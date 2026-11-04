@@ -198,6 +198,7 @@ export function initializeSessionOwnerSchema(db: Database) {
           project TEXT NOT NULL,
           inside TEXT,
           title TEXT NOT NULL,
+          title_clock INTEGER NOT NULL DEFAULT 0,
           purpose TEXT NOT NULL,
           template TEXT NOT NULL,
           state TEXT NOT NULL CHECK(state IN ('awaiting_policy','creating','ready','failed')),
@@ -620,6 +621,7 @@ export function initializeSessionOwnerSchema(db: Database) {
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
       `);
+      add('canvas_project_ensures','title_clock','title_clock INTEGER NOT NULL DEFAULT 0');
       // Retain the speech text beside its original bytes so a later provider
       // dispatch and a retried client request use the same transcription.
       add('session_attachments','transcript_text','transcript_text TEXT');

@@ -30,8 +30,10 @@ const ledgerConstructors=checkLedgerConstructors(root);
 const safety=Bun.spawnSync([process.execPath,join(import.meta.dir,'database-safety-fixture.ts')],{cwd:root,stdout:'pipe',stderr:'pipe',timeout:30_000});
 if(safety.exitCode!==0)throw new Error(`Database safety check failed: ${safety.stderr.toString().slice(-3000)}`);
 phase('database-safety');
-const runningGuard=Bun.spawnSync([process.execPath,join(import.meta.dir,'live-store-copy-guard-fixture.ts')],{cwd:root,stdout:'pipe',stderr:'pipe',timeout:10_000});
-if(runningGuard.exitCode!==0)throw new Error(`Running agent copy guard failed: ${runningGuard.stderr.toString().slice(-3000)}`);
+// Each guard operation owns its hang bound; the controller owns the whole gate deadline.
+// Inherit progress so even an outer timeout retains the last operation reached.
+const runningGuard=Bun.spawnSync([process.execPath,join(import.meta.dir,'live-store-copy-guard-fixture.ts')],{cwd:root,stdout:'pipe',stderr:'inherit'});
+if(runningGuard.exitCode!==0)throw new Error(`Running agent copy guard failed: exit=${runningGuard.exitCode} signal=${runningGuard.signalCode}`);
 phase('live-store-copy-guard');
 const acceptance=Bun.spawnSync([process.execPath,join(import.meta.dir,'accepted-input-admission-fixture.ts')],{cwd:root,stdout:'pipe',stderr:'pipe',timeout:30_000});
 if(acceptance.exitCode!==0)throw new Error(`Accepted input check failed: ${acceptance.stderr.toString().slice(-3000)}`);

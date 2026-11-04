@@ -239,7 +239,7 @@ async function upgradeAnswerClosures(generation:number){
 /** Reproject handoffs and attributed answers after their display changes. */
 async function upgradeRequestRoots(generation:number){
   const version=(prepared.query('SELECT request_roots_version AS version FROM presentation_message_meta WHERE singleton=1').get() as {version:number}).version;
-  if(version>=7)return;
+  if(version>=8)return;
   const resolveRoot=inboxRootResolver(source),changedRoots=new Set<string>();
   let after=0;
   while(true){
@@ -294,7 +294,7 @@ async function upgradeRequestRoots(generation:number){
   }
   prepared.transaction(()=>{keepLease();topics.apply(generation,[],changedRoots);})();
   while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
-  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET request_roots_version=7 WHERE singleton=1').run();})();
+  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET request_roots_version=8 WHERE singleton=1').run();})();
 }
 const insertTopicEvent=prepared.query(`INSERT INTO presentation_topic_events(generation,topic_id,event_sequence,session_id,event_id)
   VALUES(?,?,?,?,?) ON CONFLICT(generation,event_sequence) DO UPDATE SET topic_id=excluded.topic_id`);
@@ -532,7 +532,7 @@ async function rebuild() {
     await rebuildAreaPages(generation);
     prepared.transaction(()=>{
       keepLease();
-      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=7,answer_closures_version=2,marked_reply_roots_version=1,agent_request_visibility_version=1,routing_result_visibility_version=1 WHERE singleton=1')
+      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=8,answer_closures_version=2,marked_reply_roots_version=1,agent_request_visibility_version=1,routing_result_visibility_version=1 WHERE singleton=1')
         .run(generation,after,startHead);
       cards.activate(generation,startHead);
       receipts.activate(generation,startHead);
@@ -629,6 +629,7 @@ async function catchUp() {
       if(Date.now()-lastTopicCollection>60_000){topics.collectPage();areas.collectPage(meta().generation);lastTopicCollection=Date.now();}})();
     return;
   }
+  const prepareStarted=performance.now();
   const resolveRoot=inboxRootResolver(source);
   const linkedInputs=new Set<string>(),movedRoots=new Set<string>(),turnsToRefresh=new Set<number>();
   const correctedInputs=new Set<string>();
@@ -707,6 +708,7 @@ async function catchUp() {
   }
   eventAfter=eventHead;
   for(const row of newRows)changedRoots.add(row.root);
+  const prepareMs=performance.now()-prepareStarted,applyStarted=performance.now();
   prepared.transaction(()=>{
     keepLease();
     for(const row of newRows)writeInboxMessage(current.generation,row);
@@ -830,12 +832,18 @@ async function catchUp() {
       }
     }
   })();
+  const applyMs=performance.now()-applyStarted,topicsStarted=performance.now();
+  const topicContexts=new Map<number,ReturnType<PreparedTopics['context']>>();
+  let topicsProcessed=0,topicContextBuilds=0,topicContextBuildMs=0;
   while(true){
-    const drained=prepared.transaction(()=>{keepLease();return topics.drain(current.generation,20);})();
+    const drained=prepared.transaction(()=>{keepLease();return topics.drain(current.generation,20,topicContexts);})();
+    topicsProcessed+=drained.processed;topicContextBuilds+=drained.contextBuilds;topicContextBuildMs+=drained.contextBuildMs;
     if(!drained.hasMore)break;
     await yieldProgress();
   }
+  const topicsMs=performance.now()-topicsStarted,labStarted=performance.now();
   while(prepared.transaction(()=>{keepLease();return labRequests.drain(current.generation);})())await yieldProgress();
+  const labMs=performance.now()-labStarted;
   prepared.transaction(()=>{
     keepLease();
     cards.checkpoint(current.generation,changes.at(-1)!.sequence);
@@ -845,6 +853,10 @@ async function catchUp() {
     prepared.query('UPDATE presentation_message_meta SET event_watermark=?,source_head=? WHERE singleton=1')
       .run(eventAfter,changes.at(-1)!.sequence);
   })();
+  writeLogLine('info',JSON.stringify({event:'presentation_worker_batch',changes:changes.length,
+    prepare_ms:Math.round(prepareMs),apply_ms:Math.round(applyMs),topic_phase_ms:Math.round(topicsMs),lab_phase_ms:Math.round(labMs),
+    topics_processed:topicsProcessed,topic_context_builds:topicContextBuilds,
+    topic_context_build_ms:Math.round(topicContextBuildMs)}));
 }
 
 let checkedDisplay=false,lastTopicCollection=0,touchBackfilled=false;

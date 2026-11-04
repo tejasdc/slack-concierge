@@ -92,6 +92,15 @@ case "${1:-}" in
   sessions|external|projects|work)
     command=$1
     shift
+    # Native Codex helpers share their parent's Concierge source identity but have a distinct
+    # thread identity. They may investigate, yet cannot settle or withdraw the parent's work.
+    # A read-only audit helper closed its parent's repair request on 2026-11-04.
+    if [[ "$command" == sessions && -n "${CODEX_THREAD_ID:-}" && -n "${CODEX_SESSION_ID:-}" && "$CODEX_THREAD_ID" != "$CODEX_SESSION_ID" ]]; then
+      if [[ "${1:-}" == reply || "${1:-}" == outcome || "${1:-}" == cancel || ( "${1:-}" == topics && ( "${2:-}" == close || ( "${2:-}" == request && "${3:-}" == close ) ) ) ]]; then
+        echo 'A native helper cannot close or cancel its parent Concierge task; return the result to the parent agent.' >&2
+        exit 2
+      fi
+    fi
     case "$command" in
       sessions) script=router-sessions ;;
       external) script=router-external ;;
