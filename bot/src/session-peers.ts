@@ -27,7 +27,7 @@ import {sessionAuthor} from './session-message-author';
 import {RETRY_POLICIES,PEER_REPLY_SCHEMA_MISMATCH_ATTEMPTS,PEER_REQUEST_ORPHAN_GRACE_MS} from './retry-policies';
 import {ledgerDurable} from './ledger-durability-barrier';
 import {parseMachineNeed,type MachineNeed} from './machine-need';
-import {AUTHORIZED_PAGE,AUTHORIZED_WEB_APP,AUTHORIZING_HUMAN_INPUT} from './mac-surface-policy';
+import {AUTHORIZED_PAGE,AUTHORIZED_WEB_APP,AUTHORIZING_HUMAN_INPUT,CANVAS_AUTHORIZING_HUMAN_INPUT} from './mac-surface-policy';
 import {endedWorkInPlainWords} from './provider-failures';
 
 /** The original human grant survives a physical-device reply only within its recorded task. */
@@ -35,15 +35,35 @@ function continuedWebAppAuthorization(actor:PeerActor,sourceInput:ReturnType<typ
   const need=input.machineNeed;
   if(input.peer!=='mac'||!input.address||need?.kind!=='mac-app'||!need.why.includes(AUTHORIZED_WEB_APP)||!need.why.includes(AUTHORIZED_PAGE)
     ||!sourceInput||!provenance?.originatingHuman||sourceInput.kind!=='input')return null;
-  const forwarded=db.query(`SELECT source_input_id,thread_root_input_id,payload_json FROM session_communication_requests
+  const forwarded=db.query(`SELECT source_input_id,source_session_id,thread_root_input_id,payload_json FROM session_communication_requests
     WHERE target_input_id=? AND target_session_id=? AND source_input_id=?`).get(sourceInput.id,actor.session,sourceInput.source_input_id) as
-    {source_input_id:string;thread_root_input_id:string|null;payload_json:string}|null;
+    {source_input_id:string;source_session_id:number;thread_root_input_id:string|null;payload_json:string}|null;
   const humanReply=forwarded?getAcceptedSessionInput(forwarded.source_input_id):null;
-  if(!forwarded||!humanReply||!humanAuthored(humanReply)||provenance.originatingHuman.inputId!==humanReply.id
+  if(!forwarded||!humanReply||!humanAuthored(humanReply)||humanReply.session_id!==forwarded.source_session_id
+    ||provenance.originatingHuman.inputId!==humanReply.id
     ||JSON.parse(forwarded.payload_json)?.forwardedReply?.inboxInputId!==humanReply.id)return null;
+  const currentTopic=forwarded.thread_root_input_id?topicOfRoot(forwarded.thread_root_input_id):null;
+  const canvas=getAcceptedSessionInput(CANVAS_AUTHORIZING_HUMAN_INPUT);
+  const replyTo=JSON.parse(humanReply.payload_json)?.replyToMessage?.messageId;
+  if(canvas&&humanAuthored(canvas)&&canvas.session_id===humanReply.session_id
+    &&replyTo===canvas.id&&forwarded.thread_root_input_id===canvas.id
+    &&currentTopic!==null&&currentTopic===topicOfRoot(canvas.id)) {
+    // The original Canvas work was handed back for the physical prerequisite; this reply
+    // resumes that retained request, rather than authorizing a new app task by its text alone.
+    const dispatch=db.query(`SELECT 1 FROM session_communication_requests request
+      JOIN session_inputs target ON target.id=request.target_input_id AND target.session_id=request.target_session_id
+      WHERE request.source_input_id=? AND request.source_session_id=? AND request.target_session_id=?
+        AND request.outcome='decision_needed'
+        AND json_extract(request.payload_json,'$.requestedEffect')='work' LIMIT 1`)
+      .get(canvas.id,canvas.session_id,actor.session);
+    if(dispatch){
+      const payload=JSON.parse(canvas.payload_json);
+      return {inputId:canvas.id,runId:canvas.turn_id?nativeRunId(canvas.turn_id):'',sessionId:`concierge:${canvas.session_id}`,
+        ...(payload.capture?.id?{captureId:payload.capture.id}:{})};
+    }
+  }
   const original=getAcceptedSessionInput(AUTHORIZING_HUMAN_INPUT);
   if(!original||!humanAuthored(original)||original.session_id!==actor.session)return null;
-  const currentTopic=forwarded.thread_root_input_id?topicOfRoot(forwarded.thread_root_input_id):null;
   const task=currentTopic&&original.turn_id?db.query(`SELECT 1 FROM turns run
     JOIN session_communication_requests request ON request.target_input_id=run.accepted_input_id
     JOIN inbox_requests topic ON topic.topic_id=?

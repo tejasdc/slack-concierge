@@ -158,19 +158,26 @@ export function sessionInputProvenance(input:AcceptedSessionInput) {
     return {inputId:original.id,runId:original.turn_id?nativeRunId(original.turn_id):'',
       sessionId:`concierge:${original.session_id}`,...(originalPayload.capture?.id?{captureId:originalPayload.capture.id}:{})};
   };
+  const forwardedHuman=(candidate:AcceptedSessionInput)=>{
+    // A human Inbox reply can be forwarded before it owns a provider turn. The owner-retained
+    // forward request, not a missing source run or the agent-facing message, proves that edge.
+    if(!candidate.source_input_id||candidate.source_run_id)return null;
+    const forwarded=db.query(`SELECT request.source_input_id,request.source_session_id,request.payload_json FROM session_communication_requests request
+      JOIN turns source_turn ON source_turn.id=request.source_turn_id AND source_turn.session_id=request.source_session_id
+      WHERE request.target_input_id=? AND request.target_session_id=? AND request.source_input_id=?`)
+      .get(candidate.id,candidate.session_id,candidate.source_input_id) as {source_input_id:string;source_session_id:number;payload_json:string}|null;
+    const details=forwarded?JSON.parse(forwarded.payload_json):null;
+    const source=forwarded?getAcceptedSessionInput(forwarded.source_input_id):null;
+    if(!source||!humanAuthored(source)||source.session_id!==forwarded?.source_session_id
+      ||details?.forwardedReply?.inboxInputId!==source.id||details?.requestedEffect!=='work')return null;
+    return {inputId:source.id,runId:'',sessionId:`concierge:${source.session_id}`};
+  };
   if(!input.source_input_id||!input.source_run_id){
     const delivered=peerDeliveryProvenance(input);
     const original=routedHuman(input);
     if(delivered)return original?{...delivered,originatingHuman:original}:delivered;
-    // An Inbox reply is forwarded without a provider run. Its retained request, rather than
-    // a claimed source run or the provider-facing text, proves which human wrote it.
-    const forwarded=db.query(`SELECT source_input_id,payload_json FROM session_communication_requests
-      WHERE target_input_id=? AND target_session_id=? AND source_input_id=? AND source_turn_id IS NOT NULL`)
-      .get(input.id,input.session_id,input.source_input_id) as {source_input_id:string;payload_json:string}|null;
-    const details=forwarded?JSON.parse(forwarded.payload_json):null;
-    const source=forwarded?getAcceptedSessionInput(forwarded.source_input_id):null;
-    if(source&&humanAuthored(source)&&details?.forwardedReply?.inboxInputId===source.id&&details?.requestedEffect==='work'){
-      const identity={inputId:source.id,runId:'',sessionId:`concierge:${source.session_id}`};
+    const identity=forwardedHuman(input);
+    if(identity){
       return {source:identity,requestId:input.request_id,effectScope:'work' as const,originatingHuman:identity,peer:undefined};
     }
     return null;
@@ -207,6 +214,7 @@ export function sessionInputProvenance(input:AcceptedSessionInput) {
     current=parent;
   }
   // A chain that ends at a peer-delivered input continues in the peer's ledger; its retained provenance supplies the human.
+  if(!human&&current)human=forwardedHuman(current);
   const delivered=!human&&current?peerDeliveryProvenance(current):null;
   if(delivered){human=delivered.originatingHuman;effectScope=effectScope==='informational'||delivered.effectScope!=='work'?'informational':'work';}
   return source?{source,requestId:input.request_id,effectScope,originatingHuman:human,...(delivered?{peer:delivered.peer}:{})}:null;

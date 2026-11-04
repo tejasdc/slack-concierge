@@ -39,14 +39,18 @@ claim a page-memory recovery path based on this grant alone. The original
 authorization and the separate Canvas capture are recorded in the policy check.
 When Tejas answers a physical prerequisite in the same Inbox task, the Inbox's
 forwarded reply has no provider run. Its retained forward request proves the exact
-human reply. A later Mac request from that reply may carry the earlier web-app
-authorization only if the original human instruction belongs to the same worker
-session and joined the turn that started from that Inbox topic's linked dispatch,
-and the new Mac-app need names the exact bundle and page. The peer delivery keeps
-the new request as its immediate source and the original instruction as its human
-task provenance; neither provider-facing text nor an agent-supplied old run can
-create this link. The Mac hook still checks each Computer Use operation against the
-read-only exact-app policy.
+human reply, including when another agent request follows it. A later Mac request
+from that reply may carry the earlier web-app authorization only when the owner
+can verify the task link and the new Mac-app need names the exact bundle and page.
+For the November 3 instruction, the original human input belongs to the same worker
+session and joined the turn started by that Inbox topic's linked dispatch. For the
+Canvas capture, the reply must address that exact capture in the same Inbox topic,
+and the work dispatch from that capture to the requesting Canvas worker must have
+settled as needing the physical prerequisite. The peer delivery keeps the new
+request as its immediate source and the original instruction or capture as its
+scoped authorization. Neither provider-facing
+text nor an agent-supplied old run can create this link. The Mac hook still checks
+each Computer Use operation against the exact-app read-only policy.
 This is a tool boundary;
 arbitrary programs outside the managed provider stream remain
 outside it. See [peer instances](../runbooks/PEER-INSTANCES.md#what-runs-on-the-mac).
