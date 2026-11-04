@@ -116,10 +116,11 @@ for reconciliation. The complete explicit-reply query used only for recovery ret
 ## Repair invariant
 
 An agent attempt may fail, stall, be cancelled or be handed back. The human
-request remains open until an explicit completed result with its required live
-check or an honest reason no live check was possible, a live
-question only Tejas can answer, a proven replacement request, or Tejas's later
-instruction to withdraw it. An agent cannot turn its own failure into a final
+request remains open until an explicit completed result with a live check,
+a live question only Tejas can answer, a proven replacement request, or Tejas's
+later instruction to withdraw it. A completed agent reply that says a live check
+was not possible leaves the human request open for verification without repeating
+an acknowledged effect. An agent cannot turn its own failure into a final
 human-task disposition. The owner records one durable recovery input per
 request and repeat count, and repeats that input after the router turn ends without
 linked progress, with a bounded delay. The router must inspect previous effects

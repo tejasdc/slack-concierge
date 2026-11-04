@@ -1635,7 +1635,10 @@ export class SessionCommunicationCoordinator {
                 .run(id,null,null,standIn.id,input.inbox.id,null,actionId,target.id,null,null,payload,hash(payload),now+PROMPT_ANSWER_REMINDER_MS,now,input.inputId,`request:${id}`,input.target.root);
             retainSessionInput({id:`request:${id}`,sessionId:target.id,scope:`session:${input.inputId}`,actionId:`request:${id}`,kind:'input',origin:'agent',payload:firstInput,sourceInputId:input.inputId,requestId:id});
             const operation=retainSessionInput({sessionId:input.inbox.id,scope:`communication:${input.inputId}`,actionId,kind:'request',origin,
-                payload:{text:input.text,sourceInputId:input.inputId,targetSessionId:`concierge:${target.id}`,targetAddress:address,requestedEffect:'work',thread:input.target.root,forwardedReply:true}});
+                payload:{text:input.text,sourceInputId:input.inputId,targetSessionId:`concierge:${target.id}`,targetAddress:address,requestedEffect:'work',thread:input.target.root,forwardedReply:true},
+                // The receipt names its request and his message, as every other ask does, so thnkr.ing draws
+                // this hand-off once, on the route card, instead of a second card beside it (2026-11-04).
+                sourceInputId:input.inputId,requestId:id});
             recordSessionEvent({eventId:`request:${id}`,sessionId:input.inbox.id,inputId:operation.input.id,kind:'request',payload:{requestId:id,targetSessionId:`concierge:${target.id}`}});
         })();
         log('info','inbox_reply_forwarded',{request_id:id,input_id:input.inputId,target_session_id:target.id,topic_id:input.target.topicId});
