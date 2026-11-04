@@ -1470,16 +1470,18 @@ export class SessionPeers {
       this.reconciliationDirty=false;
       // Catalogue refreshes have their own task owner and bounded interval.
       for(const name of this.dependencies.clients.keys())void this.refreshCatalogue(name);
-      await this.scanRows<PeerRequestRow>('session_peer_requests','SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests WHERE outcome IS NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1',
+      // Each scan names its partial index: Bun's SQLite otherwise walked the whole table by rowid,
+      // stored payloads included, on every wake (about three times a second on 2026-11-03).
+      await this.scanRows<PeerRequestRow>('session_peer_requests','SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests INDEXED BY session_peer_requests_open WHERE outcome IS NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1',
         row=>this.closeStranded(row));
-      await this.scanRows<PeerRequestRow>('session_peer_requests',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests
+      await this.scanRows<PeerRequestRow>('session_peer_requests',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests INDEXED BY session_peer_requests_canceled
           WHERE outcome='canceled' AND remote_operation_id IS NOT NULL
             AND coalesce(json_extract(remote_status_json,'$.cancellationAcknowledged'),0)=0
             AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
         row=>this.schedule(`cancel:${row.request_id}`,()=>this.revokeCanceledRemote(row.request_id)));
-      await this.scanRows<PeerRequestRow>('session_peer_requests',"SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests WHERE outcome IS NULL AND overdue_at_ms IS NULL AND json_extract(remote_status_json,'$.hold.code') IS NOT NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1",
+      await this.scanRows<PeerRequestRow>('session_peer_requests',"SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests INDEXED BY session_peer_requests_open WHERE outcome IS NULL AND overdue_at_ms IS NULL AND json_extract(remote_status_json,'$.hold.code') IS NOT NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1",
         row=>this.inspectHold(row));
-      await this.scanRows<PeerRequestRow>('session_peer_requests',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests WHERE ${AWAITING_INSPECTION} AND due_at_ms<=? AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
+      await this.scanRows<PeerRequestRow>('session_peer_requests',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests INDEXED BY session_peer_requests_open WHERE ${AWAITING_INSPECTION} AND due_at_ms<=? AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
         row=>this.inspectOverdueRequest(row),this.now());
       if(this.unrecovered.size)this.schedule('recover-discarded-replies',()=>this.recoverDiscardedReplies());
       // A cancellation could have been admitted by an older release without revoking its
@@ -1491,9 +1493,9 @@ export class SessionPeers {
           WHERE d.closed_at_ms IS NOT NULL AND turn.status='queued' AND turn.saved_kind IS NULL
             AND d.rowid<=? AND d.rowid>? ORDER BY d.rowid LIMIT 1`,
         row=>this.canceledByOrigin(row.request_id));
-      await this.scanRows<PeerRequestRow>('session_peer_requests','SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests WHERE outcome IS NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1',
+      await this.scanRows<PeerRequestRow>('session_peer_requests','SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests INDEXED BY session_peer_requests_open WHERE outcome IS NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1',
         row=>this.schedule(`ask:${row.request_id}`,()=>this.dispatch(this.row(row.request_id))));
-      await this.scanRows<PeerEventRow>('session_peer_events',"SELECT rowid AS reconciliation_rowid,* FROM session_peer_events WHERE status NOT IN ('received','retained') AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1",
+      await this.scanRows<PeerEventRow>('session_peer_events',"SELECT rowid AS reconciliation_rowid,* FROM session_peer_events INDEXED BY session_peer_events_undelivered WHERE status NOT IN ('received','retained') AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1",
         event=>this.schedule(`event:${event.event_id}`,()=>this.deliver(event)));
       await this.scanRows<DeliveryRow>('session_peer_deliveries',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_deliveries WHERE (closed_at_ms IS NULL
           OR request_id IN (SELECT request_id FROM session_peer_replies WHERE status='pending')) AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
