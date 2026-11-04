@@ -327,7 +327,7 @@ policy from the answer, and reconciliation reads history separately with `thread
 2026-11-04 full-history resumes of a 218 MB conversation held Concierge's shared connection long
 enough that every Codex session's resume timed out for six minutes
 ([failure record](../incidents/2026-11-04-codex-resume-full-history-stalled-all-sessions.md)).
-A turn's resume also has no deadline. A cold resume loads the whole rollout before answering, and
+A turn's resume, at dispatch and in restart recovery, also has no deadline. A cold resume loads the whole rollout before answering, and
 the App Server queues resumes per thread, so asking again only adds another load. The turn waits
 while the connection lives and logs `codex_resume_waiting` every 30 s. Stop and a disconnect still
 end the wait.

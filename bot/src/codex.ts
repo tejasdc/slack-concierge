@@ -1139,6 +1139,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   void stoppedBeforeSubmission.catch(() => {});
   const resumeUntilAnswered = async (threadId: string, params: unknown) => {
     await ledgerDurable();
+    if (interruptionReason) throw interruptionReason;
     const started = Date.now();
     const slow = setInterval(() => log("warn", "codex_resume_waiting", {
       provider_thread_uuid: threadId, waited_ms: Date.now() - started,
@@ -1399,11 +1400,12 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         const recoveredParams = await codexThreadParameters(recoveredInput,
           (method, params) => client.request(method, params, { requestTimeoutMs }), threadEnvironment);
         if (turnSettled || controllerClosed) return;
+        // Recovery retries this loop until it settles, so a deadline here only stacked cold loads.
         const resumed = await client.request("thread/resume", {
           threadId: activeThreadId,
           ...recoveredParams,
           excludeTurns: true,
-        }, { requestTimeoutMs });
+        }, { untilDisconnect: true });
         if (turnSettled || controllerClosed) return;
         verifyCodexConsultationPolicy(input, resumed);
         const history = await client.request("thread/read", {
