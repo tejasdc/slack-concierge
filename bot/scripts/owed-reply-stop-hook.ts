@@ -120,6 +120,12 @@ function leftoverCodexProcesses(runId: string): { pid: number; name: string }[] 
     try {
       const environment = readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0');
       if (!environment.includes(`CONCIERGE_SOURCE_RUN_ID=${runId}`)) continue;
+      // The provider coordinator and tool shells still carry this run ID at Stop. Their
+      // concierge-exec unit is owned by Concierge and kills its whole cgroup on release.
+      // A process outside that unit may outlive its finished turn unowned.
+      let cgroup = '';
+      try { cgroup = readFileSync(`/proc/${pid}/cgroup`, 'utf8'); } catch { /* Unknown ownership stays reportable. */ }
+      if (/^0::\/agents\.slice\/concierge-exec-[^/\n]+\.service(?:\/|$)/m.test(cgroup)) continue;
       const executable = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0')[0] ?? '';
       // Browsers already have their own exact-owner cleanup and idle shutdown.
       if (executable.includes('agent-browser') || /\/(?:chrome|chrome_crashpad_handler)$/.test(executable)) continue;

@@ -344,14 +344,20 @@ shared App Server. A process that outlives a crashed or unhooked run remains vis
 the host's aged-controller alert for owner investigation; the host observer never kills it.
 
 For a server Codex turn that is allowed to stop, the same hook also checks server processes
-for others carrying that exact Concierge run identity. It excludes
-the hook's own process chain and the browsers handled above. If any remain, it files one
+for others carrying that exact Concierge run identity. It excludes the hook's own process
+chain, the browsers handled above, and processes still inside a `concierge-exec-*` unit.
+Concierge owns that unit and releases it with `KillMode=control-group` after the provider
+finishes. The Codex coordinator and its tool shells can still be running there when Stop
+fires; counting them produced repeated false Inbox reports on 2026-11-04. A matching
+process outside that owned unit has crossed the lifecycle boundary. If any remain, it files one
 durable agent issue report in Inbox for the run, so the router assigns investigation and
 the request stays open until the work is settled. It does not kill an unknown process:
 an agent may have intentionally started a service, and the report requires its durable
 owner to be established or the process to be stopped. It matches the exact run identity
-without depending on a successful App Server scope move. Registered command watches are
-already owned by Concierge, have deadlines, and run in separate execution units; they
+without depending on a successful App Server scope move. If the App Server remains in the
+owned execution unit after a failed move, its children are covered by that unit's release;
+the existing scope-move failure diagnostic still requires investigation. Registered command
+watches are already owned by Concierge, have deadlines, and run in separate execution units; they
 are outside this check. The report is a turn-exit check, not a periodic orphan scan, and
 an owner outage can make the hook's bounded report attempt fail; the hook emits a diagnostic
 line then, but where Codex retains that output has not been verified. The check also misses

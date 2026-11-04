@@ -1390,6 +1390,14 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evid
   const unfinished=dispatches.filter(dispatch=>(!dispatch.row?.outcome&&!(dispatch!==latest&&dispatch.row?.stalled_at_ms!=null))
       ||(dispatch===latest&&dispatch.row!==null&&!done(dispatch.row))).map(dispatch=>({requestId:dispatch.id}));
   if(unfinished.length)throw new TopicError(`This request's work has not finished (${unfinished.map((d:any)=>d.requestId).join(', ')}): close it completed only when that work answered as done. If part of what he asked is not done, do it or have it built, then close.`,409,'REQUEST_WORK_UNFINISHED');
+  if(latest&&humanRequest(topic,request)) {
+    const shared=db.query(`SELECT count(*) AS count FROM inbox_requests request,json_each(request.dispatches_json) dispatch
+      WHERE json_extract(dispatch.value,'$.requestId')=?`).get(latest.id) as {count:number};
+    if(shared.count>1&&!evidence.some(id=>{
+      const post=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=? AND kind=?').get(id,'post') as {payload_json:string}|null;
+      return post&&JSON.parse(post.payload_json).requestId===latest.id;
+    }))throw new TopicError('This agent answer is linked to several human requests. Check this request separately and name the agent answer as evidence before closing it.',409,'REQUEST_SHARED_COMPLETION_EVIDENCE_REQUIRED');
+  }
   if(questionsOfRequest(topic.topicId,request).some(question=>question.kind==='decision'&&OPEN_QUESTION_STATES.includes(question.state)))
     throw new TopicError('A question for this request is still open: settle it before closing the request as completed.',409,'REQUEST_QUESTION_OPEN');
 }
@@ -1973,20 +1981,40 @@ export function topicsCommand(actor:TopicActor,body:any) {
       const disposition=String(body?.disposition??'');
       if(!DISPOSITIONS.includes(disposition))throw new TopicError(`--disposition must be one of ${DISPOSITIONS.join(', ')}.`);
       const why=text(body?.reason,'reason',4000),evidence=idList(body?.evidence,'--evidence');
-      return agentMutation(actor,actionId(),{kind:'topic-request-close',requestId:body?.request_id,disposition,evidence,reason:why},()=>{
+      const humanQuote=typeof body?.human_quote==='string'?body.human_quote.trim():'';
+      return agentMutation(actor,actionId(),{kind:'topic-request-close',requestId:body?.request_id,disposition,evidence,humanQuote,reason:why},()=>{
         const request=requestRow(text(body?.request_id,'request id',200));
         const topic=topicFor(request.topicId);
+        if(request.state!=='open')throw new TopicError('This request is already closed. Reopen it before changing its disposition.',409,'REQUEST_ALREADY_CLOSED');
         if(disposition==='failed')throw new TopicError('An agent failure cannot close the underlying request. Send the remaining work onward.',409,'REQUEST_RECOVERY_REQUIRED');
-        // His message counts here when it sits in this thread or was routed into it: the routed
-        // copy and its original both resolve to his exact input (2026-11-04: his "nothing is lost"
-        // routed into the lockout thread could not withdraw its recovery request, so the sweep
-        // kept restarting it).
-        const laterHumanEvidence=evidence.some(id=>{
+        // A routed copy and its original both resolve to the exact human input in this topic.
+        const laterHumanInstruction=evidence.some(id=>{
           const source=resolveAskedSource(id,topic)?.source;
           return !!source&&new Date(iso(source.created_at)!).getTime()>=new Date(iso(request.createdAt)!).getTime();
         });
-        if(['declined','withdrawn'].includes(disposition)&&humanRequest(topic,request)&&!laterHumanEvidence)
-          throw new TopicError('A withdrawal needs Tejas’s later message in this thread as evidence. An agent failure cannot withdraw his request.',409,'REQUEST_HUMAN_WITHDRAWAL_REQUIRED');
+        const withdrawalEvidence=evidence.some(id=>{
+          const input=resolveAskedSource(id,topic)?.source;
+          if(!input||new Date(iso(input.created_at)!).getTime()<new Date(iso(request.createdAt)!).getTime()||humanQuote.length<4)return false;
+          let words='',replyTo:unknown;
+          try{const payload=JSON.parse(input.payload_json);words=typeof payload.text==='string'?payload.text:'';replyTo=payload.replyToMessage?.messageId;}
+          catch{return false;}
+          if(!words.includes(humanQuote))return false;
+          if(/\b(?:don['’]t|do not)\s+(?:stop|cancel|withdraw|drop)\b|\b(?:keep working|continue working|please finish|still broken)\b/i.test(humanQuote))return false;
+          const post=typeof replyTo==='string'&&replyTo.startsWith('post:forward:')
+            ?db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(replyTo) as {payload_json:string}|null:null;
+          const answeredDispatch=post?JSON.parse(post.payload_json).requestId:null;
+          const requestScoped=typeof answeredDispatch==='string'&&request.dispatches.some(dispatch=>dispatch.requestId===answeredDispatch);
+          const answersRequestQuestion=typeof replyTo==='string'&&questionsOfRequest(request.topicId,request)
+            .some(question=>question.sources.includes(replyTo));
+          const onlyOpenRequest=topicRequests(request.topicId).filter(candidate=>candidate.state==='open').length===1;
+          const titleWords=request.title.toLowerCase().split(/[^a-z0-9]+/).filter(word=>word.length>=5);
+          const namesRequest=titleWords.length>=2&&titleWords.filter(word=>humanQuote.toLowerCase().includes(word)).length>=2;
+          return requestScoped||answersRequestQuestion||onlyOpenRequest||namesRequest;
+        });
+        if(['declined','withdrawn'].includes(disposition)&&humanRequest(topic,request)&&!withdrawalEvidence)
+          throw new TopicError('Withdrawing his request needs his exact withdrawal words and a later human message tied to this request. His Close control also withdraws its named requests.',409,'REQUEST_HUMAN_WITHDRAWAL_REQUIRED');
+        if(disposition==='superseded'&&humanRequest(topic,request))
+          throw new TopicError('A shared message or successor title cannot transfer his unfinished obligation. Keep this request open and link checked work to it.',409,'REQUEST_TRANSFER_REQUIRED');
         if(disposition==='superseded'&&!evidence.some(id=>{
           const replacementRow=db.query('SELECT * FROM inbox_requests WHERE request_id=? AND request_id<>?')
             .get(id,request.requestId) as any|null;
@@ -1994,14 +2022,14 @@ export function topicsCommand(actor:TopicActor,body:any) {
           const replacement=toStoredRequest(replacementRow);
           const sources=new Set(request.sources.map(source=>source.inputId));
           const sameSource=replacement.sources.some(source=>sources.has(source.inputId));
-          return (replacement.state==='open'||replacement.disposition==='completed')&&(sameSource||laterHumanEvidence);
+          return (replacement.state==='open'||replacement.disposition==='completed')&&(sameSource||laterHumanInstruction);
         }))throw new TopicError('A superseded request needs a live or completed replacement carrying the same source, or Tejas’s later instruction in this thread.',409,'REQUEST_REPLACEMENT_REQUIRED');
         if(disposition==='superseded'&&questionsOfRequest(topic.topicId,request)
           .some(question=>question.kind==='decision'&&OPEN_QUESTION_STATES.includes(question.state)))
           throw new TopicError('This request still has a live question for Tejas. Explicitly carry that question into the replacement or settle it with a proven replacement question before closing.',409,'REQUEST_QUESTION_OPEN');
         if(disposition==='completed')refuseUnfinishedCompletion(topic,request,evidence);
         const at=nowIso();
-        const next={...request,state:'closed' as const,disposition,closure:{by,at,reason:why,evidence},revision:request.revision+1,updatedAt:at};
+        const next={...request,state:'closed' as const,disposition,closure:{by,at,reason:why,evidence,...(['withdrawn','declined'].includes(disposition)&&humanQuote?{humanQuote}:{})},revision:request.revision+1,updatedAt:at};
         // Only the questions linked to this exact request end with it.
         const questions=expireOpen(questionsOfRequest(topic.topicId,request),`The request it was for closed (${disposition}): ${why}`,at);
         const topicNext=bumped(topic);
@@ -2877,7 +2905,7 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
  * and no thread ever closed itself. The rules, all decided here and by the owner:
  * - A request follows its work. Once nothing sent for it is running, its latest answer decides:
  *   done closes it completed (the same rule the router is held to). A failed or cancelled attempt
- *   leaves his request open and sends it back for recovery. His own Stop withdraws that attempt.
+ *   leaves his request open and sends it back for recovery. His own Stop ends only that attempt.
  *   Any other end is also sent to the router for recovery.
  * - A thread closes itself when the last thing in it ends: no open request, nothing waiting on him
  *   (an unread answer counts), no work running for it, not set aside. It is decided at that ending
@@ -3080,8 +3108,10 @@ function linkForwardedReplies(topicId:string,forwards:Forward[]):number {
     for(const request of targets) {
       if(request.dispatches.some((dispatch:any)=>dispatch.requestId===forward.id))continue;
       const earlier=request.dispatches.map((dispatch:any)=>workRow(String(dispatch?.requestId??''))).filter((work):work is Work=>!!work);
-      const running=forward.outcome===null&&!forward.stalled;
-      if(request.state==='closed'&&!running)continue;
+      // Historical forwards already considered by a completed request are not new work.
+      // A later continuation still links even when its attempt stalled or ended.
+      const closedAtMs=request.closure?.at?new Date(iso(request.closure.at)!).getTime():0;
+      if(request.state==='closed'&&(forward.createdAtMs<=closedAtMs||forward.createdAtMs<recoveryStart))continue;
       const dispatch={requestId:forward.id,targetSessionId:forward.target,targetTitle:null,outcome:forward.outcome,state:null,forwardedReply:true};
       const created=new Map(earlier.map(work=>[work.id,work.createdAtMs]));
       const dispatches=[...request.dispatches,dispatch].sort((first:any,second:any)=>
@@ -3089,7 +3119,7 @@ function linkForwardedReplies(topicId:string,forwards:Forward[]):number {
       const reopen=request.state==='closed';
       const next={...request,dispatches,...(reopen?{state:'open' as const,disposition:null,closure:null}:{}),revision:request.revision+1,updatedAt:nowIso()};
       const topic=topicRow(topicId);
-      const why=reopen?'His reply to the agent working on it reopened it while that work runs.':'His reply to the agent working on it is part of its work.';
+      const why=reopen?'His later reply to the agent reopened this request.':'His reply to the agent working on it is part of its work.';
       const change=reopenedForNewWork({kind:'topic_request',payload:{change:'linked',topicId,topic:bumped(topic),request:next,by:OWNER_BY,reason:why,revision:topic.revision+1}});
       if(recordOwnerTopicChange(topic.sessionId,`topic-link:forward:${forward.id}:${request.requestId}`,'topic_request',change.payload))linked++;
     }
@@ -3097,7 +3127,16 @@ function linkForwardedReplies(topicId:string,forwards:Forward[]):number {
   return linked;
 }
 
-type Stuck={topicId:string;topicTitle:string;requestId:string;title:string;work:string;how:string;key:string;sourceInputId:string|null;sourceRunId:string|null;sourceUncertain:boolean};
+type Stuck={topicId:string;topicTitle:string;requestId:string;title:string;work:string;how:string;key:string;sourceInputId:string|null;sourceRunId:string|null;sourceUncertain:boolean;stoppedByTejas:boolean;sharedAnswerPostId:string|null};
+function sharedAnswerPostId(workId:string):string|null {
+  const shared=db.query(`SELECT count(*) AS count FROM inbox_requests request,json_each(request.dispatches_json) dispatch
+    WHERE json_extract(dispatch.value,'$.requestId')=?`).get(workId) as {count:number};
+  if(shared.count<2)return null;
+  const closure=db.query(`SELECT json_extract(payload_json,'$.postId') AS post_id FROM session_owner_events
+    WHERE kind='answer_closure' AND json_extract(payload_json,'$.requestId')=? ORDER BY sequence DESC LIMIT 1`)
+    .get(workId) as {post_id:string|null}|null;
+  return closure?.post_id??'';
+}
 function recoverySource(request:StoredRequest):{inputId:string;runId:string;uncertain:boolean}|null {
   const dispatchSources=request.dispatches.flatMap((dispatch:any)=>{
     const id=String(dispatch?.requestId??'');
@@ -3184,19 +3223,21 @@ function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settl
       // check was possible. Its not-checked reason remains visible in the answer; the owner
       // cannot infer unfinished work from that reason alone.
       if(completionChecked){disposition='completed';why=latest.requestedEffect==='informational'?'The information requested was answered.':'The work sent for it answered as done.';}
-    } else if(latest?.outcome==='canceled'&&latest.stoppedByTejas&&!waitingOnHim) {
-      disposition='withdrawn';why='Tejas stopped the work.';
     }
     if(!disposition&&waitingOnHim) {
       continue;
     }
     if(!disposition&&topic.setAside)continue;
     if(!disposition) {
+      const sharedPost=latest?.outcome==='answered'&&latest.disposition==='completed'&&!latest.notCheckedReason
+        ?sharedAnswerPostId(latest.id):null;
       let how=!latest?'has had no agent assigned'
+        :sharedPost!==null?`answered as done in a dispatch shared by several requests; verify this request against ${sharedPost||'its retained answer post'} separately`
         :latest.outcome==='answered'&&latest.disposition==='completed'&&latest.notCheckedReason?`reported completion without a live check (${latest.notCheckedReason}); verify the result without repeating an acknowledged effect`
         :latest.outcome==='answered'&&latest.disposition==='completed'?'claimed completion without a verified result'
         :latest.stalled?'stalled without a final reply'
         :latest.disposition==='failed'?'failed without finishing the task'
+        :latest.outcome==='canceled'&&latest.stoppedByTejas?'was stopped by Tejas; do not automatically restart the stopped work'
         :latest.outcome==='canceled'?'was cancelled without a replacement'
         :pendingAnswer?'has Tejas’s answer to its question but no resumed work'
         :latest.outcome==='decision_needed'?'asked for a decision that nobody is waiting on any more'
@@ -3214,7 +3255,8 @@ function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settl
       if(unplaced.length)how+=`; open question ${unplaced.join(', ')} in this thread names no request: if it is what this request waits on, revise it with its questionId and owner.requestId ${request.requestId} instead of restarting work`;
       const source=recoverySource(request);
       stuck.push({topicId,topicTitle:topic.title,requestId:request.requestId,title:request.title,work:latest?.id??'unassigned',how,
-        key:request.requestId,sourceInputId:source?.inputId??null,sourceRunId:source?.runId??null,sourceUncertain:!source||source.uncertain});
+        key:request.requestId,sourceInputId:source?.inputId??null,sourceRunId:source?.runId??null,sourceUncertain:!source||source.uncertain,
+        stoppedByTejas:!!latest?.stoppedByTejas,sharedAnswerPostId:sharedPost});
       continue;
     }
     const at=nowIso();
@@ -3300,7 +3342,7 @@ export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:strin
       if(!db.query('SELECT 1 FROM session_inputs WHERE id=?').get(inputId))
         admit({sessionId:session.id,inputId,origin:'service',sourceInputId:!item.sourceUncertain&&item.sourceInputId?item.sourceInputId:inputId,
           sourceRunId:!item.sourceUncertain&&item.sourceRunId?item.sourceRunId:inputId,requestId:item.requestId,
-          text:`The request "${item.title}" (${item.requestId}) in "${item.topicTitle}" (${item.topicId}) is still open. Its latest attempt (${item.work}) ${item.how}. ${item.sourceUncertain?'The exact source of this request is not linked; establish original authorship and task scope from the retained thread before dispatching. ':''}Inspect the exact prior attempt and its effects, then send the remaining work to its owning agent (sessions ask … --thread, then topics request link). Never replay an ambiguous or acknowledged effect. Close only after the work is completed and checked, or keep an only-he-can question open for Tejas. A failure, hand-back, cancellation or provider error cannot close his request. You do not need to reply to this.`});
+          text:`The request "${item.title}" (${item.requestId}) in "${item.topicTitle}" (${item.topicId}) is still open. Its latest attempt (${item.work}) ${item.how}. ${item.sourceUncertain?'The exact source of this request is not linked; establish original authorship and task scope from the retained thread before dispatching. ':''}${item.stoppedByTejas?'Tejas stopped that run. Do not restart it or its effects on your own; reconcile any effects already in flight and keep the human task open. If his intent for the remaining task is genuinely ambiguous, ask one focused only-he-can question.':item.sharedAnswerPostId!==null?`The same answer was linked to several requests. Do not dispatch again merely to obtain a separate receipt. Read the answer ${item.sharedAnswerPostId||'on the shared dispatch'} and this request's scope; if it is fully checked, close this request citing that answer post as evidence, otherwise send only the missing work.`:'Inspect the exact prior attempt and its effects, then send the remaining work to its owning agent (sessions ask … --thread, then topics request link).'} Never replay an ambiguous or acknowledged effect. Close only after the work is completed and checked, or keep an only-he-can question open for Tejas. A failure, hand-back, cancellation or provider error cannot close his request. You do not need to reply to this.`});
       recordSessionEvent({eventId:`topic-recovery:${item.key}:${item.attempt}`,sessionId:session.id,kind:'topic_request',
         payload:{change:'flagged',topicId:item.topicId,requestId:item.requestId,work:item.work,by:OWNER_BY,recoveryInputId:inputId,reason:`Its work ${item.how}.`}});
       // Said in his thread, never rung: Concierge retrying its own recovery gives him nothing to
@@ -3310,7 +3352,11 @@ export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:strin
         const root=topicRoots(item.topicId)[0];
         if(root&&!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`post:forward:${eventId}`))
           postAgentAnswer({inboxSessionId:session.id,eventId,requestId:item.work,root,inboxInputId:root,
-            respondingSessionId:`concierge:${session.id}`,text:'Your request is still open. Concierge has tried twice to restart its work, but no new agent attempt is linked yet. It will keep trying; you do not need to repeat it.',
+            respondingSessionId:`concierge:${session.id}`,text:item.stoppedByTejas
+              ?'Your request remains open after you stopped the agent run. Concierge has not restarted that run; it is checking what remains and will ask only if your direction is needed.'
+              :item.sharedAnswerPostId!==null
+                ?'Your request remains open while Concierge checks whether the agent’s shared answer covered this part of your work. You do not need to repeat it.'
+                :'Your request is still open. Concierge has tried twice to restart its work, but no new agent attempt is linked yet. It will keep trying; you do not need to repeat it.',
             attachments:[],stalled:false,final:false,notify:false,workDisposition:null});
       }
       flagged++;

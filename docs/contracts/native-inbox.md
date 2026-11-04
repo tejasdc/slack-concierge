@@ -421,7 +421,8 @@ his replies to the agent working on a request were never counted as its work, a 
 answer posted into the thread closed nothing, and no thread ever closed itself. Now:
 - His reply forwarded to an agent is linked to earlier work only when it replies to that
   work's posted answer (`topic-link:forward:<request>:<topicRequest>`). Its answer can then
-  settle that request, and a reply after closure reopens it while that work runs. Sharing a
+  settle that request, and a later reply after closure reopens it even if its attempt
+  stalled or ended. Sharing a
   thread or agent does not establish that a new question continues earlier work: the October 16
   Fully Kiosk answer otherwise closed an unfinished lyrics build in the same thread. If the
   forwarded reply has no one proven earlier request, it becomes its own request, sourced to
@@ -432,7 +433,8 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   with a live check closes it `completed` under `refuseUnfinishedCompletion`. An honest
   `--not-checked` answer leaves the task open and returns verification to the router;
   that verification does not repeat an acknowledged external effect. His own Stop
-  withdraws the stopped attempt. A failed,
+  ends only the stopped attempt; the router is told not to restart it or its
+  effects without new instruction. A failed,
   cancelled, handed-back or otherwise unfinished attempt leaves his request open. The owner
   gives the Inbox router a retained recovery input with the exact request and latest attempt.
   A request with an open decision question waiting on Tejas gets no recovery input. A decision
@@ -455,11 +457,18 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   from a nearby thread message. The router inspects prior effects before sending remaining work;
   it cannot close the request
   as failed merely because an agent could not finish. Declined or withdrawn closure of a human
-  request requires a later human message in that thread as evidence (his message routed into
-  the thread counts, named by its routed copy or its original id); an agent issue report may
-  be declined with its reason when it needs no work. A superseded
-  close names a real replacement Inbox request that is still open or completed and carries
-  the same source, unless a later human message in the thread authorizes the change. It cannot
+  request requires his exact withdrawal words from a later retained message tied to
+  that request: a reply to its agent answer, a thread with only that request open,
+  or words naming the request. His message routed into this thread counts by its
+  routed copy or original ID. The quote is retained with the closure.
+  His Close control withdraws the requests it names; Stop ends the current attempt
+  and leaves the human request open for reconciliation. An agent issue report may be
+  declined with its reason when it needs no work. An agent cannot supersede a human
+  request because another request shares its source message: both stay open until
+  their work is individually checked. When one agent answer is linked to several
+  requests, none closes automatically: the recovery input names the shared answer,
+  and the router checks each request's remaining scope in a separate close command.
+  A superseded close of an agent report cannot
   expire a live decision question. That question must be carried to the replacement or
   explicitly settled with a proven replacement question. A question only he can answer
   remains open in its thread. A question still being prepared by an agent is recovery work,

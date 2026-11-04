@@ -98,7 +98,7 @@ router-actions.sh sessions topics pin|unpin <topicId> <source-flags> --action-id
 router-actions.sh sessions topics request add <topicId> <source-flags> --action-id A --title T [--source <inputId>[:passage] ...] -- <brief>
 router-actions.sh sessions topics request amend <requestId> <source-flags> --action-id A [--title T] [--source ...] -- <what changed and why>
 router-actions.sh sessions topics request link <requestId> <source-flags> --action-id A --dispatch <communicationRequestId>
-router-actions.sh sessions topics request close <requestId> <source-flags> --action-id A --disposition completed|declined|withdrawn|superseded|failed [--evidence <id> ...] -- <reason>
+router-actions.sh sessions topics request close <requestId> <source-flags> --action-id A --disposition completed|declined|withdrawn|superseded|failed [--evidence <id> ...] [--human-quote "<his exact withdrawal words>"] -- <reason>
 router-actions.sh sessions topics request reopen <requestId> <source-flags> --action-id A -- <reason>
 router-actions.sh sessions topics questions <topicId> <source-flags> --action-id A --json-file <file>
 router-actions.sh sessions topics question settle <questionId> <source-flags> --action-id A --state answered|declined|withdrawn|superseded|deferred [--answer <inputId>] [--replacement <questionId>] -- <reason>
@@ -194,7 +194,7 @@ function sourceFrom(flags: Map<string, string>): Source {
 const TOPIC_VERBS = ["list","read","items","detail","resolve","questions-read","create","place","route","link","unlink","rename","summary","merge","close","reopen","pin","unpin","request","questions","question","answer","acknowledge","focus","release","file","area"];
 const TOPIC_REPEATABLE = ["--root","--source","--item","--input","--evidence","--area"];
 const TOPIC_SINGLE = ["--source-channel","--source-ts","--source-input","--source-run","--action-id","--title","--summary","--reason",
-  "--into","--from","--thread","--scope","--dispatch","--disposition","--json-file","--state","--answer","--replacement","--limit","--cursor","--query","--expected-revision","--need","--kind","--part","--digest","--message"];
+  "--into","--from","--thread","--scope","--dispatch","--disposition","--human-quote","--json-file","--state","--answer","--replacement","--limit","--cursor","--query","--expected-revision","--need","--kind","--part","--digest","--message"];
 /** `sessions topics <verb> …`: parsed here, dispatched as one operation to the coordinator. */
 function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   const separator = args.indexOf("--");
@@ -251,7 +251,7 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   if(verb==='create'&&flags.has('--from'))body.parent_topic_id=flags.get('--from');
   if((verb==='link'||verb==='unlink')&&flags.has('--into'))body.parent_topic_id=flags.get('--into');
   copy("--thread", "topic_id");
-  copy("--dispatch", "dispatch"); copy("--disposition", "disposition"); copy("--state", "state");
+  copy("--dispatch", "dispatch"); copy("--disposition", "disposition"); copy("--human-quote", "human_quote"); copy("--state", "state");
   copy("--answer", "answer"); copy("--replacement", "replacement"); copy("--query", "query"); copy("--cursor", "cursor"); copy("--need", "need");
   copy("--kind","kind");
   copy("--message","message_id");
