@@ -87,17 +87,23 @@ async function fencedCopyAndSwap(source: string, destination: string, retired: s
  * 2026-11-04 with the disk at 89%. A copy something still holds open stays.
  */
 const KEPT_ORIGINAL_MS = 24 * 60 * 60 * 1000;
+// Housekeeping inside the update's stopped window: a failure here is reported and the update goes
+// on, because otherwise every later update would stop on the same step.
 function retireKeptOriginals(name: string) {
-  const kept = new RegExp(`^${name.replace(/\./g, '\\.')}\\.before-own-filesystem-\\d{8}T\\d{6}Z$`);
-  for (const entry of readdirSync(stateDir)) {
-    if (!kept.test(entry)) continue;
-    const original = join(stateDir, entry);
-    if (Date.now() - statSync(original).mtimeMs < KEPT_ORIGINAL_MS) continue;
-    const parts = [original, `${original}-wal`, `${original}-shm`];
-    if (otherHolders(parts).length) { say(`${entry} is open elsewhere; kept`); continue; }
-    for (const part of parts) rmSync(part, { force: true });
-    fsyncPath(stateDir);
-    say(`removed ${entry}, kept since the move as its rollback`);
+  try {
+    const kept = new RegExp(`^${name.replace(/\./g, '\\.')}\\.before-own-filesystem-\\d{8}T\\d{6}Z$`);
+    for (const entry of readdirSync(stateDir)) {
+      if (!kept.test(entry)) continue;
+      const original = join(stateDir, entry);
+      if (Date.now() - statSync(original).mtimeMs < KEPT_ORIGINAL_MS) continue;
+      const parts = [original, `${original}-wal`, `${original}-shm`];
+      if (otherHolders(parts).length) { say(`${entry} is open elsewhere; kept`); continue; }
+      for (const part of parts) rmSync(part, { force: true });
+      fsyncPath(stateDir);
+      say(`removed ${entry}, kept since the move as its rollback`);
+    }
+  } catch (error) {
+    say(`could not retire kept originals of ${name}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

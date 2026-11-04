@@ -710,8 +710,10 @@ promote_candidate_release() {
     "$CANDIDATE_ARTIFACT_PATH/control/antigravity-account-statusline.sh"
 }
 
-# Runs after success is recorded, at idle disk priority, so a slow or failed prune never fails or
-# delays an update; the next update tries again. The promoted release's own manager does it.
+# Runs after success is recorded and outside the failure traps, at low priority, so a slow or
+# failed prune never fails an update; the next update tries again. The promoted release's own
+# manager does it, reading the ledger's references through the serving owner. Control recovery
+# does not prune: its ledger reads are offline.
 prune_old_releases() {
   [ -n "$CANDIDATE_ARTIFACT_PATH" ] || return 0
   ionice -c3 nice -n19 env CONCIERGE_STATE_DIR="$STATE_DIR" \
@@ -1182,9 +1184,9 @@ deploy() {
     install_router_actions
     DEPLOY_FAILURE_REASON="Verified deployment success could not be committed to durable state."
     record_deployment_success
-    prune_old_releases
   fi
   trap - EXIT ERR INT TERM
+  [ -z "$DEPLOY_RUN_ID" ] || prune_old_releases
 
   echo "=== deploy complete ==="
   git log -1 --oneline
@@ -1276,7 +1278,6 @@ recover_control() {
   release_deployment_gate
   confirm_service_proof_is_current
   record_deployment_success
-  prune_old_releases
   trap - EXIT ERR INT TERM USR1
 }
 

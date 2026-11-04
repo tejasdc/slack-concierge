@@ -44,7 +44,7 @@ try {
     ? ledgerAccess(realpathSync(stateDir),Bun.main,false).ownerServedReleaseCommand
     : false;
   const directStateRequired=!ownerServedReleaseCommand
-    && ['prepare','activate','restore-lkg','promote','lkg','prune'].includes(command??'');
+    && ['prepare','activate','restore-lkg','promote','lkg'].includes(command??'');
   const state=directStateRequired
     ? await import('../src/deployment-state')
     : {} as typeof import('../src/deployment-state');
@@ -166,10 +166,17 @@ try {
     finish(0, { status: "control-activated", ...manifest });
   }
   if (command === "prune") {
-    // Without a recorded rollback target nothing proves which old release is still needed.
+    // The ledger's references (the rollback target, and the host scripts of executions not yet
+    // released) are read from the serving owner; with no owner serving, nothing is pruned.
+    if (!ownerServedReleaseCommand) throw new Error("Pruning needs the serving owner; nothing was pruned.");
     const release = await lastKnownGoodRelease();
     if (!release) throw new Error("No last-known-good release has been recorded; nothing was pruned.");
-    const { kept, removed } = manager.pruneReleases(release.artifact_path);
+    const response = await fetch('http://localhost/internal/deployment-release-files-in-use', {
+      unix: join(stateDir!, 'request-owner.sock'), method: 'GET',
+    } as RequestInit);
+    const inUse = await response.json();
+    if (!response.ok || !Array.isArray(inUse)) throw new Error(`Serving owner refused the in-use release read: ${JSON.stringify(inUse)}`);
+    const { kept, removed } = manager.pruneReleases([release.artifact_path, ...inUse]);
     finish(0, { status: "pruned", kept, removed: removed.length });
   }
   throw new Error("usage: release-manager.ts <install-runtime|prepare|activate|restore-lkg|promote|set-control|current|lkg|prune>");

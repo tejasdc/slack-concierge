@@ -16,7 +16,7 @@ export function ledgerAccess(directory: string, main: string, readWorker: boolea
   const live = directory === canonical || sameFile(join(directory, 'state.db'), join(canonical, 'state.db'));
   const name = basename(main).replace(/\.[cm]?[jt]s$/, '');
   const readCommands: Record<string, readonly string[]> = {
-    'release-manager': ['lkg', 'current', 'install-runtime', 'restore-lkg', 'set-control', 'prune'],
+    'release-manager': ['lkg', 'current', 'install-runtime', 'restore-lkg', 'set-control'],
     'deploy-state': ['show', 'desired', 'repair-show'],
   };
   // The installed release controller sends its pre-stop mutations to the serving owner.

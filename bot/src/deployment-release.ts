@@ -13,6 +13,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
@@ -430,6 +431,9 @@ export class TrustedRootReleaseManager {
           || existing.control_source_tree_digest !== controlSourceTreeDigest) {
           throw new Error("Existing release digest does not match the prepared source.");
         }
+        // Reused by a new attempt, so it counts as newly prepared for release retention.
+        const now = new Date();
+        utimesSync(artifactPath, now, now);
       } else {
         makeReadOnly(outputRoot);
         renameSync(outputRoot, artifactPath);
@@ -544,20 +548,23 @@ export class TrustedRootReleaseManager {
   /**
    * Removes sealed releases nothing can still run. Every successful update used to leave its
    * artifact behind forever: 767 of them (9.8 GB) on 2026-11-04 with the root filesystem at 89%.
-   * Kept: the current and control pointers, the last-known-good rollback, the newest releases by
+   * Kept: the current and control pointers, the paths the ledger still names (the last-known-good
+   * rollback and the host scripts of executions not yet released), the newest releases by
    * preparation time, and any release a live process or systemd unit names, because agent
    * execution hosts keep running from the release that launched them across later updates.
    * Removal renames first, so an interrupted prune never leaves a half-deleted release under a
    * digest name; leftovers from an interrupted prune are finished on the next one.
    */
-  pruneReleases(lastKnownGood: string | null, recent = RETAINED_RECENT_RELEASES) {
+  pruneReleases(ledgerReferences: string[], recent = RETAINED_RECENT_RELEASES) {
     const releases = join(this.environment.releaseRoot, "releases");
     const named = readdirSync(releases).filter(name => /^[0-9a-f]{64}$/.test(name));
     const kept = new Set<string>(named.map(name => ({ name, at: lstatSync(join(releases, name)).mtimeMs }))
       .sort((left, right) => right.at - left.at).slice(0, recent).map(release => release.name));
-    for (const path of [this.currentArtifactPath(), this.controlArtifactPath(), lastKnownGood]) {
-      if (path) kept.add(basename(realpathSync(path)));
+    for (const path of [this.currentArtifactPath(), this.controlArtifactPath()]) {
+      if (path) kept.add(basename(path));
     }
+    const releasePath = releaseDigestPattern(this.environment.releaseRoot);
+    for (const reference of ledgerReferences) for (const match of reference.matchAll(releasePath)) kept.add(match[1]!);
     for (const digest of releasesNamedByProcessesAndUnits(this.environment.releaseRoot)) kept.add(digest);
     const removed: string[] = [];
     for (const name of named) {
@@ -573,9 +580,9 @@ export class TrustedRootReleaseManager {
   }
 }
 
-// Ten covers the candidate just promoted, the releases before it that a slow agent may still be
-// launching from, and a few rollbacks by hand; each release is about 13 MB.
-const RETAINED_RECENT_RELEASES = 10;
+// About 25 releases are prepared on a busy day; twenty keeps most of a day (the release before
+// the one just promoted, failed candidates, a few rollbacks by hand) at about 13 MB each.
+const RETAINED_RECENT_RELEASES = 20;
 const UNIT_DIRECTORIES = ["/run/systemd/transient", "/run/systemd/system", "/etc/systemd/system"];
 
 /**
@@ -585,7 +592,7 @@ const UNIT_DIRECTORIES = ["/run/systemd/transient", "/run/systemd/system", "/etc
  * for "nothing uses it".
  */
 export function releasesNamedByProcessesAndUnits(releaseRoot: string): Set<string> {
-  const pattern = new RegExp(`${escapeRegExp(join(releaseRoot, "releases"))}/([0-9a-f]{64})`, "g");
+  const pattern = releaseDigestPattern(releaseRoot);
   const found = new Set<string>();
   const collect = (text: string) => { for (const match of text.matchAll(pattern)) found.add(match[1]!); };
   const gone = (error: unknown) => ["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "");
@@ -617,3 +624,5 @@ export function releasesNamedByProcessesAndUnits(releaseRoot: string): Set<strin
 }
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const releaseDigestPattern = (releaseRoot: string) =>
+  new RegExp(`${escapeRegExp(join(releaseRoot, "releases"))}/([0-9a-f]{64})`, "g");
