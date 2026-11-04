@@ -1434,7 +1434,8 @@ export class SessionOwner {
   savedWorkList(cursor:string|null=null){return savedWorkListPage(db,cursor);}
   savedWorkControl(turnId:number,action:string,body:Record<string,unknown>){return updateSavedTurn(turnId,action,body);}
   projects() {
-    return {projects:sessionProjects(this.defaultCwd).map(project=>({...project,defaultProvider:project.name==='slack-inbox'?'cc-opus-1m':configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)}))};
+    const canvasTitles=this.projectSetup?.canvasProjectTitles();
+    return {projects:sessionProjects(this.defaultCwd).map(project=>({...project,...(canvasTitles?.has(project.name)?{canvasTitle:canvasTitles.get(project.name)}:{}),defaultProvider:project.name==='slack-inbox'?'cc-opus-1m':configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)}))};
   }
   async standingAgents() {return {...standingAgentView(db,this.defaultCwd),hostTimers:await hostTimerView()};}
   private project(id:string) {
