@@ -1440,6 +1440,44 @@ export function openAgentReport(sessionId:number,inputId:string,title:string,bri
   return {topicId:created.topic.topicId,requestId:request.requestId};
 }
 
+/** Keep subsequent observations on the already-owned process issue, with a durable event. */
+export function appendAgentReportObservation(requestId:string,observationId:string,observation:string) {
+  const eventId=`topic-agent-report-observation:${observationId}`;
+  const prior=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(eventId) as {payload_json:string}|null;
+  if(prior){
+    if(JSON.parse(prior.payload_json).observation!==observation)
+      throw new TopicError('Idempotency conflict: this process observation changed under the same action.',409);
+    return false;
+  }
+  const request=requestRow(requestId);
+  if(request.state!=='open')return false;
+  const topic=topicRow(request.topicId);
+  const next:StoredRequest={...request,brief:(request.brief+'\n\nLater observation: '+observation).slice(-8000),
+    revision:request.revision+1,updatedAt:nowIso()};
+  const topicNext=bumped(topic);
+  return recordOwnerTopicChange(topic.sessionId,eventId,'topic_request',
+    {change:'amended',topicId:topic.topicId,topic:topicNext,request:next,
+      by:{kind:'owner',sessionId:`concierge:${topic.sessionId}`},reason:'A later turn found another process for this open issue.',
+      observation,revision:topicNext.revision});
+}
+
+/**
+ * A leftover-process issue is only about processes that still run. When every process it
+ * recorded has exited, the owner closes it with that evidence, so no agent settles each copy.
+ */
+export function settleExitedProcessReport(requestId:string,evidence:string) {
+  const request=requestRow(requestId);
+  if(request.state!=='open')return false;
+  const topic=topicRow(request.topicId),at=nowIso();
+  const why=`Every process this report recorded has exited. ${evidence}`.slice(0,4000);
+  const next={...request,state:'closed' as const,disposition:'completed',closure:{by:OWNER_BY,at,reason:why,evidence:[]},
+    revision:request.revision+1,updatedAt:at};
+  const questions=expireOpen(questionsOfRequest(topic.topicId,request),`The request it was for closed (completed): ${why}`,at);
+  const topicNext=bumped(topic);
+  return recordOwnerTopicChange(topic.sessionId,`topic-process-report-settled:${requestId}:${request.revision}`,'topic_request',
+    {change:'request_closed',topicId:topic.topicId,topic:topicNext,request:next,by:OWNER_BY,reason:why,revision:topicNext.revision,questions});
+}
+
 function placeChange(session:SessionRow,topic:StoredTopic,roots:string[],by:TopicBy,reason:string|null) {
   for(const root of roots){
     const previous=topicOfRoot(root);

@@ -343,26 +343,34 @@ instead of a periodic process killer, and does not touch other runs' browsers or
 shared App Server. A process that outlives a crashed or unhooked run remains visible to
 the host's aged-controller alert for owner investigation; the host observer never kills it.
 
-For a server Codex turn that is allowed to stop, the same hook also checks server processes
-for others carrying that exact Concierge run identity. It excludes the hook's own process
-chain, the browsers handled above, and processes still inside a `concierge-exec-*` unit.
-Concierge owns that unit and releases it with `KillMode=control-group` after the provider
-finishes. The Codex coordinator and its tool shells can still be running there when Stop
-fires; counting them produced repeated false Inbox reports on 2026-11-04. A matching
-process outside that owned unit has crossed the lifecycle boundary. If any remain, it files one
-durable agent issue report in Inbox for the run, so the router assigns investigation and
-the request stays open until the work is settled. It does not kill an unknown process:
-an agent may have intentionally started a service, and the report requires its durable
-owner to be established or the process to be stopped. It matches the exact run identity
-without depending on a successful App Server scope move. If the App Server remains in the
-owned execution unit after a failed move, its children are covered by that unit's release;
-the existing scope-move failure diagnostic still requires investigation. Registered command
-watches are already owned by Concierge, have deadlines, and run in separate execution units; they
-are outside this check. The report is a turn-exit check, not a periodic orphan scan, and
-an owner outage can make the hook's bounded report attempt fail; the hook emits a diagnostic
-line then, but where Codex retains that output has not been verified. The check also misses
-spawned subagent shells that do not inherit the parent turn environment and turns that end
-without a Stop hook, such as a daemon crash. Those require separate lifecycle recovery.
+On the server, Concierge records a Codex process-audit intent when a native turn starts.
+After the turn has a settled done, error or cancelled state and its execution unit has been released, the owner
+scans live processes for that Codex thread's exact `CODEX_THREAD_ID`. A resumed thread keeps
+this identity across turns; its shell may retain the first turn's source run ID. The scan
+excludes browsers handled by the Stop hook and `concierge-exec-*` units, which Concierge
+releases with control-group killing. Registered command watches are in those units and have
+their own deadlines. A parked turn is not scanned while the provider may still be running;
+the retained intent waits for its terminal settlement. The audit also waits while another
+Concierge turn or an external Codex client is using that session's thread, then rechecks
+after reading processes before filing anything. Only processes in the shared
+`codex-app-server-*.scope` count: that scope has no turn-end custody, while execution units,
+command watches and other systemd services (a Thinkering ship job) stop their own children.
+A survivor is recorded as a sighting with its PID, process start time and cgroup, not
+reported. The owner's minute sweep rechecks each recorded PID against its start time. If
+every process has exited, the sighting settles with no Inbox report; most detached builds
+and short waits end this way. If one is still running ten minutes after the turn, the owner
+files one agent issue report naming the survivors, and the sweep closes that report itself
+(completed, with the recheck as its reason) once every process recorded on it has exited,
+so no agent is needed to settle a report whose process went away. It does not kill an unknown
+program: an agent may have started an intentional service. Later sightings append their evidence to the existing grouped request, so one
+unresolved problem does not create a new Inbox thread on every turn. Old ungrouped reports
+cannot absorb a new sighting. A fresh report may be
+filed after that request closes. The retained audit intent is retried on startup and every
+minute until its checked event is recorded. The scan is server-only; a child that removes
+its thread identity, a native subagent with a separate thread, and Mac non-browser jobs
+need separate custody mechanisms. The prior Stop-hook process check ran before the provider
+had finished and produced repeated reports from still-owned processes; it no longer reports
+non-browser jobs.
 On macOS, Chrome left after its controller has already died and crash handlers reparented
 to launchd are outside that recorded tree and cannot be closed by this hook.
 
