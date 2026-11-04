@@ -1,10 +1,13 @@
 # Runners and the owner on its own app server
 
 **Status (2026-11-04):** built: the agents' network entrance, per-run and per-runner tokens, the
-runner lease engine with its routes, and a probe runner. **Not built: turns on runners.** Agent
-turns, execution hosts, the shared Codex App Server, provider account homes and checkouts still
-live on the owner's machine, so the owner **cannot move to the app server yet**; the remaining
-work is "Turns on a runner" below, plus the couplings marked "after the cut" in the inventory.
+runner lease engine with its routes, a probe runner, and **Claude Code turns on runners** ("Turns on
+a runner" below): a new Claude turn can run on a runner, whose agents reach the owner only over
+the network entrance. It is selected per session (`sessions ask --on-runner`) unless the owner sets
+`CONCIERGE_TURN_RUNNERS=all`. **Still on the owner's machine:** shared Codex App Server turns,
+Google and outside-Codex hosts, command and file watches, the provider account readings and
+sign-ins, and project checkouts (a runner must have the same folders). The owner therefore
+**cannot move to the app server yet**; the remaining work is listed under "Not on runners yet".
 Decided plan: remote-box `docs/plans/2026-11-04-off-one-server-architecture.md` ("Decisions after
 review"), steps 2 and 3.
 
@@ -87,7 +90,7 @@ Routes (`/runner/v1/*`, runner token required unless noted):
 
 | Route | Rule |
 | --- | --- |
-| `claim {kinds}` | oldest queued job of those kinds, new attempt at epoch 1, 90 s lease; `job:null` when none |
+| `claim {kinds}` | oldest queued job of those kinds, new attempt at epoch 1, five-minute lease; `job:null` when none |
 | `heartbeat {attemptId, epoch}` | extends the lease (runner sends every 15 s), returns unanswered commands |
 | `events {attemptId, epoch, events:[{seq, frame}]}` | stores only the contiguous run after the cursor; answers `ackedSeq`; resends store nothing twice |
 | `command-results {…, results:[{commandId, result}]}` | the first result per command id stands |
@@ -117,28 +120,74 @@ The runner daemon is `bot/scripts/runner.ts` (`CONCIERGE_OWNER_URL`, `CONCIERGE_
 reacquires them at start (a reacquired probe is left to expire; turn jobs will resume heartbeats).
 Today it runs `probe` jobs only.
 
-## Turns on a runner (the cut, with the app server)
+## Turns on a runner (built for Claude Code turns)
 
-The execution host already has the runner's shape: a supervised process, an append-only journal
-with sequence numbers, idempotent `submit` by id, attach-with-replay from a sequence, and `release`
-only after the coordinator has settled the outcome. The cut keeps that program unchanged and moves
-who talks to it:
+The execution host program is unchanged; what moved is who talks to it. The coordinator reaches a
+host through one interface (`host-access.ts`) with two places: **local** (systemd or launchd on the
+owner's machine, socket and journal on its disk, exactly as before) and **runner**
+(`runner-host-access.ts`). Every custody rule in [execution host](EXECUTION-HOST.md) (adoption,
+replay with recorded write outcomes, held runs, settlement from a record, release only after
+settlement) is written once against that interface, so both places follow it.
 
-1. A new turn becomes a `turn` job (not replay safe) whose payload is today's launch manifest minus
-   the owner's environment: prompt, folders by project name, model, account label, session ids,
-   attachment bytes, the run token.
-2. The runner claims it, starts the execution host with `systemd-run` exactly as today, attaches to
-   `host.sock` locally, and ships journal frames as events (`seq` = journal sequence). The owner's
-   `HostedClaudeCodeTransport` reads the same frames from `runner_events` instead of the socket, so
-   adoption, replay and settlement logic stay as written.
-3. Steering, Stop and close become `runner_commands`; the runner applies them with `submit`,
-   `signal` and `close`, whose host receipts are the command results. `release` is a command sent
-   only after the owner durably settles the turn, as today.
-4. The shared Codex App Server, transcript watch, account homes and project checkouts move to the
-   runner side of this line; the owner receives their observations as events.
+What happens for a turn on a runner:
 
-The cut is not built yet because on a single machine it adds a hop and a second custody path with
-nothing gained; it is the work that makes the CCX23 move a deploy.
+1. The owner records the execution (`executions.supervisor = 'runner'`, no folder) and queues a
+   `turn` job (not replay safe) whose payload is the launch manifest: provider command name, args,
+   working folder, the run's own variables (identity, run token, account home, model settings),
+   the opening input, attachment bytes, and the host protocols the owner adopts. The owner's own
+   environment is not in it.
+2. A runner claims it within two minutes (`CONCIERGE_RUNNER_CLAIM_MS`), or the owner withdraws the
+   still-queued job in one statement and the turn fails unstarted (nothing ran). The runner writes the
+   attachments, finds the provider command on its own `PATH`, builds the environment from its own
+   (its state folder, its release's helpers, its address for the owner, `THINKERING_CAPABILITY_URL`
+   when set) plus the run's variables, and starts the host under its own systemd. A command it
+   cannot find, a missing folder or a host protocol the owner does not adopt is its definite
+   refusal (`notStarted`), which the owner treats like a host that never started.
+3. The runner reports `attached` (protocol, pids), then ships every journal frame as an event
+   (`{k:'host', f, h}`; `h` is the highest host sequence shipped). The owner's link reads them from
+   `runner_events`, woken in-process when a runner write commits (`runnerActivity`), so replay and
+   live frames reach `HostedClaudeCodeTransport` as they did from the socket.
+4. Submit, close, signal, status and release are job commands; the runner applies each through the
+   host's socket with the same id and returns the host's receipt as the result (a host refusal is a
+   result; a lost connection is not, and the command is offered again). Claude's transcript is
+   followed on the runner (`watch-transcript`) and pickups come back as events.
+5. **One call per runner, not per turn:** every half second the runner sends one `sync` carrying each
+   held turn's new events; the owner stores them, extends each lease once it is a heartbeat old and
+   answers each turn's unanswered commands, all in one transaction. An attempt the runner no longer
+   holds is refused alone.
+6. After the owner settles the turn it sends `release`; the host exits; the runner stores the last
+   events and finishes the job. A runner restart reacquires each held turn at a new epoch, resumes the
+   host journal after the last stored `h` and keeps going. A lease that passes makes the job
+   `unconfirmed`: the owner settles it from the provider's recorded exit if the events hold one, or as
+   lost (interrupted, never replayed); a runner whose attempt is refused stops that host.
+7. **Fencing both ways.** Leases last five minutes. A runner that has not reached the owner for four
+   minutes stops its agents itself, so no agent acts after the owner could have settled its turn as
+   lost and a later turn resumed the conversation elsewhere. At its start the owner extends every live
+   lease from now, so its own downtime never counts against a runner. A later owner withdraws a job
+   no runner claimed yet, holds a claimed job until its runner reports the host, and records a
+   takeover as live (survival proof) only once the runner reaches it after the takeover.
+   A runner process restarted after four minutes without contact stops those agents before taking
+   its turns back. An owner outage longer than four minutes therefore still ends runner agents (now
+   by the runner's own stop). Known gaps: a runner process that stays down while its hosts run has no
+   host-side deadline; and rolling back to a release without runner support settles runner turns as
+   lost at once, so for up to four minutes a runner on another machine may still run the old agent
+   while a new turn starts in the same conversation.
+
+Survival through owner updates uses the existing rule: `claude-code/runner` counts as surviving only
+after one such run was taken over live by a later owner. Until then updates wait for runner turns.
+
+### Not on runners yet
+
+- Shared Codex App Server turns (`codex-daemon`), Google turns and outside Codex hosts stay local.
+  Moving Codex needs the App Server started on the runner and its JSON-RPC session relayed, plus per-turn
+  token resolution because a Codex thread keeps its first turn's shell environment.
+- Command and file watches (`watches.ts`) and artifacts start hosts on the owner's machine.
+- Provider account usage readings, sign-in commands and history writes read the owner's home.
+- Project folders: the job names an absolute folder; a runner must have the same checkout layout, and
+  the Claude command's hook settings name the owner's release path, so a runner on another machine
+  needs the same release installed.
+- Concierge's own thnkr.ing calls (thesaurus, to-dos, messages, native reads) still use Thinkering's
+  local socket; its network entrance is live at `THINKERING_CAPABILITY_URL` (built separately).
 
 ## Heavy work out of the owner's request loop
 
@@ -192,6 +241,11 @@ Sources: [GetActivityTask](https://docs.aws.amazon.com/step-functions/latest/api
   keeps process control unreachable, and the agents' client takes the network path.
 - `bot/scripts/runner-lease-check.ts`: claim, contiguous events, commands, epoch fencing, computed
   expiry (turn unconfirmed, build requeued) and idempotent finish.
+- `bot/scripts/runner-turn-check.ts` (needs systemd; not in the build): the real runner daemon starts
+  real hosts for a scripted provider; output, follow-up receipts, attachment bytes, the runner-built
+  environment (no owner variable leaks), release after settlement, a coordinator taking the run back,
+  a killed and restarted runner continuing with every host frame stored once in order, and the two
+  unstarted refusals (command not found, no runner claimed).
 - Live, 2026-11-04 on release 75faaa3d: over `100.118.245.110:8789` a call without a token got 401,
   the token route 403 and a process-control route 404; probe `probe:live-8623-20261104` was queued
   and run by the installed `runner.js --once` with an `ax41` runner token: one attempt at epoch 1,
