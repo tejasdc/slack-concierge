@@ -213,7 +213,7 @@ async function refreshCorrectedInputDisplay(generation:number,inputId:string,cha
 async function upgradeAnswerClosures(generation:number){
   const version=(prepared.query('SELECT answer_closures_version AS version FROM presentation_message_meta WHERE singleton=1')
     .get() as {version:number}).version;
-  if(version>=1)return;
+  if(version>=2)return;
   const changedRoots=new Set<string>();
   let after=0;
   while(true){
@@ -233,7 +233,7 @@ async function upgradeAnswerClosures(generation:number){
   }
   prepared.transaction(()=>{keepLease();topics.apply(generation,[],changedRoots);})();
   while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
-  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET answer_closures_version=1 WHERE singleton=1').run();})();
+  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET answer_closures_version=2 WHERE singleton=1').run();})();
 }
 /** Reproject handoffs and attributed answers after their display changes. */
 async function upgradeRequestRoots(generation:number){
@@ -530,7 +530,7 @@ async function rebuild() {
     await rebuildAreaPages(generation);
     prepared.transaction(()=>{
       keepLease();
-      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=6,answer_closures_version=1,marked_reply_roots_version=1,agent_request_visibility_version=1,routing_result_visibility_version=1 WHERE singleton=1')
+      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=6,answer_closures_version=2,marked_reply_roots_version=1,agent_request_visibility_version=1,routing_result_visibility_version=1 WHERE singleton=1')
         .run(generation,after,startHead);
       cards.activate(generation,startHead);
       receipts.activate(generation,startHead);

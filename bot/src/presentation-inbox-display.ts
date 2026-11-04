@@ -5,6 +5,7 @@ import {routeTitle} from './inbox-request-root';
 import {messageDeliveryReceipts} from './message-route-receipts';
 import {authorSessionOf} from './session-presence';
 import {threadRequestDisplay} from './thread-request-display';
+import {answerClosingLine} from './answer-closing-line';
 
 const CONTENT_BYTES=8192;
 const bounded=(value:string,max=CONTENT_BYTES)=>{
@@ -80,9 +81,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
   const quiet=result&&row.turn_id!==null?(database.query(`SELECT json_extract(payload_json,'$.quiet') AS quiet
     FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='turn_outcome'
       AND json_extract(payload_json,'$.quiet') IS NOT NULL LIMIT 1`).get(sessionId,row.turn_id) as {quiet:string}|null)?.quiet?.trim():null;
-  const closing=post?database.query('SELECT payload_json FROM session_owner_events WHERE event_id=?')
-    .get(`post:closure:${row.event_id}`) as {payload_json:string}|null:null;
-  const closingLine=closing?JSON.parse(closing.payload_json).closingLine:null;
+  const closingLine=post?answerClosingLine(database,sessionId,row.event_id,event.answersQuestion===true):null;
   const routes=row.input_id&&!agent?messageDeliveryReceipts(database,row.input_id):[];
   const raw={id:agent?row.event_id:row.input_id,sourceSessionId:sessionId,role:agent?'assistant':'user',
     ...(typeof (post?event.messageThreadRootId:payload.messageThreadRootId)==='string'?{messageThreadRootId:post?event.messageThreadRootId:payload.messageThreadRootId}:{}),

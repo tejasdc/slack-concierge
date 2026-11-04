@@ -44,7 +44,8 @@ requires the earlier answer signal for that exact request, closes the request, a
 disposition and checked/not-checked facts as an append-only closure attached to the answer post.
 The final creates no second answer post. If a final has body text, those new words are posted
 verbatim with the closing facts attached. An ordinary progress partial does not satisfy the answer clock.
-The prepared Inbox view refreshes that same answer when the closure arrives. On installation it
+The prepared Inbox view resolves the closure through the retained post association and refreshes
+that same answer when the closure arrives. On installation it
 also refreshes answers with closures already retained before this display version, so a thread
 read and its live changes expose the same facts without creating another message.
 The same signal is retained on the Inbox post as `answersQuestion:true`, including the prepared
@@ -66,7 +67,9 @@ The Mac sends the original final body and closing facts separately; the origin c
 earlier signal before accepting a bodyless final. A final from one agent run can close several
 requests in one Inbox topic with one visible post when its text, attachments, disposition,
 quiet status and nested conversation match exactly. The owner retains each request's reply,
-outcome and topic closure separately. An explicit `--also` still groups requester returns;
+outcome and topic closure separately. Grouping compares the closing facts recorded for the
+first reply, even though those facts have their own event for each request; different closing
+facts keep separate visible posts. An explicit `--also` still groups requester returns;
 the post rule also works when the agent closes the requests with separate commands. Answers
 from different runs remain separately visible, as do new words after a prompt-answer partial.
 The October 21 retained duplicate posts are hidden by append-only collapse events; their

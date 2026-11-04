@@ -12,6 +12,7 @@ import {authorSessionOf} from './session-presence';
 import {threadRequestDisplay} from './thread-request-display';
 import {routedTurnResultSql} from './inbox-routing-result';
 import type {InboxProducerKind} from './inbox-producer-sources';
+import {answerClosingLine} from './answer-closing-line';
 
 export type InboxCapture = {
   source:{kind:InboxProducerKind;id:string;recordedAt:string;title?:string;metadata?:Record<string,unknown>};
@@ -152,10 +153,7 @@ export function inboxMessage(row:any) {
   // A post carries its own: an agent's completed answer it said he need not read.
   const quiet=result&&typeof row.turn_id==='number'?turnQuietReason(row.session_id,row.turn_id)
     :post&&typeof eventPayload.quiet==='string'&&eventPayload.quiet.trim()?eventPayload.quiet.trim():null;
-  const closings=post?db.query("SELECT payload_json FROM session_owner_events WHERE session_id=? AND kind='answer_closure' AND json_extract(payload_json,'$.postId')=? ORDER BY sequence")
-    .all(row.session_id,row.event_id) as {payload_json:string}[]:[];
-  const closingLines=[...new Set(closings.map(item=>JSON.parse(item.payload_json).closingLine).filter((line):line is string=>typeof line==='string'&&!!line))];
-  const closingLine=closingLines.length?closingLines.join('\n'):null;
+  const closingLine=post?answerClosingLine(db,row.session_id,row.event_id,eventPayload.answersQuestion===true):null;
   const routes=row.input_id&&!agent?messageDeliveryReceipts(db,row.input_id):[];
   const requestContent=request?threadRequestDisplay(db,eventPayload):'';
   return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(threads?.mixedThreads?{mixedThreads:true}:{}),...(threads?.answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
@@ -464,7 +462,8 @@ export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:
           AND coalesce(json_extract(post.payload_json,'$.quiet'),'')=?
           AND coalesce(json_extract(post.payload_json,'$.messageThreadRootId'),'')=?
           AND coalesce((SELECT json_extract(closure.payload_json,'$.closingLine') FROM session_owner_events closure
-            WHERE closure.event_id='post:closure:' || post.event_id),'')=?
+            WHERE closure.event_id IN ('post:closure:' || substr(post.event_id,length('post:forward:')+1),
+              'post:closure:' || post.event_id) ORDER BY closure.sequence DESC LIMIT 1),'')=?
           AND (json_extract(post.payload_json,'$.answerGroup')=? OR
             json_extract(post.payload_json,'$.answerSource.runId')=?)
         ORDER BY post.sequence LIMIT 1`)

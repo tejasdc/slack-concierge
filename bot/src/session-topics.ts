@@ -8,6 +8,7 @@ import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
 import {db,getSessionById,type SessionRow} from './state';
 import {getAcceptedSessionInput,humanAuthored,sessionInputProvenance,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput,type RetainInputTiming} from './session-inputs';
 import {capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot,postForwardedThreadAnswer} from './session-inbox';
+import {answerClosingLine} from './answer-closing-line';
 import {inboxRequestRoot} from './inbox-request-root';
 import type {OpenNeed} from './session-turn-outcome';
 import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
@@ -2493,10 +2494,7 @@ export function collapseDuplicateAnswerPosts(topicId:string,postIds:readonly str
   if(posts.some(post=>!post))throw new Error('The duplicate answer set is incomplete.');
   const ordered=posts.map(post=>post!).sort((left,right)=>left.sequence-right.sequence);
   const first=ordered[0]!,original=JSON.parse(first.payload_json);
-  const closingLine=(id:string)=>{
-    const row=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(`post:closure:${id}`) as {payload_json:string}|null;
-    return row?JSON.parse(row.payload_json).closingLine??null:null;
-  };
+  const closingLine=(post:typeof first)=>answerClosingLine(db,post.session_id,post.event_id,JSON.parse(post.payload_json).answersQuestion===true);
   const sameAnswer=(post:typeof first)=>{
     const payload=JSON.parse(post.payload_json);
     const request=db.query('SELECT outcome,source_session_id,target_session_id FROM session_communication_requests WHERE request_id=?')
@@ -2507,7 +2505,7 @@ export function collapseDuplicateAnswerPosts(topicId:string,postIds:readonly str
       &&JSON.stringify(payload.attachments??[])===JSON.stringify(original.attachments??[])
       &&(payload.quiet??null)===(original.quiet??null)
       &&(payload.messageThreadRootId??null)===(original.messageThreadRootId??null)
-      &&closingLine(post.event_id)===closingLine(first.event_id)
+      &&closingLine(post)===closingLine(first)
       &&request?.outcome==='answered'&&request.source_session_id===first.session_id
       &&`concierge:${request.target_session_id}`===payload.postedBySession;
   };
