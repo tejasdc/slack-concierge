@@ -37,6 +37,8 @@ export function topicEventSentence(payload:any):string {
     case 'forwarded':return `Your reply went straight to ${payload.to?.title??'the agent working on this'}.`;
     case 'set_aside':return `Set aside: ${payload.topic?.setAside?.reason??''}`;
     case 'resumed':return 'Picked back up.';
+    case 'pinned':return 'Pinned to the top of Open.';
+    case 'unpinned':return 'Unpinned.';
     case 'added':return `Request added: ${payload.request?.title??''}`;
     case 'amended':return `Request changed: ${payload.reason??payload.request?.title??''}`;
     case 'linked':return `Work linked to ${payload.request?.title??'this request'}.`;
