@@ -1971,11 +1971,13 @@ export function topicsCommand(actor:TopicActor,body:any) {
         const request=requestRow(text(body?.request_id,'request id',200));
         const topic=topicFor(request.topicId);
         if(disposition==='failed')throw new TopicError('An agent failure cannot close the underlying request. Send the remaining work onward.',409,'REQUEST_RECOVERY_REQUIRED');
+        // His message counts here when it sits in this thread or was routed into it: the routed
+        // copy and its original both resolve to his exact input (2026-11-04: his "nothing is lost"
+        // routed into the lockout thread could not withdraw its recovery request, so the sweep
+        // kept restarting it).
         const laterHumanEvidence=evidence.some(id=>{
-          const input=getAcceptedSessionInput(id);
-          if(input?.origin!=='human'||new Date(iso(input.created_at)!).getTime()<new Date(iso(request.createdAt)!).getTime())return false;
-          const root=inboxThreadRoot(input.session_id,input.id);
-          return !!root&&topicOfRoot(root)===request.topicId;
+          const source=resolveAskedSource(id,topic)?.source;
+          return !!source&&new Date(iso(source.created_at)!).getTime()>=new Date(iso(request.createdAt)!).getTime();
         });
         if(['declined','withdrawn'].includes(disposition)&&humanRequest(topic,request)&&!laterHumanEvidence)
           throw new TopicError('A withdrawal needs Tejas’s later message in this thread as evidence. An agent failure cannot withdraw his request.',409,'REQUEST_HUMAN_WITHDRAWAL_REQUIRED');
