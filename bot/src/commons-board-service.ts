@@ -25,7 +25,7 @@ export type BoardInput={
   product?:string; from?:string[]; supersedes?:string;
   /** post: the design section this speaks to (`lab:<design-handle>.<passage>`), what the post is (answer|ask|comment), and,
    *  when an agent places his words from an Inbox thread, speaker `tejas` with the Inbox input that holds them. */
-  target?:string; intent?:string; speaker?:string; his_input?:string;
+  target?:string; intent?:string; disposition?:unknown; speaker?:string; his_input?:string;
   /** The Inbox thread the work belongs to: on product design the record files one line about the publication there; on a
    *  speaker post a later answer is filed there too; on cards each card's line goes there. */
   inbox_session?:string; inbox_message?:string;
@@ -184,6 +184,8 @@ export async function boardCommand(input:BoardInput,actor:BoardActor|null,delive
   if(input.target&&input.verb!=='post')throw new BoardError('--target is only for board post.');
   if(input.target&&!DESIGN_PASSAGE.test(input.target.trim()))throw new BoardError('--target names a design section as lab:<design-handle>.<passage>.');
   if((input.intent||input.speaker||input.his_input)&&input.verb!=='post')throw new BoardError('--intent, --speaker and --his-input are only for board post.');
+  if(input.disposition&&(input.verb!=='post'||input.intent!=='disposition'))throw new BoardError('A structured disposition belongs to board post --intent disposition.');
+  if(input.intent==='disposition'&&!input.disposition)throw new BoardError('A disposition post needs structured scope and status from --disposition-file.');
   if(input.speaker&&(input.speaker.trim()!=='tejas'||!input.his_input?.trim()||!input.target))throw new BoardError('Placing his words needs --speaker tejas, --his-input <the Inbox input that holds them> and --target <the section>; the agent stays the author of record.');
   const inboxAllowed=(input.verb==='product'&&input.product==='design')||(input.verb==='post'&&!!input.speaker)||input.verb==='cards';
   if((input.inbox_session||input.inbox_message)&&(!inboxAllowed||!input.inbox_session||!input.inbox_message))throw new BoardError('--inbox-session and --inbox-message go together, on board product --product design, board post --speaker tejas, or board cards.');
@@ -228,6 +230,7 @@ export async function boardCommand(input:BoardInput,actor:BoardActor|null,delive
     }
     written=await lab('POST',`/records/${encodeURIComponent(input.thread.replace(/^lab:/,''))}/entries`,actor,{actionId,act:input.verb,text,
       ...(replyToEntryId?{replyToEntryId}:{}),...(input.target?{targetAddress:input.target.trim()}:{}),...(input.intent?{intent:input.intent.trim()}:{}),
+      ...(input.disposition?{disposition:input.disposition}:{}),
       ...(input.speaker?{speaker:'tejas',source:input.his_input!.trim(),...inbox}:{}),
       ...(mentions?.length?{mentions}:{}),...(input.sealed?{sealed:true}:{}),...(input.end?{end:input.end}:{}),...(input.outcome?{outcome:input.outcome}:{})});
   }

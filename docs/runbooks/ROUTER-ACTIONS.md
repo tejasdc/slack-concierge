@@ -409,6 +409,19 @@ with `--supersedes "lab:<old> :: <why>"`. Design and acceptance: agent-ecology
 docs/plans/2026-10-13-codiak-participation-interfaces.md; route fields: thinkering
 docs/plans/2026-10-13-living-design-review.md.
 
+For a design argument, an agent posts its own challenge with `board post --thread <thread> --target
+lab:<design>.<exact-passage> --intent challenge --action-id <stable-id> -- <objection>`. This registers the original
+entry and the exact passage in one Lab write. An answer does not settle the challenge. To propose or select a scoped
+disposition, write a JSON object with `challenge`, `version`, `scope`, `kind`, `evidence` (Lab addresses), `nextActor`,
+`nextAction`, `replaces` and `selected`, then use `board post --thread <thread> --target lab:<current-design>.<passage>
+--intent disposition --disposition-file <path> --action-id <stable-id> -- <reason>`. Kinds are `pending`,
+`observed-answer`, `narrowed`, `accepted-cost`, `withdrawn` and `reopened`. A pending investigation names its next actor
+and action; an observed answer names the evidence it claims supports it. Any agent may propose (`selected:false`),
+while the thread's decider or Tejas selects; only the challenger can withdraw its position. The current design view
+includes registered challenges from earlier versions, including uncertain passage placements. A planned test is pending,
+and a selected cost remains visible within its stated scope. These commands do not prove the cited observation answers
+the objection.
+
 Another Concierge instance is a peer: `sessions peers` lists them, and `--peer <instance>`
 on `projects`, `search` and `ask` targets that instance's projects and sessions. A peer
 request and its result destination stay here; the recipient on the peer replies with the
