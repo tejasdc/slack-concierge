@@ -18,20 +18,23 @@ the class result from the notice. Reported by an agent on 2026-11-04.
 
 ## Cause
 
-A `needs_decision` reply and a `needs_you` outcome had no field for the line he decides
-from: the owner prepended the agent's whole text to his words and the reason they leave it
-open, and thnkr.ing shows the question as given. Inbox thread questions already had a separate
-`decision` line used as the notice body; replies and outcomes did not.
+A decision's notice body is the question text as recorded, and the owner built it from the
+agent's whole text. Commit 5b426fa5 (same day as this report) made the Inbox filing of a
+`needs_decision` reply lead with the reply's required one-line `--summary`
+([its record](2026-11-02-class-result-buried-in-notification.md)). Still unshaped: a
+`needs_you` turn outcome (no summary existed for it), a decision returned to a non-Inbox
+requester, and a Mac worker's need, which all used the whole text.
 
 ## Fix
 
-Both now require `--decide`, one line (four words to 240 characters) saying what he must
-decide and the result it depends on; the owner puts it first. A missing, multi-line, overlong
-or fragment line is refused with the instruction to add it.
+`sessions outcome needs_you` requires `--summary`, the same one line replies carry, and the
+owner places that line first in every recorded question: the reply's and outcome's question
+text, the requester's returned decision, the Inbox worker filing and a Mac worker's need.
+One line serves every path instead of a second field next to the summary.
 
 ## Acceptance scenario
 
 - **Seed:** a work request to an agent session; Tejas's words available for --his-words.
-- **Action:** the agent replies `needs_decision` with text opening on unrelated news, first without `--decide`, then with `--decide "Class was not cancelled (inside the 1-hour cutoff): ask the front desk to waive the fee?"`.
-- **Expected:** the first reply is refused naming `--decide`; the second records a question, attention item and notice body that begin with that line.
+- **Action:** the agent declares `sessions outcome needs_you` without `--summary` (refused, naming it), then replies `needs_decision` with text opening on unrelated news, with `--summary "Class was not cancelled (inside the 1-hour cutoff): ask the front desk to waive the fee?"` to a non-Inbox requester.
+- **Expected:** the first is refused naming `--summary`; the requester's question, attention item and notice body begin with that line.
 - **Replayable offline:** yes
