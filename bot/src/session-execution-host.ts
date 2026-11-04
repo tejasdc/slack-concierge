@@ -22,6 +22,7 @@ import {readRetainedNativeResult} from './turn-recovery';
 import {isProcessIdentityAlive} from './runtime-identity';
 import {ProviderCapabilityUnavailableError} from './provider-policy';
 import {ProviderDispatchError} from './provider-failures';
+import {chooseClaudeDispatch} from './provider-account-dispatch';
 import {CHATGPT_THINKING_LEVELS,HIS_CHATGPT_PREFIX,PROVIDER_ALIASES, providerDisplayName } from './aliases';
 import {recordRepairNotice} from './repair-notices';
 
