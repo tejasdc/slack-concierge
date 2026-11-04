@@ -42,14 +42,20 @@ assert.equal(leases.reacquire('other',[turn.attemptId])[0]!.stale,true);
 
 // Expiry is computed: a turn whose lease passed is unconfirmed (never replayed); a build is queued again.
 const build=leases.claim('ax41',['build'])!;
+assert.equal(leases.claim('ax41',['build']),null,'Nothing queued and nothing due answers from a read.');
 now+=LEASE_MS+1;
-assert.equal(leases.job('turn-1')!.state,'unconfirmed');
+assert.equal(leases.job('turn-1')!.state,'unconfirmed','The job view reports a passed lease before anything records it.');
+assert.equal((db.query("SELECT state FROM runner_jobs WHERE job_id='turn-1'").get() as any).state,'leased','The view writes nothing.');
 assert.equal(leases.job('build-1')!.state,'queued');
 assert.equal(code(()=>leases.heartbeat('ax41',turn.attemptId,2)),'STALE_EPOCH');
 assert.equal(leases.reacquire('ax41',[turn.attemptId])[0]!.stale,true,'An expired attempt cannot be taken back.');
 assert.equal(code(()=>leases.finish('ax41',build.attemptId,1,'op','late')),'STALE_EPOCH');
 const rebuilt=leases.claim('ax41',['build'])!;
 assert.notEqual(rebuilt.attemptId,build.attemptId);
+leases.appendEvents('ax41',rebuilt.attemptId,1,[{seq:1,frame:'second'}]);
+assert.equal(leases.job('build-1',3)!.events.length,0,'A cursor names its attempt.');
+assert.deepEqual(leases.job('build-1',0,rebuilt.attemptId)!.events.map(event=>event.frame),['second']);
+assert.equal(leases.job('build-1')!.eventsAttemptId,rebuilt.attemptId);
 
 // Finish: once per attempt, a repeat with the same operation answers the first, another operation conflicts.
 assert.deepEqual(leases.finish('ax41',rebuilt.attemptId,1,'finish-1',{ok:true}),{finished:true,repeated:false,result:{ok:true}});

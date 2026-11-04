@@ -105,6 +105,8 @@ export async function startForegroundGateway(config:{stateDir:string;ownerSocket
         const authorization=request.headers.get('authorization')??'';
         const verified=authorization.startsWith('Bearer ')?verifyAgentToken(key,authorization.slice(7)):null;
         if(!verified)return Response.json({ok:false,error:'AGENT_UNAUTHORIZED',detail:'A valid agent run or runner token is required.'},{status:401});
+        // Process-control entrances, including the event-stream page, stay on the local socket.
+        if(new URL(request.url).pathname.startsWith('/internal/'))return Response.json({error:'Unknown request API route.'},{status:404});
         const headers=new Headers(request.headers);headers.delete('authorization');
         return route(new Request(request,{headers}),false,agentPrincipalHeader(verified));
       }});

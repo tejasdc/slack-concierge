@@ -1,9 +1,10 @@
 # Runners and the owner on its own app server
 
-**Status (2026-11-04):** the agents' network entrance, per-run and per-runner tokens, the runner
-lease engine and its routes, and a probe runner are built and installed on the AX41. Agent turns
-still run on the owner's own machine through the [execution host](EXECUTION-HOST.md); moving them
-onto runners is the cut described under "Turns on a runner", which happens with the app server.
+**Status (2026-11-04):** built: the agents' network entrance, per-run and per-runner tokens, the
+runner lease engine with its routes, and a probe runner. **Not built: turns on runners.** Agent
+turns, execution hosts, the shared Codex App Server, provider account homes and checkouts still
+live on the owner's machine, so the owner **cannot move to the app server yet**; the remaining
+work is "Turns on a runner" below, plus the couplings marked "after the cut" in the inventory.
 Decided plan: remote-box `docs/plans/2026-11-04-off-one-server-architecture.md` ("Decisions after
 review"), steps 2 and 3.
 
@@ -45,17 +46,22 @@ Everything the owner assumes because agents run beside it. Each line names where
   through a Cloudflare Tunnel hostname with the same tokens.
 - **Tokens** (`agent-run-tokens.ts`): HMAC-SHA256 over `{kind, principal, expiry}` with a 32-byte key
   in `$CONCIERGE_STATE_DIR/agent-token.key` (0600). The gateway verifies without opening the ledger.
-  - `run`: minted for every turn into its environment as `CONCIERGE_AGENT_TOKEN`; valid eight days
-    (an execution host lives at most seven).
+  - `run`: minted into a turn's environment as `CONCIERGE_AGENT_TOKEN`, only when the owner has a
+    network address to give it (`CONCIERGE_AGENT_API_URL`); valid eight days (an execution host
+    lives at most seven). Before the cut it must be resolved per turn rather than per environment:
+    a shared Codex thread keeps its first turn's shell environment for the thread's life.
   - `runner`: minted on the owner's machine (`POST /runner/v1/token` on the local socket only); valid
-    90 days; used by the runner daemon and by hooks without per-run environment.
+    90 days; used by the runner daemon and by hooks without per-run environment. It carries the local
+    socket's **full** command authority (session communication, `/external/*`, requests), not only
+    the runner routes, because a runner's agents need that authority anyway.
   - A run token can land on the runner's disk (Codex keeps a thread's shell environment in its
     session files). That grants nothing a root reader of that disk lacks today; it matters only
     once a runner is a machine an attacker could read without root, and then rotation applies.
   - Revocation is key rotation (delete the key file; the next start creates a new one). Per-token
     revocation was not built: one operator, short run lifetimes, and the owner still validates every
     action's source input and run against the ledger.
-- **What a token authorizes:** what the local socket authorizes today. The owner's existing source
+- **What a token authorizes:** what the local socket authorizes today, except process-control
+  routes (`/internal/*`, including the event-stream page), which only the local socket serves. The owner's existing source
   checks still decide every action; the token adds a verified principal, forwarded to the owner as
   `x-concierge-agent-principal` (`run:<session>:<turn>` or `runner:<name>`), which callers cannot set.
   A tighter binding (refusing a run that names another run's source) was not added: helpers and
@@ -63,8 +69,8 @@ Everything the owner assumes because agents run beside it. Each line names where
   data and privacy boundaries [decision: agents-are-never-handcuffed].
 - **Client:** `router-request-client.ts` uses `CONCIERGE_OWNER_URL` with the token when the run
   carries both, and the local socket otherwise. The owner passes `CONCIERGE_OWNER_URL` only when
-  `CONCIERGE_AGENT_API_URL` is configured. On the AX41 it is not: agents on the owner's own machine
-  keep the socket until the owner moves, when setting that one variable switches every new run.
+  `CONCIERGE_AGENT_API_URL` is configured, and only then mints the run token. On the AX41 it is not:
+  agents on the owner's own machine keep the socket, and carry no token, until turns run on runners.
 
 ## Runner protocol (built: engine, routes, probe runner)
 
@@ -87,7 +93,7 @@ Routes (`/runner/v1/*`, runner token required unless noted):
 | `command-results {…, results:[{commandId, result}]}` | the first result per command id stands |
 | `finish {…, operationId, result}` | ends attempt and job once; the same operation id repeats the first answer, another conflicts |
 | `reacquire {attemptIds}` | a restarted runner takes back its live attempts at a **new epoch**; expired ones are `stale` and must be stopped locally |
-| `GET jobs/<id>?after=<seq>` (any agent) | job state, attempts and events after a cursor |
+| `GET jobs/<id>?attempt=<id>&after=<seq>` (any agent) | a read: job state (a passed lease reported as the state the next transition records), attempts, and one attempt's events after that attempt's cursor (latest attempt unless named) |
 | `POST probes {probeId}` (any agent) | queues a marked, replay-safe `probe` job; the runner echoes it |
 | `POST token {runner}` (local socket only) | mints a runner token |
 
@@ -102,12 +108,14 @@ Invariants:
   coordinator settles exactly as it settles a `lost` execution today (interrupted, never replayed).
 - **Every effect has its own operation identity**: events by sequence, commands by command id,
   the finish by operation id. Ambiguous external effects are reconciled, never replayed.
-- Runners open no port; they poll `claim` every 2 s when idle. At this scale (one to ten runners) the
-  poll costs one indexed read; a long poll is a later refinement if measured worth it.
+- Runners open no port; they poll `claim` every 2 s when idle. With nothing queued and no lease due
+  the answer comes from two indexed reads and takes no write lock; a long poll is a later refinement
+  if measured worth it.
 
 The runner daemon is `bot/scripts/runner.ts` (`CONCIERGE_OWNER_URL`, `CONCIERGE_RUNNER_TOKEN_FILE`,
 `CONCIERGE_RUNNER_STATE`; `--once` for checks). It records held attempts in its own folder and
-reacquires them at start. Today it runs `probe` jobs only.
+reacquires them at start (a reacquired probe is left to expire; turn jobs will resume heartbeats).
+Today it runs `probe` jobs only.
 
 ## Turns on a runner (the cut, with the app server)
 
@@ -166,13 +174,15 @@ Sources: [GetActivityTask](https://docs.aws.amazon.com/step-functions/latest/api
 [service quotas](https://docs.aws.amazon.com/step-functions/latest/dg/service-quotas.html) (the
 256 KiB and 1 MiB payload figures disagree between the API reference and the quota page).
 
-## Moving the owner (what the deploy does)
+## Moving the owner (after turns run on runners)
 
+0. Build "Turns on a runner" and run the AX41's turns through it while the owner is still on the
+   AX41; only then is the move a deploy.
 1. On the app server: install the release, restore the ledger and presentation store, set
    `CONCIERGE_AGENT_API_LISTEN` to its tailnet address and leave out the Codex App Server
    `ExecStartPre` lines and `agents.slice` settings.
-2. On the AX41: run `runner.ts` as a service with a runner token, with turn jobs enabled; set
-   `CONCIERGE_AGENT_API_URL` on the owner so runs carry the network address.
+2. On the AX41: run `runner.ts` as a service with a runner token; set `CONCIERGE_AGENT_API_URL` on
+   the owner so runs carry the network address and their tokens.
 3. Thinkering's capability socket moves behind Thinkering's own HTTPS entrance (its step 2).
 
 ## Checks
@@ -182,4 +192,5 @@ Sources: [GetActivityTask](https://docs.aws.amazon.com/step-functions/latest/api
   keeps process control unreachable, and the agents' client takes the network path.
 - `bot/scripts/runner-lease-check.ts`: claim, contiguous events, commands, epoch fencing, computed
   expiry (turn unconfirmed, build requeued) and idempotent finish.
-- Live: a probe job queued through the owner and run by `runner.ts --once` over the network entrance.
+- Live (after install): a probe job queued through the owner's socket and run by `runner.ts --once`
+  over the network entrance with a runner token; the result is recorded in the commit that follows.

@@ -64,8 +64,10 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
     assert.equal(response.status,200,JSON.stringify(response));
     assert.equal(seen.at(-1)!.principal,'run:7:43');
     assert.deepEqual(agentRunEnvironment({turnId:1,sessionId:1},{}),{},'Without a state directory nothing is minted.');
-    assert.equal(agentRunEnvironment({turnId:1,sessionId:1},{CONCIERGE_STATE_DIR:root}).CONCIERGE_OWNER_URL,undefined,
-      'Without a network address runs keep the local socket.');
+    assert.deepEqual(agentRunEnvironment({turnId:1,sessionId:1},{CONCIERGE_STATE_DIR:root}),{},
+      'Without a network address runs keep the local socket and carry no token.');
+    assert.equal((await fetch(`http://127.0.0.1:${port}/internal/event-stream-page`,{headers:{authorization:`Bearer ${run}`}})).status,404,
+      'The event-stream page stays on the local socket.');
     console.log('agent entrance: refused 4 bad tokens, forwarded run and runner principals, client used the network entrance');
   } finally {
     await gateway.stop(true);

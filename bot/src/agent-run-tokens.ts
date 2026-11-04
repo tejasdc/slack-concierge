@@ -70,15 +70,16 @@ export function agentPrincipalHeader(agent:VerifiedAgent):string {
 
 let ownerKey:{dir:string;key:Buffer}|null=null;
 /**
- * What a run's environment carries so its helpers reach this owner: always the run's token, and
- * the owner's network address when `CONCIERGE_AGENT_API_URL` names one (the app-server move sets
- * it; until then helpers keep the local socket). Without a state directory nothing is added.
+ * What a run's environment carries so its helpers reach this owner over the network: the owner's
+ * address and the run's token, only when `CONCIERGE_AGENT_API_URL` names that address (the
+ * app-server move sets it). Otherwise nothing: helpers keep the local socket, and no unused
+ * bearer credential sits in agents' environments and transcripts.
  */
 export function agentRunEnvironment(principal:{turnId:number;sessionId:number},
   environment:NodeJS.ProcessEnv=process.env):Record<string,string> {
   const dir=environment.CONCIERGE_STATE_DIR?.trim();
-  if(!dir)return {};
-  if(ownerKey?.dir!==dir)ownerKey={dir,key:agentTokenKey(dir)};
   const url=environment.CONCIERGE_AGENT_API_URL?.trim();
-  return {CONCIERGE_AGENT_TOKEN:mintAgentToken(ownerKey.key,{kind:'run',...principal}),...(url?{CONCIERGE_OWNER_URL:url}:{})};
+  if(!dir||!url)return {};
+  if(ownerKey?.dir!==dir)ownerKey={dir,key:agentTokenKey(dir)};
+  return {CONCIERGE_AGENT_TOKEN:mintAgentToken(ownerKey.key,{kind:'run',...principal}),CONCIERGE_OWNER_URL:url};
 }

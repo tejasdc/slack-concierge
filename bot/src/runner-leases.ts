@@ -52,7 +52,7 @@ export function initializeRunnerSchema(db:Database) {
     ended_at_ms INTEGER
   );
   CREATE INDEX IF NOT EXISTS runner_attempts_job ON runner_attempts(job_id);
-  CREATE INDEX IF NOT EXISTS runner_attempts_live ON runner_attempts(runner) WHERE state='live';
+  CREATE INDEX IF NOT EXISTS runner_attempts_live ON runner_attempts(lease_expires_at_ms) WHERE state='live';
   CREATE TABLE IF NOT EXISTS runner_events (
     attempt_id TEXT NOT NULL REFERENCES runner_attempts(attempt_id),
     seq INTEGER NOT NULL,
@@ -91,6 +91,8 @@ export class RunnerLeases {
   /** Settles every lease that has passed. Called inside each transition, so no timer is needed. */
   private settleExpired() {
     const now=this.now();
+    // Only a lease that has actually passed costs a write.
+    if(!this.db.query("SELECT 1 FROM runner_attempts WHERE state='live' AND lease_expires_at_ms<=? LIMIT 1").get(now))return 0;
     const expired=this.db.query(`SELECT attempt.attempt_id,attempt.job_id,job.replay_safe FROM runner_attempts attempt
       JOIN runner_jobs job ON job.job_id=attempt.job_id
       WHERE attempt.state='live' AND attempt.lease_expires_at_ms<=?`).all(now) as {attempt_id:string;job_id:string;replay_safe:number}[];
@@ -106,10 +108,14 @@ export class RunnerLeases {
 
   /** A runner asks for work: the oldest queued job of a kind it runs, under a new attempt at epoch 1. */
   claim(runner:string,kinds:readonly string[]) {
+    if(!kinds.length)return null;
+    const marks=kinds.map(()=>'?').join(',');
+    // An idle runner polls every few seconds: with nothing queued and no lease due, answer from a read.
+    if(!this.db.query(`SELECT 1 FROM runner_jobs WHERE state='queued' AND kind IN (${marks}) LIMIT 1`).get(...kinds)
+      &&!this.db.query("SELECT 1 FROM runner_attempts WHERE state='live' AND lease_expires_at_ms<=? LIMIT 1").get(this.now()))return null;
     return this.db.transaction(()=>{
       this.settleExpired();
-      if(!kinds.length)return null;
-      const job=this.db.query(`SELECT * FROM runner_jobs WHERE state='queued' AND kind IN (${kinds.map(()=>'?').join(',')})
+      const job=this.db.query(`SELECT * FROM runner_jobs WHERE state='queued' AND kind IN (${marks})
         ORDER BY created_at_ms LIMIT 1`).get(...kinds) as Job|null;
       if(!job)return null;
       const now=this.now(),attemptId=randomUUID();
@@ -216,17 +222,23 @@ export class RunnerLeases {
     }).immediate();
   }
 
-  /** The coordinator's view of a job, its attempts and events after a cursor. */
-  job(jobId:string,afterSeq=0) {
-    return this.db.transaction(()=>{
-      this.settleExpired();
-      const job=this.db.query('SELECT * FROM runner_jobs WHERE job_id=?').get(jobId) as Job|null;
-      if(!job)return null;
-      const attempts=this.db.query('SELECT attempt_id,runner,epoch,state,lease_expires_at_ms,acked_seq FROM runner_attempts WHERE job_id=? ORDER BY started_at_ms').all(jobId) as Attempt[];
-      const current=attempts.at(-1);
-      const events=current?(this.db.query('SELECT seq,frame_json FROM runner_events WHERE attempt_id=? AND seq>? ORDER BY seq').all(current.attempt_id,afterSeq) as {seq:number;frame_json:string}[])
-        .map(row=>({seq:row.seq,frame:JSON.parse(row.frame_json)})):[];
-      return {jobId,kind:job.kind,state:job.state,result:JSON.parse(job.result_json??'null'),attempts,events};
-    }).immediate();
+  /**
+   * The coordinator's view of a job: its attempts, and the events of one attempt (the latest
+   * unless named) after a cursor of that attempt. A read: a passed lease is reported as the
+   * state the next transition will record, without writing it here.
+   */
+  job(jobId:string,afterSeq=0,attemptId?:string) {
+    const job=this.db.query('SELECT * FROM runner_jobs WHERE job_id=?').get(jobId) as Job|null;
+    if(!job)return null;
+    const now=this.now();
+    const attempts=(this.db.query('SELECT attempt_id,runner,epoch,state,lease_expires_at_ms,acked_seq FROM runner_attempts WHERE job_id=? ORDER BY started_at_ms').all(jobId) as Attempt[])
+      .map(attempt=>attempt.state==='live'&&attempt.lease_expires_at_ms<=now?{...attempt,state:'expired'}:attempt);
+    const passed=job.state==='leased'&&!attempts.some(attempt=>attempt.state==='live');
+    const state:RunnerJobState=passed?(job.replay_safe?'queued':'unconfirmed'):job.state;
+    const chosen=attemptId?attempts.find(attempt=>attempt.attempt_id===attemptId):attempts.at(-1);
+    const events=chosen?(this.db.query('SELECT seq,frame_json FROM runner_events WHERE attempt_id=? AND seq>? ORDER BY seq').all(chosen.attempt_id,afterSeq) as {seq:number;frame_json:string}[])
+      .map(row=>({seq:row.seq,frame:JSON.parse(row.frame_json)})):[];
+    return {jobId,kind:job.kind,state,result:passed&&!job.replay_safe?{unconfirmed:'lease_expired'}:JSON.parse(job.result_json??'null'),
+      attempts,eventsAttemptId:chosen?.attempt_id??null,events};
   }
 }

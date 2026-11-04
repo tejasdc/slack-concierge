@@ -44,7 +44,7 @@ export async function runnerRoutes(request:Request,url:URL):Promise<Response> {
       return Response.json({ok:true,...queued},{status:queued.created?201:200});
     }
     if(request.method==='GET'&&path.startsWith('jobs/')) {
-      const job=engine().job(decodeURIComponent(path.slice('jobs/'.length)),Number(url.searchParams.get('after')??0)||0);
+      const job=engine().job(decodeURIComponent(path.slice('jobs/'.length)),Number(url.searchParams.get('after')??0)||0,url.searchParams.get('attempt')??undefined);
       return job?Response.json({ok:true,job}):Response.json({ok:false,error:'UNKNOWN_JOB'},{status:404});
     }
     const runner=RUNNER.exec(principal??'')?.[1];
