@@ -107,7 +107,7 @@ function pruneAutomaticCopies(keep = AUTOMATIC_COPIES_KEPT): number {
 function offBoxBackupCapturedBefore(): number | null {
   // A scratch state folder's check supplies the backup time; the live state folder never can.
   const rehearsed = Number(process.env.CONCIERGE_REHEARSAL_OFF_BOX_BACKUP_STARTED_MS);
-  if (Number.isFinite(rehearsed) && realpathSync(stateDirectory!).startsWith(`${realpathSync(tmpdir())}/`)) return rehearsed;
+  if (Number.isFinite(rehearsed) && realpathSync(stateDirectory!).startsWith(`${realpathSync(tmpdir())}/concierge-retire-rehearsal-`)) return rehearsed;
   const shown = spawnSync('systemctl', ['show', 'remote-box-backup.service', '--timestamp=unix', '-p', 'Result',
     '-p', 'ExecMainStatus', '-p', 'ActiveState', '-p', 'ExecMainStartTimestamp', '-p', 'ExecMainExitTimestamp'], { encoding: 'utf8' });
   if (shown.status !== 0) return null;
