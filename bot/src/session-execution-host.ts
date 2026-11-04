@@ -1051,7 +1051,7 @@ export class SessionExecutionHost {
             actual=adoption?this.adoptedOutsideRun(prepared,adoption):this.outsideRun(prepared,claim,session,kept);
           } else if(session.provider_id==='antigravity') {
             if(!adoption&&!executionHostsEnabled())throw new ProviderCapabilityUnavailableError('execution','Google work requires a durable execution host on this machine.');
-            actual=adoption?this.adoptedRun(prepared,adoption,antigravityExecutable())
+            actual=adoption?this.adoptedRun(prepared,adoption)
               :this.hostedRun(prepared,claim,session,kept,antigravityExecutable());
           } else if(session.provider_id==='claude-code'&&(adoption||executionHostsEnabled())) {
             actual=adoption?this.adoptedRun(prepared,adoption):this.hostedRun(prepared,claim,session,kept);
@@ -1197,7 +1197,9 @@ export class SessionExecutionHost {
   private hostedTransport(mode:'launch'|'adopt'|'adopt-record',executionId:string,stateDir:string,executable?:string,timeouts?:{inactivityMs:number|null}) {
     // From the owner, not the run's environment: an information-only consultation runs without it.
     const routerBotDir=providerOwnerEnvironment().CONCIERGE_ROUTER_BOT_DIR;
-    return new HostedClaudeCodeTransport({mode,executionId,stateDir,routerBotDir,executable:executable??claudeExecutable(),
+    // Only a launch resolves the CLI. On 2026-11-04 Claude Code was reinstalled during a Concierge
+    // restart; adoption looked it up, found no `claude` and parked 25 agents that were still running.
+    return new HostedClaudeCodeTransport({mode,executionId,stateDir,routerBotDir,executable:executable??(mode==='launch'?claudeExecutable():undefined),
       onLaunched:launch=>recordExecutionLaunched(executionId,launch),
       onAttached:status=>{
         log('info','execution_host_attached',{execution_id:executionId,mode,host_pid:status.hostPid,provider_pid:status.providerPid,replayed:status.until,provider_running:!status.exit});
