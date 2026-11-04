@@ -63,7 +63,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - The canonical owner, not agent memory, enforces Inbox placement, attention and
   delivery. Unfiled human inputs prevent the Inbox router from ending its turn.
   Failed, cancelled or stalled agent attempts leave his Inbox request open for
-  durable recovery; checked completion, a live only-he-can question, or
+  durable recovery; a routed human work message joins that request ledger atomically,
+  and an unverified completion stays open for a check. Checked completion, a live only-he-can question, or
   Tejas's own withdrawal determines what happens next. See
   [native Inbox](docs/contracts/native-inbox.md).
   The router command refuses a native Codex helper's attempt to close or cancel

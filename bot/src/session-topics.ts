@@ -9,6 +9,7 @@ import {db,getSessionById,type SessionRow} from './state';
 import {carryingTurn,getAcceptedSessionInput,humanAuthored,nativeRunId,sessionInputProvenance,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput,type RetainInputTiming} from './session-inputs';
 import {capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot,postForwardedThreadAnswer} from './session-inbox';
 import {answerClosingLine} from './answer-closing-line';
+import {notSeenWorking} from './answers-to-tejas';
 import {inboxRequestRoot} from './inbox-request-root';
 import type {OpenNeed} from './session-turn-outcome';
 import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
@@ -1369,7 +1370,7 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evid
     if(row.outcome!=='answered')return false;
     if(row.requested_effect==='informational')return true;
     if(!row.result_json)return false;
-    try{return JSON.parse(row.result_json).workDisposition==='completed';}
+    try{const result=JSON.parse(row.result_json);return result.workDisposition==='completed'&&!notSeenWorking(result.closingLine);}
     catch{return false;}
   };
   // The latest dispatch is where the work stands: an earlier one that asked a question or
@@ -2791,7 +2792,7 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
  */
 const OWNER_BY:TopicBy={kind:'owner'};
 type Work={id:string;outcome:string|null;disposition:string|null;requestedEffect:string|null;target:string|null;createdAtMs:number;stalled:boolean;
-  stoppedByTejas?:boolean};
+  stoppedByTejas?:boolean;notCheckedReason?:string|null};
 const dispositionOf=(resultJson:string|null)=>{
   if(!resultJson)return null;
   try{const value=JSON.parse(resultJson).workDisposition;return typeof value==='string'?value:null;}catch{return null;}
@@ -2800,11 +2801,15 @@ const stoppedByTejasOf=(resultJson:string|null)=>{
   if(!resultJson)return false;
   try{return JSON.parse(resultJson)?.output?.stoppedBy==='tejas';}catch{return false;}
 };
+const notCheckedReasonOf=(resultJson:string|null)=>{
+  if(!resultJson)return null;
+  try{return notSeenWorking(JSON.parse(resultJson).closingLine);}catch{return null;}
+};
 function workRow(id:string):Work|null {
   const local=db.query("SELECT target_session_id,outcome,result_json,created_at_ms,stalled_at_ms,json_extract(payload_json,'$.requestedEffect') AS requested_effect FROM session_communication_requests WHERE request_id=?").get(id) as any;
-  if(local)return {id,outcome:local.outcome,disposition:dispositionOf(local.result_json),requestedEffect:local.requested_effect,target:`concierge:${local.target_session_id}`,createdAtMs:local.created_at_ms,stalled:local.stalled_at_ms!==null,stoppedByTejas:stoppedByTejasOf(local.result_json)};
+  if(local)return {id,outcome:local.outcome,disposition:dispositionOf(local.result_json),requestedEffect:local.requested_effect,target:`concierge:${local.target_session_id}`,createdAtMs:local.created_at_ms,stalled:local.stalled_at_ms!==null,stoppedByTejas:stoppedByTejasOf(local.result_json),notCheckedReason:notCheckedReasonOf(local.result_json)};
   const peer=db.query("SELECT peer,remote_session_id,outcome,result_json,created_at_ms,stalled_at_ms,json_extract(payload_json,'$.requestedEffect') AS requested_effect FROM session_peer_requests WHERE request_id=?").get(id) as any;
-  return peer?{id,outcome:peer.outcome,disposition:dispositionOf(peer.result_json),requestedEffect:peer.requested_effect,target:receiveSessionFromPeer(peer.remote_session_id,peer.peer),createdAtMs:peer.created_at_ms,stalled:peer.stalled_at_ms!==null,stoppedByTejas:stoppedByTejasOf(peer.result_json)}:null;
+  return peer?{id,outcome:peer.outcome,disposition:dispositionOf(peer.result_json),requestedEffect:peer.requested_effect,target:receiveSessionFromPeer(peer.remote_session_id,peer.peer),createdAtMs:peer.created_at_ms,stalled:peer.stalled_at_ms!==null,stoppedByTejas:stoppedByTejasOf(peer.result_json),notCheckedReason:notCheckedReasonOf(peer.result_json)}:null;
 }
 /** His replies in a thread that went to an agent (`forwardReply`), each with the root it was sent for. */
 type Forward=Work&{root:string|null;inboxInputId:string|null};
@@ -2845,6 +2850,33 @@ function recordOwnerTopicChange(sessionId:number,eventId:string,kind:string,payl
   recordSessionEvent({eventId,sessionId,kind,payload});
   applyTopicChange(kind,payload);
   return true;
+}
+
+/** Exact-message routing creates durable work without guessing from a shared thread. */
+export function linkInboxDispatchWork(input:{topicId:string;sourceMessageId:string;dispatchId:string;targetSessionId:string;summary:string;brief:string}) {
+  const topic=topicRow(input.topicId);
+  const requests=topicRequests(input.topicId);
+  const exact=requests.filter(request=>request.sources.some(source=>source.inputId===input.sourceMessageId));
+  const existing=exact.length===1?exact[0]:null;
+  const at=nowIso();
+  const dispatch={requestId:input.dispatchId,targetSessionId:input.targetSessionId,targetTitle:null,outcome:null,state:'recorded'};
+  if(existing){
+    if(existing.dispatches.some((item:any)=>item.requestId===input.dispatchId))return existing.requestId;
+    const sources=existing.sources.some(source=>source.inputId===input.sourceMessageId)?existing.sources:[...existing.sources,{inputId:input.sourceMessageId}];
+    const next={...existing,state:'open' as const,disposition:null,closure:null,sources,dispatches:[...existing.dispatches,dispatch],revision:existing.revision+1,updatedAt:at};
+    const change=reopenedForNewWork({kind:'topic_request',payload:{change:'linked',topicId:topic.topicId,topic:bumped(topic),request:next,by:OWNER_BY,
+      reason:'This work dispatch belongs to the open request in its Inbox thread.',revision:topic.revision+1}});
+    recordOwnerTopicChange(topic.sessionId,`topic-link:routed:${input.dispatchId}`,'topic_request',change.payload);
+    return existing.requestId;
+  }
+  const request:StoredRequest={requestId:`req:${randomUUID()}`,topicId:topic.topicId,title:input.summary.slice(0,200)||topic.title,
+    brief:input.brief.trim()?input.brief.slice(0,8000):`The message and its attachments are retained at ${input.sourceMessageId}.`,
+    state:'open',disposition:null,revision:1,sources:[{inputId:input.sourceMessageId}],
+    dispatches:[dispatch],closure:null,createdAt:at,updatedAt:at};
+  const change=reopenedForNewWork({kind:'topic_request',payload:{change:'added',topicId:topic.topicId,topic:bumped(topic),request,by:OWNER_BY,
+    reason:'Work sent from this Inbox thread must have a durable request.',revision:topic.revision+1}});
+  recordOwnerTopicChange(topic.sessionId,`topic-request:routed:${input.dispatchId}`,'topic_request',change.payload);
+  return request.requestId;
 }
 
 /** A change that places new work in a closed thread opens it again, with what its closure ended. */
@@ -3047,7 +3079,7 @@ function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settl
       &&(question.owner?.requestId===request.requestId||dispatchIds.has(String(question.owner?.dispatchRequestId??''))));
     let disposition:string|null=null,why='';
     let completionChecked=false;
-    if(latest?.outcome==='answered'&&(latest.disposition==='completed'||latest.requestedEffect==='informational')) {
+    if(latest?.outcome==='answered'&&((latest.disposition==='completed'&&!latest.notCheckedReason)||latest.requestedEffect==='informational')) {
       try{refuseUnfinishedCompletion(topic,request);completionChecked=true;}
       catch(error){if(!(error instanceof TopicError))throw error;}
       // The explicit completed reply accepts either a live check or an honest reason no live
@@ -3063,6 +3095,7 @@ function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settl
     if(!disposition&&topic.setAside)continue;
     if(!disposition) {
       let how=!latest?'has had no agent assigned'
+        :latest.outcome==='answered'&&latest.disposition==='completed'&&latest.notCheckedReason?`reported completion without a live check (${latest.notCheckedReason}); verify the result without repeating an acknowledged effect`
         :latest.outcome==='answered'&&latest.disposition==='completed'?'claimed completion without a verified result'
         :latest.stalled?'stalled without a final reply'
         :latest.disposition==='failed'?'failed without finishing the task'
