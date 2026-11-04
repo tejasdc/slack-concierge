@@ -14,7 +14,15 @@ request must name its exact bundle and page IDs, and its retained provenance mus
 to Tejas's authorizing human input. The Mac owner returns that provenance and reason
 to the hook. For this human task, Computer Use admits a direct `getApp` call
 selecting that bundle and subsequent read-only app-state calls. A Mac-app request
-that also names Web Inspector may make one exact-bundle `getApp` and
+from Tejas's November 4 Canvas capture may select that exact bundle. Its later
+passive reads must select the bundle again and read it in the same Computer Use
+program with a dedicated `var thnkrCanvasInspectionApp` handle, so a remembered
+REPL handle cannot point the read at another app. The retained originating-human
+input must be that capture and the recorded need must name the same bundle and
+page. This allows inspection of the existing Mac page for
+the lekondo Canvas incident; it does not authorize a Canvas interaction, page
+reload, or draft disposal. Only the original November 3 human authorization,
+in a Mac-app request that also names Web Inspector, may make one exact-bundle `getApp` and
 Option-Command-I call in the same Computer Use program to attempt to open the
 Inspector on that app. The program uses a dedicated `var thnkrInspectorApp` handle:
 the Computer Use REPL can retain earlier `let app` bindings, while `var` can be
@@ -27,8 +35,8 @@ only while the accepted Mac request is active. Selecting the app does not establ
 that the requested page is still present; the Mac agent must inspect and report that
 separately before acting on its contents. The shortcut's effect on this installed
 Dock web app is not yet verified and must be observed after the Mac unlocks; do not
-claim a page-memory recovery path based on this grant alone. The current identifiers and direct human
-authorization are recorded in the November 3 Mac request and policy check.
+claim a page-memory recovery path based on this grant alone. The original
+authorization and the separate Canvas capture are recorded in the policy check.
 When Tejas answers a physical prerequisite in the same Inbox task, the Inbox's
 forwarded reply has no provider run. Its retained forward request proves the exact
 human reply. A later Mac request from that reply may carry the earlier web-app
