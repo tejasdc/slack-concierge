@@ -23,7 +23,8 @@ Its first `unshare --mount` call was refused inside that sandbox.
 
 ## Fix
 
-The launcher first hides the live ledger in an outer mount namespace. A second,
+The launcher first hides the live ledger and its loop backing image in an outer mount
+namespace. A second,
 less privileged namespace inherits those locked mounts and has only the capabilities
 needed for the page check's own mounts. Ordinary Concierge candidate checks keep
 their existing capability drop. The security fixture checks that an attempted

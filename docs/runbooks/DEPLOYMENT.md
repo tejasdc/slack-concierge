@@ -797,8 +797,9 @@ That entrance accepts quoted release notes containing shell punctuation. Real sh
 chaining, command substitution and a second unwrapped package launch remain refused;
 the guard checks the command shape without executing the release.
 The protected code entrance uses two nested mount namespaces on Linux. The outer one
-hides the live Concierge directories; the inner, less privileged one locks those
-mounts while granting only the capabilities needed for a release's read-only
+hides the live Concierge directories and any loop-mounted ledger backing image. The
+inner, less privileged one locks those mounts while granting only the capabilities
+needed for a release's read-only
 Thinkering page view. The page check can create its overlay and its own mount
 namespace, but cannot remove the outer ledger mounts. Ordinary candidate checks
 still run with all capabilities dropped.
