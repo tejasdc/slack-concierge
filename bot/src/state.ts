@@ -889,6 +889,9 @@ addColumn("turns", "stop_input_cutoff", "stop_input_cutoff INTEGER");
 addColumn("turns", "input_context_received_by_turn_id", "input_context_received_by_turn_id INTEGER");
 addColumn("turns", "dispatch_attempt", "dispatch_attempt INTEGER NOT NULL DEFAULT 0");
 addColumn("turns", "dispatch_failure_class", "dispatch_failure_class TEXT");
+// Every queued claim checks for a parked host in its session. Keep that lookup bounded even
+// for long-lived conversations such as the Inbox router.
+db.exec("CREATE INDEX IF NOT EXISTS turns_parked_host_session ON turns(session_id,id) WHERE status='parked' AND dispatch_failure_class='parked_ambiguous'");
 addColumn("turns", "dispatch_next_attempt_ms", "dispatch_next_attempt_ms INTEGER");
 // A human may move a waiting Inbox input ahead of other waiting inputs. Identity and
 // admission history stay on the original turn; only the claim order changes.
@@ -4189,6 +4192,23 @@ export function parkRunningTurnAfterProviderFailure(input: {
   })();
 }
 
+/** An abandoned old run is terminal only after its host has recorded the provider's exit. */
+export function settleSupersededParkedTurn(turnId: number): boolean {
+  return db.transaction(() => {
+    const changed = db.query(`UPDATE turns SET status='interrupted',
+      agent_text='An earlier agent was stopped after a later turn entered this conversation.',
+      dispatch_failure_class=NULL, delivery_status='not_available',
+      delivery_error='The earlier agent was stopped after a later turn entered this conversation.'
+      WHERE id=? AND status='parked' AND dispatch_failure_class='parked_ambiguous'
+        AND EXISTS (SELECT 1 FROM turns later WHERE later.session_id=turns.session_id AND later.id>turns.id
+          AND (later.provider_admission_intended_at IS NOT NULL OR later.provider_started_at IS NOT NULL
+            OR later.provider_input_acknowledged_at IS NOT NULL))`)
+      .run(turnId).changes === 1;
+    if (changed) turnFactChanged(turnId,'terminal');
+    return changed;
+  })();
+}
+
 export type ResumeParkedTurnResult = "resumed" | "already_queued" | "not_parked" | "unsafe";
 
 export function resumeParkedSessionTurn(turnId: number): ResumeParkedTurnResult {
@@ -5303,6 +5323,10 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
   AND NOT EXISTS (SELECT 1 FROM session_communication_requests request
     WHERE request.target_input_id=turn.accepted_input_id AND request.outcome='canceled')
   AND (turn.turn_kind<>'native' OR (session.status<>'archived' AND COALESCE(json_extract(session.native_metadata_json,'$.suspended'),0)=0))
+  AND NOT EXISTS (SELECT 1 FROM turns older JOIN executions held ON held.turn_id=older.id
+    AND held.dispatch_attempt=older.dispatch_attempt AND held.state IN ('intended','live','exited')
+    WHERE older.session_id=turn.session_id
+      AND older.status='parked' AND older.dispatch_failure_class='parked_ambiguous')
   AND NOT EXISTS (
     SELECT 1 FROM turn_dependencies dependency
     JOIN turns prerequisite ON prerequisite.id=dependency.prerequisite_turn_id
@@ -5457,6 +5481,10 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
             WHERE live.session_id=turns.session_id AND live.id<>turns.id
               AND live.status IN ('running', 'delivering')
           )
+          AND NOT EXISTS (SELECT 1 FROM turns older JOIN executions held ON held.turn_id=older.id
+            AND held.dispatch_attempt=older.dispatch_attempt AND held.state IN ('intended','live','exited')
+            WHERE older.session_id=turns.session_id
+              AND older.status='parked' AND older.dispatch_failure_class='parked_ambiguous')
           AND NOT EXISTS (
             SELECT 1
             FROM turn_artifact_deliveries artifact

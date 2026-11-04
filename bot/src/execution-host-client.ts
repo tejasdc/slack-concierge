@@ -749,6 +749,36 @@ export async function releaseHost(directory: string, executionId: string): Promi
   } catch { return false; }
 }
 
+/** Stop an abandoned provider only when a later turn already entered its conversation. */
+export async function stopSupersededHost(directory: string, executionId: string): Promise<boolean> {
+  const stopUnit = async () => {
+    // The unit name is derived from the exact execution ID and owns the provider process group.
+    if (process.platform === 'linux')
+      await supervisorCommand('systemctl',['stop',`${executionUnit(executionId)}.service`],10_000);
+    else if (process.platform === 'darwin')
+      await supervisorCommand('launchctl',['bootout',`${launchdDomain()}/${executionUnit(executionId)}`],10_000);
+    if (await hostSupervisorView(executionId) === 'gone') return true;
+    await new Promise(resolve => setTimeout(resolve,1_000));
+    return await hostSupervisorView(executionId) === 'gone';
+  };
+  const connection = await HostConnection.connect(hostSocketPath(directory), 3_000).catch(() => null);
+  if (!connection) return stopUnit();
+  try {
+    const status = await connection.status();
+    if (status.executionId !== executionId) return false;
+    if (status.exit) return true;
+    await connection.attach(Number.MAX_SAFE_INTEGER, () => {});
+    await connection.command({ op: "signal", id: `superseded-term-${executionId}`, signal: "SIGTERM" });
+    await new Promise(resolve => setTimeout(resolve, 5_000));
+    if ((await connection.status()).exit) return true;
+    await connection.command({ op: "signal", id: `superseded-kill-${executionId}`, signal: "SIGKILL" });
+    await new Promise(resolve => setTimeout(resolve, 1_000));
+    return !!(await connection.status()).exit;
+  } catch {
+    return stopUnit();
+  } finally { connection.close(); }
+}
+
 /** A write the host recorded as never made: the input provably did not reach the provider. */
 export class HostWriteRefusedError extends Error {}
 /** A write whose outcome nobody recorded (connection lost, unconfirmed): it may have reached the provider. */

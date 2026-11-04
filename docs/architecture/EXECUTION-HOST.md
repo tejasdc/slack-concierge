@@ -111,6 +111,21 @@ Taking back:
    only a launch resolves the Claude or Google CLI. On 2026-11-04 Claude Code was reinstalled
    while Concierge restarted, the lookup found no `claude`, and 25 running agents were parked
    while they kept working unattended.
+   Startup also takes back a parked native turn with an answering host or a recorded provider
+   exit, provided no later turn was admitted to the provider in that session. A queued later turn
+   waits behind the parked host. Concierge restores the same run and dispatch attempt atomically.
+   The earlier uncertain terminal event remains in history; the recovered run and outcome have
+   separate event identities. Each further restart uses the host's durable adoption count for
+   its run events. A later provider admission blocks recovery so two processes cannot be adopted
+   into the same conversation.
+   While Concierge stays online, it rechecks parked host custody each minute without touching
+   already running executions. A superseded parked host is signalled to stop; after its provider
+   exits, the older turn is marked interrupted and the later turn stays in place.
+   A recovered closing answer advances attention again even if the parking notice was already
+   read; the answer is a new arrival in his thread.
+   If an older turn was superseded, its Inbox request remains open. The Inbox recovery path
+   carries that unfinished request back to the router for continuation after
+   the stopped attempt; an interrupted turn is not treated as a checked answer.
 4. The transport attaches; the host returns its sequence at that moment (`until`) in the same
    synchronous step that starts the replay. Frames that arrive before the boundary is known wait
    unsorted; the history (up to `until`) is collected whole, so each recorded write is replayed with

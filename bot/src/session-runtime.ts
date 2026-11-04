@@ -133,6 +133,19 @@ export async function startSessionRuntime() {
   for(const adoption of executions.adopted)runAdopted(adoption);
   for(const held of executions.held)watchHeldExecution(held,{stopped:()=>draining,adopt:runAdopted,
     interrupt:(turnId,reason)=>{interruptOrphanedTurn(turnId,instanceId,reason);queue.wake();}});
+  let parkedRecoveryActive=false;
+  const parkedRecovery=setInterval(()=>{
+    if(draining||parkedRecoveryActive)return;
+    parkedRecoveryActive=true;
+    void claimAdoptableExecutions({instanceId,isOwnerAlive:isProcessIdentityAlive,onlyParked:true})
+      .then(found=>{
+        for(const adoption of found.adopted)runAdopted(adoption);
+        for(const held of found.held)watchHeldExecution(held,{stopped:()=>draining,adopt:runAdopted,
+          interrupt:(turnId,reason)=>{interruptOrphanedTurn(turnId,instanceId,reason);queue.wake();}});
+      }).catch(error=>log('error','parked_execution_recovery_failed',errorFields(error)))
+      .finally(()=>{parkedRecoveryActive=false;});
+  },60_000);
+  parkedRecovery.unref?.();
   recoverUnsettledSteeringMessages(isProcessIdentityAlive);
   recoverTurnArtifactDeliveryClaims(isProcessIdentityAlive);
   const activeTurnIds=()=>[...new Set([...registry.activeTurns,...queue.activeTurns,...active])];
@@ -176,7 +189,7 @@ export async function startSessionRuntime() {
     .catch(error=>log('error','inbox_entry_index_warm_failed',errorFields(error)));
   let stopping:Promise<void>|null=null;
   const stop=()=>stopping??=(async()=>{
-    draining=true;clearInterval(globalPauseReconcile);clearInterval(ghostSweep);clearSandboxReadyReceipt(runtime);stopUsageWatch();stopBackgroundJobWatch();stopUpdateWaitWatch();stopWatchWorker();stopAuthWatch();detach();detachProjection();queue.stop();await communication.stop();await codexSessionObserver?.stop();
+    draining=true;clearInterval(globalPauseReconcile);clearInterval(ghostSweep);clearInterval(parkedRecovery);clearSandboxReadyReceipt(runtime);stopUsageWatch();stopBackgroundJobWatch();stopUpdateWaitWatch();stopWatchWorker();stopAuthWatch();detach();detachProjection();queue.stop();await communication.stop();await codexSessionObserver?.stop();
     // A hosted agent keeps working through this exit; the next coordinator takes it back.
     const hosted=hostedTurns(active);
     for(const turnId of active){

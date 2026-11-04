@@ -34,6 +34,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - Protected agent code launches hide the live ledger and its disk image while allowing Thinkering's
   phone-width release check to mount its read-only data view. The
   [deployment runbook](docs/runbooks/DEPLOYMENT.md) owns the isolation contract.
+- Hosted run adoption and parked-run recovery follow the
+  [execution host](docs/architecture/EXECUTION-HOST.md) contract; never reset their ledger status by hand.
 - Keep credentials and private dialogue out of unrelated prompts, logs and public
   artifacts. Preserve the authenticated data and capability boundaries in
   [session ownership](docs/architecture/SESSION-OWNER.md) and

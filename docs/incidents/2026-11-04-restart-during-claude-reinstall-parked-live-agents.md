@@ -31,7 +31,7 @@ ever takes a parked run with a live host back.
 Commit 6c9b01f2 (PR 418): adoption no longer resolves the Claude CLI or re-runs the Google CLI
 check; only a launch does.
 
-Not yet done (needs its own change): taking back the runs already parked. At the time of writing,
+The first repair did not take back the runs already parked. At the time of that repair,
 18 parked turns had a live host and no later turn in their session (20606, 20615, 20620, 20704,
 20706, 20736, 20737, 20739, 20744, 20753, 20759, 20760, 20761, 20764, 20769, 20770, 20772, 20777).
 Simply setting them back to `running` before `claimAdoptableExecutions` is not safe: the failed
@@ -41,6 +41,15 @@ conflict"). Five sessions (turns 20629, 20690, 20720, 20779, 20784) already star
 while the earlier agent still runs in the same Claude conversation; those old agents are a
 second writer to that conversation and should be stopped or explicitly settled. The launch case
 (a fresh run finding no CLI mid-reinstall) still fails its turn instead of retrying.
+
+The follow-up recovery takes back a parked native turn when its host answers or has a recorded
+exit and no later turn was admitted to the provider in that session. It retains the original run
+and dispatch attempt and gives recovered run and terminal facts distinct identities that survive
+another Concierge restart. Queued later turns wait; a recovered answer raises fresh attention.
+Older parked turns with admitted later turns
+are excluded from adoption; their hosts are stopped and their old turns marked interrupted after
+provider exit, keeping the later turn in place. Concierge rechecks parked custody each minute
+while online, so another parked live host does not wait for a restart.
 
 ## Acceptance scenario
 
