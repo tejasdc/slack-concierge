@@ -25,7 +25,11 @@ deadline expires, Concierge records the terminal observation and the next watch 
 transaction, before delivering the wake. The next watch starts from the observed file version and
 has a fresh deadline. A cancelled watch never renews; cancelling an earlier watch in the series
 cancels its current successor. One active renewing watch per session and file is enforced by the
-ledger. Thus an interrupted agent turn cannot leave a standing condition unwatched, and no model
+ledger. A Codex session that continues a Claude session's work after Claude usage ran out shares
+that session's renewing watches: the original keeps the series, its wakes move to the Codex
+session with the rest of the held work, and a renewing registration from either side returns the
+existing watch (with `heldBy` naming the other session) instead of starting a second series that
+would wake both for one change. Thus an interrupted agent turn cannot leave a standing condition unwatched, and no model
 runs between observations. The deadline still wakes the model for a missed-change check; choose
 the longest acceptable fallback interval because every expiry spends one turn. The thread reader
 uses six hours. This option does not claim that a change made and undone during an observation gap
