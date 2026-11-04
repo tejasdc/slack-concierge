@@ -3,7 +3,7 @@ import {db,type SessionRow} from './state';
 import {getAcceptedSessionInput,recordSessionEvent,sessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {log} from './log';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
-import {inboxRequestRoot,routeTitle,topicRouteAnchor} from './inbox-request-root';
+import {inboxRequestRoot,requestPromptInputId,routeTitle,topicRouteAnchor} from './inbox-request-root';
 import {firstInboxAcceptanceSql} from './inbox-message-identity';
 import type {ProviderHistoryMessage} from './provider-history';
 import {retainedReplyTarget} from './inbox-reply-lineage';
@@ -158,6 +158,8 @@ export function inboxMessage(row:any) {
   const closingLine=post?answerClosingLine(db,row.session_id,row.event_id,eventPayload.answersQuestion===true):null;
   const routes=row.input_id&&!agent?messageDeliveryReceipts(db,row.input_id):[];
   const requestContent=request?threadRequestDisplay(db,eventPayload):'';
+  const promptInputId=request&&typeof eventPayload.requestId==='string'
+    ?requestPromptInputId(db,eventPayload.requestId,row.session_id):null;
   return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(threads?.mixedThreads?{mixedThreads:true}:{}),...(threads?.answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
     ...(typeof (post?eventPayload.messageThreadRootId:payload.messageThreadRootId)==='string'?{messageThreadRootId:post?eventPayload.messageThreadRootId:payload.messageThreadRootId}:{}),
     ...(routes.length?{routedTo:routes[0],routedToAll:routes}:{}),
@@ -170,6 +172,7 @@ export function inboxMessage(row:any) {
     ...(!agent&&remoteAgent?{author:{kind:'agent' as const,session:authorSessionOf(db,`mac:${remoteAgent.sessionId}`),
       inputId:remoteAgent.inputId,runId:remoteAgent.runId}}:{}),
     ...(request?{author:{kind:'agent' as const,session:authorSessionOf(db,`concierge:${row.session_id}`),communication:'request' as const,requestId:eventPayload.requestId},
+      ...(promptInputId?{promptInputId}:{}),
       ...(displayedRoot!==row.event_id?{replyToMessage:{kind:'message' as const,sessionId:`concierge:${row.session_id}`,messageId:displayedRoot}}:{})}:{}),
     ...(result&&typeof payload.messageThreadRootId==='string'&&row.input_id?{replyToMessage:{kind:'message' as const,sessionId:`concierge:${row.session_id}`,messageId:row.input_id}}:{}),
     ...(post?{replyToMessage:displayedRoot!==row.input_id?{kind:'message' as const,sessionId:`concierge:${row.session_id}`,messageId:displayedRoot}:eventPayload.replyToMessage,author:{kind:(eventPayload.postedBy==='service'?'service':'agent') as 'service'|'agent',communication:'post' as const,
