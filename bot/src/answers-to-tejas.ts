@@ -2,6 +2,7 @@ import { db } from './state';
 import { approvalDecision, decisionRecord, decisionSection } from './decision-approval';
 import { getAcceptedSessionInput, humanAuthored, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
 import { deviceQuestionNamesPhysicalPrerequisite } from './agent-reachable-app-question';
+import { fragmentReason } from './answer-line';
 
 /**
  * What an agent must attach before something reaches Tejas as a question or as "done".
@@ -82,7 +83,8 @@ function quoteVerdict(actorInputId: string, quote: string): Verdict {
  * The question as he will read it: the agent's question, then his words and why they leave it
  * open. Refuses when either field is missing or the quoted words are not his.
  */
-export function questionForTejas(input: { actorInputId: string; question: string; hisWords?: string; whyNotAnswered?: string; onlyHeCan?: string; decisionId?: string; approvalAction?: string }): string {
+export function questionForTejas(input: { actorInputId: string; question: string; decide?: string; hisWords?: string; whyNotAnswered?: string; onlyHeCan?: string; decisionId?: string; approvalAction?: string }): string {
+  const decide = requireDecideLine(input.decide);
   const kind = requireOnlyHeCan(input.onlyHeCan);
   if(kind==='device'&&!deviceQuestionNamesPhysicalPrerequisite(input.question))
     throw new Error('Only-he-can device questions ask for one action on a physical device in their first sentence, such as "Please unlock your iPhone." or "Can you unlock your Mac so I can continue?"; later sentences may only state what you saw or will do, never ask him for more. Try the available agent route first, then explain in --why-not-answered why only Tejas can take this step.');
@@ -91,7 +93,32 @@ export function questionForTejas(input: { actorInputId: string; question: string
   const decision = kind === 'approval' ? approvalDecision(input.decisionId, input.approvalAction) : undefined;
   const { hisWords, why } = requireHisWords(input, QUESTION_FIELDS_REQUIRED, decision);
   const citation = decision ? `\nRequired by permanent decision: ${decision} (${input.approvalAction})` : '';
-  return `${input.question.trim()}\n\n${hisWordsLine(hisWords, why)}\nOnly you can: ${ONLY_HE_CAN[kind]}${citation}`;
+  const details = input.question.trim();
+  const body = details && normalized(details) !== normalized(decide) ? `${decide}\n\n${details}` : decide;
+  return `${body}\n\n${hisWordsLine(hisWords, why)}\nOnly you can: ${ONLY_HE_CAN[kind]}${citation}`;
+}
+
+/** About what a Lock Screen shows of a notice before it is opened. */
+export const DECIDE_LINE_LIMIT = 240;
+const DECIDE_REQUIRED =
+  'A question to Tejas leads with one line saying what he must decide and the result it depends on; that line is the start of his phone notice. '
+  + `Add --decide "<one line, at most ${DECIDE_LINE_LIMIT} characters, e.g. 'Class was not cancelled (inside the 1-hour cutoff): ask the front desk to waive the fee?'>". `
+  + 'Background and other news go in the text after it.';
+
+/**
+ * The line his notice opens with. On 2026-11-02 a decision reply's whole 729-character text became
+ * the notice, and it opened with an unrelated email paragraph: the class result and the choice he had
+ * to make came only past what his Lock Screen showed. A thread question already has its own
+ * `decision` line; this gives replies and needs_you outcomes the same.
+ */
+export function requireDecideLine(value: unknown): string {
+  const line = typeof value === 'string' ? value.trim() : '';
+  if (!line) throw new Error(DECIDE_REQUIRED);
+  if (/\n/.test(line)) throw new Error(`--decide is one line; put everything after it in the text. ${DECIDE_REQUIRED}`);
+  if (line.length > DECIDE_LINE_LIMIT) throw new Error(`--decide is ${line.length} characters; his Lock Screen shows about ${DECIDE_LINE_LIMIT}. Shorten it to what he must decide and the result it depends on, and put the rest in the text.`);
+  const fragment = fragmentReason(line);
+  if (fragment) throw new Error(`--decide ${fragment}`);
+  return line;
 }
 
 /** The kind of thing only he can do; anything else is refused with the list. */

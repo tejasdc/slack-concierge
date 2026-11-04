@@ -848,7 +848,7 @@ export class SessionCommunicationCoordinator {
         })();
     }
     /** A live session declares its turn's outcome as a retained, retry-safe action. */
-    outcome(input:{source:CommunicationSource;action_id:string;outcome:DeclaredTurnOutcome;text?:string;quiet_because?:string;his_words?:string;why_not_answered?:string;only_he_can?:string;decision_id?:string;approval_action?:string}) {
+    outcome(input:{source:CommunicationSource;action_id:string;outcome:DeclaredTurnOutcome;text?:string;quiet_because?:string;decide?:string;his_words?:string;why_not_answered?:string;only_he_can?:string;decision_id?:string;approval_action?:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.actor(input.source);action(input.action_id);
         if(!actor.inputId)throw new Error('Outcome requires an exact native source input and run.');
@@ -856,10 +856,10 @@ export class SessionCommunicationCoordinator {
         const stated=typeof input.text==='string'?input.text.trim():'';
         if(input.outcome==='done'&&input.text!==undefined)throw new Error('done takes no text.');
         if(input.outcome!=='done'&&!stated)throw new Error(`${input.outcome} requires text.`);
-        if(input.outcome!=='needs_you'&&(input.his_words!==undefined||input.why_not_answered!==undefined||input.only_he_can!==undefined||input.decision_id!==undefined||input.approval_action!==undefined))
+        if(input.outcome!=='needs_you'&&(input.decide!==undefined||input.his_words!==undefined||input.why_not_answered!==undefined||input.only_he_can!==undefined||input.decision_id!==undefined||input.approval_action!==undefined))
             throw new Error('Question fields belong to needs_you: they say why only he can answer.');
         const content=input.outcome==='needs_you'
-            ?questionForTejas({actorInputId:actor.inputId,question:stated,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can,decisionId:input.decision_id,approvalAction:input.approval_action}):stated;
+            ?questionForTejas({actorInputId:actor.inputId,question:stated,decide:input.decide,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can,decisionId:input.decision_id,approvalAction:input.approval_action}):stated;
         const quiet=typeof input.quiet_because==='string'?input.quiet_because.trim():'';
         if(quiet&&input.outcome!=='done')throw new Error('--quiet-because belongs to done: it says why he need not read the answer.');
         const routed=turnRoutedInput(db,actor.session,actor.turn,actor.inputId);
@@ -1709,6 +1709,8 @@ export class SessionCommunicationCoordinator {
         files?:AttachedFile[];
         his_words?:string;
         why_not_answered?:string;
+        /** The one line his notice opens with: what he must decide and the result it depends on. */
+        decide?:string;
         only_he_can?:string;
         decision_id?:string;
         approval_action?:string;
@@ -1736,7 +1738,7 @@ export class SessionCommunicationCoordinator {
         // What the requester, and through it Tejas, reads: a decision carries his words and why
         // they leave it open; completed work carries what was checked live. Folded into the words
         // so every path that carries a reply (a return, a peer, a digest) carries them too.
-        const asksHim=input.his_words!==undefined||input.why_not_answered!==undefined||input.only_he_can!==undefined||input.decision_id!==undefined||input.approval_action!==undefined;
+        const asksHim=input.decide!==undefined||input.his_words!==undefined||input.why_not_answered!==undefined||input.only_he_can!==undefined||input.decision_id!==undefined||input.approval_action!==undefined;
         // "Could not finish" that names what only he can do is waiting on him, not finished: it is
         // recorded as the question it is, so it reaches his device. A failed reply files only a quiet
         // reading item, and that is how the Uber Eats agent's photo request reached nobody (2026-11-02).
@@ -1814,7 +1816,7 @@ export class SessionCommunicationCoordinator {
         }
         const outsideRequest=!!db.query('SELECT 1 FROM session_external_requests WHERE request_id=?').get(input.request_id);
         if(input.workDisposition==='needs_decision'&&!outsideRequest)
-            input={...input,text:questionForTejas({actorInputId:input.source.input_id??'',question:input.text,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can,decisionId:input.decision_id,approvalAction:input.approval_action})};
+            input={...input,text:questionForTejas({actorInputId:input.source.input_id??'',question:input.text,decide:input.decide,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can,decisionId:input.decision_id,approvalAction:input.approval_action})};
         else if(input.workDisposition==='completed')
             input={...input,reply_body:input.text,text:completionWithCheck({text:input.text,checked:input.checked,notChecked:input.not_checked,allDone:input.all_done})};
         if(outsideRequest)
