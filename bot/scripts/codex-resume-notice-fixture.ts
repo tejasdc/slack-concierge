@@ -14,7 +14,7 @@ const { runCodexTurn } = await import("../src/codex");
 const { noticeCodexResumeWait } = await import("../src/codex-resume-health");
 const { pendingRepairNotices } = await import("../src/repair-notices");
 
-const ledger = new Database(":memory:");
+const ledger = new Database(':memory:');
 let answerResume!: () => void;
 const notifications = new Set<(event: any) => void>();
 const requests: string[] = [];
