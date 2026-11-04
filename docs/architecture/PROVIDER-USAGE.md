@@ -165,13 +165,17 @@ credential in memory. A failed activation leaves the queue untouched. Claude's m
 Keychain login uses the existing sign-in activation path and Keychain change event.
 
 A signed-out account gets one renewal request to the Mac's browser agent per episode
-(`bot/src/signin-renewal.ts`). After the agent answers without finishing (failed or
-needs_decision), no new request goes out for that account for six hours: on 2026-11-03
-Claude refused the approval with "Couldn't verify your browser" and the old half-hour
-episode sent a second request 30 minutes later, switching his Chrome's claude.ai account
-again. While the last stored reading shows the account's weekly allowance used up with its
-reset more than an hour away, no renewal starts at all, because signing in gives it no room;
-the background check asks again within the hour before the reset. The agent is told to switch
+(`bot/src/signin-renewal.ts`). After the agent answers failed, no new request goes out for
+that account for six hours from when Concierge first sees that answer (neither request table
+records when an answer arrived, and a sleeping Mac can answer hours late, so the first sighting
+is stamped in `signin_renewal_failures`): on 2026-11-03 Claude refused the approval with
+"Couldn't verify your browser" and the old half-hour episode sent a second request 30 minutes
+later, switching his Chrome's claude.ai account again. A needs_decision answer does not hold,
+because it asks him to fix Chrome's own sign-in and a renewal should follow once he has. While
+the last stored reading shows a Claude account's weekly allowance used up with its reset more
+than an hour away, no renewal starts at all, because signing in gives it no room; the background
+check asks again within the hour before the reset. Codex is not deferred this way, because a
+Codex account at 100% can still run on credits or spend a banked reset. The agent is told to switch
 the provider site in his Chrome back to the account it found there when it finishes or gives
 up, and not to approve again after a browser-verification refusal.
 
