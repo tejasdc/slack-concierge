@@ -764,7 +764,10 @@ db.exec(`CREATE TABLE IF NOT EXISTS executions (
   created_at_ms INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS executions_open ON executions(turn_id) WHERE state IN ('intended','live','exited');`);
+CREATE INDEX IF NOT EXISTS executions_open ON executions(turn_id) WHERE state IN ('intended','live','exited');
+-- Joins from a turn to its execution attempt; without it SQLite built a temporary index over every
+-- execution on each ghost-turn sweep (2026-11-04).
+CREATE INDEX IF NOT EXISTS executions_turn ON executions(turn_id,dispatch_attempt);`);
 addColumn('executions','adopted_live','adopted_live INTEGER NOT NULL DEFAULT 0');
 addColumn('executions','host_digest','host_digest TEXT');
 db.exec("CREATE INDEX IF NOT EXISTS executions_survival ON executions(provider,supervisor) WHERE adopted_live=1 AND state='released'");
@@ -1715,6 +1718,8 @@ export function isTurnArtifactStagingCleanupComplete(turnId: number) {
  * Introduced after the 2026-10-08 incident where five such ghosts held 20 queued turns for 1-2
  * hours and nearly caused a Codex-app-server restart for the wrong reason.
  */
+// Reads only running turns through their partial index: the sweep runs on every recovery pass, and
+// reading each turn's status walked every turn's stored text, twice a minute in busy periods (2026-11-04).
 export function listGhostRunningTurnsForOwner(ownerInstanceId: string, maxAgeMs: number): RecoverableTurnRow[] {
   return db.query(`
     SELECT t.id, t.session_id, s.slack_channel_id, s.slack_thread_ts,
@@ -1724,11 +1729,11 @@ export function listGhostRunningTurnsForOwner(ownerInstanceId: string, maxAgeMs:
            t.progress_stream_ts, t.progress_stream_state, t.progress_activity_id, t.stop_requested_at, t.dispatch_attempt,
            t.owner_instance_id, p.pid AS owner_pid, p.boot_id AS owner_boot_id,
            p.process_start_ticks AS owner_process_start_ticks
-    FROM turns t
+    FROM turns t INDEXED BY turns_session_active
     JOIN sessions s ON s.id=t.session_id
     LEFT JOIN process_instances p ON p.instance_id=t.owner_instance_id
     LEFT JOIN executions e ON e.turn_id=t.id AND e.dispatch_attempt=t.dispatch_attempt
-    WHERE t.status='running'
+    WHERE t.status IN ('running','delivering') AND t.status='running'
       AND t.owner_instance_id=?
       AND e.execution_id IS NULL
       AND (CAST(strftime('%s', 'now') AS INTEGER) - CAST(strftime('%s', t.started_at) AS INTEGER)) * 1000 >= ?
