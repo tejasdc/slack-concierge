@@ -514,8 +514,9 @@ The owner clamps a read or dismiss generation to the session's own attention cou
   summary` lets the asker see only it. See [exchange kinds](../plans/2026-10-08-exchange-kinds.md).
 
 - **One agent event occupies one thread row.** Progress from one agent run with the same words,
-  files and answer status reuses the first post across requests in a topic. A stopped or prompt
-  overdue turn has one service post across those requests. Each request keeps its own event,
+  files and answer status reuses the first post across requests in a topic. A stopped
+  turn has one service post across those requests; timer events stay in the request ledger and
+  agent return path without posting in Tejas's thread. Each request keeps its own event,
   reminder, answer obligation and final disposition. A bodyless final still closes against that
   request's prompt-answer event, even when another request carried the visible post. Distinct
   closing facts remain append-only and appear beneath that shared post. Mac replies
