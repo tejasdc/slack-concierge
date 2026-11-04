@@ -32,6 +32,19 @@ forwarding. Suppress a router's second conversation result only when its turn ha
 routing evidence and explicitly declared `done`; require an explicit thread post for a
 substantive response. Reconcile previously prepared `done` results.
 
+The marked outside-agent capture `capture:30d252f2bf14414b96b246e50588ab6b85e060b6e9321e9a3c8f2b770a0a3859`
+exposed two more cases before final acceptance. Its router turn had already declared `done`
+for an earlier queued input, then placed this capture in a test topic, routed it to a second
+test topic, and sent request `1fb49e0d-d9a8-424e-8ba4-9d18edb56b03` to a test Codex
+recipient. A second `done` for the capture was correctly refused as one outcome already
+belonged to the turn, but the agent-thread obligation also refused a route-only `done`
+until the router added `post:572b7668` to the test thread. The visible handoff already
+answers where this capture went. A routed agent-authored source now satisfies that obligation
+when the declared outcome is `done`; genuine answers and questions still require a post.
+The closing result filter now looks for routing evidence anywhere in the same turn, because
+the result is bound to its opening input while later accepted inputs can supply the routed
+source. Source attachments remain tied to each exact routed message.
+
 ## Acceptance scenario
 
 - **Seed:** A marked agent test capture in a test topic, sent to an existing agent, a new session,

@@ -12,7 +12,7 @@ import { requestIdFor as peerRequestId } from './session-peers';
 import { expireQuestionsForFinalReply, fileWorkerNeedInThread, invalidateTopicRoots, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordRequesterDecisionReturn, recordTurnOutcome, turnDeclaredByAction, withdrawOpenNeed, type DeclaredTurnOutcome } from './session-turn-outcome';
-import {turnRoutedHumanInput} from './inbox-routing-result';
+import {turnRoutedInput} from './inbox-routing-result';
 import {sessionAuthor} from './session-message-author';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
@@ -787,7 +787,7 @@ export class SessionCommunicationCoordinator {
             ?questionForTejas({actorInputId:actor.inputId,question:stated,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can,decisionId:input.decision_id,approvalAction:input.approval_action}):stated;
         const quiet=typeof input.quiet_because==='string'?input.quiet_because.trim():'';
         if(quiet&&input.outcome!=='done')throw new Error('--quiet-because belongs to done: it says why he need not read the answer.');
-        const routed=turnRoutedHumanInput(db,actor.session,actor.turn,actor.inputId);
+        const routed=turnRoutedInput(db,actor.session,actor.turn,actor.inputId);
         // Silence about his own message is never the router's judgement alone: `done` on a turn
         // that answers something he sent needs a reason unless the route receipt is the answer.
         if(input.outcome==='done'&&!quiet&&answersHisOwnMessage(actor.session,actor.inputId)&&!routed)throw new Error(QUIET_REASON_REQUIRED);
@@ -798,7 +798,10 @@ export class SessionCommunicationCoordinator {
         // post: its closing text never shows there, so an outcome declared without a post
         // would leave the answer nowhere he looks (2026-09-24, two hours).
         const owed=threadOwedByTurn(getSessionById(actor.session)!,actor.inputId);
-        if(owed&&input.outcome!=='failed'&&!turnPostedInto(actor.session,actor.turn,owed))
+        // A route-only close already appears on that agent-authored source message as a
+        // handoff. The ordinary owed-post rule still protects answers and questions.
+        if(owed&&input.outcome!=='failed'&&!(input.outcome==='done'&&routed)
+            &&!turnPostedInto(actor.session,actor.turn,owed))
             throw new Error(`This turn answers another agent's message in a thread, and its closing text never shows there. Post the answer first: sessions post --thread ${owed} --action-id <A> -- <the answer for Tejas>. Then declare the outcome.`);
         return db.transaction(()=>{
             this.actor({input_id:actor.inputId,run_id:nativeRunId(actor.turn)});

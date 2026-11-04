@@ -10,7 +10,7 @@ import {retainedReplyTarget} from './inbox-reply-lineage';
 import {messageDeliveryReceipts,messageRouteReceipts} from './message-route-receipts';
 import {authorSessionOf} from './session-presence';
 import {threadRequestDisplay} from './thread-request-display';
-import {routedHumanResultSql} from './inbox-routing-result';
+import {routedTurnResultSql} from './inbox-routing-result';
 import type {InboxProducerKind} from './inbox-producer-sources';
 
 export type InboxCapture = {
@@ -90,7 +90,7 @@ const inboxRowsWhere=(closures:boolean,activity=false)=>` WHERE (${activity?"(ev
     AND NOT (event.kind IN ('accepted','result') AND COALESCE(input.origin='agent' AND input.request_id IS NOT NULL,0))
     -- Routing belongs to his source message's handoff. The router's closing narration is
     -- retained in its turn, never projected as a second conversation reply.
-    AND NOT (${routedHumanResultSql})
+    AND NOT (${routedTurnResultSql})
     -- A turn that said nothing of its own is not a message: its thread shows no reply rather
     -- than a sentence nobody wrote. A result that carries files is still a message.
     AND (event.kind<>'result' OR COALESCE(json_extract(event.payload_json,'$.text'), turn.agent_text, '')<>'' OR json_array_length(COALESCE(json_extract(event.payload_json,'$.attachments'),'[]'))>0)

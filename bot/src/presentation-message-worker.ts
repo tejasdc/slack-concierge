@@ -8,7 +8,7 @@ import {canceledRequestNotice,inboxRootResolver,sourceMessagePage} from './prese
 import {PreparedSearchIndex} from './prepared-search';
 import {sessionCatalogueLabels} from './session-labels';
 import {preparedInboxDisplay} from './presentation-inbox-display';
-import {routedHumanResultSql} from './inbox-routing-result';
+import {routedTurnResultSql} from './inbox-routing-result';
 import {PreparedSessionCards} from './prepared-session-cards';
 import {PreparedReceipts} from './prepared-receipts';
 import {PreparedTopics} from './prepared-topics';
@@ -589,7 +589,7 @@ async function upgradeRoutingResultVisibility(generation:number){
     if(!rows.length)break;
     const hidden=rows.filter(row=>!!source.query(`SELECT 1 FROM session_owner_events event
       LEFT JOIN session_inputs input ON input.id=event.input_id
-      WHERE event.sequence=? AND ${routedHumanResultSql}`).get(row.sequence));
+      WHERE event.sequence=? AND ${routedTurnResultSql}`).get(row.sequence));
     prepared.transaction(()=>{
       keepLease();
       for(const row of hidden){
@@ -789,7 +789,7 @@ async function catchUp() {
         if(!prior)continue;
         const hidden=source.query(`SELECT 1 FROM session_owner_events event
           LEFT JOIN session_inputs input ON input.id=event.input_id
-          WHERE event.sequence=? AND ${routedHumanResultSql}`).get(row.sequence);
+          WHERE event.sequence=? AND ${routedTurnResultSql}`).get(row.sequence);
         if(hidden){
           prepared.query('DELETE FROM presentation_messages WHERE generation=? AND event_sequence=?').run(current.generation,row.sequence);
           prepared.query('DELETE FROM presentation_message_display WHERE generation=? AND event_sequence=?').run(current.generation,row.sequence);
