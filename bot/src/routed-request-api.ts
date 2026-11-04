@@ -129,6 +129,9 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'move') return Response.json(sessions.move(input));
         if (operation === 'post') return Response.json(withLinkCheck(sessions.post(input),input,owner));
         if (operation === 'outcome') return Response.json(sessions.outcome(await withTodoState(input)));
+        if (operation === 'answer') return Response.json(sessions.handleChatGptAnswer(input));
+        if (operation === 'legacy-link') return Response.json(sessions.classifyLegacyChatGpt(input));
+        if (operation === 'chatgpt-recover') return Response.json(await sessions.recoverChatGptNeverSent(input));
         if (operation === 'attention-withdraw') return Response.json(sessions.withdrawAttention(input));
         if (operation === 'thread') return Response.json(sessions.thread(input));
         if (operation === 'topics') { await refuseFinishedTodoQuestions(input); return Response.json(sessions.topics(input)); }

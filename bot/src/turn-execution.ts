@@ -39,6 +39,7 @@ import {
   ProviderTurnCancelledError,
 } from "./provider-failures";
 import {queueTurnContinuation} from './session-inputs';
+import { ChatGptDispatchError } from './session-capability-client';
 import type { AgentProvider } from "./providers";
 import { slackCall } from "./rate-limit";
 import { CONCIERGE_SESSION_RESPONSE_CONTRACT } from "./response-contract";
@@ -1227,16 +1228,16 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         && isRefreshableAuthFailure(message)
         && !structuredFailure?.assistantOutput
         && (!dispatchBoundary.admissionIntended || structuredFailure?.terminalConfirmed === true);
-      // CHATGPT_NOT_SENT is written only when Thinkering restarted while this send waited its pacing
-      // turn: nothing reached ChatGPT. It is a place lost in a queue, not a failed attempt, so it never
-      // spends the retry budget (two queued sends were stopped after five restarts on 2026-10-13) and
-      // goes back in line after the ordinary short retry delay. An immediate requeue let the queue claim
-      // the turn again while its failed run still held it ("claimed twice locally", eleven ChatGPT turns
-      // on 2026-10-13). It can recur only once per Thinkering restart.
-      const chatgptPlaceLost = replaySafe && input.providerId === 'chatgpt' && message.includes('CHATGPT_NOT_SENT');
+      // NOT_SENT means a transient pre-Send wait or owner restart; the same run can stay
+      // queued without spending the provider retry budget. SEND_FAILED also proves no Send,
+      // but covers persistent sign-in and account failures. It must reach the finite breaker
+      // so the asking agent is told what failed while its exact answer duty remains open.
+      const chatgptNeverSent = replaySafe && input.providerId === 'chatgpt'
+        && error instanceof ChatGptDispatchError && !error.evidence.uncertain
+        && error.evidence.code === 'CHATGPT_NOT_SENT';
       const localPrerequisiteWait = replaySafe && structuredFailure?.localPrerequisiteUnavailable === true;
       let retryable = replaySafe
-        && (authWait || googleUsageWait || chatgptPlaceLost || localPrerequisiteWait || structuredFailure?.failureClass === "retryable" ||
+        && (authWait || googleUsageWait || chatgptNeverSent || localPrerequisiteWait || structuredFailure?.failureClass === "retryable" ||
           structuredFailure?.modelAtCapacity === true || heldUntilMs !== null || switchClaudeAccount);
       let policyRetryAtMs: number | null = null;
       // A rejected model is a property of this session's binding, not of the Google
@@ -1246,7 +1247,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // Sign-in and allowance holds have their own release signals, so they do not
       // consume a timed provider-request retry budget.
       if (replaySafe && !authWait && !googleUsageWait && heldUntilMs === null && !switchClaudeAccount &&
-        !invalidGoogleModel && !chatgptPlaceLost && !structuredFailure?.threadWriterConflict) {
+        !invalidGoogleModel && !chatgptNeverSent && !structuredFailure?.threadWriterConflict) {
         const failure = retryable
           ? { kind: 'transient' as const, reason: message, retryAtMs: heldUntilMs,
               restartSignal: 'the account answers or a retry is requested' }

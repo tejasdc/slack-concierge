@@ -57,6 +57,7 @@ import {sessionMessageMetadataProjection} from './session-message-metadata';
 import {acceptedInputAuthor,authorSession,sessionAuthor,withCurrentAuthors} from './session-message-author';
 import {localSessionNumber} from './peer-identity';
 import {humanAuthored,sessionInputProvenance} from './session-inputs';
+import {withdrawChatGptTasksForStoppedTurnByTejas} from './chatgpt-obligations';
 import {noticeTime} from './provider-free-notice';
 import {movedToCodex} from './provider-exhaustion-recovery';
 import {SIGNIN_WORKER,signInRenewalOf,signInWorkerActionId,signInWorkerText} from './signin-renewal';
@@ -428,6 +429,8 @@ export type SessionOwnerRuntime = {
   detail?(session:SessionRow,key:string):Promise<unknown>;
   artifact?(session:SessionRow,id:string):Promise<unknown>;
   recover?(session:SessionRow,operation:AcceptedSessionInput):Promise<void>;
+  requeueProvenUnsentChatGpt?(session:SessionRow,operation:AcceptedSessionInput):Promise<{status:'requeued'|'already_queued'|'already_running';runId:string}>;
+  proveRejectedChatGptAttachment?(session:SessionRow,operation:AcceptedSessionInput):Promise<{runId:string;reason:string;attachmentHashes:string[]}>;
   fork?(session:SessionRow,input:AcceptedSessionInput):void;
   bind?(session:SessionRow,operation:AcceptedSessionInput,reference:ChatGptBinding):Promise<{binding:ChatGptBinding}>;
   sources?:{search(input:any):Promise<any>;context(input:any):Promise<any>;import(input:any):Promise<any>;proof?(input:any):Promise<any>;history?(input:any):Promise<any>;historyMessage?(input:any):Promise<any>;refresh?():Promise<any>};
@@ -2773,6 +2776,8 @@ export class SessionOwner {
     })();
     try {
       const confirmed=await this.runtime.stop(session.id,turn.id);
+      if(confirmed)withdrawChatGptTasksForStoppedTurnByTejas({turnId:turn.id,humanInputId:operation.id,
+        actionId:actionId(input),now:Date.now()});
       db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(confirmed?{state:'running'}:{state:'uncertain',error:{code:'STOP_UNCONFIRMED',message:'Stop intent is retained; provider cancellation is not confirmed.'}}),operation.id);
     } catch(error) {
       db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'uncertain',error:{code:'STOP_UNCONFIRMED',message:error instanceof Error?error.message:String(error)}}),operation.id);
@@ -2837,6 +2842,23 @@ export class SessionOwner {
     }
     recordSessionEvent({eventId:`control:${operation.id}`,sessionId:session.id,inputId:operation.id,kind:'reconciled',payload:{operationId:target.id}});
     return {session:this.view(this.session(id)),operation:this.receipt(this.input(operation.id))};
+  }
+  /** Agent recovery is scoped by the communication owner's original request and accepted
+   * source before this method is reached. The browser owner supplies the no-send proof. */
+  async requeueProvenUnsentChatGpt(sessionId:number,inputId:string) {
+    const session=this.session(`concierge:${sessionId}`);
+    const operation=this.input(inputId);
+    if(operation.session_id!==session.id||session.provider_id!=='chatgpt'||!this.runtime.requeueProvenUnsentChatGpt)
+      throw new SessionOwnerError('The original ChatGPT operation is unavailable for exact recovery.',409,'CAPABILITY_UNAVAILABLE');
+    return this.runtime.requeueProvenUnsentChatGpt(session,operation);
+  }
+  /** The caller separately verifies original request and obligation custody. */
+  async proveRejectedChatGptAttachment(sessionId:number,inputId:string) {
+    const session=this.session(`concierge:${sessionId}`);
+    const operation=this.input(inputId);
+    if(operation.session_id!==session.id||session.provider_id!=='chatgpt'||!this.runtime.proveRejectedChatGptAttachment)
+      throw new SessionOwnerError('The original ChatGPT operation is unavailable for attachment correction.',409,'CAPABILITY_UNAVAILABLE');
+    return this.runtime.proveRejectedChatGptAttachment(session,operation);
   }
   /** Every page states the ledger position it reflects, read before the page itself so
    * nothing recorded during the read is lost; a client upserts, so an overlap is harmless. */
@@ -4150,7 +4172,9 @@ export class SessionOwner {
           else if(request.method==='POST'&&parts[3]==='outcome'&&parts.length===4)result=this.projectSetup.pushed(parts[2]!,body);
           else throw new SessionOwnerError('Unknown peer operation route.',404);
         }
-        else if(request.method==='POST'&&parts[1]==='requests'&&parts.length===2)result=peers.accept(body);
+        else if(request.method==='POST'&&parts[1]==='requests'&&parts.length===2)result=await peers.accept(body,false);
+        else if(request.method==='POST'&&parts[1]==='requests'&&parts[2]==='corrected-attachment'&&parts.length===3)
+          result=await peers.accept(body,true);
         else if(request.method==='GET'&&parts[1]==='requests'&&parts.length===3)result=peers.status(parts[2]!);
         else if(request.method==='POST'&&parts[1]==='requests'&&parts[3]==='replies'&&parts.length===4)result=peers.receiveReply(parts[2]!,body);
         else if(request.method==='POST'&&parts[1]==='requests'&&parts[3]==='notify'&&parts.length===4)result=await peers.notified(parts[2]!);

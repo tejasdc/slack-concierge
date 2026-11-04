@@ -61,6 +61,10 @@ server remains the way in. Design notes: `bot/src/outside-codex.ts`.
 Add `--return-to-requester` only when the requesting agent needs its own final or failure
 input to continue. The choice is retained with the request and works for local and peer
 recipients. Requests without a thread retain their ordinary agent-to-agent return.
+For a ChatGPT question in a named thread, `--return-to-requester` is required:
+the asking agent must receive the exact answer and record how it handled it
+before its task can finish. The owner refuses a threaded ChatGPT ask without
+that return.
 `sessions get` still exposes every retained reply, outcome and attachment.
 
 ## Waiting for a local process
@@ -619,8 +623,13 @@ and `target_input_id`. Use an existing discovered address when the user selected
 an existing conversation. An unavailable capability returns a durable failure;
 an uncertain start retains its evidence. Neither substitutes another provider
 nor creates a replacement session on retry. ChatGPT returns through the service;
-it receives no outbound session tool. Ordinary-language interpretation remains
-in the existing application instructions, with no second intent recognizer.
+it receives no outbound session tool. The asking agent selects the exact task
+with `--for-task` when the source is a human input or holds several tasks. The
+return includes the exact `sessions answer` command and answer event ID. A
+failed or ambiguous attempt leaves the question open for exact receipt
+recovery. See [ChatGPT answer obligations](../architecture/CHATGPT-ANSWER-OBLIGATIONS.md).
+Ordinary-language interpretation remains in the existing application
+instructions, with no second intent recognizer.
 
 The helper performs one `POST /session-communication/<command>` through
 `requests.sock` beside `CONCIERGE_STATE_DB`, using the existing socket resolver.
