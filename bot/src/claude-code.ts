@@ -1074,9 +1074,12 @@ export async function runClaudeCodeTurn(input: {
   let stopTranscriptWatch = () => {};
   const startTranscriptWatch = (sessionUuid: string, fromStart: boolean) => {
     stopTranscriptWatch();
-    stopTranscriptWatch = watchClaudeTranscript({
-      sessionUuid, fromStart, environment: input.environment, onPickup: recordTranscriptPickup,
-    });
+    // A host on a runner has Claude's transcript on that machine; the runner follows it there.
+    const remote = (transport as { transcriptWatcher?: () => ((watch: { sessionUuid: string; fromStart: boolean; onPickup: (pickup: ClaudeTranscriptPickup) => void }) => () => void) | null })
+      .transcriptWatcher?.();
+    stopTranscriptWatch = remote
+      ? remote({ sessionUuid, fromStart, onPickup: recordTranscriptPickup })
+      : watchClaudeTranscript({ sessionUuid, fromStart, environment: input.environment, onPickup: recordTranscriptPickup });
   };
   // Stop is his, so it is available as soon as there is a writer, replay or not, and it closes
   // the input even if the interrupt could not be written (a full disk refuses the write).
