@@ -207,10 +207,32 @@ export function observedDatabase(database: Database): Database {
     statements.set(raw, proxy);
     return proxy;
   }
+  // Bun's own `query()` cache keeps 20 statements; the owner runs hundreds of distinct queries, so
+  // nearly every call re-prepared its statement and built a new row shape, two proxies and their
+  // closures. That garbage, about 50 statements a second, grew the owner from 0.5 to 1.5-4.5 GB
+  // several times a day until a full collection (heap census, 2026-11-04). This keeps every
+  // statement the program asks for by text, least recently used first out past the limit, which
+  // only SQL built from values (IN lists of varying length) can reach.
+  const prepared = new Map<string, any>();
+  const PREPARED_LIMIT = 2000;
+  const cachedQuery = (target: Database, sql: string) => {
+    const cached = prepared.get(sql);
+    if (cached) { prepared.delete(sql); prepared.set(sql, cached); return cached; }
+    const created = statement(observeSynchronousStorage('statement', () => fingerprintOf(sql), () => target.prepare(sql)), sql);
+    prepared.set(sql, created);
+    if (prepared.size > PREPARED_LIMIT) prepared.delete(prepared.keys().next().value!);
+    return created;
+  };
   return new Proxy(database, { get(target, property) {
     const value = Reflect.get(target, property, target);
-    if (property === 'query' || property === 'prepare')
+    if (property === 'query')
+      return (sql: string, ...args: any[]) => args.length
+        ? statement(observeSynchronousStorage('statement', () => fingerprintOf(sql), () => Reflect.apply(value, target, [sql, ...args])), sql)
+        : cachedQuery(target, sql);
+    if (property === 'prepare')
       return (sql: string, ...args: any[]) => statement(observeSynchronousStorage('statement', () => fingerprintOf(sql), () => Reflect.apply(value, target, [sql, ...args])), sql);
+    if (property === 'close')
+      return (...args: any[]) => { prepared.clear(); return Reflect.apply(value, target, args); };
     if (property === 'transaction')
       return (callback: Function, ...args: any[]) => {
         const phases = transactionPhaseTiming();
