@@ -2505,6 +2505,24 @@ export function reconcilePlacedRequestAnswers(onlyRequestId?:string):number {
   return reconciled;
 }
 
+/** Hide historical timer posts without deleting their request or post evidence. */
+export function retireTimedRequestPosts():number {
+  return db.transaction(()=>{
+    const posts=db.query(`SELECT post.event_id,post.input_id,post.session_id FROM session_owner_events post
+    WHERE post.kind='post' AND post.event_id LIKE 'post:forward:%'
+      AND NOT EXISTS (SELECT 1 FROM session_owner_events hidden WHERE hidden.event_id='post:collapse:' || post.event_id)
+      AND (EXISTS (SELECT 1 FROM session_communication_events event
+        WHERE event.event_id=substr(post.event_id,length('post:forward:')+1) AND event.kind='overdue')
+        OR EXISTS (SELECT 1 FROM session_peer_events event
+        WHERE event.event_id=substr(post.event_id,length('post:forward:')+1) AND event.kind='overdue'))`)
+      .all() as {event_id:string;input_id:string|null;session_id:number}[];
+    for(const post of posts)
+      recordSessionEvent({eventId:`post:collapse:${post.event_id}`,sessionId:post.session_id,inputId:post.input_id,
+        kind:'post_collapse',payload:{postId:post.event_id,reason:'A request timer is for agents, not the Inbox conversation.'}});
+    return posts.length;
+  })();
+}
+
 /** Retire duplicate presentation entries while keeping every request, reply and original post as evidence. */
 export function collapseDuplicateAnswerPosts(topicId:string,postIds:readonly string[]):number {
   if(postIds.length<2||new Set(postIds).size!==postIds.length)throw new Error('Name distinct answer posts.');

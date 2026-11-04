@@ -679,7 +679,7 @@ export class SessionPeers {
     updateSessionMetadata(session.id,{generation:(sessionMetadata(session).generation??0)+1});
     // Commit the thread post beside the reply, before any requester can run.
     const event=db.query('SELECT * FROM session_peer_events WHERE event_id=?').get(eventId) as PeerEventRow;
-    if(this.postThreadEvent(row,event,JSON.parse(event.payload_json))&&!returnsToRequester(row,event))
+    if((kind==='overdue'||this.postThreadEvent(row,event,JSON.parse(event.payload_json)))&&!returnsToRequester(row,event))
       db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=?").run(eventId);
     return eventId;
   }
@@ -976,6 +976,12 @@ export class SessionPeers {
       return;
     }
     const returnToRequester=returnsToRequester(row,event);
+    // The peer's timing event stays in the request ledger and agent return path.
+    // It never becomes a Service post in Tejas's thread.
+    if(event.kind==='overdue'&&!returnToRequester){
+      db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
+      return;
+    }
     const directPost=this.postThreadEvent(row,event,declared);
     // A progress note wakes nobody, from a peer as from this machine (see the coordinator's deliver).
     if(event.kind==='progress'){db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);return;}
@@ -1044,6 +1050,7 @@ export class SessionPeers {
     return !!root&&!!inbox&&!!sessionMetadata(inbox).inbox&&!!topicOfRoot(root);
   }
   private postThreadEvent(row:PeerRequestRow,event:PeerEventRow,declared:any):boolean {
+    if(event.kind==='overdue')return false;
     // A named thread receives the peer's own reply; requester delivery needs its own choice.
     const requestPayload=JSON.parse(row.payload_json);
     const forwarded=requestPayload.forwardedReply;

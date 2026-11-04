@@ -2078,7 +2078,7 @@ export class SessionCommunicationCoordinator {
         }
         // The thread uses the owner's event order, never the router's later execution order.
         const event=db.query('SELECT * FROM session_communication_events WHERE event_id=?').get(id) as EventRow;
-        if(this.postThreadEvent(request,event,JSON.parse(event.payload_json))&&!returnsToRequester(request,event))
+        if((kind==='overdue'||this.postThreadEvent(request,event,JSON.parse(event.payload_json)))&&!returnsToRequester(request,event))
             db.query("UPDATE session_communication_events SET status='received',error=NULL WHERE event_id=?").run(id);
         return id;
     }
@@ -2376,6 +2376,12 @@ export class SessionCommunicationCoordinator {
             return;
         }
         const returnToRequester=returnsToRequester(request,event);
+        // Timing is for the request ledger and agents. A named thread never receives
+        // a timer post, including overdue events retained before this release.
+        if(event.kind==='overdue'&&!returnToRequester){
+            db.query("UPDATE session_communication_events SET status='received',error=NULL WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
+            return;
+        }
         // A named thread is the result destination. A requester turn is a separately chosen effect.
         const alreadyPostedInThread=this.postThreadEvent(request,event,declared);
         // A progress note wakes nobody: it stays on the request, in the asker's record and in any
@@ -2465,6 +2471,7 @@ export class SessionCommunicationCoordinator {
         db.query("UPDATE session_communication_events SET status='uncertain',error='Legacy return delivery requires owner reconciliation; no effect has been replayed.' WHERE event_id=? AND status NOT IN ('received','uncertain')").run(event.event_id);
     }
     private postThreadEvent(request:RequestRow,event:EventRow,declared:any):boolean {
+        if(event.kind==='overdue')return false;
         const thread=this.threadAnswer(request,event,declared);
         const stoppedPost=declared.output?.stoppedBy==='tejas'&&this.postHisStop(request,event,declared);
         if(thread&&!stoppedPost)this.postThreadAnswer(request,event,declared,thread);
