@@ -1,7 +1,7 @@
 ---
 failure: A Concierge restart during a Claude Code reinstall marked 25 running agents as parked, so their sessions went idle while the agents kept working with no one listening and their replies were refused.
 date: 2026-11-04
-fix_commits: [6c9b01f2, c8efc5ff]
+fix_commits: [6c9b01f2, c8efc5ff, fccc0db5]
 cause_status: confirmed
 ---
 
