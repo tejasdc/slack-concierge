@@ -21,6 +21,15 @@ export function routeTitle(database:Database,topicId:string|null|undefined,sessi
   return local?.title??sessionId;
 }
 
+/** The input that caused a request, distinct from the older message named for its answer. */
+export function requestPromptInputId(database:Database,requestId:string,sourceSessionId:number):string|null {
+  const row=(database.query('SELECT source_input_id AS id FROM session_communication_requests WHERE request_id=? AND source_session_id=?')
+    .get(requestId,sourceSessionId)
+    ??database.query('SELECT source_input_id AS id FROM session_peer_requests WHERE request_id=? AND source_session_id=?')
+      .get(requestId,sourceSessionId)) as {id:string|null}|null;
+  return row?.id??null;
+}
+
 /** Thread custody discharges ordinary delivery; a final hand-back needs the asker to act. */
 export function returnsToRequester(request:{thread_root_input_id:string|null;payload_json:string},event?:{kind:string;payload_json:string}):boolean {
   const payload=JSON.parse(request.payload_json);

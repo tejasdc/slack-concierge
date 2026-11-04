@@ -73,6 +73,22 @@ test('a prompt answer followed by a bodyless final keeps one thread post with cl
     .toBe('Completed · Checked on the real system: the thread shows one answer.');
 });
 
+test('a reopened request keeps its new prompt distinct from the old answer address',async()=>{
+  const inbox=session(),inboxId=Number(inbox.session.id.slice(10));
+  updateSessionMetadata(inboxId,{inbox:true});
+  const current=run(),recipient=session();
+  const old='capture:old-request';
+  db.query('INSERT INTO session_inputs(id,session_id,scope,action_id,kind,origin,payload_json,receipt_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
+    .run(old,inboxId,'fixture','old-request','input','human',JSON.stringify({text:'October request'}),'{}','2026-10-10T00:00:00.000Z');
+  const request=await ask(current.source,recipient,'reopen-test',{summary:'Check the unfinished work',requestedEffect:'work'});
+  db.query('UPDATE session_communication_requests SET thread_root_input_id=? WHERE request_id=?').run(old,request.request_id);
+  const event=db.query("SELECT sequence,event_id FROM session_owner_events WHERE kind='request' AND json_extract(payload_json,'$.requestId')=?")
+    .get(request.request_id) as {sequence:number;event_id:string};
+  const display=preparedInboxDisplay(db,inboxId,event.sequence,event.event_id)!.preview;
+  expect(display).toMatchObject({promptInputId:current.source.input_id,
+    replyToMessage:{messageId:old},author:{communication:'request',requestId:request.request_id}});
+});
+
 test('the request owner accepts a bodyless final only after that request has a prompt answer',async()=>{
   session();const requester=run(),target=session(),worker=run();
   const request=await ask(requester.source,target,'prompt-request',{requestedEffect:'work'});
