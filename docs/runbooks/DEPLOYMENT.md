@@ -761,8 +761,25 @@ automatic copy (`state.pre-deployment-repair.<ms>.db` without a matching record)
 once a newer verified copy exists, since it can never be a rollback source; one newer than
 every verified copy, or still being published, is left alone. Before this, uncertified copies
 were never counted or removed, and seven from 2026-10-10 took the root disk under its 50 GB
-floor on 2026-10-12. Incident evidence and hand-made backups have other names and are never
-touched; insufficient space refuses the new backup instead of deleting the last recovery evidence.
+floor on 2026-10-12. Hand-made backups have other names and are never touched; insufficient
+space refuses the new backup instead of deleting the last recovery evidence.
+
+After an update is promoted healthy, the promoted release's `migrate-deployment-repair.js
+--retire-captured` retires local copies whose purpose has ended (2026-11-04: a 7.5 GB
+pre-repair copy and the 2.4 GB damaged ledger from the 2026-10-10 incident held the root
+disk at 89%). The off-box backup is `remote-box-backup.service` (nightly restic over
+`/root` and `/var/lib`; a night's snapshot is certain to last 14 days, monthly ones a
+year). Its last run counts only when it has finished successfully (inactive, exited after
+it started); a running unit already reads as success. An automatic pre-repair copy is
+removed once its file and verification record last changed before that run started, so
+the backup holds that same closed, verified copy: a healthy update has replaced the one it
+guarded. The backup's copy of the live ledger is read while the owner writes and is not
+treated as a substitute. A database copy kept as incident evidence under
+`<state>/incidents/<incident>/` is removed 14 days after it last changed, once that backup
+holds it; incidents record no closing, so the window stands in for one. The small exports
+beside it stay. When the backup's last run did not finish successfully, or cannot be read,
+nothing is retired. restic's partial-success exit (some files unreadable) counts as success
+in remote-box's backup script.
 A release whose migrator predates `--backup-if-needed` is copied unconditionally, as below.
 
 `bot/scripts/migrate-deployment-repair.ts --backup-only` opens the source read-only and
