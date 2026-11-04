@@ -761,8 +761,19 @@ automatic copy (`state.pre-deployment-repair.<ms>.db` without a matching record)
 once a newer verified copy exists, since it can never be a rollback source; one newer than
 every verified copy, or still being published, is left alone. Before this, uncertified copies
 were never counted or removed, and seven from 2026-10-10 took the root disk under its 50 GB
-floor on 2026-10-12. Incident evidence and hand-made backups have other names and are never
-touched; insufficient space refuses the new backup instead of deleting the last recovery evidence.
+floor on 2026-10-12. Hand-made backups have other names and are never touched; insufficient
+space refuses the new backup instead of deleting the last recovery evidence.
+
+After an update is promoted healthy, the promoted release's `migrate-deployment-repair.js
+--retire-captured` retires local copies whose purpose has ended (2026-11-04: a 7.5 GB
+pre-repair copy and the 2.4 GB damaged ledger from the 2026-10-10 incident held the root
+disk at 89%). An automatic pre-repair copy older than the start of the last successful
+nightly off-box backup (`remote-box-backup.service`, restic over `/root` and `/var/lib`,
+kept up to a year) is removed: a healthy update has replaced the one it guarded, and that
+backup holds a newer ledger. A database copy kept as incident evidence under
+`<state>/incidents/<incident>/` is removed after 14 days once that backup has captured it;
+the small exports beside it stay. When the backup's last run did not succeed, or cannot be
+read, nothing is retired.
 A release whose migrator predates `--backup-if-needed` is copied unconditionally, as below.
 
 `bot/scripts/migrate-deployment-repair.ts --backup-only` opens the source read-only and

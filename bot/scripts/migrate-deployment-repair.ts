@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from 'node:child_process';
@@ -96,6 +96,66 @@ const AUTOMATIC_COPY_BYTES = 12 * 1024 ** 3;
 function pruneAutomaticCopies(keep = AUTOMATIC_COPIES_KEPT): number {
   if (process.env.CONCIERGE_DEPLOYMENT_MIGRATION_BACKUP) return 0;
   return pruneVerifiedBackups(dirname(backupPath), keep, AUTOMATIC_COPY_BYTES);
+}
+
+/**
+ * When the host's nightly off-box backup (remote-box-backup, restic over /root and /var/lib) last
+ * started a run that succeeded, or null when that cannot be shown. A file written before that start
+ * is in that night's snapshot, which restic keeps for a year (monthly retention).
+ */
+function offBoxBackupCapturedBefore(): number | null {
+  const shown = spawnSync('systemctl', ['show', 'remote-box-backup.service', '--timestamp=unix',
+    '-p', 'Result', '-p', 'ExecMainStatus', '-p', 'ExecMainStartTimestamp'], { encoding: 'utf8' });
+  if (shown.status !== 0) return null;
+  const values = Object.fromEntries(shown.stdout.trim().split('\n').map(line => line.split('=')));
+  const started = /^@(\d+)$/.exec(values.ExecMainStartTimestamp ?? '')?.[1];
+  return values.Result === 'success' && values.ExecMainStatus === '0' && started ? Number(started) * 1000 : null;
+}
+
+/**
+ * Retires local ledger copies whose purpose has ended, run only after an update was promoted
+ * healthy. Nothing removed them otherwise: on 2026-11-04 a 7.5 GB pre-repair copy and the 2.4 GB
+ * damaged ledger kept from the 2026-10-10 incident held the root disk at 89%.
+ * - An automatic pre-repair copy guards the update that made it. Once a later healthy update is
+ *   promoted (this call) and the nightly off-box backup has captured a newer ledger, restoring the
+ *   copy would lose more work than restoring that backup, so it goes, verified or not.
+ * - A database copy kept as incident evidence (incidents/<incident>/*.db) stays 14 days, and
+ *   longer until the off-box backup has captured it; restic then keeps it for a year. The small
+ *   exports beside it (the reconciled rows) stay.
+ */
+const INCIDENT_COPY_DAYS = 14;
+function retireCapturedCopies(now = Date.now()) {
+  const capturedBefore = offBoxBackupCapturedBefore();
+  if (capturedBefore === null) return { offBoxBackup: null, removed: [] as string[] };
+  const removed: string[] = [];
+  const remove = (path: string) => {
+    for (const suffix of ['.verified.json', '-wal', '-shm', '-journal', '']) rmSync(path + suffix, { force: true });
+    removed.push(path);
+  };
+  const backups = dirname(backupPath);
+  for (const name of readdirSync(backups)) {
+    const stamp = /^state\.pre-deployment-repair\.(\d+)\.db$/.exec(name)?.[1];
+    if (!stamp || Number(stamp) >= capturedBefore || existsSync(join(backups, `${name}.publishing`))) continue;
+    remove(join(backups, name));
+  }
+  const incidents = join(stateDirectory!, 'incidents');
+  for (const incident of existsSync(incidents) ? readdirSync(incidents) : []) {
+    const folder = join(incidents, incident);
+    if (!statSync(folder).isDirectory()) continue;
+    for (const name of readdirSync(folder)) {
+      if (!name.endsWith('.db')) continue;
+      const written = statSync(join(folder, name)).mtimeMs;
+      if (written >= capturedBefore || now - written < INCIDENT_COPY_DAYS * 86_400_000) continue;
+      remove(join(folder, name));
+    }
+  }
+  return { offBoxBackup: new Date(capturedBefore).toISOString(), removed };
+}
+
+if (process.argv.includes('--retire-captured')) {
+  if (namedBackup) throw new Error('Retiring captured copies uses the automatic backup directory.');
+  console.log(JSON.stringify({ status: 'retired', ...retireCapturedCopies() }));
+  process.exit(0);
 }
 
 if (pruneOnly) {
