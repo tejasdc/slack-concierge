@@ -2057,11 +2057,6 @@ export class SessionCommunicationCoordinator {
             .run(this.now(),request.request_id).changes;
         if(changed)log('warn','external_session_request_stalled',{request_id:request.request_id,worker_session_id:`concierge:${request.target_session_id}`,reason:next.reason});
     }
-    private hasNativePartialReply(request: RequestRow): boolean {
-        return !!request.source_input_id && !!db.query(
-            "SELECT 1 FROM session_communication_events WHERE request_id=? AND kind='progress' LIMIT 1",
-        ).get(request.request_id);
-    }
     private recipientStillWorking(request: RequestRow, states = ['running', 'queued']): boolean {
         const session = getSessionById(request.target_session_id);
         return !!session && states.includes(this.dependencies.owner.view(session).execution);
@@ -2071,17 +2066,6 @@ export class SessionCommunicationCoordinator {
         return db.query(`SELECT request.* FROM session_communication_requests request
             JOIN session_inputs input ON input.id=request.target_input_id WHERE input.turn_id=? ORDER BY request.rowid`)
             .all(turnId) as RequestRow[];
-    }
-    private steeringRow(routed: { turn_id: number; steering_id?: number | null; message_ts?: string | null }) {
-        return (routed.steering_id ? db.query('SELECT status FROM turn_steering_messages WHERE id=?').get(routed.steering_id)
-            : db.query('SELECT status FROM turn_steering_messages WHERE turn_id=? AND slack_user_msg_ts=?').get(routed.turn_id, routed.message_ts)) as { status: string } | null;
-    }
-    private deliveredToTurn(routed: any): boolean {
-        return routed.input_kind === 'turn' || (routed.input_kind === 'steering'
-            && ['sent', 'ambiguous'].includes(this.steeringRow(routed)?.status ?? ''));
-    }
-    private steeringAcknowledged(routed: any): boolean {
-        return this.steeringRow(routed)?.status === 'sent';
     }
     /** The request's final that still stands; a superseded inference is history. */
     private currentFinal(requestId: string) {
@@ -2272,48 +2256,16 @@ export class SessionCommunicationCoordinator {
             sha256: turn.agent_text ? hash(turn.agent_text) : null,
             ...(turn.status==='done'&&turn.agent_text?{text:turn.agent_text}:{}),
             ...(actual?.provider_id==='chatgpt'&&!['done','cancelled'].includes(turn.status)?{error:turn.agent_text}:{} ) };
-        // One recipient turn often carries several of a requester's questions: the first opens
-        // the turn and later ones steer into it. The recipient answers them together in one
-        // final text, so that answer belongs to every question the turn was holding — not only
-        // to the request an explicit reply happened to name.
+        // A final reply settles exactly the requests it names (its own and any --also). Sharing a
+        // recipient turn is not evidence that one reply answers another request: the Inbox sends
+        // one request per thread, and they routinely steer into one turn. Until 2026-11-04 a
+        // sibling's reply was copied onto every request that turn held, and one answer closed
+        // two unrelated threads with the wrong text (docs/incidents/2026-11-04-one-reply-closed-sibling-requests.md).
+        // A recipient that answers several together says so with --also.
         const shared = this.sharedTurnRequests(turn.id);
         // A failed steering send never reached this turn; its input runs later as its own turn.
         const steeringCount = (db.query("SELECT count(*) AS count FROM turn_steering_messages WHERE turn_id=? AND status<>'failed'").get(turn.id) as any).count;
-        const questionsOnly = turn.status === 'done' && !!turn.provider_input_acknowledged_at
-            && shared.length === steeringCount + 1
-            && shared.some(value => value.target_input_id === turn.accepted_input_id)
-            && this.deliveredToTurn(routed);
-        // The recipient's own explicit reply is the strongest confirmation available, and it
-        // answers every question this turn already held when the reply was written. A question
-        // that arrived afterwards, or another requester's, is not covered by it. Only a reply
-        // action counts: a sibling the owner itself settled carries the owner's words, not the
-        // recipient's, and reading those back as an answer would invent one.
-        // A partial reply is the recipient saying it is not finished with this request, so a
-        // sibling's answer does not cover it: its own final comes later.
-        const partial = this.hasNativePartialReply(request);
-        const answer = !questionsOnly || partial ? null
-            : shared.filter(value => value.request_id !== request.request_id && value.source_session_id === request.source_session_id)
-                .map(value => db.query("SELECT * FROM session_communication_events WHERE request_id=? AND kind='final' AND action_key IS NOT NULL").get(value.request_id) as EventRow | null)
-                .find((event): event is EventRow => !!event && event.created_at_ms >= request.created_at_ms) ?? null;
         const effect = JSON.parse(request.payload_json).requestedEffect;
-        if (answer) {
-            const declared = JSON.parse(answer.payload_json);
-            const unconfirmed = routed.input_kind === 'steering' && !this.steeringAcknowledged(routed);
-            const outcome = effect !== 'work' ? 'answered' : declared.workDisposition === 'failed' ? 'failed'
-                : declared.workDisposition === 'needs_decision' ? 'decision_needed'
-                : declared.workDisposition === 'completed' ? 'answered' : 'undetermined';
-            // Each sibling returns its own result, so the requester can account for every
-            // question it asked. Unproven delivery of this exact question is an uncertainty
-            // the requester still has to see.
-            this.settle(request, outcome, declared.text, { ...output,
-                answered_by_request_id: answer.request_id, shared_turn_requests: shared.length,
-                ...(unconfirmed ? { delivery: 'STEERING_DELIVERY_UNCONFIRMED',
-                    delivery_note: 'This request steered into the answering turn without provider acknowledgement. Its answer follows that turn’s confirmed completion; receipt of this exact message is not proven.' } : {}) },
-                effect === 'work' && !unconfirmed && declared.workDisposition === 'completed' ? 'completed' : null,
-                // One answer covering several questions carries its files to each of them.
-                declared.attachments ?? []);
-            return;
-        }
         if (turn.status === 'done') {
             // A request closes only through the recipient's reply command, the requester's cancel,
             // or a failed execution. A turn ending is none of those, however its text is worded:
