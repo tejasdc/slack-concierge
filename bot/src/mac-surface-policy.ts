@@ -29,7 +29,7 @@ function authorizedWebAppRead(need:RecordedNeed,toolName:string,code:string):boo
 
 function authorizedWebAppInspectorOpen(need:RecordedNeed,toolName:string,code:string):boolean {
   if(!authorizedWebAppNeed(need,toolName)||!/\bWeb Inspector\b/i.test(need.why))return false;
-  return new RegExp(`^\\s*(?:let|const|var)\\s+app\\s*=\\s*await\\s+${exactWebAppSelector()}\\s*;\\s*await\\s+app\\.pressKey\\(\\s*(['"])alt\\+super\\+i\\2\\s*\\)\\s*;?\\s*$`).test(code);
+  return new RegExp(`^\\s*var\\s+thnkrInspectorApp\\s*=\\s*await\\s+${exactWebAppSelector()}\\s*;\\s*await\\s+thnkrInspectorApp\\.pressKey\\(\\s*(['"])alt\\+super\\+i\\2\\s*\\)\\s*;?\\s*$`).test(code);
 }
 
 function namedToolCall(name:RegExp,code:string):boolean {

@@ -16,7 +16,9 @@ to the hook. For this human task, Computer Use admits a direct `getApp` call
 selecting that bundle and subsequent read-only app-state calls. A Mac-app request
 that also names Web Inspector may make one exact-bundle `getApp` and
 Option-Command-I call in the same Computer Use program to attempt to open the
-Inspector on that app. The action binds a fresh handle instead of trusting an
+Inspector on that app. The program uses a dedicated `var thnkrInspectorApp` handle:
+the Computer Use REPL can retain earlier `let app` bindings, while `var` can be
+reused for a later attempt. The action binds a fresh handle instead of trusting an
 earlier REPL variable. This grants the first Inspector-opening probe, not Console
 input, clicking, heap capture, or export: those need a verified target-bound route.
 A generic Safari selector, another web app or browser, whole-screen call,
