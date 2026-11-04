@@ -708,6 +708,11 @@ resumes under the same task ID, its new start supersedes its old end.
 When a parent-owned job ends without its report for two minutes, the owner steers a service
 notice into the run and stops holding that job (`noticeMissingBackgroundReport`). The 15- and
 60-minute prompts remain the check on jobs that are still running.
+Each prompt uses a fixed minute threshold for its action identity, even if the job has run
+longer or an update starts waiting later. The update-wait prompt has its own identity. If an
+older prompt was already accepted with different wording, Concierge recognizes that exact
+accepted service input and records the notice as told instead of retrying its conflict on
+every watch tick. Other admission failures remain visible and retryable.
 
 Once App Server accepts a turn, transport failure is not a terminal provider outcome. The controller reconnects, resumes the exact provider thread, and identifies the daemon-owned turn by provider turn ID or the stable user-message client ID. Supported `thread/read(includeTurns=true)` history replays completed items idempotently and proves whether the turn is still in progress or terminal. An explicit reconciliation RPC error, including an unsupported history method, or a failed consultation-policy check parks the same turn as ambiguous. The saved failure includes the initiating error and failed reconciliation with their RPC method, message, and numeric code when supplied; start RPC failures are also logged with exact thread/client-input identity. Repeating an unsupported operation cannot establish the missing proof. The existing parked-turn FIFO fence blocks successors and replay without another owner or daemon change.
 

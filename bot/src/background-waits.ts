@@ -12,6 +12,18 @@ const releaseDetails = new Map<number, string>();
 const notices = new Set<string>();
 const noticeSentAt = new Map<string, number>();
 
+function alreadyAcceptedBackgroundNotice(input: BackgroundNoticeAdmission): boolean {
+  const accepted = db.query(`SELECT session_id, kind, origin, json_extract(payload_json,'$.delivery') AS delivery,
+      source_input_id, source_run_id, request_id
+    FROM session_inputs WHERE scope=? AND action_id=?`).get(`session:${input.sourceInputId}`, input.inputId) as
+    { session_id: number; kind: string; origin: string; delivery: string | null; source_input_id: string | null;
+      source_run_id: string | null; request_id: string | null } | null;
+  return accepted?.session_id === input.sessionId && accepted.kind === "input"
+    && accepted.origin === input.origin && accepted.delivery === input.delivery
+    && accepted.source_input_id === input.sourceInputId && accepted.source_run_id === input.sourceRunId
+    && accepted.request_id === input.requestId;
+}
+
 export function recordTurnBackgroundWait(turnId: number, wait: ClaudeBackgroundWait | null) {
   const prior = waits.get(turnId);
   if (wait) waits.set(turnId, wait);
@@ -97,16 +109,30 @@ export function startBackgroundJobWatch(admit: (input: BackgroundNoticeAdmission
           if (age < mark * 60_000) continue;
           const id = `background-job:${nativeRunId(turnId)}:${task.id}:${mark}`;
           if (notices.has(id)) continue;
+          const input: BackgroundNoticeAdmission = { sessionId: turn.session_id, inputId: id,
+            origin: "service", sourceInputId: id, sourceRunId: nativeRunId(turnId), requestId: id,
+            delivery: "steer",
+            text: `Your background job “${task.description}” has been running for at least ${mark} minutes. Do you still intend to keep it running? If not, stop it now. You do not need to reply to this.` };
+          let alreadyAccepted = false;
           try {
-            admit({ sessionId: turn.session_id, inputId: id, origin: "service", sourceInputId: id,
-              sourceRunId: nativeRunId(turnId), requestId: id, delivery: "steer",
-              text: `Your background job “${task.description}” has been running for ${Math.floor(age / 60_000)} minutes.${updateWaiting ? " A Concierge update is waiting for this run." : ""} Do you still intend to keep it running? If not, stop it now. You do not need to reply to this.` });
-            notices.add(id);
-            noticeSentAt.set(id, now);
+            admit(input);
+          } catch (error) {
+            if (error instanceof Error && error.message === "Idempotency conflict: accepted action payload changed."
+              && alreadyAcceptedBackgroundNotice(input)) alreadyAccepted = true;
+            else {
+              log("info", "background_job_notice_skipped", { turn_id: turnId, task_id: task.id,
+                mark, reason: error instanceof Error ? error.message : String(error) });
+              continue;
+            }
+          }
+          try {
             db.query(`UPDATE background_job_status SET ${mark === 60 ? "told_60" : "told_30"}=1
               WHERE turn_id=? AND task_id=?`).run(turnId, task.id);
+            notices.add(id);
+            noticeSentAt.set(id, now);
             executionChanged();
-            log("info", "background_job_notice_sent", { turn_id: turnId, task_id: task.id, mark });
+            log("info", alreadyAccepted ? "background_job_notice_already_accepted" : "background_job_notice_sent",
+              { turn_id: turnId, task_id: task.id, mark });
           } catch (error) {
             log("info", "background_job_notice_skipped", { turn_id: turnId, task_id: task.id,
               mark, reason: error instanceof Error ? error.message : String(error) });
@@ -115,12 +141,18 @@ export function startBackgroundJobWatch(admit: (input: BackgroundNoticeAdmission
         if (updateWaiting && age >= STILL_WAITING_AFTER_MS) {
           const id = `background-job:${nativeRunId(turnId)}:${task.id}:update`;
           if (!notices.has(id)) {
+            const input: BackgroundNoticeAdmission = { sessionId: turn.session_id, inputId: id,
+              origin: "service", sourceInputId: id, sourceRunId: nativeRunId(turnId), requestId: id,
+              delivery: "steer",
+              text: `A Concierge update is waiting for this run while your background job “${task.description}” has been running for at least ${STILL_WAITING_MINUTES} minutes. Do you still intend to keep it running? If not, stop it now. No reply is owed.` };
             try {
-              admit({ sessionId: turn.session_id, inputId: id, origin: "service", sourceInputId: id,
-                sourceRunId: nativeRunId(turnId), requestId: id, delivery: "steer",
-                text: `A Concierge update is waiting for this run while your background job “${task.description}” has been running for ${Math.floor(age / 60_000)} minutes. Do you still intend to keep it running? If not, stop it now. No reply is owed.` });
+              admit(input);
               notices.add(id);
-            } catch { /* The exact run may have ended before pinned admission. */ }
+            } catch (error) {
+              if (error instanceof Error && error.message === "Idempotency conflict: accepted action payload changed."
+                && alreadyAcceptedBackgroundNotice(input)) notices.add(id);
+              // The exact run may also have ended before pinned admission.
+            }
           }
         }
       }
