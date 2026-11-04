@@ -28,6 +28,8 @@ one blocking decision there, owned by the asking session. Filing uses the outcom
 identity and rolls back a failed thread attempt before trying the fallback. Work without a
 Inbox origin continues to use its own session attention. An agent-authored Inbox request is
 eligible without pretending it was written by Tejas.
+When the request row is missing, the accepted worker input's source and exact source run
+still prove which session dispatched it.
 
 ## Acceptance scenario
 
