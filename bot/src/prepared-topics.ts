@@ -8,6 +8,8 @@ import {topicEventDisplay} from './topic-event-display';
 const PAGE=20,CHUNK_BYTES=16*1024;
 type State='open'|'closed'|'background'|'all';
 const orderKey=(band:number,at:string,id:string)=>`${band}:${String(9999999999999-Date.parse(at)).padStart(13,'0')}:${id}`;
+/** A pinned thread's key: '-' sorts before every unpinned '0:' key, newest pin first, so rows prepared before pins existed keep their place. */
+const listKey=(band:number,pinnedAt:string|null|undefined,at:string,id:string)=>band<0&&pinnedAt?`-${String(9999999999999-Date.parse(pinnedAt)).padStart(13,'0')}:${orderKey(0,at,id)}`:orderKey(band,at,id);
 type Meta={generation:number;source_head:number;ready:number;retained_after:number;inbox_session:number};
 const json=(value:unknown)=>JSON.stringify(value);
 /** Owner times have two spellings ('2026-09-23 18:46:23' and ISO); keep one in prepared rows. */
@@ -362,9 +364,9 @@ export class PreparedTopics {
   if('sessionId' in value.summary.work&&value.summary.work.sessionId)depend('session',value.summary.work.sessionId);
   const row=[generation,topicId,owner,value.summary.state,
    value.summary.state==='open'&&!value.summary.needsYou.count&&value.summary.work.kind!=='idle'?1:0,
-   value.band,value.summary.lastEntryAt,value.summary.closedAt??value.summary.lastEntryAt,json(summary),ref.hash,value.search,orderKey(value.band,value.summary.lastEntryAt,topicId),
+   value.band,value.summary.lastEntryAt,value.summary.closedAt??value.summary.lastEntryAt,json(summary),ref.hash,value.search,listKey(value.band,value.summary.pinnedAt,value.summary.lastEntryAt,topicId),
    orderKey(0,value.summary.closedAt??value.summary.lastEntryAt,topicId),
-   json(replyTargets),json(overview),orderKey(0,startedAt,topicId)];
+   json(replyTargets),json(overview),listKey(value.band,value.summary.pinnedAt,startedAt,topicId)];
   const projectionHash=createHash('sha256').update(json([row,items,questions,dependencies,requestLinks,attentions,branches])).digest('hex');
   this.stagedRetains=null;
   if(previous?.projection_hash===projectionHash)return;

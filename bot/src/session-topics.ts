@@ -216,7 +216,9 @@ const toReadByHim=(question:{state:string;kind?:QuestionKind;reads?:ReadingText[
 const DISPOSITIONS=['completed','declined','withdrawn','superseded','failed'];
 
 type StoredTopic={topicId:string;sessionId:number;title:string;summary:string;state:'open'|'closed';setAside:any|null;
-  aliases:string[];revision:number;recovered:boolean;readSequence:number;closure:any|null;createdBy:TopicBy;createdAt:string;updatedAt:string};
+  aliases:string[];revision:number;recovered:boolean;readSequence:number;closure:any|null;createdBy:TopicBy;createdAt:string;updatedAt:string;
+  /** When he pinned it; pinned threads lead the Open list in either order. */
+  pinnedAt?:string|null};
 type StoredRequest={requestId:string;topicId:string;title:string;brief:string;state:'open'|'closed';disposition:string|null;
   revision:number;sources:{inputId:string;passage?:string}[];dispatches:any[];closure:any|null;createdAt:string;updatedAt:string};
 type StoredQuestion={questionId:string;topicId:string;revision:number;state:QuestionState;blocking:boolean;optional:boolean;
@@ -386,7 +388,7 @@ function reassignEntries(index:EntryIndex,affected:Set<string>):EntryIndex {
 const toStoredTopic=(row:any):StoredTopic=>({topicId:row.topic_id,sessionId:row.session_id,title:row.title,summary:row.summary,
   state:row.state,setAside:row.set_aside_json?JSON.parse(row.set_aside_json):null,aliases:JSON.parse(row.aliases_json),
   revision:row.revision,recovered:!!row.recovered,readSequence:row.read_sequence,closure:row.closure_json?JSON.parse(row.closure_json):null,
-  createdBy:JSON.parse(row.created_by_json),createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!});
+  createdBy:JSON.parse(row.created_by_json),createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!,pinnedAt:iso(row.pinned_at)??null});
 const toStoredRequest=(row:any):StoredRequest=>({requestId:row.request_id,topicId:row.topic_id,title:row.title,brief:row.brief,
   state:row.state,disposition:row.disposition,revision:row.revision,sources:JSON.parse(row.sources_json),dispatches:JSON.parse(row.dispatches_json),
   closure:row.closure_json?JSON.parse(row.closure_json):null,createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!});
@@ -399,14 +401,14 @@ const toStoredQuestion=(row:any):StoredQuestion=>({questionId:row.question_id,to
   createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!});
 
 function upsertTopic(topic:StoredTopic) {
-  db.query(`INSERT INTO inbox_topics(topic_id,session_id,title,summary,state,set_aside_json,aliases_json,revision,recovered,read_sequence,created_at,updated_at,closure_json,created_by_json)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  db.query(`INSERT INTO inbox_topics(topic_id,session_id,title,summary,state,set_aside_json,aliases_json,revision,recovered,read_sequence,created_at,updated_at,closure_json,created_by_json,pinned_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(topic_id) DO UPDATE SET title=excluded.title,summary=excluded.summary,state=excluded.state,set_aside_json=excluded.set_aside_json,
       aliases_json=excluded.aliases_json,revision=excluded.revision,recovered=excluded.recovered,read_sequence=excluded.read_sequence,
-      updated_at=excluded.updated_at,closure_json=excluded.closure_json`)
+      updated_at=excluded.updated_at,closure_json=excluded.closure_json,pinned_at=excluded.pinned_at`)
     .run(topic.topicId,topic.sessionId,topic.title,topic.summary,topic.state,topic.setAside?JSON.stringify(topic.setAside):null,
       JSON.stringify(topic.aliases),topic.revision,topic.recovered?1:0,topic.readSequence,topic.createdAt,topic.updatedAt,
-      topic.closure?JSON.stringify(topic.closure):null,JSON.stringify(topic.createdBy));
+      topic.closure?JSON.stringify(topic.closure):null,JSON.stringify(topic.createdBy),topic.pinnedAt??null);
 }
 function upsertRequest(request:StoredRequest) {
   db.query(`INSERT INTO inbox_requests(request_id,topic_id,title,brief,state,disposition,revision,sources_json,dispatches_json,closure_json,created_at,updated_at)
@@ -852,7 +854,7 @@ function topicSummary(topic:StoredTopic,session:SessionRow,index:EntryIndex,work
   const lastAt=last.map(entry=>entry.at).sort().at(-1)??topic.createdAt;
   return {id:topic.topicId,title:topic.title,aliases:topic.aliases,summary:topic.summary,state:topic.state,setAside:topic.setAside,
     revision:topic.revision,recovered:topic.recovered,createdAt:topic.createdAt,updatedAt:topic.updatedAt,lastEntryAt:lastAt,
-    lastEntrySequence:lastSequence,unread:lastSequence>topic.readSequence,roots,
+    lastEntrySequence:lastSequence,unread:lastSequence>topic.readSequence,roots,pinnedAt:topic.pinnedAt??null,
     // When it was closed, for the Closed list's order and its rows; a merged-away topic has no moment of its own here.
     closedAt:topic.state==='closed'&&topic.closure?.kind!=='merged'?topic.closure?.at??topic.updatedAt:null,
     needsYou:{count:items.length,oldestAt:items[0]?.at??null,items},
@@ -1081,12 +1083,14 @@ export function listTopics(options:{state?:string|null;order?:string|null;query?
   // prepared-topic-values.ts for why there are no bands). Closed threads
   // are ordered by when they were closed (Tejas, 2026-10-07: "everything is kind of cluttered and
   // dumped on the main page here. Clean it up.").
-  const band=(_topic:ReturnType<typeof topicSummary>)=>0;
+  // Pinned threads lead the Open list, most recently pinned first; closing keeps the pin for a reopen.
+  const band=(topic:ReturnType<typeof topicSummary>)=>topic.pinnedAt?-1:0;
+  const pinned=(first:ReturnType<typeof topicSummary>,second:ReturnType<typeof topicSummary>)=>state==='closed'?0:band(first)-band(second)||String(second.pinnedAt??'').localeCompare(String(first.pinnedAt??''));
   const recency=(topic:ReturnType<typeof topicSummary>)=>state==='closed'?String(topic.closedAt??topic.lastEntryAt):String(topic.lastEntryAt);
   // Started order from the ledger is by the thread record's creation; the prepared list, which
   // serves every read once built, uses the first message's arrival instead.
-  if(options.order==='started')summaries.sort((first,second)=>String(second.createdAt).localeCompare(String(first.createdAt)));
-  else summaries.sort((first,second)=>(state==='closed'?0:band(first)-band(second))||recency(second).localeCompare(recency(first)));
+  if(options.order==='started')summaries.sort((first,second)=>pinned(first,second)||String(second.createdAt).localeCompare(String(first.createdAt)));
+  else summaries.sort((first,second)=>pinned(first,second)||recency(second).localeCompare(recency(first)));
   const limit=Math.min(200,Math.max(1,Number(options.limit)||50));
   const offset=Math.max(0,Number(options.cursor)||0);
   const page=summaries.slice(offset,offset+limit);
@@ -1807,6 +1811,13 @@ export function topicsCommand(actor:TopicActor,body:any) {
         return {change:{kind:'topic',payload:{change:'reopened',topicId:topic.topicId,topic:next,by,reason:why,revision:next.revision,questions}},result:{topic:next,restored:questions.length}};
       });
     }
+    case 'pin':case 'unpin':{
+      return agentMutation(actor,actionId(),{kind:`topic-${verb}`,topicId:body?.topic_id,reason:reason()},()=>{
+        const topic=topicFor(body?.topic_id);
+        const next=bumped(topic,{pinnedAt:verb==='pin'?topic.pinnedAt??nowIso():null});
+        return {change:{kind:'topic',payload:{change:verb==='pin'?'pinned':'unpinned',topicId:topic.topicId,topic:next,by,reason:reason(),revision:next.revision}},result:{topic:next}};
+      },inboxOrThrow().id);
+    }
     case 'request.add':{
       assertInbox(session);
       const title=text(body?.title,'--title',200),brief=text(body?.brief,'brief',8000),sources=parseSources(body?.sources);
@@ -2042,7 +2053,7 @@ export function clearFocusForEndedRun(turn:{id:number;session_id:number}) {
 
 /* ------------------------------------------------------------------ human actions */
 
-const HUMAN_ACTIONS=['rename','summary','close','reopen','set_aside','resume','move','split','merge','read','expose','question','request','file','followup'];
+const HUMAN_ACTIONS=['rename','summary','close','reopen','pin','unpin','set_aside','resume','move','split','merge','read','expose','question','request','file','followup'];
 
 export function createTopicByHuman(body:any) {
   const session=inboxOrThrow();
@@ -2106,6 +2117,10 @@ export function topicHumanAction(topicId:string,body:any) {
         const questions=restoreExpiredByClosure(topic,at);
         const next=bumped(topic,{state:'open',closure:null,setAside:null});
         return {change:{kind:'topic',payload:{change:'reopened',topicId,topic:next,by,reason:why,revision:next.revision,questions}},result:{topic:next,restored:questions.length}};
+      }
+      case 'pin':case 'unpin':{
+        const next=bumped(topic,{pinnedAt:kind==='pin'?topic.pinnedAt??at:null});
+        return {change:{kind:'topic',payload:{change:kind==='pin'?'pinned':'unpinned',topicId,topic:next,by,revision:next.revision}},result:{topic:next}};
       }
       case 'set_aside':{
         const why=text(action.reason,'reason',4000);

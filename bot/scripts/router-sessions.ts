@@ -94,6 +94,7 @@ router-actions.sh sessions topics summary <topicId> <source-flags> --action-id A
 router-actions.sh sessions topics merge <fromTopicId> <source-flags> --action-id A --into <topicId> --reason R
 router-actions.sh sessions topics close <topicId> <source-flags> --action-id A --scope <text> -- <reason>
 router-actions.sh sessions topics reopen <topicId> <source-flags> --action-id A -- <reason>
+router-actions.sh sessions topics pin|unpin <topicId> <source-flags> --action-id A
 router-actions.sh sessions topics request add <topicId> <source-flags> --action-id A --title T [--source <inputId>[:passage] ...] -- <brief>
 router-actions.sh sessions topics request amend <requestId> <source-flags> --action-id A [--title T] [--source ...] -- <what changed and why>
 router-actions.sh sessions topics request link <requestId> <source-flags> --action-id A --dispatch <communicationRequestId>
@@ -190,7 +191,7 @@ function sourceFrom(flags: Map<string, string>): Source {
   return { channel_id: channel, message_ts: timestamp };
 }
 
-const TOPIC_VERBS = ["list","read","items","detail","resolve","questions-read","create","place","route","link","unlink","rename","summary","merge","close","reopen","request","questions","question","answer","acknowledge","focus","release","file","area"];
+const TOPIC_VERBS = ["list","read","items","detail","resolve","questions-read","create","place","route","link","unlink","rename","summary","merge","close","reopen","pin","unpin","request","questions","question","answer","acknowledge","focus","release","file","area"];
 const TOPIC_REPEATABLE = ["--root","--source","--item","--input","--evidence","--area"];
 const TOPIC_SINGLE = ["--source-channel","--source-ts","--source-input","--source-run","--action-id","--title","--summary","--reason",
   "--into","--from","--thread","--scope","--dispatch","--disposition","--json-file","--state","--answer","--replacement","--limit","--cursor","--query","--expected-revision","--need","--kind","--part","--digest","--message"];
