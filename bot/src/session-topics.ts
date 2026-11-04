@@ -1440,6 +1440,27 @@ export function openAgentReport(sessionId:number,inputId:string,title:string,bri
   return {topicId:created.topic.topicId,requestId:request.requestId};
 }
 
+/** Keep subsequent observations on the already-owned process issue, with a durable event. */
+export function appendAgentReportObservation(requestId:string,observationId:string,observation:string) {
+  const eventId=`topic-agent-report-observation:${observationId}`;
+  const prior=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(eventId) as {payload_json:string}|null;
+  if(prior){
+    if(JSON.parse(prior.payload_json).observation!==observation)
+      throw new TopicError('Idempotency conflict: this process observation changed under the same action.',409);
+    return false;
+  }
+  const request=requestRow(requestId);
+  if(request.state!=='open')return false;
+  const topic=topicFor(request.topicId);
+  const next:StoredRequest={...request,brief:(request.brief+'\n\nLater observation: '+observation).slice(-8000),
+    revision:request.revision+1,updatedAt:nowIso()};
+  const topicNext=bumped(topic);
+  return recordOwnerTopicChange(topic.sessionId,eventId,'topic_request',
+    {change:'amended',topicId:topic.topicId,topic:topicNext,request:next,
+      by:{kind:'owner',sessionId:`concierge:${topic.sessionId}`},reason:'A later turn found another process for this open issue.',
+      observation,revision:topicNext.revision});
+}
+
 function placeChange(session:SessionRow,topic:StoredTopic,roots:string[],by:TopicBy,reason:string|null) {
   for(const root of roots){
     const previous=topicOfRoot(root);

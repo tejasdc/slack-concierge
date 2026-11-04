@@ -1,4 +1,5 @@
 import {onCodexHistoryChanged} from './codex-session-observer';
+import {codexLeftoverProcesses} from './codex-leftover-processes';
 import {createHash} from 'node:crypto';
 import {ledgerDurable} from './ledger-durability-barrier';
 import {thesaurusTurnContext} from './thesaurus-context';
@@ -171,6 +172,7 @@ function canvasSpeechApplicationContext(input:AcceptedSessionInput,runId:string,
 }
 
 export class SessionExecutionHost {
+  private readonly codexProcessAudits=new Set<number>();
   private readonly historyPages=new ProviderHistoryPageClient();
   private readonly stopCodexWindows:()=>void;
   // Thinkering's ChatGPT capability verifies every call by asking this owner for the run's receipt,
@@ -922,6 +924,8 @@ export class SessionExecutionHost {
     if(claim.turn_kind!=='native'||!claim.accepted_input_id)throw new Error('Native execution requires an accepted input.');
     const input=getAcceptedSessionInput(claim.accepted_input_id),session=getSessionById(claim.session_id);
     if(!input||!session||input.session_id!==session.id||input.turn_id!==claim.turn_id||input.steering_id!==null)throw new Error('Accepted native input binding changed.');
+    if(session.provider_id==='codex'&&process.platform==='linux')recordSessionEvent({eventId:`codex-process-audit-intent:${claim.turn_id}`,
+      sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'process_audit',payload:{}});
     if(!adoption)recordSessionEvent({eventId:`run:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'run',payload:{run:this.owner.run(nativeRunId(claim.turn_id))}});
     else if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`terminal:${claim.turn_id}:${claim.dispatch_attempt}`)) {
       const count=(db.query('SELECT adoptions FROM executions WHERE execution_id=?').get(adoption.execution.execution_id) as {adoptions:number}).adoptions;
@@ -945,7 +949,65 @@ export class SessionExecutionHost {
       recordSessionEvent({eventId:priorTerminal
         ?`recovered-terminal:${claim.turn_id}:${claim.dispatch_attempt}:${count}`
         :`terminal:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'run',payload:{run:this.owner.run(nativeRunId(claim.turn_id))}});
+      if(session.provider_id==='codex'&&process.platform==='linux')await this.auditCodexTurn(claim.turn_id).catch(error=>
+        log('warn','codex_process_audit_failed',{turn_id:claim.turn_id,...errorFields(error)}));
     }
+  }
+  /** An intent survives a coordinator restart; an unfinished check is retried by the runtime. */
+  async reconcileCodexProcessAudits() {
+    const pending=db.query(`SELECT intent.turn_id FROM session_owner_events intent
+      JOIN turns turn ON turn.id=intent.turn_id AND turn.status IN ('done','error','cancelled')
+      WHERE intent.event_id>='codex-process-audit-intent:' AND intent.event_id<'codex-process-audit-intent;'
+        AND EXISTS (SELECT 1 FROM session_owner_events terminal WHERE terminal.turn_id=intent.turn_id
+          AND terminal.kind='run' AND terminal.event_id>='terminal:' AND terminal.event_id<'terminal;')
+        AND NOT EXISTS (SELECT 1 FROM session_owner_events done
+          WHERE done.event_id='codex-process-audit-done:'||intent.turn_id)
+      ORDER BY intent.turn_id LIMIT 50`).all() as {turn_id:number}[];
+    for(const row of pending)await this.auditCodexTurn(row.turn_id).catch(error=>
+      log('warn','codex_process_audit_recovery_failed',{turn_id:row.turn_id,...errorFields(error)}));
+  }
+  private codexProcessAuditReady(turnId:number,sessionId:number) {
+    const turn=db.query('SELECT status FROM turns WHERE id=?').get(turnId) as {status:string}|null;
+    if(!turn||!['done','error','cancelled'].includes(turn.status))return false;
+    if(db.query(`SELECT 1 FROM turns WHERE session_id=? AND id<>? AND status IN ('running','delivering') LIMIT 1`)
+      .get(sessionId,turnId))return false;
+    // The Mac Codex app can use the same server thread without a Concierge turn row.
+    return !db.query(`SELECT 1 FROM sessions WHERE id=?
+      AND json_extract(native_metadata_json,'$.codexLifecycle.state') IN ('running','uncertain')`).get(sessionId);
+  }
+  private async auditCodexTurn(turnId:number) {
+    if(this.codexProcessAudits.has(turnId))return;
+    if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`codex-process-audit-done:${turnId}`))return;
+    this.codexProcessAudits.add(turnId);
+    try {
+      const row=db.query(`SELECT turn.session_id,turn.accepted_input_id,turn.native_run_id,session.agent_session_uuid
+        FROM turns turn JOIN sessions session ON session.id=turn.session_id
+        WHERE turn.id=? AND session.provider_id='codex'`)
+        .get(turnId) as {session_id:number;accepted_input_id:string;native_run_id:string|null;agent_session_uuid:string|null}|null;
+      if(!row)throw new Error('Codex process audit intent has no turn.');
+      // A terminal event records the coordinator's attempt, including one that parks because
+      // provider completion is uncertain. Only a settled turn proves its tools have stopped.
+      if(!this.codexProcessAuditReady(turnId,row.session_id))return;
+      if(!row.agent_session_uuid){
+        recordSessionEvent({eventId:`codex-process-audit-done:${turnId}`,sessionId:row.session_id,
+          inputId:row.accepted_input_id,turnId,kind:'process_audit',payload:{reason:'no-provider-thread'}});
+        return;
+      }
+      const remaining=await codexLeftoverProcesses(row.agent_session_uuid);
+      if(!this.codexProcessAuditReady(turnId,row.session_id))return;
+      if(remaining.length){
+        const title='A finished Codex turn left background processes running';
+        const detail=`After Codex turn ${turnId} completed, Concierge found ${remaining.length} non-browser process(es) bearing its exact thread ID outside Concierge-owned execution units. `+
+          `Session concierge:${row.session_id}; thread ${row.agent_session_uuid}; processes: ${JSON.stringify(remaining)}. `+
+          'Inspect current PID and start time before stopping unneeded work. Intentional work needs a registered command watch or another durable supervisor.';
+        const receipt=await this.owner.reportAgentIssue({source:{inputId:row.accepted_input_id,runId:row.native_run_id??nativeRunId(turnId)},
+          actionId:`codex-leftover-process-${turnId}`,issueKey:'codex-leftover-process',title,text:detail});
+        log('warn','codex_leftover_process_reported',{turn_id:turnId,session_id:row.session_id,
+          processes:remaining,request_id:(receipt as any)?.report?.requestId,deduplicated:(receipt as any)?.deduplicated===true});
+      }
+      recordSessionEvent({eventId:`codex-process-audit-done:${turnId}`,sessionId:row.session_id,
+        inputId:row.accepted_input_id,turnId,kind:'process_audit',payload:{threadId:row.agent_session_uuid,remaining:remaining.length}});
+    } finally {this.codexProcessAudits.delete(turnId);}
   }
   settleSetupFailure(claim:Pick<QueuedTurnClaimRow,'turn_id'|'dispatch_attempt'>,error:unknown) {
     const boundary=getRunningTurnDispatchBoundary(claim.turn_id,this.options.instanceId,claim.dispatch_attempt);
