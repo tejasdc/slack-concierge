@@ -250,7 +250,7 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
         const turn=db.query(`SELECT id,session_id,accepted_input_id,status,dispatch_attempt,dispatch_hold,provider_admission_intended_at,
           provider_started_at,provider_turn_id,provider_input_acknowledged_at,saved_kind FROM turns WHERE id=?`).get(original.turn_id) as WaitingTurn|null;
         if(!turn||!safeTurn(turn,original))throw new Error(`Queued input ${item.ref} is no longer safe to move.`);
-        finishTurn(turn.id,'cancelled',`Continued by ${canonical(to)} before provider admission.`);
+        finishTurn(turn.id,'cancelled','Continued in another agent session before provider admission.');
         settleTurnDependencies(turn.id);
         const originalPayload=JSON.parse(original.payload_json);
         const cloned=retainSessionInput({id:`handoff-input:${state.id}:${original.id}`,sessionId:to,scope:`handoff:${state.id}`,actionId:original.id,

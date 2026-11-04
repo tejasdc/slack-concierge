@@ -17,7 +17,7 @@ export type SessionCard=Readonly<{id:string;title:string;titleTruncated:boolean;
   unread:boolean;execution:string;pendingCount:number;model:string|null;reasoningEffort:string|null;
   interactionPolicy:'standard'|'consultation-only';account:string|null;accountTruncated:boolean;
   canvasObservation:{boardId:string}|null;
-  timing:SessionTiming|null;agentName:string|null;presenceRevision:number;
+  timing:SessionTiming|null;cancellation:{by:string;reason:string}|null;agentName:string|null;presenceRevision:number;
   savedWork:{turnId:number;kind:'scheduled'|'banked';status:string;startsAt:string|null;savedAt:string|null;
     expiresAt:string|null;account:string|null;window:string|null;repeatEveryMs:number|null;sequence:number|null}|null;
   turnOutcome:{outcome:string;question:string|null;questionTruncated:boolean;inputId:string|null;at:string}|null;
@@ -110,7 +110,8 @@ export class PreparedSessionCards {
     // Cards written before the shared presence record (no presenceRevision) are rewritten the same
     // way, so an idle session's sidebar card carries the record without waiting for its next change.
     const rows=this.prepared.query(`SELECT session_id FROM presentation_session_cards WHERE generation=?
-      AND (json_extract(card_json,'$.touch.rule') IS NOT ? OR json_extract(card_json,'$.presenceRevision') IS NULL) LIMIT ?`)
+      AND (json_extract(card_json,'$.touch.rule') IS NOT ? OR json_extract(card_json,'$.presenceRevision') IS NULL
+        OR json_type(card_json,'$.cancellation') IS NULL) LIMIT ?`)
       .all(generation,TOUCH_RULE,limit) as {session_id:number}[];
     for(const row of rows)this.write(generation,row.session_id,sourceSequence,true);
     return rows.length===limit;
@@ -165,7 +166,7 @@ export class PreparedSessionCards {
       interactionPolicy:meta.interactionPolicy==='consultation-only'?'consultation-only':'standard',
       canvasObservation:meta.canvasObservation?{boardId:meta.canvasBoardId??''}:null,
       account:account?.text??null,accountTruncated:account?.truncated??false,
-      timing:presence.timing,agentName:presence.agentName,presenceRevision:presence.presenceRevision,
+      timing:presence.timing,cancellation:presence.cancellation,agentName:presence.agentName,presenceRevision:presence.presenceRevision,
       savedWork:saved?{turnId:saved.id,kind:saved.saved_kind,status:saved.status,startsAt:savedStartAt(saved),
         savedAt:saved.saved_at_ms?new Date(saved.saved_at_ms).toISOString():null,
         expiresAt:saved.saved_expires_at_ms?new Date(saved.saved_expires_at_ms).toISOString():null,
@@ -180,7 +181,8 @@ export class PreparedSessionCards {
     // orders after it, and every presence change is a new card with the current revision.
     const prior=previous?JSON.parse(previous.card_json) as Partial<SessionCard>:null;
     const samePresence=!!prior&&typeof prior.presenceRevision==='number'&&prior.execution===card.execution&&prior.agentName===card.agentName
-      &&prior.provider===card.provider&&prior.model===card.model&&prior.reasoningEffort===card.reasoningEffort&&JSON.stringify(prior.timing)===JSON.stringify(card.timing);
+      &&prior.provider===card.provider&&prior.model===card.model&&prior.reasoningEffort===card.reasoningEffort
+      &&JSON.stringify(prior.timing)===JSON.stringify(card.timing)&&JSON.stringify(prior.cancellation)===JSON.stringify(card.cancellation);
     const encoded=JSON.stringify(samePresence?{...card,presenceRevision:prior!.presenceRevision}:card);
     if(Buffer.byteLength(encoded)>MAX_CARD_BYTES)throw new Error('SESSION_CARD_EXCEEDS_PREPARED_RECORD_BOUND');
     if(previous?.card_json===encoded)return;

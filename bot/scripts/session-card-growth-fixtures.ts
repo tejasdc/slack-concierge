@@ -11,11 +11,15 @@ function fixture(count:number){
   source.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,provider_id TEXT,status TEXT,native_metadata_json TEXT,
     agent_session_uuid TEXT,slack_channel_id TEXT,slack_thread_ts TEXT,created_at TEXT,last_turn_at TEXT);
     CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,status TEXT,started_at TEXT,provider_turn_id TEXT,
-      native_run_id TEXT,ended_at TEXT,provider_input_acknowledged_at TEXT,provider_duration_ms INTEGER,
+      native_run_id TEXT,ended_at TEXT,agent_text TEXT,stop_requested_at TEXT,accepted_input_id TEXT,
+      provider_admission_intended_at TEXT,provider_started_at TEXT,
+      provider_input_acknowledged_at TEXT,provider_duration_ms INTEGER,
       saved_kind TEXT,dispatch_failure_class TEXT,dispatch_next_attempt_ms INTEGER,
       saved_at_ms INTEGER,saved_expires_at_ms INTEGER,saved_account TEXT,saved_window TEXT,
       saved_repeat_ms INTEGER,saved_sequence INTEGER);
-    CREATE TABLE session_inputs(id TEXT PRIMARY KEY,session_id INTEGER,kind TEXT,origin TEXT,created_at TEXT);
+    CREATE TABLE session_inputs(id TEXT PRIMARY KEY,session_id INTEGER,kind TEXT,origin TEXT,created_at TEXT,
+      payload_json TEXT,receipt_json TEXT);
+    CREATE TABLE global_pause_targets(turn_id INTEGER);
     CREATE TABLE session_owner_events(session_id INTEGER,kind TEXT,event_id TEXT,payload_json TEXT,created_at TEXT);
     CREATE INDEX session_inputs_session_kind ON session_inputs(session_id,kind);
     CREATE TABLE presentation_change_log(sequence INTEGER PRIMARY KEY AUTOINCREMENT,source_table TEXT,row_key TEXT,session_id INTEGER);

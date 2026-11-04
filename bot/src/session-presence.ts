@@ -4,6 +4,7 @@ import {TURN_STATE} from './session-receipt-state';
 import {localSessionNumber} from './peer-identity';
 import {sessionCatalogueLabels} from './session-labels';
 import type {AuthorSession} from './provider-history';
+import {humanStopForRun} from './stop-origin';
 
 /**
  * What every surface shows about an agent: who it is (provider, model, effort and the name he
@@ -26,11 +27,11 @@ import type {AuthorSession} from './provider-history';
  */
 export type AgentIdentity=Readonly<{provider:string|null;model:string|null;reasoningEffort:string|null;agentName:string|null}>;
 export type SessionTiming=Readonly<{startedAt:string|null;endedAt:string|null;workStartedAt:string|null;running:boolean;workMs:number|null}>;
-export type SessionPresence=AgentIdentity&Readonly<{execution:string;timing:SessionTiming|null;presenceRevision:number}>;
+export type SessionPresence=AgentIdentity&Readonly<{execution:string;timing:SessionTiming|null;presenceRevision:number;cancellation:{by:string;reason:string}|null}>;
 
 type PresenceSession={id:number;provider_id:string|null;agent_session_uuid:string|null};
 type PresenceMeta={model?:unknown;reasoningEffort?:unknown;codexLifecycle?:any;outside?:boolean};
-type TurnFacts={id:number;status:string;native_run_id:string|null;provider_turn_id:string|null;started_at:string|null;ended_at:string|null;
+type TurnFacts={id:number;status:string;native_run_id:string|null;provider_turn_id:string|null;provider_admission_intended_at:string|null;provider_started_at:string|null;started_at:string|null;ended_at:string|null;agent_text:string|null;stop_requested_at:string|null;
   provider_input_acknowledged_at:string|null;provider_duration_ms:number|null};
 
 const iso=(value:string|null|undefined)=>value?new Date(value.includes('T')?value:value+'Z').toISOString():null;
@@ -46,8 +47,16 @@ export function agentIdentity(session:{provider_id:string|null},meta:PresenceMet
 
 /** The turn facts behind the status, for callers that also need run identities or the queue length. */
 export function sessionExecution(source:Database,session:PresenceSession,meta:PresenceMeta) {
-  const fields='id,status,native_run_id,provider_turn_id,started_at,ended_at,provider_input_acknowledged_at,provider_duration_ms';
-  const latest=source.query(`SELECT ${fields} FROM turns WHERE session_id=? ORDER BY id DESC LIMIT 1`).get(session.id) as TurnFacts|null;
+  const fields='id,status,native_run_id,provider_turn_id,provider_admission_intended_at,provider_started_at,started_at,ended_at,agent_text,stop_requested_at,provider_input_acknowledged_at,provider_duration_ms';
+  // A redundant service input withdrawn before provider admission did no work. Keep its turn in
+  // history, but do not let it replace the real run as the session's visible latest attempt.
+  const latest=source.query(`SELECT ${fields} FROM turns WHERE session_id=? AND NOT (
+    status='cancelled' AND provider_admission_intended_at IS NULL
+    AND provider_started_at IS NULL AND provider_turn_id IS NULL
+    AND provider_input_acknowledged_at IS NULL
+    AND (accepted_input_id IS NULL OR EXISTS (
+      SELECT 1 FROM session_inputs input WHERE input.id=turns.accepted_input_id AND input.origin='service'))
+  ) ORDER BY id DESC LIMIT 1`).get(session.id) as TurnFacts|null;
   const active=source.query(`SELECT ${fields} FROM turns WHERE session_id=? AND status IN ('running','delivering') ORDER BY id DESC LIMIT 1`).get(session.id) as TurnFacts|null;
   const queued=(source.query("SELECT count(*) AS count FROM turns WHERE session_id=? AND status='queued'").get(session.id) as {count:number}).count;
   const observed=session.provider_id==='codex'&&meta.outside!==true
@@ -65,7 +74,26 @@ export function sessionExecution(source:Database,session:PresenceSession,meta:Pr
     ?{startedAt:external.startedAt??null,endedAt:external.endedAt??null,workStartedAt:external.startedAt??null,running:external.state==='running',workMs:external.workMs??null}
     :timedRun?{startedAt:iso(timedRun.started_at),endedAt:iso(timedRun.ended_at),workStartedAt:iso(timedRun.provider_input_acknowledged_at),
       running:['running','delivering'].includes(timedRun.status),workMs:timedRun.provider_duration_ms??null}:null;
-  return {latest,active,queued,external,execution,timing};
+  const humanStop=latest?.status==='cancelled'&&latest.stop_requested_at&&latest.native_run_id
+    ?humanStopForRun(source,latest.native_run_id):null;
+  const paused=latest?.status==='cancelled'&&latest.stop_requested_at
+    ?!!source.query('SELECT 1 FROM global_pause_targets WHERE turn_id=? LIMIT 1').get(latest.id):false;
+  const chatGptError=latest?.status==='cancelled'&&session.provider_id==='chatgpt'&&latest.id
+    ?source.query(`SELECT COALESCE(json_extract(receipt_json,'$.error.message'),json_extract(receipt_json,'$.error')) AS message
+      FROM session_inputs WHERE id=(SELECT accepted_input_id FROM turns WHERE id=?)`).get(latest.id) as {message:string|null}|null:null;
+  const cancellation=execution==='canceled'&&latest?.status==='cancelled'
+    ?humanStop?{by:'Tejas',reason:'You pressed Stop on this run.'}
+    :paused?{by:'Pause all',reason:'The system-wide pause stopped this run.'}
+    :!latest.provider_admission_intended_at&&!latest.provider_started_at&&!latest.provider_turn_id
+      &&!latest.provider_input_acknowledged_at
+      &&(latest.agent_text?.startsWith('Tejas ')||latest.agent_text==='Dropped by Tejas.')
+      ?{by:'Tejas',reason:latest.agent_text==='Dropped by Tejas.'?'Dropped this saved work.':latest.agent_text.replace(/^Tejas /,'').trim()}
+    :latest.agent_text?.startsWith('Agent session concierge:')
+      ?{by:latest.agent_text.split(' canceled this saved work.')[0]!,reason:'Canceled this saved work.'}
+    :session.provider_id==='chatgpt'?{by:'ChatGPT',reason:chatGptError?.message||'ChatGPT did not report why it canceled this run.'}
+    :{by:latest.agent_text?.startsWith('The requesting session withdrew')?'The requesting agent':'Concierge',
+      reason:latest.agent_text?.trim()||'The cancellation reason was not recorded.'}:null;
+  return {latest,active,queued,external,execution,timing,cancellation};
 }
 
 /** The newest journal sequence that touched this session; read before the facts, so the facts are at least that new. */
@@ -100,6 +128,6 @@ export function authorSessionOf(source:Database,id:string):AuthorSession|undefin
 export function sessionPresence(source:Database,session:PresenceSession,meta:PresenceMeta) {
   const revision=presenceRevision(source,session.id);
   const facts=sessionExecution(source,session,meta);
-  const presence:SessionPresence={...agentIdentity(session,meta),execution:facts.execution,timing:facts.timing,presenceRevision:revision};
+  const presence:SessionPresence={...agentIdentity(session,meta),execution:facts.execution,timing:facts.timing,cancellation:facts.cancellation,presenceRevision:revision};
   return {presence,facts};
 }
