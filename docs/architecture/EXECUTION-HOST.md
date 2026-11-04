@@ -331,6 +331,21 @@ background task. This uses the existing trusted hook
 instead of a periodic process killer, and does not touch other runs' browsers or the
 shared App Server. A process that outlives a crashed or unhooked run remains visible to
 the host's aged-controller alert for owner investigation; the host observer never kills it.
+
+For a server Codex turn that is allowed to stop, the same hook also checks server processes
+for others carrying that exact Concierge run identity. It excludes
+the hook's own process chain and the browsers handled above. If any remain, it files one
+durable agent issue report in Inbox for the run, so the router assigns investigation and
+the request stays open until the work is settled. It does not kill an unknown process:
+an agent may have intentionally started a service, and the report requires its durable
+owner to be established or the process to be stopped. It matches the exact run identity
+without depending on a successful App Server scope move. Registered command watches are
+already owned by Concierge, have deadlines, and run in separate execution units; they
+are outside this check. The report is a turn-exit check, not a periodic orphan scan, and
+an owner outage can make the hook's bounded report attempt fail; the hook emits a diagnostic
+line then, but where Codex retains that output has not been verified. The check also misses
+spawned subagent shells that do not inherit the parent turn environment and turns that end
+without a Stop hook, such as a daemon crash. Those require separate lifecycle recovery.
 On macOS, Chrome left after its controller has already died and crash handlers reparented
 to launchd are outside that recorded tree and cannot be closed by this hook.
 
