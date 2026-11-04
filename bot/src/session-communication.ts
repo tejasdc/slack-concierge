@@ -1723,6 +1723,7 @@ export class SessionCommunicationCoordinator {
                 if (prior.request_id !== input.request_id || payload.text !== input.text || payload.final !== input.final
                     || payload.workDisposition !== input.workDisposition || payload.answersQuestion !== (input.answers_question || undefined)
                     || payload.answerGroup !== input.answer_group
+                    || payload.waitingOnWatch !== input.waiting_on_watch
                     || payload.notify !== (input.notify||undefined)
                     || payload.alsoMainThread !== (input.also_main_thread||undefined)
                     || JSON.stringify(payload.evidence) !== JSON.stringify(input.evidence)
@@ -2429,7 +2430,7 @@ export class SessionCommunicationCoordinator {
                 })();
                 return;
             }
-            if (healthy || updateDraining() || (turn?.status === 'done' && waitingOnDependency(request.target_session_id, request.created_at_ms, false))) {
+            if (healthy || updateDraining() || (turn?.status === 'done' && waitingOnDependency(request.target_session_id, request.request_id, request.created_at_ms, false))) {
                 db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
                     .run(now + STILL_WAITING_AFTER_MS, request.request_id);
                 return;

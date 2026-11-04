@@ -69,29 +69,28 @@ export function waitingOnLiveRequest(sessionId: number, sinceMs = 0, untakenAnsw
             WHERE request.source_session_id=? AND request.source_input_id IS NOT NULL AND request.created_at_ms>=? AND ${returns} AND answer.status IN ('recorded','admitted') LIMIT 1`).get(sessionId, sinceMs);
 }
 
-/** The worker ended its turn waiting on something that will wake it: its own live request, or a watch it registered (watches.ts). */
-export function waitingOnDependency(sessionId: number, sinceMs = 0, untakenAnswers = true): boolean {
-    return !!db.query("SELECT 1 FROM watches WHERE session_id=? AND created_at_ms>=? AND (state IN ('accepted','observing') OR delivery_state='pending') LIMIT 1").get(sessionId, sinceMs)
-        || !!db.query(`SELECT 1 FROM watches watch WHERE watch.session_id=?
+/** The worker ended its turn with a returning request or a watch named by this request. */
+export function waitingOnDependency(sessionId: number, requestId: string, sinceMs = 0, untakenAnswers = true): boolean {
+    return !!db.query(`SELECT 1 FROM watches watch WHERE watch.session_id=?
             AND (watch.state IN ('accepted','observing') OR watch.delivery_state='pending')
             AND (EXISTS (SELECT 1 FROM session_communication_requests request
                 JOIN session_communication_events reply ON reply.request_id=request.request_id AND reply.kind='progress'
-                WHERE request.target_session_id=? AND request.outcome IS NULL AND request.created_at_ms>=?
+                WHERE request.request_id=? AND request.target_session_id=? AND request.outcome IS NULL AND request.created_at_ms>=?
                   AND json_extract(reply.payload_json,'$.waitingOnWatch')=watch.watch_id)
               OR EXISTS (SELECT 1 FROM session_peer_deliveries request
                 JOIN session_peer_replies reply ON reply.request_id=request.request_id AND reply.kind='progress'
-                WHERE request.target_session_id=? AND request.closed_at_ms IS NULL AND request.created_at_ms>=?
+                WHERE request.request_id=? AND request.target_session_id=? AND request.closed_at_ms IS NULL AND request.created_at_ms>=?
                   AND json_extract(reply.payload_json,'$.waitingOnWatch')=watch.watch_id)) LIMIT 1`)
-            .get(sessionId,sessionId,sinceMs,sessionId,sinceMs)
+            .get(sessionId,requestId,sessionId,sinceMs,requestId,sessionId,sinceMs)
         || waitingOnLiveRequest(sessionId, sinceMs, untakenAnswers);
 }
 
 /** Whether something already in the system will wake this worker again. */
-export function workerWillWake(owner: SessionOwner, sessionId: number, sinceMs = 0): boolean {
+export function workerWillWake(owner: SessionOwner, sessionId: number, requestId: string, sinceMs = 0): boolean {
     const session = getSessionById(sessionId);
     if (!session) return false;
     if (['running', 'queued'].includes(owner.view(session).execution)) return true;
-    return waitingOnDependency(sessionId, sinceMs);
+    return waitingOnDependency(sessionId, requestId, sinceMs);
 }
 
 export type StrandedStep =
@@ -117,8 +116,9 @@ export const REPORT_BACK_SINCE_MS = 1792000000000; // 2026-10-14T17:46:40Z
  */
 export function strandedStep(owner: SessionOwner, input: { requestId: string; workerSessionId: number; createdAtMs: number; remindedAtMs: number | null; remindedVia: string | null; stalledAtMs: number | null }): StrandedStep {
     if (input.createdAtMs < REMINDERS_SINCE_MS || input.stalledAtMs !== null) return { step: 'none' };
-    // Only what the worker started for this request counts: its own sub-request or watch after the request arrived.
-    if (workerWillWake(owner, input.workerSessionId, input.createdAtMs)) return { step: 'none' };
+    // A watch counts only when this request's partial reply named it. A returning sub-request
+    // also wakes the session when it settles.
+    if (workerWillWake(owner, input.workerSessionId, input.requestId, input.createdAtMs)) return { step: 'none' };
     const session = getSessionById(input.workerSessionId);
     if (!session || !owner.canSend(session))
         return { step: 'stall', reason: 'the worker session is paused, archived or no longer available' };
