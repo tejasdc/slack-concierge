@@ -32,7 +32,13 @@ if(!passthrough){
     if(environment[name])throw new Error(`Claude account selection refused a competing ${name} credential or provider setting. Explicitly pin an intentional route.`);
   }
   const response=await requestApiResponse(`/sessions/v1/auth/claude-launch-choice${model?`?model=${encodeURIComponent(model)}`:''}`);
-  if(!response.ok)throw new Error(typeof response.result?.detail==='string'?response.result.detail:'Concierge could not select a Claude account.');
+  if(!response.ok){
+    const refusal=response.result?.error;
+    const reason=typeof refusal?.message==='string'?refusal.message
+      :typeof response.result?.detail==='string'?response.result.detail
+      :'Concierge could not select a Claude account.';
+    throw new Error(reason);
+  }
   const choice=response.result?.choice as {account?:unknown;home?:unknown}|null;
   if(choice&&typeof choice.account!=='string')throw new Error('Concierge returned an invalid Claude account choice.');
   if(choice?.home!==null&&choice?.home!==undefined&&typeof choice.home!=='string')throw new Error('Concierge returned an invalid Claude account home.');
