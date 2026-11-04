@@ -850,6 +850,17 @@ than trying to create another user namespace. The wrapper supplies its own devic
 which Bun requires to start. Owner startup and the checkpoint worker report their actual
 SQLite version and source identity through the existing bounded application log.
 
+The database-safety gate always checks that a child cannot read an existing canonical ledger
+directory. Its fresh-launcher overlay, locked-mount and loop-backing-image assertions require
+the canonical directory to be accessible before isolation, just like its packaged-controller
+assertions. Inside candidate preparation, both the preceding and current builders have already
+hidden that directory and dropped all capabilities; asking the candidate launcher for private
+mounts cannot restore them. The gate reports fresh-boundary coverage as `not-exercised` there,
+while retaining the inherited ledger-access refusal check. This does not prove the new
+launcher's fresh-boundary behavior or weaken the builder's sandbox. Incident `aef2992f` failed
+because a fresh overlay assertion was run inside the inherited boundary. The correction is
+candidate-owned and does not require replacing the installed controller.
+
 The writer reservation covers only the schema change:
 the whole-ledger checks took 32 s on the 1.9 GB ledger (2026-10-09) and, held inside
 the reservation, made every live owner write fail with `SQLITE_BUSY`; a FULL

@@ -71,6 +71,12 @@ try {
 
   // Real command import with another connection holding the writer. Before this fix, lkg
   // reran schema UPDATEs and exhausted busy_timeout despite being a read-only operation.
+  let canMountCanonical = true;
+  try { accessSync(join(homedir(),'.local/state/concierge'),constants.R_OK | constants.X_OK); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EACCES' && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    canMountCanonical = false;
+  }
   const env = { ...process.env, CONCIERGE_STATE_DIR: root };
   const init = Bun.spawnSync([process.execPath, join(import.meta.dir, 'migrate-deployment-repair.ts'), '--empty-schema'], { env, stdout:'pipe', stderr:'pipe', timeout:20_000 });
   assert.equal(init.exitCode, 0, init.stderr.toString());
@@ -81,9 +87,6 @@ try {
     assert.equal(read.exitCode, 1, read.stderr.toString());
     assert.equal(JSON.parse(read.stdout.toString()).status, 'missing');
     assert(!read.stderr.toString().includes('locked'));
-    let canMountCanonical = true;
-    try { accessSync(join(homedir(),'.local/state/concierge'),constants.R_OK | constants.X_OK); }
-    catch { canMountCanonical = false; }
     if (process.platform === 'linux' && existsSync('/usr/bin/bwrap') && canMountCanonical) {
       // Keep the configured path outside home so the test-mode guard stays enforced.
       // The private canonical mount has the same database inode as root, so ledgerAccess
@@ -124,6 +127,11 @@ try {
       const isolated = Bun.spawnSync(command, { stdout:'pipe', stderr:'pipe', timeout:5_000 });
       assert.equal(isolated.exitCode, 0, isolated.stderr.toString());
       assert.equal(isolated.stdout.toString().trim(), 'refused');
+    }
+    // Candidate preparation already hid the canonical directory and dropped capabilities.
+    // That boundary is inherited, not recreated by privateDatabaseCommand, even with true.
+    // Only a fresh boundary can exercise the new launcher's mounts and backing-image mask.
+    if (canMountCanonical) {
       const overlay = join(root, 'mount-capable-check');
       for (const name of ['lower', 'upper', 'work', 'merged']) mkdirSync(join(overlay, name), { recursive: true });
       writeFileSync(join(overlay, 'lower', 'visible'), 'overlay works');
@@ -154,6 +162,9 @@ try {
         }
       }
     }
+    console.log(JSON.stringify({check:'database-isolation-boundary',
+      freshBoundary:canMountCanonical?'exercised':'not-exercised',
+      reason:canMountCanonical?'canonical-directory-accessible':'canonical-directory-unavailable'}));
   }
   console.log(JSON.stringify({check:'database-safety',status:'passed',atomicPublication:true,verifiedRetention:true,readHelperUnderWriter:true,rawScriptRefusal:true}));
 } finally { rmSync(root, { recursive: true, force: true }); }
