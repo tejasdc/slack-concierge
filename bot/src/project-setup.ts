@@ -25,7 +25,9 @@ type Origin={peer:string;session:string;input:string;run:string;originatingHuman
 type Order={orderId:string;kind:'project.setup';origin:Origin;project:string;folder?:string};
 // A peer that predates placement decisions must not silently create a grouped project at root.
 export const PROJECT_FOLDERS_OPERATION='project.setup.placement.v1';
+export const PROJECT_NESTED_EXPERTISE_OPERATION='project.setup.expertise.v1';
 const GROUP=/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+const LAB_EXPERTISE_GROUP='agent-ecology/expertise';
 type CanvasEnsureRow={board_id:string;client_action_id:string;project:string;inside:string|null;title:string;title_clock:number;purpose:string;template:string;state:'awaiting_policy'|'creating'|'ready'|'failed';policy_revision_id:string|null;created_project:number;error:string|null;created_at_ms:number;updated_at_ms:number};
 type CanvasPolicyRow={revision_id:string;group_name:string;template:string;consultation_request_id:string;source_session_id:number;source_input_id:string;source_run_id:string;created_at_ms:number};
 const canvasBoard=(value:unknown)=>{
@@ -58,11 +60,20 @@ function canvasPurpose(title:string){
 function projectFolder(workspace:string,project:string,folder?:string){return folder?join(workspace,folder,project):join(workspace,project);}
 function projectGroup(value:unknown):string|undefined {
   if(value===null||value===undefined)return undefined;
-  if(typeof value!=='string'||value.length>100||!GROUP.test(value))throw new Error('Placement must be at the workspace root or in one plain grouping folder.');
+  if(typeof value!=='string'||value.length>100||!(GROUP.test(value)||value===LAB_EXPERTISE_GROUP))
+    throw new Error('Placement must be at the workspace root, in one plain grouping folder, or in the lab expertise folder.');
   return value;
 }
 function ensureGroupFolder(workspace:string,group:string){
   const folder=join(workspace,group);
+  if(group===LAB_EXPERTISE_GROUP){
+    const lab=sessionProject(workspace,'agent-ecology');
+    if(lab?.cwd!==join(workspace,'agent-ecology')||!pathExists(join(lab.cwd,'.git')))
+      throw new Error('The agent-ecology project must be registered before adding an expertise.');
+    const ignore=join(lab.cwd,'.gitignore');
+    if(!pathExists(ignore)||!readFileSync(ignore,'utf8').split(/\r?\n/).includes('/expertise/'))
+      throw new Error('The lab must ignore its expertise repositories before creating one.');
+  }
   if(!pathExists(folder))mkdirSync(folder);
   if(!lstatSync(folder).isDirectory()||pathExists(join(folder,'.git'))||pathExists(join(folder,'.obsidian')))
     throw new Error(`${folder} must be a plain grouping folder, not a link, repository or vault.`);
@@ -131,7 +142,8 @@ function exactKeys(value:unknown,keys:string[]):Record<string,any> {
 function orderId(peer:string,project:string,attempt:number){return createHash('sha256').update(`project.setup:${peer}:${project}:${attempt}`).digest('hex').slice(0,32);}
 function pathExists(path:string){try{lstatSync(path);return true;}catch(error:any){if(error?.code==='ENOENT')return false;throw error;}}
 async function originOf(path:string){try{return (await git(path,'remote','get-url','origin')).replace(/\.git$/,'').replace(/^git@github\.com:/,'https://github.com/');}catch{return null;}}
-function expectedOrigin(project:string){return `https://github.com/tejasdc/${project}`;}
+function repositoryName(project:string,folder?:string){return folder===LAB_EXPERTISE_GROUP?`expertise-${project}`:project;}
+function expectedOrigin(project:string,folder?:string){return `https://github.com/tejasdc/${repositoryName(project,folder)}`;}
 function head(path:string){return git(path,'rev-parse','HEAD');}
 function projectPredicate(path:string){try{return lstatSync(join(path,'.git')).isDirectory()&&lstatSync(join(path,'AGENTS.md')).isFile();}catch{return false;}}
 async function createScaffold(path:string,project:string,purpose:string,workspace:string,template?:ProjectTemplate){
@@ -232,27 +244,27 @@ export class ProjectSetup {
     if(elsewhere&&elsewhere.cwd!==destination)throw new Error(`${elsewhere.cwd} already uses this name; one name is one project, wherever it sits.`);
     if(pathExists(destination)&&!pathExists(intent))throw new Error('A local folder already uses this name; use projects share for an existing project.');
     if(folder)ensureGroupFolder(this.workspace,folder);
-    if(pathExists(intent)&&await originOf(destination)&&await originOf(destination)!==expectedOrigin(project))throw new Error('The unfinished project has a different GitHub origin.');
+    if(pathExists(intent)&&await originOf(destination)&&await originOf(destination)!==expectedOrigin(project,folder))throw new Error('The unfinished project has a different GitHub origin.');
     if(!pathExists(destination))mkdirSync(destination);
     if(pathExists(intent))await createScaffold(destination,project,data.purpose.trim(),this.workspace,template);
     else if(!projectPredicate(destination))await createScaffold(destination,project,data.purpose.trim(),this.workspace,template);
     const current=await git(destination,'status','--porcelain');if(current)throw new Error('The existing project has unpushed or uncommitted files; finish and push it first.');
     onLocalReady?.();
-    if(await originOf(destination)!==expectedOrigin(project)){
+    if(await originOf(destination)!==expectedOrigin(project,folder)){
       if(await originOf(destination))throw new Error('This folder has a different GitHub origin.');
-      try{await run('gh',['repo','create',`tejasdc/${project}`,'--private','--description',data.purpose.trim(),'--source',destination,'--push']);}
+      try{await run('gh',['repo','create',`tejasdc/${repositoryName(project,folder)}`,'--private','--description',data.purpose.trim(),'--source',destination,'--push']);}
       catch(error){
-        const repository=JSON.parse(await run('gh',['repo','view',`tejasdc/${project}`,'--json','visibility,url']));
-        if(repository.visibility!=='PRIVATE'||repository.url!==expectedOrigin(project))throw error;
-        const remoteHead=(await run('git',['ls-remote',`${expectedOrigin(project)}.git`,'HEAD'])).split(/\s+/)[0];
+        const repository=JSON.parse(await run('gh',['repo','view',`tejasdc/${repositoryName(project,folder)}`,'--json','visibility,url']));
+        if(repository.visibility!=='PRIVATE'||repository.url!==expectedOrigin(project,folder))throw error;
+        const remoteHead=(await run('git',['ls-remote',`${expectedOrigin(project,folder)}.git`,'HEAD'])).split(/\s+/)[0];
         if(remoteHead&&remoteHead!==await head(destination))throw new Error('A GitHub repository with this name already exists; choose another descriptive name.');
-        if(!await originOf(destination))await git(destination,'remote','add','origin',`${expectedOrigin(project)}.git`);
+        if(!await originOf(destination))await git(destination,'remote','add','origin',`${expectedOrigin(project,folder)}.git`);
       }
     }
-    const repository=JSON.parse(await run('gh',['repo','view',`tejasdc/${project}`,'--json','visibility,url']));
-    if(repository.visibility!=='PRIVATE'||repository.url!==expectedOrigin(project))throw new Error('The GitHub repository is not the expected private tejasdc repository.');
-    if(await originOf(destination)!==expectedOrigin(project))throw new Error('The local Git origin does not name the created repository.');
-    if(await git(destination,'remote','get-url','origin')!==`${expectedOrigin(project)}.git`)await git(destination,'remote','set-url','origin',`${expectedOrigin(project)}.git`);
+    const repository=JSON.parse(await run('gh',['repo','view',`tejasdc/${repositoryName(project,folder)}`,'--json','visibility,url']));
+    if(repository.visibility!=='PRIVATE'||repository.url!==expectedOrigin(project,folder))throw new Error('The GitHub repository is not the expected private tejasdc repository.');
+    if(await originOf(destination)!==expectedOrigin(project,folder))throw new Error('The local Git origin does not name the created repository.');
+    if(await git(destination,'remote','get-url','origin')!==`${expectedOrigin(project,folder)}.git`)await git(destination,'remote','set-url','origin',`${expectedOrigin(project,folder)}.git`);
     const branch=await git(destination,'branch','--show-current');
     if(!branch)throw new Error('The project has no branch to push.');
     await git(destination,'push','-u','origin',branch);
@@ -405,7 +417,7 @@ export class ProjectSetup {
     const folder=dirname(destination)===this.workspace?undefined:relative(this.workspace,dirname(destination));
     if(folder)projectGroup(folder);
     if(!projectPredicate(destination)||!registered)throw new Error('The local project must be a registered Git project with AGENTS.md.');
-    if(await originOf(destination)!==expectedOrigin(project))throw new Error('This project is not from github.com/tejasdc under the same name.');
+    if(await originOf(destination)!==expectedOrigin(project,folder))throw new Error('This project is not from the expected private tejasdc repository.');
     const branch=await git(destination,'branch','--show-current');if(!branch)throw new Error('Push the project branch before sharing.');
     const local=await head(destination),remote=(await git(destination,'ls-remote','--heads','origin',branch)).split(/\s+/)[0];
     if(local!==remote)throw new Error('The local branch is ahead of its origin; push first.');
@@ -475,7 +487,9 @@ export class ProjectSetup {
     this.sending.add(row.order_id);
     try{
       const status=await client.request<{operations?:string[]}>('GET','/sessions/v1/status',undefined,5000);
-      if(!status.operations?.includes('project.setup')||!status.operations.includes(PROJECT_FOLDERS_OPERATION)){
+      const folder=(JSON.parse(row.body_json) as Order).folder;
+      if(!status.operations?.includes('project.setup')||!status.operations.includes(PROJECT_FOLDERS_OPERATION)
+        ||folder===LAB_EXPERTISE_GROUP&&!status.operations.includes(PROJECT_NESTED_EXPERTISE_OPERATION)){
         db.query("UPDATE project_setup_orders SET state='needs_update' WHERE order_id=?").run(row.order_id);
         this.notice(row,'needs_update',needsUpdateText(row));return;
       }
@@ -536,7 +550,7 @@ export class ProjectSetup {
     // folder would strand the sessions and transcripts recorded against its path.
     const previouslyRegistered=sessionProject(this.workspace,project);
     for(const existing of new Set([destination,...(previouslyRegistered?[previouslyRegistered.cwd]:[])]))if(pathExists(existing)){
-      if(await originOf(existing)===expectedOrigin(project)&&projectPredicate(existing)){notesLink(this.workspace,project,existing,false);return fail({state:'already_present',commit:await head(existing)});}
+      if(await originOf(existing)===expectedOrigin(project,folder)&&projectPredicate(existing)){notesLink(this.workspace,project,existing,false);return fail({state:'already_present',commit:await head(existing)});}
       return fail({state:'refused',reason:'destination_conflict'});
     }
     const temporary=join(this.workspace,'.project-setup',raw.orderId,project);
@@ -546,9 +560,9 @@ export class ProjectSetup {
       for(const parent of [join(this.workspace,'.project-setup'),dirname(temporary)])if(pathExists(parent)&&!lstatSync(parent).isDirectory())return fail({state:'refused',reason:'destination_conflict'});
       mkdirSync(dirname(temporary),{recursive:true});
       if(pathExists(temporary)&&!lstatSync(temporary).isDirectory())return fail({state:'refused',reason:'destination_conflict'});
-      if(!pathExists(temporary))await run('git',[...CLONE_OPTIONS,'clone','--no-checkout','--no-recurse-submodules',`${expectedOrigin(project)}.git`,temporary]);
+      if(!pathExists(temporary))await run('git',[...CLONE_OPTIONS,'clone','--no-checkout','--no-recurse-submodules',`${expectedOrigin(project,folder)}.git`,temporary]);
       await run('git',[...CLONE_OPTIONS,'checkout','--force','HEAD'],temporary);
-      if(await originOf(temporary)!==expectedOrigin(project))return fail({state:'refused',reason:'invalid_repository'});
+      if(await originOf(temporary)!==expectedOrigin(project,folder))return fail({state:'refused',reason:'invalid_repository'});
       if(!projectPredicate(temporary))return fail({state:'failed',failureClass:'permanent',reason:'The GitHub repository is not a project on this machine.'});
       if(pathExists(destination))return fail({state:'refused',reason:'destination_conflict'});
       if(folder)ensureGroupFolder(this.workspace,folder);
