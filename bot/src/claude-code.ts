@@ -1406,7 +1406,10 @@ export async function runClaudeCodeTurn(input: {
       providerBytes+=Buffer.byteLength(chunk);providerChunks++;
       if (!structuredSeen) unstructuredOutput = (unstructuredOutput + chunk).slice(-64 * 1024);
       eventBuffer += chunk;
-      const lines = eventBuffer.split("\n");
+      // Split only when this chunk ends a line. A long line (a large tool result) arrives in
+      // hundreds of 2 KB chunks, and splitting the whole growing partial line on each one copied
+      // it every time: 343 ms and 75 MB of garbage per five 1 MB lines (2026-11-04).
+      const lines = chunk.includes("\n") ? eventBuffer.split("\n") : [eventBuffer];
       eventBuffer = lines.pop() || "";
       eventAt = at ?? null;
       try {
