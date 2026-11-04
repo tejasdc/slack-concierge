@@ -25,6 +25,17 @@ The router command wrapper now refuses reply, outcome, cancel and topic-close
 commands from such a helper; it still permits read-only inspection. The parent
 reported the premature closure to the Inbox router and continued the repair.
 
+The live audit found two further closure gaps after the first release. The Inbox
+router sent Tejas's emphatic follow-up as an exact `--route-message` work request
+but did not link that send to an Inbox request. Its provider later ended on a
+capacity error; meanwhile the original task had closed on the audit helper's
+overbroad completed reply. The router manually reopened the original task and
+linked a continuation. New exact-message work sends now create or join a
+request in the same transaction as the dispatch, locally and across the Mac
+peer. A separate completed reply can honestly say `--not-checked`; that
+qualifier now leaves the human task open for verification without replaying its
+prior effect.
+
 ## Cause
 
 The owner treated a terminal agent attempt as a terminal human task. Its one-shot

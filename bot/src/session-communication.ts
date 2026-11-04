@@ -9,7 +9,7 @@ import { inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, mes
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
 import { followForwardedReply, forwardedReplyFraming } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
-import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWithoutThread, invalidateTopicRoots, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
+import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWithoutThread, invalidateTopicRoots, linkInboxDispatchWork, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordRequesterDecisionReturn, recordTurnOutcome, turnDeclaredByAction, withdrawOpenNeed, type DeclaredTurnOutcome } from './session-turn-outcome';
 import {turnRoutedInput} from './inbox-routing-result';
@@ -1543,8 +1543,12 @@ export class SessionCommunicationCoordinator {
                     payload:{text:input.text,sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),targetSessionId:`concierge:${selected.session}`,targetAddress:address,...(input.provider?{targetProvider:input.provider}:{}),...(title===undefined?{}:{title}),afterRequestIds:after,...extra},sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),requestId:id}).input;
                 if(consultation)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({childSessionId:`concierge:${selected.session}`}),operation.id);
                 recordSessionEvent({eventId:`request:${id}`,sessionId:actor.session,inputId:operation.id,turnId:actor.turn,kind:'request',payload:{requestId:id,targetSessionId:`concierge:${selected.session}`,...(threadRoot?{threadSourceMessageId}:{})}});
-                if(routedFrom)recordSessionMessageRoute({sourceMessageId:routedFrom.messageId,destinationSessionId:`concierge:${selected.session}`,
-                    destinationMessageId:`request:${id}`,requestId:id,actor:{sessionId:actor.session,turnId:actor.turn,inputId:actor.inputId!,runId:nativeRunId(actor.turn)}});
+                if(routedFrom){
+                    recordSessionMessageRoute({sourceMessageId:routedFrom.messageId,destinationSessionId:`concierge:${selected.session}`,
+                        destinationMessageId:`request:${id}`,requestId:id,actor:{sessionId:actor.session,turnId:actor.turn,inputId:actor.inputId!,runId:nativeRunId(actor.turn)}});
+                    if(input.requestedEffect==='work')linkInboxDispatchWork({topicId:routedFrom.topicId,sourceMessageId:routedFrom.messageId,
+                        dispatchId:id,targetSessionId:`concierge:${selected.session}`,summary:input.summary??routedFrom.title,brief:routedFrom.originalText});
+                }
             }
         })();
         this.wake();
