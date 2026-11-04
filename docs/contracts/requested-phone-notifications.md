@@ -66,6 +66,15 @@ when a final reply already closed the request. The server checks that request's 
 then posts and files the decision there. The same event ID makes a repeated send harmless; an offline
 Mac keeps the event pending and retries later until the server acknowledges it.
 
+If a server worker's turn traces to Inbox work but the exact request has no usable
+thread address, the server creates a separate Inbox thread titled for the asking agent and puts
+the agent's exact question there. Its decision belongs to that agent, so a reply in the thread
+can still reach the agent. The question and its blocking notification are committed with the
+turn outcome; a filing error is rolled back before this fallback runs. A worker without an Inbox
+origin keeps its own session attention and does not create an Inbox copy. Agent-authored Inbox
+requests retain their agent provenance; they are never presented as Tejas's words. This fallback avoids
+guessing from the last thread that happened to send work to the same agent.
+
 ### No automatic reminders
 
 On 2026-10-30 Concierge briefly reminded him of every question waiting on him
