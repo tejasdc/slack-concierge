@@ -507,7 +507,7 @@ The owner clamps a read or dismiss generation to the session's own attention cou
   "Please update as soon as one agent you get there. What if one agent is like doing some minor work and an another
   agent is doing two hours of work?" [decision: answers-delivered-when-they-arrive]). A stall or overdue notice is checked
   against the request at delivery and dropped when the request is already answered, and an answer withdraws a notice
-  about it not yet taken up. A worker waiting on its own returning sub-request or watch started after the request is not stalled
+  about it not yet taken up. A worker waiting on its own returning sub-request or a watch named in that request's partial reply is not stalled
   (`waitingOnDependency`). Every ask and final reply carries a one-line `--summary` shown first; `--answer-view
   summary` lets the asker see only it. See [exchange kinds](../plans/2026-10-08-exchange-kinds.md).
 
@@ -524,8 +524,9 @@ The owner clamps a read or dismiss generation to the session's own attention cou
   product's current-release link, then names its watch ID with `sessions reply --partial
   --waiting-on-watch`. The reply command checks that the watch belongs to that agent and is
   active. An existing renewing watch can serve a later request too: the partial reply binds
-  that request to the watch. While it is active, the stranded check sees a live
-  dependency; when the link points to another release, the watch sends one service input to the
+  that request to the watch. The stranded check requires that exact request-to-watch
+  binding, so an unrelated watch cannot conceal a silent stop. While the watch is active,
+  the check sees a live dependency; when the link points to another release, it sends one service input to the
   agent so it can check the installed revision and close or continue the request. The file watcher
   follows the link for file or directory changes and, for new watches, also records the exact
   symlink target. An atomic link swap is observed even if the old and new release directories
