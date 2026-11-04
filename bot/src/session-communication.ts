@@ -1027,6 +1027,11 @@ export class SessionCommunicationCoordinator {
             if(!input.source?.input_id)throw new Error('Board commands come from an admitted native run: use --source-input and --source-run.');
             const resolved=this.actor(input.source);
             actor={session:resolved.session,inputId:resolved.inputId!,runId:nativeRunId(resolved.turn)};
+            if(this.dependencies.peers?.self==='mac') {
+                const source=actor;
+                actor={...source,labProxy:(method,path,body)=>this.dependencies.peers!.client('cloud').request('POST','/sessions/v1/peers/lab',
+                    {method,path,inputId:source.inputId,runId:source.runId,...(body===undefined?{}:{body})})};
+            }
         }
         return boardCommand(input,actor,{
             admit:admission=>this.dependencies.owner.admit(admission),
