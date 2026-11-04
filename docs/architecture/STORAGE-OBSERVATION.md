@@ -212,6 +212,12 @@ iterator finalization and sink failure, and reports large-result observation ove
 imports the application ledger or configures a production state path. Instrumentation is not a
 performance gate by itself: readers and releases must enforce their separate cost contracts.
 
+The observed connection keeps the statement for every SQL text it is asked to `query()`
+(least recently used out past 2,000). Bun's own `query()` cache holds 20, so with hundreds of
+distinct queries nearly every call re-prepared its statement; that garbage grew the owner by
+1-4 GB at a time until a full collection (heap census, 2026-11-04). `prepare()` still returns a
+fresh statement.
+
 Routine owner memory readings also export the observation-loss counter, with RSS, heap,
 external and array-buffer sizes. They do not walk the heap when it is already large. The
 external host observer owns process/swap/pressure evidence during a blocked event loop.
