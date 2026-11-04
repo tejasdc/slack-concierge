@@ -7,11 +7,12 @@ import {attachSessionSteering,getAcceptedSessionInput,nativeRunId,recordSessionE
 import {acquireDatabaseTestLock} from './db-lock';
 import {backfillResultAnsweredByPost,inboxHistory,inboxHistoryAfter,inboxMessage,markResultAnsweredByPost,postForwardedThreadAnswer} from '../src/session-inbox';
 import {preparedInboxDisplay} from '../src/presentation-inbox-display';
+import {claimExecutionTurn,retainExecutionIntent} from '../src/executions';
 import {inboxRootResolver,sourceMessagePage} from '../src/presentation-message-source';
 
 let unlock:()=>void,owner:SessionOwner,communication:SessionCommunicationCoordinator;
 let steeringMode:'sent'|'pending',errors:unknown[];
-const clear=()=>{for(const table of ['session_owner_events','session_communication_events','session_communication_requests','session_inputs','turn_dependencies','routed_requests','routed_input_events','deployment_drain','comparison_requests','fork_requests','slack_thread_statuses','slack_user_input_claims','turn_steering_messages','turn_delivery_chunks','turns','sessions','channels'])db.query(`DELETE FROM ${table}`).run();};
+const clear=()=>{for(const table of ['session_owner_events','session_communication_events','session_communication_requests','session_inputs','turn_dependencies','routed_requests','routed_input_events','deployment_drain','comparison_requests','fork_requests','slack_thread_statuses','slack_user_input_claims','turn_steering_messages','turn_delivery_chunks','executions','turns','sessions','channels'])db.query(`DELETE FROM ${table}`).run();};
 beforeEach(async()=>{
   unlock=await acquireDatabaseTestLock();clear();steeringMode='sent';errors=[];
   owner=new SessionOwner({available:()=>true,wake:()=>{},stop:async()=>false,steer:input=>{
@@ -652,4 +653,27 @@ test('unresolved legacy requests and returns stay visibly uncertain without sett
   expect(db.query('SELECT count(*) AS n FROM session_inputs').get()).toEqual(inputs);
   expect(db.query('SELECT count(*) AS n FROM routed_requests').get()).toEqual({n:0});
   expect(errors).toEqual([]);
+});
+
+test('a parked native execution with its original host is reclaimed without a second dispatch attempt',()=>{
+  const created=session(),{claim,source}=run();
+  const sessionId=Number(created.session.id.slice(10));
+  const executionId=randomUUID().replaceAll('-','').slice(0,16);
+  retainExecutionIntent({executionId,turnId:claim.turn_id,dispatchAttempt:claim.dispatch_attempt,
+    sessionId,provider:'claude-code',directory:'/tmp/parked-fixture',processor:{},coordinatorInstanceId:'fixture-owner'});
+  db.query("UPDATE executions SET state='live' WHERE execution_id=?").run(executionId);
+  expect(parkRunningTurnAfterProviderFailure({turnId:claim.turn_id,ownerInstanceId:'fixture-owner',
+    dispatchAttempt:claim.dispatch_attempt,failureClass:'parked_ambiguous',error:'adoption lost the CLI'})).toBeTrue();
+  recordSessionEvent({eventId:`terminal:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId,
+    inputId:source.input_id,turnId:claim.turn_id,kind:'run',payload:{run:{status:'uncertain'}}});
+  const execution=db.query('SELECT * FROM executions WHERE execution_id=?').get(executionId) as any;
+  expect(claimExecutionTurn(execution,null,'new-owner',true)).toBeTrue();
+  expect(db.query('SELECT status,owner_instance_id,dispatch_attempt FROM turns WHERE id=?').get(claim.turn_id))
+    .toEqual({status:'running',owner_instance_id:'new-owner',dispatch_attempt:claim.dispatch_attempt});
+  expect(db.query('SELECT status FROM sessions WHERE id=?').get(sessionId)).toEqual({status:'running'});
+  recordSessionEvent({eventId:`recovered-terminal:${claim.turn_id}:${claim.dispatch_attempt}:${execution.adoptions+1}`,sessionId,
+    inputId:source.input_id,turnId:claim.turn_id,kind:'run',payload:{run:{status:'succeeded'}}});
+  expect(db.query("SELECT count(*) AS n FROM session_owner_events WHERE turn_id=? AND kind='run' AND event_id LIKE '%terminal:%'").get(claim.turn_id))
+    .toEqual({n:2});
+  expect(claimExecutionTurn(execution,null,'another-owner',true)).toBeFalse();
 });
