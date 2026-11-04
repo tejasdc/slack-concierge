@@ -319,3 +319,14 @@ and is safe to run at any time.
 6. Retain recovery directories through the next approved activation and post-restart verification.
 
 The dated failure and repair evidence is in [the 2026-08-24 incident](../incidents/2026-08-24-codex-runtime-sync-corruption.md).
+
+## Resumes Never Ask For History
+
+Every Concierge `thread/resume` sends `excludeTurns: true`: turns read only the thread id, model and
+policy from the answer, and reconciliation reads history separately with `thread/read`. On
+2026-11-04 full-history resumes of a 218 MB conversation held Concierge's shared connection long
+enough that every Codex session's resume timed out for six minutes
+([failure record](../incidents/2026-11-04-codex-resume-full-history-stalled-all-sessions.md)).
+To find the conversation behind a burst of resume timeouts, look for the thread whose
+`otel.name="thread/resume"` span in `~/.codex/logs_2.sqlite` began just before the burst, and
+compare its rollout size under `~/.codex/sessions`.

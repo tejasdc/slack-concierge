@@ -970,7 +970,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
 
       const threadParams = await codexThreadParameters(input, request, input.environment);
       const threadResponse = sessionUUID
-        ? await request("thread/resume", { threadId: sessionUUID, ...threadParams })
+        ? await request("thread/resume", { threadId: sessionUUID, ...threadParams, excludeTurns: true })
         : await request("thread/start", threadParams);
       verifyCodexConsultationPolicy(input, threadResponse);
       threadId = threadResponse?.thread?.id || sessionUUID;
@@ -1382,6 +1382,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         const resumed = await client.request("thread/resume", {
           threadId: activeThreadId,
           ...recoveredParams,
+          excludeTurns: true,
         }, { requestTimeoutMs });
         if (turnSettled || controllerClosed) return;
         verifyCodexConsultationPolicy(input, resumed);
@@ -1524,8 +1525,12 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     if (interruptionReason) throw interruptionReason;
     let threadResponse: any;
     try {
+      // A turn reads only the thread's id, model and policy from this answer. Without
+      // excludeTurns the App Server returns the whole history: for a 218 MB conversation
+      // (session 6967, 2026-11-04) each resume outlived the 30 s limit and held the shared
+      // connection, so every other Codex session's resume timed out with it.
       threadResponse = sessionUUID
-        ? await request("thread/resume", { threadId: sessionUUID, ...threadParams })
+        ? await request("thread/resume", { threadId: sessionUUID, ...threadParams, excludeTurns: true })
         : await request("thread/start", threadParams);
     } catch (error) {
       // Neither operation sends the user's input. Even if the App Server created or

@@ -260,6 +260,8 @@ describe("codex app-server", () => {
       environment: { CONCIERGE_COMMIT_PROVENANCE: "must-not-reach-tools", ARBITRARY_ACTION_AUTHORITY: "never" } });
     const threads = client.requestParams.filter(({ method }) => method === "thread/start" || method === "thread/resume");
     expect(threads).toHaveLength(2);
+    // A turn never reads history from resume; asking for it stalled the shared App Server on 2026-11-04.
+    for (const { method, params } of threads) if (method === "thread/resume") expect(params.excludeTurns).toBeTrue();
     for (const { params } of threads) {
       expect(params).toMatchObject({ permissions: "concierge-consultation", approvalPolicy: "never", runtimeWorkspaceRoots: ["/tmp"] });
       expect(params.sandbox).toBeUndefined();
