@@ -6,19 +6,30 @@ export const AUTHORIZING_HUMAN_INPUT='f66f15dd-e251-4537-a9cd-347d0548434b';
 
 type RecordedNeed=string|{kind:string;why?:string;humanInputId?:string};
 
-function authorizedWebAppInspection(need:RecordedNeed,toolName:string,code:string):boolean {
-  if(typeof need==='string'||need.kind!=='mac-app'||need.humanInputId!==AUTHORIZING_HUMAN_INPUT||typeof need.why!=='string'
-      ||!need.why.includes(AUTHORIZED_WEB_APP)||!need.why.includes(AUTHORIZED_PAGE)
-      ||!COMPUTER_CONTROL.test(toolName))return false;
+function authorizedWebAppNeed(need:RecordedNeed,toolName:string):need is Exclude<RecordedNeed,string> {
+  return typeof need!=='string'&&need.kind==='mac-app'&&need.humanInputId===AUTHORIZING_HUMAN_INPUT
+    &&typeof need.why==='string'&&need.why.includes(AUTHORIZED_WEB_APP)&&need.why.includes(AUTHORIZED_PAGE)
+    &&COMPUTER_CONTROL.test(toolName);
+}
+
+function exactWebAppSelector():string {
   const quoted=AUTHORIZED_WEB_APP.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  return new RegExp(`^\\s*(?:(?:let|const|var)\\s+[A-Za-z_$][\\w$]*\\s*=\\s*)?await\\s+cua\\.getApp\\(\\s*(['"])${quoted}\\1\\s*\\)\\s*;?\\s*$`).test(code);
+  return `cua\\.getApp\\(\\s*(['"])${quoted}\\1\\s*\\)`;
+}
+
+function authorizedWebAppInspection(need:RecordedNeed,toolName:string,code:string):boolean {
+  if(!authorizedWebAppNeed(need,toolName))return false;
+  return new RegExp(`^\\s*(?:(?:let|const|var)\\s+[A-Za-z_$][\\w$]*\\s*=\\s*)?await\\s+${exactWebAppSelector()}\\s*;?\\s*$`).test(code);
 }
 
 function authorizedWebAppRead(need:RecordedNeed,toolName:string,code:string):boolean {
-  if(typeof need==='string'||need.kind!=='mac-app'||need.humanInputId!==AUTHORIZING_HUMAN_INPUT
-      ||typeof need.why!=='string'||!need.why.includes(AUTHORIZED_WEB_APP)||!need.why.includes(AUTHORIZED_PAGE)
-      ||!COMPUTER_CONTROL.test(toolName))return false;
+  if(!authorizedWebAppNeed(need,toolName))return false;
   return /^\s*await\s+app\.(?:getAXState|getAXStateAndScreenshot|getScreenshot)\(\s*\)\s*;?\s*$/.test(code);
+}
+
+function authorizedWebAppInspectorOpen(need:RecordedNeed,toolName:string,code:string):boolean {
+  if(!authorizedWebAppNeed(need,toolName)||!/\bWeb Inspector\b/i.test(need.why))return false;
+  return new RegExp(`^\\s*(?:let|const|var)\\s+app\\s*=\\s*await\\s+${exactWebAppSelector()}\\s*;\\s*await\\s+app\\.pressKey\\(\\s*(['"])alt\\+super\\+i\\2\\s*\\)\\s*;?\\s*$`).test(code);
 }
 
 function namedToolCall(name:RegExp,code:string):boolean {
@@ -43,13 +54,14 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
   const kind=typeof need==='string'?need:need.kind;
   if(platform==='darwin'&&macComputerUseCall(toolName,toolInput)
       &&typeof need!=='string'&&need.humanInputId===AUTHORIZING_HUMAN_INPUT
-      &&!authorizedWebAppInspection(need,toolName,code)&&!authorizedWebAppRead(need,toolName,code))
-    return 'This authorization covers only read-only Computer Use inspection of the exact thnkr.ing web app. Use its recorded bundle and page IDs; do not select another app or the whole screen.';
+      &&!authorizedWebAppInspection(need,toolName,code)&&!authorizedWebAppRead(need,toolName,code)
+      &&!authorizedWebAppInspectorOpen(need,toolName,code))
+    return 'This authorization covers the exact thnkr.ing web app: passive inspection, or opening Web Inspector with the exact-bundle shortcut when that action is named in the recorded Mac-app need. Other app, browser, page input and whole-screen actions remain refused.';
   if(platform==='darwin'&&(CHROME_CONTROL.test(tool)||namedToolCall(CHROME_CONTROL,code)))
     return 'Claude in Chrome controls Tejas’s personal Chrome. Run the website on the server, or use the isolated Mac browser after a recorded server failure.';
   if(platform==='darwin'&&macComputerUseCall(toolName,toolInput)&&kind!=='provider-renewal'
       &&/\b(?:Google Chrome|Chrome|Safari|Thinkering)\b/i.test(code)
-      &&!authorizedWebAppInspection(need,toolName,code))
+      &&!authorizedWebAppInspection(need,toolName,code)&&!authorizedWebAppInspectorOpen(need,toolName,code))
     return code.includes('com.apple.Safari.WebApp.')
       ? 'This Safari web app needs an active Mac-app request naming its exact bundle and page IDs, followed by a direct Computer Use getApp call for that bundle. Reissue the request with Tejas’s authorization; do not ask him to copy the app’s contents.'
       : 'Computer Use cannot target Tejas’s personal browser. Run the website on the server, or use the isolated Mac browser after a recorded server failure.';

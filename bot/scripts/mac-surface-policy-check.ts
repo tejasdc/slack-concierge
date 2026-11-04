@@ -36,20 +36,33 @@ assert.match(macSurfaceRefusal({command:null,need:'',platform:'darwin',toolName:
 assert.match(macSurfaceRefusal({command:null,need:'mac-file',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Voice Memos")'}})??'',/accepted Mac/);
 assert.equal(macSurfaceRefusal({command:null,need:'mac-app',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Voice Memos")'}}),null);
 const webAppNeed={kind:'mac-app',why:'Inspect the already-open thnkr.ing web app com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 page faf63877-6536-4ac6-86e9-5d63e03d3369, directly authorized by Tejas.',humanInputId:'f66f15dd-e251-4537-a9cd-347d0548434b'};
+const webInspectorNeed={...webAppNeed,why:`${webAppNeed.why} Open Web Inspector on that exact app to inspect reachable unsaved editor state.`};
+const webInspectorOpen=`let app = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792'); await app.pressKey('alt+super+i')`;
 const webAppCall="let app = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792');";
 assert.equal(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webAppCall}}),null);
 assert.equal(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await app.getAXState()'}}),null);
-assert.match(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getState()'}})??'',/only read-only/);
-assert.match(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Firefox")'}})??'',/only read-only/);
-assert.match(macSurfaceRefusal({command:null,need:{...webAppNeed,why:'Inspect the Mac app'},platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Firefox")'}})??'',/only read-only/);
+assert.equal(macSurfaceRefusal({command:null,need:webInspectorNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webInspectorOpen}}),null);
+assert.equal(macSurfaceRefusal({command:null,need:webInspectorNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:`let app = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792'); await app.pressKey("alt+super+i")`}}),null);
+for(const need of [webAppNeed,{...webInspectorNeed,humanInputId:'other-human'},{...webInspectorNeed,why:'Open Web Inspector'}])
+  assert.match(macSurfaceRefusal({command:null,need,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webInspectorOpen}})??'',/exact|only|authorization|bundle|page/i);
+for(const code of [
+  `let app = await cua.getApp('Safari'); await app.pressKey('alt+super+i')`,
+  `let app = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792'); await app.pressKey('super+r')`,
+  `let app = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792'); await app.click(42)`,
+  `${webInspectorOpen}; await app.getAXState()`,
+  `await app.pressKey('alt+super+i')`,
+]) assert.ok(macSurfaceRefusal({command:null,need:webInspectorNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code}}));
+assert.match(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getState()'}})??'',/exact thnkr.ing web app/);
+assert.match(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Firefox")'}})??'',/exact thnkr.ing web app/);
+assert.match(macSurfaceRefusal({command:null,need:{...webAppNeed,why:'Inspect the Mac app'},platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Firefox")'}})??'',/exact thnkr.ing web app/);
 assert.match(macSurfaceRefusal({command:null,need:'mac-app',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webAppCall}})??'',/exact bundle and page IDs/);
 assert.match(macSurfaceRefusal({command:null,need:{kind:'mac-app',why:'Inspect the already-open thnkr.ing app com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792'},platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webAppCall}})??'',/exact bundle and page IDs/);
 assert.match(macSurfaceRefusal({command:null,need:{...webAppNeed,humanInputId:'another-human-request'},platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webAppCall}})??'',/exact bundle and page IDs/);
-assert.match(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:"await cua.getApp('Safari')"}})??'',/only read-only/);
+assert.match(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:"await cua.getApp('Safari')"}})??'',/exact thnkr.ing web app/);
 assert.match(macSurfaceRefusal({command:null,need:'mac-app',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:"await cua.getApp('Thinkering')"}})??'',/personal browser/);
-assert.match(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:"await cua.getApp('Thinkering')"}})??'',/only read-only/);
-assert.match(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webAppCall+" await cua.getApp('Safari');"}})??'',/only read-only/);
-assert.match(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'functions.exec',toolInput:{code:`await tools.mcp__cua_repl__js({code:${JSON.stringify(webAppCall)}})`}})??'',/only read-only/);
+assert.match(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:"await cua.getApp('Thinkering')"}})??'',/exact thnkr.ing web app/);
+assert.match(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webAppCall+" await cua.getApp('Safari');"}})??'',/exact thnkr.ing web app/);
+assert.match(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'functions.exec',toolInput:{code:`await tools.mcp__cua_repl__js({code:${JSON.stringify(webAppCall)}})`}})??'',/exact thnkr.ing web app/);
 assert.match(macSurfaceRefusal({command:null,need:'mac-app',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Google Chrome")'}})??'',/personal browser/);
 assert.equal(macSurfaceRefusal({command:null,need:'provider-renewal',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Google Chrome")'}}),null);
 assert.match(macSurfaceRefusal({command:null,need:'provider-renewal',platform:'darwin',toolName:'mcp__claude-in-chrome__navigate',toolInput:{url:'https://claude.ai'}})??'',/personal Chrome/);
