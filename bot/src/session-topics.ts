@@ -667,7 +667,8 @@ function topicView(topicId:string) {
   const session=inboxOrThrow();
   const topic=topicRow(topicId);
   const summary=topicSummary(topic,session,entryIndex(),workIndex(session.id),readIndex(session.id));
-  return {...summary,closure:topic.closure,history:topicHistory(session.id,topicId)};
+  // The stored identity field stays beside the view's own, so every reader of the old answer keeps working.
+  return {...summary,topicId,closure:topic.closure,history:topicHistory(session.id,topicId)};
 }
 function bumped(topic:StoredTopic,change:Partial<StoredTopic>={}):StoredTopic {
   return {...topic,...change,revision:topic.revision+1,updatedAt:nowIso()};
