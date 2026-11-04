@@ -16,7 +16,7 @@ forwarded work, so two messages from the same session but different requests rem
 conversations. These checks run again at the owner rather than trusting the browser's recipient.
 
 Every returned answer carries the same message-thread root and replies to the exact human message
-that prompted it. This applies across the server and Mac peer paths and to overdue or stopped
+that prompted it. This applies across the server and Mac peer paths and to stopped
 terminal posts. An agent may add `--also-main-thread` to a reply when the same words should also be
 visible in the main conversation; the owner writes a separate attributed main-thread post whose
 message-thread root is absent. The flag is refused for an ordinary main-thread request. Human
@@ -79,19 +79,20 @@ parser. A running agent can retain an older bundled parser across a deployment; 
 reply would reject `--answers-question` before the owner could record the answer.
 
 At two minutes without that signal, the recipient receives one service reminder through the same
-live-input channel. At three minutes, the origin records one overdue event, posts a service notice
-in the thread, without waking the Inbox router. Only an ask explicitly carrying `--return-to-requester`
-also sends its requester a return. A late notice that has not been consumed is withdrawn once
-the answer arrives. A late answer is still posted to the
-same thread. The existing fifteen-minute work-stall policy remains separate and resumes after a
-prompt answer. An unavailable agent or sleeping peer cannot promise a semantic answer by a wall
-clock; three minutes is the upper bound before the visible overdue state in the thread.
+live-input channel. At three minutes, the origin records one overdue event in the request ledger.
+No timer event posts in Tejas's thread or notifies him, on either the server or Mac peer path.
+Older timer posts are retired from the Inbox projection with append-only collapse events; their
+request and original post records remain available for diagnosis.
+An ask explicitly carrying `--return-to-requester` still sends the agent requester a return.
+A late answer is posted to the same thread. The existing fifteen-minute work-stall policy remains
+separate and resumes after a prompt answer; its timer events also stay out of his thread.
+An unavailable agent or sleeping peer cannot promise a semantic answer by a wall clock.
 
 The origin owns the due time and answer signal. A peer recipient owns its own reminder timer from
 the instant it accepts the request. Stable reminder input identities and retained reply event IDs
 make retries and restarts idempotent. No timer closes, cancels or resends the underlying work.
 
 For live acceptance, a marked agent test input may reply inside an Inbox thread through the same
-forwarding path. Its stored and displayed author remains agent, and its test overdue does not
-claim Tejas asked the question or wake the Inbox router. This lets the check prove delivery to a
-busy recipient and the returned thread post without impersonating him.
+forwarding path. Its stored and displayed author remains agent. Its test overdue is retained in
+the request record without a thread post or Inbox router wake. This lets the check prove delivery
+to a busy recipient and the returned answer without impersonating him.
