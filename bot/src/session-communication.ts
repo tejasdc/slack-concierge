@@ -2360,7 +2360,7 @@ export class SessionCommunicationCoordinator {
         if (event.kind === 'overdue' && (declared.agentReminder || legacyAgentReminder || declared.held)) {
             const source = getSessionById(request.source_session_id);
             if (!source || !this.messageable({session:source.id,channel:null,root:null,native:true})) {
-                db.query("UPDATE session_communication_events SET status='held',error='Asking agent is unavailable; reminder retained.' WHERE event_id=?").run(event.event_id);
+                db.query("UPDATE session_communication_events SET status='held',error='Asking agent is unavailable; reminder retained.' WHERE event_id=? AND (status IS NOT 'held' OR error IS NOT 'Asking agent is unavailable; reminder retained.')").run(event.event_id);
                 return;
             }
             const inputId = `request-reminder:${event.event_id}`;
@@ -2370,8 +2370,9 @@ export class SessionCommunicationCoordinator {
             const accepted=this.dependencies.owner!.admit({sessionId:source.id,inputId,origin:'service',sourceInputId:request.source_input_id!,sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,text});
             const observed=readInputExecution(accepted);
             const received=observed.acknowledgedAt||observed.turn?.input_context_received_by_turn_id;
-            db.query('UPDATE session_communication_events SET accepted_input_id=?,status=?,error=NULL WHERE event_id=?')
-                .run(inputId,received?'received':accepted.turn_id?'admitted':'held',event.event_id);
+            const status=received?'received':accepted.turn_id?'admitted':'held';
+            db.query('UPDATE session_communication_events SET accepted_input_id=?,status=?,error=NULL WHERE event_id=? AND (accepted_input_id IS NOT ? OR status IS NOT ? OR error IS NOT NULL)')
+                .run(inputId,status,event.event_id,inputId,status);
             return;
         }
         const returnToRequester=returnsToRequester(request,event);
