@@ -11,8 +11,8 @@ export type SessionProject = {name:string;cwd:string};
 // itself a repository (the Mac's ideaflow/, holding team repositories such as Cortex,
 // which were invisible until September 30, 2026). Team repositories keep their own
 // layout, so CLAUDE.md counts as instructions and either file may be a symlink. A
-// nested repository inside a project is never listed, and a workspace child keeps its
-// name over a grouped one. A writing workspace is a child of an Obsidian vault with its own
+// The lab's ignored expertise/ directory is the one supported nested repository group;
+// a workspace child keeps its name over a grouped one. A writing workspace is a child of an Obsidian vault with its own
 // AGENTS.md: Obsidian Sync already keeps its one copy on every device, so it has no
 // Git root and must not be given a second copy to become one (the blogs folder,
 // September 25, 2026). A code project keeps its name when both kinds share one.
@@ -20,7 +20,9 @@ export function sessionProjects(workspaceRoot:string):SessionProject[] {
   const root=realpathSync(workspaceRoot);
   const children=canonicalChildren(root);
   const grouped=children.filter(child=>!isDirectory(join(child,'.git'))&&!isDirectory(join(child,'.obsidian'))).flatMap(canonicalChildren);
-  const code=[...children,...grouped].filter(cwd=>isDirectory(join(cwd,'.git'))&&(resolvesToFile(join(cwd,'AGENTS.md'))||resolvesToFile(join(cwd,'CLAUDE.md'))));
+  const lab=join(root,'agent-ecology');
+  const expertise=isDirectory(join(lab,'.git'))?canonicalChildren(join(lab,'expertise')):[];
+  const code=[...children,...grouped,...expertise].filter(cwd=>isDirectory(join(cwd,'.git'))&&(resolvesToFile(join(cwd,'AGENTS.md'))||resolvesToFile(join(cwd,'CLAUDE.md'))));
   const writing=obsidianVaults(root).flatMap(vault=>canonicalChildren(vault).filter(cwd=>isFile(join(cwd,'AGENTS.md'))));
   const byName=new Map<string,SessionProject>();
   for(const cwd of [...code,...writing]) {
@@ -76,5 +78,6 @@ function resolvesToFile(path:string):boolean {try {return statSync(path).isFile(
 
 /** The registered project a folder belongs to: itself, or the project it is inside. Task lists and instructions belong to the project, not its subfolders. */
 export function containingProject(workspaceRoot:string,cwd:string):SessionProject|null {
-  return sessionProjects(workspaceRoot).find(project=>cwd===project.cwd||cwd.startsWith(`${project.cwd}/`))??null;
+  return sessionProjects(workspaceRoot).filter(project=>cwd===project.cwd||cwd.startsWith(`${project.cwd}/`))
+    .sort((left,right)=>left.cwd.length-right.cwd.length)[0]??null;
 }

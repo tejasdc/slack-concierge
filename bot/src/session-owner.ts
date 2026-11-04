@@ -90,7 +90,7 @@ import {preparedSessionWindow,preparedSessionChanges,preparedInboxAttention,prep
 import {preparedReceiptWindow,preparedReceiptChanges} from './presentation-receipt-reader';
 import {TURN_STATE,inputExecutionFacts,receiptOperationState} from './session-receipt-state';
 import {receiptStatusFromFacts,type InputStatusDetail} from './session-receipt-status';
-import {PROJECT_FOLDERS_OPERATION,type ProjectSetup} from './project-setup';
+import {PROJECT_FOLDERS_OPERATION,PROJECT_NESTED_EXPERTISE_OPERATION,type ProjectSetup} from './project-setup';
 import type {PeerLinks} from './peer-links';
 import {appendTodoFile} from './todo-file';
 import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn} from './saved-work';
@@ -3936,7 +3936,7 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='share'&&parts.length===2&&this.projectSetup)result=await this.projectSetup.share(body);
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='cancel'&&parts.length===2&&this.projectSetup)result=this.projectSetup.cancel(body);
       else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='status'&&parts.length===3&&this.projectSetup)result=this.projectSetup.status(parts[1]!,url.searchParams.get('peer')??undefined);
-      else if(request.method==='GET'&&parts[0]==='status'&&parts.length===1) result={...await this.status(),operations:[...(this.projectSetup?['project.setup',PROJECT_FOLDERS_OPERATION]:[]),...(this.peerLinks?['link.open']:[])]};
+      else if(request.method==='GET'&&parts[0]==='status'&&parts.length===1) result={...await this.status(),operations:[...(this.projectSetup?['project.setup',PROJECT_FOLDERS_OPERATION,PROJECT_NESTED_EXPERTISE_OPERATION]:[]),...(this.peerLinks?['link.open']:[])]};
       else if(request.method==='GET'&&parts[0]==='releases'&&parts.length===1) result=await releaseHistory();
       else if(request.method==='GET'&&parts[0]==='files'&&parts.length===1) result=await this.file(url.searchParams.get('path'),url.searchParams.get('machine'));
       else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='instructions'&&parts.length===3) result=this.projectInstructions(parts[1]!);

@@ -251,8 +251,10 @@ mirrors the whole workspace. `projects status` reads the retained order locally.
 
 `project.setup` is a typed durable operation beside session requests on the authenticated
 peer listener. Its body contains only order ID, operation kind, project name, origin
-identity and the organizer's accepted one-level grouping folder, if any. Every new order waits as
-needing an update until the peer advertises the placement contract, so an older peer never
+identity and the organizer's accepted grouping folder, if any: one plain folder or the lab's
+`agent-ecology/expertise` nesting. The nested group also requires the registered lab parent
+and its `/expertise/` ignore rule on the receiving machine. Every new order waits as
+needing an update until the peer advertises the applicable placement contract, so an older peer never
 places a grouped project at the top of its workspace. A project the receiver already holds
 in the other placement is reported present and left where it is. The receiver builds the fixed `tejasdc` HTTPS URL and local workspace destination.
 It clones with an argument list, disabled hooks, submodules, non-HTTPS transports, LFS
