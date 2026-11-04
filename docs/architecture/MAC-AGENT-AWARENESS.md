@@ -62,11 +62,13 @@ This is a tool boundary;
 arbitrary programs outside the managed provider stream remain
 outside it. See [peer instances](../runbooks/PEER-INSTANCES.md#what-runs-on-the-mac).
 
-The question gate accepts a device-only claim only when its question names a physical
-prerequisite and does not ask Tejas to operate an app or website. The agent first uses
-its computer-use route. If that route reaches a physical prerequisite such as unlocking
-his physical Mac, the question names that prerequisite instead of asking him to perform the app
-action.
+The question gate accepts a device-only claim when its question names one action on a
+physical device. The agent first uses its available device route. If that route reaches
+a physical prerequisite such as unlocking his Mac, the question names that prerequisite.
+Starting one named app on an e-reader, watch or TV can also be a physical prerequisite:
+for example, KOReader must be started on a Kindle before it exposes an agent connection.
+The required explanation says which route was tried and why the agent cannot do that
+step itself. A generic request to open an app or website remains refused.
 
 The Mac session owner observes Claude and Codex tool starts in the existing provider
 progress stream. The server owner also observes tool calls that SSH to Tejas's Mac,
