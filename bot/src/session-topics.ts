@@ -2341,28 +2341,65 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
  */
 export function fileWorkerNeedInThread(input:{respondingSessionId:number;turnInputId:string;runId:string;eventId:string;text:string}):string|null {
   const turnInput=getAcceptedSessionInput(input.turnInputId);
-  const human=turnInput?sessionInputProvenance(turnInput)?.originatingHuman:null;
+  const provenance=turnInput?sessionInputProvenance(turnInput):null;
+  const human=provenance?.originatingHuman;
   const askedIn=human?conciergeSessionNumber(human.sessionId):null;
   const inbox=askedIn!==null?getSessionById(askedIn):null;
   if(!human||!inbox||!sessionMetadata(inbox).inbox||inbox.id===input.respondingSessionId)return null;
-  // The request carrying his originating message's thread, else the latest thread this Inbox sent this worker.
+  // Only the request that delivered this turn can name its thread. A prior request to the
+  // same worker may belong to another topic and must not capture this question.
   const request=(db.query(`SELECT request_id,thread_root_input_id FROM session_communication_requests
-      WHERE target_session_id=? AND source_session_id=? AND thread_root_input_id IS NOT NULL
-      ORDER BY (thread_root_input_id=?) DESC,created_at_ms DESC LIMIT 1`)
-    .get(input.respondingSessionId,inbox.id,human.inputId)) as {request_id:string;thread_root_input_id:string}|null;
+      WHERE request_id=? AND target_session_id=? AND source_session_id=? AND target_input_id=? AND thread_root_input_id IS NOT NULL
+      LIMIT 1`)
+    .get(provenance?.requestId,input.respondingSessionId,inbox.id,input.turnInputId)) as {request_id:string;thread_root_input_id:string}|null;
   if(!request)return null;
   const root=inboxRequestRoot(db,request.request_id,request.thread_root_input_id)??request.thread_root_input_id;
   refreshRootMemo();
   const topicId=topicOfRoot(root);
   if(!topicId)return null;
   const respondingSessionId=`concierge:${input.respondingSessionId}`;
-  if(topicQuestions(topicId).some(question=>sameAsk(question,respondingSessionId,input.runId)))return null;
+  const covered=topicQuestions(topicId).find(question=>sameAsk(question,respondingSessionId,input.runId));
+  if(covered)return covered.questionId;
   const post=postForwardedThreadAnswer({inboxSessionId:inbox.id,eventId:`need:${input.eventId}`,requestId:request.request_id,root,
     inboxInputId:request.thread_root_input_id,respondingSessionId,text:input.text,attachments:[],stalled:false,final:false,workDisposition:null});
   if(!post)return null;
   fileAgentAnswer({inboxSessionId:inbox.id,root,postId:post,eventId:`need:${input.eventId}`,dispatchRequestId:request.request_id,
     respondingSessionId,respondingTitle:sessionAuthor(respondingSessionId)?.title??null,disposition:'needs_decision',text:input.text,askedInRun:input.runId});
   return post;
+}
+/** Keep an Inbox-origin question reachable when its exact dispatch has no usable thread. */
+export function fileWorkerNeedWithoutThread(input:{respondingSessionId:number;turnInputId:string;runId:string;eventId:string;text:string}):string|null {
+  const turnInput=getAcceptedSessionInput(input.turnInputId);
+  const provenance=turnInput?sessionInputProvenance(turnInput):null;
+  const inboxOrigin=provenance?.originatingHuman?.sessionId
+    ??(provenance?.effectScope==='work'?provenance.source?.sessionId:null);
+  const askedIn=inboxOrigin?conciergeSessionNumber(inboxOrigin):null;
+  const inbox=askedIn!==null?getSessionById(askedIn):null;
+  if(!inbox||!sessionMetadata(inbox).inbox||!input.text.trim())return null;
+  const respondingSessionId=`concierge:${input.respondingSessionId}`;
+  const covered=db.query(`SELECT question_id FROM inbox_questions WHERE kind='decision'
+    AND json_extract(owner_json,'$.sessionId')=? AND json_extract(owner_json,'$.askedInRun')=? LIMIT 1`)
+    .get(respondingSessionId,input.runId) as {question_id:string}|null;
+  if(covered)return covered.question_id;
+  const root=input.eventId,postId=`post:worker-need:${input.eventId}`;
+  const title=sessionAuthor(respondingSessionId)?.title??'Agent question';
+  db.transaction(()=>{
+    // The action input is accepted in the worker session and gives this Inbox post a stable root.
+    // Its provenance remains agent-authored; the Inbox never presents it as Tejas's message.
+    if(!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(postId))
+      recordSessionEvent({eventId:postId,sessionId:inbox.id,inputId:root,kind:'post',
+        payload:{text:input.text.trim(),postedBy:'owner-forward',postedBySession:respondingSessionId}});
+    if(!topicOfRoot(root)){
+      const by:TopicBy={kind:'owner',sessionId:respondingSessionId};
+      const created=createTopic(inbox,by,{title:`Question from ${title}`,roots:[root],
+        areaIds:[ensureSystemNoticeArea(inbox.id)],reason:'The Inbox request had no usable thread when its agent asked Tejas.'});
+      recordOwnerTopicChange(inbox.id,`topic-worker-need:${input.eventId}`,created.change.kind,created.change.payload);
+    }
+    fileAgentAnswer({inboxSessionId:inbox.id,root,postId,eventId:`need:${input.eventId}`,
+      dispatchRequestId:`need:${input.eventId}`,respondingSessionId,
+      respondingTitle:title,disposition:'needs_decision',text:input.text,askedInRun:input.runId});
+  })();
+  return postId;
 }
 /** The server owns the Inbox decision for an exact Mac request; the Mac sends only its outcome fact. */
 export function filePeerWorkerNeedInThread(input:{requestId:string;inboxSessionId:number;threadRootInputId:string|null;

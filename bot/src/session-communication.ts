@@ -9,7 +9,7 @@ import { inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, mes
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
 import { followForwardedReply, forwardedReplyFraming } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
-import { expireQuestionsForFinalReply, fileWorkerNeedInThread, invalidateTopicRoots, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
+import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWithoutThread, invalidateTopicRoots, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordRequesterDecisionReturn, recordTurnOutcome, turnDeclaredByAction, withdrawOpenNeed, type DeclaredTurnOutcome } from './session-turn-outcome';
 import {turnRoutedHumanInput} from './inbox-routing-result';
@@ -815,8 +815,11 @@ export class SessionCommunicationCoordinator {
             // A worker on an Inbox thread waiting on him reaches him through that thread; its own
             // needs_you is left to the Inbox by thnkr.ing, which would otherwise never hear of it.
             if(input.outcome==='needs_you'&&!sessionMetadata(getSessionById(actor.session)!).inbox){
-                try{fileWorkerNeedInThread({respondingSessionId:actor.session,turnInputId:actor.inputId!,runId:nativeRunId(actor.turn),eventId:saved.input.id,text:stated});}
+                const need={respondingSessionId:actor.session,turnInputId:actor.inputId!,runId:nativeRunId(actor.turn),eventId:saved.input.id,text:stated};
+                let filed:string|null=null;
+                try{filed=db.transaction(()=>fileWorkerNeedInThread(need))();}
                 catch(error){log('error','worker_need_thread_filing_failed',{session:actor.session,input:saved.input.id,message:error instanceof Error?error.message:String(error)});}
+                if(!filed)fileWorkerNeedWithoutThread(need);
                 this.dependencies.peers?.recordTurnNeed(this.peerActor(actor),`turn_outcome:action:${saved.input.id}`,stated);
             }
             return {...receipt,duplicate:false};
