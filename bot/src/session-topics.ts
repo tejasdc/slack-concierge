@@ -12,7 +12,7 @@ import {answerClosingLine} from './answer-closing-line';
 import {inboxRequestRoot} from './inbox-request-root';
 import type {OpenNeed} from './session-turn-outcome';
 import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
-import {log} from './log';
+import {errorFields,log} from './log';
 import {latestWorkerProgress} from './worker-progress';
 import {approvalDecision} from './decision-approval';
 import {hisWordsLine,notSeenWorking,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
@@ -626,10 +626,21 @@ function humanMutation(sessionId:number,clientActionId:string,payload:unknown,ru
       record(sessionId,saved.input.id,null,change);
       recordMs=performance.now()-phaseStart;
       phaseStart=performance.now();phaseName='receipt';
-      db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',result}),saved.input.id);
+      // His app answers an action with the thread as it now stands, so the answer is the thread view
+      // at the revision just recorded, saved with the receipt so a retry returns the same bytes. The
+      // stored record alone had no id or messages; the app threw on it and called a saved pin
+      // pending (2026-11-04, report e0889a03).
+      // The view is the answer the app wants, never a reason to refuse an action already recorded:
+      // if it cannot be computed, the stored record answers (the app reads its revision too).
+      let answered=result;
+      if(result.topic&&typeof result.topic.topicId==='string'){
+        try{answered={...result,topic:topicView(result.topic.topicId)};}
+        catch(error){log('warn','inbox_topic_answer_view_failed',{topic_id:result.topic.topicId,...errorFields(error)});}
+      }
+      db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',result:answered}),saved.input.id);
       receiptMs=performance.now()-phaseStart;
       phaseName='commit';
-      return {...result,duplicate:false};
+      return {...answered,duplicate:false};
     })();
     completed=true;
     return result;
@@ -650,6 +661,14 @@ function humanMutation(sessionId:number,clientActionId:string,payload:unknown,ru
         duplicate,outcome:completed?'completed':'failed'});
     }
   }
+}
+/** One thread as the app's lists and thread view show it, computed from the ledger as it stands now. */
+function topicView(topicId:string) {
+  const session=inboxOrThrow();
+  const topic=topicRow(topicId);
+  const summary=topicSummary(topic,session,entryIndex(),workIndex(session.id),readIndex(session.id));
+  // The stored identity field stays beside the view's own, so every reader of the old answer keeps working.
+  return {...summary,topicId,closure:topic.closure,history:topicHistory(session.id,topicId)};
 }
 function bumped(topic:StoredTopic,change:Partial<StoredTopic>={}):StoredTopic {
   return {...topic,...change,revision:topic.revision+1,updatedAt:nowIso()};
