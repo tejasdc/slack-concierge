@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {macSurfaceRefusal,RETIREMENT_FILE_MENU_PROGRAM} from '../src/mac-surface-policy';
+import {macSurfaceRefusal,RETIREMENT_FILE_MENU_PROGRAM,RETIREMENT_NEW_WINDOW_PROGRAM} from '../src/mac-surface-policy';
 import {parseMachineNeed} from '../src/machine-need';
 import {deviceQuestionNamesPhysicalPrerequisite} from '../src/agent-reachable-app-question';
 
@@ -44,6 +44,30 @@ const retirementRead="var thnkrRetirementInspectionApp = await cua.getApp('com.a
 for(const code of [retirementCall,retirementRead])
   assert.equal(macSurfaceRefusal({command:null,need:retirementNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code}}),null);
 assert.equal(macSurfaceRefusal({command:null,need:retirementNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:RETIREMENT_FILE_MENU_PROGRAM}}),null);
+const retirementNewWindowNeed={...retirementNeed,why:`${retirementNeed.why}; select native New Window`};
+assert.equal(macSurfaceRefusal({command:null,need:retirementNewWindowNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:RETIREMENT_NEW_WINDOW_PROGRAM}}),null);
+for(const need of [retirementNeed,{...retirementNewWindowNeed,effectScope:'informational'},
+  {...retirementNewWindowNeed,humanInputId:'capture:other'},
+  {...retirementNewWindowNeed,why:retirementNewWindowNeed.why.replace('exact53 retirement','old recovery')},
+  {...retirementNewWindowNeed,why:retirementNewWindowNeed.why.replace('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792','com.apple.Safari.WebApp.other')}])
+  assert.ok(macSurfaceRefusal({command:null,need,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:RETIREMENT_NEW_WINDOW_PROGRAM}}));
+for(const code of [RETIREMENT_NEW_WINDOW_PROGRAM.replace('New Window$/gm','Close Window$/gm'),
+  RETIREMENT_NEW_WINDOW_PROGRAM.replace('getAXState({disableDiffing:true})','getAXState()'),
+  `${RETIREMENT_NEW_WINDOW_PROGRAM}\nawait thnkrRetirementNewWindowApp.click(1);`])
+  assert.ok(macSurfaceRefusal({command:null,need:retirementNewWindowNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code}}));
+{
+  const clicks:number[]=[];
+  const app={getAXState:async()=>`Window: "thnkr.ing", App: Thinkering.\n0 File, Secondary Actions: Cancel, Pick\n\t1 menu Secondary Actions: Cancel\n\t\t2 New Window\n\t\t3 Close Window`,click:async(index:number)=>{clicks.push(index);},getAXStateAndScreenshot:async()=>({state:'after'})};
+  await new Function('cua',`return (async()=>{${RETIREMENT_NEW_WINDOW_PROGRAM}})()` )({getApp:async()=>app});
+  assert.deepEqual(clicks,[2]);
+  for(const menu of [`Window: "thnkr.ing", App: Thinkering.\n0 File, Secondary Actions: Cancel, Pick\n\t1 menu Secondary Actions: Cancel\n\t\t2 Close Window`,
+    `Window: "Safari", App: Safari.\n0 File, Secondary Actions: Cancel, Pick\n\t1 menu Secondary Actions: Cancel\n\t\t2 New Window`]) {
+    const refusedClicks:number[]=[];
+    const wrongApp={...app,getAXState:async()=>menu,click:async(index:number)=>{refusedClicks.push(index);}};
+    await assert.rejects(new Function('cua',`return (async()=>{${RETIREMENT_NEW_WINDOW_PROGRAM}})()` )({getApp:async()=>wrongApp}));
+    assert.deepEqual(refusedClicks,[]);
+  }
+}
 for(const code of [RETIREMENT_FILE_MENU_PROGRAM.replace('File$/gm','Edit$/gm'),
   RETIREMENT_FILE_MENU_PROGRAM.replace('getAXState({disableDiffing:true})','getAXState()'),
   `${RETIREMENT_FILE_MENU_PROGRAM}\nawait thnkrRetirementMenuApp.click(1);`])
@@ -71,6 +95,8 @@ for(const code of ["await cua.getApp('Safari')",'await cua.getState()',"await cu
   assert.ok(macSurfaceRefusal({command:null,need:retirementNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code}}),code);
 for(const need of [retirementNeed,recoveryNeed])
   assert.ok(macSurfaceRefusal({command:null,need,platform:'darwin',toolName:'functions.exec',toolInput:{code:'await tools.mcp__cua_repl__js({code:"await cua.getState()"})'}}));
+for(const need of [webAppNeed,canvasNeed,recoveryNeed])
+  assert.ok(macSurfaceRefusal({command:null,need,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:RETIREMENT_NEW_WINDOW_PROGRAM}}));
 for(const need of [{...retirementNeed,effectScope:'informational'},
   {...retirementNeed,humanInputId:'capture:other'},
   {...retirementNeed,why:retirementNeed.why.replace('exact53 retirement','old recovery')},
