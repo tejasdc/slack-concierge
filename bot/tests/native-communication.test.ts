@@ -6,6 +6,7 @@ import {SessionCommunicationCoordinator} from '../src/session-communication';
 import {attachSessionSteering,getAcceptedSessionInput,nativeRunId,retainSessionInput,updateSessionMetadata,sessionInputProvenance} from '../src/session-inputs';
 import {acquireDatabaseTestLock} from './db-lock';
 import {inboxHistoryAfter,inboxMessage,postForwardedThreadAnswer} from '../src/session-inbox';
+import {preparedInboxDisplay} from '../src/presentation-inbox-display';
 
 let unlock:()=>void,owner:SessionOwner,communication:SessionCommunicationCoordinator;
 let steeringMode:'sent'|'pending',errors:unknown[];
@@ -68,6 +69,8 @@ test('a prompt answer followed by a bodyless final keeps one thread post with cl
   expect(inboxMessage(row)).toMatchObject({content:'The answer to your question.',closingLine:'Completed · Checked on the real system: the thread shows one answer.'});
   expect(inboxHistoryAfter(getSessionById(inboxId)!,firstSequence,10)).toEqual([
     expect.objectContaining({id:first,content:'The answer to your question.',closingLine:'Completed · Checked on the real system: the thread shows one answer.'})]);
+  expect(preparedInboxDisplay(db,inboxId,firstSequence,first)?.preview.closingLine)
+    .toBe('Completed · Checked on the real system: the thread shows one answer.');
 });
 
 test('the request owner accepts a bodyless final only after that request has a prompt answer',async()=>{
@@ -95,6 +98,27 @@ test('separate identical answers remain visible unless one command explicitly gr
   postForwardedThreadAnswer({...base,eventId:'grouped-one',requestId:'request-three',answerGroup:'one-command'});
   postForwardedThreadAnswer({...base,eventId:'grouped-two',requestId:'request-four',answerGroup:'one-command'});
   expect(db.query("SELECT count(*) AS n FROM session_owner_events WHERE kind='post'").get()).toEqual({n:3});
+});
+
+test('separate final replies from one run share a post while retaining each request closure',async()=>{
+  const inbox=session(),inboxId=Number(inbox.session.id.slice(10));
+  const root=(db.query('SELECT id FROM session_inputs WHERE session_id=? ORDER BY rowid LIMIT 1').get(inboxId) as {id:string}).id;
+  const base={inboxSessionId:inboxId,root,inboxInputId:root,respondingSessionId:'concierge:worker',
+    text:'The fixture is complete.',attachments:[],stalled:false,final:true,workDisposition:'completed',
+    closingLine:'Completed · Checked on the real system: four requests settled.',
+    answerSource:{inputId:'request:fixture-control',runId:'one-worker-run'}};
+  const posts=['one','two','three','four'].map(id=>postForwardedThreadAnswer({...base,eventId:`final-${id}`,requestId:`request-${id}`}));
+  expect(new Set(posts).size).toBe(1);
+  expect(db.query("SELECT count(*) AS n FROM session_owner_events WHERE kind='post'").get()).toEqual({n:1});
+  expect(db.query("SELECT count(*) AS n FROM session_owner_events WHERE kind='answer_closure'").get()).toEqual({n:4});
+  const firstSequence=(db.query('SELECT sequence FROM session_owner_events WHERE event_id=?').get(posts[0]!) as {sequence:number}).sequence;
+  expect(preparedInboxDisplay(db,inboxId,firstSequence,posts[0]!)?.preview.closingLine)
+    .toBe('Completed · Checked on the real system: four requests settled.');
+  const requestIds=(db.query("SELECT json_extract(payload_json,'$.requestId') AS requestId FROM session_owner_events WHERE kind='answer_closure' ORDER BY sequence").all() as {requestId:string}[]).map(row=>row.requestId);
+  expect(requestIds).toEqual(['request-one','request-two','request-three','request-four']);
+  const different=postForwardedThreadAnswer({...base,eventId:'final-different',requestId:'request-five',
+    closingLine:'Failed · Checked on the real system: the fifth request failed.'});
+  expect(different).not.toBe(posts[0]);
 });
 
 test('one explicit multi-request reply produces one return without comparing answer text',async()=>{
