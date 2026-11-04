@@ -27,7 +27,7 @@ outside it. See [peer instances](../runbooks/PEER-INSTANCES.md#what-runs-on-the-
 The question gate accepts a device-only claim only when its question names a physical
 prerequisite and does not ask Tejas to operate an app or website. The agent first uses
 its computer-use route. If that route reaches a physical prerequisite such as unlocking
-the Mac, the question names that prerequisite instead of asking him to perform the app
+his physical Mac, the question names that prerequisite instead of asking him to perform the app
 action.
 
 The Mac session owner observes Claude and Codex tool starts in the existing provider
