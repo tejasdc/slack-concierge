@@ -90,7 +90,7 @@ Routes (`/runner/v1/*`, runner token required unless noted):
 
 | Route | Rule |
 | --- | --- |
-| `claim {kinds}` | oldest queued job of those kinds, new attempt at epoch 1, 90 s lease; `job:null` when none |
+| `claim {kinds}` | oldest queued job of those kinds, new attempt at epoch 1, five-minute lease; `job:null` when none |
 | `heartbeat {attemptId, epoch}` | extends the lease (runner sends every 15 s), returns unanswered commands |
 | `events {attemptId, epoch, events:[{seq, frame}]}` | stores only the contiguous run after the cursor; answers `ackedSeq`; resends store nothing twice |
 | `command-results {…, results:[{commandId, result}]}` | the first result per command id stands |
@@ -160,6 +160,12 @@ What happens for a turn on a runner:
    host journal after the last stored `h` and keeps going. A lease that passes makes the job
    `unconfirmed`: the owner settles it from the provider's recorded exit if the events hold one, or as
    lost (interrupted, never replayed); a runner whose attempt is refused stops that host.
+7. **Fencing both ways.** Leases last five minutes. A runner that has not reached the owner for four
+   minutes stops its agents itself, so no agent acts after the owner could have settled its turn as
+   lost and a later turn resumed the conversation elsewhere. At its start the owner extends every live
+   lease from now, so its own downtime never counts against a runner. A later owner withdraws a job
+   no runner claimed yet, holds a claimed job until its runner reports the host, and records a
+   takeover as live (survival proof) only once the runner reaches it after the takeover.
 
 Survival through owner updates uses the existing rule: `claude-code/runner` counts as surviving only
 after one such run was taken over live by a later owner. Until then updates wait for runner turns.
