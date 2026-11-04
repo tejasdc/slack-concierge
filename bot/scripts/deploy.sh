@@ -719,6 +719,11 @@ prune_old_releases() {
   ionice -c3 nice -n19 env CONCIERGE_STATE_DIR="$STATE_DIR" \
     "$BUN_BIN" run "$CANDIDATE_ARTIFACT_PATH/control/release-manager.js" prune \
     || echo "Old release pruning failed; the next update retries it." >&2
+  # A healthy update was just promoted, so earlier pre-repair copies have done their job; those the
+  # nightly off-box backup has captured, and incident database copies past their window, are retired.
+  ionice -c3 nice -n19 env CONCIERGE_STATE_DIR="$STATE_DIR" \
+    "$BUN_BIN" run "$CANDIDATE_ARTIFACT_PATH/control/migrate-deployment-repair.js" --retire-captured \
+    || echo "Retiring captured ledger copies failed; the next update retries it." >&2
 }
 
 install_router_actions() {
