@@ -43,8 +43,8 @@ request evidence remain in the catalogue and visible Inbox history.
 When the Inbox asks another session to work on a named thread, the owner posts that session's
 answers, final result, failure and cancellation into the thread under the answer's exact event
 identity. The request's status remains readable with `sessions get`; the Inbox router does not
-receive a second runnable copy. An ask that truly needs its result to continue routing says
-`--return-to-requester`. A 15-minute unresolved-request reminder goes to the asking agent with
+receive a second runnable copy for ordinary replies. An ask that truly needs its result to continue routing says
+`--return-to-requester`; a final hand-back always gives the asking agent an actionable copy while its answer stays in the thread once. A 15-minute unresolved-request reminder goes to the asking agent with
 the exact request summary or words, not into Tejas's thread. A provider hold that only the
 asking agent can follow up on uses the same destination. A stopped run at Tejas's request stays a quiet service note; other terminal
 failures create a reading item in that thread. New reply and notice posts commit beside the

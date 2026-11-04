@@ -21,10 +21,12 @@ export function routeTitle(database:Database,topicId:string|null|undefined,sessi
   return local?.title??sessionId;
 }
 
-/** Thread custody discharges delivery; waking the asker is a separate, explicit effect. */
-export function returnsToRequester(request:{thread_root_input_id:string|null;payload_json:string}):boolean {
+/** Thread custody discharges ordinary delivery; a final hand-back needs the asker to act. */
+export function returnsToRequester(request:{thread_root_input_id:string|null;payload_json:string},event?:{kind:string;payload_json:string}):boolean {
   const payload=JSON.parse(request.payload_json);
-  return payload.returnToRequester===true||(!request.thread_root_input_id&&!payload.forwardedReply);
+  const handBack=event?.kind==='final'?JSON.parse(event.payload_json).handBack:null;
+  return payload.returnToRequester===true||handBack==='not-my-subject'||handBack==='too-loaded'
+    ||(!request.thread_root_input_id&&!payload.forwardedReply);
 }
 
 /** The queue and live dispatcher refuse old copies before reconciliation withdraws them. */
@@ -35,7 +37,10 @@ export function threadOnlyReturnInputSql(input:string):string {
     AND request.source_session_id=${input}.session_id
     AND (request.thread_root_input_id IS NOT NULL OR json_extract(request.payload_json,'$.forwardedReply') IS NOT NULL
       OR json_extract(request.payload_json,'$.routedMessage') IS NOT NULL)
-    AND coalesce(json_extract(request.payload_json,'$.returnToRequester'),0)<>1)`).join(' OR ')})`;
+    AND coalesce(json_extract(request.payload_json,'$.returnToRequester'),0)<>1
+    AND NOT EXISTS (SELECT 1 FROM ${table.replace('requests','events')} event
+      WHERE ${input}.id='return:'||event.event_id AND event.request_id=request.request_id
+        AND event.kind='final' AND json_extract(event.payload_json,'$.handBack') IN ('not-my-subject','too-loaded')))`).join(' OR ')})`;
 }
 
 /** The request's own placed root owns its answer, even if the sender named another thread. */
