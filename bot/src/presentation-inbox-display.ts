@@ -51,6 +51,10 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
       detailRef:{sessionId:`concierge:${sessionId}`,messageId:row.event_id}},detailJson:JSON.stringify(full)};
   }
   const result=row.kind==='result',post=row.kind==='post',request=row.kind==='request',agent=result||post||request;
+  const promptInputId=request&&typeof event.requestId==='string'
+    ?((database.query('SELECT source_input_id AS id FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(event.requestId,sessionId)
+      ??database.query('SELECT source_input_id AS id FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(event.requestId,sessionId)) as {id:string|null}|null)?.id
+    :null;
   const displayedRoot=post||request?inboxRootResolver(database)(sessionId,row.event_id)??row.input_id:row.input_id;
   const content=post?event.text??'':request?threadRequestDisplay(database,event):result?event.text??row.agent_text??'':payload.text??'';
   const attachmentIds=result||post?event.attachments:payload.attachments;
@@ -93,6 +97,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
     content:typeof content==='string'?content:String(content),tool:null,phase:null,...(row.input_id?{inputId:request?row.event_id:displayedRoot}:{}),
     ...(!agent&&typeof outsideAgent==='string'?{author:{kind:'agent',outsideAgent:{name:outsideAgent,label:`Outside agent · ${outsideAgent}`}}}:{}),
     ...(request?{author:{kind:'agent',session:authorSessionOf(database,`concierge:${sessionId}`),communication:'request',requestId:event.requestId},
+      ...(promptInputId?{promptInputId}:{}),
       ...(displayedRoot!==row.event_id?{replyToMessage:{kind:'message',sessionId:`concierge:${sessionId}`,messageId:displayedRoot}}:{})}:{}),
     ...(result&&typeof payload.messageThreadRootId==='string'&&row.input_id?{replyToMessage:{kind:'message',sessionId:`concierge:${sessionId}`,messageId:row.input_id}}:{}),
     ...(post?{replyToMessage:displayedRoot!==row.input_id?{kind:'message',sessionId:`concierge:${sessionId}`,messageId:displayedRoot}:event.replyToMessage,author:{kind:event.postedBy==='service'?'service':'agent',communication:'post',
@@ -116,6 +121,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
     ...(typeof full.closingLine==='string'?{closingLine:bounded(full.closingLine,512).text}:{}),
     ...(full.communicationKind==='suggestion'?{communicationKind:'suggestion'}:{}),
     ...(full.replyToMessage?{replyToMessage:full.replyToMessage}:{}),
+    ...(full.promptInputId?{promptInputId:full.promptInputId}:{}),
     ...(full.messageThreadRootId?{messageThreadRootId:full.messageThreadRootId}:{}),
     ...(full.routedBy?{routedBy:full.routedBy}:{}),...(full.routedTo?{routedTo:full.routedTo}:{}),
     ...(full.routedToAll?{routedToAll:full.routedToAll}:{}),...(full.relayed?{relayed:true}:{}),

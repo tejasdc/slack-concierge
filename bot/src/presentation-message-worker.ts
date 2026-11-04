@@ -239,7 +239,7 @@ async function upgradeAnswerClosures(generation:number){
 /** Reproject handoffs and attributed answers after their display changes. */
 async function upgradeRequestRoots(generation:number){
   const version=(prepared.query('SELECT request_roots_version AS version FROM presentation_message_meta WHERE singleton=1').get() as {version:number}).version;
-  if(version>=7)return;
+  if(version>=8)return;
   const resolveRoot=inboxRootResolver(source),changedRoots=new Set<string>();
   let after=0;
   while(true){
@@ -294,7 +294,7 @@ async function upgradeRequestRoots(generation:number){
   }
   prepared.transaction(()=>{keepLease();topics.apply(generation,[],changedRoots);})();
   while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
-  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET request_roots_version=7 WHERE singleton=1').run();})();
+  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET request_roots_version=8 WHERE singleton=1').run();})();
 }
 const insertTopicEvent=prepared.query(`INSERT INTO presentation_topic_events(generation,topic_id,event_sequence,session_id,event_id)
   VALUES(?,?,?,?,?) ON CONFLICT(generation,event_sequence) DO UPDATE SET topic_id=excluded.topic_id`);
@@ -532,7 +532,7 @@ async function rebuild() {
     await rebuildAreaPages(generation);
     prepared.transaction(()=>{
       keepLease();
-      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=7,answer_closures_version=2,marked_reply_roots_version=1,agent_request_visibility_version=1,routing_result_visibility_version=1 WHERE singleton=1')
+      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=8,answer_closures_version=2,marked_reply_roots_version=1,agent_request_visibility_version=1,routing_result_visibility_version=1 WHERE singleton=1')
         .run(generation,after,startHead);
       cards.activate(generation,startHead);
       receipts.activate(generation,startHead);

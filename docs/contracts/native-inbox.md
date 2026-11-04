@@ -397,6 +397,10 @@ by the human message itself can stay as a handoff attached to that message. One 
 identity yields one visible handoff in either placement, while its return still follows
 the named thread root. This lets an audit reopen an October request in November without
 making the October message appear to have been sent again.
+Prepared request messages carry the request's source input as `promptInputId`, separate
+from their `replyToMessage` return address. The prepared-message worker refreshes earlier
+request displays on upgrade, so the distinction remains readable for reopened work sent
+before the browser change reached a device.
 
 Both server and Mac startup reconcile requests placed after their answers arrived: they close
 the answered request and move its existing reading item without notifying twice.
