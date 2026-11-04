@@ -241,7 +241,9 @@ router. The questions read carries the same per group. A human input to the Inbo
 applies its default. A reply addressed to an agent is retained in the Inbox as his message
 (`accepted` event `forwarded:<input>`, receipt `{state:'waiting', forwardedTo}`, a `topic`
 event `change:'forwarded'`), starts no router turn, and is carried to the agent as a communication
-request (action `forward:<input>`, payload `forwardedReply`); each of the agent's replies is posted
+request (action `forward:<input>`, payload `forwardedReply`, its operation receipt naming
+`requestId` and `sourceInputId` like every other ask, so thnkr.ing draws the reply route and its
+request as one hand-off card with one status); each of the agent's replies is posted
 into the thread as a `post` by that agent (`postedBy:'owner-forward'`, `postedBySession`), a stall
 as a service post, and the final settles the receipt. Until then the receipt follows the request
 that carries it (`followForwardedReply`, on every execution change and every Mac poll): `queued`
@@ -590,7 +592,7 @@ additive to everything above, carry a request between two instances' ledgers:
 | `POST /sessions/v1/projects/share` | Owner socket only: `{name,to,source?:{input,run}}`. Requires a registered local Git project with matching `tejasdc` origin and pushed branch. Records one durable order for the named peer. |
 | `GET /sessions/v1/projects/:name/status?peer=…` | Reads local retained orders with peer, state, result and creation time; no peer connection is needed. |
 | `POST /sessions/v1/projects/cancel` | Owner socket only: `{name,to}`. Cancels an order only while it is still recorded and no delivery attempt is in flight; it does not remove a project. |
-| `POST /sessions/v1/peers/operations` | Peer receiver: exact `{orderId,kind:"project.setup",origin,project,folder?}`. `folder` is one plain grouping folder accepted by the organizer; the receiver derives its own path, validates the destination and fixed GitHub origin, then returns the retained outcome. |
+| `POST /sessions/v1/peers/operations` | Peer receiver: exact `{orderId,kind:"project.setup",origin,project,folder?}`. `folder` is the organizer's accepted plain grouping folder or the lab's established `agent-ecology/expertise` nesting; the receiver derives its own path, validates the destination and group-specific GitHub origin, then returns the retained outcome. A nested expertise order waits until the receiver advertises `project.setup.expertise.v1`. |
 | `GET /sessions/v1/peers/operations/:orderId` | Sender pulls the receiver's retained outcome; this complements the push. |
 | `POST /sessions/v1/peers/operations/:orderId/outcome` | Receiver pushes `{outcome}` to the origin. Sender retains one terminal result and returns it to the requesting session when source identity exists. |
 | `POST /sessions/v1/peers/project-notices` | A Mac owner without a local Inbox forwards one retained project notice `{orderId,sourcePeer,kind,text}` to the cloud owner. The cloud owner uses the existing provider-free notice and topic filing path; the sender retries until acknowledged. |
