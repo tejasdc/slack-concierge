@@ -386,6 +386,14 @@ forwarded to an agent for its current topic. The move would silently relocate th
 reply's later answers and requested notifications. Route the exact human message
 instead; its source remains visible in the original conversation.
 
+A `--route-message` work request also joins the topic's durable request ledger in the
+same local transaction that records its dispatch, on both local and peer paths. If that
+exact message already sources a request, the dispatch joins it. Otherwise it gets its
+own request sourced to the exact message; sharing a thread does not prove that two
+messages ask for the same work. This covers
+the November 4 failure in which an exact human reply went to an agent without being
+linked, while an earlier attempt's completion closed the only tracked task.
+
 The request's source input and its named thread answer different questions. The source is
 the event that caused this send; the named thread message is the return address for its
 answer. An agent follow-up can start work today while naming a human message from weeks
@@ -420,8 +428,10 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   rule starts before accepting new work after installation; older unlinked replies belong
   to the historical audit, not an automatic replay.
 - Once nothing sent for an open request is running, an answer explicitly marked completed
-  with the required live check or a recorded reason why no live check was possible closes it `completed`
-  under `refuseUnfinishedCompletion`; his own Stop withdraws the stopped attempt. A failed,
+  with a live check closes it `completed` under `refuseUnfinishedCompletion`. An honest
+  `--not-checked` answer leaves the task open and returns verification to the router;
+  that verification does not repeat an acknowledged external effect. His own Stop
+  withdraws the stopped attempt. A failed,
   cancelled, handed-back or otherwise unfinished attempt leaves his request open. The owner
   gives the Inbox router a retained recovery input with the exact request and latest attempt.
   If the router's input ends without a replacement dispatch or checked completion, upkeep

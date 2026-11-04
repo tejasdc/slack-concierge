@@ -12,7 +12,7 @@ import {meaningIndex} from './meaning-index';
 import {acceptedInputForTurn,carryingTurn,enqueueSessionInput,getAcceptedSessionInput,handedToARun, withdrawUnstartedServiceInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {heldRequestNotice,inputHold,readInputExecution,resolveSessionAddress,sessionAddress,SessionOwnerError,type SessionOwner} from './session-owner';
 import {log,errorFields} from './log';
-import {expireQuestionsForFinalReply,filePeerWorkerNeedInThread,postAgentAnswer,recordSessionMessageRoute,topicOfRoot} from './session-topics';
+import {expireQuestionsForFinalReply,filePeerWorkerNeedInThread,linkInboxDispatchWork,postAgentAnswer,recordSessionMessageRoute,topicOfRoot} from './session-topics';
 import {presentSessionForPeer,receiveSessionFromPeer} from './peer-identity';
 import {followForwardedReply,messageRouteForSource} from './session-inbox';
 import {inboxRequestRoot,returnsToRequester} from './inbox-request-root';
@@ -579,9 +579,14 @@ export class SessionPeers {
           ...(input.provider?{targetProvider:input.provider}:{}),...(input.title===undefined?{}:{title:input.title}),afterRequestIds:[],requestedEffect:effect,...(input.evidence?{evidence:input.evidence}:{}),...(queued?{queuedOffline:true}:{})},
         sourceInputId:actor.inputId,sourceRunId:runId,requestId:id}).input;
       recordSessionEvent({eventId:`request:${id}`,sessionId:actor.session,inputId:operation.id,turnId:actor.turn,kind:'request',payload:{requestId:id,peer:input.peer,targetSessionId:this.presentedSession(input.peer,accepted.sessionId),...(input.threadRoot?{threadSourceMessageId:input.threadSourceMessageId}:{})}});
-      if(input.routedFrom)recordSessionMessageRoute({sourceMessageId:input.routedFrom.messageId,
-        destinationSessionId:this.presentedSession(input.peer,accepted.sessionId),destinationMessageId:`request:${id}`,requestId:id,
-        actor:{sessionId:actor.session,turnId:actor.turn,inputId:actor.inputId,runId}});
+      if(input.routedFrom){
+        recordSessionMessageRoute({sourceMessageId:input.routedFrom.messageId,
+          destinationSessionId:this.presentedSession(input.peer,accepted.sessionId),destinationMessageId:`request:${id}`,requestId:id,
+          actor:{sessionId:actor.session,turnId:actor.turn,inputId:actor.inputId,runId}});
+        if(effect==='work')linkInboxDispatchWork({topicId:input.routedFrom.topicId,sourceMessageId:input.routedFrom.messageId,
+          dispatchId:id,targetSessionId:this.presentedSession(input.peer,accepted.sessionId),summary:input.summary??input.routedFrom.title,
+          brief:input.routedFrom.originalText});
+      }
     })();
     const queuedAddress=()=>{
       // An addressed session is known before its peer wakes; a new session is not.
