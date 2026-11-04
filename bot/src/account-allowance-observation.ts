@@ -34,6 +34,17 @@ export function includedAllowanceWindows(provider:AccountIdentityProvider,accoun
   return account.windows;
 }
 
+/** A reading may be too old to rank room while still proving a full window has not reset. */
+export function hasActiveFullAllowanceWindow(provider:AccountIdentityProvider,account:AccountUsage,
+  model:string|null|undefined,now=Date.now()):boolean {
+  return account.windows.some(window=>{
+    if(provider==='claude-code'&&window.name==='Weekly · Fable only'
+      &&model!==null&&!/fable/i.test(model??''))return false;
+    const reset=Date.parse(window.resetsAt??'');
+    return window.usedPercent>=100&&Number.isFinite(reset)&&reset>now;
+  });
+}
+
 /** OpenAI can charge this account's existing credits after its included Codex week is spent.
  * The credit flag and balance come from the same account reading as the allowance bars. */
 export function codexCreditsCanCover(account:AccountUsage,now=Date.now()):boolean {

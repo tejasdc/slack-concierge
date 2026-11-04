@@ -4,7 +4,7 @@ import {join} from 'node:path';
 import {chooseAccountForTurn,type AccountReason} from './provider-account-choice';
 import {accountHome,currentAccount,keptProfileCount,listProfiles,profileId,type AccountIdentityProvider,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage} from './provider-account-usage';
-import {accountReadingFresh,includedAllowanceWindows} from './account-allowance-observation';
+import {accountReadingFresh,hasActiveFullAllowanceWindow,includedAllowanceWindows} from './account-allowance-observation';
 import type {AccountUsage,ProviderUsage} from './provider-account-usage';
 import type {AccountRoom} from './provider-account-choice';
 import {ProviderDispatchError} from './provider-failures';
@@ -380,9 +380,13 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
   const warmRoom=warmCacheAccount?rooms.find(room=>room.account===warmCacheAccount&&lastGoodRoom(room)!==null):null;
   // Selection grants an attempt when the usage reader cannot measure this login. It is
   // not a fabricated zero-percent reading, and a known cached refusal still blocks it.
-  const selectedAttempt=selected?rooms.find(room=>room.account===selected&&room.home
-    &&(room.problem||room.tightestUsedPercent===null)
-    &&!claudeAccountCachedReset(room.account,model)):null;
+  const selectedAttempt=selected?rooms.find(room=>{
+    const reading=usage.accounts.find(account=>account.label===room.account);
+    return room.account===selected&&room.home
+      &&(room.problem||room.tightestUsedPercent===null)
+      &&(!reading||!hasActiveFullAllowanceWindow('claude-code',reading,model))
+      &&!claudeAccountCachedReset(room.account,model);
+  }):null;
   if(selectedAttempt&&(!warmRoom||!!selectedAccount))return {account:selectedAttempt.account,home:selectedAttempt.home,
     because:'stayed-on-its-account',expected,selectionRevision:selection?.revision??0};
   if(warmRoom&&!selectedAccount)return {account:warmRoom.account,home:warmRoom.home,
@@ -412,8 +416,14 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
       expected,selectionRevision:selection?.revision??0};
     // A failed usage read is not a provider refusal. If a proven login is available,
     // let Claude decide whether it can run instead of parking work on missing evidence.
-    const unreadable=rooms.filter(room=>(room.home||room.isDefault)
-      &&room.tightestUsedPercent===null&&!claudeAccountCachedReset(room.account,model))
+    const unreadable=rooms.filter(room=>{
+      if(!(room.home||room.isDefault)||room.tightestUsedPercent!==null
+        ||claudeAccountCachedReset(room.account,model))return false;
+      const reading=usage.accounts.find(account=>account.label===room.account);
+      // A six-minute-old reading is not fresh room, but a full window whose reset is
+      // still in the future remains evidence that this account cannot run yet.
+      return !reading||!hasActiveFullAllowanceWindow('claude-code',reading,model);
+    })
       .sort((a,b)=>Number(b.account===expected)-Number(a.account===expected)
         ||Number(b.account===warmCacheAccount)-Number(a.account===warmCacheAccount))[0];
     if(unreadable)return {account:unreadable.account,home:unreadable.home,
