@@ -953,7 +953,21 @@ export class SessionExecutionHost {
         log('warn','codex_process_audit_failed',{turn_id:claim.turn_id,...errorFields(error)}));
     }
   }
-  /** An intent survives a coordinator restart; an unfinished check is retried by the runtime. */
+  /**
+   * Both owner compositions (index.ts and session-runtime.ts) start this, so the retry lives with
+   * the host that records the intents. The audit at turn end usually runs before the turn row is
+   * marked done and defers; this sweep is what completes it.
+   */
+  startCodexProcessAuditSweep(stopped:()=>boolean):()=>void {
+    if(process.platform!=='linux')return ()=>{};
+    const sweep=()=>{if(!stopped())void this.reconcileCodexProcessAudits().catch(error=>
+      log('error','codex_process_audit_recovery_failed',errorFields(error)));};
+    sweep();
+    const timer=setInterval(sweep,60_000);
+    timer.unref?.();
+    return ()=>clearInterval(timer);
+  }
+  /** An intent survives a coordinator restart; an unfinished check is retried by the sweep above. */
   async reconcileCodexProcessAudits() {
     const pending=db.query(`SELECT intent.turn_id FROM session_owner_events intent
       JOIN turns turn ON turn.id=intent.turn_id AND turn.status IN ('done','error','cancelled')
