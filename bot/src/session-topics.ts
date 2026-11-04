@@ -2454,8 +2454,16 @@ const conciergeSessionNumber=(address:unknown):number|null=>{
 export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown):Promise<number> {
   const session=inboxSession();
   if(!session)return 0;
-  const linked=(db.query(`SELECT question_id FROM inbox_questions WHERE state IN ('open','partial') AND kind='decision'
-    AND (json_extract(owner_json,'$.todoId') IS NOT NULL OR coalesce(json_extract(brief_json,'$.todo'),'none')<>'none')`).all() as {question_id:string}[]);
+  const linked:{question_id:string}[]=[];
+  let after='';
+  for(;;){
+    const page=db.query(`SELECT question_id FROM inbox_questions WHERE question_id>? AND state IN ('open','partial') AND kind='decision'
+      AND (json_extract(owner_json,'$.todoId') IS NOT NULL OR coalesce(json_extract(brief_json,'$.todo'),'none')<>'none')
+      ORDER BY question_id LIMIT 200`).all(after) as {question_id:string}[];
+    linked.push(...page);
+    if(page.length<200)break;
+    after=page.at(-1)!.question_id;
+  }
   if(!linked.length)return 0;
   let todos:Map<string,TodoState>;
   try{todos=new Map((await readTodos()).map(todo=>[todo.id,todo]));}
