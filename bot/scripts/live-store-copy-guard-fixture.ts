@@ -6,9 +6,16 @@ import {dirname, join, resolve} from 'node:path';
 
 const root=mkdtempSync(join(tmpdir(),'concierge-live-copy-hook-'));
 const bun=process.execPath;
-function run(command:string,args:string[],env:Record<string,string>={}) {
-  const result=Bun.spawnSync([command,...args],{env:{...process.env,...env},stdout:'pipe',stderr:'pipe'});
-  if(result.exitCode!==0)throw new Error(`${command} exited ${result.exitCode}: ${result.stderr.toString()}`);
+let operation=0;
+function run(command:string,args:string[],env:Record<string,string>={},stdin?:Bun.BunFile|Uint8Array) {
+  const step=++operation, started=performance.now();
+  process.stderr.write(`live-copy-guard: operation ${step} started\n`);
+  // Bound one child operation, not the cumulative startup cost of every wrapper invocation.
+  // The deployment controller separately bounds the complete presentation gate.
+  const result=Bun.spawnSync([command,...args],{env:{...process.env,...env},stdin:stdin??'ignore',stdout:'pipe',stderr:'pipe',timeout:10_000});
+  const elapsedMs=Math.round(performance.now()-started);
+  if(result.exitCode!==0)throw new Error(`Live copy guard operation ${step} failed: exit=${result.exitCode} signal=${result.signalCode} elapsedMs=${elapsedMs} deadlineMs=10000 stderr=${result.stderr.toString().slice(-3000)}`);
+  process.stderr.write(`live-copy-guard: operation ${step} passed elapsedMs=${elapsedMs}\n`);
   return result.stdout.toString();
 }
 function check(condition:unknown,message:string):asserts condition {if(!condition)throw new Error(message);}
@@ -23,11 +30,9 @@ try {
   const scriptDir=join(bot,'scripts');
   mkdirSync(scriptDir,{recursive:true});
   const guard=join(scriptDir,'live-store-copy-guard.js');
-  const build=Bun.spawnSync([bun,'build',resolve(import.meta.dir,'live-store-copy-guard.ts'),'--target','bun','--outfile',guard],{stdout:'pipe',stderr:'pipe'});
-  check(build.exitCode===0,`guard bundle failed: ${build.stderr.toString()}`);
+  run(bun,['build',resolve(import.meta.dir,'live-store-copy-guard.ts'),'--target','bun','--outfile',guard]);
   const privateCommand=join(scriptDir,'private-code-command.js');
-  const privateBuild=Bun.spawnSync([bun,'build',resolve(import.meta.dir,'private-code-command.ts'),'--target','bun','--outfile',privateCommand],{stdout:'pipe',stderr:'pipe'});
-  check(privateBuild.exitCode===0,`private command bundle failed: ${privateBuild.stderr.toString()}`);
+  run(bun,['build',resolve(import.meta.dir,'private-code-command.ts'),'--target','bun','--outfile',privateCommand]);
   const current=join(root,'current');
   symlinkSync(release,current);
   const old=join(root,'releases/release-old/control/bot');
@@ -55,9 +60,7 @@ process.stdout.write(JSON.stringify({hookSpecificOutput})+'\\n');`);
     const input=JSON.stringify({tool_name:'Bash',tool_input:{command},cwd:root});
     const inputPath=join(root,'hook-input.json');
     writeFileSync(inputPath,input);
-    const output=Bun.spawnSync([destination],{env:{...process.env,CONCIERGE_ROUTER_BOT_DIR:old,CONCIERGE_STATE_DIR:join(homedir(),'.local/state/'+'concierge'),...env},stdin:Bun.file(inputPath),stdout:'pipe',stderr:'pipe'});
-    check(output.exitCode===0,`wrapper failed: ${output.stderr.toString()}`);
-    const decision=output.stdout.toString().trim();
+    const decision=run(destination,[],{CONCIERGE_ROUTER_BOT_DIR:old,CONCIERGE_STATE_DIR:join(homedir(),'.local/state/'+'concierge'),...env},Bun.file(inputPath)).trim();
     return decision ? JSON.parse(decision).hookSpecificOutput : {};
   };
   check(execute('echo safe').additionalContext==='PINNED_OLD_SEMANTIC','benign command did not reach pinned semantic hook');
@@ -129,11 +132,10 @@ process.stdout.write(JSON.stringify({hookSpecificOutput})+'\\n');`);
     check(execute(`sqlite3 ${home}/state.db ".backup /tmp/raw.db"`).permissionDecision==='deny',`raw copy at ${home} was not refused`);
     check(execute(`sqlite3 -readonly "file:${home}/state.db?mode=ro" "SELECT 1"`).additionalContext==='PINNED_OLD_SEMANTIC',`read-only query at ${home} was refused`);
   }
-  const marked=Bun.spawnSync([bun,resolve(import.meta.dir,'history-guard.ts')],{
-    env:{...process.env,CONCIERGE_CURRENT_LIVE_COPY_CHECKED:'1'},
-    stdin:Buffer.from(JSON.stringify({tool_name:'Bash',tool_input:{command:raw},cwd:root})),
-    stdout:'pipe',stderr:'pipe'});
-  check(marked.exitCode===0&&!marked.stdout.toString().includes('permissionDecision'),
+  const marked=run(bun,[resolve(import.meta.dir,'history-guard.ts')],
+    {CONCIERGE_CURRENT_LIVE_COPY_CHECKED:'1'},
+    Buffer.from(JSON.stringify({tool_name:'Bash',tool_input:{command:raw},cwd:root})));
+  check(!marked.includes('permissionDecision'),
     'new semantic hook repeated the machine copy decision');
   const releaseB=join(root,'release-b');
   mkdirSync(join(releaseB,'control/bot/scripts'),{recursive:true});
