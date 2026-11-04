@@ -76,6 +76,8 @@ requests retain their agent provenance; they are never presented as Tejas's word
 guessing from the last thread that happened to send work to the same agent.
 If the request record itself is missing, the accepted worker input's direct source and exact source run
 can establish the Inbox origin; the server still creates a new thread rather than borrowing an older one.
+The same verified source chain carries Inbox origin through an intermediary server agent whose onward
+request has no Inbox thread address.
 
 ### No automatic reminders
 

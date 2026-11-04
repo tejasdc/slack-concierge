@@ -2371,15 +2371,23 @@ export function fileWorkerNeedInThread(input:{respondingSessionId:number;turnInp
 export function fileWorkerNeedWithoutThread(input:{respondingSessionId:number;turnInputId:string;runId:string;eventId:string;text:string}):string|null {
   const turnInput=getAcceptedSessionInput(input.turnInputId);
   const provenance=turnInput?sessionInputProvenance(turnInput):null;
-  let inboxOrigin=provenance?.originatingHuman?.sessionId
-    ??(provenance?.effectScope==='work'?provenance.source?.sessionId:null);
-  // A missing request row prevents the ordinary provenance walk. The retained source
-  // input and its exact run still establish an Inbox dispatch without guessing a thread.
-  if(!inboxOrigin&&turnInput?.origin==='agent'&&turnInput.kind==='request'&&turnInput.source_input_id&&turnInput.source_run_id){
-    const source=getAcceptedSessionInput(turnInput.source_input_id);
-    const sourceRun=source?.turn_id?db.query('SELECT native_run_id FROM turns WHERE id=? AND session_id=?')
-      .get(source.turn_id,source.session_id) as {native_run_id:string|null}|null:null;
-    if(sourceRun?.native_run_id===turnInput.source_run_id)inboxOrigin=`concierge:${source!.session_id}`;
+  let inboxOrigin=provenance?.originatingHuman?.sessionId??null;
+  // Follow retained source/run edges through any agent handoff. This also works when a
+  // request row is missing, while an unrelated prior dispatch cannot supply a thread.
+  if(!inboxOrigin&&provenance?.effectScope!=='informational'){
+    const seen=new Set<string>();
+    let current=turnInput;
+    while(current?.origin==='agent'&&['input','create','consultation','request'].includes(current.kind)
+      &&current.source_input_id&&current.source_run_id&&!seen.has(current.id)){
+      seen.add(current.id);
+      const source=getAcceptedSessionInput(current.source_input_id);
+      const sourceRun=source?.turn_id?db.query('SELECT native_run_id FROM turns WHERE id=? AND session_id=?')
+        .get(source.turn_id,source.session_id) as {native_run_id:string|null}|null:null;
+      if(!source||sourceRun?.native_run_id!==current.source_run_id)break;
+      const sourceSession=getSessionById(source.session_id);
+      if(sourceSession&&sessionMetadata(sourceSession).inbox){inboxOrigin=`concierge:${source.session_id}`;break;}
+      current=source;
+    }
   }
   const askedIn=inboxOrigin?conciergeSessionNumber(inboxOrigin):null;
   const inbox=askedIn!==null?getSessionById(askedIn):null;
