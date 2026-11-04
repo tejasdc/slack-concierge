@@ -1542,6 +1542,41 @@ function questionOwner(value:unknown):any|null|undefined {
   if(typeof value==='object')return value;
   throw new TopicError('owner must be {sessionId, requestId?, dispatchRequestId?} or a session id.');
 }
+/** The one open request a question's sources name, or the thread's only open request. */
+function impliedRequest(open:StoredRequest[],sources:string[]):StoredRequest|null {
+  const bySource=open.filter(request=>request.sources.some(source=>sources.includes(source.inputId)));
+  return bySource.length===1?bySource[0]!:open.length===1?open[0]!:null;
+}
+/** Whether a question asked before links were derived (no request named either way) belongs to this request. */
+function unlinkedQuestionImplies(question:StoredQuestion,request:StoredRequest,open:StoredRequest[]):boolean {
+  const owner=question.owner;
+  if(owner&&('requestId' in owner||owner.dispatchRequestId))return false;
+  return impliedRequest(open,question.sources)?.requestId===request.requestId;
+}
+/**
+ * The request a decision question waits on, stored on its owner so the never-dropped sweep
+ * (`settleEndedRequests`) reads the request as waiting on Tejas instead of re-flagging it. On
+ * 2026-11-04 the Inbox router asked two only-he-can questions with only its session and run as
+ * owner, and the sweep kept sending recovery for both requests while he had the question open.
+ * The link is derived, not remembered: a question whose sources name exactly one open request's
+ * source, or the thread's only open request, belongs to it. With several open requests and no
+ * evidence the declaration must name one (`owner.requestId`), or say `"requestId": null` for a
+ * thread-level question that blocks no request.
+ */
+function linkQuestionToRequest(topic:StoredTopic,owner:any|null,sources:string[]):any|null {
+  if(owner&&('requestId' in owner||owner.dispatchRequestId)) {
+    if(owner.requestId){
+      const named=topicRequests(topic.topicId).find(request=>request.requestId===owner.requestId);
+      if(!named)throw new TopicError(`Request ${owner.requestId} is not in this thread.`,409,'QUESTION_REQUEST_MISMATCH');
+    }
+    return owner;
+  }
+  const open=topicRequests(topic.topicId).filter(request=>request.state==='open');
+  if(!open.length)return owner;
+  const chosen=impliedRequest(open,sources);
+  if(!chosen)throw new TopicError(`This thread has ${open.length} open requests (${open.map(request=>`${request.requestId} "${request.title}"`).join(', ')}). Name the one this question waits on with owner.requestId, or set owner.requestId to null for a thread-level question, so the request is not flagged as dropped while he has it.`,400,'QUESTION_REQUEST_REQUIRED');
+  return {...(owner??{}),requestId:chosen.requestId};
+}
 const decisionKey=(decision:string)=>decision.replace(/\s+/g,' ').trim().toLowerCase();
 const briefChanged=(first:any,second:any)=>JSON.stringify(first)!==JSON.stringify(second);
 
@@ -1571,6 +1606,10 @@ function reconcileQuestions(session:SessionRow,topic:StoredTopic,declarations:un
     // A ready question must be answerable; one that is not stays the agent's preparation. Asking
     // for `ready` with a brief that cannot be answered is refused with what is missing.
     const missing=briefMissing(brief);
+    // An only-he-can question is meant for him now; parking it silently as agent_checking hid five
+    // of them from his Needs list (2026-11-04). Staging one stays possible with an explicit context.
+    if(declaredContext===undefined&&brief?.onlyHeCan&&missing.length)
+      throw new TopicError(`An onlyHeCan question goes to Tejas, so it needs ${missing.join(', ')} to be shown to him; add them, or declare context agent_checking while you are still preparing it.`,400,'QUESTION_NOT_ANSWERABLE');
     if(declaredContext==='ready'&&missing.length)throw new TopicError(`A ready question needs ${missing.join(', ')}; declare it agent_checking while it is being prepared.`,400,'QUESTION_NOT_ANSWERABLE');
     if(identity!==undefined) {
       const existing=current(String(identity));
@@ -1578,7 +1617,9 @@ function reconcileQuestions(session:SessionRow,topic:StoredTopic,declarations:un
       const context=declaredContext??(missing.length?'agent_checking':existing.context);
       if(existing.kind!=='reading'&&context==='ready'&&by.kind==='agent'&&briefChanged(existing.brief,brief)){
         try{brief=withHisWords(brief,by);}catch(error){throw new TopicError((error as Error).message,400,'QUESTION_NEEDS_HIS_WORDS');}}
-      const nextOwner=owner===undefined?existing.owner:owner;
+      const declaredOwner=owner===undefined?existing.owner:owner;
+      const nextOwner=existing.kind==='decision'&&OPEN_QUESTION_STATES.includes(existing.state)
+        ?linkQuestionToRequest(topic,declaredOwner,sources.length?sources:existing.sources):declaredOwner;
       if(existing.kind==='asked'&&sources.length){
         for(const s of sources){
           if(!resolveAskedSource(s,topic))
@@ -1616,8 +1657,11 @@ function reconcileQuestions(session:SessionRow,topic:StoredTopic,declarations:un
     }
     if(kind==='decision'&&context==='ready'&&by.kind==='agent'){
       try{brief=withHisWords(brief,by);}catch(error){throw new TopicError((error as Error).message,400,'QUESTION_NEEDS_HIS_WORDS');}}
+    const questionSources=sources.length?sources:filed?.sources??[];
+    const baseOwner=owner??(by.sessionId?{sessionId:by.sessionId,runId:by.runId??null}:null);
     const question:StoredQuestion={questionId:`q:${randomUUID()}`,topicId:topic.topicId,revision:1,state,blocking,optional,context,
-      brief:typeof item.changedBecause==='string'?{...brief,changedBecause:item.changedBecause}:brief,owner:owner??(by.sessionId?{sessionId:by.sessionId,runId:by.runId??null}:null),sources:sources.length?sources:filed?.sources??[],
+      brief:typeof item.changedBecause==='string'?{...brief,changedBecause:item.changedBecause}:brief,
+      owner:kind==='decision'?linkQuestionToRequest(topic,baseOwner,questionSources):baseOwner,sources:questionSources,
       replaces:typeof item.replaces==='string'?item.replaces:null,replacedBy:null,answer:null,recovered:false,legacyNeedEventId:filed?.legacyNeedEventId??null,
       kind,origin:filed?'marker':'declared',generation:filed?.generation??raiseGeneration(inboxSessionRow),
       createdAt:askedAt??filed?.createdAt??at,updatedAt:at};
@@ -3074,9 +3118,12 @@ function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settl
     const dispatchIds=new Set(request.dispatches.map((dispatch:any)=>String(dispatch?.requestId??'')));
     const decisionViews=questionsOfRequest(topicId,request).filter(question=>question.kind==='decision')
       .map(question=>questionView(question,replies));
-    const pendingAnswer=decisionViews.find(question=>!!question.pendingReply)?.pendingReply;
-    const waitingOnHim=decisionViews.some(awaitingHim)||topicQuestions(topicId).some(question=>question.kind==='decision'&&question.state==='deferred'
-      &&(question.owner?.requestId===request.requestId||dispatchIds.has(String(question.owner?.dispatchRequestId??''))));
+    const openRequests=topicRequests(topicId).filter(candidate=>candidate.state==='open');
+    const legacyViews=topicQuestions(topicId).filter(question=>question.kind==='decision'&&OPEN_QUESTION_STATES.includes(question.state)
+      &&unlinkedQuestionImplies(question,request,openRequests)).map(question=>questionView(question,replies));
+    const pendingAnswer=[...decisionViews,...legacyViews].find(question=>!!question.pendingReply)?.pendingReply;
+    const waitingOnHim=decisionViews.some(awaitingHim)||legacyViews.some(awaitingHim)||topicQuestions(topicId).some(question=>question.kind==='decision'&&question.state==='deferred'
+      &&(question.owner?.requestId===request.requestId||dispatchIds.has(String(question.owner?.dispatchRequestId??''))||unlinkedQuestionImplies(question,request,openRequests)));
     let disposition:string|null=null,why='';
     let completionChecked=false;
     if(latest?.outcome==='answered'&&((latest.disposition==='completed'&&!latest.notCheckedReason)||latest.requestedEffect==='informational')) {
@@ -3105,6 +3152,15 @@ function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settl
         :latest.outcome==='unanswered'?'never answered':latest.outcome==='undetermined'?'ended without saying whether it was done'
         :latest.outcome==='dependency_failed'?'was held behind work that did not succeed':`ended as ${latest.outcome}`;
       if(pendingAnswer)how+=`; Tejas's answer ${pendingAnswer.inputId} is waiting to be processed`;
+      // A linked question still being prepared is not shown to him, so nothing waits on him yet;
+      // the router's job is to finish it, not to send the work again (2026-11-04: five only-he-can
+      // questions sat as agent_checking for want of why/answerable, invisible to him).
+      for(const question of [...questionsOfRequest(topicId,request),...topicQuestions(topicId).filter(question=>OPEN_QUESTION_STATES.includes(question.state)
+        &&unlinkedQuestionImplies(question,request,openRequests))].filter(question=>question.kind==='decision'&&preparingForHim(question)))
+        how+=`; its question ${question.questionId} is still being prepared and is not shown to Tejas (missing ${missingFor(question).join(', ')||'context ready'}): complete it with topics questions (its questionId, the missing fields, context ready) instead of restarting work`;
+      const unplaced=topicQuestions(topicId).filter(question=>question.kind==='decision'&&OPEN_QUESTION_STATES.includes(question.state)
+        &&!(question.owner&&('requestId' in question.owner||question.owner.dispatchRequestId))&&!impliedRequest(openRequests,question.sources)).map(question=>question.questionId);
+      if(unplaced.length)how+=`; open question ${unplaced.join(', ')} in this thread names no request: if it is what this request waits on, revise it with its questionId and owner.requestId ${request.requestId} instead of restarting work`;
       const source=recoverySource(request);
       stuck.push({topicId,topicTitle:topic.title,requestId:request.requestId,title:request.title,work:latest?.id??'unassigned',how,
         key:request.requestId,sourceInputId:source?.inputId??null,sourceRunId:source?.runId??null,sourceUncertain:!source||source.uncertain});

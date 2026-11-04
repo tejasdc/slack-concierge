@@ -354,7 +354,8 @@ with the existing id (`QUESTION_DUPLICATE`) rather than becoming its twin. **A q
 ready only when it can be answered**: its brief says why it came up (`why.text`) and exactly
 what he can answer now (`answerable`); choices are optional, but each present one needs a
 label (`option` is accepted for `label`, a bare string for an uncertainty). A declaration
-without those is stored as `agent_checking` (`checking` is accepted for it), and asking for
+without those is stored as `agent_checking` (`checking` is accepted for it) unless it carries
+`onlyHeCan` without an explicit context, which is refused with what is missing; asking for
 `ready` without them is refused with what is missing (`QUESTION_NOT_ANSWERABLE`); on a
 revision an omitted `context` keeps the current one. `owner` is the documented object or a
 bare session id. Every question read carries `readiness` (`ready`|`preparing`) and
@@ -434,7 +435,17 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   withdraws the stopped attempt. A failed,
   cancelled, handed-back or otherwise unfinished attempt leaves his request open. The owner
   gives the Inbox router a retained recovery input with the exact request and latest attempt.
-  If the router's input ends without a replacement dispatch or checked completion, upkeep
+  A request with an open decision question waiting on Tejas gets no recovery input. A decision
+  question records its request on `owner.requestId`, derived when declared: the one open
+  request its sources name, else the thread's only open request; with several open requests
+  and no such evidence, `topics questions` refuses until the declaration names one or sets
+  `owner.requestId` to null for a thread-level question. Questions asked before this rule
+  (2026-11-04) are read by the same derivation; an ambiguous one is named in the recovery
+  input so the router links it instead of restarting work. A linked question still being
+  prepared (`agent_checking` or missing fields) is not shown to him, so it does not quiet the
+  request; its recovery input names the question and its missing fields so the router finishes
+  it. A declaration carrying `onlyHeCan` with missing fields and no explicit `context` is
+  refused (`QUESTION_NOT_ANSWERABLE`) instead of being parked out of his sight. If the router's input ends without a replacement dispatch or checked completion, upkeep
   sends another attempt after a bounded delay, starting at fifteen minutes and capped at one
   day. Upkeep admits at most five recovery inputs on one reading pass, leaving the rest
   eligible on the next pass. The input and flag have stable identities across restart. After
