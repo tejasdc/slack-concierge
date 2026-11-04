@@ -10,6 +10,14 @@ changed topic with one batch context; update changed roots and sorting attention
 only after all source changes through the advertised head are covered. The caller must run
 updates and the checkpoint in one prepared-database transaction. It must not import the
 canonical mutable owner into the worker.
+When a change batch dirties many topics through one session dependency, drain
+pages reuse that session's prepared context for the batch. The next source batch
+starts a fresh context, so newly accepted replies and pending work are read then.
+The worker's content-free batch record reports primary apply time, topic and
+Lab phase wall time, number of topic rows visited, and context construction
+count and time. Phase wall times include progress yields and any search
+maintenance run during them. This distinguishes a slow projection from a
+growing source rate without making the accepting owner loop do diagnostic work.
 
 Interactive reads use indexed keysets, at most twenty rows, and explicit source coverage.
 Lists retain exact counts and expose a detail reference when their value needs a preview.

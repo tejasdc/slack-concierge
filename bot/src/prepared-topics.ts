@@ -210,20 +210,25 @@ export class PreparedTopics {
   }
  }
  /** Each call is finite; caller yields between calls and checkpoints only after hasMore=false. */
- drain(generation:number,limit=20){
+ drain(generation:number,limit=20,contexts=new Map<number,TopicContext>()){
   const rows=this.prepared.query('SELECT topic_id FROM presentation_topic_dirty WHERE generation=? ORDER BY topic_id LIMIT ?').all(generation,Math.min(20,limit)+1) as {topic_id:string}[];
-  const contexts=new Map<number,TopicContext>();
+  const touched=new Set<number>();let contextBuilds=0,contextBuildMs=0;
   for(const row of rows.slice(0,Math.min(20,limit))){
    const topic=this.source.query('SELECT session_id FROM inbox_topics WHERE topic_id=?').get(row.topic_id) as {session_id:number}|null;
    const previous=topic??this.prepared.query('SELECT session_id FROM presentation_topics WHERE generation=? AND topic_id=?').get(generation,row.topic_id) as {session_id:number}|null;
-   if(previous){let context=contexts.get(previous.session_id);if(!context){context=this.context(generation,previous.session_id);contexts.set(previous.session_id,context);}this.write(context,row.topic_id);}
+   if(previous){let context=contexts.get(previous.session_id);if(!context){const started=performance.now();context=this.context(generation,previous.session_id);contextBuildMs+=performance.now()-started;contextBuilds++;contexts.set(previous.session_id,context);}touched.add(previous.session_id);this.write(context,row.topic_id);}
    this.prepared.query('DELETE FROM presentation_topic_dirty WHERE generation=? AND topic_id=?').run(generation,row.topic_id);
   }
-  for(const context of contexts.values())this.updateSorting(context);
+  for(const id of touched)this.updateSorting(contexts.get(id)!);
   const sorting=this.prepared.query('SELECT session_id FROM presentation_topic_sorting_dirty WHERE generation=? LIMIT 20').all(generation) as {session_id:number}[];
-  for(const row of sorting){if(!contexts.has(row.session_id))this.updateSorting(this.context(generation,row.session_id));
+  for(const row of sorting){if(!touched.has(row.session_id)){
+    let context=contexts.get(row.session_id);
+    if(!context){const started=performance.now();context=this.context(generation,row.session_id);contextBuildMs+=performance.now()-started;contextBuilds++;contexts.set(row.session_id,context);}
+    this.updateSorting(context);
+   }
    this.prepared.query('DELETE FROM presentation_topic_sorting_dirty WHERE generation=? AND session_id=?').run(generation,row.session_id);}
-  return {hasMore:rows.length>Math.min(20,limit)||sorting.length===20};
+  return {hasMore:rows.length>Math.min(20,limit)||sorting.length===20,
+   processed:Math.min(rows.length,Math.min(20,limit)),contextBuilds,contextBuildMs};
  }
  updateRoot(generation:number,root:string){
   const row=this.prepared.query('SELECT session_id,event_sequence,created_at FROM presentation_messages WHERE generation=? AND root_input_id=? ORDER BY event_sequence DESC LIMIT 1')
