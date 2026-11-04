@@ -21,10 +21,16 @@ The retained chain is:
 ## Cause
 
 The forwarding request has a trusted human source input and no source run: the human reply did not own a provider turn. The provenance reader understood that first hop but stopped at the same edge after another agent request. The Mac peer handoff could only carry the immediate reply ID; the guard recognized the original capture ID.
+After that repair was installed on both machines, the Canvas worker resumed from a release-watch
+input. A fresh Mac request `8f1f1bce-f960-4635-8fef-06620d775b8f` still carried the unlock
+reply ID and the hook refused the exact same-program read. The sync worker independently resumed
+from a Mac-result input and its request `b5105dcf-1ac3-4863-8349-bf3284c2491b` carried a later
+human Inbox reply instead of the original Computer Use authorization. The previous handoff
+recognized only an immediate forwarded input, not its owner-recorded service continuations.
 
 ## Fix
 
-The repair uses the owner-retained forward request to preserve the initiating human identity through later agent hops. For this Canvas task, the peer handoff carries the original capture as the scoped authorization only when the reply addresses the exact capture in its Inbox topic and the capture's work dispatch to that worker settled as needing the physical prerequisite. The Mac guard still admits only exact-bundle selection and same-program passive accessibility or screenshot reads; it refuses other apps, generic Safari, clicks, reloads and Inspector. The page ID is a recorded need, not a Computer Use selector; the Mac agent must verify the returned page UI.
+The repair uses the owner-retained forward request to preserve the initiating human identity through later agent hops. For this Canvas task, the peer handoff carries the original capture as the scoped authorization only when the reply addresses the exact capture in its Inbox topic and the capture's work dispatch to that worker settled as needing the physical prerequisite. It now follows only owner-recorded release-watch and work-result inputs to that forwarded work request, verifying the source run and the record that delivered each continuation. The same traversal serves a later reply in the original sync task. The Canvas grant admits only exact-bundle selection and same-program passive accessibility or screenshot reads; it refuses other apps, generic Safari, clicks, reloads and Inspector. The original sync grant retains its separately named exact-app Inspector-opening shortcut. The page ID is a recorded need, not a Computer Use selector; the Mac agent must verify the returned page UI.
 
 ## Acceptance scenario
 

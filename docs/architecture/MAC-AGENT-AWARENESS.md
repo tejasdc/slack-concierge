@@ -42,6 +42,10 @@ forwarded reply has no provider run. Its retained forward request proves the exa
 human reply, including when another agent request follows it. A later Mac request
 from that reply may carry the earlier web-app authorization only when the owner
 can verify the task link and the new Mac-app need names the exact bundle and page.
+The same rule follows owner-recorded release-watch and work-request return inputs back to
+that forwarded reply, checking each input's recorded source run and the watch, peer, or local
+request that delivered it. A new agent request, an unrecorded service input, a changed
+source run, or a return from informational work does not carry the grant.
 For the November 3 instruction, the original human input belongs to the same worker
 session and joined the turn started by that Inbox topic's linked dispatch. For the
 Canvas capture, the reply must address that exact capture in the same Inbox topic,
