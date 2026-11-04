@@ -36,12 +36,27 @@ assert.match(macSurfaceRefusal({command:null,need:'',platform:'darwin',toolName:
 assert.match(macSurfaceRefusal({command:null,need:'mac-file',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Voice Memos")'}})??'',/accepted Mac/);
 assert.equal(macSurfaceRefusal({command:null,need:'mac-app',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Voice Memos")'}}),null);
 const webAppNeed={kind:'mac-app',why:'Inspect the already-open thnkr.ing web app com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 page faf63877-6536-4ac6-86e9-5d63e03d3369, directly authorized by Tejas.',humanInputId:'f66f15dd-e251-4537-a9cd-347d0548434b'};
+const canvasNeed={...webAppNeed,humanInputId:'capture:7bad480ccf4350922acb3ac750cc0ba0b7a990f596acd92b5fe98403f6f0e7a0'};
 const webInspectorNeed={...webAppNeed,why:`${webAppNeed.why} Open Web Inspector on that exact app to inspect reachable unsaved editor state.`};
 const webInspectorOpen=`var thnkrInspectorApp = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792'); await thnkrInspectorApp.pressKey('alt+super+i')`;
 const webAppCall="let app = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792');";
 assert.equal(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webAppCall}}),null);
 assert.equal(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await app.getAXState()'}}),null);
+for(const code of [webAppCall,...['getAXState','getAXStateAndScreenshot','getScreenshot'].map(method=>
+  `var thnkrCanvasInspectionApp = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792'); await thnkrCanvasInspectionApp.${method}()` )])
+  assert.equal(macSurfaceRefusal({command:null,need:canvasNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code}}),null);
+for(const code of ["await cua.getApp('Safari')","await cua.getApp('Google Chrome')",'await cua.getState()',
+  'await app.getAXState()','await app.getScreenshot()','await app.click(42)',"await app.pressKey('super+r')",
+  `${webAppCall} await app.getScreenshot()`,
+  "var thnkrCanvasInspectionApp = await cua.getApp('Safari'); await thnkrCanvasInspectionApp.getAXState()",
+  "var thnkrCanvasInspectionApp = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792'); await thnkrCanvasInspectionApp.click(42)"])
+  assert.ok(macSurfaceRefusal({command:null,need:canvasNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code}}),code);
+for(const need of [{...canvasNeed,why:'Inspect the exact app without a page ID'},
+  {...canvasNeed,why:canvasNeed.why.replace('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792','com.apple.Safari.WebApp.other')},
+  {...canvasNeed,humanInputId:'capture:another-human-input'}])
+  assert.ok(macSurfaceRefusal({command:null,need,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webAppCall}}));
 assert.equal(macSurfaceRefusal({command:null,need:webInspectorNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webInspectorOpen}}),null);
+assert.ok(macSurfaceRefusal({command:null,need:{...canvasNeed,why:`${canvasNeed.why} Open Web Inspector.`},platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webInspectorOpen}}));
 assert.equal(macSurfaceRefusal({command:null,need:webInspectorNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:`var thnkrInspectorApp = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792'); await thnkrInspectorApp.pressKey("alt+super+i")`}}),null);
 for(const need of [webAppNeed,{...webInspectorNeed,humanInputId:'other-human'},{...webInspectorNeed,why:'Open Web Inspector'}])
   assert.match(macSurfaceRefusal({command:null,need,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webInspectorOpen}})??'',/exact|only|authorization|bundle|page/i);
