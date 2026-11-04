@@ -1336,7 +1336,7 @@ describe("codex app-server", () => {
     const executable = fakeCodex(dir, [
       ...initializeHandshake,
       "IFS= read -r thread",
-      `case \"$thread\" in *'\"method\":\"thread/resume\"'*'\"threadId\":\"${sessionUUID}\"'*) ;; *) exit 13;; esac`,
+      `case \"$thread\" in *'\"method\":\"thread/resume\"'*'\"threadId\":\"${sessionUUID}\"'*'\"excludeTurns\":true'*) ;; *) exit 13;; esac`,
       `printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"${sessionUUID}\"}}}'`,
       "IFS= read -r turn",
       "printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-2\"}}}'",
