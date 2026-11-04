@@ -88,6 +88,14 @@ if (process.env.CONCIERGE_READ_WORKER !== "1") {
     WHERE kind='file' AND renew_ms IS NOT NULL AND state IN ('accepted','observing')`);
   db.exec(`CREATE INDEX IF NOT EXISTS standing_armed_watches ON watches(session_id,watch_id)
     WHERE state IN ('accepted','observing')`);
+  // Every request-liveness check, handoff inventory and five-second watch poll filtered the whole
+  // table: on 2026-11-04 the owner re-read all 2,160 watches about ten times a second during a
+  // busy burst. Each index carries the exact condition its queries use, so Bun's SQLite takes it.
+  db.exec(`CREATE INDEX IF NOT EXISTS watches_session_live ON watches(session_id)
+    WHERE state IN ('accepted','observing') OR delivery_state='pending'`);
+  db.exec(`CREATE INDEX IF NOT EXISTS watches_open ON watches(state) WHERE state IN ('accepted','observing')`);
+  db.exec(`CREATE INDEX IF NOT EXISTS watches_delivery_due ON watches(terminal_at_ms) WHERE delivery_state='pending'`);
+  db.exec(`CREATE INDEX IF NOT EXISTS watches_host_active ON watches(host_state) WHERE host_state IN ('intended','live','stopping')`);
 }
 
 export type WatchRow = {
