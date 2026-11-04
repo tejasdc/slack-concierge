@@ -106,6 +106,8 @@ export class HostConnection {
 
   private read(chunk: string) {
     this.buffer += chunk;
+    // Searching the whole pending frame on every chunk copies a long frame once per chunk.
+    if (!chunk.includes("\n")) return;
     let index: number;
     while ((index = this.buffer.indexOf("\n")) >= 0) {
       const line = this.buffer.slice(0, index); this.buffer = this.buffer.slice(index + 1);

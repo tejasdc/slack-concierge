@@ -293,7 +293,9 @@ async function runCodexControlRequest(input: {
   };
 
   proc.stdout.on("data", (chunk: Buffer) => {
-    stdoutBuf += chunk.toString();
+    const text = chunk.toString();
+    stdoutBuf += text;
+    if (!text.includes("\n")) return;
     const lines = stdoutBuf.split("\n");
     stdoutBuf = lines.pop() || "";
     for (const line of lines) {
@@ -896,6 +898,8 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
     } })}\n`,
     onStdout: (chunk) => {
       stdoutRest += chunk;
+      // Only a chunk that ends a line needs the split; see the Claude runner's stdout reader.
+      if (!chunk.includes("\n")) return;
       const lines = stdoutRest.split("\n");
       stdoutRest = lines.pop() || "";
       for (const line of lines) handleLine(line);
