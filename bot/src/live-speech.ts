@@ -34,7 +34,7 @@ const TLS_DIR = `${process.env.CONCIERGE_STATE_DIR || ""}/speech/tls`;
 const ENGINE = "apple.SpeechTranscriber";
 const ENGINE_VERSION = `darwin ${release()}`;
 
-type Recording = { stream: string; started: Promise<void>; decoder: ChildProcessWithoutNullStreams; decoded: Promise<number>; remainder: Buffer; frames: number; touchedAt: number; startedAt: number };
+type Recording = { stream: string; started: Promise<void>; decoder: ChildProcessWithoutNullStreams; decoded: Promise<number>; ended: boolean; remainder: Buffer; frames: number; touchedAt: number; startedAt: number };
 const recordings = new Map<string, Recording>();
 const localCapture = new LocalCaptureState();
 
@@ -51,7 +51,7 @@ async function begin(id: string) {
   const stream = `live-${randomUUID()}`;
   const started = speechEngine.beginStream(stream);
   const decoder = spawn("ffmpeg", ["-loglevel", "error", "-i", "pipe:0", "-ar", "16000", "-ac", "1", "-f", "f32le", "pipe:1"], { stdio: ["pipe", "pipe", "pipe"] });
-  const recording: Recording = { stream, started, decoder, decoded: Promise.resolve(0), remainder: Buffer.alloc(0), frames: 0, touchedAt: Date.now(), startedAt: Date.now() };
+  const recording: Recording = { stream, started, decoder, decoded: Promise.resolve(0), ended: false, remainder: Buffer.alloc(0), frames: 0, touchedAt: Date.now(), startedAt: Date.now() };
   decoder.stdout.on("data", (chunk: Buffer) => {
     // The engine takes whole samples; a piece that ends mid-sample carries the rest forward.
     const bytes = Buffer.concat([recording.remainder, chunk]);
@@ -63,22 +63,35 @@ async function begin(id: string) {
   });
   decoder.stderr.resume();
   decoder.stdin.on("error", () => {});
-  recording.decoded = new Promise((resolve) => { decoder.on("close", (code) => resolve(code ?? 1)); decoder.on("error", () => resolve(1)); });
+  recording.decoded = new Promise((resolve) => { decoder.on("close", (code) => { recording.ended = true; resolve(code ?? 1); }); decoder.on("error", () => { recording.ended = true; resolve(1); }); });
   recordings.set(id, recording);
   try { await started; } catch (error) { cancel(id); throw error; }
 }
 
-async function append(id: string, audio: Buffer) {
+// A decoder that stopped while the page was still recording would otherwise take every later piece
+// and answer every read with no words, so the page kept showing "Listening" while nothing he said
+// arrived (thnkr.ing report 5d05977f, 2026-11-04, after a paused Safari recording resumed). Saying
+// so lets the page start a fresh recording here and keep going.
+function live(id: string) {
   const recording = recordings.get(id);
   if (!recording) throw new SpeechRefusal("SPEECH_UNKNOWN_RECORDING", 404);
+  if (recording.ended) {
+    log("warn", "live_speech_decoder_ended", { audio_ms: Math.round(recording.frames / 16) });
+    cancel(id);
+    throw new SpeechRefusal("SPEECH_DECODER_ENDED", 409);
+  }
+  return recording;
+}
+
+async function append(id: string, audio: Buffer) {
+  const recording = live(id);
   recording.touchedAt = Date.now();
   await recording.started;
   recording.decoder.stdin.write(audio);
 }
 
 async function drain(id: string, cursor: number) {
-  const recording = recordings.get(id);
-  if (!recording) throw new SpeechRefusal("SPEECH_UNKNOWN_RECORDING", 404);
+  const recording = live(id);
   if (!Number.isSafeInteger(cursor) || cursor < 0) throw new SpeechRefusal("SPEECH_INVALID_CURSOR", 400);
   recording.touchedAt = Date.now();
   await recording.started;
