@@ -626,10 +626,15 @@ function humanMutation(sessionId:number,clientActionId:string,payload:unknown,ru
       record(sessionId,saved.input.id,null,change);
       recordMs=performance.now()-phaseStart;
       phaseStart=performance.now();phaseName='receipt';
-      db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',result}),saved.input.id);
+      // His app answers an action with the thread as it now stands, so the answer is the thread view
+      // at the revision just recorded, saved with the receipt so a retry returns the same bytes. The
+      // stored record alone had no id or messages; the app threw on it and called a saved pin
+      // pending (2026-11-04, report e0889a03).
+      const answered=result.topic&&typeof result.topic.topicId==='string'?{...result,topic:topicView(result.topic.topicId)}:result;
+      db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',result:answered}),saved.input.id);
       receiptMs=performance.now()-phaseStart;
       phaseName='commit';
-      return {...result,duplicate:false};
+      return {...answered,duplicate:false};
     })();
     completed=true;
     return result;
@@ -650,6 +655,13 @@ function humanMutation(sessionId:number,clientActionId:string,payload:unknown,ru
         duplicate,outcome:completed?'completed':'failed'});
     }
   }
+}
+/** One thread as the app's lists and thread view show it, computed from the ledger as it stands now. */
+function topicView(topicId:string) {
+  const session=inboxOrThrow();
+  const topic=topicRow(topicId);
+  const summary=topicSummary(topic,session,entryIndex(),workIndex(session.id),readIndex(session.id));
+  return {...summary,closure:topic.closure,history:topicHistory(session.id,topicId)};
 }
 function bumped(topic:StoredTopic,change:Partial<StoredTopic>={}):StoredTopic {
   return {...topic,...change,revision:topic.revision+1,updatedAt:nowIso()};
