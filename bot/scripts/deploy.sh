@@ -710,6 +710,15 @@ promote_candidate_release() {
     "$CANDIDATE_ARTIFACT_PATH/control/antigravity-account-statusline.sh"
 }
 
+# Runs after success is recorded, at idle disk priority, so a slow or failed prune never fails or
+# delays an update; the next update tries again. The promoted release's own manager does it.
+prune_old_releases() {
+  [ -n "$CANDIDATE_ARTIFACT_PATH" ] || return 0
+  ionice -c3 nice -n19 env CONCIERGE_STATE_DIR="$STATE_DIR" \
+    "$BUN_BIN" run "$CANDIDATE_ARTIFACT_PATH/control/release-manager.js" prune \
+    || echo "Old release pruning failed; the next update retries it." >&2
+}
+
 install_router_actions() {
   local source="$CONTROL_SYSTEMD_DIR/router-actions.sh"
   if [ ! -f "$source" ]; then
@@ -1173,6 +1182,7 @@ deploy() {
     install_router_actions
     DEPLOY_FAILURE_REASON="Verified deployment success could not be committed to durable state."
     record_deployment_success
+    prune_old_releases
   fi
   trap - EXIT ERR INT TERM
 
@@ -1266,6 +1276,7 @@ recover_control() {
   release_deployment_gate
   confirm_service_proof_is_current
   record_deployment_success
+  prune_old_releases
   trap - EXIT ERR INT TERM USR1
 }
 
