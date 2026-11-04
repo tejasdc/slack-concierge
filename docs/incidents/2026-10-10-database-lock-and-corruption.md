@@ -47,7 +47,10 @@ A separate deployment's migrator passed its full consistency checks at 12:21:37 
 At 12:24:13 the restarted coordinator reported `SQLITE_CORRUPT`; its startup recovery
 subsequently failed and systemd stopped retrying at 12:24:56. The cause of that exact
 damage is unconfirmed. The original and WAL/SHM were retained under
-`/root/.local/state/concierge/incidents/2026-10-10-1224-corrupt/`.
+`/root/.local/state/concierge/incidents/2026-10-10-1224-corrupt/`. Since 2026-11-04 the
+damaged database copy there is removed by incident-copy retention (see the deployment
+runbook's state migration and backups section); after that it exists only in the server's
+nightly off-box backups, while the private exports below stay in that folder.
 
 The preceding backup `state.pre-deployment-repair.1791649233269.db` passed a separate
 `quick_check(1)`. With the service already failed and no coordinator running, it was
