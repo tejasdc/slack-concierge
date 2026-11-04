@@ -13,7 +13,10 @@ const SOCKET = process.env.THINKERING_SESSION_CAPABILITY_SOCKET || '/run/thinker
 // A local socket answers in milliseconds; the Mac crosses SSH to the server, where the thesaurus is.
 const LOCAL_MS = 1_500, MAC_MS = 6_000;
 const LIMIT = 1_048_576;
-const UNREAD = 'Tejas’s own thesaurus (his meanings for his terms) could not be read for this message. When a word or name of his is unclear, look it up before guessing: curl -s --unix-socket /run/thinkering/session-capabilities.sock "http://x/app/thesaurus?q=<word>" (from his Mac: through ssh remote-box).';
+const UNREAD = 'Tejas’s own thesaurus (his meanings for his terms) could not be read for this message.';
+// How to look a word up is Thinkering's wording, kept from its last answer rather than copied here,
+// so a turn whose lookup failed still says how to reach the thesaurus once one has succeeded.
+let lastLookup:string|null=null;
 
 function overSocket(body:Buffer):Promise<string>{
   return new Promise((resolve,reject)=>{
@@ -48,12 +51,13 @@ export async function thesaurusTurnContext(text:string):Promise<string>{
   const started=Date.now();
   try{
     const body=Buffer.from(JSON.stringify({text}));
-    const answer=JSON.parse(await (process.platform==='darwin'?overSsh(body):overSocket(body))) as {context?:unknown;mentions?:unknown[]};
+    const answer=JSON.parse(await (process.platform==='darwin'?overSsh(body):overSocket(body))) as {context?:unknown;mentions?:unknown[];lookup?:unknown};
     if(typeof answer.context!=='string'||!answer.context.trim())throw new Error('no context');
+    if(typeof answer.lookup==='string'&&answer.lookup.trim())lastLookup=answer.lookup;
     log('info','thesaurus_turn_context',{mentions:Array.isArray(answer.mentions)?answer.mentions.length:0,ms:Date.now()-started});
     return answer.context;
   }catch(error){
     log('warn','thesaurus_turn_context_unavailable',{ms:Date.now()-started,reason:error instanceof Error?error.message.slice(0,80):'failed'});
-    return UNREAD;
+    return lastLookup?`${UNREAD} ${lastLookup}`:UNREAD;
   }
 }
