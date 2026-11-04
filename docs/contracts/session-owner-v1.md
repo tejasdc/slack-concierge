@@ -239,7 +239,9 @@ router. The questions read carries the same per group. A human input to the Inbo
 applies its default. A reply addressed to an agent is retained in the Inbox as his message
 (`accepted` event `forwarded:<input>`, receipt `{state:'waiting', forwardedTo}`, a `topic`
 event `change:'forwarded'`), starts no router turn, and is carried to the agent as a communication
-request (action `forward:<input>`, payload `forwardedReply`); each of the agent's replies is posted
+request (action `forward:<input>`, payload `forwardedReply`, its operation receipt naming
+`requestId` and `sourceInputId` like every other ask, so thnkr.ing draws the reply route and its
+request as one hand-off card with one status); each of the agent's replies is posted
 into the thread as a `post` by that agent (`postedBy:'owner-forward'`, `postedBySession`), a stall
 as a service post, and the final settles the receipt. Until then the receipt follows the request
 that carries it (`followForwardedReply`, on every execution change and every Mac poll): `queued`
