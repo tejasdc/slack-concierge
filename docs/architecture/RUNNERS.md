@@ -192,5 +192,9 @@ Sources: [GetActivityTask](https://docs.aws.amazon.com/step-functions/latest/api
   keeps process control unreachable, and the agents' client takes the network path.
 - `bot/scripts/runner-lease-check.ts`: claim, contiguous events, commands, epoch fencing, computed
   expiry (turn unconfirmed, build requeued) and idempotent finish.
-- Live (after install): a probe job queued through the owner's socket and run by `runner.ts --once`
-  over the network entrance with a runner token; the result is recorded in the commit that follows.
+- Live, 2026-11-04 on release 75faaa3d: over `100.118.245.110:8789` a call without a token got 401,
+  the token route 403 and a process-control route 404; probe `probe:live-8623-20261104` was queued
+  and run by the installed `runner.js --once` with an `ax41` runner token: one attempt at epoch 1,
+  events `started` and `echo` acknowledged to sequence 2 (a resend stored nothing), job `finished`.
+  `router-actions.sh sessions get` with only `CONCIERGE_OWNER_URL` and a token (no local state
+  folder) answered through the entrance.
