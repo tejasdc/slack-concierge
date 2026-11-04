@@ -59,6 +59,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - The canonical owner, not agent memory, enforces Inbox placement, attention and
   delivery. Unfiled human inputs prevent the Inbox router from ending its turn.
   See [filing before stopping](docs/contracts/native-inbox.md#filing-before-stopping),
+  [routing handoffs](docs/contracts/native-inbox.md#routing-handoffs-on-the-source-message),
   [human questions](docs/architecture/HUMAN-QUESTIONS.md), and
   [requested phone delivery](docs/contracts/requested-phone-notifications.md).
 
