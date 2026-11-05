@@ -3942,7 +3942,7 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='sessions'&&parts[2]==='window'&&parts.length===3){
         const space=sessionSpaceParam(url.searchParams.get('space'));
         if(!space)throw new SessionOwnerError('space is required: lab or everyday.');
-        if(space==='everyday')await closeQuestionsAnsweredByTodos(admission=>this.admit(admission));
+        await closeQuestionsAnsweredByTodos(admission=>this.admit(admission));
         const attention=url.searchParams.get('needsAttention');
         if(attention!==null&&attention!=='true'&&attention!=='false')throw new SessionOwnerError('needsAttention is true or false.');
         const workflowId=url.searchParams.get('workflowId');
