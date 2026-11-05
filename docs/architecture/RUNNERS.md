@@ -195,6 +195,8 @@ after one such run was taken over live by a later owner. Until then updates wait
 
 ### Not on runners yet
 
+Exact locations and a plan for every item below: [what still ties the owner to the agents' machine](../plans/2026-11-05-owner-off-agent-machine-remaining.md).
+
 - Google turns and outside Codex hosts stay local. Google's launch first reads the owner's own
   `~/.gemini` settings (the paid-credit guard), and an outside run's prompt file is written into the
   owner's state folder, which runners hide; both need the runner-side account step below first.
