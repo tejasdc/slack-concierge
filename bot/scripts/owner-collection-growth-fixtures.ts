@@ -14,7 +14,7 @@ function source(count:number){
   CREATE TABLE session_followed_messages(session_id INTEGER,message_id TEXT,excerpt TEXT,created_at TEXT,PRIMARY KEY(session_id,message_id));
   CREATE TABLE sessions(id INTEGER PRIMARY KEY,binding_generation INTEGER,provider_id TEXT,native_metadata_json TEXT,
     slack_channel_id TEXT,slack_thread_ts TEXT);
-  CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,saved_kind TEXT,status TEXT,
+  CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,saved_kind TEXT,saved_quiet_only INTEGER NOT NULL DEFAULT 0,status TEXT,
     turn_kind TEXT,owner_instance_id TEXT,provider_admission_intended_at TEXT,provider_started_at TEXT,
     provider_turn_id TEXT,provider_input_acknowledged_at TEXT,stop_requested_at TEXT,native_run_id TEXT,
     accepted_input_id TEXT,queue_priority INTEGER NOT NULL DEFAULT 0,saved_at_ms INTEGER NOT NULL DEFAULT 1,

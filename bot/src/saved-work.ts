@@ -8,11 +8,12 @@ import {includedAllowanceWindows} from './account-allowance-observation';
 import {chooseAccountForTurn} from './provider-account-choice';
 import {log,errorFields} from './log';
 import {savedStartAt} from './saved-start-time';
-import {inQuietHours,localParts} from './quiet-hours';
+import {inQuietHours,localParts,nextQuietEnd,quietOnlyAdmits,QUIET_STOP_MARGIN_MS} from './quiet-hours';
 export {savedStartAt} from './saved-start-time';
 
 export type SavedKind='scheduled'|'banked';
 export type SavedTurn={id:number;session_id:number;status:string;saved_kind:SavedKind;saved_at_ms:number;saved_expires_at_ms:number|null;saved_manual_start:number;
+  saved_quiet_only:number;
   saved_repeat_ms:number|null;saved_root_id:number|null;saved_sequence:number|null;saved_fire_at_ms:number|null;
   saved_account:string|null;saved_window:string|null;saved_boundary_ms:number|null;dispatch_next_attempt_ms:number|null;dispatch_failure_class:string|null;
   saved_alerted_at_ms:number|null;accepted_input_id:string|null};
@@ -46,8 +47,9 @@ export function changeSavedWorkSettings(value:Partial<SavedWorkSettings>):SavedW
  * refused every continuation, the whole resume rolled back, and a run a Concierge update
  * interrupted was left with no continuation at all.
  */
-export function saveQueuedTurn(turnId:number,kind:SavedKind,atMs?:number,expiresAtMs?:number,repeatEveryMs?:number,continuationOf?:number,standingRole?:string):void {
+export function saveQueuedTurn(turnId:number,kind:SavedKind,atMs?:number,expiresAtMs?:number,repeatEveryMs?:number,continuationOf?:number,standingRole?:string,quietOnly=false):void {
   const now=Date.now();
+  if(quietOnly&&kind!=='banked')throw new Error('Quiet-only work must be banked.');
   if(kind==='scheduled'&&(!Number.isFinite(atMs)||atMs!<=now))throw new Error('Schedule a future instant.');
   if(expiresAtMs!==undefined&&(!Number.isFinite(expiresAtMs)||expiresAtMs<=(atMs??now)))throw new Error('Expiry must follow the scheduled time.');
   if(repeatEveryMs!==undefined&&(kind!=='scheduled'||!Number.isSafeInteger(repeatEveryMs)||repeatEveryMs<60_000))throw new Error('Repeat interval must be at least one minute.');
@@ -64,11 +66,12 @@ export function saveQueuedTurn(turnId:number,kind:SavedKind,atMs?:number,expires
         .get(turn.session_id,turnId) as {id:number}|null;
       if(existing)throw new Error(`The ${standingRole} role already has repeating schedule ${existing.id} queued. Change its time in Thinkering Saved work, or cancel it with sessions saved cancel ${existing.id} before scheduling another.`);
     }
+    const inherited=continuationOf?savedTurn(continuationOf)?.saved_quiet_only===1:false;
     const next=kind==='scheduled'?atMs!:null;
     db.query(`UPDATE turns SET saved_kind=?,saved_at_ms=?,saved_expires_at_ms=?,dispatch_failure_class=NULL,dispatch_next_attempt_ms=?,
-      saved_fire_at_ms=?,saved_repeat_ms=?,saved_root_id=?,saved_sequence=? WHERE id=?`)
+      saved_fire_at_ms=?,saved_repeat_ms=?,saved_root_id=?,saved_sequence=?,saved_quiet_only=? WHERE id=?`)
       .run(kind,now,kind==='scheduled'?expiresAtMs??null:now+savedWorkSettings().wait_days*DAY,next,next,
-        repeatEveryMs??null,repeatEveryMs?turnId:null,repeatEveryMs?0:null,turnId);
+        repeatEveryMs??null,repeatEveryMs?turnId:null,repeatEveryMs?0:null,quietOnly||inherited?1:0,turnId);
   })();
   executionChanged();
 }
@@ -88,6 +91,7 @@ function nextQuietStart(now:number,settings:SavedWorkSettings):number {
   }
   return now+DAY;
 }
+export function quietOnlyCutoff(now:number,settings=savedWorkSettings()){return nextQuietEnd(now,settings)-QUIET_STOP_MARGIN_MS;}
 const fleetBusy=(savedSessionId:number)=>!!db.query(`SELECT 1 FROM turns WHERE session_id<>?
   AND (status IN ('running','delivering') OR (status='queued' AND saved_kind IS NULL)) LIMIT 1`).get(savedSessionId);
 const savedRows=()=>db.query("SELECT * FROM turns WHERE saved_kind IS NOT NULL AND status='queued' ORDER BY id").all() as SavedTurn[];
@@ -117,10 +121,13 @@ export function reconsiderBankedWork(now=Date.now()):number {
       .sort((a,b)=>Date.parse(a.resetsAt!)-Date.parse(b.resetsAt!))[0]:null;
     const account=candidate?.account??null;
     const reset=candidate?Date.parse(candidate.resetsAt!):null;
-    const eligible=!!candidate&&!fleetBusy(row.session_id)&&(quiet(now,settings)||reset!-now<=2*HOUR);
-    const next=eligible?0:reset!==null?Math.min(nextQuietStart(now,settings),Math.max(now+60_000,reset-2*HOUR))
+    const quietOnly=row.saved_quiet_only===1;
+    const eligible=!!candidate&&!fleetBusy(row.session_id)&&(quietOnly
+      ?quietOnlyAdmits(now,settings)
+      :quiet(now,settings)||reset!-now<=2*HOUR);
+    const next=eligible?0:quietOnly?nextQuietStart(now,settings):reset!==null?Math.min(nextQuietStart(now,settings),Math.max(now+60_000,reset-2*HOUR))
       :row.dispatch_next_attempt_ms!==null&&row.dispatch_next_attempt_ms>now+3*60_000?row.dispatch_next_attempt_ms:null;
-    const boundary=eligible?reset:null;
+    const boundary=eligible?(quietOnly?Math.min(reset!,quietOnlyCutoff(now,settings)):reset):null;
     if(row.dispatch_next_attempt_ms===next&&row.saved_account===(eligible?account:null)
       &&row.saved_window===(eligible?candidate!.window:null)&&row.saved_boundary_ms===boundary)continue;
     const result=db.query(`UPDATE turns SET dispatch_next_attempt_ms=?,saved_account=?,saved_window=?,saved_boundary_ms=?
@@ -147,7 +154,7 @@ export function yieldBankedTurn(turnId:number,owner:string,nextMs=Date.now()+3*6
   return !!result.changes;
 }
 
-export function resumeBankedAfterYield(turnId:number,reason:'allowance_boundary'|'deployment_boundary'):boolean {
+export function resumeBankedAfterYield(turnId:number,reason:'allowance_boundary'|'deployment_boundary'|'quiet_boundary'):boolean {
   // An admitted provider may already have pushed or deployed, so its opening input is never
   // queued again. The stopped turn is kept as the record of what happened, and the work
   // continues as a new message that says where it got to — which is what the entry point
@@ -156,7 +163,9 @@ export function resumeBankedAfterYield(turnId:number,reason:'allowance_boundary'
   const changed=db.transaction(()=>{
     const row=savedTurn(turnId);
     if(!row||row.status!=='cancelled'||!row.accepted_input_id)return false;
-    const question=reason==='deployment_boundary'
+    const question=reason==='quiet_boundary'
+      ?'Quiet-only banked work stopped before morning. Check what the agent completed before deciding how to continue.'
+      :reason==='deployment_boundary'
       ?'Banked work stopped for a deployment after it started. Check what the agent completed before deciding how to continue.'
       :'Banked work stopped at its allowance boundary after it started. Check what the agent completed before deciding how to continue.';
     db.query(`UPDATE turns SET agent_text=COALESCE(agent_text,?) WHERE id=? AND status='cancelled'`).run(question,turnId);
@@ -171,11 +180,11 @@ export function resumeBankedAfterYield(turnId:number,reason:'allowance_boundary'
     // session that has moved on, a status it does not accept — and a refusal is not a failure
     // here: the run stays held for him, which is what happened before this existed.
     const continued=queueTurnContinuation(turnId,{kind:'boundary',
-      detail:reason==='deployment_boundary'?'a Concierge update was waiting':'the allowance it was spending reset',
+      detail:reason==='quiet_boundary'?'the quiet work window was ending':reason==='deployment_boundary'?'a Concierge update was waiting':'the allowance it was spending reset',
       ...(row.dispatch_next_attempt_ms?{waitUntilMs:row.dispatch_next_attempt_ms}:{})});
     // A continuation of banked work is still banked work: without this it would be ordinary
     // work that simply runs at its time, unbound to an account and outside the reserve.
-    if(continued?.turn_id)saveQueuedTurn(continued.turn_id,'banked',undefined,undefined,undefined,turnId);
+    if(continued?.turn_id&&!savedTurn(continued.turn_id))saveQueuedTurn(continued.turn_id,'banked',undefined,undefined,undefined,turnId);
     return true;
   })();
   return changed;
@@ -192,6 +201,7 @@ export function updateSavedTurn(turnId:number,action:string,body:Record<string,u
     const row=savedTurn(turnId);
     if(!row||row.status!=='queued')throw new Error('This saved work is no longer waiting.');
     if(action==='time'||action==='schedule') {
+    if(row.saved_quiet_only)throw new Error('Quiet-only work cannot be converted to a daytime schedule. Drop it and create an explicitly scheduled request.');
     if(action==='time'&&row.saved_kind!=='scheduled')throw new Error('Use schedule to convert banked work into scheduled work.');
     if(action==='schedule'&&row.saved_kind!=='banked')throw new Error('Only banked work can be converted into a schedule.');
     const at=body.atMs;
@@ -201,6 +211,8 @@ export function updateSavedTurn(turnId:number,action:string,body:Record<string,u
     db.query(`UPDATE turns SET saved_kind='scheduled',dispatch_next_attempt_ms=?,saved_fire_at_ms=?,saved_expires_at_ms=?,saved_account=NULL,
       saved_window=NULL,saved_boundary_ms=NULL,saved_alerted_at_ms=NULL,saved_manual_start=0 WHERE id=? AND status='queued'`).run(at,at,expires??null,turnId);
     } else if(action==='start') {
+    if(row.saved_quiet_only&&!quietOnlyAdmits(Date.now(),savedWorkSettings()))
+      throw new Error('Quiet-only work can start only during its quiet window, before the morning cutoff.');
     db.query(`UPDATE turns SET saved_manual_start=1,dispatch_next_attempt_ms=0,saved_account=NULL,saved_window=NULL,saved_boundary_ms=NULL
       WHERE id=? AND status='queued'`).run(turnId);
     } else {
@@ -258,7 +270,9 @@ export function inspectSavedWork(now=Date.now(),lateMs=5*60_000):number {
       if(!changed.changes)return false;
       const session=getSessionById(row.session_id);if(!session)return false;
       const meta=sessionMetadata(session),generation=(meta.generation??0)+1;
-      const question=expired?'This banked work found no safe allowance window. Start it now, schedule it, or drop it.'
+      const question=expired?row.saved_quiet_only
+        ?'This quiet-only banked work found no safe overnight allowance window. Start it during quiet hours or drop it.'
+        :'This banked work found no safe allowance window. Start it now, schedule it, or drop it.'
         :missed?'This scheduled work missed its expiry. Create a new schedule to run it later.'
         :'This scheduled work is past its time and remains queued. Check the deployment hold or an earlier parked turn.';
       const eventId=`saved-work-alert:${row.id}`,inputId=row.accepted_input_id??`saved:${row.id}`;

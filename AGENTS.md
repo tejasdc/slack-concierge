@@ -70,6 +70,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   from agent and service inputs. The [session owner wire contract](docs/contracts/session-owner-v1.md),
   [human command custody](docs/architecture/HUMAN-COMMAND-INTAKE.md), and
   [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md) own those boundaries.
+- Banked phone work that Tejas permits only overnight uses the explicit quiet-only saved-work choice; request cancellation also revokes a queued saved turn. See [session ownership](docs/architecture/SESSION-OWNER.md#one-execution-owner) and [router actions](docs/runbooks/ROUTER-ACTIONS.md#current-native-routing).
 - A device question can name an app startup when the physical device has no agent route;
   the agent explains the failed route. Returned `needs_you` questions can be withdrawn
   by exact event identity when they become stale. See [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md)

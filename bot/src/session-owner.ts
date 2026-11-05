@@ -1157,7 +1157,7 @@ export class SessionOwner {
           nextCursor:preparedAttention.nextCursor,coverage:preparedAttention.coverage}:{} )},
       needsAttention:meta.inbox?preparedAttention!.needsAttention??true:needsAttention(meta),turnOutcome:meta.turnOutcome??null,
       withdrawnNeeds:meta.withdrawnNeeds??[],unread:generation>(meta.readGeneration??0),execution,backgroundWait:active?turnBackgroundWait(active.id):null,pendingCount:queued,
-      savedWork:(()=>{const saved=savedSessionTurn(session.id);return saved?{kind:saved.saved_kind,
+      savedWork:(()=>{const saved=savedSessionTurn(session.id);return saved?{kind:saved.saved_kind,quietOnly:saved.saved_quiet_only===1,
         startsAt:savedStartAt(saved),
         expiresAt:saved.saved_expires_at_ms?new Date(saved.saved_expires_at_ms).toISOString():null,
         account:saved.saved_account,window:saved.saved_window,repeatEveryMs:saved.saved_repeat_ms,
@@ -1351,7 +1351,7 @@ export class SessionOwner {
   }
   /** Called only inside the communication owner's source-validated request transaction. */
   /** A peer instance's request has no local source input; its scope names the peer and the remote input instead. */
-  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;project?:string;title?:string;summary?:string;smallTask?:boolean;outside?:boolean;onRunner?:boolean;standingRole?:StandingAgentRole;firstInput:{text:string;machineNeed?:import('./machine-need').MachineNeed;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number}}) {
+  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;project?:string;title?:string;summary?:string;smallTask?:boolean;outside?:boolean;onRunner?:boolean;standingRole?:StandingAgentRole;firstInput:{text:string;machineNeed?:import('./machine-need').MachineNeed;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean}}) {
     const title=normalizeSessionTitle(input.title);
     const source=input.sourceInputId?getAcceptedSessionInput(input.sourceInputId):null;
     const fromClaude=!!source&&getSessionById(source.session_id)?.provider_id==='claude-code';
@@ -1376,7 +1376,7 @@ export class SessionOwner {
     if(input.saved) {
       const queued=enqueueSessionInput(operation.id);
       if(queued.turn_id===null)throw new SessionOwnerError('Saved input could not be queued.',409);
-      saveQueuedTurn(queued.turn_id,input.saved.kind,input.saved.atMs,input.saved.expiresAtMs,input.saved.repeatEveryMs,undefined,input.standingRole);
+      saveQueuedTurn(queued.turn_id,input.saved.kind,input.saved.atMs,input.saved.expiresAtMs,input.saved.repeatEveryMs,undefined,input.standingRole,input.saved.quietOnly);
     }
     return getAcceptedSessionInput(operation.id)!;
   }
@@ -2138,8 +2138,10 @@ export class SessionOwner {
   create(body:unknown) {
     const input=object(body);only(input,['clientActionId','provider','purpose','title','workflowId','project','model','reasoningEffort','firstInput','door','savedWork']);
     const savedWork=input.savedWork===undefined?null:object(input.savedWork);
-    if(savedWork){only(savedWork,['kind','atMs','expiresAtMs','repeatEveryMs']);if(!input.firstInput||!input.title||input.provider==='chatgpt'||!['scheduled','banked'].includes(savedWork.kind))
+    if(savedWork){only(savedWork,['kind','atMs','expiresAtMs','repeatEveryMs','quietOnly']);if(!input.firstInput||!input.title||input.provider==='chatgpt'||!['scheduled','banked'].includes(savedWork.kind))
       throw new SessionOwnerError('Saved work needs a named new coding session and its first input.');}
+    if(savedWork?.quietOnly!==undefined&&(savedWork.kind!=='banked'||savedWork.quietOnly!==true))
+      throw new SessionOwnerError('Quiet-only is an explicit banked-work choice.');
     if(savedWork?.repeatEveryMs!==undefined&&(!input.project||typeof input.project!=='string'||!canOwnStandingWork(this.defaultCwd,sessionProject(this.defaultCwd,input.project,{inside:true})?.cwd)))
       throw new SessionOwnerError(STANDING_WORK_REFUSAL,409,'STANDING_WORK_PROJECT_REQUIRED');
     if(input.door!==undefined&&(typeof input.door!=='string'||!input.door.trim()||input.door.length>60))throw new SessionOwnerError('A door is a short label of how the message came in.');
@@ -2189,7 +2191,7 @@ export class SessionOwner {
       if(savedWork) {
         const queued=enqueueSessionInput(recorded.id);
         if(queued.turn_id===null)throw new SessionOwnerError('Saved input could not be queued.',409);
-        saveQueuedTurn(queued.turn_id,savedWork.kind as 'scheduled'|'banked',savedWork.atMs as number|undefined,savedWork.expiresAtMs as number|undefined,savedWork.repeatEveryMs as number|undefined);
+        saveQueuedTurn(queued.turn_id,savedWork.kind as 'scheduled'|'banked',savedWork.atMs as number|undefined,savedWork.expiresAtMs as number|undefined,savedWork.repeatEveryMs as number|undefined,undefined,undefined,savedWork.quietOnly as boolean|undefined);
       } else if(input.firstInput&&!recorded.receipt_json) enqueueSessionInput(recorded.id);
       return getAcceptedSessionInput(recorded.id)!;
     })();

@@ -23,7 +23,8 @@ import {log,errorFields} from './log';
 import {startStuckWorkWatch} from './stuck-work-watch';
 import {startRepairNoticeDelivery} from './repair-notices';
 import {CodexSessionObserver} from './codex-session-observer';
-import {prepareSavedWorkForClaims,reconsiderBankedWork,inspectSavedWork,resumeBankedAfterYield,savedTurn,savedWorkSettings} from './saved-work';
+import {prepareSavedWorkForClaims,reconsiderBankedWork,inspectSavedWork,resumeBankedAfterYield,savedTurn,savedWorkSettings,quietOnlyCutoff} from './saved-work';
+import {quietOnlyAdmits} from './quiet-hours';
 import {providerAccountUsage} from './provider-account-usage';
 import {savedWorkAccountRooms} from './provider-account-dispatch';
 import {startBackgroundJobWatch} from './background-waits';
@@ -43,23 +44,32 @@ export async function startSessionRuntime() {
   registerProcessInstance(instanceId,identity.pid,identity.bootId,identity.startTicks);
   let draining=false;
   const active=new Set<number>();
-  const yielding=new Map<number,'allowance_boundary'|'deployment_boundary'>();
-  const registry=new ActiveTurnDispatchRegistry({onStarted:()=>{},onSettled:()=>queue.wake()});
-  const requestBankedYield=(turnId:number,reason:'allowance_boundary'|'deployment_boundary')=>{
+  const yielding=new Map<number,'allowance_boundary'|'deployment_boundary'|'quiet_boundary'>();
+  let quietBoundaryTimer:ReturnType<typeof setTimeout>|null=null;
+  const registry=new ActiveTurnDispatchRegistry({onStarted:()=>queueMicrotask(inspectActiveBanked),onSettled:()=>queue.wake()});
+  const requestBankedYield=(turnId:number,reason:'allowance_boundary'|'deployment_boundary'|'quiet_boundary')=>{
     if(yielding.has(turnId))return;
     const row=savedTurn(turnId);
-    if(!row||row.saved_kind!=='banked'||row.saved_manual_start)return;
+    if(!row||row.saved_kind!=='banked'||row.saved_manual_start&&!row.saved_quiet_only)return;
     const requested=registry.requestSessionCancellation(row.session_id,turnId);
     if(!requested.matched)return;
     yielding.set(turnId,reason);
-    void requested.completion.catch(error=>{yielding.delete(turnId);log('warn','banked_yield_failed',{turn_id:turnId,...errorFields(error)});});
+    void requested.completion.catch(error=>log('warn','banked_yield_failed',{turn_id:turnId,...errorFields(error)}));
   };
   const inspectActiveBanked=()=>{
+    if(quietBoundaryTimer){clearTimeout(quietBoundaryTimer);quietBoundaryTimer=null;}
     const draining=!!db.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get();
-    const reserve=savedWorkSettings().reserve_percent;
+    const settings=savedWorkSettings(),reserve=settings.reserve_percent,now=Date.now();
+    let nextQuietBoundary=Infinity;
     for(const turnId of active){
-      const row=savedTurn(turnId);if(!row||row.saved_kind!=='banked'||row.saved_manual_start)continue;
+      const row=savedTurn(turnId);if(!row||row.saved_kind!=='banked'||row.saved_manual_start&&!row.saved_quiet_only)continue;
+      if(yielding.has(turnId))continue;
       if(draining){requestBankedYield(turnId,'deployment_boundary');continue;}
+      if(row.saved_quiet_only){
+        if(!quietOnlyAdmits(now,settings)){requestBankedYield(turnId,'quiet_boundary');continue;}
+        nextQuietBoundary=Math.min(nextQuietBoundary,quietOnlyCutoff(now,settings));
+      }
+      if(row.saved_manual_start)continue;
       const session=db.query('SELECT provider_id FROM sessions WHERE id=?').get(row.session_id) as {provider_id:string}|null;
       if(!session||!['codex','claude-code','antigravity'].includes(session.provider_id))continue;
       const provider=session.provider_id as 'codex'|'claude-code'|'antigravity';
@@ -75,6 +85,7 @@ export async function startSessionRuntime() {
         ||!window||window.usedPercent>=100-reserve)
         requestBankedYield(turnId,'allowance_boundary');
     }
+    if(Number.isFinite(nextQuietBoundary))quietBoundaryTimer=setTimeout(()=>inspectActiveBanked(),Math.max(1,nextQuietBoundary-Date.now()));
   };
   let codexSessionObserver:CodexSessionObserver|null=null;
   const host=new SessionExecutionHost({instanceId,registry,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>queue.wake(),providerSessionBound:uuid=>codexSessionObserver?.providerSessionBound(uuid)??Promise.resolve()});
@@ -104,6 +115,7 @@ export async function startSessionRuntime() {
     run:async(claim:QueuedTurnClaimRow)=>{
       active.add(claim.turn_id);
       try {
+        inspectActiveBanked();
         if(claim.turn_kind!=='native') {
           if(claim.turn_kind!=='slack_user'||!claim.slack_channel_id||!claim.slack_user_msg_ts)throw new Error('This queued adapter control requires its original surface.');
           const input=retainSlackInput(claim.slack_channel_id,claim.slack_user_msg_ts);
@@ -114,6 +126,7 @@ export async function startSessionRuntime() {
         return await host.run(claim);
       } finally {
         active.delete(claim.turn_id);
+        inspectActiveBanked();
         const reason=yielding.get(claim.turn_id);
         yielding.delete(claim.turn_id);
         if(reason)resumeBankedAfterYield(claim.turn_id,reason);
@@ -124,10 +137,18 @@ export async function startSessionRuntime() {
   // their turns as orphaned, and continue under the same run (design 2026-10-07 §3.1 step 4).
   const runAdopted=(adoption:Adoption)=>{
     active.add(adoption.claim.turn_id);
+    inspectActiveBanked();
     void host.run(adoption.claim,adoption).catch(error=>{
       log('error','execution_adoption_failed',{turn_id:adoption.claim.turn_id,execution_id:adoption.execution.execution_id,...errorFields(error)});
       host.settleSetupFailure(adoption.claim,error);
-    }).finally(()=>{active.delete(adoption.claim.turn_id);queue.wake();});
+    }).finally(()=>{
+      active.delete(adoption.claim.turn_id);
+      inspectActiveBanked();
+      const reason=yielding.get(adoption.claim.turn_id);
+      yielding.delete(adoption.claim.turn_id);
+      if(reason)resumeBankedAfterYield(adoption.claim.turn_id,reason);
+      queue.wake();
+    });
   };
   const executions=await claimAdoptableExecutions({instanceId,isOwnerAlive:isProcessIdentityAlive});
   for(const adoption of executions.adopted)runAdopted(adoption);
@@ -190,7 +211,7 @@ export async function startSessionRuntime() {
     .catch(error=>log('error','inbox_entry_index_warm_failed',errorFields(error)));
   let stopping:Promise<void>|null=null;
   const stop=()=>stopping??=(async()=>{
-    draining=true;clearInterval(globalPauseReconcile);clearInterval(ghostSweep);stopProcessAuditSweep();clearInterval(parkedRecovery);clearSandboxReadyReceipt(runtime);stopUsageWatch();stopBackgroundJobWatch();stopUpdateWaitWatch();stopWatchWorker();stopAuthWatch();detach();detachProjection();queue.stop();await communication.stop();await codexSessionObserver?.stop();
+    draining=true;if(quietBoundaryTimer)clearTimeout(quietBoundaryTimer);clearInterval(globalPauseReconcile);clearInterval(ghostSweep);stopProcessAuditSweep();clearInterval(parkedRecovery);clearSandboxReadyReceipt(runtime);stopUsageWatch();stopBackgroundJobWatch();stopUpdateWaitWatch();stopWatchWorker();stopAuthWatch();detach();detachProjection();queue.stop();await communication.stop();await codexSessionObserver?.stop();
     // A hosted agent keeps working through this exit; the next coordinator takes it back.
     const hosted=hostedTurns(active);
     for(const turnId of active){

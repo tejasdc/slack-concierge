@@ -14,7 +14,7 @@ function fixture(count:number){
       native_run_id TEXT,ended_at TEXT,agent_text TEXT,stop_requested_at TEXT,accepted_input_id TEXT,
       provider_admission_intended_at TEXT,provider_started_at TEXT,
       provider_input_acknowledged_at TEXT,provider_duration_ms INTEGER,
-      saved_kind TEXT,dispatch_failure_class TEXT,dispatch_next_attempt_ms INTEGER,
+      saved_kind TEXT,saved_quiet_only INTEGER NOT NULL DEFAULT 0,dispatch_failure_class TEXT,dispatch_next_attempt_ms INTEGER,
       saved_at_ms INTEGER,saved_expires_at_ms INTEGER,saved_account TEXT,saved_window TEXT,
       saved_repeat_ms INTEGER,saved_sequence INTEGER);
     CREATE TABLE session_inputs(id TEXT PRIMARY KEY,session_id INTEGER,kind TEXT,origin TEXT,created_at TEXT,

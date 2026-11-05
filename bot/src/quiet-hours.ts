@@ -16,3 +16,24 @@ export function inQuietHours(now:number,settings:QuietHours):boolean {
     ?hour>=settings.quiet_start_hour&&hour<settings.quiet_end_hour
     :hour>=settings.quiet_start_hour||hour<settings.quiet_end_hour;
 }
+
+function localOffset(ms:number,settings:QuietHours) {
+  const p=localParts(ms,settings);
+  return Date.UTC(p.year,p.month-1,p.day,p.hour,p.minute,p.second)-Math.floor(ms/1000)*1000;
+}
+
+export const QUIET_STOP_MARGIN_MS=5*60_000;
+export function nextQuietEnd(now:number,settings:QuietHours):number {
+  const p=localParts(now,settings);
+  for(let day=0;day<3;day++) {
+    const wall=Date.UTC(p.year,p.month-1,p.day+day,settings.quiet_end_hour);
+    let candidate=wall-localOffset(wall,settings);
+    candidate=wall-localOffset(candidate,settings);
+    if(candidate>now&&inQuietHours(candidate-1000,settings))return candidate;
+  }
+  return now+24*60*60_000;
+}
+
+export function quietOnlyAdmits(now:number,settings:QuietHours):boolean {
+  return inQuietHours(now,settings)&&now<nextQuietEnd(now,settings)-QUIET_STOP_MARGIN_MS;
+}
