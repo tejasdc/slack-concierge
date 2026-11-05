@@ -182,8 +182,8 @@ class Turn {
       if(answer.error==='STALE_EPOCH'||answer.error==='UNKNOWN_ATTEMPT')this.lose(new Error(answer.detail??answer.error));
       return;
     }
-    // Saved at most every half minute, so a runner restarted after a long silence knows to stop it.
-    if(Date.now()-this.lastContact>30_000)updateHeld(state=>{const held=state[this.job.attemptId];if(held)held.lastContactAtMs=Date.now();});
+    // A restarted runner reads this contact from the owner-contact file the sync loop keeps, not
+    // from the held attempt (see fenceStale).
     this.lastContact=Date.now();
     this.queue=this.queue.filter(event=>event.seq>answer.ackedSeq!);
     for(const command of answer.commands??[])this.offer(command);
@@ -372,10 +372,19 @@ const turns=new Map<string,Turn>();
 // Take back what this runner held before a restart; a stale attempt is no longer this runner's.
 // First, a turn this runner has not been able to report for the fencing time is stopped: the owner
 // may already have settled it as lost, and the restart must not let its agent keep acting.
+// The owner last heard of a held turn at the later of its claim (or reacquire) and the runner's
+// last contact with the owner, the owner-contact file (written by syncs, which carry every held
+// turn, and by other answered owner calls). A turn the owner disowns in a sync is dropped from the
+// held file at once; the reacquire below settles whatever lease did pass. That file is the one
+// each host stops its agent by, so the runner and its hosts fence on one fact. (Until 2026-11-04 this
+// read only the claim time, so every restart stopped each turn older than the fencing time.)
+const readOwnerContact=()=>{try{return Number(readFileSync(ownerContactFile,'utf8'))||0;}catch{return 0;}};
 const fenceStale=()=>{
+  const synced=readOwnerContact();
   for(const [attemptId,held] of Object.entries(readHeld())) {
-    if(held.kind!=='turn'||!held.executionId||Date.now()-(held.lastContactAtMs??0)<RUNNER_FENCE_MS)continue;
-    say('runner_turn_fenced',{job:held.jobId,attemptId,silentMs:Date.now()-(held.lastContactAtMs??0)});
+    const heardAt=Math.max(held.lastContactAtMs??0,synced);
+    if(held.kind!=='turn'||!held.executionId||Date.now()-heardAt<RUNNER_FENCE_MS)continue;
+    say('runner_turn_fenced',{job:held.jobId,attemptId,silentMs:Date.now()-heardAt});
     spawnSync('systemctl',['stop',`${executionUnit(held.executionId)}.service`],{timeout:15_000});
   }
 };
