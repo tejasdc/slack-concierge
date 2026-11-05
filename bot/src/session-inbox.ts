@@ -208,8 +208,11 @@ export function inboxMessage(row:any) {
  */
 export type InboxThreadLink={inputId:string;root:string;thread:string;attached:boolean;routedBy:any;at:string};
 export function inboxThreadLink(sessionId:number,inputId:string):InboxThreadLink|null {
+  // An accepted input keeps its identity when the Inbox router changes provider.
+  // Its next placement may be recorded by the successor, so the latest event for
+  // that exact input wins across the handoff chain.
   const row=db.query(`SELECT payload_json,created_at FROM session_owner_events
-    WHERE session_id=? AND kind='thread_link' AND input_id=? ORDER BY sequence DESC LIMIT 1`).get(sessionId,inputId) as {payload_json:string;created_at:string}|null;
+    WHERE kind='thread_link' AND input_id=? ORDER BY sequence DESC LIMIT 1`).get(inputId) as {payload_json:string;created_at:string}|null;
   if(!row)return null;
   const payload=JSON.parse(row.payload_json);
   return {inputId,root:payload.root,thread:payload.thread,attached:payload.attached!==false,routedBy:payload.routedBy??null,
