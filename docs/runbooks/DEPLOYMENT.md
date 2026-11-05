@@ -549,6 +549,11 @@ stderr and reports exit status, signal and elapsed time on child failure. The co
 A desired commit whose
 run failed is not run again; the next push to `main` starts a fresh run.
 
+The functional Codex probe uses the running unit's configured runner setting, so a local App Server
+cannot pass health for an owner that reaches Codex through the runner relay. A candidate with a
+runner relay waits up to 30 seconds for the runner to reconnect before provider readiness fails;
+surviving Codex turns are followed only after that proof.
+
 If the detached runner cannot launch, or if a durable rollout step, candidate
 restart, or functional health proof fails, Concierge records one incident on
 the same active deployment run and starts the same repair service. A launched

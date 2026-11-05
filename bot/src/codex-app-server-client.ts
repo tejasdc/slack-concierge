@@ -414,7 +414,19 @@ export function codexRelayRunner(): string | null {
 }
 
 export async function verifySharedCodexAppServerReady() {
-  await sharedCodexAppServerClient().request("model/list", {}, { requestTimeoutMs: 10_000 });
+  // The runner reconnects after the owner's gateway comes up. A missing listen channel is the
+  // relay's only 503; keep the gateway alive through that handoff instead of failing startup.
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    try {
+      await sharedCodexAppServerClient().request("model/list", {}, { requestTimeoutMs: 10_000 });
+      return;
+    } catch (error) {
+      if (!codexRelayRunner() || !(error instanceof CodexAppServerClientError)
+        || error.message !== "Unexpected server response: 503" || Date.now() >= deadline) throw error;
+      await Bun.sleep(1_000);
+    }
+  }
 }
 
 export async function closeSharedCodexAppServerClient() {

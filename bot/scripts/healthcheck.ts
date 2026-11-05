@@ -2,7 +2,7 @@
 import toml from "@iarna/toml";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { CodexAppServerClient } from "../src/codex-app-server-client";
+import { ownerCodexAppServerClient } from "../src/codex-app-server-client";
 
 const configPath = process.env.CONCIERGE_CONFIG_PATH || `${homedir()}/.config/concierge/slack.toml`;
 const config: any = toml.parse(readFileSync(configPath, "utf-8"));
@@ -27,7 +27,8 @@ if (!response.ok || !result.ok) {
   process.exit(1);
 }
 
-const codex = new CodexAppServerClient();
+// The deployment probe must reach the same App Server as the running owner.
+const codex = ownerCodexAppServerClient();
 try {
   await codex.request("model/list", {}, { requestTimeoutMs: 10_000 });
 } catch (error) {
