@@ -951,8 +951,8 @@ Restore capture state separately from
 
 ## Runtime dependencies and service shutdown
 
-The deployment controller supports a service unit that refuses manual stops. When
-that refusal is installed, the controller creates a short named systemd unit that
+The service unit refuses direct manual stops and restarts. The deployment controller
+creates a short named systemd unit that
 conflicts with Concierge, waits for the ordered indirect stop, and then starts the
 selected release. The unit's journal description carries the deployment run and
 stage. Install the controller support in one release before installing the refusal
