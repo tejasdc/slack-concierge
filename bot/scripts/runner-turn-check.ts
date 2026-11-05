@@ -160,6 +160,29 @@ try {
   assert.deepEqual(seqs,seqs.map((_,index)=>index+1),'Every host frame is stored once, in order, across the runner restart.');
   assert.equal(await new RunnerHostAccess(second).release(),true);
 
+  // 3a. A turn claimed longer ago than the fencing time, which the owner has heard from on every
+  // sync, survives a runner restart: the restart fences on the last sync, not on the claim.
+  const veteran=newExecutionId();executionIds.push(veteran);
+  const old=runTurn(veteran,'launch',{stdin:'long-running'});
+  await until(()=>old.lines.includes('out:long-running'),'the long-running turn to answer');
+  const veteranEpoch=(db.query('SELECT epoch FROM runner_attempts WHERE job_id=?').get(turnJobId(veteran)) as any).epoch;
+  await Bun.sleep(1_500);
+  await stopRunner('SIGKILL');
+  const heldFile=join(runnerState,'attempts.json');
+  const heldState=JSON.parse(readFileSync(heldFile,'utf8'));
+  const veteranAttempt=Object.keys(heldState).find(id=>heldState[id].executionId===veteran)!;
+  heldState[veteranAttempt].lastContactAtMs=Date.now()-(await import('../src/runner-leases')).RUNNER_FENCE_MS-60_000;
+  writeFileSync(heldFile,JSON.stringify(heldState),{mode:0o600});
+  const logBefore=runnerLog.length;
+  startRunner();
+  await until(()=>(db.query('SELECT epoch FROM runner_attempts WHERE job_id=?').get(turnJobId(veteran)) as any).epoch>veteranEpoch,'the restarted runner to reacquire the long-running turn');
+  assert.ok(!runnerLog.slice(logBefore).join('').includes('runner_turn_fenced'),`A turn the owner heard from is not fenced on restart:\n${runnerLog.slice(logBefore).join('')}`);
+  await old.write!('still-here\n',{commandId:'steer-check-veteran'});
+  await until(()=>old.lines.includes('out:still-here'),'the long-running turn to continue after the runner restart');
+  old.close!();
+  assert.deepEqual(await old.result,{code:0,signal:null});
+  assert.equal(await new RunnerHostAccess(veteran).release(),true);
+
   // 3b. The runner dies and stays down: once its last contact with the owner is older than the
   // fencing time, the host stops its agent by itself (no runner is left to do it).
   const orphaned=newExecutionId();executionIds.push(orphaned);

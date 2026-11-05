@@ -174,7 +174,9 @@ What happens for a turn on a runner:
    no runner claimed yet, holds a claimed job until its runner reports the host, and records a
    takeover as live (survival proof) only once the runner reaches it after the takeover.
    A runner process restarted after four minutes without contact stops those agents before taking
-   its turns back. An owner outage longer than four minutes therefore still ends runner agents (now
+   its turns back. "Without contact" is measured from the later of the turn's claim and the
+   runner's last successful sync (its `owner-contact` file), never from the claim alone, so a turn
+   of any age the owner was still hearing from survives a runner restart. An owner outage longer than four minutes therefore still ends runner agents (now
    by the runner's own stop).
 8. **Deadlines that need no live runner.** The runner records each time it reaches the owner (a
    claim, a sync, a reacquire) in `owner-contact` in its state folder, and every host it starts
@@ -412,7 +414,8 @@ Sources: [GetActivityTask](https://docs.aws.amazon.com/step-functions/latest/api
 - `bot/scripts/runner-turn-check.ts` (needs systemd; not in the build): the real runner daemon starts
   real hosts for a scripted provider; output, follow-up receipts, attachment bytes, the runner-built
   environment (no owner variable leaks), release after settlement, a coordinator taking the run back,
-  a killed and restarted runner continuing with every host frame stored once in order, a host whose
+  a killed and restarted runner continuing with every host frame stored once in order, a turn
+  claimed longer ago than the fencing time surviving a runner restart, a host whose
   runner died with an old last contact stopping its own provider (`SIGTERM` journaled), and the two
   unstarted refusals (command not found, no runner claimed).
 - Live, 2026-11-04 on release 75faaa3d: over `100.118.245.110:8789` a call without a token got 401,
