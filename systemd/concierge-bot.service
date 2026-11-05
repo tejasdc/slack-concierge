@@ -46,12 +46,13 @@ Environment=CONCIERGE_PEER_TOKEN_FILE=%d/peer
 # Agents and runners reach the owner over the tailnet with signed tokens (docs/architecture/RUNNERS.md).
 # CONCIERGE_AGENT_API_URL stays unset while agents run on this machine: they keep the local socket.
 Environment=CONCIERGE_AGENT_API_LISTEN=100.118.245.110:8789
-# Claude turns run on runner ax41; Codex connections use its relay. Startup holds adopted Codex
-# turns until the gateway and runner channel answer (RUNNERS.md "Startup order"). Google and
-# outside-Codex turns stay local until their runner-side steps exist
-# (docs/architecture/RUNNERS.md "Not on runners yet"). Setting either to off/unset is the rollback.
+# Claude turns run on runner ax41. CONCIERGE_CODEX_RUNNER stays unset until the startup hold is
+# proven on a real restart: as committed, a runner channel missing for 30 s after the gateway
+# starts fails owner startup, so a down ax41 would stop Concierge rather than hold Codex turns
+# (RUNNERS.md "Startup order"). Google and outside-Codex turns stay local until their runner-side
+# steps exist (docs/architecture/RUNNERS.md "Not on runners yet"). Setting either to off/unset is
+# the rollback.
 Environment=CONCIERGE_TURN_RUNNERS=all
-Environment=CONCIERGE_CODEX_RUNNER=ax41
 # Concierge's own thnkr.ing calls (ChatGPT runs, native reads, human commands, to-dos, thesaurus)
 # take thnkr.ing's network entrance with the owner's service token, so nothing in the owner needs
 # thnkr.ing's local socket when it moves to its own app server (docs/architecture/RUNNERS.md).

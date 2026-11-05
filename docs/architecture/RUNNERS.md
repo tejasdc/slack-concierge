@@ -256,7 +256,9 @@ seconds while the gateway stays up; other provider errors fail startup. Only aft
 `model/list` are claimed Codex turns followed. Claude host adoption proceeds during the wait.
 This ordering prevents a missing request socket from parking live Codex work and gives the runner
 its normal reconnection interval. The deployed health probe reads the service's runner setting and
-checks that same App Server route.
+checks that same App Server route. The service leaves `CONCIERGE_CODEX_RUNNER` unset until this
+order is proven on a real restart. A wait that runs past its bound still fails startup, so a down
+ax41 would keep the owner from starting instead of only holding its Codex turns.
 
 ## Agents' thnkr.ing calls
 
