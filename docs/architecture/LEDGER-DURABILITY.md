@@ -12,7 +12,8 @@ Provider tool updates and commentary are kept in a bounded owner-memory queue fo
 second, then written in one SQLite transaction. A queue also flushes at 512 events or 4 MiB,
 before an immediate provider message, and when a provider turn ends. Exact event IDs, versions,
 order and the accepted input to which each update belongs are captured before the wait; duplicate
-replays are ignored. A failed flush retains the queue and retries after one second. Accepted human
+replays are ignored. A failed flush retains the queue and retries after one second; it is logged
+without holding an immediate provider answer or the final result behind optional progress. Accepted human
 input, requests, replies, final provider answers and run lifecycle changes are still written at
 their existing immediate durability boundaries. This chooses a short visibility delay for
 non-acknowledged activity in exchange for fewer WAL commits and repeated index-page writes;
