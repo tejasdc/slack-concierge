@@ -16,7 +16,8 @@ async function coordinationGrowth(){
   const insert=raw.query('INSERT INTO presentation_messages VALUES(?,?,?,?)');
   raw.transaction(()=>{
    for(let i=0;i<count;i++)insert.run(1,'selected',`message:${i}`,i+1);
-   for(let i=0;i<60;i++)insert.run(1,'selected',i%2?`request:${i}`:`post:earlier-work:${i}`,count+i+1);
+   // Ten earlier-work posts among fifty requests: only the newest post is the thread's current suggestion.
+   for(let i=0;i<60;i++)insert.run(1,'selected',i%6?`request:${i}`:`post:earlier-work:${i}`,count+i+1);
   })();
   const db=observedDatabase(raw);
   const first=observeStorageOperation('thread-coordination-growth',()=>withStorageReadBudget({maxCalls:8,maxRows:42,maxResultBytes:16384},
@@ -24,6 +25,7 @@ async function coordinationGrowth(){
   assert.equal(first.keys.length,20);assert.ok(first.nextCursor);
   const second=readPreparedThreadCoordinationKeys(db,'selected',20,first.nextCursor,100000);
   assert.equal(second.keys.length,20);assert.ok(second.keys[0]!.sequence<first.keys.at(-1)!.sequence);
+  assert.deepEqual([...first.keys,...second.keys].filter(key=>key.messageId.startsWith('post:earlier-work:')).map(key=>key.messageId),['post:earlier-work:54']);
   raw.query('UPDATE presentation_message_meta SET ready=0').run();
   assert.equal(readPreparedThreadCoordinationKeys(db,'selected',20,null,100000).coverage.code,'presentation_indexing');
   raw.query('UPDATE presentation_message_meta SET ready=1').run();
