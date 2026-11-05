@@ -190,12 +190,7 @@ class Turn {
   }
   private lastContact=Date.now();
   private fenced=false;
-  /**
-   * Out of touch with the owner for RUNNER_FENCE_MS: the owner may soon settle this turn as lost and
-   * a later turn may resume the same conversation, so the agent must stop acting now. The attempt is
-   * kept: if the owner comes back before the lease passes, the next sync refuses or continues it.
-   */
-  /** The execution to stop now, if this turn has just crossed the fencing time; the caller stops them together. */
+  /** Out of touch with the owner: return this execution for the caller's batched stop. */
   fenceIfSilent():string|null {
     if(this.stopped||this.fenced||Date.now()-this.lastContact<RUNNER_FENCE_MS)return null;
     this.fenced=true;
@@ -410,13 +405,17 @@ if(Object.keys(before).length){
     await Bun.sleep(5_000);
   }
   const {attempts}=answer;
-  // The owner already settled these turns without us: their hosts must not keep acting.
-  const settled:string[]=[];
+  // Stop settled hosts before deleting their records or awaiting any job read: a failed read
+  // exits this runner, and a restart cannot find a host whose held record was deleted.
+  const settled=attempts.flatMap((attempt:any)=>{
+    const prior=before[attempt.attemptId];
+    return attempt.stale&&prior?.kind==='turn'&&prior.executionId?[prior.executionId]:[];
+  });
+  stopExecutions(settled);
   for(const attempt of attempts) {
     const prior=before[attempt.attemptId]!;
     if(attempt.stale) {
       updateHeld(state=>{delete state[attempt.attemptId];});
-      if(prior.kind==='turn'&&prior.executionId)settled.push(prior.executionId);
       continue;
     }
     updateHeld(state=>{state[attempt.attemptId]!.epoch=attempt.epoch;state[attempt.attemptId]!.lastContactAtMs=Date.now();});
@@ -429,7 +428,6 @@ if(Object.keys(before).length){
     turns.set(attempt.attemptId,turn);
     void turn.resume(prior.watches);
   }
-  stopExecutions(settled);
   say('runner_reacquired',{attempts});
 }
 /**

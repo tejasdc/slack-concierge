@@ -23,6 +23,11 @@ no owner call in between. The owner's 35 s window passed without runner contact;
 on the runner and the drain ran until systemd's SIGKILL at 09:58:45 (update c1676339 parked,
 incident ce2c2192).
 
+At 09:53:51 the runner reached the same owner's `reacquire` route as that owner drained, but
+the following job read failed with `ConnectionRefused` and exited the runner. The batching fix
+also stops hosts the owner has already settled before any such read, so an exit cannot strand a
+host after its held record is deleted.
+
 ## Cause
 
 The restart fence ran one blocking `systemctl stop` per stale turn (about 2 s each) before each
@@ -40,7 +45,7 @@ held attempt once per runner process, and stops owner-settled turns after reacqu
 - **Seed:** a runner holding many turns whose owner contact is older than the fencing time, with
   the owner unreachable.
 - **Action:** restart the runner, then bring the owner up.
-- **Expected:** one `runner_turn_fenced` per turn within one fencing pass taking a few seconds,
-  and a `reacquire` attempt within 5 s of the owner's agent entrance opening.
+- **Expected:** one `runner_turn_fenced` per turn within one bounded fencing pass, followed by a
+  `reacquire` attempt without a separate blocking stop for each turn.
 - **Replayable offline:** partly; `bot/scripts/runner-turn-check.ts` covers restart and
   reacquire with systemd, not the many-turn timing.

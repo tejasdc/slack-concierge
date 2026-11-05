@@ -178,8 +178,8 @@ What happens for a turn on a runner:
    runner's last successful sync (its `owner-contact` file), never from the claim alone, so a turn
    of any age the owner was still hearing from survives a runner restart. An owner outage longer than four minutes therefore still ends runner agents (now
    by the runner's own stop). Every turn fenced at one moment is stopped in a single `systemctl stop`
-   (systemd stops them together), and each only once, so fencing never holds back the next attempt
-   to reach the owner (2026-11-05 failure record below).
+   (systemd stops them together), and each only once, so the next attempt to reach the owner waits
+   for one bounded stop instead of one stop per turn (2026-11-05 failure record below).
 8. **Deadlines that need no live runner.** The runner records each time it reaches the owner (a
    claim, a sync, a reacquire) in `owner-contact` in its state folder, and every host it starts
    reads that file (`ownerContact` in the launch manifest): once the last contact is older than the
