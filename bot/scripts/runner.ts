@@ -195,11 +195,12 @@ class Turn {
    * a later turn may resume the same conversation, so the agent must stop acting now. The attempt is
    * kept: if the owner comes back before the lease passes, the next sync refuses or continues it.
    */
-  fenceIfSilent() {
-    if(this.stopped||this.fenced||Date.now()-this.lastContact<RUNNER_FENCE_MS)return;
+  /** The execution to stop now, if this turn has just crossed the fencing time; the caller stops them together. */
+  fenceIfSilent():string|null {
+    if(this.stopped||this.fenced||Date.now()-this.lastContact<RUNNER_FENCE_MS)return null;
     this.fenced=true;
     say('runner_turn_fenced',{job:this.job.jobId,silentMs:Date.now()-this.lastContact});
-    spawnSync('systemctl',['stop',`${executionUnit(this.executionId)}.service`],{timeout:15_000});
+    return this.executionId;
   }
   get attempt(){return {attemptId:this.job.attemptId,epoch:this.epoch};}
 
@@ -379,14 +380,25 @@ const turns=new Map<string,Turn>();
 // each host stops its agent by, so the runner and its hosts fence on one fact. (Until 2026-11-04 this
 // read only the claim time, so every restart stopped each turn older than the fencing time.)
 const readOwnerContact=()=>{try{return Number(readFileSync(ownerContactFile,'utf8'))||0;}catch{return 0;}};
+// Every turn to fence is stopped in one systemctl call, so systemd stops them together. One call per
+// turn took about 2 s each, and the reacquire waited behind all of them: on 2026-11-05 sixteen turns
+// crossed the fencing time together, the runner made no owner contact for 38 s, and the restarted
+// owner (up 35 s before its next stop) never saw it.
+const stopExecutions=(executionIds:string[])=>{
+  if(executionIds.length)spawnSync('systemctl',['stop',...executionIds.map(id=>`${executionUnit(id)}.service`)],{timeout:15_000});
+};
+const fencedAtStart=new Set<string>();
 const fenceStale=()=>{
   const synced=readOwnerContact();
+  const stale:string[]=[];
   for(const [attemptId,held] of Object.entries(readHeld())) {
     const heardAt=Math.max(held.lastContactAtMs??0,synced);
-    if(held.kind!=='turn'||!held.executionId||Date.now()-heardAt<RUNNER_FENCE_MS)continue;
+    if(held.kind!=='turn'||!held.executionId||fencedAtStart.has(attemptId)||Date.now()-heardAt<RUNNER_FENCE_MS)continue;
+    fencedAtStart.add(attemptId);
     say('runner_turn_fenced',{job:held.jobId,attemptId,silentMs:Date.now()-heardAt});
-    spawnSync('systemctl',['stop',`${executionUnit(held.executionId)}.service`],{timeout:15_000});
+    stale.push(held.executionId);
   }
+  stopExecutions(stale);
 };
 const before=readHeld();
 if(Object.keys(before).length){
@@ -398,12 +410,13 @@ if(Object.keys(before).length){
     await Bun.sleep(5_000);
   }
   const {attempts}=answer;
+  // The owner already settled these turns without us: their hosts must not keep acting.
+  const settled:string[]=[];
   for(const attempt of attempts) {
     const prior=before[attempt.attemptId]!;
     if(attempt.stale) {
       updateHeld(state=>{delete state[attempt.attemptId];});
-      // The owner already settled this turn without us: its host must not keep acting.
-      if(prior.kind==='turn'&&prior.executionId)spawnSync('systemctl',['stop',`${executionUnit(prior.executionId)}.service`],{timeout:15_000});
+      if(prior.kind==='turn'&&prior.executionId)settled.push(prior.executionId);
       continue;
     }
     updateHeld(state=>{state[attempt.attemptId]!.epoch=attempt.epoch;state[attempt.attemptId]!.lastContactAtMs=Date.now();});
@@ -416,6 +429,7 @@ if(Object.keys(before).length){
     turns.set(attempt.attemptId,turn);
     void turn.resume(prior.watches);
   }
+  stopExecutions(settled);
   say('runner_reacquired',{attempts});
 }
 /**
@@ -423,7 +437,7 @@ if(Object.keys(before).length){
  * grows with runners, not with the number of agents each runs.
  */
 let syncing=false;
-setInterval(()=>{for(const turn of turns.values())turn.fenceIfSilent();},5_000);
+setInterval(()=>{stopExecutions([...turns.values()].map(turn=>turn.fenceIfSilent()).filter((id):id is string=>id!==null));},5_000);
 setInterval(async()=>{
   if(syncing||!turns.size)return;
   syncing=true;
