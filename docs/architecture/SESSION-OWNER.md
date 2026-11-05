@@ -348,7 +348,9 @@ The owner clamps a read or dismiss generation to the session's own attention cou
 
 - Executable input receipts expose `statusDetail` with a human reason, known condition
   clearance time and whether that exact input retries automatically. Terminal failures
-  remain immutable history. A native turn parked with an unconfirmed outcome is never
+  remain immutable history. ChatGPT's retained not-sent codes are translated into the
+  explanation that the attempt stopped before Send while the raw code remains diagnostic
+  evidence. A native turn parked with an unconfirmed outcome is never
   replayed and never holds back later inputs: the next one runs and carries it as
   unconfirmed context, because nothing reconciles it and a Mac request sat queued behind
   one for five days (mac:69, Oct 1–6, 2026). A queued request that is held (sign-in, usage,
