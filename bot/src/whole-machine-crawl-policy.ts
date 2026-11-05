@@ -29,13 +29,15 @@ VALUE_OPTIONS.egrep = VALUE_OPTIONS.grep!; VALUE_OPTIONS.fgrep = VALUE_OPTIONS.g
 
 /** A starting point that covers the whole machine or every process's files. */
 export function wholeMachineRoot(path: string): boolean {
-  const clean = path.replace(/\/+/g, '/').replace(/(?:\/\.)+$/, '').replace(/(.)\/$/, '$1');
+  const clean = path.replace(/\/+/g, '/').replace(/(?:\/\.)+$/, '').replace(/(.)\/$/, '$1') || '/';
   if (clean === '/' || clean === '/*' || clean === '/proc' || clean === '/proc/*') return true;
-  return /^\/proc\/[^/]+\/(?:cwd|root|fd)(?:\/|$)/.test(clean) && !/^\/proc\/(?:self|thread-self)\//.test(clean);
+  // One process's whole working folder or root; a named file or folder inside it is fine.
+  return /^\/proc\/[^/]+\/(?:cwd|root|fd)(?:\/\*)?$/.test(clean) && !/^\/proc\/(?:self|thread-self)\//.test(clean);
 }
 
+// The last depth option wins for every tool here, so read from the end.
 function depthBound(words: string[], options: string[]): number | null {
-  for (let i = 0; i < words.length; i++) {
+  for (let i = words.length - 1; i >= 0; i--) {
     const word = words[i]!;
     for (const option of options) {
       if (word === option) return Number(words[i + 1]);
@@ -46,10 +48,16 @@ function depthBound(words: string[], options: string[]): number | null {
   return null;
 }
 
+function resolveDir(base: string, target: string): string {
+  const parts = base.split('/').filter(Boolean);
+  for (const part of target.split('/')) { if (part === '..') parts.pop(); else if (part && part !== '.') parts.push(part); }
+  return '/' + parts.join('/');
+}
+
 const bounded = (depth: number | null) => depth !== null && Number.isFinite(depth) && depth <= 2;
 
 /** The whole-machine root a recursive search starts from, or null. `words` start at the program. */
-function crawlRoot(words: string[]): string | null {
+function crawlRoot(words: string[], dir: string | null): string | null {
   const name = words[0]!.split('/').pop()!;
   const args = words.slice(1);
   let paths: string[];
@@ -83,7 +91,10 @@ function crawlRoot(words: string[]): string | null {
     }
     paths = patternGiven ? positional : positional.slice(1);
   } else return null;
-  return paths.find(wholeMachineRoot) ?? null;
+  // No path means the tools search the working folder; relative paths start there too.
+  if (!paths.length) paths = ['.'];
+  const absolute = paths.map(path => path.startsWith('/') ? path : dir === null ? null : resolveDir(dir, path));
+  return absolute.find(path => path !== null && wholeMachineRoot(path)) ?? null;
 }
 
 const refusal = (root: string) => `Refused: this recursive search starts at ${root}, which covers the whole machine `
@@ -94,16 +105,17 @@ const refusal = (root: string) => `Refused: this recursive search starts at ${ro
   + 'or bound a look at the top of the filesystem with `find / -maxdepth 2` or `rg --max-depth 2`.';
 
 /** Why one agent tool call would crawl the whole machine, or null. */
-export function wholeMachineCrawlRefusal(command: string | null, toolName = '', toolInput: Record<string, any> = {}, depth = 0): string | null {
+export function wholeMachineCrawlRefusal(command: string | null, toolName = '', toolInput: Record<string, any> = {}, cwd: string | null = null, depth = 0): string | null {
   if ((toolName === 'Grep' || toolName === 'Glob') && typeof toolInput.path === 'string' && wholeMachineRoot(toolInput.path)) return refusal(toolInput.path);
   if (toolName === 'Glob' && typeof toolInput.pattern === 'string' && toolInput.pattern.startsWith('/')) {
     const fixed = toolInput.pattern.split('/**')[0]!;
     if (toolInput.pattern.includes('**') && wholeMachineRoot(fixed || '/')) return refusal(fixed || '/');
   }
   if (!command || depth > 4) return null;
+  let dir = cwd;
   for (const simple of parseShell(command)) {
     for (const inner of simple.substitutions) {
-      const found = wholeMachineCrawlRefusal(inner, '', {}, depth + 1);
+      const found = wholeMachineCrawlRefusal(inner, '', {}, dir, depth + 1);
       if (found) return found;
     }
     let words = simple.words.map(word => word.text);
@@ -120,15 +132,16 @@ export function wholeMachineCrawlRefusal(command: string | null, toolName = '', 
     }
     if (!words.length) continue;
     const name = words[0]!.split('/').pop()!;
+    if (name === 'cd') { const target = words[1] && !words[1].startsWith('-') ? words[1] : '~'; dir = target.startsWith('/') ? target : dir === null || target.startsWith('~') ? null : resolveDir(dir, target); continue; }
     if (SHELLS.has(name)) {
       const flag = words.findIndex(word => /^-[a-z]*c[a-z]*$/.test(word));
       for (const script of flag >= 0 ? [words[flag + 1] ?? ''] : simple.bodies) {
-        const found = wholeMachineCrawlRefusal(script, '', {}, depth + 1);
+        const found = wholeMachineCrawlRefusal(script, '', {}, dir, depth + 1);
         if (found) return found;
       }
       continue;
     }
-    const root = crawlRoot(words);
+    const root = crawlRoot(words, dir);
     if (root) return refusal(root);
   }
   return null;

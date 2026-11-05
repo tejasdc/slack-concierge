@@ -15,6 +15,10 @@ const refused = [
   'ls -R /',
   'timeout 60 rg foo //',
   'x=$(rg -l foo /proc/*/cwd)',
+  'rg foo /.',
+  'cd / && rg foo .',
+  'cd /tmp && cd .. && find . -name x',
+  'rg -d 2 -d 100 foo /',
 ];
 const allowed = [
   "rg -n 'journal-probe' /proc/[0-9]*/cmdline",
@@ -32,11 +36,13 @@ const allowed = [
   'rg -e / src',
   'cat /proc/loadavg',
   'rg foo /proc/self/cwd/src',
+  'rg foo /proc/123/cwd/file.log',
+  'cd /root/workspace && rg foo .',
 ];
 
 describe('whole-machine crawl refusal', () => {
-  for (const command of refused) test(`refuses ${command}`, () => expect(wholeMachineCrawlRefusal(command)).toContain('Refused'));
-  for (const command of allowed) test(`allows ${command}`, () => expect(wholeMachineCrawlRefusal(command)).toBeNull());
+  for (const command of refused) test(`refuses ${command}`, () => expect(wholeMachineCrawlRefusal(command, '', {}, '/tmp')).toContain('Refused'));
+  for (const command of allowed) test(`allows ${command}`, () => expect(wholeMachineCrawlRefusal(command, '', {}, '/tmp')).toBeNull());
   test("refuses Claude's Grep and Glob over the whole machine", () => {
     expect(wholeMachineCrawlRefusal(null, 'Grep', { pattern: 'x', path: '/' })).toContain('Refused');
     expect(wholeMachineCrawlRefusal(null, 'Glob', { pattern: '/proc/*/cwd/**/*.ts' })).toContain('Refused');

@@ -61,7 +61,7 @@ const cwd=[input.workdir,hook.cwd].find(dir=>typeof dir==='string'&&dir)||proces
 // A recursive search over the whole machine stalled every service for minutes on 2026-11-05;
 // it is checked here because this file is read from the current release on every command.
 let crawl:string|null=null;
-try{crawl=wholeMachineCrawlRefusal(command,String(hook.tool_name??''),input);}catch{crawl=null;}
+try{crawl=wholeMachineCrawlRefusal(command,String(hook.tool_name??''),input,cwd);}catch{crawl=null;}
 const reason=liveStoreCopyRefusal(command,cwd)??crawl;
 if(reason)process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}})+'\n');
 else if(command&&inheritedLiveState()&&codeLaunch(command)&&!privateEntrance(command)){

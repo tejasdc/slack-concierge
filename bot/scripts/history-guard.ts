@@ -129,7 +129,7 @@ try {
   const start = [input.workdir, hook.cwd].find(dir => typeof dir === 'string' && dir) ?? process.cwd();
   // The machine wrapper's current-release pass already checked whole-machine crawls.
   if (!reason && process.env.CONCIERGE_CURRENT_LIVE_COPY_CHECKED !== '1') {
-    try { reason = wholeMachineCrawlRefusal(command, String(hook.tool_name ?? ''), input); } catch { reason = null; }
+    try { reason = wholeMachineCrawlRefusal(command, String(hook.tool_name ?? ''), input, [input.workdir, hook.cwd].find(dir => typeof dir === 'string' && dir) ?? process.cwd()); } catch { reason = null; }
   }
   if (command && !reason) {
     reason = (process.env.CONCIERGE_CURRENT_LIVE_COPY_CHECKED === '1' ? null : liveStoreCopyRefusal(command, start))
