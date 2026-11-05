@@ -114,9 +114,10 @@ There is not yet a Concierge-owned App Server activation command. Until one is i
 
 ## Invariant: Only The Managed Daemon Starts The App Server
 
-Every App Server on this host is started by `codex app-server daemon start`, either from `concierge-bot.service`'s `ExecStartPre` or by an operator. `daemon version` must report `"backend":"pid"`; an output without a `backend` field means the listener was started outside the managed path, and `daemon restart` and `daemon stop` will refuse it with `app server is running but is not managed by codex app-server daemon`. Treat that as an incident to repair, never as a topology to operate.
+Every App Server on this host is started by `codex app-server daemon start`, either by the Concierge runner that supervises it (`bot/scripts/runner.ts`, at the runner's start or when a relay finds nobody listening; see [Runners](../architecture/RUNNERS.md)) or by an operator. Until 2026-11-05 `concierge-bot.service`'s `ExecStartPre` started it; the owner now starts no App Server. `daemon version` must report `"backend":"pid"`; an output without a `backend` field means the listener was started outside the managed path, and `daemon restart` and `daemon stop` will refuse it with `app server is running but is not managed by codex app-server daemon`. Treat that as an incident to repair, never as a topology to operate.
 
-Before that command, the systemd unit restores root ownership and private modes on the
+Before that command, the start path (`startCodexDaemonWhenAbsent`, used by the runner; formerly the
+owner's systemd unit) restores the caller's ownership and private modes on the
 managed daemon and control-socket directories. Codex 0.156.1 refuses to start when the
 socket parent belongs to another local user, even when that directory is mode `0700`.
 The September 22 deployment exposed this after macOS ownership had been preserved on

@@ -19,7 +19,7 @@
  *   finishes after that. A turn is never replayed: if this runner loses its lease, the owner has
  *   already settled the turn as unconfirmed and the local host is stopped.
  */
-import {mkdirSync,readFileSync,writeFileSync,renameSync,existsSync} from 'node:fs';
+import {mkdirSync,readFileSync,writeFileSync,renameSync,existsSync,readdirSync,rmSync,statSync} from 'node:fs';
 import {dirname,isAbsolute,join,resolve} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {ADOPTABLE_HOST_PROTOCOLS,HOST_PROTOCOL_VERSION,HostConnection,HostNotStartedError,connectWhenReady,executionDirectory,
@@ -27,11 +27,14 @@ import {ADOPTABLE_HOST_PROTOCOLS,HOST_PROTOCOL_VERSION,HostConnection,HostNotSta
 import {watchClaudeTranscript} from '../src/claude-transcript-watch';
 import {RUNNER_FENCE_MS} from '../src/runner-leases';
 import {codexAppServerSocketPath} from '../src/codex-app-server-client';
-import {controlSocketListeners,startCodexDaemonWhenAbsent} from '../src/codex-daemon-file-limit';
+import {controlSocketListeners,moveCodexDaemonToOwnScope,raiseCodexDaemonFileLimit,startCodexDaemonWhenAbsent} from '../src/codex-daemon-file-limit';
+import {serveRunnerMachineCalls} from '../src/runner-machine-calls';
+import {localWatchMachine,serveWatchCall} from '../src/watch-machine';
+import {rewriteRelayedCodexRequest,runnerMachineEnvironment,writeRunnerConnection,type RunnerMachine} from '../src/runner-machine';
 
 const owner=process.env.CONCIERGE_OWNER_URL?.replace(/\/+$/,'');
 const tokenFile=process.env.CONCIERGE_RUNNER_TOKEN_FILE;
-const stateDir=process.env.CONCIERGE_RUNNER_STATE;
+const stateDir=process.env.CONCIERGE_RUNNER_STATE?resolve(process.env.CONCIERGE_RUNNER_STATE):undefined;
 if(!owner||!tokenFile||!stateDir){console.error('CONCIERGE_OWNER_URL, CONCIERGE_RUNNER_TOKEN_FILE and CONCIERGE_RUNNER_STATE are required.');process.exit(2);}
 const token=readFileSync(tokenFile,'utf8').trim();
 mkdirSync(stateDir,{recursive:true,mode:0o700});
@@ -55,6 +58,30 @@ const kinds=(process.env.CONCIERGE_RUNNER_KINDS??'probe,turn,codex').split(',').
 const maxTurns=Number(process.env.CONCIERGE_RUNNER_MAX_TURNS)||64;
 /** This runner's release: the host program and the agents' helpers come from here, never from the owner. */
 const botDir=resolve(import.meta.dir,'..');
+const machine:RunnerMachine={botDir,stateDir,bunPath:process.execPath,runnerName:process.env.CONCIERGE_RUNNER_NAME??'',
+  basePath:process.env.PATH??'/usr/local/bin:/usr/bin:/bin'};
+// Every helper on this runner (Codex shells and hooks included) reads where the owner is from here.
+if(!once)writeRunnerConnection(stateDir,{ownerUrl:owner,tokenFile:resolve(tokenFile),thinkeringUrl:process.env.THINKERING_CAPABILITY_URL?.trim()||null});
+
+/**
+ * Which helper release the machine-wide Codex hooks run for a thread whose turn this runner relayed
+ * (hook-pins.ts explains the pins; install-codex-stop-hook.sh reads this runner's first). Pins are
+ * rewritten at every turn start and dropped after the longest life of an execution host.
+ */
+const runnerPins=join(stateDir,'hook-pins','codex');
+function pinCodexThread(threadId:string) {
+  if(!/^[A-Za-z0-9-]{1,128}$/.test(threadId))return;
+  try {
+    mkdirSync(runnerPins,{recursive:true,mode:0o700});
+    const target=join(runnerPins,threadId);
+    writeFileSync(`${target}.${process.pid}.tmp`,`${botDir}\nrunner\n`,{mode:0o600});
+    renameSync(`${target}.${process.pid}.tmp`,target);
+  } catch(error){say('runner_codex_hook_pin_failed',{thread:threadId,error:String(error)});}
+}
+function pruneCodexPins() {
+  let names:string[]=[];try{names=readdirSync(runnerPins);}catch{return;}
+  for(const name of names){try{if(Date.now()-statSync(join(runnerPins,name)).mtimeMs>8*24*3600_000)rmSync(join(runnerPins,name),{force:true});}catch{}}
+}
 
 type HeldAttempt={jobId:string;epoch:number;kind?:string;executionId?:string;manifest?:unknown;watches?:Record<string,string>;lastContactAtMs?:number};
 type Held=Record<string,HeldAttempt>;
@@ -107,15 +134,10 @@ async function runProbe(job:{jobId:string;attemptId:string;epoch:number;payload:
 function turnEnvironment(manifest:{environment:Record<string,string>;inheritEnvironment:boolean}) {
   if(!manifest.inheritEnvironment)return {...manifest.environment};
   const ownerScripts=manifest.environment.CONCIERGE_ROUTER_BOT_DIR?join(manifest.environment.CONCIERGE_ROUTER_BOT_DIR,'scripts'):null;
-  const runPath=(manifest.environment.PATH??'').split(':').filter(part=>part&&part!==ownerScripts);
-  const basePath=(process.env.PATH??'/usr/local/bin:/usr/bin:/bin').split(':');
   return {...process.env as Record<string,string>,...manifest.environment,
-    PATH:[join(botDir,'scripts'),...new Set([...runPath,...basePath])].join(':'),
-    CONCIERGE_STATE_DIR:stateDir!,CONCIERGE_STATE_DB:join(stateDir!,'no-ledger-on-a-runner.db'),
-    CONCIERGE_ROUTER_BOT_DIR:botDir,CONCIERGE_BUN_BIN:process.execPath,
+    ...runnerMachineEnvironment(machine,manifest.environment.PATH??'',ownerScripts),
     // The address this runner reaches the owner at is the one known to work from here.
     CONCIERGE_OWNER_URL:owner!,
-    CONCIERGE_RUNNER_NAME:process.env.CONCIERGE_RUNNER_NAME??'',
     // thnkr.ing's network entrance, reached with the same run token (Thinkering's step 2).
     ...(process.env.THINKERING_CAPABILITY_URL?{THINKERING_CAPABILITY_URL:process.env.THINKERING_CAPABILITY_URL}:{})};
 }
@@ -419,6 +441,35 @@ setInterval(async()=>{
  * environment, so the shells it runs carry this runner's owner address and token file.
  */
 const relayBase=owner!.replace(/^http/,'ws');
+const textDecoder=new TextDecoder();
+/**
+ * An owner message on its way to this runner's App Server: a thread's shell settings get this
+ * machine's folders and a turn start pins the thread's hooks to this runner's helpers
+ * (runner-machine.ts). A text frame stays text and a binary frame stays binary.
+ */
+function fromOwner(data:string|ArrayBuffer|Uint8Array):string|ArrayBuffer|Uint8Array {
+  const text=typeof data==='string'?data:textDecoder.decode(data);
+  const {text:rewritten,pinThread}=rewriteRelayedCodexRequest(text,machine);
+  if(pinThread)pinCodexThread(pinThread);
+  if(rewritten===text)return data;
+  return typeof data==='string'?rewritten:new TextEncoder().encode(rewritten);
+}
+/**
+ * This runner supervises its App Server (the owner's service no longer starts one): absent at the
+ * runner's start or when a relay finds nobody listening, it is started here; whoever started it, each
+ * new connection lifts its open-file limit and moves it into a scope of its own, at most twice a
+ * minute (codex-daemon-file-limit.ts explains both).
+ */
+let supervisedAt=0;
+/** A socket named in the environment is a stand-in (the relay check), not this machine's managed daemon. */
+const managedAppServer=!process.env.CONCIERGE_CODEX_APP_SERVER_SOCKET?.trim();
+function superviseCodexAppServer() {
+  if(!managedAppServer||Date.now()-supervisedAt<30_000)return;
+  supervisedAt=Date.now();
+  void raiseCodexDaemonFileLimit();
+  void moveCodexDaemonToOwnScope();
+  pruneCodexPins();
+}
 function relayCodexAppServer(id:string) {
   const remote=new WebSocket(`${relayBase}/runner/v1/relay/accept?id=${encodeURIComponent(id)}`,{headers:{authorization:`Bearer ${token}`}} as any);
   const local=new WebSocket(`ws+unix://${codexAppServerSocketPath()}:/`);
@@ -430,19 +481,38 @@ function relayCodexAppServer(id:string) {
     for(const socket of [remote,local])try{socket.close(1011,why.slice(0,120));}catch{}
   };
   remote.binaryType='arraybuffer';local.binaryType='arraybuffer';
-  remote.onmessage=event=>{if(local.readyState===WebSocket.OPEN)local.send(event.data);else if(local.readyState===WebSocket.CONNECTING)waiting.push(event.data);else end('the App Server connection is gone');};
-  local.onopen=()=>{for(const message of waiting.splice(0))local.send(message);};
+  remote.onmessage=event=>{
+    const data=fromOwner(event.data);
+    if(local.readyState===WebSocket.OPEN)local.send(data);else if(local.readyState===WebSocket.CONNECTING)waiting.push(data);else end('the App Server connection is gone');
+  };
+  local.onopen=()=>{superviseCodexAppServer();for(const message of waiting.splice(0))local.send(message);};
   // A message that cannot be passed on ends the relay; it is never dropped silently.
   local.onmessage=event=>{if(remote.readyState===WebSocket.OPEN)remote.send(event.data);else end('the owner side is gone');};
   local.onerror=()=>{
     // Nobody listening on the App Server's socket: start it (once per half minute); the owner's
     // client sees this relay end and connects again.
-    if(!existsSync(codexAppServerSocketPath())||!controlSocketListeners(codexAppServerSocketPath()).length)startCodexDaemonWhenAbsent('ECONNREFUSED');
+    if(managedAppServer&&(!existsSync(codexAppServerSocketPath())||!controlSocketListeners(codexAppServerSocketPath()).length))startCodexDaemonWhenAbsent('ECONNREFUSED');
     end('the App Server on this runner is not answering');
   };
   local.onclose=event=>end(`App Server closed (${event.code})`);
   remote.onclose=event=>end(`owner side closed (${event.code})`);
   remote.onerror=()=>end('owner side failed');
+}
+/**
+ * The owner's calls on this machine (runner-machine-calls.ts): watches read paths and run their
+ * commands here, under this runner's state folder and release, hidden from the owner's state like
+ * its turns. Each relay the owner opens is one channel of calls.
+ */
+const watchMachine=localWatchMachine(stateDir,()=>botDir,(process.env.CONCIERGE_RUNNER_HIDE_PATHS??'').split(':').filter(Boolean));
+function answerMachineCalls(id:string) {
+  const remote=new WebSocket(`${relayBase}/runner/v1/relay/accept?id=${encodeURIComponent(id)}`,{headers:{authorization:`Bearer ${token}`}} as any);
+  serveRunnerMachineCalls(remote,async(method,params)=>{
+    recordOwnerContact();
+    if(method==='ping')return true;
+    if(method.startsWith('watch.'))return serveWatchCall(watchMachine,stateDir,method.slice('watch.'.length),params);
+    throw new Error(`this runner does not answer ${method}`);
+  });
+  remote.onclose=event=>say('runner_machine_calls_closed',{relay:id,code:event.code});
 }
 let relayChannel:WebSocket|null=null;
 function listenForRelays(delayMs=0) {
@@ -452,7 +522,8 @@ function listenForRelays(delayMs=0) {
     channel.onopen=()=>say('runner_relay_listening');
     channel.onmessage=event=>{
       let message:any;try{message=JSON.parse(String(event.data));}catch{return;}
-      if(message?.op==='open'&&message.target==='codex-app-server'&&typeof message.id==='string')relayCodexAppServer(message.id);
+      if(message?.op==='open'&&message.target==='codex-app-server'&&typeof message.id==='string'&&kinds.includes('codex'))relayCodexAppServer(message.id);
+      if(message?.op==='open'&&message.target==='runner-machine'&&typeof message.id==='string')answerMachineCalls(message.id);
     };
     channel.onclose=event=>{
       if(relayChannel!==channel)return;
@@ -464,7 +535,12 @@ function listenForRelays(delayMs=0) {
     };
   },delayMs);
 }
-if(!once&&kinds.includes('codex'))listenForRelays();
+if(!once&&kinds.includes('codex')){
+  const socket=codexAppServerSocketPath();
+  if(managedAppServer&&(!existsSync(socket)||!controlSocketListeners(socket).length))startCodexDaemonWhenAbsent('runner start');
+}
+// The listen channel carries the owner's machine calls as well as Codex relays.
+if(!once)listenForRelays();
 
 for(let idle=0;;) {
   const jobKinds=kinds.filter(kind=>kind!=='codex');

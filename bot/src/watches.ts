@@ -13,9 +13,9 @@
  * one service input with the stable id `watch:<watch-id>:<event>`.
  */
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, rmSync, statSync } from "node:fs";
-import { join } from "node:path";
 import { db,globalPauseState,getSessionById } from "./state";
+import { MAX_DIRECTORY_ENTRIES, versionChange, type PathVersion } from "./path-version";
+export { WATCH_HASH_LIMIT_BYTES, observePath, versionChange, type PathVersion } from "./path-version";
 import {sessionMetadata} from './session-inputs';
 import {inboxThreadRoot,postForwardedThreadAnswer} from './session-inbox';
 import { log, errorFields } from "./log";
@@ -24,16 +24,13 @@ import { RETRY_POLICIES } from "./retry-policies";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
 import { forgetWatchObservation, loadWatchObservationCursors, observationForWatch, recordWatchObservation,
   startWatchObservationWorker, stopWatchObservationWorker, waitForWatchObservationWorker } from './watch-observation';
-import { HOST_PROTOCOL_VERSION, HostConnection, executionDirectory, executionHostsEnabled, executionUnit,
-  hostProcessorSeconds, hostSocketPath, hostSupervisorView, newExecutionId, streamJournal, releaseHost, retireHostJob, startHost, HostNotStartedError } from "./execution-host-client";
+import { executionHostsEnabled, hostProcessorSeconds, newExecutionId } from "./execution-host-client";
+import { localWatchMachine, ordinaryCommandEnvironment, runnerWatchMachine, type WatchMachine } from "./watch-machine";
+import { runnerMachineCall } from "./runner-machine-calls";
 
 export const WATCH_POLL_MS = 5_000;
 /** Three missed polls: a longer silence is a pause (a restart, a sleeping Mac) and is recorded as a gap. */
 export const WATCH_GAP_MS = 3 * WATCH_POLL_MS;
-/** A file up to this size is versioned by its content; a bigger one by modification time and size. */
-export const WATCH_HASH_LIMIT_BYTES = 4 * 1024 * 1024;
-const MAX_DIRECTORY_ENTRIES = 20_000;
-const NAMED_ENTRIES_LIMIT = 500;
 const MIN_UNTIL_MS = 1_000;
 const MAX_UNTIL_MS = 30 * 24 * 60 * 60_000;
 const STOP_GRACE_MS = 10_000;
@@ -83,6 +80,8 @@ if (process.env.CONCIERGE_READ_WORKER !== "1") {
   const columns = db.query("PRAGMA table_info(watches)").all() as { name: string }[];
   if (!columns.some(column => column.name === "renew_ms")) db.exec("ALTER TABLE watches ADD COLUMN renew_ms INTEGER");
   if (!columns.some(column => column.name === "series_id")) db.exec("ALTER TABLE watches ADD COLUMN series_id TEXT");
+  // The runner whose machine holds the watched path or command; NULL is this owner's own machine.
+  if (!columns.some(column => column.name === "runner")) db.exec("ALTER TABLE watches ADD COLUMN runner TEXT");
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS one_renewing_file_watch
     ON watches(session_id, condition_json)
     WHERE kind='file' AND renew_ms IS NOT NULL AND state IN ('accepted','observing')`);
@@ -106,83 +105,15 @@ export type WatchRow = {
   delivery_state: "pending" | "accepted" | null; delivery_input_id: string | null; delivery_attempts: number; delivery_next_ms: number | null;
   host_execution_id: string | null; host_directory: string | null; host_unit: string | null; host_script: string | null;
   host_protocol: number | null; host_state: "intended" | "live" | "stopping" | "released" | "gone" | null; host_stop_at_ms: number | null;
-  host_killed: number; host_pruned: number; renew_ms: number | null; series_id: string | null; created_at_ms: number;
+  host_killed: number; host_pruned: number; renew_ms: number | null; series_id: string | null; runner?: string | null; created_at_ms: number;
 };
 type Gap = { fromMs: number; toMs: number };
 const gapsOf = (row: WatchRow): Gap[] => JSON.parse(row.gaps_json);
 const isOpen = (row: WatchRow) => row.state === "accepted" || row.state === "observing";
 const iso = (ms: number) => new Date(ms).toISOString();
 
-// ---- file and directory versions ---------------------------------------------------------------
-
-export type PathVersion = {
-  type: "absent" | "file" | "directory" | "other";
-  mode: "absent" | "content-hash" | "mtime-size" | "directory-entries";
-  size: number | null; mtimeMs: number | null; digest: string | null;
-  entryCount: number | null;
-  /** name -> [size, mtimeMs]; kept only for a small directory, to name what changed. */
-  entries: Record<string, [number, number]> | null;
-  /** New registrations also pin the link target; older baselines omit it and keep their old comparison. */
-  linkTargetDigest?:string|null;
-};
+// File and directory versions live in path-version.ts, which a runner runs too.
 const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
-
-/** What is at `path` now. A missing path is a version (`absent`), not an error: appearing is a change. */
-export function observePath(path: string): PathVersion {
-  let stat;
-  try { stat = statSync(path); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ENOTDIR")
-      return { type: "absent", mode: "absent", size: null, mtimeMs: null, digest: null, entryCount: null, entries: null };
-    throw error;
-  }
-  let linkTargetDigest:string|null=null;
-  try {if(lstatSync(path).isSymbolicLink())linkTargetDigest=sha256(readlinkSync(path));}
-  catch { /* The ordinary target observation below still decides whether the path changed. */ }
-  if (stat.isDirectory()) {
-    const names = readdirSync(path);
-    if (names.length > MAX_DIRECTORY_ENTRIES)
-      return { type: "directory", mode: "directory-entries", size: null, mtimeMs: null, digest: `too-many:${names.length}`, entryCount: names.length, entries: null };
-    const entries: Record<string, [number, number]> = {};
-    for (const name of names.sort()) {
-      try { const entry = lstatSync(join(path, name)); entries[name] = [entry.size, entry.mtimeMs]; }
-      catch { /* removed while listing: it is simply not there */ }
-    }
-    const digest = sha256(Object.entries(entries).map(([name, [size, mtime]]) => `${name}\0${size}\0${mtime}`).join("\n"));
-    return { type: "directory", mode: "directory-entries", size: null, mtimeMs: null, digest, entryCount: Object.keys(entries).length,
-      entries: Object.keys(entries).length <= NAMED_ENTRIES_LIMIT ? entries : null, ...(linkTargetDigest?{linkTargetDigest}:{}) };
-  }
-  if (stat.isFile() && stat.size <= WATCH_HASH_LIMIT_BYTES)
-    return { type: "file", mode: "content-hash", size: stat.size, mtimeMs: stat.mtimeMs, digest: sha256(readFileSync(path)), entryCount: null, entries: null, ...(linkTargetDigest?{linkTargetDigest}:{}) };
-  return { type: stat.isFile() ? "file" : "other", mode: "mtime-size", size: stat.size, mtimeMs: stat.mtimeMs, digest: null, entryCount: null, entries: null, ...(linkTargetDigest?{linkTargetDigest}:{}) };
-}
-
-/** Why `now` is not the baseline version, or null when it is the same version. */
-export function versionChange(baseline: PathVersion, now: PathVersion): string | null {
-  if (baseline.type !== now.type) {
-    if (now.type === "absent") return `it was deleted (it was a ${baseline.type})`;
-    if (baseline.type === "absent") return `it appeared (a ${now.type})`;
-    return `it changed from a ${baseline.type} to a ${now.type}`;
-  }
-  if (now.type === "absent") return null;
-  if (baseline.linkTargetDigest&&now.linkTargetDigest&&baseline.linkTargetDigest!==now.linkTargetDigest)
-    return "the link points to another release";
-  if (now.type === "directory") {
-    if (now.digest === baseline.digest) return null;
-    if (baseline.entries && now.entries) {
-      const added = Object.keys(now.entries).filter(name => !baseline.entries![name]);
-      const removed = Object.keys(baseline.entries).filter(name => !now.entries![name]);
-      const modified = Object.keys(now.entries).filter(name => baseline.entries![name]
-        && (baseline.entries![name]![0] !== now.entries![name]![0] || baseline.entries![name]![1] !== now.entries![name]![1]));
-      const list = (label: string, names: string[]) => names.length ? `${label} ${names.slice(0, 10).join(", ")}${names.length > 10 ? ` and ${names.length - 10} more` : ""}` : "";
-      return `its entries changed: ${[list("added", added), list("removed", removed), list("modified", modified)].filter(Boolean).join("; ")}`;
-    }
-    return `its entries changed (${baseline.entryCount} entries before, ${now.entryCount} now)`;
-  }
-  if (baseline.size !== now.size) return `its size changed from ${baseline.size} to ${now.size} bytes`;
-  if (baseline.mode === "content-hash") return now.digest !== baseline.digest ? "its content changed" : null;
-  return baseline.mtimeMs !== now.mtimeMs ? "its modification time changed (size unchanged; a version by modification time and size cannot prove the content differs)" : null;
-}
 
 const describeBaseline = (version: PathVersion) =>
   version.mode === "content-hash" ? `content hash of a ${version.size}-byte file`
@@ -204,7 +135,9 @@ export function parseUntil(value: string, now: number): number {
   return deadline;
 }
 
-export type WatchRegistration = { sessionId: number; originInputId: string; originRunId: string; actionId: string; until: string; renew?: boolean }
+export type WatchRegistration = { sessionId: number; originInputId: string; originRunId: string; actionId: string; until: string; renew?: boolean;
+  /** The runner the registering agent runs on: its path or command is on that machine, not this one. */
+  runner?: string | null }
   & ({ kind: "file"; path: string } | { kind: "command"; argv: string[]; cwd: string });
 
 export function watchView(row: WatchRow) {
@@ -218,7 +151,7 @@ export function watchView(row: WatchRow) {
     registeredAt: iso(row.created_at_ms), deadline: iso(row.deadline_ms),
     lastObservedAt: observation.lastObservedAt ? iso(observation.lastObservedAt) : null,
     renewEveryMs: row.renew_ms, seriesId: row.series_id,
-    ...(row.kind === "command" && row.host_execution_id && isOpen(row)
+    ...(row.kind === "command" && row.host_execution_id && isOpen(row) && !row.runner
       ? { processorSeconds: hostProcessorSeconds(row.host_execution_id) } : {}),
     gaps: (JSON.parse(observation.gapsJson) as Gap[]).map(gap => ({ from: iso(gap.fromMs), to: iso(gap.toMs) })),
     terminalEvent: row.terminal_event, endedAt: row.terminal_at_ms ? iso(row.terminal_at_ms) : null,
@@ -236,7 +169,7 @@ function recoveryLineage(sessionId: number): number[] {
 }
 
 /** Idempotent by (origin input, action id): a retry returns the first registration and never makes a second. */
-export function registerWatch(input: WatchRegistration, now = Date.now()): { watch: ReturnType<typeof watchView>; duplicate: boolean; takenOverFrom?: string } {
+export async function registerWatch(input: WatchRegistration, now = Date.now()): Promise<{ watch: ReturnType<typeof watchView>; duplicate: boolean; takenOverFrom?: string }> {
   if (!input.actionId || input.actionId.length > 200) throw new Error("A stable action id is required.");
   const condition = input.kind === "file" ? { path: input.path } : { argv: input.argv, cwd: input.cwd };
   if (input.renew && input.kind !== "file") throw new Error("Only file watches can renew.");
@@ -267,10 +200,13 @@ export function registerWatch(input: WatchRegistration, now = Date.now()): { wat
     }
     if (active) return { watch: watchView(active), duplicate: true };
   }
+  const runner = input.runner?.trim() || null;
+  if (runner && !/^[A-Za-z0-9._-]{1,64}$/.test(runner)) throw new Error("That runner name is not valid.");
+  const machine = machineFor({ runner });
   let baseline: unknown, mode: string;
   if (input.kind === "file") {
     if (!input.path.startsWith("/")) throw new Error("A watched path must be absolute.");
-    const version = observePath(input.path);
+    const version = await machine.observe(input.path);
     if (version.type === "directory" && version.digest?.startsWith("too-many:"))
       throw new Error(`That directory has more than ${MAX_DIRECTORY_ENTRIES} entries; watch a narrower one.`);
     baseline = version; mode = version.mode;
@@ -278,17 +214,31 @@ export function registerWatch(input: WatchRegistration, now = Date.now()): { wat
     if (!input.argv.length || input.argv.length > 256 || input.argv.some(item => typeof item !== "string") || input.argv.join("").length > 65_536)
       throw new Error("A command watch needs an explicit argument list (at most 256 arguments).");
     if (!input.argv[0]!.includes("/")) throw new Error("The command must be a path; the helper resolves a bare name before sending it.");
-    if (!input.cwd.startsWith("/") || !existsSync(input.cwd) || !statSync(input.cwd).isDirectory()) throw new Error("--cwd must be an existing absolute directory.");
-    if (!executionHostsEnabled()) throw new Error("This machine cannot run a command apart from Concierge, so it cannot watch one.");
+    if (!input.cwd.startsWith("/") || !await machine.isDirectory(input.cwd)) throw new Error("--cwd must be an existing absolute directory.");
+    if (!runner && !executionHostsEnabled()) throw new Error("This machine cannot run a command apart from Concierge, so it cannot watch one.");
     baseline = { notStarted: true }; mode = "launch-record";
+  }
+  // A retry may have registered while this one read the baseline on the runner.
+  const raced = db.query("SELECT * FROM watches WHERE origin_input_id=? AND action_id=?").get(input.originInputId, input.actionId) as WatchRow | null;
+  if (raced) {
+    if (raced.request_hash !== requestHash || raced.session_id !== input.sessionId) throw new Error("Idempotency conflict: this action id already registered a different watch.");
+    return { watch: watchView(raced), duplicate: true };
   }
   const watchId = randomBytes(6).toString("hex");
   // The baseline is part of the same row as the registration, so it exists before the caller hears yes.
-  db.query(`INSERT INTO watches (watch_id, session_id, origin_input_id, origin_run_id, action_id, request_hash, kind, condition_json,
-      baseline_json, baseline_mode, deadline_ms, state, last_observed_ms, renew_ms, created_at_ms)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?, ?)`)
-    .run(watchId, input.sessionId, input.originInputId, input.originRunId, input.actionId, requestHash, input.kind, JSON.stringify(condition),
-      JSON.stringify(baseline), mode, deadline, now, renewMs, now);
+  try {
+    db.query(`INSERT INTO watches (watch_id, session_id, origin_input_id, origin_run_id, action_id, request_hash, kind, condition_json,
+        baseline_json, baseline_mode, deadline_ms, state, last_observed_ms, renew_ms, runner, created_at_ms)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?)`)
+      .run(watchId, input.sessionId, input.originInputId, input.originRunId, input.actionId, requestHash, input.kind, JSON.stringify(condition),
+        JSON.stringify(baseline), mode, deadline, now, renewMs, runner, now);
+  } catch (error) {
+    // Another renewing registration of this path won while this one read the baseline on a runner.
+    const winner = renewMs !== null ? db.query(`SELECT * FROM watches WHERE session_id=? AND kind='file' AND condition_json=?
+      AND renew_ms IS NOT NULL AND state IN ('accepted','observing')`).get(input.sessionId, JSON.stringify(condition)) as WatchRow | null : null;
+    if (winner) return { watch: watchView(winner), duplicate: true };
+    throw error;
+  }
   wakeWatchWorker();
   return { watch: watchView(db.query("SELECT * FROM watches WHERE watch_id=?").get(watchId) as WatchRow), duplicate: false };
 }
@@ -384,7 +334,7 @@ function settle(watchId: string, event: "fired" | "expired" | "failed" | "cancel
       : event === "expired" ? `Watch ${watchId} expired at ${iso(settlement.now)}: ${settlement.detail}.`
         : event === "failed" ? `Watch ${watchId} failed: ${settlement.detail}.`
           : `Watch ${watchId} was cancelled: ${settlement.detail}`;
-    const processor = row.kind === "command" && row.host_execution_id ? hostProcessorSeconds(row.host_execution_id) : null;
+    const processor = row.kind === "command" && row.host_execution_id && !row.runner ? hostProcessorSeconds(row.host_execution_id) : null;
     const text = `${headline}${late} It watched ${what}, registered ${iso(row.created_at_ms)} with a deadline of ${iso(row.deadline_ms)}. ${gapsText(gaps, row, resumedAt)}${
       processor !== null ? ` ${processorText(processor, row.created_at_ms, resumedAt)}` : ""}${
       settlement.observed && typeof (settlement.observed as any).outputTail === "string" && (settlement.observed as any).outputTail
@@ -402,11 +352,11 @@ You do not need to reply to this.`;
       const baseline = settlement.observed && typeof settlement.observed === "object" && "version" in settlement.observed
         ? (settlement.observed as { version: PathVersion }).version : JSON.parse(row.baseline_json) as PathVersion;
       db.query(`INSERT INTO watches (watch_id,session_id,origin_input_id,origin_run_id,action_id,request_hash,kind,
-          condition_json,baseline_json,baseline_mode,deadline_ms,state,last_observed_ms,renew_ms,series_id,created_at_ms)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,'accepted',?,?,?,?)`)
+          condition_json,baseline_json,baseline_mode,deadline_ms,state,last_observed_ms,renew_ms,series_id,runner,created_at_ms)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,'accepted',?,?,?,?,?)`)
         .run(nextId,row.session_id,row.origin_input_id,row.origin_run_id,`renew:${row.watch_id}`,row.request_hash,'file',
           row.condition_json,JSON.stringify(baseline),baseline.mode,settlement.now+row.renew_ms,settlement.now,
-          row.renew_ms,row.series_id??row.watch_id,settlement.now);
+          row.renew_ms,row.series_id??row.watch_id,row.runner??null,settlement.now);
     }
     return true;
   })();
@@ -431,32 +381,18 @@ let wakeRequested: (() => void) | null = null;
 /** A registration or cancel asks the worker to look now instead of at the next poll. */
 export function wakeWatchWorker() { queueMicrotask(() => wakeRequested?.()); }
 
-/** The environment a watched command gets: the ordinary user variables, never Concierge's own secrets. */
-function commandEnvironment(): Record<string, string> {
-  const names = ["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "SHELL", "TMPDIR", "TZ", "XDG_RUNTIME_DIR"];
-  return Object.fromEntries(names.filter(name => process.env[name]).map(name => [name, process.env[name]!]));
+/** The machine a watch's path or command is on: this owner's, or its runner's through the call channel. */
+let localMachine: WatchMachine | null = null;
+/** This poll's reachable runners; one that stops answering mid-poll is dropped for the rest of it. */
+let pollReachable: Set<string> | null = null;
+function machineFor(row: { runner?: string | null }): WatchMachine {
+  if (row.runner) { const runner = row.runner; return runnerWatchMachine(runner, () => pollReachable?.delete(runner)); }
+  localMachine ??= localWatchMachine(process.env.CONCIERGE_STATE_DIR!, () => providerOwnerEnvironment().CONCIERGE_ROUTER_BOT_DIR!);
+  return localMachine;
 }
 
 function update(watchId: string, set: string, ...params: unknown[]) {
   db.query(`UPDATE watches SET ${set} WHERE watch_id=?`).run(...params, watchId);
-}
-
-/** The last stretch of what a finished command wrote, read from the end of its journal. */
-function outputTail(directory: string): string {
-  try {
-    const path = join(directory, "journal");
-    const size = statSync(path).size, length = Math.min(size, 128 * 1024);
-    const buffer = Buffer.alloc(length), fd = openSync(path, "r");
-    try { readSync(fd, buffer, 0, length, size - length); } finally { closeSync(fd); }
-    const lines = buffer.toString("utf8").split("\n");
-    if (size > length) lines.shift();
-    let text = "";
-    for (const line of lines) {
-      if (!line) continue;
-      try { const frame = JSON.parse(line); if (frame.k === "o") text += `${frame.d}\n`; else if (frame.k === "e") text += String(frame.d); } catch { /* torn tail */ }
-    }
-    return text.length > OUTPUT_TAIL_CHARS ? `…${text.slice(-OUTPUT_TAIL_CHARS)}` : text;
-  } catch { return ""; }
 }
 
 function describeExit(exit: { code: number | null; signal: string | null }) {
@@ -466,7 +402,7 @@ function describeExit(exit: { code: number | null; signal: string | null }) {
 async function observeFile(row: WatchRow, now: number) {
   const baseline = JSON.parse(row.baseline_json) as PathVersion;
   let current: PathVersion;
-  try { current = observePath(JSON.parse(row.condition_json).path); }
+  try { current = await machineFor(row).observe(JSON.parse(row.condition_json).path); }
   catch (error) {
     // Unreadable now: nothing was observed, so the silence is recorded as a gap when observation resumes.
     log("warn", "watch_unreadable", { watch_id: row.watch_id, ...errorFields(error) });
@@ -485,64 +421,57 @@ function markObserved(row: WatchRow, now: number) {
 
 async function launchCommand(row: WatchRow, deps: WatchWorkerDeps, now: number) {
   const condition = JSON.parse(row.condition_json) as { argv: string[]; cwd: string };
+  const machine = machineFor(row);
   if (now >= row.deadline_ms) { settle(row.watch_id, "expired", { observedAt: null, now, detail: "its deadline passed before the command could be started, so it was never started" }); return; }
-  if (!existsSync(condition.cwd)) { settle(row.watch_id, "failed", { observedAt: now, now, detail: `the working directory ${condition.cwd} no longer exists, so the command was not started` }); return; }
+  if (!await machine.isDirectory(condition.cwd)) { settle(row.watch_id, "failed", { observedAt: now, now, detail: `the working directory ${condition.cwd} no longer exists, so the command was not started` }); return; }
   const executionId = newExecutionId();
+  const record = await machine.hostRecord(executionId);
   // The intent is recorded before the supervisor is asked, so a crash in between leaves evidence.
   update(row.watch_id, "host_execution_id=?, host_directory=?, host_unit=?, host_protocol=?, host_state='intended'",
-    executionId, executionDirectory(deps.stateDir, executionId), executionUnit(executionId), HOST_PROTOCOL_VERSION);
-  try {
-    const launch = await startHost({ stateDir: deps.stateDir, executionId, routerBotDir: deps.routerBotDir(), priority: "waiter", manifest: {
-      executable: "/bin/sh", args: ["-c", 'exec "$@" </dev/null', "concierge-watch", ...condition.argv], cwd: condition.cwd,
-      environment: commandEnvironment(), initialInput: "" } });
-    update(row.watch_id, "host_script=?, host_state='live'", launch.hostScript);
-    log("info", "watch_command_started", { watch_id: row.watch_id, execution_id: executionId });
-  } catch (error) {
-    if (error instanceof HostNotStartedError) {
-      update(row.watch_id, "host_state='gone'");
-      settle(row.watch_id, "failed", { observedAt: now, now, detail: `the command could not be started: ${error.message}` });
-    } else log("warn", "watch_command_start_unconfirmed", { watch_id: row.watch_id, ...errorFields(error) });
+    executionId, record.directory, record.unit, record.protocol);
+  let launch: Awaited<ReturnType<WatchMachine["launch"]>>;
+  try { launch = await machine.launch({ executionId, argv: condition.argv, cwd: condition.cwd, environment: ordinaryCommandEnvironment() }); }
+  catch (error) { log("warn", "watch_command_start_unconfirmed", { watch_id: row.watch_id, runner: row.runner ?? null, ...errorFields(error) }); return; }
+  if ("notStarted" in launch) {
+    update(row.watch_id, "host_state='gone'");
+    settle(row.watch_id, "failed", { observedAt: now, now, detail: `the command could not be started: ${launch.notStarted}` });
     return;
   }
+  update(row.watch_id, "host_script=?, host_state='live'", launch.hostScript);
+  log("info", "watch_command_started", { watch_id: row.watch_id, execution_id: executionId, runner: row.runner ?? null });
   await markObserved(row, now);
 }
 
-/** What the host says about the command: its exit, still running, or not known this poll. */
-async function commandState(row: WatchRow): Promise<{ state: "running" } | { state: "exited"; code: number | null; signal: string | null } | { state: "lost" } | { state: "unknown" }> {
-  const directory = row.host_directory!, executionId = row.host_execution_id!;
-  try {
-    const connection = await HostConnection.connect(hostSocketPath(directory), 3_000);
-    try {
-      const status = await connection.status();
-      if (status.executionId !== executionId) return { state: "unknown" };
-      return status.exit ? { state: "exited", code: status.exit.code, signal: status.exit.signal } : { state: "running" };
-    } finally { connection.close(); }
-  } catch { /* the host does not answer: the supervisor and the record decide */ }
-  const view = await hostSupervisorView(executionId);
-  if (view === "unknown") return { state: "unknown" };
-  try {
-    for await(const frame of streamJournal(directory))if(frame.k==="x")
-      return { state: "exited", code: frame.d?.code ?? null, signal: frame.d?.signal ?? null };
-  } catch { /* no journal */ }
-  return view === "gone" ? { state: "lost" } : { state: "unknown" };
+/** What the host says about the command; a machine that cannot be reached is not knowing, this poll. */
+async function commandState(row: WatchRow): ReturnType<WatchMachine["commandState"]> {
+  try { return await machineFor(row).commandState(row.host_execution_id!, row.host_directory!); }
+  catch (error) { log("warn", "watch_command_state_unread", { watch_id: row.watch_id, runner: row.runner ?? null, ...errorFields(error) }); return { state: "unknown" }; }
 }
 
 async function observeCommand(row: WatchRow, deps: WatchWorkerDeps, now: number) {
   if (!row.host_execution_id) { await launchCommand(row, deps, now); return; }
   if (row.host_state === "intended") {
     // A coordinator died between recording the intent and learning the result.
-    const view = await hostSupervisorView(row.host_execution_id);
-    if (view === "alive") update(row.watch_id, "host_state='live'");
-    else if (view === "gone" && !existsSync(join(row.host_directory!, "journal"))) {
+    const outcome = await machineFor(row).startOutcome(row.host_execution_id, row.host_directory!).catch(() => "unknown" as const);
+    if (outcome === "never-ran" && row.runner && now < row.deadline_ms) {
+      // The call that started it went unanswered (a slow runner or a dropped channel), and the runner,
+      // which knows its own starts in flight, says it never started: start it afresh.
+      update(row.watch_id, "host_execution_id=NULL, host_directory=NULL, host_unit=NULL, host_protocol=NULL, host_state=NULL");
+      log("warn", "watch_command_restarted_after_unanswered_start", { watch_id: row.watch_id, runner: row.runner, execution_id: row.host_execution_id });
+      return;
+    }
+    if (outcome === "never-ran") {
       update(row.watch_id, "host_state='gone'");
       settle(row.watch_id, "failed", { observedAt: now, now, detail: "Concierge restarted while starting the command, and no trace of it was found; it did not run" });
       return;
-    } else if (view === "unknown") return;
+    } else if (outcome === "unknown") return;
     else update(row.watch_id, "host_state='live'");
   }
   const state = await commandState(row);
   if (state.state === "exited") {
-    const tail = outputTail(row.host_directory!);
+    let tail: string;
+    try { tail = await machineFor(row).outputTail(row.host_directory!); }
+    catch (error) { log("warn", "watch_output_unread", { watch_id: row.watch_id, runner: row.runner ?? null, ...errorFields(error) }); return; }
     settle(row.watch_id, "fired", { observedAt: now, now, detail: `${describeExit(state)}`, observed: { exit: { code: state.code, signal: state.signal }, outputTail: tail } });
     return;
   }
@@ -574,23 +503,18 @@ async function cleanUpHost(row: WatchRow, now: number) {
     return;
   }
   if (state.state === "exited") {
-    if (await releaseHost(row.host_directory!, row.host_execution_id)) {
+    if (await machineFor(row).release(row.host_execution_id, row.host_directory!)) {
       update(row.watch_id, "host_state='released'");
       // launchd keeps a finished job loaded; it is removed once it reports stopped.
-      setTimeout(() => { void retireHostJob(row.host_execution_id!).catch(error =>
+      setTimeout(() => { void machineFor(row).retire(row.host_execution_id!).catch(error =>
         log("warn", "watch_host_retire_failed", { watch_id: row.watch_id, error: String(error) })); }, 10_000).unref?.();
     }
   } else if (state.state === "lost") update(row.watch_id, "host_state='gone'");
 }
 
 async function signalHost(row: WatchRow, signal: "SIGTERM" | "SIGKILL") {
-  try {
-    const connection = await HostConnection.connect(hostSocketPath(row.host_directory!), 3_000);
-    try {
-      await connection.attach(Number.MAX_SAFE_INTEGER, () => {});
-      await connection.command({ op: "signal", id: `watch-${signal}-${row.watch_id}`, signal });
-    } finally { connection.close(); }
-  } catch (error) { log("warn", "watch_command_signal_failed", { watch_id: row.watch_id, signal, ...errorFields(error) }); }
+  try { await machineFor(row).signal(row.host_execution_id!, row.host_directory!, signal, `watch-${signal}-${row.watch_id}`); }
+  catch (error) { log("warn", "watch_command_signal_failed", { watch_id: row.watch_id, signal, runner: row.runner ?? null, ...errorFields(error) }); }
 }
 
 function deliverPending(deps: WatchWorkerDeps, now: number) {
@@ -628,13 +552,23 @@ function deliverPending(deps: WatchWorkerDeps, now: number) {
   }
 }
 
-function pruneRecords(now: number) {
+async function pruneRecords(now: number) {
   const old = db.query(`SELECT * FROM watches WHERE host_directory IS NOT NULL AND host_pruned=0 AND host_state IN ('released','gone')
     AND terminal_at_ms<?`).all(now - RECORD_RETENTION_MS) as WatchRow[];
   for (const row of old) {
-    try { rmSync(row.host_directory!, { recursive: true, force: true }); update(row.watch_id, "host_pruned=1"); }
+    try { await machineFor(row).prune(row.host_directory!); update(row.watch_id, "host_pruned=1"); }
     catch (error) { log("warn", "watch_record_prune_failed", { watch_id: row.watch_id, ...errorFields(error) }); }
   }
+}
+
+const endedCommands = () => db.query("SELECT * FROM watches WHERE kind='command' AND state NOT IN ('accepted','observing') AND host_state IN ('intended','live','stopping')").all() as WatchRow[];
+
+/** The runners among these that answer a short check now, each asked once per poll, together. */
+async function reachableRunners(names: (string | null | undefined)[]): Promise<Set<string>> {
+  const runners = [...new Set(names.filter((name): name is string => !!name))];
+  const answers = await Promise.all(runners.map(runner => runnerMachineCall(runner, "ping", {}, 3_000).then(() => runner, () => null)));
+  for (const runner of runners) if (!answers.includes(runner)) log("warn", "watch_runner_unreachable", { runner });
+  return new Set(answers.filter((name): name is string => !!name));
 }
 
 /** One poll. `now` is a parameter so a pause can be simulated exactly. */
@@ -644,14 +578,24 @@ export async function runWatchTick(deps: WatchWorkerDeps, now = Date.now()) {
     AND (?=0 OR EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=?
       AND allowed.machine=? AND allowed.session_id=watches.session_id)) ORDER BY created_at_ms`)
     .all(pause.paused?1:0,pause.generation,process.env.CONCIERGE_PEER_NAME==='mac'?'mac':'cloud') as WatchRow[];
+  deliverPending(deps, now);
+  const reachable = pollReachable = await reachableRunners([...open.map(row => row.runner), ...endedCommands().map(row => row.runner)]);
   for (const row of open) {
+    // An unreachable runner's watches are not observed this poll; the silence becomes a recorded gap.
+    if (row.runner && !reachable.has(row.runner)) {
+      if (now >= row.deadline_ms) settle(row.watch_id, "expired", { observedAt: null, now, detail:
+        row.kind === "file" ? `no change was observed, but runner ${row.runner} could not be reached at the end`
+          : row.host_execution_id ? `the command's state could not be read at the deadline: runner ${row.runner} could not be reached`
+            : "its deadline passed before the command could be started, so it was never started" });
+      continue;
+    }
     try {
       if (row.kind === "file") await observeFile(row, now);
       else await observeCommand(row, deps, now);
     } catch (error) { log("error", "watch_poll_failed", { watch_id: row.watch_id, ...errorFields(error) }); }
   }
-  const ended = db.query("SELECT * FROM watches WHERE kind='command' AND state NOT IN ('accepted','observing') AND host_state IN ('intended','live','stopping')").all() as WatchRow[];
-  for (const row of ended) {
+  for (const row of endedCommands()) {
+    if (row.runner && !reachable.has(row.runner)) continue;
     try { await cleanUpHost(row, now); } catch (error) { log("warn", "watch_host_cleanup_failed", { watch_id: row.watch_id, ...errorFields(error) }); }
   }
   deliverPending(deps, now);
@@ -659,13 +603,14 @@ export async function runWatchTick(deps: WatchWorkerDeps, now = Date.now()) {
 
 /** Starts this machine's one watch worker; returns its stop function. */
 export function startWatchWorker(deps: WatchWorkerDeps): () => void {
+  localMachine = localWatchMachine(deps.stateDir, deps.routerBotDir);
   const openWatchIds = db.query("SELECT watch_id FROM watches WHERE state IN ('accepted','observing')")
     .all() as { watch_id: string }[];
   loadWatchObservationCursors(openWatchIds.map(row => row.watch_id));
   startWatchObservationWorker();
   // A restart retries any delivery that had run out of attempts.
   db.query("UPDATE watches SET delivery_attempts=0, delivery_next_ms=NULL WHERE delivery_state='pending'").run();
-  pruneRecords(Date.now());
+  void pruneRecords(Date.now());
   let running = false, again = false, timer: ReturnType<typeof setTimeout> | null = null, stopped = false;
   const poll = async () => {
     if (stopped || deps.stopped?.()) return;

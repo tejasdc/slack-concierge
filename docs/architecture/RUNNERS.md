@@ -9,9 +9,10 @@ the network entrance. **This source configures every new Claude turn for runner 
 Codex setting failed startup on 2026-11-04 and was rolled back; the repaired startup order below
 awaits integration and runtime proof by the detached controller. `claude-code/runner`
 earned its survival proof in the 2026-11-05 acceptance restart (execution `b212ed3c76cd9766`, taken
-over live by the restarted owner). **Still on the owner's machine:** Google and outside-Codex hosts,
-command and file watches, the provider account readings and sign-ins, and project checkouts (a runner
-must have the same folders); the AX41's App Server itself is still the one the owner unit starts. Concierge's own thnkr.ing
+over live by the restarted owner). Command and file watches run on the registering agent's runner. **Still on the owner's machine:** Google and outside-Codex hosts,
+the provider account readings and sign-ins, and project checkouts (a runner
+must have the same folders). The AX41's Codex App Server is started and supervised by the runner, and
+a Codex thread's shell names the runner's folders, never the owner's (2026-11-05). Concierge's own thnkr.ing
 calls already use thnkr.ing's network entrance. The owner therefore
 **cannot move to the app server yet**; the remaining work is listed under "Not on runners yet".
 Decided plan: remote-box `docs/plans/2026-11-04-off-one-server-architecture.md` ("Decisions after
@@ -36,7 +37,7 @@ Everything the owner assumes because agents run beside it. Each line names where
 | Hooks run by the shared Codex App Server (no per-run environment) | same socket | a runner token in the App Server's environment on the runner (built: runner tokens) |
 | `router-actions.sh channel-id`, `channels-list`, `router-threads`, `router-post` lookups, `todo-add` | open the ledger file directly | owner routes, or retired with Slack (all four are Slack-era) |
 | Execution hosts | `systemd-run` on the owner's machine, owner attaches to `host.sock`, reads the journal from disk | started by the runner; journal frames shipped to the owner as sequenced events (below) |
-| Shared Codex App Server | started by the owner's unit (`ExecStartPre`), reached over a local socket | started and supervised by the runner |
+| Shared Codex App Server | started by the owner's unit (`ExecStartPre`), reached over a local socket | started and supervised by the runner (built 2026-11-05) |
 | Claude transcript watch, provider history, handoff/resurrection writes into `~/.claude` and `~/.codex` | owner reads/writes its own home | runner-side, results sent as events |
 | Provider account homes, usage readings, sign-in CLIs | owner's home | runner-side; the owner keeps the allowance decision and receives readings |
 | Project folders, worktrees, `git` in checkouts, file watches, artifact folders, links judged by reading files | owner's disk (`/root/workspace`) | runner-side; jobs name a project, the runner resolves its folder |
@@ -194,12 +195,11 @@ after one such run was taken over live by a later owner. Until then updates wait
 
 ### Not on runners yet
 
+Exact locations and a plan for every item below: [what still ties the owner to the agents' machine](../plans/2026-11-05-owner-off-agent-machine-remaining.md).
+
 - Google turns and outside Codex hosts stay local. Google's launch first reads the owner's own
   `~/.gemini` settings (the paid-credit guard), and an outside run's prompt file is written into the
   owner's state folder, which runners hide; both need the runner-side account step below first.
-- Codex hooks: `pinCodexThreadHooks` files each thread's helper release in the owner's state folder
-  and the App Server's hooks read it there, so a runner on another machine needs that pin sent to it.
-- Command and file watches (`watches.ts`) and artifacts start hosts on the owner's machine.
 - Provider account usage readings, sign-in commands and history writes read the owner's home.
 - Project folders: the job names an absolute folder; a runner must have the same checkout layout, and
   the Claude command's hook settings name the owner's release path, so a runner on another machine
@@ -226,10 +226,24 @@ turn by its thread and turn id), so moving it only changes where the bridge's We
    relay. The App Server client already treats a dropped bridge as an ambiguous disconnect and
    reconnects, which is a new relay. Idle sockets are pinged every minute, so a runner that vanished
    is noticed instead of leaving a dead listener.
-5. A runner whose App Server is not answering starts it (`codex app-server daemon start`, the same
-   helper the owner used, in `agents.slice`) under the runner's own environment. Codex shells inherit
-   that environment, so helpers in a Codex thread reach the owner with the runner's
-   `CONCIERGE_OWNER_URL` and token file (`router-request-client.ts`). A run's own token and owner
+5. **The runner supervises its App Server; the owner starts none.** At the runner's start, and when a
+   relay finds nobody listening, it starts one (`codex app-server daemon start`, in a scope in
+   `agents.slice`, after restoring the private control and daemon folders and only with Codex's
+   updater off) under the runner's own environment. Whoever started it, the first relay each half
+   minute lifts its open-file limit and moves it into a scope of its own, as the owner did on every
+   connection before. The owner's unit no longer runs `daemon start` (2026-11-05).
+   **A Codex thread names the runner, never the owner** (`runner-machine.ts`): the owner sends a
+   thread's shell settings without its own folders (`withoutMachinePaths`), and the runner fills in
+   its own on the way through the relay: its helpers first on `PATH`, its state folder, release, Bun,
+   name and `CONCIERGE_RUNNER_STATE`. Where the owner is lives only in the runner's
+   `connection.env` (owner address, token file, thnkr.ing address), rewritten at each runner start
+   and read by `router-request-client.ts` and `scripts/thinkering` on every call, because a thread
+   keeps its first turn's shell settings for life and an address written there would outlive the
+   owner's move. A `turn/start` passing through pins that thread's hooks to the runner's release
+   (`<runner state>/hook-pins/codex/<thread>`, kept eight days), which the machine's hook wrappers
+   read before the owner's pins. The owner still files its own pin, read only by an App Server
+   its unit started (the AX41's until its next restart); off the AX41 nothing reads it. Only owner-to-App-Server
+   messages are inspected, by a substring test before any parse; the streamed answers pass untouched. A run's own token and owner
    address are kept out of a Codex thread's shell settings, because a thread keeps them for its life,
    past the token's expiry and the owner's move. Codex helpers therefore act as `runner:<name>`; the
    owner still checks every action's source input and run. This substitutes the runner token for the
@@ -273,11 +287,21 @@ runner token file in a Codex shell, sent from a private header file; otherwise t
 Mac keeps `ssh remote-box curl --unix-socket …`, and thnkr.ing's own rendering of the think-aloud
 text keeps its socket (`capabilityCommand` is optional). The wording keeps the socket command as a
 fallback because a Codex conversation keeps its first turn's `PATH`, which may name a release
-without the helper. Known cost: thnkr.ing records a call made with the runner token as
+without the helper. The address and token file come from the runner's `connection.env` when the
+shell names a runner. A shell with no run token (a Codex thread) uses thnkr.ing's socket whenever it
+exists on that machine, because thnkr.ing identifies the session from the calling process there; over
+the network such a call would carry only the runner token. Known cost, on a runner without
+thnkr.ing's socket only: thnkr.ing records a call made with the runner token as
 `runner:<name>` with no session, so a Codex shell's calls that carry no `X-Concierge-Agent-Source`
-(board reads, `/todos/tasks`, `/app/*` routes that fall back to the caller's session) lose session
-attribution; calls that carry the source header are verified by it as before. The per-turn token
-exchange (item 5 under "Codex App Server on a runner") removes this.
+(board reads, `/todos/tasks`, `/app/*` routes that fall back to the caller's session, Canvas page
+inspection) lose session attribution; calls that carry the source header are verified by it as before.
+The per-turn token exchange (item 5 under "Codex App Server on a runner") removes this.
+
+**No ledger on a runner.** A runner turn and, since 2026-11-05, a relayed Codex shell name the
+runner's state folder, so helpers that open the ledger file directly (`scripts/ledger-read.py` with a
+bare name, `router-actions.sh threads`, `trigger`, Slack channel-name lookups, `todo-add`) do not find
+one there; `ledger-read.py` says so and takes the owner's database by absolute path where it is on
+the same machine, and `todo-add` refuses rather than creating an empty ledger.
 
 Why a relay and not the job protocol: the App Server's traffic is a live connection with many
 streamed notifications, not obligations; carrying it through `runner_events` would write every token
@@ -286,19 +310,32 @@ stores nothing and keeps the App Server's own protocol end to end. Why not a por
 runners open none (decided plan, "How the parts talk", 3).
 
 Not yet, before a runner on another machine can hold Codex:
-- The Codex thread's shell settings still carry the owner's `PATH`, state folder, ledger path, bot
-  folder and Bun path (`providerOwnerEnvironment`, codex.ts); Claude runner turns rewrite these on the
-  runner, Codex relay turns do not, so `router-actions.sh` would not be found on another machine.
 - The leftover-process audit after a Codex turn reads the owner's `/proc`; the Codex Remote observer
   would watch the runner's App Server while his own command-line turns run elsewhere.
-- "Supervised" is only a start when a connection finds no App Server: no open-file limit raise, no
-  scope move, no update handling; the start is refused unless that machine's Codex updater is off.
 - One relayed message is limited to 64 MB, the same as the backpressure limit.
-- Account switching restarts the App Server on the owner's machine (`provider-activation.ts`),
-and the owner unit's `ExecStartPre` still starts the local App Server. On the AX41 the owner and runner
-share one App Server, so turning `CONCIERGE_CODEX_RUNNER=ax41` on changes the path, not the daemon;
-the App Server must be restarted under the runner (admission closed, turns idle, see
-[Codex App Server](../runbooks/CODEX-APP-SERVER.md)) before Codex helpers carry the runner's address.
+- Account switching restarts the App Server on the owner's machine (`provider-activation.ts`).
+- Threads started before 2026-11-05 keep the owner's folders in their shell settings for life; they
+  work on the AX41, where those folders exist, and only there. The AX41's running App Server was
+  started by the owner's unit and keeps the owner's environment (its hooks read the owner's pins)
+  until it is next restarted, which the runner then does under its own.
+
+## Runner machine calls
+
+Some of the owner's work is a question to an agent's machine, not an obligation: read a path, start
+or ask after a watched command. These ride the relay the runner already keeps
+open (target `runner-machine`, `runner-machine-calls.ts`): the owner opens one WebSocket per runner
+on its local request socket, the gateway pairs it with the runner, and each call is one JSON message
+`{id, method, params}` answered by `{id, result}` or `{id, error}`. Nothing is stored and nothing is
+resent: the ledger keeps every decision, and a call that cannot be answered (runner away, channel
+dropped, 15 s timeout) is not knowing this time, as with a local host that does not answer. The
+runner answers with the same functions the owner uses for its own machine, under the runner's state
+folder and release; a host record outside the runner's own `exec` folder is refused.
+
+Why not the job protocol: these are reads and idempotent starts the owner already records and
+retries per poll; leases, events and fencing would add ledger writes to every five-second watch poll.
+Why not a port on the runner: runners open none.
+
+Users: durable watches ([watches](WATCHES.md), `watch-machine.ts`, methods `watch.*`). Turn artifacts need none: only the retired Slack presentation makes an artifact folder; a native turn makes none.
 
 ## Concierge's own thnkr.ing calls (built)
 
@@ -353,8 +390,8 @@ Sources: [GetActivityTask](https://docs.aws.amazon.com/step-functions/latest/api
 0. Build "Turns on a runner" and run the AX41's turns through it while the owner is still on the
    AX41; only then is the move a deploy.
 1. On the app server: install the release, restore the ledger and presentation store, set
-   `CONCIERGE_AGENT_API_LISTEN` to its tailnet address and leave out the Codex App Server
-   `ExecStartPre` lines and `agents.slice` settings.
+   `CONCIERGE_AGENT_API_LISTEN` to its tailnet address and leave out the `agents.slice` settings (the
+   unit no longer starts a Codex App Server).
 2. On the AX41: run `runner.ts` as a service with a runner token; set `CONCIERGE_AGENT_API_URL` on
    the owner so runs carry the network address and their tokens.
 3. Thinkering's capability socket moves behind Thinkering's own HTTPS entrance (its step 2).

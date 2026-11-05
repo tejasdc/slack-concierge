@@ -15,7 +15,8 @@ if (!channelName || !sourceChannelId || !sourceMessageTs || separator !== "--" |
 
 const statePath = process.env.CONCIERGE_STATE_DB || "/root/.local/state/concierge/state.db";
 const configPath = process.env.CONCIERGE_SLACK_CONFIG || "/root/.config/concierge/slack.toml";
-const db = ledgerWriteResults(new Database(statePath));
+// Never create an empty ledger where there is none (a runner holds none).
+const db = ledgerWriteResults(new Database(statePath, { readwrite: true, create: false }));
 db.exec("PRAGMA busy_timeout = 5000");
 const channel = db.query(`
   SELECT slack_channel_name, vault_path

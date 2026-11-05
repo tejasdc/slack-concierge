@@ -118,7 +118,14 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         }
         if (operation === 'saved') return Response.json(sessions.saved(input));
         if (operation === 'pause') return Response.json(await sessions.pause(input));
-        if (operation === 'watch') return Response.json(sessions.watch(input));
+        if (operation === 'watch') {
+          // A runner's own token names its machine for certain: that wins over what the helper sent.
+          // A run token or the local socket carries no machine, so the helper's runner name stands
+          // (agents are never handcuffed; docs/architecture/WATCHES.md "Which machine").
+          const principal=request.headers.get('x-concierge-agent-principal');
+          const runner=principal?.startsWith('runner:')?principal.slice('runner:'.length):input.runner;
+          return Response.json(await sessions.watch({...input,...(runner?{runner}:{})}));
+        }
         if (operation === 'handoff') return Response.json(await sessions.handoff(input));
         if (operation === 'obligations') return Response.json(await sessions.obligations(input));
         if (operation === 'open') return Response.json(await sessions.openLink(input));
