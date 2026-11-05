@@ -1560,7 +1560,7 @@ export class SessionCommunicationCoordinator {
                 const history=await this.earlierWork(actor,input,routedFrom?.root??topicRootFor(threadRoot,actor.inputId),null);
                 if(history?.text)input={...input,text:`${history.text}\n\n${input.text}`};
             }
-            return this.peers().ask(this.peerActor(actor),{peer:input.peer,action_id:input.action_id,address:input.address,provider:input.provider,effort:input.effort,project:input.project,title,summary:input.summary,text:input.text,
+            return this.peers().ask(this.peerActor(actor),{peer:input.peer,action_id:input.action_id,address:input.address,provider:input.provider,effort:input.effort,escalationReason:input.escalationReason,project:input.project,title,summary:input.summary,text:input.text,
                 forTask:input.for_task,recoveryOf:input.recovery_of,correctionOf:input.correction_of,
                 requestedEffect:input.requestedEffect,files:input.files,attachments:input.attachments,captureId:input.captureId,evidence:input.evidence,threadRoot,threadSourceMessageId,returnToRequester:input.return_to_requester,
                 ...(machineNeed?{machineNeed}:{}),

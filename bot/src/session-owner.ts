@@ -1356,12 +1356,12 @@ export class SessionOwner {
   }
   /** Called only inside the communication owner's source-validated request transaction. */
   /** A peer instance's request has no local source input; its scope names the peer and the remote input instead. */
-  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;escalationReason?:string;project?:string;title?:string;summary?:string;smallTask?:boolean;outside?:boolean;onRunner?:boolean;standingRole?:StandingAgentRole;firstInput:{text:string;machineNeed?:import('./machine-need').MachineNeed;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean}}) {
+  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;escalationReason?:string;attestedHumanModel?:string;project?:string;title?:string;summary?:string;smallTask?:boolean;outside?:boolean;onRunner?:boolean;standingRole?:StandingAgentRole;firstInput:{text:string;machineNeed?:import('./machine-need').MachineNeed;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean}}) {
     const title=normalizeSessionTitle(input.title);
     const source=input.sourceInputId?getAcceptedSessionInput(input.sourceInputId):null;
     const fromClaude=!!source&&getSessionById(source.session_id)?.provider_id==='claude-code';
     const selected=this.requestTarget({...input,choiceKey:input.requestId},fromClaude);
-    const humanChoice=selected.model&&topModel(selected.model)?humanChoseTopModel(input.sourceInputId,selected.model):false;
+    const humanChoice=selected.model&&topModel(selected.model)?input.attestedHumanModel===selected.model||humanChoseTopModel(input.sourceInputId,selected.model):false;
     const refused=escalationReason(selected.model,input.escalationReason,humanChoice);
     if(refused)throw new SessionOwnerError(refused,409,'MODEL_ESCALATION_REASON_REQUIRED');
     // An outside session's turns run as the Codex command line in their own unit (outside-codex.ts).
@@ -4234,9 +4234,12 @@ export class SessionOwner {
           else if(request.method==='POST'&&parts[3]==='outcome'&&parts.length===4)result=this.projectSetup.pushed(parts[2]!,body);
           else throw new SessionOwnerError('Unknown peer operation route.',404);
         }
-        else if(request.method==='POST'&&parts[1]==='requests'&&parts.length===2)result=await peers.accept(body,false);
-        else if(request.method==='POST'&&parts[1]==='requests'&&parts[2]==='corrected-attachment'&&parts.length===3)
-          result=await peers.accept(body,true);
+        else if(request.method==='POST'&&parts[1]==='requests'
+          &&(parts.length===2||parts[2]==='corrected-attachment'&&parts.length===3)){
+          if(request.headers.get('x-concierge-verified-peer')!=='1')
+            throw new SessionOwnerError('Peer request intake requires an authenticated peer.',403,'PEER_UNAUTHORIZED');
+          result=await peers.accept(body,parts.length===3);
+        }
         else if(request.method==='GET'&&parts[1]==='requests'&&parts.length===3)result=peers.status(parts[2]!);
         else if(request.method==='POST'&&parts[1]==='requests'&&parts[3]==='replies'&&parts.length===4)result=peers.receiveReply(parts[2]!,body);
         else if(request.method==='POST'&&parts[1]==='requests'&&parts[3]==='notify'&&parts.length===4)result=await peers.notified(parts[2]!);

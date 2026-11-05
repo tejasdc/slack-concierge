@@ -4,6 +4,8 @@ import {homedir} from 'node:os';
 import {basename,join} from 'node:path';
 import {PeerCatalogueSync} from './peer-catalogue-sync';
 import {sessionProject} from './session-projects';
+import {parseProviderSelector,resolveProviderSelector} from './aliases';
+import {humanChoseTopModel} from './model-escalation-custody';
 import {AWAITING_INSPECTION,PROMPT_ANSWER_REMINDER_MS,PROMPT_ANSWER_OVERDUE_MS,REMINDERS_SINCE_MS,STILL_WAITING_AFTER_MS,STILL_WAITING_MINUTES,updateDraining,replyCommand,stalledNotice,strandedStep,tellWorkerCanceled,cancelQueuedWithdrawnRequest,waitingOnDependency,type OwedRequest} from './request-liveness';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {OWNER_READ_RESPONSE_MS} from './owner-transport-policy';
@@ -530,7 +532,7 @@ export class SessionPeers {
   hasDelivery(requestId:string){return !!db.query('SELECT 1 FROM session_peer_deliveries WHERE request_id=?').get(requestId);}
   private presentedSession(peer:string,remote:string){return receiveSessionFromPeer(remote,peer,this.self);}
   private presentedAddress(peer:string,address:string){return address.startsWith('session:')?`${peer}/${address}`:address;}
-  async ask(actor:PeerActor,input:{peer:string;action_id:string;address?:string;provider?:string;effort?:string;project?:string;title?:string;summary?:string;text:string;
+  async ask(actor:PeerActor,input:{peer:string;action_id:string;address?:string;provider?:string;effort?:string;escalationReason?:string;project?:string;title?:string;summary?:string;text:string;
     forTask?:string;recoveryOf?:string;correctionOf?:string;
     machineNeed?:MachineNeed;
     requestedEffect?:'informational'|'work';files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null;threadSourceMessageId?:string;returnToRequester?:boolean;
@@ -542,7 +544,7 @@ export class SessionPeers {
     const effect=input.requestedEffect??'informational';
     const prior=()=>db.query('SELECT * FROM session_peer_requests WHERE source_input_id=? AND action_id=?').get(actor.inputId,input.action_id) as PeerRequestRow|null;
     const encode=(taskRef:ChatGptTask|null)=>JSON.stringify({peer:input.peer,answerGuaranteeVersion:1,...(input.provider?{provider:input.provider}:{address:input.address}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary}),text:input.text,
-      ...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),...(input.files===undefined?{}:{files:input.files}),
+      ...(input.effort===undefined?{}:{effort:input.effort}),...(input.escalationReason===undefined?{}:{escalationReason:input.escalationReason}),...(input.project===undefined?{}:{project:input.project}),...(input.files===undefined?{}:{files:input.files}),
       ...(input.captureId===undefined?{}:{captureId:input.captureId}),...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.machineNeed?{machineNeed:input.machineNeed}:{}),requestedEffect:effect,...(input.threadRoot?{thread:input.threadRoot}:{}),...(input.returnToRequester?{returnToRequester:true}:{}),
       ...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{}),...(input.routedFrom?{routedMessage:{sourceInputId:input.routedFrom.messageId},routedFrom:input.routedFrom}:{}),
       ...(taskRef?{taskRef}:{}),...(input.recoveryOf?{recoveryOf:input.recoveryOf}:{}),...(input.correctionOf?{correctionOf:input.correctionOf}:{})});
@@ -619,11 +621,18 @@ export class SessionPeers {
       ?{inputId:sourceInput.id,runId,sessionId:`concierge:${actor.session}`,...(JSON.parse(sourceInput.payload_json).capture?.id?{captureId:JSON.parse(sourceInput.payload_json).capture.id}:{})}:null);
     // Every identity leaving this instance is named by it (peer-identity.ts).
     const originatingHuman=known?{...known,sessionId:presentSessionForPeer(known.sessionId,this.self)}:null;
+    const humanModelChoices=known?(['claude-fable-5-1','gpt-6-astra'] as const).filter(model=>
+      humanChoseTopModel(known.inputId,model)
+      ||(provenance?.originatingHuman?.inputId===known.inputId&&humanChoseTopModel(actor.inputId,model))):[];
+    const providerSelector=parseProviderSelector(input.provider);
+    const selectedModel=providerSelector?resolveProviderSelector(providerSelector).model:undefined;
+    const humanModelChoice=!!selectedModel&&humanModelChoices.includes(selectedModel as 'claude-fable-5-1'|'gpt-6-astra');
     const text=input.framing?input.framing(id):`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. ${input.routedFrom?`This carries Tejas’s exact Inbox message ${input.routedFrom.messageId} into this session. Reply to this request; the answer appears under that message in its original thread.`:'This is agent-authored input within the originating human task, not a new human message.'} Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`;
     const delivery={requestId:id,answerGuaranteeVersion:1,
       ...(task?{answerObligation:{id:input.correctionOf??input.recoveryOf??id,task,attemptId:id}}:{}),
       origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,originatingHuman,effectScope:provenance?.effectScope??null},
-      ...(input.provider?{provider:input.provider,...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary})}:{address:input.address}),
+      ...(humanModelChoices.length?{humanModelChoices}:{}),
+      ...(input.provider?{provider:input.provider,...(input.effort===undefined?{}:{effort:input.effort}),...(input.escalationReason===undefined?{}:{escalationReason:input.escalationReason}),...(humanModelChoice?{humanModelChoice:selectedModel}:{}),...(input.project===undefined?{}:{project:input.project}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary})}:{address:input.address}),
       text,message:input.text,requestedEffect:effect,...(input.machineNeed?{machineNeed:input.machineNeed}:{}),...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{}),
       ...(input.routedFrom?{routedFrom:input.routedFrom}:{}) ,...(input.correctionOf?{correctionOf:input.correctionOf}:{}),...(files.length?{files}:{})};
     const retain=(accepted:{sessionId:string;address:string;operationId:string},queued:boolean)=>db.transaction(()=>{
@@ -1420,6 +1429,14 @@ export class SessionPeers {
     const origin=object(input.origin);
     if(typeof origin.peer!=='string'||!this.dependencies.clients.has(origin.peer))throw new SessionOwnerError('Unknown peer instance.',403,'PEER_UNKNOWN');
     if(typeof origin.sessionId!=='string'||typeof origin.inputId!=='string'||typeof origin.runId!=='string')throw new SessionOwnerError('A peer request names its origin session, input and run.');
+    if(origin.originatingHuman!==undefined&&origin.originatingHuman!==null
+      &&(typeof origin.originatingHuman?.inputId!=='string'||typeof origin.originatingHuman?.runId!=='string'||typeof origin.originatingHuman?.sessionId!=='string'))
+      throw new SessionOwnerError('A peer human source needs its exact session, input and run.',400,'PEER_HUMAN_SOURCE_INVALID');
+    if(input.humanModelChoices!==undefined&&(!Array.isArray(input.humanModelChoices)||input.humanModelChoices.length>2
+      ||input.humanModelChoices.some((model:unknown)=>model!=='claude-fable-5-1'&&model!=='gpt-6-astra')))
+      throw new SessionOwnerError('A peer model choice must name a supported top model.',400,'PEER_MODEL_CHOICE_INVALID');
+    if(input.humanModelChoice!==undefined&&typeof input.humanModelChoice!=='string')
+      throw new SessionOwnerError('A peer model choice must name its selected model.',400,'PEER_MODEL_CHOICE_INVALID');
     if(typeof input.text!=='string'||!input.text.trim())throw new SessionOwnerError('Nonempty request text required.');
     if(correctedAttachmentRoute!==!!input.correctionOf)
       throw new SessionOwnerError('Attachment corrections use only the dedicated peer correction route.',409,'PEER_CORRECTION_ROUTE');
@@ -1500,7 +1517,9 @@ export class SessionPeers {
         throw new SessionOwnerError('The corrected peer attachment must have changed bytes.',409,'PEER_CORRECTION_UNCHANGED');
     }
     // The sender's own words stay beside the delivery text its preamble wraps for the provider.
+    const humanModelChoices=origin.originatingHuman?Array.from(new Set([...(input.humanModelChoices??[]),input.humanModelChoice].filter((model:unknown)=>model==='claude-fable-5-1'||model==='gpt-6-astra'))):[];
     const provenance={origin:{peer:origin.peer,sessionId:origin.sessionId,inputId:origin.inputId,runId:origin.runId},originatingHuman:origin.originatingHuman??null,effectScope:origin.effectScope??null,
+      ...(humanModelChoices.length?{humanModelChoices}:{}),
       ...(input.answerGuaranteeVersion===1?{answerGuaranteeVersion:1}:{}),...(input.answerObligation?{answerObligation:input.answerObligation}:{}),
       ...(correctionProof?{correctionOf:input.correctionOf,correctionPayloadHash:hash(JSON.stringify(input)),
         correctionProof:{runId:correctionProof.runId,reason:correctionProof.reason}}:{}),
@@ -1512,7 +1531,7 @@ export class SessionPeers {
       const scope=`peer:${origin.peer}:${origin.inputId}`;
       let sessionId:number;
       if(typeof input.provider==='string'){
-        const operation=owner.createRequestTarget({scope,requestId,provider:input.provider,effort:input.effort,project:input.project,title:input.title,summary:typeof input.summary==='string'?input.summary:undefined,
+        const operation=owner.createRequestTarget({scope,requestId,provider:input.provider,effort:input.effort,escalationReason:typeof input.escalationReason==='string'?input.escalationReason:undefined,attestedHumanModel:humanModelChoices.includes(input.humanModelChoice)?input.humanModelChoice:undefined,project:input.project,title:input.title,summary:typeof input.summary==='string'?input.summary:undefined,
           firstInput:{text:input.text,...(machineNeed?{machineNeed}:{}),...(attachments.length?{attachments}:{})}});
         sessionId=operation.session_id;
       } else {
