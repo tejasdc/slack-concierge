@@ -1,3 +1,4 @@
+import {markTask} from './owner-task-labels';
 /** The accepting loop enables this; workers and command-line readers pay no timing cost.
  * One interval has one slowest call, never SQL, values or an accumulating query history. */
 type Kind = 'statement' | 'transaction';
@@ -27,6 +28,7 @@ export function takeStorageInterval(): StorageInterval {
 /** Include transaction commit/rollback: timing statements alone misses their disk flush.
  * Nested calls contribute once to occupied time; a transaction includes its callback work. */
 export function observeSynchronousStorage<T>(kind: Kind, fingerprint: (() => string) | null, work: () => T, phases?: TransactionPhases): T {
+  markTask();
   if (!enabled) return work();
   const outer = depth++ === 0;
   const start = performance.now();

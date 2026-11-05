@@ -13,6 +13,7 @@ import {NoSpeech,transcribeAudioPath,transcriptionProgress} from './transcriptio
 import {finishedSpeechJobIds,readSpeechJobResult,removeFinishedSpeechJob,speechJobProgress,speechRoot,stageSpeechJob} from './speech-job-spool';
 import {ensureSpeechWorker} from './speech-job-supervisor';
 import {log} from './log';
+import {withTaskLabel} from './owner-task-labels';
 import {searchPrepared,searchRouterThreadsRead} from './presentation-search-client';
 import {boundSearchResponse} from './search-response-boundary';
 import {isTransientDatabaseError} from './database-retry';
@@ -325,7 +326,7 @@ function startOwnerLoopMonitor() {
     // Processor time spent while the loop was held tells waiting (a lock, synchronous I/O: near
     // zero) from computing (close to the lag or above it) without a profiler, which may not run here.
     const storage=takeStorageInterval();
-    if(lag>=200){log('warn','owner_event_loop_lag',{lag_ms:lag,cpu_ms:Math.round((used.user+used.system)/1000),storage,in_flight:[...ownerRequestsInFlight].map(([requestId,route])=>({requestId,route}))});noteOwnerStall(lag,Math.round((used.user+used.system)/1000));}
+    if(lag>=200){const memory=process.memoryUsage();log('warn','owner_event_loop_lag',{lag_ms:lag,rss_mb:Math.round(memory.rss/2**20),heap_used_mb:Math.round(memory.heapUsed/2**20),cpu_ms:Math.round((used.user+used.system)/1000),storage,in_flight:[...ownerRequestsInFlight].map(([requestId,route])=>({requestId,route}))});noteOwnerStall(lag,Math.round((used.user+used.system)/1000));}
   },250);
   ownerLoopMonitor.unref?.();
 }
@@ -3820,7 +3821,7 @@ export class SessionOwner {
           return ownerJson({error:{code:'READER_CONTRACT_REQUIRED',message:'This owner read has no declared cost contract or named control exception.'}},{status:503});
         return contract?withStorageReadBudget(contract.storage,()=>this.handleRequest(request)):this.handleRequest(request);
       };
-      let response=await observeStorageOperation(label,run,measured=>{work=measured;});
+      let response=await withTaskLabel(`request ${label}`,()=>observeStorageOperation(label,run,measured=>{work=measured;}));
       if(policy&&policy.maxResponseBytes>0&&Number(response?.headers.get('content-length'))>policy.maxResponseBytes){
         log('error','owner_read_budget_refused',{reader:contract?.name??('path' in policy?policy.path:'unknown'),reason:'response_bytes'});
         response=ownerJson({error:{code:'READ_BUDGET_EXCEEDED',message:'This page exceeded its declared read size.'}},{status:503});

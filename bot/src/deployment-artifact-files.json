@@ -46,7 +46,8 @@
     "control/application/foreground-gateway-worker.js": "bot/src/foreground-gateway-worker.ts",
     "control/application/native-read-worker.js": "bot/src/native-read-worker.ts",
     "control/application/ledger-durability-worker.js": "bot/src/ledger-durability-worker.ts",
-    "control/application/watch-observation-worker.js": "bot/src/watch-observation-worker.ts"
+    "control/application/watch-observation-worker.js": "bot/src/watch-observation-worker.ts",
+    "control/application/owner-task-watchdog-worker.js": "bot/src/owner-task-watchdog-worker.ts"
   },
   "controlFiles": {
     "control/bot/scripts/mac-browser-fallback.sh": "bot/scripts/mac-browser-fallback.sh",
@@ -84,6 +85,7 @@
     "control/application/foreground-gateway-worker.js",
     "control/application/native-read-worker.js",
     "control/application/ledger-durability-worker.js",
-    "control/application/watch-observation-worker.js"
+    "control/application/watch-observation-worker.js",
+    "control/application/owner-task-watchdog-worker.js"
   ]
 }

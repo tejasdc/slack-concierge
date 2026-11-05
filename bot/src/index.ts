@@ -1,3 +1,4 @@
+import './owner-task-labels-install';
 import { App, LogLevel } from "@slack/bolt";
 import { runStartupPhase } from './startup-phase';
 import { RoutedRequestCoordinator } from "./routed-requests";
