@@ -12,8 +12,8 @@ import {OPEN_QUESTION_STATES} from './topic-attention-rules';
  * Every agent sent work from the thread, finished or not, is a choice and owns the answers it sent
  * back or had posted here; open work also owns its request's messages. An agent working the thread
  * right now, or one with a question open, is a choice too. The default is the agent whose item he
- * replies to; else the one agent still at work here; else the router, which also covers "several
- * are at work", so he picks. A session on his Mac is a choice exactly as one here
+ * replies to; else whoever last spoke in the thread (an agent, or the router's own reply); only in
+ * a thread where nobody has spoken yet, the one agent at work, else the router. A session on his Mac is a choice exactly as one here
  * [decision: mac-sessions-have-parity]. Whether a session can be offered at all, and its name, is
  * the caller's `resolve`, because each read keeps its own view of the session catalogue.
  */
@@ -98,16 +98,32 @@ export function topicReplyTargets(source:Database,input:ReplyTargetInput):ReplyT
   if(request.state==='open'&&stillOpen(requestId)){const returned=returnsOf(requestId);busy(add(dispatch.targetSessionId,`working on “${request.title}”`,[...request.sources.map(item=>item.inputId),...returned],returned.length>0));}
   else add(dispatch.targetSessionId,`worked on “${request.title}”`,returnsOf(requestId));
  }
- // Answers the owner posted straight into this thread name the agent that wrote them.
- if(roots.length)for(const row of source.query(`SELECT event_id,json_extract(payload_json,'$.postedBySession') AS from_session FROM session_owner_events
-  WHERE session_id=? AND kind='post' AND coalesce(json_extract(payload_json,'$.threadRoot'),input_id) IN (${roots.map(()=>'?').join(',')}) AND json_extract(payload_json,'$.postedBy')='owner-forward'`).all(input.inboxSessionId,...roots) as {event_id:string;from_session:string|null}[])
-  add(row.from_session,'answered here',[row.event_id]);
+ // Every message an agent wrote into this thread is that agent's, however it arrived: forwarded
+ // by the owner, or posted by the agent itself with `sessions post --thread`. The message names its
+ // writer, so ownership is read from it, never inferred from request bookkeeping. Until 2026-11-05
+ // only forwarded answers counted, so an answer an agent posted itself belonged to nobody and the
+ // box fell back to the Inbox agent (Tejas, 3:16 AM: "There is not a single message from the Inbox
+ // in this thread in the longest time. Why is that getting selected?"). Service notices (earlier
+ // work, a stall) are not anyone speaking to him. Newest first, so the first speaker found is the
+ // agent he is most likely answering.
+ let newestSpeaker:string|null=null;
+ if(roots.length)for(const row of source.query(`SELECT event_id,json_extract(payload_json,'$.postedBySession') AS from_session,json_extract(payload_json,'$.postedBy') AS posted_by FROM session_owner_events
+  WHERE session_id=? AND kind='post' AND coalesce(json_extract(payload_json,'$.threadRoot'),input_id) IN (${roots.map(()=>'?').join(',')}) ORDER BY sequence DESC`).all(input.inboxSessionId,...roots) as {event_id:string;from_session:string|null;posted_by:string|null}[]){
+  if(row.posted_by==='service')continue;
+  // A post with no writing session is the Inbox agent's own reply in the thread.
+  const speaker=row.from_session?add(row.from_session,'answered here',[row.event_id]):router;
+  newestSpeaker??=speaker;
+ }
  for(const dispatch of input.workDispatches)if(dispatch.root&&roots.includes(dispatch.root))busy(add(dispatch.sessionId,'working on this thread now',[dispatch.root]));
  for(const question of input.questions)if(OPEN_QUESTION_STATES.some(state=>state===question.state)||question.state==='deferred')
   busy(add(question.ownerSessionId,question.decision?`asked you: ${question.decision}`:'asked you a question here',[question.id,...question.sources]));
  if(about&&input.spokenBy)add(input.spokenBy,'answered here',[about]);
  const list=[...choices.values()];
+ // The one invariant (Tejas, 2026-11-05: "It's finding the right one to respond to quickly"): the
+ // first choice is the agent he is most likely replying to: the writer of the item he is replying
+ // under when he picked one, else whoever spoke last in this thread. An agent that has not spoken
+ // here is first only in a thread where nobody has spoken yet, as the one agent at work on it.
  const owning=about?list.find(choice=>choice.owns.includes(about)):undefined;
  const atWork=list.filter(choice=>working.has(choice.sessionId));
- return {router,default:owning?.sessionId??(atWork.length===1?atWork[0]!.sessionId:router),choices:list};
+ return {router,default:owning?.sessionId??newestSpeaker??(atWork.length===1?atWork[0]!.sessionId:router),choices:list};
 }
