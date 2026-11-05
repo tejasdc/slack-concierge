@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { request } from "node:http";
+import { thinkeringConfigured, thinkeringRequest } from "./thinkering-capability-target";
 import { isAbsolute } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { AgentProvider, ProviderCapabilities } from "./providers";
@@ -317,10 +317,12 @@ function failureText(error: ChatGptResult["error"] | ChatGptReceipt["error"], fa
 
 /** A configured capability transport; it owns no accepted work, retries, timers or catalogue. */
 export class SessionCapabilityClient {
-  private readonly socketPath: string;
+  private readonly socketPath: string | undefined;
 
-  constructor(options: { socketPath: string }) {
-    verify(isAbsolute(options.socketPath) && !options.socketPath.includes("\0"), "Configure an absolute private capability socket path.");
+  /** The socket is used only when thnkr.ing's network entrance is not configured (thinkering-capability-target.ts). */
+  constructor(options: { socketPath?: string }) {
+    verify(thinkeringConfigured(options.socketPath), "Configure thnkr.ing's network entrance or an absolute private capability socket path.");
+    verify(options.socketPath === undefined || (isAbsolute(options.socketPath) && !options.socketPath.includes("\0")), "Configure an absolute private capability socket path.");
     this.socketPath = options.socketPath;
   }
   saveCaptureNote(input:{captureId:string;text:string;title:string;capturedAt:string;inboxMessage?:string;summary?:string;addTo?:string;person?:string;journal?:'entry'|'checkin'}) {
@@ -337,7 +339,8 @@ export class SessionCapabilityClient {
   private send<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
     return new Promise((resolve, reject) => {
       const bytes = JSON.stringify(body);
-      const req = request({ socketPath: this.socketPath, method: "POST", path,
+      let req: ReturnType<typeof thinkeringRequest>;
+      try { req = thinkeringRequest(path, { method: "POST",
         headers: { "content-type": "application/json", "content-length": Buffer.byteLength(bytes), connection: "close" } }, res => {
         const chunks: Buffer[] = [];
         res.on("data", chunk => chunks.push(Buffer.from(chunk)));
@@ -358,7 +361,8 @@ export class SessionCapabilityClient {
           }
           resolve(value as T);
         });
-      });
+      }, this.socketPath); }
+      catch { reject(new SessionCapabilityError("CAPABILITY_DISCONNECTED", "thnkr.ing's network entrance token could not be read; no request was sent.", null, true)); return; }
       req.on("error", () => reject(new SessionCapabilityError(signal?.aborted ? "CAPABILITY_OBSERVATION_ABORTED" : "CAPABILITY_DISCONNECTED",
         signal?.aborted ? "Local capability observation ended; native cancellation is unconfirmed." : "The private capability connection failed; no retry was attempted.", null, true)));
       const abort = () => {

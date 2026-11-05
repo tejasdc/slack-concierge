@@ -1,5 +1,5 @@
 import {spawn} from 'node:child_process';
-import {request as httpRequest} from 'node:http';
+import {thinkeringRequest} from './thinkering-capability-target';
 import {log} from './log';
 
 /**
@@ -20,7 +20,7 @@ let lastLookup:string|null=null;
 
 function overSocket(body:Buffer):Promise<string>{
   return new Promise((resolve,reject)=>{
-    const request=httpRequest({socketPath:SOCKET,path:'/thesaurus/mentions',method:'POST',timeout:LOCAL_MS,
+    const request=thinkeringRequest('/thesaurus/mentions',{method:'POST',timeout:LOCAL_MS,
       headers:{'content-type':'application/json','content-length':body.length}},response=>{
       const chunks:Buffer[]=[];let size=0;
       response.on('data',chunk=>{const part=Buffer.from(chunk as Uint8Array);size+=part.length;if(size>LIMIT)response.destroy(new Error('too large'));else chunks.push(part);});

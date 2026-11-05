@@ -17,6 +17,7 @@ import type {AgentProvider} from './providers';
 import {antigravityExecutable} from './antigravity';
 import {runOutsideCodexTurn,type OutsideRun} from './outside-codex';
 import type {ProviderId} from './state';
+import {thinkeringConfigured} from './thinkering-capability-target';
 import {SessionCapabilityClient,chatGptCapabilities,type ChatGptAdmission,type CapabilityEvidence,type ChatGptReceipt} from './session-capability-client';
 import {completeNativeFork,readNativeForkPin,type NativeForkPin} from './native-session-controls';
 import {readRetainedNativeResult} from './turn-recovery';
@@ -204,7 +205,7 @@ export class SessionExecutionHost {
     const detach=observeExecutionChanges(()=>void this.moveCodexOffSpentAccount());
     const timer=setInterval(()=>void this.moveCodexOffSpentAccount(),60_000);
     this.stopCodexMoves=()=>{detach();clearInterval(timer);};
-    this.capabilityClient=options.capabilityClient??(options.capabilitySocket?new SessionCapabilityClient({socketPath:options.capabilitySocket}):null);
+    this.capabilityClient=options.capabilityClient??(thinkeringConfigured(options.capabilitySocket)?new SessionCapabilityClient({socketPath:options.capabilitySocket}):null);
     // A device login completes in the browser with nothing to send back, so the
     // process exiting is the only signal that credentials changed. Activation
     // belongs here too, or the new account would sit on disk unused.

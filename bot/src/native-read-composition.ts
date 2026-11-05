@@ -5,6 +5,7 @@ import {providers} from './providers';
 import {ProviderHistoryPageClient} from './provider-history-page-client';
 import {readClaudeCachedMessage,readCodexHistoryMessage} from './provider-history';
 import {SessionCapabilityClient,chatGptCapabilities} from './session-capability-client';
+import {thinkeringConfigured} from './thinkering-capability-target';
 import {CHATGPT_THINKING_LEVELS,HIS_CHATGPT_PREFIX,PROVIDER_ALIASES} from './aliases';
 import {peerSettings} from './session-peers';
 import {readRequestReceipt} from './native-read-request-receipt';
@@ -20,7 +21,7 @@ const CAPABILITY_READ_WAIT_MS=5000;
 /** Read composition reuses the owner's projection and validation, without a command host. */
 export function createNativeReadComposition(defaultCwd:string,capabilitySocket:string|undefined) {
   if(process.env.CONCIERGE_READ_WORKER!=='1')throw new Error('NATIVE_READ_WORKER_REQUIRED');
-  const capabilityClient=capabilitySocket?new SessionCapabilityClient({socketPath:capabilitySocket}):null;
+  const capabilityClient=thinkeringConfigured(capabilitySocket)?new SessionCapabilityClient({socketPath:capabilitySocket}):null;
   const historyPages=new ProviderHistoryPageClient();
   historyPages.warm();
   const configuredPeers=peerSettings();
