@@ -2878,15 +2878,27 @@ const sameAsk=(question:StoredQuestion,respondingSessionId:string,runId:string|n
   &&OPEN_QUESTION_STATES.some(state=>state===question.state)&&question.owner?.sessionId===respondingSessionId&&question.owner?.askedInRun===runId;
 
 /** Reconcile retained answers after a request is linked, including links to another thread. */
+/** The live, per-request reconciliation: forwarded final answers and carried closures for one request (or all). */
 export function reconcilePlacedRequestAnswers(onlyRequestId?:string):number {
+  return reconcileForwardedFinalAnswers(onlyRequestId)+reconcileCarriedClosures(onlyRequestId);
+}
+
+/**
+ * Forwarded final answers, optionally only those whose events fall in (afterSequence, throughSequence].
+ * A bounded range reads only that slice of the event log: "+kind" and "+event_id" keep the planner
+ * off the indexes that list every forwarded post ever, so the sequence range is its access path.
+ */
+export function reconcileForwardedFinalAnswers(onlyRequestId?:string,range?:{afterSequence:number;throughSequence:number}):number {
   const inbox=inboxSession();
   if(!inbox)return 0;
+  const bounded=!!range,idColumn=bounded?'+event_id':'event_id';
   const rows=db.query(`SELECT event_id,session_id,input_id,payload_json FROM session_owner_events
-    WHERE kind='post' AND event_id >= 'post:forward:' AND event_id < 'post:forward;'
+    WHERE ${bounded?'+kind':'kind'}='post' AND ${idColumn} >= 'post:forward:' AND ${idColumn} < 'post:forward;'
       AND event_id NOT LIKE 'post:forward:shared:%'
       AND json_extract(payload_json,'$.replyKind')='final'
       AND json_extract(payload_json,'$.workDisposition') IS NOT NULL
-      AND (? IS NULL OR json_extract(payload_json,'$.requestId')=?)`).all(onlyRequestId??null,onlyRequestId??null) as
+      AND sequence > ? AND sequence <= ?
+      AND (? IS NULL OR json_extract(payload_json,'$.requestId')=?)`).all(range?.afterSequence??0,range?.throughSequence??Number.MAX_SAFE_INTEGER,onlyRequestId??null,onlyRequestId??null) as
       {event_id:string;session_id:number;input_id:string;payload_json:string}[];
   let reconciled=0;
   for(const row of rows){
@@ -2925,12 +2937,22 @@ export function reconcilePlacedRequestAnswers(onlyRequestId?:string):number {
     }
     reconciled++;
   }
+  return reconciled;
+}
+
+/** Partial answers carried by an answer closure, mirrored once their request is answered. */
+export function reconcileCarriedClosures(onlyRequestId?:string,range?:{afterSequence:number;throughSequence:number}):number {
+  const inbox=inboxSession();
+  if(!inbox)return 0;
+  let reconciled=0;
   const carried=db.query(`SELECT closure.event_id,closure.session_id,post.input_id,closure.payload_json,post.event_id AS post_id,
       post.payload_json AS post_payload FROM session_owner_events closure INDEXED BY session_owner_events_session_kind
     JOIN session_owner_events post ON post.event_id=json_extract(closure.payload_json,'$.postId') AND post.kind='post'
-    WHERE closure.session_id=? AND closure.kind='answer_closure' AND json_extract(post.payload_json,'$.replyKind')='partial'
+    WHERE closure.session_id=? AND closure.kind='answer_closure'
+      AND closure.sequence > ? AND closure.sequence <= ? AND json_extract(post.payload_json,'$.replyKind')='partial'
       AND post.event_id NOT LIKE 'post:forward:shared:%'
-      AND (? IS NULL OR json_extract(closure.payload_json,'$.requestId')=?)`).all(inbox.id,onlyRequestId??null,onlyRequestId??null) as
+      AND (? IS NULL OR json_extract(closure.payload_json,'$.requestId')=?)`).all(inbox.id,range?.afterSequence??0,
+        range?.throughSequence??Number.MAX_SAFE_INTEGER,onlyRequestId??null,onlyRequestId??null) as
       {event_id:string;session_id:number;input_id:string;payload_json:string;post_id:string;post_payload:string}[];
   for(const row of carried){
     const closure=JSON.parse(row.payload_json),post=JSON.parse(row.post_payload);
@@ -2946,16 +2968,19 @@ export function reconcilePlacedRequestAnswers(onlyRequestId?:string):number {
 }
 
 /** Hide historical timer posts without deleting their request or post evidence. */
-export function retireTimedRequestPosts():number {
+export function retireTimedRequestPosts(range?:{afterSequence:number;throughSequence:number}):number {
+  // A bounded range reads only that slice of the event log (see reconcileForwardedFinalAnswers).
+  const bounded=!!range;
   return db.transaction(()=>{
     const posts=db.query(`SELECT post.event_id,post.input_id,post.session_id FROM session_owner_events post
-    WHERE post.kind='post' AND post.event_id LIKE 'post:forward:%'
+    WHERE ${bounded?'+post.kind':'post.kind'}='post' AND ${bounded?'+post.event_id':'post.event_id'} LIKE 'post:forward:%'
+      AND post.sequence > ? AND post.sequence <= ?
       AND NOT EXISTS (SELECT 1 FROM session_owner_events hidden WHERE hidden.event_id='post:collapse:' || post.event_id)
       AND (EXISTS (SELECT 1 FROM session_communication_events event
         WHERE event.event_id=substr(post.event_id,length('post:forward:')+1) AND event.kind='overdue')
         OR EXISTS (SELECT 1 FROM session_peer_events event
         WHERE event.event_id=substr(post.event_id,length('post:forward:')+1) AND event.kind='overdue'))`)
-      .all() as {event_id:string;input_id:string|null;session_id:number}[];
+      .all(range?.afterSequence??0,range?.throughSequence??Number.MAX_SAFE_INTEGER) as {event_id:string;input_id:string|null;session_id:number}[];
     for(const post of posts)
       recordSessionEvent({eventId:`post:collapse:${post.event_id}`,sessionId:post.session_id,inputId:post.input_id,
         kind:'post_collapse',payload:{postId:post.event_id,reason:'A request timer is for agents, not the Inbox conversation.'}});

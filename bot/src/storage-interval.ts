@@ -18,6 +18,20 @@ type TransactionPhases = { callbackEntered?: number; callbackLeft?: number; slow
 const transactionStack: TransactionPhases[] = [];
 
 export function startStorageIntervals(): void { interval = empty(); enabled = true; }
+
+/** Ledger work done inside one named step, independent of the rolling interval the loop monitor takes. */
+export type StorageStep = { calls: number; occupied_ms: number; slowest_ms: number; slowest_fingerprint: string | null };
+const steps: StorageStep[] = [];
+/** The same measure opened now and read later, for spans that are not one function (module loading). */
+export function openStorageStep(): () => StorageStep {
+  const step: StorageStep = { calls: 0, occupied_ms: 0, slowest_ms: 0, slowest_fingerprint: null };
+  steps.push(step);
+  return () => {
+    const index = steps.indexOf(step);
+    if (index >= 0) steps.splice(index, 1);
+    return { ...step, occupied_ms: Math.round(step.occupied_ms), slowest_ms: Math.round(step.slowest_ms) };
+  };
+}
 export function takeStorageInterval(): StorageInterval {
   const completed = interval;
   interval = empty();
@@ -51,6 +65,11 @@ export function observeSynchronousStorage<T>(kind: Kind, fingerprint: (() => str
       interval.calls++;
       if (kind === 'transaction') interval.transactions++;
       if (outer) {interval.occupied_ms += elapsed;noteLedgerOccupied(elapsed);}
+      for (const step of steps) {
+        step.calls++;
+        if (outer) step.occupied_ms += elapsed;
+        if (elapsed > step.slowest_ms) { step.slowest_ms = elapsed; step.slowest_fingerprint = fingerprint?.() ?? null; }
+      }
       if (elapsed >= 25 && elapsed > (interval.slowest?.duration_ms ?? 0)) {
         // Capture only a slow call's synchronous caller, after the call. No heap walk or profiler.
         const stack = (new Error().stack ?? '').split('\n').slice(1, 9).map(line => line.trim().slice(0, 240));
