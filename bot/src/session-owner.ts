@@ -4084,9 +4084,9 @@ export class SessionOwner {
         result={canvasContext:session.provider_id==='codex'};
       }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='view'&&parts.length===3){
-        const session=this.session(parts[1]!);
-        if(sessionMetadata(session).inbox)await closeQuestionsAnsweredByTodos(admission=>this.admit(admission));
-        result={session:this.view(session)};
+        this.session(parts[1]!);
+        await closeQuestionsAnsweredByTodos(admission=>this.admit(admission));
+        result={session:this.view(this.session(parts[1]!))};
       }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='sessions'&&parts[3]==='attention'&&parts.length===4){
         const session=this.session(parts[2]!);
