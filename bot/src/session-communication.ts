@@ -16,6 +16,7 @@ import {turnRoutedInput} from './inbox-routing-result';
 import {sessionAuthor} from './session-message-author';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
+import {ProviderCapabilityUnavailableError} from './provider-policy';
 import { log } from './log';
 import { STEP_ASKS, finishedTodoRefusal, type TodoState } from './question-todos';
 import {boundSearchResponse} from './search-response-boundary';
@@ -719,6 +720,33 @@ export class SessionCommunicationCoordinator {
         this.actor(input.source);
         return {providers:(['claude-code','codex','antigravity'] as const).map(provider=>usageSignal(provider))};
     }
+    /** Switch through the same guarded account operation as Accounts, attributed to this agent run. */
+    async switchCodexAccount(input:{source:CommunicationSource;action_id:string;profile_id:string;machine?:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const authority=this.authority(this.fenced(this.actor(input.source))),actor=authority.actor;
+        action(input.action_id);
+        if(authority.scope!=='work'||!actor.inputId)throw new Error('Switching an account needs an exact live work request.');
+        if(!input.profile_id?.trim())throw new Error('Name the saved Codex account profile.');
+        const retained={sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
+            kind:'action' as const,origin:'agent' as const,payload:{kind:'codex-account-switch',profileId:input.profile_id,machine:input.machine??(process.platform==='darwin'?'mac':'cloud')},
+            sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn)};
+        const saved=retainSessionInput(retained);
+        if(saved.duplicate)return saved.input.receipt_json
+            ? {...JSON.parse(saved.input.receipt_json),duplicate:true}
+            : {status:'uncertain',detail:'The earlier account switch has no final receipt; inspect the account before another attempt.',duplicate:true};
+        try {
+            const result=await this.dependencies.owner.switchAuthProfile('codex',input.profile_id,input.machine);
+            db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+                .run(JSON.stringify(result),saved.input.id);
+            return result;
+        } catch(error) {
+            const result={status:error instanceof ProviderCapabilityUnavailableError?'failed':'uncertain',
+                detail:error instanceof Error?error.message:String(error)};
+            db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+                .run(JSON.stringify(result),saved.input.id);
+            return result;
+        }
+    }
     /**
      * A session names itself, and may correct that name later. It used to be one-shot, so a
      * session that had been given a bad name — by itself earlier, or by whoever created it —
@@ -1325,6 +1353,7 @@ export class SessionCommunicationCoordinator {
         /** Run the new session's Claude turns on a runner machine (docs/architecture/RUNNERS.md). */
         onRunner?: boolean;
         effort?: string;
+        escalationReason?: string;
         project?: string;
         title?: string;
         text: string;
@@ -1670,7 +1699,7 @@ export class SessionCommunicationCoordinator {
             const firstInput={text:toChatgpt?chatgptText:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${history?.text?`${history.text}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(routedFrom)firstInput.text=`This request carries Tejas’s exact Inbox message ${routedFrom.messageId} into this session. Reply to this request; the answer appears under that message in its original thread.\n\n${firstInput.text}`;
             if(input.provider) {
-                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,summary:input.summary,smallTask:input.smallTask,outside:input.outside,onRunner:input.onRunner,standingRole,firstInput,saved:input.saved});
+                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,escalationReason:input.escalationReason,project:input.project,title,summary:input.summary,smallTask:input.smallTask,outside:input.outside,onRunner:input.onRunner,standingRole,firstInput,saved:input.saved});
                 target={session:created.session_id,channel:null,root:null,native:true};
             }
             if(input.saved&&requestedRole&&!input.provider){

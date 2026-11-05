@@ -18,6 +18,7 @@ router-actions.sh projects canvas-bind <board-id> --title <canvas title> --exist
 router-actions.sh projects canvas-status <board-id>
 router-actions.sh sessions peers <source-flags>
 router-actions.sh sessions usage <source-flags> [--by-session] [--period today|week]
+router-actions.sh sessions auth switch codex <saved-profile-id> [--machine mac] <source-flags> --action-id A
 router-actions.sh sessions search <source-flags> [--limit N] [--peer <instance>] [--thread <message-id>] -- <concept...>
 router-actions.sh sessions context <address> <source-flags> [--thread <message-id>]
 router-actions.sh sessions ask <address> <source-flags> --action-id A [--thread <message-id> | --route-message <human-input-id>] [--return-to-requester] --summary "<one line>" [--answer-view summary|full] [--after-request <request-id> ...] [--after-settled <request-id> ...] -- <text>
@@ -155,9 +156,10 @@ export type SessionCommunicationRequest =
   | { operation: "agent-bind"; body: { source: Source; action_id:string; role:string; address:string } }
   | { operation: "peers"; body: { source: Source } }
   | { operation: "usage"; body: { source: Source; by_session?:boolean; period?:'today'|'week' } }
+  | { operation: "auth-switch"; body: { source: Source; action_id:string; profile_id:string; machine?:'mac' } }
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string; thread?: string } }
   | { operation: "context"; body: { source: Source; address: string; thread?: string } }
-  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; role?:string; provider?: string; smallTask?:boolean; effort?:string; project?:string; title?: string; text: string; after?: string[]; pace?: string[]; summary?: string; answer_view?: 'summary'|'full'; return_to_requester?:boolean; for_task?:string; recovery_of?:string; correction_of?:string; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean} } }
+  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; role?:string; provider?: string; smallTask?:boolean; effort?:string; escalationReason?:string; project?:string; title?: string; text: string; after?: string[]; pace?: string[]; summary?: string; answer_view?: 'summary'|'full'; return_to_requester?:boolean; for_task?:string; recovery_of?:string; correction_of?:string; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean} } }
   | { operation: "note"; body: { source: Source; action_id:string; captureId?:string; messageId?:string; summary:string; addTo?:string; person?:string; journal?:"entry"|"checkin" } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string; address?:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; promise_request?:string; keep_working?:boolean; notify?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
@@ -595,6 +597,21 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if(!action_id)invalid('agents bind needs a stable --action-id.');
     return {operation:'agent-bind',body:{source,action_id,role,address}};
   }
+  if(operation==='auth'&&args[0]==='switch') {
+    args.shift();
+    const provider=args.shift(),profile_id=args.shift();
+    if(provider!=='codex'||!profile_id||profile_id.startsWith('--'))invalid('auth switch needs codex and an exact saved profile id.');
+    const flags=new Map<string,string>();
+    while(args.length){
+      const flag=args.shift()!,value=args.shift();
+      if(!['--source-input','--source-run','--action-id','--machine'].includes(flag)||!value?.trim()||flags.has(flag))invalid(`Invalid auth switch option ${flag}.`);
+      flags.set(flag,value);
+    }
+    const source=sourceFrom(flags),action_id=flags.get('--action-id'),machine=flags.get('--machine');
+    if(!action_id)invalid('auth switch needs a stable --action-id.');
+    if(machine&&machine!=='mac')invalid('auth switch --machine accepts mac only; omit it for this machine.');
+    return {operation:'auth-switch',body:{source,action_id,profile_id,...(machine?{machine:'mac' as const}:{})}};
+  }
   if (operation !== "projects" && operation !== "agents" && operation !== "peers" && operation !== "usage" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "answer" && operation !== "thread" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel") {
     invalid("Choose a session command: thread, topics, projects, agents, peers, usage, search, context, ask, note, title, post, outcome, answer, reply, get, or cancel.");
   }
@@ -723,7 +740,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === "--expires" && savedKind==='scheduled')
       || (flag === "--every-ms" && savedKind==='scheduled')
       || (flag === "--session-name" && operation === "ask")
-      || (["--effort","--gpt","--project","--capture-id","--requested-effect","--after-request","--after-settled","--for-task","--recovery-of","--correction-of"].includes(flag) && operation === "ask")
+      || (["--effort","--escalation-reason","--gpt","--project","--capture-id","--requested-effect","--after-request","--after-settled","--for-task","--recovery-of","--correction-of"].includes(flag) && operation === "ask")
       // A reply or post carries files the same way an ask does: own bytes, or already
       // retained custody a router forwards without downloading it.
       || (["--file","--attachment"].includes(flag) && (operation === "ask" || operation === "reply" || operation === "post"))
@@ -950,7 +967,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(smallTask&&(provider!=='auto'||peer||identity))invalid('--small-task requires a new local Automatic session.');
   if(outside&&(identity||peer||savedKind||provider==='chatgpt'||provider==='auto'||!project))
     invalid('--outside starts a new Codex session on this machine: give --project (and optionally a Codex --provider alias), not an address, --peer, ChatGPT, Automatic or saved work.');
-  if(!provider&&!role&&(project||effort))invalid('--project and --effort require new session creation.');
+  if(!provider&&!role&&(project||effort||flags.has('--escalation-reason')))invalid('--project, --effort and --escalation-reason require new session creation.');
   if(provider&&provider!=='chatgpt'&&!project)invalid(peer?'New coding sessions on a peer require --project from sessions projects --peer <instance>.':'New coding sessions require --project from sessions projects.');
   if(peer&&(after.length||pace.length))invalid('A peer request cannot wait on --after-request or --after-settled.');
   if(provider==='chatgpt'&&project)invalid('ChatGPT accepts no project.');
@@ -976,7 +993,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       invalid('--every-ms requires an interval of at least one minute.');
   }
   return operation === "ask"
-    ? { operation, body: { source, action_id: actionId, ...(role?{role}:provider?{provider}:{address:identity!}), ...(smallTask?{smallTask:true}:{}), ...(outside?{outside:true}:{}), ...(onRunner?{onRunner:true}:{}), ...(title===undefined?{}:{title}), text: content[0]??'', ...(after.length ? { after } : {}),...(pace.length ? { pace } : {}),...(identity?(hisChat?{hisChat:true}:{}):(hisChat?{effort:`tejas:${chatgptChoice??''}`}:chatgptChoice?{effort:chatgptChoice}:{})),...(project?{project}:{}),...attached,...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(flags.has('--route-message')?{routeMessageId:flags.get('--route-message')!}:{}),...(returnToRequester?{return_to_requester:true}:{}),...(flags.has('--for-task')?{for_task:flags.get('--for-task')!}:{}),...(flags.has('--recovery-of')?{recovery_of:flags.get('--recovery-of')!}:{}),...(flags.has('--correction-of')?{correction_of:flags.get('--correction-of')!}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(summary?{summary}:{}),...(answerView?{answer_view:answerView as 'summary'|'full'}:{}),...(flags.has('--machine-need')?{machine_need:flags.get('--machine-need')!}:{}),...(flags.has('--server-attempt-url')||flags.has('--server-attempt-failure')?{server_attempt:{url:flags.get('--server-attempt-url'),failure:flags.get('--server-attempt-failure')}}:{}),...(flags.has('--consult')?{consult:flags.get('--consult')!}:{}),...(resurrect?{resurrect:true}:{}),...(savedKind?{saved:{kind:savedKind,...(savedKind==='scheduled'?{atMs:Date.parse(flags.get('--at')!)}:{}),...(flags.has('--expires')?{expiresAtMs:Date.parse(flags.get('--expires')!)}:{}),...(flags.has('--every-ms')?{repeatEveryMs:Number(flags.get('--every-ms'))}:{}),...(quietOnly?{quietOnly:true}:{})}}:{}) } }
+    ? { operation, body: { source, action_id: actionId, ...(role?{role}:provider?{provider}:{address:identity!}), ...(smallTask?{smallTask:true}:{}), ...(outside?{outside:true}:{}), ...(onRunner?{onRunner:true}:{}), ...(title===undefined?{}:{title}), text: content[0]??'', ...(after.length ? { after } : {}),...(pace.length ? { pace } : {}),...(identity?(hisChat?{hisChat:true}:{}):(hisChat?{effort:`tejas:${chatgptChoice??''}`}:chatgptChoice?{effort:chatgptChoice}:{})),...(flags.has("--escalation-reason")?{escalationReason:flags.get("--escalation-reason")!}:{}),...(project?{project}:{}),...attached,...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(flags.has('--route-message')?{routeMessageId:flags.get('--route-message')!}:{}),...(returnToRequester?{return_to_requester:true}:{}),...(flags.has('--for-task')?{for_task:flags.get('--for-task')!}:{}),...(flags.has('--recovery-of')?{recovery_of:flags.get('--recovery-of')!}:{}),...(flags.has('--correction-of')?{correction_of:flags.get('--correction-of')!}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(summary?{summary}:{}),...(answerView?{answer_view:answerView as 'summary'|'full'}:{}),...(flags.has('--machine-need')?{machine_need:flags.get('--machine-need')!}:{}),...(flags.has('--server-attempt-url')||flags.has('--server-attempt-failure')?{server_attempt:{url:flags.get('--server-attempt-url'),failure:flags.get('--server-attempt-failure')}}:{}),...(flags.has('--consult')?{consult:flags.get('--consult')!}:{}),...(resurrect?{resurrect:true}:{}),...(savedKind?{saved:{kind:savedKind,...(savedKind==='scheduled'?{atMs:Date.parse(flags.get('--at')!)}:{}),...(flags.has('--expires')?{expiresAtMs:Date.parse(flags.get('--expires')!)}:{}),...(flags.has('--every-ms')?{repeatEveryMs:Number(flags.get('--every-ms'))}:{}),...(quietOnly?{quietOnly:true}:{})}}:{}) } }
     : { operation, body: { source, action_id: actionId, request_id: identity!, text: message, final: !partial, ...(summary?{summary}:{}),...(notify?{notify:true}:{}),...(alsoMainThread?{also_main_thread:true}:{}),
         ...(answersQuestion?{answers_question:true}:{}),
         ...(flags.has('--waiting-on-watch')?{waiting_on_watch:flags.get('--waiting-on-watch')!}:{}),

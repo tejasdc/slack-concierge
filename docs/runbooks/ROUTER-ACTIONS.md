@@ -325,6 +325,14 @@ replacement action or invoke `work recover` to bypass uncertain effects.
 
 ## Agent session communication
 
+An agent carrying a work request can switch the saved Codex account on this server
+or the Mac through `sessions auth switch codex <saved-profile-id> [--machine mac]`
+with its exact native source pair and stable action ID. This invokes the existing
+guarded Accounts operation: running Codex turns prevent the move, Codex proves the
+new login, and a failed proof rolls back. The command retains an agent-authored
+receipt; an uncertain operation is inspected, never replayed under the same ID.
+See [provider usage](../architecture/PROVIDER-USAGE.md).
+
 ### Provider-change handoff
 
 When Tejas asks that ongoing work continue on another provider or model, hand off the
