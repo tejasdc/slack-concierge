@@ -22,8 +22,8 @@ const context=new AsyncLocalStorage<number>();
 // Labels: [0] running label id (0: none), [1] last ended label id, [2] label id the watchdog saw
 // for the latest block (negative: unmarked, minus the last ended label), [3] block sequence.
 // Times, in ms since `origin` as 64-bit floats so they never wrap: [0] heartbeat, [1] running label
-// set, [2] last label ended, [3] latest block started.
-const shared=new Int32Array(new SharedArrayBuffer(16)),times=new Float64Array(new SharedArrayBuffer(32));
+// set, [2] last label ended, [3] latest block started, [4] cumulative ledger-occupied ms.
+const shared=new Int32Array(new SharedArrayBuffer(16)),times=new Float64Array(new SharedArrayBuffer(40));
 const origin=performance.timeOrigin+performance.now();
 const labelIds=new Map<string,number>(),labelNames:string[]=['none'];
 let watchdog:Worker|null=null;
@@ -86,6 +86,15 @@ export function lastBlockTask(sinceMs:number):{task:string;task_marked:boolean;b
   // Only a block that started after `sinceMs` (the previous lag tick) belongs to this lag line.
   if(!block||times[3]<sinceMs-60)return null; // a block starts at the last heartbeat, up to 50 ms before it began
   return id>0?{task:labelNames[id]??'unknown',task_marked:true,block}:{task:labelNames[-id]??'none',task_marked:false,block};
+}
+
+/** Ledger time on the owner's thread, so a block reports how much of it was waiting on the ledger. */
+export function noteLedgerOccupied(ms:number):void {if(watchdog)times[4]=times[4]!+ms;}
+
+/** A bounded label for an HTTP route: identifiers in the path become ":id". */
+export function routeLabel(kind:string,method:string,pathname:string):string {
+  const path=pathname.split('/').map(part=>/^[0-9]+$|^[0-9a-f-]{16,}$|^[A-Za-z0-9_-]{24,}$|:/.test(part)?':id':part).join('/');
+  return `${kind} ${method} ${path}`.slice(0,120);
 }
 
 /** The shared clock, for the lag monitor's tick times. */

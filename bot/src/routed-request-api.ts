@@ -1,3 +1,4 @@
+import {routeLabel,withTaskLabel} from './owner-task-labels';
 import {readFileSync} from "node:fs";
 import { finishedTodoRefusal, namedTodo } from './question-todos';
 import {chmod} from "node:fs/promises";
@@ -170,6 +171,15 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
 
 /** Capabilities installed only on the root-private Unix socket, never on the peer listener. */
 function localOwnerRequestApiHandler(shared:(request:Request)=>Promise<Response>,sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
+  const handle=localOwnerRequest(shared,sessions,owner);
+  // Runner routes and the other local capabilities are owner work too: a block in them is named
+  // by route (2026-11-05: a 6.6 s runner-route transaction ran unlabelled inside a 10.9 s block).
+  return function fetch(request:Request):Promise<Response> {
+    return withTaskLabel(routeLabel('routed',request.method,new URL(request.url).pathname),()=>handle(request));
+  };
+}
+
+function localOwnerRequest(shared:(request:Request)=>Promise<Response>,sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
   return async function fetch(request:Request):Promise<Response> {
     try {
       const url=new URL(request.url);
