@@ -114,8 +114,10 @@ export function readWorkspaceFile(input: { machine: string; workspaceRoot: strin
   };
 }
 
-// An absolute or home path that ends in a file kind, not inside a web address.
+// An absolute or home path that ends in a file kind. Web addresses are blanked out before the
+// search, so no part of one (`/+/refs/…/AndroidManifest.xml` in a Git web page) reads as a file.
 const LINKED_PATH = /(?<![\w:/.~-])(?:~\/|\/)[^\s`'"<>()[\]{}|*]+\.[A-Za-z0-9]+/g;
+const WEB_ADDRESS = /\b[a-z][a-z0-9+.-]*:\/\/[^\s<>()[\]{}`'"]+/gi;
 
 export type UnopenableLink = { path: string; code: string; reason: string };
 
@@ -129,7 +131,7 @@ export type UnopenableLink = { path: string; code: string; reason: string };
 export function unopenableLinks(text: string, workspaceRoot: string): UnopenableLink[] {
   const seen = new Set<string>();
   const refused: UnopenableLink[] = [];
-  for (const match of text.matchAll(LINKED_PATH)) {
+  for (const match of text.replace(WEB_ADDRESS, ' ').matchAll(LINKED_PATH)) {
     const path = match[0].replace(/[.,;:!?]+$/, '');
     const extension = path.slice(path.lastIndexOf('.')).toLowerCase();
     if (seen.has(path) || !VIEWABLE_EXTENSIONS[extension]) continue;
