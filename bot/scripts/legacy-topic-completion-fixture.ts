@@ -3,11 +3,13 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
+import {LEGACY_TOPIC_COMPLETION_TEST_AUTHORIZATION} from '../src/test-authorizations';
 
 const scratch=mkdtempSync(join(tmpdir(),'concierge-legacy-topic-'));
 process.env.CONCIERGE_STATE_DIR=scratch;
 process.env.CONCIERGE_CAPTURE_STATE_DIR=join(scratch,'capture');
 process.env.CONCIERGE_TEST_MODE='1';
+process.env.CONCIERGE_TEST_AUTHORIZATION=LEGACY_TOPIC_COMPLETION_TEST_AUTHORIZATION;
 
 const [{db,claimNextQueuedTurn,markTurnProviderAdmissionIntended,acknowledgeTurnProviderInput},
   {SessionOwner},{SessionCommunicationCoordinator},{nativeRunId,retainSessionInput,updateSessionMetadata},
