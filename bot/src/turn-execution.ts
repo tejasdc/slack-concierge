@@ -37,6 +37,7 @@ import {
   providerDispatchError,
   providerRetryDelayMs,
   ProviderTurnCancelledError,
+  OwnerDrainBeforeProviderAdmissionError,
 } from "./provider-failures";
 import {queueTurnContinuation} from './session-inputs';
 import { ChatGptDispatchError } from './session-capability-client';
@@ -79,6 +80,8 @@ import {
   markTurnProviderAdmissionIntended,
   parkRunningTurnAfterProviderFailure,
   retryRunningTurnAfterProviderFailure,
+  requeueWithdrawnRunnerTurn,
+  requeueOrphanedPreAdmissionTurn,
   recordTurnProviderTurnId,
   registerTurnArtifactIntents,
   markTurnResponseDelivered,
@@ -253,7 +256,7 @@ export interface SlackTurnExecutionInput {
   providerEnvironment?: Record<string, string>;
   boundAccount?: {account:string;home:string|null};
   interactionPolicy?: 'standard' | 'consultation-only';
-  beforeProviderAdmission?: () => void;
+  beforeProviderAdmission?: () => void | Promise<void>;
   /** This run's provider process was started by an earlier coordinator and is being taken back. */
   adopted?: boolean;
   steeringController: TurnSteeringController;
@@ -601,7 +604,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       markTurnProviderStarted(input.turnId);
     };
     if (input.beforeProviderAdmission) {
-      input.beforeProviderAdmission();
+      const prerequisite = input.beforeProviderAdmission();
+      if (prerequisite) await prerequisite;
     } else if (!markTurnProviderAdmissionIntended(
       input.turnId,
       input.ownerInstanceId,
@@ -1162,6 +1166,21 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       && !artifactActivity
       && dispatchBoundary !== null
       && !dispatchBoundary.durableArtifactActivity;
+    if (preserveDispatchFailure && input.presentation === 'native'
+      && error instanceof OwnerDrainBeforeProviderAdmissionError
+      && requeueOrphanedPreAdmissionTurn(input.turnId,input.ownerInstanceId)) {
+      await progressController?.pauseForRetry();
+      await statusController?.stop();
+      log('info','codex_readiness_requeued_on_owner_drain',{turn_id:input.turnId,dispatch_attempt:dispatchAttempt});
+      return {status:'retry_queued',turnId:input.turnId};
+    }
+    if (preserveDispatchFailure && input.presentation === 'native'
+      && requeueWithdrawnRunnerTurn(input.turnId,input.ownerInstanceId,dispatchAttempt)) {
+      await progressController?.pauseForRetry();
+      await statusController?.stop();
+      log('info','runner_turn_requeued_unsent',{turn_id:input.turnId,dispatch_attempt:dispatchAttempt});
+      return {status:'retry_queued',turnId:input.turnId};
+    }
     if (preserveDispatchFailure) {
       if (structuredFailure?.providerSessionId && providerIdentityCompatible) {
         recordProviderSession(input, structuredFailure.providerSessionId);
