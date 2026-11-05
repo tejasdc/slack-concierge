@@ -36,6 +36,10 @@ alert. The old Slack design is historical reference only.
 - `ThinkeringWorkspaceSyncStuck` enters that same Repair agent queue when a thnkr.ing
   page has reported for over two minutes that its sync stopped and its changes are
   held on that device.
+- `AX41DiskRapidLoss` enters that same Repair agent queue as its own Grafana episode
+  when the root disk loses free space rapidly. It can alert while the continuing
+  `AX41DiskFillingEarly` warning is already firing; both use the same standing
+  investigator and neither opens a human health thread.
 - `AX41LogLinesWaitSustained`, `AX41JournalWritesSlow`, `AX41AppLoggerBlocked` and
   `ThinkeringLogUploadSlow` enter that same queue. Each names the one way logging got in
   the apps' way, so the investigator starts from the tripped signal. They replaced the
