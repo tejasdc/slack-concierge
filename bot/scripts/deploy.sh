@@ -903,7 +903,11 @@ probe_capture_ingress() {
 }
 
 probe_service() {
-  local deadline state main_pid invocation_id online runtime_sha
+  local deadline state main_pid invocation_id online runtime_sha unit_environment codex_runner
+  # Probe the Codex path the installed unit actually uses; the detached deploy shell does not
+  # inherit the service's Environment= lines.
+  unit_environment=$(systemctl show "$SERVICE" --property=Environment --value 2>/dev/null || true)
+  codex_runner=$(printf ' %s\n' "$unit_environment" | sed -n 's/.*[[:space:]]CONCIERGE_CODEX_RUNNER=\([^[:space:]]*\).*/\1/p')
   # Socket Mode can remain alive in its connection handshake through a transient
   # Slack delay. Give startup a real readiness deadline instead of interpreting
   # ten polling attempts (only 27 seconds) as an application failure.
@@ -918,7 +922,7 @@ probe_service() {
     fi
     runtime_sha=$(printf '%s\n' "$online" | sed -n 's/.*"git_sha":"\([0-9a-f]\{40\}\)".*/\1/p')
     if [ "$state" = "active" ] && [ "${main_pid:-0}" -gt 0 ] 2>/dev/null; then
-      if [ -n "$online" ] && "$BUN_BIN" run "$HEALTHCHECK_SCRIPT"; then
+      if [ -n "$online" ] && CONCIERGE_CODEX_RUNNER="$codex_runner" "$BUN_BIN" run "$HEALTHCHECK_SCRIPT"; then
         if [ -n "$DEPLOY_RUN_ID" ] && [ "$runtime_sha" != "$DEPLOYED_COMMIT" ]; then
           echo "SERVICE PROVENANCE PROBE FAILED: runtime reported ${runtime_sha:-no SHA}, expected $DEPLOYED_COMMIT." >&2
           return 1
