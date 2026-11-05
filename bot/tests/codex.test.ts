@@ -93,10 +93,8 @@ class ScriptedSharedClient implements CodexAppServerClientLike {
       if (this.turnStartError) throw this.turnStartError;
       return { turn: { id: "shared-turn" } };
     }
-    if (method === "thread/read") {
-      return {
-        thread: {
-          turns: [{
+    if (["thread/read", "thread/turns/list", "thread/items/list"].includes(method)) {
+      const turn = {
             id: "shared-turn",
             status: this.historyStatus,
             ...this.historyTiming,
@@ -121,9 +119,11 @@ class ScriptedSharedClient implements CodexAppServerClientLike {
                 text: "TL;DR: recovered exact turn",
               }] : []),
             ],
-          }],
-        },
-      };
+          };
+      if (method === "thread/turns/list") return { data: [{ ...turn,
+        items: params.itemsView === "full" ? turn.items : turn.items.slice(0, 1) }], nextCursor: null };
+      if (method === "thread/items/list") return { data: turn.items.map(item => ({ turnId: turn.id, item })), nextCursor: null };
+      return { thread: { turns: [turn] } };
     }
     if (method === "turn/steer") {
       this.onSteer?.(this, params);
@@ -206,8 +206,10 @@ describe("codex app-server", () => {
       };
       client.onSteer = active => { for (const event of afterSteering) active.emit(event); };
       const request = client.request.bind(client);
-      client.request = async (method, params) => method === "thread/read"
-        ? { thread: { turns: [{ id: "old-turn", status: "completed", items: [{ ...final, id: "old-final" }] }, terminal.params.turn] } }
+      client.request = async (method, params) => method === "thread/turns/list"
+        ? { data: [{ ...terminal.params.turn, items: params.itemsView === "full" ? finalItems : [user] }], nextCursor: null }
+        : method === "thread/items/list"
+          ? { data: finalItems.map(item => ({ turnId: "shared-turn", item })), nextCursor: null }
         : request(method, params);
       const directory = mkdtempSync(join(tmpdir(), "concierge-message-test-"));
       const output = (event: unknown) => `printf '%s\\n' '${JSON.stringify(event)}'`;
@@ -683,7 +685,7 @@ describe("codex app-server", () => {
     expect(providerTurnPersistenceCalls).toBe(2);
   });
 
-  test.each(["thread/resume", "thread/read"])("parks the original uncertain start when reconciliation rejects %s", async method => {
+  test.each(["thread/resume", "thread/turns/list", "thread/items/list"])("parks the original uncertain start when reconciliation rejects %s", async method => {
     class UnsupportedHistoryClient extends ScriptedSharedClient {
       rejected = false;
       override async request(name: string, params: any) {
@@ -704,7 +706,8 @@ describe("codex app-server", () => {
       interactionPolicy: "consultation-only", appServerClient: client, clientUserMessageId: "slack-concierge:turn:shared",
       onInputAcknowledged: () => { acknowledged = true; }, onProviderTerminal: () => { terminal = true; },
     }).then(result => ({ result, error: null }), error => ({ result: null, error }));
-    expect(outcome.error).toMatchObject({ terminalConfirmed: false, providerSessionId: "shared-thread", providerTurnId: null });
+    expect(outcome.error).toMatchObject({ terminalConfirmed: false, providerSessionId: "shared-thread",
+      providerTurnId: method === "thread/items/list" ? "shared-turn" : null });
     expect(String(outcome.error)).toContain("original unconfirmed RPC failure");
     expect(String(outcome.error)).toContain("list_turns is not supported yet");
     expect(String(outcome.error)).toContain("turn/start failed: original unconfirmed RPC failure (JSON-RPC code -32603)");
@@ -811,7 +814,7 @@ describe("codex app-server", () => {
     const ready = new Promise<void>(resolve => { cancellationReady = resolve; });
     class PendingReadClient extends ScriptedSharedClient {
       override async request(method: string, params: any) {
-        if (method === "thread/read") { reading(); await pending; }
+        if (method === "thread/turns/list") { reading(); await pending; }
         const response = await super.request(method, params);
         if (method === "turn/interrupt") this.emit({ method: "turn/completed", params: {
           threadId: "shared-thread", turn: { id: "shared-turn", status: "interrupted", items: [] },
@@ -845,7 +848,7 @@ describe("codex app-server", () => {
     const pending = new Promise<void>(resolve => { release = resolve; });
     class LateHistoryClient extends ScriptedSharedClient {
       override async request(method: string, params: any) {
-        if (method === "thread/read") { reading(); await pending; }
+        if (method === "thread/turns/list") { reading(); await pending; }
         return super.request(method, params);
       }
     }
