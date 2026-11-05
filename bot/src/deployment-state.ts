@@ -971,6 +971,18 @@ export function recordDeploymentReleaseActivationIntent(runId: string, artifactD
       if (run.activation_state !== null) throw new Error("An activated deployment cannot change candidates.");
       return { supersededCommit: run.desired_commit };
     }
+    // A commit that was activated in this run and then failed is never activated again unchanged;
+    // only a different commit (its repair) may follow. Whatever chose the commit, this is the last
+    // gate. A failure before any activation (incident dba27ddf: the owner was restarting) leaves no
+    // activated release, so the same commit may still be retried.
+    const failedHere = db.query(`SELECT incident.id FROM deployment_repair_incidents incident
+      JOIN deployment_releases earlier ON earlier.run_id=incident.run_id
+        AND earlier.git_commit=incident.failed_commit AND earlier.activated_at IS NOT NULL
+      WHERE incident.run_id=? AND incident.failed_commit=? LIMIT 1`).get(runId, release.git_commit) as { id: string } | null;
+    if (failedHere) {
+      throw new Error(`Commit ${release.git_commit} already failed in this deployment run (incident ${failedHere.id}); `
+        + "it is not activated again. Only a commit containing its repair can be activated.");
+    }
     db.query(`UPDATE deployment_runs
       SET candidate_artifact_digest=?, candidate_commit=?, activation_state='intended',
           updated_at=CURRENT_TIMESTAMP WHERE id=?`)
@@ -1305,12 +1317,15 @@ export function prepareDeploymentRetry(incidentId: string) {
     if (!run || run.status !== "releasing") throw new Error("Deployment run is not held for retry.");
     db.query(`UPDATE deployment_repair_incidents SET status='retrying', updated_at=CURRENT_TIMESTAMP WHERE id=?`)
       .run(incidentId);
+    // The retry installs the integrated repair, never the commit that failed. Leaving the run's
+    // desired commit at the failed candidate rebuilt and re-activated 15dbe76b twice on
+    // 2026-11-04 (incident 4f105855) although its repair 0116beb1 was already on main.
     db.query(`UPDATE deployment_runs
       SET status='prepared', repair_state='retrying', runner_pid=NULL, runner_boot_id=NULL,
           runner_start_ticks=NULL, deployed_commit=NULL, service_invocation_id=NULL,
           evidence_json=NULL, error=NULL, completed_at=NULL, candidate_artifact_digest=NULL,
-          candidate_commit=NULL, activation_state=NULL, updated_at=CURRENT_TIMESTAMP
-      WHERE id=? AND status='releasing'`).run(run.id);
+          candidate_commit=NULL, activation_state=NULL, desired_commit=?, updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND status='releasing'`).run(incident.repair_commit, run.id);
     requestDeploymentTurnReactionStateInTransaction(run.id, "deploying");
     appendRunEvent(run.id, "repair_retrying", {
       incident_id: incidentId,
