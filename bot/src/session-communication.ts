@@ -840,10 +840,6 @@ export class SessionCommunicationCoordinator {
             if(!rootInputId)throw new Error('That --thread is not a message in this Inbox.');
             const topicId=topicOfRoot(rootInputId);
             const promisesAnswer=/\b(?:i(?:'|’)ll|we(?:'|’)ll|will\b(?!\s+(?:not|never)\b)|going to)\b[^.!?\n]{0,100}\b(?:answer|reply|respond)\b|\banswers? here\b|\bwill be answered\b/i.test(text);
-            if((promisesAnswer||input.promise_request)&&!topicId)throw new Error('Place this thread in the Inbox before promising an answer. Nothing was posted.');
-            if(topicId&&(promisesAnswer||input.promise_request)
-                &&!hasOpenInboxWorkForSource(topicId,sourceInputId,input.promise_request))
-                throw new Error('This post promises an answer without a matching open Inbox request. Route the exact human message as work, or name an open topic request with --promise-request. Nothing was posted.');
             // A named topic must be the one the thread is in; a post cannot be filed under another.
             if(input.topic){const placed=db.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(rootInputId) as {topic_id:string}|null;
                 if(placed&&placed.topic_id!==input.topic)throw new Error(`That message is in thread ${placed.topic_id}, not ${input.topic}. Nothing was posted.`);}
@@ -864,6 +860,10 @@ export class SessionCommunicationCoordinator {
             const messageId=`post:${saved.input.id}`;
             const receipt={messageId,thread:input.thread,inputId:rootInputId,...(attachments.length?{attachments}:{})};
             if(saved.duplicate)return {post:receipt,duplicate:true};
+            if((promisesAnswer||input.promise_request)&&!topicId)throw new Error('Place this thread in the Inbox before promising an answer. Nothing was posted.');
+            if(topicId&&(promisesAnswer||input.promise_request)
+                &&!hasOpenInboxWorkForSource(topicId,sourceInputId,input.promise_request))
+                throw new Error('This post promises an answer without a matching open Inbox request. Route the exact human message as work, or name an open topic request with --promise-request. Nothing was posted.');
             recordSessionEvent({eventId:messageId,sessionId:session.id,inputId:rootInputId,...(router?{turnId:actor.turn}:{}),kind:'post',
                 payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${session.id}`,messageId:input.thread},postedBy:saved.input.id,...(router?{}:{postedBySession:`concierge:${own.id}`}),...(attachments.length?{attachments}:{})}});
             if(input.notify)notifyAgentPost(session.id,rootInputId,messageId,text);
