@@ -2865,15 +2865,19 @@ const sameAsk=(question:StoredQuestion,respondingSessionId:string,runId:string|n
   &&OPEN_QUESTION_STATES.some(state=>state===question.state)&&question.owner?.sessionId===respondingSessionId&&question.owner?.askedInRun===runId;
 
 /** Reconcile retained answers after a request is linked, including links to another thread. */
-export function reconcilePlacedRequestAnswers(onlyRequestId?:string):number {
+export function reconcilePlacedRequestAnswers(onlyRequestId?:string,afterSequence=0):number {
   const inbox=inboxSession();
   if(!inbox)return 0;
+  // After a completed pass only the newest events are read: "+event_id" keeps the planner off the
+  // event-id index (every forwarded post ever) so the sequence range is its access path.
+  const bounded=afterSequence>0,idColumn=bounded?'+event_id':'event_id';
   const rows=db.query(`SELECT event_id,session_id,input_id,payload_json FROM session_owner_events
-    WHERE kind='post' AND event_id >= 'post:forward:' AND event_id < 'post:forward;'
+    WHERE ${bounded?'+kind':'kind'}='post' AND ${idColumn} >= 'post:forward:' AND ${idColumn} < 'post:forward;'
       AND event_id NOT LIKE 'post:forward:shared:%'
       AND json_extract(payload_json,'$.replyKind')='final'
       AND json_extract(payload_json,'$.workDisposition') IS NOT NULL
-      AND (? IS NULL OR json_extract(payload_json,'$.requestId')=?)`).all(onlyRequestId??null,onlyRequestId??null) as
+      AND sequence > ?
+      AND (? IS NULL OR json_extract(payload_json,'$.requestId')=?)`).all(afterSequence,onlyRequestId??null,onlyRequestId??null) as
       {event_id:string;session_id:number;input_id:string;payload_json:string}[];
   let reconciled=0;
   for(const row of rows){
@@ -2917,7 +2921,8 @@ export function reconcilePlacedRequestAnswers(onlyRequestId?:string):number {
     JOIN session_owner_events post ON post.event_id=json_extract(closure.payload_json,'$.postId') AND post.kind='post'
     WHERE closure.session_id=? AND closure.kind='answer_closure' AND json_extract(post.payload_json,'$.replyKind')='partial'
       AND post.event_id NOT LIKE 'post:forward:shared:%'
-      AND (? IS NULL OR json_extract(closure.payload_json,'$.requestId')=?)`).all(inbox.id,onlyRequestId??null,onlyRequestId??null) as
+      AND closure.sequence > ?
+      AND (? IS NULL OR json_extract(closure.payload_json,'$.requestId')=?)`).all(inbox.id,afterSequence,onlyRequestId??null,onlyRequestId??null) as
       {event_id:string;session_id:number;input_id:string;payload_json:string;post_id:string;post_payload:string}[];
   for(const row of carried){
     const closure=JSON.parse(row.payload_json),post=JSON.parse(row.post_payload);
