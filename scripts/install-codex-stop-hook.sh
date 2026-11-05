@@ -143,8 +143,11 @@ if [ '$2' = history-guard ]; then
 fi
 dir='$bot' suffix='$suffix' run=''
 id=\$(printf '%s' "\$input" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9-]*\)".*/\1/p' | head -n 1)
-if [ -n "\$id" ] && [ -n "\${CONCIERGE_RUNNER_STATE:-}" ] && [ -f "\$CONCIERGE_RUNNER_STATE/hook-pins/codex/\$id" ]; then run=\$(head -n 1 "\$CONCIERGE_RUNNER_STATE/hook-pins/codex/\$id")
-elif [ -n "\$id" ] && [ -f '$state/hook-pins/codex/'"\$id" ]; then run=\$(head -n 1 '$state/hook-pins/codex/'"\$id")
+pin='' runner_pin=\${CONCIERGE_RUNNER_STATE:+\$CONCIERGE_RUNNER_STATE/hook-pins/codex/\$id} owner_pin='$state/hook-pins/codex/'"\$id"
+# Both may exist (a thread relayed through a runner, then run here after a rollback): the newer wins.
+if [ -n "\$id" ] && [ -n "\$runner_pin" ] && [ -f "\$runner_pin" ] && { [ ! -f "\$owner_pin" ] || [ ! "\$owner_pin" -nt "\$runner_pin" ]; }; then pin=\$runner_pin
+elif [ -n "\$id" ] && [ -f "\$owner_pin" ]; then pin=\$owner_pin; fi
+if [ -n "\$pin" ]; then run=\$(head -n 1 "\$pin")
 elif [ -n "\${CONCIERGE_ROUTER_BOT_DIR:-}" ]; then run=\$CONCIERGE_ROUTER_BOT_DIR; fi
 if [ -n "\$run" ]; then
   if [ -f "\$run/scripts/$2.js" ]; then dir=\$run suffix=js

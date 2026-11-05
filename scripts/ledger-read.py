@@ -48,6 +48,10 @@ def database_path(name):
     try:
         return path.resolve(strict=True)
     except FileNotFoundError:
+        if os.environ.get("CONCIERGE_RUNNER_STATE"):
+            # A runner has no ledger: it lives with the owner (docs/architecture/RUNNERS.md).
+            raise ReadError(f"no database at {path}: this shell runs on a Concierge runner, which holds no ledger; "
+                            "name the owner's database by absolute path when it is on this machine") from None
         raise ReadError(f"no database at {path}") from None
 
 

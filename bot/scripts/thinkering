@@ -14,6 +14,11 @@ if [ -n "$connection" ] && [ -r "$connection" ]; then
   value=$(sed -n 's/^CONCIERGE_RUNNER_TOKEN_FILE=//p' "$connection" | head -n 1)
   [ -n "$value" ] && token_file=$value
 fi
+socket=${THINKERING_SESSION_CAPABILITY_SOCKET:-/run/thinkering/session-capabilities.sock}
+# A shell with no run token of its own (a Codex thread) would reach the network entrance only as its
+# runner, with no session; where thnkr.ing's socket is on this machine, the socket identifies the
+# session from this process instead, so it is used. A run token, or no socket, means the network.
+if [ -z "${CONCIERGE_AGENT_TOKEN:-}" ] && [ -S "$socket" ]; then THINKERING_CAPABILITY_URL=; fi
 if [ -n "${THINKERING_CAPABILITY_URL:-}" ]; then
   token=${CONCIERGE_AGENT_TOKEN:-}
   if [ -z "$token" ] && [ -n "$token_file" ]; then token=$(cat "$token_file"); fi
@@ -35,4 +40,4 @@ if [ -n "${THINKERING_CAPABILITY_URL:-}" ]; then
   curl -H "@$headers" "$@"
   exit $?
 fi
-exec curl --unix-socket "${THINKERING_SESSION_CAPABILITY_SOCKET:-/run/thinkering/session-capabilities.sock}" "$@"
+exec curl --unix-socket "$socket" "$@"

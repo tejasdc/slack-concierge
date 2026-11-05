@@ -285,11 +285,21 @@ runner token file in a Codex shell, sent from a private header file; otherwise t
 Mac keeps `ssh remote-box curl --unix-socket …`, and thnkr.ing's own rendering of the think-aloud
 text keeps its socket (`capabilityCommand` is optional). The wording keeps the socket command as a
 fallback because a Codex conversation keeps its first turn's `PATH`, which may name a release
-without the helper. Known cost: thnkr.ing records a call made with the runner token as
+without the helper. The address and token file come from the runner's `connection.env` when the
+shell names a runner. A shell with no run token (a Codex thread) uses thnkr.ing's socket whenever it
+exists on that machine, because thnkr.ing identifies the session from the calling process there; over
+the network such a call would carry only the runner token. Known cost, on a runner without
+thnkr.ing's socket only: thnkr.ing records a call made with the runner token as
 `runner:<name>` with no session, so a Codex shell's calls that carry no `X-Concierge-Agent-Source`
-(board reads, `/todos/tasks`, `/app/*` routes that fall back to the caller's session) lose session
-attribution; calls that carry the source header are verified by it as before. The per-turn token
-exchange (item 5 under "Codex App Server on a runner") removes this.
+(board reads, `/todos/tasks`, `/app/*` routes that fall back to the caller's session, Canvas page
+inspection) lose session attribution; calls that carry the source header are verified by it as before.
+The per-turn token exchange (item 5 under "Codex App Server on a runner") removes this.
+
+**No ledger on a runner.** A runner turn and, since 2026-11-05, a relayed Codex shell name the
+runner's state folder, so helpers that open the ledger file directly (`scripts/ledger-read.py` with a
+bare name, `router-actions.sh threads`, `trigger`, Slack channel-name lookups, `todo-add`) do not find
+one there; `ledger-read.py` says so and takes the owner's database by absolute path where it is on
+the same machine, and `todo-add` refuses rather than creating an empty ledger.
 
 Why a relay and not the job protocol: the App Server's traffic is a live connection with many
 streamed notifications, not obligations; carrying it through `runner_events` would write every token

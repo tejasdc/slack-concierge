@@ -83,8 +83,9 @@ export function rewriteRelayedCodexRequest(text:string,machine:RunnerMachine):{t
   try{message=JSON.parse(text);}catch{return {text,pinThread:null};}
   if(!message||typeof message!=='object'||typeof message.method!=='string')return {text,pinThread:null};
   const pinThread=message.method==='turn/start'&&typeof message.params?.threadId==='string'?message.params.threadId:null;
-  const set=message.params?.config?.shell_environment_policy?.set;
-  if(!set||typeof set!=='object')return {text,pinThread};
+  const policy=message.params?.config?.shell_environment_policy,set=policy?.set;
+  // An information-only consultation inherits nothing and is given nothing (provider-policy.ts).
+  if(!set||typeof set!=='object'||policy.inherit==='none'||!Object.keys(set).length)return {text,pinThread};
   message.params.config.shell_environment_policy.set={...set,...runnerMachineEnvironment(machine,typeof set.PATH==='string'?set.PATH:'')};
   return {text:JSON.stringify(message),pinThread};
 }

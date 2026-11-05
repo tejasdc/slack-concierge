@@ -34,7 +34,7 @@ import {rewriteRelayedCodexRequest,runnerMachineEnvironment,writeRunnerConnectio
 
 const owner=process.env.CONCIERGE_OWNER_URL?.replace(/\/+$/,'');
 const tokenFile=process.env.CONCIERGE_RUNNER_TOKEN_FILE;
-const stateDir=process.env.CONCIERGE_RUNNER_STATE;
+const stateDir=process.env.CONCIERGE_RUNNER_STATE?resolve(process.env.CONCIERGE_RUNNER_STATE):undefined;
 if(!owner||!tokenFile||!stateDir){console.error('CONCIERGE_OWNER_URL, CONCIERGE_RUNNER_TOKEN_FILE and CONCIERGE_RUNNER_STATE are required.');process.exit(2);}
 const token=readFileSync(tokenFile,'utf8').trim();
 mkdirSync(stateDir,{recursive:true,mode:0o700});

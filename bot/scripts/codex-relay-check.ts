@@ -89,6 +89,8 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
     assert.equal(set.CONCIERGE_ROUTER_BOT_DIR,resolve(import.meta.dir,'..'));
     assert.ok(set.PATH.startsWith(`${resolve(import.meta.dir,'..')}/scripts:`),set.PATH);
     assert.ok(!JSON.stringify(set).includes('/owner/'),'An owner folder reached the runner\'s App Server.');
+    const consulted=await client.request('thread/start',{cwd:root,config:{shell_environment_policy:{inherit:'none',set:{}}}},{requestTimeoutMs:10_000});
+    assert.deepEqual(consulted.received.config.shell_environment_policy,{inherit:'none',set:{}},'A consultation thread was given Concierge settings.');
     await client.request('turn/start',{threadId:'019a-relay-check',input:[]},{requestTimeoutMs:10_000});
     await until(()=>existsSync(join(runnerState,'hook-pins','codex','019a-relay-check')),'the runner to pin the thread');
     assert.equal(readFileSync(join(runnerState,'hook-pins','codex','019a-relay-check'),'utf8').split('\n')[0],resolve(import.meta.dir,'..'));
