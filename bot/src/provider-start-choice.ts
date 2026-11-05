@@ -7,6 +7,7 @@ import { NOTICE_AT_PERCENT, storedUsage } from './provider-usage-forecast';
 import { cachedUsageLimit, claudeAccountCachedReset, usageAttempt } from './provider-usage';
 import {AUTOMATIC_PROVIDER_ALIASES,resolveProviderAlias, providerDisplayName } from './aliases';
 import {modelCapacityRefused} from './provider-model-capacity';
+import {claudeAllowanceHeld} from './claude-allowance-hold';
 
 export type AutomaticProvider = keyof typeof AUTOMATIC_PROVIDER_ALIASES;
 type Candidate = { provider: AutomaticProvider; account: string; used: number; paidCredits: boolean; resetsAt: number | null; windowResetAt: number | null };
@@ -16,6 +17,7 @@ export const capacityCanStart=(candidate:Candidate):boolean=>candidate.used<100|
 function candidatesForNewWork(now: number): Candidate[] {
   const candidates: Candidate[] = [];
   for (const provider of Object.keys(AUTOMATIC_PROVIDER_ALIASES) as AutomaticProvider[]) {
+    if(provider==='claude-code'&&claudeAllowanceHeld(now))continue;
     const model=resolveProviderAlias(AUTOMATIC_PROVIDER_ALIASES[provider]).model;
     if(model&&modelCapacityRefused(provider,model,now))continue;
     const usage = providerAccountUsage(provider);
