@@ -355,7 +355,7 @@ import {installSessionProjection} from './session-projection';
 import {fillMissingSessionPurposes} from './session-purpose';
 import {expireUnreadableReadingItems,fileServiceNotices,keepThreadsCurrent,migrateInboxAttention,migrateInboxTopics,reconcilePlacedRequestAnswers,repairOctober21RepeatedAnswer,repairNovember4RepeatedThreadNotices,retireTimedRequestPosts,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
 import {resolveRetryNotices} from './retry-breaker-notice';
-import {runStartupCatchUp,runStartupRepairOnce} from './startup-repairs';
+import {runStartupCatchUp,runStartupRepairOnce,startDeferredStartupRepairs} from './startup-repairs';
 import {CodexSessionObserver} from './codex-session-observer';
 import {ensureSpeechWorker} from './speech-job-supervisor';
 
@@ -4346,6 +4346,8 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
         });
         if (runtime.profile === "production") reportOnline();
         serviceOnline = true;
+        // Repairs with no completion record wait until now, past the update's health proof.
+        startDeferredStartupRepairs(() => draining);
         // Historical result markers land before the thread index reads those rows.
         void backfillResultAnsweredByPost(() => draining)
           .then(marked => log('info','inbox_posted_result_backfill',{marked}))

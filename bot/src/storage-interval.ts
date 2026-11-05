@@ -22,13 +22,6 @@ export function startStorageIntervals(): void { interval = empty(); enabled = tr
 /** Ledger work done inside one named step, independent of the rolling interval the loop monitor takes. */
 export type StorageStep = { calls: number; occupied_ms: number; slowest_ms: number; slowest_fingerprint: string | null };
 const steps: StorageStep[] = [];
-/** Measure the ledger work of a synchronous step (counted only while storage timing is enabled). */
-export function measureStorageStep<T>(work: () => T): { result: T; storage: StorageStep } {
-  const step: StorageStep = { calls: 0, occupied_ms: 0, slowest_ms: 0, slowest_fingerprint: null };
-  steps.push(step);
-  try { const result = work(); return { result, storage: { ...step, occupied_ms: Math.round(step.occupied_ms), slowest_ms: Math.round(step.slowest_ms) } }; }
-  finally { steps.splice(steps.indexOf(step), 1); }
-}
 /** The same measure opened now and read later, for spans that are not one function (module loading). */
 export function openStorageStep(): () => StorageStep {
   const step: StorageStep = { calls: 0, occupied_ms: 0, slowest_ms: 0, slowest_fingerprint: null };

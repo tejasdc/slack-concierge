@@ -2921,8 +2921,7 @@ export function reconcilePlacedRequestAnswers(onlyRequestId?:string,afterSequenc
     JOIN session_owner_events post ON post.event_id=json_extract(closure.payload_json,'$.postId') AND post.kind='post'
     WHERE closure.session_id=? AND closure.kind='answer_closure' AND json_extract(post.payload_json,'$.replyKind')='partial'
       AND post.event_id NOT LIKE 'post:forward:shared:%'
-      AND closure.sequence > ?
-      AND (? IS NULL OR json_extract(closure.payload_json,'$.requestId')=?)`).all(inbox.id,afterSequence,onlyRequestId??null,onlyRequestId??null) as
+      AND (? IS NULL OR json_extract(closure.payload_json,'$.requestId')=?)`).all(inbox.id,onlyRequestId??null,onlyRequestId??null) as
       {event_id:string;session_id:number;input_id:string;payload_json:string;post_id:string;post_payload:string}[];
   for(const row of carried){
     const closure=JSON.parse(row.payload_json),post=JSON.parse(row.post_payload);

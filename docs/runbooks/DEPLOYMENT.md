@@ -723,7 +723,11 @@ from the first statement (before 2026-11-05 it began only once the owner object 
 for a 126 s start, incident ce2c2192). Startup costs what changed since the last start, not the size
 of history: repairs for past incidents run once and record a `startup_repair` event on the Inbox
 session, and the placed-answer catch-up reads only owner events after its last pass
-(`startup_catch_up`). The first start of a release that adds a repair still pays its sweep once
+(`startup_catch_up`). A repair or catch-up with no completion record never runs on the start path:
+it is deferred until two minutes after Concierge reports online, past the update's health proof,
+and then holds the loop once while serving (`startup_repairs_deferred`, then each one's
+`startup_repair_completed` or `startup_catch_up_completed`). Each `concierge_startup_phase`
+closing event also carries its `ms` and the ledger work done while it was open
 (`docs/incidents/2026-11-05-startup-sweeps-outran-health-deadline.md`).
 The capture worker starts without waiting for capture ingress. If the ingress queue is
 unreachable, Concierge stays online, logs `capture_delivery_queue_unavailable`, and shows
