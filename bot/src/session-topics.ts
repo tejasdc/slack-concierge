@@ -2451,12 +2451,13 @@ const conciergeSessionNumber=(address:unknown):number|null=>{
  * his tick is his answer, so the question leaves Needs you and the agent that asked is told to carry
  * on. Runs on the owner's reading cadence; one read of his to-dos covers every linked question.
  */
-export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown):Promise<number> {
+export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown,
+  scope:'all'|'inbox'|number='all'):Promise<number> {
   const session=inboxSession();
   if(!session)return 0;
   const linked:{question_id:string}[]=[];
   let after='';
-  for(;;){
+  while(typeof scope!=='number'){
     const page=db.query(`SELECT question_id FROM inbox_questions WHERE question_id>? AND state IN ('open','partial') AND kind='decision'
       AND (json_extract(owner_json,'$.todoId') IS NOT NULL OR coalesce(json_extract(brief_json,'$.todo'),'none')<>'none')
       ORDER BY question_id LIMIT 200`).all(after) as {question_id:string}[];
@@ -2464,9 +2465,9 @@ export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:num
     if(page.length<200)break;
     after=page.at(-1)!.question_id;
   }
-  const direct:{id:number}[]=[];
+  const direct:{id:number}[]=typeof scope==='number'?[{id:scope}]:[];
   let afterSession=0;
-  for(;;){
+  while(scope==='all'){
     const page=db.query(`SELECT id FROM sessions WHERE id>? AND native_metadata_json LIKE '%"todoId"%'
       ORDER BY id LIMIT 200`).all(afterSession) as {id:number}[];
     direct.push(...page);
