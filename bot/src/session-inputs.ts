@@ -9,6 +9,7 @@ import {providerRefusalContinuationReason,type ProviderRefusalContinuationReason
 import {topicRouteAnchor} from './inbox-request-root';
 import {capturesEnterRouter} from './inbox-producer-sources';
 import {log} from './log';
+import {claudeAllowanceHeld,CLAUDE_ALLOWANCE_HOLD_MESSAGE} from './claude-allowance-hold';
 
 const eventWriteCounts=new Map<string,{writes:number;rootCommits:number}>();
 setInterval(()=>{
@@ -125,6 +126,7 @@ export function humanNamedSession(sessionId:number):boolean {
  * continued conversation is its opening words; a session with neither is refused.
  */
 export function createNativeSession(provider:ProviderId, metadata:NativeSessionMetadata&{summary:string|undefined}):SessionRow {
+  if(provider==='claude-code'&&claudeAllowanceHeld())throw new Error(CLAUDE_ALLOWANCE_HOLD_MESSAGE);
   const summary=purposeLine(metadata.summary)??purposeLine(metadata.title);
   if(!summary)throw new Error('A session needs a purpose: say in one line what it is for.');
   const result=db.query(`INSERT INTO sessions(slack_channel_id,slack_thread_ts,provider_id,native_metadata_json)
