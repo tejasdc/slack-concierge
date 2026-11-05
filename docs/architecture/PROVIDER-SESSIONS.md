@@ -585,7 +585,8 @@ The routed message shows the selected provider/model even when its task is a fil
 A new Fable or Astra session checks the stated escalation trigger before it is retained.
 When an ask crosses between the server and Mac, the sending Concierge carries the
 reason and its verified record of Tejas's exact model choice to the receiving
-Concierge. The authenticated delivery retains that record with the human source,
+Concierge. Only the peer-authenticated entrance admits that delivery. The
+delivery retains that record with the human source,
 including for an addressed session, a later peer hop, and a local session
 started from the received task. The receiving owner accepts a choice only
 for the same selected model. Each accepted

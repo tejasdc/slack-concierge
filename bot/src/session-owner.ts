@@ -4234,9 +4234,12 @@ export class SessionOwner {
           else if(request.method==='POST'&&parts[3]==='outcome'&&parts.length===4)result=this.projectSetup.pushed(parts[2]!,body);
           else throw new SessionOwnerError('Unknown peer operation route.',404);
         }
-        else if(request.method==='POST'&&parts[1]==='requests'&&parts.length===2)result=await peers.accept(body,false);
-        else if(request.method==='POST'&&parts[1]==='requests'&&parts[2]==='corrected-attachment'&&parts.length===3)
-          result=await peers.accept(body,true);
+        else if(request.method==='POST'&&parts[1]==='requests'
+          &&(parts.length===2||parts[2]==='corrected-attachment'&&parts.length===3)){
+          if(request.headers.get('x-concierge-verified-peer')!=='1')
+            throw new SessionOwnerError('Peer request intake requires an authenticated peer.',403,'PEER_UNAUTHORIZED');
+          result=await peers.accept(body,parts.length===3);
+        }
         else if(request.method==='GET'&&parts[1]==='requests'&&parts.length===3)result=peers.status(parts[2]!);
         else if(request.method==='POST'&&parts[1]==='requests'&&parts[3]==='replies'&&parts.length===4)result=peers.receiveReply(parts[2]!,body);
         else if(request.method==='POST'&&parts[1]==='requests'&&parts[3]==='notify'&&parts.length===4)result=await peers.notified(parts[2]!);
