@@ -708,6 +708,8 @@ retry primitive with one named, bounded three-attempt/45-second policy. The prio
 runtime remained healthy and the controller restored the recorded last-known-good release;
 the external supervisor still owns integration, restart, and health proof for this repair.
 
+### Owner startup and history catch-up
+
 Application startup records `concierge_startup_phase` for recovery, required Canvas
 refresh, the Slack connection, the request API, the capture worker, and provider
 readiness. Each phase emits `started` followed by `completed` or `failed`; an unmatched
@@ -723,7 +725,7 @@ from the first statement (before 2026-11-05 it began only once the owner object 
 for a 126 s start, incident ce2c2192). Startup costs what changed since the last start, not the size
 of history. Each sweep over history (forwarded final answers, timed-post retirement, the purpose
 backfill) is a catch-up over a key range with a high-water mark recorded as a `startup_catch_up`
-event on the Inbox session: with a mark the start path reads only keys after it; a first pass
+event on the Inbox session. Every unfinished range, including work left by an interrupted pass,
 runs two minutes after Concierge reports online, in small pages with a pause between them and a
 mark after each page (`startup_repairs_deferred`, `startup_catch_up_first_pass`). The carried
 closures pass stays unbounded and timed. Each `concierge_startup_phase` closing event also

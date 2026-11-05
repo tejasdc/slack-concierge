@@ -537,8 +537,8 @@ for(const held of recoverProviderRefusalContinuations())noticeTurnContinuation({
   provider:held.provider,model:null,turnId:held.turnId,reason:held.reason},recordOwnerEvent);
 runStartupStep('session_projection', () => installSessionProjection(sessionExecutionHost.owner));
 // Every startup step below is timed and named (runStartupStep). Sweeps over history are catch-ups
-// with a high-water mark: only what changed since the last start runs here, and a first pass runs
-// page by page after Concierge is online (startup-repairs.ts). A hand-written
+// with a high-water mark: their remaining work runs page by page after Concierge is online
+// (startup-repairs.ts). A hand-written
 // session-purposes.json is still applied in full whenever one is present.
 try {log('info','session_purposes_filled',runStartupStep('session_purposes',()=>
   existsSync(join(process.env.CONCIERGE_STATE_DIR!,'session-purposes.json'))

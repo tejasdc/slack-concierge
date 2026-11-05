@@ -11,12 +11,11 @@ import { runStartupStep } from './startup-phase';
  * 2026-11-05).
  *
  * Each such sweep is a catch-up over a key range (an event sequence or a session id) with a
- * high-water mark, recorded as a write-once event on the Inbox session. With a mark, the start
- * path processes only keys after it. Without one (its first pass reads all history), the pass runs
- * after Concierge is online and its health proof has had time to finish, in pages of `pageSize`
- * keys with a pause between them, recording the mark after every page, so the serving loop is
- * never held for long and an interrupted pass resumes where it stopped. Without an Inbox session
- * (a fresh or test state) there is nowhere to record a mark, so the whole pass simply runs.
+ * high-water mark, recorded as a write-once event on the Inbox session. Every outstanding range,
+ * including the remainder after an interrupted pass, runs after Concierge is online and its
+ * health proof has had time to finish. It runs in pages of `pageSize` keys with a pause between
+ * them, recording the mark after every page, so the serving loop is never held for long. A fresh
+ * state without an Inbox session cannot retain a mark and retries its catch-up on the next start.
  */
 const DEFERRED_START_DELAY_MS = 120_000;
 const PAUSE_BETWEEN_PAGES_MS = 250;
@@ -38,14 +37,9 @@ function recordMark(name: string, afterKey: number, throughKey: number) {
 
 export function runStartupCatchUp(name: string, maxKey: () => number, pass: Pass, pageSize: number): unknown {
   const mark = lastMark(name), through = maxKey();
-  if (mark !== null || !inboxSession()) {
-    const after = mark ?? 0;
-    if (through <= after) return { caught_up: true, through_key: after };
-    const result = pass(after, through);
-    recordMark(name, after, through);
-    return result;
-  }
-  deferred.push({ name, afterKey: 0, throughKey: through, pageSize, pass });
+  const after = mark ?? 0;
+  if (through <= after) return { caught_up: true, through_key: after };
+  deferred.push({ name, afterKey: after, throughKey: through, pageSize, pass });
   return { deferred: true, through_key: through };
 }
 
@@ -60,7 +54,6 @@ async function runDeferred(shouldStop: () => boolean) {
   for (const item of deferred.splice(0)) {
     const outcome = await runPages(item, shouldStop);
     log(outcome === 'completed' ? 'info' : 'error', 'startup_catch_up_first_pass', { name: item.name, outcome, through_key: item.throughKey });
-    if (outcome !== 'completed') return;
   }
 }
 

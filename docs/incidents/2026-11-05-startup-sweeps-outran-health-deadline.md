@@ -31,14 +31,14 @@ heavy disk load those sweeps account for most of the 126 s, since the same work 
 - Each synchronous startup step is timed and labelled (`concierge_startup_step`, with ledger
   statements, time and slowest fingerprint; `module_load` for import-time work), and ledger time
   is counted from the first statement.
-- Each history sweep is a catch-up with a high-water mark: the start path reads only what changed
-  since the last start; a first pass runs after Concierge is online in small paged steps.
+- Each history sweep is a catch-up with a high-water mark. All unfinished work, including the
+  remainder after an interrupted pass, runs after Concierge is online in small paged steps.
 - Awaited startup phases log their duration and ledger work.
 
 ## Acceptance scenario
 
 - **Seed:** a ledger with a large owner event history and completed repair markers.
 - **Action:** Concierge starts on a cold page cache.
-- **Expected:** each startup step logs its time; the history sweeps are skipped or bounded to new
-  events; the first startup phase begins well inside 90 s.
+- **Expected:** each startup step logs its time; history catch-up waits until after the health
+  proof, including after an interrupted pass; the first startup phase begins well inside 90 s.
 - **Replayable offline:** partly (scratch ledger; cold-cache timing needs the real host).
