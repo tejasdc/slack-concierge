@@ -20,6 +20,9 @@
  * such copy wrote 52.8 GB and stalled his pages on 2026-10-10; copies go through
  * scripts/diagnostic-sqlite-snapshot.py.
  *
+ * It refuses a recursive search over the whole machine (bot/src/whole-machine-crawl-policy.ts):
+ * one rg through every /proc/<pid>/cwd ran at about 5 CPUs for 4.5 minutes on 2026-11-05.
+ *
  * It refuses a Claude Code command that waits on a shared host build slot unless it runs in the
  * background (bot/src/foreground-build-policy.ts): a foreground build froze an urgent repair for
  * ten minutes on 2026-11-01 while Tejas waited.
@@ -39,6 +42,7 @@ import { recordMessagesRead } from '../src/messages-read-log';
 import { liveStoreCopyRefusal } from '../src/live-store-copy-policy';
 import { macComputerUseCall, macSurfaceRefusal } from '../src/mac-surface-policy';
 import { foregroundBuildRefusal } from '../src/foreground-build-policy';
+import { wholeMachineCrawlRefusal } from '../src/whole-machine-crawl-policy';
 
 function selfMatchingWaitRefusal(command: string): string | null {
   const loop = /\b(?:until|while)\b[\s\S]*\b(?:do|sleep)\b|\bfor\b[\s\S]*\bdo\b/i.test(command);
@@ -123,6 +127,10 @@ try {
   if(computerUse&&(!hook.session_id||typeof hook.session_id!=='string'))reason=macSurfaceRefusal({...surface,need:''});
   // Codex names a command's own working directory in its input; Claude's is the hook's cwd.
   const start = [input.workdir, hook.cwd].find(dir => typeof dir === 'string' && dir) ?? process.cwd();
+  // The machine wrapper's current-release pass already checked whole-machine crawls.
+  if (!reason && process.env.CONCIERGE_CURRENT_LIVE_COPY_CHECKED !== '1') {
+    try { reason = wholeMachineCrawlRefusal(command, String(hook.tool_name ?? ''), input); } catch { reason = null; }
+  }
   if (command && !reason) {
     reason = (process.env.CONCIERGE_CURRENT_LIVE_COPY_CHECKED === '1' ? null : liveStoreCopyRefusal(command, start))
       ?? selfMatchingWaitRefusal(command) ?? historyRewriteRefusal(command, start, probe);

@@ -14,8 +14,8 @@
  * A command is read as a shell reads it, so words about git in a message or a file are not git.
  */
 
-type Word = { text: string; raw: string };
-type Simple = { words: Word[]; bodies: string[]; substitutions: string[] };
+export type Word = { text: string; raw: string };
+export type Simple = { words: Word[]; bodies: string[]; substitutions: string[] };
 
 /** Answers about the repository a git command runs in; null when it cannot say. */
 export type RepositoryProbe = {
@@ -31,7 +31,7 @@ const PROTECTED_BRANCHES = /^(?:refs\/heads\/)?(?:main|master)$/;
 // git options that take a separate value, before the subcommand.
 const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--config-env']);
 
-function parseShell(source: string): Simple[] {
+export function parseShell(source: string): Simple[] {
   const commands: Simple[] = [];
   let current: Simple = { words: [], bodies: [], substitutions: [] };
   let pendingRedirect: string | null = null;
