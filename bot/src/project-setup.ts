@@ -8,7 +8,8 @@ import {canonicalAgentsTemplate,canonicalDocsIndexTemplate} from './project-scaf
 import {projectTemplate,templateAgentsSection,templateFiles,type ProjectTemplate} from './project-templates';
 import {containingProject,sessionProject} from './session-projects';
 import {standingAgentSession} from './standing-agents';
-import {getAcceptedSessionInput,nativeRunId,sessionInputProvenance} from './session-inputs';
+import {getAcceptedSessionInput,nativeRunId,recordSessionEvent,sessionInputProvenance} from './session-inputs';
+import {inboxSession} from './session-inbox';
 import {publishProviderFreeNotice} from './provider-free-notice';
 import {fileServiceNotices} from './session-topics';
 import type {SessionOwner} from './session-owner';
@@ -281,6 +282,19 @@ export class ProjectSetup {
     return {project,local:'done',path:destination,commit,orders};
   }
   private canvasRow(board:string){return db.query('SELECT * FROM canvas_project_ensures WHERE board_id=?').get(board) as CanvasEnsureRow|null;}
+  private publishCanvasState(row:CanvasEnsureRow,state:'pending'|'ready'|'failed'){
+    // A Canvas may not have a project session yet. The Inbox anchors this global
+    // event, while the board ID remains the identity the browser reconciles.
+    const inbox=inboxSession();
+    if(!inbox)throw new Error('No session anchors Canvas project events.');
+    recordSessionEvent({eventId:`canvas-project:${row.board_id}:${state}`,sessionId:inbox.id,
+      kind:'canvas_project',payload:{boardId:row.board_id,project:row.project,state}});
+  }
+  private canvasState(row:CanvasEnsureRow){
+    const sessionName=row.inside?`${row.project}/${row.inside}`:row.project;
+    const local=sessionProject(this.workspace,sessionName,{inside:true});
+    return {local,state:local?'ready':row.state==='failed'?'failed':'pending'} as const;
+  }
   canvasProjectTitles(){
     return new Map((db.query("SELECT project,title FROM canvas_project_ensures WHERE policy_revision_id IS NOT NULL AND inside IS NULL AND state='ready' AND created_project=1").all() as Array<{project:string;title:string}>).map(row=>[row.project,row.title]));
   }
@@ -311,12 +325,11 @@ export class ProjectSetup {
   }
   private async canvasView(row:CanvasEnsureRow){
     const sessionName=row.inside?`${row.project}/${row.inside}`:row.project;
-    const local=sessionProject(this.workspace,sessionName,{inside:true});
+    const {local,state}=this.canvasState(row);
     const order=(db.query("SELECT state FROM project_setup_orders WHERE project=? AND peer='mac' ORDER BY created_at_ms DESC,rowid DESC LIMIT 1").get(row.project) as {state:string}|null)?.state??null;
     const explicit=row.policy_revision_id===null&&!row.created_project;
     const macPath=explicit||order==='done'||order==='already_present'?await this.peerProjectPath('mac',row.project,row.inside):null;
     const macState=macPath?'ready':order&&TERMINAL.has(order)?'unavailable':order||row.state==='creating'&&!!local?'pending':'unavailable';
-    const state=local?'ready':row.state==='failed'?'failed':'pending';
     const created=!!row.created_project||!!row.policy_revision_id&&!!local;
     return {state,boardId:row.board_id,title:row.title,project:{name:row.project,inside:row.inside,sessionProject:sessionName,ownerId:this.self,
       serverPath:local?.cwd??null,macPath,macState,
@@ -336,13 +349,22 @@ export class ProjectSetup {
     this.canvasLocalReadiness.set(row.board_id,localReady);
     const operation=this.serialProject(row.project,()=>this.createLocal(
       {purpose:row.purpose,template:policy.template,hereOnly:false},row.project,
-      {group:projectGroup(policy.group_name),receipt:policy.revision_id},releaseLocal));
+      {group:projectGroup(policy.group_name),receipt:policy.revision_id},()=>{
+        this.publishCanvasState(row,'ready');releaseLocal();
+      }));
     void operation.then(()=>{
-      db.query("UPDATE canvas_project_ensures SET state='ready',created_project=?,error=NULL,updated_at_ms=? WHERE board_id=?")
-        .run(1,Date.now(),row.board_id);
+      db.transaction(()=>{
+        db.query("UPDATE canvas_project_ensures SET state='ready',created_project=?,error=NULL,updated_at_ms=? WHERE board_id=?")
+          .run(1,Date.now(),row.board_id);
+        this.publishCanvasState(row,'ready');
+      })();
     },error=>{
-      db.query("UPDATE canvas_project_ensures SET state=?,error=?,updated_at_ms=? WHERE board_id=?")
-        .run(classify(error)==='permanent'?'failed':'creating',message(error).slice(0,1000),Date.now(),row.board_id);
+      db.transaction(()=>{
+        db.query("UPDATE canvas_project_ensures SET state=?,error=?,updated_at_ms=? WHERE board_id=?")
+          .run(classify(error)==='permanent'?'failed':'creating',message(error).slice(0,1000),Date.now(),row.board_id);
+        const current=this.canvasRow(row.board_id)!;
+        this.publishCanvasState(current,this.canvasState(current).state);
+      })();
     }).finally(()=>{releaseLocal();if(this.canvasLocalReadiness.get(row.board_id)===localReady)this.canvasLocalReadiness.delete(row.board_id);this.wake();});
     await localReady;
   }
@@ -375,12 +397,17 @@ export class ProjectSetup {
         project=name;state='ready';
       }else project=this.canvasName(title,board);
       const purpose=canvasPurpose(title),now=Date.now(),policy=state==='ready'?null:this.canvasPolicy();
-      db.query(`INSERT INTO canvas_project_ensures(board_id,client_action_id,project,inside,title,title_clock,purpose,template,state,policy_revision_id,created_project,created_at_ms,updated_at_ms)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(board,actionId,project,inside,title,titleClock,purpose,policy?.template??'writing',state==='ready'?'ready':policy?'creating':'awaiting_policy',policy?.revision_id??null,created,now,now);
-      row=this.canvasRow(board)!;
+      db.transaction(()=>{
+        db.query(`INSERT INTO canvas_project_ensures(board_id,client_action_id,project,inside,title,title_clock,purpose,template,state,policy_revision_id,created_project,created_at_ms,updated_at_ms)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(board,actionId,project,inside,title,titleClock,purpose,policy?.template??'writing',state==='ready'?'ready':policy?'creating':'awaiting_policy',policy?.revision_id??null,created,now,now);
+        row=this.canvasRow(board)!;
+        this.publishCanvasState(row!,state==='ready'?'ready':'pending');
+      })();
     }
-    if(row.state==='ready')return this.canvasView(row);
-    if(row.state==='failed')return this.canvasView(row);
+    if(row.state==='ready'||row.state==='failed'){
+      this.publishCanvasState(row,this.canvasState(row).state);
+      return this.canvasView(row);
+    }
     await this.advanceCanvas(row);
     return this.canvasView(this.canvasRow(board)!);
   }

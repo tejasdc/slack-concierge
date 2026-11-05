@@ -213,6 +213,12 @@ optional inside folder; title similarity never attaches a board to a project.
 For a deliberate retrofit, `projects canvas-bind <board-id> --title <title> --existing <project>
 [--inside <folder>]` records that exact association without creating or moving a project;
 `projects canvas-status <board-id>` reads its retained setup state.
+The owner also emits `canvas_project` on its existing durable events stream when
+a board becomes pending, locally ready, or permanently failed before local
+readiness. That event names the stable board ID, project, and state; its cursor
+survives reconnect. A browser opens the stream before reading the board status,
+then refreshes that one board on its event. Remote GitHub and Mac progress stays
+in the board status read and never delays local `ready`.
 
 `--template brainstorm|writing|design` lays a project template into the new project before its
 first commit: a threads file, research dossiers and an `agents/` folder of standing agent
