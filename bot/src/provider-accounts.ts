@@ -110,7 +110,7 @@ function claudeAccount(credentials: any): ProviderAccount | null {
   };
 }
 
-const CLAUDE_EXECUTABLE = process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE || "claude";
+export const CLAUDE_EXECUTABLE = process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE || "claude";
 
 /**
  * Who Claude Code itself says is signed in.
