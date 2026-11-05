@@ -70,6 +70,11 @@ async function child() {
  const target=createNativeSession('codex',{title:'Private recipient fixture'});
  const standIn=retainSessionInput({sessionId:inbox.id,scope:'fixture-stand-in',actionId:'stand-in',kind:'input',origin:'human',payload:{text:'Root'}}).input;
  enqueueSessionInput(standIn.id);
+ const fixtureNow=new Date().toISOString();
+ db.query(`INSERT INTO inbox_topics(topic_id,session_id,title,summary,state,set_aside_json,aliases_json,revision,recovered,read_sequence,created_at,updated_at,closure_json,created_by_json,pinned_at)
+   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run('fixture-topic',inbox.id,'Private forwarding fixture','', 'open',null,'[]',1,0,0,fixtureNow,fixtureNow,null,'{}',null);
+ db.query('INSERT INTO inbox_topic_roots(root_input_id,topic_id,placed_at,placed_by_json,reason) VALUES(?,?,?,?,?)')
+   .run(standIn.id,'fixture-topic',fixtureNow,'{}','fixture direct reply');
  const route={sessionId:`concierge:${target.id}`,local:target.id,peer:null,title:'Private recipient fixture',topicId:'fixture-topic',root:standIn.id};
  const coordinator=new SessionCommunicationCoordinator({owner:restarted,isOwnerAlive:()=>true,onError:error=>{throw error;}});
  restarted.communication=coordinator;
