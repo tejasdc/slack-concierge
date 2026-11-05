@@ -1103,6 +1103,14 @@ that effect automatically.
   project marks a long command with `agents-run-this-in-background`); Codex already yields. A
   foreground build froze the canvas voice repair for ten minutes while Tejas waited (2026-11-01).
 
+- **No agent search crawls the whole machine.** The same command guard, in the machine hook's
+  current-release pass so running agents get it at once, refuses a recursive search (rg, grep -r,
+  find, fd, ag, ack, ls -R, tree, Claude's Grep and Glob) starting at `/`, `/proc` or a process's
+  `/proc/<pid>/cwd|root|fd`, unless it is depth-bounded to 2; the refusal points at `pgrep -af`,
+  `/proc/<pid>/cmdline` and `readlink /proc/<pid>/cwd` (`bot/src/whole-machine-crawl-policy.ts`).
+  One rg through every `/proc/<pid>/cwd` ran at about 5 CPUs for 4.5 minutes on 2026-11-05
+  (`docs/incidents/2026-11-05-agent-search-crawled-every-process-folder.md`).
+
 - **Pushed history is never rewritten, and the system refuses it.** No forced push, and no
   amending or rebasing a commit that is already pushed; a pushed mistake is fixed with a new
   commit. Rebasing, amending or resetting unpushed work stays allowed. Three layers, one rule:

@@ -2,6 +2,7 @@
  * while the machine wrapper reads this release's raw-live-copy policy on every command. */
 import {toolCommand} from '../src/history-rewrite-policy';
 import {liveStoreCopyRefusal} from '../src/live-store-copy-policy';
+import {wholeMachineCrawlRefusal} from '../src/whole-machine-crawl-policy';
 import {homedir} from 'node:os';
 import {realpathSync} from 'node:fs';
 import {resolve} from 'node:path';
@@ -57,7 +58,11 @@ try { hook=JSON.parse((await Bun.stdin.text())||'{}'); } catch { process.exit(0)
 const input=hook.tool_input??{};
 const command=toolCommand(input);
 const cwd=[input.workdir,hook.cwd].find(dir=>typeof dir==='string'&&dir)||process.cwd();
-const reason=liveStoreCopyRefusal(command,cwd);
+// A recursive search over the whole machine stalled every service for minutes on 2026-11-05;
+// it is checked here because this file is read from the current release on every command.
+let crawl:string|null=null;
+try{crawl=wholeMachineCrawlRefusal(command,String(hook.tool_name??''),input,cwd);}catch{crawl=null;}
+const reason=liveStoreCopyRefusal(command,cwd)??crawl;
 if(reason)process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}})+'\n');
 else if(command&&inheritedLiveState()&&codeLaunch(command)&&!privateEntrance(command)){
   const privatePath=process.env.CONCIERGE_PRIVATE_CODE_PATH;
