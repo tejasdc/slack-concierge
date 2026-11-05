@@ -102,6 +102,7 @@ import {scheduleProviderAccountUsageRefresh} from './provider-account-usage';
 import {currentAccount} from './provider-accounts';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 import {PeerAccountAnswers} from './peer-account-answers';
+import {maybeStartInboxProviderFailover} from './inbox-provider-failover';
 
 export class SessionOwnerError extends Error {
   constructor(message:string,public status=400,public code=/idempotency conflict/i.test(message)?'IDEMPOTENCY_CONFLICT':'INVALID_INPUT'){super(message);}
@@ -1661,7 +1662,10 @@ export class SessionOwner {
     const project=sessionProject(this.defaultCwd,'slack-inbox');
     if(!project)throw new SessionOwnerError('The slack-inbox project is unavailable.',503,'PROJECT_UNAVAILABLE');
     const current=inboxSession(),meta=current?sessionMetadata(current):null;
-    if(current?.provider_id==='claude-code'&&meta?.cwd===project.cwd&&meta.inboxRole==='project-router'&&meta.model==='opus[1m]')return current;
+    if(current&&meta?.cwd===project.cwd&&meta.inboxRole==='project-router'){
+      maybeStartInboxProviderFailover(current);
+      return current;
+    }
     return createNativeSession('claude-code',{title:'Inbox',summary:INBOX_PURPOSE,inbox:true,inboxRole:'project-router',purpose:'chat',cwd:project.cwd,project:project.cwd,model:'opus[1m]'});
   }
   inbox() {

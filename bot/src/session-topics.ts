@@ -798,6 +798,10 @@ function unfiledNeeds(session:SessionRow):OpenNeed[] {
  */
 type HumanReply={inputId:string;at:string;reviews:string[];replyTo:string|null};
 type ReadIndex={humanReplies:Map<string,HumanReply[]>};
+const inboxLineageSql=`WITH RECURSIVE lineage(id) AS (
+  SELECT ? UNION ALL SELECT handoff.predecessor_session_id FROM session_handoffs handoff
+  JOIN lineage ON handoff.successor_session_id=lineage.id WHERE handoff.state='accepted'
+) SELECT id FROM lineage`;
 function readIndex(sessionId:number,completeReplies=false):ReadIndex {
   refreshRootMemo();
   // Every human message per thread root, newest first, with the questions it reviewed and the
@@ -809,13 +813,13 @@ function readIndex(sessionId:number,completeReplies=false):ReadIndex {
   const replyFilter=completeReplies?`AND (json_extract(payload_json,'$.review.questions') IS NOT NULL
         OR json_extract(payload_json,'$.replyToMessage.messageId') IS NOT NULL)`:'';
   const limit=completeReplies?'':'LIMIT 2000';
-  for(const row of db.query(`SELECT id,created_at,json_extract(payload_json,'$.review.questions') AS review,
+  for(const row of db.query(`SELECT id,session_id,created_at,json_extract(payload_json,'$.review.questions') AS review,
       json_extract(payload_json,'$.replyToMessage.messageId') AS reply_to
-      FROM session_inputs WHERE session_id=? AND origin='human' AND kind IN ('input','create','inbox-capture')
+      FROM session_inputs WHERE session_id IN (${inboxLineageSql}) AND origin='human' AND kind IN ('input','create','inbox-capture')
         AND id NOT IN (SELECT input_id FROM session_input_author_corrections) ${replyFilter} ORDER BY rowid DESC ${limit}`).all(sessionId) as any[]) {
     // Only message kinds: his reading marks and topic actions are human inputs too, two thirds
     // of the newest 2,000 rows in the normal list view, and none of them is in any thread.
-    const root=rootOf(sessionId,row.id);
+    const root=rootOf(row.session_id,row.id);
     if(!root)continue;
     let reviews:string[]=[];
     try{const parsed=row.review?JSON.parse(row.review):[];reviews=Array.isArray(parsed)?parsed.map((item:any)=>String(item?.id??'')).filter(Boolean):[];}catch{reviews=[];}
@@ -1110,7 +1114,7 @@ export function listTopics(options:{state?:string|null;order?:string|null;query?
   const state=options.state??'open';
   if(!['open','background','closed','all'].includes(state))throw new TopicError('Unknown topic state filter.');
   const query=(options.query??'').trim().toLowerCase();
-  const rows=(db.query('SELECT * FROM inbox_topics WHERE session_id=? ORDER BY updated_at DESC,topic_id').all(session.id) as any[]).map(toStoredTopic);
+  const rows=(db.query(`SELECT * FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) ORDER BY updated_at DESC,topic_id`).all(session.id) as any[]).map(toStoredTopic);
   let summaries=rows.map(topic=>topicSummary(topic,session,index,work,read));
   if(query)summaries=summaries.filter(topic=>[topic.title,topic.summary,...topic.aliases].join(' ').toLowerCase().includes(query));
   if(state==='open')summaries=summaries.filter(topic=>topic.state==='open');
@@ -1319,7 +1323,7 @@ export function crossTopicQuestions(state:string|null) {
     :['answered','declined','withdrawn','superseded','read','expired'].includes(question.state);
   const index=entryIndex(),work=workIndex(session.id),read=readIndex(session.id);
   const groups=[];
-  for(const row of db.query('SELECT * FROM inbox_topics WHERE session_id=? ORDER BY updated_at DESC').all(session.id) as any[]) {
+  for(const row of db.query(`SELECT * FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) ORDER BY updated_at DESC`).all(session.id) as any[]) {
     const topic=toStoredTopic(row);
     const questions=topicQuestions(topic.topicId).filter(matches);
     if(!questions.length)continue;
@@ -3622,13 +3626,13 @@ export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:strin
     WHERE question.state IN ('open','partial') AND question.kind='decision' LIMIT 1`).get();
   const read=hasOpenDecision?readIndex(session.id,true):{humanReplies:new Map<string,HumanReply[]>()};
   const running=new Set(forwards.filter(forward=>forward.outcome===null&&forward.root).map(forward=>topicOfRoot(forward.root!)).filter((id):id is string=>!!id));
-  const open=(db.query("SELECT topic_id FROM inbox_topics WHERE session_id=? AND state='open'").all(session.id) as {topic_id:string}[]).map(row=>row.topic_id);
+  const open=(db.query(`SELECT topic_id FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) AND state='open'`).all(session.id) as {topic_id:string}[]).map(row=>row.topic_id);
   const closedWithOpenRequests=(db.query(`SELECT DISTINCT request.topic_id FROM inbox_requests request
     JOIN inbox_topics topic ON topic.topic_id=request.topic_id
-    WHERE request.state='open' AND topic.session_id=? AND topic.state='closed'
+    WHERE request.state='open' AND topic.session_id IN (${inboxLineageSql}) AND topic.state='closed'
       AND COALESCE(json_extract(topic.closure_json,'$.kind'),'')!='merged'`)
     .all(session.id) as {topic_id:string}[]).map(row=>row.topic_id);
-  const closedBefore=(db.query("SELECT count(*) AS count FROM inbox_topics WHERE session_id=? AND state='closed'").get(session.id) as {count:number}).count;
+  const closedBefore=(db.query(`SELECT count(*) AS count FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) AND state='closed'`).get(session.id) as {count:number}).count;
   const openRequestsBefore=(db.query("SELECT count(*) AS count FROM inbox_requests WHERE state='open'").get() as {count:number}).count;
   const stuck:Stuck[]=[];
   for(const topicId of new Set([...open,...running,...closedWithOpenRequests])) {
@@ -3667,7 +3671,7 @@ export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:strin
       flagged++;
     } catch(error) {log('error','inbox_thread_upkeep_flag_failed',{request_id:item.requestId,message:error instanceof Error?error.message:String(error)});}
   }
-  const closed=(db.query("SELECT count(*) AS count FROM inbox_topics WHERE session_id=? AND state='closed'").get(session.id) as {count:number}).count-closedBefore;
+  const closed=(db.query(`SELECT count(*) AS count FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) AND state='closed'`).get(session.id) as {count:number}).count-closedBefore;
   const settled=openRequestsBefore-(db.query("SELECT count(*) AS count FROM inbox_requests WHERE state='open'").get() as {count:number}).count;
   if(closed||settled||flagged)log('info','inbox_threads_kept_current',{threads:open.length,closed,settled,flagged,stuck:stuck.length});
   return {threads:open.length,closed,settled,flagged};
@@ -3745,7 +3749,7 @@ export function topicPromptContext(sessionId:number,inputId:string,payload:any):
     // Agent requests have their own request/reply custody and do not need a human topic.
     const input=getAcceptedSessionInput(inputId);
     if(input?.origin==='agent'&&input.request_id)return '';
-    const recent=(db.query(`SELECT topic_id,title,summary,updated_at FROM inbox_topics WHERE session_id=? AND state='open'
+    const recent=(db.query(`SELECT topic_id,title,summary,updated_at FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) AND state='open'
       ORDER BY updated_at DESC LIMIT 8`).all(sessionId) as any[]).map(row=>({id:row.topic_id,title:row.title,summary:row.summary,lastEntryAt:iso(row.updated_at)}));
     const instruction=isBugReportInput(inputId)?bugReportPlacementInstruction():PLACEMENT_INSTRUCTION;
     return `\n\n<topic-placement>\n${JSON.stringify({instruction,openTopics:recent})}\n</topic-placement>`;
@@ -3825,7 +3829,7 @@ export function retitleRecoveredTopics() {
   refreshRootMemo();
   const by:TopicBy={kind:'owner',sessionId:`concierge:${session.id}`};
   let retitled=0;
-  for(const row of db.query('SELECT * FROM inbox_topics WHERE session_id=? AND recovered=1').all(session.id) as any[]) {
+  for(const row of db.query(`SELECT * FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) AND recovered=1`).all(session.id) as any[]) {
     const topic=toStoredTopic(row);
     if(lastRenameBy(topic))continue;
     const root=topicRoots(topic.topicId)[0];
@@ -4020,7 +4024,7 @@ export function fileServiceNotices():{filed:number} {
       db.transaction(()=>{
         let topicId=topicOfRoot(root);
         if(!topicId) {
-          const existing=db.query(`SELECT topic_id FROM inbox_topics WHERE session_id=? AND state='open' AND title=? ORDER BY updated_at DESC LIMIT 1`).get(session.id,title) as {topic_id:string}|null;
+          const existing=db.query(`SELECT topic_id FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) AND state='open' AND title=? ORDER BY updated_at DESC LIMIT 1`).get(session.id,title) as {topic_id:string}|null;
           const placed=existing?placeChange(session,topicRow(existing.topic_id),[root],by,reason):
             createTopic(session,by,{title,roots:[root],reason,areaIds:[ensureSystemNoticeArea(session.id)]});
           recordSessionEvent({eventId:`topic-service-notice:${need.eventId}:placed`,sessionId:session.id,inputId:need.inputId,kind:placed.change.kind,payload:placed.change.payload});

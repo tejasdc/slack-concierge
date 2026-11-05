@@ -276,6 +276,10 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
     for(const item of verified.items.filter(item=>item.kind==='lab'||item.kind==='worktree'))record(item.kind,item.ref);
     db.query("UPDATE session_handoffs SET state='accepted',accepted_at=CURRENT_TIMESTAMP,inventory_json=?,inventory_digest=? WHERE id=?")
       .run(JSON.stringify(verified),verifiedDigest,state.id);
+    // The Inbox is one logical router across provider sessions. Promote its role only
+    // after acceptance, so a proposed successor cannot receive captures prematurely.
+    const predecessorMeta=sessionMetadata(getSessionById(from)!);
+    if(predecessorMeta.inboxRole==='project-router')updateSessionMetadata(to,{inbox:true,inboxRole:'project-router'});
     // Suspension prevents the next turn. It does not interrupt an already admitted run;
     // that run receives a direct notice after this transaction commits.
     updateSessionMetadata(from,{suspended:true});
