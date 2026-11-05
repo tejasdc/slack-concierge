@@ -94,6 +94,18 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
     assert.equal(readFileSync(join(runnerState,'hook-pins','codex','019a-relay-check'),'utf8').split('\n')[0],resolve(import.meta.dir,'..'));
     assert.deepEqual(readRunnerConnection({CONCIERGE_RUNNER_STATE:runnerState}),{ownerUrl:`http://127.0.0.1:${port}`,tokenFile});
 
+    // The owner's calls on the runner's machine ride the same channel (runner-machine-calls.ts): a
+    // watch reads a path there, and a host record outside the runner's own folder is refused.
+    process.env.CONCIERGE_STATE_DIR=root;
+    const {runnerMachineCall,closeRunnerMachineCalls}=await import('../src/runner-machine-calls');
+    await writeFile(join(root,'watched.txt'),'one');
+    const seenVersion=await runnerMachineCall('ax41','watch.observe',{path:join(root,'watched.txt')});
+    assert.equal(seenVersion.type,'file');assert.equal(seenVersion.mode,'content-hash');
+    assert.equal(await runnerMachineCall('ax41','watch.isDirectory',{path:root}),true);
+    await assert.rejects(runnerMachineCall('ax41','watch.prune',{directory:'/etc'}),/not this runner's/);
+    await assert.rejects(runnerMachineCall('other','watch.observe',{path:root}),/no call channel|not listening|closed/);
+    closeRunnerMachineCalls();
+
     // The App Server drops its connection: the relay and the client's connection end with it.
     let dropped=false;
     client.onDisconnect(()=>{dropped=true;});

@@ -118,7 +118,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         }
         if (operation === 'saved') return Response.json(sessions.saved(input));
         if (operation === 'pause') return Response.json(await sessions.pause(input));
-        if (operation === 'watch') return Response.json(sessions.watch(input));
+        if (operation === 'watch') return Response.json(await sessions.watch(input));
         if (operation === 'handoff') return Response.json(await sessions.handoff(input));
         if (operation === 'obligations') return Response.json(await sessions.obligations(input));
         if (operation === 'open') return Response.json(await sessions.openLink(input));

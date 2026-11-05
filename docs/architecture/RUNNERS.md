@@ -9,8 +9,8 @@ the network entrance. **This source configures every new Claude turn for runner 
 Codex setting failed startup on 2026-11-04 and was rolled back; the repaired startup order below
 awaits integration and runtime proof by the detached controller. `claude-code/runner`
 earned its survival proof in the 2026-11-05 acceptance restart (execution `b212ed3c76cd9766`, taken
-over live by the restarted owner). **Still on the owner's machine:** Google and outside-Codex hosts,
-command and file watches, the provider account readings and sign-ins, and project checkouts (a runner
+over live by the restarted owner). Command and file watches run on the registering agent's runner. **Still on the owner's machine:** Google and outside-Codex hosts,
+artifacts, the provider account readings and sign-ins, and project checkouts (a runner
 must have the same folders). The AX41's Codex App Server is started and supervised by the runner, and
 a Codex thread's shell names the runner's folders, never the owner's (2026-11-05). Concierge's own thnkr.ing
 calls already use thnkr.ing's network entrance. The owner therefore
@@ -198,7 +198,7 @@ after one such run was taken over live by a later owner. Until then updates wait
 - Google turns and outside Codex hosts stay local. Google's launch first reads the owner's own
   `~/.gemini` settings (the paid-credit guard), and an outside run's prompt file is written into the
   owner's state folder, which runners hide; both need the runner-side account step below first.
-- Command and file watches (`watches.ts`) and artifacts start hosts on the owner's machine.
+- Artifacts (a turn's files to deliver) are found and read in the turn's folder on the owner's disk.
 - Provider account usage readings, sign-in commands and history writes read the owner's home.
 - Project folders: the job names an absolute folder; a runner must have the same checkout layout, and
   the Claude command's hook settings name the owner's release path, so a runner on another machine
@@ -307,6 +307,24 @@ Not yet, before a runner on another machine can hold Codex:
   work on the AX41, where those folders exist, and only there. The AX41's running App Server was
   started by the owner's unit and keeps the owner's environment (its hooks read the owner's pins)
   until it is next restarted, which the runner then does under its own.
+
+## Runner machine calls
+
+Some of the owner's work is a question to an agent's machine, not an obligation: read a path, start
+or ask after a watched command, list a turn's files. These ride the relay the runner already keeps
+open (target `runner-machine`, `runner-machine-calls.ts`): the owner opens one WebSocket per runner
+on its local request socket, the gateway pairs it with the runner, and each call is one JSON message
+`{id, method, params}` answered by `{id, result}` or `{id, error}`. Nothing is stored and nothing is
+resent: the ledger keeps every decision, and a call that cannot be answered (runner away, channel
+dropped, 15 s timeout) is not knowing this time, as with a local host that does not answer. The
+runner answers with the same functions the owner uses for its own machine, under the runner's state
+folder and release; a host record outside the runner's own `exec` folder is refused.
+
+Why not the job protocol: these are reads and idempotent starts the owner already records and
+retries per poll; leases, events and fencing would add ledger writes to every five-second watch poll.
+Why not a port on the runner: runners open none.
+
+Users: durable watches ([watches](WATCHES.md), `watch-machine.ts`, methods `watch.*`).
 
 ## Concierge's own thnkr.ing calls (built)
 

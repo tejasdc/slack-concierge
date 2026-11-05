@@ -28,6 +28,8 @@ import {watchClaudeTranscript} from '../src/claude-transcript-watch';
 import {RUNNER_FENCE_MS} from '../src/runner-leases';
 import {codexAppServerSocketPath} from '../src/codex-app-server-client';
 import {controlSocketListeners,moveCodexDaemonToOwnScope,raiseCodexDaemonFileLimit,startCodexDaemonWhenAbsent} from '../src/codex-daemon-file-limit';
+import {serveRunnerMachineCalls} from '../src/runner-machine-calls';
+import {localWatchMachine,serveWatchCall} from '../src/watch-machine';
 import {rewriteRelayedCodexRequest,runnerMachineEnvironment,writeRunnerConnection,type RunnerMachine} from '../src/runner-machine';
 
 const owner=process.env.CONCIERGE_OWNER_URL?.replace(/\/+$/,'');
@@ -496,6 +498,21 @@ function relayCodexAppServer(id:string) {
   remote.onclose=event=>end(`owner side closed (${event.code})`);
   remote.onerror=()=>end('owner side failed');
 }
+/**
+ * The owner's calls on this machine (runner-machine-calls.ts): watches read paths and run their
+ * commands here, under this runner's state folder and release, hidden from the owner's state like
+ * its turns. Each relay the owner opens is one channel of calls.
+ */
+const watchMachine=localWatchMachine(stateDir,()=>botDir,(process.env.CONCIERGE_RUNNER_HIDE_PATHS??'').split(':').filter(Boolean));
+function answerMachineCalls(id:string) {
+  const remote=new WebSocket(`${relayBase}/runner/v1/relay/accept?id=${encodeURIComponent(id)}`,{headers:{authorization:`Bearer ${token}`}} as any);
+  serveRunnerMachineCalls(remote,async(method,params)=>{
+    recordOwnerContact();
+    if(method.startsWith('watch.'))return serveWatchCall(watchMachine,stateDir,method.slice('watch.'.length),params);
+    throw new Error(`this runner does not answer ${method}`);
+  });
+  remote.onclose=event=>say('runner_machine_calls_closed',{relay:id,code:event.code});
+}
 let relayChannel:WebSocket|null=null;
 function listenForRelays(delayMs=0) {
   setTimeout(()=>{
@@ -504,7 +521,8 @@ function listenForRelays(delayMs=0) {
     channel.onopen=()=>say('runner_relay_listening');
     channel.onmessage=event=>{
       let message:any;try{message=JSON.parse(String(event.data));}catch{return;}
-      if(message?.op==='open'&&message.target==='codex-app-server'&&typeof message.id==='string')relayCodexAppServer(message.id);
+      if(message?.op==='open'&&message.target==='codex-app-server'&&typeof message.id==='string'&&kinds.includes('codex'))relayCodexAppServer(message.id);
+      if(message?.op==='open'&&message.target==='runner-machine'&&typeof message.id==='string')answerMachineCalls(message.id);
     };
     channel.onclose=event=>{
       if(relayChannel!==channel)return;
@@ -519,8 +537,9 @@ function listenForRelays(delayMs=0) {
 if(!once&&kinds.includes('codex')){
   const socket=codexAppServerSocketPath();
   if(managedAppServer&&(!existsSync(socket)||!controlSocketListeners(socket).length))startCodexDaemonWhenAbsent('runner start');
-  listenForRelays();
 }
+// The listen channel carries the owner's machine calls as well as Codex relays.
+if(!once)listenForRelays();
 
 for(let idle=0;;) {
   const jobKinds=kinds.filter(kind=>kind!=='codex');

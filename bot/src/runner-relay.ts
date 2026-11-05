@@ -18,7 +18,8 @@ import {log} from './log';
  * Only a runner token may listen or accept, and only for its own name; only the root-private local
  * socket may connect. No owner state or ledger is touched, so this runs inside the gateway.
  */
-export const RELAY_TARGETS=new Set(['codex-app-server']);
+/** `runner-machine` is the owner's call channel to the runner itself (runner-machine-calls.ts). */
+export const RELAY_TARGETS=new Set(['codex-app-server','runner-machine']);
 const ACCEPT_DEADLINE_MS=15_000;
 const BUFFER_LIMIT=16*1024*1024;
 

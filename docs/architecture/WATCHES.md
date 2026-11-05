@@ -20,6 +20,18 @@ router-actions.sh sessions watch cancel <watch-id> <source-flags> --action-id A
 `--until` is at most 30 days away. Registration is idempotent by (source input, action id); the same
 id with a different condition is refused.
 
+**Which machine.** A watch is on the machine of the agent that registered it. An agent on a runner
+(its helper carries `CONCIERGE_RUNNER_NAME`) sends that name; the watch row records it (`runner`),
+and every read of the path, the command's start, its state, output, signal, release and pruning go
+to that runner over its call channel ([Runners](RUNNERS.md#runner-machine-calls)); the command runs
+in an execution host under the runner's state folder, with the runner's ordinary variables and the
+owner's state hidden. The owner keeps every decision, record and delivery. A runner that cannot be
+reached is not knowing for that poll, exactly like a host that does not answer: a file watch records
+the silence as a gap, a command watch expires at its deadline if its state still cannot be read.
+Registration on an unreachable runner fails, and the agent tries again. A watch without a runner
+(the Mac, agents on the owner's own machine) is local, as before. Processor seconds are reported only
+for local commands.
+
 `--renew` is for a standing file condition. It requires a duration. When the file changes or the
 deadline expires, Concierge records the terminal observation and the next watch in one ledger
 transaction, before delivering the wake. The next watch starts from the observed file version and
