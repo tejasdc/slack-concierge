@@ -37,7 +37,8 @@ const QUESTION_FIELDS_REQUIRED =
 const CHECK_REQUIRED =
   'Completed work says what was checked on the real system. Add --checked "<what you ran on the live system, through your own '
   + 'marked entrance where it is his surface, and what you saw>", or --not-checked "<why no live check was possible>" when none was. '
-  + 'Do not write unit tests to fill this.';
+  + 'When the reply is only an answer and you changed nothing (no code, setting, data or message sent), give '
+  + '--nothing-changed "<what the answer rests on>" instead. Do not write unit tests to fill this.';
 
 /** Letters and digits only, so a quote survives punctuation, casing and line breaks. */
 function normalized(text: string) {
@@ -139,21 +140,36 @@ const NOT_ALL_DONE =
   + 'routes the building), or reply --work-disposition failed saying what was not done. Ask him (needs_decision) only for something no agent can '
   + 'do, or a permanent approval rule reserves for him: ' + Object.keys(ONLY_HE_CAN).join(', ') + '. A "done" that left out part of his request reached him twice in one week (2026-09-29, 2026-10-02).';
 
+/**
+ * How a completed reply was verified: a live check, an honest reason none was possible, or the
+ * replier's claim that the reply is only an answer and nothing was changed. The third exists
+ * because an answer to his question has nothing to see working, and an honest not-checked reason
+ * on it held his question open for a verification nobody could do (2026-11-05, req:forward:c3148684).
+ * Not-checked keeps meaning "a change exists that nobody has seen working".
+ */
+export type CompletionCheck = { checked?: string; notChecked?: string; nothingChanged?: string };
+
+function onlyCheck(input: CompletionCheck): string {
+  const given = ([['Checked on the real system: ', input.checked], [NOT_CHECKED_LIVE, input.notChecked], [NOTHING_CHANGED, input.nothingChanged]] as const)
+    .map(([label, value]) => [label, value?.trim() ?? ''] as const).filter(([, value]) => value);
+  if (given.length > 1) throw new Error('Give one of --checked, --not-checked or --nothing-changed, not several.');
+  if (!given.length) throw new Error(CHECK_REQUIRED);
+  return `${given[0][0]}${given[0][1]}`;
+}
+
 /** Completed work as it will be read: the answer, then what was checked live (or why nothing was). */
-export function completionWithCheck(input: { text: string; checked?: string; notChecked?: string; allDone?: boolean }): string {
+export function completionWithCheck(input: CompletionCheck & { text: string; allDone?: boolean }): string {
   if (input.allDone !== true) throw new Error(NOT_ALL_DONE);
-  const checked = input.checked?.trim() ?? '', notChecked = input.notChecked?.trim() ?? '';
-  if (checked && notChecked) throw new Error('Give either --checked or --not-checked, not both.');
-  if (!checked && !notChecked) throw new Error(CHECK_REQUIRED);
-  return `${input.text.trim()}\n\n${checked ? `Checked on the real system: ${checked}` : `${NOT_CHECKED_LIVE}${notChecked}`}`;
+  return `${input.text.trim()}\n\n${onlyCheck(input)}`;
 }
 
 const NOT_CHECKED_LIVE = 'Not checked live: ';
+const NOTHING_CHANGED = 'Answered; nothing was changed: ';
 const COMPLETED_CLOSING = 'Completed · ';
 /** The line that closes a final reply, kept on its stored result so later readers know how it ended. */
-export function finalClosingLine(disposition: string, checked?: string, notChecked?: string): string {
+export function finalClosingLine(disposition: string, check: CompletionCheck = {}): string {
   return disposition === 'completed'
-    ? `${COMPLETED_CLOSING}${checked?.trim() ? `Checked on the real system: ${checked.trim()}` : `${NOT_CHECKED_LIVE}${notChecked?.trim() ?? ''}`}`
+    ? `${COMPLETED_CLOSING}${onlyCheck(check)}`
     : disposition === 'failed' ? 'Failed' : 'Needs your decision';
 }
 /**
