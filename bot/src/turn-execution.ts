@@ -118,7 +118,7 @@ import {
 import { TurnStatusController } from "./turn-status-controller";
 import { prepareProviderInput } from "./provider-input";
 import { interruptedInputContext, interruptedInputNotice } from "./input-continuity";
-import { projectSessionProviderMessage } from "./session-projection";
+import { flushPendingProviderProgressEvents, projectSessionProviderMessage } from "./session-projection";
 import { noticeMissingBackgroundReport, recordTurnBackgroundWait, registerBackgroundRelease, takeBackgroundReleaseDetail } from "./background-waits";
 import { recordTurnProviderRetry, registerTurnRetryRestart } from "./provider-retries";
 import { OUTAGE_CONFIRM_MS, offerOutageChoices, providerTroubleStatus } from "./provider-outage";
@@ -738,7 +738,11 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
           else void input.cancellationController?.request();
         }
       },
-      onProviderTerminal: () => input.closeSteering(new Error("The provider turn completed.")),
+      onProviderTerminal: () => {
+        try { flushPendingProviderProgressEvents(); }
+        catch(error){log('error','session_progress_terminal_flush_failed',{turn_id:input.turnId,...errorFields(error)});}
+        input.closeSteering(new Error("The provider turn completed."));
+      },
       onBackgroundWait: (wait) => recordTurnBackgroundWait(input.turnId, wait),
       onBackgroundReportMissing: (task) => noticeMissingBackgroundReport(input.turnId, task),
       onBackgroundReleaseReady: (release) => registerBackgroundRelease(input.turnId, release),
@@ -751,6 +755,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       onRetryRestartReady: (restart) => registerTurnRetryRestart(input.turnId, restart),
     });
     input.closeSteering();
+    try { flushPendingProviderProgressEvents(); }
+    catch(error){log('error','session_progress_terminal_flush_failed',{turn_id:input.turnId,...errorFields(error)});}
     recordProviderStarted();
     // Pickup can precede a model refusal. A successful provider result proves this exact
     // held input left its allowance wait.
@@ -1075,6 +1081,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     return { status: "delivered", turnId: input.turnId };
   } catch (error) {
     input.closeSteering(error instanceof Error ? error : new Error(String(error)));
+    try { flushPendingProviderProgressEvents(); }
+    catch(flushError){log('error','session_progress_terminal_flush_failed',{turn_id:input.turnId,...errorFields(flushError)});}
     if (deliveryCompleted) {
       log("error", "post_delivery_followup_failed", {
         ...errorFields(error),
