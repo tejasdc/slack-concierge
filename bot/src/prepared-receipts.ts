@@ -44,7 +44,15 @@ export class PreparedReceipts {
       .get() as {ready:number;revision:string}|null;
     return !!meta?.ready&&meta.revision===projectionRevision;
   }
+  activeGeneration(){
+    return (this.prepared.query('SELECT generation FROM presentation_receipt_meta WHERE singleton=1')
+      .get() as {generation:number}).generation;
+  }
+  nextGeneration(){return this.activeGeneration()+1;}
   beginRebuild(generation:number){
+    const active=this.activeGeneration();
+    this.prepared.query('DELETE FROM presentation_receipts WHERE generation<>?').run(active);
+    this.prepared.query('DELETE FROM presentation_receipt_changes WHERE generation<>?').run(active);
     this.prepared.query('DELETE FROM presentation_receipts WHERE generation=?').run(generation);
     this.prepared.query('DELETE FROM presentation_receipt_changes WHERE generation=?').run(generation);
   }
@@ -59,8 +67,8 @@ export class PreparedReceipts {
       .get(generation) as {n:number}).n;
     this.prepared.query('UPDATE presentation_receipt_meta SET generation=?,source_head=?,change_base=?,ready=1,projection_revision=? WHERE singleton=1')
       .run(generation,sourceHead,base,projectionRevision);
-    this.prepared.query('DELETE FROM presentation_receipts WHERE generation<?').run(generation);
-    this.prepared.query('DELETE FROM presentation_receipt_changes WHERE generation<?').run(generation);
+    this.prepared.query('DELETE FROM presentation_receipts WHERE generation<>?').run(generation);
+    this.prepared.query('DELETE FROM presentation_receipt_changes WHERE generation<>?').run(generation);
   }
   checkpoint(generation:number,sourceHead:number){
     this.prepared.query('UPDATE presentation_receipt_meta SET source_head=? WHERE singleton=1 AND generation=? AND ready=1')

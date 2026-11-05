@@ -451,12 +451,26 @@ async function refreshAreaProjection(generation:number){
   prepared.transaction(()=>{keepLease();areas.activate(generation);})();
 }
 
+/** Receipt policy changes rebuild only receipts. Every other prepared view keeps its own generation. */
+async function refreshReceiptProjection(){
+  const generation=receipts.nextGeneration(),startHead=head();
+  prepared.transaction(()=>{keepLease();receipts.beginRebuild(generation);})();
+  let after=0;
+  while(true){
+    const page=prepared.transaction(()=>{keepLease();return receipts.rebuildPage(generation,after,20);})();
+    after=page.lastRowid;
+    if(!page.hasMore)break;
+    await yieldProgress(5);
+  }
+  prepared.transaction(()=>{keepLease();receipts.activate(generation,startHead,receiptProjectionRevision);})();
+}
+
 /** Full re-rooting occurs off the interactive owner. The old generation stays readable until commit. */
 async function rebuild() {
   if(rebuilding)return;
   rebuilding=true;
   try {
-    const previous=meta(),generation=previous.generation+1,startHead=head();
+    const previous=meta(),generation=previous.generation+1,receiptGeneration=receipts.nextGeneration(),startHead=head();
     const eventHead=(source.query('SELECT COALESCE(MAX(sequence),0) AS n FROM session_owner_events').get() as {n:number}).n;
     prepared.transaction(()=>{
       keepLease();
@@ -467,7 +481,7 @@ async function rebuild() {
       prepared.query('DELETE FROM presentation_owner_messages WHERE generation=?').run(generation);
       prepared.query('DELETE FROM presentation_owner_message_versions WHERE generation=?').run(generation);
       cards.beginRebuild(generation);
-      receipts.beginRebuild(generation);
+      receipts.beginRebuild(receiptGeneration);
       topics.beginRebuild(generation);
       areas.beginRebuild(generation);
       labRequests.beginRebuild(generation);
@@ -492,7 +506,7 @@ async function rebuild() {
         .all(inputAfter) as {rowid:number;id:string}[];
       if(!rows.length)break;
       prepared.transaction(()=>{keepLease();for(const row of rows)writeInput(row.id);})();
-      prepared.transaction(()=>{keepLease();receipts.rebuildPage(generation,inputAfter,20);})();
+      prepared.transaction(()=>{keepLease();receipts.rebuildPage(receiptGeneration,inputAfter,20);})();
       inputAfter=rows.at(-1)!.rowid;
       await yieldProgress(5);
     }
@@ -539,7 +553,7 @@ async function rebuild() {
       prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=8,answer_closures_version=2,marked_reply_roots_version=1,agent_request_visibility_version=1,routing_result_visibility_version=2 WHERE singleton=1')
         .run(generation,after,startHead);
       cards.activate(generation,startHead);
-      receipts.activate(generation,startHead,receiptProjectionRevision);
+      receipts.activate(receiptGeneration,startHead,receiptProjectionRevision);
       topics.activate(generation,startHead);
       areas.activate(generation);
       labRequests.activate(generation,startHead);
@@ -616,8 +630,9 @@ async function upgradeRoutingResultVisibility(generation:number){
 /** Changes to lineage request a new generation. New messages append without rereading history. */
 async function catchUp() {
   const current=meta();
-  if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)
-    ||!receipts.isCurrent(receiptProjectionRevision)){await rebuild();return;}
+  if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)){await rebuild();return;}
+  if(!receipts.isCurrent(receiptProjectionRevision)){await refreshReceiptProjection();return;}
+  const receiptGeneration=receipts.activeGeneration();
   if(!current.agent_request_visibility_version){await upgradeAgentRequestVisibility(current.generation);return;}
   if(current.routing_result_visibility_version<2){await upgradeRoutingResultVisibility(current.generation);return;}
   upgradeMarkedReplyRoots(current.generation);
@@ -630,7 +645,7 @@ async function catchUp() {
         turn_id:number|null;request_id:string|null;topic_id:string|null;target_session_id:number|null;
         target_input_id:string|null}[];
   if(!changes.length){
-    prepared.transaction(()=>{keepLease();receipts.refreshDue(current.generation);
+    prepared.transaction(()=>{keepLease();receipts.refreshDue(receiptGeneration);
       if(Date.now()-lastTopicCollection>60_000){topics.collectPage();areas.collectPage(meta().generation);lastTopicCollection=Date.now();}})();
     return;
   }
@@ -817,8 +832,8 @@ async function catchUp() {
     cards.apply(current.generation,changes.map(change=>
       change.session_id&&(change.source_table==='slack_agent_session_title_projections'||change.source_table==='slack_agent_session_status_projections')
         ?{...change,source_table:'sessions',row_key:String(change.session_id)}:change));
-    receipts.apply(current.generation,changes);
-    receipts.refreshDue(current.generation);
+    receipts.apply(receiptGeneration,changes);
+    receipts.refreshDue(receiptGeneration);
     topics.apply(current.generation,changes,changedRoots);
     areas.apply(current.generation,changes);
     labRequests.apply(current.generation,changes);
@@ -852,7 +867,7 @@ async function catchUp() {
   prepared.transaction(()=>{
     keepLease();
     cards.checkpoint(current.generation,changes.at(-1)!.sequence);
-    receipts.checkpoint(current.generation,changes.at(-1)!.sequence);
+    receipts.checkpoint(receiptGeneration,changes.at(-1)!.sequence);
     topics.checkpoint(current.generation,changes.at(-1)!.sequence);
     labRequests.checkpoint(current.generation,changes.at(-1)!.sequence);
     prepared.query('UPDATE presentation_message_meta SET event_watermark=?,source_head=? WHERE singleton=1')

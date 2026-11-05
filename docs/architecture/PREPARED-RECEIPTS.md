@@ -36,11 +36,12 @@ before it resubmits a message whose preview was truncated.
 
 The receipt metadata records the digest of the installed presentation worker bundle. Because that
 bundle contains the receipt policy and its dependencies, any release that changes classification or
-wording makes the prior prepared generation stale automatically. The worker then builds every
-historical receipt into the next generation in bounded pages while readers keep the last complete
-generation. It records the new digest only in the same transaction that activates the complete new
-generation. A restart during rebuilding therefore resumes from the prior complete view and can
-never present a partially migrated receipt set as current.
+wording makes the prior prepared receipt generation stale automatically. Receipt generations are
+independent of message, topic and session-card generations: the worker rebuilds only historical
+receipts in bounded pages while readers keep the last complete receipt generation. It records the
+new digest only in the same transaction that activates the complete replacement. A restart during
+rebuilding discards the abandoned receipt shadow and starts from the prior complete view, so it can
+never present a partially migrated receipt set as current or duplicate unrelated projections.
 
 The scratch `receipt-projection-fixture.ts` exercises retry set, restart
 invalidation, clear, queued hold, provenance and oversized retained text.
