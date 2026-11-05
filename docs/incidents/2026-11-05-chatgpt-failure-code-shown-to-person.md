@@ -16,13 +16,19 @@ message or whether the input would retry.
 ## Cause
 
 The receipt owner used the retained ChatGPT dispatch code as both its machine-readable code and
-its person-readable explanation. Thinkering correctly rendered the explanation it received.
+its person-readable explanation. After that policy was corrected, the exact receipt route returned
+the new sentence but Thinkering still received a historical prepared receipt computed by the prior
+release. Prepared receipts refreshed only when ledger facts changed; a release that changed receipt
+classification or wording did not invalidate them.
 
 ## Fix
 
 The receipt owner translates the two retained not-sent codes into a sentence that says the
 attempt stopped before Send, no message reached ChatGPT, and no automatic retry will occur. The
-exact code remains available in the raw error detail for diagnosis.
+exact code remains available in the raw error detail for diagnosis. The prepared receipt owner now
+records the installed projection's derived revision and shadow-rebuilds all historical receipts when
+that revision changes. The previous complete generation remains readable until the replacement is
+complete, and no accepted input is replayed.
 
 ## Acceptance scenario
 
