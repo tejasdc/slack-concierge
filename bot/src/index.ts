@@ -246,6 +246,7 @@ import { beginAgentProgressMessages, createProgressMessageClient, hasAgentProgre
 import { handleAgentSessionStop } from "./agent-session-stop";
 import { GHOST_TURN_INTERRUPT_AGE_MS, reconcileRecoverableTurns, sweepGhostRunningTurns } from "./turn-recovery";
 import { claimAdoptableExecutions, hostedTurns, watchHeldExecution, type Adoption } from "./executions";
+import { beginRunnerTurnDrain } from "./runner-host-access";
 import { interruptOrphanedTurn, observeExecutionChanges } from "./state";
 import {recoverExhaustedClaudeWork} from './provider-exhaustion-recovery';
 import {maybeStartInboxProviderFailover} from './inbox-provider-failover';
@@ -4115,10 +4116,13 @@ async function drainAndStop(signal: string) {
     log("error", "sandbox_readiness_cleanup_failed", errorFields(error));
   }
   sessionTurnQueue?.stop();
+  sessionExecutionHost.beginDrain();
+  const withdrawnRunnerTurns = beginRunnerTurnDrain(instanceId);
   log("info", "service_drain_started", {
     signal,
     active_turns: activeTurnCount,
     active_input_handlers: activeInputHandlerCount,
+    withdrawn_runner_turn_jobs: withdrawnRunnerTurns,
     instance_id: instanceId,
   });
   // Bun waits for every in-flight response before a graceful stop resolves, and an
