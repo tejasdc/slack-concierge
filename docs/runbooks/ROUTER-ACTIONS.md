@@ -48,7 +48,12 @@ thread and sends it back if it tries to stop owing a reply. If it stopped while 
 not run (Concierge down or restarting), the owner admits one report-back notice into the same
 conversation, and only a second silent stop is recorded as stalled in the thread. Follow-ups to
 the session queue and run as the next outside turn (`codex exec resume`); an outside run cannot
-be steered. Its history is Codex's own record of the conversation.
+be steered. The session view therefore advertises no live steering, and a waiting
+message says why it will be read in the next turn. A human message accepted by an older
+owner as steering but provably never sent is restored to that queue under its
+original identity at startup, including when the outside run already finished.
+Its history is Codex's own
+record of the conversation.
 
 Use it for work that changes Concierge itself or must outlive trouble in Concierge. It replaces
 starting `codex exec` by hand as a background job or through a launcher script with a file watch

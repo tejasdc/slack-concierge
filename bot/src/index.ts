@@ -3820,6 +3820,7 @@ async function reconcilePriorInstanceTurns() {
   }, 60_000);
   parkedRecovery.unref?.();
   const recoveredSteering = recoverUnsettledSteeringMessages(isProcessIdentityAlive);
+  sessionExecutionHost.recoverOutsideWaitingInputs();
   if (recoveredSteering.failed > 0 || recoveredSteering.ambiguous > 0) {
     log("warn", "unsettled_steering_recovered", recoveredSteering);
   }

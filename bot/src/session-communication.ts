@@ -817,7 +817,10 @@ export class SessionCommunicationCoordinator {
             if(!session)throw new Error('No Inbox session exists yet.');
             const router=session.id===own.id;
             const target=getAcceptedSessionInput(input.input_id);
-            if(!target||target.session_id!==session.id)throw new Error('Thread placement needs an accepted message in the Inbox.');
+            if(!target||!db.query(`WITH RECURSIVE lineage(id) AS (SELECT ? UNION ALL
+              SELECT predecessor_session_id FROM session_handoffs JOIN lineage ON successor_session_id=lineage.id
+              WHERE state='accepted') SELECT 1 FROM lineage WHERE id=? LIMIT 1`).get(session.id,target.session_id))
+                throw new Error('Thread placement needs an accepted message in the Inbox.');
             const root=detach?null:inboxThreadRoot(session.id,input.thread!);
             if(!detach&&!root)throw new Error('That --thread is not a message in this Inbox.');
             if(root===target.id)throw new Error('A message cannot continue its own thread.');

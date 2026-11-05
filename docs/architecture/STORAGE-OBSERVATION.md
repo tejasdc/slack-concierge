@@ -1,5 +1,12 @@
 # Storage work attribution
 
+The minute-by-minute legacy turn-status recovery pass uses a partial index of
+pending turns. It still retries historical pending statuses, while an empty pass
+reads no retained turn rows. This keeps a large native session history out of
+the interactive owner's periodic ledger scan. The index is created after the
+legacy status column during schema upgrade; the query continues to filter its
+historical Slack eligibility rules.
+
 Slow Inbox topic mutations include a content-free breakdown of input retention: payload
 serialization, existing-action lookup, cancellation lookup, insertion, readback and the
 inner transaction boundary. The outer topic transaction's remaining time is reported

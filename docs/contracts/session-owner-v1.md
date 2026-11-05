@@ -8,6 +8,22 @@ The accepting owner applies one live-delivery default to people, agents and
 service returns: an unselected message joins the current run when the provider
 can take it, then falls back to the session queue if that run ends before
 admission. Local, outside and peer agent requests use that same dispatch path.
+An outside Codex repair run is the exception: its independent `codex exec` command
+reads one opening input and has no live input channel. The owner advertises no
+steering capability for that session and places new messages in its next turn,
+with the reason on each waiting receipt. The same accepted input is recovered to
+that queue after a provably unsent human steering attempt made by an older owner.
+If an accepted handoff suspended that session while its independent command was
+finishing, recovery follows the accepted successor chain. It retains one linked
+input in the current successor's queue, marks the predecessor's input as
+continued there, and lets the successor's live channel take it when available.
+It never wakes the suspended predecessor or copies an uncertain send.
+This exception applies to the one-shot outside transport, which has no addressable
+live sender; a managed Codex App Server run keeps its live steering. Replacing an
+already-running outside command with another process would overlap the same
+conversation and violate the one-run-per-session rule. This transport-limited
+exception to immediate delivery is explicit beside his priority rule
+[decision: his-requests-come-first].
 Source run identity records where a return came from; it pins a service notice
 only when that notice explicitly requests exact-run steering. Scheduled work,
 continuations and informational Inbox notices that are deliberately retained
