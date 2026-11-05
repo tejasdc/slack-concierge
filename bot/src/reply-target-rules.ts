@@ -107,17 +107,30 @@ export function topicReplyTargets(source:Database,input:ReplyTargetInput):ReplyT
  // work, a stall) are not anyone speaking to him. Newest first, so the first speaker found is the
  // agent he is most likely answering.
  let newestSpeaker:string|null=null;
+ // Each agent is named as its newest message here is signed, which is the name he reads in the
+ // thread. A handed-off chain is one choice, so that is the predecessor's name only while the
+ // predecessor still wrote the newest of its messages; before 2026-11-05 the predecessor's name
+ // stuck for good once it had ever answered, and the "Slowness thread coordinator" that had written
+ // every message for three hours was offered under the name of the session it took over from
+ // (Tejas: "the Slowness thread coordinator is not appearing in the Control-Space menu").
+ const signedAs=new Map<string,string|null>();
+ const writerTitle=(named:string):string|null=>{
+  const written=named.replace(/^([\w-]+):concierge:([1-9]\d*)$/,'$1:$2');
+  return sessionTitle(source,written)??input.resolve(written)?.title??null;
+ };
  if(roots.length)for(const row of source.query(`SELECT event_id,json_extract(payload_json,'$.postedBySession') AS from_session,json_extract(payload_json,'$.postedBy') AS posted_by FROM session_owner_events
   WHERE session_id=? AND kind='post' AND coalesce(json_extract(payload_json,'$.threadRoot'),input_id) IN (${roots.map(()=>'?').join(',')}) ORDER BY sequence DESC`).all(input.inboxSessionId,...roots) as {event_id:string;from_session:string|null;posted_by:string|null}[]){
   if(row.posted_by==='service')continue;
   // A post with no writing session is the Inbox agent's own reply in the thread.
   const speaker=row.from_session?add(row.from_session,'answered here',[row.event_id]):router;
   newestSpeaker??=speaker;
+  if(speaker&&speaker!==router&&row.from_session&&!signedAs.has(speaker))signedAs.set(speaker,writerTitle(row.from_session));
  }
  for(const dispatch of input.workDispatches)if(dispatch.root&&roots.includes(dispatch.root))busy(add(dispatch.sessionId,'working on this thread now',[dispatch.root]));
  for(const question of input.questions)if(OPEN_QUESTION_STATES.some(state=>state===question.state)||question.state==='deferred')
   busy(add(question.ownerSessionId,question.decision?`asked you: ${question.decision}`:'asked you a question here',[question.id,...question.sources]));
  if(about&&input.spokenBy)add(input.spokenBy,'answered here',[about]);
+ for(const [sessionId,title] of signedAs){const choice=choices.get(sessionId);if(choice&&title)choice.title=title;}
  const list=[...choices.values()];
  // The one invariant (Tejas, 2026-11-05: "It's finding the right one to respond to quickly"): the
  // first choice is the agent he is most likely replying to: the writer of the item he is replying
