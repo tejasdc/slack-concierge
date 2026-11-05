@@ -9,6 +9,12 @@ turn. Codex Computer Use also requires a recorded desktop-capable need, and Clau
 Chrome remains refused because it controls his personal browser. Concierge's own
 provider sign-in repair request is the only Computer Use exception for the saved
 Chrome account; the Mac owner checks the retained repair request before admitting it.
+That admission remains available while the exact renewal request is open in the
+worker's running turn, even if a later budget or progress input joins the turn.
+The guard checks request custody again for each Computer Use call; an ordinary
+Mac browser request cannot claim the renewal exception. The worker can inspect
+its local outside-agent renewal with the same `sessions get` command it uses for
+peer requests, while the request remains owed until an explicit final reply.
 For Tejas's directly authorized, already-open thnkr.ing Safari web app and old-page
 work, a Mac-app request must name its exact bundle and page IDs. Its retained provenance must
 lead to a human input and a work effect; an informational request cannot grant

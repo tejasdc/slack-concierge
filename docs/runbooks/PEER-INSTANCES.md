@@ -124,8 +124,9 @@ server. Native iOS Safari touch and selection, Xcode, Messages, a Mac-only file 
 physical screen, and Tejas's explicit Mac requests can use the Mac. New and addressed Mac work
 requires `--machine-need` with a specific reason; the receiving owner checks it.
 The tool guard on the Mac reads the need from its run's environment and, before a refusal stands,
-asks the Mac owner for the need of the run holding that conversation (the newest need among the
-inputs the run took, its first message or a request steered in later). Codex turns all run on the
+asks the Mac owner for the need of the run holding that conversation. The newest ordinary
+need wins, while an exact open provider renewal admitted to that run remains available
+after an unrelated budget or progress input. Codex turns all run on the
 shared App Server, so a per-turn environment never reaches Codex's hook; before 2026-11-03 a Codex
 session created with a mac-app need was refused as if it had none. The owner returns
 the retained reason as well as the kind, so the hook can enforce an exact app target

@@ -16,14 +16,16 @@ import { claudeAccountFacts, claudeCredentialVersion, claudeWindowsFromOwnLogin,
 import type { ResetAdvice } from "./provider-reset-facts";
 import { noticeTime } from "./notice-time";
 import { resolveProviderAlias } from "./aliases";
+import { renewSavedCodexLogin } from './codex-saved-login-renewal';
 
 /**
  * Usage limits for every account of a provider, not only the one agents use.
  *
- * Reading never signs in, switches or renews anything. Codex accounts each live in
+ * Reading never signs in or switches. Codex accounts each live in
  * their own Codex home: the agents' home plus one folder per extra account under
  * ~/.codex-accounts. CodexBar reads a home's usage with its stored access token and
- * never refreshes or rewrites it. Claude accounts come from claude-swap, which keeps
+ * never refreshes or rewrites it; an expired saved login is renewed by Codex itself in
+ * its own home. Claude accounts come from claude-swap, which keeps
  * each account's credentials and reads their usage without switching the active one.
  *
  * Both tools are optional: a missing tool leaves that provider's list empty with a
@@ -223,6 +225,18 @@ async function codexAccount(home: string, agents: boolean): Promise<AccountUsage
   catch { return { label, plan, current: agents, windows: [], problem: "Usage could not be read." }; }
   if (row?.error) {
     const message = String(row.error.message ?? "");
+    if(!agents&&/token_expired/i.test(message)){
+      const renewal=renewSavedCodexLogin(home,label,()=>{
+        // A renewal may finish before the pass that noticed expiry has stored its result.
+        // Wait for that pass to settle so the new reading cannot join and then disappear.
+        void (inFlight??Promise.resolve()).catch(()=>{}).then(()=>scheduleProviderAccountUsageRefresh()).catch(()=>{});
+      });
+      if(renewal==='signed_out')return {label,plan,current:false,windows:[],signedOut:true,
+        problem:'This saved Codex sign-in was refused by Codex. It needs signing in again.'};
+      if(renewal!=='no_refresh_token')return {label,plan,current:false,windows:[],problem:renewal==='pending'
+        ?'Saved Codex sign-in renewal is pending; usage cannot yet be read.'
+        :'Saved Codex sign-in could not be renewed. Usage is unavailable; sign in again if it stays this way.'};
+    }
     // A refused sign-in is not a failed reading: the account cannot run anything until it is
     // signed in again. On 2026-10-06 all three of the server's Codex sign-ins answered
     // "token_expired" while Accounts still listed them as signed in.
