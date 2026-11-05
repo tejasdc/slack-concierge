@@ -193,8 +193,10 @@ export function readCompactReceipt(source:Database,inputId:string):PreparedRecei
     session:(sessionId)=>{
       const row=source.query('SELECT status,provider_id,native_metadata_json FROM sessions WHERE id=?').get(sessionId) as
         {status:string;provider_id:string;native_metadata_json:string};
-      return {status:row.status,providerId:row.provider_id,suspended:!!json(row.native_metadata_json).suspended};
+      const metadata=json(row.native_metadata_json);
+      return {status:row.status,providerId:row.provider_id,suspended:!!metadata.suspended,outside:!!metadata.outside};
     },
+    otherLiveTurn:(sessionId,turnId)=>!!source.query("SELECT 1 FROM turns WHERE session_id=? AND id<>? AND status IN ('running','delivering') LIMIT 1").get(sessionId,turnId),
     deploymentHold:(providerId,inputKind)=>{
       if(!source.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get())return false;
       const survivable=survivableRunKinds(source);
