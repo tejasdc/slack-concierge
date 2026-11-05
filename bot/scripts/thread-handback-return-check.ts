@@ -9,16 +9,23 @@ for(const table of ['session_communication','session_peer']){
 }
 database.exec('CREATE TABLE session_inputs (id TEXT,request_id TEXT,session_id INTEGER,origin TEXT)');
 
-for(const [table,kind,handBack,expectedReturn] of [
-  ['session_communication','final',null,false],
-  ['session_communication','final','too-loaded',true],
-  ['session_peer','final','not-my-subject',true],
-  ['session_peer','progress',null,false],
+for(const [table,kind,requestedEffect,result,expectedReturn] of [
+  ['session_communication','final','work',{workDisposition:'completed'},false],
+  ['session_peer','final','informational',{outcome:'answered'},false],
+  ['session_communication','final','work',{workDisposition:'failed'},true],
+  ['session_peer','final','work',{workDisposition:'needs_decision'},true],
+  ['session_communication','final','work',{},true],
+  ['session_peer','final','informational',{outcome:'failed'},true],
+  ['session_communication','final','work',{outcome:'canceled',output:{stoppedBy:'tejas'}},false],
+  ['session_peer','overdue','work',{promptAnswerOverdue:true},true],
+  ['session_communication','final','work',{workDisposition:'completed',handBack:'too-loaded'},true],
+  ['session_peer','final','work',{workDisposition:'failed',handBack:'not-my-subject'},true],
+  ['session_peer','progress','work',{},false],
 ] as const){
-  const requestId=`${table}:${kind}:${handBack??'ordinary'}`;
+  const requestId=`${table}:${kind}:${requestedEffect}:${JSON.stringify(result)}`;
   const eventId=`event:${requestId}`;
-  const request={thread_root_input_id:'thread:fixture',payload_json:'{}'};
-  const event={kind,payload_json:JSON.stringify({...(handBack?{handBack}:{})})};
+  const request={thread_root_input_id:'thread:fixture',payload_json:JSON.stringify({requestedEffect})};
+  const event={kind,payload_json:JSON.stringify(result)};
   database.query(`INSERT INTO ${table}_requests VALUES(?,?,?,?)`).run(requestId,7,request.thread_root_input_id,request.payload_json);
   database.query(`INSERT INTO ${table}_events VALUES(?,?,?,?)`).run(eventId,requestId,event.kind,event.payload_json);
   database.query('INSERT INTO session_inputs VALUES(?,?,?,?)').run(`return:${eventId}`,requestId,7,'service');
@@ -27,4 +34,4 @@ for(const [table,kind,handBack,expectedReturn] of [
   assert.equal(!!refused,!expectedReturn,`${requestId}: queue guard`);
 }
 database.close();
-console.log('Thread hand-back returns reach the requester; ordinary thread returns stay refused on server and peer.');
+console.log('Thread completion stays quiet; failures, decisions, uncertainty, overdue answers and hand-backs return on server and peer.');
