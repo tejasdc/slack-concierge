@@ -623,7 +623,9 @@ explicit child choices still win. Agent-created Fable/Astra sessions and handoff
 require a stated escalation trigger. The exact request records that reason as a
 countable session event. The agent shell's `codex` launcher refuses Astra without
 `CODEX_ESCALATION_REASON`; direct absolute binary paths are outside that shell
-guard. The ordinary full-path `~/.local/bin/codex` command has the same refusal
+guard. A human-origin exception reads the human input's text for an affirmative
+model directive; naming a model in discussion or telling agents to avoid it is
+not an explicit choice. The ordinary full-path `~/.local/bin/codex` command has the same refusal
 through command-line-tools; the package binary beneath that entry is the audit
 boundary. Accepted command-line Astra starts append
 their reason to the owner state's escalation log; the usage report counts that
