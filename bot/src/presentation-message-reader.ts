@@ -82,8 +82,9 @@ export function readPreparedThreadCoordinationKeys(database:Database,topicId:str
     SELECT event_sequence AS sequence,message_id AS messageId FROM presentation_messages INDEXED BY presentation_messages_topic_identity
       WHERE generation=? AND topic_id=? AND message_id GLOB 'request:*' AND event_sequence<?
     UNION ALL
-    SELECT event_sequence AS sequence,message_id AS messageId FROM presentation_messages INDEXED BY presentation_messages_topic_identity
-      WHERE generation=? AND topic_id=? AND message_id GLOB 'post:earlier-work:*' AND event_sequence<?
+    -- Only the thread's current earlier-work suggestion: each one replaces the last (2026-11-05).
+    SELECT sequence,messageId FROM (SELECT event_sequence AS sequence,message_id AS messageId FROM presentation_messages INDEXED BY presentation_messages_topic_identity
+      WHERE generation=? AND topic_id=? AND message_id GLOB 'post:earlier-work:*' ORDER BY event_sequence DESC LIMIT 1) WHERE sequence<?
   ) ORDER BY sequence DESC LIMIT ?`).all(meta.generation,topicId,position,meta.generation,topicId,position,limit+1) as PreparedMessageKey[];
   const page=rows.slice(0,limit);
   return {keys:page,nextCursor:rows.length>limit?String(page.at(-1)!.sequence):null,
