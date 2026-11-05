@@ -524,12 +524,14 @@ async function codexThreadParameters(
       // turn/start inherits this verified profile; reselecting its name there
       // reloads host config without this request-local permissions table.
       permissions: CONSULTATION_PERMISSION_PROFILE,
-      config: codexConsultationConfig((await request("config/read", { cwd: input.cwd, includeLayers: false }))?.config),
+      config: { ...codexConsultationConfig((await request("config/read", { cwd: input.cwd, includeLayers: false }))?.config),
+        agents: { default_subagent_model: "gpt-6-luna", default_subagent_reasoning_effort: "medium" } },
       ...(!input.sessionUUID ? { dynamicTools: [], environments: [] } : {}),
     } : {
       sandbox: "danger-full-access",
-      ...(Object.keys(shellEnvironment).length > 0
-        ? { config: { shell_environment_policy: { inherit: "all", set: shellEnvironment } } } : {}),
+      config: { agents: { default_subagent_model: "gpt-6-luna", default_subagent_reasoning_effort: "medium" },
+        ...(Object.keys(shellEnvironment).length > 0
+          ? { shell_environment_policy: { inherit: "all", set: shellEnvironment } } : {}) },
     }),
     ...(input.model ? { model: input.model } : {}),
     ...(input.reasoning_effort ? { reasoningEffort: input.reasoning_effort } : {}),

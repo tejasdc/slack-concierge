@@ -23,6 +23,7 @@ export type ProviderAliasKey =
   | "cx-terra"
   | "cx-luna"
   | "google"
+  | "google-high"
   | "google-flash";
 
 const CLAUDE_MODELS = {
@@ -57,7 +58,7 @@ const CODEX_MODELS = {
 // Google's current paid AI Pro CLI offers Argon High as its strongest Gemini mode.
 // Keep Flash selectable only by an explicit model choice. A withdrawn choice
 // must close the request as a failed start rather than wait for an answer.
-const GOOGLE_MODELS = { high: "gemini-4-argon-high", flash: "gemini-3.8-flash-high" } as const;
+const GOOGLE_MODELS = { medium: "gemini-4-argon-medium", high: "gemini-4-argon-high", flash: "gemini-3.8-flash-high" } as const;
 
 /**
  * Every model this system can select, and what it is called in front of Tejas.
@@ -101,6 +102,7 @@ const MODEL_LABELS: Record<SelectableModel, string> = {
   "gpt-6-astra": "GPT-6 Astra",
   "gemini-3.8-flash-high": "Gemini 3.8 Flash (High)",
   "gemini-4-argon-high": "Gemini 4 Argon (High)",
+  "gemini-4-argon-medium": "Gemini 4 Argon (Medium)",
 };
 
 /**
@@ -270,7 +272,7 @@ export const PROVIDER_DEFAULT_REASONING_EFFORT: Record<ProviderId, ReasoningEffo
 // model-name alias; they keep their historical meaning so nothing in flight
 // changes, and exact alias matching always wins over effort parsing.
 export const PROVIDER_ALIASES = {
-  cc: { provider: "claude-code", model: CLAUDE_MODELS.fable },
+  cc: { provider: "claude-code", model: CLAUDE_MODELS.opus },
   "cc-fast": { provider: "claude-code", model: CLAUDE_MODELS.haiku },
   "cc-medium": { provider: "claude-code", model: CLAUDE_MODELS.sonnet },
   "cc-fable": { provider: "claude-code", model: CLAUDE_MODELS.fable },
@@ -285,7 +287,8 @@ export const PROVIDER_ALIASES = {
   "cx-sol": { provider: "codex", model: CODEX_MODELS.sol },
   "cx-terra": { provider: "codex", model: CODEX_MODELS.terra },
   "cx-luna": { provider: "codex", model: CODEX_MODELS.luna },
-  google: { provider: "antigravity", model: GOOGLE_MODELS.high },
+  google: { provider: "antigravity", model: GOOGLE_MODELS.medium },
+  "google-high": { provider: "antigravity", model: GOOGLE_MODELS.high },
   "google-flash": { provider: "antigravity", model: GOOGLE_MODELS.flash },
 } satisfies Record<ProviderAliasKey, ProviderAliasTarget>;
 

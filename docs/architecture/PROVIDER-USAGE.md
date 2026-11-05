@@ -975,6 +975,13 @@ removed from the owner's session view; thnkr.ing's banner, its component and its
 
 The owner serves `GET /sessions/v1/usage/breakdown?period=today|week`; agents get the
 same read through `router-actions.sh sessions usage --by-session --period today|week`.
+The read now includes `callMix` for all calls, each account, and each session:
+total calls, helper and main calls, helper share, and each model's call share.
+Codex helper transcripts identify their parent thread; nested helpers follow that
+chain back to the session. It also counts accepted Fable/Astra escalation events
+and accepted agent-shell Astra command starts from the owner's escalation log
+by model. This measures model calls, not price or task quality, and the transcript
+scanner's `computedAt` bounds freshness.
 Today starts at midnight in the owner's saved-work time zone; week means the last
 seven days. A separate worker reads provider transcripts incrementally and keeps its
 cursor and deduplicated usage records in `usage-breakdown.db` beside, never inside,
