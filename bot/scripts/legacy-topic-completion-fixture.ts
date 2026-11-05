@@ -37,7 +37,8 @@ try {
   const inboxId=Number(inbox.session.id.slice(10));updateSessionMetadata(inboxId,{inbox:true});
   const current=run();
   const root=retainSessionInput({sessionId:inboxId,scope:'surface:thinkering',actionId:'legacy-human-root',kind:'input',origin:'human',payload:{text:'Check why my message stayed queued.'}}).input;
-  const created=topicsCommand(current.actor,{verb:'create',action_id:'legacy-topic',title:'Queued message',roots:[root.id]});
+  const area=topicsCommand(current.actor,{verb:'area.create',action_id:'legacy-area',name:'Legacy completion fixture'}).area;
+  const created=topicsCommand(current.actor,{verb:'create',action_id:'legacy-topic',title:'Queued message',roots:[root.id],area_ids:[area.id]});
   const topicId=created.topic.topicId;
   const added=topicsCommand(current.actor,{verb:'request.add',request_id:topicId,action_id:'legacy-request',title:'Explain and resolve the queue',
     sources:[root.id],brief:'Check the queue, recover it if needed, and explain the outcome.'});
