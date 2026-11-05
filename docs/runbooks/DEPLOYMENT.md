@@ -546,9 +546,10 @@ applies its ten-second hang bound to each child operation, not to the sum of bun
 all sequential wrapper invocations. It streams numbered start/completion markers to retained
 stderr and reports exit status, signal and elapsed time on child failure. The controller's
 180-second presentation deadline still bounds the complete sequence; no assertion is skipped.
-The controller's commands whose output it reads (candidate preparation, the current and
-last-known-good release reads, the adoptability check and activation) keep both streams when they
-fail: the newest 20 failures stay in `/var/lib/slack-concierge-deployment/command-failures/`,
+The controller's commands whose output it reads and whose failure stops the update (the run
+claim and show, the desired-commit read, the migration backup, candidate preparation, the current
+and last-known-good release reads, the adoptability check and activation) keep both streams when
+they fail, with stderr still streaming to the journal as it is written: the newest 20 failures stay in `/var/lib/slack-concierge-deployment/command-failures/`,
 their tails and that path join the release error, and a repair handoff copies them into the
 incident's `failed-command/` folder (`stdout.log`, `stderr.log`, `status.json`). Before this, a
 failing activation's JSON error was captured and then lost when the script stopped (incident

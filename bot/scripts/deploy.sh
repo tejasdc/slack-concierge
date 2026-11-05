@@ -141,9 +141,14 @@ checkout_deployment_commit() {
   local target
   git -C "$REPO" fetch origin main
   if [ -n "$DEPLOY_RUN_ID" ]; then
-    local recorded
-    recorded=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" desired \
-      --run-id "$DEPLOY_RUN_ID" | jq -r '.desired_commit // empty')
+    local recorded status=0
+    run_retaining_output desired-commit env CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" desired \
+      --run-id "$DEPLOY_RUN_ID" || status=$?
+    if [ "$status" -ne 0 ]; then
+      DEPLOY_FAILURE_REASON="$DEPLOY_FAILURE_REASON $FAILED_COMMAND_SUMMARY"
+      return "$status"
+    fi
+    recorded=$(printf '%s\n' "$CAPTURED_OUTPUT" | jq -r '.desired_commit // empty')
     [ -z "$recorded" ] || DEPLOY_DESIRED_COMMIT=$recorded
   fi
   target=${DEPLOY_DESIRED_COMMIT:-$(git -C "$REPO" rev-parse origin/main)}
@@ -219,10 +224,15 @@ handoff_from_concierge_service() {
 }
 
 claim_deployment_run() {
-  local claim_output claim_status
+  local claim_output claim_status status=0
   [ -n "$DEPLOY_RUN_ID" ] || return 0
-  claim_output=$(CONCIERGE_RELEASE_OFFLINE="${CONCIERGE_RELEASE_OFFLINE:-${CONCIERGE_BOOTSTRAP_STOPPED:-0}}" CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" claim \
-    --run-id "$DEPLOY_RUN_ID" --owner-pid "$DEPLOY_OWNER_PID")
+  run_retaining_output deployment-claim env CONCIERGE_RELEASE_OFFLINE="${CONCIERGE_RELEASE_OFFLINE:-${CONCIERGE_BOOTSTRAP_STOPPED:-0}}" CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" claim \
+    --run-id "$DEPLOY_RUN_ID" --owner-pid "$DEPLOY_OWNER_PID" || status=$?
+  if [ "$status" -ne 0 ]; then
+    DEPLOY_FAILURE_REASON="$DEPLOY_FAILURE_REASON $FAILED_COMMAND_SUMMARY"
+    return "$status"
+  fi
+  claim_output=$CAPTURED_OUTPUT
   printf '%s\n' "$claim_output"
   claim_status=$(printf '%s\n' "$claim_output" | jq -er '.status')
   DEPLOY_DESIRED_COMMIT=$(printf '%s\n' "$claim_output" | jq -r '.desired_commit // empty')
@@ -668,10 +678,16 @@ run_retaining_output() {
   FAILED_COMMAND_SUMMARY=""
   stderr_file=$(mktemp)
   set +e
-  CAPTURED_OUTPUT=$("$@" 2>"$stderr_file")
+  # stderr streams to the journal as it is written (an owner wait can last 90 s) and to the file;
+  # the substitution waits for tee so the file is complete before it is read.
+  CAPTURED_OUTPUT=$(
+    "$@" 2> >(tee "$stderr_file" >&2)
+    command_status=$?
+    wait "$!" 2>/dev/null
+    exit "$command_status"
+  )
   status=$?
   set -e
-  if [ -s "$stderr_file" ]; then cat "$stderr_file" >&2; fi
   if [ "$status" -ne 0 ]; then
     # Printed here too, because a caller that stops on the failure never prints it.
     if [ -n "$CAPTURED_OUTPUT" ]; then printf '%s\n' "$CAPTURED_OUTPUT"; fi
@@ -695,7 +711,14 @@ retain_failed_command_output() {
   # The newest 20 failures are kept, like candidate-check evidence.
   ls -1dt "$root"/*/ 2>/dev/null | tail -n +21 | xargs -r rm -rf --
   FAILED_COMMAND_EVIDENCE_DIR="$directory"
-  FAILED_COMMAND_SUMMARY="The $label command exited $status. stdout: $(tail -c 2000 "$directory/stdout.log") stderr: $(tail -c 2000 "$directory/stderr.log") complete output: $directory"
+  FAILED_COMMAND_SUMMARY="The $label command exited $status. stdout: $(tail -c 2000 "$directory/stdout.log") stderr: $(tail -c 2000 "$directory/stderr.log") complete output: $directory (a repair incident keeps its own copy in its failed-command folder)"
+}
+
+# A failure the update recovered from (a newer commit superseded the candidate) is not evidence
+# for whatever fails later.
+forget_failed_command_output() {
+  FAILED_COMMAND_EVIDENCE_DIR=""
+  FAILED_COMMAND_SUMMARY=""
 }
 
 # The incident keeps the failing command's own streams beside the repair agent's log, so neither
@@ -716,7 +739,7 @@ prepare_candidate_release() {
     --run-id "$DEPLOY_RUN_ID" --commit "$DEPLOYED_COMMIT" || status=$?
   output=$CAPTURED_OUTPUT
   if [ "$status" -ne 0 ]; then
-    if candidate_advanced; then return 0; fi
+    if candidate_advanced; then forget_failed_command_output; return 0; fi
     detail=$(printf '%s\n' "$output" | jq -c '{status,error}' 2>/dev/null || printf '%s' "$output")
     # The release manager bounds each stream; retain both tails in the durable
     # failure reason as well as its full JSON line in the deploy journal.
@@ -740,7 +763,7 @@ prepare_candidate_release() {
     fi
   fi
   if [ -z "$running_artifact" ] || [ -z "$rollback_artifact" ]; then
-    if candidate_advanced; then return 0; fi
+    if candidate_advanced; then forget_failed_command_output; return 0; fi
     DEPLOY_FAILURE_REASON="The installed and last-known-good releases could not be identified, so the candidate's compatibility with agents already running could not be proven. $FAILED_COMMAND_SUMMARY"
     PREFLIGHT_REFUSED=1
     return 1
@@ -750,7 +773,7 @@ prepare_candidate_release() {
     --running "$running_artifact" --rollback "$rollback_artifact" || status=$?
   output=$CAPTURED_OUTPUT
   if [ "$status" -ne 0 ]; then
-    if candidate_advanced; then return 0; fi
+    if candidate_advanced; then forget_failed_command_output; return 0; fi
     DEPLOY_FAILURE_REASON="The candidate release cannot take back agents that are still running in execution hosts: ${output:0:2400} $FAILED_COMMAND_SUMMARY"
     # Nothing was activated: the running release stays exactly as it is (no restore, no restart).
     PREFLIGHT_REFUSED=1
@@ -962,8 +985,14 @@ restore_last_known_good_and_start_repair() {
 }
 
 recover_interrupted_candidate_if_needed() {
-  local run activation_state candidate_commit prior_status
-  run=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" show --run-id "$DEPLOY_RUN_ID")
+  local run activation_state candidate_commit prior_status status=0
+  run_retaining_output deployment-show env CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" show --run-id "$DEPLOY_RUN_ID" \
+    || status=$?
+  if [ "$status" -ne 0 ]; then
+    DEPLOY_FAILURE_REASON="$DEPLOY_FAILURE_REASON $FAILED_COMMAND_SUMMARY"
+    return "$status"
+  fi
+  run=$CAPTURED_OUTPUT
   activation_state=$(printf '%s\n' "$run" | jq -r '.activation_state // empty')
   [ "$activation_state" = "intended" ] || [ "$activation_state" = "active" ] || return 0
   candidate_commit=$(printf '%s\n' "$run" | jq -er '.candidate_commit')
@@ -1093,11 +1122,19 @@ deploy() {
     local migration_backup candidate_migration="$REPO/bot/scripts/migrate-deployment-repair.ts"
     # The release being installed decides from its own schema whether the ledger needs a copy; a
     # release whose migrator predates that decision is copied unconditionally, as before.
+    local migration_status=0
     if grep -q -- '--backup-if-needed' "$candidate_migration" 2>/dev/null; then
-      migration_backup=$(cd "$REPO/bot" && CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$candidate_migration" --backup-if-needed)
+      run_retaining_output migration-backup env -C "$REPO/bot" CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$candidate_migration" --backup-if-needed \
+        || migration_status=$?
     else
-      migration_backup=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$MIGRATION_SCRIPT" --backup-only)
+      run_retaining_output migration-backup env CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$MIGRATION_SCRIPT" --backup-only \
+        || migration_status=$?
     fi
+    if [ "$migration_status" -ne 0 ]; then
+      DEPLOY_FAILURE_REASON="$DEPLOY_FAILURE_REASON $FAILED_COMMAND_SUMMARY"
+      return "$migration_status"
+    fi
+    migration_backup=$CAPTURED_OUTPUT
     echo "$migration_backup"
     MIGRATION_BACKUP_PATH=$(printf '%s\n' "$migration_backup" | jq -r '.backup_path // empty')
     DEPLOY_FAILURE_REASON="No verified immutable last-known-good release was available for rollback."
