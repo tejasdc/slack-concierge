@@ -70,15 +70,40 @@ class WorkersAiEngine implements EmbeddingEngine {
   stop(){}
 }
 
+/**
+ * Where a local engine listens and how many threads it computes with.
+ *
+ * Two engines run the same model file (its pages are shared, so the second costs about 140 MB).
+ * The shared one on port 8796 does Concierge's indexing and serves every other local caller
+ * (thnkr.ing's note meanings and Reader queries, agents' experiments). Concierge's own question
+ * embeddings go to a private one on a socket in its state folder, so a bulk caller on the shared
+ * port never makes a session search wait: on 2026-11-05 an agent embedding 904 failure cases there
+ * held searches to their 6 s limit.
+ *
+ * Threads and polling come from measurements on the saturated box (load ~54 on 12 cores, same
+ * day): with 4 threads that spin while they wait for each other, one query took 6-17 s and the
+ * engine burned up to 3.6 cores; with 1 thread and no spinning it took 0.15-0.28 s; 2 threads with
+ * no spinning took 0.3-1.9 s and keep the shared engine's throughput for batches.
+ */
+type EngineSeat={socket:string|null;threads:number;parallel:number};
+const SHARED_SEAT:EngineSeat={socket:null,threads:2,parallel:4};
+// In Concierge's state folder, which agents' launches do not see; a socket path longer than the
+// kernel's limit (about 104 bytes on macOS) falls back to /tmp.
+const QUERY_SEAT=(stateDir:string):EngineSeat=>{const inState=join(stateDir,'meaning-query.sock');return {socket:inState.length<100?inState:`/tmp/concierge-meaning-query-${hash(stateDir).slice(0,12)}.sock`,threads:1,parallel:2};};
+
 /** One llama.cpp server process, started on first use; CPU only, because the box's Vulkan path failed in September. */
 class LocalEngine implements EmbeddingEngine {
   readonly model=`llama.cpp:${MODEL.split('/').pop()}`;
   readonly batch=INDEX_BATCH;
   private child:ChildProcess|null=null;
   private ready:Promise<void>|null=null;
+  constructor(private readonly seat:EngineSeat=SHARED_SEAT){}
   installed(){return existsSync(SERVER)&&existsSync(MODEL);}
   servable(){return true;}
-  private async healthy(){try{return (await fetch(`http://127.0.0.1:${PORT}/health`,{signal:AbortSignal.timeout(1_000)})).ok;}catch{return false;}}
+  private call(path:string,init:RequestInit={}){
+    return this.seat.socket?fetch(`http://localhost${path}`,{...init,unix:this.seat.socket} as RequestInit):fetch(`http://127.0.0.1:${PORT}${path}`,init);
+  }
+  private async healthy(){try{return (await this.call('/health',{signal:AbortSignal.timeout(1_000)})).ok;}catch{return false;}}
   private start():Promise<void> {
     if(this.ready)return this.ready;
     this.ready=this.spawnOrAdopt();
@@ -87,10 +112,17 @@ class LocalEngine implements EmbeddingEngine {
   }
   /** An engine left on the port by an earlier Concierge process is used rather than fought: a second one could not bind and would exit in a loop. */
   private async spawnOrAdopt():Promise<void> {
-    if(await this.healthy()){log('info','meaning_engine_adopted',{port:PORT});return;}
+    const where=this.seat.socket??PORT;
+    if(await this.healthy()){log('info','meaning_engine_adopted',{at:where});return;}
+    // A socket file left by an engine that died would stop the new one from listening.
+    if(this.seat.socket)rmSync(this.seat.socket,{force:true});
+    const listen=this.seat.socket?['--host',this.seat.socket]:['--host','127.0.0.1','--port',String(PORT)];
+    // 2048 tokens per slot, whatever the slot count: a passage or question is far shorter.
+    const context=String(2048*this.seat.parallel);
     // The engine dies with Concierge: stopped on exit below, and killed by the kernel if Concierge
     // is killed outright, so an update restart never finds a leftover engine (2026-10-07).
-    const child=spawn('nice',['-n','10','setpriv','--pdeathsig','KILL',SERVER,'-m',MODEL,'--embedding','--host','127.0.0.1','--port',String(PORT),'-c','8192','-b','2048','-ub','2048','-np','4','-t','4','--device','none','--log-disable'],{stdio:'ignore'});
+    const child=spawn('nice',['-n','10','setpriv','--pdeathsig','KILL',SERVER,'-m',MODEL,'--embedding',...listen,'-c',context,'-b','2048','-ub','2048','-np',String(this.seat.parallel),'-t',String(this.seat.threads),'--poll','0','--device','none','--log-disable'],{stdio:'ignore'});
+    log('info','meaning_engine_started',{at:where,threads:this.seat.threads});
     this.child=child;
     child.on('exit',code=>{if(this.child===child){this.child=null;this.ready=null;log('warn','meaning_engine_exited',{code});}});
     child.on('error',error=>{if(this.child===child){this.child=null;this.ready=null;log('warn','meaning_engine_failed',{error:error.message});}});
@@ -108,7 +140,7 @@ class LocalEngine implements EmbeddingEngine {
     const deadline=AbortSignal.timeout(timeoutMs);
     await Promise.race([this.start(),new Promise<never>((_,reject)=>deadline.addEventListener('abort',()=>reject(new Error('meaning engine did not start in time')),{once:true}))]);
     let response:Response;
-    try{response=await fetch(`http://127.0.0.1:${PORT}/v1/embeddings`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({input:texts}),signal:deadline});}
+    try{response=await this.call('/v1/embeddings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({input:texts}),signal:deadline});}
     catch(error){
       // An engine that stopped answering (adopted and then gone, or hung) is replaced on the next call.
       if(!(await this.healthy())){this.child?.kill();this.child=null;this.ready=null;}
@@ -145,7 +177,10 @@ export class MeaningIndex {
   private timer:ReturnType<typeof setTimeout>|null=null;private caughtUp=false;private stopped=false;private failure:string|null=null;
   /** Called once, the first time indexing finds nothing left to read: every passage then has this model's vector. */
   onComplete:(()=>void)|null=null;
-  constructor(path:string,private readonly titleOf:(sessionId:number)=>string|null,private readonly engine:EmbeddingEngine=new LocalEngine()) {
+  constructor(path:string,private readonly titleOf:(sessionId:number)=>string|null,private readonly engine:EmbeddingEngine=new LocalEngine(),
+    /** Embeds questions (searches and callers comparing a question): its own engine when local, so indexing and other callers never delay one. Same model as engine. */
+    private readonly questions:EmbeddingEngine=engine) {
+    if(questions.model!==engine.model)throw new Error(`question engine ${questions.model} differs from index engine ${engine.model}`);
     // The index is derived from the ledger and rebuilt from it, so its commits never wait for the
     // disk: a sync here ran on the owner's event loop and stalled it under agent disk load
     // (2026-10-10). A power loss can then leave it unreadable, which is answered by rebuilding.
@@ -201,7 +236,7 @@ export class MeaningIndex {
     const out:Float32Array[]=[];
     for(let start=0;start<texts.length;start+=this.engine.batch){
       while(this.searching>0)await Bun.sleep(50);
-      out.push(...await this.engine.embed(texts.slice(start,start+this.engine.batch).map(text=>QUERY_PREFIX+text.slice(0,PASSAGE_CHARS))));
+      out.push(...await this.questions.embed(texts.slice(start,start+this.engine.batch).map(text=>QUERY_PREFIX+text.slice(0,PASSAGE_CHARS))));
     }
     return out;
   }
@@ -358,8 +393,13 @@ export class MeaningIndex {
       this.timer=setTimeout(tick,worked?50:this.failure?IDLE_POLL_MS*5:IDLE_POLL_MS);
     };
     this.timer=setTimeout(tick,5_000);
+    // Loading the model takes seconds; pay it now rather than inside the first search's 6 s. The
+    // shared engine is started too, because thnkr.ing's Reader expects it on port 8796 even when
+    // the index has nothing new to embed.
+    for(const engine of new Set([this.engine,this.questions]))if(engine instanceof LocalEngine)
+      engine.embed([QUERY_PREFIX+'warm up'],60_000).catch(error=>log('warn','meaning_engine_warmup_failed',{error:error instanceof Error?error.message:String(error)}));
   }
-  stop(){this.stopped=true;if(this.timer)clearTimeout(this.timer);this.engine.stop();this.held?.db.close();this.held=null;this.store.close();}
+  stop(){this.stopped=true;if(this.timer)clearTimeout(this.timer);this.engine.stop();if(this.questions!==this.engine)this.questions.stop();this.held?.db.close();this.held=null;this.store.close();}
   /** Archive hits resolve to the exact source, version and event the archive holds now, so a stale vector never names a changed file. */
   private resolveArchive(archive:Database,key:string):MeaningHit['target']|null {
     try{
@@ -379,7 +419,7 @@ export class MeaningIndex {
     if(!indexed)return {available:false,hits:[],reason:'The meaning index is still being built.',indexed,pending:true};
     let vector:Float32Array;
     this.searching++;
-    try{[vector]=(await this.engine.embed([QUERY_PREFIX+query.slice(0,PASSAGE_CHARS)],6_000)) as [Float32Array];}
+    try{[vector]=(await this.questions.embed([QUERY_PREFIX+query.slice(0,PASSAGE_CHARS)],6_000)) as [Float32Array];}
     catch(error){return {available:false,hits:[],reason:`Meaning search unavailable: ${error instanceof Error?error.message:String(error)}`,indexed,pending:!this.caughtUp};}
     finally{this.searching--;}
     return this.ranked(vector,limit,indexed);
@@ -391,7 +431,7 @@ export class MeaningIndex {
   /** A question embedded at search priority: indexing steps aside for it as it does for a search, where queryVectors waits behind searches. */
   async questionVector(query:string):Promise<Float32Array> {
     this.searching++;
-    try{const [vector]=await this.engine.embed([QUERY_PREFIX+query.slice(0,PASSAGE_CHARS)],6_000) as [Float32Array];return vector;}
+    try{const [vector]=await this.questions.embed([QUERY_PREFIX+query.slice(0,PASSAGE_CHARS)],6_000) as [Float32Array];return vector;}
     finally{this.searching--;}
   }
   searchVector(vector:Float32Array,limit:number):MeaningSearch {
@@ -453,7 +493,7 @@ export function startMeaningIndex(stateDir:string,titleOf:(sessionId:number)=>st
   process.once('exit',()=>{for(const index of running)try{index.stop();}catch{}});
   const cloud=new WorkersAiEngine();
   if(!cloud.installed()){
-    shared=new MeaningIndex(legacyPath,titleOf);shared.start();running.add(shared);
+    shared=new MeaningIndex(legacyPath,titleOf,new LocalEngine(),new LocalEngine(QUERY_SEAT(stateDir)));shared.start();running.add(shared);
     return shared;
   }
   // Beside the local index's real file, which lives on the ledger's own disk behind a link. One
@@ -463,7 +503,7 @@ export function startMeaningIndex(stateDir:string,titleOf:(sessionId:number)=>st
   running.add(primary);
   const local=new LocalEngine();
   if((primary.complete&&primary.servable())||!local.installed()){shared=primary;primary.start();return shared;}
-  const standby=new MeaningIndex(legacyPath,titleOf,local);
+  const standby=new MeaningIndex(legacyPath,titleOf,local,new LocalEngine(QUERY_SEAT(stateDir)));
   running.add(standby);
   shared=standby;standby.start();
   primary.onComplete=()=>{
