@@ -909,6 +909,9 @@ addColumn("turns", "status_desired_text", "status_desired_text TEXT");
 addColumn("turns", "status_desired_revision", "status_desired_revision INTEGER NOT NULL DEFAULT 0");
 addColumn("turns", "status_projected_revision", "status_projected_revision INTEGER NOT NULL DEFAULT 0");
 addColumn("turns", "status_projection_status", "status_projection_status TEXT NOT NULL DEFAULT 'not_needed'");
+// The minute recovery pass must inspect pending legacy statuses without scanning
+// every retained turn on the interactive owner loop.
+db.exec("CREATE INDEX IF NOT EXISTS turns_pending_status_projection ON turns(id) WHERE status_projection_status='pending'");
 addColumn("turns", "status_projection_attempts", "status_projection_attempts INTEGER NOT NULL DEFAULT 0");
 addColumn("turns", "status_projection_error", "status_projection_error TEXT");
 addColumn("turns", "status_projection_next_attempt_ms", "status_projection_next_attempt_ms INTEGER");
