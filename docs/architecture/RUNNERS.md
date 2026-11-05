@@ -10,7 +10,7 @@ Codex setting failed startup on 2026-11-04 and was rolled back; the repaired sta
 awaits integration and runtime proof by the detached controller. `claude-code/runner`
 earned its survival proof in the 2026-11-05 acceptance restart (execution `b212ed3c76cd9766`, taken
 over live by the restarted owner). Command and file watches run on the registering agent's runner. **Still on the owner's machine:** Google and outside-Codex hosts,
-artifacts, the provider account readings and sign-ins, and project checkouts (a runner
+the provider account readings and sign-ins, and project checkouts (a runner
 must have the same folders). The AX41's Codex App Server is started and supervised by the runner, and
 a Codex thread's shell names the runner's folders, never the owner's (2026-11-05). Concierge's own thnkr.ing
 calls already use thnkr.ing's network entrance. The owner therefore
@@ -198,7 +198,6 @@ after one such run was taken over live by a later owner. Until then updates wait
 - Google turns and outside Codex hosts stay local. Google's launch first reads the owner's own
   `~/.gemini` settings (the paid-credit guard), and an outside run's prompt file is written into the
   owner's state folder, which runners hide; both need the runner-side account step below first.
-- Artifacts (a turn's files to deliver) are found and read in the turn's folder on the owner's disk.
 - Provider account usage readings, sign-in commands and history writes read the owner's home.
 - Project folders: the job names an absolute folder; a runner must have the same checkout layout, and
   the Claude command's hook settings name the owner's release path, so a runner on another machine
@@ -324,7 +323,7 @@ Why not the job protocol: these are reads and idempotent starts the owner alread
 retries per poll; leases, events and fencing would add ledger writes to every five-second watch poll.
 Why not a port on the runner: runners open none.
 
-Users: durable watches ([watches](WATCHES.md), `watch-machine.ts`, methods `watch.*`).
+Users: durable watches ([watches](WATCHES.md), `watch-machine.ts`, methods `watch.*`). Turn artifacts need none: only the retired Slack presentation makes an artifact folder; a native turn makes none.
 
 ## Concierge's own thnkr.ing calls (built)
 
