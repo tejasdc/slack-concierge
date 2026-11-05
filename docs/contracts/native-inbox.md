@@ -663,6 +663,15 @@ request receipt. A direct forwarded reply remains one human conversation message
 internal carrier request withheld from Conversation. The source message's route disclosure
 points to that carrier request for details; routing the same source into several destinations
 produces several entries under that source, not a guessed destination from the latest turn.
+Routing one exact Inbox message to an existing session keeps the source thread as the
+request's answer destination. The route receipt shows where the message went; the
+recipient's final answer posts once under that exact message, including when the
+recipient runs on a peer machine. The request's final event and the thread post have
+stable identities, so retrying delivery neither resends the work nor duplicates the
+answer. The request cannot be marked delivered to its conversation merely because the
+agent settled it in its own session. Before this rule, route-message deliberately
+suppressed the thread answer and marked the final event received, leaving a settled
+request and a waiting card with no visible answer (Nov 5 Cloudflare copy question).
 
 A router turn that routes Tejas's input and explicitly declares `done` has no second conversation reply
 from its closing text, including the owner relay for an agent-authored routed input. The closing

@@ -1433,12 +1433,12 @@ export class SessionCommunicationCoordinator {
         }
         // The thread this request works for, decided here and recorded on the request, so its
         // returns are filed there whatever input started the turn that sent it.
-        const threadRoot=routedFrom?null:inboxRequestThread(getSessionById(actor.session)!,input.thread);
+        const threadRoot=routedFrom?.root??inboxRequestThread(getSessionById(actor.session)!,input.thread);
         if(threadRoot&&(typeof input.summary!=='string'||!input.summary.trim()||/[\r\n]/.test(input.summary)))
             throw new Error('A thread request needs a one-line summary for its visible handoff.');
         const currentInput=actor.inputId?getAcceptedSessionInput(actor.inputId):null;
-        const threadSourceMessageId=threadRoot&&currentInput?.origin==='human'
-            &&inboxThreadRoot(actor.session,currentInput.id)===threadRoot?currentInput.id:input.thread;
+        const threadSourceMessageId=routedFrom?.messageId??(threadRoot&&currentInput?.origin==='human'
+            &&inboxThreadRoot(actor.session,currentInput.id)===threadRoot?currentInput.id:input.thread);
         if(input.return_to_requester!==undefined&&input.return_to_requester!==true)
             throw new Error('Requester returns must be explicitly enabled.');
         const title=normalizeSessionTitle(input.title);
@@ -1639,7 +1639,7 @@ export class SessionCommunicationCoordinator {
             });
             const chatgptText = isHisChat ? input.text : `${input.text}\n\n${chatgptRequestLine()}`;
             const firstInput={text:toChatgpt?chatgptText:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${history?.text?`${history.text}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
-            if(routedFrom)firstInput.text=`This request carries Tejas’s exact Inbox message ${routedFrom.messageId} into this session. Answer here; the original thread displays only its routing receipt.\n\n${firstInput.text}`;
+            if(routedFrom)firstInput.text=`This request carries Tejas’s exact Inbox message ${routedFrom.messageId} into this session. Reply to this request; the answer appears under that message in its original thread.\n\n${firstInput.text}`;
             if(input.provider) {
                 const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,summary:input.summary,smallTask:input.smallTask,outside:input.outside,onRunner:input.onRunner,standingRole,firstInput,saved:input.saved});
                 target={session:created.session_id,channel:null,root:null,native:true};
@@ -1800,7 +1800,6 @@ export class SessionCommunicationCoordinator {
     private answerThread(request:RequestRow):{root:string;forwarded:{inboxInputId:string}|null}|null {
         if(!request.source_input_id)return null;
         const payload=JSON.parse(request.payload_json);
-        if(payload.routedMessage)return null;
         const forwarded=payload.forwardedReply;
         if(forwarded&&typeof forwarded.inboxInputId==='string'){
             const route=messageRouteForSource(forwarded.inboxInputId);
@@ -1808,7 +1807,7 @@ export class SessionCommunicationCoordinator {
             return {root:route&&'topicId' in route?route.messageId:request.thread_root_input_id??request.source_input_id,forwarded};
         }
         const inbox=getSessionById(request.source_session_id);
-        const root=inboxRequestRoot(db,request.request_id,request.thread_root_input_id);
+        const root=inboxRequestRoot(db,request.request_id,request.thread_root_input_id??payload.routedFrom?.root??null);
         if(!root||!inbox||!sessionMetadata(inbox).inbox||!topicOfRoot(root))return null;
         return {root,forwarded:null};
     }
@@ -1823,12 +1822,13 @@ export class SessionCommunicationCoordinator {
         const route=forwarded?.inboxInputId?messageRouteForSource(forwarded.inboxInputId):null;
         if(route&&'sessionId' in route)return false;
         const inbox=getSessionById(request.source_session_id);
-        const root=route&&'topicId' in route?route.messageId:inboxRequestRoot(db,request.request_id,request.thread_root_input_id??(forwarded?request.source_input_id:null));
+        const routedFrom=JSON.parse(request.payload_json).routedFrom;
+        const root=route&&'topicId' in route?route.messageId:inboxRequestRoot(db,request.request_id,request.thread_root_input_id??routedFrom?.root??(forwarded?request.source_input_id:null));
         if(!root||!inbox||!sessionMetadata(inbox).inbox||!topicOfRoot(root))return false;
         const responder=getSessionById(request.target_session_id);
         const title=responder?sessionMetadata(responder).title??null:null;
         postAgentAnswer({inboxSessionId:request.source_session_id,eventId:event.event_id,requestId:request.request_id,root,
-            inboxInputId:forwarded?.inboxInputId??root,respondingSessionId:`concierge:${request.target_session_id}`,respondingTitle:title,
+            inboxInputId:forwarded?.inboxInputId??routedFrom?.messageId??root,respondingSessionId:`concierge:${request.target_session_id}`,respondingTitle:title,
             text:`You stopped ${title?`“${title}”`:'this agent'} at ${noticeTime(db,declared.output.stoppedAtMs)}; its work on this ended there.`,
             attachments:[],stalled:true,final:true,workDisposition:null,hisInputId:null,quiet:'Stopped by Tejas',
             messageThreadRootId:typeof forwarded?.messageThreadRootId==='string'?forwarded.messageThreadRootId:null});
@@ -1839,9 +1839,10 @@ export class SessionCommunicationCoordinator {
     }
     private postThreadAnswer(request:RequestRow,event:EventRow,declared:any,thread:{root:string;forwarded:{inboxInputId:string}|null}) {
         const responder=getSessionById(request.target_session_id);
-        const forwarded=JSON.parse(request.payload_json).forwardedReply;
+        const requestPayload=JSON.parse(request.payload_json);
+        const forwarded=requestPayload.forwardedReply;
         postAgentAnswer({inboxSessionId:request.source_session_id,eventId:event.event_id,requestId:request.request_id,root:thread.root,
-            inboxInputId:thread.forwarded?.inboxInputId??thread.root,respondingSessionId:`concierge:${request.target_session_id}`,
+            inboxInputId:thread.forwarded?.inboxInputId??requestPayload.routedFrom?.messageId??thread.root,respondingSessionId:`concierge:${request.target_session_id}`,
             respondingTitle:responder?sessionMetadata(responder).title??null:null,text:String(declared.replyBody??declared.text??''),todoId:typeof declared.todoId==='string'?declared.todoId:null,
             attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],
             stalled:event.kind==='overdue'||!!declared.stalled||(!declared.source&&declared.outcome!=='answered'),final:event.kind==='final',
@@ -2621,7 +2622,8 @@ export class SessionCommunicationCoordinator {
             for (const notice of db.query("SELECT accepted_input_id FROM session_communication_events WHERE request_id=? AND kind='overdue' AND accepted_input_id IS NOT NULL").all(request.request_id) as {accepted_input_id:string}[])
                 db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled'),updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id IS NULL AND steering_id IS NULL AND json_extract(coalesce(receipt_json,'{}'),'$.state') IS NULL").run(notice.accepted_input_id);
         if(routedMessage||(forwardedRoute&&'sessionId' in forwardedRoute)){
-            withdrawUnstartedServiceInput(`return:${event.event_id}`,'Answer retained in the destination session.');
+            if(routedMessage&&event.kind==='final'&&!alreadyPostedInThread)throw new Error('The routed message has no answer in its Inbox thread.');
+            withdrawUnstartedServiceInput(`return:${event.event_id}`,routedMessage?'Answer posted in the source Inbox thread.':'Answer retained in the destination session.');
             db.query("UPDATE session_communication_events SET status='received',error=NULL WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
             return;
         }
