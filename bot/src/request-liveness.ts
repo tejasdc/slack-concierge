@@ -75,12 +75,14 @@ export function waitingOnDependency(sessionId: number, requestId: string, sinceM
             AND (watch.state IN ('accepted','observing') OR watch.delivery_state='pending')
             AND (EXISTS (SELECT 1 FROM session_communication_requests request
                 JOIN session_communication_events reply ON reply.request_id=request.request_id AND reply.kind='progress'
+                JOIN watches named ON named.watch_id=json_extract(reply.payload_json,'$.waitingOnWatch')
                 WHERE request.request_id=? AND request.target_session_id=? AND request.outcome IS NULL AND request.created_at_ms>=?
-                  AND json_extract(reply.payload_json,'$.waitingOnWatch')=watch.watch_id)
+                  AND coalesce(named.series_id,named.watch_id)=coalesce(watch.series_id,watch.watch_id))
               OR EXISTS (SELECT 1 FROM session_peer_deliveries request
                 JOIN session_peer_replies reply ON reply.request_id=request.request_id AND reply.kind='progress'
+                JOIN watches named ON named.watch_id=json_extract(reply.payload_json,'$.waitingOnWatch')
                 WHERE request.request_id=? AND request.target_session_id=? AND request.closed_at_ms IS NULL AND request.created_at_ms>=?
-                  AND json_extract(reply.payload_json,'$.waitingOnWatch')=watch.watch_id)) LIMIT 1`)
+                  AND coalesce(named.series_id,named.watch_id)=coalesce(watch.series_id,watch.watch_id))) LIMIT 1`)
             .get(sessionId,requestId,sessionId,sinceMs,requestId,sessionId,sinceMs)
         || waitingOnLiveRequest(sessionId, sinceMs, untakenAnswers);
 }
