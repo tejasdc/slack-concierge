@@ -3,7 +3,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import type { Action } from "./router-post";
 import { RETRY_POLICIES, type RetryPolicy } from "../src/retry-policies";
 import { nextRetry } from "../src/retry-core";
-import {OWNER_COMMAND_RESPONSE_MS} from '../src/owner-transport-policy';
+import {OWNER_COMMAND_RESPONSE_MS,ownerNeverReached} from '../src/owner-transport-policy';
 
 // Concierge restarts for a few seconds whenever it updates, and an agent's helper call can land
 // in that gap. Sending it once and giving up turned a routine update into a failed reply or a
@@ -14,7 +14,6 @@ import {OWNER_COMMAND_RESPONSE_MS} from '../src/owner-transport-policy';
 //   everything there without one is a read; a GET reads. Project creation and sharing carry no
 //   identity, so after a possible delivery they are reported unconfirmed, never resent.
 // The same serialized body is resent every time; no attempt mints a new action id.
-const NEVER_REACHED = new Set(["FailedToOpenSocket", "ECONNREFUSED", "ENOENT", "ConnectionRefused"]);
 
 export type OwnerUnconfirmed = { ok: false; status: 0; result: { ok: false; error: "owner_unconfirmed"; detail: string; attempts: number; retry: { path: string; action_id: string | null; resend_is_safe: boolean } } };
 
@@ -70,8 +69,7 @@ export function resendIsSafe(path: string, body?: unknown) {
 }
 
 function failureKind(error: unknown): "never-reached" | "maybe-reached" {
-  const code = (error as { code?: unknown })?.code;
-  return typeof code === "string" && NEVER_REACHED.has(code) ? "never-reached" : "maybe-reached";
+  return ownerNeverReached(error) ? "never-reached" : "maybe-reached";
 }
 
 export async function requestApiResponse(path: string, body?: unknown, policy: RetryPolicy = RETRY_POLICIES.ownerRestart) {

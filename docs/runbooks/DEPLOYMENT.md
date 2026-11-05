@@ -546,6 +546,18 @@ applies its ten-second hang bound to each child operation, not to the sum of bun
 all sequential wrapper invocations. It streams numbered start/completion markers to retained
 stderr and reports exit status, signal and elapsed time on child failure. The controller's
 180-second presentation deadline still bounds the complete sequence; no assertion is skipped.
+The controller's commands whose output it reads (candidate preparation, the current and
+last-known-good release reads, the adoptability check and activation) keep both streams when they
+fail: the newest 20 failures stay in `/var/lib/slack-concierge-deployment/command-failures/`,
+their tails and that path join the release error, and a repair handoff copies them into the
+incident's `failed-command/` folder (`stdout.log`, `stderr.log`, `status.json`). Before this, a
+failing activation's JSON error was captured and then lost when the script stopped (incident
+dba27ddf, 2026-11-04). Every release and deployment-run call the controller makes to the serving
+owner waits for its request socket to accept the connection, on the same bounded owner-restart
+policy agents' helper calls use (90 seconds), because Concierge can restart while an update
+runs; only a request that provably never reached the owner, or a read, is sent again, and each
+wait is a `deployment_owner_socket_wait` line in the deploy journal. Failure recording stops
+waiting at once when the service is fully stopped and records offline, as before.
 A desired commit whose
 run failed is not run again; the next push to `main` starts a fresh run.
 
