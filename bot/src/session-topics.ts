@@ -15,7 +15,7 @@ import type {OpenNeed} from './session-turn-outcome';
 import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 import {errorFields,log} from './log';
 import {readTodos,STEP_ASKS,type TodoState} from './question-todos';
-import {latestWorkerProgress} from './worker-progress';
+import {topicCurrentWorkers} from './topic-current-workers';
 import {approvalDecision} from './decision-approval';
 import {hisWordsLine,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
 import {deviceQuestionNamesPhysicalPrerequisite} from './agent-reachable-app-question';
@@ -750,11 +750,15 @@ function topicWork(topic:StoredTopic,roots:string[],index:WorkIndex,entries:Entr
   // since. That is the router's job, shown to him so nobody has to read logs to know it is owed.
   const unrelayed=unrelayedFinal(roots,entries);
   if(unrelayed)return {kind:'result_waiting' as const,text:'An agent\'s answer came back and has not been relayed to you',returnInputId:unrelayed.inputId,since:unrelayed.at};
-  // Every agent working the thread, each with the newest progress it reported, so the Brief can
-  // say what is happening without anyone relaying it (see worker-progress.ts).
+  // A session can hold several requests for the same thread. They are separate deliveries,
+  // but one working agent in the Brief; accepted session handoffs move open requests to the
+  // successor session, so the current target ID remains the stable grouping key.
   const working=index.dispatches.filter(item=>item.root&&roots.includes(item.root));
-  if(working.length)return {kind:'worker_working' as const,text:'Handed to another agent',sessionId:working[0]!.sessionId,
-    workers:working.map(item=>({sessionId:item.sessionId,title:item.title,progress:latestWorkerProgress(db,item.requestId)}))};
+  if(working.length){
+    const current=topicCurrentWorkers(db,working);
+    return {kind:'worker_working' as const,text:current.length===1?`With ${current[0]!.title}`:`With ${current.length} agents`,
+      sessionId:current[0]!.sessionId,workers:current};
+  }
   return {kind:'idle' as const,text:''};
 }
 /**
