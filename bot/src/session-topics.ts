@@ -3913,6 +3913,9 @@ export function migrateInboxTopics(options:{batch?:number}={}) {
         if(topicOfRoot(root))continue;
         const input=getAcceptedSessionInput(root);
         if(!input){manifest.unresolved.push({inputId:root,reason:'no retained input'});continue;}
+        // Agent coordination, returned answers and service upkeep have their own receipts.
+        // A root in the Inbox transcript does not make them requests from Tejas.
+        if(!humanAuthored(input)&&!routableMessage(input))continue;
         const at=iso(input.created_at)??entry.at;
         // A topic belongs to the active Inbox, whichever Inbox session its thread was
         // accepted in: a provider/cwd cutover created new sessions, and Tejas has one Inbox.
@@ -3942,6 +3945,43 @@ export function migrateInboxTopics(options:{batch?:number}={}) {
   log('info','inbox_topics_migrated',{session_id:session.id,roots:manifest.roots,topics:manifest.topics,
     requests:manifest.requests,questions:manifest.questions,unresolved:manifest.unresolved.length});
   return {migrated:true,manifest};
+}
+
+/** Retire migration-created bookkeeping requests through owner events, keeping their history. */
+export function retireRecoveredBookkeepingRequests() {
+  const session=inboxSession();
+  if(!session)return {retired:0};
+  refreshRootMemo();
+  const replies=readIndex(session.id,true).humanReplies;
+  const by:TopicBy={kind:'owner',sessionId:`concierge:${session.id}`};
+  let retired=0;
+  const candidates=db.query("SELECT topic_id FROM inbox_topics WHERE session_id=? AND recovered=1 AND state='open'")
+    .all(session.id) as {topic_id:string}[];
+  for(const {topic_id:topicId} of candidates) {
+    const roots=topicRoots(topicId);
+    if(roots.length!==1||replies.has(roots[0]!))continue;
+    const input=getAcceptedSessionInput(roots[0]!);
+    if(!input||humanAuthored(input)||routableMessage(input)||isServiceNotice(input.id))continue;
+    const requests=topicRequests(topicId);
+    if(requests.length!==1||requests[0]!.state!=='open'||requests[0]!.sources.length!==1
+      ||requests[0]!.sources[0]!.inputId!==input.id||topicQuestions(topicId).length)continue;
+    const request=requests[0]!;
+    const at=nowIso(),reason='Recovered agent or service bookkeeping is not a request from Tejas.';
+    db.transaction(()=>{
+      const topic=topicRow(topicId);
+      const closedRequest={...request,state:'closed' as const,disposition:'superseded',
+        closure:{by,at,reason,evidence:[input.id]},revision:request.revision+1,updatedAt:at};
+      const next=bumped(topic);
+      recordOwnerTopicChange(session.id,`topic-bookkeeping-retired:${request.requestId}`,'topic_request',
+        {change:'request_closed',topicId,topic:next,request:closedRequest,by,reason,revision:next.revision});
+      // Request closure may automatically close the topic. If work is still running, the
+      // receipt remains available and the normal owner pass closes it after that work ends.
+      closeThreadIfFinished(topicId,'bookkeeping retired');
+    })();
+    retired++;
+  }
+  if(retired)log('info','inbox_recovered_bookkeeping_retired',{session_id:session.id,retired});
+  return {retired};
 }
 
 const ATTENTION_MIGRATION_VERSION=2;

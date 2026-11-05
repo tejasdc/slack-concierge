@@ -759,13 +759,17 @@ identity and these per-input facts. The routing preamble was prefixed to every i
 September 23, 2026; the attention rule moved there before its release.
 
 Migration runs once at owner startup, guarded by a `topics_migration` event with
-`version:1`, and is additive, resumable and safe while the Inbox is live: one topic per
-existing thread root (`recovered:1`), one open request per topic with that root as its
-source and its dispatches linked, and one open question per legacy attention entry, which
-retains the entry's id so answering it clears the entry. Nothing is closed, notified,
-dispatched or deleted, and the manifest `{roots,topics,requests,questions,unresolved}` is
-written into the guard event and logged as counts only. New roots stay unplaced until the
-router or a human places them; they appear as the `sorting` pile on the topics read.
+`version:1`. Only a human-authored Inbox root or a marked, routable agent capture can
+become a recovered request. Agent coordination, returned answers and service upkeep
+remain in their exact receipts; a transcript root alone grants no human-work standing.
+For each eligible root the migration creates one topic (`recovered:1`), one open request
+with its linked dispatches, and one question per legacy attention entry retaining its id.
+The manifest `{roots,topics,requests,questions,unresolved}` is written into the guard event.
+An owner-ledger correction retires previously recovered bookkeeping requests only when their
+topic has one nonhuman, nonroutable root, one request sourced solely to that root, no questions
+and no human reply. It keeps the source input, agent receipts and topic history, and never
+closes a human-authored request. New human roots stay unplaced until the router or a human
+files them; they appear as the `sorting` pile on the topics read.
 
 ## Filing before stopping
 
