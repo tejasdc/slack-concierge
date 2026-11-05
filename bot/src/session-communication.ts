@@ -650,35 +650,32 @@ export class SessionCommunicationCoordinator {
             WHERE session.agent_session_uuid=? AND turn.status IN ('running','delivering') ORDER BY turn.id DESC LIMIT 1`)
             .get(input.provider_session_id) as {turn_id:number;session_id:number}|null;
         if(!running)return {kind:null};
-        let newest=true;
         for(const row of db.query(`SELECT id,payload_json FROM session_inputs WHERE turn_id=? ORDER BY rowid DESC LIMIT 50`).all(running.turn_id) as {id:string;payload_json:string}[]){
             const payload=JSON.parse(row.payload_json);
             const need=payload?.machineNeed??payload?.firstInput?.machineNeed;
             const kind=need?.kind;
-            if(typeof kind==='string'&&kind&&(kind!=='provider-renewal'||newest)){
+            if(typeof kind==='string'&&kind&&kind!=='provider-renewal'){
                 const accepted=getAcceptedSessionInput(row.id);
                 const provenance=accepted?sessionInputProvenance(accepted):null;
                 return {kind,why:typeof need.why==='string'?need.why:'',
                     humanInputId:provenance?.originatingHuman?.inputId,effectScope:provenance?.effectScope};
             }
-            // A return to the worker carries the original renewal input as its request source.
-            // Other turns in the same session never inherit this browser exception.
-            if(newest){
-                const sources=db.query(`SELECT DISTINCT request.source_input_id FROM session_communication_events event
+            // A renewal remains current while its exact accepted request is open in this
+            // turn. A later budget or progress input cannot erase that request's custody.
+            // Other turns in the same session do not inherit the browser exception.
+            const sources=db.query(`SELECT DISTINCT request.source_input_id FROM session_communication_events event
                     JOIN session_communication_requests request ON request.request_id=event.request_id
                     WHERE event.accepted_input_id=? AND request.source_session_id=?`).all(row.id,running.session_id) as {source_input_id:string}[];
-                const sourceInput=sources.length===1?sources[0]!.source_input_id:row.id;
-                const peerRenewal=db.query(`SELECT 1 FROM session_peer_deliveries WHERE target_input_id=? AND target_session_id=?
+            const sourceInput=sources.length===1?sources[0]!.source_input_id:row.id;
+            const peerRenewal=db.query(`SELECT 1 FROM session_peer_deliveries WHERE target_input_id=? AND target_session_id=?
                     AND closed_at_ms IS NULL AND json_extract(origin_provenance_json,'$.machineNeed.kind')='provider-renewal'`)
-                    .get(sourceInput,running.session_id);
-                if(peerRenewal)return {kind:'provider-renewal'};
-                const renewal=db.query(`SELECT action_id FROM session_external_requests WHERE target_input_id=? AND agent_name='signin-renewal' AND outcome IS NULL`).get(sourceInput) as {action_id:string}|null;
-                if(renewal){
-                    const notices=db.query(`SELECT key FROM repair_notices WHERE kind IN ('claude_signin_expired','codex_signin_expired')`).all() as {key:string}[];
-                    if(notices.some(notice=>signInWorkerActionId(notice.key)===renewal.action_id))return {kind:'provider-renewal'};
-                }
+                .get(sourceInput,running.session_id);
+            if(peerRenewal)return {kind:'provider-renewal'};
+            const renewal=db.query(`SELECT action_id FROM session_external_requests WHERE target_input_id=? AND agent_name='signin-renewal' AND outcome IS NULL`).get(sourceInput) as {action_id:string}|null;
+            if(renewal){
+                const notices=db.query(`SELECT key FROM repair_notices WHERE kind IN ('claude_signin_expired','codex_signin_expired')`).all() as {key:string}[];
+                if(notices.some(notice=>signInWorkerActionId(notice.key)===renewal.action_id))return {kind:'provider-renewal'};
             }
-            newest=false;
         }
         return {kind:null};
     }
@@ -1113,6 +1110,11 @@ export class SessionCommunicationCoordinator {
         request_id: string;
     }) {
         const actor = this.actor(input.source);
+        const outside=db.query('SELECT agent_name,target_session_id FROM session_external_requests WHERE request_id=?').get(input.request_id) as {agent_name:string;target_session_id:number}|null;
+        if(outside){
+            if(actor.session!==outside.target_session_id)throw new Error('Request is outside this session.');
+            return this.externalGet(outside.agent_name,input.request_id);
+        }
         if (this.dependencies.peers && !this.local(input.request_id) && (this.dependencies.peers.owns(input.request_id) || this.dependencies.peers.hasDelivery(input.request_id)))
             return this.dependencies.peers.get(this.peerActor(actor), input.request_id);
         const row = this.row(input.request_id);
