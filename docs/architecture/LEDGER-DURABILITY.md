@@ -1,5 +1,13 @@
 # Ledger durability off the owner's loop
 
+## Measuring event write pressure
+
+The owner emits `session_event_write_rate` once a minute when it has written session events. Its
+`by_kind` values count inserted events and the transactions that began outside any existing
+transaction (`rootCommits`). These are exact counts for this write path, not totals for every
+ledger table. Compare them with WAL commit-frame counts when investigating overall ledger write
+pressure. The metric contains event kinds and counts only, never message content or IDs.
+
 ## Problem
 
 SQLite's default commit (`synchronous=FULL`) syncs the write-ahead log on the calling thread, and
