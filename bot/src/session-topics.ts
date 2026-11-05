@@ -3368,7 +3368,10 @@ function questionAgents(question:StoredQuestion,routerAddress:string):string[] {
     const row=db.query('SELECT * FROM inbox_requests WHERE request_id=?').get(owner.requestId) as any|null;
     if(row)dispatchIds=toStoredRequest(row).dispatches.map((dispatch:any)=>String(dispatch?.requestId??''));
   }
-  return [...new Set(dispatchIds.map(id=>workRow(id)?.target).filter((target):target is string=>!!target))];
+  // Only the agent holding the newest work: an older attempt's agent is no longer waiting on this.
+  const newest=dispatchIds.map(id=>workRow(id)).filter((work):work is Work=>!!work?.target)
+    .sort((left,right)=>right.createdAtMs-left.createdAtMs)[0];
+  return newest?.target?[newest.target]:[];
 }
 /**
  * A ready question Tejas has open that the agent holding this attempt was already waiting on when
