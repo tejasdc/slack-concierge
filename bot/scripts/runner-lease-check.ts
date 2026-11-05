@@ -62,4 +62,21 @@ assert.deepEqual(leases.finish('ax41',rebuilt.attemptId,1,'finish-1',{ok:true}),
 assert.deepEqual(leases.finish('ax41',rebuilt.attemptId,1,'finish-1',{ok:false}),{finished:true,repeated:true,result:{ok:true}});
 assert.equal(code(()=>leases.finish('ax41',rebuilt.attemptId,1,'finish-2',null)),'CONFLICT');
 assert.equal(leases.job('build-1')!.state,'finished');
-console.log('runner leases: claim, contiguous events, commands, epoch fencing, computed expiry and idempotent finish hold');
+// Owner restarts: a lease is extended from now only while its runner was heard from within a lease,
+// so a dead runner's turn cannot be kept open by restarting the owner again and again.
+leases.enqueue({jobId:'turn-2',kind:'turn',payload:{}});
+const quiet=leases.claim('ax41',['turn'])!;
+const lastHeard=now;
+for(let restart=1;restart<=5;restart++){now+=LEASE_MS-60_000;leases.extendLiveLeases();}
+assert.equal(leases.job('turn-2')!.state,'unconfirmed','Restarts stop extending a runner silent for a lease.');
+assert.ok(now-lastHeard<=5*LEASE_MS);
+leases.enqueue({jobId:'turn-3',kind:'turn',payload:{}});
+const heard=leases.claim('ax41',['turn'])!;
+now+=LEASE_MS-60_000;
+leases.heartbeat('ax41',heard.attemptId,1);
+now+=LEASE_MS-60_000;
+assert.equal(leases.extendLiveLeases(),1,'A runner heard from within the lease keeps its lease across a restart.');
+assert.equal(leases.job('turn-3')!.state,'leased');
+void quiet;
+
+console.log('runner leases: claim, contiguous events, commands, epoch fencing, computed expiry, idempotent finish and bounded restart extension hold');

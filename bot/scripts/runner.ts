@@ -36,6 +36,20 @@ if(!owner||!tokenFile||!stateDir){console.error('CONCIERGE_OWNER_URL, CONCIERGE_
 const token=readFileSync(tokenFile,'utf8').trim();
 mkdirSync(stateDir,{recursive:true,mode:0o700});
 const held=join(stateDir,'attempts.json');
+/**
+ * When this runner last reached the owner, for its hosts: each host stops its agent once this is
+ * older than RUNNER_FENCE_MS, so an agent never outlives a runner that went down for good.
+ */
+const ownerContactFile=join(stateDir,'owner-contact');
+let contactWrittenAt=0;
+const recordOwnerContact=()=>{
+  const now=Date.now();
+  if(now-contactWrittenAt<5_000)return;
+  contactWrittenAt=now;
+  // A failure here would stop every agent at the fencing time, so it is said out loud.
+  try{writeFileSync(ownerContactFile+'.tmp',String(now),{mode:0o600});renameSync(ownerContactFile+'.tmp',ownerContactFile);}
+  catch(error){say('runner_owner_contact_write_failed',{error:String(error)});}
+};
 const once=process.argv.includes('--once');
 const kinds=(process.env.CONCIERGE_RUNNER_KINDS??'probe,turn,codex').split(',').map(kind=>kind.trim()).filter(Boolean);
 const maxTurns=Number(process.env.CONCIERGE_RUNNER_MAX_TURNS)||64;
@@ -63,6 +77,12 @@ async function read(path:string):Promise<any> {
   if(!response.ok)throw new OwnerRefusal(result.detail??result.error??`HTTP ${response.status}`,result.error,response.status);
   return result;
 }
+/**
+ * A 404 on `sync`: this owner has no sync route (an older release answers `NOT_FOUND` or an unknown
+ * route). The current owner never answers 404 there: per-attempt refusals come inside a 200 and
+ * request failures are 400 or 503.
+ */
+const ownerWithoutRunners=(error:unknown)=>error instanceof OwnerRefusal&&error.status===404;
 const lostCustody=(error:unknown)=>error instanceof OwnerRefusal&&(error.code==='STALE_EPOCH'||error.code==='UNKNOWN_ATTEMPT');
 
 async function runProbe(job:{jobId:string;attemptId:string;epoch:number;payload:any}) {
@@ -188,6 +208,7 @@ class Turn {
    * unconfirmed, or another copy of this runner took it. The local host is stopped only in the
    * first case; a newer copy of this daemon keeps it.
    */
+  abandon(why:string){this.lose(new Error(why));}
   private lose(error:unknown) {
     if(this.stopped)return;
     say('runner_turn_custody_lost',{job:this.job.jobId,error:String(error)});
@@ -216,7 +237,8 @@ class Turn {
       if(!existsSync(manifest.cwd))throw new HostNotStartedError(`the turn's folder ${manifest.cwd} does not exist on this runner`);
       await startHost({stateDir:stateDir!,executionId:this.executionId,routerBotDir:botDir,
         hiddenPaths:(process.env.CONCIERGE_RUNNER_HIDE_PATHS??'').split(':').filter(Boolean),
-        manifest:{executable,args:manifest.args,cwd:manifest.cwd,environment:this.environment,initialInput:manifest.initialInput,initialMeta:manifest.initialMeta}});
+        manifest:{executable,args:manifest.args,cwd:manifest.cwd,environment:this.environment,initialInput:manifest.initialInput,initialMeta:manifest.initialMeta,
+          ownerContact:{file:ownerContactFile,fenceMs:RUNNER_FENCE_MS}}});
     } catch(error) {
       if(error instanceof HostNotStartedError)return this.finish({notStarted:error.message});
       // The supervisor may have started it without answering: custody below decides.
@@ -341,7 +363,7 @@ if(Object.keys(before).length){
   for(;;){
     fenceStale();
     answer=await call('reacquire',{attemptIds:Object.keys(before)}).catch(error=>{say('runner_reacquire_retry',{error:String(error)});return null;});
-    if(answer)break;
+    if(answer){recordOwnerContact();break;}
     await Bun.sleep(5_000);
   }
   const {attempts}=answer;
@@ -378,8 +400,14 @@ setInterval(async()=>{
     let budget=2_000_000;
     const sent=[...turns.values()].map(turn=>{const events=turn.outgoing(Math.max(64_000,budget));budget-=events.reduce((sum,event)=>sum+JSON.stringify(event.frame).length,0);return {turn,events};});
     const {attempts}=await call('sync',{attempts:sent.map(({turn,events})=>({...turn.attempt,events}))});
+    recordOwnerContact();
     for(const answer of attempts)turns.get(answer.attemptId)?.synced(answer);
-  } catch(error){say('runner_sync_failed',{error:String(error)});}
+  } catch(error){
+    say('runner_sync_failed',{error:String(error)});
+    // An owner that does not know the runner routes at all (a rollback to a release without them)
+    // has already settled these turns as lost: stop their agents now, not after the fencing time.
+    if(ownerWithoutRunners(error))for(const turn of [...turns.values()])turn.abandon('the owner does not speak the runner protocol');
+  }
   finally{syncing=false;}
 },500);
 
@@ -443,6 +471,7 @@ for(let idle=0;;) {
   const offered=turns.size>=maxTurns?jobKinds.filter(kind=>kind!=='turn'):jobKinds;
   const {job}=offered.length?await call('claim',{kinds:once?['probe']:offered}).catch(error=>{say('runner_claim_failed',{error:String(error)});return {job:null};}):{job:null};
   if(job){
+    recordOwnerContact();
     if(job.kind==='turn'){
       const turn=new Turn(job,job.epoch);
       turns.set(job.attemptId,turn);

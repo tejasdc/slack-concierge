@@ -162,7 +162,7 @@ export class RunnerLeases {
         const attempt=this.db.query('SELECT * FROM runner_attempts WHERE attempt_id=?').get(attemptId) as Attempt|null;
         if(!attempt||attempt.runner!==runner||attempt.state!=='live')return {attemptId,stale:true as const};
         const lease=this.now()+LEASE_MS;
-        this.db.query('UPDATE runner_attempts SET epoch=epoch+1,lease_expires_at_ms=? WHERE attempt_id=?').run(lease,attemptId);
+        this.db.query('UPDATE runner_attempts SET epoch=epoch+1,lease_expires_at_ms=?,last_contact_at_ms=? WHERE attempt_id=?').run(lease,this.now(),attemptId);
         return {attemptId,stale:false as const,epoch:attempt.epoch+1,leaseExpiresAtMs:lease,ackedSeq:attempt.acked_seq};
       });
     }).immediate();
@@ -182,7 +182,7 @@ export class RunnerLeases {
     return this.db.transaction(()=>{
       const attempt=this.holding(runner,attemptId,epoch);
       const lease=this.now()+LEASE_MS;
-      this.db.query('UPDATE runner_attempts SET lease_expires_at_ms=? WHERE attempt_id=?').run(lease,attemptId);
+      this.db.query('UPDATE runner_attempts SET lease_expires_at_ms=?,last_contact_at_ms=? WHERE attempt_id=?').run(lease,this.now(),attemptId);
       const commands=(this.db.query(`SELECT command_id,kind,body_json FROM runner_commands
         WHERE job_id=? AND result_at_ms IS NULL ORDER BY created_at_ms,command_id`).all(attempt.job_id) as {command_id:string;kind:string;body_json:string}[])
         .map(row=>({commandId:row.command_id,kind:row.kind,body:JSON.parse(row.body_json)}));
@@ -218,13 +218,17 @@ export class RunnerLeases {
   }
 
   /**
-   * At the owner's start, before adoption: every live lease is extended from now, so the owner's own
-   * downtime never counts against a runner that was waiting for it. A runner that really died still
-   * expires one lease later.
+   * At the owner's start, before adoption: a live lease whose runner was heard from within the last
+   * lease is extended from now, so the owner's own downtime never counts against a runner that was
+   * waiting for it. One not heard from for a whole lease is left to pass: its runner has stopped its
+   * agents by then (it fences at RUNNER_FENCE_MS), and extending it again on every restart would keep
+   * a dead runner's turn open as long as the owner kept restarting. A lease therefore never outlasts
+   * its runner's last contact by more than two lease lengths.
    */
   extendLiveLeases() {
-    return this.db.query(`UPDATE runner_attempts SET lease_expires_at_ms=MAX(lease_expires_at_ms,?) WHERE state='live'`)
-      .run(this.now()+LEASE_MS).changes;
+    const now=this.now();
+    return this.db.query(`UPDATE runner_attempts SET lease_expires_at_ms=MAX(lease_expires_at_ms,?)
+      WHERE state='live' AND COALESCE(last_contact_at_ms,started_at_ms)>?`).run(now+LEASE_MS,now-LEASE_MS).changes;
   }
 
   /**

@@ -254,7 +254,9 @@ export async function startHost(input: {
   stateDir: string; executionId: string; routerBotDir: string; runtime?: string; priority?: HostPriority;
   /** Paths the host's unit cannot see at all (systemd InaccessiblePaths); a runner hides the owner's state. */
   hiddenPaths?: string[];
-  manifest: { executable: string; args: string[]; cwd: string; environment: Record<string, string>; initialInput: string; initialMeta?: Record<string, unknown> };
+  manifest: { executable: string; args: string[]; cwd: string; environment: Record<string, string>; initialInput: string; initialMeta?: Record<string, unknown>;
+    /** On a runner: the file where the runner records each time it reached the owner, and how long the host waits without one. */
+    ownerContact?: { file: string; fenceMs: number } };
 }): Promise<HostLaunch> {
   const directory = executionDirectory(input.stateDir, input.executionId);
   // Everything before the supervisor is asked is a definite refusal: nothing can be running.

@@ -169,10 +169,20 @@ What happens for a turn on a runner:
    takeover as live (survival proof) only once the runner reaches it after the takeover.
    A runner process restarted after four minutes without contact stops those agents before taking
    its turns back. An owner outage longer than four minutes therefore still ends runner agents (now
-   by the runner's own stop). Known gaps: a runner process that stays down while its hosts run has no
-   host-side deadline; and rolling back to a release without runner support settles runner turns as
-   lost at once, so for up to four minutes a runner on another machine may still run the old agent
-   while a new turn starts in the same conversation.
+   by the runner's own stop).
+8. **Deadlines that need no live runner.** The runner records each time it reaches the owner (a
+   claim, a sync, a reacquire) in `owner-contact` in its state folder, and every host it starts
+   reads that file (`ownerContact` in the launch manifest): once the last contact is older than the
+   fencing time, the host journals a `SIGTERM` and stops its provider itself (and `SIGKILL` 30 s
+   later if it has not exited), so a runner that died and stayed down cannot leave an agent acting.
+   A runner whose sync is answered 404 is talking to an owner without the sync route (a rollback to an
+   older release, which has already settled these turns as lost) and stops its agents at once instead
+   of after the fencing time; the current owner never answers 404 there. A rollback to a release
+   without the agents' entrance at all (before 01d246f6) refuses the connection, so only the fencing
+   time covers it. A runner rolled back to a release that does not write `owner-contact` leaves hosts
+   started by this one to stop their agents at the fencing time. At its start the owner extends only leases whose runner was heard from within the
+   last lease, so restarting the owner repeatedly cannot keep a dead runner's turn open; a lease
+   never outlasts its runner's last contact by more than two lease lengths.
 
 Survival through owner updates uses the existing rule: `claude-code/runner` counts as surviving only
 after one such run was taken over live by a later owner. Until then updates wait for runner turns.
@@ -327,11 +337,13 @@ Sources: [GetActivityTask](https://docs.aws.amazon.com/step-functions/latest/api
   relay and the next request opens a new one. `--real-app-server` asks this machine's real App Server
   `model/list` through the runner (2026-11-04 on the AX41: 8 models answered).
 - `bot/scripts/runner-lease-check.ts`: claim, contiguous events, commands, epoch fencing, computed
-  expiry (turn unconfirmed, build requeued) and idempotent finish.
+  expiry (turn unconfirmed, build requeued), idempotent finish, and owner restarts that stop extending
+  a runner silent for a lease.
 - `bot/scripts/runner-turn-check.ts` (needs systemd; not in the build): the real runner daemon starts
   real hosts for a scripted provider; output, follow-up receipts, attachment bytes, the runner-built
   environment (no owner variable leaks), release after settlement, a coordinator taking the run back,
-  a killed and restarted runner continuing with every host frame stored once in order, and the two
+  a killed and restarted runner continuing with every host frame stored once in order, a host whose
+  runner died with an old last contact stopping its own provider (`SIGTERM` journaled), and the two
   unstarted refusals (command not found, no runner claimed).
 - Live, 2026-11-04 on release 75faaa3d: over `100.118.245.110:8789` a call without a token got 401,
   the token route 403 and a process-control route 404; probe `probe:live-8623-20261104` was queued

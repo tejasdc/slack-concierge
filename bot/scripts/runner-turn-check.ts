@@ -40,7 +40,10 @@ const {RunnerHostAccess,turnJobId}=await import('../src/runner-host-access');
 const {HostedClaudeCodeTransport,HostNotStartedError,newExecutionId}=await import('../src/execution-host-client');
 
 const key=agentTokenKey(ownerState);
+// A rollback stand-in: an older owner had runner routes but no sync, and answered NOT_FOUND.
+let olderOwner=false;
 const server=Bun.serve({port:0,hostname:'127.0.0.1',idleTimeout:0,fetch:async request=>{
+  if(olderOwner&&new URL(request.url).pathname.endsWith('/sync'))return Response.json({ok:false,error:'NOT_FOUND'},{status:404});
   // The gateway's rule: a verified token names the principal; nothing else may.
   const token=request.headers.get('authorization')?.replace(/^Bearer /,'')??'';
   const verified=verifyAgentToken(key,token);
@@ -112,6 +115,10 @@ try {
   const attachmentPath=join(root,'attachments-'+first,'note.txt');
   const one=runTurn(first,'launch',{files:[{path:attachmentPath,base64:Buffer.from('bytes from the owner').toString('base64')}]});
   await until(()=>one.lines.includes('out:hello'),'the opening input to be answered');
+  // A live runner keeps its owner contact fresh (every host reads it as its deadline).
+  await Bun.sleep(1_500);
+  const contact=Number(readFileSync(join(runnerState,'owner-contact'),'utf8'));
+  assert.ok(Date.now()-contact<10_000,`The runner records its owner contact while it syncs (${Date.now()-contact} ms old).`);
   const env=one.lines.find(line=>line.startsWith('env '))!;
   assert.match(env,new RegExp(`state=${runnerState} `),"The provider's state folder is the runner's.");
   assert.match(env,new RegExp(`owner=${ownerUrl.replace(/[.]/g,'\\.')} `),'The runner supplies its owner address.');
@@ -152,6 +159,34 @@ try {
     .map(row=>JSON.parse(row.frame_json)).filter(frame=>frame.k==='host').map(frame=>frame.f.s);
   assert.deepEqual(seqs,seqs.map((_,index)=>index+1),'Every host frame is stored once, in order, across the runner restart.');
   assert.equal(await new RunnerHostAccess(second).release(),true);
+
+  // 3b. The runner dies and stays down: once its last contact with the owner is older than the
+  // fencing time, the host stops its agent by itself (no runner is left to do it).
+  const orphaned=newExecutionId();executionIds.push(orphaned);
+  const lonely=runTurn(orphaned,'launch',{stdin:'alone'});
+  await until(()=>lonely.lines.includes('out:alone'),'the third turn to answer');
+  await stopRunner('SIGKILL');
+  const {RUNNER_FENCE_MS}=await import('../src/runner-leases');
+  const {streamJournal,executionDirectory}=await import('../src/execution-host-client');
+  writeFileSync(join(runnerState,'owner-contact'),String(Date.now()-RUNNER_FENCE_MS-1_000));
+  let fencedExit:any=null;
+  for(let tries=0;tries<40&&!fencedExit;tries++){
+    for await(const frame of streamJournal(executionDirectory(runnerState,orphaned)))if(frame.k==='x')fencedExit=frame.d;
+    if(!fencedExit)await Bun.sleep(1_000);
+  }
+  assert.equal(fencedExit?.signal,'SIGTERM',`The host stopped its provider at the deadline: ${JSON.stringify(fencedExit)}`);
+  startRunner();
+
+  // 3c. A rollback to an owner without the sync route: the runner stops its agents at once.
+  const rolledBack=newExecutionId();executionIds.push(rolledBack);
+  const doomed=runTurn(rolledBack,'launch',{stdin:'before-rollback'});
+  await until(()=>doomed.lines.includes('out:before-rollback'),'the rollback turn to answer');
+  olderOwner=true;
+  const rollbackAt=Date.now();
+  await until(()=>spawnSync('systemctl',['is-active',`concierge-exec-${rolledBack}.service`]).stdout.toString().trim()!=='active',
+    'the runner to stop its agent when the owner lost the sync route',20_000);
+  assert.ok(Date.now()-rollbackAt<20_000);
+  olderOwner=false;
 
   // 4. A provider the runner cannot find: its definite refusal, nothing started.
   const missing=newExecutionId();
