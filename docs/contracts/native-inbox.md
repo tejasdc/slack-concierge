@@ -442,7 +442,12 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
 - Once nothing sent for an open request is running, an answer explicitly marked completed
   with a live check closes it `completed` under `refuseUnfinishedCompletion`. An honest
   `--not-checked` answer leaves the task open and returns verification to the router;
-  that verification does not repeat an acknowledged external effect. His own Stop
+  that verification does not repeat an acknowledged external effect. A reply that only
+  answers and changed nothing says so with `--nothing-changed "<what the answer rests on>"`
+  (shown as "Answered; nothing was changed: …") and closes like a checked completion:
+  there is nothing to see working, and on 2026-11-05 an honest not-checked answer to his
+  question (`req:forward:c3148684`) looped back to the router for a verification nobody
+  could do. Not-checked keeps meaning a change exists that nobody has seen working. His own Stop
   ends only the stopped attempt; the router is told not to restart it or its
   effects without new instruction. A reopened request records how many dispatches
   it already had. An answer from that earlier set cannot close it automatically again;

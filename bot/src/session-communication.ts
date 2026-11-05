@@ -1877,6 +1877,8 @@ export class SessionCommunicationCoordinator {
         approval_action?:string;
         checked?:string;
         not_checked?:string;
+        /** The replier's claim that the reply is only an answer and nothing was changed: what it rests on. */
+        nothing_changed?:string;
         all_done?:boolean;
         /** The receiving session's push-back: not-my-subject or too-loaded, with a failed disposition. */
         hand_back?:string;
@@ -1911,8 +1913,8 @@ export class SessionCommunicationCoordinator {
         if(asksHim&&input.workDisposition!=='needs_decision')
             throw new Error('Question fields belong to --work-disposition needs_decision.');
         const todoId=input.workDisposition==='needs_decision'?questionTodo(input):null;
-        if((input.checked!==undefined||input.not_checked!==undefined||input.all_done!==undefined)&&input.workDisposition!=='completed')
-            throw new Error('--checked, --not-checked and --all-done belong to --work-disposition completed.');
+        if((input.checked!==undefined||input.not_checked!==undefined||input.nothing_changed!==undefined||input.all_done!==undefined)&&input.workDisposition!=='completed')
+            throw new Error('--checked, --not-checked, --nothing-changed and --all-done belong to --work-disposition completed.');
         // A request that came with earlier work on the same problem is answered first by saying what
         // that work was and how this approach differs (request-history.ts). Without it the earlier
         // findings sat in the request unread; with it the requester, and Tejas in his thread, see that
@@ -1983,7 +1985,7 @@ export class SessionCommunicationCoordinator {
         if(input.workDisposition==='needs_decision'&&!outsideRequest)
             input={...input,text:questionForTejas({actorInputId:input.source.input_id??'',question:input.text,lead:input.summary,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can,decisionId:input.decision_id,approvalAction:input.approval_action})};
         else if(input.workDisposition==='completed')
-            input={...input,reply_body:input.text,text:completionWithCheck({text:input.text,checked:input.checked,notChecked:input.not_checked,allDone:input.all_done})};
+            input={...input,reply_body:input.text,text:completionWithCheck({text:input.text,checked:input.checked,notChecked:input.not_checked,nothingChanged:input.nothing_changed,allDone:input.all_done})};
         if(input.final&&['failed','needs_decision'].includes(input.workDisposition??'')&&input.openChatGptIds?.length)
             input={...input,text:`${input.text}\n\nChatGPT answers still owed: ${input.openChatGptIds.join(', ')}. The exact questions remain open for recovery; this report does not close them.`};
         if(outsideRequest)
@@ -2004,7 +2006,7 @@ export class SessionCommunicationCoordinator {
             const peer=this.peerActor(actor);
             const attachments=attached?this.retainAttachments(peer.inputId,input.action_id,'reply-file',input):[];
             return noted(this.dependencies.peers.reply(peer, {action_id:input.action_id,request_id:input.request_id,text:input.text,replyBody:input.reply_body,answerGroup:input.answer_group,
-                closingLine:input.final&&input.workDisposition?finalClosingLine(input.workDisposition,input.checked,input.not_checked):undefined,
+                closingLine:input.final&&input.workDisposition?finalClosingLine(input.workDisposition,{checked:input.checked,notChecked:input.not_checked,nothingChanged:input.nothing_changed}):undefined,
                 final:input.final,answersQuestion:input.answers_question,waitingOnWatch:input.waiting_on_watch,workDisposition:input.workDisposition,openChatGptIds:input.openChatGptIds,evidence:input.evidence,...(todoId?{todoId}:{}),...(attachments.length?{attachments}:{}),...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{}),...(input.notify?{notify:true}:{}),...(input.also_main_thread?{alsoMainThread:true}:{})}));
         }
         // Any request whose replies post into an Inbox thread can carry the answer to his question
@@ -2092,7 +2094,7 @@ export class SessionCommunicationCoordinator {
         const payload = { text: input.text, final: input.final, source: actor.source, responding_session_id: `concierge:${actor.session}`,
             ...(input.reply_body!==undefined?{replyBody:input.reply_body}:{}),
             ...(input.answer_group?{answerGroup:input.answer_group}:{}),
-            ...(input.final&&input.workDisposition?{closingLine:finalClosingLine(input.workDisposition,input.checked,input.not_checked)}:{}),
+            ...(input.final&&input.workDisposition?{closingLine:finalClosingLine(input.workDisposition,{checked:input.checked,notChecked:input.not_checked,nothingChanged:input.nothing_changed})}:{}),
             ...(input.summary?{summary:input.summary}:{}),
             ...(input.notify?{notify:true}:{}),
             ...(input.also_main_thread?{alsoMainThread:true}:{}),
