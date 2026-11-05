@@ -5,10 +5,9 @@ import { REMINDERS_SINCE_MS } from './request-liveness';
 import {threadOnlyReturnInputSql} from './inbox-request-root';
 
 /**
- * Every settled request owes its requester one return input. Delivery normally follows within
- * the same wake, so a settled result still without a return after the grace period has been
- * dropped somewhere, as completed work was on September 21, 2026 when it was retained instead
- * of returned. This audit makes that loud: one `session_return_undelivered` error per result.
+ * Every result that needs requester action owes it one return input. Delivery normally follows
+ * within the same wake, so an actionable result still without a return after the grace period has
+ * been dropped somewhere. This audit makes that loud: one `session_return_undelivered` error per result.
  * A requester that is paused or archived holds its result on purpose and is not reported, and an
  * answer the owner posted straight into an Inbox thread (`received` with no return input) has
  * reached its destination.
