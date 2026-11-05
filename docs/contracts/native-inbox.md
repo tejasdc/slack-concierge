@@ -453,7 +453,10 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   A failed,
   cancelled, handed-back or otherwise unfinished attempt leaves his request open. The owner
   gives the Inbox router a retained recovery input with the exact request and latest attempt.
-  A request with an open decision question waiting on Tejas gets no recovery input. A decision
+  A request with an open decision question waiting on Tejas gets no recovery input. So does a
+  request whose latest attempt is still unanswered with an agent that, when the attempt was sent,
+  already held a ready question waiting on him (its declaring agent, or the agent its linked
+  work went to), even in another request or thread. A decision
   question records its request on `owner.requestId`, derived when declared: the one open
   request its sources name, else the thread's only open request; with several open requests
   and no such evidence, `topics questions` refuses until the declaration names one or sets
