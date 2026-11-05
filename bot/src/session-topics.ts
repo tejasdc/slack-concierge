@@ -2465,7 +2465,9 @@ export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:num
     if(page.length<200)break;
     after=page.at(-1)!.question_id;
   }
-  const direct:{id:number}[]=typeof scope==='number'?[{id:scope}]:[];
+  const target=typeof scope==='number'?getSessionById(scope):null;
+  const direct:{id:number}[]=target&&(sessionMetadata(target).needs??[]).some(need=>need.outcome==='needs_you'&&!!need.todoId)
+    ?[{id:target.id}]:[];
   let afterSession=0;
   while(scope==='all'){
     const page=db.query(`SELECT id FROM sessions WHERE id>? AND native_metadata_json LIKE '%"todoId"%'
