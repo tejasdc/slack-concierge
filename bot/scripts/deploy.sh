@@ -612,6 +612,15 @@ install_systemd_unit() {
         return 1
       fi
     done
+    # A credential file the unit loads but this machine lacks would stop it from starting at all
+    # (thnkr.ing's owner token comes from remote-box's deploy).
+    local credential
+    for credential in $(sed -n 's/^LoadCredential=[^:]*://p' "$src"); do
+      if [ ! -f "$credential" ]; then
+        echo "DEPLOY FAILED: $unit loads $credential, which does not exist; deploy remote-box first." >&2
+        return 1
+      fi
+    done
     if ! cmp -s "$src" "$dest" 2>/dev/null; then
       install -m 0644 "$src" "$dest"
       echo "  installed $unit"

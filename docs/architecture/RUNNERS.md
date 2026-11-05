@@ -6,7 +6,8 @@ a runner" below): a new Claude turn can run on a runner, whose agents reach the 
 the network entrance. It is selected per session (`sessions ask --on-runner`) unless the owner sets
 `CONCIERGE_TURN_RUNNERS=all`. **Still on the owner's machine:** shared Codex App Server turns,
 Google and outside-Codex hosts, command and file watches, the provider account readings and
-sign-ins, and project checkouts (a runner must have the same folders). The owner therefore
+sign-ins, and project checkouts (a runner must have the same folders). Concierge's own thnkr.ing
+calls already use thnkr.ing's network entrance. The owner therefore
 **cannot move to the app server yet**; the remaining work is listed under "Not on runners yet".
 Decided plan: remote-box `docs/plans/2026-11-04-off-one-server-architecture.md` ("Decisions after
 review"), steps 2 and 3.
@@ -186,8 +187,22 @@ after one such run was taken over live by a later owner. Until then updates wait
 - Project folders: the job names an absolute folder; a runner must have the same checkout layout, and
   the Claude command's hook settings name the owner's release path, so a runner on another machine
   needs the same release installed.
-- Concierge's own thnkr.ing calls (thesaurus, to-dos, messages, native reads) still use Thinkering's
-  local socket; its network entrance is live at `THINKERING_CAPABILITY_URL` (built separately).
+- Wording Concierge gives agents still names thnkr.ing's local socket (the canvas think-aloud
+  instructions, the `--todo` hint); a runner turn has `THINKERING_CAPABILITY_URL` and its run token
+  instead.
+
+## Concierge's own thnkr.ing calls (built)
+
+Every call the owner itself makes to thnkr.ing (ChatGPT runs and their source search, native reads,
+human commands, the to-do check on questions, the thesaurus before each turn) goes through one
+choice, `thinkering-capability-target.ts`: when `CONCIERGE_THINKERING_CAPABILITY_URL` is set it uses
+thnkr.ing's network entrance with the service token in `CONCIERGE_THINKERING_TOKEN_FILE`
+(remote-box README "Network capability entrance"); otherwise the local socket, as before. The owner
+unit sets the AX41's tailnet entrance and loads `/etc/thinkering/network-callers/concierge-owner.token`
+as a systemd credential, so the owner already works without thnkr.ing's socket. The token file is
+read on every call: rotation needs no restart, and a missing file fails that call instead of falling
+back to a socket another machine will not have. Deploy refuses a unit whose credential file is
+missing (it would never start). The Mac's owner keeps reaching thnkr.ing over `ssh remote-box`.
 
 ## Heavy work out of the owner's request loop
 

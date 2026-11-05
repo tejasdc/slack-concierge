@@ -1,5 +1,5 @@
 import {spawn} from 'node:child_process';
-import {request as httpRequest} from 'node:http';
+import {thinkeringRequest} from './thinkering-capability-target';
 import {log} from './log';
 
 /**
@@ -18,7 +18,7 @@ const LOCAL_MS=3_000,MAC_MS=8_000,LIMIT=8_388_608,PAGE=200;
 
 function overSocket(path:string):Promise<string>{
   return new Promise((resolve,reject)=>{
-    const request=httpRequest({socketPath:SOCKET,path,method:'GET',timeout:LOCAL_MS},response=>{
+    const request=thinkeringRequest(path,{method:'GET',timeout:LOCAL_MS},response=>{
       const chunks:Buffer[]=[];let size=0;
       response.on('data',chunk=>{const part=Buffer.from(chunk as Uint8Array);size+=part.length;if(size>LIMIT)response.destroy(new Error('too large'));else chunks.push(part);});
       response.once('error',reject);

@@ -46,9 +46,15 @@ Environment=CONCIERGE_PEER_TOKEN_FILE=%d/peer
 # Agents and runners reach the owner over the tailnet with signed tokens (docs/architecture/RUNNERS.md).
 # CONCIERGE_AGENT_API_URL stays unset while agents run on this machine: they keep the local socket.
 Environment=CONCIERGE_AGENT_API_LISTEN=100.118.245.110:8789
+# Concierge's own thnkr.ing calls (ChatGPT runs, native reads, human commands, to-dos, thesaurus)
+# take thnkr.ing's network entrance with the owner's service token, so nothing in the owner needs
+# thnkr.ing's local socket when it moves to its own app server (docs/architecture/RUNNERS.md).
+Environment=CONCIERGE_THINKERING_CAPABILITY_URL=http://100.118.245.110:8790
+Environment=CONCIERGE_THINKERING_TOKEN_FILE=%d/thinkering_owner
 Environment='CONCIERGE_PEERS=[{"name":"mac","url":"http://100.90.183.122:8788","paths":["/Users/tejasdc/"],"archives":["/root/transcript-archive/mac-claude-projects","/root/transcript-archive/mac-codex-sessions"]}]'
 LoadCredential=capture_queue:/etc/concierge/capture-queue.token
 LoadCredential=peer:/etc/concierge/peer.token
+LoadCredential=thinkering_owner:/etc/thinkering/network-callers/concierge-owner.token
 StandardOutput=journal
 StandardError=journal
 

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { request as httpRequest } from "node:http";
+import { thinkeringRequest } from "./thinkering-capability-target";
 import { log, errorFields } from "./log";
 import type { HumanCommand } from "./human-command-state";
 import {currentProcessIdentity,processIdentityPayload} from './runtime-identity';
@@ -18,7 +18,7 @@ export type TerminalHumanCommandStatus = Readonly<{
 export function callThinkeringCommand(path:string,command:unknown,socketPath:string):Promise<CommandDelivery>{
   return new Promise((resolve,reject)=>{
     const bytes=Buffer.from(JSON.stringify(command));
-    const request=httpRequest({socketPath,path,method:"POST",timeout:30_000,
+    const request=thinkeringRequest(path,{method:"POST",timeout:30_000,
       headers:{"content-type":"application/json","content-length":bytes.length}},response=>{
       const chunks:Buffer[]=[];let size=0;
       response.on("data",chunk=>{
@@ -31,7 +31,7 @@ export function callThinkeringCommand(path:string,command:unknown,socketPath:str
         try{resolve({status:response.statusCode??503,value:JSON.parse(Buffer.concat(chunks).toString("utf8"))});}
         catch(error){reject(error);}
       });
-    });
+    },socketPath);
     request.once("timeout",()=>request.destroy(new Error("Thinkering command gateway timed out.")));
     request.once("error",reject);
     request.end(bytes);
