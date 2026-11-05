@@ -8,6 +8,15 @@ import {armThreadNotification} from './thread-notifications';
 import {providerRefusalContinuationReason,type ProviderRefusalContinuationReason} from './provider-failures';
 import {topicRouteAnchor} from './inbox-request-root';
 import {capturesEnterRouter} from './inbox-producer-sources';
+import {log} from './log';
+
+const eventWriteCounts=new Map<string,{writes:number;rootCommits:number}>();
+setInterval(()=>{
+  if(!eventWriteCounts.size)return;
+  const byKind=Object.fromEntries(eventWriteCounts);
+  eventWriteCounts.clear();
+  log('info','session_event_write_rate',{interval_ms:60_000,by_kind:byKind});
+},60_000).unref();
 
 export type AcceptedSessionInput = {
   id:string; session_id:number; scope:string; action_id:string; kind:string;
@@ -251,10 +260,15 @@ export function recordSessionEvent(input:{eventId:string;sessionId:number;inputI
     if (previous.session_id!==input.sessionId || previous.input_id!==inputId || previous.turn_id!==(input.turnId??null) || previous.kind!==input.kind || previous.payload_json!==payload) throw new Error('Event identity conflict.');
     return;
   }
+  const rootCommit=!db.inTransaction;
   db.transaction(()=>{
     db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
       .run(input.eventId,input.sessionId,inputId,input.turnId??null,input.kind,payload);
   })();
+  const count=eventWriteCounts.get(input.kind)??{writes:0,rootCommits:0};
+  count.writes++;
+  if(rootCommit)count.rootCommits++;
+  eventWriteCounts.set(input.kind,count);
   executionChanged();
 }
 export function recordSessionInputAttention(inputId:string) {
