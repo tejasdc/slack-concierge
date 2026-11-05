@@ -65,6 +65,9 @@ export class RunnerRelay {
     perMessageDeflate:false,
     // Codex answers (a whole thread's history on resume) can be large.
     maxPayloadLength:256*1024*1024,
+    // A peer that stops reading past this is disconnected rather than having messages dropped:
+    // a dropped JSON-RPC answer would look like a stalled turn, a disconnect is handled as ambiguous.
+    backpressureLimit:64*1024*1024,closeOnBackpressureLimit:true,
     // Pings every idle minute: a runner whose network went away is noticed and its channel dropped,
     // instead of leaving a dead listener that every connect would wait on.
     idleTimeout:60,sendPings:true,
@@ -91,7 +94,7 @@ export class RunnerRelay {
       if(!pair||pair.remote||pair.runner!==data.runner){socket.close(1008,'unknown relay');return;}
       pair.remote=socket;
       if(pair.timer)clearTimeout(pair.timer);pair.timer=null;
-      for(const message of pair.waiting)socket.send(message);
+      for(const message of pair.waiting)if(!this.forward(pair,socket,message))return;
       pair.waiting=[];pair.waitingBytes=0;
       log('info','runner_relay_paired',{runner:pair.runner,target:pair.target,relay:pair.id});
     },
@@ -100,8 +103,8 @@ export class RunnerRelay {
       if(data.role==='listen')return; // the runner's channel carries nothing to the owner
       const pair=this.pairs.get(data.id);
       if(!pair)return;
-      if(data.role==='accept'){pair.local.send(message);return;}
-      if(pair.remote){pair.remote.send(message);return;}
+      if(data.role==='accept'){this.forward(pair,pair.local,message);return;}
+      if(pair.remote){this.forward(pair,pair.remote,message);return;}
       pair.waitingBytes+=typeof message==='string'?Buffer.byteLength(message):message.length;
       if(pair.waitingBytes>BUFFER_LIMIT){this.end(pair,'too much waited for the runner');return;}
       pair.waiting.push(message);
@@ -117,6 +120,20 @@ export class RunnerRelay {
       if(pair)this.end(pair,`${data.role==='local'?'owner':'runner'} side closed (${code}${reason?` ${reason}`:''})`);
     },
   };
+
+  /** Bun's send answers 0 when it dropped the message: the relay ends instead of losing it silently. */
+  private forward(pair:Pair,to:ServerWebSocket<RelaySocketData>,message:Message):boolean {
+    if(to.send(message)!==0)return true;
+    this.end(pair,'a message could not be passed on');
+    return false;
+  }
+
+  /** Before the gateway stops: open WebSockets would otherwise hold a graceful stop until it is killed. */
+  closeAll(why='the owner is stopping') {
+    for(const pair of [...this.pairs.values()])this.end(pair,why);
+    for(const listener of [...this.listeners.values()])try{listener.close(1001,why);}catch{}
+    this.listeners.clear();
+  }
 
   private end(pair:Pair,why:string) {
     if(!this.pairs.delete(pair.id))return;

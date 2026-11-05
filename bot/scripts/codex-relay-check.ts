@@ -83,7 +83,16 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
     assert.ok(!seen.some(path=>path.includes('/relay')),'Relay traffic never reaches the owner.');
     await client.close();
     await until(()=>gateway.relay().relays===0,'the closed client\'s relay to end');
-    console.log('codex relay: run token refused, unknown runner refused, App Server reached through the runner, drop ended the relay, reconnect opened a new one');
+    // A graceful stop (every owner update) is not held by the runner's open channel or a live relay.
+    const held=new CodexAppServerClient(join(root,'requests.sock'),process.env.CONCIERGE_NODE_BIN||Bun.which('node')||'/usr/bin/node',
+      {relayRunner:'ax41',bridgePath:resolve(import.meta.dir,'../src/codex-app-server-bridge.mjs')});
+    await held.request('model/list',{},{requestTimeoutMs:10_000});
+    assert.ok(gateway.relay().listening.includes('ax41')&&gateway.relay().relays===1);
+    const stopping=Date.now();
+    await gateway.stop(false);
+    assert.ok(Date.now()-stopping<5_000,`A graceful stop took ${Date.now()-stopping} ms with a runner listening.`);
+    await held.close().catch(()=>{});
+    console.log('codex relay: run token refused, unknown runner refused, App Server reached through the runner, drop ended the relay, reconnect opened a new one, graceful stop not held');
     }
   } finally {
     runner.kill();
