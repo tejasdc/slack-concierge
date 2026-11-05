@@ -6,7 +6,7 @@ import {presentationHead} from './presentation-changes';
 import {observedDatabase} from './storage-observation';
 import {readPreparedTopics,readPreparedIncoming,readPreparedTopicOverview,readPreparedTopicItems,readPreparedQuestions,
  readPreparedTopicChanges,readPreparedTopicResolution,readPreparedTopicChunk,readPreparedTopicEvents} from './prepared-topics';
-import {readPreparedAreas,readPreparedArea} from './prepared-areas';
+import {readPreparedAreas,readPreparedArea,readPreparedThreadAreas} from './prepared-areas';
 
 let connection:Database|null=null;
 function prepared(){
@@ -32,6 +32,10 @@ export function preparedAreas(query:string|null,cursor:string|null,limit:number)
 export function preparedArea(id:string,cursor:string|null,limit:number){
  const reader=prepared();return reader&&reader.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='presentation_areas'").get()?readPreparedArea(reader,presentationHead(db),id,cursor,limit):
   {area:null,coverage:indexing()};
+}
+export function preparedThreadAreas(topicId:string,cursor:string|null,limit:number){
+ const reader=prepared();return reader&&reader.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='presentation_area_threads'").get()
+  ?readPreparedThreadAreas(reader,presentationHead(db),topicId,cursor,limit):{areas:[],nextCursor:null,coverage:indexing()};
 }
 export function preparedIncoming(options:Omit<Parameters<typeof readPreparedIncoming>[1],'canonicalHead'>){
  const reader=prepared();return reader?readPreparedIncoming(reader,{...options,canonicalHead:presentationHead(db)}):
