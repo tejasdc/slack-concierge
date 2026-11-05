@@ -26,6 +26,7 @@ import { forgetWatchObservation, loadWatchObservationCursors, observationForWatc
   startWatchObservationWorker, stopWatchObservationWorker, waitForWatchObservationWorker } from './watch-observation';
 import { executionHostsEnabled, hostProcessorSeconds, newExecutionId } from "./execution-host-client";
 import { localWatchMachine, ordinaryCommandEnvironment, runnerWatchMachine, type WatchMachine } from "./watch-machine";
+import { runnerMachineCall } from "./runner-machine-calls";
 
 export const WATCH_POLL_MS = 5_000;
 /** Three missed polls: a longer silence is a pause (a restart, a sleeping Mac) and is recorded as a gap. */
@@ -225,11 +226,19 @@ export async function registerWatch(input: WatchRegistration, now = Date.now()):
   }
   const watchId = randomBytes(6).toString("hex");
   // The baseline is part of the same row as the registration, so it exists before the caller hears yes.
-  db.query(`INSERT INTO watches (watch_id, session_id, origin_input_id, origin_run_id, action_id, request_hash, kind, condition_json,
-      baseline_json, baseline_mode, deadline_ms, state, last_observed_ms, renew_ms, runner, created_at_ms)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?)`)
-    .run(watchId, input.sessionId, input.originInputId, input.originRunId, input.actionId, requestHash, input.kind, JSON.stringify(condition),
-      JSON.stringify(baseline), mode, deadline, now, renewMs, runner, now);
+  try {
+    db.query(`INSERT INTO watches (watch_id, session_id, origin_input_id, origin_run_id, action_id, request_hash, kind, condition_json,
+        baseline_json, baseline_mode, deadline_ms, state, last_observed_ms, renew_ms, runner, created_at_ms)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?)`)
+      .run(watchId, input.sessionId, input.originInputId, input.originRunId, input.actionId, requestHash, input.kind, JSON.stringify(condition),
+        JSON.stringify(baseline), mode, deadline, now, renewMs, runner, now);
+  } catch (error) {
+    // Another renewing registration of this path won while this one read the baseline on a runner.
+    const winner = renewMs !== null ? db.query(`SELECT * FROM watches WHERE session_id=? AND kind='file' AND condition_json=?
+      AND renew_ms IS NOT NULL AND state IN ('accepted','observing')`).get(input.sessionId, JSON.stringify(condition)) as WatchRow | null : null;
+    if (winner) return { watch: watchView(winner), duplicate: true };
+    throw error;
+  }
   wakeWatchWorker();
   return { watch: watchView(db.query("SELECT * FROM watches WHERE watch_id=?").get(watchId) as WatchRow), duplicate: false };
 }
@@ -343,11 +352,11 @@ You do not need to reply to this.`;
       const baseline = settlement.observed && typeof settlement.observed === "object" && "version" in settlement.observed
         ? (settlement.observed as { version: PathVersion }).version : JSON.parse(row.baseline_json) as PathVersion;
       db.query(`INSERT INTO watches (watch_id,session_id,origin_input_id,origin_run_id,action_id,request_hash,kind,
-          condition_json,baseline_json,baseline_mode,deadline_ms,state,last_observed_ms,renew_ms,series_id,created_at_ms)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,'accepted',?,?,?,?)`)
+          condition_json,baseline_json,baseline_mode,deadline_ms,state,last_observed_ms,renew_ms,series_id,runner,created_at_ms)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,'accepted',?,?,?,?,?)`)
         .run(nextId,row.session_id,row.origin_input_id,row.origin_run_id,`renew:${row.watch_id}`,row.request_hash,'file',
           row.condition_json,JSON.stringify(baseline),baseline.mode,settlement.now+row.renew_ms,settlement.now,
-          row.renew_ms,row.series_id??row.watch_id,settlement.now);
+          row.renew_ms,row.series_id??row.watch_id,row.runner??null,settlement.now);
     }
     return true;
   })();
@@ -442,6 +451,13 @@ async function observeCommand(row: WatchRow, deps: WatchWorkerDeps, now: number)
   if (row.host_state === "intended") {
     // A coordinator died between recording the intent and learning the result.
     const outcome = await machineFor(row).startOutcome(row.host_execution_id, row.host_directory!).catch(() => "unknown" as const);
+    if (outcome === "never-ran" && row.runner && now < row.deadline_ms) {
+      // The call that started it went unanswered (a slow runner or a dropped channel), and the runner,
+      // which knows its own starts in flight, says it never started: start it afresh.
+      update(row.watch_id, "host_execution_id=NULL, host_directory=NULL, host_unit=NULL, host_protocol=NULL, host_state=NULL");
+      log("warn", "watch_command_restarted_after_unanswered_start", { watch_id: row.watch_id, runner: row.runner, execution_id: row.host_execution_id });
+      return;
+    }
     if (outcome === "never-ran") {
       update(row.watch_id, "host_state='gone'");
       settle(row.watch_id, "failed", { observedAt: now, now, detail: "Concierge restarted while starting the command, and no trace of it was found; it did not run" });
@@ -451,7 +467,9 @@ async function observeCommand(row: WatchRow, deps: WatchWorkerDeps, now: number)
   }
   const state = await commandState(row);
   if (state.state === "exited") {
-    const tail = await machineFor(row).outputTail(row.host_directory!).catch(() => "");
+    let tail: string;
+    try { tail = await machineFor(row).outputTail(row.host_directory!); }
+    catch (error) { log("warn", "watch_output_unread", { watch_id: row.watch_id, runner: row.runner ?? null, ...errorFields(error) }); return; }
     settle(row.watch_id, "fired", { observedAt: now, now, detail: `${describeExit(state)}`, observed: { exit: { code: state.code, signal: state.signal }, outputTail: tail } });
     return;
   }
@@ -541,6 +559,16 @@ async function pruneRecords(now: number) {
   }
 }
 
+const endedCommands = () => db.query("SELECT * FROM watches WHERE kind='command' AND state NOT IN ('accepted','observing') AND host_state IN ('intended','live','stopping')").all() as WatchRow[];
+
+/** The runners among these that answer a short check now, each asked once per poll, together. */
+async function reachableRunners(names: (string | null | undefined)[]): Promise<Set<string>> {
+  const runners = [...new Set(names.filter((name): name is string => !!name))];
+  const answers = await Promise.all(runners.map(runner => runnerMachineCall(runner, "ping", {}, 3_000).then(() => runner, () => null)));
+  for (const runner of runners) if (!answers.includes(runner)) log("warn", "watch_runner_unreachable", { runner });
+  return new Set(answers.filter((name): name is string => !!name));
+}
+
 /** One poll. `now` is a parameter so a pause can be simulated exactly. */
 export async function runWatchTick(deps: WatchWorkerDeps, now = Date.now()) {
   const pause=globalPauseState();
@@ -548,14 +576,24 @@ export async function runWatchTick(deps: WatchWorkerDeps, now = Date.now()) {
     AND (?=0 OR EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=?
       AND allowed.machine=? AND allowed.session_id=watches.session_id)) ORDER BY created_at_ms`)
     .all(pause.paused?1:0,pause.generation,process.env.CONCIERGE_PEER_NAME==='mac'?'mac':'cloud') as WatchRow[];
+  deliverPending(deps, now);
+  const reachable = await reachableRunners([...open.map(row => row.runner), ...endedCommands().map(row => row.runner)]);
   for (const row of open) {
+    // An unreachable runner's watches are not observed this poll; the silence becomes a recorded gap.
+    if (row.runner && !reachable.has(row.runner)) {
+      if (now >= row.deadline_ms) settle(row.watch_id, "expired", { observedAt: null, now, detail:
+        row.kind === "file" ? `no change was observed, but runner ${row.runner} could not be reached at the end`
+          : row.host_execution_id ? `the command's state could not be read at the deadline: runner ${row.runner} could not be reached`
+            : "its deadline passed before the command could be started, so it was never started" });
+      continue;
+    }
     try {
       if (row.kind === "file") await observeFile(row, now);
       else await observeCommand(row, deps, now);
     } catch (error) { log("error", "watch_poll_failed", { watch_id: row.watch_id, ...errorFields(error) }); }
   }
-  const ended = db.query("SELECT * FROM watches WHERE kind='command' AND state NOT IN ('accepted','observing') AND host_state IN ('intended','live','stopping')").all() as WatchRow[];
-  for (const row of ended) {
+  for (const row of endedCommands()) {
+    if (row.runner && !reachable.has(row.runner)) continue;
     try { await cleanUpHost(row, now); } catch (error) { log("warn", "watch_host_cleanup_failed", { watch_id: row.watch_id, ...errorFields(error) }); }
   }
   deliverPending(deps, now);

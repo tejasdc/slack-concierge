@@ -320,7 +320,7 @@ Not yet, before a runner on another machine can hold Codex:
 ## Runner machine calls
 
 Some of the owner's work is a question to an agent's machine, not an obligation: read a path, start
-or ask after a watched command, list a turn's files. These ride the relay the runner already keeps
+or ask after a watched command. These ride the relay the runner already keeps
 open (target `runner-machine`, `runner-machine-calls.ts`): the owner opens one WebSocket per runner
 on its local request socket, the gateway pairs it with the runner, and each call is one JSON message
 `{id, method, params}` answered by `{id, result}` or `{id, error}`. Nothing is stored and nothing is

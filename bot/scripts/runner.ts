@@ -508,6 +508,7 @@ function answerMachineCalls(id:string) {
   const remote=new WebSocket(`${relayBase}/runner/v1/relay/accept?id=${encodeURIComponent(id)}`,{headers:{authorization:`Bearer ${token}`}} as any);
   serveRunnerMachineCalls(remote,async(method,params)=>{
     recordOwnerContact();
+    if(method==='ping')return true;
     if(method.startsWith('watch.'))return serveWatchCall(watchMachine,stateDir,method.slice('watch.'.length),params);
     throw new Error(`this runner does not answer ${method}`);
   });

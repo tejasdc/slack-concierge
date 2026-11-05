@@ -1,6 +1,6 @@
 /**
  * Calls the owner makes on a runner's machine (docs/architecture/RUNNERS.md "Runner machine
- * calls"): read a path, start or ask after a watched command, list a turn's files. Runners open no
+ * calls"): read a path, start or ask after a watched command. Runners open no
  * port, so these ride the relay the runner already keeps open (runner-relay.ts, target
  * `runner-machine`): the owner opens one WebSocket per runner on its local request socket, the
  * gateway pairs it with the runner, and each call is one JSON message `{id, method, params}`
@@ -56,23 +56,31 @@ function channel(runner: string): Channel {
   return made;
 }
 
-/** One call on `runner`'s machine. Rejects with RunnerUnreachableError when the runner cannot answer. */
-export async function runnerMachineCall<T = any>(runner: string, method: string, params: Record<string, unknown>): Promise<T> {
+/**
+ * One call on `runner`'s machine. Rejects with RunnerUnreachableError when the runner cannot answer
+ * within `timeoutMs` (opening the channel included). A launch passes a longer limit than the
+ * runner's own supervisor wait, so a slow start is answered rather than abandoned.
+ */
+export async function runnerMachineCall<T = any>(runner: string, method: string, params: Record<string, unknown>, timeoutMs = CALL_TIMEOUT_MS): Promise<T> {
   const current = channel(runner);
-  await current.open;
   const id = ++nextId;
   return new Promise<T>((resolve, reject) => {
+    let expired = false;
     const timer = setTimeout(() => {
+      expired = true;
       current.pending.delete(id);
-      reject(new RunnerUnreachableError(`runner ${runner} did not answer ${method} within ${CALL_TIMEOUT_MS / 1000} s`));
-    }, CALL_TIMEOUT_MS);
-    current.pending.set(id, { resolve, reject, timer });
-    try { current.socket.send(JSON.stringify({ id, method, params })); }
-    catch (error) { current.pending.delete(id); clearTimeout(timer); reject(new RunnerUnreachableError(String(error))); }
+      reject(new RunnerUnreachableError(`runner ${runner} did not answer ${method} within ${timeoutMs / 1000} s`));
+    }, timeoutMs);
+    current.open.then(() => {
+      if (expired) return; // never sent: a late send after the caller gave up would act unseen
+      current.pending.set(id, { resolve, reject, timer });
+      try { current.socket.send(JSON.stringify({ id, method, params })); }
+      catch (error) { current.pending.delete(id); clearTimeout(timer); reject(new RunnerUnreachableError(String(error))); }
+    }, error => { clearTimeout(timer); reject(error); });
   });
 }
 
-/** Before the owner stops: close every call channel so none holds the gateway. */
+/** Close every call channel (checks; the gateway's own stop also ends them). */
 export function closeRunnerMachineCalls() {
   for (const { socket } of channels.values()) try { socket.close(1000, "the owner is stopping"); } catch { /* already closed */ }
   channels.clear();

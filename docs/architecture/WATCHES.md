@@ -32,6 +32,23 @@ Registration on an unreachable runner fails, and the agent tries again. A watch 
 (the Mac, agents on the owner's own machine) is local, as before. Processor seconds are reported only
 for local commands.
 
+- **Which runner is trusted.** A call with a runner's own token names that runner, which wins over
+  the helper's value; a run token or the local socket carries no machine, so the helper's
+  `CONCIERGE_RUNNER_NAME` stands. An agent naming another runner can watch there: agents are never
+  handcuffed beyond data and privacy [decision: agents-are-never-handcuffed], and the runner still
+  answers only for its own watch executions.
+- **One unreachable runner costs one check.** Each poll first delivers wakes already settled, then
+  asks every runner with open watches one three-second `ping`, together; an unreachable runner's
+  watches are skipped for that poll (their silence becomes a gap, a deadline still settles), so local
+  watches never wait on it.
+- **A slow start is never mistaken for none.** A launch call waits 45 s, longer than the runner's own
+  30 s supervisor wait; the runner answers "unknown" for a start still in flight; and a runner watch
+  whose start went unanswered and left no trace starts afresh before its deadline instead of failing.
+  A command whose output cannot be read this poll fires on the next one, with its output.
+- A renewing series keeps its runner. Watched commands on a runner cannot see the owner's state
+  folder or ledger (`CONCIERGE_RUNNER_HIDE_PATHS`), like the runner's turns; a command that read them
+  belongs on the owner's machine.
+
 `--renew` is for a standing file condition. It requires a duration. When the file changes or the
 deadline expires, Concierge records the terminal observation and the next watch in one ledger
 transaction, before delivering the wake. The next watch starts from the observed file version and

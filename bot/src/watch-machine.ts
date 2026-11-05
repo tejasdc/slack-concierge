@@ -6,8 +6,8 @@
  * runner's call channel for a runner (`runnerWatchMachine`), and the runner serves those calls with
  * the same local functions under its own state folder and release.
  */
-import { closeSync, existsSync, openSync, readSync, rmSync, statSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { closeSync, existsSync, openSync, readFileSync, readSync, rmSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { observePath, type PathVersion } from "./path-version";
 import { HOST_PROTOCOL_VERSION, HostConnection, executionDirectory, executionUnit, hostSocketPath, hostSupervisorView, releaseHost,
   retireHostJob, startHost, streamJournal, HostNotStartedError } from "./execution-host-client";
@@ -120,48 +120,71 @@ export function localWatchMachine(stateDir: string, routerBotDir: () => string, 
 
 /** A runner's machine, through its call channel; any failure to reach it is an error the worker treats as not knowing. */
 export function runnerWatchMachine(runner: string): WatchMachine {
-  const call = (method: string, params: Record<string, unknown>) => runnerMachineCall(runner, `watch.${method}`, params);
+  const call = (method: string, params: Record<string, unknown>, timeoutMs?: number) => runnerMachineCall(runner, `watch.${method}`, params, timeoutMs);
   return {
     runner,
     observe: path => call("observe", { path }),
     isDirectory: path => call("isDirectory", { path }),
     hostRecord: executionId => call("hostRecord", { executionId }),
-    launch: input => call("launch", input),
+    // Longer than the runner's own 30 s wait for its supervisor, so a slow start is answered.
+    launch: input => call("launch", input, 45_000),
     commandState: (executionId, directory) => call("commandState", { executionId, directory }),
     startOutcome: (executionId, directory) => call("startOutcome", { executionId, directory }),
-    outputTail: directory => call("outputTail", { directory }),
+    outputTail: directory => call("outputTail", { executionId: directory.split("/").pop(), directory }),
     signal: (executionId, directory, signal, commandId) => call("signal", { executionId, directory, signal, commandId }),
     release: (executionId, directory) => call("release", { executionId, directory }),
     retire: executionId => call("retire", { executionId }),
-    prune: directory => call("prune", { directory }),
+    prune: directory => call("prune", { executionId: directory.split("/").pop(), directory }),
   };
 }
 
+/** Starts this runner has begun and not finished: their outcome is not yet knowable. */
+const launching = new Set<string>();
+
 /**
- * The runner's side: one call from the owner, answered by this machine's own functions. A path the
- * owner names for a host record must be inside this runner's execution folder, so a call can never
- * remove or signal something else on the runner.
+ * The runner's side: one call from the owner, answered by this machine's own functions. Every host
+ * record named must be this runner's own watch execution (`<state>/exec/<id>`, started as a watch),
+ * so a call can never signal, release or remove an agent turn's host or anything else on the runner.
  */
 export async function serveWatchCall(machine: WatchMachine, stateDir: string, method: string, params: any): Promise<unknown> {
-  const inExecutions = (directory: unknown) => {
-    if (typeof directory !== "string" || dirname(directory) !== join(stateDir, "exec") || !EXECUTION_ID.test(basename(directory)))
-      throw new Error("that host record is not this runner's");
-    return directory;
-  };
   const executionId = (value: unknown) => { if (typeof value !== "string" || !EXECUTION_ID.test(value)) throw new Error("not an execution id"); return value; };
+  const record = () => {
+    const id = executionId(params.executionId);
+    if (params.directory !== undefined && params.directory !== join(stateDir, "exec", id)) throw new Error("that host record is not this runner's");
+    return { id, directory: join(stateDir, "exec", id) };
+  };
+  const watchRecord = () => {
+    const found = record();
+    // A record whose start is still in flight has no manifest yet; it can only be a watch's.
+    if (launching.has(found.id)) return found;
+    try {
+      const manifest = JSON.parse(readFileSync(join(found.directory, "manifest.json"), "utf8"));
+      const args = manifest?.args ?? manifest?.manifest?.args;
+      if (Array.isArray(args) && args[2] === "concierge-watch") return found;
+    } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return found; }
+    throw new Error("that host is not a watched command");
+  };
   switch (method) {
+    case "ping": return true;
     case "observe": return machine.observe(String(params.path));
     case "isDirectory": return machine.isDirectory(String(params.path));
     case "hostRecord": return machine.hostRecord(executionId(params.executionId));
-    // The command gets this machine's ordinary variables, never the owner's.
-    case "launch": return machine.launch({ executionId: executionId(params.executionId), argv: params.argv, cwd: String(params.cwd), environment: ordinaryCommandEnvironment() });
-    case "commandState": return machine.commandState(String(params.executionId), inExecutions(params.directory));
-    case "startOutcome": return machine.startOutcome(String(params.executionId), inExecutions(params.directory));
-    case "outputTail": return machine.outputTail(inExecutions(params.directory));
-    case "signal": return machine.signal(String(params.executionId), inExecutions(params.directory), params.signal === "SIGKILL" ? "SIGKILL" : "SIGTERM", String(params.commandId));
-    case "release": return machine.release(String(params.executionId), inExecutions(params.directory));
-    case "retire": return machine.retire(String(params.executionId));
-    case "prune": return machine.prune(inExecutions(params.directory));
+    case "launch": {
+      const id = executionId(params.executionId);
+      if (!Array.isArray(params.argv) || !params.argv.length || params.argv.length > 256 || params.argv.some((item: unknown) => typeof item !== "string")
+        || !String(params.argv[0]).startsWith("/")) throw new Error("a watched command needs an explicit argument list starting with a path");
+      launching.add(id);
+      // The command gets this machine's ordinary variables, never the owner's.
+      try { return await machine.launch({ executionId: id, argv: params.argv, cwd: String(params.cwd), environment: ordinaryCommandEnvironment() }); }
+      finally { launching.delete(id); }
+    }
+    case "commandState": { const { id, directory } = record(); return machine.commandState(id, directory); }
+    case "startOutcome": { const { id, directory } = record(); return launching.has(id) ? "unknown" : machine.startOutcome(id, directory); }
+    case "outputTail": { const { directory } = watchRecord(); return machine.outputTail(directory); }
+    case "signal": { const { id, directory } = watchRecord(); return machine.signal(id, directory, params.signal === "SIGKILL" ? "SIGKILL" : "SIGTERM", String(params.commandId)); }
+    case "release": { const { id, directory } = watchRecord(); return machine.release(id, directory); }
+    case "retire": { const { id } = watchRecord(); return machine.retire(id); }
+    case "prune": { const { directory } = watchRecord(); return machine.prune(directory); }
   }
   throw new Error(`unknown watch call ${method}`);
 }

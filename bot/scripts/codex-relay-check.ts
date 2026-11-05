@@ -104,7 +104,9 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
     const seenVersion=await runnerMachineCall('ax41','watch.observe',{path:join(root,'watched.txt')});
     assert.equal(seenVersion.type,'file');assert.equal(seenVersion.mode,'content-hash');
     assert.equal(await runnerMachineCall('ax41','watch.isDirectory',{path:root}),true);
-    await assert.rejects(runnerMachineCall('ax41','watch.prune',{directory:'/etc'}),/not this runner's/);
+    await assert.rejects(runnerMachineCall('ax41','watch.prune',{executionId:'etc',directory:'/etc'}),/not an execution id/);
+    await assert.rejects(runnerMachineCall('ax41','watch.signal',{executionId:'0123456789abcdef',directory:'/etc',signal:'SIGKILL',commandId:'x'}),/not this runner's/);
+    assert.equal(await runnerMachineCall('ax41','ping',{}),true);
     await assert.rejects(runnerMachineCall('other','watch.observe',{path:root}),/no call channel|not listening|closed/);
     closeRunnerMachineCalls();
 
