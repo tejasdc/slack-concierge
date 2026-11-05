@@ -13,6 +13,7 @@ import {NoSpeech,transcribeAudioPath,transcriptionProgress} from './transcriptio
 import {finishedSpeechJobIds,readSpeechJobResult,removeFinishedSpeechJob,speechJobProgress,speechRoot,stageSpeechJob} from './speech-job-spool';
 import {ensureSpeechWorker} from './speech-job-supervisor';
 import {log} from './log';
+import {lastBlockTask,taskClockMs,withTaskLabel} from './owner-task-labels';
 import {searchPrepared,searchRouterThreadsRead} from './presentation-search-client';
 import {boundSearchResponse} from './search-response-boundary';
 import {isTransientDatabaseError} from './database-retry';
@@ -309,6 +310,9 @@ function ownerJson(value:unknown,init:ResponseInit={}) {
   return new Response(body,{...init,headers});
 }
 const ownerRequestsInFlight=new Map<string,string>();
+// The watchdog's label for the block this lag line reports; a block it already reported is not repeated.
+let reportedBlock=0,previousTickAt=0;
+function freshBlockTask(since:number){const task=lastBlockTask(since);if(!task||task.block===reportedBlock)return {};reportedBlock=task.block;const {block:_,...named}=task;return named;}
 let ownerLoopMonitor:ReturnType<typeof setInterval>|null=null;
 /**
  * Event-loop lag: how late a 250 ms tick fired. A late tick means synchronous work held the
@@ -325,7 +329,8 @@ function startOwnerLoopMonitor() {
     // Processor time spent while the loop was held tells waiting (a lock, synchronous I/O: near
     // zero) from computing (close to the lag or above it) without a profiler, which may not run here.
     const storage=takeStorageInterval();
-    if(lag>=200){log('warn','owner_event_loop_lag',{lag_ms:lag,cpu_ms:Math.round((used.user+used.system)/1000),storage,in_flight:[...ownerRequestsInFlight].map(([requestId,route])=>({requestId,route}))});noteOwnerStall(lag,Math.round((used.user+used.system)/1000));}
+    const tickStartedAt=previousTickAt;previousTickAt=taskClockMs();
+    if(lag>=200){const memory=process.memoryUsage();log('warn','owner_event_loop_lag',{lag_ms:lag,...freshBlockTask(tickStartedAt),rss_mb:Math.round(memory.rss/2**20),heap_used_mb:Math.round(memory.heapUsed/2**20),cpu_ms:Math.round((used.user+used.system)/1000),storage,in_flight:[...ownerRequestsInFlight].map(([requestId,route])=>({requestId,route}))});noteOwnerStall(lag,Math.round((used.user+used.system)/1000));}
   },250);
   ownerLoopMonitor.unref?.();
 }
@@ -3822,7 +3827,7 @@ export class SessionOwner {
           return ownerJson({error:{code:'READER_CONTRACT_REQUIRED',message:'This owner read has no declared cost contract or named control exception.'}},{status:503});
         return contract?withStorageReadBudget(contract.storage,()=>this.handleRequest(request)):this.handleRequest(request);
       };
-      let response=await observeStorageOperation(label,run,measured=>{work=measured;});
+      let response=await withTaskLabel(`request ${label}`,()=>observeStorageOperation(label,run,measured=>{work=measured;}));
       if(policy&&policy.maxResponseBytes>0&&Number(response?.headers.get('content-length'))>policy.maxResponseBytes){
         log('error','owner_read_budget_refused',{reader:contract?.name??('path' in policy?policy.path:'unknown'),reason:'response_bytes'});
         response=ownerJson({error:{code:'READ_BUDGET_EXCEEDED',message:'This page exceeded its declared read size.'}},{status:503});

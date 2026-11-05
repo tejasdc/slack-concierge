@@ -1,3 +1,4 @@
+import { markTask } from './owner-task-labels';
 type LogLevel = "debug" | "info" | "warn" | "error" | "critical";
 type Counts = Record<LogLevel, number>;
 type Output = Pick<NodeJS.WriteStream, "write" | "on" | "destroyed" | "writableEnded">;
@@ -142,6 +143,7 @@ export function logSinkCounters() {
 export function writeLogLine(level: LogLevel, line: string) { sink(level).write(level, line); }
 
 export function log(level: LogLevel, event: string, fields: Record<string, unknown> = {}) {
+  markTask();
   const line = {
     ts: new Date().toISOString(),
     level,
