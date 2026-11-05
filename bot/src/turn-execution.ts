@@ -79,6 +79,7 @@ import {
   markTurnProviderAdmissionIntended,
   parkRunningTurnAfterProviderFailure,
   retryRunningTurnAfterProviderFailure,
+  requeueWithdrawnRunnerTurn,
   recordTurnProviderTurnId,
   registerTurnArtifactIntents,
   markTurnResponseDelivered,
@@ -1162,6 +1163,13 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       && !artifactActivity
       && dispatchBoundary !== null
       && !dispatchBoundary.durableArtifactActivity;
+    if (preserveDispatchFailure && input.presentation === 'native'
+      && requeueWithdrawnRunnerTurn(input.turnId,input.ownerInstanceId,dispatchAttempt)) {
+      await progressController?.pauseForRetry();
+      await statusController?.stop();
+      log('info','runner_turn_requeued_unsent',{turn_id:input.turnId,dispatch_attempt:dispatchAttempt});
+      return {status:'retry_queued',turnId:input.turnId};
+    }
     if (preserveDispatchFailure) {
       if (structuredFailure?.providerSessionId && providerIdentityCompatible) {
         recordProviderSession(input, structuredFailure.providerSessionId);

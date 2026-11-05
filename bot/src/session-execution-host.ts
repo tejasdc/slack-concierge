@@ -1419,7 +1419,7 @@ export class SessionExecutionHost {
     // Only a launch resolves the CLI. On 2026-11-04 Claude Code was reinstalled during a Concierge
     // restart; adoption looked it up, found no `claude` and parked 25 agents that were still running.
     return new HostedClaudeCodeTransport({mode,executionId,stateDir,routerBotDir,
-      ...(runnerFiles?{access:new RunnerHostAccess(executionId)}:{}),
+      ...(runnerFiles?{access:new RunnerHostAccess(executionId,mode==='launch'?this.options.instanceId:undefined)}:{}),
       executable:executable??(mode==='launch'?claudeExecutable():undefined),
       onLaunched:launch=>recordExecutionLaunched(executionId,launch),
       onAttached:status=>{
