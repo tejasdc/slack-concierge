@@ -16,23 +16,30 @@ with the exact thnkr.ing bundle, File menu, New Window, and exact53 retirement
 need. The console was unlocked, but PreToolUse refused direct `cua.getApp`
 before Computer Use ran.
 
+Tejas later reported unlocking again through
+human input `a806ad0a-a0d8-4f72-b603-b245c95de638`. Mac request
+`26c29754-1461-4761-8e75-016a7c486144` carried the same exact-app
+retirement need; PreToolUse again refused direct `cua.getApp` before Computer
+Use. The Mac reported the console unlocked, and no File menu or New Window
+action ran.
+
 ## Cause
 
-The retirement guard admitted only the earlier human capture
+The retirement guard initially admitted only the earlier human capture
 `capture:2a296c24ca627e68981feab3c3e56a32b3e43cf317d0eb545ee4cab23801270b`.
-The new work request correctly carried Tejas's later unlock reply as its
-originating human input.
+The first repair admitted the first unlock reply, while the next work request
+correctly carried the second unlock reply as its originating human input.
 
 ## Fix
 
-The guard now recognizes that one reply as a
+The guard now recognizes both exact reply IDs as
 continuation of the same scoped retirement work. Its work effect, exact app,
 retirement purpose, and fixed guarded menu programs remain required. The reply
 does not gain the old-page recovery grant.
 
 ## Acceptance scenario
 
-- **Seed:** Record a `mac-app` work need from the unlock human input naming the
+- **Seed:** Record a `mac-app` work need from either unlock human input naming the
   exact web-app bundle, File menu, New Window, and exact53 retirement.
 - **Action:** Call direct exact-bundle `cua.getApp`, the same-program passive
   read, and the two fixed guarded menu programs.

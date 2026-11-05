@@ -6,6 +6,7 @@ export const AUTHORIZING_HUMAN_INPUT='f66f15dd-e251-4537-a9cd-347d0548434b';
 export const CANVAS_AUTHORIZING_HUMAN_INPUT='capture:7bad480ccf4350922acb3ac750cc0ba0b7a990f596acd92b5fe98403f6f0e7a0';
 export const RETIREMENT_AUTHORIZING_HUMAN_INPUT='capture:2a296c24ca627e68981feab3c3e56a32b3e43cf317d0eb545ee4cab23801270b';
 export const RETIREMENT_UNLOCK_HUMAN_INPUT='1ba89166-c732-481b-b53a-e77e85ba93ba';
+export const RETIREMENT_CURRENT_UNLOCK_HUMAN_INPUT='a806ad0a-a0d8-4f72-b603-b245c95de638';
 export const RETIREMENT_FILE_MENU_PROGRAM=String.raw`var thnkrRetirementMenuApp = await cua.getApp("${AUTHORIZED_WEB_APP}");
 var thnkrRetirementMenuState = await thnkrRetirementMenuApp.getAXState({disableDiffing:true});
 var thnkrRetirementWindowLines = thnkrRetirementMenuState.match(/^\d+ standard window thnkr\.ing, ID: WebAppWindow-Thinkering(?:,.*)?$/gm) ?? [];
@@ -24,7 +25,9 @@ await thnkrRetirementNewWindowApp.getAXStateAndScreenshot({disableDiffing:true})
 type RecordedNeed=string|{kind:string;why?:string;humanInputId?:string;effectScope?:string};
 
 function retirementHumanInput(id:string|undefined):boolean {
-  return id===RETIREMENT_AUTHORIZING_HUMAN_INPUT||id===RETIREMENT_UNLOCK_HUMAN_INPUT;
+  return id===RETIREMENT_AUTHORIZING_HUMAN_INPUT
+    ||id===RETIREMENT_UNLOCK_HUMAN_INPUT
+    ||id===RETIREMENT_CURRENT_UNLOCK_HUMAN_INPUT;
 }
 
 function authorizedWebAppNeed(need:RecordedNeed,toolName:string):need is Exclude<RecordedNeed,string> {
