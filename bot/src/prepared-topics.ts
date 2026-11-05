@@ -103,6 +103,12 @@ export class PreparedTopics {
    prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN one_reply_rule INTEGER NOT NULL DEFAULT 1');
    prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
   })();
+  // A thread's default reply goes to whoever spoke last in it since 2026-11-05; threads prepared
+  // under the older default keep pointing at the Inbox agent until they change, so recompute each once.
+  if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='newest_speaker_reply'))prepared.transaction(()=>{
+   prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN newest_speaker_reply INTEGER NOT NULL DEFAULT 1');
+   prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
+  })();
   // A thread's start and each of his requests' arrival, for the Started order and the Incoming view
   // (Tejas, 2026-10-09: "a chronological view of like all of the requests that are like coming in
   // ... mapping to the threads"). Added in place with a backfill: forcing a whole rebuild emptied
