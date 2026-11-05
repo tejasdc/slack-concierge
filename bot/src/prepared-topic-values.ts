@@ -11,6 +11,7 @@ const parse=(value:string|null|undefined,fallback:any=null)=>{try{return value?J
 const open=(state:string)=>OPEN_QUESTION_STATES.some(item=>item===state);
 const relaySince='2026-09-23T05:30:00.000Z';
 export type TopicContext={source:Database;prepared:Database;generation:number;sessionId:number;requestedSessionId?:number;boundedReads?:boolean;
+  sessionIds:number[];
   root:ReturnType<typeof inboxRootResolver>;humanReplies:Map<string,{inputId:string;at:string;reviews:string[];replyTo:string|null}[]>;
   queued:{inputId:string;root:string|null;position:number}[];
   dispatches:{root:string|null;sessionId:string|null;title:string;requestId:string}[];
@@ -23,6 +24,9 @@ function sessionTitle(source:Database,id:number):string|null{
 function peerAddress(peer:string,id:string){return `${peer}:${String(id).replace(/^concierge:/,'')}`;}
 /** All shared read indexes are assembled once for a bounded change batch, in the worker. */
 export function topicContext(source:Database,prepared:Database,generation:number,sessionId:number):TopicContext{
+ const sessionIds=(source.query(`WITH RECURSIVE lineage(id) AS (SELECT ? UNION ALL
+   SELECT predecessor_session_id FROM session_handoffs JOIN lineage ON successor_session_id=lineage.id
+   WHERE state='accepted') SELECT id FROM lineage`).all(sessionId) as {id:number}[]).map(row=>row.id);
  const resolve=inboxRootResolver(source);
  const root:ReturnType<typeof inboxRootResolver>=(session,id,seen)=>resolve(session,id,seen)??
   (prepared.query('SELECT root_input_id AS root FROM presentation_messages WHERE generation=? AND message_id=? ORDER BY event_sequence LIMIT 1')
@@ -62,7 +66,7 @@ export function topicContext(source:Database,prepared:Database,generation:number
   dispatches.push({root:row.input_id?root(sessionId,row.input_id):null,sessionId:peerAddress(row.peer,row.remote_session_id),
    title:parse(peer?.view_json,{})?.title||`${row.peer} session`,requestId:row.request_id});
  }
- return {source,prepared,generation,sessionId,root,humanReplies,queued,dispatches,focus:focused,focusTitle};
+ return {source,prepared,generation,sessionId,sessionIds,root,humanReplies,queued,dispatches,focus:focused,focusTitle};
 }
 
 function messageById(context:TopicContext,id:string):{content:string;at:string;root:string|null;detailRef?:unknown;contentCoverage?:unknown}|null{
@@ -75,18 +79,18 @@ function messageById(context:TopicContext,id:string):{content:string;at:string;r
   const value=JSON.parse(row.display_json);
   return {content:value.content,at:value.createdAt,root:row.root_input_id,...(value.detailRef?{detailRef:value.detailRef,contentCoverage:value.contentCoverage}:{})};
  }
- const row=(source.query(`SELECT e.kind,e.event_id,e.input_id,e.created_at,e.payload_json,t.agent_text,i.payload_json AS input_json
+ const row=(source.query(`SELECT e.session_id,e.kind,e.event_id,e.input_id,e.created_at,e.payload_json,t.agent_text,i.payload_json AS input_json
   FROM session_owner_events e LEFT JOIN turns t ON t.id=e.turn_id LEFT JOIN session_inputs i ON i.id=e.input_id
-  WHERE e.session_id=? AND e.event_id=? AND e.kind IN ('post','result') ORDER BY e.sequence LIMIT 1`).get(sessionId,id)
-  ??source.query(`SELECT e.kind,e.event_id,e.input_id,e.created_at,e.payload_json,t.agent_text,i.payload_json AS input_json
+  WHERE e.session_id IN (${context.sessionIds.map(()=>'?').join(',')}) AND e.event_id=? AND e.kind IN ('post','result') ORDER BY e.sequence LIMIT 1`).get(...context.sessionIds,id)
+  ??source.query(`SELECT e.session_id,e.kind,e.event_id,e.input_id,e.created_at,e.payload_json,t.agent_text,i.payload_json AS input_json
   FROM session_owner_events e LEFT JOIN turns t ON t.id=e.turn_id LEFT JOIN session_inputs i ON i.id=e.input_id
-  WHERE e.session_id=? AND e.input_id=? AND e.kind NOT IN ('post','result') ORDER BY e.sequence LIMIT 1`).get(sessionId,id)) as any;
+  WHERE e.session_id IN (${context.sessionIds.map(()=>'?').join(',')}) AND e.input_id=? AND e.kind NOT IN ('post','result') ORDER BY e.sequence LIMIT 1`).get(...context.sessionIds,id)) as any;
  if(!row)return null;
  const sequence=source.query('SELECT sequence FROM session_owner_events WHERE event_id=?').get(row.event_id) as {sequence:number};
- const display=preparedInboxDisplay(source,sessionId,sequence.sequence,id);
+ const display=preparedInboxDisplay(source,row.session_id,sequence.sequence,id);
  if(!display)return null;
  const message=display.detailJson?JSON.parse(display.detailJson):display.preview;
- return {content:message.content,at:message.createdAt,root:root(sessionId,id)};
+ return {content:message.content,at:message.createdAt,root:root(row.session_id,id)};
 }
 const readingValue=(id:string,message:NonNullable<ReturnType<typeof messageById>>)=>({messageId:id,text:message.content,at:message.at,
  ...(message.detailRef?{detailRef:message.detailRef,contentCoverage:message.contentCoverage}:{})});
@@ -128,13 +132,13 @@ function readsFor(context:TopicContext,question:any,roots:Set<string>){
    }
   }
   const posts=context.source.query(`SELECT event_id FROM session_owner_events
-   WHERE session_id=? AND kind='post' AND (
+   WHERE session_id IN (${context.sessionIds.map(()=>'?').join(',')}) AND kind='post' AND (
     (?<>'' AND json_extract(payload_json,'$.requestId')=?)
     OR json_extract(payload_json,'$.replyToMessage.messageId') IN (SELECT value FROM json_each(?))
    ) AND (
     json_extract(payload_json,'$.answersQuestion')=1
     OR (json_extract(payload_json,'$.replyKind')='final' AND json_extract(payload_json,'$.workDisposition')='completed')
-   ) ORDER BY sequence`).all(context.sessionId,typeof requestId==='string'?requestId:'',typeof requestId==='string'?requestId:'',JSON.stringify([...new Set(expandedFollowups)])) as {event_id:string}[];
+   ) ORDER BY sequence`).all(...context.sessionIds,typeof requestId==='string'?requestId:'',typeof requestId==='string'?requestId:'',JSON.stringify([...new Set(expandedFollowups)])) as {event_id:string}[];
   return posts.flatMap(post=>{const message=messageById(context,post.event_id);
    return message&&(message.content.trim()||message.detailRef)?[readingValue(post.event_id,message)]:[];});
  }
@@ -152,7 +156,7 @@ function readsFor(context:TopicContext,question:any,roots:Set<string>){
  const turnId=turn??(question.owner?.runId?(source.query('SELECT id FROM turns WHERE native_run_id=?').get(question.owner.runId) as {id:number}|null)?.id:null);
  if(turnId!==null&&turnId!==undefined){
   const posts=source.query(`SELECT event_id,coalesce(json_extract(payload_json,'$.threadRoot'),input_id) AS root,created_at,${context.boundedReads?"''":"json_extract(payload_json,'$.text')"} AS text
-    FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='post' ORDER BY sequence`).all(sessionId,turnId) as any[];
+    FROM session_owner_events WHERE session_id IN (${context.sessionIds.map(()=>'?').join(',')}) AND turn_id=? AND kind='post' ORDER BY sequence`).all(...context.sessionIds,turnId) as any[];
   const here=posts.filter(post=>!!post.root&&roots.has(post.root));
   const values=here.flatMap(post=>{
    const message=context.boundedReads?messageById(context,post.event_id):{content:String(post.text??''),at:iso(post.created_at)!,root:post.root};
@@ -161,7 +165,7 @@ function readsFor(context:TopicContext,question:any,roots:Set<string>){
   if(values.length)return values;
   const result=source.query(`SELECT e.event_id,e.input_id,e.created_at,${context.boundedReads?"''":"COALESCE(json_extract(e.payload_json,'$.text'),t.agent_text,'')"} AS text
     FROM session_owner_events e LEFT JOIN turns t ON t.id=e.turn_id
-    WHERE e.session_id=? AND e.turn_id=? AND e.kind='result' LIMIT 1`).get(sessionId,turnId) as any;
+    WHERE e.session_id IN (${context.sessionIds.map(()=>'?').join(',')}) AND e.turn_id=? AND e.kind='result' LIMIT 1`).get(...context.sessionIds,turnId) as any;
   if(result&&result.input_id&&roots.has(root(sessionId,result.input_id)??'')){
    const message=context.boundedReads?messageById(context,result.event_id):{content:String(result.text??''),at:iso(result.created_at)!,root:result.input_id};
    if(message&&(message.content.trim()||message.detailRef))return [readingValue(result.event_id,message)];

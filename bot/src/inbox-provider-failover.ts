@@ -22,7 +22,7 @@ export function maybeStartInboxProviderFailover(session:SessionRow|null=inboxSes
       provider_admission_intended_at:string|null;provider_started_at:string|null;
       provider_turn_id:string|null;provider_input_acknowledged_at:string|null}|null;
   const failedBeforeAdmission=!!last&&
-    ((last.status==='queued'&&['auth_wait','backoff'].includes(last.dispatch_failure_class??''))||last.status==='error')
+    last.status==='queued'&&['auth_wait','backoff','usage_wait'].includes(last.dispatch_failure_class??'')
     &&last.provider_admission_intended_at===null&&last.provider_started_at===null
     &&last.provider_turn_id===null&&last.provider_input_acknowledged_at===null;
   const exhausted=!!current&&current.used>=100&&!current.paidCredits;

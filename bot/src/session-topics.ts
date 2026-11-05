@@ -1208,7 +1208,7 @@ export function hasOpenInboxWorkForSource(topicId:string,sourceInputId:string,pr
 
 function topicHistory(sessionId:number,topicId:string) {
   return (db.query(`SELECT payload_json,created_at FROM session_owner_events
-    WHERE session_id=? AND kind IN (${MANAGEMENT_KINDS.map(()=>'?').join(',')}) AND json_extract(payload_json,'$.topicId')=?
+    WHERE session_id IN (${inboxLineageSql}) AND kind IN (${MANAGEMENT_KINDS.map(()=>'?').join(',')}) AND json_extract(payload_json,'$.topicId')=?
     ORDER BY sequence DESC LIMIT 20`).all(sessionId,...MANAGEMENT_KINDS,topicId) as any[]).map(row=>{
       const payload=JSON.parse(row.payload_json);
       return {change:payload.change,at:iso(row.created_at),by:payload.by??null,reason:payload.reason??null};
