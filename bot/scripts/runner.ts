@@ -373,9 +373,10 @@ const turns=new Map<string,Turn>();
 // First, a turn this runner has not been able to report for the fencing time is stopped: the owner
 // may already have settled it as lost, and the restart must not let its agent keep acting.
 // The owner last heard of a held turn at the later of its claim (or reacquire) and the runner's
-// last successful sync: a sync carries every held turn, and a turn the owner refuses there is
-// dropped from the held file at once. That sync time is the owner-contact file, the same one each
-// host stops its agent by, so the runner and its hosts fence on one fact. (Until 2026-11-04 this
+// last contact with the owner, the owner-contact file (written by syncs, which carry every held
+// turn, and by other answered owner calls). A turn the owner disowns in a sync is dropped from the
+// held file at once; the reacquire below settles whatever lease did pass. That file is the one
+// each host stops its agent by, so the runner and its hosts fence on one fact. (Until 2026-11-04 this
 // read only the claim time, so every restart stopped each turn older than the fencing time.)
 const readOwnerContact=()=>{try{return Number(readFileSync(ownerContactFile,'utf8'))||0;}catch{return 0;}};
 const fenceStale=()=>{
