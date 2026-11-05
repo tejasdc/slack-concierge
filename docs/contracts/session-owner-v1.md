@@ -599,6 +599,23 @@ additive to everything above, carry a request between two instances' ledgers:
 | `POST /sessions/v1/projects/canvas-policy` | `{consultation}` names one completed request answered by the currently bound workspace organizer. The owner derives `group` and `template` only from that answer's exact raw JSON body and retains its reply source as one immutable policy revision. Existing board bindings keep the revision they used. Ordinary project creation continues to require its own completed consultation. |
 | `POST /sessions/v1/canvas-projects/ensure` | Authenticated owner entrance: `{clientActionId,boardId,boardTitle,boardClock?,existingProject?:{name,inside?}}`. The board identity owns one immutable project choice. A new board reads the current Canvas policy and creates its own project; an explicit registered existing-project binding is reused without title inference. The browser gives each later title revision a distinct action identity for command custody; the owner accepts it for the same board without changing the project choice, and replaces the display title only when its revision clock is newer. An old client omitting the clock cannot roll a newer title back. The project folder and session identity stay fixed. The reply becomes `ready` as soon as the server scaffold is usable; private GitHub and Mac setup continue under the same durable operation, and a later remote error does not revoke that local readiness. Returns `{state,boardId,title,project:{name,inside,sessionProject,ownerId,serverPath,macPath,macState,template,created},retryAfterMs,policyRevisionId,error}`. The project catalogue includes `canvasTitle` for generated Canvas projects so project choices can show the live board title beside the stable folder name. |
 | `GET /sessions/v1/canvas-projects/:boardId` | Reads one retained Canvas project status. Server and Mac paths are facts confirmed by their respective project catalogues; an unconfirmed peer path is `null`. |
+
+Canvas creation also publishes `kind:"canvas_project"` on the existing durable
+`/sessions/v1/events` cursor and `/sessions/v1/events/stream` SSE transport. Its
+payload is `{boardId,project,state}` with `state:"pending"|"ready"|"failed"`.
+The board ID is the stable identity; the event's `sessionId` is the Inbox stream
+anchor because the board need not have an agent session. A first retained choice
+publishes `pending` (or `ready` when explicitly bound to an existing project).
+The server publishes `ready` as soon as its local project scaffold is registered,
+before GitHub and Mac setup finish. It publishes `failed` only when local
+readiness cannot be established permanently. These readiness states are monotone
+for one board; remote setup errors do not revoke local `ready`. The same event
+identity is retained on a retry, so replay and duplicate ensures do not create
+another transition. The event carries the changed fact; the board status GET
+remains the full current view, including title, paths, Mac progress and error.
+An open page can subscribe with `kind=canvas_project` before its initial status
+read, keep the global event cursor across reconnects, and read the named board
+after its event. No event stream substitutes for the initial status read.
 | `POST /sessions/v1/projects/share` | Owner socket only: `{name,to,source?:{input,run}}`. Requires a registered local Git project with matching `tejasdc` origin and pushed branch. Records one durable order for the named peer. |
 | `GET /sessions/v1/projects/:name/status?peer=…` | Reads local retained orders with peer, state, result and creation time; no peer connection is needed. |
 | `POST /sessions/v1/projects/cancel` | Owner socket only: `{name,to}`. Cancels an order only while it is still recorded and no delivery attempt is in flight; it does not remove a project. |
