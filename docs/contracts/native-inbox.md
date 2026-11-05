@@ -642,6 +642,11 @@ their exact retained text. The source capture remains its own message in the con
 clients show handoff and suggestion identities in the work lane rather than repeating them as
 conversation messages. The work page seeks indexed request and suggestion identities in the
 prepared Inbox ledger, so old unrelated conversation does not extend a page read.
+The topic's current-work summary groups open deliveries by their current destination session:
+several requests to one session still have separate receipts, but its worker row appears once
+with the latest progress from those requests. An accepted session handoff moves open requests
+to its successor, so the successor is the current worker. Distinct destination sessions remain
+distinct; a shared title alone does not prove they are one agent.
 Opening the private coordination view uses the same route with `mode=private`. It pages local and peer requests
 that inherited this topic from their originating human task but did not ask to post a public
 thread answer. Each item names the sending and receiving sessions, summary, state and exact

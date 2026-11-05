@@ -1,5 +1,5 @@
 import {questionDisplay} from './topic-display-rules';
-import {latestWorkerProgress} from './worker-progress';
+import {topicCurrentWorkers} from './topic-current-workers';
 import {topicReplyTargets} from './reply-target-rules';
 import type {Database} from 'bun:sqlite';
 import {inboxRootResolver} from './presentation-message-source';
@@ -306,8 +306,9 @@ function topicWorkValue(context:TopicContext,topic:any,roots:string[]){
  if(unrelayed)return {kind:'result_waiting' as const,text:"An agent's answer came back and has not been relayed to you",
   returnInputId:unrelayed.inputId,since:unrelayed.at};
  const working=context.dispatches.filter(item=>item.root&&roots.includes(item.root));
- if(working.length)return {kind:'worker_working' as const,text:'Handed to another agent',sessionId:working[0]!.sessionId,
-  workers:working.map(item=>({sessionId:item.sessionId,title:item.title,progress:latestWorkerProgress(context.source,item.requestId)}))};
+ if(working.length){const workers=topicCurrentWorkers(context.source,working);
+  return {kind:'worker_working' as const,text:workers.length===1?`With ${workers[0]!.title}`:`With ${workers.length} agents`,
+   sessionId:workers[0]!.sessionId,workers};}
  return {kind:'idle' as const,text:''};
 }
 

@@ -28,6 +28,17 @@ test('prepared topic preserves canonical question, request, attention, and work 
  db.query('INSERT INTO session_inputs(id,session_id,scope,action_id,kind,origin,payload_json,receipt_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
   .run('root-one',session,'fixture','root-one','input','human',JSON.stringify({text:'The question'}),'{}',at);
  db.query('INSERT INTO inbox_topic_roots(root_input_id,topic_id) VALUES(?,?)').run('root-one','fixture-topic');
+ const worker=Number(db.query("INSERT INTO sessions(slack_channel_id,slack_thread_ts,provider_id,native_metadata_json) VALUES('fixture-worker','1','claude-code',?)")
+  .run(JSON.stringify({title:'One current worker'})).lastInsertRowid);
+ const sourceTurn=Number(db.query("INSERT INTO turns(session_id,slack_user_msg_ts,user_text,status) VALUES(?,'fixture-source','Source','running')")
+  .run(session).lastInsertRowid);
+ db.query("INSERT INTO turns(session_id,slack_user_msg_ts,user_text,status) VALUES(?,'fixture-worker','Work','running')").run(worker);
+ for(const id of ['worker-request-one','worker-request-two']){
+  db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,
+   action_id,target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id)
+   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,'fixture',id,sourceTurn,session,'root-one',id,worker,'fixture-worker','1',
+    JSON.stringify({text:id}),'fixture-hash',1,1,'root-one');
+ }
  const accepted=Number(db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,kind,payload_json,created_at) VALUES(?,?,?,?,?,?)')
   .run('accepted-one',session,'root-one','accepted','{}',at).lastInsertRowid);
  const longText='Exact retained answer 界 '.repeat(2000);
@@ -44,6 +55,8 @@ test('prepared topic preserves canonical question, request, attention, and work 
  invalidateTopicRoots();
  const canonical=readTopic('fixture-topic');
  const value=preparedTopicValue(topicContext(db,prepared,1,session),'fixture-topic')!;
+ expect(canonical.work).toMatchObject({kind:'worker_working',text:'With One current worker',workers:[{sessionId:`concierge:${worker}`}]});
+ expect((canonical.work as any).workers).toHaveLength(1);
  const {entries,...canonicalDetail}=canonical;
  expect(value.detail).toEqual(canonicalDetail);
  expect(value.summary).toEqual(listTopics().topics[0]);
