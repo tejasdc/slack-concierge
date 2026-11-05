@@ -12,9 +12,9 @@ describe("canonical scaffold cutover ordering", () => {
     expect(script).toContain('source "$SCRIPT_DIR/deploy.sh"');
     expect(script.indexOf("verify_git_origin")).toBeLessThan(script.indexOf("claim_deployment_gate"));
     expect(script).toContain("CONCIERGE_PRESERVE_GATES_ON_FAILURE=1");
-    expect(script.indexOf("claim_deployment_gate")).toBeLessThan(script.indexOf('systemctl stop "$SERVICE"'));
-    expect(script.indexOf('project-scaffold-cutover-state.ts" begin')).toBeLessThan(script.indexOf('systemctl stop "$SERVICE"'));
-    expect(script.indexOf('systemctl stop "$SERVICE"')).toBeLessThan(script.indexOf('"${migration_command[@]}" | tee "$first_report"'));
+    expect(script.indexOf("claim_deployment_gate")).toBeLessThan(script.indexOf('stop_unit "$SERVICE"'));
+    expect(script.indexOf('project-scaffold-cutover-state.ts" begin')).toBeLessThan(script.indexOf('stop_unit "$SERVICE"'));
+    expect(script.indexOf('stop_unit "$SERVICE"')).toBeLessThan(script.indexOf('"${migration_command[@]}" | tee "$first_report"'));
     expect(script.indexOf('"${migration_command[@]}" | tee "$first_report"')).toBeLessThan(script.indexOf('"${migration_command[@]}" | tee "$second_report"'));
     expect(script.indexOf('project-scaffold-cutover-state.ts" canvas-required')).toBeLessThan(script.indexOf("  deploy"));
     expect(script.indexOf("  deploy")).toBeLessThan(script.indexOf('project-scaffold-cutover-state.ts" complete'));

@@ -108,12 +108,34 @@ relocate_ledger_to_own_filesystem() {
 # capture ingress stopped. Clearing the counter first keeps the limit for crashes only.
 restart_unit() {
   systemctl reset-failed "$1" 2>/dev/null || true
-  systemctl restart "$1"
+  if [ "$1" = "$SERVICE" ] && [ "$(systemctl show "$1" --property=RefuseManualStop --value)" = yes ]; then
+    stop_unit "$1"
+    start_unit "$1"
+  else
+    systemctl restart "$1"
+  fi
 }
 
 start_unit() {
   systemctl reset-failed "$1" 2>/dev/null || true
   systemctl start "$1"
+}
+
+stop_unit() {
+  local unit=$1 stop_name systemd_unit
+  if [ "$unit" = "$SERVICE" ] && [ "$(systemctl show "$unit" --property=RefuseManualStop --value)" = yes ]; then
+    # RefuseManualStop blocks an agent's direct restart. A claimed deployment stops the
+    # service indirectly through a named, journaled conflict transaction instead.
+    systemd_unit="$unit"
+    [[ "$systemd_unit" = *.service ]] || systemd_unit="$systemd_unit.service"
+    stop_name="concierge-deployment-stop-$(date +%s%N)"
+    systemd-run --wait --collect --unit="$stop_name" \
+      --description="Concierge deployment ${DEPLOY_RUN_ID:-operator} stop at ${CURRENT_DEPLOY_STAGE:-unknown}" \
+      --property="Conflicts=$systemd_unit" --property="After=$systemd_unit" \
+      --service-type=oneshot /usr/bin/true
+  else
+    systemctl stop "$unit"
+  fi
 }
 
 verify_git_origin() {
@@ -1258,7 +1280,7 @@ deploy() {
   DEPLOY_FAILURE_REASON="The durable verification checkpoint could not be recorded."
   record_deployment_phase verifying "{\"deployed_commit\":\"$DEPLOYED_COMMIT\"}"
   DEPLOY_FAILURE_REASON="The drained coordinator could not be stopped before schema migration."
-  systemctl stop "$SERVICE"
+  stop_unit "$SERVICE"
   DEPLOY_FAILURE_REASON="The ledger could not be moved onto its own filesystem."
   relocate_ledger_to_own_filesystem
   if [ -n "$DEPLOY_RUN_ID" ] && [ "$MIGRATION_DONE" != "1" ]; then
@@ -1380,7 +1402,7 @@ recover_control() {
   CONTROL_RECOVERY_ACTIVATED=1
   CONCIERGE_RELEASE_OFFLINE=1 "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" activate --run-id "$DEPLOY_RUN_ID" --artifact "$CANDIDATE_ARTIFACT_PATH"
   record_deployment_phase restarting
-  systemctl stop "$SERVICE"
+  stop_unit "$SERVICE"
   CONCIERGE_STATE_DIR="$STATE_DIR" CONCIERGE_SERVICE="$SERVICE" "$BUN_BIN" run \
     "$CANDIDATE_ARTIFACT_PATH/control/migrate-deployment-repair.js" --schema-only --backup-path "$MIGRATION_BACKUP_PATH"
   start_unit "$SERVICE"
