@@ -43,17 +43,25 @@ test('recovery retains human work without turning service bookkeeping into human
       const roots=root===returned?[root,returnedUpkeep]:[root];
       const payload={change:'created',topicId,topic,roots:roots.map(rootInputId=>({rootInputId,topicId,placedAt:at,placedBy:by,reason:'old migration'})),
         request,questions:[],by,reason:'old migration',revision:1,recovered:true};
-      recordSessionEvent({eventId:`old-migration:${root}`,sessionId:inbox.id,kind:'topic',payload});
+      recordSessionEvent({eventId:`topic-migration:${root}`,sessionId:inbox.id,kind:'topic',payload});
       applyTopicChange('topic',payload);
+      if(root===upkeep) {
+        const assigned={...request,dispatches:[{requestId:randomUUID()}],revision:2,updatedAt:new Date().toISOString()};
+        const next={...topic,revision:2,updatedAt:assigned.updatedAt};
+        const assignment={change:'linked',topicId,topic:next,request:assigned,by,reason:'later agent work',revision:2};
+        recordSessionEvent({eventId:`assigned:${root}`,sessionId:inbox.id,kind:'topic_request',payload:assignment});
+        applyTopicChange('topic_request',assignment);
+      }
       return requestId;
     });
-    expect(retireRecoveredBookkeepingRequests()).toEqual({retired:3});
+    expect(retireRecoveredBookkeepingRequests()).toEqual({retired:2});
     expect(retireRecoveredBookkeepingRequests()).toEqual({retired:0});
-    for(const requestId of syntheticRequests)
+    for(const requestId of syntheticRequests.slice(0,2))
       expect((db.query('SELECT state FROM inbox_requests WHERE request_id=?').get(requestId) as {state:string}).state).toBe('closed');
-    expect((db.query("SELECT count(*) AS n FROM inbox_requests WHERE state='open'").get() as {n:number}).n).toBe(1);
+    expect((db.query('SELECT state FROM inbox_requests WHERE request_id=?').get(syntheticRequests[2]!) as {state:string}).state).toBe('open');
+    expect((db.query("SELECT count(*) AS n FROM inbox_requests WHERE state='open'").get() as {n:number}).n).toBe(2);
     const admitted:string[]=[];
     keepThreadsCurrent(input=>{admitted.push(input.requestId);});
-    for(const requestId of syntheticRequests)expect(admitted).not.toContain(requestId);
+    for(const requestId of syntheticRequests.slice(0,2))expect(admitted).not.toContain(requestId);
   }finally{unlock();}
 });

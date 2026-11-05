@@ -771,7 +771,10 @@ roots, and there is no question or human reply. A returned result and its later 
 can therefore share one synthetic topic without becoming human work. The correction records
 all roots as closure evidence and adds the original communication or Inbox request receipt
 where its exact link is retained. It keeps the original request, source inputs, result receipts
-and topic history; completion of original work remains governed by that request's checked answer.
+and topic history. If the router assigned work after migration, the correction leaves that
+request open for the normal checked-outcome path; the original migration event proves which
+dispatches were present before that assignment. Completion of original work remains governed
+by its own request's checked answer.
 New human roots stay unplaced until the router or a human
 files them; they appear as the `sorting` pile on the topics read.
 

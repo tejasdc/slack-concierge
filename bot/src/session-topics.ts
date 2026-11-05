@@ -3966,6 +3966,16 @@ export function retireRecoveredBookkeepingRequests() {
     if(requests.length!==1||requests[0]!.state!=='open'||requests[0]!.sources.length!==1
       ||!roots.includes(requests[0]!.sources[0]!.inputId)||topicQuestions(topicId).length)continue;
     const request=requests[0]!;
+    // The router may have since assigned real work to this recovered thread. Its
+    // request then owns that dispatch until the normal checked-outcome path settles
+    // it; the migration correction must only retire the original phantom row.
+    const migration=db.query("SELECT json_extract(payload_json,'$.request.dispatches') AS dispatches FROM session_owner_events WHERE event_id=? AND kind='topic'")
+      .get(`topic-migration:${request.sources[0]!.inputId}`) as {dispatches:string|null}|null;
+    if(!migration?.dispatches)continue;
+    const initialDispatches=JSON.parse(migration.dispatches) as {requestId:string}[];
+    const initialIds=initialDispatches.map(dispatch=>dispatch.requestId).sort();
+    const currentIds=request.dispatches.map((dispatch:any)=>String(dispatch.requestId)).sort();
+    if(JSON.stringify(currentIds)!==JSON.stringify(initialIds))continue;
     const input=inputs.find(candidate=>candidate?.id===request.sources[0]!.inputId)!;
     const evidence=[...roots];
     if(input.id.startsWith('return:')) {
