@@ -1079,8 +1079,14 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   // The app-server shell policy belongs to the durable thread, while commit
   // provenance belongs to one turn. The Git hook resolves that value from the
   // live CODEX_THREAD_ID so a resumed thread cannot retain an older turn token.
+  // The same holds for a run's network token and owner address (docs/architecture/RUNNERS.md): a
+  // thread keeps them for its whole life, past the token's expiry and the owner's moves. Helpers in
+  // a Codex shell instead use the runner's own address and token file, which the runner's App
+  // Server carries in its environment (router-request-client.ts).
   const {
     CONCIERGE_COMMIT_PROVENANCE: _turnScopedCommitProvenance,
+    CONCIERGE_AGENT_TOKEN: _turnScopedAgentToken,
+    CONCIERGE_OWNER_URL: _ownerAddressOfThisTurn,
     ...threadEnvironment
   } = input.environment || {};
   let connectionGeneration: number | null = null;

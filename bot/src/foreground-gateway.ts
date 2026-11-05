@@ -8,12 +8,15 @@ import {forwardPrivateRequest,unavailable} from './foreground-forward';
 import {classifyNativeReadRoute} from './native-read-routes';
 import {log,errorFields,logSinkCounters} from './log';
 import {agentPrincipalHeader,verifyAgentToken} from './agent-token-verify';
+import {RunnerRelay} from './runner-relay';
 
 /** No application owner, synchronous filesystem API, or database imports belong here. */
 export async function startForegroundGateway(config:{stateDir:string;ownerSocket:string;readWorkerEntry:string;
   peer:{hostname:string;port:number;token:string}|null;onContact?:()=>void;
   agent?:{hostname:string;port:number;keyHex:string}|null}) {
   const pool=new ForegroundReadPool(config.stateDir,config.ownerSocket,config.readWorkerEntry);
+  // Live connections to services on runners (the Codex App Server), piped here; nothing stored.
+  const relay=new RunnerRelay();
   let local:ReturnType<typeof Bun.serve>|null=null,peer:ReturnType<typeof Bun.serve>|null=null,agent:ReturnType<typeof Bun.serve>|null=null;
   let closing:Promise<void>|null=null;
   const stop=(force=false)=>closing??=(async()=>{
@@ -81,7 +84,8 @@ export async function startForegroundGateway(config:{stateDir:string;ownerSocket
     await pool.start();
     const path=join(config.stateDir,'requests.sock');
     await removeUnboundSocket(path);
-    local=Bun.serve({unix:path,idleTimeout:0,fetch:route});
+    local=Bun.serve({unix:path,idleTimeout:0,websocket:relay.handlers,fetch:(request:Request,server)=>
+      new URL(request.url).pathname==='/runner/v1/relay/connect'?relay.upgradeLocal(request,server):route(request)});
     await chmod(path,0o600);
     if(config.peer) {
       const expected=Buffer.from(config.peer.token);
@@ -101,16 +105,18 @@ export async function startForegroundGateway(config:{stateDir:string;ownerSocket
       // The agents' entrance over the network (docs/architecture/RUNNERS.md): the same routes the
       // local socket serves, for a caller that proves an agent run or a runner with a signed token.
       const key=Buffer.from(config.agent.keyHex,'hex');
-      agent=Bun.serve({hostname:config.agent.hostname,port:config.agent.port,idleTimeout:0,fetch:async(request:Request)=>{
+      agent=Bun.serve({hostname:config.agent.hostname,port:config.agent.port,idleTimeout:0,websocket:relay.handlers,fetch:async(request:Request,server)=>{
         const authorization=request.headers.get('authorization')??'';
         const verified=authorization.startsWith('Bearer ')?verifyAgentToken(key,authorization.slice(7)):null;
         if(!verified)return Response.json({ok:false,error:'AGENT_UNAUTHORIZED',detail:'A valid agent run or runner token is required.'},{status:401});
         // Process-control entrances, including the event-stream page, stay on the local socket.
-        if(new URL(request.url).pathname.startsWith('/internal/'))return Response.json({error:'Unknown request API route.'},{status:404});
+        const pathname=new URL(request.url).pathname;
+        if(pathname.startsWith('/internal/'))return Response.json({error:'Unknown request API route.'},{status:404});
+        if(pathname==='/runner/v1/relay/listen'||pathname==='/runner/v1/relay/accept')return relay.upgradeRunner(request,server,agentPrincipalHeader(verified));
         const headers=new Headers(request.headers);headers.delete('authorization');
         return route(new Request(request,{headers}),false,agentPrincipalHeader(verified));
       }});
     }
-    return {stop,snapshot:()=>pool.snapshot()};
+    return {stop,snapshot:()=>pool.snapshot(),relay:()=>relay.snapshot()};
   } catch(error){await stop(true);throw error;}
 }

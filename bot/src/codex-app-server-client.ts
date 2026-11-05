@@ -97,6 +97,8 @@ export class CodexAppServerClient {
     private readonly options: {
       bridgePath?: string;
       shutdownGraceMs?: number;
+      /** A runner whose App Server this client reaches through the owner's relay (socketPath is then the owner's requests.sock). */
+      relayRunner?: string | null;
     } = {},
   ) {}
 
@@ -201,10 +203,15 @@ export class CodexAppServerClient {
 
   private createConnection(): ActiveConnection {
     const generation = ++this.generation;
-    void raiseCodexDaemonFileLimit();
-    void moveCodexDaemonToOwnScope();
+    const relay = this.options.relayRunner ?? null;
+    // The daemon's limits and scope are this machine's business only when it runs here.
+    if (!relay) {
+      void raiseCodexDaemonFileLimit();
+      void moveCodexDaemonToOwnScope();
+    }
     const bridgePath = this.options.bridgePath || releaseCodexBridgePath();
-    const child = spawn(this.nodeExecutable, [bridgePath, this.socketPath], {
+    const child = spawn(this.nodeExecutable, [bridgePath, this.socketPath,
+      ...(relay ? [`/runner/v1/relay/connect?runner=${encodeURIComponent(relay)}&target=codex-app-server`] : [])], {
       stdio: ["pipe", "pipe", "pipe"],
     });
     let resolveDisconnected!: () => void;
@@ -363,7 +370,8 @@ export class CodexAppServerClient {
       );
     this.active = null;
     // The bridge reports the socket's own refusal; only a socket nobody is listening on starts one.
-    const absent = /connect (ECONNREFUSED|ENOENT)/.exec(error.message);
+    // Through a runner's relay the runner starts its own App Server; here nothing is started.
+    const absent = this.options.relayRunner ? null : /connect (ECONNREFUSED|ENOENT)/.exec(error.message);
     if (absent) startCodexDaemonWhenAbsent(absent[1]!);
     connection.rejectReady(error);
     for (const [id, pending] of this.pending) {
@@ -383,9 +391,26 @@ export class CodexAppServerClient {
 
 let sharedClient: CodexAppServerClient | null = null;
 
+/**
+ * The App Server every Codex turn uses. With `CONCIERGE_CODEX_RUNNER` set it is that runner's,
+ * reached through this owner's relay (docs/architecture/RUNNERS.md); otherwise this machine's.
+ */
 export function sharedCodexAppServerClient() {
-  sharedClient ??= new CodexAppServerClient();
+  sharedClient ??= ownerCodexAppServerClient();
   return sharedClient;
+}
+
+/** A new connection to the App Server Concierge's turns use, wherever it runs (the observer keeps its own). */
+export function ownerCodexAppServerClient(): CodexAppServerClient {
+  const runner = codexRelayRunner();
+  return runner
+    ? new CodexAppServerClient(join(process.env.CONCIERGE_STATE_DIR?.trim() || join(homedir(), ".local/state/concierge"), "requests.sock"),
+      undefined, { relayRunner: runner })
+    : new CodexAppServerClient();
+}
+
+export function codexRelayRunner(): string | null {
+  return process.env.CONCIERGE_CODEX_RUNNER?.trim() || null;
 }
 
 export async function verifySharedCodexAppServerReady() {
