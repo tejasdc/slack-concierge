@@ -621,10 +621,9 @@ export class SessionPeers {
       ?{inputId:sourceInput.id,runId,sessionId:`concierge:${actor.session}`,...(JSON.parse(sourceInput.payload_json).capture?.id?{captureId:JSON.parse(sourceInput.payload_json).capture.id}:{})}:null);
     // Every identity leaving this instance is named by it (peer-identity.ts).
     const originatingHuman=known?{...known,sessionId:presentSessionForPeer(known.sessionId,this.self)}:null;
-    const inheritedHumanModels=known&&provenance?.originatingHuman?.inputId===known.inputId
-      &&'humanModelChoices' in provenance&&Array.isArray(provenance.humanModelChoices)?provenance.humanModelChoices:[];
     const humanModelChoices=known?(['claude-fable-5-1','gpt-6-astra'] as const).filter(model=>
-      humanChoseTopModel(known.inputId,model)||inheritedHumanModels?.includes(model)):[];
+      humanChoseTopModel(known.inputId,model)
+      ||(provenance?.originatingHuman?.inputId===known.inputId&&humanChoseTopModel(actor.inputId,model))):[];
     const providerSelector=parseProviderSelector(input.provider);
     const selectedModel=providerSelector?resolveProviderSelector(providerSelector).model:undefined;
     const humanModelChoice=!!selectedModel&&humanModelChoices.includes(selectedModel as 'claude-fable-5-1'|'gpt-6-astra');
