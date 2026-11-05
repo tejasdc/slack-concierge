@@ -219,6 +219,12 @@ if (ownerContact?.file && ownerContact.fenceMs > 0) {
     fenced = true;
     append("c", { op: "signal", id: `runner-fence-${Date.now()}`, signal: "SIGTERM", reason: `the runner has not reached the owner for ${Math.round(silent / 1000)} s` });
     signalExecution("SIGTERM");
+    // A provider that ignores SIGTERM must still stop: the turn may already be settled as lost.
+    setTimeout(() => {
+      if (exit) return;
+      append("c", { op: "signal", id: `runner-fence-kill-${Date.now()}`, signal: "SIGKILL", reason: "the provider did not stop after SIGTERM" });
+      signalExecution("SIGKILL");
+    }, 30_000);
   }, 15_000);
 }
 

@@ -173,11 +173,14 @@ What happens for a turn on a runner:
 8. **Deadlines that need no live runner.** The runner records each time it reaches the owner (a
    claim, a sync, a reacquire) in `owner-contact` in its state folder, and every host it starts
    reads that file (`ownerContact` in the launch manifest): once the last contact is older than the
-   fencing time, the host journals a `SIGTERM` and stops its provider itself, so a runner that died
-   and stayed down cannot leave an agent acting. A runner whose sync is answered 404 without a runner
-   protocol code is talking to an owner that has no runner routes (a rollback to an older release,
-   which has already settled these turns as lost) and stops its agents at once instead of after the
-   fencing time. At its start the owner extends only leases whose runner was heard from within the
+   fencing time, the host journals a `SIGTERM` and stops its provider itself (and `SIGKILL` 30 s
+   later if it has not exited), so a runner that died and stayed down cannot leave an agent acting.
+   A runner whose sync is answered 404 is talking to an owner without the sync route (a rollback to an
+   older release, which has already settled these turns as lost) and stops its agents at once instead
+   of after the fencing time; the current owner never answers 404 there. A rollback to a release
+   without the agents' entrance at all (before 01d246f6) refuses the connection, so only the fencing
+   time covers it. A runner rolled back to a release that does not write `owner-contact` leaves hosts
+   started by this one to stop their agents at the fencing time. At its start the owner extends only leases whose runner was heard from within the
    last lease, so restarting the owner repeatedly cannot keep a dead runner's turn open; a lease
    never outlasts its runner's last contact by more than two lease lengths.
 

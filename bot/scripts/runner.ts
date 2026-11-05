@@ -46,7 +46,9 @@ const recordOwnerContact=()=>{
   const now=Date.now();
   if(now-contactWrittenAt<5_000)return;
   contactWrittenAt=now;
-  try{writeFileSync(ownerContactFile+'.tmp',String(now),{mode:0o600});renameSync(ownerContactFile+'.tmp',ownerContactFile);}catch{}
+  // A failure here would stop every agent at the fencing time, so it is said out loud.
+  try{writeFileSync(ownerContactFile+'.tmp',String(now),{mode:0o600});renameSync(ownerContactFile+'.tmp',ownerContactFile);}
+  catch(error){say('runner_owner_contact_write_failed',{error:String(error)});}
 };
 const once=process.argv.includes('--once');
 const kinds=(process.env.CONCIERGE_RUNNER_KINDS??'probe,turn,codex').split(',').map(kind=>kind.trim()).filter(Boolean);
@@ -75,8 +77,12 @@ async function read(path:string):Promise<any> {
   if(!response.ok)throw new OwnerRefusal(result.detail??result.error??`HTTP ${response.status}`,result.error,response.status);
   return result;
 }
-/** A 404 whose answer is not a runner protocol code: this owner has no runner routes. */
-const ownerWithoutRunners=(error:unknown)=>error instanceof OwnerRefusal&&error.status===404&&!/^[A-Z_]+$/.test(error.code??'');
+/**
+ * A 404 on `sync`: this owner has no sync route (an older release answers `NOT_FOUND` or an unknown
+ * route). The current owner never answers 404 there: per-attempt refusals come inside a 200 and
+ * request failures are 400 or 503.
+ */
+const ownerWithoutRunners=(error:unknown)=>error instanceof OwnerRefusal&&error.status===404;
 const lostCustody=(error:unknown)=>error instanceof OwnerRefusal&&(error.code==='STALE_EPOCH'||error.code==='UNKNOWN_ATTEMPT');
 
 async function runProbe(job:{jobId:string;attemptId:string;epoch:number;payload:any}) {
