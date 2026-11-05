@@ -248,17 +248,21 @@ turn by its thread and turn id), so moving it only changes where the bridge's We
    id. Only then are the relays and listen channels closed (`closeRelays`), so the final stop is
    never held by them. `codex-relay-check.ts` holds a relayed connection through the first step.
 
-**Startup order.** Recovery claims surviving Codex turns immediately but holds their App Server
-connections until the request socket and gateway exist and the provider readiness check has reached
-the runner. The runner restarts onto the candidate release before the owner, then reconnects its
-listen channel after the gateway opens. A 503 meaning no listen channel is retried for at most 30
-seconds while the gateway stays up; other provider errors fail startup. Only after a successful
-`model/list` are claimed Codex turns followed. Claude host adoption proceeds during the wait.
-This ordering prevents a missing request socket from parking live Codex work and gives the runner
-its normal reconnection interval. The deployed health probe reads the service's runner setting and
-checks that same App Server route. The service leaves `CONCIERGE_CODEX_RUNNER` unset until this
-order is proven on a real restart. A wait that runs past its bound still fails startup, so a down
-ax41 would keep the owner from starting instead of only holding its Codex turns.
+**Startup order.** Codex readiness never holds or fails Concierge's startup. Recovery claims
+surviving Codex turns immediately; every Codex turn, adopted or new, then waits at one readiness
+gate before connecting to its App Server. A new turn waits before its run is recorded or admitted,
+so a restart during the wait requeues it as unsent. A Stop requested during the wait is held and
+takes effect when Codex answers. The gate opens when a
+`model/list` probe answers. The probe starts with the first Codex turn or with the startup
+readiness phase, whichever comes first. It retries through any error (a missing request socket,
+the relay's 503 for an absent runner channel, a down App Server) with a backoff of up to 15
+seconds, and logs `codex_app_server_unready` at most once a minute. Claude work, the request API
+and everything else run normally meanwhile. The deployed health probe still reads the service's
+runner setting and checks that route: it can reject a candidate, but Concierge stays up. The
+service leaves `CONCIERGE_CODEX_RUNNER` unset until a restart with this gate shows the runner's
+listen channel reconnecting. On 2026-11-05 each failing owner exited about 0.1 s after its gateway
+opened, while the runner retries its listen channel every 5 s, so the channel could not reconnect
+before the exit. Whether it stays connected in production has not been observed yet.
 
 ## Agents' thnkr.ing calls
 
