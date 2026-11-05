@@ -1331,13 +1331,15 @@ export class SessionCommunicationCoordinator {
         routeMessageId?:string;
         /** A session a new one should consult for context; its address is put in the first input. */
         consult?:string;
-        saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number};
+        saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean};
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting requests.');
         const sender = this.authority(this.fenced(this.actor(input.source)));
         const actor = sender.actor;
         action(input.action_id);
+        if(input.saved?.quietOnly!==undefined&&(input.saved.kind!=='banked'||input.saved.quietOnly!==true))
+            throw new Error('Quiet-only is an explicit banked-work choice.');
         const requestedRole=input.role;
         const requestedTitle=input.title;
         let standingRole:import('./standing-agents').StandingAgentRole|undefined;
@@ -1650,7 +1652,7 @@ export class SessionCommunicationCoordinator {
                     payload:firstInput,sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),requestId:id}).input;
                 const queued=enqueueSessionInput(admitted.id);
                 if(queued.turn_id===null)throw new Error('Scheduled input could not be queued.');
-                saveQueuedTurn(queued.turn_id,input.saved.kind,input.saved.atMs,input.saved.expiresAtMs,input.saved.repeatEveryMs,undefined,requestedRole);
+                saveQueuedTurn(queued.turn_id,input.saved.kind,input.saved.atMs,input.saved.expiresAtMs,input.saved.repeatEveryMs,undefined,requestedRole,input.saved.quietOnly);
             }
             if(consultation) {
                 const created=this.dependencies.owner!.createRequestConsultation(consultation,{sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,firstInput});
@@ -1699,7 +1701,7 @@ export class SessionCommunicationCoordinator {
         return this.receipt(this.row(id));
     }
     private scheduleOwnRole(actor:{session:number;turn:number;inputId?:string|null},
-        saved:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number},
+        saved:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean},
         role:string,actionId:string,text:string,digest:string) {
         const inputId=`saved-self:${hash(`${actor.inputId}:${actionId}`)}`;
         const existing=getAcceptedSessionInput(inputId);
@@ -1713,7 +1715,7 @@ export class SessionCommunicationCoordinator {
                 kind:'input',origin:'agent',payload:{text,digest},sourceInputId:actor.inputId!,sourceRunId:nativeRunId(actor.turn)}).input;
             const queued=enqueueSessionInput(retained.id);
             if(queued.turn_id===null)throw new Error('Scheduled input could not be queued.');
-            saveQueuedTurn(queued.turn_id,saved.kind,saved.atMs,saved.expiresAtMs,saved.repeatEveryMs,undefined,role);
+            saveQueuedTurn(queued.turn_id,saved.kind,saved.atMs,saved.expiresAtMs,saved.repeatEveryMs,undefined,role,saved.quietOnly);
             return queued.turn_id;
         })();
         this.wake();
@@ -3011,7 +3013,7 @@ export class SessionCommunicationCoordinator {
             // stored text on each wake (2026-11-03).
             await this.scanRows<RequestRow>('session_communication_requests', `SELECT r.rowid AS reconciliation_rowid,r.* FROM turns t INDEXED BY turns_queued_order
                 CROSS JOIN session_inputs i ON i.turn_id=t.id CROSS JOIN session_communication_requests r ON r.target_input_id=i.id
-                WHERE r.outcome='canceled' AND t.status='queued' AND t.saved_kind IS NULL AND r.rowid<=? AND r.rowid>?
+                WHERE r.outcome='canceled' AND t.status='queued' AND r.rowid<=? AND r.rowid>?
                 ORDER BY r.rowid LIMIT 1`, request => db.transaction(()=>{
                     if(request.target_input_id&&cancelQueuedWithdrawnRequest(request.target_input_id))
                         withdrawUnstartedServiceInput(`canceled:${request.request_id}`,'The request was withdrawn before its worker began.');

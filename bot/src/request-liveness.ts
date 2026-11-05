@@ -169,17 +169,38 @@ export function tellWorkerCanceled(owner: SessionOwner, input: { requestId: stri
 export function cancelQueuedWithdrawnRequest(targetInputId: string): boolean {
     const target = getAcceptedSessionInput(targetInputId);
     if (!target) return false;
+    const revokeQueued=(inputId:string,turnId:number,sessionId:number)=>{
+        finishTurn(turnId, 'cancelled', 'The requesting session withdrew this work before it resumed.');
+        settleTurnDependencies(turnId);
+        const session=getSessionById(sessionId);
+        if(session&&['codex','claude-code','antigravity'].includes(session.provider_id))
+            resolveUsageHoldNoticesForSettledTurn(session.provider_id as UsageProvider,turnId,'request_withdrawn');
+        db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled'),updated_at=CURRENT_TIMESTAMP WHERE id=?")
+            .run(inputId);
+    };
     if (target.turn_id !== null) {
-        const queued = db.query("SELECT status,saved_kind FROM turns WHERE id=? AND session_id=?")
-            .get(target.turn_id, target.session_id) as { status: string; saved_kind: string | null } | null;
+        const queued = db.query("SELECT status FROM turns WHERE id=? AND session_id=?")
+            .get(target.turn_id, target.session_id) as { status: string } | null;
+        if (queued?.status === 'queued') {
+            revokeQueued(target.id,target.turn_id,target.session_id);
+            return true;
+        }
+        // A banked boundary can replace the first turn with a saved continuation. Follow only
+        // that exact input lineage; another request in the same session is not ours to revoke.
+        const descendants=db.query(`WITH RECURSIVE lineage(id) AS (
+            SELECT id FROM session_inputs WHERE id=?
+            UNION ALL
+            SELECT child.id FROM session_inputs child JOIN lineage parent ON child.source_input_id=parent.id
+              WHERE child.scope='turn-continuation'
+          ) SELECT child.id,child.turn_id,child.session_id FROM lineage
+          JOIN session_inputs child ON child.id=lineage.id JOIN turns turn ON turn.id=child.turn_id
+          WHERE child.id<>? AND turn.status='queued' ORDER BY turn.id`).all(target.id,target.id) as
+            {id:string;turn_id:number;session_id:number}[];
+        for(const descendant of descendants)revokeQueued(descendant.id,descendant.turn_id,descendant.session_id);
+        if(descendants.length)return true;
         if (queued?.status === 'cancelled')
             return JSON.parse(target.receipt_json ?? '{}').state === 'canceled';
-        if (queued?.status !== 'queued' || queued.saved_kind !== null) return false;
-        finishTurn(target.turn_id, 'cancelled', 'The requesting session withdrew this work before it resumed.');
-        settleTurnDependencies(target.turn_id);
-        const session=getSessionById(target.session_id);
-        if(session&&['codex','claude-code','antigravity'].includes(session.provider_id))
-            resolveUsageHoldNoticesForSettledTurn(session.provider_id as UsageProvider,target.turn_id,'request_withdrawn');
+        return false;
     } else if (target.steering_id !== null || JSON.parse(target.receipt_json ?? '{}').state != null) return false;
     db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled'),updated_at=CURRENT_TIMESTAMP WHERE id=?")
         .run(target.id);

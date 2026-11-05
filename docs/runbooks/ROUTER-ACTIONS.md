@@ -113,6 +113,8 @@ long numbers and codes he forwarded), which errs toward hiding.
 
 ## Current native routing
 
+For resource-heavy phone work that Tejas authorized only while he sleeps, create a new banked coding session with `sessions bank --quiet-only` and the usual project, session name, summary, source pair and action ID. The saved-work quiet hours and time zone in thnkr.ing Settings govern the window. Concierge refuses a claim outside that band or during its last five minutes, and asks an active run to stop at that early cutoff; a continuation keeps the same choice. Ordinary `sessions bank` retains its allowance-reset behavior. `sessions cancel <request-id>` withdraws a queued saved turn; `sessions saved cancel <turn-id>` remains the direct saved-work control. Check `sessions saved list` after cancellation. See [session ownership](../architecture/SESSION-OWNER.md#one-execution-owner).
+
 ### Standing agents
 
 Consult the workspace organizer, then create a continuing job with `projects new <name> --purpose "<one sentence>" --consultation <request-id> <source-flags>`,

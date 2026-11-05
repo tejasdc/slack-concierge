@@ -16,6 +16,7 @@ import {
 export { db } from "./state-database";
 import { survivableRunKinds as survivableRunKindsIn } from "./execution-survival";
 import { log } from "./log";
+import { quietOnlyAdmits } from './quiet-hours';
 
 // Only the canonical writer owns schema upgrades. Read executors open a physically read-only
 // connection and must never run migration code during module initialization.
@@ -940,6 +941,7 @@ addColumn("turns", "saved_window", "saved_window TEXT");
 addColumn("turns", "saved_boundary_ms", "saved_boundary_ms INTEGER");
 addColumn("turns", "saved_alerted_at_ms", "saved_alerted_at_ms INTEGER");
 addColumn("turns", "saved_manual_start", "saved_manual_start INTEGER NOT NULL DEFAULT 0");
+addColumn("turns", "saved_quiet_only", "saved_quiet_only INTEGER NOT NULL DEFAULT 0 CHECK(saved_quiet_only IN (0,1))");
 addColumn("turns", "saved_repeat_ms", "saved_repeat_ms INTEGER");
 addColumn("turns", "saved_root_id", "saved_root_id INTEGER");
 addColumn("turns", "saved_sequence", "saved_sequence INTEGER");
@@ -5405,6 +5407,7 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
       AND NOT (${SETTLED_EXECUTION_SQL})
   )
   AND COALESCE(turn.dispatch_next_attempt_ms, 0)<=?
+  AND (turn.saved_quiet_only=0 OR ?=1)
   AND (turn.saved_manual_start=1 OR COALESCE(turn.saved_kind,'')<>'scheduled' OR turn.saved_fire_at_ms<=?)
   AND COALESCE(turn.dispatch_failure_class,'') NOT IN ('auth_wait','usage_wait')
   AND (turn.saved_manual_start=1 OR turn.saved_kind IS NULL OR turn.saved_kind<>'scheduled' OR turn.saved_expires_at_ms IS NULL OR turn.saved_expires_at_ms>?)
@@ -5450,7 +5453,8 @@ let codexAdmissionHeld=false;
 export function holdCodexAdmission(held:boolean){codexAdmissionHeld=held;if(!held)executionChanged();}
 
 function claimableQueuedTurnParameters(nowMs:number,activeSessionIds:readonly number[],survivable:ReturnType<typeof survivableRunKinds>|null) {
-  return [nowMs,nowMs,nowMs,nowMs,nowMs,nowMs,JSON.stringify(activeSessionIds),nowMs,
+  const quietSettings=db.query('SELECT quiet_start_hour,quiet_end_hour,time_zone FROM saved_work_settings WHERE singleton=1').get() as {quiet_start_hour:number;quiet_end_hour:number;time_zone:string};
+  return [nowMs,nowMs,quietOnlyAdmits(nowMs,quietSettings)?1:0,nowMs,nowMs,nowMs,nowMs,JSON.stringify(activeSessionIds),nowMs,
     survivable ? 1 : 0,JSON.stringify(survivable?.providers ?? []),codexAdmissionHeld ? 1 : 0] as const;
 }
 

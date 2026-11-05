@@ -424,13 +424,23 @@ export function carryingTurn(turnId:number):{id:number;status:string}|null {
  */
 export function queueTurnContinuation(sourceTurnId:number,reason:TurnContinuationReason):AcceptedSessionInput|null {
   return db.transaction(()=>{
-    const source=db.query(`SELECT id,session_id,status,accepted_input_id,native_run_id,ended_at,stop_requested_at
+    const source=db.query(`SELECT id,session_id,status,accepted_input_id,native_run_id,ended_at,stop_requested_at,saved_quiet_only
       FROM turns WHERE id=?`).get(sourceTurnId) as {id:number;session_id:number;status:string;accepted_input_id:string|null;
-        native_run_id:string|null;ended_at:string|null;stop_requested_at:string|null}|null;
+        native_run_id:string|null;ended_at:string|null;stop_requested_at:string|null;saved_quiet_only:number}|null;
     // A person's Stop is stop_requested_at, never the status: the system cancelling its own
     // work at a boundary it chose ends as cancelled too, and that work is owed a continuation.
     if(!source || source.stop_requested_at || !source.ended_at
       || (reason.kind==='provider_refused'?source.status!=='error':!['done','error','cancelled'].includes(source.status)))return null;
+    // A request may be withdrawn after its first turn ended but before a boundary creates
+    // another one. Its exact input ancestry is the authority for every continuation.
+    if(source.accepted_input_id&&db.query(`WITH RECURSIVE ancestry(id,source_input_id) AS (
+        SELECT id,source_input_id FROM session_inputs WHERE id=?
+        UNION ALL
+        SELECT parent.id,parent.source_input_id FROM session_inputs parent
+          JOIN ancestry child ON parent.id=child.source_input_id
+      ) SELECT 1 FROM ancestry JOIN session_communication_requests request
+        ON request.target_input_id=ancestry.id WHERE request.outcome='canceled' LIMIT 1`)
+      .get(source.accepted_input_id))return null;
     const session=getSessionById(source.session_id);
     if(!session || session.status==='archived' || sessionMetadata(session).suspended)return null;
     // A provider refusal stopped one account, not the work: the request that turn served is still
@@ -456,6 +466,17 @@ export function queueTurnContinuation(sourceTurnId:number,reason:TurnContinuatio
       ...(source.native_run_id?{sourceRunId:source.native_run_id}:{})}).input;
     const queued=enqueueSessionInput(saved.id);
     if(queued.turn_id!==null){
+      if(source.saved_quiet_only){
+        // Every continuation entry point must carry the opt-in choice before a runner can
+        // claim it. Provider refusals, background releases and startup recovery all use this path.
+        const now=Date.now();
+        const settings=db.query('SELECT wait_days FROM saved_work_settings WHERE singleton=1').get() as {wait_days:number};
+        db.query(`UPDATE turns SET saved_kind='banked',saved_at_ms=?,saved_expires_at_ms=?,saved_quiet_only=1,
+          dispatch_failure_class=NULL,dispatch_next_attempt_ms=NULL,dispatch_hold=NULL
+          WHERE id=? AND status='queued'`).run(now,now+settings.wait_days*24*60*60_000,queued.turn_id);
+        executionChanged();
+        return queued;
+      }
       // A usage wall on one account is no reason to wait while another has room: it runs now and the
       // account choice sends it there.
       const elsewhere=reason.kind==='provider_refused'&&reason.refusal==='usage'&&reason.elsewhere===true;
