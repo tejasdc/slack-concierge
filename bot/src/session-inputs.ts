@@ -450,10 +450,11 @@ export function queueTurnContinuation(sourceTurnId:number,reason:TurnContinuatio
     if(!source || source.stop_requested_at || !source.ended_at
       || (reason.kind==='provider_refused'?source.status!=='error':!['done','error','cancelled'].includes(source.status)))return null;
     // A request may be withdrawn after its first turn ended but before a boundary creates
-    // another one. Its exact input ancestry is the authority for every continuation.
+    // another one. Service inputs can name themselves as their source, so visit each
+    // ancestry row once; UNION ALL would recurse forever on those valid inputs.
     if(source.accepted_input_id&&db.query(`WITH RECURSIVE ancestry(id,source_input_id) AS (
         SELECT id,source_input_id FROM session_inputs WHERE id=?
-        UNION ALL
+        UNION
         SELECT parent.id,parent.source_input_id FROM session_inputs parent
           JOIN ancestry child ON parent.id=child.source_input_id
       ) SELECT 1 FROM ancestry JOIN session_communication_requests request

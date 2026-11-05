@@ -42,6 +42,11 @@ in a recognized provider refusal, had a retained assistant or tool message, and 
 Stop, newer input or queued work. This excludes a refusal before the provider did work,
 which keeps its original input under the separate sign-in/usage hold rules.
 
+Before continuing, the owner checks whether the exact input ancestry contains a
+withdrawn request. Service recovery inputs may legitimately name themselves as
+their source. The ancestry walk visits each input once, so a self-reference or
+other cycle cannot trap the owner and stall unrelated sessions.
+
 - `bot/src/index.ts` owns Slack ingress, admission, command and shortcut registration, and routing.
 - `bot/src/session-runtime.ts` composes the same owner, queue, registry and executor when Slack is disabled. `session-execution-host.ts` admits native inputs and controls; it does not own a second provider queue.
 - `bot/src/session-turn-queue.ts` owns process-local wakeup coalescing for durable ownerless queued turns. SQLite claim transitions in `bot/src/state.ts` remain the concurrency boundary.
