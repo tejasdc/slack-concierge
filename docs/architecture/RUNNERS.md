@@ -198,11 +198,12 @@ human commands, the to-do check on questions, the thesaurus before each turn) go
 choice, `thinkering-capability-target.ts`: when `CONCIERGE_THINKERING_CAPABILITY_URL` is set it uses
 thnkr.ing's network entrance with the service token in `CONCIERGE_THINKERING_TOKEN_FILE`
 (remote-box README "Network capability entrance"); otherwise the local socket, as before. The owner
-unit sets the AX41's tailnet entrance and loads `/etc/thinkering/network-callers/concierge-owner.token`
-as a systemd credential, so the owner already works without thnkr.ing's socket. The token file is
-read on every call: rotation needs no restart, and a missing file fails that call instead of falling
-back to a socket another machine will not have. Deploy refuses a unit whose credential file is
-missing (it would never start). The Mac's owner keeps reaching thnkr.ing over `ssh remote-box`.
+unit sets the AX41's tailnet entrance and names `/etc/thinkering/network-callers/concierge-owner.token`
+itself (not a systemd credential, which is a copy taken at start), so the owner already works
+without thnkr.ing's socket. The token file is read on every call: rotation needs no restart, and a
+missing file fails that call instead of falling back to a socket another machine will not have.
+Tests and sandbox lanes that switch thnkr.ing off clear these variables too. Deploy refuses any
+unit whose `LoadCredential=` file is missing (it would never start). The Mac's owner keeps reaching thnkr.ing over `ssh remote-box`.
 
 ## Heavy work out of the owner's request loop
 

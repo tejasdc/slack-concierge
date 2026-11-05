@@ -828,7 +828,7 @@ supervise_lane() {
       export HOME=${HOME:-/root}
       export CONCIERGE_RUNTIME_PROFILE=sandbox
       export CONCIERGE_SLACK_ENABLED="$(jq -r 'if .slack_enabled == false then "0" else "1" end' "$request_path")"
-      unset CONCIERGE_SESSION_CAPABILITY_SOCKET
+      unset CONCIERGE_SESSION_CAPABILITY_SOCKET CONCIERGE_THINKERING_CAPABILITY_URL CONCIERGE_THINKERING_TOKEN_FILE
       capability_socket=$(jq -r '.capability_socket // ""' "$request_path")
       if test -n "$capability_socket"; then
         validate_capability_socket "$capability_socket"

@@ -11,7 +11,7 @@ test('actual Slack-free runtime starts, retains authenticated owner operations a
   const environment={...process.env,CONCIERGE_RUNTIME_PROFILE:'sandbox',CONCIERGE_TEST_MODE:'1',CONCIERGE_SLACK_ENABLED:'0',
     CONCIERGE_STATE_DIR:state,CONCIERGE_WORKSPACE_ROOT:join(root,'workspace'),CONCIERGE_SANDBOX_RUN_ID:'native-runtime-test',
     CONCIERGE_SANDBOX_LANE:'1',CONCIERGE_SANDBOX_READY_FILE:ready};
-  for(const key of Object.keys(environment))if(key.includes('SLACK')&&key!=='CONCIERGE_SLACK_ENABLED'||key==='CONCIERGE_CONFIG_PATH'||key==='CONCIERGE_SESSION_CAPABILITY_SOCKET'||key.startsWith('CONCIERGE_CAPTURE_')||key.startsWith('CONCIERGE_SANDBOX_EXPECTED_'))delete environment[key];
+  for(const key of Object.keys(environment))if(key.includes('SLACK')&&key!=='CONCIERGE_SLACK_ENABLED'||key==='CONCIERGE_CONFIG_PATH'||key==='CONCIERGE_SESSION_CAPABILITY_SOCKET'||key.startsWith('CONCIERGE_THINKERING_')||key.startsWith('CONCIERGE_CAPTURE_')||key.startsWith('CONCIERGE_SANDBOX_EXPECTED_'))delete environment[key];
   let child:ReturnType<typeof Bun.spawn>|null=null,output:Promise<string>|null=null;
   const start=async()=>{
     child=Bun.spawn([process.execPath,'src/index.ts'],{cwd:join(import.meta.dir,'..'),env:environment,stdout:'pipe',stderr:'pipe'});
