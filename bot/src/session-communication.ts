@@ -1075,7 +1075,19 @@ export class SessionCommunicationCoordinator {
     /** Whether a request paced with --after-settled still has to wait for this earlier request. */
     private pacingWaitsOn(id: string): boolean {
         const earlier = this.row(id);
-        return !earlier.outcome && earlier.stalled_at_ms === null;
+        if (earlier.outcome || earlier.stalled_at_ms !== null) return false;
+        // Pacing keeps a few requests working at once; it waits while the earlier request is
+        // being worked on, not until its recipient has replied. Once the run that held it has
+        // ended, with or without a final reply, the lane is free, even if no stall was marked:
+        // on 2026-11-05 a request whose run ended with six progress replies and no final was
+        // never marked stalled and held 7 nightly findings for 6.5 hours. The earlier request
+        // stays open, so its late answer still settles it.
+        const input = earlier.target_input_id ? getAcceptedSessionInput(earlier.target_input_id) : null;
+        if (!input?.turn_id) return true;
+        let turn = db.query('SELECT id,status FROM turns WHERE id=?').get(input.turn_id) as { id: number; status: string } | null;
+        if (!turn) return true;
+        if (turn.status === 'error') turn = carryingTurn(turn.id) ?? turn;
+        return !['done', 'error', 'cancelled'].includes(turn.status);
     }
     private row(id: string): RequestRow {
         const row = db.query('SELECT * FROM session_communication_requests WHERE request_id=?').get(id) as RequestRow | null;
