@@ -245,6 +245,12 @@ Not yet, before a runner on another machine can hold Codex:
   would watch the runner's App Server while his own command-line turns run elsewhere.
 - "Supervised" is only a start when a connection finds no App Server: no open-file limit raise, no
   scope move, no update handling; the start is refused unless that machine's Codex updater is off.
+- An owner drain closes the request surfaces, and with them every relay, before its execution host
+  stops (index.ts drain order). With the relay on, every Codex connection, running turns included,
+  would be cut mid-drain; prove with a drain check holding a Codex turn in flight that the next owner
+  follows those turns (as it does after a restart) rather than recording them failed, or close relays
+  last.
+- One relayed message is limited to 64 MB, the same as the backpressure limit.
 - Account switching restarts the App Server on the owner's machine (`provider-activation.ts`),
 and the owner unit's `ExecStartPre` still starts the local App Server. On the AX41 the owner and runner
 share one App Server, so turning `CONCIERGE_CODEX_RUNNER=ax41` on changes the path, not the daemon;

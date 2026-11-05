@@ -63,8 +63,10 @@ export class RunnerRelay {
 
   readonly handlers:WebSocketHandler<RelaySocketData>={
     perMessageDeflate:false,
-    // Codex answers (a whole thread's history on resume) can be large.
-    maxPayloadLength:256*1024*1024,
+    // One message may be as large as the backpressure limit below, never larger: a bigger one could
+    // never be passed on and would end the relay every time it was asked again. Concierge's resumes
+    // exclude turns and history is read in pages, so answers stay far below this.
+    maxPayloadLength:64*1024*1024,
     // A peer that stops reading past this is disconnected rather than having messages dropped:
     // a dropped JSON-RPC answer would look like a stalled turn, a disconnect is handled as ambiguous.
     backpressureLimit:64*1024*1024,closeOnBackpressureLimit:true,
