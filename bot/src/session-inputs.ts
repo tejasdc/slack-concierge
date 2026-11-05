@@ -702,19 +702,47 @@ export function withdrawUnstartedServiceInput(inputId:string,reason:string):bool
  * acknowledged or ambiguous send, a Slack-provenance steering message, or a
  * session that cannot accept input at all stays terminal.
  */
+function continueUnsentOutsideHandoff(input:AcceptedSessionInput):AcceptedSessionInput|null {
+  const session=getSessionById(input.session_id);
+  // The independent command may finish after a handoff has suspended its session.
+  if(!session||!sessionMetadata(session).outside||!sessionMetadata(session).suspended||input.origin!=='human')return null;
+  let destination=input.session_id;
+  const visited=new Set<number>();
+  while(true){
+    if(visited.has(destination))return null;
+    visited.add(destination);
+    const handoff=db.query("SELECT successor_session_id FROM session_handoffs WHERE predecessor_session_id=? AND state='accepted' ORDER BY accepted_at DESC LIMIT 1")
+      .get(destination) as {successor_session_id:number}|null;
+    if(!handoff)break;
+    destination=handoff.successor_session_id;
+  }
+  if(destination===input.session_id)return null;
+  const successor=getSessionById(destination);
+  if(!successor||successor.status==='archived'||sessionMetadata(successor).suspended)return null;
+  const payload=JSON.parse(input.payload_json);
+  delete payload.delivery;delete payload.expectedRunId;delete payload.steerChosen;delete payload.queueChosen;
+  const continued=retainSessionInput({id:`handoff-unsent:${input.id}`,sessionId:destination,
+    scope:'handoff-unsent',actionId:input.id,kind:'input',origin:input.origin,payload,
+    sourceInputId:input.id,sourceRunId:input.source_run_id??undefined,requestId:input.request_id??undefined}).input;
+  if(enqueueSessionInput(continued.id).turn_id===null)return null;
+  db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND receipt_json IS NULL')
+    .run(JSON.stringify({state:'canceled',movedTo:`concierge:${destination}`,continuedAs:continued.id}),input.id);
+  return continued;
+}
 export function recoverUnsentSteeredInput(inputId:string) {
   return db.transaction(()=>{
     const input=getAcceptedSessionInput(inputId);
     if(!input)return input;
     // A message can have several attempts; the latest decides where it stands.
-    const prior=db.query(`SELECT id,turn_id,status,provider_sent_at FROM turn_steering_messages
-      WHERE accepted_input_id=? ORDER BY id DESC LIMIT 1`).get(input.id) as {id:number;turn_id:number;status:string;provider_sent_at:string|null}|null;
+    const prior=db.query(`SELECT id,turn_id,status,provider_sent_at,slack_user_msg_ts FROM turn_steering_messages
+      WHERE accepted_input_id=? ORDER BY id DESC LIMIT 1`).get(input.id) as {id:number;turn_id:number;status:string;provider_sent_at:string|null;slack_user_msg_ts:string|null}|null;
     if(input.steering_id===null){
       // A previous recovery may have detached the failed attempt before it could
       // put the same accepted input in the queue. Finish that durable next step.
       if(prior?.status==='failed'&&!prior.provider_sent_at&&input.turn_id===null
         &&!(input.receipt_json&&JSON.parse(input.receipt_json).state)
-        &&!(input.origin==='service'&&JSON.parse(input.payload_json).delivery==='steer'))return enqueueSessionInput(input.id);
+        &&!(input.origin==='service'&&JSON.parse(input.payload_json).delivery==='steer'))
+        return (prior.slack_user_msg_ts===null?continueUnsentOutsideHandoff(input):null)??enqueueSessionInput(input.id);
       if(prior&&!(prior.status==='failed'&&!prior.provider_sent_at)&&input.turn_id===null){
         db.query('UPDATE session_inputs SET turn_id=?,steering_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id IS NULL AND steering_id IS NULL')
           .run(prior.turn_id,prior.id,input.id);
@@ -732,7 +760,8 @@ export function recoverUnsentSteeredInput(inputId:string) {
       WHERE id=? AND accepted_input_id=? AND slack_user_msg_ts IS NULL`).get(input.steering_id,input.id) as {status:string;provider_sent_at:string|null}|null;
     if(steering?.status!=='failed'||steering.provider_sent_at)return input;
     const session=getSessionById(input.session_id);
-    if(!session||session.status==='archived'||sessionMetadata(session).suspended)return input;
+    if(!session||session.status==='archived')return input;
+    if(sessionMetadata(session).suspended)return continueUnsentOutsideHandoff(input)??input;
     db.query('UPDATE session_inputs SET turn_id=NULL,steering_id=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND steering_id=?').run(input.id,input.steering_id);
     // Queue in the same transaction as detaching. Dispatch must not see the
     // unattached input and attempt another steering insert with this identity.
