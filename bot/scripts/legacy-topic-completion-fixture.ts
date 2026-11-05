@@ -12,7 +12,7 @@ process.env.CONCIERGE_TEST_MODE='1';
 process.env.CONCIERGE_TEST_AUTHORIZATION=LEGACY_TOPIC_COMPLETION_TEST_AUTHORIZATION;
 
 const [{db,claimNextQueuedTurn,markTurnProviderAdmissionIntended,acknowledgeTurnProviderInput},
-  {SessionOwner},{SessionCommunicationCoordinator},{nativeRunId,retainSessionInput,updateSessionMetadata},
+  {SessionOwner},{SessionCommunicationCoordinator},{nativeRunId,updateSessionMetadata},
   {topicsCommand}]=await Promise.all([
   import('../src/state'),import('../src/session-owner'),import('../src/session-communication'),
   import('../src/session-inputs'),import('../src/session-topics')]);
@@ -36,17 +36,17 @@ try {
   const inbox=owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',firstInput:{text:'Reconcile retained work'}});
   const inboxId=Number(inbox.session.id.slice(10));updateSessionMetadata(inboxId,{inbox:true});
   const current=run();
-  const root=retainSessionInput({sessionId:inboxId,scope:'surface:thinkering',actionId:'legacy-human-root',kind:'input',origin:'human',payload:{text:'Check why my message stayed queued.'}}).input;
+  const rootId=current.actor.inputId;
   const area=topicsCommand(current.actor,{verb:'area.create',action_id:'legacy-area',name:'Legacy completion fixture'}).area;
-  const created=topicsCommand(current.actor,{verb:'create',action_id:'legacy-topic',title:'Queued message',roots:[root.id],area_ids:[area.id]});
+  const created=topicsCommand(current.actor,{verb:'create',action_id:'legacy-topic',title:'Queued message',roots:[rootId],area_ids:[area.id]});
   const topicId=created.topic.topicId;
   const added=topicsCommand(current.actor,{verb:'request.add',topic_id:topicId,action_id:'legacy-request',title:'Explain and resolve the queue',
-    sources:[root.id],brief:'Check the queue, recover it if needed, and explain the outcome.'});
+    sources:[rootId],brief:'Check the queue, recover it if needed, and explain the outcome.'});
   const requestId=added.request.requestId;
 
   const target=owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat'});
   const dispatch=await communication.ask({source:current.source,action_id:'legacy-dispatch',address:target.session.address,
-    thread:root.id,text:'Inspect the queued message and resolve it.',requestedEffect:'informational'});
+    thread:rootId,text:'Inspect the queued message and resolve it.',requestedEffect:'informational'});
   await communication.idle();const worker=run();
   communication.reply({source:worker.source,action_id:'legacy-final',request_id:dispatch.request_id,
     text:'The deployment hold released, the message drained, and no change was needed.',final:true});
