@@ -20,6 +20,7 @@ export async function startForegroundGateway(config:{stateDir:string;ownerSocket
   let local:ReturnType<typeof Bun.serve>|null=null,peer:ReturnType<typeof Bun.serve>|null=null,agent:ReturnType<typeof Bun.serve>|null=null;
   let closing:Promise<void>|null=null;
   const stop=(force=false)=>closing??=(async()=>{
+    relay.closeAll();
     await Promise.all([local?.stop(force),peer?.stop(force),agent?.stop(force)]);
     await pool.stop();
   })();

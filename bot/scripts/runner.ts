@@ -402,9 +402,10 @@ function relayCodexAppServer(id:string) {
     for(const socket of [remote,local])try{socket.close(1011,why.slice(0,120));}catch{}
   };
   remote.binaryType='arraybuffer';local.binaryType='arraybuffer';
-  remote.onmessage=event=>{if(local.readyState===WebSocket.OPEN)local.send(event.data);else waiting.push(event.data);};
+  remote.onmessage=event=>{if(local.readyState===WebSocket.OPEN)local.send(event.data);else if(local.readyState===WebSocket.CONNECTING)waiting.push(event.data);else end('the App Server connection is gone');};
   local.onopen=()=>{for(const message of waiting.splice(0))local.send(message);};
-  local.onmessage=event=>{if(remote.readyState===WebSocket.OPEN)remote.send(event.data);};
+  // A message that cannot be passed on ends the relay; it is never dropped silently.
+  local.onmessage=event=>{if(remote.readyState===WebSocket.OPEN)remote.send(event.data);else end('the owner side is gone');};
   local.onerror=()=>{
     // Nobody listening on the App Server's socket: start it (once per half minute); the owner's
     // client sees this relay end and connects again.
@@ -428,6 +429,9 @@ function listenForRelays(delayMs=0) {
     channel.onclose=event=>{
       if(relayChannel!==channel)return;
       say('runner_relay_listen_closed',{code:event.code});
+      // 4000: a newer copy of this runner took the channel; this copy stops offering relays rather
+      // than the two replacing each other forever.
+      if(event.code===4000){say('runner_relay_replaced');return;}
       listenForRelays(5_000);
     };
   },delayMs);

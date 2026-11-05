@@ -220,7 +220,16 @@ turn by its thread and turn id), so moving it only changes where the bridge's We
    `CONCIERGE_OWNER_URL` and token file (`router-request-client.ts`). A run's own token and owner
    address are kept out of a Codex thread's shell settings, because a thread keeps them for its life,
    past the token's expiry and the owner's move. Codex helpers therefore act as `runner:<name>`; the
-   owner still checks every action's source input and run.
+   owner still checks every action's source input and run. This substitutes the runner token for the
+   per-turn token the plan asked for: any Codex shell on that runner holds the runner's full
+   authority, including claiming its jobs and opening its relay channel (which carries every
+   session's Codex traffic). A root agent on the runner could read the token file anyway, so this
+   widens nothing on a machine where agents are root; a per-turn exchange (runner token plus
+   `CODEX_THREAD_ID` for the current turn's run token, as the commit-provenance hook resolves its
+   turn) is still owed before a runner hides its token from agents.
+6. Backpressure: a side that stops reading past 64 MB is disconnected (`closeOnBackpressureLimit`),
+   and a message Bun refuses ends the relay; nothing is dropped silently. A graceful owner stop
+   closes every relay and listen channel first, so it is never held by them.
 
 Why a relay and not the job protocol: the App Server's traffic is a live connection with many
 streamed notifications, not obligations; carrying it through `runner_events` would write every token
@@ -228,7 +237,15 @@ delta into the ledger the move is meant to relieve, and add half a second per re
 stores nothing and keeps the App Server's own protocol end to end. Why not a port on the runner:
 runners open none (decided plan, "How the parts talk", 3).
 
-Not yet: account switching restarts the App Server on the owner's machine (`provider-activation.ts`),
+Not yet, before a runner on another machine can hold Codex:
+- The Codex thread's shell settings still carry the owner's `PATH`, state folder, ledger path, bot
+  folder and Bun path (`providerOwnerEnvironment`, codex.ts); Claude runner turns rewrite these on the
+  runner, Codex relay turns do not, so `router-actions.sh` would not be found on another machine.
+- The leftover-process audit after a Codex turn reads the owner's `/proc`; the Codex Remote observer
+  would watch the runner's App Server while his own command-line turns run elsewhere.
+- "Supervised" is only a start when a connection finds no App Server: no open-file limit raise, no
+  scope move, no update handling; the start is refused unless that machine's Codex updater is off.
+- Account switching restarts the App Server on the owner's machine (`provider-activation.ts`),
 and the owner unit's `ExecStartPre` still starts the local App Server. On the AX41 the owner and runner
 share one App Server, so turning `CONCIERGE_CODEX_RUNNER=ax41` on changes the path, not the daemon;
 the App Server must be restarted under the runner (admission closed, turns idle, see
