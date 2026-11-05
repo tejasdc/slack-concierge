@@ -1,7 +1,7 @@
 import {strict as assert} from 'node:assert';
 import {Database} from 'bun:sqlite';
 import {PreparedTopics,readPreparedTopics,readPreparedTopic,readPreparedTopicChanges,readPreparedTopicOverview,readPreparedTopicItems,readPreparedQuestions,readPreparedTopicResolution,readPreparedTopicChunk,readPreparedInboxAttention,readPreparedTopicEvents,readPreparedIncoming} from '../src/prepared-topics';
-import {PreparedAreas,readPreparedAreas,readPreparedArea} from '../src/prepared-areas';
+import {PreparedAreas,readPreparedAreas,readPreparedArea,readPreparedThreadAreas} from '../src/prepared-areas';
 import {observedDatabase,withStorageReadBudget,observeStorageOperation} from '../src/storage-observation';
 import {readPreparedThreadCoordinationKeys} from '../src/presentation-message-reader';
 import {readCanceledSourceOrigins,readCoordinationActivity,readPrivateCoordinationRows,readPublicRequestRows} from '../src/thread-coordination-read';
@@ -159,32 +159,62 @@ async function readerGrowth(reader:'incoming'|'window'|'overview'|'items'|'quest
 async function areaGrowth(kind:'window'|'detail'){
  for(const count of [100,1000,10000]){
   const source=new Database(':memory:'),raw=new Database(':memory:');
+  if(count===100&&kind==='detail')raw.exec(`CREATE TABLE presentation_area_threads(
+    generation INTEGER NOT NULL,area_id TEXT NOT NULL,topic_id TEXT NOT NULL,
+    PRIMARY KEY(generation,area_id,topic_id));`);
   new PreparedTopics(source,raw);new PreparedAreas(source,raw);
+  if(count===100&&kind==='detail')assert.ok((raw.query('PRAGMA table_info(presentation_area_threads)').all() as {name:string}[]).some(column=>column.name==='reason'));
   raw.query('UPDATE presentation_topics_meta SET generation=1,source_head=7,ready=1,inbox_session=1').run();
   raw.transaction(()=>{for(let i=0;i<count;i++){
    const id=`area:${String(i).padStart(6,'0')}`,topicId=`topic:${String(i).padStart(6,'0')}`;
    raw.query('INSERT INTO presentation_areas VALUES(?,?,?,?,?,?)').run(1,id,`Area ${i}`,`area ${String(i).padStart(6,'0')}`,'', '2026-10-16T00:00:00Z');
-   raw.query('INSERT INTO presentation_area_threads VALUES(?,?,?)').run(1,'area:000000',topicId);
+   raw.query('INSERT INTO presentation_area_threads(generation,area_id,topic_id) VALUES(?,?,?)').run(1,'area:000000',topicId);
    raw.query(`INSERT INTO presentation_topics(generation,topic_id,session_id,state,background,band,recency,closed_recency,summary_json,detail_hash,
     search_text,sort_key,closed_sort_key,reply_targets_json,overview_json,started_sort_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(1,topicId,1,'open',0,0,'2026-10-16T00:00:00Z','2026-10-16T00:00:00Z',JSON.stringify({title:`Thread ${i}`,summary:'',state:'open',lastEntryAt:'2026-10-16T00:00:00Z'}),'x','',`0:${String(i).padStart(8,'0')}`,`0:${String(i).padStart(8,'0')}`,'{}','{}',`0:${String(i).padStart(8,'0')}`);
   }})();
+  for(let i=1;i<=4;i++)raw.query('INSERT INTO presentation_area_threads(generation,area_id,topic_id,reason) VALUES(?,?,?,?)')
+   .run(1,`area:${String(i).padStart(6,'0')}`,'topic:000000',i===1?'Filed by meaning: close to another thread':'Chosen by Inbox');
+  raw.query('INSERT INTO presentation_area_projection_meta VALUES(1,1,3)').run();
   const db=observedDatabase(raw),selected=()=>kind==='window'?readPreparedAreas(db,7,'area',null,20):readPreparedArea(db,7,'area:000000',null,20);
-  const result=observeStorageOperation(`fixture-area-${kind}`,()=>withStorageReadBudget({maxCalls:128,maxRows:160,maxResultBytes:262144},selected));
+  const result=observeStorageOperation(`fixture-area-${kind}`,()=>withStorageReadBudget({maxCalls:128,maxRows:180,maxResultBytes:262144},selected));
   assert.ok(Buffer.byteLength(JSON.stringify(result))<131072);
   if(kind==='window'){
    assert.equal(result.areas.length,20);assert.ok(result.nextCursor);
    assert.equal(readPreparedAreas(db,7,'area',result.nextCursor,20).areas[0]?.id,'area:000020');
   }else{
    assert.equal(result.area.threads.length,20);assert.ok(result.area.nextCursor);
+   assert.deepEqual(result.area.threads[0]?.otherAreas,[
+    {id:'area:000001',name:'Area 1',inferred:true},
+    {id:'area:000002',name:'Area 2',inferred:false},
+    {id:'area:000003',name:'Area 3',inferred:false}]);
+   assert.equal(result.area.threads[0]?.otherAreaCount,4);
    assert.equal(readPreparedArea(db,7,'area:000000',result.area.nextCursor,20).area?.threads[0]?.id,'topic:000020');
   }
+  source.close();raw.close();
+ }
+}
+async function threadAreasGrowth(){
+ for(const count of [100,1000,10000]){
+  const source=new Database(':memory:'),raw=new Database(':memory:');
+  new PreparedTopics(source,raw);new PreparedAreas(source,raw);
+  raw.query('UPDATE presentation_topics_meta SET generation=1,source_head=7,ready=1,inbox_session=1').run();
+  raw.transaction(()=>{for(let i=0;i<count;i++){
+   const id=`area:${String(i).padStart(6,'0')}`;
+   raw.query('INSERT INTO presentation_areas VALUES(?,?,?,?,?,?)').run(1,id,`Area ${i}`,`area ${String(i).padStart(6,'0')}`,'','2026-11-05T00:00:00Z');
+   raw.query('INSERT INTO presentation_area_threads(generation,area_id,topic_id,reason) VALUES(?,?,?,?)').run(1,id,'topic:one',i%2?'Filed by meaning: close to another thread':'Chosen by Inbox');
+  }})();
+  raw.query('INSERT INTO presentation_area_projection_meta VALUES(1,1,3)').run();
+  const db=observedDatabase(raw),first=observeStorageOperation('fixture-thread-areas',()=>withStorageReadBudget({maxCalls:128,maxRows:50,maxResultBytes:131072},()=>readPreparedThreadAreas(db,7,'topic:one',null,20)));
+  assert.equal(first.areas.length,20);assert.ok(first.nextCursor);
+  assert.equal(readPreparedThreadAreas(db,7,'topic:one',first.nextCursor,20).areas[0]?.id,'area:000020');
   source.close();raw.close();
  }
 }
 export const READ_GROWTH_FIXTURES={
  'thread-coordination-growth':coordinationGrowth,
  'areas-window-growth':()=>areaGrowth('window'),'areas-detail-growth':()=>areaGrowth('detail'),
+ 'thread-areas-growth':threadAreasGrowth,
  'topics-window-growth':()=>readerGrowth('window'),'topics-detail-growth':()=>readerGrowth('detail'),'topics-changes-growth':()=>readerGrowth('changes'),
  'topics-overview-growth':()=>readerGrowth('overview'),'topics-items-growth':()=>readerGrowth('items'),'topics-questions-growth':()=>readerGrowth('questions'),
  'topics-resolution-growth':()=>readerGrowth('resolution'),'inbox-attention-growth':()=>readerGrowth('attention'),

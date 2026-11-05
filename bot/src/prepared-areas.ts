@@ -16,7 +16,7 @@ export class PreparedAreas {
       summary TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(generation,area_id));
       CREATE INDEX IF NOT EXISTS presentation_areas_name ON presentation_areas(generation,name_key,area_id);
       CREATE TABLE IF NOT EXISTS presentation_area_threads(
-        generation INTEGER NOT NULL,area_id TEXT NOT NULL,topic_id TEXT NOT NULL,
+        generation INTEGER NOT NULL,area_id TEXT NOT NULL,topic_id TEXT NOT NULL,reason TEXT NOT NULL DEFAULT '',
         PRIMARY KEY(generation,area_id,topic_id));
       CREATE INDEX IF NOT EXISTS presentation_area_threads_topic ON presentation_area_threads(generation,topic_id,area_id);
       CREATE TABLE IF NOT EXISTS presentation_area_neighbors(
@@ -25,14 +25,16 @@ export class PreparedAreas {
       CREATE INDEX IF NOT EXISTS presentation_area_neighbors_right ON presentation_area_neighbors(generation,right_area_id,left_area_id);
       CREATE TABLE IF NOT EXISTS presentation_area_projection_meta(
         singleton INTEGER PRIMARY KEY CHECK(singleton=1),generation INTEGER NOT NULL,version INTEGER NOT NULL);`);
+    if(!(prepared.query('PRAGMA table_info(presentation_area_threads)').all() as {name:string}[]).some(column=>column.name==='reason'))
+      prepared.exec("ALTER TABLE presentation_area_threads ADD COLUMN reason TEXT NOT NULL DEFAULT ''");
   }
   isReady(generation:number){
     const row=this.prepared.query('SELECT generation,version FROM presentation_area_projection_meta WHERE singleton=1')
       .get() as {generation:number;version:number}|null;
-    return row?.generation===generation&&row.version===2;
+    return row?.generation===generation&&row.version===3;
   }
   activate(generation:number){
-    this.prepared.query(`INSERT INTO presentation_area_projection_meta VALUES(1,?,2)
+    this.prepared.query(`INSERT INTO presentation_area_projection_meta VALUES(1,?,3)
       ON CONFLICT(singleton) DO UPDATE SET generation=excluded.generation,version=excluded.version`).run(generation);
   }
   beginRebuild(generation:number){
@@ -68,8 +70,9 @@ export class PreparedAreas {
       .run(generation,id,row.name,row.name_key,row.summary,row.updated_at);
   }
   private thread(generation:number,areaId:string,topicId:string){
-    const exists=this.source.query('SELECT 1 FROM inbox_area_threads WHERE area_id=? AND topic_id=?').get(areaId,topicId);
-    if(exists)this.prepared.query('INSERT OR IGNORE INTO presentation_area_threads VALUES(?,?,?)').run(generation,areaId,topicId);
+    const exists=this.source.query('SELECT reason FROM inbox_area_threads WHERE area_id=? AND topic_id=?').get(areaId,topicId) as {reason:string}|null;
+    if(exists)this.prepared.query(`INSERT INTO presentation_area_threads(generation,area_id,topic_id,reason) VALUES(?,?,?,?)
+      ON CONFLICT(generation,area_id,topic_id) DO UPDATE SET reason=excluded.reason`).run(generation,areaId,topicId,exists.reason);
     else this.prepared.query('DELETE FROM presentation_area_threads WHERE generation=? AND area_id=? AND topic_id=?').run(generation,areaId,topicId);
   }
   private neighbor(generation:number,left:string,right:string){
@@ -89,7 +92,7 @@ const status=(db:Database,head:number)=>{
   let areaMeta:{generation:number;version:number}|null=null;
   try{areaMeta=db.query('SELECT generation,version FROM presentation_area_projection_meta WHERE singleton=1')
     .get() as {generation:number;version:number}|null;}catch{ /* The worker has not installed its disposable schema yet. */ }
-  const complete=!!row.ready&&row.source_head>=head&&areaMeta?.generation===row.generation&&areaMeta.version===2;
+  const complete=!!row.ready&&row.source_head>=head&&areaMeta?.generation===row.generation&&areaMeta.version===3;
   return {generation:row.generation,coverage:{complete,
     code:complete?null:'presentation_indexing',appliedSequence:row.source_head}};
 };
@@ -125,8 +128,32 @@ export function readPreparedArea(db:Database,head:number,id:string,cursor:string
     WHERE m.generation=? AND m.area_id=? AND (?='' OR t.sort_key>?)
     ORDER BY t.sort_key LIMIT ?`).all(generation,id,old?.key??'',old?.key??'',size+1) as any[];
   const page=rows.slice(0,size);
+  const otherAreas=db.query(`SELECT a.area_id AS id,a.name,m.reason FROM presentation_area_threads m
+    JOIN presentation_areas a ON a.generation=m.generation AND a.area_id=m.area_id
+    WHERE m.generation=? AND m.topic_id=? AND m.area_id<>? ORDER BY a.name_key,a.area_id LIMIT 4`);
+  const otherCount=db.query(`SELECT count(*) AS n FROM presentation_area_threads WHERE generation=? AND topic_id=? AND area_id<>?`);
   return {area:{...areaSummary(area),neighbors:neighborRows.slice(0,20),neighborsMore:neighborRows.length>20,
     threadCount:(db.query('SELECT count(*) AS n FROM presentation_area_threads WHERE generation=? AND area_id=?').get(generation,id) as {n:number}).n,
-    threads:page.map(row=>{const item=JSON.parse(row.summary_json);return {id:row.topic_id,title:item.title,summary:item.summary,state:item.state,updatedAt:item.lastEntryAt};}),
+    threads:page.map(row=>{const item=JSON.parse(row.summary_json);
+      const others=otherAreas.all(generation,row.topic_id,id) as {id:string;name:string;reason:string}[];
+      const count=(otherCount.get(generation,row.topic_id,id) as {n:number}).n;
+      return {id:row.topic_id,title:item.title,summary:item.summary,state:item.state,updatedAt:item.lastEntryAt,
+        otherAreas:others.slice(0,3).map(other=>({id:other.id,name:other.name,inferred:other.reason.startsWith('Filed by meaning: ')})),otherAreaCount:count};}),
     nextCursor:rows.length>size&&page.length?encode({g:generation,id,key:page.at(-1)!.sort_key}):null},coverage};
+}
+
+/** The reverse membership view for one thread. Each page follows its topic index, then resolves
+ * current area names. An inferred membership remains distinguishable from an explicit one. */
+export function readPreparedThreadAreas(db:Database,head:number,topicId:string,cursor:string|null,limit=20){
+  const {generation,coverage}=status(db,head),size=Math.max(1,Math.min(PAGE,limit));
+  const old=cursor?decode(cursor):null;
+  if(cursor&&(!old||old.g!==generation||old.id!==topicId||typeof old.name!=='string'||typeof old.area!=='string'))
+    return {areas:[],nextCursor:null,coverage:{complete:false,code:'reset_required'}};
+  const rows=db.query(`SELECT a.area_id AS id,a.name,m.reason,a.name_key FROM presentation_area_threads m
+    JOIN presentation_areas a ON a.generation=m.generation AND a.area_id=m.area_id
+    WHERE m.generation=? AND m.topic_id=? AND (?=0 OR a.name_key>? OR (a.name_key=? AND a.area_id>?))
+    ORDER BY a.name_key,a.area_id LIMIT ?`).all(generation,topicId,old?1:0,old?.name??'',old?.name??'',old?.area??'',size+1) as {id:string;name:string;reason:string;name_key:string}[];
+  const page=rows.slice(0,size);
+  return {areas:page.map(area=>({id:area.id,name:area.name,inferred:area.reason.startsWith('Filed by meaning: '),
+    reason:area.reason})),nextCursor:rows.length>size&&page.length?encode({g:generation,id:topicId,name:page.at(-1)!.name_key,area:page.at(-1)!.id}):null,coverage};
 }

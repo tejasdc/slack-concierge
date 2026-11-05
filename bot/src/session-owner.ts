@@ -26,7 +26,7 @@ import {boundedChangedMessageIds,HISTORY_CHANGE_LIMIT} from './bounded-history-c
 import {historyContent,previewHistoryMessage} from './history-message-preview';
 import {HistoryDetailCache} from './history-detail-cache';
 import {preparedTopics,preparedIncoming,preparedTopicOverview,preparedTopicItems,preparedQuestions,preparedTopicChanges,
-  preparedTopicResolution,preparedTopicDetail,preparedTopicsReady,preparedAreas,preparedArea} from './presentation-topic-reader';
+  preparedTopicResolution,preparedTopicDetail,preparedTopicsReady,preparedAreas,preparedArea,preparedThreadAreas} from './presentation-topic-reader';
 import {createAreaByHuman,areaHumanAction,AreaError} from './session-areas';
 import {presentationChangesForSession,presentationEpoch,presentationHead} from './presentation-changes';
 import {noteOwnerStall,noteSlowOwnerRequest,startOwnerResponsivenessWatch} from './owner-responsiveness';
@@ -4030,6 +4030,8 @@ export class SessionOwner {
       }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='areas'&&parts.length===3)
         result=preparedArea(parts[2]!,url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),20)??20);
+      else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='topics'&&parts[3]==='areas'&&parts.length===4)
+        result=preparedThreadAreas(parts[2]!,url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),20)??20);
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='incoming'&&parts.length===2)
         result=preparedIncoming({cursor:url.searchParams.get('cursor'),limit:boundedLimit(url.searchParams.get('limit'),20)??20});
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='topics'&&parts[2]==='changes'&&parts.length===3){
