@@ -355,7 +355,7 @@ import {installSessionProjection} from './session-projection';
 import {fillMissingSessionPurposes} from './session-purpose';
 import {expireUnreadableReadingItems,fileServiceNotices,keepThreadsCurrent,migrateInboxAttention,migrateInboxTopics,reconcileCarriedClosures,reconcileForwardedFinalAnswers,repairOctober21RepeatedAnswer,repairNovember4RepeatedThreadNotices,retireTimedRequestPosts,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
 import {resolveRetryNotices} from './retry-breaker-notice';
-import {ownerEventMaxSequence,runStartupCatchUp,sessionMaxId,startDeferredStartupRepairs} from './startup-repairs';
+import {ownerEventMaxSequence,runStartupCatchUp,runStartupSweep,sessionMaxId,startDeferredStartupRepairs} from './startup-repairs';
 import {CodexSessionObserver} from './codex-session-observer';
 import {ensureSpeechWorker} from './speech-job-supervisor';
 
@@ -552,7 +552,8 @@ try {runStartupStep('inbox_topics_migration',()=>migrateInboxTopics());} catch(e
 try {runStartupStep('forwarded_final_answers',()=>runStartupCatchUp('forwarded-final-answers',ownerEventMaxSequence,
   (afterSequence,throughSequence)=>reconcileForwardedFinalAnswers(undefined,{afterSequence,throughSequence}),20_000));}
 catch(error) {log('error','inbox_request_answer_reconciliation_failed',errorFields(error));}
-try {runStartupStep('carried_closures',()=>reconcileCarriedClosures());}
+try {runStartupStep('carried_closures',()=>runStartupSweep('carried-closures',ownerEventMaxSequence,
+  (afterSequence,throughSequence)=>reconcileCarriedClosures(undefined,{afterSequence,throughSequence}),20_000));}
 catch(error) {log('error','inbox_request_answer_reconciliation_failed',errorFields(error));}
 try {log('info','timed_request_posts_retired',{result:runStartupStep('timed_request_posts',()=>runStartupCatchUp('timed-request-posts',ownerEventMaxSequence,
   (afterSequence,throughSequence)=>retireTimedRequestPosts({afterSequence,throughSequence}),20_000))});}

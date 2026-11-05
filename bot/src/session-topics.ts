@@ -2928,16 +2928,18 @@ export function reconcileForwardedFinalAnswers(onlyRequestId?:string,range?:{aft
 }
 
 /** Partial answers carried by an answer closure, mirrored once their request is answered. */
-export function reconcileCarriedClosures(onlyRequestId?:string):number {
+export function reconcileCarriedClosures(onlyRequestId?:string,range?:{afterSequence:number;throughSequence:number}):number {
   const inbox=inboxSession();
   if(!inbox)return 0;
   let reconciled=0;
   const carried=db.query(`SELECT closure.event_id,closure.session_id,post.input_id,closure.payload_json,post.event_id AS post_id,
       post.payload_json AS post_payload FROM session_owner_events closure INDEXED BY session_owner_events_session_kind
     JOIN session_owner_events post ON post.event_id=json_extract(closure.payload_json,'$.postId') AND post.kind='post'
-    WHERE closure.session_id=? AND closure.kind='answer_closure' AND json_extract(post.payload_json,'$.replyKind')='partial'
+    WHERE closure.session_id=? AND closure.kind='answer_closure'
+      AND closure.sequence > ? AND closure.sequence <= ? AND json_extract(post.payload_json,'$.replyKind')='partial'
       AND post.event_id NOT LIKE 'post:forward:shared:%'
-      AND (? IS NULL OR json_extract(closure.payload_json,'$.requestId')=?)`).all(inbox.id,onlyRequestId??null,onlyRequestId??null) as
+      AND (? IS NULL OR json_extract(closure.payload_json,'$.requestId')=?)`).all(inbox.id,range?.afterSequence??0,
+        range?.throughSequence??Number.MAX_SAFE_INTEGER,onlyRequestId??null,onlyRequestId??null) as
       {event_id:string;session_id:number;input_id:string;payload_json:string;post_id:string;post_payload:string}[];
   for(const row of carried){
     const closure=JSON.parse(row.payload_json),post=JSON.parse(row.post_payload);

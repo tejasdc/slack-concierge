@@ -20,7 +20,8 @@ import { runStartupStep } from './startup-phase';
 const DEFERRED_START_DELAY_MS = 120_000;
 const PAUSE_BETWEEN_PAGES_MS = 250;
 type Pass = (afterKey: number, throughKey: number) => unknown;
-const deferred: { name: string; afterKey: number; throughKey: number; pageSize: number; pass: Pass }[] = [];
+type DeferredPass = { name: string; afterKey: number; throughKey: number; pageSize: number; pass: Pass; recordProgress: boolean };
+const deferred: DeferredPass[] = [];
 
 function lastMark(name: string): number | null {
   const row = db.query(`SELECT json_extract(payload_json,'$.throughKey') AS through FROM session_owner_events
@@ -39,7 +40,15 @@ export function runStartupCatchUp(name: string, maxKey: () => number, pass: Pass
   const mark = lastMark(name), through = maxKey();
   const after = mark ?? 0;
   if (through <= after) return { caught_up: true, through_key: after };
-  deferred.push({ name, afterKey: after, throughKey: through, pageSize, pass });
+  deferred.push({ name, afterKey: after, throughKey: through, pageSize, pass, recordProgress: true });
+  return { deferred: true, through_key: through };
+}
+
+/** Revisit work whose earlier rows can become eligible later; its pages have no permanent mark. */
+export function runStartupSweep(name: string, maxKey: () => number, pass: Pass, pageSize: number): unknown {
+  const through = maxKey();
+  if (through === 0) return { caught_up: true, through_key: 0 };
+  deferred.push({ name, afterKey: 0, throughKey: through, pageSize, pass, recordProgress: false });
   return { deferred: true, through_key: through };
 }
 
@@ -58,7 +67,7 @@ async function runDeferred(shouldStop: () => boolean) {
 }
 
 // A failed page records no mark beyond the last good one, so the next start resumes from there.
-async function runPages(item: (typeof deferred)[number], shouldStop: () => boolean): Promise<'completed' | 'stopped' | 'failed'> {
+async function runPages(item: DeferredPass, shouldStop: () => boolean): Promise<'completed' | 'stopped' | 'failed'> {
   for (let after = item.afterKey; after < item.throughKey;) {
     if (shouldStop()) return 'stopped';
     const through = Math.min(after + item.pageSize, item.throughKey);
@@ -69,10 +78,10 @@ async function runPages(item: (typeof deferred)[number], shouldStop: () => boole
   return 'completed';
 }
 
-function runPage(item: (typeof deferred)[number], after: number, through: number): boolean {
+function runPage(item: DeferredPass, after: number, through: number): boolean {
   try {
     runStartupStep(`catch-up ${item.name}`, () => item.pass(after, through));
-    recordMark(item.name, after, through);
+    if (item.recordProgress) recordMark(item.name, after, through);
     return true;
   } catch (error) {
     log('error', 'startup_catch_up_page_failed', { name: item.name, after_key: after, through_key: through, ...errorFields(error) });

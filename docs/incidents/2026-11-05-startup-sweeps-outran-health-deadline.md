@@ -33,6 +33,8 @@ heavy disk load those sweeps account for most of the 126 s, since the same work 
   is counted from the first statement.
 - Each history sweep is a catch-up with a high-water mark. All unfinished work, including the
   remainder after an interrupted pass, runs after Concierge is online in small paged steps.
+- Carried answer closures run after Concierge is online in small pages on every start; they cannot
+  use a permanent mark because a retained request may become answered later.
 - Awaited startup phases log their duration and ledger work.
 
 ## Acceptance scenario
