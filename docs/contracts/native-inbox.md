@@ -651,6 +651,9 @@ including when the agent did not name a thread on its private request.
 When Tejas addresses a reply directly to an agent, its internal delivery request is excluded
 from the conversation projection, including existing prepared rows on upgrade. His source
 message remains once with its route receipt and the agent's eventual answer still posts there.
+The Inbox session's own conversation (its Sessions view and history page) omits that forwarded
+reply and its carrier request: the router never received either, and listing them there made
+every thread's replies look delivered to the router (Tejas, 2026-11-05). Threads keep both.
 
 ### Routing handoffs on the source message
 
