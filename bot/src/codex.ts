@@ -6,6 +6,7 @@ import { codexHistoryMessages, providerMessageObserver, type ProviderMessageCall
 import {
   CodexAppServerClientError,
   CodexAppServerUnansweredError,
+  codexAppServerReady,
   sharedCodexAppServerClient,
   type CodexAppServerClientLike,
 } from "./codex-app-server-client";
@@ -1578,6 +1579,9 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         throw parkUnconfirmedTurn(error);
       }
     });
+    // The shared App Server may still be unreachable after a restart; the turn waits for it
+    // (Stop still ends the wait) rather than failing or being parked unsent.
+    if (!input.appServerClient) await Promise.race([codexAppServerReady(), stoppedBeforeSubmission]);
     connectionGeneration = await client.connect();
     let threadId: string;
     if (input.adoptTurn) {

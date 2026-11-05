@@ -38,6 +38,15 @@ installed service's runner setting and checks the same route the owner uses.
 This incident CLI committed source and documentation only. The external supervisor owns integration,
 restart and runtime proof. No test or review was run under the incident's human policy.
 
+## Follow-up fix (2026-11-05)
+
+The 30-second bound above still exited the owner. In this incident the runner's listen channel never
+connected (code 1002, then 1006, every five seconds from 01:48 to 02:06 UTC), so no bounded wait could
+have passed. Readiness is now a gate that never throws. Startup continues without it, and Codex turns,
+adopted and new, wait at it before connecting. `CONCIERGE_CODEX_RUNNER` stays unset until the relay
+stays connected. `bot/scripts/codex-readiness-check.ts` replays the probe through ENOENT, 503 and an
+unknown error.
+
 ## Acceptance scenario
 
 - **Seed:** An owner configured for a runner relay has live Codex turns to adopt; the runner is

@@ -48,7 +48,7 @@ import { providers } from "./providers";
 import { findCodexTurnIdsByReplayText } from "./codex";
 import {
   closeSharedCodexAppServerClient,
-  codexRelayRunner,
+  codexAppServerReady,
   verifySharedCodexAppServerReady,
 } from "./codex-app-server-client";
 import { CodexRemoteObserver } from "./codex-remote-observer";
@@ -3716,7 +3716,7 @@ function scheduleDeploymentWork(reason: DeploymentWorkReason) {
   void deploymentWorkRunner.request(reason);
 }
 
-async function reconcilePriorInstanceTurns(codexRelayReady: Promise<void>) {
+async function reconcilePriorInstanceTurns() {
   if (runtime.ownership.deployment) {
     const deploymentNoticesRecovered = recoverDeploymentNoticeClaims(isProcessIdentityAlive);
     const deadDeploymentRuns = recoverDeadDeploymentRuns(isProcessIdentityAlive);
@@ -3777,10 +3777,10 @@ async function reconcilePriorInstanceTurns(codexRelayReady: Promise<void>) {
   // their turns as orphaned, and continue under the same run (design 2026-10-07 §3.1 step 4).
   const runAdopted = (adoption: Adoption) => {
     adoptedTurnIds.add(adoption.claim.turn_id);
-    // A relayed Codex turn is already held by its App Server. Keep its adopted identity through
-    // recovery, but do not contact that server until the gateway and runner channel are ready.
-    const ready = adoption.execution.provider === 'codex' && codexRelayRunner()
-      ? codexRelayReady : Promise.resolve();
+    // A Codex turn is already held by its App Server. Keep its adopted identity through recovery,
+    // but do not contact that server until it has answered (after the request socket and any
+    // runner relay channel exist).
+    const ready = adoption.execution.provider === 'codex' ? codexAppServerReady() : Promise.resolve();
     void ready.then(() => sessionExecutionHost.run(adoption.claim, adoption)).catch((error) => {
       log("error", "execution_adoption_failed", { turn_id: adoption.claim.turn_id, execution_id: adoption.execution.execution_id, ...errorFields(error) });
       settleClaimedTurnSetupFailure(adoption.claim, error);
@@ -4272,15 +4272,13 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
       retryMs: null,
     });
     const requireCanvasRefresh = projectCutoverStartup.requireCanvasRefresh;
-    let releaseCodexRecovery!: () => void;
-    const codexRelayReady = new Promise<void>(resolve => { releaseCodexRecovery = resolve; });
     await startRecoveredSessionTurnQueue({
       recoverPriorTurns: () => runStartupPhase('recovery', async () => {
         for (const row of db.query("SELECT request_id FROM routed_requests WHERE status IN ('confirmed', 'parked', 'held')").all() as Array<{ request_id: string }>) {
           recoverRoutedInputClaim(row.request_id, isProcessIdentityAlive);
         }
         await routedRequests.recover();
-        await reconcilePriorInstanceTurns(codexRelayReady);
+        await reconcilePriorInstanceTurns();
       }),
       startRuntime: async () => {
         await startRuntimeWithRequiredCanvasRefresh({
@@ -4318,9 +4316,9 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
           },
         });
       },
+      // Codex readiness never holds or fails startup: Codex turns wait at its gate instead.
       verifyProviderReady: async () => {
-        await runStartupPhase('provider_readiness', () => verifySharedCodexAppServerReady());
-        releaseCodexRecovery();
+        void runStartupPhase('provider_readiness', () => verifySharedCodexAppServerReady());
       },
       startQueue: () => {
         startSessionTurnQueue();

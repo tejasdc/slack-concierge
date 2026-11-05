@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { jsonLine, onJsonLines } from "./json-lines";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { errorFields, log } from "./log";
 import {releaseCodexBridgePath} from "./release-worker";
 import { moveCodexDaemonToOwnScope, raiseCodexDaemonFileLimit, startCodexDaemonWhenAbsent } from "./codex-daemon-file-limit";
 
@@ -413,18 +414,47 @@ export function codexRelayRunner(): string | null {
   return process.env.CONCIERGE_CODEX_RUNNER?.trim() || null;
 }
 
-export async function verifySharedCodexAppServerReady() {
-  // The runner reconnects after the owner's gateway comes up. A missing listen channel is the
-  // relay's only 503; keep the gateway alive through that handoff instead of failing startup.
-  const deadline = Date.now() + 30_000;
+let codexAppServerReadiness: Promise<void> | null = null;
+
+/**
+ * Settles once the App Server Concierge's turns use has answered in this process. Codex turns, new
+ * and adopted, wait here before connecting, so an unreachable App Server or runner relay holds them
+ * instead of failing them, and never stops Concierge itself from starting. The first caller starts
+ * the probe, so every process that runs Codex turns has one.
+ */
+export function codexAppServerReady(): Promise<void> {
+  codexAppServerReadiness ??= probeCodexAppServerUntilReady(
+    () => sharedCodexAppServerClient().request("model/list", {}, { requestTimeoutMs: 10_000 }));
+  return codexAppServerReadiness;
+}
+
+/** Startup's readiness phase: the same probe, which never gives up and never throws. */
+export function verifySharedCodexAppServerReady(): Promise<void> {
+  return codexAppServerReady();
+}
+
+/**
+ * Probes until the App Server answers. It never gives up: on 2026-11-04 a fatal startup probe took
+ * the whole owner down three times while only Codex was unreachable
+ * (docs/incidents/2026-11-04-codex-runner-relay-startup-order.md).
+ */
+export async function probeCodexAppServerUntilReady(probe: () => Promise<unknown>,
+  sleep: (ms: number) => Promise<unknown> = ms => Bun.sleep(ms)): Promise<void> {
+  let failures = 0;
+  let loggedAt = 0;
   for (;;) {
     try {
-      await sharedCodexAppServerClient().request("model/list", {}, { requestTimeoutMs: 10_000 });
+      await probe();
+      if (failures > 0) log("info", "codex_app_server_ready", { failed_probes: failures });
       return;
     } catch (error) {
-      if (!codexRelayRunner() || !(error instanceof CodexAppServerClientError)
-        || error.message !== "Unexpected server response: 503" || Date.now() >= deadline) throw error;
-      await Bun.sleep(1_000);
+      failures++;
+      if (Date.now() - loggedAt >= 60_000) {
+        loggedAt = Date.now();
+        log("error", "codex_app_server_unready", { failed_probes: failures,
+          relay_runner: codexRelayRunner(), ...errorFields(error) });
+      }
+      await sleep(Math.min(1_000 * failures, 15_000));
     }
   }
 }
