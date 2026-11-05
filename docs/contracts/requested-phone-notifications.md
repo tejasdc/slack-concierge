@@ -111,7 +111,7 @@ the agent he has done it. When thnkr.ing cannot be read, the question is accepte
 question records the to-do. Before an Inbox attention, question, or thread view is returned, Concierge
 rechecks linked questions against the current to-dos and settles a Done or Dropped question as
 answered, telling its asking agent to carry on. The owner's reading cadence remains a recovery
-pass. A Mac agent's question is refused the same way (its Concierge reads the to-do over SSH), but its to-do does not yet travel with the question to the server, so it does not close by itself; a needs_you from a session he started directly lives in Needs attention, not a thread question, and also does not close by itself. Matching is by exact to-do
+pass. Direct session questions that carry an exact to-do also leave Needs attention when it is Done or Dropped, and the session receives a completion notice. A Mac agent's question is refused the same way (its Concierge reads the to-do over SSH), but its to-do does not yet travel with the question to the server, so it does not close by itself. Matching is by exact to-do
 id, never by wording. Source: 2026-11-04, the Diwali agent asked him at 2:58 PM for a Spotify
 invite he had marked done at 10:20 PM the night before
 ([record](../incidents/2026-11-04-asked-for-a-step-already-done.md)).

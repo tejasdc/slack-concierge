@@ -2674,7 +2674,8 @@ export class SessionCommunicationCoordinator {
             if(event.kind==='final'&&payload.workDisposition==='needs_decision'&&!sessionMetadata(source).inbox){
                 const author=sessionAuthor(`concierge:${coveredResponder}`);
                 recordRequesterDecisionReturn({sessionId:source.id,returnInputId:accepted.id,requestId:request.request_id,
-                    question:String(payload.text??''),agentName:author?.agentName,taskTitle:author?.title});
+                    question:String(payload.text??''),todoId:typeof payload.todoId==='string'?payload.todoId:null,
+                    agentName:author?.agentName,taskTitle:author?.title});
             }
             for(const joined of group.joining)db.query('UPDATE session_communication_events SET accepted_input_id=? WHERE event_id=? AND accepted_input_id IS NULL').run(`return:${event.event_id}`,joined.event_id);
             const observed = readInputExecution(accepted);
