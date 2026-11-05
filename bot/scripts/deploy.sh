@@ -679,11 +679,16 @@ run_retaining_output() {
   stderr_file=$(mktemp)
   set +e
   # stderr streams to the journal as it is written (an owner wait can last 90 s) and to the file;
-  # the substitution waits for tee so the file is complete before it is read.
+  # the substitution waits for tee so the file is complete before it is read. The shell opens tee
+  # itself (exec) so $! names it: a redirection on an external command sets up the substitution
+  # in the forked child, leaving $! unset, and set -u then ended the substitution with status 1.
   CAPTURED_OUTPUT=$(
-    "$@" 2> >(tee "$stderr_file" >&2)
+    exec 3> >(tee "$stderr_file" >&2)
+    tee_pid=$!
+    "$@" 2>&3
     command_status=$?
-    wait "$!" 2>/dev/null
+    exec 3>&-
+    wait "$tee_pid"
     exit "$command_status"
   )
   status=$?
