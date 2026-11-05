@@ -63,6 +63,19 @@ export function capturePresentation(input:InboxCapture) {
   return {text,files,report};
 }
 
+/**
+ * A capture from his bug button (or its shortcut) is always a thread of its own, never a
+ * reply inside a work thread [decision: inbox-button-always-new-request]. The Thinkering
+ * bug-report door is the one producer that marks a capture this way.
+ */
+export function isBugReportInput(inputId:string) {
+  const input=getAcceptedSessionInput(inputId);
+  if(!input)return false;
+  const source=JSON.parse(input.payload_json)?.capture?.source;
+  return source?.kind==='thinkering'&&source.metadata?.client==='thinkering-bug-report';
+}
+export const BUG_REPORT_OWN_THREAD='A bug report is always its own Inbox thread (decision inbox-button-always-new-request). Give it a thread of its own with topics create --root <it> --from <related thread>, and send the work to its owner with sessions ask --route-message <it>.';
+
 // The Inbox uses its accepted dialogue, including imports that never enter a
 // provider transcript. Event sequence is the existing durable pagination key.
 function inboxHistoryBoundary(cursor:string|null) {

@@ -7,7 +7,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
 import {db,getSessionById,type SessionRow} from './state';
 import {carryingTurn,getAcceptedSessionInput,humanAuthored,nativeRunId,sessionInputProvenance,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput,type RetainInputTiming} from './session-inputs';
-import {capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot,postForwardedThreadAnswer} from './session-inbox';
+import {BUG_REPORT_OWN_THREAD,isBugReportInput,capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot,postForwardedThreadAnswer} from './session-inbox';
 import {answerClosingLine} from './answer-closing-line';
 import {notSeenWorking} from './answers-to-tejas';
 import {inboxRequestRoot} from './inbox-request-root';
@@ -944,7 +944,7 @@ export function unfiledReceivedInputs(sessionId:number,turnId:number) {
       if(report)return [{input_id:input.id,root_id:root,at:input.created_at,text:input.text??'',
         topic_id:topicId,request_id:report.request_id}];
     }
-    return topicId?[]:[{input_id:input.id,root_id:root,at:input.created_at,text:input.text??''}];
+    return topicId?[]:[{input_id:input.id,root_id:root,at:input.created_at,text:input.text??'',...(isBugReportInput(root)?{bug_report:true}:{})}];
   });
 }
 /** Thread roots nobody has filed yet: the sorting pile above the topic list. */
@@ -1498,6 +1498,19 @@ export function settleExitedProcessReport(requestId:string,evidence:string) {
     {change:'request_closed',topicId:topic.topicId,topic:topicNext,request:next,by:OWNER_BY,reason:why,revision:topicNext.revision,questions});
 }
 
+/**
+ * An agent may put a bug report only alone into a thread that holds nothing else: a new
+ * one, or an empty one when moving it back out. On Nov 5 the router placed his bug report
+ * about a worker's answer into that worker's thread [decision: inbox-button-always-new-request].
+ */
+function refuseSharedBugReportThread(roots:string[],topicId:string|null) {
+  const reports=roots.filter(isBugReportInput);
+  if(!reports.length)return;
+  const others=new Set([...roots,...(topicId?topicRoots(topicId):[])]);
+  for(const report of reports)others.delete(report);
+  if(others.size||reports.length>1)throw new TopicError(BUG_REPORT_OWN_THREAD,409,'BUG_REPORT_OWN_THREAD');
+}
+
 function placeChange(session:SessionRow,topic:StoredTopic,roots:string[],by:TopicBy,reason:string|null) {
   for(const root of roots){
     const previous=topicOfRoot(root);
@@ -1851,6 +1864,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
       const namedParent=body?.parent_topic_id===undefined?null:text(body.parent_topic_id,'--from',200);
       return agentMutation(actor,actionId(),{kind:'topic-create',title,summary,roots,areaIds:body?.area_ids,parentTopicId:namedParent,reason:reason()},()=>{
         for(const root of roots){const held=topicOfRoot(root);if(held)throw new TopicError(`${root} already belongs to ${held}; use topics place to move it.`,409,'ROOT_PLACED');}
+        refuseSharedBugReportThread(roots,null);
         const forwarded=!inbox?db.query(`SELECT source_input_id,thread_root_input_id FROM session_communication_requests
           WHERE target_session_id=? AND target_input_id=? ORDER BY created_at_ms DESC LIMIT 1`).get(actor.sessionId,actor.inputId) as {source_input_id:string|null;thread_root_input_id:string|null}|null:null;
         const sourceRoot=inbox?rootOf(session.id,actor.inputId)??actor.inputId:
@@ -1879,6 +1893,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
       const roots=placementRoots(session,body?.roots);
       return agentMutation(actor,actionId(),{kind:'topic-place',topicId:body?.topic_id,roots,reason:reason()},()=>{
         const topic=topicFor(body?.topic_id);
+        refuseSharedBugReportThread(roots,topic.topicId);
         const placed=placeChange(session,topic,roots,by,reason());
         return {change:placed.change,result:{topic:placed.topic,roots}};
       });
@@ -1895,6 +1910,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
         const sourceTopicId=sourceRoot?topicOfRoot(sourceRoot):null;
         if(!sourceRoot||!sourceTopicId)throw new TopicError('Place the source conversation before routing its message.',409,'ROUTE_SOURCE_UNPLACED');
         if(sourceTopicId===destination)throw new TopicError('The destination is already this message’s topic.',409,'ROUTE_SAME_TOPIC');
+        if(isBugReportInput(messageId))throw new TopicError(BUG_REPORT_OWN_THREAD,409,'BUG_REPORT_OWN_THREAD');
         const topic=topicFor(destination);
         // Match the partial route-source index's predicate exactly. SQLite cannot infer
         // that kind='topic_route' implies its two-kind predicate; that form scanned the
@@ -1940,6 +1956,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
       return agentMutation(actor,actionId(),{kind:'topic-merge',from:body?.topic_id,into:body?.into,reason:why},()=>{
         const from=topicFor(body?.topic_id),into=topicRow(text(body?.into,'--into',200));
         if(from.topicId===into.topicId)throw new TopicError('A topic cannot be merged into itself.');
+        if(topicRoots(from.topicId).some(isBugReportInput))throw new TopicError(BUG_REPORT_OWN_THREAD,409,'BUG_REPORT_OWN_THREAD');
         const merged=mergeChange(from,into,by,why);
         return {change:merged.change,result:{topic:merged.destination,merged:merged.source}};
       });
@@ -3648,6 +3665,7 @@ export function validateReviewSelection(sessionId:number,input:Record<string,any
 /* ------------------------------------------------------------------ router prompt */
 
 const PLACEMENT_INSTRUCTION='This capture is not yet in a topic. Place it with sessions topics place/create before routing or answering.';
+const bugReportPlacementInstruction=()=>`This bug report is not yet in a topic. ${BUG_REPORT_OWN_THREAD} The open topics are listed only as candidates for --from.`;
 export const ATTENTION_INSTRUCTION='Anything you need from him about a thread is a question in that thread: declare it with sessions topics questions <topicId> (kind "decision" when he must answer, "reading" when he should only read it) before the turn ends. A ready decision is for what no agent can do or a permanent rule reserves for him: it carries "onlyHeCan" (sign-in, secret, device, ambiguous or approval), "hisWords" copied exactly from his message and "whyNotSettled"; the owner refuses it otherwise. Approval also carries "decisionId" and "approvalAction", which the owner verifies against the permanent record. Other permission questions are refused; do the work and tell him afterwards. A request he made closes completed only when the work sent for it answered as done. An end-of-turn needs_you/response marker with no question declared this run is held unfiled, in no thread, until you file it with sessions topics file <topicId> --need <id>; he sees it as waiting for you to file. Every question you declare is yours to end: settle it when it is answered, replaced or no longer needed.';
 const UNFILED_INSTRUCTION='These attention entries are in no thread yet. File each with sessions topics file <topicId> --need <need> (or include it as "from" in a topics questions declaration with a full brief); startedFrom is the thread its turn began in, a suggestion, not a decision.';
 /** What the router is told about the thread an Inbox input belongs to. */
@@ -3664,7 +3682,8 @@ export function topicPromptContext(sessionId:number,inputId:string,payload:any):
     if(input?.origin==='agent'&&input.request_id)return '';
     const recent=(db.query(`SELECT topic_id,title,summary,updated_at FROM inbox_topics WHERE session_id=? AND state='open'
       ORDER BY updated_at DESC LIMIT 8`).all(sessionId) as any[]).map(row=>({id:row.topic_id,title:row.title,summary:row.summary,lastEntryAt:iso(row.updated_at)}));
-    return `\n\n<topic-placement>\n${JSON.stringify({instruction:PLACEMENT_INSTRUCTION,openTopics:recent})}\n</topic-placement>`;
+    const instruction=isBugReportInput(inputId)?bugReportPlacementInstruction():PLACEMENT_INSTRUCTION;
+    return `\n\n<topic-placement>\n${JSON.stringify({instruction,openTopics:recent})}\n</topic-placement>`;
   }
   const topic=topicRow(topicId);
   const context:any={id:topic.topicId,title:topic.title,summary:topic.summary,

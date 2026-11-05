@@ -151,6 +151,18 @@ split control is the `unthread` message action on the same surface, recorded as 
 detach. The Inbox agent decides placement, only for a thread where it asked and is still
 waiting; everything else stays a new row.
 
+A bug report (a capture from the bug button or its shortcut, marked by the Thinkering
+bug-report door) is always a thread of its own [decision: inbox-button-always-new-request].
+The owner refuses, with `BUG_REPORT_OWN_THREAD`, an agent's `sessions thread` of a bug
+report, `topics place` of one into a topic that holds any other root, `topics create` with
+it beside other roots, `topics route` of it into another thread, and `topics merge` of a
+topic that holds one. The router gives it its own topic (`topics create --root <it> --from
+<related topic>` links the related thread) and sends the work to the owning agent with
+`sessions ask --route-message`. The placement prompt and the Stop hook's filing commands
+offer only that. Other captures may still join a bug report's thread, and Tejas's own moves
+are not restricted. Before this (Nov 5, 2026) the router placed his bug report about a
+worker's answer into that worker's thread, and its instructions were the only guard.
+
 Every Inbox message resolves to one thread root, and attention needs are keyed by it: a
 capture or request is its own root; a routed capture follows its link; his reply follows
 the message it replies to; and a returned answer follows the request it settles, through
