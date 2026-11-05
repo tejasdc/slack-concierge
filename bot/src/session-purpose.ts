@@ -50,34 +50,67 @@ export function purposeFromFirstWords(text:unknown):string|undefined {
 }
 
 /**
- * Fills every session still without a purpose, once per startup and only where none is stored,
- * so it never overwrites one a creator, a session or Tejas wrote. Purposes written for existing
- * sessions in plain words (`session-purposes.json` in the state directory, `{"<id>": "<line>"}`,
- * produced once from each session's first words and its project's instructions) come first;
- * the file is renamed `.applied` afterwards so it is read once. Anything still empty takes its
- * first words, and a session with no words at all its name.
+ * Only a missing purpose or a title copied into the purpose may be replaced. The one-time
+ * `session-purposes.json` supplies authored lines first; this fallback fills remaining gaps
+ * from each session's first words or name. The unchanged file is renamed `.applied` after both
+ * passes finish. A creator, a session or Tejas can set a purpose at any time.
  */
-export function fillMissingSessionPurposes(stateDir:string):{written:number;fromFile:number} {
-  const file=join(stateDir,'session-purposes.json');
-  const written:Record<string,string>=existsSync(file)?JSON.parse(readFileSync(file,'utf8')):{};
+export function fillMissingSessionPurposes(range:{afterId:number;throughId:number}):{written:number} {
   const rows=db.query(`SELECT s.id,s.native_metadata_json AS meta,
       (SELECT user_text FROM turns t WHERE t.session_id=s.id ORDER BY t.id LIMIT 1) AS first,
       (SELECT name FROM channels c WHERE c.slack_channel_id=s.slack_channel_id) AS channel
-    FROM sessions s WHERE COALESCE(TRIM(json_extract(s.native_metadata_json,'$.summary')),'')=''
-      OR TRIM(json_extract(s.native_metadata_json,'$.summary'))=TRIM(json_extract(s.native_metadata_json,'$.title'))`)
-    .all() as {id:number;meta:string|null;first:string|null;channel:string|null}[];
-  let count=0,fromFile=0;
+    FROM sessions s WHERE s.id > ? AND s.id <= ? AND (COALESCE(TRIM(json_extract(s.native_metadata_json,'$.summary')),'')=''
+      OR TRIM(json_extract(s.native_metadata_json,'$.summary'))=TRIM(json_extract(s.native_metadata_json,'$.title')))`)
+    .all(range.afterId,range.throughId) as {id:number;meta:string|null;first:string|null;channel:string|null}[];
+  let count=0;
   db.transaction(()=>{
     for(const row of rows){
       const meta=JSON.parse(row.meta||'{}');
-      const stated=purposeLine(written[String(row.id)]);
-      const purpose=rolePurpose(meta)??stated??purposeFromFirstWords(row.first)??purposeLine(meta.title??row.channel);
+      const purpose=rolePurpose(meta)??purposeFromFirstWords(row.first)??purposeLine(meta.title??row.channel);
       if(!purpose||purpose===meta.summary)continue;
       db.query('UPDATE sessions SET native_metadata_json=? WHERE id=?').run(JSON.stringify({...meta,summary:purpose}),row.id);
-      count++;if(stated&&purpose===stated)fromFile++;
+      count++;
     }
   })();
   if(count)executionChanged();
-  if(existsSync(file))renameSync(file,`${file}.applied`);
-  return {written:count,fromFile};
+  return {written:count};
+}
+
+export type SessionPurposeFile = { text:string; entries:[string,string][] };
+export function readSessionPurposeFile(stateDir:string):SessionPurposeFile|null {
+  const path=join(stateDir,'session-purposes.json');
+  if(!existsSync(path))return null;
+  const text=readFileSync(path,'utf8'),parsed=JSON.parse(text);
+  if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('The session purpose file must be an ID-to-purpose object.');
+  return {text,entries:Object.entries(parsed) as [string,string][]};
+}
+
+/** Apply only the named file entries; fallback waits until every page has succeeded. */
+export function applySessionPurposeEntries(entries:readonly [string,string][]):{written:number} {
+  let count=0;
+  db.transaction(()=>{
+    for(const [key,value] of entries){
+      const id=Number(key),stated=purposeLine(value);
+      if(!Number.isSafeInteger(id)||id<=0||!stated)continue;
+      const row=db.query('SELECT native_metadata_json FROM sessions WHERE id=?').get(id) as {native_metadata_json:string|null}|null;
+      if(!row)continue;
+      const meta=JSON.parse(row.native_metadata_json||'{}');
+      const current=purposeLine(meta.summary),title=purposeLine(meta.title);
+      if(current&&current!==title)continue;
+      const purpose=rolePurpose(meta)??stated;
+      if(purpose===current)continue;
+      db.query('UPDATE sessions SET native_metadata_json=? WHERE id=?').run(JSON.stringify({...meta,summary:purpose}),id);
+      count++;
+    }
+  })();
+  if(count)executionChanged();
+  return {written:count};
+}
+
+/** Leave a changed file in place for the next pass rather than marking unapplied bytes done. */
+export function markSessionPurposeFileApplied(stateDir:string,expectedText:string):boolean {
+  const path=join(stateDir,'session-purposes.json');
+  if(!existsSync(path)||readFileSync(path,'utf8')!==expectedText)return false;
+  renameSync(path,`${path}.applied`);
+  return true;
 }

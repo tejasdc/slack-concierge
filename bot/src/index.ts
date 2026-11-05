@@ -1,6 +1,6 @@
-import './owner-task-labels-install';
+import {closeModuleLoadStorage} from './owner-task-labels-install';
 import { App, LogLevel } from "@slack/bolt";
-import { runStartupPhase } from './startup-phase';
+import { recordModuleLoadStep, runStartupPhase, runStartupStep } from './startup-phase';
 import { RoutedRequestCoordinator } from "./routed-requests";
 import { initializeSessionTitle } from "./session-inputs";
 import {backfillResultAnsweredByPost} from './session-inbox';
@@ -352,11 +352,13 @@ import { startMachineWatchWorker,wakeWatchWorker } from './watches';
 import {recordSessionEvent as recordOwnerEvent,recoverProviderRefusalContinuations} from './session-inputs';
 import {refreshClaudeAccount} from './provider-accounts';
 import {installSessionProjection} from './session-projection';
-import {fillMissingSessionPurposes} from './session-purpose';
-import {expireUnreadableReadingItems,fileServiceNotices,keepThreadsCurrent,migrateInboxAttention,migrateInboxTopics,reconcilePlacedRequestAnswers,repairOctober21RepeatedAnswer,repairNovember4RepeatedThreadNotices,retireTimedRequestPosts,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
+import {expireUnreadableReadingItems,fileServiceNotices,keepThreadsCurrent,migrateInboxAttention,migrateInboxTopics,reconcileCarriedClosures,reconcileForwardedFinalAnswers,repairOctober21RepeatedAnswer,repairNovember4RepeatedThreadNotices,retireTimedRequestPosts,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
 import {resolveRetryNotices} from './retry-breaker-notice';
+import {ownerEventMaxSequence,runStartupCatchUp,runStartupSweep,scheduleSessionPurposeRepair,startDeferredStartupRepairs} from './startup-repairs';
 import {CodexSessionObserver} from './codex-session-observer';
 import {ensureSpeechWorker} from './speech-job-supervisor';
+
+recordModuleLoadStep(closeModuleLoadStorage());
 
 // On a Mac the independent speech job keeps the local engine ready across Concierge updates.
 // The coordinator can still start its own engine on demand for retained-file fallback.
@@ -532,26 +534,38 @@ codexSessionObserver=new CodexSessionObserver();
 bindOwner();
 for(const held of recoverProviderRefusalContinuations())noticeTurnContinuation({
   provider:held.provider,model:null,turnId:held.turnId,reason:held.reason},recordOwnerEvent);
-installSessionProjection(sessionExecutionHost.owner);
-try {log('info','session_purposes_filled',fillMissingSessionPurposes(process.env.CONCIERGE_STATE_DIR!));} catch(error) {log('error','session_purposes_fill_failed',errorFields(error));}
+runStartupStep('session_projection', () => installSessionProjection(sessionExecutionHost.owner));
+// Every startup step below is timed and named (runStartupStep). Sweeps over history are catch-ups
+// with a high-water mark: their remaining work runs page by page after Concierge is online
+// (startup-repairs.ts). File-authored purposes finish before the generic fallback begins.
+try {log('info','session_purposes_filled',runStartupStep('session_purposes',()=>
+  scheduleSessionPurposeRepair(process.env.CONCIERGE_STATE_DIR!)));}
+catch(error) {log('error','session_purposes_fill_failed',errorFields(error));}
 // Production starts through this path, so the one-time topics migration runs here too; it is
 // guarded by its own event and does nothing once it has run.
-try {migrateInboxTopics();} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
-try {reconcilePlacedRequestAnswers();} catch(error) {log('error','inbox_request_answer_reconciliation_failed',errorFields(error));}
-try {log('info','timed_request_posts_retired',{count:retireTimedRequestPosts()});}
+try {runStartupStep('inbox_topics_migration',()=>migrateInboxTopics());} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
+try {runStartupStep('forwarded_final_answers',()=>runStartupCatchUp('forwarded-final-answers',ownerEventMaxSequence,
+  (afterSequence,throughSequence)=>reconcileForwardedFinalAnswers(undefined,{afterSequence,throughSequence}),20_000));}
+catch(error) {log('error','inbox_request_answer_reconciliation_failed',errorFields(error));}
+try {runStartupStep('carried_closures',()=>runStartupSweep('carried-closures',ownerEventMaxSequence,
+  (afterSequence,throughSequence)=>reconcileCarriedClosures(undefined,{afterSequence,throughSequence}),20_000));}
+catch(error) {log('error','inbox_request_answer_reconciliation_failed',errorFields(error));}
+try {log('info','timed_request_posts_retired',{result:runStartupStep('timed_request_posts',()=>runStartupCatchUp('timed-request-posts',ownerEventMaxSequence,
+  (afterSequence,throughSequence)=>retireTimedRequestPosts({afterSequence,throughSequence}),20_000))});}
 catch(error) {log('error','timed_request_post_retirement_failed',errorFields(error));}
-try {log('info','repeated_answer_posts_collapsed',{count:repairOctober21RepeatedAnswer()});}
+// These two look up fixed event ids; they are cheap and need no catch-up.
+try {log('info','repeated_answer_posts_collapsed',{count:runStartupStep('october21_repeated_answer',repairOctober21RepeatedAnswer)});}
 catch(error) {log('error','repeated_answer_repair_failed',errorFields(error));}
-try {log('info','repeated_thread_notices_collapsed',{count:repairNovember4RepeatedThreadNotices()});}
+try {log('info','repeated_thread_notices_collapsed',{count:runStartupStep('november4_repeated_thread_notices',repairNovember4RepeatedThreadNotices)});}
 catch(error) {log('error','repeated_thread_notice_repair_failed',errorFields(error));}
-try {migrateInboxAttention();} catch(error) {log('error','inbox_attention_migration_failed',errorFields(error));}
+try {runStartupStep('inbox_attention_migration',()=>migrateInboxAttention());} catch(error) {log('error','inbox_attention_migration_failed',errorFields(error));}
 // A reading item with nothing to read is ended with its reason; new ones are refused at the door.
-try {expireUnreadableReadingItems();} catch(error) {log('error','inbox_unreadable_reading_items_failed',errorFields(error));}
+try {runStartupStep('unreadable_reading_items',()=>expireUnreadableReadingItems());} catch(error) {log('error','inbox_unreadable_reading_items_failed',errorFields(error));}
 // A service notice has a thread from the moment it exists; those published while this process
 // was down, or by another process, get theirs here.
-try {fileServiceNotices();} catch(error) {log('error','inbox_service_notices_failed',errorFields(error));}
+try {runStartupStep('service_notices',()=>fileServiceNotices());} catch(error) {log('error','inbox_service_notices_failed',errorFields(error));}
 // A retry notice whose breaker has since cleared says it is running again and closes.
-try {resolveRetryNotices();} catch(error) {log('error','inbox_retry_notices_failed',errorFields(error));}
+try {runStartupStep('retry_notices',()=>resolveRetryNotices());} catch(error) {log('error','inbox_retry_notices_failed',errorFields(error));}
 const runKeyedDurableTask = createKeyedTaskScheduler((key, error) => {
   log("error", "durable_notice_worker_failed", { key, ...errorFields(error) });
 });
@@ -4335,6 +4349,8 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
         });
         if (runtime.profile === "production") reportOnline();
         serviceOnline = true;
+        // Repairs with no completion record wait until now, past the update's health proof.
+        startDeferredStartupRepairs(() => draining);
         // Historical result markers land before the thread index reads those rows.
         void backfillResultAnsweredByPost(() => draining)
           .then(marked => log('info','inbox_posted_result_backfill',{marked}))
