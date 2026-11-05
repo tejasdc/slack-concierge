@@ -70,6 +70,11 @@ async function child() {
  const target=createNativeSession('codex',{title:'Private recipient fixture'});
  const standIn=retainSessionInput({sessionId:inbox.id,scope:'fixture-stand-in',actionId:'stand-in',kind:'input',origin:'human',payload:{text:'Root'}}).input;
  enqueueSessionInput(standIn.id);
+ const fixtureNow=new Date().toISOString();
+ db.query(`INSERT INTO inbox_topics(topic_id,session_id,title,summary,state,set_aside_json,aliases_json,revision,recovered,read_sequence,created_at,updated_at,closure_json,created_by_json,pinned_at)
+   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run('fixture-topic',inbox.id,'Private forwarding fixture','', 'open',null,'[]',1,0,0,fixtureNow,fixtureNow,null,'{}',null);
+ db.query('INSERT INTO inbox_topic_roots(root_input_id,topic_id,placed_at,placed_by_json,reason) VALUES(?,?,?,?,?)')
+   .run(standIn.id,'fixture-topic',fixtureNow,'{}','fixture direct reply');
  const route={sessionId:`concierge:${target.id}`,local:target.id,peer:null,title:'Private recipient fixture',topicId:'fixture-topic',root:standIn.id};
  const coordinator=new SessionCommunicationCoordinator({owner:restarted,isOwnerAlive:()=>true,onError:error=>{throw error;}});
  restarted.communication=coordinator;
@@ -86,6 +91,8 @@ async function child() {
   })(),/fixture request insertion failed/);
   assert.equal((db.query('SELECT receipt_json FROM session_inputs WHERE id=?').get(forwarded.id) as {receipt_json:string|null}).receipt_json,null,
    'failed local request insertion must roll back waiting receipt');
+  assert.equal((db.query("SELECT count(*) AS n FROM inbox_requests WHERE topic_id='fixture-topic'").get() as {n:number}).n,0,
+   'failed forwarding must not leave an orphaned human obligation');
   db.exec('DROP TRIGGER fixture_refuse_request');
   // An older accepted waiting receipt is a durable intent for the original destination.
   recordForwardedThreadReply(inbox,forwarded,route);
@@ -93,6 +100,10 @@ async function child() {
   restarted.recoverAcceptedInput((await import('../src/session-inputs')).getAcceptedSessionInput(forwarded.id)!);
   assert.equal((db.query('SELECT count(*) AS n FROM session_communication_requests WHERE source_input_id=?').get(forwarded.id) as {n:number}).n,1);
   assert.equal((db.query('SELECT count(*) AS n FROM session_inputs WHERE scope=?').get(`session:${forwarded.id}`) as {n:number}).n,1);
+  const obligation=db.query("SELECT sources_json,dispatches_json FROM inbox_requests WHERE topic_id='fixture-topic'").get() as {sources_json:string;dispatches_json:string}|null;
+  assert.ok(obligation,'the accepted human reply must create a topic obligation');
+  assert.equal(JSON.parse(obligation.sources_json)[0].inputId,forwarded.id);
+  assert.equal(JSON.parse(obligation.dispatches_json)[0].requestId,(db.query('SELECT request_id FROM session_communication_requests WHERE source_input_id=?').get(forwarded.id) as {request_id:string}).request_id);
  }finally{(coordinator as any).stopped=true;}
  phase('local-forward-verified');
  const peers=new SessionPeers({self:'mac',clients:new Map([['cloud',new PeerClient('cloud','http://127.0.0.1','fixture')]]),owner:restarted,

@@ -38,7 +38,7 @@ Any message the owner retained can become a note: a capture, a thread reply, a p
 router-actions.sh sessions title [--session <session-address>] <source-flags> --action-id A -- <title>
 router-actions.sh sessions move <session-address> --project <project or project/folder, e.g. agent-ecology/expertise/alan-kay> <source-flags> --action-id A
 Moves an idle session to another folder; its next turn resumes the same conversation there. --project on ask and create also accepts a folder inside a registered project.
-router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> [--topic <topicId>] [--keep-working] [--notify] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
+router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> [--topic <topicId>] [--promise-request <open-request-id>] [--keep-working] [--notify] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 router-actions.sh sessions outcome <done|response|needs_you|failed> <source-flags> --action-id A [--quiet-because "<why he need not read this>"] [--summary "<one line: what he must decide and the result it depends on>" (needs_you) --only-he-can sign-in|secret|device|ambiguous|approval --his-words "<his exact words>" --why-not-answered "<what they leave open>" [--todo <his to-do id>|none] [--decision-id ID --approval-action ACTION (approval only)]] [--text-file F | -- <text>]
 router-actions.sh sessions answer <original-chatgpt-request-id> <source-flags> --action-id A --answer-event <exact-event-id> --handling used|context_supplied|scoped|superseded [--follow-up-request <exact-request-id> (context_supplied)] [--successor-request <answered-request-id> --reason "<how it covers the original>" (superseded)] [--reason "<narrowed claim and missing context>" (scoped)]
 router-actions.sh sessions legacy-link <historical-chatgpt-request-id> <source-flags> --action-id A --for-task <kind>:<exact-id> --provider chatgpt|other --reason "<inspected target and task evidence>"
@@ -83,6 +83,7 @@ A watch wakes this conversation once, with no model awake meanwhile: when the fi
 
 Topics — the Inbox's recognizable conversations. Every mutation takes <source-flags> and --action-id A; --expected-revision N refuses a stale decision.
 router-actions.sh sessions topics list <source-flags> [--state open|background|closed|all] [--query q] [--limit N] [--cursor C]
+router-actions.sh sessions topics obligations <source-flags>  # all open requests with owner and age
 router-actions.sh sessions topics read <topicId> <source-flags> [--state open|reading|history|deferred|checking]
 router-actions.sh sessions topics items <topicId> <source-flags> --kind questions|requests|history [--state STATE] [--cursor C] [--limit N]
 router-actions.sh sessions topics detail <topicId> <source-flags> --digest HASH [--part N]
@@ -159,7 +160,7 @@ export type SessionCommunicationRequest =
   | { operation: "ask"; body: { source: Source; action_id: string; address?: string; role?:string; provider?: string; smallTask?:boolean; effort?:string; project?:string; title?: string; text: string; after?: string[]; pace?: string[]; summary?: string; answer_view?: 'summary'|'full'; return_to_requester?:boolean; for_task?:string; recovery_of?:string; correction_of?:string; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean} } }
   | { operation: "note"; body: { source: Source; action_id:string; captureId?:string; messageId?:string; summary:string; addTo?:string; person?:string; journal?:"entry"|"checkin" } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string; address?:string } }
-  | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; keep_working?:boolean; notify?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
+  | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; promise_request?:string; keep_working?:boolean; notify?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
   | { operation: "outcome"; body: { source: Source; action_id:string; outcome:'done'|'response'|'needs_you'|'failed'; text?:string; quiet_because?:string; summary?:string; his_words?:string; why_not_answered?:string; only_he_can?:string; todo?:string; decision_id?:string; approval_action?:string } }
   | { operation: "answer"; body: { source: Source; action_id:string; obligation_id:string; answer_event_id:string; handling:'used'|'context_supplied'|'scoped'|'superseded'; reason?:string; follow_up_request_id?:string; successor_request_id?:string } }
   | { operation: "legacy-link"; body: { source: Source; action_id:string; request_id:string; for_task:string; provider:'chatgpt'|'other'; reason:string } }
@@ -199,7 +200,7 @@ function sourceFrom(flags: Map<string, string>): Source {
   return { channel_id: channel, message_ts: timestamp };
 }
 
-const TOPIC_VERBS = ["list","read","items","detail","resolve","questions-read","create","place","route","link","unlink","rename","summary","merge","close","reopen","pin","unpin","request","questions","question","answer","acknowledge","focus","release","file","area"];
+const TOPIC_VERBS = ["list","obligations","read","items","detail","resolve","questions-read","create","place","route","link","unlink","rename","summary","merge","close","reopen","pin","unpin","request","questions","question","answer","acknowledge","focus","release","file","area"];
 const TOPIC_REPEATABLE = ["--root","--source","--item","--input","--evidence","--area"];
 const TOPIC_SINGLE = ["--source-channel","--source-ts","--source-input","--source-run","--action-id","--title","--summary","--reason",
   "--into","--from","--thread","--scope","--dispatch","--disposition","--human-quote","--json-file","--state","--answer","--replacement","--limit","--cursor","--query","--expected-revision","--need","--kind","--part","--digest","--message"];
@@ -227,7 +228,7 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
       invalid('areas takes list, suggest, create, rename, summary, link, unlink, neighbor or unneighbor.');
     verb=`area.${sub}`;
   }
-  const identified = !["list","create","release","questions-read","area.list","area.suggest","area.create"].includes(verb);
+  const identified = !["list","obligations","create","release","questions-read","area.list","area.suggest","area.create"].includes(verb);
   let identity: string | undefined;
   if (identified) {
     identity = options.shift();
@@ -247,7 +248,7 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
     }
   }
   const source = sourceFrom(flags);
-  const mutating = !["list","read","items","detail","resolve","questions-read","area.list","area.suggest"].includes(verb);
+  const mutating = !["list","obligations","read","items","detail","resolve","questions-read","area.list","area.suggest"].includes(verb);
   const actionId = flags.get("--action-id");
   if (mutating && !actionId) invalid(`topics ${verb.replace(".", " ")} requires an explicit stable --action-id.`);
   const takesText = ["rename","summary","close","reopen","request.add","request.amend","request.close","request.reopen","question.settle","focus"].includes(verb);
@@ -715,6 +716,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === "--thread" && (operation === "post" || operation === "thread" || operation === "ask" || operation === "search" || operation === "context"))
       || (flag === "--route-message" && operation === "ask")
       || (flag === "--topic" && operation === "post")
+      || (flag === "--promise-request" && operation === "post")
       || (flag === "--provider" && operation === "ask")
       || (flag === "--role" && operation === "ask")
       || (flag === "--at" && savedKind==='scheduled')
@@ -906,7 +908,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if(!thread)invalid('post requires --thread with the exact message ID the thread is rooted at or continues.');
     if(notify&&!message.trim())invalid('--notify requires words in the post.');
     return {operation,body:{source,action_id:actionId,thread,text:message,...attached,...(notify?{notify:true}:{}),
-      ...(flags.has('--topic')?{topic:flags.get('--topic')!}:{}),...(keepWorking?{keep_working:true}:{})}};
+      ...(flags.has('--topic')?{topic:flags.get('--topic')!}:{}),...(flags.has('--promise-request')?{promise_request:flags.get('--promise-request')!}:{}),...(keepWorking?{keep_working:true}:{})}};
   }
   // A project and no address mean a new coding session. Resolve that choice in the owner,
   // so callers do not have to remember a provider when an allowance changes.

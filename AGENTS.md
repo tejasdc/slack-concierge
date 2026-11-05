@@ -77,6 +77,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   and the [session owner contract](docs/contracts/session-owner-v1.md).
 - The canonical owner, not agent memory, enforces Inbox placement, attention and
   delivery. Unfiled human inputs prevent the Inbox router from ending its turn.
+  Direct human thread replies join the same topic request ledger on admission;
+  future-answer posts require recorded work for their exact source or request.
+  `sessions topics obligations` shows every open request, its current destination and age.
   Failed, cancelled or stalled agent attempts leave his Inbox request open for
   durable recovery; a routed human work message joins that request ledger atomically,
   and an unverified completion stays open for a check. Checked completion, a live only-he-can question, or

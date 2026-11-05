@@ -9,7 +9,7 @@ import { inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, mes
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
 import { BUG_REPORT_OWN_THREAD, followForwardedReply, forwardedReplyFraming, isBugReportInput } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
-import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWithoutThread, invalidateTopicRoots, linkInboxDispatchWork, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
+import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWithoutThread, hasOpenInboxWorkForSource, invalidateTopicRoots, linkForwardedReplyWork, linkInboxDispatchWork, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordRequesterDecisionReturn, recordTurnOutcome, turnDeclaredByAction, withdrawOpenNeed, type DeclaredTurnOutcome } from './session-turn-outcome';
 import {turnRoutedInput} from './inbox-routing-result';
@@ -819,7 +819,7 @@ export class SessionCommunicationCoordinator {
      * accepted there and then never seen, and it would sit inside the window a history
      * delta fingerprints.
      */
-    post(input:{source:CommunicationSource;action_id:string;thread:string;text:string;topic?:string;keep_working?:boolean;notify?:boolean;attachments?:string[];files?:AttachedFile[]}) {
+    post(input:{source:CommunicationSource;action_id:string;thread:string;text:string;topic?:string;promise_request?:string;keep_working?:boolean;notify?:boolean;attachments?:string[];files?:AttachedFile[]}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.fenced(this.actor(input.source));action(input.action_id);
         const carried=files(input.files);
@@ -839,6 +839,8 @@ export class SessionCommunicationCoordinator {
             // message in a thread carries that thread's root forward.
             const rootInputId=inboxThreadRoot(session.id,input.thread);
             if(!rootInputId)throw new Error('That --thread is not a message in this Inbox.');
+            const topicId=topicOfRoot(rootInputId);
+            const promisesAnswer=/\b(?:i(?:'|’)ll|we(?:'|’)ll|will\b(?!\s+(?:not|never)\b)|going to)\b[^.!?\n]{0,100}\b(?:answer|reply|respond)\b|\banswers? here\b|\bwill be answered\b/i.test(text);
             // A named topic must be the one the thread is in; a post cannot be filed under another.
             if(input.topic){const placed=db.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(rootInputId) as {topic_id:string}|null;
                 if(placed&&placed.topic_id!==input.topic)throw new Error(`That message is in thread ${placed.topic_id}, not ${input.topic}. Nothing was posted.`);}
@@ -854,10 +856,15 @@ export class SessionCommunicationCoordinator {
                 :[];
             const saved=retainSessionInput({sessionId:own.id,scope:`communication:${sourceInputId}`,actionId:input.action_id,
                 kind:'action',origin:'agent',payload:{kind:'thread-post',thread:input.thread,text,
-                    ...(input.topic?{topic:input.topic}:{}),...(input.keep_working?{keepWorking:true}:{}),...(input.notify?{notify:true}:{}),...(attachments.length?{attachments}:{})},sourceInputId,sourceRunId:nativeRunId(actor.turn)});
+                    ...(input.topic?{topic:input.topic}:{}),...(input.promise_request?{promiseRequest:input.promise_request}:{}),
+                    ...(input.keep_working?{keepWorking:true}:{}),...(input.notify?{notify:true}:{}),...(attachments.length?{attachments}:{})},sourceInputId,sourceRunId:nativeRunId(actor.turn)});
             const messageId=`post:${saved.input.id}`;
             const receipt={messageId,thread:input.thread,inputId:rootInputId,...(attachments.length?{attachments}:{})};
             if(saved.duplicate)return {post:receipt,duplicate:true};
+            if((promisesAnswer||input.promise_request)&&!topicId)throw new Error('Place this thread in the Inbox before promising an answer. Nothing was posted.');
+            if(topicId&&(promisesAnswer||input.promise_request)
+                &&!hasOpenInboxWorkForSource(topicId,sourceInputId,input.promise_request))
+                throw new Error('This post promises an answer without a matching open Inbox request. Route the exact human message as work, or name an open topic request with --promise-request. Nothing was posted.');
             recordSessionEvent({eventId:messageId,sessionId:session.id,inputId:rootInputId,...(router?{turnId:actor.turn}:{}),kind:'post',
                 payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${session.id}`,messageId:input.thread},postedBy:saved.input.id,...(router?{}:{postedBySession:`concierge:${own.id}`}),...(attachments.length?{attachments}:{})}});
             if(input.notify)notifyAgentPost(session.id,rootInputId,messageId,text);
@@ -1804,6 +1811,7 @@ export class SessionCommunicationCoordinator {
                 // this hand-off once, on the route card, instead of a second card beside it (2026-11-04).
                 sourceInputId:input.inputId,requestId:id});
             recordSessionEvent({eventId:`request:${id}`,sessionId:input.inbox.id,inputId:operation.input.id,kind:'request',payload:{requestId:id,targetSessionId:`concierge:${target.id}`}});
+            if(origin==='human')linkForwardedReplyWork(input.target.topicId,id);
         })();
         log('info','inbox_reply_forwarded',{request_id:id,input_id:input.inputId,target_session_id:target.id,topic_id:input.target.topicId});
         this.wake();

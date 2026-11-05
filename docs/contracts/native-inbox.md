@@ -93,12 +93,15 @@ admission events and prevented receipt status from advancing. The reader correct
 the existing checkpoint without deleting history, moving messages, or replaying delivery.
 
 An ordinary accepted executable message and its local queued turn commit together. A forwarded
-thread reply and its local agent request also commit together; the request attempts live
+thread reply, its local agent request, and its topic obligation also commit together; the request attempts live
 delivery into a busy recipient and queues only when no live run can take it. A marked
 agent test reply uses the same entrance with agent authorship. Forwarding to another
 machine retains the exact chosen destination as an intent before the network call;
 retry and startup recovery reuse the original input and peer request identity. A lost
 peer answer leaves delivery explicitly unconfirmed until that identity is reconciled.
+The peer's retained request and the source topic obligation commit together before network
+delivery. An unanswered older forwarded reply without a topic obligation is admitted by
+upkeep; an older checked completion is not replayed as new work.
 For a forwarded reply, the peer recipient retains the exact input with the delivery
 record, then attempts live delivery. A refusal before provider admission recovers that
 same input on retry or reconciliation and creates at most one queued turn.
@@ -416,6 +419,14 @@ own request sourced to the exact message; sharing a thread does not prove that t
 messages ask for the same work. This covers
 the November 4 failure in which an exact human reply went to an agent without being
 linked, while an earlier attempt's completion closed the only tracked task.
+An agent's post promising a future answer is refused unless the exact
+source already belongs to an open request or it names that request with
+`--promise-request`. A post cannot create a promise merely by saying it; send the
+work first. A retry of the same accepted post returns its original receipt even after
+that work closes; the open-work guard applies to new posts. `sessions topics obligations` reads all open requests in
+one view with their current destination and age, without creating another store. The
+reported owner follows live attempts and existing decision waits, including a decision
+in another thread that holds an agent's work; ended attempts return to Inbox recovery.
 
 The request's source input and its named thread answer different questions. The source is
 the event that caused this send; the named thread message is the return address for its
