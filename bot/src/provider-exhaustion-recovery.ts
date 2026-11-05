@@ -22,15 +22,16 @@ function waitingTurns(sessionId:number):WaitingTurn[] {
 
 export function safeTurn(turn:WaitingTurn,input:AcceptedSessionInput):boolean {
   if(turn.status!=='queued'||turn.saved_kind!==null||input.turn_id!==turn.id||input.session_id!==turn.session_id
-    ||!['input','create'].includes(input.kind)||input.steering_id!==null
+    ||!['input','create','inbox-capture'].includes(input.kind)||input.steering_id!==null
     ||turn.provider_input_acknowledged_at!==null)return false;
   const receipt=input.receipt_json?JSON.parse(input.receipt_json):{};
   if(Object.keys(receipt).some(key=>key!=='admission')
     ||(receipt.admission&&(receipt.admission.provider!=='claude-code'||receipt.admission.inputId!==input.id)))return false;
   // A usage hold is written only after the provider's refusal was classified replay safe.
   // Admission intent alone is not proof of execution; a fresh untouched queued turn has none.
-  if(turn.dispatch_attempt>0&&turn.dispatch_hold!=='usage')return false;
-  if(turn.dispatch_attempt===0&&(turn.provider_admission_intended_at!==null
+  // A held refusal is replay safe by its classification. Other retries are movable
+  // only when the owner has no evidence that provider admission even began.
+  if(turn.dispatch_hold!=='usage'&&(turn.provider_admission_intended_at!==null
     ||turn.provider_started_at!==null||turn.provider_turn_id!==null))return false;
   const payload=JSON.parse(input.payload_json);
   if(input.kind==='create'&&(!payload.firstInput||typeof payload.firstInput.text!=='string'))return false;

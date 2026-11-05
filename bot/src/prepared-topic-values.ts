@@ -28,11 +28,14 @@ export function topicContext(source:Database,prepared:Database,generation:number
   (prepared.query('SELECT root_input_id AS root FROM presentation_messages WHERE generation=? AND message_id=? ORDER BY event_sequence LIMIT 1')
    .get(generation,id) as {root:string|null}|null)?.root??null;
  const humanReplies=new Map<string,{inputId:string;at:string;reviews:string[];replyTo:string|null}[]>();
- const replyRows=source.query(`SELECT id,created_at,json_extract(payload_json,'$.review.questions') AS review,
+ const replyRows=source.query(`SELECT id,session_id,created_at,json_extract(payload_json,'$.review.questions') AS review,
    json_extract(payload_json,'$.replyToMessage.messageId') AS reply_to FROM session_inputs
-   WHERE session_id=? AND origin='human' AND kind IN ('input','create','inbox-capture')
+   WHERE session_id IN (WITH RECURSIVE lineage(id) AS (SELECT ? UNION ALL
+     SELECT predecessor_session_id FROM session_handoffs JOIN lineage ON successor_session_id=lineage.id
+     WHERE state='accepted') SELECT id FROM lineage)
+   AND origin='human' AND kind IN ('input','create','inbox-capture')
    AND id NOT IN (SELECT input_id FROM session_input_author_corrections) ORDER BY rowid DESC LIMIT 2000`).all(sessionId) as any[];
- for(const row of replyRows){const where=root(sessionId,row.id);if(!where)continue;
+ for(const row of replyRows){const where=root(row.session_id,row.id);if(!where)continue;
   const reviews=parse(row.review,[]);
   const item={inputId:row.id,at:iso(row.created_at)!,reviews:Array.isArray(reviews)?reviews.map((x:any)=>String(x?.id??'')).filter(Boolean):[],
    replyTo:typeof row.reply_to==='string'?row.reply_to:null};
@@ -292,7 +295,7 @@ function latestReturnAndPost(context:TopicContext,roots:string[]){
 
 function topicWorkValue(context:TopicContext,topic:any,roots:string[]){
  if(context.focus?.topicId===topic.topicId)return {kind:'router_working' as const,text:context.focus.summary??'',
-  runId:context.focus.runId,sessionId:`concierge:${topic.sessionId}`};
+  runId:context.focus.runId,sessionId:`concierge:${context.sessionId}`};
  const queued=context.queued.find(item=>item.root&&roots.includes(item.root));
  if(queued){const ahead=queued.position-1;
   const text=context.focusTitle

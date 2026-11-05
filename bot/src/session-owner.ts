@@ -1448,7 +1448,7 @@ export class SessionOwner {
   savedWorkControl(turnId:number,action:string,body:Record<string,unknown>){return updateSavedTurn(turnId,action,body);}
   projects() {
     const canvasTitles=this.projectSetup?.canvasProjectTitles();
-    return {projects:sessionProjects(this.defaultCwd).map(project=>({...project,...(canvasTitles?.has(project.name)?{canvasTitle:canvasTitles.get(project.name)}:{}),defaultProvider:project.name==='slack-inbox'?'cc-opus-1m':configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)}))};
+    return {projects:sessionProjects(this.defaultCwd).map(project=>({...project,...(canvasTitles?.has(project.name)?{canvasTitle:canvasTitles.get(project.name)}:{}),defaultProvider:project.name==='slack-inbox'?(claudeAllowanceHeld()?'codex':'cc-opus-1m'):configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)}))};
   }
   async standingAgents() {return {...standingAgentView(db,this.defaultCwd),hostTimers:await hostTimerView()};}
   private project(id:string) {
@@ -1667,7 +1667,9 @@ export class SessionOwner {
       maybeStartInboxProviderFailover(current);
       return current;
     }
-    return createNativeSession('claude-code',{title:'Inbox',summary:INBOX_PURPOSE,inbox:true,inboxRole:'project-router',purpose:'chat',cwd:project.cwd,project:project.cwd,model:'opus[1m]'});
+    const provider=claudeAllowanceHeld()?'codex':'claude-code';
+    return createNativeSession(provider,{title:'Inbox',summary:INBOX_PURPOSE,inbox:true,inboxRole:'project-router',standingRole:'inbox',
+      purpose:'chat',cwd:project.cwd,project:project.cwd,model:provider==='claude-code'?'opus[1m]':undefined});
   }
   inbox() {
     if(process.env.CONCIERGE_READ_WORKER==='1'){

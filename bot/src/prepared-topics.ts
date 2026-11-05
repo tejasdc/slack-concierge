@@ -314,7 +314,10 @@ export class PreparedTopics {
    .run(context.generation,json(value));
  }
  rebuildPage(generation:number,sessionId:number,after='',limit=20){
-  const rows=this.source.query('SELECT topic_id FROM inbox_topics WHERE session_id=? AND topic_id>? ORDER BY topic_id LIMIT ?')
+  const rows=this.source.query(`SELECT topic_id FROM inbox_topics WHERE session_id IN (
+    WITH RECURSIVE lineage(id) AS (SELECT ? UNION ALL SELECT predecessor_session_id FROM session_handoffs
+      JOIN lineage ON successor_session_id=lineage.id WHERE state='accepted') SELECT id FROM lineage)
+    AND topic_id>? ORDER BY topic_id LIMIT ?`)
    .all(sessionId,after,limit+1) as {topic_id:string}[];
   const context=this.context(generation,sessionId);
   for(const row of rows.slice(0,limit))this.write(context,row.topic_id);
@@ -403,7 +406,7 @@ export class PreparedTopics {
   if(['router_working','router_queued'].includes(value.summary.work.kind))depend('inbox-work',String(value.sessionId));
   for(const target of value.detail.replyTargets.choices)depend('session',target.sessionId);
   if('sessionId' in value.summary.work&&value.summary.work.sessionId)depend('session',value.summary.work.sessionId);
-  const row=[generation,topicId,owner,value.summary.state,
+  const row=[generation,topicId,context.sessionId,value.summary.state,
    value.summary.state==='open'&&!value.summary.needsYou.count&&value.summary.work.kind!=='idle'?1:0,
    value.band,value.summary.lastEntryAt,value.summary.closedAt??value.summary.lastEntryAt,json(summary),ref.hash,value.search,listKey(value.band,value.summary.pinnedAt,value.summary.lastEntryAt,topicId),
    orderKey(0,value.summary.closedAt??value.summary.lastEntryAt,topicId),
@@ -432,7 +435,7 @@ export class PreparedTopics {
    this.prepared.query('INSERT INTO presentation_topic_search(rowid,text) VALUES(?,?)').run(searchId,value.search);
    this.prepared.query('INSERT INTO presentation_topic_short(rowid,tokens) VALUES(?,?)').run(searchId,shortTokens(value.search));
   }
-  if(owner===context.sessionId&&(previous?.summary_json!==json(summary)||previous?.detail_hash!==ref.hash))
+  if(previous?.summary_json!==json(summary)||previous?.detail_hash!==ref.hash)
    this.prepared.query('INSERT INTO presentation_topic_changes(generation,topic_id,before_json,after_json) VALUES(?,?,?,?)')
     .run(generation,topicId,previous?.summary_json??null,json(summary));
   }finally{this.stagedRetains=null;}

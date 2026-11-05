@@ -156,14 +156,21 @@ function resolveAskedSource(rawId:string,topic:StoredTopic):{source:AcceptedSess
   const route=routedMessageFor(id);
   if(route&&route.kind==='topic_route'&&route.topicId===topic.topicId){
     const source=getAcceptedSessionInput(route.sourceMessageId);
-    if(source&&source.session_id===topic.sessionId&&humanAuthored(source))return {source};
+    if(source&&routerSessionOwnsTopic(source.session_id,topic.sessionId)&&humanAuthored(source))return {source};
     return null;
   }
   const source=getAcceptedSessionInput(id);
-  if(!source||source.session_id!==topic.sessionId||!humanAuthored(source))return null;
-  const root=inboxThreadRoot(topic.sessionId,source.id)??source.id;
+  if(!source||!routerSessionOwnsTopic(source.session_id,topic.sessionId)||!humanAuthored(source))return null;
+  const root=inboxThreadRoot(source.session_id,source.id)??source.id;
   if(topicOfRoot(root)!==topic.topicId)return null;
   return {source};
+}
+
+function routerSessionOwnsTopic(sourceSessionId:number,topicSessionId:number):boolean {
+  if(sourceSessionId===topicSessionId)return true;
+  return !!db.query(`WITH RECURSIVE lineage(id) AS (SELECT ? UNION ALL
+    SELECT predecessor_session_id FROM session_handoffs JOIN lineage ON successor_session_id=lineage.id
+    WHERE state='accepted') SELECT 1 FROM lineage WHERE id=? LIMIT 1`).get(sourceSessionId,topicSessionId);
 }
 
 export function readsFor(question:{topicId:string;kind?:QuestionKind;legacyNeedEventId:string|null;owner:any;brief:any;sources?:string[]}):ReadingText[] {
@@ -176,15 +183,17 @@ export function readsFor(question:{topicId:string;kind?:QuestionKind;legacyNeedE
   const roots=new Set([...topicRoots(question.topicId),...(question.sources??[]).flatMap(source=>{
     const route=routedMessageFor(source);
     const dest=route?.kind==='topic_route'?route.destinationMessageId:null;
-    const root=inboxThreadRoot(topic.session_id,source);
+    const sourceSession=(inboxRowByMessageId(null,source) as {session_id:number}|null)?.session_id??topic.session_id;
+    const root=inboxThreadRoot(sourceSession,source);
     return [root??source,...(dest?[dest]:[])];
   })]);
   const named:string[]=Array.isArray(question.brief?.reads)?question.brief.reads.filter((id:unknown):id is string=>typeof id==='string'&&!!id.trim()):[];
   if(named.length) {
     const found:ReadingText[]=[];
     for(const id of named) {
-      const message=inboxMessageById(topic.session_id,id) as {content?:string;createdAt?:string;inputId?:string}|null;
-      const root=message?.inputId?inboxThreadRoot(topic.session_id,message.inputId):null;
+      const messageSession=(inboxRowByMessageId(null,id) as {session_id:number}|null)?.session_id??topic.session_id;
+      const message=inboxMessageById(messageSession,id) as {content?:string;createdAt?:string;inputId?:string}|null;
+      const root=message?.inputId?inboxThreadRoot(messageSession,message.inputId):null;
       if(message&&String(message.content??'').trim()&&root&&roots.has(root))found.push({messageId:id,text:String(message.content),at:message.createdAt??''});
     }
     return found;
@@ -703,7 +712,7 @@ function queuedInboxInputs(sessionId:number) {
   return (db.query(`SELECT id FROM session_inputs WHERE session_id=? AND turn_id IS NULL AND steering_id IS NULL
     AND json_extract(COALESCE(receipt_json,'{}'),'$.state') IS NULL AND kind IN ('input','create','inbox-capture') ORDER BY rowid`).all(sessionId) as {id:string}[]).map(row=>row.id);
 }
-type WorkIndex={focus:ReturnType<typeof focusRow>;focusTitle:string|null;queued:{inputId:string;root:string|null;position:number}[];
+type WorkIndex={sessionId:number;focus:ReturnType<typeof focusRow>;focusTitle:string|null;queued:{inputId:string;root:string|null;position:number}[];
   dispatches:{root:string|null;sessionId:string|null;title:string;requestId:string}[]};
 function workIndex(sessionId:number):WorkIndex {
   const focus=focusRow(sessionId);
@@ -725,7 +734,7 @@ function workIndex(sessionId:number):WorkIndex {
     dispatches.push({root:rootOf(sessionId,row.source_input_id),sessionId:receiveSessionFromPeer(row.remote_session_id,row.peer),
       title:(catalogue?JSON.parse(catalogue.view_json)?.title:null)||`${row.peer} session`,requestId:row.request_id});
   }
-  return {focus,focusTitle,queued,dispatches};
+  return {sessionId,focus,focusTitle,queued,dispatches};
 }
 /**
  * What is happening to this thread, in words he would use. `text` is detail a surface adds
@@ -735,7 +744,7 @@ function workIndex(sessionId:number):WorkIndex {
  */
 function topicWork(topic:StoredTopic,roots:string[],index:WorkIndex,entries:EntryIndex) {
   if(index.focus?.topicId===topic.topicId)
-    return {kind:'router_working' as const,text:index.focus.summary??'',runId:index.focus.runId,sessionId:`concierge:${topic.sessionId}`};
+    return {kind:'router_working' as const,text:index.focus.summary??'',runId:index.focus.runId,sessionId:`concierge:${index.sessionId}`};
   const queued=index.queued.find(item=>item.root&&roots.includes(item.root));
   if(queued) {
     const ahead=queued.position-1;

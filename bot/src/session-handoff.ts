@@ -189,7 +189,7 @@ export async function proposeHandoff(input:{actorSession:number;inputId:string;r
       requesting_input_id,requesting_run_id,originating_human_json,inventory_json,inventory_digest)
       VALUES(?,?,?,'proposed',?,?,?,?,?,?,?,?)`).run(id,source.id,successor.id,input.actionId,input.actorSession,input.reason.trim(),input.inputId,input.runId,
         human?JSON.stringify(human):null,JSON.stringify(now),hash);
-    const brief=`You continue ${canonical(source.id)} on ${input.provider}. Read its conversation with sessions context ${sessionAddress(source)} before acting. `+
+    const brief=`You continue ${canonical(source.id)} on ${input.provider}. The reason is: ${input.reason.trim()} Read its conversation with sessions context ${sessionAddress(source)} before acting. `+
       `Its exact open inventory and omissions follow. Do not re-ask a sent request: its answer will return to you after acceptance. `+
       `Acknowledge the current set with sessions handoff accept ${id} --digest ${hash} --source-input <this input> --source-run <this run>. `+
       `If the digest changed, read the new inventory and acknowledge that exact digest.\n\n${JSON.stringify(now,null,2)}`;
@@ -279,7 +279,10 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
     // The Inbox is one logical router across provider sessions. Promote its role only
     // after acceptance, so a proposed successor cannot receive captures prematurely.
     const predecessorMeta=sessionMetadata(getSessionById(from)!);
-    if(predecessorMeta.inboxRole==='project-router')updateSessionMetadata(to,{inbox:true,inboxRole:'project-router'});
+    if(predecessorMeta.inboxRole==='project-router')updateSessionMetadata(to,{inbox:true,inboxRole:'project-router',
+      standingRole:'inbox',needs:predecessorMeta.needs,generation:predecessorMeta.generation,
+      readGeneration:predecessorMeta.readGeneration,attentionGeneration:predecessorMeta.attentionGeneration,
+      dismissedGeneration:predecessorMeta.dismissedGeneration});
     // Suspension prevents the next turn. It does not interrupt an already admitted run;
     // that run receives a direct notice after this transaction commits.
     updateSessionMetadata(from,{suspended:true});
