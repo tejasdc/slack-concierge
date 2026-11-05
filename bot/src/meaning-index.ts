@@ -89,7 +89,7 @@ type EngineSeat={socket:string|null;threads:number;parallel:number};
 const SHARED_SEAT:EngineSeat={socket:null,threads:2,parallel:4};
 // In Concierge's state folder, which agents' launches do not see; a socket path longer than the
 // kernel's limit (about 104 bytes on macOS) falls back to /tmp.
-const QUERY_SEAT=(stateDir:string):EngineSeat=>{const inState=join(stateDir,'meaning-query.sock');return {socket:inState.length<100?inState:`/tmp/concierge-meaning-query-${process.getuid?.()??0}.sock`,threads:1,parallel:2};};
+const QUERY_SEAT=(stateDir:string):EngineSeat=>{const inState=join(stateDir,'meaning-query.sock');return {socket:inState.length<100?inState:`/tmp/concierge-meaning-query-${hash(stateDir).slice(0,12)}.sock`,threads:1,parallel:2};};
 
 /** One llama.cpp server process, started on first use; CPU only, because the box's Vulkan path failed in September. */
 class LocalEngine implements EmbeddingEngine {
@@ -393,8 +393,11 @@ export class MeaningIndex {
       this.timer=setTimeout(tick,worked?50:this.failure?IDLE_POLL_MS*5:IDLE_POLL_MS);
     };
     this.timer=setTimeout(tick,5_000);
-    // Loading the model takes seconds; pay it now rather than inside the first search's 6 s.
-    if(this.questions!==this.engine)this.questions.embed([QUERY_PREFIX+'warm up'],60_000).catch(error=>log('warn','meaning_question_engine_warmup_failed',{error:error instanceof Error?error.message:String(error)}));
+    // Loading the model takes seconds; pay it now rather than inside the first search's 6 s. The
+    // shared engine is started too, because thnkr.ing's Reader expects it on port 8796 even when
+    // the index has nothing new to embed.
+    for(const engine of new Set([this.engine,this.questions]))if(engine instanceof LocalEngine)
+      engine.embed([QUERY_PREFIX+'warm up'],60_000).catch(error=>log('warn','meaning_engine_warmup_failed',{error:error instanceof Error?error.message:String(error)}));
   }
   stop(){this.stopped=true;if(this.timer)clearTimeout(this.timer);this.engine.stop();if(this.questions!==this.engine)this.questions.stop();this.held?.db.close();this.held=null;this.store.close();}
   /** Archive hits resolve to the exact source, version and event the archive holds now, so a stale vector never names a changed file. */
