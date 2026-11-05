@@ -140,6 +140,12 @@ The design describes a separately supervised worker. This is one polling worker 
 silence over 15 s (a Concierge restart, a sleeping Mac) the next poll rechecks every condition
 against its baseline and records the pause as a gap; the terminal message lists the gaps and says
 that a change made and undone inside one cannot be known. Nothing pretends to have watched throughout.
+A started command watch says something different. Its command runs in its own execution host,
+which a Concierge restart does not stop, and its exit and output are read from the host afterwards.
+So for a command the gaps are listed as times Concierge was not polling. The message says nothing
+the command reported was lost, and that any calls the command made to Concierge during a gap
+would have failed. The old file-watch wording sent the canvas reviewers (2026-11-05, 22 gaps
+from releases) looking for a lost observation that could not have happened.
 
 Every unchanged poll advances a persistent cursor so a restart can identify the last observation.
 The dedicated thread writes this cursor and its gaps to a separate SQLite database beside the

@@ -269,6 +269,12 @@ type Settlement = { observedAt: number | null; now: number; detail: string; obse
 function gapsText(gaps: Gap[], row: WatchRow, endedAt: number) {
   if (!gaps.length) return `Observation gaps: none. Concierge polled every ${WATCH_POLL_MS / 1000} s from ${iso(row.created_at_ms)} to ${iso(endedAt)} with no silence longer than ${WATCH_GAP_MS / 1000} s.`;
   const list = gaps.map(gap => `${iso(gap.fromMs)} to ${iso(gap.toMs)} (${Math.round((gap.toMs - gap.fromMs) / 1000)} s)`).join("; ");
+  // A started command lives in its own execution host, which a Concierge restart does not stop, and
+  // its exit is read from the host afterwards; a gap only delays reading it. Saying a change could
+  // have been missed sent the canvas reviewers (2026-11-05, 22 gaps from releases) looking for a loss.
+  if (row.kind === "command" && row.host_state === "live") {
+    return `Concierge was not polling ${gaps.length} time${gaps.length === 1 ? "" : "s"}: ${list}, most likely while it restarted. The command kept running in its own process through each of these, and its exit and output are kept by its host, so nothing the command reported was lost; a gap only delays when Concierge reads the result. Calls the command itself made to Concierge during a gap would have failed, and handling that is up to the command.`;
+  }
   return `Observation gaps: ${gaps.length}. Coverage cannot be proven during ${list}; Concierge may have been restarting, the machine may have been asleep or unreachable, or an observation could not be recorded. A change that was made and undone inside a gap cannot be known; what is stated here is what was found when observation resumed.`;
 }
 
