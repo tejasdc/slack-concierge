@@ -165,8 +165,10 @@ function peerDeliveryProvenance(input:AcceptedSessionInput) {
   // Identities arrive named by the sender; see peer-identity.ts for the rule.
   const human=retained.originatingHuman&&typeof retained.originatingHuman.sessionId==='string'
     ?{...retained.originatingHuman,sessionId:receiveSessionFromPeer(retained.originatingHuman.sessionId,delivery.peer)}:null;
+  const humanModelChoices=human&&Array.isArray(retained.humanModelChoices)
+    ?retained.humanModelChoices.filter((model:unknown):model is string=>model==='claude-fable-5-1'||model==='gpt-6-astra'):[];
   return {source:{inputId:delivery.origin_input_id,runId:delivery.origin_run_id,sessionId:receiveSessionFromPeer(delivery.origin_session_id,delivery.peer),peer:delivery.peer},
-    requestId:input.request_id,effectScope,originatingHuman:human as {inputId:string;runId:string;sessionId:string;captureId?:string}|null,peer:delivery.peer};
+    requestId:input.request_id,effectScope,originatingHuman:human as {inputId:string;runId:string;sessionId:string;captureId?:string}|null,peer:delivery.peer,humanModelChoices};
 }
 export function sessionInputProvenance(input:AcceptedSessionInput) {
   const routedHuman=(candidate:AcceptedSessionInput)=>{
@@ -238,7 +240,7 @@ export function sessionInputProvenance(input:AcceptedSessionInput) {
   if(!human&&current)human=forwardedHuman(current);
   const delivered=!human&&current?peerDeliveryProvenance(current):null;
   if(delivered){human=delivered.originatingHuman;effectScope=effectScope==='informational'||delivered.effectScope!=='work'?'informational':'work';}
-  return source?{source,requestId:input.request_id,effectScope,originatingHuman:human,...(delivered?{peer:delivered.peer}:{})}:null;
+  return source?{source,requestId:input.request_id,effectScope,originatingHuman:human,...(delivered?{peer:delivered.peer,humanModelChoices:delivered.humanModelChoices}:{})}:null;
 }
 export function acceptedInputForTurn(turnId:number) {
   return db.query("SELECT * FROM session_inputs WHERE turn_id=? AND steering_id IS NULL AND kind IN ('input','create','consultation','comparison','fork') ORDER BY rowid LIMIT 1").get(turnId) as AcceptedSessionInput|null;
