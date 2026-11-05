@@ -9,12 +9,13 @@ if [ -n "${THINKERING_CAPABILITY_URL:-}" ]; then
   if [ -z "$token" ] && [ -n "${CONCIERGE_RUNNER_TOKEN_FILE:-}" ]; then token=$(cat "$CONCIERGE_RUNNER_TOKEN_FILE"); fi
   if [ -z "$token" ]; then
     echo "thinkering: this shell has no Concierge agent token for thnkr.ing's network entrance" >&2
-    exit 2
+    exit 64
   fi
   base=${THINKERING_CAPABILITY_URL%/}
   # The token goes in a private header file, never on a command line other processes can list.
-  headers=$(mktemp) || exit 2
-  trap 'rm -f "$headers"' EXIT
+  headers=$(mktemp) || exit 64
+  # A signal skips an EXIT trap in POSIX shells; exiting from its own trap runs it.
+  trap 'rm -f "$headers"' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
   printf 'Authorization: Bearer %s\n' "$token" > "$headers"
   for argument do
     shift

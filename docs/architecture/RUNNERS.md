@@ -3,10 +3,13 @@
 **Status (2026-11-04):** built: the agents' network entrance, per-run and per-runner tokens, the
 runner lease engine with its routes, a probe runner, and **Claude Code turns on runners** ("Turns on
 a runner" below): a new Claude turn can run on a runner, whose agents reach the owner only over
-the network entrance. It is selected per session (`sessions ask --on-runner`) unless the owner sets
-`CONCIERGE_TURN_RUNNERS=all`. **Still on the owner's machine:** shared Codex App Server turns (the relay is built, not
-switched on), Google and outside-Codex hosts, command and file watches, the provider account readings and
-sign-ins, and project checkouts (a runner must have the same folders). Concierge's own thnkr.ing
+the network entrance. **On the AX41 every new Claude turn runs on runner `ax41`
+(`CONCIERGE_TURN_RUNNERS=all`) and every Codex App Server connection goes through it
+(`CONCIERGE_CODEX_RUNNER=ax41`)**, both set in `systemd/concierge-bot.service`; `claude-code/runner`
+earned its survival proof in the 2026-11-05 acceptance restart (execution `b212ed3c76cd9766`, taken
+over live by the restarted owner). **Still on the owner's machine:** Google and outside-Codex hosts,
+command and file watches, the provider account readings and sign-ins, and project checkouts (a runner
+must have the same folders); the AX41's App Server itself is still the one the owner unit starts. Concierge's own thnkr.ing
 calls already use thnkr.ing's network entrance. The owner therefore
 **cannot move to the app server yet**; the remaining work is listed under "Not on runners yet".
 Decided plan: remote-box `docs/plans/2026-11-04-off-one-server-architecture.md` ("Decisions after
@@ -251,7 +254,13 @@ Agent wording (canvas think-aloud, the `--todo` hint) names the release's `think
 runner's Codex App Server) it uses thnkr.ing's network entrance with `CONCIERGE_AGENT_TOKEN`, or the
 runner token file in a Codex shell, sent from a private header file; otherwise the local socket. The
 Mac keeps `ssh remote-box curl --unix-socket …`, and thnkr.ing's own rendering of the think-aloud
-text keeps its socket (`capabilityCommand` is optional).
+text keeps its socket (`capabilityCommand` is optional). The wording keeps the socket command as a
+fallback because a Codex conversation keeps its first turn's `PATH`, which may name a release
+without the helper. Known cost: thnkr.ing records a call made with the runner token as
+`runner:<name>` with no session, so a Codex shell's calls that carry no `X-Concierge-Agent-Source`
+(board reads, `/todos/tasks`, `/app/*` routes that fall back to the caller's session) lose session
+attribution; calls that carry the source header are verified by it as before. The per-turn token
+exchange (item 5 under "Codex App Server on a runner") removes this.
 
 Why a relay and not the job protocol: the App Server's traffic is a live connection with many
 streamed notifications, not obligations; carrying it through `runner_events` would write every token
