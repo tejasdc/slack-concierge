@@ -29,7 +29,7 @@ run_project_scaffold_cutover() {
   hold_capture_gate
 
   echo "=== stop the drained old Canvas authority ==="
-  systemctl stop "$SERVICE"
+  stop_unit "$SERVICE"
 
   local migration_command=(
     "$BUN_BIN" run "$REPO/bot/scripts/migrate-project-scaffolds.ts"

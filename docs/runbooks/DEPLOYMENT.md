@@ -951,6 +951,16 @@ Restore capture state separately from
 
 ## Runtime dependencies and service shutdown
 
+The deployment controller supports a service unit that refuses manual stops. When
+that refusal is installed, the controller creates a short named systemd unit that
+conflicts with Concierge, waits for the ordered indirect stop, and then starts the
+selected release. The unit's journal description carries the deployment run and
+stage. Install the controller support in one release before installing the refusal
+in the service unit: an older controller cannot stop a unit that refuses manual
+stops. Automatic crash recovery remains systemd-owned.
+Query `journalctl -u 'concierge-deployment-stop-*' --since '<time>'` beside
+`journalctl -u concierge-bot.service` to join a planned stop to its run and stage.
+
 `concierge-bot.service` runs the stable launcher at
 `/usr/local/lib/slack-concierge-deployment/launch`. The launcher executes the
 verified artifact selected by `/var/lib/slack-concierge-deployment/current`.
