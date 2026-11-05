@@ -5,6 +5,7 @@ export const AUTHORIZED_PAGE='faf63877-6536-4ac6-86e9-5d63e03d3369';
 export const AUTHORIZING_HUMAN_INPUT='f66f15dd-e251-4537-a9cd-347d0548434b';
 export const CANVAS_AUTHORIZING_HUMAN_INPUT='capture:7bad480ccf4350922acb3ac750cc0ba0b7a990f596acd92b5fe98403f6f0e7a0';
 export const RETIREMENT_AUTHORIZING_HUMAN_INPUT='capture:2a296c24ca627e68981feab3c3e56a32b3e43cf317d0eb545ee4cab23801270b';
+export const RETIREMENT_UNLOCK_HUMAN_INPUT='1ba89166-c732-481b-b53a-e77e85ba93ba';
 export const RETIREMENT_FILE_MENU_PROGRAM=String.raw`var thnkrRetirementMenuApp = await cua.getApp("${AUTHORIZED_WEB_APP}");
 var thnkrRetirementMenuState = await thnkrRetirementMenuApp.getAXState({disableDiffing:true});
 var thnkrRetirementWindowLines = thnkrRetirementMenuState.match(/^\d+ standard window thnkr\.ing, ID: WebAppWindow-Thinkering(?:,.*)?$/gm) ?? [];
@@ -22,17 +23,21 @@ await thnkrRetirementNewWindowApp.getAXStateAndScreenshot({disableDiffing:true})
 
 type RecordedNeed=string|{kind:string;why?:string;humanInputId?:string;effectScope?:string};
 
+function retirementHumanInput(id:string|undefined):boolean {
+  return id===RETIREMENT_AUTHORIZING_HUMAN_INPUT||id===RETIREMENT_UNLOCK_HUMAN_INPUT;
+}
+
 function authorizedWebAppNeed(need:RecordedNeed,toolName:string):need is Exclude<RecordedNeed,string> {
   return typeof need!=='string'&&need.kind==='mac-app'
     &&typeof need.humanInputId==='string'&&need.humanInputId.length>0
-    &&need.humanInputId!==RETIREMENT_AUTHORIZING_HUMAN_INPUT&&need.effectScope==='work'
+    &&!retirementHumanInput(need.humanInputId)&&need.effectScope==='work'
     &&typeof need.why==='string'&&need.why.includes(AUTHORIZED_WEB_APP)&&need.why.includes(AUTHORIZED_PAGE)
     &&COMPUTER_CONTROL.test(toolName);
 }
 
 function authorizedRetirementInspectionNeed(need:RecordedNeed,toolName:string):need is Exclude<RecordedNeed,string> {
   return typeof need!=='string'&&need.kind==='mac-app'
-    &&need.humanInputId===RETIREMENT_AUTHORIZING_HUMAN_INPUT&&need.effectScope==='work'
+    &&retirementHumanInput(need.humanInputId)&&need.effectScope==='work'
     &&typeof need.why==='string'&&need.why.includes(AUTHORIZED_WEB_APP)
     &&need.why.includes('exact53 retirement')&&COMPUTER_CONTROL.test(toolName);
 }
@@ -56,7 +61,7 @@ function restrictedWebAppTask(need:RecordedNeed,toolName:string,toolInput:unknow
     &&((typeof need.why==='string'&&need.why.includes(AUTHORIZED_WEB_APP))
       ||need.humanInputId===AUTHORIZING_HUMAN_INPUT
       ||need.humanInputId===CANVAS_AUTHORIZING_HUMAN_INPUT
-      ||need.humanInputId===RETIREMENT_AUTHORIZING_HUMAN_INPUT);
+      ||retirementHumanInput(need.humanInputId));
 }
 
 function exactWebAppSelector():string {
@@ -114,7 +119,7 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
       &&!authorizedRetirementNewWindowOpen(need,toolName,code)) {
     if(!authorizedCurrentWebAppNeed(need,toolName))return !COMPUTER_CONTROL.test(toolName)
       ? 'This Safari web app needs an active Mac-app request naming its exact bundle and page IDs, followed by a direct Computer Use getApp call for that bundle. Reissue the request with Tejas’s authorization; do not ask him to copy the app’s contents.'
-      : need.humanInputId===RETIREMENT_AUTHORIZING_HUMAN_INPUT
+      : retirementHumanInput(need.humanInputId)
       ? 'This current-window retirement inspection needs an active Mac-app work request naming the exact thnkr.ing bundle and exact53 retirement, followed by a direct Computer Use getApp call for that bundle.'
       : need.humanInputId===AUTHORIZING_HUMAN_INPUT||need.humanInputId===CANVAS_AUTHORIZING_HUMAN_INPUT
       ? 'This human work authorization covers only passive inspection of the exact thnkr.ing web app. Select its bundle again in the same Computer Use program as each read; Inspector, input, other apps and whole-screen calls remain refused.'

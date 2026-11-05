@@ -67,6 +67,11 @@ closed or navigated by this program. The menu selection and final read cannot pr
 that both windows share IndexedDB; the app's exact53 retirement result and the old
 window's recount must supply that evidence. The new window's loaded release must
 be observed separately before attributing the consumer's behavior to it.
+Tejas's later unlock reply in the same retirement task is also an exact human
+authorization source for this existing work need. The policy accepts that one
+reply ID under the same bundle, `exact53 retirement` purpose, work effect, and
+fixed File-menu or New Window programs. It does not turn the unlock reply into
+an old-page recovery grant or allow other Mac apps or free-form Computer Use.
 When Tejas answers a physical prerequisite in the same Inbox task, the Inbox's
 forwarded reply has no provider run. Its retained forward request proves the exact
 human reply, including when another agent request follows it. A later Mac request
