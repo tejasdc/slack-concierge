@@ -3,6 +3,7 @@ import { log, errorFields } from './log';
 import { recordSessionEvent } from './session-inputs';
 import { inboxSession } from './session-inbox';
 import { runStartupStep } from './startup-phase';
+import {applySessionPurposeEntries,fillMissingSessionPurposes,markSessionPurposeFileApplied,readSessionPurposeFile} from './session-purpose';
 
 /**
  * Startup costs what changed since the last start, not the size of history. Sweeps written for
@@ -20,7 +21,7 @@ import { runStartupStep } from './startup-phase';
 const DEFERRED_START_DELAY_MS = 120_000;
 const PAUSE_BETWEEN_PAGES_MS = 250;
 type Pass = (afterKey: number, throughKey: number) => unknown;
-type DeferredPass = { name: string; afterKey: number; throughKey: number; pageSize: number; pass: Pass; recordProgress: boolean };
+type DeferredPass = { name: string; afterKey: number; throughKey: number; pageSize: number; pass: Pass; recordProgress: boolean; onCompleted?: () => void };
 const deferred: DeferredPass[] = [];
 
 function lastMark(name: string): number | null {
@@ -45,11 +46,26 @@ export function runStartupCatchUp(name: string, maxKey: () => number, pass: Pass
 }
 
 /** Revisit work whose earlier rows can become eligible later; its pages have no permanent mark. */
-export function runStartupSweep(name: string, maxKey: () => number, pass: Pass, pageSize: number): unknown {
+export function runStartupSweep(name: string, maxKey: () => number, pass: Pass, pageSize: number, onCompleted?: () => void): unknown {
   const through = maxKey();
-  if (through === 0) return { caught_up: true, through_key: 0 };
-  deferred.push({ name, afterKey: 0, throughKey: through, pageSize, pass, recordProgress: false });
+  deferred.push({ name, afterKey: 0, throughKey: through, pageSize, pass, recordProgress: false, onCompleted });
   return { deferred: true, through_key: through };
+}
+
+/** A purpose file must finish before fallback can fill the same missing sessions. */
+export function scheduleSessionPurposeRepair(stateDir: string): unknown {
+  const fallback = () => runStartupCatchUp('session-purposes', sessionMaxId,
+    (afterId, throughId) => fillMissingSessionPurposes({ afterId, throughId }), 500);
+  const input = readSessionPurposeFile(stateDir);
+  if (!input) return fallback();
+  return runStartupSweep('session-purpose-file', () => input.entries.length,
+    (after, through) => applySessionPurposeEntries(input.entries.slice(after, through)), 500,
+    () => runStartupSweep('session-purpose-fallback', sessionMaxId,
+      (afterId, throughId) => fillMissingSessionPurposes({ afterId, throughId }), 500,
+      () => {
+        if (!markSessionPurposeFileApplied(stateDir, input.text))
+          log('warn', 'session_purpose_file_changed_during_apply');
+      }));
 }
 
 /** Called once Concierge reports online; works through each deferred first pass page by page. */
@@ -60,9 +76,14 @@ export function startDeferredStartupRepairs(shouldStop: () => boolean) {
 }
 
 async function runDeferred(shouldStop: () => boolean) {
-  for (const item of deferred.splice(0)) {
+  while (deferred.length) {
+    const item = deferred.shift()!;
     const outcome = await runPages(item, shouldStop);
     log(outcome === 'completed' ? 'info' : 'error', 'startup_catch_up_first_pass', { name: item.name, outcome, through_key: item.throughKey });
+    if (outcome === 'completed') {
+      try { item.onCompleted?.(); }
+      catch (error) { log('error', 'startup_catch_up_completion_failed', { name: item.name, ...errorFields(error) }); }
+    }
   }
 }
 

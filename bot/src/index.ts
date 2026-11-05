@@ -16,8 +16,7 @@ import toml from "@iarna/toml";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { isHintCommand, renderCommandHints } from "./command-hints";
 import {
   addDir,
@@ -352,10 +351,9 @@ import { startMachineWatchWorker,wakeWatchWorker } from './watches';
 import {recordSessionEvent as recordOwnerEvent,recoverProviderRefusalContinuations} from './session-inputs';
 import {refreshClaudeAccount} from './provider-accounts';
 import {installSessionProjection} from './session-projection';
-import {fillMissingSessionPurposes} from './session-purpose';
 import {expireUnreadableReadingItems,fileServiceNotices,keepThreadsCurrent,migrateInboxAttention,migrateInboxTopics,reconcileCarriedClosures,reconcileForwardedFinalAnswers,repairOctober21RepeatedAnswer,repairNovember4RepeatedThreadNotices,retireTimedRequestPosts,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
 import {resolveRetryNotices} from './retry-breaker-notice';
-import {ownerEventMaxSequence,runStartupCatchUp,runStartupSweep,sessionMaxId,startDeferredStartupRepairs} from './startup-repairs';
+import {ownerEventMaxSequence,runStartupCatchUp,runStartupSweep,scheduleSessionPurposeRepair,startDeferredStartupRepairs} from './startup-repairs';
 import {CodexSessionObserver} from './codex-session-observer';
 import {ensureSpeechWorker} from './speech-job-supervisor';
 
@@ -538,13 +536,9 @@ for(const held of recoverProviderRefusalContinuations())noticeTurnContinuation({
 runStartupStep('session_projection', () => installSessionProjection(sessionExecutionHost.owner));
 // Every startup step below is timed and named (runStartupStep). Sweeps over history are catch-ups
 // with a high-water mark: their remaining work runs page by page after Concierge is online
-// (startup-repairs.ts). A hand-written
-// session-purposes.json is still applied in full whenever one is present.
+// (startup-repairs.ts). File-authored purposes finish before the generic fallback begins.
 try {log('info','session_purposes_filled',runStartupStep('session_purposes',()=>
-  existsSync(join(process.env.CONCIERGE_STATE_DIR!,'session-purposes.json'))
-    ?fillMissingSessionPurposes(process.env.CONCIERGE_STATE_DIR!)
-    :runStartupCatchUp('session-purposes',sessionMaxId,
-      (afterId,throughId)=>fillMissingSessionPurposes(process.env.CONCIERGE_STATE_DIR!,{afterId,throughId}),500)));}
+  scheduleSessionPurposeRepair(process.env.CONCIERGE_STATE_DIR!)));}
 catch(error) {log('error','session_purposes_fill_failed',errorFields(error));}
 // Production starts through this path, so the one-time topics migration runs here too; it is
 // guarded by its own event and does nothing once it has run.

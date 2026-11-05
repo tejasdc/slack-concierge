@@ -727,7 +727,9 @@ of history. Each sweep over history (forwarded final answers, timed-post retirem
 backfill) is a catch-up over a key range with a high-water mark recorded as a `startup_catch_up`
 event on the Inbox session. Every unfinished range, including work left by an interrupted pass,
 runs two minutes after Concierge reports online, in small pages with a pause between them and a
-mark after each page (`startup_repairs_deferred`, `startup_catch_up_first_pass`). Carried
+mark after each page (`startup_repairs_deferred`, `startup_catch_up_first_pass`). A one-time
+session purpose file is applied in pages first, followed by a full paged fallback; only after
+both passes finish is the unchanged file marked applied. Carried
 answer closures are also paged after online on every start, without a permanent mark: an old
 closure may become eligible when its request is answered later. Each `concierge_startup_phase` closing event also
 carries its `ms` and the ledger work done while it was open

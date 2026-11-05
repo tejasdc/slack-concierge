@@ -1,14 +1,12 @@
 import {randomUUID} from 'node:crypto';
-import {join,resolve} from 'node:path';
-import {existsSync} from 'node:fs';
+import {resolve} from 'node:path';
 import {resolveRuntimeProfile,clearSandboxReadyReceipt,writeNativeSandboxReadyReceipt} from './runtime-profile';
 import {db,abandonTurnArtifactBatch,claimNextQueuedTurn,getClaudePreferredModel,getSessionById,nextQueuedTurnAttemptMs,registerProcessInstance,recoverUnsettledSteeringMessages,recoverTurnArtifactDeliveryClaims,observeExecutionChanges,type QueuedTurnClaimRow} from './state';
 import {providers} from './providers';
 import {SessionExecutionHost} from './session-execution-host';
 import {installSessionProjection} from './session-projection';
-import {fillMissingSessionPurposes} from './session-purpose';
 import {runStartupStep} from './startup-phase';
-import {ownerEventMaxSequence,runStartupCatchUp,runStartupSweep,sessionMaxId,startDeferredStartupRepairs} from './startup-repairs';
+import {ownerEventMaxSequence,runStartupCatchUp,runStartupSweep,scheduleSessionPurposeRepair,startDeferredStartupRepairs} from './startup-repairs';
 import {ActiveTurnDispatchRegistry} from './turn-dispatch-seams';
 import {SessionTurnQueueCoordinator} from './session-turn-queue';
 import {currentProcessIdentity,isProcessIdentityAlive} from './runtime-identity';
@@ -106,7 +104,7 @@ export async function startSessionRuntime() {
     provider:held.provider,model:null,turnId:held.turnId,reason:held.reason},recordSessionEvent);
   const detachProjection=installSessionProjection(host.owner);
   // The Mac starts here rather than through index.ts, so its sessions are filled here too.
-  try {log('info','session_purposes_filled',runStartupStep('session_purposes',()=>existsSync(join(process.env.CONCIERGE_STATE_DIR!,'session-purposes.json'))?fillMissingSessionPurposes(process.env.CONCIERGE_STATE_DIR!):runStartupCatchUp('session-purposes',sessionMaxId,(afterId,throughId)=>fillMissingSessionPurposes(process.env.CONCIERGE_STATE_DIR!,{afterId,throughId}),500)));} catch(error) {log('error','session_purposes_fill_failed',errorFields(error));}
+  try {log('info','session_purposes_filled',runStartupStep('session_purposes',()=>scheduleSessionPurposeRepair(process.env.CONCIERGE_STATE_DIR!)));} catch(error) {log('error','session_purposes_fill_failed',errorFields(error));}
   // One topic per existing Inbox thread, once, after the schema migration state.ts ran.
   // Additive and safe while the Inbox is live; a second start finds its guard event.
   try {runStartupStep('inbox_topics_migration',()=>migrateInboxTopics());} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
