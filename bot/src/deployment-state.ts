@@ -971,16 +971,20 @@ export function recordDeploymentReleaseActivationIntent(runId: string, artifactD
       if (run.activation_state !== null) throw new Error("An activated deployment cannot change candidates.");
       return { supersededCommit: run.desired_commit };
     }
-    // A commit that was activated in this run and then failed is never activated again unchanged;
-    // only a different commit (its repair) may follow. Whatever chose the commit, this is the last
-    // gate. A failure before any activation (incident dba27ddf: the owner was restarting) leaves no
-    // activated release, so the same commit may still be retried.
-    const failedHere = db.query(`SELECT incident.id FROM deployment_repair_incidents incident
-      JOIN deployment_releases earlier ON earlier.run_id=incident.run_id
-        AND earlier.git_commit=incident.failed_commit AND earlier.activated_at IS NOT NULL
-      WHERE incident.run_id=? AND incident.failed_commit=? LIMIT 1`).get(runId, release.git_commit) as { id: string } | null;
-    if (failedHere) {
-      throw new Error(`Commit ${release.git_commit} already failed in this deployment run (incident ${failedHere.id}); `
+    // A commit whose most recent activation, in any run, failed (its run's incident names it) is
+    // never activated again unchanged; only a different commit (its repair) may follow. Whatever
+    // chose the commit (a repair retry, a new run, an operator), this is the last gate. A failure
+    // before any activation (incident dba27ddf: the owner was restarting) leaves no activated
+    // release, so that commit may still be retried; a later success elsewhere is fresh evidence.
+    const failedBefore = db.query(`SELECT incident.id FROM deployment_releases latest
+      JOIN deployment_repair_incidents incident
+        ON incident.run_id=latest.run_id AND incident.failed_commit=latest.git_commit
+      WHERE latest.git_commit=? AND latest.activated_at IS NOT NULL
+        AND latest.activated_at=(SELECT MAX(activated_at) FROM deployment_releases
+          WHERE git_commit=? AND activated_at IS NOT NULL)
+      LIMIT 1`).get(release.git_commit, release.git_commit) as { id: string } | null;
+    if (failedBefore) {
+      throw new Error(`Commit ${release.git_commit} failed after its last activation (incident ${failedBefore.id}); `
         + "it is not activated again. Only a commit containing its repair can be activated.");
     }
     db.query(`UPDATE deployment_runs

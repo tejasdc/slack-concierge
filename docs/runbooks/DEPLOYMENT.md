@@ -585,10 +585,10 @@ repair in an incident worktree and returns a structured committed-or-blocked
 result. The supervisor non-force pushes only after proving the recorded
 `origin/main` base, and retries the same deployment run through the existing
 detached controller, targeting the repair commit: the retry sets the run's desired commit to
-it. A commit that was activated in a run and then failed is refused at activation intent for the
-rest of that run, whatever chose it, so a repair loop cannot restart Concierge onto a known-bad
-release; a failure before any activation (the owner was restarting, say) may still retry the
-same commit. On 2026-11-04 the retry kept the failed candidate 15dbe76b as its target and
+it. A commit whose most recent activation, in any run, failed (that run's incident names it) is
+refused at activation intent, whatever chose it (a repair retry, a new run, an operator), so
+nothing restarts Concierge onto a known-bad release; a failure before any activation (the owner
+was restarting, say) may still retry the same commit, and a later success elsewhere clears it. On 2026-11-04 the retry kept the failed candidate 15dbe76b as its target and
 activated it twice more although its repair 0116beb1 was on main
 (`docs/incidents/2026-11-04-repair-retry-reactivated-failed-candidate.md`). No manual polling is required. A successful retry records
 its runtime proof and wakes no feature agent. The third identical candidate-health

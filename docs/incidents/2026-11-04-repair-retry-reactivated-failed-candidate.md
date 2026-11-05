@@ -27,8 +27,8 @@ activation refused a commit that had already been activated and failed in the sa
 ## Fix
 
 - The retry sets the run's desired commit to the incident's repair commit.
-- Activation intent refuses a commit that was activated earlier in the same run and failed (an
-  incident names it as its failed commit and a release of it was activated). A failure that
+- Activation intent refuses a commit whose most recent activation, in any run, failed (that
+  run's incident names it as its failed commit). A failure that
   never reached activation can still retry the same commit.
 
 ## Acceptance scenario
