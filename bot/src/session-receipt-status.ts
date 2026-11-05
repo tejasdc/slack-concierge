@@ -13,7 +13,8 @@ export type StatusContext={
   requestWait:(requestId:string,inputId:string)=>{after:boolean;held:{requestId:string;outcome:string}|null};
   savedTurn:(turnId:number)=>SavedTurnFact;
   continuationRefusal:(turnId:number)=>string|null;
-  session:(sessionId:number)=>{status:string;providerId:string;suspended:boolean};
+  session:(sessionId:number)=>{status:string;providerId:string;suspended:boolean;outside:boolean};
+  otherLiveTurn:(sessionId:number,turnId:number)=>boolean;
   deploymentHold:(providerId:string,inputKind:string)=>boolean;
   focusHold:(sessionId:number)=>number|null;
   olderBlockingTurn:(sessionId:number,turnId:number)=>BlockingTurnFact;
@@ -108,6 +109,8 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
   const older=context.olderBlockingTurn(input.session_id,turn.id);
   if(older?.status==='parked')return {code:'EARLIER_INPUT_PARKED',message:'An earlier input is parked and must be reconciled before this queued input can run.',clearsAt:null,automaticRetry:false};
   if(context.dependencyPending(turn.id))return {code:'WAITING_FOR_DEPENDENCY',message:'This input is waiting for an earlier required outcome.',clearsAt:null,automaticRetry:true};
+  if(session.outside&&context.otherLiveTurn(input.session_id,turn.id))return {
+    code:'OUTSIDE_NEXT_TURN',message:`This independent Codex run survives Concierge restarts but cannot read a new message while it works. ${waitingWork} is saved in order for a later turn after this run finishes.`,clearsAt:null,automaticRetry:true};
   if(older?.status==='queued'&&(older.dispatch_hold==='usage'||older.dispatch_failure_class==='usage_wait'||older.continuation_refusal==='usage')){
     const reset=older.dispatch_next_attempt_ms!==null&&older.dispatch_next_attempt_ms>context.now()?older.dispatch_next_attempt_ms:null;
     const product=providerDisplayName(session.providerId)??String(session.providerId);

@@ -777,14 +777,18 @@ export class SessionExecutionHost {
       const session=getSessionById(sessionId);
       // The Inbox keeps its own queue rules (focus hold, captures waiting in order).
       if(!session||sessionMetadata(session).inbox||sessionMetadata(session).interactionPolicy==='consultation-only')return;
+      const outside=!!sessionMetadata(session).outside;
       // Messages whose latest hand-off never reached the provider and that are not yet back in the
       // queue: still attached to that failed attempt, or left detached by an interrupted pull.
+      // Outside startup takes back only his messages; older service notices and settled agent
+      // requests need their own obligation audit before anything wakes them again.
       const unsent=db.query(`SELECT input.id,input.origin,input.request_id FROM session_inputs input
         JOIN turn_steering_messages steering ON steering.accepted_input_id=input.id
           AND steering.id=(SELECT MAX(latest.id) FROM turn_steering_messages latest WHERE latest.accepted_input_id=input.id)
         WHERE input.session_id=? AND steering.status='failed' AND steering.provider_sent_at IS NULL
           AND json_extract(input.receipt_json,'$.state') IS NULL
-          AND (input.steering_id=steering.id OR input.steering_id IS NULL AND input.turn_id IS NULL)`).all(sessionId) as {id:string;origin:string;request_id:string|null}[];
+          AND (?=0 OR input.origin='human')
+          AND (input.steering_id=steering.id OR input.steering_id IS NULL AND input.turn_id IS NULL)`).all(sessionId,outside?1:0) as {id:string;origin:string;request_id:string|null}[];
       for(const row of unsent) {
         const recovered=recoverUnsentSteeredInput(row.id);
         // A reminder to answer a request already answered says nothing true any more; delivering it
@@ -793,6 +797,9 @@ export class SessionExecutionHost {
           &&db.query('SELECT 1 FROM session_communication_requests WHERE request_id=? AND (prompt_answered_at_ms IS NOT NULL OR outcome IS NOT NULL)').get(row.request_id))
           withdrawUnstartedServiceInput(recovered?.id??row.id,'Answered before this reminder was delivered.');
       }
+      // The outside CLI accepts one opening message only. Recovery may restore earlier unsent
+      // inputs to FIFO, but must never withdraw them to try another live delivery.
+      if(outside){if(unsent.length)this.options.wake();return;}
       // Only messages the taken-back run will take leave the queue; a Canvas speech run refuses
       // every other message, which then keeps its queued turn instead of being re-queued.
       const running=db.query("SELECT id FROM turns WHERE session_id=? AND status='running' AND stop_requested_at IS NULL ORDER BY id DESC LIMIT 1").get(sessionId) as {id:number}|null;
@@ -809,6 +816,20 @@ export class SessionExecutionHost {
       log('warn','waiting_inputs_join_failed',{session_id:sessionId,...errorFields(error)});
     }
   }
+  /** A finished outside run has no live sender to trigger recovery. */
+  recoverOutsideWaitingInputs() {
+    const sessions=db.query(`SELECT DISTINCT input.session_id FROM session_inputs input
+      JOIN sessions session ON session.id=input.session_id
+      JOIN turn_steering_messages steering ON steering.accepted_input_id=input.id
+        AND steering.id=(SELECT MAX(latest.id) FROM turn_steering_messages latest WHERE latest.accepted_input_id=input.id)
+      WHERE COALESCE(json_extract(session.native_metadata_json,'$.outside'),0)=1
+        AND input.origin='human'
+        AND steering.status='failed' AND steering.provider_sent_at IS NULL
+        AND json_extract(input.receipt_json,'$.state') IS NULL
+        AND (input.steering_id=steering.id OR input.steering_id IS NULL AND input.turn_id IS NULL)`).all() as {session_id:number}[];
+    for(const row of sessions)this.pullWaitingInputs(row.session_id);
+    if(sessions.length)log('info','outside_unsent_human_sessions_scanned',{sessions:sessions.length});
+  }
   private steer(input:AcceptedSessionInput):boolean {
     const body=JSON.parse(input.payload_json);
     const session=getSessionById(input.session_id);
@@ -816,7 +837,7 @@ export class SessionExecutionHost {
     // predecessor. It can enter its already-running provider queue, but grants no
     // permission to enqueue another turn or write through the owner.
     const closingHandoffNotice=input.origin==='service'&&input.scope.startsWith('handoff-notice:');
-    if(!session||!closingHandoffNotice&&!this.owner.view(session).capabilities.steer)return false;
+    if(!session||sessionMetadata(session).outside||!closingHandoffNotice&&!this.owner.view(session).capabilities.steer)return false;
     if(sessionMetadata(session).interactionPolicy==='consultation-only'&&body.attachments?.length)return false;
     const matched=this.options.registry.dispatchSessionSteering(input.session_id,target=>{
       // Stop owns this run only. New communication waits in its session's FIFO.
@@ -947,6 +968,7 @@ export class SessionExecutionHost {
     try {
       return await this.options.registry.run({turnId:claim.turn_id,sessionId:session.id},async(steeringController,closeSteering,cancellationController)=>{
         if(input.kind==='fork'){closeSteering(new Error('A native fork control has no model input channel.'));return this.runFork(claim,input,session);}
+        if(sessionMetadata(session).outside)steeringController.close(new Error('An independent Codex command has no live input channel.'));
         if(adoption)await this.settleUnsentSteering(claim.turn_id,adoption.execution);
         const outcome=await this.runModel(claim,input,session,steeringController,closeSteering,cancellationController,adoption);
         // Only here is the run's outcome durably settled; a crash before this leaves the host's
@@ -1290,7 +1312,13 @@ export class SessionExecutionHost {
                 return result;
               },error=>{noteChatgptChannelFailure(error,session.id,claim.dispatch_attempt);throw error;});
           }
-          if(outside)return runOutsideCodexTurn(actual as OutsideRun);
+          if(outside){
+            // Older owners advertised steering for outside CLI turns, whose one-shot input has no
+            // receiver. Adoption first marks those attempts unsent; bring each exact input back
+            // to this session's FIFO before following the independent process again.
+            this.pullWaitingInputs(session.id);
+            return runOutsideCodexTurn(actual as OutsideRun);
+          }
           if(!underlying)throw new ProviderCapabilityUnavailableError('send',`${session.provider_id} is unavailable; no provider substitution was attempted.`);
           return underlying.run(actual);
         }};
