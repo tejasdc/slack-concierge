@@ -40,7 +40,7 @@ try {
   const area=topicsCommand(current.actor,{verb:'area.create',action_id:'legacy-area',name:'Legacy completion fixture'}).area;
   const created=topicsCommand(current.actor,{verb:'create',action_id:'legacy-topic',title:'Queued message',roots:[root.id],area_ids:[area.id]});
   const topicId=created.topic.topicId;
-  const added=topicsCommand(current.actor,{verb:'request.add',request_id:topicId,action_id:'legacy-request',title:'Explain and resolve the queue',
+  const added=topicsCommand(current.actor,{verb:'request.add',topic_id:topicId,action_id:'legacy-request',title:'Explain and resolve the queue',
     sources:[root.id],brief:'Check the queue, recover it if needed, and explain the outcome.'});
   const requestId=added.request.requestId;
 
