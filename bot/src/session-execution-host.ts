@@ -1,4 +1,5 @@
 import {onCodexHistoryChanged} from './codex-session-observer';
+import { codexAppServerReady } from "./codex-app-server-client";
 import {CODEX_PROCESS_REPORT_GRACE_MS,codexLeftoverProcesses,codexProcessStillRunning,type CodexLeftoverProcess} from './codex-leftover-processes';
 import {createHash} from 'node:crypto';
 import {ledgerDurable} from './ledger-durability-barrier';
@@ -1240,6 +1241,10 @@ export class SessionExecutionHost {
           } else if(privateCodex) {
             actual=this.adoptedRun(prepared,adoption!,MANAGED_CODEX);
           } else if(session.provider_id==='codex'&&(adoption||executionHostsEnabled())) {
+            // Wait for the App Server before recording or admitting a new run: a restart during the
+            // wait then requeues the turn as unsent instead of adopting and parking it. A Stop
+            // requested meanwhile is held and applied when the wait ends.
+            if(!adoption)await codexAppServerReady();
             // The shared daemon already outlives Concierge; recording the run lets the next Concierge follow it.
             actual=adoption?this.adoptedCodexRun(prepared,adoption,session):this.trackedCodexRun(prepared,claim,session,kept);
           }
