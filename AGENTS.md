@@ -45,6 +45,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   and [durable watches](docs/architecture/WATCHES.md).
 - Hosted run adoption and parked-run recovery follow the
   [execution host](docs/architecture/EXECUTION-HOST.md) contract; never reset their ledger status by hand.
+- Outside Codex repair sessions use a one-input command line and take follow-ups
+  in the next turn; see [router actions](docs/runbooks/ROUTER-ACTIONS.md#outside-requests).
 - Keep credentials and private dialogue out of unrelated prompts, logs and public
   artifacts. Preserve the authenticated data and capability boundaries in
   [session ownership](docs/architecture/SESSION-OWNER.md) and
