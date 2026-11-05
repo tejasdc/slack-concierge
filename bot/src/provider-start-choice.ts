@@ -7,15 +7,17 @@ import { NOTICE_AT_PERCENT, storedUsage } from './provider-usage-forecast';
 import { cachedUsageLimit, claudeAccountCachedReset, usageAttempt } from './provider-usage';
 import {AUTOMATIC_PROVIDER_ALIASES,resolveProviderAlias, providerDisplayName } from './aliases';
 import {modelCapacityRefused} from './provider-model-capacity';
+import {claudeAllowanceHeld} from './claude-allowance-hold';
 
 export type AutomaticProvider = keyof typeof AUTOMATIC_PROVIDER_ALIASES;
 type Candidate = { provider: AutomaticProvider; account: string; used: number; paidCredits: boolean; resetsAt: number | null; windowResetAt: number | null };
 export const capacityCanStart=(candidate:Candidate):boolean=>candidate.used<100||candidate.paidCredits;
 
 /** New, unbound work only. A running session never changes provider. */
-function candidatesForNewWork(now: number): Candidate[] {
+function candidatesForNewWork(now: number,includeHeldClaude=false): Candidate[] {
   const candidates: Candidate[] = [];
   for (const provider of Object.keys(AUTOMATIC_PROVIDER_ALIASES) as AutomaticProvider[]) {
+    if(provider==='claude-code'&&claudeAllowanceHeld(now)&&!includeHeldClaude)continue;
     const model=resolveProviderAlias(AUTOMATIC_PROVIDER_ALIASES[provider]).model;
     if(model&&modelCapacityRefused(provider,model,now))continue;
     const usage = providerAccountUsage(provider);
@@ -60,8 +62,8 @@ export function newWorkHeadroom(provider: 'claude-code' | 'codex', now = Date.no
   return newWorkCapacity(provider, now)?.used ?? null;
 }
 
-export function newWorkCapacity(provider: AutomaticProvider, now = Date.now()): Candidate | null {
-  return candidatesForNewWork(now).filter(candidate => candidate.provider === provider)
+export function newWorkCapacity(provider: AutomaticProvider, now = Date.now(),includeHeldClaude=false): Candidate | null {
+  return candidatesForNewWork(now,includeHeldClaude).filter(candidate => candidate.provider === provider)
     .sort((a,b) => a.used - b.used || (a.windowResetAt ?? Infinity) - (b.windowResetAt ?? Infinity))[0] ?? null;
 }
 

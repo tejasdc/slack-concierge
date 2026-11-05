@@ -28,6 +28,7 @@ import {ProviderCapabilityUnavailableError} from './provider-policy';
 import {ProviderDispatchError} from './provider-failures';
 import {providerRetryDelayMs} from './provider-failures';
 import {chooseClaudeDispatch} from './provider-account-dispatch';
+import {maybeStartInboxProviderFailover} from './inbox-provider-failover';
 import {CHATGPT_THINKING_LEVELS,HIS_CHATGPT_PREFIX,PROVIDER_ALIASES, providerDisplayName } from './aliases';
 import {recordRepairNotice} from './repair-notices';
 
@@ -961,6 +962,7 @@ export class SessionExecutionHost {
       recordSessionEvent({eventId:priorTerminal
         ?`recovered-terminal:${claim.turn_id}:${claim.dispatch_attempt}:${count}`
         :`terminal:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'run',payload:{run:this.owner.run(nativeRunId(claim.turn_id))}});
+      if(sessionMetadata(session).inboxRole==='project-router')maybeStartInboxProviderFailover(session);
       if(session.provider_id==='codex'&&process.platform==='linux')await this.auditCodexTurn(claim.turn_id).catch(error=>
         log('warn','codex_process_audit_failed',{turn_id:claim.turn_id,...errorFields(error)}));
     }

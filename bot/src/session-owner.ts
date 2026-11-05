@@ -100,10 +100,12 @@ import {appendTodoFile} from './todo-file';
 import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn} from './saved-work';
 import {usageBreakdown} from './usage-breakdown';
 import {chooseProviderForNewWork,type AutomaticProvider} from './provider-start-choice';
+import {claudeAllowanceHeld,CLAUDE_ALLOWANCE_HOLD_MESSAGE} from './claude-allowance-hold';
 import {scheduleProviderAccountUsageRefresh} from './provider-account-usage';
 import {currentAccount} from './provider-accounts';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 import {PeerAccountAnswers} from './peer-account-answers';
+import {maybeStartInboxProviderFailover} from './inbox-provider-failover';
 
 export class SessionOwnerError extends Error {
   constructor(message:string,public status=400,public code=/idempotency conflict/i.test(message)?'IDEMPOTENCY_CONFLICT':'INVALID_INPUT'){super(message);}
@@ -1453,7 +1455,7 @@ export class SessionOwner {
   savedWorkControl(turnId:number,action:string,body:Record<string,unknown>){return updateSavedTurn(turnId,action,body);}
   projects() {
     const canvasTitles=this.projectSetup?.canvasProjectTitles();
-    return {projects:sessionProjects(this.defaultCwd).map(project=>({...project,...(canvasTitles?.has(project.name)?{canvasTitle:canvasTitles.get(project.name)}:{}),defaultProvider:project.name==='slack-inbox'?'cc-opus-1m':configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)}))};
+    return {projects:sessionProjects(this.defaultCwd).map(project=>({...project,...(canvasTitles?.has(project.name)?{canvasTitle:canvasTitles.get(project.name)}:{}),defaultProvider:project.name==='slack-inbox'?(claudeAllowanceHeld()?'codex':'cc-opus-1m'):configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)}))};
   }
   async standingAgents() {return {...standingAgentView(db,this.defaultCwd),hostTimers:await hostTimerView()};}
   private project(id:string) {
@@ -1668,8 +1670,13 @@ export class SessionOwner {
     const project=sessionProject(this.defaultCwd,'slack-inbox');
     if(!project)throw new SessionOwnerError('The slack-inbox project is unavailable.',503,'PROJECT_UNAVAILABLE');
     const current=inboxSession(),meta=current?sessionMetadata(current):null;
-    if(current?.provider_id==='claude-code'&&meta?.cwd===project.cwd&&meta.inboxRole==='project-router'&&meta.model==='opus[1m]')return current;
-    return createNativeSession('claude-code',{title:'Inbox',summary:INBOX_PURPOSE,inbox:true,inboxRole:'project-router',purpose:'chat',cwd:project.cwd,project:project.cwd,model:'opus[1m]'});
+    if(current&&meta?.cwd===project.cwd&&meta.inboxRole==='project-router'){
+      maybeStartInboxProviderFailover(current);
+      return current;
+    }
+    const provider=claudeAllowanceHeld()?'codex':'claude-code';
+    return createNativeSession(provider,{title:'Inbox',summary:INBOX_PURPOSE,inbox:true,inboxRole:'project-router',standingRole:'inbox',
+      purpose:'chat',cwd:project.cwd,project:project.cwd,model:provider==='claude-code'?'opus[1m]':undefined});
   }
   inbox() {
     if(process.env.CONCIERGE_READ_WORKER==='1'){
@@ -2139,6 +2146,7 @@ export class SessionOwner {
     const project=sessionProject(this.defaultCwd,input.project,{inside:true});
     if(!project)throw new SessionOwnerError('Project is unknown or unavailable. Choose an exact project from sessions projects; do not use the Inbox or another project as a fallback.');
     const selected=resolveProviderSelector(selector),cwd=project.cwd;
+    if(selected.provider==='claude-code'&&claudeAllowanceHeld())throw new SessionOwnerError(CLAUDE_ALLOWANCE_HOLD_MESSAGE,409,'CLAUDE_ALLOWANCE_HELD');
     return {provider:selected.provider,model:selected.model,reasoningEffort:selected.reasoning_effort,purpose:'develop',cwd,project:cwd,
       ...(input.provider==='auto'?{automaticProviderChoice:true,...(input.smallTask?{automaticSmallTask:true}:{})}:{})};
   }
@@ -2181,6 +2189,7 @@ export class SessionOwner {
       const project=input.project===undefined?null:sessionProject(this.defaultCwd,input.project,{inside:true});
       if(input.project!==undefined&&!project)throw new SessionOwnerError('Choose an exact project from the project list.');
       const provider=input.provider==='auto'?automaticProvider(provider=>this.runtime.available(provider),action):input.provider as ProviderId;
+      if(provider==='claude-code'&&claudeAllowanceHeld())throw new SessionOwnerError(CLAUDE_ALLOWANCE_HOLD_MESSAGE,409,'CLAUDE_ALLOWANCE_HELD');
       if(input.firstInput?.canvasContext&&provider!=='codex')throw new SessionOwnerError('Argument-map think-aloud requires an ordinary Codex session.',409,'CAPABILITY_UNAVAILABLE');
       const providerDefault=input.provider==='auto'?resolveProviderAlias(AUTOMATIC_PROVIDER_ALIASES[provider as AutomaticProvider]):
         provider==='codex'?resolveProviderDefault('codex'):
@@ -4018,6 +4027,7 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='auth'&&parts[1]==='providers'&&parts.length===2)
         result=await this.authProviders(url.searchParams.get('machine')??undefined,url.searchParams.get('fresh')==='1');
       else if(request.method==='GET'&&parts[0]==='auth'&&parts[1]==='claude-launch-choice'&&parts.length===2){
+        if(claudeAllowanceHeld())throw new SessionOwnerError(CLAUDE_ALLOWANCE_HOLD_MESSAGE,409,'CLAUDE_ALLOWANCE_HELD');
         if(!this.runtime.auth?.chooseClaudeLaunch)throw new SessionOwnerError('Claude account selection is unavailable.',503);
         const model=url.searchParams.get('model');
         if(model&&(!/^[A-Za-z0-9._-]{1,100}$/.test(model)))throw new SessionOwnerError('Invalid Claude model.',400);
