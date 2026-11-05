@@ -17,30 +17,43 @@ test('recovery retains human work without turning service bookkeeping into human
     accepted('human',`human-${randomUUID()}`,'Please keep this work open.');
     const bookkeeping=`area-theme:${randomUUID()}`;
     accepted('service',bookkeeping,'These open threads are close in meaning.');
+    const returned=`return:${randomUUID()}`;
+    accepted('service',returned,'The agent answered the earlier request.');
+    const upkeep=`thread-upkeep:${randomUUID()}`;
+    accepted('service',upkeep,'An earlier request still needs attention.');
+    const returnedUpkeep=`thread-upkeep:${randomUUID()}`;
+    accepted('service',returnedUpkeep,'The returned result needs no new request.');
     const migrated=migrateInboxTopics();
     expect(migrated.migrated).toBe(true);
     expect((db.query("SELECT count(*) AS n FROM inbox_requests WHERE state='open'").get() as {n:number}).n).toBe(1);
     expect(db.query("SELECT 1 FROM inbox_topic_roots WHERE root_input_id=?").get(bookkeeping)).toBeNull();
+    expect(db.query("SELECT 1 FROM inbox_topic_roots WHERE root_input_id IN (?,?,?)").get(returned,upkeep,returnedUpkeep)).toBeNull();
 
     // Simulate the older migration's already-retained synthetic topic and request through
     // the same owner event projection, then prove the correction is replayable and idempotent.
     const {applyTopicChange}=await import('../src/session-topics');
-    const at=new Date().toISOString(),topicId=`topic:${randomUUID()}`,requestId=`req:${randomUUID()}`;
+    const at=new Date().toISOString();
     const by={kind:'owner',sessionId:`concierge:${inbox.id}`};
-    const topic={topicId,sessionId:inbox.id,title:'Service bookkeeping',summary:'',state:'open',setAside:null,
-      aliases:[],revision:1,recovered:true,readSequence:0,closure:null,createdBy:by,createdAt:at,updatedAt:at};
-    const request={requestId,topicId,title:topic.title,brief:'',state:'open',disposition:null,revision:1,
-      sources:[{inputId:bookkeeping}],dispatches:[],closure:null,createdAt:at,updatedAt:at};
-    const payload={change:'created',topicId,topic,roots:[{rootInputId:bookkeeping,topicId,placedAt:at,placedBy:by,reason:'old migration'}],
-      request,questions:[],by,reason:'old migration',revision:1,recovered:true};
-    recordSessionEvent({eventId:`old-migration:${bookkeeping}`,sessionId:inbox.id,kind:'topic',payload});
-    applyTopicChange('topic',payload);
-    expect(retireRecoveredBookkeepingRequests()).toEqual({retired:1});
+    const syntheticRequests=[bookkeeping,returned,upkeep].map(root=>{
+      const topicId=`topic:${randomUUID()}`,requestId=`req:${randomUUID()}`;
+      const topic={topicId,sessionId:inbox.id,title:'Service bookkeeping',summary:'',state:'open',setAside:null,
+        aliases:[],revision:1,recovered:true,readSequence:0,closure:null,createdBy:by,createdAt:at,updatedAt:at};
+      const request={requestId,topicId,title:topic.title,brief:'',state:'open',disposition:null,revision:1,
+        sources:[{inputId:root}],dispatches:[],closure:null,createdAt:at,updatedAt:at};
+      const roots=root===returned?[root,returnedUpkeep]:[root];
+      const payload={change:'created',topicId,topic,roots:roots.map(rootInputId=>({rootInputId,topicId,placedAt:at,placedBy:by,reason:'old migration'})),
+        request,questions:[],by,reason:'old migration',revision:1,recovered:true};
+      recordSessionEvent({eventId:`old-migration:${root}`,sessionId:inbox.id,kind:'topic',payload});
+      applyTopicChange('topic',payload);
+      return requestId;
+    });
+    expect(retireRecoveredBookkeepingRequests()).toEqual({retired:3});
     expect(retireRecoveredBookkeepingRequests()).toEqual({retired:0});
-    expect((db.query('SELECT state FROM inbox_requests WHERE request_id=?').get(requestId) as {state:string}).state).toBe('closed');
+    for(const requestId of syntheticRequests)
+      expect((db.query('SELECT state FROM inbox_requests WHERE request_id=?').get(requestId) as {state:string}).state).toBe('closed');
     expect((db.query("SELECT count(*) AS n FROM inbox_requests WHERE state='open'").get() as {n:number}).n).toBe(1);
     const admitted:string[]=[];
     keepThreadsCurrent(input=>{admitted.push(input.requestId);});
-    expect(admitted).not.toContain(requestId);
+    for(const requestId of syntheticRequests)expect(admitted).not.toContain(requestId);
   }finally{unlock();}
 });

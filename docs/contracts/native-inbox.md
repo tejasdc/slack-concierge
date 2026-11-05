@@ -765,10 +765,14 @@ remain in their exact receipts; a transcript root alone grants no human-work sta
 For each eligible root the migration creates one topic (`recovered:1`), one open request
 with its linked dispatches, and one question per legacy attention entry retaining its id.
 The manifest `{roots,topics,requests,questions,unresolved}` is written into the guard event.
-An owner-ledger correction retires previously recovered bookkeeping requests only when their
-topic has one nonhuman, nonroutable root, one request sourced solely to that root, no questions
-and no human reply. It keeps the source input, agent receipts and topic history, and never
-closes a human-authored request. New human roots stay unplaced until the router or a human
+An owner-ledger correction retires previously recovered bookkeeping requests only when every
+root in their topic is nonhuman and nonroutable, there is one request sourced to one of those
+roots, and there is no question or human reply. A returned result and its later upkeep notices
+can therefore share one synthetic topic without becoming human work. The correction records
+all roots as closure evidence and adds the original communication or Inbox request receipt
+where its exact link is retained. It keeps the original request, source inputs, result receipts
+and topic history; completion of original work remains governed by that request's checked answer.
+New human roots stay unplaced until the router or a human
 files them; they appear as the `sorting` pile on the topics read.
 
 ## Filing before stopping

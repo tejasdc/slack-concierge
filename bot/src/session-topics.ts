@@ -3959,18 +3959,46 @@ export function retireRecoveredBookkeepingRequests() {
     .all(session.id) as {topic_id:string}[];
   for(const {topic_id:topicId} of candidates) {
     const roots=topicRoots(topicId);
-    if(roots.length!==1||replies.has(roots[0]!))continue;
-    const input=getAcceptedSessionInput(roots[0]!);
-    if(!input||humanAuthored(input)||routableMessage(input)||isServiceNotice(input.id))continue;
+    if(!roots.length||roots.some(root=>replies.has(root)))continue;
+    const inputs=roots.map(root=>getAcceptedSessionInput(root));
+    if(inputs.some(input=>!input||humanAuthored(input)||routableMessage(input)||isServiceNotice(input.id)))continue;
     const requests=topicRequests(topicId);
     if(requests.length!==1||requests[0]!.state!=='open'||requests[0]!.sources.length!==1
-      ||requests[0]!.sources[0]!.inputId!==input.id||topicQuestions(topicId).length)continue;
+      ||!roots.includes(requests[0]!.sources[0]!.inputId)||topicQuestions(topicId).length)continue;
     const request=requests[0]!;
+    const input=inputs.find(candidate=>candidate?.id===request.sources[0]!.inputId)!;
+    const evidence=[...roots];
+    if(input.id.startsWith('return:')) {
+      // A return is an event on the communication request it names. A prefix alone
+      // cannot prove that the input is a return or which obligation owns it.
+      const eventId=input.id.slice('return:'.length);
+      const event=(db.query('SELECT request_id FROM session_communication_events WHERE event_id=?').get(eventId)
+        ??db.query('SELECT request_id FROM session_peer_events WHERE event_id=?').get(eventId)) as {request_id:string}|null;
+      if(event?.request_id===input.request_id)evidence.push(eventId,`request:${event.request_id}`);
+      else if(input.id.startsWith('return:project-setup:')) {
+        const order=db.query('SELECT order_id FROM project_setup_orders WHERE return_input_id=? AND order_id=?').get(input.id,input.request_id) as {order_id:string}|null;
+        if(order)evidence.push(`project-setup:${order.order_id}`);
+      }
+    } else if(input.id.startsWith('thread-upkeep:')) {
+      // An upkeep notice points at the request it was trying to recover. Keep
+      // that request open; only retire the extra request made from the notice.
+      const source=input.source_input_id?getAcceptedSessionInput(input.source_input_id):null;
+      if(source&&source.id!==input.id) {
+        if(input.request_id===request.requestId) {
+          if(source.id.startsWith('request:')
+            &&request.dispatches.some((dispatch:any)=>dispatch.requestId===source.id.slice('request:'.length)))evidence.push(source.id);
+        } else if(input.request_id) {
+          const original=db.query('SELECT sources_json FROM inbox_requests WHERE request_id=?').get(input.request_id) as {sources_json:string}|null;
+          if(original&&JSON.parse(original.sources_json).some((item:{inputId:string})=>item.inputId===source.id))
+            evidence.push(input.request_id,source.id);
+        }
+      }
+    }
     const at=nowIso(),reason='Recovered agent or service bookkeeping is not a request from Tejas.';
     db.transaction(()=>{
       const topic=topicRow(topicId);
       const closedRequest={...request,state:'closed' as const,disposition:'superseded',
-        closure:{by,at,reason,evidence:[input.id]},revision:request.revision+1,updatedAt:at};
+        closure:{by,at,reason,evidence},revision:request.revision+1,updatedAt:at};
       const next=bumped(topic);
       recordOwnerTopicChange(session.id,`topic-bookkeeping-retired:${request.requestId}`,'topic_request',
         {change:'request_closed',topicId,topic:next,request:closedRequest,by,reason,revision:next.revision});
