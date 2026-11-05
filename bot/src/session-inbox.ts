@@ -208,8 +208,11 @@ export function inboxMessage(row:any) {
  */
 export type InboxThreadLink={inputId:string;root:string;thread:string;attached:boolean;routedBy:any;at:string};
 export function inboxThreadLink(sessionId:number,inputId:string):InboxThreadLink|null {
+  // An accepted input keeps its identity when the Inbox router changes provider.
+  // Its next placement may be recorded by the successor, so the latest event for
+  // that exact input wins across the handoff chain.
   const row=db.query(`SELECT payload_json,created_at FROM session_owner_events
-    WHERE session_id=? AND kind='thread_link' AND input_id=? ORDER BY sequence DESC LIMIT 1`).get(sessionId,inputId) as {payload_json:string;created_at:string}|null;
+    WHERE kind='thread_link' AND input_id=? ORDER BY sequence DESC LIMIT 1`).get(inputId) as {payload_json:string;created_at:string}|null;
   if(!row)return null;
   const payload=JSON.parse(row.payload_json);
   return {inputId,root:payload.root,thread:payload.thread,attached:payload.attached!==false,routedBy:payload.routedBy??null,
@@ -228,7 +231,9 @@ export function inboxThreadLink(sessionId:number,inputId:string):InboxThreadLink
  * restart took a minute resolving 2,000 messages, 2026-09-22). Each half uses its own index.
  */
 export function inboxRowByMessageId(sessionId:number|null,messageId:string):any|null {
-  const scope=sessionId===null?'':' AND event.session_id=?';
+  const scope=sessionId===null?'':` AND event.session_id IN (WITH RECURSIVE lineage(id) AS (
+    SELECT ? UNION ALL SELECT predecessor_session_id FROM session_handoffs JOIN lineage
+    ON successor_session_id=lineage.id WHERE state='accepted') SELECT id FROM lineage)`;
   const bind=sessionId===null?[messageId]:[sessionId,messageId];
   return db.query(`${inboxRows}${scope} AND event.kind IN ('result','post','request','topic_route') AND event.event_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
     ??db.query(`${inboxRows}${scope} AND event.kind NOT IN ('result','post','request','topic_route') AND event.input_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
@@ -237,12 +242,12 @@ export function inboxRowByMessageId(sessionId:number|null,messageId:string):any|
     ??null;
 }
 export function inboxThreadRoot(sessionId:number,messageId:string,seen=new Set<string>()):string|null {
-  const row=inboxRowByMessageId(sessionId,messageId) as {input_id:string|null;event_id:string;kind:string;payload_json:string}|null;
+  const row=inboxRowByMessageId(sessionId,messageId) as {session_id:number;input_id:string|null;event_id:string;kind:string;payload_json:string}|null;
   if(row?.kind==='request'){
     const requestId=JSON.parse(row.payload_json).requestId;
     if(typeof requestId==='string'){
-      const request=(db.query('SELECT thread_root_input_id FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(requestId,sessionId)
-        ??db.query('SELECT thread_root_input_id FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(requestId,sessionId)) as {thread_root_input_id:string|null}|null;
+      const request=(db.query('SELECT thread_root_input_id FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(requestId,row.session_id)
+        ??db.query('SELECT thread_root_input_id FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(requestId,row.session_id)) as {thread_root_input_id:string|null}|null;
       const linked=request?.thread_root_input_id?inboxRequestRoot(db,requestId,request.thread_root_input_id):null;
       if(linked&&linked!==row.event_id)return linked;
     }
@@ -268,7 +273,7 @@ export function inboxThreadRoot(sessionId:number,messageId:string,seen=new Set<s
   seen.add(row.input_id);
   // A capture placed into a thread answers that thread's root, so everything answering it
   // stays there too.
-  const link=inboxThreadLink(sessionId,row.input_id);
+  const link=inboxThreadLink(row.session_id,row.input_id);
   if(link?.attached)return link.root;
   // A returned answer is not a thread of its own: it belongs to the thread of the request it
   // settles, found through the input that request was sent from (which may itself be a
@@ -279,7 +284,7 @@ export function inboxThreadRoot(sessionId:number,messageId:string,seen=new Set<s
   const replyTo=retainedReplyTarget(own);
   if(typeof replyTo?.messageId==='string'&&replyTo.messageId!==row.input_id)
     return inboxThreadRoot(sessionId,replyTo.messageId,seen)??row.input_id;
-  const sent=returnedRequestSource(sessionId,row.input_id);
+  const sent=returnedRequestSource(row.session_id,row.input_id);
   return sent?inboxThreadRoot(sessionId,sent,seen)??row.input_id:row.input_id;
 }
 /** The input a service return's request was sent from, when this Inbox sent that request. */
