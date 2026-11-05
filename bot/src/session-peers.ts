@@ -12,7 +12,7 @@ import {meaningIndex} from './meaning-index';
 import {acceptedInputForTurn,carryingTurn,enqueueSessionInput,getAcceptedSessionInput,handedToARun, withdrawUnstartedServiceInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {heldRequestNotice,inputHold,readInputExecution,resolveSessionAddress,sessionAddress,SessionOwnerError,type SessionOwner} from './session-owner';
 import {log,errorFields} from './log';
-import {expireQuestionsForFinalReply,filePeerWorkerNeedInThread,linkInboxDispatchWork,postAgentAnswer,recordSessionMessageRoute,topicOfRoot} from './session-topics';
+import {expireQuestionsForFinalReply,filePeerWorkerNeedInThread,linkForwardedReplyWork,linkInboxDispatchWork,postAgentAnswer,recordSessionMessageRoute,topicOfRoot} from './session-topics';
 import {presentSessionForPeer,receiveSessionFromPeer} from './peer-identity';
 import {followForwardedReply,messageRouteForSource} from './session-inbox';
 import {inboxRequestRoot,returnsToRequester} from './inbox-request-root';
@@ -654,6 +654,7 @@ export class SessionPeers {
           dispatchId:id,targetSessionId:this.presentedSession(input.peer,accepted.sessionId),summary:input.summary??input.routedFrom.title,
           brief:input.routedFrom.originalText});
       }
+      if(input.forwardedReply?.authorKind==='human')linkForwardedReplyWork(input.forwardedReply.topicId,id);
     })();
     const queuedAddress=()=>{
       // An addressed session is known before its peer wakes; a new session is not.

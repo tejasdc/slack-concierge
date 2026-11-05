@@ -37,6 +37,7 @@ export const OWNER_GET_EXCEPTIONS:readonly Route[]=[
  {path:'/peers/requests/:id/replies/:id',purpose:'one exact peer reply including retained files',maxResponseBytes:64*MiB,kind:'control'},
  {path:'/sessions/:id/details/:id',purpose:'one provider runtime detail',maxResponseBytes:32*MiB,kind:'control'},
  {path:'/sessions/:id/artifacts/:id',purpose:'one provider runtime artifact',maxResponseBytes:64*MiB,kind:'control'},
+ {path:'/inbox/obligations',purpose:'one bounded view of every open Inbox obligation, owner and age',maxResponseBytes:2*MiB,kind:'control'},
  {path:'/inbox/:id',purpose:'one exact retained capture',maxResponseBytes:32*MiB,kind:'control'},
  {path:'/inbox',purpose:'one Inbox identity with selected view; retire this alias',maxResponseBytes:2*MiB,kind:'legacy'},
  {path:'/sessions',purpose:'UNBOUNDED whole catalogue; MUST REMOVE after peer migration',maxResponseBytes:8*MiB,kind:'legacy'},

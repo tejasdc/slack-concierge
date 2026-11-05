@@ -1135,6 +1135,47 @@ export function listTopics(options:{state?:string|null;order?:string|null;query?
     sorting:sortingCaptures(session,index),asOf:nowIso()};
 }
 
+/** One bounded view of every open human obligation, independent of thread-list paging. */
+export function openInboxObligations() {
+  const inbox=inboxOrThrow();
+  const requests=(db.query(`SELECT * FROM inbox_requests WHERE state='open' ORDER BY created_at,request_id`).all() as any[]).map(toStoredRequest);
+  const now=Date.now();
+  const topics=new Map<string,StoredTopic>(),questions=new Map<string,StoredQuestion[]>();
+  const items=requests.map(request=>{
+    let topic=topics.get(request.topicId);
+    if(!topic){topic=topicRow(request.topicId);topics.set(request.topicId,topic);}
+    let inTopic=questions.get(request.topicId);
+    if(!inTopic){inTopic=topicQuestions(request.topicId);questions.set(request.topicId,inTopic);}
+    const dispatches=new Set(request.dispatches.map((dispatch:any)=>String(dispatch.requestId??'')));
+    const question=inTopic.find(item=>item.kind==='decision'&&item.context==='ready'&&item.blocking&&!item.optional
+      &&(OPEN_QUESTION_STATES.includes(item.state)||item.state==='deferred')
+      &&(item.owner?.requestId===request.requestId||dispatches.has(String(item.owner?.dispatchRequestId??''))));
+    const latest=request.dispatches.at(-1);
+    const work=latest?workRow(String(latest.requestId??'')):null;
+    const waitingOn=question?'his decision':!work?'Inbox routing':work.outcome===null&&!work.stalled?'agent answer':work.notCheckedReason?'verification':'recovery';
+    const owner=question?'Tejas':waitingOn==='agent answer'?String(latest?.targetSessionId??`concierge:${inbox.id}`):`concierge:${inbox.id}`;
+    return {requestId:request.requestId,topicId:request.topicId,topicTitle:topic.title,title:request.title,
+      owner,createdAt:request.createdAt,ageMs:Math.max(0,now-new Date(request.createdAt).getTime()),
+      waitingOn};
+  });
+  return {count:items.length,asOf:new Date(now).toISOString(),items};
+}
+
+/** A future-answer post may name only work already recorded for its exact source. */
+export function hasOpenInboxWorkForSource(topicId:string,sourceInputId:string,promiseRequestId?:string):boolean {
+  const dispatchId=sourceInputId.startsWith('request:')?sourceInputId.slice('request:'.length):null;
+  return topicRequests(topicId).some(request=>request.state==='open'&&(
+    promiseRequestId?request.requestId===promiseRequestId:
+    request.sources.some(source=>source.inputId===sourceInputId)
+    ||request.dispatches.some((dispatch:any)=>{
+      const id=String(dispatch.requestId??'');
+      if(id===dispatchId)return true;
+      const local=db.query('SELECT source_input_id FROM session_communication_requests WHERE request_id=?').get(id) as {source_input_id:string|null}|null;
+      const peer=local?null:db.query('SELECT source_input_id FROM session_peer_requests WHERE request_id=?').get(id) as {source_input_id:string|null}|null;
+      return (local?.source_input_id??peer?.source_input_id)===sourceInputId;
+    })));
+}
+
 function topicHistory(sessionId:number,topicId:string) {
   return (db.query(`SELECT payload_json,created_at FROM session_owner_events
     WHERE session_id=? AND kind IN (${MANAGEMENT_KINDS.map(()=>'?').join(',')}) AND json_extract(payload_json,'$.topicId')=?
@@ -1830,6 +1871,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
   };
   switch(verb) {
     case 'list':return preparedTopicsReady()?preparedTopics({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor}):directTopicList({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor});
+    case 'obligations':return openInboxObligations();
     case 'read':return preparedTopicOverview(text(body?.topic_id,'topic id',200),body?.state??'open');
     case 'resolve':guard();return preparedTopicResolution(text(body?.message_id,'message id',500));
     case 'questions-read':guard();return preparedQuestions({state:body?.state??'open',cursor:body?.cursor,limit:body?.limit});
@@ -3113,17 +3155,17 @@ function workRow(id:string):Work|null {
 }
 /** His replies in a thread that went to an agent (`forwardReply`), each with the root it was sent for. */
 type Forward=Work&{root:string|null;inboxInputId:string|null};
-function forwardedReplies():Forward[] {
+function forwardedReplies(onlyRequestId?:string):Forward[] {
   const local=(db.query(`SELECT request_id,target_session_id,outcome,result_json,created_at_ms,stalled_at_ms,thread_root_input_id,
       json_extract(payload_json,'$.requestedEffect') AS requested_effect,
       json_extract(payload_json,'$.forwardedReply.inboxInputId') AS inbox_input_id FROM session_communication_requests
-    WHERE json_extract(payload_json,'$.forwardedReply') IS NOT NULL`).all() as any[])
-    .map(row=>({id:row.request_id,outcome:row.outcome,disposition:dispositionOf(row.result_json),requestedEffect:row.requested_effect,target:`concierge:${row.target_session_id}`,createdAtMs:row.created_at_ms,stalled:row.stalled_at_ms!==null,root:row.thread_root_input_id,inboxInputId:row.inbox_input_id}));
+    WHERE json_extract(payload_json,'$.forwardedReply') IS NOT NULL ${onlyRequestId?'AND request_id=?':''}`).all(...(onlyRequestId?[onlyRequestId]:[])) as any[])
+    .map(row=>({id:row.request_id,outcome:row.outcome,disposition:dispositionOf(row.result_json),notCheckedReason:notCheckedReasonOf(row.result_json),requestedEffect:row.requested_effect,target:`concierge:${row.target_session_id}`,createdAtMs:row.created_at_ms,stalled:row.stalled_at_ms!==null,root:row.thread_root_input_id,inboxInputId:row.inbox_input_id}));
   const peer=(db.query(`SELECT request_id,peer,remote_session_id,outcome,result_json,created_at_ms,stalled_at_ms,thread_root_input_id,
       json_extract(payload_json,'$.requestedEffect') AS requested_effect,
       json_extract(payload_json,'$.forwardedReply.inboxInputId') AS inbox_input_id FROM session_peer_requests
-    WHERE json_extract(payload_json,'$.forwardedReply') IS NOT NULL`).all() as any[])
-    .map(row=>({id:row.request_id,outcome:row.outcome,disposition:dispositionOf(row.result_json),requestedEffect:row.requested_effect,target:receiveSessionFromPeer(row.remote_session_id,row.peer),createdAtMs:row.created_at_ms,stalled:row.stalled_at_ms!==null,root:row.thread_root_input_id,inboxInputId:row.inbox_input_id}));
+    WHERE json_extract(payload_json,'$.forwardedReply') IS NOT NULL ${onlyRequestId?'AND request_id=?':''}`).all(...(onlyRequestId?[onlyRequestId]:[])) as any[])
+    .map(row=>({id:row.request_id,outcome:row.outcome,disposition:dispositionOf(row.result_json),notCheckedReason:notCheckedReasonOf(row.result_json),requestedEffect:row.requested_effect,target:receiveSessionFromPeer(row.remote_session_id,row.peer),createdAtMs:row.created_at_ms,stalled:row.stalled_at_ms!==null,root:row.thread_root_input_id,inboxInputId:row.inbox_input_id}));
   return [...local,...peer].sort((first,second)=>first.createdAtMs-second.createdAtMs);
 }
 /** The work whose posted answer his forwarded reply replied to, when he replied to one. */
@@ -3252,7 +3294,7 @@ function forwardRecoveryStartMs(sessionId:number):number {
   recordSessionEvent({eventId,sessionId,kind:'topic_request',payload:{change:'forward_recovery_started',atMs}});
   return atMs;
 }
-function linkForwardedReplies(topicId:string,forwards:Forward[]):number {
+function linkForwardedReplies(topicId:string,forwards:Forward[],admittingNow=false):number {
   const roots=new Set(topicRoots(topicId));
   const mine=forwards.filter(forward=>!!forward.root&&roots.has(forward.root));
   const recoveryStart=forwardRecoveryStartMs(topicRow(topicId).sessionId);
@@ -3265,7 +3307,8 @@ function linkForwardedReplies(topicId:string,forwards:Forward[]):number {
     const byAnswer=answered?requests.filter(request=>request.dispatches.some((dispatch:any)=>dispatch.requestId===answered)):[];
     const bySource=forward.inboxInputId?requests.filter(request=>request.sources.some(source=>source.inputId===forward.inboxInputId)):[];
     const targets=byAnswer.length===1?byAnswer:bySource.length===1?bySource:[];
-    if(!targets.length&&forward.createdAtMs>=recoveryStart&&forward.inboxInputId
+    const unresolved=forward.outcome!=='answered'||forward.disposition!=='completed'||!!forward.notCheckedReason;
+    if(!targets.length&&(admittingNow||forward.createdAtMs>=recoveryStart||unresolved)&&forward.inboxInputId
       &&!requests.some(request=>request.dispatches.some((dispatch:any)=>dispatch.requestId===forward.id))) {
       const source=getAcceptedSessionInput(forward.inboxInputId);
       if(source?.origin==='human') {
@@ -3288,7 +3331,7 @@ function linkForwardedReplies(topicId:string,forwards:Forward[]):number {
       // Historical forwards already considered by a completed request are not new work.
       // A later continuation still links even when its attempt stalled or ended.
       const closedAtMs=request.closure?.at?new Date(iso(request.closure.at)!).getTime():0;
-      if(request.state==='closed'&&(forward.createdAtMs<=closedAtMs||forward.createdAtMs<recoveryStart))continue;
+      if(request.state==='closed'&&(forward.createdAtMs<=closedAtMs||(!admittingNow&&forward.createdAtMs<recoveryStart&&!unresolved)))continue;
       const dispatch={requestId:forward.id,targetSessionId:forward.target,targetTitle:null,outcome:forward.outcome,state:null,forwardedReply:true};
       const created=new Map(earlier.map(work=>[work.id,work.createdAtMs]));
       const dispatches=[...request.dispatches,dispatch].sort((first:any,second:any)=>
@@ -3304,6 +3347,10 @@ function linkForwardedReplies(topicId:string,forwards:Forward[]):number {
     }
   }
   return linked;
+}
+/** Admit one direct human reply into the topic ledger in the same transaction as its dispatch. */
+export function linkForwardedReplyWork(topicId:string,dispatchId:string):number {
+  return linkForwardedReplies(topicId,forwardedReplies(dispatchId),true);
 }
 
 type Stuck={topicId:string;topicTitle:string;requestId:string;title:string;work:string;how:string;key:string;sourceInputId:string|null;sourceRunId:string|null;sourceUncertain:boolean;stoppedByTejas:boolean;sharedAnswerPostId:string|null};

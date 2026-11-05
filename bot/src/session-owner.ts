@@ -79,7 +79,7 @@ import {sessionAddress} from './session-address';
 import {handoffView,supersededBy,supersededAddress,withdrawnSuccessor} from './session-handoff';
 import {sessionExecution,sessionPresence} from './session-presence';
 import {inboxAttribution} from './inbox-attribution-read';
-import {directTopicList} from './session-topics';
+import {directTopicList,openInboxObligations} from './session-topics';
 import {workThread} from './session-fit';
 import {sessionMutuals,mutualLift} from './session-mutuals';
 import {commitWork,originInput} from './commit-work';
@@ -3905,6 +3905,7 @@ export class SessionOwner {
       if(request.method==='GET'&&parts[0]==='presentation'&&['topics','questions'].includes(parts[1]??''))
         await closeQuestionsAnsweredByTodos(admission=>this.admit(admission),'inbox');
       if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===1)result=this.inbox();
+      else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='obligations'&&parts.length===2)result=openInboxObligations();
       else if(request.method==='POST'&&parts[0]==='mac-browser-fallback'&&parts.length===1)result=this.macBrowserFallback(body);
       else if(request.method==='GET'&&parts[0]==='focus-hold'&&parts.length===1)result=await this.focusHoldStatus();
       else if(request.method==='POST'&&parts[0]==='focus-hold'&&parts.length===1)result=await this.focusHoldControl(body);
