@@ -17,6 +17,7 @@ export { db } from "./state-database";
 import { survivableRunKinds as survivableRunKindsIn } from "./execution-survival";
 import { log } from "./log";
 import { quietOnlyAdmits } from './quiet-hours';
+import { OWNER_DRAIN_WITHDRAWAL_REASON } from './runner-leases';
 import {CLAUDE_ALLOWANCE_HOLD_UNTIL_MS} from './claude-allowance-hold';
 
 // Only the canonical writer owns schema upgrades. Read executors open a physically read-only
@@ -4208,6 +4209,52 @@ export function requeueOrphanedPreAdmissionTurn(
     db.query(`UPDATE sessions
               SET status=CASE WHEN status='archived' THEN status ELSE 'idle' END
               WHERE id=?`).run(turn.session_id);
+    return true;
+  })();
+}
+
+/** A withdrawn runner launch is proof of no provider admission even though intent was recorded. */
+export function requeueWithdrawnRunnerTurn(turnId: number, ownerInstanceId: string, dispatchAttempt: number): boolean {
+  return db.transaction(() => {
+    const row = db.query(`SELECT turn.session_id, turn.projection_mode, turn.progress_stream_state,
+        turn.progress_stream_ts, execution.execution_id
+      FROM turns turn JOIN executions execution ON execution.turn_id=turn.id
+        AND execution.dispatch_attempt=turn.dispatch_attempt
+      JOIN runner_jobs job ON job.job_id='turn:'||execution.execution_id
+      WHERE turn.id=? AND turn.status='running' AND turn.owner_instance_id=?
+        AND turn.dispatch_attempt=? AND turn.stop_requested_at IS NULL
+        AND turn.provider_started_at IS NULL AND turn.provider_turn_id IS NULL
+        AND turn.provider_input_acknowledged_at IS NULL
+        AND execution.supervisor='runner' AND execution.state='intended'
+        AND execution.coordinator_instance_id=?
+        AND job.kind='turn' AND job.state='finished'
+        AND json_extract(job.result_json,'$.withdrawn')=?
+        AND NOT EXISTS (SELECT 1 FROM runner_attempts WHERE job_id=job.job_id)
+        AND NOT EXISTS (SELECT 1 FROM turn_steering_messages
+          WHERE turn_id=turn.id AND status IN ('sent','sending','ambiguous'))
+        AND NOT EXISTS (SELECT 1 FROM turn_artifact_deliveries WHERE turn_id=turn.id)
+        AND NOT EXISTS (SELECT 1 FROM turn_artifact_batches
+          WHERE turn_id=turn.id AND status<>'collecting')`)
+      .get(turnId,ownerInstanceId,dispatchAttempt,ownerInstanceId,OWNER_DRAIN_WITHDRAWAL_REASON) as {session_id:number;projection_mode:string;
+        progress_stream_state:string;progress_stream_ts:string|null;execution_id:string}|null;
+    if(!row||turnHasAmbiguousAgentProgressStart(turnId))return false;
+    const changed=db.query(`UPDATE turns SET status='queued',owner_instance_id=NULL,
+      provider_admission_intended_at=NULL,dispatch_failure_class=NULL,dispatch_next_attempt_ms=0,
+      agent_text=NULL,ended_at=NULL,status_projection_status='not_needed',
+      status_projection_error=NULL,status_projection_attempts=0,status_projection_next_attempt_ms=0
+      WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?`)
+      .run(turnId,ownerInstanceId,dispatchAttempt).changes;
+    if(changed!==1)return false;
+    db.query("UPDATE executions SET state='lost',detail='runner job withdrawn before claim',updated_at_ms=? WHERE execution_id=?")
+      .run(Date.now(),row.execution_id);
+    if(row.projection_mode==='agent'&&row.progress_stream_state==='starting'&&!row.progress_stream_ts){
+      db.query("DELETE FROM agent_progress_messages WHERE turn_id=? AND creation_state='pending'").run(turnId);
+      db.query(`UPDATE turns SET progress_stream_state='not_started',progress_activity_id=NULL,
+        progress_stream_error=NULL,progress_terminal_requested=0 WHERE id=?`).run(turnId);
+    }
+    db.query("UPDATE sessions SET status=CASE WHEN status='archived' THEN status ELSE 'idle' END WHERE id=?")
+      .run(row.session_id);
+    turnFactChanged(turnId,'queued');
     return true;
   })();
 }

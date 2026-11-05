@@ -214,7 +214,7 @@ export async function startSessionRuntime() {
     .catch(error=>log('error','inbox_entry_index_warm_failed',errorFields(error)));
   let stopping:Promise<void>|null=null;
   const stop=()=>stopping??=(async()=>{
-    draining=true;if(quietBoundaryTimer)clearTimeout(quietBoundaryTimer);clearInterval(globalPauseReconcile);clearInterval(ghostSweep);stopProcessAuditSweep();clearInterval(parkedRecovery);clearSandboxReadyReceipt(runtime);stopUsageWatch();stopBackgroundJobWatch();stopUpdateWaitWatch();stopWatchWorker();stopAuthWatch();detach();detachProjection();queue.stop();await communication.stop();await codexSessionObserver?.stop();
+    draining=true;if(quietBoundaryTimer)clearTimeout(quietBoundaryTimer);clearInterval(globalPauseReconcile);clearInterval(ghostSweep);stopProcessAuditSweep();clearInterval(parkedRecovery);clearSandboxReadyReceipt(runtime);stopUsageWatch();stopBackgroundJobWatch();stopUpdateWaitWatch();stopWatchWorker();stopAuthWatch();detach();detachProjection();queue.stop();host.beginDrain();await communication.stop();await codexSessionObserver?.stop();
     // A hosted agent keeps working through this exit; the next coordinator takes it back.
     const hosted=hostedTurns(active);
     for(const turnId of active){
