@@ -317,7 +317,14 @@ while a pass is already running joins that pass instead of starting a second.
 - **Codex**: the agents' home `~/.codex` plus one home per extra account under
   `~/.codex-accounts/<name>/`, each read by CodexBar (`/root/tools/codexbar-cli/codexbar`)
   with its own `CODEX_HOME`. CodexBar reads with the stored access token and never refreshes
-  or rewrites credentials. Sign an extra account into its own empty home with
+  or rewrites credentials. If a saved account's token has expired, Concierge asks Codex's
+  own App Server in that saved home to renew it, one process per account at a time, then
+  refreshes the usage reading. The read cannot count the old usage as room while renewal
+  runs. An explicit revoked or reused refresh token is marked signed out and enters
+  the existing sign-in repair. Three transport or startup failures against an unchanged
+  login back off before the reader reports renewal unavailable without claiming that
+  Codex refused the login; a changed login can be tried again.
+  Sign an extra account into its own empty home with
   `CODEX_HOME=~/.codex-accounts/<name> codex login --device-auth`; never sign in inside
   `~/.codex`, because device login deletes that home's `auth.json` first, and OpenAI can
   revoke a stored token when another account signs into the same home
@@ -373,6 +380,18 @@ Reading the Accounts list no longer snapshots the login in use, and `saveProfile
 A switch is refused while a Codex turn is running on this machine. The post-restart account
 probe uses the shared bounded retry primitive and its own 45-second, three-attempt policy;
 temporary socket startup failures never create an unbounded or ad hoc retry loop.
+
+An agent acting on Tejas's work request uses `router-actions.sh sessions auth switch codex
+<saved-profile-id>` (or `--machine mac`) with its exact source input, run and stable action ID.
+This enters the same guarded switch as Accounts while retaining the agent's authorship and
+an operation receipt. It cannot borrow an information-only consultation's authority. A
+duplicate action returns its retained result; if a process died during the switch, it
+reports an uncertain result for inspection rather than moving the credentials twice.
+The command does not override the running-Codex-turn guard or sign in an expired account;
+the saved home must be renewed through Codex itself before the guarded switch can succeed.
+The guarded move also refuses while any saved Codex login on the machine is renewing,
+and renewal does not start while a switch is moving credentials. Both the incoming
+and outgoing login can move into saved homes, so the exclusion covers the machine.
 
 The first row is the dangerous one and it is not reversible: the account that was in
 `~/.codex` loses the only live token the machine had for it, and OpenAI can revoke that
