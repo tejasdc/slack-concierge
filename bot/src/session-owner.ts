@@ -3896,7 +3896,7 @@ export class SessionOwner {
         return this.stream(request,url);
       }
       if(request.method==='GET'&&parts[0]==='presentation'&&['topics','questions'].includes(parts[1]??''))
-        await closeQuestionsAnsweredByTodos(admission=>this.admit(admission));
+        await closeQuestionsAnsweredByTodos(admission=>this.admit(admission),'inbox');
       if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===1)result=this.inbox();
       else if(request.method==='POST'&&parts[0]==='mac-browser-fallback'&&parts.length===1)result=this.macBrowserFallback(body);
       else if(request.method==='GET'&&parts[0]==='focus-hold'&&parts.length===1)result=await this.focusHoldStatus();
@@ -3942,7 +3942,7 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='sessions'&&parts[2]==='window'&&parts.length===3){
         const space=sessionSpaceParam(url.searchParams.get('space'));
         if(!space)throw new SessionOwnerError('space is required: lab or everyday.');
-        if(space==='everyday')await closeQuestionsAnsweredByTodos(admission=>this.admit(admission));
+        await closeQuestionsAnsweredByTodos(admission=>this.admit(admission));
         const attention=url.searchParams.get('needsAttention');
         if(attention!==null&&attention!=='true'&&attention!=='false')throw new SessionOwnerError('needsAttention is true or false.');
         const workflowId=url.searchParams.get('workflowId');
@@ -4085,13 +4085,13 @@ export class SessionOwner {
       }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='view'&&parts.length===3){
         const session=this.session(parts[1]!);
-        if(sessionMetadata(session).inbox)await closeQuestionsAnsweredByTodos(admission=>this.admit(admission));
-        result={session:this.view(session)};
+        await closeQuestionsAnsweredByTodos(admission=>this.admit(admission),sessionMetadata(session).inbox?'inbox':session.id);
+        result={session:this.view(this.session(parts[1]!))};
       }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='sessions'&&parts[3]==='attention'&&parts.length===4){
         const session=this.session(parts[2]!);
         if(!sessionMetadata(session).inbox)throw new SessionOwnerError('Paged attention belongs to the Inbox.');
-        await closeQuestionsAnsweredByTodos(admission=>this.admit(admission));
+        await closeQuestionsAnsweredByTodos(admission=>this.admit(admission),'inbox');
         result=preparedInboxAttention(session.id,url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),20)??20);
       }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===2)

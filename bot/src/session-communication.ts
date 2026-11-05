@@ -914,7 +914,7 @@ export class SessionCommunicationCoordinator {
             if(turnDeclaredByAction(actor.turn))
                 throw new Error('This turn already declared its outcome by action.');
             recordTurnOutcome({eventId:`turn_outcome:action:${saved.input.id}`,sessionId:actor.session,turnId:actor.turn,
-                inputId:actor.inputId,outcome:input.outcome,text:content||null,refuseUnreadable:true,quiet:quiet||null});
+                inputId:actor.inputId,outcome:input.outcome,text:content||null,todoId,refuseUnreadable:true,quiet:quiet||null});
             const receipt={state:'completed',outcome:input.outcome,inputId:actor.inputId};
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(receipt),saved.input.id);
             // A worker on an Inbox thread waiting on him reaches him through that thread; its own
@@ -2142,7 +2142,7 @@ export class SessionCommunicationCoordinator {
                 const declared=input.workDisposition==='completed'?'done':input.workDisposition==='failed'?'failed'
                     :input.workDisposition==='needs_decision'?'needs_you':requestedEffect==='work'?null:'done';
                 if(declared&&!turnDeclaredByAction(actor.turn))recordTurnOutcome({eventId:`turn_outcome:reply:${id}`,sessionId:actor.session,turnId:actor.turn,
-                    inputId:request.target_input_id!,outcome:declared,text:input.text});
+                    inputId:request.target_input_id!,outcome:declared,text:input.text,todoId});
                 // The worker no longer needs the answers it asked for on this request's behalf; a
                 // needs_decision final keeps them, because that reply is the question.
                 if(input.workDisposition)expireQuestionsForFinalReply({workerSessionId:actor.session,requestId:request.request_id,
@@ -2674,7 +2674,8 @@ export class SessionCommunicationCoordinator {
             if(event.kind==='final'&&payload.workDisposition==='needs_decision'&&!sessionMetadata(source).inbox){
                 const author=sessionAuthor(`concierge:${coveredResponder}`);
                 recordRequesterDecisionReturn({sessionId:source.id,returnInputId:accepted.id,requestId:request.request_id,
-                    question:String(payload.text??''),agentName:author?.agentName,taskTitle:author?.title});
+                    question:String(payload.text??''),todoId:typeof payload.todoId==='string'?payload.todoId:null,
+                    agentName:author?.agentName,taskTitle:author?.title});
             }
             for(const joined of group.joining)db.query('UPDATE session_communication_events SET accepted_input_id=? WHERE event_id=? AND accepted_input_id IS NULL').run(`return:${event.event_id}`,joined.event_id);
             const observed = readInputExecution(accepted);

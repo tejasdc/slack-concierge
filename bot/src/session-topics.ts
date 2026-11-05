@@ -2451,12 +2451,13 @@ const conciergeSessionNumber=(address:unknown):number|null=>{
  * his tick is his answer, so the question leaves Needs you and the agent that asked is told to carry
  * on. Runs on the owner's reading cadence; one read of his to-dos covers every linked question.
  */
-export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown):Promise<number> {
+export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown,
+  scope:'all'|'inbox'|number='all'):Promise<number> {
   const session=inboxSession();
   if(!session)return 0;
   const linked:{question_id:string}[]=[];
   let after='';
-  for(;;){
+  while(typeof scope!=='number'){
     const page=db.query(`SELECT question_id FROM inbox_questions WHERE question_id>? AND state IN ('open','partial') AND kind='decision'
       AND (json_extract(owner_json,'$.todoId') IS NOT NULL OR coalesce(json_extract(brief_json,'$.todo'),'none')<>'none')
       ORDER BY question_id LIMIT 200`).all(after) as {question_id:string}[];
@@ -2464,10 +2465,19 @@ export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:num
     if(page.length<200)break;
     after=page.at(-1)!.question_id;
   }
-  if(!linked.length)return 0;
+  const direct:{id:number}[]=typeof scope==='number'?[{id:scope}]:[];
+  let afterSession=0;
+  while(scope==='all'){
+    const page=db.query(`SELECT id FROM sessions WHERE id>? AND native_metadata_json LIKE '%"todoId"%'
+      ORDER BY id LIMIT 200`).all(afterSession) as {id:number}[];
+    direct.push(...page);
+    if(page.length<200)break;
+    afterSession=page.at(-1)!.id;
+  }
+  if(!linked.length&&!direct.length)return 0;
   let todos:Map<string,TodoState>;
   try{todos=new Map((await readTodos()).map(todo=>[todo.id,todo]));}
-  catch(error){log('warn','question_todo_check_unavailable',{questions:linked.length,reason:error instanceof Error?error.message.slice(0,80):'failed'});return 0;}
+  catch(error){log('warn','question_todo_check_unavailable',{questions:linked.length,direct:direct.length,reason:error instanceof Error?error.message.slice(0,80):'failed'});return 0;}
   let closed=0;
   for(const {question_id} of linked) {
     try {
@@ -2492,6 +2502,25 @@ export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:num
         admit({sessionId:owner,inputId:noticeId,origin:'service',sourceInputId:noticeId,sourceRunId:noticeId,requestId:noticeId,
           text:`${reason} Your question to him, "${String(question.brief?.decision??'').slice(0,300)}", is closed by that: carry on from there and check the result yourself. You do not need to reply to this.`});
     } catch(error) {log('error','question_todo_close_failed',{question:question_id,message:error instanceof Error?error.message:String(error)});}
+  }
+  const {withdrawOpenNeed}=await import('./session-turn-outcome');
+  for(const {id} of direct){
+    const session=getSessionById(id);
+    if(!session||sessionMetadata(session).inbox)continue;
+    for(const need of sessionMetadata(session).needs??[]){
+      if(need.outcome!=='needs_you'||!need.todoId)continue;
+      const todo=todos.get(need.todoId);
+      if(!todo||(todo.status!=='done'&&todo.status!=='dropped'))continue;
+      const reason=todo.status==='done'?`He marked his to-do "${todo.text}" done.`:`He dropped his to-do "${todo.text}".`;
+      try{
+        withdrawOpenNeed({sessionId:id,needEventId:need.eventId,reason,eventId:`attention-todo-done:${need.eventId}`});
+        closed++;
+        const noticeId=`direct-todo-done:${need.eventId}`;
+        if(admit&&!db.query('SELECT 1 FROM session_inputs WHERE id=?').get(noticeId))
+          admit({sessionId:id,inputId:noticeId,origin:'service',sourceInputId:noticeId,sourceRunId:noticeId,requestId:noticeId,
+            text:`${reason} Your question to him, "${need.question.slice(0,300)}", is closed by that: carry on from there and check the result yourself. You do not need to reply to this.`});
+      }catch(error){log('error','direct_question_todo_close_failed',{session:id,need:need.eventId,message:error instanceof Error?error.message:String(error)});}
+    }
   }
   if(closed)log('info','questions_closed_by_todos',{closed});
   return closed;
