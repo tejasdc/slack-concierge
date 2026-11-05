@@ -53,8 +53,11 @@ const loggedUnhandled = new Set<string>();
  */
 const AUDIT_EVERY_MS = 60 * 1000;
 let auditedAt = -Infinity;
+let incidentAuditTraceRemaining = 20;
 
 async function scanAuditRows<T>(table:string,sql:string,args:unknown[],visit:(row:T)=>void,stopped:()=>boolean) {
+    if (incidentAuditTraceRemaining-- > 0)
+        log('warn', 'incident_reconciliation_scan', { table, sql: sql.replace(/\s+/g, ' ').slice(0, 400) });
     const highWater=(db.query(`SELECT max(rowid) AS value FROM ${table}`).get() as {value:number|null}).value??0;
     const query=db.query(sql);
     let cursor=0;
