@@ -1,4 +1,4 @@
-import {markTask} from './owner-task-labels';
+import {markTask,noteLedgerOccupied} from './owner-task-labels';
 /** The accepting loop enables this; workers and command-line readers pay no timing cost.
  * One interval has one slowest call, never SQL, values or an accumulating query history. */
 type Kind = 'statement' | 'transaction';
@@ -50,7 +50,7 @@ export function observeSynchronousStorage<T>(kind: Kind, fingerprint: (() => str
       }
       interval.calls++;
       if (kind === 'transaction') interval.transactions++;
-      if (outer) interval.occupied_ms += elapsed;
+      if (outer) {interval.occupied_ms += elapsed;noteLedgerOccupied(elapsed);}
       if (elapsed >= 25 && elapsed > (interval.slowest?.duration_ms ?? 0)) {
         // Capture only a slow call's synchronous caller, after the call. No heap walk or profiler.
         const stack = (new Error().stack ?? '').split('\n').slice(1, 9).map(line => line.trim().slice(0, 240));

@@ -3,7 +3,8 @@ import {parentPort,workerData} from 'node:worker_threads';
 import {log} from './log';
 
 // Same layout as owner-task-labels.ts: labels [running, last ended, published block label, block
-// sequence]; times [heartbeat, running set, last ended, published block start], ms since `origin`.
+// sequence]; times [heartbeat, running set, last ended, published block start, cumulative ledger
+// occupied ms], ms since `origin`.
 const shared=new Int32Array(workerData.shared as SharedArrayBuffer);
 const times=new Float64Array(workerData.times as SharedArrayBuffer);
 const origin=workerData.origin as number;
@@ -15,9 +16,17 @@ const PUBLISH_MS=200,LOG_MS=500,STILL_MS=5_000,JUMP_MB=300,CHECK_MS=50;
 const nowMs=()=>performance.timeOrigin+performance.now()-origin;
 const rssMb=()=>Math.round(process.memoryUsage().rss/2**20); // the whole process, read from this thread
 
-type Block={running:number;lastEnded:number;endedBeforeMs:number;markedBeforeMs:number;startMb:number;peakMb:number;heldMs:number;stillLogged:boolean};
+// Shares: the running label is sampled every check while a block lasts, so a stretch in which
+// several pieces of work ran back to back names each one (2026-11-05: a 10.9 s block named only
+// the timer that started it, while an unlabelled runner-route transaction took 6.6 s of it).
+type Block={running:number;lastEnded:number;endedBeforeMs:number;markedBeforeMs:number;startMb:number;peakMb:number;heldMs:number;stillLogged:boolean;
+  ledgerAtStart:number;shareMs:Map<string,number>;sampledHeldMs:number};
 let block:Block|null=null,sequence=0;
 let previousMb=rssMb(),previousAt=nowMs(),lastJumpAt=-Infinity;
+
+function shares(current:Block) {
+  return Object.fromEntries([...current.shareMs].sort((a,b)=>b[1]-a[1]).slice(0,5).map(([label,ms])=>[label,Math.round(ms)]));
+}
 
 function describe(current:Block) {
   // A running label was set by the work that is executing; with none, the block is in awaited or
@@ -33,14 +42,21 @@ setInterval(()=>{
     const mb=rssMb();
     if(!block){
       const blockStart=times[0]!,running=Atomics.load(shared,0),lastEnded=Atomics.load(shared,1);
-      block={running,lastEnded,endedBeforeMs:blockStart-times[2]!,markedBeforeMs:blockStart-times[1]!,startMb:mb,peakMb:mb,heldMs,stillLogged:false};
+      block={running,lastEnded,endedBeforeMs:blockStart-times[2]!,markedBeforeMs:blockStart-times[1]!,startMb:mb,peakMb:mb,heldMs,stillLogged:false,
+        ledgerAtStart:times[4]!,shareMs:new Map(),sampledHeldMs:0};
       times[3]=blockStart;Atomics.store(shared,2,running?running:-lastEnded);Atomics.store(shared,3,++sequence);
     }
     block.peakMb=Math.max(block.peakMb,mb);block.heldMs=heldMs;
+    // Each check credits the time since the previous one to the label running now; the first
+    // credits the whole time before the block was noticed.
+    const sampled=Atomics.load(shared,0),sampledLabel=sampled?labels[sampled]??'unknown':'unmarked';
+    block.shareMs.set(sampledLabel,(block.shareMs.get(sampledLabel)??0)+heldMs-block.sampledHeldMs);block.sampledHeldMs=heldMs;
     // Logged while still blocked too, in case the process dies before the loop answers again.
     if(heldMs>=STILL_MS&&!block.stillLogged){block.stillLogged=true;log('warn','owner_task_still_blocked',{...describe(block),blocked_ms:heldMs,rss_start_mb:block.startMb,rss_now_mb:mb});}
   } else if(block) {
-    if(block.heldMs>=LOG_MS)log('warn','owner_task_blocked',{...describe(block),blocked_ms:block.heldMs,rss_start_mb:block.startMb,rss_peak_mb:block.peakMb,rss_end_mb:rssMb()});
+    // Ledger time is added when each statement ends, so after the block it covers the whole block.
+    if(block.heldMs>=LOG_MS)log('warn','owner_task_blocked',{...describe(block),blocked_ms:block.heldMs,label_shares_ms:shares(block),
+      ledger_wait_ms:Math.round(times[4]!-block.ledgerAtStart),rss_start_mb:block.startMb,rss_peak_mb:block.peakMb,rss_end_mb:rssMb()});
     block=null;
   }
   if(now-previousAt>=1000){
