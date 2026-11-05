@@ -3358,6 +3358,38 @@ function nextRecoveryAttempt(item:Stuck):number|null {
   // Repeated router refusals remain due, but do not turn one stuck task into a hot loop.
   return due?attempt:null;
 }
+/** The agent sessions a question's work is held by: its declaring agent, else where its linked work went. */
+function questionAgents(question:StoredQuestion,routerAddress:string):string[] {
+  const owner=question.owner??{};
+  if(typeof owner.sessionId==='string'&&owner.sessionId!==routerAddress)return [owner.sessionId];
+  let dispatchIds:string[]=[];
+  if(owner.dispatchRequestId)dispatchIds=[String(owner.dispatchRequestId)];
+  else if(owner.requestId){
+    const row=db.query('SELECT * FROM inbox_requests WHERE request_id=?').get(owner.requestId) as any|null;
+    if(row)dispatchIds=toStoredRequest(row).dispatches.map((dispatch:any)=>String(dispatch?.requestId??''));
+  }
+  // Only the agent holding the newest work: an older attempt's agent is no longer waiting on this.
+  const newest=dispatchIds.map(id=>workRow(id)).filter((work):work is Work=>!!work?.target)
+    .sort((left,right)=>right.createdAtMs-left.createdAtMs)[0];
+  return newest?.target?[newest.target]:[];
+}
+/**
+ * A ready question Tejas has open that the agent holding this attempt was already waiting on when
+ * the attempt was sent. Work sent to an agent that is blocked on him waits with it, even when the
+ * question sits in another request or thread and cannot name this one (2026-11-04: two saving
+ * requests sent to the writing agent while it waited on "Please unlock your Mac" were flagged as
+ * dropped every half hour).
+ */
+function agentWaitingOnHim(latest:Work,read:ReadIndex,routerAddress:string):string|null {
+  if(!latest.target)return null;
+  const questions=(db.query(`SELECT * FROM inbox_questions WHERE kind='decision' AND state IN ('open','partial')
+    AND context='ready' AND created_at<=?`).all(new Date(latest.createdAtMs).toISOString()) as any[]).map(toStoredQuestion);
+  for(const question of questions) {
+    if(!questionAgents(question,routerAddress).includes(latest.target))continue;
+    if(awaitingHim(questionView(question,latestHumanReply(read,topicRoots(question.topicId)))))return question.questionId;
+  }
+  return null;
+}
 /**
  * Settles open requests with checked completion or an explicit human Stop. Returns all other
  * obligations with no live attempt or ready question to the router for recovery.
@@ -3395,7 +3427,7 @@ function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settl
     const sharedDecisionWaiting=latest?.disposition==='needs_decision'&&request.dispatches.some((dispatch:any)=>dispatch.sharedAcrossTopic&&dispatch.requestId===latest.id)
       &&!!db.query(`SELECT 1 FROM inbox_questions WHERE kind='decision' AND state IN ('open','partial','deferred')
         AND context='ready' AND blocking=1 AND optional=0 AND json_extract(owner_json,'$.dispatchRequestId')=? LIMIT 1`).get(latest.id);
-    const waitingOnHim=sharedDecisionWaiting||decisionViews.some(awaitingHim)||legacyViews.some(awaitingHim)||topicQuestions(topicId).some(question=>question.kind==='decision'&&question.state==='deferred'
+    const waitingOnHim=sharedDecisionWaiting||(!!latest&&latest.outcome===null&&!!agentWaitingOnHim(latest,read,`concierge:${topic.sessionId}`))||decisionViews.some(awaitingHim)||legacyViews.some(awaitingHim)||topicQuestions(topicId).some(question=>question.kind==='decision'&&question.state==='deferred'
       &&(question.owner?.requestId===request.requestId||dispatchIds.has(String(question.owner?.dispatchRequestId??''))||unlinkedQuestionImplies(question,request,openRequests)));
     let disposition:string|null=null,why='';
     let completionChecked=false;
