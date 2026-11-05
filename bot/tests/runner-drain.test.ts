@@ -8,6 +8,9 @@ import {retainExecutionIntent} from '../src/executions';
 import {beginRunnerTurnDrain,RunnerHostAccess,turnJobId} from '../src/runner-host-access';
 import {runnerLedger} from '../src/runner-ledger';
 import {HostNotStartedError} from '../src/execution-host-client';
+import {CLAUDE_ALLOWANCE_HOLD_UNTIL_MS} from '../src/claude-allowance-hold';
+
+const claimTime=()=>Math.max(Date.now(),CLAUDE_ALLOWANCE_HOLD_UNTIL_MS+1);
 
 let unlock:()=>void;
 beforeEach(async()=>{unlock=await acquireDatabaseTestLock();});
@@ -23,7 +26,7 @@ function turn(provider:'claude-code'|'codex',owner:string) {
   const accepted=retainSessionInput({sessionId:session.id,scope:'runner-drain-test',actionId:randomUUID(),
     kind:'input',origin:'human',payload:{text:'Keep this exact request'}}).input;
   enqueueSessionInput(accepted.id);
-  const claim=claimNextQueuedTurn(owner)!;
+  const claim=claimNextQueuedTurn(owner,claimTime())!;
   expect(claim?.accepted_input_id).toBe(accepted.id);
   return claim;
 }
@@ -55,7 +58,7 @@ test('drain withdraws unclaimed runner launches and returns their exact turns un
   expect(db.query('SELECT status,owner_instance_id,provider_admission_intended_at FROM turns WHERE id=?')
     .get(claimed.turn_id)).toEqual({status:'queued',owner_instance_id:null,provider_admission_intended_at:null});
   expect(db.query('SELECT state FROM executions WHERE execution_id=?').get(claimedExecution)).toEqual({state:'lost'});
-  expect(claimNextQueuedTurn('next-owner')?.turn_id).toBe(claimed.turn_id);
+  expect(claimNextQueuedTurn('next-owner',claimTime())?.turn_id).toBe(claimed.turn_id);
   expect(db.query('SELECT status FROM turns WHERE id=?').get(queued.turn_id)).toEqual({status:'running'});
   // A launch that resumes after the first drain sweep must withdraw its own new job.
   const late=turn('claude-code',owner);
@@ -75,7 +78,7 @@ test('Codex readiness drain requeues only before admission intent',()=>{
   const claim=turn('codex','codex-waiting-owner');
   expect(db.query('SELECT 1 FROM executions WHERE turn_id=?').get(claim.turn_id)).toBeNull();
   expect(requeueOrphanedPreAdmissionTurn(claim.turn_id,'codex-waiting-owner')).toBe(true);
-  expect(claimNextQueuedTurn('next-owner')?.turn_id).toBe(claim.turn_id);
+  expect(claimNextQueuedTurn('next-owner',claimTime())?.turn_id).toBe(claim.turn_id);
   const intended=turn('codex','codex-intended-owner');
   expect(markTurnProviderAdmissionIntended(intended.turn_id,'codex-intended-owner',intended.dispatch_attempt)).toBe(true);
   expect(requeueOrphanedPreAdmissionTurn(intended.turn_id,'codex-intended-owner')).toBe(false);

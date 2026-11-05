@@ -693,6 +693,7 @@ export class SessionCommunicationCoordinator {
         for(const request of db.query(`SELECT * FROM session_communication_requests WHERE target_session_id=? AND outcome IS NULL AND stalled_at_ms IS NULL
             AND source_input_id IS NOT NULL AND target_input_id IS NOT NULL AND created_at_ms>=? ORDER BY rowid`).all(running.session_id,REMINDERS_SINCE_MS) as RequestRow[]) {
             if(!handedToARun(request.target_input_id!)||this.currentFinal(request.request_id))continue;
+            if(waitingOnDependency(running.session_id,request.request_id,request.created_at_ms))continue;
             const effect=JSON.parse(request.payload_json).requestedEffect??'informational';
             if(input.offer?.includes(request.request_id))db.query('UPDATE session_communication_requests SET hook_offered_run=? WHERE request_id=?').run(runId,request.request_id);
             if(input.remind)db.query("UPDATE session_communication_requests SET reminded_at_ms=?,reminded_via='hook' WHERE request_id=? AND reminded_at_ms IS NULL AND hook_offered_run=?").run(this.now(),request.request_id,runId);

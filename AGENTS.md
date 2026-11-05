@@ -27,6 +27,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   is for capture paths; use a feature's own socket or route when appropriate.
 - Concierge service stops during a release go through the deployment controller's
   [attributed systemd stop path](docs/runbooks/DEPLOYMENT.md#runtime-dependencies-and-service-shutdown).
+- Owner startup timing and deferred history catch-up follow the
+  [deployment startup contract](docs/runbooks/DEPLOYMENT.md#owner-startup-and-history-catch-up).
 - Every commit carries an `Update-note:` sentence in product language and a
   `Failure-record:` trailer naming its replayable failure record or `none`.
   The [update-note rule](docs/runbooks/DEPLOYMENT.md#update-notes-for-every-commit) and

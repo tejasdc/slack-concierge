@@ -156,14 +156,21 @@ function resolveAskedSource(rawId:string,topic:StoredTopic):{source:AcceptedSess
   const route=routedMessageFor(id);
   if(route&&route.kind==='topic_route'&&route.topicId===topic.topicId){
     const source=getAcceptedSessionInput(route.sourceMessageId);
-    if(source&&source.session_id===topic.sessionId&&humanAuthored(source))return {source};
+    if(source&&routerSessionOwnsTopic(source.session_id,topic.sessionId)&&humanAuthored(source))return {source};
     return null;
   }
   const source=getAcceptedSessionInput(id);
-  if(!source||source.session_id!==topic.sessionId||!humanAuthored(source))return null;
-  const root=inboxThreadRoot(topic.sessionId,source.id)??source.id;
+  if(!source||!routerSessionOwnsTopic(source.session_id,topic.sessionId)||!humanAuthored(source))return null;
+  const root=inboxThreadRoot(source.session_id,source.id)??source.id;
   if(topicOfRoot(root)!==topic.topicId)return null;
   return {source};
+}
+
+function routerSessionOwnsTopic(sourceSessionId:number,topicSessionId:number):boolean {
+  if(sourceSessionId===topicSessionId)return true;
+  return !!db.query(`WITH RECURSIVE lineage(id) AS (SELECT ? UNION ALL
+    SELECT predecessor_session_id FROM session_handoffs JOIN lineage ON successor_session_id=lineage.id
+    WHERE state='accepted') SELECT 1 FROM lineage WHERE id=? LIMIT 1`).get(sourceSessionId,topicSessionId);
 }
 
 export function readsFor(question:{topicId:string;kind?:QuestionKind;legacyNeedEventId:string|null;owner:any;brief:any;sources?:string[]}):ReadingText[] {
@@ -176,15 +183,17 @@ export function readsFor(question:{topicId:string;kind?:QuestionKind;legacyNeedE
   const roots=new Set([...topicRoots(question.topicId),...(question.sources??[]).flatMap(source=>{
     const route=routedMessageFor(source);
     const dest=route?.kind==='topic_route'?route.destinationMessageId:null;
-    const root=inboxThreadRoot(topic.session_id,source);
+    const sourceSession=(inboxRowByMessageId(null,source) as {session_id:number}|null)?.session_id??topic.session_id;
+    const root=inboxThreadRoot(sourceSession,source);
     return [root??source,...(dest?[dest]:[])];
   })]);
   const named:string[]=Array.isArray(question.brief?.reads)?question.brief.reads.filter((id:unknown):id is string=>typeof id==='string'&&!!id.trim()):[];
   if(named.length) {
     const found:ReadingText[]=[];
     for(const id of named) {
-      const message=inboxMessageById(topic.session_id,id) as {content?:string;createdAt?:string;inputId?:string}|null;
-      const root=message?.inputId?inboxThreadRoot(topic.session_id,message.inputId):null;
+      const messageSession=(inboxRowByMessageId(null,id) as {session_id:number}|null)?.session_id??topic.session_id;
+      const message=inboxMessageById(messageSession,id) as {content?:string;createdAt?:string;inputId?:string}|null;
+      const root=message?.inputId?inboxThreadRoot(messageSession,message.inputId):null;
       if(message&&String(message.content??'').trim()&&root&&roots.has(root))found.push({messageId:id,text:String(message.content),at:message.createdAt??''});
     }
     return found;
@@ -703,7 +712,7 @@ function queuedInboxInputs(sessionId:number) {
   return (db.query(`SELECT id FROM session_inputs WHERE session_id=? AND turn_id IS NULL AND steering_id IS NULL
     AND json_extract(COALESCE(receipt_json,'{}'),'$.state') IS NULL AND kind IN ('input','create','inbox-capture') ORDER BY rowid`).all(sessionId) as {id:string}[]).map(row=>row.id);
 }
-type WorkIndex={focus:ReturnType<typeof focusRow>;focusTitle:string|null;queued:{inputId:string;root:string|null;position:number}[];
+type WorkIndex={sessionId:number;focus:ReturnType<typeof focusRow>;focusTitle:string|null;queued:{inputId:string;root:string|null;position:number}[];
   dispatches:{root:string|null;sessionId:string|null;title:string;requestId:string}[]};
 function workIndex(sessionId:number):WorkIndex {
   const focus=focusRow(sessionId);
@@ -725,7 +734,7 @@ function workIndex(sessionId:number):WorkIndex {
     dispatches.push({root:rootOf(sessionId,row.source_input_id),sessionId:receiveSessionFromPeer(row.remote_session_id,row.peer),
       title:(catalogue?JSON.parse(catalogue.view_json)?.title:null)||`${row.peer} session`,requestId:row.request_id});
   }
-  return {focus,focusTitle,queued,dispatches};
+  return {sessionId,focus,focusTitle,queued,dispatches};
 }
 /**
  * What is happening to this thread, in words he would use. `text` is detail a surface adds
@@ -735,7 +744,7 @@ function workIndex(sessionId:number):WorkIndex {
  */
 function topicWork(topic:StoredTopic,roots:string[],index:WorkIndex,entries:EntryIndex) {
   if(index.focus?.topicId===topic.topicId)
-    return {kind:'router_working' as const,text:index.focus.summary??'',runId:index.focus.runId,sessionId:`concierge:${topic.sessionId}`};
+    return {kind:'router_working' as const,text:index.focus.summary??'',runId:index.focus.runId,sessionId:`concierge:${index.sessionId}`};
   const queued=index.queued.find(item=>item.root&&roots.includes(item.root));
   if(queued) {
     const ahead=queued.position-1;
@@ -798,6 +807,10 @@ function unfiledNeeds(session:SessionRow):OpenNeed[] {
  */
 type HumanReply={inputId:string;at:string;reviews:string[];replyTo:string|null};
 type ReadIndex={humanReplies:Map<string,HumanReply[]>};
+const inboxLineageSql=`WITH RECURSIVE lineage(id) AS (
+  SELECT ? UNION ALL SELECT handoff.predecessor_session_id FROM session_handoffs handoff
+  JOIN lineage ON handoff.successor_session_id=lineage.id WHERE handoff.state='accepted'
+) SELECT id FROM lineage`;
 function readIndex(sessionId:number,completeReplies=false):ReadIndex {
   refreshRootMemo();
   // Every human message per thread root, newest first, with the questions it reviewed and the
@@ -809,13 +822,13 @@ function readIndex(sessionId:number,completeReplies=false):ReadIndex {
   const replyFilter=completeReplies?`AND (json_extract(payload_json,'$.review.questions') IS NOT NULL
         OR json_extract(payload_json,'$.replyToMessage.messageId') IS NOT NULL)`:'';
   const limit=completeReplies?'':'LIMIT 2000';
-  for(const row of db.query(`SELECT id,created_at,json_extract(payload_json,'$.review.questions') AS review,
+  for(const row of db.query(`SELECT id,session_id,created_at,json_extract(payload_json,'$.review.questions') AS review,
       json_extract(payload_json,'$.replyToMessage.messageId') AS reply_to
-      FROM session_inputs WHERE session_id=? AND origin='human' AND kind IN ('input','create','inbox-capture')
+      FROM session_inputs WHERE session_id IN (${inboxLineageSql}) AND origin='human' AND kind IN ('input','create','inbox-capture')
         AND id NOT IN (SELECT input_id FROM session_input_author_corrections) ${replyFilter} ORDER BY rowid DESC ${limit}`).all(sessionId) as any[]) {
     // Only message kinds: his reading marks and topic actions are human inputs too, two thirds
     // of the newest 2,000 rows in the normal list view, and none of them is in any thread.
-    const root=rootOf(sessionId,row.id);
+    const root=rootOf(row.session_id,row.id);
     if(!root)continue;
     let reviews:string[]=[];
     try{const parsed=row.review?JSON.parse(row.review):[];reviews=Array.isArray(parsed)?parsed.map((item:any)=>String(item?.id??'')).filter(Boolean):[];}catch{reviews=[];}
@@ -1110,7 +1123,7 @@ export function listTopics(options:{state?:string|null;order?:string|null;query?
   const state=options.state??'open';
   if(!['open','background','closed','all'].includes(state))throw new TopicError('Unknown topic state filter.');
   const query=(options.query??'').trim().toLowerCase();
-  const rows=(db.query('SELECT * FROM inbox_topics WHERE session_id=? ORDER BY updated_at DESC,topic_id').all(session.id) as any[]).map(toStoredTopic);
+  const rows=(db.query(`SELECT * FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) ORDER BY updated_at DESC,topic_id`).all(session.id) as any[]).map(toStoredTopic);
   let summaries=rows.map(topic=>topicSummary(topic,session,index,work,read));
   if(query)summaries=summaries.filter(topic=>[topic.title,topic.summary,...topic.aliases].join(' ').toLowerCase().includes(query));
   if(state==='open')summaries=summaries.filter(topic=>topic.state==='open');
@@ -1195,7 +1208,7 @@ export function hasOpenInboxWorkForSource(topicId:string,sourceInputId:string,pr
 
 function topicHistory(sessionId:number,topicId:string) {
   return (db.query(`SELECT payload_json,created_at FROM session_owner_events
-    WHERE session_id=? AND kind IN (${MANAGEMENT_KINDS.map(()=>'?').join(',')}) AND json_extract(payload_json,'$.topicId')=?
+    WHERE session_id IN (${inboxLineageSql}) AND kind IN (${MANAGEMENT_KINDS.map(()=>'?').join(',')}) AND json_extract(payload_json,'$.topicId')=?
     ORDER BY sequence DESC LIMIT 20`).all(sessionId,...MANAGEMENT_KINDS,topicId) as any[]).map(row=>{
       const payload=JSON.parse(row.payload_json);
       return {change:payload.change,at:iso(row.created_at),by:payload.by??null,reason:payload.reason??null};
@@ -1319,7 +1332,7 @@ export function crossTopicQuestions(state:string|null) {
     :['answered','declined','withdrawn','superseded','read','expired'].includes(question.state);
   const index=entryIndex(),work=workIndex(session.id),read=readIndex(session.id);
   const groups=[];
-  for(const row of db.query('SELECT * FROM inbox_topics WHERE session_id=? ORDER BY updated_at DESC').all(session.id) as any[]) {
+  for(const row of db.query(`SELECT * FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) ORDER BY updated_at DESC`).all(session.id) as any[]) {
     const topic=toStoredTopic(row);
     const questions=topicQuestions(topic.topicId).filter(matches);
     if(!questions.length)continue;
@@ -2865,15 +2878,27 @@ const sameAsk=(question:StoredQuestion,respondingSessionId:string,runId:string|n
   &&OPEN_QUESTION_STATES.some(state=>state===question.state)&&question.owner?.sessionId===respondingSessionId&&question.owner?.askedInRun===runId;
 
 /** Reconcile retained answers after a request is linked, including links to another thread. */
+/** The live, per-request reconciliation: forwarded final answers and carried closures for one request (or all). */
 export function reconcilePlacedRequestAnswers(onlyRequestId?:string):number {
+  return reconcileForwardedFinalAnswers(onlyRequestId)+reconcileCarriedClosures(onlyRequestId);
+}
+
+/**
+ * Forwarded final answers, optionally only those whose events fall in (afterSequence, throughSequence].
+ * A bounded range reads only that slice of the event log: "+kind" and "+event_id" keep the planner
+ * off the indexes that list every forwarded post ever, so the sequence range is its access path.
+ */
+export function reconcileForwardedFinalAnswers(onlyRequestId?:string,range?:{afterSequence:number;throughSequence:number}):number {
   const inbox=inboxSession();
   if(!inbox)return 0;
+  const bounded=!!range,idColumn=bounded?'+event_id':'event_id';
   const rows=db.query(`SELECT event_id,session_id,input_id,payload_json FROM session_owner_events
-    WHERE kind='post' AND event_id >= 'post:forward:' AND event_id < 'post:forward;'
+    WHERE ${bounded?'+kind':'kind'}='post' AND ${idColumn} >= 'post:forward:' AND ${idColumn} < 'post:forward;'
       AND event_id NOT LIKE 'post:forward:shared:%'
       AND json_extract(payload_json,'$.replyKind')='final'
       AND json_extract(payload_json,'$.workDisposition') IS NOT NULL
-      AND (? IS NULL OR json_extract(payload_json,'$.requestId')=?)`).all(onlyRequestId??null,onlyRequestId??null) as
+      AND sequence > ? AND sequence <= ?
+      AND (? IS NULL OR json_extract(payload_json,'$.requestId')=?)`).all(range?.afterSequence??0,range?.throughSequence??Number.MAX_SAFE_INTEGER,onlyRequestId??null,onlyRequestId??null) as
       {event_id:string;session_id:number;input_id:string;payload_json:string}[];
   let reconciled=0;
   for(const row of rows){
@@ -2912,12 +2937,22 @@ export function reconcilePlacedRequestAnswers(onlyRequestId?:string):number {
     }
     reconciled++;
   }
+  return reconciled;
+}
+
+/** Partial answers carried by an answer closure, mirrored once their request is answered. */
+export function reconcileCarriedClosures(onlyRequestId?:string,range?:{afterSequence:number;throughSequence:number}):number {
+  const inbox=inboxSession();
+  if(!inbox)return 0;
+  let reconciled=0;
   const carried=db.query(`SELECT closure.event_id,closure.session_id,post.input_id,closure.payload_json,post.event_id AS post_id,
       post.payload_json AS post_payload FROM session_owner_events closure INDEXED BY session_owner_events_session_kind
     JOIN session_owner_events post ON post.event_id=json_extract(closure.payload_json,'$.postId') AND post.kind='post'
-    WHERE closure.session_id=? AND closure.kind='answer_closure' AND json_extract(post.payload_json,'$.replyKind')='partial'
+    WHERE closure.session_id=? AND closure.kind='answer_closure'
+      AND closure.sequence > ? AND closure.sequence <= ? AND json_extract(post.payload_json,'$.replyKind')='partial'
       AND post.event_id NOT LIKE 'post:forward:shared:%'
-      AND (? IS NULL OR json_extract(closure.payload_json,'$.requestId')=?)`).all(inbox.id,onlyRequestId??null,onlyRequestId??null) as
+      AND (? IS NULL OR json_extract(closure.payload_json,'$.requestId')=?)`).all(inbox.id,range?.afterSequence??0,
+        range?.throughSequence??Number.MAX_SAFE_INTEGER,onlyRequestId??null,onlyRequestId??null) as
       {event_id:string;session_id:number;input_id:string;payload_json:string;post_id:string;post_payload:string}[];
   for(const row of carried){
     const closure=JSON.parse(row.payload_json),post=JSON.parse(row.post_payload);
@@ -2933,16 +2968,19 @@ export function reconcilePlacedRequestAnswers(onlyRequestId?:string):number {
 }
 
 /** Hide historical timer posts without deleting their request or post evidence. */
-export function retireTimedRequestPosts():number {
+export function retireTimedRequestPosts(range?:{afterSequence:number;throughSequence:number}):number {
+  // A bounded range reads only that slice of the event log (see reconcileForwardedFinalAnswers).
+  const bounded=!!range;
   return db.transaction(()=>{
     const posts=db.query(`SELECT post.event_id,post.input_id,post.session_id FROM session_owner_events post
-    WHERE post.kind='post' AND post.event_id LIKE 'post:forward:%'
+    WHERE ${bounded?'+post.kind':'post.kind'}='post' AND ${bounded?'+post.event_id':'post.event_id'} LIKE 'post:forward:%'
+      AND post.sequence > ? AND post.sequence <= ?
       AND NOT EXISTS (SELECT 1 FROM session_owner_events hidden WHERE hidden.event_id='post:collapse:' || post.event_id)
       AND (EXISTS (SELECT 1 FROM session_communication_events event
         WHERE event.event_id=substr(post.event_id,length('post:forward:')+1) AND event.kind='overdue')
         OR EXISTS (SELECT 1 FROM session_peer_events event
         WHERE event.event_id=substr(post.event_id,length('post:forward:')+1) AND event.kind='overdue'))`)
-      .all() as {event_id:string;input_id:string|null;session_id:number}[];
+      .all(range?.afterSequence??0,range?.throughSequence??Number.MAX_SAFE_INTEGER) as {event_id:string;input_id:string|null;session_id:number}[];
     for(const post of posts)
       recordSessionEvent({eventId:`post:collapse:${post.event_id}`,sessionId:post.session_id,inputId:post.input_id,
         kind:'post_collapse',payload:{postId:post.event_id,reason:'A request timer is for agents, not the Inbox conversation.'}});
@@ -3622,13 +3660,13 @@ export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:strin
     WHERE question.state IN ('open','partial') AND question.kind='decision' LIMIT 1`).get();
   const read=hasOpenDecision?readIndex(session.id,true):{humanReplies:new Map<string,HumanReply[]>()};
   const running=new Set(forwards.filter(forward=>forward.outcome===null&&forward.root).map(forward=>topicOfRoot(forward.root!)).filter((id):id is string=>!!id));
-  const open=(db.query("SELECT topic_id FROM inbox_topics WHERE session_id=? AND state='open'").all(session.id) as {topic_id:string}[]).map(row=>row.topic_id);
+  const open=(db.query(`SELECT topic_id FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) AND state='open'`).all(session.id) as {topic_id:string}[]).map(row=>row.topic_id);
   const closedWithOpenRequests=(db.query(`SELECT DISTINCT request.topic_id FROM inbox_requests request
     JOIN inbox_topics topic ON topic.topic_id=request.topic_id
-    WHERE request.state='open' AND topic.session_id=? AND topic.state='closed'
+    WHERE request.state='open' AND topic.session_id IN (${inboxLineageSql}) AND topic.state='closed'
       AND COALESCE(json_extract(topic.closure_json,'$.kind'),'')!='merged'`)
     .all(session.id) as {topic_id:string}[]).map(row=>row.topic_id);
-  const closedBefore=(db.query("SELECT count(*) AS count FROM inbox_topics WHERE session_id=? AND state='closed'").get(session.id) as {count:number}).count;
+  const closedBefore=(db.query(`SELECT count(*) AS count FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) AND state='closed'`).get(session.id) as {count:number}).count;
   const openRequestsBefore=(db.query("SELECT count(*) AS count FROM inbox_requests WHERE state='open'").get() as {count:number}).count;
   const stuck:Stuck[]=[];
   for(const topicId of new Set([...open,...running,...closedWithOpenRequests])) {
@@ -3667,7 +3705,7 @@ export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:strin
       flagged++;
     } catch(error) {log('error','inbox_thread_upkeep_flag_failed',{request_id:item.requestId,message:error instanceof Error?error.message:String(error)});}
   }
-  const closed=(db.query("SELECT count(*) AS count FROM inbox_topics WHERE session_id=? AND state='closed'").get(session.id) as {count:number}).count-closedBefore;
+  const closed=(db.query(`SELECT count(*) AS count FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) AND state='closed'`).get(session.id) as {count:number}).count-closedBefore;
   const settled=openRequestsBefore-(db.query("SELECT count(*) AS count FROM inbox_requests WHERE state='open'").get() as {count:number}).count;
   if(closed||settled||flagged)log('info','inbox_threads_kept_current',{threads:open.length,closed,settled,flagged,stuck:stuck.length});
   return {threads:open.length,closed,settled,flagged};
@@ -3745,7 +3783,7 @@ export function topicPromptContext(sessionId:number,inputId:string,payload:any):
     // Agent requests have their own request/reply custody and do not need a human topic.
     const input=getAcceptedSessionInput(inputId);
     if(input?.origin==='agent'&&input.request_id)return '';
-    const recent=(db.query(`SELECT topic_id,title,summary,updated_at FROM inbox_topics WHERE session_id=? AND state='open'
+    const recent=(db.query(`SELECT topic_id,title,summary,updated_at FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) AND state='open'
       ORDER BY updated_at DESC LIMIT 8`).all(sessionId) as any[]).map(row=>({id:row.topic_id,title:row.title,summary:row.summary,lastEntryAt:iso(row.updated_at)}));
     const instruction=isBugReportInput(inputId)?bugReportPlacementInstruction():PLACEMENT_INSTRUCTION;
     return `\n\n<topic-placement>\n${JSON.stringify({instruction,openTopics:recent})}\n</topic-placement>`;
@@ -3825,7 +3863,7 @@ export function retitleRecoveredTopics() {
   refreshRootMemo();
   const by:TopicBy={kind:'owner',sessionId:`concierge:${session.id}`};
   let retitled=0;
-  for(const row of db.query('SELECT * FROM inbox_topics WHERE session_id=? AND recovered=1').all(session.id) as any[]) {
+  for(const row of db.query(`SELECT * FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) AND recovered=1`).all(session.id) as any[]) {
     const topic=toStoredTopic(row);
     if(lastRenameBy(topic))continue;
     const root=topicRoots(topic.topicId)[0];
@@ -4020,7 +4058,7 @@ export function fileServiceNotices():{filed:number} {
       db.transaction(()=>{
         let topicId=topicOfRoot(root);
         if(!topicId) {
-          const existing=db.query(`SELECT topic_id FROM inbox_topics WHERE session_id=? AND state='open' AND title=? ORDER BY updated_at DESC LIMIT 1`).get(session.id,title) as {topic_id:string}|null;
+          const existing=db.query(`SELECT topic_id FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) AND state='open' AND title=? ORDER BY updated_at DESC LIMIT 1`).get(session.id,title) as {topic_id:string}|null;
           const placed=existing?placeChange(session,topicRow(existing.topic_id),[root],by,reason):
             createTopic(session,by,{title,roots:[root],reason,areaIds:[ensureSystemNoticeArea(session.id)]});
           recordSessionEvent({eventId:`topic-service-notice:${need.eventId}:placed`,sessionId:session.id,inputId:need.inputId,kind:placed.change.kind,payload:placed.change.payload});

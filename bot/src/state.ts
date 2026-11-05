@@ -18,6 +18,7 @@ import { survivableRunKinds as survivableRunKindsIn } from "./execution-survival
 import { log } from "./log";
 import { quietOnlyAdmits } from './quiet-hours';
 import { OWNER_DRAIN_WITHDRAWAL_REASON } from './runner-leases';
+import {CLAUDE_ALLOWANCE_HOLD_UNTIL_MS} from './claude-allowance-hold';
 
 // Only the canonical writer owns schema upgrades. Read executors open a physically read-only
 // connection and must never run migration code during module initialization.
@@ -5362,8 +5363,13 @@ export function nextQueuedTurnAttemptMs(nowMs = Date.now()): number | null {
     SELECT saved_expires_at_ms AS at FROM turns WHERE status='queued' AND saved_kind='scheduled' AND saved_expires_at_ms>?
     UNION ALL
     SELECT until_ms AS at FROM focus_hold WHERE singleton=1 AND until_ms>?
+    UNION ALL
+    SELECT ? AS at WHERE ?>? AND EXISTS (
+      SELECT 1 FROM turns turn JOIN sessions session ON session.id=turn.session_id
+      WHERE turn.status='queued' AND session.provider_id='claude-code'
+        AND COALESCE(json_extract(session.native_metadata_json,'$.inboxRole'),'')<>'project-router')
   )`)
-    .get(nowMs,nowMs,nowMs,nowMs) as { at: number | null };
+    .get(nowMs,nowMs,nowMs,nowMs,CLAUDE_ALLOWANCE_HOLD_UNTIL_MS,CLAUDE_ALLOWANCE_HOLD_UNTIL_MS,nowMs) as { at: number | null };
   return row.at ?? null;
 }
 
@@ -5429,6 +5435,8 @@ export function survivableRunKinds() { return survivableRunKindsIn(db); }
 
 const CLAIMABLE_QUEUED_TURN_WHERE = `
   turn.status='queued'
+  AND NOT (session.provider_id='claude-code' AND ?<?
+    AND COALESCE(json_extract(session.native_metadata_json,'$.inboxRole'),'')<>'project-router')
   AND NOT EXISTS (SELECT 1 FROM session_inputs input WHERE input.id=turn.accepted_input_id
     AND ${threadOnlyReturnInputSql('input')})
   AND NOT EXISTS (SELECT 1 FROM global_pause pause WHERE pause.singleton=1 AND pause.paused=1
@@ -5501,7 +5509,7 @@ export function holdCodexAdmission(held:boolean){codexAdmissionHeld=held;if(!hel
 
 function claimableQueuedTurnParameters(nowMs:number,activeSessionIds:readonly number[],survivable:ReturnType<typeof survivableRunKinds>|null) {
   const quietSettings=db.query('SELECT quiet_start_hour,quiet_end_hour,time_zone FROM saved_work_settings WHERE singleton=1').get() as {quiet_start_hour:number;quiet_end_hour:number;time_zone:string};
-  return [nowMs,nowMs,quietOnlyAdmits(nowMs,quietSettings)?1:0,nowMs,nowMs,nowMs,nowMs,JSON.stringify(activeSessionIds),nowMs,
+  return [nowMs,CLAUDE_ALLOWANCE_HOLD_UNTIL_MS,nowMs,nowMs,quietOnlyAdmits(nowMs,quietSettings)?1:0,nowMs,nowMs,nowMs,nowMs,JSON.stringify(activeSessionIds),nowMs,
     survivable ? 1 : 0,JSON.stringify(survivable?.providers ?? []),codexAdmissionHeld ? 1 : 0] as const;
 }
 
