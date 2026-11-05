@@ -32,6 +32,7 @@ const MAX_COMMAND_BYTES = 16 * 1024 * 1024;
 type Manifest = {
   version: 1; executionId: string; executable: string; args: string[]; cwd: string;
   environment?: Record<string, string>; initialInput: string; initialMeta?: Record<string, unknown>;
+  ownerContact?: { file: string; fenceMs: number };
 };
 type Frame = { s: number; t: number; k: "o" | "e" | "i" | "c" | "x" | "h"; d: unknown };
 
@@ -197,6 +198,29 @@ receipts.set("initial", { op: "receipt", id: "initial", seq: initial.s, written:
 whenPersisted().then(() => writeLine(manifest.initialInput))
   .then(() => { append("c", { op: "written", id: "initial" }); receipts.set("initial", { op: "receipt", id: "initial", seq: initial.s, written: true }); })
   .catch(error => { receipts.set("initial", { op: "receipt", id: "initial", seq: initial.s, written: false, error: error.message }); append("c", { op: "write-failed", id: "initial", error: error.message }); });
+
+// ---- a runner's deadline ----------------------------------------------------------------------
+// On a runner the host's coordinator is the owner on another machine, reached only through the
+// runner. The runner records each time it reached the owner; when that is older than the fencing
+// time (the runner died and stayed down, or lost the owner), the owner may already have settled this
+// turn as lost and resumed the conversation elsewhere, so the provider is stopped here. The stop is
+// journaled like any signal; the exit is recorded as usual. (docs/architecture/RUNNERS.md)
+const ownerContact = manifest.ownerContact;
+if (ownerContact?.file && ownerContact.fenceMs > 0) {
+  const hostStarted = Date.now();
+  let fenced = false;
+  setInterval(() => {
+    if (fenced || exit) return;
+    // No record yet: the runner reached the owner moments ago to claim this turn.
+    let contact = hostStarted;
+    try { contact = Number(readFileSync(ownerContact.file, "utf8").trim()) || hostStarted; } catch {}
+    const silent = Date.now() - contact;
+    if (silent < ownerContact.fenceMs) return;
+    fenced = true;
+    append("c", { op: "signal", id: `runner-fence-${Date.now()}`, signal: "SIGTERM", reason: `the runner has not reached the owner for ${Math.round(silent / 1000)} s` });
+    signalExecution("SIGTERM");
+  }, 15_000);
+}
 
 // ---- the coordinator connection -------------------------------------------------------------
 let attached: Socket | null = null;

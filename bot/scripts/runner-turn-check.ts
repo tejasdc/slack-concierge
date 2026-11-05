@@ -153,6 +153,23 @@ try {
   assert.deepEqual(seqs,seqs.map((_,index)=>index+1),'Every host frame is stored once, in order, across the runner restart.');
   assert.equal(await new RunnerHostAccess(second).release(),true);
 
+  // 3b. The runner dies and stays down: once its last contact with the owner is older than the
+  // fencing time, the host stops its agent by itself (no runner is left to do it).
+  const orphaned=newExecutionId();executionIds.push(orphaned);
+  const lonely=runTurn(orphaned,'launch',{stdin:'alone'});
+  await until(()=>lonely.lines.includes('out:alone'),'the third turn to answer');
+  await stopRunner('SIGKILL');
+  const {RUNNER_FENCE_MS}=await import('../src/runner-leases');
+  const {streamJournal,executionDirectory}=await import('../src/execution-host-client');
+  writeFileSync(join(runnerState,'owner-contact'),String(Date.now()-RUNNER_FENCE_MS-1_000));
+  let fencedExit:any=null;
+  for(let tries=0;tries<40&&!fencedExit;tries++){
+    for await(const frame of streamJournal(executionDirectory(runnerState,orphaned)))if(frame.k==='x')fencedExit=frame.d;
+    if(!fencedExit)await Bun.sleep(1_000);
+  }
+  assert.equal(fencedExit?.signal,'SIGTERM',`The host stopped its provider at the deadline: ${JSON.stringify(fencedExit)}`);
+  startRunner();
+
   // 4. A provider the runner cannot find: its definite refusal, nothing started.
   const missing=newExecutionId();
   const refused=runTurn(missing,'launch',{executable:'no-such-provider-for-check'});
