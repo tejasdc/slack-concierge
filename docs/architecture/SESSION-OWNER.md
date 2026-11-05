@@ -543,8 +543,12 @@ The owner clamps a read or dismiss generation to the session's own attention cou
 - **A release wait has a wake condition.** The agent registers a renewing file watch on the
   product's current-release link, then names its watch ID with `sessions reply --partial
   --waiting-on-watch`. The reply command checks that the watch belongs to that agent and is
-  active. An existing renewing watch can serve a later request too: the partial reply binds
-  that request to the watch. The stranded check requires that exact request-to-watch
+  active. The Stop hook uses the same request-specific wake check as stranded-request recovery:
+  it lets a turn end while that request has an active watch-backed partial, but still demands a
+  reply for other requests without a wake. A renewing watch keeps that binding across watch IDs
+  in its series, provided the active watch still belongs to the worker. An existing renewing
+  watch can serve a later request too: the partial reply binds that request to the watch.
+  The stranded check requires that exact request-to-watch
   binding, so an unrelated watch cannot conceal a silent stop. While the watch is active,
   the check sees a live dependency; when the link points to another release, it sends one service input to the
   agent so it can check the installed revision and close or continue the request. The file watcher

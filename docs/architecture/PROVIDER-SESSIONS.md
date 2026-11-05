@@ -52,8 +52,10 @@ from its Git checkout before starting the updated owner. Both slots survive a re
 or checkout rollback. Installation preserves the CLI's other settings and refuses
 to replace an unrelated status-line command.
 
-The `google` alias selects Gemini 4 Argon (High) through Antigravity, the strongest
-Gemini mode Google's CLI listed for this paid Google AI Pro account on 2026-10-18.
+The `google` alias selects Gemini 4 Argon (Medium) through Antigravity. Google's
+installed CLI listed Low, Medium, and High modes on 2026-11-05; Medium keeps the
+same model family and its Argon allowance group while spending less reasoning
+than High on automatic work. `google-high` explicitly selects Argon High.
 `google-flash` explicitly selects Gemini 3.8 Flash (High); Automatic never names it.
 Google's `/usage` reply keeps Gemini 4 Argon in its own allowance group (bucket ids
 `gemini-argon-*`), separate from the shared Gemini Flash/Pro group. The reading adds the
@@ -130,8 +132,8 @@ Model aliases:
 
 | Alias | Provider | Model |
 | --- | --- | --- |
-| `cc`, `cc-fable` | Claude Code | `claude-fable-5-1` |
-| `cc-opus` | Claude Code | `claude-opus-5-5` |
+| `cc`, `cc-opus` | Claude Code | `claude-opus-5-5` |
+| `cc-fable` | Claude Code | `claude-fable-5-1` |
 | `cc-opus-1m` | Claude Code | `opus[1m]` (Claude Code's latest Opus with extended context) |
 | `cc-sonnet`, `cc-medium` | Claude Code | `claude-sonnet-5` |
 | `cc-haiku`, `cc-fast` | Claude Code | `claude-haiku-4-5-20251001` |
@@ -139,7 +141,8 @@ Model aliases:
 | `cx-astra` | Codex | `gpt-6-astra` |
 | `cx-terra`, `cx-medium` | Codex | `gpt-5.6-terra` |
 | `cx-luna`, `cx-fast` | Codex | `gpt-6-luna` |
-| `google` | Antigravity | `gemini-4-argon-high` |
+| `google` | Antigravity | `gemini-4-argon-medium` |
+| `google-high` | Antigravity | `gemini-4-argon-high` |
 | `google-flash` | Antigravity | `gemini-3.8-flash-high` |
 
 `cc-fast`, `cc-medium`, `cx-fast`, and `cx-medium` are retained tier spellings
@@ -569,7 +572,7 @@ New unbound native sessions use [Automatic starts](#automatic-starts-for-new-wor
 4. An A/B comparison is intentionally different from ordinary routing: without an explicit target it selects the source session's counterpart (`codex` → `claude-code`, `claude-code` → `codex`). An explicit `!compare @alias` wins for that comparison only.
 5. A provider outage never switches anything by itself. A stuck human message is offered the alternatives that answered a live check at that moment, and runs on one only when Tejas picks it (in the notification or on the message); see the `provider_outage` offer in the wire contract. This is a per-message choice, not a fallback chain, and it never changes a session's selected model (Tejas, 2026-09-22).
 6. Usage failure changes the executing model within the selected provider's configured chain; it does not change the requested preference. Claude tries the exact IDs in `CLAUDE_USAGE_FALLBACK_CHAIN`, then reports exhaustion visibly. It never silently switches to Codex or silently waits for a quota reset. Retry uses the existing turn controls; a user may explicitly ask the router to select Codex. There is no Codex-to-Codex chain: the [Codex allowance is account-scoped](../incidents/2026-09-15-codex-usage-limit-scope.md), so `cx-sol` is a quality and cost choice, never an availability fallback.
-7. Within a selected provider, a running turn may start other agents in two directions: it delegates bounded work down to cheaper models and escalates a stuck problem up to a stronger independent investigator. The global instruction file's Model selection section is the authority for both (see [delegation and escalation](#delegation-and-escalation)); this document owns only the alias table they name. Neither direction changes the turn's own binding, adds a selection mechanism, or overrides an explicit user choice.
+7. Within a selected provider, a running turn may start other agents in two directions: it delegates bounded work down to cheaper models and escalates a stuck problem up to a stronger independent investigator. The catalog `model-selection` skill is the behavioral authority (see [delegation and escalation](#delegation-and-escalation)); this document owns the executable alias and launch defaults. Neither direction changes the turn's own binding or overrides an explicit user choice.
 
 The request field wins over aliases inside forwarded task text. The router must resolve explicit user preference before supplying it. Without one, Automatic applies only when a new native session is created; it never mutates running work or an explicit durable binding. Reviewer instruction policy owns reviewer independence and original-transcript/fidelity checks; this runtime policy owns provider intent and failure behavior. The review-policy thread at `1789435604.076219` settled the same-provider case: a Claude implementer still gets a fresh Claude reviewer, with disclosure that this lacks a second provider's perspective. Already-bound sessions do not alternate providers automatically.
 
@@ -580,10 +583,9 @@ The routed message shows the selected provider/model even when its task is a fil
 ### Delegation and escalation
 
 A running provider turn decides for itself when to hand work to another model.
-The rule lives in one place, the global agent instruction file's **Model
-selection** section (`~/.codex/AGENTS.md`, linked from `~/.claude/CLAUDE.md`),
-because it governs every project and both providers; project AGENTS.md files
-point to it rather than restating it. In short: work whose acceptance criterion is
+The rule lives in the catalog `model-selection` skill, which the global AGENTS.md
+points to; project AGENTS.md files point to it rather than restating it. In short:
+work whose acceptance criterion is
 already fixed goes **down** to a provider-native subagent when its result only
 returns to the parent; nested helpers stay inside that subagent. The parent
 reviews the result. A new Concierge session is for work that is its own job,
@@ -610,11 +612,24 @@ Model roles for both directions:
 | Alias | Model | Role |
 | --- | --- | --- |
 | `cc-opus` | `claude-opus-5-5` | Default parent: judgment, design, diagnosis, and review of delegated output. |
-| `cc`, `cc-fable` | `claude-fable-5-1` | Escalation investigator only when Astra is unavailable; also design and review. |
+| `cc-fable` | `claude-fable-5-1` | Fallback investigator only when the named GPT model is unavailable, or Tejas explicitly chose it. |
 | `cx`, `cx-sol` | `gpt-6-sol` | Substantial but well-scoped implementation, at the default `medium` effort. |
 | `cx-medium` | `gpt-5.6-terra` | Balanced quality, latency, and cost. |
 | `cx-fast` | `gpt-6-luna` | Mechanical edits, reproductions, and checking stated claims. |
-| `cx-astra` | `gpt-6-astra` | Read-only escalation oracle for a stuck problem, started without asking; otherwise only by Tejas's explicit choice. |
+| `cx-astra` | `gpt-6-astra` | Read-only investigator after three reports or failed fixes and an unavailable or unhelpful ChatGPT Pro answer, or by Tejas's explicit choice. |
+
+Concierge starts Claude helpers on Sonnet and Codex helpers on Luna by default;
+explicit child choices still win. Agent-created Fable/Astra sessions and handoffs
+require a stated escalation trigger. The exact request records that reason as a
+countable session event. The agent shell's `codex` launcher refuses Astra without
+`CODEX_ESCALATION_REASON`; direct absolute binary paths are outside that shell
+guard. The ordinary full-path `~/.local/bin/codex` command has the same refusal
+through command-line-tools; the package binary beneath that entry is the audit
+boundary. Accepted command-line Astra starts append
+their reason to the owner state's escalation log; the usage report counts that
+log alongside session events. A direct command-line start names Tejas's explicit
+choice in its reason when he made one. The direct human session picker preserves his
+explicit model choice. The owner sends this policy again in every turn's context.
 
 **How the rule reaches running sessions.** Claude Code rereads the global file
 and receives Concierge's per-turn prompt (`SESSION_INPUT_INSTRUCTIONS`, passed as

@@ -4,7 +4,7 @@ import {homedir} from 'node:os';
 import {basename,join} from 'node:path';
 import {PeerCatalogueSync} from './peer-catalogue-sync';
 import {sessionProject} from './session-projects';
-import {AWAITING_INSPECTION,PROMPT_ANSWER_REMINDER_MS,PROMPT_ANSWER_OVERDUE_MS,REMINDERS_SINCE_MS,STILL_WAITING_AFTER_MS,STILL_WAITING_MINUTES,updateDraining,replyCommand,stalledNotice,strandedStep,tellWorkerCanceled,cancelQueuedWithdrawnRequest,type OwedRequest} from './request-liveness';
+import {AWAITING_INSPECTION,PROMPT_ANSWER_REMINDER_MS,PROMPT_ANSWER_OVERDUE_MS,REMINDERS_SINCE_MS,STILL_WAITING_AFTER_MS,STILL_WAITING_MINUTES,updateDraining,replyCommand,stalledNotice,strandedStep,tellWorkerCanceled,cancelQueuedWithdrawnRequest,waitingOnDependency,type OwedRequest} from './request-liveness';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {OWNER_READ_RESPONSE_MS} from './owner-transport-policy';
 import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
@@ -1644,6 +1644,7 @@ export class SessionPeers {
     for(const row of db.query(`SELECT * FROM session_peer_deliveries WHERE target_session_id=? AND closed_at_ms IS NULL AND stalled_at_ms IS NULL AND created_at_ms>=? ORDER BY rowid`).all(sessionId,REMINDERS_SINCE_MS) as DeliveryRow[]) {
       if(!handedToARun(row.target_input_id))continue;
       if(db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='final'").get(row.request_id))continue;
+      if(waitingOnDependency(sessionId,row.request_id,row.created_at_ms))continue;
       if(mark.offer.includes(row.request_id))db.query('UPDATE session_peer_deliveries SET hook_offered_run=? WHERE request_id=?').run(runId,row.request_id);
       if(mark.remind)db.query("UPDATE session_peer_deliveries SET reminded_at_ms=?,reminded_via='hook' WHERE request_id=? AND reminded_at_ms IS NULL AND hook_offered_run=?").run(this.now(),row.request_id,runId);
       owed.push({request_id:row.request_id,requester:`${row.peer}/${row.origin_session_id}`,requested_effect:row.requested_effect,command:replyCommand(row.request_id,row.requested_effect)});

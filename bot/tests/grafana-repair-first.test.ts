@@ -10,6 +10,11 @@ import {mkdtempSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 
+test('rapid disk loss is an ordinary alert for the standing repair agent',()=>{
+ expect(GRAFANA_CONDITIONS.AX41DiskRapidLoss).toBeDefined();
+ expect(GRAFANA_EXTERNAL_CONDITIONS.has('AX41DiskRapidLoss')).toBe(false);
+});
+
 test('all native health alerts stay with their repair owner and never open a human Inbox thread',async()=>{
  const unlock=await acquireDatabaseTestLock();ensureTable(db);
  const inputs=()=>Number((db.query('SELECT count(*) AS n FROM session_inputs').get() as any).n);

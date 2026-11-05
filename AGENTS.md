@@ -52,6 +52,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - Fresh agent-started Claude Code commands skip older Concierge wrappers in PATH and tolerate the package install's brief
   missing-command window before account selection; see the
   [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md#claude-code-started-by-an-agent).
+- Agent-started top-model choices and helper defaults follow [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#delegation-and-escalation);
+  model and helper call shares are in [usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
 
 ## Session and Inbox obligations
 
