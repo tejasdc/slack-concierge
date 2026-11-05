@@ -795,6 +795,7 @@ export class SessionExecutionHost {
           AND (input.steering_id=steering.id OR input.steering_id IS NULL AND input.turn_id IS NULL)`).all(sessionId,outside?1:0) as {id:string;origin:string;request_id:string|null}[];
       for(const row of unsent) {
         const recovered=recoverUnsentSteeredInput(row.id);
+        if(recovered&&recovered.session_id!==sessionId)this.pullWaitingInputs(recovered.session_id);
         // A reminder to answer a request already answered says nothing true any more; delivering it
         // late made the agent answer twice. Answers withdraw overdue notices the same way.
         if(row.origin==='service'&&row.id.startsWith('question-reminder:')&&row.request_id

@@ -40,6 +40,15 @@ the next-turn wait. At startup, on adoption and at run start, the owner recovers
 any prior provably unsent human steering attempt under its original accepted-input
 identity. Startup scans for his messages even when the command already ended,
 as the reported run did before this repair shipped.
+The installed check found that this particular session had accepted a provider
+handoff while its outside command was still finishing. The original session was
+suspended before the failed steering attempt could be recovered, so the first
+repair correctly left that input attached instead of waking the predecessor.
+Recovery now follows the accepted handoff chain to its current active successor,
+creates one linked input there, and marks the predecessor input continued to that
+exact new input. The stable link and original receipt make the move inspectable;
+the transaction prevents a duplicate after a restart. No pending or ambiguous
+steering attempt is moved.
 Outside runs skip the live waiting-input release, so recovery cannot withdraw
 those messages for another impossible steering attempt. A sent or ambiguous
 attempt remains untouched. Older service notices and agent requests are retained
@@ -50,8 +59,10 @@ and the dispatch guard also rejects an outside target for old clients or service
 notices. Both the live receipt and the prepared presentation receipt check the
 actual older active turn for the next-turn explanation.
 
-The session ledger is the single writer for input order. The accepted input ID
-survives a failed live attempt and its transfer to FIFO; that transfer is atomic.
+The session ledger is the single writer for input order. Without a handoff, the
+accepted input ID survives a failed live attempt and its transfer to FIFO. With
+an accepted handoff, the original input and one linked successor input identify
+the same message, and the move is atomic.
 The execution host owns the active outside command, and the claim gate excludes
 another running or delivering turn in that session. Codex's recorded native
 conversation ID, not a title or directory, selects the later `exec resume`.
@@ -61,7 +72,7 @@ unsent; recovery requires the failed steering row with no provider-send evidence
 
 ## Acceptance scenario
 
-- **Seed:** An outside Codex run is active, with one ordinary human follow-up; also retain a failed, provably unsent human steering attempt from an already finished outside run.
+- **Seed:** An outside Codex run is active, with one ordinary human follow-up; also retain a failed, provably unsent human steering attempt from an already finished outside run that accepted a handoff before the attempt failed.
 - **Action:** Admit the new follow-up, then restart Concierge and let the active run finish.
-- **Expected:** The first input enters that session's FIFO without a steering attempt and says why it waits. The old input enters FIFO under its original ID. Stop still reaches the active outside run. Each later turn uses the recorded Codex conversation ID without overlap; managed Codex and Claude Code still steer live.
+- **Expected:** The first input enters that session's FIFO without a steering attempt and says why it waits. The old input has one linked continuation in the final accepted successor, and its receipt names that continuation; the suspended predecessor does not restart. Stop still reaches the active outside run. Each later outside turn uses the recorded Codex conversation ID without overlap; managed Codex and Claude Code still steer live.
 - **Replayable offline:** no (the independent systemd unit, real owner restart and visible receipt must be observed on the installed system).
