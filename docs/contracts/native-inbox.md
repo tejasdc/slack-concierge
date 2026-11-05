@@ -685,7 +685,9 @@ A router turn that routes Tejas's input and explicitly declares `done` has no se
 from its closing text, including the owner relay for an agent-authored routed input. The closing
 text stays in the session history. A requested answer or
 necessary question is posted into the thread deliberately; declaring `response` or `needs_you`
-after routing is refused until the turn posts there. A routed turn that fails, or an older
+after routing is refused until the turn posts there. This rule belongs to the Inbox router alone:
+a worker that asks another session for facts while answering a routed message has routed
+nothing, and declares `response` with its answer as usual. A routed turn that fails, or an older
 unclassified closing answer, remains visible rather than silently losing substance. The
 prepared Inbox ledger removes already indexed explicit `done` narration when upgraded and also when
 the outcome arrives after its result. Marker-only legacy closes remain visible because their
