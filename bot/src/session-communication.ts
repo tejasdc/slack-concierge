@@ -16,6 +16,7 @@ import {turnRoutedInput} from './inbox-routing-result';
 import {sessionAuthor} from './session-message-author';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
+import {ProviderCapabilityUnavailableError} from './provider-policy';
 import { log } from './log';
 import { STEP_ASKS, finishedTodoRefusal, type TodoState } from './question-todos';
 import {boundSearchResponse} from './search-response-boundary';
@@ -718,6 +719,33 @@ export class SessionCommunicationCoordinator {
     usage(input:{source:CommunicationSource}) {
         this.actor(input.source);
         return {providers:(['claude-code','codex','antigravity'] as const).map(provider=>usageSignal(provider))};
+    }
+    /** Switch through the same guarded account operation as Accounts, attributed to this agent run. */
+    async switchCodexAccount(input:{source:CommunicationSource;action_id:string;profile_id:string;machine?:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const authority=this.authority(this.fenced(this.actor(input.source))),actor=authority.actor;
+        action(input.action_id);
+        if(authority.scope!=='work'||!actor.inputId)throw new Error('Switching an account needs an exact live work request.');
+        if(!input.profile_id?.trim())throw new Error('Name the saved Codex account profile.');
+        const retained={sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
+            kind:'action' as const,origin:'agent' as const,payload:{kind:'codex-account-switch',profileId:input.profile_id,machine:input.machine??(process.platform==='darwin'?'mac':'cloud')},
+            sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn)};
+        const saved=retainSessionInput(retained);
+        if(saved.duplicate)return saved.input.receipt_json
+            ? {...JSON.parse(saved.input.receipt_json),duplicate:true}
+            : {status:'uncertain',detail:'The earlier account switch has no final receipt; inspect the account before another attempt.',duplicate:true};
+        try {
+            const result=await this.dependencies.owner.switchAuthProfile('codex',input.profile_id,input.machine);
+            db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+                .run(JSON.stringify(result),saved.input.id);
+            return result;
+        } catch(error) {
+            const result={status:error instanceof ProviderCapabilityUnavailableError?'failed':'uncertain',
+                detail:error instanceof Error?error.message:String(error)};
+            db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+                .run(JSON.stringify(result),saved.input.id);
+            return result;
+        }
     }
     /**
      * A session names itself, and may correct that name later. It used to be one-shot, so a

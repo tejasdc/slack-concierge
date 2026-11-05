@@ -18,6 +18,7 @@ router-actions.sh projects canvas-bind <board-id> --title <canvas title> --exist
 router-actions.sh projects canvas-status <board-id>
 router-actions.sh sessions peers <source-flags>
 router-actions.sh sessions usage <source-flags> [--by-session] [--period today|week]
+router-actions.sh sessions auth switch codex <saved-profile-id> [--machine mac] <source-flags> --action-id A
 router-actions.sh sessions search <source-flags> [--limit N] [--peer <instance>] [--thread <message-id>] -- <concept...>
 router-actions.sh sessions context <address> <source-flags> [--thread <message-id>]
 router-actions.sh sessions ask <address> <source-flags> --action-id A [--thread <message-id> | --route-message <human-input-id>] [--return-to-requester] --summary "<one line>" [--answer-view summary|full] [--after-request <request-id> ...] [--after-settled <request-id> ...] -- <text>
@@ -155,6 +156,7 @@ export type SessionCommunicationRequest =
   | { operation: "agent-bind"; body: { source: Source; action_id:string; role:string; address:string } }
   | { operation: "peers"; body: { source: Source } }
   | { operation: "usage"; body: { source: Source; by_session?:boolean; period?:'today'|'week' } }
+  | { operation: "auth-switch"; body: { source: Source; action_id:string; profile_id:string; machine?:'mac' } }
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string; thread?: string } }
   | { operation: "context"; body: { source: Source; address: string; thread?: string } }
   | { operation: "ask"; body: { source: Source; action_id: string; address?: string; role?:string; provider?: string; smallTask?:boolean; effort?:string; project?:string; title?: string; text: string; after?: string[]; pace?: string[]; summary?: string; answer_view?: 'summary'|'full'; return_to_requester?:boolean; for_task?:string; recovery_of?:string; correction_of?:string; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean} } }
@@ -594,6 +596,21 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     const source=sourceFrom(flags),action_id=flags.get('--action-id');
     if(!action_id)invalid('agents bind needs a stable --action-id.');
     return {operation:'agent-bind',body:{source,action_id,role,address}};
+  }
+  if(operation==='auth'&&args[0]==='switch') {
+    args.shift();
+    const provider=args.shift(),profile_id=args.shift();
+    if(provider!=='codex'||!profile_id||profile_id.startsWith('--'))invalid('auth switch needs codex and an exact saved profile id.');
+    const flags=new Map<string,string>();
+    while(args.length){
+      const flag=args.shift()!,value=args.shift();
+      if(!['--source-input','--source-run','--action-id','--machine'].includes(flag)||!value?.trim()||flags.has(flag))invalid(`Invalid auth switch option ${flag}.`);
+      flags.set(flag,value);
+    }
+    const source=sourceFrom(flags),action_id=flags.get('--action-id'),machine=flags.get('--machine');
+    if(!action_id)invalid('auth switch needs a stable --action-id.');
+    if(machine&&machine!=='mac')invalid('auth switch --machine accepts mac only; omit it for this machine.');
+    return {operation:'auth-switch',body:{source,action_id,profile_id,...(machine?{machine:'mac' as const}:{})}};
   }
   if (operation !== "projects" && operation !== "agents" && operation !== "peers" && operation !== "usage" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "answer" && operation !== "thread" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel") {
     invalid("Choose a session command: thread, topics, projects, agents, peers, usage, search, context, ask, note, title, post, outcome, answer, reply, get, or cancel.");

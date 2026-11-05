@@ -100,6 +100,7 @@ import {ProviderLoginManager} from './auth-login';
 import {codexSignInState,codexAccountInUse} from './codex-device-login';
 import {CodexAccountLogin} from './codex-account-login';
 import {currentAccount,accountMemoryFallback,listProfiles,saveProfile,refreshClaudeAccount,setCodexAccountInUse,codexProfileSource,moveCodexAccountIntoUse,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
+import {beginCodexAccountSwitch} from './codex-saved-login-renewal';
 import {ClaudeAccountLogin} from './claude-account-login';
 import {providerAccountUsage,scheduleProviderAccountUsageRefresh,usageRefreshing,type ProviderUsage} from './provider-account-usage';
 import {accountReadingFresh,includedAllowanceWindows,markUncurrentAccountReadings} from './account-allowance-observation';
@@ -595,10 +596,12 @@ export class SessionExecutionHost {
   private async putCodexAccountInUse(source:string):Promise<ProviderAuthRefreshResult>{
     if(this.codexSwitching)return {status:'failed',detail:'Another Codex switch is still finishing on this machine. Nothing was changed.'};
     if(runningCodexTurns()!==0)return {status:'failed',detail:'Codex is working on this machine right now, so nothing was changed. Switch once that work finishes.'};
+    const releaseSavedLogin=beginCodexAccountSwitch();
+    if(!releaseSavedLogin)return {status:'failed',detail:'A saved Codex login is being renewed right now. Nothing was changed; try again when its usage reading finishes.'};
     this.codexSwitching=true;
     try {
       return await this.moveCodexAndProve(source);
-    } finally { this.codexSwitching=false; }
+    } finally { this.codexSwitching=false;releaseSavedLogin(); }
   }
   private async moveCodexAndProve(source:string):Promise<ProviderAuthRefreshResult>{
     const move=moveCodexAccountIntoUse(source);

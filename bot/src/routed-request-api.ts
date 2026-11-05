@@ -117,6 +117,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
           return Response.json(input.by_session
             ? await usageBreakdown(input.period==='week'?'week':'today') : current);
         }
+        if (operation === 'auth-switch') return Response.json(await sessions.switchCodexAccount(input));
         if (operation === 'saved') return Response.json(sessions.saved(input));
         if (operation === 'pause') return Response.json(await sessions.pause(input));
         if (operation === 'watch') {
