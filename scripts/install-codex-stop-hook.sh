@@ -87,8 +87,10 @@ fi
 # so an update never changes those semantic hooks under a running agent. The history wrapper first
 # runs the installed release's raw-live-copy refusal, which must also protect already-running agents.
 # Pinned semantic dispatch then follows, in order:
-#   1. a shared Codex daemon turn: the folder Concierge filed under its conversation id, which the
-#      hook receives as session_id on stdin (<state>/hook-pins/codex/<id>);
+#   1. a shared Codex daemon turn: the folder filed under its conversation id, which the hook
+#      receives as session_id on stdin: first the runner's pin when the App Server runs under a
+#      runner ($CONCIERGE_RUNNER_STATE/hook-pins/codex/<id>, bot/scripts/runner.ts), then the
+#      owner's (<state>/hook-pins/codex/<id>);
 #   2. a run Concierge started in a host: its own CONCIERGE_ROUTER_BOT_DIR;
 #   3. any other agent: the installed copy.
 dispatch='# dispatch: per-run v2'
@@ -141,7 +143,8 @@ if [ '$2' = history-guard ]; then
 fi
 dir='$bot' suffix='$suffix' run=''
 id=\$(printf '%s' "\$input" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9-]*\)".*/\1/p' | head -n 1)
-if [ -n "\$id" ] && [ -f '$state/hook-pins/codex/'"\$id" ]; then run=\$(head -n 1 '$state/hook-pins/codex/'"\$id")
+if [ -n "\$id" ] && [ -n "\${CONCIERGE_RUNNER_STATE:-}" ] && [ -f "\$CONCIERGE_RUNNER_STATE/hook-pins/codex/\$id" ]; then run=\$(head -n 1 "\$CONCIERGE_RUNNER_STATE/hook-pins/codex/\$id")
+elif [ -n "\$id" ] && [ -f '$state/hook-pins/codex/'"\$id" ]; then run=\$(head -n 1 '$state/hook-pins/codex/'"\$id")
 elif [ -n "\${CONCIERGE_ROUTER_BOT_DIR:-}" ]; then run=\$CONCIERGE_ROUTER_BOT_DIR; fi
 if [ -n "\$run" ]; then
   if [ -f "\$run/scripts/$2.js" ]; then dir=\$run suffix=js

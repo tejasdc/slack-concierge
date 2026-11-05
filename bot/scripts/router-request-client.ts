@@ -4,6 +4,7 @@ import type { Action } from "./router-post";
 import { RETRY_POLICIES, type RetryPolicy } from "../src/retry-policies";
 import { nextRetry } from "../src/retry-core";
 import {OWNER_COMMAND_RESPONSE_MS,ownerNeverReached} from '../src/owner-transport-policy';
+import {readRunnerConnection} from '../src/runner-machine';
 
 // Concierge restarts for a few seconds whenever it updates, and an agent's helper call can land
 // in that gap. Sending it once and giving up turned a routine update into a failed reply or a
@@ -33,17 +34,19 @@ function socketPath() {
  * other caller reaches the owner's socket on this machine, as before (docs/architecture/RUNNERS.md).
  */
 function networkOwner() {
-  const url = process.env.CONCIERGE_OWNER_URL?.trim();
+  // On a runner its connection file is current; an address in this shell may predate the owner's move.
+  const connection = readRunnerConnection();
+  const url = connection?.ownerUrl || process.env.CONCIERGE_OWNER_URL?.trim();
   if (!url) return null;
-  const token = process.env.CONCIERGE_AGENT_TOKEN?.trim() || runnerToken();
+  const token = process.env.CONCIERGE_AGENT_TOKEN?.trim() || runnerToken(connection?.tokenFile);
   return token ? { url: url.replace(/\/+$/, ''), token } : null;
 }
 /**
- * A Codex shell on a runner carries no per-run token (a thread would keep it for its life); it
- * inherits the runner's own address and token file from the App Server the runner started.
+ * A Codex shell on a runner carries no per-run token (a thread would keep it for its life); it uses
+ * the runner's own token file, named in the runner's connection file (runner-machine.ts).
  */
-function runnerToken(): string | null {
-  const file = process.env.CONCIERGE_RUNNER_TOKEN_FILE?.trim();
+function runnerToken(connectionTokenFile?: string): string | null {
+  const file = connectionTokenFile || process.env.CONCIERGE_RUNNER_TOKEN_FILE?.trim();
   if (!file) return null;
   try { return readFileSync(file, 'utf8').trim() || null; } catch { return null; }
 }

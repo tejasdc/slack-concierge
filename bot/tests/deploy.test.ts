@@ -489,7 +489,8 @@ describe("drain-aware deploy", () => {
     expect(botUnit).toContain("CONCIERGE_CAPTURE_QUEUE_URL=http://127.0.0.1:8081");
     expect(botUnit).toContain("CONCIERGE_CODEX_REMOTE_EXCLUDE_CHANNELS=C0BNNP6U6GN,D0BMWUJ3RD5,slack-inbox");
     expect(botUnit).toContain("ExecStartPre=/usr/bin/test -x /usr/bin/node");
-    expect(botUnit).toContain("ExecStartPre=/root/.codex/packages/standalone/current/codex app-server daemon start");
+    // The runner starts and supervises the App Server; the owner must not (RUNNERS.md).
+    expect(botUnit).not.toContain("app-server daemon start");
     expect(botUnit).toContain("ExecStartPre=/usr/local/lib/slack-concierge-deployment/control recover");
     const repairUnit = readFileSync(join(repo, "systemd/concierge-deployment-repair@.service"), "utf-8");
     expect(repairUnit).toContain("User=root");

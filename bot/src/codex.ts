@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
+import { withoutMachinePaths } from "./runner-machine";
 import { splitTurnOutcomeMarker } from "./turn-outcome-marker";
 import { codexHistoryMessages, providerMessageObserver, type ProviderMessageCallback } from "./provider-history";
 import {
   CodexAppServerClientError,
   CodexAppServerUnansweredError,
   codexAppServerReady,
+  codexRelayRunner,
   sharedCodexAppServerClient,
   type CodexAppServerClientLike,
 } from "./codex-app-server-client";
@@ -1729,7 +1731,9 @@ export async function runCodexTurn(input: RunCodexTurnInput): Promise<RunResult>
     onRateLimits?.(snapshot);
   } };
   if (input.interactionPolicy !== "consultation-only") {
-    input = { ...input, environment: providerOwnerEnvironment(input.environment) };
+    const environment = providerOwnerEnvironment(input.environment);
+    // A runner's App Server gets that runner's folders from the runner (runner-machine.ts), never ours.
+    input = { ...input, environment: !input.executable && codexRelayRunner() ? withoutMachinePaths(environment) : environment };
   }
   try {
     const result = await (input.executable ? runCodexTurnStdio(input) : runCodexTurnShared(input));

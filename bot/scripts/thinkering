@@ -4,9 +4,19 @@
 # written http://x/<path> goes to thnkr.ing. With THINKERING_CAPABILITY_URL set (a turn on a runner)
 # that is thnkr.ing's network entrance with this agent's Concierge token; otherwise its local socket,
 # so the same words work on the server, on a runner and in every older instruction's URL form.
+# On a runner, its connection file (bot/src/runner-machine.ts) is current; a Codex thread keeps its
+# first turn's environment for life, so values there may predate a move.
+connection=${CONCIERGE_RUNNER_STATE:+$CONCIERGE_RUNNER_STATE/connection.env}
+token_file=${CONCIERGE_RUNNER_TOKEN_FILE:-}
+if [ -n "$connection" ] && [ -r "$connection" ]; then
+  value=$(sed -n 's/^THINKERING_CAPABILITY_URL=//p' "$connection" | head -n 1)
+  [ -n "$value" ] && THINKERING_CAPABILITY_URL=$value
+  value=$(sed -n 's/^CONCIERGE_RUNNER_TOKEN_FILE=//p' "$connection" | head -n 1)
+  [ -n "$value" ] && token_file=$value
+fi
 if [ -n "${THINKERING_CAPABILITY_URL:-}" ]; then
   token=${CONCIERGE_AGENT_TOKEN:-}
-  if [ -z "$token" ] && [ -n "${CONCIERGE_RUNNER_TOKEN_FILE:-}" ]; then token=$(cat "$CONCIERGE_RUNNER_TOKEN_FILE"); fi
+  if [ -z "$token" ] && [ -n "$token_file" ]; then token=$(cat "$token_file"); fi
   if [ -z "$token" ]; then
     echo "thinkering: this shell has no Concierge agent token for thnkr.ing's network entrance" >&2
     exit 64

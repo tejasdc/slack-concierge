@@ -9,6 +9,7 @@
  */
 import {strict as assert} from 'node:assert';
 import {chmod,mkdtemp,rm,writeFile} from 'node:fs/promises';
+import {existsSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 
@@ -36,6 +37,8 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
       const request=JSON.parse(String(message));
       if(request.method==='initialize')socket.send(JSON.stringify({id:request.id,result:{userAgent:'stand-in'}}));
       else if(request.method==='model/list')socket.send(JSON.stringify({id:request.id,result:{data:[{id:'stand-in-model'}],connection:appConnections}}));
+      else if(request.method==='thread/start')socket.send(JSON.stringify({id:request.id,result:{thread:{id:'019a-relay-check'},received:request.params}}));
+      else if(request.method==='turn/start')socket.send(JSON.stringify({id:request.id,result:{turn:{id:'turn-1'}}}));
       else if(request.method==='test/drop')socket.close();
     }}});
 
@@ -71,6 +74,25 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
     const first=await client.request('model/list',{},{requestTimeoutMs:10_000});
     assert.equal(first.data[0].id,'stand-in-model');
     assert.equal(first.connection,1);
+
+    // The owner sends a thread's shell settings without its own folders; the runner fills in its own
+    // on the way through, pins the thread's hooks to its helpers at the turn start, and names where
+    // the owner is in its connection file (runner-machine.ts).
+    const runnerState=join(root,'runner');
+    const {withoutMachinePaths,readRunnerConnection}=await import('../src/runner-machine');
+    const ownerShell=withoutMachinePaths({PATH:'/owner/bot/scripts:/usr/bin',CONCIERGE_STATE_DIR:'/owner/state',CONCIERGE_ROUTER_BOT_DIR:'/owner/bot',CONCIERGE_TURN_ID:'9'});
+    const started=await client.request('thread/start',{cwd:root,config:{shell_environment_policy:{inherit:'all',set:ownerShell}}},{requestTimeoutMs:10_000});
+    const set=started.received.config.shell_environment_policy.set;
+    assert.equal(set.CONCIERGE_TURN_ID,'9');
+    assert.equal(set.CONCIERGE_STATE_DIR,runnerState);
+    assert.equal(set.CONCIERGE_RUNNER_STATE,runnerState);
+    assert.equal(set.CONCIERGE_ROUTER_BOT_DIR,resolve(import.meta.dir,'..'));
+    assert.ok(set.PATH.startsWith(`${resolve(import.meta.dir,'..')}/scripts:`),set.PATH);
+    assert.ok(!JSON.stringify(set).includes('/owner/'),'An owner folder reached the runner\'s App Server.');
+    await client.request('turn/start',{threadId:'019a-relay-check',input:[]},{requestTimeoutMs:10_000});
+    await until(()=>existsSync(join(runnerState,'hook-pins','codex','019a-relay-check')),'the runner to pin the thread');
+    assert.equal(readFileSync(join(runnerState,'hook-pins','codex','019a-relay-check'),'utf8').split('\n')[0],resolve(import.meta.dir,'..'));
+    assert.deepEqual(readRunnerConnection({CONCIERGE_RUNNER_STATE:runnerState}),{ownerUrl:`http://127.0.0.1:${port}`,tokenFile});
 
     // The App Server drops its connection: the relay and the client's connection end with it.
     let dropped=false;

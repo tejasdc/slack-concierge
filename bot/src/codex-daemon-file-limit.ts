@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { chmodSync, chownSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -72,6 +72,18 @@ let lastDaemonStartAt = 0;
 export function startCodexDaemonWhenAbsent(reason: string) {
   if ((process.platform !== "linux" && process.platform !== "darwin") || autoStartHeld || daemonStart || Date.now() - lastDaemonStartAt < 30_000) return;
   lastDaemonStartAt = Date.now();
+  // Codex refuses to start when its control and daemon folders are not private (CODEX-APP-SERVER.md);
+  // the owner's unit used to restore them before its own start, which runners now do here.
+  if (process.platform === "linux") {
+    try {
+      for (const folder of ["app-server-control", "app-server-daemon"]) {
+        mkdirSync(join(homedir(), ".codex", folder), { recursive: true, mode: 0o700 });
+        chmodSync(join(homedir(), ".codex", folder), 0o700);
+        // Owned by whoever runs Codex: a copied folder kept another user's owner on 2026-09-22.
+        chownSync(join(homedir(), ".codex", folder), process.getuid!(), process.getgid!());
+      }
+    } catch (error) { log("warn", "codex_daemon_folders_unrepaired", { error: error instanceof Error ? error.message : String(error) }); }
+  }
   if (!codexUpdaterDisabled()) {
     log("error", "codex_daemon_start_failed", { reason, error: "Codex automatic App Server updates are not disabled." });
     return;

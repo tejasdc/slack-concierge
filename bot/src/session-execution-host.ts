@@ -1363,6 +1363,8 @@ export class SessionExecutionHost {
       directory:'',coordinatorInstanceId:this.options.instanceId,supervisor:'codex-daemon',processor:{...kept,run:data}});
     // The daemon's hooks carry no run of their own: file this release's helpers under the Codex
     // conversation before its turn starts, so they stay the same if an update installs mid-turn.
+    // Through a runner's relay the runner also pins its own helpers at the turn's start (runner.ts);
+    // an App Server started by this owner's unit (the AX41's until its next restart) reads these.
     const stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!),botDir=providerOwnerEnvironment().CONCIERGE_ROUTER_BOT_DIR;
     return {...prepared,onProviderThreadStarted:(threadId:string)=>{
       try{if(botDir)pinCodexThreadHooks(stateDir,threadId,executionId,botDir);}
