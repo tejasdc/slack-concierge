@@ -1,5 +1,6 @@
 import {readdir,readFile,stat} from 'node:fs/promises';
 import {join,relative} from 'node:path';
+import {createHash} from 'node:crypto';
 import {db} from './state';
 import {log} from './log';
 import {recordSessionEvent} from './session-inputs';
@@ -25,7 +26,7 @@ import {meaningIndex} from './meaning-index';
  * (in the 2026-11-01 run they were the top three hits). What it finds is one quiet post in the
  * thread with links he can open; nothing asks him anything.
  */
-const MIN_SCORE=0.5,SHOWN=2,WINDOW=350,WINDOWS=14,PER_WINDOW=3;
+const MIN_SCORE=0.5,SHOWN=3,WINDOW=350,WINDOWS=14,PER_WINDOW=3,NAMED_WINDOWS=2;
 /** How much of a note's opening is compared, the same length the thread filer reads of his words. */
 const NOTE_OPENING=600;
 /** Messages that arrived before this owner started are linked only when this recent, so a restart never posts into old threads. */
@@ -92,9 +93,15 @@ async function notes():Promise<{path:string;title:string;text:string}[]> {
 /** Earlier sessions, notes and threads close to one message, best first. */
 async function earlierWork(input:{inboxSessionId:number;topicId:string;words:string;arrivedMs:number;search:SessionSearch;threads:{id:string;title:string;text:string;createdMs:number|null}[]}) {
   const index=meaningIndex();if(!index?.installed)return [];
-  const questions=windows(input.words);
+  // One question for the whole thread (his words, as the search reads its first 800 characters),
+  // plus at most two passages that name something in his standing facts, which the whole-thread
+  // question can drown out (the IdeaFlow case, 2026-11-02). Fourteen windows per message cost up
+  // to fourteen owner searches and he asked why the text was being broken up (2026-11-05).
   const names=await standingNames();
-  const named=questions.map(question=>{const lower=question.toLocaleLowerCase('en-US');return names.some(name=>lower.includes(name));});
+  const names_in=(text:string)=>{const lower=text.toLocaleLowerCase('en-US');return names.some(name=>lower.includes(name));};
+  const salient=windows(input.words).filter(names_in).slice(0,NAMED_WINDOWS);
+  const questions=[input.words.replace(/\s+/g,' ').trim(),...salient];
+  const named=questions.map((question,at)=>at>0||names_in(question));
   const working=new Set<number>([input.inboxSessionId]);
   for(const row of db.query('SELECT dispatches_json FROM inbox_requests WHERE topic_id=?').all(input.topicId) as {dispatches_json:string}[])
     for(const dispatch of JSON.parse(row.dispatches_json) as any[]){const id=/^concierge:(\d+)$/.exec(String(dispatch?.targetSessionId??''));if(id)working.add(Number(id[1]));}
@@ -143,12 +150,23 @@ async function earlierWork(input:{inboxSessionId:number;topicId:string;words:str
     const found=list.find(item=>!hub(item.key));if(!found)continue;
     const vote=votes.get(found.key)??{found,named:0,all:0,best:0};
     vote.all++;if(named[at])vote.named++;
-    if(found.score>vote.best){vote.best=found.score;vote.found={...found,because:questions[at]};}
+    if(found.score>vote.best){vote.best=found.score;vote.found={...found,because:at===0?closestSentence(input.words,found):questions[at]};}
     votes.set(found.key,vote);
   }
   return [...votes.values()].sort((a,b)=>b.named-a.named||b.all-a.all||b.best-a.best).slice(0,SHOWN).map(vote=>vote.found);
 }
 
+/** The sentence of his sharing the most words with what was found, so the quote says why this link is here. */
+function closestSentence(words:string,found:Found):string{
+  const of=(text:string)=>new Set(text.toLocaleLowerCase('en-US').match(/[\p{L}\p{N}]{4,}/gu)??[]);
+  const target=of(`${found.title} ${found.snippet}`);
+  let best='',bestShared=-1;
+  for(const sentence of words.replace(/\s+/g,' ').split(/(?<=[.?!])\s+/)){
+    const shared=[...of(sentence)].filter(word=>target.has(word)).length;
+    if(shared>bestShared){bestShared=shared;best=sentence;}
+  }
+  return best;
+}
 /** A few of his words from the passage that found the link, so he can see why it is there. */
 const yourWords=(text:string|undefined)=>{
   const words=(text??'').replace(/\s+/g,' ').trim();
@@ -164,28 +182,55 @@ const line=(found:Found)=>{
 };
 
 /**
- * Links each recent captured message in the changed threads to his earlier work, once per
- * message. Returns how many messages got a post.
+ * His own words in a capture: a bug report's form scaffolding (its header, "What changed:" summary,
+ * the image list and everything from "Complete diagnostics JSON" on) is removed. The same rule as
+ * thnkr.ing's captureWords (apps/web/src/inbox-capture-text.ts): 100 of the first 717 links were
+ * found by the form's own lines, not by anything he said (2026-11-05).
+ */
+export function hisCaptureWords(text:string):string{
+  const lines=text.split('\n');
+  const end=lines.findIndex(line=>line.startsWith('Complete diagnostics JSON'));
+  const readable=end>=0?lines.slice(0,end):lines;
+  if((readable[0]??'').trim()!=='Thinkering bug report')return readable.join('\n').trim();
+  const words:string[]=[];let listing=false;
+  for(const line of readable.slice(1)){
+    if(line.trim()==='Description:'){listing=false;continue;}
+    if(line.trim()==='Attached images:'||line.trim()==='What changed:'){listing=true;continue;}
+    if(!listing)words.push(line);
+  }
+  return words.join('\n').trim();
+}
+
+/**
+ * Links each changed thread, as a whole, to his earlier work: one post per thread, made again only
+ * when his own words in it change (a new captured message of his). Only messages he sent count;
+ * agent reports and alerts filed into his threads are not his thinking. Returns how many posts it made.
  */
 export async function linkEarlierWork(input:{inboxSessionId:number;topicIds:string[];startedMs:number;search:SessionSearch;threads:{id:string;title:string;text:string}[]}) {
   const created=new Map((db.query("SELECT topic_id,created_at FROM inbox_topics WHERE session_id=? AND state='open'").all(input.inboxSessionId) as {topic_id:string;created_at:string}[]).map(row=>[row.topic_id,time(row.created_at)]));
   const threads=input.threads.map(thread=>({...thread,createdMs:created.get(thread.id)??null}));
   let posted=0;
   for(const topicId of input.topicIds){
-    const roots=db.query("SELECT r.root_input_id AS id,i.created_at AS at,substr(json_extract(i.payload_json,'$.text'),1,4000) AS text,i.origin AS origin FROM inbox_topic_roots r JOIN session_inputs i ON i.id=r.root_input_id WHERE r.topic_id=? AND r.root_input_id LIKE 'capture:%'")
-      .all(topicId) as {id:string;at:string;text:string|null;origin:string}[];
-    for(const root of roots){
-      const arrivedMs=time(root.at);
-      if(arrivedMs===null||arrivedMs<input.startedMs-RECENT_MS||!root.text||root.text.length<40)continue;
-      const eventId=`post:earlier-work:${root.id}`;
-      if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))continue;
-      const found=await earlierWork({inboxSessionId:input.inboxSessionId,topicId,words:root.text,arrivedMs,search:input.search,threads});
-      // A message with nothing close enough is marked too, so it is not searched again.
-      const text=found.length?`**Earlier work related to this message.** Concierge found it by meaning in your sessions, threads and notes; nothing to do unless you want to open it.\n${found.map(line).join('\n')}`:null;
-      recordSessionEvent({eventId,sessionId:input.inboxSessionId,inputId:root.id,kind:text?'post':'earlier_work',
-        payload:text?{text,replyToMessage:{kind:'message',sessionId:`concierge:${input.inboxSessionId}`,messageId:root.id},postedBy:'service'}:{found:0}});
-      if(text){posted++;log('info','earlier_work_linked',{topic_id:topicId,root:root.id,found:found.map(item=>({kind:item.kind,score:Math.round(item.score*1000)/1000}))});}
-    }
+    const roots=db.query("SELECT r.root_input_id AS id,i.created_at AS at,substr(json_extract(i.payload_json,'$.text'),1,4000) AS text FROM inbox_topic_roots r JOIN session_inputs i ON i.id=r.root_input_id WHERE r.topic_id=? AND r.root_input_id LIKE 'capture:%' AND i.origin='human' ORDER BY i.created_at,i.id")
+      .all(topicId) as {id:string;at:string;text:string|null}[];
+    const his=roots.map(root=>({...root,words:hisCaptureWords(root.text??'')})).filter(root=>root.words.length>=40);
+    const latest=his.at(-1);if(!latest)continue;
+    const arrivedMs=time(latest.at);
+    if(arrivedMs===null||arrivedMs<input.startedMs-RECENT_MS)continue;
+    const words=his.map(root=>root.words).join('\n').slice(0,4000);
+    const eventId=`post:earlier-work:${topicId}:${createHash('sha256').update(words).digest('hex').slice(0,16)}`;
+    if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))continue;
+    const started=performance.now();
+    // Earlier means before his first message here, so the thread's own later work is never its own match.
+    const found=await earlierWork({inboxSessionId:input.inboxSessionId,topicId,words,arrivedMs:time(his[0]!.at)??arrivedMs,search:input.search,threads});
+    const durationMs=Math.round(performance.now()-started);
+    // A thread with nothing close enough is marked too, so the same words are not searched again.
+    const text=found.length?`**Earlier work related to this thread.** Concierge found it by meaning in your sessions, threads and notes, from your own messages here; nothing to do unless you want to open it.\n${found.map(line).join('\n')}`:null;
+    recordSessionEvent({eventId,sessionId:input.inboxSessionId,inputId:latest.id,kind:text?'post':'earlier_work',
+      payload:text?{text,replyToMessage:{kind:'message',sessionId:`concierge:${input.inboxSessionId}`,messageId:latest.id},postedBy:'service'}:{found:0}});
+    if(text)posted++;
+    log('info','earlier_work_linked',{topic_id:topicId,root:latest.id,messages:his.length,durationMs,
+      found:found.map(item=>({kind:item.kind,score:Math.round(item.score*1000)/1000}))});
   }
   return posted;
 }
