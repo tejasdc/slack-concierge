@@ -582,6 +582,13 @@ The routed message shows the selected provider/model even when its task is a fil
 
 ### Delegation and escalation
 
+A new Fable or Astra session checks the stated escalation trigger before it is retained.
+When an ask crosses between the server and Mac, the sending Concierge carries the
+reason and its verified record of Tejas's exact model choice to the receiving
+Concierge. The receiving owner accepts that record only for the same selected model;
+the peer's authenticated delivery keeps the human source identity. Each accepted
+top-model start records its reason for the usage report.
+
 A running provider turn decides for itself when to hand work to another model.
 The rule lives in the catalog `model-selection` skill, which the global AGENTS.md
 points to; project AGENTS.md files point to it rather than restating it. In short:
