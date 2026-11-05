@@ -31,6 +31,14 @@ export class ProviderTurnCancelledError extends Error {
   }
 }
 
+/** This owner stopped while a local prerequisite was still waiting; no provider was admitted. */
+export class OwnerDrainBeforeProviderAdmissionError extends Error {
+  constructor() {
+    super("Concierge drained before provider admission.");
+    this.name = "OwnerDrainBeforeProviderAdmissionError";
+  }
+}
+
 export class ProviderDispatchError extends Error {
   readonly failureClass: ProviderDispatchFailureClass;
   readonly terminalConfirmed: boolean;

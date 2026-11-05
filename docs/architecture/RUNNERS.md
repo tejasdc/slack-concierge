@@ -144,7 +144,9 @@ What happens for a turn on a runner:
    the opening input, attachment bytes, and the host protocols the owner adopts. The owner's own
    environment is not in it.
 2. A runner claims it within two minutes (`CONCIERGE_RUNNER_CLAIM_MS`), or the owner withdraws the
-   still-queued job in one statement and the turn fails unstarted (nothing ran). The runner writes the
+   still-queued job in one statement. The ordinary claim-timeout path parks the turn for custody
+   reconciliation after its admission intent; only the owner-drain withdrawal in step 7 returns
+   the turn unsent. The runner writes the
    attachments, finds the provider command on its own `PATH`, builds the environment from its own
    (its state folder, its release's helpers, its address for the owner, `THINKERING_CAPABILITY_URL`
    when set) plus the run's variables, and starts the host under its own systemd. A command it
@@ -259,8 +261,13 @@ turn by its thread and turn id), so moving it only changes where the bridge's We
    turn) is still owed before a runner hides its token from agents.
 6. Backpressure: a side that stops reading past 64 MB is disconnected (`closeOnBackpressureLimit`),
    and a message Bun refuses ends the relay; nothing is dropped silently.
-7. **Owner drain.** A drain's first step stops the front door taking new connections but keeps open
-   relays (`stopListening`; Bun's graceful stop leaves upgraded sockets working). A Codex turn's
+7. **Owner drain.** After stopping new turn claims, the owner withdraws its still-queued runner turn
+   jobs before it waits for active turns. A launch crossing that sweep withdraws its own queued job
+   before waiting for a claim. Withdrawal is conditional on `queued`, so a runner that already
+   claimed a job keeps custody and the existing adoption and fencing rules apply. The withdrawn
+   launch reports not-started, and the owner clears that attempt's admission intent and requeues
+   its exact turn as proven unsent for the next owner. The drain also stops the front door taking
+   new connections but keeps open relays (`stopListening`; Bun's graceful stop leaves upgraded sockets working). A Codex turn's
    relayed App Server connection therefore lives until the owner closes its App Server client as its
    last step, exactly as the local socket does, and the next owner follows the turn by thread and turn
    id. Only then are the relays and listen channels closed (`closeRelays`), so the final stop is
@@ -268,9 +275,10 @@ turn by its thread and turn id), so moving it only changes where the bridge's We
 
 **Startup order.** Codex readiness never holds or fails Concierge's startup. Recovery claims
 surviving Codex turns immediately; every Codex turn, adopted or new, then waits at one readiness
-gate before connecting to its App Server. A new turn waits before its run is recorded or admitted,
-so a restart during the wait requeues it as unsent. A Stop requested during the wait is held and
-takes effect when Codex answers. The gate opens when a
+gate before connecting to its App Server. A new turn waits before provider admission and execution
+intent. On owner drain that turn's wait ends and its exact input returns to the queue as proven
+unsent; an already recorded execution remains with its host for adoption. A human Stop requested
+during an ordinary readiness wait is held and takes effect when Codex answers. The gate opens when a
 `model/list` probe answers. The probe starts with the first Codex turn or with the startup
 readiness phase, whichever comes first. It retries through any error (a missing request socket,
 the relay's 503 for an absent runner channel, a down App Server) with a backoff of up to 15

@@ -1383,7 +1383,8 @@ export async function runClaudeCodeTurn(input: {
   const outcome = await transport.run({
     args,
     cwd: input.cwd,
-    environment: input.interactionPolicy === "consultation-only" ? claudeConsultationEnvironment(input.environment) : providerOwnerEnvironment(input.environment),
+    environment: { ...(input.interactionPolicy === "consultation-only" ? claudeConsultationEnvironment(input.environment) : providerOwnerEnvironment(input.environment)),
+      CLAUDE_CODE_SUBAGENT_MODEL: input.environment?.CLAUDE_CODE_SUBAGENT_MODEL || "claude-sonnet-5" },
     ...(input.interactionPolicy === "consultation-only" ? { inheritEnvironment: false } : {}),
     stdin: `${claudeCodeUserMessage(input.prompt)}\n`,
     onStdinReady: (write, close) => {

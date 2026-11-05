@@ -5,9 +5,11 @@ import {promisify} from 'node:util';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {db,executionChanged,finishTurn,getSessionById,settleTurnDependencies} from './state';
-import {createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,retainSessionInput,sessionInputProvenance,sessionMetadata,stablePayload,updateSessionMetadata} from './session-inputs';
+import {createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,retainSessionInput,sessionInputProvenance,sessionMetadata,stablePayload,updateSessionMetadata} from './session-inputs';
 import {safeTurn,type WaitingTurn} from './provider-exhaustion-recovery';
 import {parseProviderSelector,resolveProviderSelector,normalizeReasoningEffort} from './aliases';
+import {escalationReason,topModel} from './model-escalation';
+import {humanChoseTopModel} from './model-escalation-custody';
 import {sessionAddress} from './session-address';
 import {claudeConfigDir,locateClaudeTranscript} from './claude-transcript-watch';
 
@@ -166,6 +168,8 @@ export async function proposeHandoff(input:{actorSession:number;inputId:string;r
   const selector=parseProviderSelector(input.provider);
   if(!selector)throw new Error('Choose a supported coding provider alias for a handoff.');
   const selected=resolveProviderSelector(selector);
+  const refused=escalationReason(input.model??selected.model,input.reason,humanChoseTopModel(input.inputId,input.model??selected.model??''));
+  if(refused)throw new Error(refused);
   if(selected.provider==='chatgpt')throw new Error('ChatGPT cannot acknowledge a handoff.');
   const effort=input.effort?normalizeReasoningEffort(input.effort):selector.effort;
   if(input.effort&&!effort)throw new Error('Invalid reasoning effort.');
@@ -195,6 +199,8 @@ export async function proposeHandoff(input:{actorSession:number;inputId:string;r
       `If the digest changed, read the new inventory and acknowledge that exact digest.\n\n${JSON.stringify(now,null,2)}`;
     const first=retainSessionInput({id:`handoff:${id}`,sessionId:successor.id,scope:`handoff:${id}`,actionId:'brief',kind:'input',origin:'agent',payload:{text:brief},
       sourceInputId:input.inputId,sourceRunId:input.runId}).input;
+    if(topModel(input.model??selected.model))recordSessionEvent({eventId:`model-escalation:handoff:${id}`,sessionId:successor.id,
+      inputId:first.id,kind:'model_escalation',payload:{model:input.model??selected.model,reason:input.reason,sourceInputId:input.inputId}});
     enqueueSessionInput(first.id);
     executionChanged();
     return {handoffId:id,successor:canonical(successor.id),address:sessionAddress(successor),inventory:now,digest:hash,state:'proposed'};

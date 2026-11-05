@@ -1,5 +1,5 @@
 import {onCodexHistoryChanged} from './codex-session-observer';
-import { codexAppServerReady } from "./codex-app-server-client";
+import { codexAppServerReady, waitForCodexAppServerOrDrain } from "./codex-app-server-client";
 import {CODEX_PROCESS_REPORT_GRACE_MS,codexLeftoverProcesses,codexProcessStillRunning,type CodexLeftoverProcess} from './codex-leftover-processes';
 import {createHash} from 'node:crypto';
 import {ledgerDurable} from './ledger-durability-barrier';
@@ -25,7 +25,7 @@ import {completeNativeFork,readNativeForkPin,type NativeForkPin} from './native-
 import {readRetainedNativeResult} from './turn-recovery';
 import {isProcessIdentityAlive} from './runtime-identity';
 import {ProviderCapabilityUnavailableError} from './provider-policy';
-import {ProviderDispatchError} from './provider-failures';
+import {OwnerDrainBeforeProviderAdmissionError,ProviderDispatchError} from './provider-failures';
 import {providerRetryDelayMs} from './provider-failures';
 import {chooseClaudeDispatch} from './provider-account-dispatch';
 import {CHATGPT_THINKING_LEVELS,HIS_CHATGPT_PREFIX,PROVIDER_ALIASES, providerDisplayName } from './aliases';
@@ -100,6 +100,7 @@ import {ProviderLoginManager} from './auth-login';
 import {codexSignInState,codexAccountInUse} from './codex-device-login';
 import {CodexAccountLogin} from './codex-account-login';
 import {currentAccount,accountMemoryFallback,listProfiles,saveProfile,refreshClaudeAccount,setCodexAccountInUse,codexProfileSource,moveCodexAccountIntoUse,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
+import {beginCodexAccountSwitch} from './codex-saved-login-renewal';
 import {ClaudeAccountLogin} from './claude-account-login';
 import {providerAccountUsage,scheduleProviderAccountUsageRefresh,usageRefreshing,type ProviderUsage} from './provider-account-usage';
 import {accountReadingFresh,includedAllowanceWindows,markUncurrentAccountReadings} from './account-allowance-observation';
@@ -179,6 +180,10 @@ function canvasSpeechApplicationContext(input:AcceptedSessionInput,runId:string,
 }
 
 export class SessionExecutionHost {
+  private draining=false;
+  private resolveDrainStarted:()=>void=()=>{};
+  private readonly drainStarted=new Promise<void>(resolve=>{this.resolveDrainStarted=resolve;});
+  beginDrain(){if(this.draining)return;this.draining=true;this.resolveDrainStarted();}
   private readonly codexProcessAudits=new Set<number>();
   private readonly historyPages=new ProviderHistoryPageClient();
   private readonly stopCodexWindows:()=>void;
@@ -595,10 +600,12 @@ export class SessionExecutionHost {
   private async putCodexAccountInUse(source:string):Promise<ProviderAuthRefreshResult>{
     if(this.codexSwitching)return {status:'failed',detail:'Another Codex switch is still finishing on this machine. Nothing was changed.'};
     if(runningCodexTurns()!==0)return {status:'failed',detail:'Codex is working on this machine right now, so nothing was changed. Switch once that work finishes.'};
+    const releaseSavedLogin=beginCodexAccountSwitch();
+    if(!releaseSavedLogin)return {status:'failed',detail:'A saved Codex login is being renewed right now. Nothing was changed; try again when its usage reading finishes.'};
     this.codexSwitching=true;
     try {
       return await this.moveCodexAndProve(source);
-    } finally { this.codexSwitching=false; }
+    } finally { this.codexSwitching=false;releaseSavedLogin(); }
   }
   private async moveCodexAndProve(source:string):Promise<ProviderAuthRefreshResult>{
     const move=moveCodexAccountIntoUse(source);
@@ -701,7 +708,7 @@ export class SessionExecutionHost {
       log('warn','codex_account_move_failed',{detail:String(result.detail??'').slice(0,300)});
     }
   }
-  async stop():Promise<void>{this.stopCodexMoves();this.stopCodexWindows();await Promise.all([this.providerLoginManager.stop(),this.codexLogin.stop(),this.claudeLogin.stop(),this.historyPages.close()]);}
+  async stop():Promise<void>{this.beginDrain();this.stopCodexMoves();this.stopCodexWindows();await Promise.all([this.providerLoginManager.stop(),this.codexLogin.stop(),this.claudeLogin.stop(),this.historyPages.close()]);}
   private capabilities(session:SessionRow) {
     if(session.provider_id==='chatgpt'&&this.capabilityClient)return {...chatGptCapabilities,recover:true,models:['chat','work',...CHATGPT_THINKING_LEVELS,...CHATGPT_THINKING_LEVELS.map(level=>HIS_CHATGPT_PREFIX+level)],attachments:['*/*']};
     const provider=this.options.providers[session.provider_id],restricted=sessionMetadata(session).interactionPolicy==='consultation-only';
@@ -1186,6 +1193,7 @@ export class SessionExecutionHost {
     // A new Claude turn may run on a runner machine (RUNNERS.md, "Turns on a runner"): it then
     // carries its files' bytes and a run token, and nothing in it relies on this machine.
     const onRunner=!adoption&&session.provider_id==='claude-code'&&turnRunsOnRunner(metadata);
+    const sharedCodex=!adoption&&session.provider_id==='codex'&&metadata.outside!==true&&executionHostsEnabled();
     const stagedFiles:{path:string;base64:string}[]=[];
     try {
       if(attachments.length&&metadata.interactionPolicy==='consultation-only')throw new ProviderCapabilityUnavailableError('attachments','Information-only consultation cannot read attached files.');
@@ -1244,10 +1252,13 @@ export class SessionExecutionHost {
           } else if(privateCodex) {
             actual=this.adoptedRun(prepared,adoption!,MANAGED_CODEX);
           } else if(session.provider_id==='codex'&&(adoption||executionHostsEnabled())) {
-            // Wait for the App Server before recording or admitting a new run: a restart during the
-            // wait then requeues the turn as unsent instead of adopting and parking it. A Stop
-            // requested meanwhile is held and applied when the wait ends.
-            if(!adoption)await codexAppServerReady();
+            // The readiness wait ended before provider admission. Keep admission and execution
+            // intent adjacent, with no await between them, so drain can requeue a waiting turn.
+            if(!adoption){
+              if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
+              if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
+                throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
+            }
             // The shared daemon already outlives Concierge; recording the run lets the next Concierge follow it.
             actual=adoption?this.adoptedCodexRun(prepared,adoption,session):this.trackedCodexRun(prepared,claim,session,kept);
           }
@@ -1322,7 +1333,11 @@ export class SessionExecutionHost {
             }
             if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
               throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
-          }}:{}),
+          }}
+        :sharedCodex?{beforeProviderAdmission:()=>{
+          if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
+          return waitForCodexAppServerOrDrain(codexAppServerReady(),this.drainStarted,()=>this.draining);
+        }}:{}),
       services:{bindProviderSession:(sessionId,provider,uuid)=>{
         bindSessionProvider(sessionId,provider,uuid);
         // An outside run's thread lives in its own CLI process; the shared App Server must not load it.
@@ -1416,7 +1431,7 @@ export class SessionExecutionHost {
     // Only a launch resolves the CLI. On 2026-11-04 Claude Code was reinstalled during a Concierge
     // restart; adoption looked it up, found no `claude` and parked 25 agents that were still running.
     return new HostedClaudeCodeTransport({mode,executionId,stateDir,routerBotDir,
-      ...(runnerFiles?{access:new RunnerHostAccess(executionId)}:{}),
+      ...(runnerFiles?{access:new RunnerHostAccess(executionId,mode==='launch'?this.options.instanceId:undefined)}:{}),
       executable:executable??(mode==='launch'?claudeExecutable():undefined),
       onLaunched:launch=>recordExecutionLaunched(executionId,launch),
       onAttached:status=>{
