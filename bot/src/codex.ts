@@ -1102,6 +1102,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   let extractedUUID: string | null = sessionUUID;
   let turnSubmissionAttempted = false;
   let turnSettled = false;
+  let adoptedTerminalObserved = false;
   let terminalReported = false;
   let providerTurnReported = false;
   let interruptionReason: Error | null = null;
@@ -1393,6 +1394,11 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         const completedTurn = params.turn || {};
         if (activeTurnId && completedTurn.id !== activeTurnId) return;
         resetInactivityTimeout();
+        if (input.adoptTurn) {
+          adoptedTerminalObserved = true;
+          void ensureRecovered();
+          return;
+        }
         settleFromTurn(completedTurn);
         return;
       }
@@ -1461,13 +1467,24 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         }, { untilDisconnect: true }).finally(endWatch);
         if (turnSettled || controllerClosed) return;
         verifyCodexConsultationPolicy(input, resumed);
-        const history = await client.request("thread/read", {
-          threadId: activeThreadId,
-          includeTurns: true,
-        }, { requestTimeoutMs });
-        if (turnSettled || controllerClosed) return;
-        const turns = Array.isArray(history?.thread?.turns) ? history.thread.turns : [];
-        const turn = matchingTurn(turns);
+        // Full thread hydration can materialize hundreds of megabytes for every adopted run.
+        // Find the exact turn in summary pages; only a terminal turn's persisted item pages
+        // can prove a complete replay across both legacy and paginated history modes.
+        let turn: any = null;
+        let turnCursor: string | null = null;
+        do {
+          const page = await client.request("thread/turns/list", {
+            threadId: activeThreadId, cursor: turnCursor, limit: 20,
+            sortDirection: "desc", itemsView: "summary",
+          }, { requestTimeoutMs });
+          if (turnSettled || controllerClosed) return;
+          if (!Array.isArray(page?.data)) throw new Error("Codex did not return a turn page.");
+          turn = matchingTurn(page.data);
+          if (turn) break;
+          const nextCursor = typeof page.nextCursor === "string" ? page.nextCursor : null;
+          if (nextCursor && nextCursor === turnCursor) throw new Error("Codex repeated a turn cursor.");
+          turnCursor = nextCursor;
+        } while (turnCursor);
         if (!turn) {
           if (--adoptedSearchesLeft <= 0) {
             parkUnconfirmedTurn(new Error("The Codex turn an earlier Concierge started is not in its thread's history."));
@@ -1479,13 +1496,28 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         }
         if (typeof turn.id === "string") acceptActiveTurnId(turn.id);
         const stillRunning = !turn?.status || turn.status === "inProgress";
-        // A recovered turn's history can hold thousands of items, each recorded in the ledger;
-        // walking them in one go held the owner for 12.5 s after a restart (2026-10-12).
-        const items = Array.isArray(turn?.items) ? turn.items : [];
-        for (let start = 0; start < items.length; start += RECOVERED_ITEMS_PER_STEP) {
-          for (const item of items.slice(start, start + RECOVERED_ITEMS_PER_STEP)) recordCompletedItem(item);
-          await new Promise<void>((resolve) => setImmediate(resolve));
-          if (turnSettled || controllerClosed) return;
+        if (stillRunning) {
+          // A live paginated turn can have items only in Codex memory. Its first user item
+          // proves receipt; later notifications and terminal persisted history carry output.
+          for (const item of Array.isArray(turn.items) ? turn.items : [])
+            if (item?.type === "userMessage") recordCompletedItem(item);
+        } else {
+          let itemCursor: string | null = null;
+          do {
+            const page = await client.request("thread/items/list", {
+              threadId: activeThreadId, turnId: turn.id, cursor: itemCursor,
+              limit: RECOVERED_ITEMS_PER_STEP, sortDirection: "asc",
+            }, { requestTimeoutMs });
+            if (turnSettled || controllerClosed) return;
+            if (!Array.isArray(page?.data) || page.data.some((entry: any) => entry?.turnId !== turn.id))
+              throw new Error("Codex did not return the exact turn's item page.");
+            for (const entry of page.data) recordCompletedItem(entry.item);
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            if (turnSettled || controllerClosed) return;
+            const nextCursor = typeof page.nextCursor === "string" ? page.nextCursor : null;
+            if (nextCursor && nextCursor === itemCursor) throw new Error("Codex repeated an item cursor.");
+            itemCursor = nextCursor;
+          } while (itemCursor);
         }
         settleFromTurn(turn, true);
         if (input.adoptTurn && stillRunning && !adoptedLiveReported) { adoptedLiveReported = true; input.onAdoptedLive?.(); }
@@ -1500,6 +1532,11 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
             // The interrupt response is non-atomic with the daemon state. The
             // next exact history read, not the transport outcome, is decisive.
           }
+          await waitForRecoveryRetry(retryMs);
+          retryMs = Math.min(retryMs * 2, 5_000);
+          continue;
+        }
+        if (adoptedTerminalObserved) {
           await waitForRecoveryRetry(retryMs);
           retryMs = Math.min(retryMs * 2, 5_000);
           continue;
