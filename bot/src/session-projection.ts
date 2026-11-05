@@ -7,6 +7,50 @@ import {errorFields,log} from './log';
 import {clearFocusForEndedRun} from './session-topics';
 import type {ProviderHistoryMessage} from './provider-history';
 
+type PendingProgressEvent={eventId:string;sessionId:number;inputId:string|null;turnId:number;kind:'message';payload:{message:ProviderHistoryMessage};versionKey:string;content:string;bytes:number};
+const pendingProgressEvents:PendingProgressEvent[]=[];
+const pendingVersions=new Map<string,Set<string>>();
+const maxPendingProgressBytes=4*1024*1024;
+const maxPendingProgressEvents=512;
+let pendingProgressBytes=0;
+let progressFlushTimer:ReturnType<typeof setTimeout>|null=null;
+let progressBatchCommits=0,progressBatchEvents=0;
+setInterval(()=>{
+  if(!progressBatchEvents)return;
+  log('info','session_progress_batch_rate',{interval_ms:60_000,commits:progressBatchCommits,events:progressBatchEvents});
+  progressBatchCommits=0;progressBatchEvents=0;
+},60_000).unref();
+
+export function flushPendingProviderProgressEvents(){
+  if(progressFlushTimer){clearTimeout(progressFlushTimer);progressFlushTimer=null;}
+  if(!pendingProgressEvents.length)return;
+  const rootCommit=!db.inTransaction;
+  try {
+    db.transaction(()=>{
+      for(const {versionKey:_versionKey,content:_content,bytes:_bytes,...event} of pendingProgressEvents)
+        recordSessionEvent(event);
+    })();
+  } catch(error) {
+    scheduleProgressFlush();
+    throw error;
+  }
+  if(rootCommit)progressBatchCommits++;
+  progressBatchEvents+=pendingProgressEvents.length;
+  pendingProgressEvents.length=0;
+  pendingProgressBytes=0;
+  pendingVersions.clear();
+}
+
+function scheduleProgressFlush(){
+  if(progressFlushTimer)return;
+  progressFlushTimer=setTimeout(()=>{
+    progressFlushTimer=null;
+    try {flushPendingProviderProgressEvents();}
+    catch(error){log('error','session_progress_batch_flush_failed',{...errorFields(error)});}
+  },1_000);
+  progressFlushTimer.unref();
+}
+
 export function projectSessionProviderMessage(turnId:number,message:ProviderHistoryMessage) {
   const turn=db.query('SELECT session_id,accepted_input_id,status,provider_turn_id FROM turns WHERE id=?').get(turnId) as any;
   if(!turn||turn.status!=='running')return;
@@ -31,7 +75,28 @@ export function projectSessionProviderMessage(turnId:number,message:ProviderHist
   for(const {payload_json} of db.query(`SELECT payload_json FROM session_owner_events
     WHERE turn_id=? AND kind='message' AND json_extract(payload_json,'$.message.id')=?`).all(turnId,message.id) as {payload_json:string}[])
     if(messageContent(JSON.parse(payload_json).message)===recorded)return;
-  recordSessionEvent({eventId:`message:${turnId}:${digest}`,sessionId:turn.session_id,inputId:steered?.accepted_input_id??turn.accepted_input_id,turnId,kind:'message',payload});
+  const event={eventId:`message:${turnId}:${digest}`,sessionId:turn.session_id,inputId:steered?.accepted_input_id??turn.accepted_input_id,turnId,kind:'message' as const,payload};
+  // Tool updates and commentary can wait one second; accepted input, final answers, and
+  // lifecycle records continue through their immediate durability boundary.
+  if(message.role==='tool'||message.role==='assistant'&&message.phase==='commentary'){
+    const versionKey=`${turnId}:${message.id}`;
+    if(pendingVersions.get(versionKey)?.has(recorded))return;
+    const bytes=Buffer.byteLength(JSON.stringify(event));
+    if(pendingProgressEvents.length>=maxPendingProgressEvents||pendingProgressBytes+bytes>maxPendingProgressBytes)
+      flushPendingProviderProgressEvents();
+    if(bytes<=maxPendingProgressBytes){
+      pendingProgressEvents.push({...event,versionKey,content:recorded,bytes});
+      const versions=pendingVersions.get(versionKey)??new Set<string>();
+      versions.add(recorded);
+      pendingVersions.set(versionKey,versions);
+      pendingProgressBytes+=bytes;
+      scheduleProgressFlush();
+      return;
+    }
+  }
+  try {flushPendingProviderProgressEvents();}
+  catch(error){log('error','session_progress_before_immediate_message_failed',{...errorFields(error)});}
+  recordSessionEvent(event);
 }
 
 /** What the provider said, without the labels the observing run attaches. */

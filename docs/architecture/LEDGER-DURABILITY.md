@@ -8,6 +8,19 @@ transaction (`rootCommits`). These are exact counts for this write path, not tot
 ledger table. Compare them with WAL commit-frame counts when investigating overall ledger write
 pressure. The metric contains event kinds and counts only, never message content or IDs.
 
+Provider tool updates and commentary are kept in a bounded owner-memory queue for at most one
+second, then written in one SQLite transaction. A queue also flushes at 512 events or 4 MiB,
+before an immediate provider message, and when a provider turn ends. Exact event IDs, versions,
+order and the accepted input to which each update belongs are captured before the wait; duplicate
+replays are ignored. A failed flush retains the queue and retries after one second; it is logged
+without holding an immediate provider answer or the final result behind optional progress. Accepted human
+input, requests, replies, final provider answers and run lifecycle changes are still written at
+their existing immediate durability boundaries. This chooses a short visibility delay for
+non-acknowledged activity in exchange for fewer WAL commits and repeated index-page writes;
+the one-second window matches the existing sync thread's cadence and does not add a service.
+`session_progress_batch_rate` reports the queue's event and root-commit counts per minute, so an
+investigation can compare it with `session_event_write_rate` and independent WAL counts.
+
 ## Problem
 
 SQLite's default commit (`synchronous=FULL`) syncs the write-ahead log on the calling thread, and
