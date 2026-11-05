@@ -597,10 +597,25 @@ export function inboxMessageById(sessionId:number,messageId:string) {
   const row=inboxRowByMessageId(sessionId,messageId);
   return row?inboxMessage(row):null;
 }
+/**
+ * The Inbox session's own conversation leaves out his thread replies that went straight to a
+ * working agent, and the automatic carrier requests that delivered them. The router never
+ * received either; listing them in its conversation made it look as if every reply in every
+ * thread was delivered to the router (Tejas, 2026-11-05: "Why are you receiving every single
+ * message on every single thread? ... You should only be invoked if I actually tag you").
+ * The threads still show both through their own projection, which reads the shared rows.
+ */
+const notForwardedPastRouterSql=` AND NOT (event.kind='accepted' AND EXISTS (SELECT 1 FROM session_owner_events forwarded
+      WHERE forwarded.event_id='forwarded:' || event.input_id))
+    AND NOT (event.kind='request' AND EXISTS (
+      SELECT 1 FROM session_communication_requests carrier WHERE carrier.request_id=json_extract(event.payload_json,'$.requestId')
+        AND json_extract(carrier.payload_json,'$.forwardedReply') IS NOT NULL
+      UNION ALL SELECT 1 FROM session_peer_requests carrier WHERE carrier.request_id=json_extract(event.payload_json,'$.requestId')
+        AND json_extract(carrier.payload_json,'$.forwardedReply') IS NOT NULL))`;
 export function inboxHistory(session:SessionRow,cursor:string|null,limit:number,activity=false) {
   if(!sessionMetadata(session).inbox)return null;
   const before=inboxHistoryBoundary(cursor);
-  const rows=db.query(`${activity?inboxActivityRows(false):inboxRows} AND (? IS NULL OR event.sequence<?) ORDER BY event.sequence DESC LIMIT ?`).all(before,before,limit+1) as any[];
+  const rows=db.query(`${activity?inboxActivityRows(false):inboxRows}${notForwardedPastRouterSql} AND (? IS NULL OR event.sequence<?) ORDER BY event.sequence DESC LIMIT ?`).all(before,before,limit+1) as any[];
   const page=rows.slice(0,limit);
   return {messages:page.slice().reverse().map(inboxMessage),nextCursor:rows.length>limit?String(page.at(-1).sequence):null};
 }
@@ -612,7 +627,7 @@ export function inboxHistory(session:SessionRow,cursor:string|null,limit:number,
  */
 export function inboxHistoryAfter(session:SessionRow,after:number,limit:number,activity=false) {
   if(!sessionMetadata(session).inbox)return null;
-  const rows=db.query(`${activity?inboxActivityRows(true):inboxDeltaRows} AND event.sequence>? ORDER BY event.sequence LIMIT ?`).all(after,limit+1) as any[];
+  const rows=db.query(`${activity?inboxActivityRows(true):inboxDeltaRows}${notForwardedPastRouterSql} AND event.sequence>? ORDER BY event.sequence LIMIT ?`).all(after,limit+1) as any[];
   if(rows.length>limit)return null;
   const projected=rows.map(row=>{
     if(row.kind!=='answer_closure')return inboxMessage(row);
