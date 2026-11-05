@@ -619,7 +619,7 @@ export class SessionPeers {
       ?{inputId:sourceInput.id,runId,sessionId:`concierge:${actor.session}`,...(JSON.parse(sourceInput.payload_json).capture?.id?{captureId:JSON.parse(sourceInput.payload_json).capture.id}:{})}:null);
     // Every identity leaving this instance is named by it (peer-identity.ts).
     const originatingHuman=known?{...known,sessionId:presentSessionForPeer(known.sessionId,this.self)}:null;
-    const text=input.framing?input.framing(id):`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. ${input.routedFrom?`This carries Tejas’s exact Inbox message ${input.routedFrom.messageId} into this session. Answer here; its original thread shows only the routing receipt.`:'This is agent-authored input within the originating human task, not a new human message.'} Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`;
+    const text=input.framing?input.framing(id):`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. ${input.routedFrom?`This carries Tejas’s exact Inbox message ${input.routedFrom.messageId} into this session. Reply to this request; the answer appears under that message in its original thread.`:'This is agent-authored input within the originating human task, not a new human message.'} Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`;
     const delivery={requestId:id,answerGuaranteeVersion:1,
       ...(task?{answerObligation:{id:input.correctionOf??input.recoveryOf??id,task,attemptId:id}}:{}),
       origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,originatingHuman,effectScope:provenance?.effectScope??null},
@@ -1180,7 +1180,9 @@ export class SessionPeers {
     // A progress note wakes nobody, from a peer as from this machine (see the coordinator's deliver).
     if(event.kind==='progress'){db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);return;}
     if(routedMessage||(forwardedRoute&&'sessionId' in forwardedRoute)){
-      withdrawUnstartedServiceInput(`return:${event.event_id}`,'Answer retained in the destination session.');
+      if(routedMessage&&event.kind==='final'&&declared.output?.stoppedBy!=='tejas'&&!directPost)
+        throw new Error('The routed message has no answer in its Inbox thread.');
+      withdrawUnstartedServiceInput(`return:${event.event_id}`,routedMessage?'Answer posted in the source Inbox thread.':'Answer retained in the destination session.');
       db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
       return;
     }
@@ -1241,10 +1243,10 @@ export class SessionPeers {
     const requestPayload=JSON.parse(row.payload_json);
     const forwarded=requestPayload.forwardedReply;
     const route=forwarded?.inboxInputId?messageRouteForSource(forwarded.inboxInputId):null;
-    if(requestPayload.routedMessage||(route&&'sessionId' in route))return false;
+    if(route&&'sessionId' in route)return false;
     if(forwarded&&typeof forwarded.inboxInputId==='string')return true;
     const inbox=getSessionById(row.source_session_id);
-    const root=inboxRequestRoot(db,row.request_id,row.thread_root_input_id);
+    const root=inboxRequestRoot(db,row.request_id,row.thread_root_input_id??requestPayload.routedFrom?.root??null);
     return !!root&&!!inbox&&!!sessionMetadata(inbox).inbox&&!!topicOfRoot(root);
   }
   private postThreadEvent(row:PeerRequestRow,event:PeerEventRow,declared:any):boolean {
@@ -1253,9 +1255,9 @@ export class SessionPeers {
     const requestPayload=JSON.parse(row.payload_json);
     const forwarded=requestPayload.forwardedReply;
     const route=forwarded?.inboxInputId?messageRouteForSource(forwarded.inboxInputId):null;
-    if(requestPayload.routedMessage||(route&&'sessionId' in route))return false;
+    if(route&&'sessionId' in route)return false;
     const inbox=getSessionById(row.source_session_id);
-    const answerRoot=route&&'topicId' in route?route.messageId:inboxRequestRoot(db,row.request_id,row.thread_root_input_id);
+    const answerRoot=route&&'topicId' in route?route.messageId:inboxRequestRoot(db,row.request_id,row.thread_root_input_id??requestPayload.routedFrom?.root??null);
     const routed=!forwarded&&((event.kind==='progress'&&!!declared.source)||event.kind==='final'||event.kind==='overdue')&&!!answerRoot
       &&!!inbox&&!!sessionMetadata(inbox).inbox&&!!topicOfRoot(answerRoot);
     const threadReply=(forwarded&&typeof forwarded.inboxInputId==='string')||routed;
@@ -1264,7 +1266,7 @@ export class SessionPeers {
       const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
       const root=answerRoot??row.source_input_id;
       postAgentAnswer({inboxSessionId:row.source_session_id,eventId:event.event_id,requestId:row.request_id,root,
-        inboxInputId:routed?root:forwarded.inboxInputId,respondingSessionId:this.presentedSession(row.peer,row.remote_session_id),
+        inboxInputId:routed?requestPayload.routedFrom?.messageId??root:forwarded.inboxInputId,respondingSessionId:this.presentedSession(row.peer,row.remote_session_id),
         respondingTitle:catalogue?JSON.parse(catalogue.view_json)?.title??null:null,text:String(declared.replyBody??declared.text??''),todoId:typeof declared.todoId==='string'?declared.todoId:null,
         attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],
         stalled:event.kind==='overdue'||!!declared.stalled||(!declared.source&&declared.outcome!=='answered'),final:event.kind==='final',
@@ -1280,11 +1282,11 @@ export class SessionPeers {
     }
     let stoppedPost=false;
     if(declared.output?.stoppedBy==='tejas'&&typeof declared.output.stoppedAtMs==='number'){
-      const root=route&&'topicId' in route?route.messageId:inboxRequestRoot(db,row.request_id,row.thread_root_input_id??(forwarded?row.source_input_id:null));
+      const root=route&&'topicId' in route?route.messageId:inboxRequestRoot(db,row.request_id,row.thread_root_input_id??requestPayload.routedFrom?.root??(forwarded?row.source_input_id:null));
       if(root&&inbox&&sessionMetadata(inbox).inbox&&topicOfRoot(root)){
         const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
         const title=catalogue?JSON.parse(catalogue.view_json)?.title??null:null;
-        postAgentAnswer({inboxSessionId:row.source_session_id,eventId:event.event_id,requestId:row.request_id,root,inboxInputId:forwarded?.inboxInputId??root,
+        postAgentAnswer({inboxSessionId:row.source_session_id,eventId:event.event_id,requestId:row.request_id,root,inboxInputId:forwarded?.inboxInputId??requestPayload.routedFrom?.messageId??root,
           respondingSessionId:this.presentedSession(row.peer,row.remote_session_id),respondingTitle:title,
           text:`You stopped ${title?`“${title}”`:'this agent'} on ${row.peer} at ${noticeTime(db,declared.output.stoppedAtMs)}; its work on this ended there.`,
           attachments:[],stalled:true,final:true,workDisposition:null,hisInputId:null,quiet:'Stopped by Tejas',
