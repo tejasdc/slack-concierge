@@ -7,7 +7,7 @@ import { bindSessionProvider, carryingTurn, createNativeSession, enqueueSessionI
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
-import { followForwardedReply, forwardedReplyFraming } from './session-inbox';
+import { BUG_REPORT_OWN_THREAD, followForwardedReply, forwardedReplyFraming, isBugReportInput } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
 import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWithoutThread, hasOpenInboxWorkForSource, invalidateTopicRoots, linkForwardedReplyWork, linkInboxDispatchWork, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
@@ -795,6 +795,7 @@ export class SessionCommunicationCoordinator {
             const root=detach?null:inboxThreadRoot(session.id,input.thread!);
             if(!detach&&!root)throw new Error('That --thread is not a message in this Inbox.');
             if(root===target.id)throw new Error('A message cannot continue its own thread.');
+            if(!detach&&isBugReportInput(target.id))throw new Error(BUG_REPORT_OWN_THREAD);
             const saved=retainSessionInput({sessionId:own.id,scope:`communication:${sourceInputId}`,actionId:input.action_id,kind:'action',origin:'agent',
                 payload:{kind:'thread-link',inputId:target.id,...(detach?{detach:true}:{thread:input.thread})},sourceInputId,sourceRunId:nativeRunId(actor.turn)});
             const receipt={inputId:target.id,attached:!detach,...(detach?{}:{thread:input.thread,root})};
@@ -896,7 +897,12 @@ export class SessionCommunicationCoordinator {
             ?questionForTejas({actorInputId:actor.inputId,question:stated,lead,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can,decisionId:input.decision_id,approvalAction:input.approval_action}):stated;
         const quiet=typeof input.quiet_because==='string'?input.quiet_because.trim():'';
         if(quiet&&input.outcome!=='done')throw new Error('--quiet-because belongs to done: it says why he need not read the answer.');
-        const routed=turnRoutedInput(db,actor.session,actor.turn,actor.inputId);
+        // Only the Inbox router's handoff leaves a routing receipt on his message. A worker that
+        // asks another session for facts while answering him has routed nothing: its answer is
+        // its own closing text, and it has no Inbox thread of its own to post into (2026-11-05,
+        // a coordinator's answer to him could be declared neither response nor posted).
+        const routed=!!sessionMetadata(getSessionById(actor.session)!).inbox
+            &&turnRoutedInput(db,actor.session,actor.turn,actor.inputId);
         // Silence about his own message is never the router's judgement alone: `done` on a turn
         // that answers something he sent needs a reason unless the route receipt is the answer.
         if(input.outcome==='done'&&!quiet&&answersHisOwnMessage(actor.session,actor.inputId)&&!routed)throw new Error(QUIET_REASON_REQUIRED);

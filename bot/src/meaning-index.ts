@@ -87,7 +87,7 @@ class WorkersAiEngine implements EmbeddingEngine {
  */
 type EngineSeat={socket:string|null;threads:number;parallel:number};
 const SHARED_SEAT:EngineSeat={socket:null,threads:2,parallel:4};
-// In Concierge's state folder, which agents' launches do not see; a socket path longer than the
+// In Concierge's state folder, unadvertised rather than locked (nothing else is refused); a path longer than the
 // kernel's limit (about 104 bytes on macOS) falls back to /tmp.
 const QUERY_SEAT=(stateDir:string):EngineSeat=>{const inState=join(stateDir,'meaning-query.sock');return {socket:inState.length<100?inState:`/tmp/concierge-meaning-query-${hash(stateDir).slice(0,12)}.sock`,threads:1,parallel:2};};
 
