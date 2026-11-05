@@ -1351,14 +1351,16 @@ export class SessionOwner {
   }
   /** Called only inside the communication owner's source-validated request transaction. */
   /** A peer instance's request has no local source input; its scope names the peer and the remote input instead. */
-  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;project?:string;title?:string;summary?:string;smallTask?:boolean;outside?:boolean;standingRole?:StandingAgentRole;firstInput:{text:string;machineNeed?:import('./machine-need').MachineNeed;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number}}) {
+  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;project?:string;title?:string;summary?:string;smallTask?:boolean;outside?:boolean;onRunner?:boolean;standingRole?:StandingAgentRole;firstInput:{text:string;machineNeed?:import('./machine-need').MachineNeed;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number}}) {
     const title=normalizeSessionTitle(input.title);
     const source=input.sourceInputId?getAcceptedSessionInput(input.sourceInputId):null;
     const fromClaude=!!source&&getSessionById(source.session_id)?.provider_id==='claude-code';
     const selected=this.requestTarget({...input,choiceKey:input.requestId},fromClaude);
     // An outside session's turns run as the Codex command line in their own unit (outside-codex.ts).
     if(input.outside&&(selected.provider!=='codex'||input.saved))throw new SessionOwnerError('An outside request runs a new Codex session; choose a Codex alias.',400);
-    const {provider,...metadata}={...selected,...(input.outside?{outside:true}:{})};
+    // Only Claude Code turns run on runners today; another provider would silently stay on this machine.
+    if(input.onRunner&&selected.provider!=='claude-code')throw new SessionOwnerError('--on-runner runs a Claude Code session; choose a Claude alias (Automatic chose '+selected.provider+').',400);
+    const {provider,...metadata}={...selected,...(input.outside?{outside:true}:{}),...(input.onRunner?{onRunner:true}:{})};
     if(input.standingRole){
       assertStandingAgentFolder(this.defaultCwd,input.standingRole,metadata.cwd);
       if(standingAgentSession(this.defaultCwd,input.standingRole))throw new SessionOwnerError('This standing role was bound while the request was being prepared; retry against its current session.',409,'STANDING_AGENT_ALREADY_BOUND');
@@ -3899,7 +3901,7 @@ export class SessionOwner {
         return this.stream(request,url);
       }
       if(request.method==='GET'&&parts[0]==='presentation'&&['topics','questions'].includes(parts[1]??''))
-        await closeQuestionsAnsweredByTodos(admission=>this.admit(admission));
+        await closeQuestionsAnsweredByTodos(admission=>this.admit(admission),'inbox');
       if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===1)result=this.inbox();
       else if(request.method==='POST'&&parts[0]==='mac-browser-fallback'&&parts.length===1)result=this.macBrowserFallback(body);
       else if(request.method==='GET'&&parts[0]==='focus-hold'&&parts.length===1)result=await this.focusHoldStatus();
@@ -3945,7 +3947,7 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='sessions'&&parts[2]==='window'&&parts.length===3){
         const space=sessionSpaceParam(url.searchParams.get('space'));
         if(!space)throw new SessionOwnerError('space is required: lab or everyday.');
-        if(space==='everyday')await closeQuestionsAnsweredByTodos(admission=>this.admit(admission));
+        await closeQuestionsAnsweredByTodos(admission=>this.admit(admission));
         const attention=url.searchParams.get('needsAttention');
         if(attention!==null&&attention!=='true'&&attention!=='false')throw new SessionOwnerError('needsAttention is true or false.');
         const workflowId=url.searchParams.get('workflowId');
@@ -4088,13 +4090,13 @@ export class SessionOwner {
       }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='view'&&parts.length===3){
         const session=this.session(parts[1]!);
-        if(sessionMetadata(session).inbox)await closeQuestionsAnsweredByTodos(admission=>this.admit(admission));
-        result={session:this.view(session)};
+        await closeQuestionsAnsweredByTodos(admission=>this.admit(admission),sessionMetadata(session).inbox?'inbox':session.id);
+        result={session:this.view(this.session(parts[1]!))};
       }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='sessions'&&parts[3]==='attention'&&parts.length===4){
         const session=this.session(parts[2]!);
         if(!sessionMetadata(session).inbox)throw new SessionOwnerError('Paged attention belongs to the Inbox.');
-        await closeQuestionsAnsweredByTodos(admission=>this.admit(admission));
+        await closeQuestionsAnsweredByTodos(admission=>this.admit(admission),'inbox');
         result=preparedInboxAttention(session.id,url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),20)??20);
       }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===2)

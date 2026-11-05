@@ -16,6 +16,7 @@ import { nextRetry } from "./retry-core";
 import { log } from "./log";
 import { ledgerDurable } from "./ledger-durability-barrier";
 import { ProviderDispatchError } from "./provider-failures";
+import type { HostAccess, HostLink, HostManifest } from "./host-access";
 
 import HOST_PROTOCOLS from "./host-protocols.json";
 /**
@@ -89,7 +90,7 @@ export class HostUnavailableError extends Error {}
 export class HostNotStartedError extends HostUnavailableError {}
 
 /** One line-delimited JSON connection to a host. */
-export class HostConnection {
+export class HostConnection implements HostLink {
   private buffer = "";
   private waiting = new Map<string, { resolve: (message: any) => void; reject: (error: Error) => void }>();
   private statusWaiters: Array<(message: any) => void> = [];
@@ -204,6 +205,8 @@ export class HostConnection {
 export type HostLaunch = {
   executionId: string; directory: string; unit: string; hostScript: string; runtime: string;
   manifestDigest: string;
+  /** The protocol the started host speaks, when it may differ from this release's (a runner's host). */
+  protocol?: number;
 };
 
 /** Where a host for this release lives: beside the router helpers this run is pinned to. */
@@ -249,6 +252,8 @@ export type HostPriority = "agent" | "waiter";
 
 export async function startHost(input: {
   stateDir: string; executionId: string; routerBotDir: string; runtime?: string; priority?: HostPriority;
+  /** Paths the host's unit cannot see at all (systemd InaccessiblePaths); a runner hides the owner's state. */
+  hiddenPaths?: string[];
   manifest: { executable: string; args: string[]; cwd: string; environment: Record<string, string>; initialInput: string; initialMeta?: Record<string, unknown> };
 }): Promise<HostLaunch> {
   const directory = executionDirectory(input.stateDir, input.executionId);
@@ -272,6 +277,7 @@ export async function startHost(input: {
       `--unit=${unit}`, `--slice=${AGENT_WORK_SLICE}`, "--service-type=exec", "--collect", "--quiet",
       "--property=Restart=no", "--property=KillMode=control-group", "--property=IOAccounting=yes",
       ...(input.priority === "waiter" ? ["--nice=19", "--property=CPUWeight=1"] : []),
+      ...(input.hiddenPaths ?? []).map(path => `--property=InaccessiblePaths=-${path}`),
       `--description=Concierge agent execution ${input.executionId}`,
       `--working-directory=${directory}`,
       runtime, "run", hostScript, directory,
@@ -392,7 +398,7 @@ export function hostScriptOfProcess(hostPid: number): string | null {
   try { return readFileSync(`/proc/${hostPid}/cmdline`, "utf8").split("\0")[2] || null; } catch { return null; }
 }
 
-async function connectWhenReady(socketPath: string): Promise<HostConnection> {
+export async function connectWhenReady(socketPath: string): Promise<HostConnection> {
   const startedAtMs = Date.now();
   let last: unknown = null;
   for (let attempt = 1; ; attempt++) {
@@ -403,6 +409,33 @@ async function connectWhenReady(socketPath: string): Promise<HostConnection> {
     await new Promise(resolve => setTimeout(resolve, Math.max(0, next.atMs - Date.now())));
   }
   throw new HostUnavailableError(`the execution host never opened its socket: ${last instanceof Error ? last.message : String(last)}`);
+}
+
+/**
+ * A host on this coordinator's own machine: started under systemd or launchd, reached through its
+ * socket, its journal read from disk. Exactly the behaviour every hosted run had before runners.
+ */
+export class LocalHostAccess implements HostAccess {
+  readonly place = "local" as const;
+  readonly directory: string;
+  constructor(private readonly stateDir: string, readonly executionId: string, private readonly routerBotDir?: string,
+    private readonly priority?: HostPriority) {
+    this.directory = executionDirectory(stateDir, executionId);
+  }
+  launch(manifest: HostManifest): Promise<HostLaunch> {
+    if (!this.routerBotDir) throw new HostNotStartedError("the run names no release helper folder to start its host from");
+    const { inheritEnvironment, ...rest } = manifest;
+    return startHost({ stateDir: this.stateDir, executionId: this.executionId, routerBotDir: this.routerBotDir, priority: this.priority,
+      // A local host starts from the coordinator's own environment, as a child process would.
+      manifest: { ...rest, environment: { ...(inheritEnvironment ? process.env as Record<string, string> : {}), ...manifest.environment } } });
+  }
+  connectWhenReady() { return connectWhenReady(hostSocketPath(this.directory)); }
+  connect(timeoutMs?: number) { return HostConnection.connect(hostSocketPath(this.directory), timeoutMs); }
+  custody() { return hostCustody(this.directory, this.executionId); }
+  journal() { return streamJournal(this.directory); }
+  release() { return releaseHost(this.directory, this.executionId); }
+  stopSuperseded() { return stopSupersededHost(this.directory, this.executionId); }
+  supervisorView() { return hostSupervisorView(this.executionId); }
 }
 
 export type HostedExecution = {
@@ -417,6 +450,8 @@ export type HostedExecution = {
   stateDir: string;
   /** The release's helper folder the host program is taken from; by default the run's own pinned one. */
   routerBotDir?: string;
+  /** Where the host is; by default this machine (LocalHostAccess). */
+  access?: HostAccess;
   /** Ledger custody steps; each is called once, in order, never for a replayed fact. */
   onLaunched?: (launch: HostLaunch) => void;
   onAttached?: (status: HostStatus & { until: number }) => void;
@@ -431,21 +466,46 @@ export type HostedExecution = {
  * through the same handlers with their original times, so its state is rebuilt, not guessed.
  */
 export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
+  private readonly access: HostAccess;
+  private link: HostLink | null = null;
   constructor(private readonly execution: HostedExecution,
     /** `inactivityMs: null` sets no limit: an outside run is watched, never policed (outside-codex.ts). */
-    private readonly timeouts: { inactivityMs?: number | null; shutdownGraceMs?: number } = {}) {}
+    private readonly timeouts: { inactivityMs?: number | null; shutdownGraceMs?: number } = {},
+    /** Files the provider reads by path, written where the host runs (a runner writes its own copy). */
+    private readonly files: { path: string; base64: string }[] = []) {
+    this.access = execution.access ?? new LocalHostAccess(execution.stateDir, execution.executionId, execution.routerBotDir);
+  }
+
+  /**
+   * Claude's transcript is read where Claude runs. A runner's link follows it there and sends each
+   * pickup back; on this machine the caller reads the transcript itself (null).
+   */
+  transcriptWatcher(): ((input: { sessionUuid: string; fromStart: boolean; onPickup: (pickup: any) => void }) => () => void) | null {
+    if (this.access.place !== "runner") return null;
+    return input => {
+      // A resumed conversation asks before the host is attached; the watch starts on each link.
+      const watch = { input, stop: null as (() => void) | null, stopped: false };
+      this.watches.add(watch);
+      if (this.link?.watchTranscript) watch.stop = this.link.watchTranscript(input);
+      return () => { watch.stopped = true; this.watches.delete(watch); watch.stop?.(); };
+    };
+  }
+  private readonly watches = new Set<{ input: { sessionUuid: string; fromStart: boolean; onPickup: (pickup: any) => void }; stop: (() => void) | null; stopped: boolean }>();
+  private linkAttached(link: HostLink) {
+    this.link = link;
+    for (const watch of this.watches) if (!watch.stopped && link.watchTranscript) { watch.stop?.(); watch.stop = link.watchTranscript(watch.input); }
+  }
 
   run(input: Parameters<ClaudeCodeTransport["run"]>[0]): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
     const execution = this.execution;
     const inactivityMs = this.timeouts.inactivityMs === null ? null : this.timeouts.inactivityMs ?? 30 * 60_000;
     const shutdownGraceMs = this.timeouts.shutdownGraceMs ?? 2_000;
-    const directory = executionDirectory(execution.stateDir, execution.executionId);
-    const socketPath = hostSocketPath(directory);
+    const access = this.access;
     if (execution.mode === "adopt-record") return this.runFromRecord(input);
     return new Promise((resolve, reject) => {
       const adopted=execution.mode==="adopt";
       if(adopted)activeAdoptedRuns++;
-      let connection: HostConnection | null = null;
+      let connection: HostLink | null = null;
       let settled = false, exited = false, inputClosing = false;
       let terminationError: Error | null = null;
       let inactivity: ReturnType<typeof setTimeout> | null = null;
@@ -593,8 +653,9 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
       };
 
       // ---- connection and custody ------------------------------------------------------------
-      const attachTo = async (next: HostConnection) => {
+      const attachTo = async (next: HostLink) => {
         connection = next;
+        this.linkAttached(next);
         replayOutcomes = next.replayWriteOutcomes;
         const attached = await next.attach(received + 1, dispatch);
         next.onClosed(reason => {
@@ -610,13 +671,13 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
       // record when the record holds the exit, and only otherwise is the run lost.
       const keepCustody = async (reason: string) => {
         for (let attempt = 0; !settled; attempt++) {
-          const custody = await hostCustody(directory, execution.executionId);
+          const custody = await access.custody();
           if (custody === "answering") {
-            try { await establish(await HostConnection.connect(socketPath, 3_000)); return; } catch { /* decide again */ }
+            try { await establish(await access.connect(3_000)); return; } catch { /* decide again */ }
           } else if (custody === "settle-from-record") {
             // The record is the evidence; no socket is needed to read it. A run that never attached
             // gets its boundary and a writer that refuses (the provider has exited) from the record.
-            const record = streamJournal(directory);
+            const record = access.journal();
             let lastRecordSeq = 0;
             const outcomes = new Map<string, "written" | "failed">();
             for await (const frame of record) {
@@ -635,7 +696,7 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
             }
             streamingReplay = true;
             replayOutcomes = outcomes;
-            for await (const frame of streamJournal(directory)) dispatch(frame);
+            for await (const frame of access.journal()) dispatch(frame);
             endHistory();
             if (!settled) finish(new HostUnavailableError("the execution host left a record that ends without the provider's exit"));
             return;
@@ -650,7 +711,7 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
       let launched = false;
       // The first attachment, whichever path reaches it, sets the history boundary and hands the
       // run its writer; later attachments only continue the frames.
-      const establish = async (next: HostConnection) => {
+      const establish = async (next: HostLink) => {
         const attached = await attachTo(next);
         if (ready) return;
         // The host computes `until` in the same synchronous step that starts the replay, so it is
@@ -674,20 +735,22 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
         if (execution.mode === "launch") {
           const executable = execution.executable;
           if (!executable) throw new HostUnavailableError("the run names no provider executable to launch");
-          const routerBotDir = execution.routerBotDir ?? input.environment?.CONCIERGE_ROUTER_BOT_DIR;
-          if (!routerBotDir) throw new HostUnavailableError("the run names no release helper folder to start its host from");
+          if (access.place === "local" && !(execution.routerBotDir ?? input.environment?.CONCIERGE_ROUTER_BOT_DIR))
+            throw new HostUnavailableError("the run names no release helper folder to start its host from");
           // From here a host may exist even if this call fails (a supervisor that accepted the start
-          // but whose answer was lost); only startHost's own definite refusals mean it does not.
+          // but whose answer was lost); only the launch's own definite refusals mean it does not.
           launched = true;
-          const launch = await startHost({ stateDir: execution.stateDir, executionId: execution.executionId, routerBotDir,
-            manifest: { executable, args: input.args, cwd: input.cwd,
-              environment: { ...(input.inheritEnvironment === false ? {} : process.env as Record<string, string>), ...input.environment },
+          // The coordinator's own environment never leaves its machine: a local host inherits it
+          // (as a child process would), a runner builds the provider's environment from its own.
+          const launch = await (execution.access ? access : new LocalHostAccess(execution.stateDir, execution.executionId,
+            execution.routerBotDir ?? input.environment?.CONCIERGE_ROUTER_BOT_DIR)).launch({ executable, args: input.args, cwd: input.cwd,
+              environment: input.environment ?? {}, inheritEnvironment: input.inheritEnvironment !== false,
               initialInput: input.stdin.endsWith("\n") ? input.stdin.slice(0, -1) : input.stdin,
-              initialMeta: { kind: "initial" } } });
+              initialMeta: { kind: "initial" } }, this.files);
           execution.onLaunched?.(launch);
-          await establish(await connectWhenReady(socketPath));
+          await establish(await access.connectWhenReady());
         } else {
-          await establish(await HostConnection.connect(socketPath));
+          await establish(await access.connect());
         }
       };
       begin().catch(error => {
@@ -705,10 +768,9 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
    * alone and settles from its own evidence, never as an interruption (it cannot write any more).
    */
   private async runFromRecord(input: Parameters<ClaudeCodeTransport["run"]>[0]): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
-    const directory = executionDirectory(this.execution.stateDir, this.execution.executionId);
     let exit: HostFrame | null = null;
     const outcomes = new Map<string, "written" | "failed">();
-    for await (const frame of streamJournal(directory)) {
+    for await (const frame of this.access.journal()) {
       if (frame.k === "x") exit = frame;
       if (frame.k === "c" && typeof frame.d?.id === "string") {
         if (frame.d.op === "written") outcomes.set(frame.d.id, "written");
@@ -718,7 +780,7 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
     if (!exit) throw new HostUnavailableError("the execution's record holds no exit");
     input.onInterruptReady?.(async () => { throw new HostWriteRefusedError("the provider has exited"); });
     input.onStdinReady?.(() => Promise.reject(new HostWriteRefusedError("the provider has exited")), () => {});
-    for await (const frame of streamJournal(directory)) {
+    for await (const frame of this.access.journal()) {
       if (frame.k === "o") input.onStdout(`${frame.d}\n`, frame.t);
       else if (frame.k === "e") input.onStderr(String(frame.d));
       else if (frame.k === "i" && frame.d?.id !== "initial") {

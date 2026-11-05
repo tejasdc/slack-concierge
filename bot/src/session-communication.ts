@@ -914,7 +914,7 @@ export class SessionCommunicationCoordinator {
             if(turnDeclaredByAction(actor.turn))
                 throw new Error('This turn already declared its outcome by action.');
             recordTurnOutcome({eventId:`turn_outcome:action:${saved.input.id}`,sessionId:actor.session,turnId:actor.turn,
-                inputId:actor.inputId,outcome:input.outcome,text:content||null,refuseUnreadable:true,quiet:quiet||null});
+                inputId:actor.inputId,outcome:input.outcome,text:content||null,todoId,refuseUnreadable:true,quiet:quiet||null});
             const receipt={state:'completed',outcome:input.outcome,inputId:actor.inputId};
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(receipt),saved.input.id);
             // A worker on an Inbox thread waiting on him reaches him through that thread; its own
@@ -1295,6 +1295,8 @@ export class SessionCommunicationCoordinator {
         hisChat?: boolean;
         /** Run the new Codex session's turns outside Concierge (outside-codex.ts); otherwise an ordinary request. */
         outside?: boolean;
+        /** Run the new session's Claude turns on a runner machine (docs/architecture/RUNNERS.md). */
+        onRunner?: boolean;
         effort?: string;
         project?: string;
         title?: string;
@@ -1402,6 +1404,8 @@ export class SessionCommunicationCoordinator {
                 throw new Error(`This session is ${frozen.state}; a side copy of its conversation answers a question only as this command's result, so ask without --thread, --return-to-requester, --after-request or saved-work options and carry the answer on yourself.`);
             return this.sideCopyAnswer(actor,input,frozen);
         }
+        if(input.onRunner!==undefined&&(input.onRunner!==true||!input.provider||input.provider==='chatgpt'||input.address||input.peer||input.outside))
+            throw new Error('--on-runner starts a new Claude Code session on this owner whose turns run on a runner: give --project and a Claude provider, not an address, --peer, --outside or ChatGPT.');
         if(input.outside!==undefined&&(input.outside!==true||!input.provider||['auto','chatgpt'].includes(input.provider)||input.address||input.peer||input.saved||input.resurrect))
             throw new Error('An outside request starts a new local Codex session: --outside with --project and an optional Codex alias.');
         if(input.consult!==undefined) {
@@ -1536,7 +1540,7 @@ export class SessionCommunicationCoordinator {
             ...(input.return_to_requester?{returnToRequester:true}:{}),
             ...(input.saved?{saved:input.saved}:{}),
             ...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),
-            ...(input.outside?{outside:true}:{}),
+            ...(input.outside?{outside:true}:{}),...(input.onRunner?{onRunner:true}:{}),
             ...(input.files===undefined?{}:{files:input.files}),...(input.captureId===undefined?{}:{captureId:input.captureId}) });
         const digest = hash(encoded);
         const prior = () => actor.inputId
@@ -1637,7 +1641,7 @@ export class SessionCommunicationCoordinator {
             const firstInput={text:toChatgpt?chatgptText:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${history?.text?`${history.text}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(routedFrom)firstInput.text=`This request carries Tejas’s exact Inbox message ${routedFrom.messageId} into this session. Answer here; the original thread displays only its routing receipt.\n\n${firstInput.text}`;
             if(input.provider) {
-                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,summary:input.summary,smallTask:input.smallTask,outside:input.outside,standingRole,firstInput,saved:input.saved});
+                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,summary:input.summary,smallTask:input.smallTask,outside:input.outside,onRunner:input.onRunner,standingRole,firstInput,saved:input.saved});
                 target={session:created.session_id,channel:null,root:null,native:true};
             }
             if(input.saved&&requestedRole&&!input.provider){
@@ -2138,7 +2142,7 @@ export class SessionCommunicationCoordinator {
                 const declared=input.workDisposition==='completed'?'done':input.workDisposition==='failed'?'failed'
                     :input.workDisposition==='needs_decision'?'needs_you':requestedEffect==='work'?null:'done';
                 if(declared&&!turnDeclaredByAction(actor.turn))recordTurnOutcome({eventId:`turn_outcome:reply:${id}`,sessionId:actor.session,turnId:actor.turn,
-                    inputId:request.target_input_id!,outcome:declared,text:input.text});
+                    inputId:request.target_input_id!,outcome:declared,text:input.text,todoId});
                 // The worker no longer needs the answers it asked for on this request's behalf; a
                 // needs_decision final keeps them, because that reply is the question.
                 if(input.workDisposition)expireQuestionsForFinalReply({workerSessionId:actor.session,requestId:request.request_id,
@@ -2670,7 +2674,8 @@ export class SessionCommunicationCoordinator {
             if(event.kind==='final'&&payload.workDisposition==='needs_decision'&&!sessionMetadata(source).inbox){
                 const author=sessionAuthor(`concierge:${coveredResponder}`);
                 recordRequesterDecisionReturn({sessionId:source.id,returnInputId:accepted.id,requestId:request.request_id,
-                    question:String(payload.text??''),agentName:author?.agentName,taskTitle:author?.title});
+                    question:String(payload.text??''),todoId:typeof payload.todoId==='string'?payload.todoId:null,
+                    agentName:author?.agentName,taskTitle:author?.title});
             }
             for(const joined of group.joining)db.query('UPDATE session_communication_events SET accepted_input_id=? WHERE event_id=? AND accepted_input_id IS NULL').run(`return:${event.event_id}`,joined.event_id);
             const observed = readInputExecution(accepted);

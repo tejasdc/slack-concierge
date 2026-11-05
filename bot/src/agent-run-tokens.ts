@@ -32,10 +32,12 @@ let ownerKey:{dir:string;key:Buffer}|null=null;
  * bearer credential sits in agents' environments and transcripts.
  */
 export function agentRunEnvironment(principal:{turnId:number;sessionId:number},
-  environment:NodeJS.ProcessEnv=process.env):Record<string,string> {
+  environment:NodeJS.ProcessEnv=process.env,options:{network?:boolean}={}):Record<string,string> {
   const dir=environment.CONCIERGE_STATE_DIR?.trim();
   const url=environment.CONCIERGE_AGENT_API_URL?.trim();
-  if(!dir||!url)return {};
+  // A run on a runner always reaches the owner over the network: it gets its token even when this
+  // owner names no address, and the runner supplies the address it reaches the owner at.
+  if(!dir||(!url&&!options.network))return {};
   if(ownerKey?.dir!==dir)ownerKey={dir,key:agentTokenKey(dir)};
-  return {CONCIERGE_AGENT_TOKEN:mintAgentToken(ownerKey.key,{kind:'run',...principal}),CONCIERGE_OWNER_URL:url};
+  return {CONCIERGE_AGENT_TOKEN:mintAgentToken(ownerKey.key,{kind:'run',...principal}),...(url?{CONCIERGE_OWNER_URL:url}:{})};
 }

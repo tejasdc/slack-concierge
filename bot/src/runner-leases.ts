@@ -1,5 +1,15 @@
 import type {Database} from 'bun:sqlite';
 import {randomUUID} from 'node:crypto';
+import {EventEmitter} from 'node:events';
+
+/**
+ * Wakes the owner's waiting turn links (runner-host-access.ts) the moment a runner's write for a
+ * job commits in this process, instead of their next poll. A wake carries no data: every reader
+ * rereads the ledger, so a missed or extra wake changes only latency.
+ */
+export const runnerActivity=new EventEmitter();
+runnerActivity.setMaxListeners(0);
+const wake=(jobId:string)=>queueMicrotask(()=>runnerActivity.emit(jobId));
 
 /**
  * The runner protocol's durable records (docs/architecture/RUNNERS.md). Runners are machines
@@ -18,7 +28,15 @@ import {randomUUID} from 'node:crypto';
  *   operation id. An expired job is requeued only when it declared replay safe; otherwise it is
  *   settled `unconfirmed` for its coordinator to reconcile (a provider may still have acted).
  */
-export const LEASE_MS=90_000;
+/**
+ * Five minutes: long enough that an owner restart or a short network loss does not end every
+ * runner's agents, short enough that a dead runner's turn is settled soon. A runner stops its own
+ * agents when it has not reached the owner for RUNNER_FENCE_MS, before the owner could judge the
+ * lease passed, so an agent never acts after its turn was settled as lost.
+ */
+export const LEASE_MS=300_000;
+export const RUNNER_FENCE_MS=LEASE_MS-60_000;
+const CONTACT_RESOLUTION_MS=5_000;
 export const HEARTBEAT_MS=15_000;
 
 export type RunnerJobState='queued'|'leased'|'finished'|'unconfirmed';
@@ -71,6 +89,10 @@ export function initializeRunnerSchema(db:Database) {
     result_at_ms INTEGER
   );
   CREATE INDEX IF NOT EXISTS runner_commands_open ON runner_commands(job_id,created_at_ms) WHERE result_at_ms IS NULL;`);
+  // When the runner last reached the owner for this attempt: a later owner's evidence that the runner
+  // is alive after a takeover (added after the first release of this table).
+  if(!(db.query("SELECT 1 FROM pragma_table_info('runner_attempts') WHERE name='last_contact_at_ms'").get()))
+    db.exec('ALTER TABLE runner_attempts ADD COLUMN last_contact_at_ms INTEGER');
 }
 
 type Attempt={attempt_id:string;job_id:string;runner:string;epoch:number;state:string;lease_expires_at_ms:number;acked_seq:number};
@@ -122,6 +144,7 @@ export class RunnerLeases {
       this.db.query("UPDATE runner_jobs SET state='leased' WHERE job_id=? AND state='queued'").run(job.job_id);
       this.db.query(`INSERT INTO runner_attempts(attempt_id,job_id,runner,epoch,state,lease_expires_at_ms,started_at_ms)
         VALUES(?,?,?,1,'live',?,?)`).run(attemptId,job.job_id,runner,now+LEASE_MS,now);
+      wake(job.job_id);
       return {jobId:job.job_id,kind:job.kind,payload:JSON.parse(job.payload_json),attemptId,epoch:1,
         leaseExpiresAtMs:now+LEASE_MS,heartbeatMs:HEARTBEAT_MS,ackedSeq:0};
     }).immediate();
@@ -167,6 +190,75 @@ export class RunnerLeases {
     }).immediate();
   }
 
+  /**
+   * One runner's periodic exchange for every turn it holds, in one transaction: each attempt's new
+   * events are stored (contiguously, as `appendEvents`), its lease is extended once it is a heartbeat
+   * old, and its unanswered commands are returned. An attempt this runner no longer holds is answered
+   * with its refusal alone; the others proceed. One call per runner, not per turn, keeps the owner's
+   * load independent of how many agents a runner runs.
+   */
+  sync(runner:string,attempts:readonly {attemptId:string;epoch:number;events?:readonly {seq:number;frame:unknown}[]}[]) {
+    return this.db.transaction(()=>attempts.map(item=>{
+      try {
+        const attempt=this.holding(runner,item.attemptId,item.epoch);
+        const {ackedSeq}=item.events?.length?this.appendEvents(runner,item.attemptId,item.epoch,item.events):{ackedSeq:attempt.acked_seq};
+        const now=this.now();
+        // One write per attempt every few seconds at most, however often the runner syncs.
+        this.db.query(`UPDATE runner_attempts SET lease_expires_at_ms=?,last_contact_at_ms=?
+          WHERE attempt_id=? AND COALESCE(last_contact_at_ms,0)<=?`).run(now+LEASE_MS,now,item.attemptId,now-CONTACT_RESOLUTION_MS);
+        const commands=(this.db.query(`SELECT command_id,kind,body_json FROM runner_commands
+          WHERE job_id=? AND result_at_ms IS NULL ORDER BY created_at_ms,command_id`).all(attempt.job_id) as {command_id:string;kind:string;body_json:string}[])
+          .map(row=>({commandId:row.command_id,kind:row.kind,body:JSON.parse(row.body_json)}));
+        return {attemptId:item.attemptId,ok:true as const,ackedSeq,commands};
+      } catch(error) {
+        if(error instanceof RunnerProtocolError)return {attemptId:item.attemptId,ok:false as const,error:error.code,detail:error.message};
+        throw error;
+      }
+    })).immediate();
+  }
+
+  /**
+   * At the owner's start, before adoption: every live lease is extended from now, so the owner's own
+   * downtime never counts against a runner that was waiting for it. A runner that really died still
+   * expires one lease later.
+   */
+  extendLiveLeases() {
+    return this.db.query(`UPDATE runner_attempts SET lease_expires_at_ms=MAX(lease_expires_at_ms,?) WHERE state='live'`)
+      .run(this.now()+LEASE_MS).changes;
+  }
+
+  /**
+   * The coordinator withdraws a job no runner has claimed. Only a still-queued job can be withdrawn,
+   * in one statement, so a withdrawn job provably never started; `false` means a runner holds it.
+   */
+  withdraw(jobId:string,reason:string):boolean {
+    const changed=this.db.query(`UPDATE runner_jobs SET state='finished',ended_at_ms=?,result_json=? WHERE job_id=? AND state='queued'`)
+      .run(this.now(),JSON.stringify({withdrawn:reason}),jobId).changes>0;
+    if(changed)wake(jobId);
+    return changed;
+  }
+
+  /** A command's first result, or undefined while none has been reported. */
+  commandResult(commandId:string):{result:unknown}|undefined {
+    const row=this.db.query('SELECT result_json,result_at_ms FROM runner_commands WHERE command_id=?').get(commandId) as {result_json:string|null;result_at_ms:number|null}|null;
+    return row?.result_at_ms!=null?{result:JSON.parse(row.result_json??'null')}:undefined;
+  }
+
+  /**
+   * The coordinator's bounded read of a job's events across all its attempts, in attempt order then
+   * sequence, after a position. Positions are `[attemptIndex, seq]` so a resumed read never rereads.
+   */
+  eventsAfter(jobId:string,after:{attempt:number;seq:number},limit=500) {
+    const attempts=(this.db.query('SELECT attempt_id FROM runner_attempts WHERE job_id=? ORDER BY started_at_ms,attempt_id').all(jobId) as {attempt_id:string}[]).map(row=>row.attempt_id);
+    const out:{attempt:number;seq:number;frame:any}[]=[];
+    for(let index=Math.max(0,after.attempt);index<attempts.length&&out.length<limit;index++) {
+      const from=index===after.attempt?after.seq:0;
+      for(const row of this.db.query('SELECT seq,frame_json FROM runner_events WHERE attempt_id=? AND seq>? ORDER BY seq LIMIT ?').all(attempts[index]!,from,limit-out.length) as {seq:number;frame_json:string}[])
+        out.push({attempt:index,seq:row.seq,frame:JSON.parse(row.frame_json)});
+    }
+    return out;
+  }
+
   /** Stores the contiguous run of events after the cursor and answers the durable cursor. */
   appendEvents(runner:string,attemptId:string,epoch:number,events:readonly {seq:number;frame:unknown}[]) {
     return this.db.transaction(()=>{
@@ -181,6 +273,7 @@ export class RunnerLeases {
         cursor=event.seq;
       }
       this.db.query('UPDATE runner_attempts SET acked_seq=? WHERE attempt_id=?').run(cursor,attemptId);
+      if(cursor>attempt.acked_seq)wake(attempt.job_id);
       return {ackedSeq:cursor};
     }).immediate();
   }
@@ -200,6 +293,7 @@ export class RunnerLeases {
       let recorded=0;
       for(const item of results)recorded+=this.db.query(`UPDATE runner_commands SET result_json=?,result_attempt_id=?,result_at_ms=?
         WHERE command_id=? AND job_id=? AND result_at_ms IS NULL`).run(JSON.stringify(item.result??null),attemptId,this.now(),item.commandId,attempt.job_id).changes;
+      if(recorded)wake(attempt.job_id);
       return {recorded};
     }).immediate();
   }
@@ -218,8 +312,15 @@ export class RunnerLeases {
       this.db.query("UPDATE runner_attempts SET state='finished',ended_at_ms=? WHERE attempt_id=?").run(now,attemptId);
       this.db.query("UPDATE runner_jobs SET state='finished',ended_at_ms=?,finish_operation_id=?,result_json=? WHERE job_id=?")
         .run(now,operationId,JSON.stringify(result??null),attempt.job_id);
+      wake(attempt.job_id);
       return {finished:true,repeated:false,result};
     }).immediate();
+  }
+
+  /** When the runner holding a job's latest live attempt last reached the owner, if it has. */
+  lastContact(jobId:string):number|null {
+    const row=this.db.query(`SELECT last_contact_at_ms FROM runner_attempts WHERE job_id=? AND state='live' ORDER BY started_at_ms DESC LIMIT 1`).get(jobId) as {last_contact_at_ms:number|null}|null;
+    return row?.last_contact_at_ms??null;
   }
 
   /**
