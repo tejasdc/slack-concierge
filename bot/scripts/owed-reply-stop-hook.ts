@@ -104,7 +104,7 @@ const ask = (extra: object) => requestApiResponse('/session-communication/owed',
 try {
   const response = await ask(hook.stop_hook_active && !background ? { remind: true } : {});
   const owed: { request_id: string; requester: string; requested_effect: string }[] = response.ok && !hook.stop_hook_active && !background ? response.result?.owed ?? [] : [];
-  const pending: { input_id: string; root_id: string; at: string; text: string; topic_id?: string; request_id?: string }[] = response.ok ? response.result?.unfiled ?? [] : [];
+  const pending: { input_id: string; root_id: string; at: string; text: string; topic_id?: string; request_id?: string; bug_report?: boolean }[] = response.ok ? response.result?.unfiled ?? [] : [];
   const unfiled=pending.filter(input=>!input.request_id);
   const reports=pending.filter(input=>!!input.request_id);
   const source: { input_id: string; run_id: string } | null = response.ok ? response.result?.source ?? null : null;
@@ -114,7 +114,9 @@ try {
     const identity = `--source-input ${quote(source.input_id)} --source-run ${quote(source.run_id)}`;
     const filing = unfiled.flatMap(input => [
       `- Unfiled input ${input.input_id} (${input.at}): ${JSON.stringify(input.text)}`,
-      `  File in an existing topic: ${tool} sessions topics place '<topic-id>' --root ${quote(input.root_id)} ${identity} --action-id ${quote(`file-${input.root_id}`)}`,
+      ...(input.bug_report
+        ? [`  This is a bug report: it always gets a thread of its own (add --from '<related-topic-id>' to the create command below to link a related thread).`]
+        : [`  File in an existing topic: ${tool} sessions topics place '<topic-id>' --root ${quote(input.root_id)} ${identity} --action-id ${quote(`file-${input.root_id}`)}`]),
       `  Or find its area with ${tool} sessions areas suggest --title '<topic title>' ${identity}, then create its topic: ${tool} sessions topics create --title '<topic title>' --area '<area-id>' --root ${quote(input.root_id)} ${identity} --action-id ${quote(`create-${input.root_id}`)}`,
       `  If it is noise, create its own topic above, then explicitly close the returned topic: ${tool} sessions topics close '<returned-topic-id>' --scope ${quote(input.input_id)} ${identity} --action-id ${quote(`noise-${input.root_id}`)} -- 'Noise: <specific reason no work is needed>'`,
     ]);
