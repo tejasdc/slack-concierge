@@ -29,16 +29,16 @@
  *   only these credits. The key is delivered through the credential portal to the fixed path
  *   below and read here only in memory.
  *
- * Reading never signs in, refreshes or rewrites a login: an expired access token simply means
- * no fresh facts, and the last good ones are kept with their time. The usage endpoint has a
+ * Reading never rewrites a login: Claude Code can renew an expired saved login through its
+ * local /usage command, while the reader keeps the last good facts with their time. The usage endpoint has a
  * polling budget shared across every reader of the account (claude-swap already polls it), so
  * facts are refreshed every thirty minutes, not with every three-minute bar reading.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { log } from "./log";
-import { accountHome, credentialPath, currentAccount, listProfiles } from "./provider-accounts";
+import { CLAUDE_EXECUTABLE, accountHome, credentialPath, currentAccount, listProfiles } from "./provider-accounts";
 
 export type UsageCreditsFacts = Readonly<{
   line: string;
@@ -201,12 +201,59 @@ function claudeCredentialFor(account: string): string | null {
   return null;
 }
 
+/** A renewed login can be retried immediately without reading or logging its secret. */
+export function claudeCredentialVersion(account: string): string | null {
+  const path = claudeCredentialFor(account);
+  if (!path) return null;
+  try {
+    const stat = statSync(path, { bigint: true });
+    return `${stat.ino}:${stat.mtimeNs}:${stat.size}`;
+  } catch { return null; }
+}
+
+const renewingOwnLogins = new Set<string>();
+const ownLoginRenewalRetry = new Map<string, { version: string | null; failures: number; nextAt: number }>();
+/** Ask Claude Code to renew its own expired login; /usage is local and uses no model tokens. */
+export function renewClaudeOwnLoginForUsage(account: string): void {
+  const path = claudeCredentialFor(account);
+  if (!path || liveAccessToken(path) || renewingOwnLogins.has(account)) return;
+  let canRenew = false;
+  try { canRenew = !!JSON.parse(readFileSync(path, "utf8"))?.claudeAiOauth?.refreshToken; }
+  catch { return; }
+  if (!canRenew) return;
+  const version = claudeCredentialVersion(account);
+  const retry = ownLoginRenewalRetry.get(account);
+  if (retry?.version === version && Date.now() < retry.nextAt) return;
+  const failures = retry?.version === version ? retry.failures + 1 : 1;
+  ownLoginRenewalRetry.set(account, { version, failures,
+    nextAt: Date.now() + Math.min(5 * 60_000 * 2 ** (failures - 1), 30 * 60_000) });
+  renewingOwnLogins.add(account);
+  void (async () => {
+    const child = Bun.spawn([CLAUDE_EXECUTABLE, "-p", "/usage", "--no-session-persistence", "--output-format", "json"], {
+      env: { ...process.env, CLAUDE_CONFIG_DIR: dirname(path) }, stdin: "ignore", stdout: "ignore", stderr: "ignore",
+    });
+    const deadline = setTimeout(() => child.kill(), 120_000);
+    try {
+      const code = await child.exited;
+      const renewed = !!liveAccessToken(path);
+      if (renewed) ownLoginRenewalRetry.delete(account);
+      log("info", "claude_own_login_renewal", { account, renewed, exit_code: code });
+    } finally {
+      clearTimeout(deadline);
+      renewingOwnLogins.delete(account);
+    }
+  })().catch(error => {
+    renewingOwnLogins.delete(account);
+    log("warn", "claude_own_login_renewal_failed", { account, error_name: error instanceof Error ? error.name : "Error" });
+  });
+}
+
 function liveAccessToken(path: string): string | null {
   try {
     const oauth = JSON.parse(readFileSync(path, "utf8"))?.claudeAiOauth;
     const token = oauth?.accessToken, expiresAt = Number(oauth?.expiresAt);
     if (typeof token !== "string" || !token) return null;
-    // An expired token is not refreshed here: that is Claude's own job when it next runs.
+    // The reader never refreshes a token directly; Claude Code handles renewal through /usage.
     if (Number.isFinite(expiresAt) && expiresAt <= Date.now() + 60_000) return null;
     return token;
   } catch { return null; }
@@ -228,7 +275,7 @@ export type OwnLoginWindow = Readonly<{ name: string; usedPercent: number; reset
  * copy of each login and refreshes it only from the default folder, so once agents ran from
  * their own homes (2026-10-07) the personal account's copy died at its next token rotation and
  * read "needs signing in again" from Oct 23 to Nov 1 while the real login worked. A login is
- * never copied; this reads it where it lives and never refreshes it.
+ * never copied; this reads it where it lives after Claude Code renews it when needed.
  */
 export async function claudeWindowsFromOwnLogin(account: string): Promise<OwnLoginWindow[] | null> {
   const path = claudeCredentialFor(account);
