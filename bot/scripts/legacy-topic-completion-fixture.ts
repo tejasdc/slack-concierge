@@ -46,7 +46,7 @@ try {
 
   const target=owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat'});
   const dispatch=await communication.ask({source:current.source,action_id:'legacy-dispatch',address:target.session.address,
-    thread:rootId,text:'Inspect the queued message and resolve it.',requestedEffect:'informational'});
+    thread:rootId,summary:'Inspect and resolve the queued message',text:'Inspect the queued message and resolve it.',requestedEffect:'informational'});
   await communication.idle();const worker=run();
   communication.reply({source:worker.source,action_id:'legacy-final',request_id:dispatch.request_id,
     text:'The deployment hold released, the message drained, and no change was needed.',final:true});
