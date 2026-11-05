@@ -12,7 +12,7 @@ import { claudeEveryAccountClearsAt, claudeHeldWorkCanRun, proveClaudeHomesAhead
 import { needSignInRenewal } from "./signin-renewal";
 import { accountUsageTable } from "./provider-usage-tables";
 import { antigravityExecutable } from "./antigravity";
-import { claudeAccountFacts, claudeWindowsFromOwnLogin, type ApiCreditsFacts, type UsageCreditsFacts } from "./claude-account-facts";
+import { claudeAccountFacts, claudeCredentialVersion, claudeWindowsFromOwnLogin, renewClaudeOwnLoginForUsage, type ApiCreditsFacts, type UsageCreditsFacts } from "./claude-account-facts";
 import type { ResetAdvice } from "./provider-reset-facts";
 import { noticeTime } from "./notice-time";
 import { resolveProviderAlias } from "./aliases";
@@ -299,7 +299,7 @@ async function readCodex(): Promise<ProviderUsage> {
  */
 const OWN_LOGIN_INTERVAL_MS = 5 * 60_000;
 const OWN_LOGIN_MAX_BACKOFF_MS = 30 * 60_000;
-const ownLoginPacing = new Map<string, { nextAtMs: number; failures: number }>();
+const ownLoginPacing = new Map<string, { nextAtMs: number; failures: number; credentialVersion: string | null }>();
 async function pacedOwnLoginWindows(label: string, previous: AccountUsage | undefined):
     Promise<{ windows: UsageWindow[]; readAt: string | null; problem: string | null; fresh: boolean } | null> {
   const kept = previous && previous.windows.length && previous.readAt
@@ -308,18 +308,21 @@ async function pacedOwnLoginWindows(label: string, previous: AccountUsage | unde
   // the login may be dead (no token reads the same as a refusal), so it says so and stops counting as room.
   const keptProblem = kept && Date.now() - Date.parse(kept.readAt) <= OWN_LOGIN_MAX_BACKOFF_MS
     ? null : "Showing the last reading; the latest could not be taken.";
-  const pacing = ownLoginPacing.get(label) ?? { nextAtMs: 0, failures: 0 };
+  const credentialVersion = claudeCredentialVersion(label);
+  const pacing = ownLoginPacing.get(label) ?? { nextAtMs: 0, failures: 0, credentialVersion };
+  renewClaudeOwnLoginForUsage(label);
   // A kept reading is a good one whose time says how old it is, so the work router can still use it.
-  if (Date.now() < pacing.nextAtMs) return kept ? { ...kept, problem: keptProblem, fresh: false } : null;
+  if (credentialVersion === pacing.credentialVersion && Date.now() < pacing.nextAtMs)
+    return kept ? { ...kept, problem: keptProblem, fresh: false } : null;
   const own = await claudeWindowsFromOwnLogin(label);
   if (own) {
-    ownLoginPacing.set(label, { nextAtMs: Date.now() + OWN_LOGIN_INTERVAL_MS, failures: 0 });
+    ownLoginPacing.set(label, { nextAtMs: Date.now() + OWN_LOGIN_INTERVAL_MS, failures: 0, credentialVersion });
     return { windows: own.map(window => ({ ...window, resetsAt: iso(window.resetsAt), willLastToReset: null, runsOutAt: null })),
       readAt: new Date().toISOString(), problem: null, fresh: true };
   }
-  const failures = pacing.failures + 1;
+  const failures = credentialVersion === pacing.credentialVersion ? pacing.failures + 1 : 1;
   ownLoginPacing.set(label, { failures,
-    nextAtMs: Date.now() + Math.min(OWN_LOGIN_INTERVAL_MS * 2 ** (failures - 1), OWN_LOGIN_MAX_BACKOFF_MS) });
+    nextAtMs: Date.now() + Math.min(OWN_LOGIN_INTERVAL_MS * 2 ** (failures - 1), OWN_LOGIN_MAX_BACKOFF_MS), credentialVersion });
   return kept ? { ...kept, problem: keptProblem, fresh: false } : null;
 }
 
