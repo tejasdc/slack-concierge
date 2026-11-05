@@ -30,6 +30,13 @@ records the installed projection's derived revision and shadow-rebuilds all hist
 that revision changes. The previous complete generation remains readable until the replacement is
 complete, and no accepted input is replayed.
 
+The first refresh implementation incorrectly coupled a receipt-policy change to the full presentation
+generation. Its installed activation began duplicating unrelated message and topic projections and
+hit SQLite's full-write refusal before it could activate the corrected receipts. The worker now owns
+an independent receipt generation and refreshes only the receipt table. Incremental receipt updates,
+time-based refreshes and checkpoints all use that receipt generation; message and topic projections
+remain untouched.
+
 ## Acceptance scenario
 
 - **Seed:** A retained input ends with `CHATGPT_SEND_FAILED` or `CHATGPT_NOT_SENT` before ChatGPT Send.
