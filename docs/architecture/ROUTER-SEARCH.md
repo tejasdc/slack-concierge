@@ -177,6 +177,12 @@ root and both identities without contacting production Slack.
   Otherwise EmbeddingGemma-300M runs on the box's CPU in a
   llama.cpp child process installed and pinned by `bot/scripts/install-meaning-engine.sh` on deploy;
   it is stopped when Concierge exits and killed by the kernel if Concierge is killed (`setpriv --pdeathsig`).
+  Two such processes share the model file: the shared engine on 127.0.0.1:8796 (2 threads) does
+  Concierge's indexing and serves every other local caller, including thnkr.ing; a private engine
+  on `meaning-query.sock` in Concierge's state folder (1 thread) embeds only Concierge's questions
+  (session search, earlier-work and request-history questions), so a bulk caller on the shared port
+  cannot delay a search. Both run with llama.cpp's polling off: on the saturated box (2026-11-05)
+  4 spinning threads took 6-17 s per query and burned up to 3.6 cores, 1 non-spinning thread 0.15-0.28 s.
   Every passage is credited to the session that wrote it and keyed by author plus exact words: a
   request counts toward the session that received it, a reply and its returned copy (including a
   Mac session's reply that exists here only as a return) are one passage of the replier. Titles of
