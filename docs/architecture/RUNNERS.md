@@ -250,7 +250,9 @@ turn by its thread and turn id), so moving it only changes where the bridge's We
 
 **Startup order.** Codex readiness never holds or fails Concierge's startup. Recovery claims
 surviving Codex turns immediately; every Codex turn, adopted or new, then waits at one readiness
-gate before connecting to its App Server (Stop still ends the wait). The gate opens when a
+gate before connecting to its App Server. A new turn waits before its run is recorded or admitted,
+so a restart during the wait requeues it as unsent. A Stop requested during the wait is held and
+takes effect when Codex answers. The gate opens when a
 `model/list` probe answers. The probe starts with the first Codex turn or with the startup
 readiness phase, whichever comes first. It retries through any error (a missing request socket,
 the relay's 503 for an absent runner channel, a down App Server) with a backoff of up to 15
