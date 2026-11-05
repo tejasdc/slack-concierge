@@ -46,6 +46,12 @@ for(const code of [retirementCall,retirementRead])
 assert.equal(macSurfaceRefusal({command:null,need:retirementNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:RETIREMENT_FILE_MENU_PROGRAM}}),null);
 const retirementNewWindowNeed={...retirementNeed,why:`${retirementNeed.why}; select native New Window`};
 assert.equal(macSurfaceRefusal({command:null,need:retirementNewWindowNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:RETIREMENT_NEW_WINDOW_PROGRAM}}),null);
+const unlockedRetirementNeed={...retirementNewWindowNeed,humanInputId:'1ba89166-c732-481b-b53a-e77e85ba93ba'};
+for(const code of [retirementCall,retirementRead,RETIREMENT_FILE_MENU_PROGRAM,RETIREMENT_NEW_WINDOW_PROGRAM])
+  assert.equal(macSurfaceRefusal({command:null,need:unlockedRetirementNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code}}),null);
+for(const code of ["await cua.getApp('Safari')",'await cua.getState()',"await cua.getApp('com.apple.Safari.WebApp.other')", "await thnkrRetirementNewWindowApp.click(2)"])
+  assert.ok(macSurfaceRefusal({command:null,need:unlockedRetirementNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code}}),code);
+assert.ok(macSurfaceRefusal({command:null,need:{...unlockedRetirementNeed,effectScope:'informational'},platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:RETIREMENT_NEW_WINDOW_PROGRAM}}));
 for(const need of [retirementNeed,{...retirementNewWindowNeed,effectScope:'informational'},
   {...retirementNewWindowNeed,humanInputId:'capture:other'},
   {...retirementNewWindowNeed,why:retirementNewWindowNeed.why.replace('exact53 retirement','old recovery')},
@@ -110,6 +116,8 @@ for(const need of [{...retirementNeed,effectScope:'informational'},
   assert.ok(macSurfaceRefusal({command:null,need,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getState()'}}));
 const webInspectorNeed={...webAppNeed,why:`${webAppNeed.why} Open Web Inspector on that exact app to inspect reachable unsaved editor state.`};
 const webInspectorOpen=`var thnkrInspectorApp = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792'); await thnkrInspectorApp.pressKey('alt+super+i')`;
+for(const code of ['await app.getAXState()',webInspectorOpen])
+  assert.ok(macSurfaceRefusal({command:null,need:{...unlockedRetirementNeed,why:`${webAppNeed.why} exact53 retirement`},platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code}}),code);
 const webAppCall="let app = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792');";
 assert.equal(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webAppCall}}),null);
 assert.equal(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await app.getAXState()'}}),null);
