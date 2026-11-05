@@ -1140,20 +1140,37 @@ export function openInboxObligations() {
   const inbox=inboxOrThrow();
   const requests=(db.query(`SELECT * FROM inbox_requests WHERE state='open' ORDER BY created_at,request_id`).all() as any[]).map(toStoredRequest);
   const now=Date.now();
-  const topics=new Map<string,StoredTopic>(),questions=new Map<string,StoredQuestion[]>();
+  const topics=new Map<string,StoredTopic>(),questions=new Map<string,StoredQuestion[]>(),openByTopic=new Map<string,StoredRequest[]>();
+  const hasDecision=!!db.query(`SELECT 1 FROM inbox_questions WHERE kind='decision' AND state IN ('open','partial','deferred') LIMIT 1`).get();
+  const read=hasDecision?readIndex(inbox.id,true):{humanReplies:new Map<string,HumanReply[]>()};
   const items=requests.map(request=>{
     let topic=topics.get(request.topicId);
     if(!topic){topic=topicRow(request.topicId);topics.set(request.topicId,topic);}
     let inTopic=questions.get(request.topicId);
     if(!inTopic){inTopic=topicQuestions(request.topicId);questions.set(request.topicId,inTopic);}
     const dispatches=new Set(request.dispatches.map((dispatch:any)=>String(dispatch.requestId??'')));
-    const question=inTopic.find(item=>item.kind==='decision'&&item.context==='ready'&&item.blocking&&!item.optional
-      &&(OPEN_QUESTION_STATES.includes(item.state)||item.state==='deferred')
+    const works=request.dispatches.map((dispatch:any)=>workRow(String(dispatch?.requestId??''))).filter((work):work is Work=>!!work)
+      .sort((left,right)=>left.createdAtMs-right.createdAtMs||left.id.localeCompare(right.id));
+    const live=works.filter(work=>work.outcome===null&&!work.stalled).at(-1);
+    const latest=works.at(-1);
+    let openRequests=openByTopic.get(request.topicId);
+    if(!openRequests){openRequests=requests.filter(item=>item.topicId===request.topicId);openByTopic.set(request.topicId,openRequests);}
+    const replies=latestHumanReply(read,topicRoots(request.topicId));
+    const direct=inTopic.filter(item=>item.kind==='decision'&&OPEN_QUESTION_STATES.includes(item.state)
       &&(item.owner?.requestId===request.requestId||dispatches.has(String(item.owner?.dispatchRequestId??''))));
-    const latest=request.dispatches.at(-1);
-    const work=latest?workRow(String(latest.requestId??'')):null;
-    const waitingOn=question?'his decision':!work?'Inbox routing':work.outcome===null&&!work.stalled?'agent answer':work.notCheckedReason?'verification':'recovery';
-    const owner=question?'Tejas':waitingOn==='agent answer'?String(latest?.targetSessionId??`concierge:${inbox.id}`):`concierge:${inbox.id}`;
+    const legacy=inTopic.filter(item=>item.kind==='decision'&&OPEN_QUESTION_STATES.includes(item.state)
+      &&unlinkedQuestionImplies(item,request,openRequests));
+    const deferred=inTopic.some(item=>item.kind==='decision'&&item.state==='deferred'
+      &&(item.owner?.requestId===request.requestId||dispatches.has(String(item.owner?.dispatchRequestId??''))
+        ||unlinkedQuestionImplies(item,request,openRequests)));
+    const shared=latest?.disposition==='needs_decision'&&request.dispatches.some((dispatch:any)=>dispatch.sharedAcrossTopic&&dispatch.requestId===latest.id)
+      &&!!db.query(`SELECT 1 FROM inbox_questions WHERE kind='decision' AND state IN ('open','partial','deferred')
+        AND context='ready' AND blocking=1 AND optional=0 AND json_extract(owner_json,'$.dispatchRequestId')=? LIMIT 1`).get(latest.id);
+    const waitingAgent=live??(latest?.outcome===null?latest:null);
+    const waitingForHim=shared||deferred||[...direct,...legacy].some(item=>awaitingHim(questionView(item,replies)))
+      ||!!(waitingAgent&&agentWaitingOnHim(waitingAgent,read,`concierge:${topic.sessionId}`));
+    const waitingOn=waitingForHim?'his decision':live?'agent answer':!latest?'Inbox routing':latest.notCheckedReason?'verification':'recovery';
+    const owner=waitingForHim?'Tejas':live?.target??`concierge:${inbox.id}`;
     return {requestId:request.requestId,topicId:request.topicId,topicTitle:topic.title,title:request.title,
       owner,createdAt:request.createdAt,ageMs:Math.max(0,now-new Date(request.createdAt).getTime()),
       waitingOn};
@@ -3300,6 +3317,8 @@ function linkForwardedReplies(topicId:string,forwards:Forward[],admittingNow=fal
   const recoveryStart=forwardRecoveryStartMs(topicRow(topicId).sessionId);
   let linked=0;
   for(const forward of mine) {
+    const source=forward.inboxInputId?getAcceptedSessionInput(forward.inboxInputId):null;
+    if(source?.origin!=='human')continue;
     // A shared agent and thread do not establish that his new message continues earlier work.
     // A reply to a different answer must never settle that earlier request.
     const requests=topicRequests(topicId);
@@ -3310,8 +3329,7 @@ function linkForwardedReplies(topicId:string,forwards:Forward[],admittingNow=fal
     const unresolved=forward.outcome!=='answered'||forward.disposition!=='completed'||!!forward.notCheckedReason;
     if(!targets.length&&(admittingNow||forward.createdAtMs>=recoveryStart||unresolved)&&forward.inboxInputId
       &&!requests.some(request=>request.dispatches.some((dispatch:any)=>dispatch.requestId===forward.id))) {
-      const source=getAcceptedSessionInput(forward.inboxInputId);
-      if(source?.origin==='human') {
+      if(source.origin==='human') {
         const topic=topicRow(topicId);
         const words=JSON.parse(source.payload_json)?.text;
         const request:StoredRequest={requestId:`req:forward:${forward.id}`,topicId,title:`Follow-up in ${topic.title}`.slice(0,200),

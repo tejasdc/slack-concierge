@@ -412,7 +412,9 @@ source already belongs to an open request or it names that request with
 `--promise-request`. A post cannot create a promise merely by saying it; send the
 work first. A retry of the same accepted post returns its original receipt even after
 that work closes; the open-work guard applies to new posts. `sessions topics obligations` reads all open requests in
-one view with their current destination and age, without creating another store.
+one view with their current destination and age, without creating another store. The
+reported owner follows live attempts and existing decision waits, including a decision
+in another thread that holds an agent's work; ended attempts return to Inbox recovery.
 
 The request's source input and its named thread answer different questions. The source is
 the event that caused this send; the named thread message is the return address for its
