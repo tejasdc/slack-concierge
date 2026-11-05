@@ -546,6 +546,19 @@ applies its ten-second hang bound to each child operation, not to the sum of bun
 all sequential wrapper invocations. It streams numbered start/completion markers to retained
 stderr and reports exit status, signal and elapsed time on child failure. The controller's
 180-second presentation deadline still bounds the complete sequence; no assertion is skipped.
+The controller's commands whose output it reads and whose failure stops the update (the run
+claim and show, the desired-commit read, the migration backup, candidate preparation, the current
+and last-known-good release reads, the adoptability check and activation) keep both streams when
+they fail, with stderr still streaming to the journal as it is written: the newest 20 failures stay in `/var/lib/slack-concierge-deployment/command-failures/`,
+their tails and that path join the release error, and a repair handoff copies them into the
+incident's `failed-command/` folder (`stdout.log`, `stderr.log`, `status.json`). Before this, a
+failing activation's JSON error was captured and then lost when the script stopped (incident
+dba27ddf, 2026-11-04). Every release and deployment-run call the controller makes to the serving
+owner waits for its request socket to accept the connection, on the same bounded owner-restart
+policy agents' helper calls use (90 seconds), because Concierge can restart while an update
+runs; only a request that provably never reached the owner, or a read, is sent again, and each
+wait is a `deployment_owner_socket_wait` line in the deploy journal. Failure recording stops
+waiting at once when the service is fully stopped and records offline, as before.
 A desired commit whose
 run failed is not run again; the next push to `main` starts a fresh run.
 
@@ -571,7 +584,13 @@ select a culprit. The repair agent diagnoses causality, commits the smallest
 repair in an incident worktree and returns a structured committed-or-blocked
 result. The supervisor non-force pushes only after proving the recorded
 `origin/main` base, and retries the same deployment run through the existing
-detached controller. No manual polling is required. A successful retry records
+detached controller, targeting the repair commit: the retry sets the run's desired commit to
+it. A commit whose most recent activation, in any run, failed (that run's incident names it) is
+refused at activation intent, whatever chose it (a repair retry, a new run, an operator), so
+nothing restarts Concierge onto a known-bad release; a failure before any activation (the owner
+was restarting, say) may still retry the same commit, and a later success elsewhere clears it. On 2026-11-04 the retry kept the failed candidate 15dbe76b as its target and
+activated it twice more although its repair 0116beb1 was on main
+(`docs/incidents/2026-11-04-repair-retry-reactivated-failed-candidate.md`). No manual polling is required. A successful retry records
 its runtime proof and wakes no feature agent. The third identical candidate-health
 failure parks the incident.
 

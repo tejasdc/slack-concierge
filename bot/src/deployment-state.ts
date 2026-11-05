@@ -971,6 +971,22 @@ export function recordDeploymentReleaseActivationIntent(runId: string, artifactD
       if (run.activation_state !== null) throw new Error("An activated deployment cannot change candidates.");
       return { supersededCommit: run.desired_commit };
     }
+    // A commit whose most recent activation, in any run, failed (its run's incident names it) is
+    // never activated again unchanged; only a different commit (its repair) may follow. Whatever
+    // chose the commit (a repair retry, a new run, an operator), this is the last gate. A failure
+    // before any activation (incident dba27ddf: the owner was restarting) leaves no activated
+    // release, so that commit may still be retried; a later success elsewhere is fresh evidence.
+    const failedBefore = db.query(`SELECT incident.id FROM deployment_releases latest
+      JOIN deployment_repair_incidents incident
+        ON incident.run_id=latest.run_id AND incident.failed_commit=latest.git_commit
+      WHERE latest.git_commit=? AND latest.activated_at IS NOT NULL
+        AND latest.activated_at=(SELECT MAX(activated_at) FROM deployment_releases
+          WHERE git_commit=? AND activated_at IS NOT NULL)
+      LIMIT 1`).get(release.git_commit, release.git_commit) as { id: string } | null;
+    if (failedBefore) {
+      throw new Error(`Commit ${release.git_commit} failed after its last activation (incident ${failedBefore.id}); `
+        + "it is not activated again. Only a commit containing its repair can be activated.");
+    }
     db.query(`UPDATE deployment_runs
       SET candidate_artifact_digest=?, candidate_commit=?, activation_state='intended',
           updated_at=CURRENT_TIMESTAMP WHERE id=?`)
@@ -1305,12 +1321,15 @@ export function prepareDeploymentRetry(incidentId: string) {
     if (!run || run.status !== "releasing") throw new Error("Deployment run is not held for retry.");
     db.query(`UPDATE deployment_repair_incidents SET status='retrying', updated_at=CURRENT_TIMESTAMP WHERE id=?`)
       .run(incidentId);
+    // The retry installs the integrated repair, never the commit that failed. Leaving the run's
+    // desired commit at the failed candidate rebuilt and re-activated 15dbe76b twice on
+    // 2026-11-04 (incident 4f105855) although its repair 0116beb1 was already on main.
     db.query(`UPDATE deployment_runs
       SET status='prepared', repair_state='retrying', runner_pid=NULL, runner_boot_id=NULL,
           runner_start_ticks=NULL, deployed_commit=NULL, service_invocation_id=NULL,
           evidence_json=NULL, error=NULL, completed_at=NULL, candidate_artifact_digest=NULL,
-          candidate_commit=NULL, activation_state=NULL, updated_at=CURRENT_TIMESTAMP
-      WHERE id=? AND status='releasing'`).run(run.id);
+          candidate_commit=NULL, activation_state=NULL, desired_commit=?, updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND status='releasing'`).run(incident.repair_commit, run.id);
     requestDeploymentTurnReactionStateInTransaction(run.id, "deploying");
     appendRunEvent(run.id, "repair_retrying", {
       incident_id: incidentId,

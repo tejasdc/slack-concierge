@@ -2,10 +2,10 @@
 
 import { readFileSync, realpathSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { join } from "node:path";
 import { ledgerAccess } from "../src/ledger-access-policy";
 import { notifyDeploymentWorker } from "../src/deployment-worker-wake";
 import { isAncestorProcess, processIdentity } from "../src/runtime-identity";
+import { deploymentOwnerFetch } from "../src/deployment-owner-fetch";
 
 // A served claim or phase needs only the private socket. Opening even a read-only SQLite
 // connection in this short-lived helper can acquire WAL writer/checkpoint locks on close.
@@ -32,16 +32,17 @@ const {
 } = state;
 
 async function ownerDeploymentMutation(operation: "claim" | "phase" | "show" | "desired" | "succeed" | "fail" | "preserved-checkout", input: Record<string, unknown>): Promise<any> {
-  const stateDir = process.env.CONCIERGE_STATE_DIR;
-  if (!stateDir) throw new Error("CONCIERGE_STATE_DIR is required for deployment state.");
+  if (!process.env.CONCIERGE_STATE_DIR) throw new Error("CONCIERGE_STATE_DIR is required for deployment state.");
   let response: Response;
   try {
-    response = await fetch("http://localhost/internal/deployment-run", {
-      unix: join(stateDir, "request-owner.sock"), method: "POST",
+    // Waits for a restarting owner's socket. For failure recording a fully stopped service ends the
+    // wait at once, because that record then becomes this controller's own ledger write.
+    response = await deploymentOwnerFetch("/internal/deployment-run", {
+      method: "POST",
       headers: { "content-type": "application/json" }, body: JSON.stringify({ operation, ...input }),
-    } as RequestInit);
+    }, { stopWaiting: operation === "fail" ? coordinatorFullyStopped : undefined });
   } catch (cause) {
-    throw Object.assign(new Error(`Serving owner is unreachable for ${operation}.`, {cause}),
+    throw Object.assign(new Error(`Serving owner is unreachable for ${operation}: ${cause instanceof Error ? cause.message : String(cause)}`, {cause}),
       {ownerTransportUnavailable:true});
   }
   const result = await response.json();
