@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   CodexAppServerClient,
+  ownerCodexAppServerClient,
   type CodexAppServerClientLike,
 } from "./codex-app-server-client";
 import { errorFields, log } from "./log";
@@ -47,7 +48,7 @@ export class CodexSessionObserver {
     // Subscriptions belong to this observer, so releasing an idle thread cannot
     // unsubscribe the execution host or another client sharing its connection.
     this.ownsAppServer = !options.appServer;
-    this.appServer = options.appServer ?? new CodexAppServerClient();
+    this.appServer = options.appServer ?? ownerCodexAppServerClient();
     this.stoppedSignal = new Promise((resolve) => { this.resolveStoppedSignal = resolve; });
   }
 

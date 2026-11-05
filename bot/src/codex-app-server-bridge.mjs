@@ -3,6 +3,9 @@ import { createInterface } from "node:readline";
 import WebSocket from "ws-node";
 
 const socketPath = process.argv[2];
+// A path names the owner's relay to a runner's App Server (docs/architecture/RUNNERS.md); the
+// App Server's own socket answers at its root. Either way the same WebSocket protocol passes.
+const relayPath = process.argv[3] || "/";
 const initializeId = "slack-concierge-initialize";
 let ready = false;
 let disconnectReported = false;
@@ -18,7 +21,7 @@ function disconnect(error) {
   write({ type: "disconnect", error: error instanceof Error ? error.message : String(error) });
 }
 
-const appServer = new WebSocket("ws://localhost/", {
+const appServer = new WebSocket(`ws://localhost${relayPath}`, {
   createConnection: () => createConnection(socketPath),
   perMessageDeflate: false,
 });

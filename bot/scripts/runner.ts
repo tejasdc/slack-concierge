@@ -5,7 +5,8 @@
  *
  * Environment: CONCIERGE_OWNER_URL (the owner's agent entrance), CONCIERGE_RUNNER_TOKEN_FILE (a
  * runner token from `POST /runner/v1/token` on the owner's machine), CONCIERGE_RUNNER_STATE (this
- * runner's own folder), CONCIERGE_RUNNER_KINDS (default `probe,turn`). `--once` handles at most one
+ * runner's own folder), CONCIERGE_RUNNER_KINDS (default `probe,turn,codex`; `codex` offers this
+ * machine's Codex App Server through the owner's relay). `--once` handles at most one
  * probe and exits (the probe check uses it).
  *
  * Job kinds:
@@ -25,6 +26,8 @@ import {ADOPTABLE_HOST_PROTOCOLS,HOST_PROTOCOL_VERSION,HostConnection,HostNotSta
   executionUnit,hostCustody,hostSocketPath,startHost,stopSupersededHost,streamJournal,type HostFrame} from '../src/execution-host-client';
 import {watchClaudeTranscript} from '../src/claude-transcript-watch';
 import {RUNNER_FENCE_MS} from '../src/runner-leases';
+import {codexAppServerSocketPath} from '../src/codex-app-server-client';
+import {controlSocketListeners,startCodexDaemonWhenAbsent} from '../src/codex-daemon-file-limit';
 
 const owner=process.env.CONCIERGE_OWNER_URL?.replace(/\/+$/,'');
 const tokenFile=process.env.CONCIERGE_RUNNER_TOKEN_FILE;
@@ -34,7 +37,7 @@ const token=readFileSync(tokenFile,'utf8').trim();
 mkdirSync(stateDir,{recursive:true,mode:0o700});
 const held=join(stateDir,'attempts.json');
 const once=process.argv.includes('--once');
-const kinds=(process.env.CONCIERGE_RUNNER_KINDS??'probe,turn').split(',').map(kind=>kind.trim()).filter(Boolean);
+const kinds=(process.env.CONCIERGE_RUNNER_KINDS??'probe,turn,codex').split(',').map(kind=>kind.trim()).filter(Boolean);
 const maxTurns=Number(process.env.CONCIERGE_RUNNER_MAX_TURNS)||64;
 /** This runner's release: the host program and the agents' helpers come from here, never from the owner. */
 const botDir=resolve(import.meta.dir,'..');
@@ -380,8 +383,64 @@ setInterval(async()=>{
   finally{syncing=false;}
 },500);
 
+/**
+ * Live services this runner offers the owner through its relay (RUNNERS.md "Codex App Server on a
+ * runner"): one outbound listen channel; for each `open` the owner's gateway sends, a second
+ * outbound WebSocket is paired with a fresh connection to the service here, and messages pass both
+ * ways unchanged. This runner's App Server is started here when absent, under the runner's own
+ * environment, so the shells it runs carry this runner's owner address and token file.
+ */
+const relayBase=owner!.replace(/^http/,'ws');
+function relayCodexAppServer(id:string) {
+  const remote=new WebSocket(`${relayBase}/runner/v1/relay/accept?id=${encodeURIComponent(id)}`,{headers:{authorization:`Bearer ${token}`}} as any);
+  const local=new WebSocket(`ws+unix://${codexAppServerSocketPath()}:/`);
+  const waiting:(string|ArrayBuffer|Uint8Array)[]=[];
+  let ended=false;
+  const end=(why:string)=>{
+    if(ended)return;ended=true;
+    say('runner_relay_closed',{relay:id,why});
+    for(const socket of [remote,local])try{socket.close(1011,why.slice(0,120));}catch{}
+  };
+  remote.binaryType='arraybuffer';local.binaryType='arraybuffer';
+  remote.onmessage=event=>{if(local.readyState===WebSocket.OPEN)local.send(event.data);else if(local.readyState===WebSocket.CONNECTING)waiting.push(event.data);else end('the App Server connection is gone');};
+  local.onopen=()=>{for(const message of waiting.splice(0))local.send(message);};
+  // A message that cannot be passed on ends the relay; it is never dropped silently.
+  local.onmessage=event=>{if(remote.readyState===WebSocket.OPEN)remote.send(event.data);else end('the owner side is gone');};
+  local.onerror=()=>{
+    // Nobody listening on the App Server's socket: start it (once per half minute); the owner's
+    // client sees this relay end and connects again.
+    if(!existsSync(codexAppServerSocketPath())||!controlSocketListeners(codexAppServerSocketPath()).length)startCodexDaemonWhenAbsent('ECONNREFUSED');
+    end('the App Server on this runner is not answering');
+  };
+  local.onclose=event=>end(`App Server closed (${event.code})`);
+  remote.onclose=event=>end(`owner side closed (${event.code})`);
+  remote.onerror=()=>end('owner side failed');
+}
+let relayChannel:WebSocket|null=null;
+function listenForRelays(delayMs=0) {
+  setTimeout(()=>{
+    const channel=new WebSocket(`${relayBase}/runner/v1/relay/listen`,{headers:{authorization:`Bearer ${token}`}} as any);
+    relayChannel=channel;
+    channel.onopen=()=>say('runner_relay_listening');
+    channel.onmessage=event=>{
+      let message:any;try{message=JSON.parse(String(event.data));}catch{return;}
+      if(message?.op==='open'&&message.target==='codex-app-server'&&typeof message.id==='string')relayCodexAppServer(message.id);
+    };
+    channel.onclose=event=>{
+      if(relayChannel!==channel)return;
+      say('runner_relay_listen_closed',{code:event.code});
+      // 4000: a newer copy of this runner took the channel; this copy stops offering relays rather
+      // than the two replacing each other forever.
+      if(event.code===4000){say('runner_relay_replaced');return;}
+      listenForRelays(5_000);
+    };
+  },delayMs);
+}
+if(!once&&kinds.includes('codex'))listenForRelays();
+
 for(let idle=0;;) {
-  const offered=turns.size>=maxTurns?kinds.filter(kind=>kind!=='turn'):kinds;
+  const jobKinds=kinds.filter(kind=>kind!=='codex');
+  const offered=turns.size>=maxTurns?jobKinds.filter(kind=>kind!=='turn'):jobKinds;
   const {job}=offered.length?await call('claim',{kinds:once?['probe']:offered}).catch(error=>{say('runner_claim_failed',{error:String(error)});return {job:null};}):{job:null};
   if(job){
     if(job.kind==='turn'){

@@ -4,8 +4,8 @@
 runner lease engine with its routes, a probe runner, and **Claude Code turns on runners** ("Turns on
 a runner" below): a new Claude turn can run on a runner, whose agents reach the owner only over
 the network entrance. It is selected per session (`sessions ask --on-runner`) unless the owner sets
-`CONCIERGE_TURN_RUNNERS=all`. **Still on the owner's machine:** shared Codex App Server turns,
-Google and outside-Codex hosts, command and file watches, the provider account readings and
+`CONCIERGE_TURN_RUNNERS=all`. **Still on the owner's machine:** shared Codex App Server turns (the relay is built, not
+switched on), Google and outside-Codex hosts, command and file watches, the provider account readings and
 sign-ins, and project checkouts (a runner must have the same folders). Concierge's own thnkr.ing
 calls already use thnkr.ing's network entrance. The owner therefore
 **cannot move to the app server yet**; the remaining work is listed under "Not on runners yet".
@@ -179,9 +179,11 @@ after one such run was taken over live by a later owner. Until then updates wait
 
 ### Not on runners yet
 
-- Shared Codex App Server turns (`codex-daemon`), Google turns and outside Codex hosts stay local.
-  Moving Codex needs the App Server started on the runner and its JSON-RPC session relayed, plus per-turn
-  token resolution because a Codex thread keeps its first turn's shell environment.
+- Google turns and outside Codex hosts stay local. Google's launch first reads the owner's own
+  `~/.gemini` settings (the paid-credit guard), and an outside run's prompt file is written into the
+  owner's state folder, which runners hide; both need the runner-side account step below first.
+- Codex hooks: `pinCodexThreadHooks` files each thread's helper release in the owner's state folder
+  and the App Server's hooks read it there, so a runner on another machine needs that pin sent to it.
 - Command and file watches (`watches.ts`) and artifacts start hosts on the owner's machine.
 - Provider account usage readings, sign-in commands and history writes read the owner's home.
 - Project folders: the job names an absolute folder; a runner must have the same checkout layout, and
@@ -190,6 +192,70 @@ after one such run was taken over live by a later owner. Until then updates wait
 - Wording Concierge gives agents still names thnkr.ing's local socket (the canvas think-aloud
   instructions, the `--todo` hint); a runner turn has `THINKERING_CAPABILITY_URL` and its run token
   instead.
+
+## Codex App Server on a runner (built, off until `CONCIERGE_CODEX_RUNNER` is set)
+
+Codex turns do not use a per-turn host: one long-lived Codex App Server holds every thread, and
+Concierge talks JSON-RPC to it over a WebSocket on its local control socket through a small Node
+bridge (`codex-app-server-bridge.mjs`). Custody already rests on that daemon (a later owner follows a
+turn by its thread and turn id), so moving it only changes where the bridge's WebSocket ends:
+
+1. The runner keeps one outbound WebSocket open to the agents' entrance,
+   `/runner/v1/relay/listen`, with its runner token (`runner.ts`, job kind `codex` in
+   `CONCIERGE_RUNNER_KINDS`, on by default). A run token is refused; the newest channel per runner wins.
+2. With `CONCIERGE_CODEX_RUNNER=<runner>` on the owner, every App Server client (turns, the session
+   observer, history workers, device sign-in) starts the same bridge against the owner's
+   `requests.sock` at `/runner/v1/relay/connect?runner=<runner>&target=codex-app-server`.
+3. The gateway (`runner-relay.ts`, inside the front-door process, no ledger) asks the runner over its
+   channel to open `/runner/v1/relay/accept?id=…`; the runner opens a fresh connection to its own
+   App Server socket and the gateway pairs the two. Messages pass unchanged and in order, including
+   the bridge's own `initialize`. Up to 16 MB sent before pairing waits in the gateway.
+4. Either end closing closes the other, and a runner that does not accept within 15 s ends the
+   relay. The App Server client already treats a dropped bridge as an ambiguous disconnect and
+   reconnects, which is a new relay. Idle sockets are pinged every minute, so a runner that vanished
+   is noticed instead of leaving a dead listener.
+5. A runner whose App Server is not answering starts it (`codex app-server daemon start`, the same
+   helper the owner used, in `agents.slice`) under the runner's own environment. Codex shells inherit
+   that environment, so helpers in a Codex thread reach the owner with the runner's
+   `CONCIERGE_OWNER_URL` and token file (`router-request-client.ts`). A run's own token and owner
+   address are kept out of a Codex thread's shell settings, because a thread keeps them for its life,
+   past the token's expiry and the owner's move. Codex helpers therefore act as `runner:<name>`; the
+   owner still checks every action's source input and run. This substitutes the runner token for the
+   per-turn token the plan asked for: any Codex shell on that runner holds the runner's full
+   authority, including claiming its jobs and opening its relay channel (which carries every
+   session's Codex traffic). A root agent on the runner could read the token file anyway, so this
+   widens nothing on a machine where agents are root; a per-turn exchange (runner token plus
+   `CODEX_THREAD_ID` for the current turn's run token, as the commit-provenance hook resolves its
+   turn) is still owed before a runner hides its token from agents.
+6. Backpressure: a side that stops reading past 64 MB is disconnected (`closeOnBackpressureLimit`),
+   and a message Bun refuses ends the relay; nothing is dropped silently. A graceful owner stop
+   closes every relay and listen channel first, so it is never held by them.
+
+Why a relay and not the job protocol: the App Server's traffic is a live connection with many
+streamed notifications, not obligations; carrying it through `runner_events` would write every token
+delta into the ledger the move is meant to relieve, and add half a second per request. The relay
+stores nothing and keeps the App Server's own protocol end to end. Why not a port on the runner:
+runners open none (decided plan, "How the parts talk", 3).
+
+Not yet, before a runner on another machine can hold Codex:
+- The Codex thread's shell settings still carry the owner's `PATH`, state folder, ledger path, bot
+  folder and Bun path (`providerOwnerEnvironment`, codex.ts); Claude runner turns rewrite these on the
+  runner, Codex relay turns do not, so `router-actions.sh` would not be found on another machine.
+- The leftover-process audit after a Codex turn reads the owner's `/proc`; the Codex Remote observer
+  would watch the runner's App Server while his own command-line turns run elsewhere.
+- "Supervised" is only a start when a connection finds no App Server: no open-file limit raise, no
+  scope move, no update handling; the start is refused unless that machine's Codex updater is off.
+- An owner drain closes the request surfaces, and with them every relay, before its execution host
+  stops (index.ts drain order). With the relay on, every Codex connection, running turns included,
+  would be cut mid-drain; prove with a drain check holding a Codex turn in flight that the next owner
+  follows those turns (as it does after a restart) rather than recording them failed, or close relays
+  last.
+- One relayed message is limited to 64 MB, the same as the backpressure limit.
+- Account switching restarts the App Server on the owner's machine (`provider-activation.ts`),
+and the owner unit's `ExecStartPre` still starts the local App Server. On the AX41 the owner and runner
+share one App Server, so turning `CONCIERGE_CODEX_RUNNER=ax41` on changes the path, not the daemon;
+the App Server must be restarted under the runner (admission closed, turns idle, see
+[Codex App Server](../runbooks/CODEX-APP-SERVER.md)) before Codex helpers carry the runner's address.
 
 ## Concierge's own thnkr.ing calls (built)
 
@@ -255,6 +321,11 @@ Sources: [GetActivityTask](https://docs.aws.amazon.com/step-functions/latest/api
 - `bot/scripts/agent-entrance-check.ts`: the real gateway refuses missing, malformed, forged and
   foreign-key tokens before the owner, forwards run and runner principals that callers cannot spoof,
   keeps process control unreachable, and the agents' client takes the network path.
+- `bot/scripts/codex-relay-check.ts`: the real gateway, runner daemon, bridge and App Server client
+  against a stand-in App Server: a run token cannot listen, an unknown runner is refused at once,
+  requests reach the App Server only through the runner, a dropped App Server connection ends the
+  relay and the next request opens a new one. `--real-app-server` asks this machine's real App Server
+  `model/list` through the runner (2026-11-04 on the AX41: 8 models answered).
 - `bot/scripts/runner-lease-check.ts`: claim, contiguous events, commands, epoch fencing, computed
   expiry (turn unconfirmed, build requeued) and idempotent finish.
 - `bot/scripts/runner-turn-check.ts` (needs systemd; not in the build): the real runner daemon starts

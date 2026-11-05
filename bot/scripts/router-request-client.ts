@@ -1,5 +1,5 @@
 import { dirname, join } from "node:path";
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import type { Action } from "./router-post";
 import { RETRY_POLICIES, type RetryPolicy } from "../src/retry-policies";
 import { nextRetry } from "../src/retry-core";
@@ -34,8 +34,19 @@ function socketPath() {
  * other caller reaches the owner's socket on this machine, as before (docs/architecture/RUNNERS.md).
  */
 function networkOwner() {
-  const url = process.env.CONCIERGE_OWNER_URL?.trim(), token = process.env.CONCIERGE_AGENT_TOKEN?.trim();
-  return url && token ? { url: url.replace(/\/+$/, ''), token } : null;
+  const url = process.env.CONCIERGE_OWNER_URL?.trim();
+  if (!url) return null;
+  const token = process.env.CONCIERGE_AGENT_TOKEN?.trim() || runnerToken();
+  return token ? { url: url.replace(/\/+$/, ''), token } : null;
+}
+/**
+ * A Codex shell on a runner carries no per-run token (a thread would keep it for its life); it
+ * inherits the runner's own address and token file from the App Server the runner started.
+ */
+function runnerToken(): string | null {
+  const file = process.env.CONCIERGE_RUNNER_TOKEN_FILE?.trim();
+  if (!file) return null;
+  try { return readFileSync(file, 'utf8').trim() || null; } catch { return null; }
 }
 function ownerUrl(path: string) { const remote = networkOwner(); return remote ? `${remote.url}${path}` : `http://localhost${path}`; }
 function ownerTransport(): { unix?: string } { return networkOwner() ? {} : { unix: socketPath() }; }
