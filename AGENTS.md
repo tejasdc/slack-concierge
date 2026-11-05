@@ -76,6 +76,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - ChatGPT questions carry an exact task and remain open through failed attempts,
   return receipt, and explicit answer handling. See [ChatGPT answer obligations](docs/architecture/CHATGPT-ANSWER-OBLIGATIONS.md).
 - Preserve exact accepted input, run, action, source-message and target identity.
+  Continuation ancestry visits each source input once because valid service inputs
+  can point to themselves; see the [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md).
   Do not replay ambiguous or acknowledged effects. Keep human authorship distinct
   from agent and service inputs. The [session owner wire contract](docs/contracts/session-owner-v1.md),
   [human command custody](docs/architecture/HUMAN-COMMAND-INTAKE.md), and
