@@ -4,8 +4,11 @@
 runner lease engine with its routes, a probe runner, and **Claude Code turns on runners** ("Turns on
 a runner" below): a new Claude turn can run on a runner, whose agents reach the owner only over
 the network entrance. **On the AX41 every new Claude turn runs on runner `ax41`
-(`CONCIERGE_TURN_RUNNERS=all`) and every Codex App Server connection goes through it
-(`CONCIERGE_CODEX_RUNNER=ax41`)**, both set in `systemd/concierge-bot.service`; `claude-code/runner`
+(`CONCIERGE_TURN_RUNNERS=all`, `systemd/concierge-bot.service`).** `CONCIERGE_CODEX_RUNNER=ax41` was
+switched on 2026-11-05 01:49 UTC and rolled back: the starting owner took back running Codex turns
+before its front door and the runner channel existed, parked three (`connect ENOENT requests.sock`) and
+failed its startup App Server check five times (`503`, no runner channel yet) until the runner
+reconnected. Relayed Codex needs startup to wait for the relay first (see "Not yet" below); `claude-code/runner`
 earned its survival proof in the 2026-11-05 acceptance restart (execution `b212ed3c76cd9766`, taken
 over live by the restarted owner). **Still on the owner's machine:** Google and outside-Codex hosts,
 command and file watches, the provider account readings and sign-ins, and project checkouts (a runner
@@ -269,6 +272,11 @@ stores nothing and keeps the App Server's own protocol end to end. Why not a por
 runners open none (decided plan, "How the parts talk", 3).
 
 Not yet, before a runner on another machine can hold Codex:
+- **Startup order (blocks switching it on).** Adoption of running Codex turns and the startup App
+  Server check run before the request API and the front door exist, and the runner reconnects only
+  after the owner is back. Relayed connections must wait (bounded) for the front door and the
+  runner's listen channel before a starting owner adopts or checks Codex, or a relay connect must wait
+  for the channel instead of answering 503 at once.
 - The Codex thread's shell settings still carry the owner's `PATH`, state folder, ledger path, bot
   folder and Bun path (`providerOwnerEnvironment`, codex.ts); Claude runner turns rewrite these on the
   runner, Codex relay turns do not, so `router-actions.sh` would not be found on another machine.
