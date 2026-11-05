@@ -2,7 +2,7 @@ import {PresentationWorkerObservation} from "./presentation-worker-observation";
 import {writeLogLine} from './log';
 import {Database} from 'bun:sqlite';
 import {createHash,randomUUID} from 'node:crypto';
-import {realpathSync} from 'node:fs';
+import {readFileSync,realpathSync} from 'node:fs';
 import {join} from 'node:path';
 import {canceledRequestNotice,inboxRootResolver,sourceMessagePage} from './presentation-message-source';
 import {PreparedSearchIndex} from './prepared-search';
@@ -144,6 +144,9 @@ function keepLease() {
     .run(Date.now(),leaseToken).changes!==1)throw new Error('PRESENTATION_LEASE_LOST');
 }
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
+// The installed worker bundles every receipt dependency. Its digest therefore changes whenever
+// receipt classification or wording changes, without a second version number to remember.
+const receiptProjectionRevision=hash(readFileSync(realpathSync(process.argv[1])).toString('base64'));
 const stable=(value:unknown):string=>JSON.stringify((function order(item:any):any{
   return Array.isArray(item)?item.map(order):item&&typeof item==='object'
     ?Object.fromEntries(Object.keys(item).sort().filter(key=>item[key]!==undefined).map(key=>[key,order(item[key])])):item;
@@ -536,7 +539,7 @@ async function rebuild() {
       prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=8,answer_closures_version=2,marked_reply_roots_version=1,agent_request_visibility_version=1,routing_result_visibility_version=2 WHERE singleton=1')
         .run(generation,after,startHead);
       cards.activate(generation,startHead);
-      receipts.activate(generation,startHead);
+      receipts.activate(generation,startHead,receiptProjectionRevision);
       topics.activate(generation,startHead);
       areas.activate(generation);
       labRequests.activate(generation,startHead);
@@ -613,7 +616,8 @@ async function upgradeRoutingResultVisibility(generation:number){
 /** Changes to lineage request a new generation. New messages append without rereading history. */
 async function catchUp() {
   const current=meta();
-  if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)){await rebuild();return;}
+  if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)
+    ||!receipts.isCurrent(receiptProjectionRevision)){await rebuild();return;}
   if(!current.agent_request_visibility_version){await upgradeAgentRequestVisibility(current.generation);return;}
   if(current.routing_result_visibility_version<2){await upgradeRoutingResultVisibility(current.generation);return;}
   upgradeMarkedReplyRoots(current.generation);
