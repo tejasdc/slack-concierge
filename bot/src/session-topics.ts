@@ -1444,10 +1444,37 @@ function humanRequest(topic:StoredTopic,request:StoredRequest):boolean {
       return input?.origin==='human'&&new Date(iso(input.created_at)!).getTime()<=new Date(iso(request.createdAt)!).getTime();
     });
 }
+type CompletionRow={outcome:string|null;result_json:string|null;requested_effect:string|null;created_at_ms:number;stalled_at_ms:number|null};
+/**
+ * Before work dispositions were required, a final answer could be retained and attributed to its
+ * exact request without saying `completed` in a typed field. The owner must not infer completion
+ * from that prose. An Inbox agent may still make the request-specific completion judgment by
+ * naming that exact final as evidence; this verifies custody and attribution while leaving the
+ * historical communication result unchanged.
+ */
+function verifiedLegacyFinalEvidence(dispatchId:string,row:CompletionRow|null,evidence:readonly string[]):boolean {
+  if(row?.outcome!=='answered'||!row.result_json)return false;
+  let result:any;
+  try{result=JSON.parse(row.result_json);}catch{return false;}
+  if(result.workDisposition!==undefined||typeof result.event_id!=='string'||!evidence.includes(result.event_id))return false;
+  const local=db.query(`SELECT payload_json FROM session_communication_events
+    WHERE event_id=? AND request_id=? AND kind='final' AND superseded_by_event_id IS NULL`).get(result.event_id,dispatchId) as {payload_json:string}|null;
+  const peer=local?null:db.query(`SELECT payload_json FROM session_peer_events
+    WHERE event_id=? AND request_id=? AND kind='final' AND superseded_by_event_id IS NULL`).get(result.event_id,dispatchId) as {payload_json:string}|null;
+  const retained=local??peer;
+  if(!retained)return false;
+  try {
+    const payload=JSON.parse(retained.payload_json);
+    return payload.final===true
+      &&payload.source?.input_id===`request:${dispatchId}`
+      &&payload.text===result.text
+      &&payload.responding_session_id===result.responding_session_id;
+  } catch{return false;}
+}
 function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evidence:string[]=[]){
   const settled=(id:string)=>{
-    const local=db.query("SELECT outcome,result_json,created_at_ms,stalled_at_ms,json_extract(payload_json,'$.requestedEffect') AS requested_effect FROM session_communication_requests WHERE request_id=?").get(id) as {outcome:string|null;result_json:string|null;created_at_ms:number;stalled_at_ms:number|null;requested_effect:string|null}|null;
-    return local??db.query("SELECT outcome,result_json,created_at_ms,stalled_at_ms,json_extract(payload_json,'$.requestedEffect') AS requested_effect FROM session_peer_requests WHERE request_id=?").get(id) as {outcome:string|null;result_json:string|null;created_at_ms:number;stalled_at_ms:number|null;requested_effect:string|null}|null;
+    const local=db.query("SELECT outcome,result_json,created_at_ms,stalled_at_ms,json_extract(payload_json,'$.requestedEffect') AS requested_effect FROM session_communication_requests WHERE request_id=?").get(id) as CompletionRow|null;
+    return local??db.query("SELECT outcome,result_json,created_at_ms,stalled_at_ms,json_extract(payload_json,'$.requestedEffect') AS requested_effect FROM session_peer_requests WHERE request_id=?").get(id) as CompletionRow|null;
   };
   const done=(row:{outcome:string|null;result_json:string|null;requested_effect:string|null})=>{
     if(row.outcome!=='answered')return false;
@@ -1471,7 +1498,8 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evid
     }))throw new TopicError('This human request has no linked work. To close it completed, name the later answer in this thread as evidence of the work you checked.',409,'REQUEST_COMPLETION_EVIDENCE_REQUIRED');
   }
   const unfinished=dispatches.filter(dispatch=>(!dispatch.row?.outcome&&!(dispatch!==latest&&dispatch.row?.stalled_at_ms!=null))
-      ||(dispatch===latest&&dispatch.row!==null&&!done(dispatch.row))).map(dispatch=>({requestId:dispatch.id}));
+      ||(dispatch===latest&&dispatch.row!==null&&!done(dispatch.row)
+        &&!verifiedLegacyFinalEvidence(dispatch.id,dispatch.row,evidence))).map(dispatch=>({requestId:dispatch.id}));
   if(unfinished.length)throw new TopicError(`This request's work has not finished (${unfinished.map((d:any)=>d.requestId).join(', ')}): close it completed only when that work answered as done. If part of what he asked is not done, do it or have it built, then close.`,409,'REQUEST_WORK_UNFINISHED');
   if(request.reopenedAt&&((request.completionFloor??0)>=dispatches.length
     ||(latest&&((workRow(latest.id)?.createdAtMs??0)<new Date(request.reopenedAt).getTime())))&&!evidence.some(id=>{
@@ -1484,7 +1512,7 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evid
   if(latest&&humanRequest(topic,request)) {
     const shared=db.query(`SELECT count(*) AS count FROM inbox_requests request,json_each(request.dispatches_json) dispatch
       WHERE json_extract(dispatch.value,'$.requestId')=?`).get(latest.id) as {count:number};
-    if(shared.count>1&&!evidence.some(id=>{
+    if(shared.count>1&&!verifiedLegacyFinalEvidence(latest.id,latest.row,evidence)&&!evidence.some(id=>{
       const post=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=? AND kind=?').get(id,'post') as {payload_json:string}|null;
       return post&&JSON.parse(post.payload_json).requestId===latest.id;
     }))throw new TopicError('This agent answer is linked to several human requests. Check this request separately and name the agent answer as evidence before closing it.',409,'REQUEST_SHARED_COMPLETION_EVIDENCE_REQUIRED');

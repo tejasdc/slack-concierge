@@ -2909,8 +2909,11 @@ export class SessionCommunicationCoordinator {
                 db.query('UPDATE session_communication_requests SET overdue_at_ms=? WHERE request_id=?').run(now, request.request_id);
             })();
     }
+    private incidentScanTraceRemaining = 200;
     /** One durable record is the fairness boundary; a Promise microtask does not yield to I/O. */
     private async scanRows<T>(table: string, sql: string, visit: (row: T) => void, ...args: (number | string)[]) {
+        if (this.incidentScanTraceRemaining-- > 0)
+            log('warn', 'incident_reconciliation_scan', { table, sql: sql.replace(/\s+/g, ' ').slice(0, 400) });
         const query = db.query(sql);
         const highWater = (db.query(`SELECT max(rowid) AS value FROM ${table}`).get() as { value: number | null }).value ?? 0;
         let cursor = 0;
@@ -2923,6 +2926,8 @@ export class SessionCommunicationCoordinator {
         }
     }
     private async scanExternalRequests() {
+        if (this.incidentScanTraceRemaining-- > 0)
+            log('warn', 'incident_reconciliation_scan', { table: 'session_external_requests', sql: 'scanExternalRequests' });
         const query = db.query(`SELECT rowid AS reconciliation_rowid,* FROM session_external_requests
             WHERE outcome IS NULL AND stalled_at_ms IS NULL AND created_at_ms>=?
               AND rowid<=? AND (created_at_ms>? OR (created_at_ms=? AND rowid>?))

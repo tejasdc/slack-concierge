@@ -21,7 +21,9 @@ db.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,status TEXT,provider_id TE
     attempt INTEGER,max_retries INTEGER,status INTEGER,retry_at_ms INTEGER);
   CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,session_id INTEGER,kind TEXT,input_id TEXT,payload_json TEXT);
   CREATE TABLE deployment_drain(singleton INTEGER PRIMARY KEY);
+  CREATE TABLE focus_hold(singleton INTEGER PRIMARY KEY,until_ms INTEGER,label TEXT,since_ms INTEGER,action_id TEXT);
   CREATE TABLE turn_dependencies(turn_id INTEGER,satisfied_at TEXT);`);
+db.query('INSERT INTO focus_hold(singleton) VALUES(1)').run();
 db.exec(`CREATE TABLE session_peer_deliveries(target_input_id TEXT,peer TEXT,origin_session_id TEXT,
   origin_input_id TEXT,origin_run_id TEXT,requested_effect TEXT,origin_provenance_json TEXT);
   CREATE TABLE session_input_author_corrections(input_id TEXT PRIMARY KEY);`);
@@ -56,6 +58,12 @@ expect(receipt().statusDetail?.code==='PROVIDER_AUTH_HELD','queued sign-in hold 
 db.query("UPDATE turns SET dispatch_failure_class=NULL WHERE id=1").run();
 db.query("UPDATE sessions SET status='archived' WHERE id=1").run();
 expect(receipt().statusDetail?.code==='SESSION_PAUSED','paused session remains visible');
+db.query("UPDATE sessions SET status='active' WHERE id=1").run();
+db.query("UPDATE turns SET status='error',ended_at='2026-10-08T00:02:00Z',agent_text='ChatGptDispatchError: CHATGPT_SEND_FAILED' WHERE id=1").run();
+expect(receipt().statusDetail?.code==='CHATGPT_SEND_FAILED','the exact ChatGPT failure stays machine-readable');
+expect(receipt().statusDetail?.message==='The ChatGPT send stopped before Send, so no message reached ChatGPT. This input will not be retried automatically.',
+  'the ChatGPT send code is translated for a person');
+expect(receipt().errorPreview==='ChatGptDispatchError: CHATGPT_SEND_FAILED','the raw ChatGPT failure stays available for diagnosis');
 db.query('INSERT INTO turns(id,session_id,status,native_run_id,provider_input_acknowledged_at,accepted_input_id) VALUES(2,1,?,?,?,?)')
   .run('done','run-2','2026-10-08T00:01:00Z','input-2');
 db.query('INSERT INTO session_inputs VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
@@ -70,4 +78,4 @@ db.query('INSERT INTO provider_outage_offers VALUES(?,?,?,?,?)')
   .run(1,JSON.stringify({offeredAt:'2026-10-08T00:00:00Z',provider:'claude-code',model:null,status:529,
     incident:{name:'x'.repeat(4000)},alternatives:[]}),null,null,null);
 expect(Buffer.byteLength(JSON.stringify(receipt()))<4096,'a large incident title cannot stall the projection');
-console.log('receipt-projection: retry set, restart, clear, hold and bounded preview passed');
+console.log('receipt-projection: retry set, restart, clear, hold, readable ChatGPT failure and bounded preview passed');

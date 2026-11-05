@@ -1836,7 +1836,10 @@ export class SessionPeers {
   }
 
   // ---- scheduling, shared with the coordinator's wake ----
+  private incidentScanTraceRemaining=200;
   private async scanRows<T>(table:string,sql:string,visit:(row:T)=>void,...args:(number|string)[]) {
+    if(this.incidentScanTraceRemaining-- > 0)
+      log('warn','incident_reconciliation_scan',{table,sql:sql.replace(/\s+/g,' ').slice(0,400)});
     const query=db.query(sql);
     const highWater=(db.query(`SELECT max(rowid) AS value FROM ${table}`).get() as {value:number|null}).value??0;
     let cursor=0;

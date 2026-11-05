@@ -40,6 +40,11 @@ candidate can be built.
 
 `bot/scripts/deploy.sh` remains the operator-only forced rollout and recovery
 entrypoint. Ordinary agents do not invoke it or register deployment requests.
+In an operator-controlled offline rollout, it stops a still-running old owner
+before activating the candidate. This prevents an unresponsive owner from
+holding the ledger writer while the controller records the activation. The
+provider drain is already held at this point; the candidate starts through the
+normal release sequence after activation.
 
 The candidate-owned presentation check writes bounded step and reader markers to stderr.
 Even an older installed controller that retains only stderr can show the last marker;

@@ -475,6 +475,14 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   effects without new instruction. A reopened request records how many dispatches
   it already had. An answer from that earlier set cannot close it automatically again;
   the router must link the continuation or name a checked answer posted after reopening.
+  Answers retained before work dispositions existed never gain a disposition by inference and
+  never close a request automatically. The router may close one request after checking the
+  historical answer against that request's whole scope, citing the exact final answer event as
+  evidence. The owner accepts that evidence only when the linked dispatch ended `answered`, the
+  named event is its unsuperseded final, and the retained request, source, responder and answer
+  bytes agree. An uncertain outcome, a sibling answer, a different event, or an answer that does
+  not prove delivery, deployment or live acceptance stays open. This request-specific closure
+  does not edit the historical result or dispatch another worker.
   Linked attempts are evaluated in admission order, including when an older failed
   attempt is discovered and linked after its checked successor. The old failure remains
   visible without becoming current merely because it was linked last.

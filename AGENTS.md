@@ -27,6 +27,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   is for capture paths; use a feature's own socket or route when appropriate.
 - Concierge service stops during a release go through the deployment controller's
   [attributed systemd stop path](docs/runbooks/DEPLOYMENT.md#runtime-dependencies-and-service-shutdown).
+- Operator-controlled offline releases stop the old owner before candidate activation;
+  see the [deployment runbook](docs/runbooks/DEPLOYMENT.md#runtime-dependencies-and-service-shutdown).
 - Owner startup timing and deferred history catch-up follow the
   [deployment startup contract](docs/runbooks/DEPLOYMENT.md#owner-startup-and-history-catch-up).
 - Every commit carries an `Update-note:` sentence in product language and a
@@ -54,6 +56,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - Fresh agent-started Claude Code commands skip older Concierge wrappers in PATH and tolerate the package install's brief
   missing-command window before account selection; see the
   [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md#claude-code-started-by-an-agent).
+- Shared Codex turn recovery and its exact identity boundary follow
+  [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#codex-provider-turn-reconciliation).
 - Agent-started top-model choices and helper defaults follow [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#delegation-and-escalation);
   model and helper call shares are in [usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
 
@@ -72,6 +76,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - ChatGPT questions carry an exact task and remain open through failed attempts,
   return receipt, and explicit answer handling. See [ChatGPT answer obligations](docs/architecture/CHATGPT-ANSWER-OBLIGATIONS.md).
 - Preserve exact accepted input, run, action, source-message and target identity.
+  Continuation ancestry visits each source input once because valid service inputs
+  can point to themselves; see the [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md).
   Do not replay ambiguous or acknowledged effects. Keep human authorship distinct
   from agent and service inputs. The [session owner wire contract](docs/contracts/session-owner-v1.md),
   [human command custody](docs/architecture/HUMAN-COMMAND-INTAKE.md), and

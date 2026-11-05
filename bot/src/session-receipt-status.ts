@@ -59,6 +59,10 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
     const clearsAt=reset&&!Number.isNaN(Date.parse(reset))?new Date(reset).toISOString():null;
     if(state==='uncertain'||turn?.status==='parked'||turn?.status==='interrupted')return {code:'OUTCOME_UNCONFIRMED',message:message??'The provider outcome is unconfirmed. This input needs reconciliation before any retry.',clearsAt:null,automaticRetry:false};
     if(message&&/usage (?:is |was )?(?:cached as )?exhausted|you(?:'|’)ve hit your (?:session |usage )?limit|usage limit/i.test(message))return {code:'PROVIDER_USAGE_EXHAUSTED',message:clearsAt?`Provider usage exhausted this input. Reported reset: ${clearsAt}. This input will not be retried automatically.`:'Provider usage exhausted this input. The reset time was not retained; this input will not be retried automatically.',clearsAt,automaticRetry:false};
+    if(message==='CHATGPT_SEND_FAILED'||message==='CHATGPT_NOT_SENT')return {
+      code:message,
+      message:'The ChatGPT send stopped before Send, so no message reached ChatGPT. This input will not be retried automatically.',
+      clearsAt:null,automaticRetry:false};
     const code=message&&/timed? out|timeout|deadline exceeded/i.test(message)?'TIMEOUT':message&&/process exited|process crashed|signal (?:SIG|\d)/i.test(message)?'PROVIDER_PROCESS_EXIT':message&&/reject|blocked by|forbidden|unauthorized|not permitted/i.test(message)?'PROVIDER_REJECTED':saved.error?.code??'EXECUTION_FAILED';
     return {code,message:message??'This input failed without a retained provider explanation.',clearsAt:null,automaticRetry:false};
   }

@@ -807,6 +807,13 @@ prepare_candidate_release() {
     return "$status"
   fi
   printf '%s\n' "$output"
+  # In an operator-controlled offline rollout, the serving owner is not needed
+  # for activation. A stuck old owner can retain the ledger writer and make the
+  # activated candidate impossible to record, so stop it before the pointer moves.
+  if [ "${CONCIERGE_RELEASE_OFFLINE:-0}" = "1" ] && systemctl is-active --quiet "$SERVICE"; then
+    echo "=== stop old coordinator before offline candidate activation ==="
+    stop_unit "$SERVICE"
+  fi
   status=0
   run_retaining_output candidate-activate env CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" activate \
     --run-id "$DEPLOY_RUN_ID" --artifact "$CANDIDATE_ARTIFACT_PATH" --allow-supersede || status=$?
