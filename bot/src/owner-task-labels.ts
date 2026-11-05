@@ -59,7 +59,10 @@ export function markTask():void {
   setRunning(id);
   if(clearQueued)return;
   clearQueued=true;
-  queueMicrotask(()=>{clearQueued=false;ended(id,0);});
+  // Clears whatever is running, not only this mark's label: several continuations can resume
+  // from one resolution and mark before it runs (third review), and when a microtask runs no
+  // other continuation's synchronous part or labelled section is still under way.
+  queueMicrotask(()=>{clearQueued=false;const running=Atomics.load(shared,0);if(running)ended(running,0);});
 }
 
 function runMarked<T>(id:number,work:()=>T):T {
@@ -93,7 +96,8 @@ function creatingSite(kind:string):string {
   // built-in frames (a Promise constructor around the timer) name nothing useful, so skip them.
   const frames=(new Error().stack??'').split('\n').slice(3).map(line=>line.trim().replace(/^at /,''));
   const frame=frames.find(line=>!/native|^new Promise|^Promise/.test(line))??frames[0]??'unknown';
-  const name=frame.split(' (')[0]!,file=(frame.match(/\(([^)]+)\)/)?.[1]??frame).split('/').pop()!.replace(/:\d+$/,'');
+  const located=frame.includes(' (');
+  const name=located?frame.split(' (')[0]!:'anonymous',file=(frame.match(/\(([^)]+)\)/)?.[1]??frame).split('/').pop()!.replace(/:\d+$/,'');
   return `${kind} ${name} ${file}`.slice(0,160);
 }
 
