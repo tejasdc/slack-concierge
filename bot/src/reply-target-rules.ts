@@ -30,17 +30,53 @@ export type ReplyTargetInput=Readonly<{
  resolve:(sessionId:string)=>Readonly<{title:string|null}>|null;
 }>;
 
+/**
+ * A handoff moves one conversation to a new session, so to him the chain is one agent: a reply
+ * goes to the session still running it, and the choice keeps the name of the session that answered
+ * him in this thread. Before 2026-11-05 the predecessor was left out (a handoff suspends it, and
+ * `resolve` refuses a suspended session) and the successor appeared only under the new name the
+ * handoff gave it, so the agent whose answer he had just read vanished from the choices and the box
+ * named one he had never seen (Tejas: "Why was my session that I was actually talking to and
+ * responded before is not in those options here?").
+ */
+function liveEndOfHandoffs(source:Database,sessionId:string):string {
+ let current=sessionId;const seen=new Set([current]);
+ while(true){
+  const local=/^concierge:([1-9]\d*)$/.exec(current);if(!local)return current;
+  const next=source.query("SELECT successor_session_id FROM session_handoffs WHERE predecessor_session_id=? AND state='accepted' ORDER BY accepted_at DESC LIMIT 1")
+   .get(Number(local[1])) as {successor_session_id:number}|null;
+  const successor=next?`concierge:${next.successor_session_id}`:null;
+  if(!successor||seen.has(successor))return current;
+  seen.add(successor);current=successor;
+ }
+}
+function sessionTitle(source:Database,sessionId:string):string|null {
+ const local=/^concierge:([1-9]\d*)$/.exec(sessionId);if(!local)return null;
+ const row=source.query("SELECT json_extract(native_metadata_json,'$.title') AS title FROM sessions WHERE id=?").get(Number(local[1])) as {title:unknown}|null;
+ return typeof row?.title==='string'&&row.title.trim()?row.title:null;
+}
+
 export function topicReplyTargets(source:Database,input:ReplyTargetInput):ReplyTargets {
  const {router,roots,about}=input;
  const choices=new Map<string,ReplyTarget>();
- const add=(named:string|null|undefined,why:string,owns:readonly string[]):string|null=>{
+ // Choices named by a predecessor that answered here: its name is the one on the answer he read.
+ const namedByAnswer=new Set<string>();
+ const add=(named:string|null|undefined,why:string,owns:readonly string[],answered=owns.length>0):string|null=>{
   if(!named||named===router)return null;
   // Older records spelt a peer session `mac:concierge:84`; the catalogue and the app say `mac:84`.
-  const sessionId=named.replace(/^([\w-]+):concierge:([1-9]\d*)$/,'$1:$2');
+  const written=named.replace(/^([\w-]+):concierge:([1-9]\d*)$/,'$1:$2');
+  const sessionId=liveEndOfHandoffs(source,written);
+  if(sessionId===router)return null;
+  const predecessorName=written===sessionId?null:sessionTitle(source,written);
   const existing=choices.get(sessionId);
-  if(existing){existing.owns.push(...owns.filter(item=>!existing.owns.includes(item)));return sessionId;}
+  if(existing){
+   existing.owns.push(...owns.filter(item=>!existing.owns.includes(item)));
+   if(predecessorName&&answered&&!namedByAnswer.has(sessionId)){existing.title=predecessorName;namedByAnswer.add(sessionId);}
+   return sessionId;
+  }
   const session=input.resolve(sessionId);if(!session)return null;
-  choices.set(sessionId,{sessionId,title:session.title,why,owns:[...new Set(owns)]});
+  choices.set(sessionId,{sessionId,title:predecessorName??session.title,why,owns:[...new Set(owns)]});
+  if(predecessorName&&answered)namedByAnswer.add(sessionId);
   return sessionId;
  };
  // A request the owner has settled, or marked stalled, is not work in progress.
@@ -59,7 +95,7 @@ export function topicReplyTargets(source:Database,input:ReplyTargetInput):ReplyT
   // Only open work owns the request's own messages: the router's request bookkeeping can lag by
   // weeks (five idle sessions were still listed on "Action Button recording" on 2026-10-07), so a
   // settled dispatch never catches a reply to something else. It stays a choice he can pick.
-  if(request.state==='open'&&stillOpen(requestId))busy(add(dispatch.targetSessionId,`working on “${request.title}”`,[...request.sources.map(item=>item.inputId),...returnsOf(requestId)]));
+  if(request.state==='open'&&stillOpen(requestId)){const returned=returnsOf(requestId);busy(add(dispatch.targetSessionId,`working on “${request.title}”`,[...request.sources.map(item=>item.inputId),...returned],returned.length>0));}
   else add(dispatch.targetSessionId,`worked on “${request.title}”`,returnsOf(requestId));
  }
  // Answers the owner posted straight into this thread name the agent that wrote them.
