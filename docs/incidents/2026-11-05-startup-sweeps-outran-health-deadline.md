@@ -31,9 +31,8 @@ heavy disk load those sweeps account for most of the 126 s, since the same work 
 - Each synchronous startup step is timed and labelled (`concierge_startup_step`, with ledger
   statements, time and slowest fingerprint; `module_load` for import-time work), and ledger time
   is counted from the first statement.
-- Repairs for past incidents run once and record a `startup_repair` event; the placed-answer
-  catch-up reads only forwarded posts after its last pass. One with no record yet is deferred until
-  two minutes after Concierge is online, so even the first start of this release skips the sweeps.
+- Each history sweep is a catch-up with a high-water mark: the start path reads only what changed
+  since the last start; a first pass runs after Concierge is online in small paged steps.
 - Awaited startup phases log their duration and ledger work.
 
 ## Acceptance scenario

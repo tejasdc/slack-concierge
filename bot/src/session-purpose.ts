@@ -57,15 +57,15 @@ export function purposeFromFirstWords(text:unknown):string|undefined {
  * the file is renamed `.applied` afterwards so it is read once. Anything still empty takes its
  * first words, and a session with no words at all its name.
  */
-export function fillMissingSessionPurposes(stateDir:string):{written:number;fromFile:number} {
+export function fillMissingSessionPurposes(stateDir:string,range?:{afterId:number;throughId:number}):{written:number;fromFile:number} {
   const file=join(stateDir,'session-purposes.json');
   const written:Record<string,string>=existsSync(file)?JSON.parse(readFileSync(file,'utf8')):{};
   const rows=db.query(`SELECT s.id,s.native_metadata_json AS meta,
       (SELECT user_text FROM turns t WHERE t.session_id=s.id ORDER BY t.id LIMIT 1) AS first,
       (SELECT name FROM channels c WHERE c.slack_channel_id=s.slack_channel_id) AS channel
-    FROM sessions s WHERE COALESCE(TRIM(json_extract(s.native_metadata_json,'$.summary')),'')=''
-      OR TRIM(json_extract(s.native_metadata_json,'$.summary'))=TRIM(json_extract(s.native_metadata_json,'$.title'))`)
-    .all() as {id:number;meta:string|null;first:string|null;channel:string|null}[];
+    FROM sessions s WHERE s.id > ? AND s.id <= ? AND (COALESCE(TRIM(json_extract(s.native_metadata_json,'$.summary')),'')=''
+      OR TRIM(json_extract(s.native_metadata_json,'$.summary'))=TRIM(json_extract(s.native_metadata_json,'$.title')))`)
+    .all(range?.afterId??0,range?.throughId??Number.MAX_SAFE_INTEGER) as {id:number;meta:string|null;first:string|null;channel:string|null}[];
   let count=0,fromFile=0;
   db.transaction(()=>{
     for(const row of rows){

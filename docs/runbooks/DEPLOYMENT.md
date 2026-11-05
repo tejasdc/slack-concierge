@@ -721,13 +721,13 @@ including every module's import-time schema work. Each step runs under its own w
 long block's `owner_task_blocked` names it, and the watchdog's `ledger_wait_ms` counts ledger time
 from the first statement (before 2026-11-05 it began only once the owner object existed and read 0
 for a 126 s start, incident ce2c2192). Startup costs what changed since the last start, not the size
-of history: repairs for past incidents run once and record a `startup_repair` event on the Inbox
-session, and the placed-answer catch-up reads only owner events after its last pass
-(`startup_catch_up`). A repair or catch-up with no completion record never runs on the start path:
-it is deferred until two minutes after Concierge reports online, past the update's health proof,
-and then holds the loop once while serving (`startup_repairs_deferred`, then each one's
-`startup_repair_completed` or `startup_catch_up_completed`). Each `concierge_startup_phase`
-closing event also carries its `ms` and the ledger work done while it was open
+of history. Each sweep over history (forwarded final answers, timed-post retirement, the purpose
+backfill) is a catch-up over a key range with a high-water mark recorded as a `startup_catch_up`
+event on the Inbox session: with a mark the start path reads only keys after it; a first pass
+runs two minutes after Concierge reports online, in small pages with a pause between them and a
+mark after each page (`startup_repairs_deferred`, `startup_catch_up_first_pass`). The carried
+closures pass stays unbounded and timed. Each `concierge_startup_phase` closing event also
+carries its `ms` and the ledger work done while it was open
 (`docs/incidents/2026-11-05-startup-sweeps-outran-health-deadline.md`).
 The capture worker starts without waiting for capture ingress. If the ingress queue is
 unreachable, Concierge stays online, logs `capture_delivery_queue_unavailable`, and shows

@@ -5,73 +5,89 @@ import { inboxSession } from './session-inbox';
 import { runStartupStep } from './startup-phase';
 
 /**
- * Startup work must cost what changed since the last start, not the size of history. Repairs for
+ * Startup costs what changed since the last start, not the size of history. Sweeps written for
  * past incidents scanned every forwarded post or every session on each start; on a cold, loaded
- * disk those sweeps held a start for 126 s, past the update's 90 s health deadline (incident
- * ce2c2192, 2026-11-05).
+ * disk they held a start for 126 s, past the update's 90 s health deadline (incident ce2c2192,
+ * 2026-11-05).
  *
- * A repair that has completed is recorded as an event on the Inbox session (as the topics
- * migration records itself) and skipped from then on. One without a record never runs on the start
- * path: it is queued and runs after Concierge is online, once the update's health proof has had
- * time to finish (DEFERRED_REPAIR_DELAY_MS), one repair per turn of the event loop. Its synchronous
- * sweep then holds the loop once, while serving, instead of failing a start. Without an Inbox
- * session (a fresh or test state) nothing can be recorded, so a repair runs at once, as before.
+ * Each such sweep is a catch-up over a key range (an event sequence or a session id) with a
+ * high-water mark, recorded as a write-once event on the Inbox session. With a mark, the start
+ * path processes only keys after it. Without one (its first pass reads all history), the pass runs
+ * after Concierge is online and its health proof has had time to finish, in pages of `pageSize`
+ * keys with a pause between them, recording the mark after every page, so the serving loop is
+ * never held for long and an interrupted pass resumes where it stopped. Without an Inbox session
+ * (a fresh or test state) there is nowhere to record a mark, so the whole pass simply runs.
  */
-const DEFERRED_REPAIR_DELAY_MS = 120_000;
-const deferred: { name: string; run: () => void }[] = [];
+const DEFERRED_START_DELAY_MS = 120_000;
+const PAUSE_BETWEEN_PAGES_MS = 250;
+type Pass = (afterKey: number, throughKey: number) => unknown;
+const deferred: { name: string; afterKey: number; throughKey: number; pageSize: number; pass: Pass }[] = [];
 
-function recordDone(eventId: string, kind: string, payload: Record<string, unknown>) {
+function lastMark(name: string): number | null {
+  const row = db.query(`SELECT json_extract(payload_json,'$.throughKey') AS through FROM session_owner_events
+    WHERE event_id > ? AND event_id < ? ORDER BY sequence DESC LIMIT 1`)
+    .get(`startup-catch-up:${name}:`, `startup-catch-up:${name};`) as { through: number } | null;
+  return row ? Number(row.through) : null;
+}
+
+function recordMark(name: string, afterKey: number, throughKey: number) {
   const inbox = inboxSession();
-  if (inbox) recordSessionEvent({ eventId, sessionId: inbox.id, kind, payload });
+  if (inbox && throughKey > afterKey) recordSessionEvent({ eventId: `startup-catch-up:${name}:${throughKey}`, sessionId: inbox.id,
+    kind: 'startup_catch_up', payload: { name, afterKey, throughKey } });
 }
 
-export function runStartupRepairOnce<T>(name: string, work: () => T): T | { skipped: 'already_done' } | { deferred: true } {
-  const eventId = `startup-repair:${name}`;
-  if (db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId)) return { skipped: 'already_done' };
-  const finish = () => {
-    const result = work();
-    recordDone(eventId, 'startup_repair', { name, result: result ?? null, completedAt: new Date().toISOString() });
+export function runStartupCatchUp(name: string, maxKey: () => number, pass: Pass, pageSize: number): unknown {
+  const mark = lastMark(name), through = maxKey();
+  if (mark !== null || !inboxSession()) {
+    const after = mark ?? 0;
+    if (through <= after) return { caught_up: true, through_key: after };
+    const result = pass(after, through);
+    recordMark(name, after, through);
     return result;
-  };
-  if (!inboxSession()) return finish();
-  deferred.push({ name, run: () => { log('info', 'startup_repair_completed', { name, result: runStartupStep(`deferred ${name}`, finish) ?? null }); } });
-  return { deferred: true };
+  }
+  deferred.push({ name, afterKey: 0, throughKey: through, pageSize, pass });
+  return { deferred: true, through_key: through };
 }
 
-/**
- * A recurring catch-up over the owner's event log reads only events after its last completed pass;
- * each pass records its high-water sequence as its own event (events are written once). Before its
- * first recorded pass it is deferred like a one-time repair, since that pass reads all history.
- */
-export function runStartupCatchUp<T>(name: string, work: (afterSequence: number) => T): T | { deferred: true } {
-  const prefix = `startup-catch-up:${name}:`;
-  const last = db.query(`SELECT json_extract(payload_json,'$.throughSequence') AS through FROM session_owner_events
-    WHERE event_id > ? AND event_id < ? ORDER BY sequence DESC LIMIT 1`).get(prefix, `startup-catch-up:${name};`) as { through: number } | null;
-  const pass = () => {
-    const afterSequence = Number(last?.through ?? 0);
-    const through = Number((db.query('SELECT COALESCE(MAX(sequence),0) AS max FROM session_owner_events').get() as { max: number }).max);
-    const result = work(afterSequence);
-    if (through > afterSequence) recordDone(`${prefix}${through}`, 'startup_catch_up', { name, afterSequence, throughSequence: through });
-    return result;
-  };
-  if (last || !inboxSession()) return pass();
-  deferred.push({ name, run: () => { log('info', 'startup_catch_up_completed', { name, result: runStartupStep(`deferred ${name}`, pass) ?? null }); } });
-  return { deferred: true };
-}
-
-/** Called once Concierge reports online; runs each deferred repair later, one per event-loop turn. */
+/** Called once Concierge reports online; works through each deferred first pass page by page. */
 export function startDeferredStartupRepairs(shouldStop: () => boolean) {
   if (!deferred.length) return;
-  log('info', 'startup_repairs_deferred', { names: deferred.map(item => item.name), delay_ms: DEFERRED_REPAIR_DELAY_MS });
-  // A failed repair is not recorded, so the next start defers it again; it is never retried here.
-  const runOne = (item: { name: string; run: () => void }) => {
-    try { item.run(); } catch (error) { log('error', 'startup_repair_failed', { name: item.name, ...errorFields(error) }); }
-  };
-  const next = () => {
-    const item = deferred.shift();
-    if (!item || shouldStop()) return;
-    runOne(item);
-    setTimeout(next, 0);
-  };
-  setTimeout(next, DEFERRED_REPAIR_DELAY_MS).unref?.();
+  log('info', 'startup_repairs_deferred', { names: deferred.map(item => item.name), delay_ms: DEFERRED_START_DELAY_MS });
+  setTimeout(() => { void runDeferred(shouldStop); }, DEFERRED_START_DELAY_MS).unref?.();
 }
+
+async function runDeferred(shouldStop: () => boolean) {
+  for (const item of deferred.splice(0)) {
+    const outcome = await runPages(item, shouldStop);
+    log(outcome === 'completed' ? 'info' : 'error', 'startup_catch_up_first_pass', { name: item.name, outcome, through_key: item.throughKey });
+    if (outcome !== 'completed') return;
+  }
+}
+
+// A failed page records no mark beyond the last good one, so the next start resumes from there.
+async function runPages(item: (typeof deferred)[number], shouldStop: () => boolean): Promise<'completed' | 'stopped' | 'failed'> {
+  for (let after = item.afterKey; after < item.throughKey;) {
+    if (shouldStop()) return 'stopped';
+    const through = Math.min(after + item.pageSize, item.throughKey);
+    if (!runPage(item, after, through)) return 'failed';
+    after = through;
+    await new Promise(resolve => setTimeout(resolve, PAUSE_BETWEEN_PAGES_MS));
+  }
+  return 'completed';
+}
+
+function runPage(item: (typeof deferred)[number], after: number, through: number): boolean {
+  try {
+    runStartupStep(`catch-up ${item.name}`, () => item.pass(after, through));
+    recordMark(item.name, after, through);
+    return true;
+  } catch (error) {
+    log('error', 'startup_catch_up_page_failed', { name: item.name, after_key: after, through_key: through, ...errorFields(error) });
+    return false;
+  }
+}
+
+export const ownerEventMaxSequence = () =>
+  Number((db.query('SELECT COALESCE(MAX(sequence),0) AS max FROM session_owner_events').get() as { max: number }).max);
+export const sessionMaxId = () =>
+  Number((db.query('SELECT COALESCE(MAX(id),0) AS max FROM sessions').get() as { max: number }).max);

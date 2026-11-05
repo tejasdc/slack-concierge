@@ -353,9 +353,9 @@ import {recordSessionEvent as recordOwnerEvent,recoverProviderRefusalContinuatio
 import {refreshClaudeAccount} from './provider-accounts';
 import {installSessionProjection} from './session-projection';
 import {fillMissingSessionPurposes} from './session-purpose';
-import {expireUnreadableReadingItems,fileServiceNotices,keepThreadsCurrent,migrateInboxAttention,migrateInboxTopics,reconcilePlacedRequestAnswers,repairOctober21RepeatedAnswer,repairNovember4RepeatedThreadNotices,retireTimedRequestPosts,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
+import {expireUnreadableReadingItems,fileServiceNotices,keepThreadsCurrent,migrateInboxAttention,migrateInboxTopics,reconcileCarriedClosures,reconcileForwardedFinalAnswers,repairOctober21RepeatedAnswer,repairNovember4RepeatedThreadNotices,retireTimedRequestPosts,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
 import {resolveRetryNotices} from './retry-breaker-notice';
-import {runStartupCatchUp,runStartupRepairOnce,startDeferredStartupRepairs} from './startup-repairs';
+import {ownerEventMaxSequence,runStartupCatchUp,sessionMaxId,startDeferredStartupRepairs} from './startup-repairs';
 import {CodexSessionObserver} from './codex-session-observer';
 import {ensureSpeechWorker} from './speech-job-supervisor';
 
@@ -536,24 +536,31 @@ bindOwner();
 for(const held of recoverProviderRefusalContinuations())noticeTurnContinuation({
   provider:held.provider,model:null,turnId:held.turnId,reason:held.reason},recordOwnerEvent);
 runStartupStep('session_projection', () => installSessionProjection(sessionExecutionHost.owner));
-// Every startup step below is timed and named (runStartupStep). Repairs for past incidents run once
-// and record it; the answer catch-up reads only events after its last pass (startup-repairs.ts).
-// A hand-written session-purposes.json is still applied whenever one is present.
+// Every startup step below is timed and named (runStartupStep). Sweeps over history are catch-ups
+// with a high-water mark: only what changed since the last start runs here, and a first pass runs
+// page by page after Concierge is online (startup-repairs.ts). A hand-written
+// session-purposes.json is still applied in full whenever one is present.
 try {log('info','session_purposes_filled',runStartupStep('session_purposes',()=>
   existsSync(join(process.env.CONCIERGE_STATE_DIR!,'session-purposes.json'))
     ?fillMissingSessionPurposes(process.env.CONCIERGE_STATE_DIR!)
-    :runStartupRepairOnce('session-purposes-v1',()=>fillMissingSessionPurposes(process.env.CONCIERGE_STATE_DIR!))));}
+    :runStartupCatchUp('session-purposes',sessionMaxId,
+      (afterId,throughId)=>fillMissingSessionPurposes(process.env.CONCIERGE_STATE_DIR!,{afterId,throughId}),500)));}
 catch(error) {log('error','session_purposes_fill_failed',errorFields(error));}
 // Production starts through this path, so the one-time topics migration runs here too; it is
 // guarded by its own event and does nothing once it has run.
 try {runStartupStep('inbox_topics_migration',()=>migrateInboxTopics());} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
-try {runStartupStep('placed_request_answers',()=>runStartupCatchUp('placed-request-answers',after=>reconcilePlacedRequestAnswers(undefined,after)));}
+try {runStartupStep('forwarded_final_answers',()=>runStartupCatchUp('forwarded-final-answers',ownerEventMaxSequence,
+  (afterSequence,throughSequence)=>reconcileForwardedFinalAnswers(undefined,{afterSequence,throughSequence}),20_000));}
 catch(error) {log('error','inbox_request_answer_reconciliation_failed',errorFields(error));}
-try {log('info','timed_request_posts_retired',{count:runStartupStep('timed_request_posts',()=>runStartupRepairOnce('timed-request-posts-v1',retireTimedRequestPosts))});}
+try {runStartupStep('carried_closures',()=>reconcileCarriedClosures());}
+catch(error) {log('error','inbox_request_answer_reconciliation_failed',errorFields(error));}
+try {log('info','timed_request_posts_retired',{result:runStartupStep('timed_request_posts',()=>runStartupCatchUp('timed-request-posts',ownerEventMaxSequence,
+  (afterSequence,throughSequence)=>retireTimedRequestPosts({afterSequence,throughSequence}),20_000))});}
 catch(error) {log('error','timed_request_post_retirement_failed',errorFields(error));}
-try {log('info','repeated_answer_posts_collapsed',{count:runStartupStep('october21_repeated_answer',()=>runStartupRepairOnce('october21-repeated-answer-v1',repairOctober21RepeatedAnswer))});}
+// These two look up fixed event ids; they are cheap and need no catch-up.
+try {log('info','repeated_answer_posts_collapsed',{count:runStartupStep('october21_repeated_answer',repairOctober21RepeatedAnswer)});}
 catch(error) {log('error','repeated_answer_repair_failed',errorFields(error));}
-try {log('info','repeated_thread_notices_collapsed',{count:runStartupStep('november4_repeated_thread_notices',()=>runStartupRepairOnce('november4-repeated-thread-notices-v1',repairNovember4RepeatedThreadNotices))});}
+try {log('info','repeated_thread_notices_collapsed',{count:runStartupStep('november4_repeated_thread_notices',repairNovember4RepeatedThreadNotices)});}
 catch(error) {log('error','repeated_thread_notice_repair_failed',errorFields(error));}
 try {runStartupStep('inbox_attention_migration',()=>migrateInboxAttention());} catch(error) {log('error','inbox_attention_migration_failed',errorFields(error));}
 // A reading item with nothing to read is ended with its reason; new ones are refused at the door.
