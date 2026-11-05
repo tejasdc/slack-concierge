@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { observePath, type PathVersion } from "./path-version";
 import { HOST_PROTOCOL_VERSION, HostConnection, executionDirectory, executionUnit, hostSocketPath, hostSupervisorView, releaseHost,
   retireHostJob, startHost, streamJournal, HostNotStartedError } from "./execution-host-client";
-import { runnerMachineCall } from "./runner-machine-calls";
+import { RunnerUnreachableError, runnerMachineCall } from "./runner-machine-calls";
 
 const OUTPUT_TAIL_CHARS = 1_500;
 const EXECUTION_ID = /^[0-9a-f]{16}$/;
@@ -119,8 +119,9 @@ export function localWatchMachine(stateDir: string, routerBotDir: () => string, 
 }
 
 /** A runner's machine, through its call channel; any failure to reach it is an error the worker treats as not knowing. */
-export function runnerWatchMachine(runner: string): WatchMachine {
-  const call = (method: string, params: Record<string, unknown>, timeoutMs?: number) => runnerMachineCall(runner, `watch.${method}`, params, timeoutMs);
+export function runnerWatchMachine(runner: string, onUnreachable?: () => void): WatchMachine {
+  const call = (method: string, params: Record<string, unknown>, timeoutMs?: number) => runnerMachineCall(runner, `watch.${method}`, params, timeoutMs)
+    .catch(error => { if (error instanceof RunnerUnreachableError) onUnreachable?.(); throw error; });
   return {
     runner,
     observe: path => call("observe", { path }),
@@ -178,7 +179,7 @@ export async function serveWatchCall(machine: WatchMachine, stateDir: string, me
       try { return await machine.launch({ executionId: id, argv: params.argv, cwd: String(params.cwd), environment: ordinaryCommandEnvironment() }); }
       finally { launching.delete(id); }
     }
-    case "commandState": { const { id, directory } = record(); return machine.commandState(id, directory); }
+    case "commandState": { const { id, directory } = record(); return launching.has(id) ? { state: "unknown" } : machine.commandState(id, directory); }
     case "startOutcome": { const { id, directory } = record(); return launching.has(id) ? "unknown" : machine.startOutcome(id, directory); }
     case "outputTail": { const { directory } = watchRecord(); return machine.outputTail(directory); }
     case "signal": { const { id, directory } = watchRecord(); return machine.signal(id, directory, params.signal === "SIGKILL" ? "SIGKILL" : "SIGTERM", String(params.commandId)); }

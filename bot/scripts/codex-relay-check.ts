@@ -8,6 +8,8 @@
  * `model/list` (read-only), proving the relay against Codex itself.
  */
 import {strict as assert} from 'node:assert';
+// An agent shell on a runner carries thnkr.ing's address; this check needs neither.
+delete process.env.THINKERING_CAPABILITY_URL;
 import {chmod,mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {existsSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
@@ -107,6 +109,15 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
     await assert.rejects(runnerMachineCall('ax41','watch.prune',{executionId:'etc',directory:'/etc'}),/not an execution id/);
     await assert.rejects(runnerMachineCall('ax41','watch.signal',{executionId:'0123456789abcdef',directory:'/etc',signal:'SIGKILL',commandId:'x'}),/not this runner's/);
     assert.equal(await runnerMachineCall('ax41','ping',{}),true);
+    // A real watch execution's record is the runner's to remove; a turn's is refused.
+    const {mkdirSync:makeDir,writeFileSync:writeSync}=await import('node:fs');
+    for(const [id,args] of [['0123456789abcdef',['-c','exec "$@"','concierge-watch','/bin/true']],['fedcba9876543210',['--print']]] as const){
+      makeDir(join(runnerState,'exec',id),{recursive:true});
+      writeSync(join(runnerState,'exec',id,'manifest.json'),JSON.stringify({version:1,executionId:id,executable:'/bin/sh',args}));
+    }
+    await runnerMachineCall('ax41','watch.prune',{executionId:'0123456789abcdef',directory:join(runnerState,'exec','0123456789abcdef')});
+    assert.ok(!existsSync(join(runnerState,'exec','0123456789abcdef')),'The runner kept a pruned watch record.');
+    await assert.rejects(runnerMachineCall('ax41','watch.prune',{executionId:'fedcba9876543210',directory:join(runnerState,'exec','fedcba9876543210')}),/not a watched command/);
     await assert.rejects(runnerMachineCall('other','watch.observe',{path:root}),/no call channel|not listening|closed/);
     closeRunnerMachineCalls();
 

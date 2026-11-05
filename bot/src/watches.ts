@@ -383,8 +383,10 @@ export function wakeWatchWorker() { queueMicrotask(() => wakeRequested?.()); }
 
 /** The machine a watch's path or command is on: this owner's, or its runner's through the call channel. */
 let localMachine: WatchMachine | null = null;
+/** This poll's reachable runners; one that stops answering mid-poll is dropped for the rest of it. */
+let pollReachable: Set<string> | null = null;
 function machineFor(row: { runner?: string | null }): WatchMachine {
-  if (row.runner) return runnerWatchMachine(row.runner);
+  if (row.runner) { const runner = row.runner; return runnerWatchMachine(runner, () => pollReachable?.delete(runner)); }
   localMachine ??= localWatchMachine(process.env.CONCIERGE_STATE_DIR!, () => providerOwnerEnvironment().CONCIERGE_ROUTER_BOT_DIR!);
   return localMachine;
 }
@@ -577,7 +579,7 @@ export async function runWatchTick(deps: WatchWorkerDeps, now = Date.now()) {
       AND allowed.machine=? AND allowed.session_id=watches.session_id)) ORDER BY created_at_ms`)
     .all(pause.paused?1:0,pause.generation,process.env.CONCIERGE_PEER_NAME==='mac'?'mac':'cloud') as WatchRow[];
   deliverPending(deps, now);
-  const reachable = await reachableRunners([...open.map(row => row.runner), ...endedCommands().map(row => row.runner)]);
+  const reachable = pollReachable = await reachableRunners([...open.map(row => row.runner), ...endedCommands().map(row => row.runner)]);
   for (const row of open) {
     // An unreachable runner's watches are not observed this poll; the silence becomes a recorded gap.
     if (row.runner && !reachable.has(row.runner)) {

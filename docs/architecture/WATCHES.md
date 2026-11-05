@@ -44,7 +44,10 @@ for local commands.
 - **A slow start is never mistaken for none.** A launch call waits 45 s, longer than the runner's own
   30 s supervisor wait; the runner answers "unknown" for a start still in flight; and a runner watch
   whose start went unanswered and left no trace starts afresh before its deadline instead of failing.
-  A command whose output cannot be read this poll fires on the next one, with its output.
+  A command whose output cannot be read this poll fires on the next one, with its output. Known
+  narrow window: if the runner process restarts mid-start, or its supervisor creates the unit after
+  its own 30 s limit, the restarted watch can run the command twice, and the abandoned record is not
+  pruned. A runner that stops answering mid-poll is skipped for the rest of that poll.
 - A renewing series keeps its runner. Watched commands on a runner cannot see the owner's state
   folder or ledger (`CONCIERGE_RUNNER_HIDE_PATHS`), like the runner's turns; a command that read them
   belongs on the owner's machine.
