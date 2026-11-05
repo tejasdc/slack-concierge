@@ -3,10 +3,13 @@
 **Status (2026-11-04):** built: the agents' network entrance, per-run and per-runner tokens, the
 runner lease engine with its routes, a probe runner, and **Claude Code turns on runners** ("Turns on
 a runner" below): a new Claude turn can run on a runner, whose agents reach the owner only over
-the network entrance. It is selected per session (`sessions ask --on-runner`) unless the owner sets
-`CONCIERGE_TURN_RUNNERS=all`. **Still on the owner's machine:** shared Codex App Server turns (the relay is built, not
-switched on), Google and outside-Codex hosts, command and file watches, the provider account readings and
-sign-ins, and project checkouts (a runner must have the same folders). Concierge's own thnkr.ing
+the network entrance. **On the AX41 every new Claude turn runs on runner `ax41`
+(`CONCIERGE_TURN_RUNNERS=all`) and every Codex App Server connection goes through it
+(`CONCIERGE_CODEX_RUNNER=ax41`)**, both set in `systemd/concierge-bot.service`; `claude-code/runner`
+earned its survival proof in the 2026-11-05 acceptance restart (execution `b212ed3c76cd9766`, taken
+over live by the restarted owner). **Still on the owner's machine:** Google and outside-Codex hosts,
+command and file watches, the provider account readings and sign-ins, and project checkouts (a runner
+must have the same folders); the AX41's App Server itself is still the one the owner unit starts. Concierge's own thnkr.ing
 calls already use thnkr.ing's network entrance. The owner therefore
 **cannot move to the app server yet**; the remaining work is listed under "Not on runners yet".
 Decided plan: remote-box `docs/plans/2026-11-04-off-one-server-architecture.md` ("Decisions after
@@ -199,9 +202,6 @@ after one such run was taken over live by a later owner. Until then updates wait
 - Project folders: the job names an absolute folder; a runner must have the same checkout layout, and
   the Claude command's hook settings name the owner's release path, so a runner on another machine
   needs the same release installed.
-- Wording Concierge gives agents still names thnkr.ing's local socket (the canvas think-aloud
-  instructions, the `--todo` hint); a runner turn has `THINKERING_CAPABILITY_URL` and its run token
-  instead.
 
 ## Codex App Server on a runner (built, off until `CONCIERGE_CODEX_RUNNER` is set)
 
@@ -238,8 +238,29 @@ turn by its thread and turn id), so moving it only changes where the bridge's We
    `CODEX_THREAD_ID` for the current turn's run token, as the commit-provenance hook resolves its
    turn) is still owed before a runner hides its token from agents.
 6. Backpressure: a side that stops reading past 64 MB is disconnected (`closeOnBackpressureLimit`),
-   and a message Bun refuses ends the relay; nothing is dropped silently. A graceful owner stop
-   closes every relay and listen channel first, so it is never held by them.
+   and a message Bun refuses ends the relay; nothing is dropped silently.
+7. **Owner drain.** A drain's first step stops the front door taking new connections but keeps open
+   relays (`stopListening`; Bun's graceful stop leaves upgraded sockets working). A Codex turn's
+   relayed App Server connection therefore lives until the owner closes its App Server client as its
+   last step, exactly as the local socket does, and the next owner follows the turn by thread and turn
+   id. Only then are the relays and listen channels closed (`closeRelays`), so the final stop is
+   never held by them. `codex-relay-check.ts` holds a relayed connection through the first step.
+
+## Agents' thnkr.ing calls
+
+Agent wording (canvas think-aloud, the `--todo` hint) names the release's `thinkering` helper
+(`bot/scripts/thinkering`, on every run's `PATH`): curl with its own arguments, where a URL written
+`http://x/<path>` goes to thnkr.ing. With `THINKERING_CAPABILITY_URL` set (runner turns and the
+runner's Codex App Server) it uses thnkr.ing's network entrance with `CONCIERGE_AGENT_TOKEN`, or the
+runner token file in a Codex shell, sent from a private header file; otherwise the local socket. The
+Mac keeps `ssh remote-box curl --unix-socket …`, and thnkr.ing's own rendering of the think-aloud
+text keeps its socket (`capabilityCommand` is optional). The wording keeps the socket command as a
+fallback because a Codex conversation keeps its first turn's `PATH`, which may name a release
+without the helper. Known cost: thnkr.ing records a call made with the runner token as
+`runner:<name>` with no session, so a Codex shell's calls that carry no `X-Concierge-Agent-Source`
+(board reads, `/todos/tasks`, `/app/*` routes that fall back to the caller's session) lose session
+attribution; calls that carry the source header are verified by it as before. The per-turn token
+exchange (item 5 under "Codex App Server on a runner") removes this.
 
 Why a relay and not the job protocol: the App Server's traffic is a live connection with many
 streamed notifications, not obligations; carrying it through `runner_events` would write every token
@@ -255,11 +276,6 @@ Not yet, before a runner on another machine can hold Codex:
   would watch the runner's App Server while his own command-line turns run elsewhere.
 - "Supervised" is only a start when a connection finds no App Server: no open-file limit raise, no
   scope move, no update handling; the start is refused unless that machine's Codex updater is off.
-- An owner drain closes the request surfaces, and with them every relay, before its execution host
-  stops (index.ts drain order). With the relay on, every Codex connection, running turns included,
-  would be cut mid-drain; prove with a drain check holding a Codex turn in flight that the next owner
-  follows those turns (as it does after a restart) rather than recording them failed, or close relays
-  last.
 - One relayed message is limited to 64 MB, the same as the backpressure limit.
 - Account switching restarts the App Server on the owner's machine (`provider-activation.ts`),
 and the owner unit's `ExecStartPre` still starts the local App Server. On the AX41 the owner and runner

@@ -4,12 +4,14 @@
 // check used its own prompt, which demanded a speech quote, while the real one refused without it).
 // Pure and free of imports so either runtime can load it.
 export type ThinkAloudCanvasContext={kind:'argument-map-speech';boardId:string;boardTitle:string;pageId:string;priorObservationSessionId?:string;segments?:Array<{text:string;spokenAt:string}>};
-export type ThinkAloudInstructionInput={identity:string;context:ThinkAloudCanvasContext;sessionAddress:string;agentSource:string;capabilitySocket:string;viaSsh:boolean};
+export type ThinkAloudInstructionInput={identity:string;context:ThinkAloudCanvasContext;sessionAddress:string;agentSource:string;capabilitySocket:string;viaSsh:boolean;
+  /** The command that reaches the capabilities; defaults to curl on `capabilitySocket`. Concierge passes its `thinkering` helper, which also works on a runner. */
+  capabilityCommand?:string};
 
 export function thinkAloudInstructions(input:ThinkAloudInstructionInput):string {
   const {context,sessionAddress,agentSource}=input;
   const shellWord=(value:string)=>`'${value.replaceAll("'","'\"'\"'")}'`;
-  const capabilityPrefix=`curl -s --unix-socket ${input.capabilitySocket}`;
+  const capabilityPrefix=input.capabilityCommand??`curl -s --unix-socket ${input.capabilitySocket}`;
   // SSH otherwise joins the local argv and lets the remote shell split the source header at its
   // spaces. One quoted remote command preserves the exact header and pipeline on a Mac session.
   const capabilityCommand=(command:string)=>input.viaSsh?`ssh remote-box ${shellWord(command)}`:command;
@@ -24,6 +26,7 @@ export function thinkAloudInstructions(input:ThinkAloudInstructionInput):string 
     `The ordinary Codex session address to use as the workspace actor is ${sessionAddress}.`,
     'Read and act through Thinkering’s existing private Argument map capability. This is available from any selected project; do not assume a particular project folder or project AGENTS.md defines it.',
     `Read this board with: ${readBoard}`,
+    input.capabilityCommand?`If \`${input.capabilityCommand.split(" ")[0]}\` is not found in this shell (a conversation started under an older release keeps its first PATH), use \`curl -s --unix-socket ${input.capabilitySocket}\` in its place in every command below.`:null,
     `Search saved threads by replacing the URL with 'http://x/canvas/argument-map/threads?query=<encoded-words>'. Apply an action with: ${postAction}. Replace <action-json-base64> with the base64 encoding of one exact JSON object; never interpolate untrusted transcript text as shell syntax.`,
     'You are the user’s ordinary continuing Codex session, with your normal ability to inspect files, research, and ask or start other agent sessions in the project he selected. Spoken checkpoints arrive as his messages while he works; do not wait for an explicit command when his thought has a clear place on the Canvas. Put faithful fragments and questions where he can see them, focus the idea he turns to, and propose connections as he discovers them. Keep unfinished thoughts unfinished and preserve uncertainty. Do not speak back or fill the Canvas with a transcript.',
     'Track who authored the words within a speech checkpoint before saving anything. When he says he is reading an article, book, or other source aloud, treat the following read-aloud words as that source’s quotation, even though his voice delivered them and even when the cue and quotation arrive together in one message. Read-aloud source words, and any paraphrase, summary, title, or definition derived from them, remain source material in every saved field and action. Do not present them as his claim, explanation, or working definition unless his separately spoken words clearly establish that specific adoption; preserve the source attribution even then. This rule applies whether or not sourceUtteranceId or sourceQuote are attached, and a missing speech receipt does not relax it. If useful, find the passage in Reader and attach it to the source with its actual title and passage; keep his separately spoken reaction in his exact words. If you cannot locate the source or tell where reading ends and his own thought begins, leave the uncertain words unattributed and ask in the session before filing them. A later original thought is his only when the speech gives you a basis to separate it from the reading.',

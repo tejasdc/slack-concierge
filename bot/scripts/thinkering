@@ -1,0 +1,28 @@
+#!/bin/sh
+# thinkering: curl aimed at thnkr.ing's agent capabilities from wherever this agent runs
+# (docs/architecture/RUNNERS.md, "Agents' thnkr.ing calls"). It takes curl's own arguments; a URL
+# written http://x/<path> goes to thnkr.ing. With THINKERING_CAPABILITY_URL set (a turn on a runner)
+# that is thnkr.ing's network entrance with this agent's Concierge token; otherwise its local socket,
+# so the same words work on the server, on a runner and in every older instruction's URL form.
+if [ -n "${THINKERING_CAPABILITY_URL:-}" ]; then
+  token=${CONCIERGE_AGENT_TOKEN:-}
+  if [ -z "$token" ] && [ -n "${CONCIERGE_RUNNER_TOKEN_FILE:-}" ]; then token=$(cat "$CONCIERGE_RUNNER_TOKEN_FILE"); fi
+  if [ -z "$token" ]; then
+    echo "thinkering: this shell has no Concierge agent token for thnkr.ing's network entrance" >&2
+    exit 64
+  fi
+  base=${THINKERING_CAPABILITY_URL%/}
+  # The token goes in a private header file, never on a command line other processes can list.
+  headers=$(mktemp) || exit 64
+  # A signal skips an EXIT trap in POSIX shells; exiting from its own trap runs it.
+  trap 'rm -f "$headers"' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+  printf 'Authorization: Bearer %s\n' "$token" > "$headers"
+  for argument do
+    shift
+    case $argument in http://x/*) argument="$base/${argument#http://x/}" ;; esac
+    set -- "$@" "$argument"
+  done
+  curl -H "@$headers" "$@"
+  exit $?
+fi
+exec curl --unix-socket "${THINKERING_SESSION_CAPABILITY_SOCKET:-/run/thinkering/session-capabilities.sock}" "$@"

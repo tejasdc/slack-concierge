@@ -4,7 +4,7 @@ import {exitWithin,exitWithParent,PARENT_GONE_EXIT_MS} from './exit-with-parent'
 import {OWNER_COMMAND_RESPONSE_MS} from './owner-transport-policy';
 
 let gateway:Awaited<ReturnType<typeof startForegroundGateway>>|null=null;
-let stopping=false;
+let stopping=false,listeningStopped=false;
 // The supervisor's own kill timer has the same graceful allowance, but it dies with the owner;
 // this one does not, so a graceful stop waiting on a connection that never closes still ends.
 const GRACEFUL_STOP_MS=OWNER_COMMAND_RESPONSE_MS+5_000;
@@ -17,7 +17,10 @@ async function stop(force=true) {
 process.on('disconnect',()=>void stop());
 process.on('SIGTERM',()=>void stop());
 process.on('SIGINT',()=>void stop());
-process.on('message',(message:any)=>{if(message?.kind==='stop')void stop(message.force===true);});
+process.on('message',(message:any)=>{
+  if(message?.kind==='stop')void stop(message.force===true);
+  else if(message?.kind==='stop-listening'){listeningStopped=true;gateway?.stopListening();}
+});
 exitWithParent(()=>void stop());
 try {
   const stateDir=process.env.CONCIERGE_STATE_DIR;
@@ -31,6 +34,8 @@ try {
   delete process.env.CONCIERGE_GATEWAY_AGENT;
   gateway=await startForegroundGateway({stateDir,ownerSocket,readWorkerEntry,peer,agent,onContact:()=>process.send?.({kind:'peer-contact'})});
   if(stopping){await gateway.stop(true);process.exit(0);}
+  // A drain that began while this gateway was still starting applies once it exists.
+  if(listeningStopped)gateway.stopListening();
   process.send?.({kind:'ready',pid:process.pid});
 } catch(error) {
   log('error','foreground_gateway_start_failed',errorFields(error));

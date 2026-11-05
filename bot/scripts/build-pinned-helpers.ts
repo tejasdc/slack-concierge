@@ -30,7 +30,7 @@ if (!existsSync(join(final, "bot/scripts/router-sessions.js"))) {
     if (!result.success) { console.error(`bundle failed for ${source}: ${result.logs.map(entry => entry.message).join("\n").slice(0, 2000)}`); process.exit(1); }
   }
   for (const [destination, source] of Object.entries(declaration.controlFiles as Record<string, string>)) {
-    if (destination !== "control/bot/scripts/mac-browser-fallback.sh" && destination !== "control/bot/scripts/claude") continue;
+    if (!["control/bot/scripts/mac-browser-fallback.sh", "control/bot/scripts/claude", "control/bot/scripts/thinkering"].includes(destination)) continue;
     const output = join(building, destination.slice("control/".length));
     mkdirSync(dirname(output), { recursive: true });
     copyFileSync(join(repository, source), output);

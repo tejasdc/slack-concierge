@@ -4128,6 +4128,9 @@ async function drainAndStop(signal: string) {
   todoFileWatcher?.close();
   await todoProjectionManager?.drain();
   await closeSharedCodexAppServerClient();
+  // Last, as the local App Server socket is: a Codex turn relayed to a runner keeps its connection
+  // through the drain, and the next owner follows it as it does after any restart.
+  await routedRequestServer?.closeRelays();
   stopProcessInstance(instanceId);
   log("info", "service_drain_complete", { signal, instance_id: instanceId });
   process.exit(0);

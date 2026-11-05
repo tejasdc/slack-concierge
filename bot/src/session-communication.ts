@@ -186,7 +186,7 @@ export function answerView(request:{request_id:string;payload_json:string},answe
  * 10:20 PM the night before). The routed request API reads the to-do from thnkr.ing before this
  * runs; when thnkr.ing cannot be read the question is accepted, never lost.
  */
-const TODO_REQUIRED='This asks him to do a step himself (sign-in, secret or device), so name the to-do it is about: --todo <id> from his to-dos (on the server: curl -s --unix-socket /run/thinkering/session-capabilities.sock \'http://x/todos/tasks?limit=200\'; from the Mac, the same through ssh remote-box), or --todo none when no to-do for this step exists. If he already ticked it off, he has done it: do not ask.';
+const TODO_REQUIRED='This asks him to do a step himself (sign-in, secret or device), so name the to-do it is about: --todo <id> from his to-dos (on the server or a runner: thinkering -s \'http://x/todos/tasks?limit=200\', or curl -s --unix-socket /run/thinkering/session-capabilities.sock with the same URL where thinkering is not found; from the Mac: ssh remote-box curl -s --unix-socket /run/thinkering/session-capabilities.sock with the same URL), or --todo none when no to-do for this step exists. If he already ticked it off, he has done it: do not ask.';
 function questionTodo(input:{only_he_can?:string;todo?:string;todo_checked?:TodoState|null|'unavailable'}):string|null {
     const id=typeof input.todo==='string'?input.todo.trim():'';
     if(!id){if(typeof input.only_he_can==='string'&&STEP_ASKS.has(input.only_he_can.trim()))throw new Error(TODO_REQUIRED);return null;}
