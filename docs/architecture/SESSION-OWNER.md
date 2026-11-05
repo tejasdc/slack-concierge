@@ -134,8 +134,8 @@ to `sessions context` for the predecessor's decisions, and references to worktre
 The predecessor still owns and can work on every obligation while the handoff is proposed.
 Only one proposal may be open per predecessor; the caller or predecessor can withdraw it.
 
-The inventory names open requests sent by and owed by the predecessor, queued inputs,
-active watches, open Lab roles where available, and referenced worktrees. Each item has
+The inventory names open requests sent by and owed by the predecessor, open ChatGPT
+answer duties, queued inputs, active watches, open Lab roles where available, and referenced worktrees. Each item has
 a stable kind and reference. Sent requests retain whether their target has acknowledged
 or started work; those and ChatGPT requests must not be dispatched again. A missing Lab
 read is stated as an omission. Worktrees, provider transcripts, past answers and Lab
@@ -143,11 +143,16 @@ entries stay where they were and keep their original authors.
 
 Only a live successor run can accept with the inventory digest. The owner recomputes the
 inventory; a changed digest or an unsafe queued input refuses acceptance and returns the current inventory for
-acknowledgement. Acceptance transfers the open request return and reply ownership,
-safe never-started queued inputs, and watches in one ledger transaction, recording each
+acknowledgement. An answer with no acknowledged return receipt also holds acceptance until
+that exact return settles. Acceptance transfers the open request return and reply ownership,
+ChatGPT answer handling and repair ownership, safe never-started queued inputs, and watches
+in one ledger transaction, recording each
 moved item. A queued input's original acceptance and history stay with the predecessor;
 the successor receives a linked copy, and the request keeps its own ID. Sent request IDs
-and their targets do not change. An owed request's current
+and their targets do not change. The original ChatGPT request and answer event retain
+their IDs; the successor handles that exact answer after its return is acknowledged.
+Older accepted handoffs that moved the request but left its answer duty with the
+predecessor are reconciled on owner startup without another ChatGPT send. An owed request's current
 recipient binding points to the successor's accepted run; its earlier delivery remains in
 the predecessor's history, and original input provenance does not change.
 The predecessor is then superseded: owner writes from its run and new requests to it
