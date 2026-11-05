@@ -57,5 +57,7 @@ export async function startForegroundGatewayProcess(stateDir:string,ownerSocket:
     const hard=setTimeout(()=>running.kill('SIGKILL'),force?5000:OWNER_COMMAND_RESPONSE_MS+5000);
     await running.exited;clearTimeout(hard);
   };
-  try {await launch();return stop;} catch(error){await stop(true);throw error;}
+  // Drain's first step: no new connections, open relays kept until `stop` (foreground-gateway.ts).
+  const stopListening=()=>{stopped=true;if(restarting)clearTimeout(restarting);child?.send({kind:'stop-listening'});};
+  try {await launch();return Object.assign(stop,{stopListening});} catch(error){await stop(true);throw error;}
 }

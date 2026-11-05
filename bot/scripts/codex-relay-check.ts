@@ -88,6 +88,15 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
       {relayRunner:'ax41',bridgePath:resolve(import.meta.dir,'../src/codex-app-server-bridge.mjs')});
     await held.request('model/list',{},{requestTimeoutMs:10_000});
     assert.ok(gateway.relay().listening.includes('ax41')&&gateway.relay().relays===1);
+    // An owner drain's first step: new connections stop, the live relay (a running Codex turn) keeps
+    // working on the same App Server connection until the owner closes its client at the end.
+    let heldDropped=false;held.onDisconnect(()=>{heldDropped=true;});
+    gateway.stopListening();
+    await Bun.sleep(300);
+    const during=await held.request('model/list',{},{requestTimeoutMs:5_000});
+    assert.equal(during.connection,3,'The relayed connection lived through the drain\'s first stop.');
+    assert.ok(!heldDropped,'The drain\'s first stop cut a relayed Codex connection.');
+    assert.equal(await fetch(`http://127.0.0.1:${port}/runner/v1/relay/listen`).then(r=>r.status,()=>'refused'),'refused','New connections stop at drain.');
     const stopping=Date.now();
     await gateway.stop(false);
     assert.ok(Date.now()-stopping<5_000,`A graceful stop took ${Date.now()-stopping} ms with a runner listening.`);

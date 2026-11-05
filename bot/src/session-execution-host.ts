@@ -171,7 +171,9 @@ function canvasSpeechApplicationContext(input:AcceptedSessionInput,runId:string,
   if(!context)return null;
   return thinkAloudInstructions({identity:sessionInputIdentityContext(input,runId),context,
     sessionAddress:`${process.platform==='darwin'?'mac':'concierge'}:${sessionId}`,agentSource:`X-Concierge-Agent-Source: ${input.id} ${runId}`,
-    capabilitySocket:'/run/thinkering/session-capabilities.sock',viaSsh:process.platform==='darwin'});
+    capabilitySocket:'/run/thinkering/session-capabilities.sock',viaSsh:process.platform==='darwin',
+    // On the server and on a runner the release's helper picks thnkr.ing's socket or network entrance.
+    ...(process.platform==='darwin'?{}:{capabilityCommand:'thinkering -s'})});
 }
 
 export class SessionExecutionHost {

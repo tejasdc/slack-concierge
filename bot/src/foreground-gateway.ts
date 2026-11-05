@@ -18,10 +18,15 @@ export async function startForegroundGateway(config:{stateDir:string;ownerSocket
   // Live connections to services on runners (the Codex App Server), piped here; nothing stored.
   const relay=new RunnerRelay();
   let local:ReturnType<typeof Bun.serve>|null=null,peer:ReturnType<typeof Bun.serve>|null=null,agent:ReturnType<typeof Bun.serve>|null=null;
-  let closing:Promise<void>|null=null;
+  let closing:Promise<void>|null=null,listenersStopping:Promise<unknown>|null=null;
+  // An owner drain first stops new connections but keeps open relays: a Codex turn's App Server
+  // connection then lives until the owner closes its client last, exactly as over the local socket
+  // (RUNNERS.md "Owner drain"). Bun's graceful stop keeps upgraded sockets working and resolves only
+  // once they close, so it is started here and awaited by `stop`.
+  const stopListening=()=>{listenersStopping??=Promise.all([local?.stop(false),peer?.stop(false),agent?.stop(false)]);};
   const stop=(force=false)=>closing??=(async()=>{
     relay.closeAll();
-    await Promise.all([local?.stop(force),peer?.stop(force),agent?.stop(force)]);
+    await Promise.all([listenersStopping,local?.stop(force),peer?.stop(force),agent?.stop(force)]);
     await pool.stop();
   })();
   const route=async(request:Request,fromPeer=false,agentPrincipal:string|null=null):Promise<Response>=>{
@@ -118,6 +123,6 @@ export async function startForegroundGateway(config:{stateDir:string;ownerSocket
         return route(new Request(request,{headers}),false,agentPrincipalHeader(verified));
       }});
     }
-    return {stop,snapshot:()=>pool.snapshot(),relay:()=>relay.snapshot()};
+    return {stop,stopListening,snapshot:()=>pool.snapshot(),relay:()=>relay.snapshot()};
   } catch(error){await stop(true);throw error;}
 }

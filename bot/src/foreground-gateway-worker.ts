@@ -17,7 +17,10 @@ async function stop(force=true) {
 process.on('disconnect',()=>void stop());
 process.on('SIGTERM',()=>void stop());
 process.on('SIGINT',()=>void stop());
-process.on('message',(message:any)=>{if(message?.kind==='stop')void stop(message.force===true);});
+process.on('message',(message:any)=>{
+  if(message?.kind==='stop')void stop(message.force===true);
+  else if(message?.kind==='stop-listening'&&!stopping)gateway?.stopListening();
+});
 exitWithParent(()=>void stop());
 try {
   const stateDir=process.env.CONCIERGE_STATE_DIR;

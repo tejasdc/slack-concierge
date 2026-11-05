@@ -295,7 +295,7 @@ export async function startRoutedRequestApi(stateDir: string, coordinator: Route
   });
   if(owner)startLedgerDurability(stateDir);
   let stopPresentation:ReturnType<typeof startPresentationWorker>|undefined;
-  let stopGateway:((force?:boolean)=>Promise<void>)|undefined;
+  let stopGateway:Awaited<ReturnType<typeof startForegroundGatewayProcess>>|undefined;
   try {
     await chmod(path, 0o600);
     // First-run creation belongs to the canonical writer, never to a GET reader.
@@ -315,9 +315,19 @@ export async function startRoutedRequestApi(stateDir: string, coordinator: Route
     await stopPresentation?.();
     throw error;
   }
-  let stopping:Promise<void>|null=null;
-  return {stop:(closeActiveConnections=false)=>stopping??=(async()=>{
-    try {await stopGateway?.(closeActiveConnections);await server.stop(closeActiveConnections);}
-    finally {await stopPresentation?.();}
-  })()};
+  let stopping:Promise<void>|null=null,gatewayStopping:Promise<void>|null=null;
+  const closeRelays=()=>gatewayStopping??=stopGateway?.(false)??Promise.resolve();
+  return {
+    // A graceful stop ends every request surface but leaves the front door's open relays (a Codex
+    // turn's App Server connection on a runner) until `closeRelays`, the drain's last step.
+    stop:(closeActiveConnections=false)=>stopping??=(async()=>{
+      try {
+        if(closeActiveConnections)await (gatewayStopping??=stopGateway?.(true)??Promise.resolve());
+        else stopGateway?.stopListening();
+        await server.stop(closeActiveConnections);
+      }
+      finally {await stopPresentation?.();}
+    })(),
+    closeRelays,
+  };
 }

@@ -4,12 +4,14 @@
 // check used its own prompt, which demanded a speech quote, while the real one refused without it).
 // Pure and free of imports so either runtime can load it.
 export type ThinkAloudCanvasContext={kind:'argument-map-speech';boardId:string;boardTitle:string;pageId:string;priorObservationSessionId?:string;segments?:Array<{text:string;spokenAt:string}>};
-export type ThinkAloudInstructionInput={identity:string;context:ThinkAloudCanvasContext;sessionAddress:string;agentSource:string;capabilitySocket:string;viaSsh:boolean};
+export type ThinkAloudInstructionInput={identity:string;context:ThinkAloudCanvasContext;sessionAddress:string;agentSource:string;capabilitySocket:string;viaSsh:boolean;
+  /** The command that reaches the capabilities; defaults to curl on `capabilitySocket`. Concierge passes its `thinkering` helper, which also works on a runner. */
+  capabilityCommand?:string};
 
 export function thinkAloudInstructions(input:ThinkAloudInstructionInput):string {
   const {context,sessionAddress,agentSource}=input;
   const shellWord=(value:string)=>`'${value.replaceAll("'","'\"'\"'")}'`;
-  const capabilityPrefix=`curl -s --unix-socket ${input.capabilitySocket}`;
+  const capabilityPrefix=input.capabilityCommand??`curl -s --unix-socket ${input.capabilitySocket}`;
   // SSH otherwise joins the local argv and lets the remote shell split the source header at its
   // spaces. One quoted remote command preserves the exact header and pipeline on a Mac session.
   const capabilityCommand=(command:string)=>input.viaSsh?`ssh remote-box ${shellWord(command)}`:command;
