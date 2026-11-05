@@ -6,6 +6,7 @@ import { defaultReleaseEnvironment, TrustedRootReleaseManager } from "../src/dep
 import { ledgerAccess } from "../src/ledger-access-policy";
 import { deploymentReactionTokensForCommitRange } from "../src/deployment-reaction-tokens";
 import { notifyDeploymentWorker } from "../src/deployment-worker-wake";
+import { deploymentOwnerFetch as ownerFetch } from "../src/deployment-owner-fetch";
 
 function option(name: string) {
   const index = process.argv.indexOf(name);
@@ -24,12 +25,8 @@ function finish(code: number, payload: Record<string, unknown>): never {
 }
 
 async function ownerReleaseMutation(operation: string, input: Record<string, unknown>): Promise<any> {
-  const stateDir=process.env.CONCIERGE_STATE_DIR;
-  if(!stateDir)throw new Error('CONCIERGE_STATE_DIR is required for release state.');
-  const response=await fetch('http://localhost/internal/deployment-release',{
-    unix:join(stateDir,'request-owner.sock'),method:'POST',
-    headers:{'content-type':'application/json'},body:JSON.stringify({operation,...input}),
-  } as RequestInit);
+  const response=await ownerFetch('/internal/deployment-release',{method:'POST',
+    headers:{'content-type':'application/json'},body:JSON.stringify({operation,...input})});
   const result=await response.json();
   if(!response.ok)throw new Error(`Serving owner refused ${operation}: ${JSON.stringify(result)}`);
   return result;
@@ -56,10 +53,7 @@ try {
     ownerServedReleaseCommand ? ownerReleaseMutation(operation,input) : Promise.resolve(direct());
   const lastKnownGoodRelease=async ():Promise<ReturnType<typeof getLastKnownGoodRelease>> => {
     if (!ownerServedReleaseCommand) return getLastKnownGoodRelease();
-    if(!stateDir)throw new Error('CONCIERGE_STATE_DIR is required for release state.');
-    const response=await fetch('http://localhost/internal/deployment-last-known-good',{
-      unix:join(stateDir,'request-owner.sock'),method:'GET',
-    } as RequestInit);
+    const response=await ownerFetch('/internal/deployment-last-known-good',{method:'GET'});
     const result=await response.json();
     if(!response.ok)throw new Error(`Serving owner refused last-known-good read: ${JSON.stringify(result)}`);
     return result;
@@ -171,9 +165,7 @@ try {
     if (!ownerServedReleaseCommand) throw new Error("Pruning needs the serving owner; nothing was pruned.");
     const release = await lastKnownGoodRelease();
     if (!release) throw new Error("No last-known-good release has been recorded; nothing was pruned.");
-    const response = await fetch('http://localhost/internal/deployment-release-files-in-use', {
-      unix: join(stateDir!, 'request-owner.sock'), method: 'GET',
-    } as RequestInit);
+    const response = await ownerFetch('/internal/deployment-release-files-in-use', { method: 'GET' });
     const inUse = await response.json();
     if (!response.ok || !Array.isArray(inUse)) throw new Error(`Serving owner refused the in-use release read: ${JSON.stringify(inUse)}`);
     const { kept, removed } = manager.pruneReleases([release.artifact_path, ...inUse]);
