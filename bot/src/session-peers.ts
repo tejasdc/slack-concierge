@@ -3,6 +3,7 @@ import {copyFileSync,existsSync,mkdirSync,readFileSync,readdirSync,statSync} fro
 import {homedir} from 'node:os';
 import {basename,join} from 'node:path';
 import {PeerCatalogueSync} from './peer-catalogue-sync';
+import {peerCatalogueView} from './peer-catalogue-view';
 import {sessionProject} from './session-projects';
 import {parseProviderSelector,resolveProviderSelector} from './aliases';
 import {humanChoseTopModel} from './model-escalation-custody';
@@ -209,21 +210,6 @@ type CatalogueRow={peer:string;remote_session_id:string;address:string;runtime_t
 const OFFLINE_MS=60_000;
 const evidenceTime=(result:any):string|null=>{const times=(result.evidence??[]).map((item:any)=>item.at).filter((at:unknown)=>typeof at==='string');return times.length?times.sort().pop():null;};
 export const offlineNote=(peer:string)=>`${peer} is offline — its sessions come from the transcript archive and its last catalogue and cannot resume until ${peer} is back.`;
-/**
- * A peer's catalogue stores its prepared session card, not the full session view every reader
- * of a session expects. Where that card is all this instance knows of a session (the peer is
- * unreachable, or search itself returned only a card) it is presented as a session nothing here can act
- * on: every control explicitly unavailable, with why, never absent. thnkr.ing's Sessions search read the
- * missing control list of a sleeping Mac's session and failed the whole page (report c6513f14).
- */
-const catalogueOnlyView=(card:any,peer:string,availability:unknown,updatedAtMs:number)=>{const reason=`Search has only a summary of this session; open it on the ${peer} to see its controls.`;return {
-  activeRunId:null,latestRunId:null,nativeKey:null,nativeBinding:null,standingRole:null,handoff:null,generation:0,
-  attention:{sessionId:card.id,actorId:'owner',readGeneration:0,dismissedGeneration:0,open:[]},withdrawnNeeds:[],backgroundWait:null,
-  lineage:null,resurrection:null,resumeMachine:null,continuedAs:null,consultationSource:null,policyLabel:null,
-  fidelity:{mode:'native',dialogue:'partial',branch:'unknown',compaction:'unknown',tools:'missing',attachments:'unknown',environment:'unavailable',omissions:[reason]},
-  ...card,
-  capabilities:{send:false,resume:false,stop:false,steer:false,fork:false,consult:false,recover:false,models:[],attachments:[],reason},
-  peer,availability,lastSeenAt:new Date(updatedAtMs).toISOString()};};
 type PeerEventRow={event_id:string;request_id:string;kind:'progress'|'final'|'overdue';payload_json:string;status:string;error:string|null;accepted_input_id:string|null;created_at_ms:number};
 type DeliveryRow={request_id:string;peer:string;origin_session_id:string;origin_input_id:string;origin_run_id:string;target_session_id:number;target_input_id:string;requested_effect:string;origin_provenance_json:string|null;notified_fingerprint:string|null;closed_at_ms:number|null;reminded_at_ms:number|null;reminded_via:string|null;prompt_reminded_at_ms:number|null;stalled_at_ms:number|null;stalled_reason:string|null;created_at_ms:number};
 type ReplyRow={event_id:string;request_id:string;action_key:string|null;kind:'progress'|'final';payload_json:string;status:string;error:string|null;created_at_ms:number};
@@ -308,7 +294,7 @@ export class SessionPeers {
   }
   private cachedView(peer:string,remote:string):any|null {
     const row=db.query('SELECT * FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(peer,remote) as CatalogueRow|null;
-    return row?catalogueOnlyView(JSON.parse(row.view_json),peer,this.availability(peer),row.updated_at_ms):null;
+    return row?peerCatalogueView(JSON.parse(row.view_json),peer,this.availability(peer),row.updated_at_ms):null;
   }
   private cachedByThread(threadId:string):{peer:string;view:any}|null {
     const row=db.query('SELECT * FROM session_peer_catalogue WHERE runtime_thread_id=? ORDER BY updated_at_ms DESC LIMIT 1').get(threadId) as CatalogueRow|null;
@@ -423,7 +409,7 @@ export class SessionPeers {
       else merged.set(id??`local:${merged.size}`,{...result,evidence:[...(result.evidence??[])]});
       const stored=id?merged.get(id):null;
       const session=stored?.session;
-      if(session?.peer&&!session.capabilities)stored.session=catalogueOnlyView(session,session.peer,session.availability??this.availability(session.peer),Date.parse(session.updatedAt??'')||this.now());};
+      if(session?.peer&&!session.capabilities)stored.session=peerCatalogueView(session,session.peer,session.availability??this.availability(session.peer),Date.parse(session.lastSeenAt??session.updatedAt??''));};
     for(const result of own.results as any[]){
       const session=result.session;
       if(session?.origin==='imported'){
@@ -459,7 +445,7 @@ export class SessionPeers {
         const haystack=`${view.title??''} ${view.summary??''} ${view.project??''}`.toLowerCase();
         if(!needles.some(needle=>haystack.includes(needle)))continue;
         if(merged.has(view.id))continue;
-        add({session:catalogueOnlyView(view,name,{...state,state:'archived-only'},row.updated_at_ms),evidence:[],catalogueOnly:true});
+        add({session:peerCatalogueView(view,name,{...state,state:'archived-only'},row.updated_at_ms),evidence:[],catalogueOnly:true});
       }
     }
     const results=[...merged.values()].slice(0,limit&&limit>0?Math.max(limit,own.results.length):undefined);
