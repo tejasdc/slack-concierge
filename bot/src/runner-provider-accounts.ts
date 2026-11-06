@@ -9,6 +9,7 @@ import { codexUpdaterDisabled } from "./codex-updater-settings";
 import { holdCodexDaemonAutoStart } from "./codex-daemon-file-limit";
 import { CodexAppServerClient } from "./codex-app-server-client";
 import { useCodexResetCredit } from "./codex-reset-credit";
+import { readRunnerGoogleUsage } from "./runner-google-usage";
 
 type AccountProvider = "codex" | "claude-code";
 const providers = new Set<AccountProvider>(["codex", "claude-code"]);
@@ -450,6 +451,11 @@ export async function runnerAccountReadings() {
 /** Closed vocabulary for the account operations exposed on the runner-machine relay. */
 export async function serveRunnerAccountCall(method: string, params: Record<string, unknown>): Promise<unknown> {
   if (method === "accounts.identity") {
+    if(params.provider==='antigravity'){
+      const usage=await readRunnerGoogleUsage();
+      const current=usage.accounts.filter(account=>account.current);
+      return current.length===1?{id:current[0]!.label,label:current[0]!.label}:null;
+    }
     const key = provider(params.provider);
     return runnerAccountIdentity(key);
   }
@@ -475,6 +481,7 @@ export async function serveRunnerAccountCall(method: string, params: Record<stri
     return { account: null, resolution: matches.length ? "ambiguous" : "missing" };
   }
   if (method === "accounts.readings") return runnerAccountReadings();
+  if (method === "accounts.google.readings") return readRunnerGoogleUsage();
   if (method === "accounts.signin.start") return startSignIn(params);
   if (method === "accounts.signin.complete") return completeSignIn(params);
   if (method === "accounts.signin.status") {

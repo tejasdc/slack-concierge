@@ -40,6 +40,7 @@ import {serveRunnerAside} from '../src/runner-asides';
 import {serveProviderUsageBreakdownCall} from '../src/runner-provider-usage-breakdown';
 import {runProjectSetupJob} from '../src/runner-project-setup';
 import {runProjectPlacementJob} from '../src/runner-project-placement';
+import {assertRunnerGoogleCreditPolicy} from '../src/runner-google-policy';
 
 const owner=process.env.CONCIERGE_OWNER_URL?.replace(/\/+$/,'');
 const tokenFile=process.env.CONCIERGE_RUNNER_TOKEN_FILE;
@@ -194,6 +195,7 @@ function turnEnvironment(manifest:{environment:Record<string,string>;inheritEnvi
     if(!home)throw new Error(`The selected Claude account is not available on runner ${machine.runnerName}.`);
     localEnvironment.CLAUDE_CONFIG_DIR=home;
   }
+  if(provider==='antigravity')assertRunnerGoogleCreditPolicy();
   if(!manifest.inheritEnvironment)return localEnvironment;
   const ownerScripts=localEnvironment.CONCIERGE_ROUTER_BOT_DIR?join(localEnvironment.CONCIERGE_ROUTER_BOT_DIR,'scripts'):null;
   return {...process.env as Record<string,string>,...localEnvironment,

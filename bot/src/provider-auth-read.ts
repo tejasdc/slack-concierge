@@ -33,9 +33,10 @@ export function providerAuthRead(ephemera:ProviderAuthEphemera):readonly Provide
 }
 
 export function antigravityAuthView(ephemera:ProviderAuthEphemera):ProviderAuthView {
+  const remoteRunner=providerRunnerTarget('antigravity');
   const stored=providerAccountUsage('antigravity');
   const usage=stored?{...markUncurrentAccountReadings('antigravity',stored),refreshing:ephemera.usageRefreshing}:null;
-  const current=usage?.accounts.find(item=>item.current&&item.label===ephemera.antigravityAccount?.label
+  const current=usage?.accounts.find(item=>item.current&&(remoteRunner||item.label===ephemera.antigravityAccount?.label)
     &&accountReadingFresh('antigravity',usage,item))??null;
   const account=current?{id:current.label,label:current.label,detail:current.plan}:null;
   const signedIn=!!account&&!current?.signedOut;

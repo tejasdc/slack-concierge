@@ -577,19 +577,47 @@ export class SessionExecutionHost {
     if(this.usageProbeRunning)return {status:'unconfirmed',...this.usageProbeContext,
       detail:'The previous provider check is still stopping; no new check was started.'};
     for(const provider of ['claude-code','codex'] as const){
-      const home=provider==='claude-code'?selectedClaudeHome():null;
-      const accountLabel=home?.label??currentAccount(provider)?.label;
-      if(!accountLabel)continue;
       const waiting=db.query(`SELECT COALESCE(turns.provider_model,
           (SELECT earlier.provider_model FROM turns earlier WHERE earlier.session_id=turns.session_id
-            AND earlier.id<turns.id AND earlier.provider_model IS NOT NULL ORDER BY earlier.id DESC LIMIT 1)) AS model
+            AND earlier.id<turns.id AND earlier.provider_model IS NOT NULL ORDER BY earlier.id DESC LIMIT 1)) AS model,
+          sessions.metadata_json
         FROM turns JOIN sessions ON sessions.id=turns.session_id
         WHERE turns.status='queued' AND turns.dispatch_hold='usage'
           AND turns.dispatch_failure_class IN ('backoff','usage_wait')
-          AND sessions.provider_id=? ORDER BY turns.id LIMIT 1`).get(provider) as {model:string|null}|null;
+          AND sessions.provider_id=? ORDER BY turns.id LIMIT 1`).get(provider) as {model:string|null;metadata_json:string}|null;
       if(!waiting)continue;
+      let savedRunner:string|null=null;
+      try{const metadata=JSON.parse(waiting.metadata_json);savedRunner=typeof metadata.providerRunner==='string'?metadata.providerRunner:null;}catch{}
+      const runnerTarget=providerRunnerTarget(provider)??savedRunner;
+      let runnerIdentity:{id:string;label:string}|null=null;
+      if(runnerTarget){
+        try{runnerIdentity=await runnerMachineCall(runnerTarget,'accounts.identity',{provider});}
+        catch{return {status:'unconfirmed',provider,account:null,detail:`Runner ${runnerTarget} could not confirm the account for this held turn.`};}
+      }
+      const home=runnerTarget?null:provider==='claude-code'?selectedClaudeHome():null;
+      const accountLabel=runnerTarget?runnerIdentity?.label:home?.label??currentAccount(provider)?.label;
+      if(!accountLabel) return {status:'unconfirmed',provider,account:null,detail:'No exact active account identity is available for this held turn.'};
       const attempt=usageAttempt(provider,waiting.model??'unresolved',accountLabel);
       const priorLimit=cachedUsageLimit(attempt);
+      if(runnerTarget){
+        try{
+          const readings=await runnerMachineCall<Record<string,any>>(runnerTarget,'accounts.readings',{},100_000);
+          const usage=readings?.[provider];
+          const reading=usage?.accounts?.find((item:any)=>item.label===accountLabel);
+          const hasRoom=!!usage&&!!reading&&reading.signedOut!==true
+            &&accountReadingFresh(provider,usage,reading,Date.now(),undefined,waiting.model)
+            &&includedAllowanceWindows(provider,reading,waiting.model).length>0
+            &&includedAllowanceWindows(provider,reading,waiting.model).every(window=>window.usedPercent<100);
+          if(!hasRoom)return {status:'unconfirmed',provider,account:accountLabel,model:waiting.model,
+            detail:`Runner ${runnerTarget} has no fresh allowance proof for ${accountLabel}; waiting work remains held.`};
+          const {released,turnIds}=releaseProvenUsageHolds(attempt,accountLabel,provider==='claude-code'&&!waiting.model);
+          if(provider==='claude-code'&&released){const revision=claudeAccountSelection()?.revision??0;
+            for(const turnId of turnIds)admitProvenClaudeWaitingTurn(turnId,accountLabel,revision);}
+          if(released)this.options.wake();
+          return {status:'available',provider,account:accountLabel,model:waiting.model,released};
+        }catch(error){return {status:'unconfirmed',provider,account:accountLabel,model:waiting.model,
+          detail:`Runner ${runnerTarget} could not confirm fresh allowance: ${error instanceof Error?error.message:String(error)}`};}
+      }
       const runner=this.options.providers[provider];
       if(!runner)return {status:'unconfirmed',provider,account:accountLabel,detail:'The provider is not available on this machine.'};
       try{
@@ -1477,11 +1505,9 @@ export class SessionExecutionHost {
             actual=adoption?this.adoptedOutsideRun(prepared,adoption):this.outsideRun(prepared,claim,session,kept,onRunner?runnerTarget!:undefined);
           } else if(session.provider_id==='antigravity') {
             if(!adoption&&!executionHostsEnabled())throw new ProviderCapabilityUnavailableError('execution','Google work requires a durable execution host on this machine.');
-            const googleExecutable=onRunner
-              ?(await runnerMachineCall<{executable:string}>(runnerTarget!,'google.executable',{})).executable
-              :antigravityExecutable();
             actual=adoption?this.adoptedRun(prepared,adoption)
-              :this.hostedRun(prepared,claim,session,kept,googleExecutable,onRunner?stagedFiles:undefined,onRunner?runnerTarget!:undefined);
+              :onRunner?this.hostedRun(prepared,claim,session,kept,'agy',stagedFiles,runnerTarget!)
+                :this.hostedRun(prepared,claim,session,kept,antigravityExecutable());
           } else if(onRunner) {
             actual=this.hostedRun(prepared,claim,session,kept,'claude',stagedFiles,runnerTarget!);
           } else if(session.provider_id==='claude-code'&&(adoption||executionHostsEnabled())) {
@@ -1966,25 +1992,26 @@ export function chooseTurnRunner(session:SessionRow,metadata=sessionMetadata(ses
     return saved.status==='bound'?saved.runner:configured;
   }
   if(saved.status==='bound')return saved.runner;
-  if(session.provider_id!=='claude-code')return null;
+  if(session.provider_id!=='claude-code'&&session.provider_id!=='antigravity')return null;
   if(session.agent_session_uuid){
     // A bound native conversation keeps the machine that last ran it. Current deployment
     // settings cannot recover that fact: use the durable execution and lease that actually
     // launched its latest turn, and refuse if that evidence is incomplete or ambiguous.
     const prior=db.query(`SELECT execution.supervisor,attempt.runner FROM executions execution
       LEFT JOIN runner_attempts attempt ON attempt.job_id='turn:'||execution.execution_id
-      WHERE execution.session_id=? AND execution.provider='claude-code'
-      ORDER BY execution.created_at_ms DESC,attempt.started_at_ms DESC LIMIT 1`).get(session.id) as
+      WHERE execution.session_id=? AND execution.provider=?
+      ORDER BY execution.created_at_ms DESC,attempt.started_at_ms DESC LIMIT 1`).get(session.id,session.provider_id) as
       {supervisor:string;runner:string|null}|null;
-    if(!prior)throw new Error('This Claude conversation has no saved machine binding and no exact execution record; refusing to guess its home.');
+    if(!prior)throw new Error(`This ${session.provider_id} conversation has no saved machine binding and no exact execution record; refusing to guess its home.`);
     if(prior.supervisor===RUNNER_SUPERVISOR){
-      if(!prior.runner)throw new Error('This Claude conversation ran on a runner, but its exact runner lease is unavailable.');
+      if(!prior.runner)throw new Error(`This ${session.provider_id} conversation ran on a runner, but its exact runner lease is unavailable.`);
       return prior.runner;
     }
     return null;
   }
-  if(!turnRunsOnRunner(metadata))return null;
+  if(session.provider_id==='claude-code'&&!turnRunsOnRunner(metadata))return null;
+  if(session.provider_id==='antigravity'&&(process.env.CONCIERGE_TURN_RUNNERS?.trim()||'marked')==='off')return null;
   const selected=process.env.CONCIERGE_TURN_RUNNER?.trim()||codexRelayRunner();
-  if(!selected)throw new Error('Claude runner placement is enabled, but no runner target is configured.');
+  if(!selected)throw new Error(`${session.provider_id} runner placement is enabled, but no runner target is configured.`);
   return selected;
 }

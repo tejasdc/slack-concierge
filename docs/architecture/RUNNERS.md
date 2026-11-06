@@ -9,8 +9,7 @@ the network entrance. **This source configures every new Claude turn for runner 
 Codex setting failed startup on 2026-11-04 and was rolled back; the repaired startup order below
 awaits integration and runtime proof by the detached controller. `claude-code/runner`
 earned its survival proof in the 2026-11-05 acceptance restart (execution `b212ed3c76cd9766`, taken
-over live by the restarted owner). Command and file watches run on the registering agent's runner. **Still on the owner's machine:** Google and outside-Codex hosts,
-the provider account readings and sign-ins, and project checkouts (a runner
+over live by the restarted owner). Command and file watches run on the registering agent's runner. **Still on the owner's machine:** outside-Codex hosts and project checkouts (a runner
 must have the same folders). The AX41's Codex App Server is started and supervised by the runner, and
 a Codex thread's shell names the runner's folders, never the owner's (2026-11-05). Concierge's own thnkr.ing
 calls already use thnkr.ing's network entrance. The owner therefore
@@ -413,6 +412,20 @@ an operation ID returns its recorded result. The dispatcher also exposes
 `accounts.codex.resetCredit`; the runner validates a unique account home and runs the provider's
 own redemption protocol there.
 
+Google/Antigravity turns can target the configured turn runner. The owner stores the selected
+runner and account label; the runner starts its own `agy` executable and checks its own
+`~/.gemini/antigravity-cli/settings.json` before launch. If the setting is unreadable or
+`useG1Credits` is true, dispatch refuses before starting the provider, so a runner cannot silently
+spend paid credits. `accounts.google.readings` reads quota and account identity on that runner;
+the owner stores the runner-tagged result and keeps the allowance ledger. Provider identity for a
+new Google session is recorded from the runner's reading, not from the owner's local profile.
+
+For Claude turns explicitly marked for a runner while `CONCIERGE_TURN_RUNNERS=marked`, the runner
+identity and account home are resolved on that machine. A marked turn never sends a profile label
+from the owner's current account selection without runner validation. The shared owner usage view
+continues to describe its configured provider source; per-session runner placement is retained in
+the session binding.
+
 Offline acceptance state card (source and isolated runner fixtures, not a live runner):
 
 - Verified: an exact provider/account identity resolves from runner-owned homes, and ambiguous
@@ -423,7 +436,9 @@ Offline acceptance state card (source and isolated runner fixtures, not a live r
   no owner-side sign-in fallback is attempted by the remote route.
 - Unknown: provider-native interactive sign-in, owner restart recovery against a live runner,
   Codex App Server account activation, reset-credit redemption, and held-work release after a
-  fresh live usage reading have not been exercised on AX41.
+  fresh live usage reading have not been exercised on AX41. Google quota parsing, runner-side
+  paid-credit refusal and Google turn execution have not been exercised against AX41's real `agy`
+  installation.
 
 | Capability | Source state | Verified here | Live runner |
 | --- | --- | --- | --- |
@@ -432,6 +447,7 @@ Offline acceptance state card (source and isolated runner fixtures, not a live r
 | Sign-in start/status/complete and owner restart recovery | Implemented | Offline CLI refusal and duplicate start outcome; owner and runner bundles | Not checked |
 | Codex activation and owner admission hold | Implemented | Bundles; no daemon restart | Not checked |
 | Codex reset-credit redemption | Implemented | Runner bundle only; no provider redemption | Not checked |
+| Google quota and paid-credit guard | Implemented | Settings absent permits; enabled and unreadable settings refuse; bundles | Not checked |
 | Exact transcript resolution | Implemented | Unique, missing and ambiguous fixtures | Not checked |
 
 Users: durable watches ([watches](WATCHES.md), `watch-machine.ts`, methods `watch.*`). Turn artifacts need none: only the retired Slack presentation makes an artifact folder; a native turn makes none.

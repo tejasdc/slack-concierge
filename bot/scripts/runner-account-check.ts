@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { tmpdir } from "node:os";
+import {assertRunnerGoogleCreditPolicy} from '../src/runner-google-policy';
 
 if (process.env.RUNNER_ACCOUNT_CHECK_CHILD !== "1") {
   const isolatedHome = mkdtempSync(join(tmpdir(), "runner-account-check-"));
@@ -18,6 +19,13 @@ if (process.env.RUNNER_ACCOUNT_CHECK_CHILD !== "1") {
 
 const root = homedir();
 mkdirSync(root, { recursive: true });
+const googleSettings=join(root,'google-settings.json');
+assertRunnerGoogleCreditPolicy(googleSettings); // No setting preserves subscription-only behavior.
+writeFileSync(googleSettings,JSON.stringify({useG1Credits:true}));
+assert.throws(()=>assertRunnerGoogleCreditPolicy(googleSettings),/overages are enabled/);
+writeFileSync(googleSettings,'{');
+assert.throws(()=>assertRunnerGoogleCreditPolicy(googleSettings),/could not be verified/);
+rmSync(googleSettings);
 const writeCodex = (home: string, email: string, id: string) => {
   mkdirSync(home, { recursive: true });
   const payload = Buffer.from(JSON.stringify({ email })).toString("base64url");
