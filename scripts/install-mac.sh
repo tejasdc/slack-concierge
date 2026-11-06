@@ -147,13 +147,12 @@ command -v ffmpeg >/dev/null 2>&1 || echo "Speech-to-text also needs ffmpeg to r
 # It has no independent launchd lifetime or permission request.
 FOOTPRINT_SRC="$REPO/bot/native/process-footprint.c"
 FOOTPRINT_BIN="$STATE/speech/process-footprint"
-if command -v clang >/dev/null 2>&1; then
-  footprint_fingerprint=$(shasum -a 256 "$FOOTPRINT_SRC" | cut -d' ' -f1)
-  if [ ! -x "$FOOTPRINT_BIN" ] || [ "$(cat "$STATE/speech/.footprint-fingerprint" 2>/dev/null)" != "$footprint_fingerprint" ]; then
-    clang -O2 -Wall "$FOOTPRINT_SRC" -o "$FOOTPRINT_BIN.build"
-    mv "$FOOTPRINT_BIN.build" "$FOOTPRINT_BIN"
-    echo "$footprint_fingerprint" > "$STATE/speech/.footprint-fingerprint"
-  fi
+command -v clang >/dev/null 2>&1 || { echo "Mac process observation needs the Xcode command line tools." >&2; exit 2; }
+footprint_fingerprint=$(shasum -a 256 "$FOOTPRINT_SRC" | cut -d' ' -f1)
+if [ ! -x "$FOOTPRINT_BIN" ] || [ "$(cat "$STATE/speech/.footprint-fingerprint" 2>/dev/null)" != "$footprint_fingerprint" ]; then
+  clang -O2 -Wall "$FOOTPRINT_SRC" -o "$FOOTPRINT_BIN.build"
+  mv "$FOOTPRINT_BIN.build" "$FOOTPRINT_BIN"
+  echo "$footprint_fingerprint" > "$STATE/speech/.footprint-fingerprint"
 fi
 
 # Screenshots for agents (bot/native/mac-capture.swift, run through ~/.local/bin/mac-screenshot).
