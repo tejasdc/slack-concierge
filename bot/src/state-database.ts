@@ -16,7 +16,7 @@ const testInvocation = process.env.CONCIERGE_TEST_MODE === "1"
 // f6e938aa investigation and b1eed622 implementation request); production-path checks stay below.
 // Tejas's phone-work repair (input e943db22) requires an isolated admission and cancellation check.
 const authorizedTest = ["native-attribution-5eaa0768", "responsive-system-b1eed622", "foreground-isolation-5804d389", "quiet-bank-e943db22", "drain-withdraw-unclaimed-2026-11-05",
-  LEGACY_TOPIC_COMPLETION_TEST_AUTHORIZATION].includes(process.env.CONCIERGE_TEST_AUTHORIZATION ?? "");
+  "agent-attachment-attribution-ebced96a", LEGACY_TOPIC_COMPLETION_TEST_AUTHORIZATION].includes(process.env.CONCIERGE_TEST_AUTHORIZATION ?? "");
 if (testInvocation && !authorizedTest) {
   throw new Error("Agent-run tests are disabled by Tejas (1789490492.818709). Refusing to open the Concierge ledger from a test process.");
 }

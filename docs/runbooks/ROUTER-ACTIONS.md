@@ -72,6 +72,27 @@ before its task can finish. The owner refuses a threaded ChatGPT ask without
 that return.
 `sessions get` still exposes every retained reply, outcome and attachment.
 
+## Report evidence reads
+
+`router-actions.sh reports chain <accepted-input-or-request-id>` reads up to eight source links
+from the owner. A bare UUID is a communication request ID. The JSON includes each accepted input's
+session, origin, source input and run, capture marker, own files, and the communication request's
+carried files. `inboxLinks` lists every exact Inbox obligation whose dispatch matches a request in
+the chain, with its source captures. `direct: true` means the link belongs to the named request or
+to a request sent directly from the named input; ancestral links are labeled `direct: false`.
+The Inbox's link can name several human reports across topics. The legacy `resolvedCapture` and
+`carriedReports` fields preserve the attachment fallback for unlinked historic sends.
+
+`router-actions.sh reports window <since-UTC> <until-UTC>` reads the half-open interval of accepted
+in-app reports and human inputs. Times are whole-second UTC, for example
+`2026-11-04T06:00:23Z`. Each report has its linked communication requests, their settlement,
+target session, and exact thread-post event IDs and times. An absent communication row has
+`known: false`; an open row has `known: true` and `outcome: null`. The read refuses a ledger
+with no accepted inputs, an invalid range, or more than 5,000 rows in a collection. A refused read
+is never a clean zero. Both commands use the same authenticated owner entrance as session reads,
+including from a runner where the ledger file is hidden; the query runs in the isolated read
+process. The owning contract is [Runners](../architecture/RUNNERS.md).
+
 ## Waiting for a local process
 
 Use `router-actions.sh wait --pid <pid> [--pid <pid> ...] [--timeout 30m]` when

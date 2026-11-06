@@ -89,7 +89,7 @@ case "${1:-}" in
       sleep 1
     done
     ;;
-  sessions|external|projects|work)
+  sessions|external|projects|work|reports)
     command=$1
     shift
     # Native Codex helpers share their parent's Concierge source identity but have a distinct
@@ -106,6 +106,7 @@ case "${1:-}" in
       external) script=router-external ;;
       projects) script=router-projects ;;
       work) script=router-request-client ;;
+      reports) script=router-reports ;;
     esac
     # Commands that talk to the owner always use the installed release's client on the server.
     # A running agent's pinned copy can outlive an update and reject an option the owner now

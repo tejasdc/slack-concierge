@@ -482,7 +482,13 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   named event is its unsuperseded final, and the retained request, source, responder and answer
   bytes agree. An uncertain outcome, a sibling answer, a different event, or an answer that does
   not prove delivery, deployment or live acceptance stays open. This request-specific closure
-  does not edit the historical result or dispatch another worker.
+  does not edit the historical result or dispatch another worker. The same exact-final evidence
+  also lets the router close a migrated request whose checked, completed answer predates its
+  topic and was shared with another request: the router names the original final event for each
+  request it has checked. Closure stores that event in the request's evidence; it does not post
+  the answer again in the topic. A failed final or one marked not checked cannot qualify;
+  for older answers without a structured check, the router must inspect the retained words
+  and live evidence before making its request-specific closure judgment.
   Linked attempts are evaluated in admission order, including when an older failed
   attempt is discovered and linked after its checked successor. The old failure remains
   visible without becoming current merely because it was linked last.

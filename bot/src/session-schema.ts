@@ -273,6 +273,7 @@ export function initializeSessionOwnerSchema(db: Database) {
         CREATE TABLE IF NOT EXISTS session_attachments (
           id TEXT PRIMARY KEY, action_id TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
           content_type TEXT NOT NULL, sha256 TEXT NOT NULL, bytes BLOB NOT NULL,
+          source_input_id TEXT, source_run_id TEXT,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS session_attachment_transcription_outcomes (
@@ -638,6 +639,10 @@ export function initializeSessionOwnerSchema(db: Database) {
       add('session_attachments','transcript_engine','transcript_engine TEXT');
       add('session_attachments','transcript_engine_version','transcript_engine_version TEXT');
       add('session_attachments','duration_ms','duration_ms INTEGER');
+      // A marked public upload keeps the verified Concierge input/run that authored its
+      // custody. Ordinary human uploads keep both fields null.
+      add('session_attachments','source_input_id','source_input_id TEXT');
+      add('session_attachments','source_run_id','source_run_id TEXT');
       // A forwarded copy of a recording finds its original's words by the bytes' hash.
       db.exec('CREATE INDEX IF NOT EXISTS session_attachments_sha256 ON session_attachments(sha256)');
       // A peer request accepted while the peer was offline keeps its exact delivery body until it lands.

@@ -30,12 +30,19 @@ export function requestPromptInputId(database:Database,requestId:string,sourceSe
   return row?.id??null;
 }
 
-/** Thread custody discharges ordinary delivery; a final hand-back needs the asker to act. */
+/** Thread custody discharges ordinary success; unresolved or failed work returns to its asker. */
 export function returnsToRequester(request:{thread_root_input_id:string|null;payload_json:string},event?:{kind:string;payload_json:string}):boolean {
   const payload=JSON.parse(request.payload_json);
-  const handBack=event?.kind==='final'?JSON.parse(event.payload_json).handBack:null;
+  const result=event?JSON.parse(event.payload_json):null;
+  const handBack=event?.kind==='final'?result.handBack:null;
+  const stoppedByTejas=result?.output?.stoppedBy==='tejas';
+  const unresolved=event?.kind==='overdue'||event?.kind==='final'&&!stoppedByTejas&&(
+    result.workDisposition==='failed'||result.workDisposition==='needs_decision'
+    ||payload.requestedEffect==='work'&&result.workDisposition===undefined
+    ||result.stalled===true
+    ||typeof result.outcome==='string'&&result.outcome!=='answered');
   return payload.returnToRequester===true||handBack==='not-my-subject'||handBack==='too-loaded'
-    ||(!request.thread_root_input_id&&!payload.forwardedReply);
+    ||unresolved||(!request.thread_root_input_id&&!payload.forwardedReply);
 }
 
 /** The queue and live dispatcher refuse old copies before reconciliation withdraws them. */
@@ -48,8 +55,16 @@ export function threadOnlyReturnInputSql(input:string):string {
       OR json_extract(request.payload_json,'$.routedMessage') IS NOT NULL)
     AND coalesce(json_extract(request.payload_json,'$.returnToRequester'),0)<>1
     AND NOT EXISTS (SELECT 1 FROM ${table.replace('requests','events')} event
-      WHERE ${input}.id='return:'||event.event_id AND event.request_id=request.request_id
-        AND event.kind='final' AND json_extract(event.payload_json,'$.handBack') IN ('not-my-subject','too-loaded')))`).join(' OR ')})`;
+      WHERE ${input}.id='return:'||event.event_id AND event.request_id=request.request_id AND (
+        event.kind='overdue' OR event.kind='final'
+          AND coalesce(json_extract(event.payload_json,'$.output.stoppedBy'),'')<>'tejas'
+          AND (json_extract(event.payload_json,'$.handBack') IN ('not-my-subject','too-loaded')
+            OR json_extract(event.payload_json,'$.workDisposition') IN ('failed','needs_decision')
+            OR json_extract(request.payload_json,'$.requestedEffect')='work'
+              AND json_extract(event.payload_json,'$.workDisposition') IS NULL
+            OR coalesce(json_extract(event.payload_json,'$.stalled'),0)=1
+            OR json_type(event.payload_json,'$.outcome')='text'
+              AND json_extract(event.payload_json,'$.outcome')<>'answered'))))`).join(' OR ')})`;
 }
 
 /** The request's own placed root owns its answer, even if the sender named another thread. */

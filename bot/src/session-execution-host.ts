@@ -96,7 +96,7 @@ import {ProviderHistoryPageClient} from './provider-history-page-client';
 import {ATTENTION_INSTRUCTION,releaseFocusForPost,settleExitedProcessReport,topicPromptContext} from './session-topics';
 import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,clearPendingSignIn} from './state';
 import {log,errorFields} from './log';
-import {transcribeAudioPath,transcriptionPrompt} from './transcription';
+import {attachedRecordingWords,transcriptionPrompt} from './transcription';
 import {ProviderLoginManager} from './auth-login';
 import {codexSignInState,codexAccountInUse} from './codex-device-login';
 import {CodexAccountLogin} from './codex-account-login';
@@ -878,7 +878,7 @@ export class SessionExecutionHost {
             let text=this.prompt(attached);
             if(attachments.length) {
               if(!root)throw new Error('The active turn has no owned attachment root.');
-              const transcripts=[];for(const attachment of attachments){const path=join(root,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});text+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/'))transcripts.push(attachment.transcriptText?{slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const}:await transcribeAudioPath({slackFileId:attachment.id,title:attachment.name,path}));}const transcript=transcriptionPrompt(transcripts.filter(item=>!body.text?.includes(item.text)));text+=transcript?`\n\n${transcript}`:'';
+              const transcripts=[];for(const attachment of attachments){const path=join(root,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});text+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/')){if(attachment.transcriptText)transcripts.push({slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const});else{const heard=await attachedRecordingWords({slackFileId:attachment.id,title:attachment.name,path});if(heard.transcript)transcripts.push(heard.transcript);if(heard.note)text+=`\n${heard.note}`;}}}const transcript=transcriptionPrompt(transcripts.filter(item=>!body.text?.includes(item.text)));text+=transcript?`\n\n${transcript}`:'';
             }
             if(sessionMetadata(session).interactionPolicy!=='consultation-only'&&session.provider_id!=='chatgpt'&&!canvasSpeechContext(attached))text=sessionInputEnvelope(attached,nativeRunId(target.turnId),text);
             updateTurnSteeringReplayText(steeringId,text,attachments.length);
@@ -1225,7 +1225,7 @@ export class SessionExecutionHost {
       if(attachments.length&&metadata.interactionPolicy==='consultation-only')throw new ProviderCapabilityUnavailableError('attachments','Information-only consultation cannot read attached files.');
       if(!adoption&&attachments.length&&session.provider_id!=='chatgpt') {
         staging=await mkdtemp(join(tmpdir(),`concierge-native-${claim.turn_id}-`));additionalDirs.push(staging);
-        const transcripts=[];for(const attachment of attachments){const path=join(staging,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});if(onRunner)stagedFiles.push({path,base64:attachment.base64});prompt+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/'))transcripts.push(attachment.transcriptText?{slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const}:await transcribeAudioPath({slackFileId:attachment.id,title:attachment.name,path}));}const transcript=transcriptionPrompt(transcripts.filter(item=>!payload.text?.includes(item.text)));prompt+=transcript?`\n\n${transcript}`:'';
+        const transcripts=[];for(const attachment of attachments){const path=join(staging,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});if(onRunner)stagedFiles.push({path,base64:attachment.base64});prompt+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/')){if(attachment.transcriptText)transcripts.push({slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const});else{const heard=await attachedRecordingWords({slackFileId:attachment.id,title:attachment.name,path});if(heard.transcript)transcripts.push(heard.transcript);if(heard.note)prompt+=`\n${heard.note}`;}}}const transcript=transcriptionPrompt(transcripts.filter(item=>!payload.text?.includes(item.text)));prompt+=transcript?`\n\n${transcript}`:'';
       }
       const nativeContext=metadata.interactionPolicy!=='consultation-only'&&session.provider_id!=='chatgpt';
       let canvasApplicationContext:string|null=null;

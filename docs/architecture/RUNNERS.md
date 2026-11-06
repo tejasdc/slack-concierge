@@ -314,6 +314,17 @@ runner's state folder, so helpers that open the ledger file directly (`scripts/l
 bare name, `router-actions.sh threads`, `trigger`, Slack channel-name lookups, `todo-add`) do not find
 one there; `ledger-read.py` says so and takes the owner's database by absolute path where it is on
 the same machine, and `todo-add` refuses rather than creating an empty ledger.
+thnkr.ing's nightly report audit and repair commit hook also read that file directly. A runner turn
+uses `router-actions.sh reports window <since-UTC> <until-UTC>` for the accepted in-app report
+captures, their linked dispatches, settlement, and thread-post state; it uses
+`router-actions.sh reports chain <input-or-request-id>` for the exact input ancestry, carried report
+files, and Inbox request links. Both are authenticated reads through the agents' entrance. The owner
+executes the bounded database work in its isolated read process, returns an explicit error when the
+owner or range is unavailable, and never treats a missing runner ledger as an empty report window.
+The source chain retains the immediate sending input for authority and returns Inbox request source
+captures separately: one dispatch can serve several human requests in different topics. The two
+thnkr.ing readers switch to these commands in their own project; until then, they still cannot
+audit or enforce report citation from a runner.
 
 Why a relay and not the job protocol: the App Server's traffic is a live connection with many
 streamed notifications, not obligations; carrying it through `runner_events` would write every token
