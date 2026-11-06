@@ -926,7 +926,10 @@ export class SessionExecutionHost {
     }
     const provider=this.options.providers[session.provider_id];
     if(!provider?.history||!session.agent_session_uuid)return null;
-    return provider.history({sessionUuid:session.agent_session_uuid,cwd:this.cwd(session),cursor,limit,ownerSessionId:session.id});
+    const metadata=sessionMetadata(session);
+    return provider.history({sessionUuid:session.agent_session_uuid,cwd:this.cwd(session),cursor,limit,ownerSessionId:session.id,
+      ...(typeof metadata.providerRunner==='string'?{runner:metadata.providerRunner}:{}),
+      ...(typeof metadata.providerAccount==='string'?{account:metadata.providerAccount}:{})});
   }
   private async historyMessage(session:SessionRow,messageId:string,turnId:string|null) {
     if(!session.agent_session_uuid)return null;
@@ -1750,7 +1753,10 @@ export class SessionExecutionHost {
       if(session.provider_id!==pin.provider||session.agent_session_uuid!==pin.parentSessionUUID||session.binding_generation!==pin.bindingGeneration||sessionMetadata(session).interactionPolicy==='consultation-only'||!provider?.capabilities?.fork||!provider.history)throw new ProviderCapabilityUnavailableError('fork','The pinned native fork capability or parent binding is unavailable.');
       let cursor:string|null=null,found=false;const cursors=new Set<string>();
       do {
-        const page=await provider.history({sessionUuid:pin.parentSessionUUID,cwd:this.cwd(session),cursor,limit:100});
+        const metadata=sessionMetadata(session);
+        const page=await provider.history({sessionUuid:pin.parentSessionUUID,cwd:this.cwd(session),cursor,limit:100,
+          ...(typeof metadata.providerRunner==='string'?{runner:metadata.providerRunner}:{}),
+          ...(typeof metadata.providerAccount==='string'?{account:metadata.providerAccount}:{})});
         found=page.messages.some(message=>provider.capabilities!.forkBoundary==='message'?message.id===pin.boundary:message.turnId===pin.boundary);
         if(found)break;
         cursor=page.nextCursor;
