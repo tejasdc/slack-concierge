@@ -253,6 +253,11 @@ turn by its thread and turn id), so moving it only changes where the bridge's We
 2. With `CONCIERGE_CODEX_RUNNER=<runner>` on the owner, every App Server client (turns, the session
    observer, history workers, device sign-in) starts the same bridge against the owner's
    `requests.sock` at `/runner/v1/relay/connect?runner=<runner>&target=codex-app-server`.
+   Runner-owned account activation also opens this bridge to prove the new App Server login. Its
+   executable is deeper in the sealed release than the owner's application bundle; the bridge
+   lookup walks to that release's manifest, and candidate validation checks the runner entry
+   before activation. The [November 6 failure record](../incidents/2026-11-06-runner-account-switch-lost-bridge.md)
+   records the queue impact when that lookup used the owner's fixed depth.
 3. The gateway (`runner-relay.ts`, inside the front-door process, no ledger) asks the runner over its
    channel to open `/runner/v1/relay/accept?id=…`; the runner opens a fresh connection to its own
    App Server socket and the gateway pairs the two. Messages pass unchanged and in order, including
