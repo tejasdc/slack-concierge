@@ -1474,7 +1474,14 @@ export class SessionOwner {
     if(session?.agent_session_uuid){
       try {
         const last=acknowledgedProviderRunner(session);
-        if(last.status==='missing')throw new SessionOwnerError('This conversation has no acknowledged machine binding.',424,'PROVIDER_RUNNER_UNKNOWN');
+        if(last.status==='missing'){
+          if(metadata.lineage&&session.parent_session_id){
+            const parent=getSessionById(session.parent_session_id);
+            if(parent?.provider_id===session.provider_id)return this.persistedProjectRunner(sessionMetadata(parent),parent);
+          }
+          if(metadata.resurrection)return null;
+          throw new SessionOwnerError('This conversation has no acknowledged machine binding.',424,'PROVIDER_RUNNER_UNKNOWN');
+        }
         return last.runner;
       } catch(error) {
         if(error instanceof SessionOwnerError)throw error;
