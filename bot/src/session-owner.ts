@@ -100,7 +100,7 @@ import {TURN_STATE,inputExecutionFacts,receiptOperationState} from './session-re
 import {receiptStatusFromFacts,type InputStatusDetail} from './session-receipt-status';
 import {PROJECT_FOLDERS_OPERATION,PROJECT_NESTED_EXPERTISE_OPERATION,type ProjectSetup} from './project-setup';
 import type {PeerLinks} from './peer-links';
-import {appendTodoFile} from './todo-file';
+import {appendTodoFile,captureMarker} from './todo-file';
 import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn} from './saved-work';
 import {usageBreakdown} from './usage-breakdown';
 import {chooseProviderForNewWork,type AutomaticProvider} from './provider-start-choice';
@@ -1184,15 +1184,15 @@ export class SessionOwner {
    * the next turn resumes the same conversation there; a session with work running or queued is
    * refused, so no turn starts in a folder that is being moved.
    */
-  moveSession(sessionId:number,requested:string) {
-    const project=sessionProject(this.defaultCwd,requested,{inside:true});
+  moveSession(sessionId:number,requested:string,projectLocation:{name:string;path:string;cwd:string;runner:string|null}) {
+    const project=projectLocation;
     if(!project)throw new SessionOwnerError('Choose a registered project or an existing folder inside one (for example agent-ecology/expertise/alan-kay).');
     const busy=db.query("SELECT 1 FROM turns WHERE session_id=? AND status IN ('queued','running','delivering') LIMIT 1").get(sessionId);
     if(busy)throw new SessionOwnerError('That session has work running or queued; move it once it is idle.',409,'SESSION_BUSY');
     const from=sessionMetadata(getSessionById(sessionId)!).cwd??null;
     const current=sessionMetadata(getSessionById(sessionId)!);
-    const coordinates=projectCoordinates(this.defaultCwd,project.cwd);
-    updateSessionMetadata(sessionId,{cwd:project.cwd,project:project.cwd,...(coordinates??{}),
+    updateSessionMetadata(sessionId,{cwd:project.cwd,project:project.cwd,projectName:project.name,projectPath:project.path,
+      ...(project.runner?{providerRunner:project.runner}:{}),
       ...(current.standingRole&&current.cwd!==project.cwd?{standingRole:null}:{})});
     return {from,to:project.cwd};
   }
@@ -1361,7 +1361,7 @@ export class SessionOwner {
   }
   /** Called only inside the communication owner's source-validated request transaction. */
   /** A peer instance's request has no local source input; its scope names the peer and the remote input instead. */
-  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;escalationReason?:string;attestedHumanModel?:string;project?:string;title?:string;summary?:string;smallTask?:boolean;outside?:boolean;onRunner?:boolean;standingRole?:StandingAgentRole;firstInput:{text:string;machineNeed?:import('./machine-need').MachineNeed;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean}}) {
+  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;escalationReason?:string;attestedHumanModel?:string;project?:string;projectLocation?:{name:string;path:string;cwd:string;runner:string|null};title?:string;summary?:string;smallTask?:boolean;outside?:boolean;onRunner?:boolean;standingRole?:StandingAgentRole;firstInput:{text:string;machineNeed?:import('./machine-need').MachineNeed;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean}}) {
     const title=normalizeSessionTitle(input.title);
     const source=input.sourceInputId?getAcceptedSessionInput(input.sourceInputId):null;
     const fromClaude=!!source&&getSessionById(source.session_id)?.provider_id==='claude-code';
@@ -1460,10 +1460,11 @@ export class SessionOwner {
   savedWorkList(cursor:string|null=null){return savedWorkListPage(db,cursor);}
   savedWorkControl(turnId:number,action:string,body:Record<string,unknown>){return updateSavedTurn(turnId,action,body);}
   private configuredProjectRunner():string|null { return process.env.CONCIERGE_TURN_RUNNER?.trim()||null; }
-  private async locateProject(location:string):Promise<{name:string;path:string;cwd:string;runner:string|null}> {
-    const runner=this.configuredProjectRunner();
+  async prepareProjectLocation(location:string,runner?:string|null) { return this.locateProject(location,runner); }
+  private async locateProject(location:string,runnerOverride?:string|null):Promise<{name:string;path:string;cwd:string;runner:string|null}> {
+    const runner=runnerOverride??this.configuredProjectRunner();
     if(runner) {
-      const located=await this.runnerProjectCall<{project:string;path:string;cwd:string}>('projects.locate',{location});
+      const located=await this.runnerProjectCall<{project:string;path:string;cwd:string}>('projects.locate',{location},runner);
       if(!located)throw new SessionOwnerError('The configured project runner did not resolve this project.',424,'PROJECT_RUNNER_UNAVAILABLE');
       return {name:located.project,path:located.path,cwd:located.cwd,runner};
     }
@@ -1473,8 +1474,8 @@ export class SessionOwner {
     if(!project)throw new SessionOwnerError('This folder is outside a registered project.');
     return {name:project.name,path:relative(project.cwd,local.cwd),cwd:local.cwd,runner:null};
   }
-  private async runnerProjectCall<T>(method:string,params:Record<string,unknown>):Promise<T|null> {
-    const runner=this.configuredProjectRunner();if(!runner)return null;
+  private async runnerProjectCall<T>(method:string,params:Record<string,unknown>,runnerOverride?:string|null):Promise<T|null> {
+    const runner=runnerOverride??this.configuredProjectRunner();if(!runner)return null;
     try{return await runnerMachineCall<T>(runner,method,params);}
     catch(error){
       const message=error instanceof Error?error.message:String(error);
@@ -1876,20 +1877,36 @@ export class SessionOwner {
     const inbox=getSessionById(accepted.session_id)!;
     return {inbox:{sessionId:`concierge:${inbox.id}`,address:sessionAddress(inbox)},operation:this.receipt(accepted)};
   }
-  createTask(id:string,body:unknown) {
+  async createTask(id:string,body:unknown) {
     const session=this.session(id),input=object(body);only(input,['clientActionId','reference']);const action=actionId(input),selected=this.selectedMessage(session,input.reference),metadata=sessionMetadata(session);
-    const project=metadata.project?containingProject(this.defaultCwd,metadata.project):null;
-    if(!project)throw new SessionOwnerError('This session has no exact registered project task authority.',409,'PROJECT_UNAVAILABLE');
+    const runner=typeof metadata.providerRunner==='string'?metadata.providerRunner:null;
+    let projectName=typeof metadata.projectName==='string'?metadata.projectName:null;
+    let project=metadata.project?containingProject(this.defaultCwd,metadata.project):null;
+    if(runner&&!projectName&&typeof metadata.project==='string') {
+      const located=await this.runnerProjectCall<{project:string}>('projects.locate',{location:metadata.project});
+      projectName=located?.project??null;
+    }
+    if(runner&&!projectName)throw new SessionOwnerError('This session has no stable runner project identity for task creation.',409,'PROJECT_UNAVAILABLE');
+    if(!runner&&!project)throw new SessionOwnerError('This session has no exact registered project task authority.',409,'PROJECT_UNAVAILABLE');
     const accepted=db.transaction(()=>{
       const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
       if(prior){if(prior.kind!=='project-task'||stablePayload(JSON.parse(prior.payload_json))!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);return prior;}
-      const saved=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:action,kind:'project-task',origin:'human',payload:input}).input;
-      const path=appendTodoFile(db,{path:join(project.cwd,'notes','TODOS.md'),channelName:project.name,text:selected.message.content,idempotencyKey:saved.id,idempotencySecret:'native-session-owner'});
-      db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',task:{path,reference:selected.reference}}),saved.id);
-      recordSessionEvent({eventId:`project-task:${saved.id}`,sessionId:session.id,inputId:saved.id,kind:'project_task',payload:{reference:selected.reference,path}});
-      return getAcceptedSessionInput(saved.id)!;
+      return retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:action,kind:'project-task',origin:'human',payload:input}).input;
     })();
-    return {operation:this.receipt(accepted)};
+    const prior=accepted.receipt_json?JSON.parse(accepted.receipt_json):{};
+    if(prior.state==='completed')return {operation:this.receipt(accepted)};
+    try {
+      const path=runner
+        ?(await this.runnerProjectCall<{path:string}>('projects.todos.append',{project:projectName,text:selected.message.content,marker:captureMarker(accepted.id,'native-session-owner')}))?.path
+        :appendTodoFile(db,{path:join(project!.cwd,'notes','TODOS.md'),channelName:project!.name,text:selected.message.content,idempotencyKey:accepted.id,idempotencySecret:'native-session-owner'});
+      if(!path)throw new SessionOwnerError('Runner did not confirm the project task append.',424,'PROJECT_RUNNER_UNAVAILABLE');
+      db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',task:{path,reference:selected.reference}}),accepted.id);
+      recordSessionEvent({eventId:`project-task:${accepted.id}`,sessionId:session.id,inputId:accepted.id,kind:'project_task',payload:{reference:selected.reference,path}});
+      return {operation:this.receipt(getAcceptedSessionInput(accepted.id)!)};
+    } catch(error) {
+      db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'uncertain',error:{code:'PROJECT_TASK_UNCONFIRMED',message:error instanceof Error?error.message:String(error)}}),accepted.id);
+      throw error;
+    }
   }
   inboxCapture(captureId:string) {
     const input=retainedInboxCapture(captureId),body=JSON.parse(input.payload_json);
@@ -2182,7 +2199,7 @@ export class SessionOwner {
       throw error;
     }
   }
-  private requestTarget(input:{provider:string;effort?:string;project?:string;choiceKey?:string;smallTask?:boolean},delegatedFromClaude=false) {
+  private requestTarget(input:{provider:string;effort?:string;project?:string;projectLocation?:{name:string;path:string;cwd:string;runner:string|null};choiceKey?:string;smallTask?:boolean},delegatedFromClaude=false) {
     if(input.provider==='chatgpt') {
       if(input.project!==undefined)throw new SessionOwnerError('ChatGPT creation does not accept a development project.');
       // The thinking level travels as the session's model, so the admission names it and the
@@ -2201,11 +2218,12 @@ export class SessionOwner {
       selector.effort=effort;
     }
     if(typeof input.project!=='string'||!input.project)throw new SessionOwnerError('New coding sessions require an explicit registered project; use sessions projects.');
-    const project=sessionProject(this.defaultCwd,input.project,{inside:true});
+    const project=input.projectLocation??sessionProject(this.defaultCwd,input.project,{inside:true});
     if(!project)throw new SessionOwnerError('Project is unknown or unavailable. Choose an exact project from sessions projects; do not use the Inbox or another project as a fallback.');
     const selected=resolveProviderSelector(selector),cwd=project.cwd;
     if(selected.provider==='claude-code'&&claudeAllowanceHeld())throw new SessionOwnerError(CLAUDE_ALLOWANCE_HOLD_MESSAGE,409,'CLAUDE_ALLOWANCE_HELD');
     return {provider:selected.provider,model:selected.model,reasoningEffort:selected.reasoning_effort,purpose:'develop',cwd,project:cwd,
+      ...('runner' in project?{projectName:project.name,projectPath:project.path,...(project.runner?{providerRunner:project.runner}:{})}:{}),
       ...(input.provider==='auto'?{automaticProviderChoice:true,...(input.smallTask?{automaticSmallTask:true}:{})}:{})};
   }
   async create(body:unknown) {
@@ -4297,7 +4315,7 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='forks') result=this.fork(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='asides') result=await this.aside(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='comparisons') result=await this.compare(parts[1]!,body);
-      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='tasks') result=this.createTask(parts[1]!,body);
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='tasks') result=await this.createTask(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='captures') result=this.captureSelectedMessage(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='reconcile') result=await this.reconcile(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='operations'&&parts.length===3&&parts[2]==='cancel') result=this.cancel(parts[1]!,body);

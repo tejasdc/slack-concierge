@@ -756,18 +756,22 @@ export class SessionCommunicationCoordinator {
      * 2026). A name Tejas set himself still wins and is never written over.
      */
     /** Moves a session (this one or another on this machine) to a project or a folder inside one; see SessionOwner.moveSession. */
-    move(input:{source:CommunicationSource;action_id:string;address:string;project:string}) {
+    async move(input:{source:CommunicationSource;action_id:string;address:string;project:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.fenced(this.actor(input.source));
         action(input.action_id);
         if(!this.dependencies.owner)throw new Error('Native session owner is unavailable.');
         if(!actor.inputId)throw new Error('Moving a session needs a native source input.');
         const target=resolveSessionAddress(input.address);
+        const targetRow=getSessionById(target.id);
+        if(!targetRow)throw new Error('That session address is unknown here.');
+        const binding=sessionMetadata(targetRow).providerRunner;
+        const projectLocation=await this.dependencies.owner!.prepareProjectLocation(input.project,typeof binding==='string'?binding:undefined);
         return db.transaction(()=>{
             const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
                 kind:'action',origin:'agent',payload:{kind:'move-session',session:target.id,project:input.project},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn)});
             if(saved.duplicate)return {session:this.dependencies.owner!.view(getSessionById(target.id)!),...JSON.parse(saved.input.receipt_json??'{}').moved};
-            const moved=this.dependencies.owner!.moveSession(target.id,input.project);
+            const moved=this.dependencies.owner!.moveSession(target.id,input.project,projectLocation);
             recordSessionEvent({eventId:`moved:${saved.input.id}`,sessionId:target.id,inputId:saved.input.id,kind:'moved',payload:{...moved,by:`concierge:${actor.session}`}});
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',moved}),saved.input.id);
             return {session:this.dependencies.owner!.view(getSessionById(target.id)!),...moved};
@@ -1671,6 +1675,8 @@ export class SessionCommunicationCoordinator {
             const raced=prior();
             if(raced){if(raced.payload_hash!==digest)throw new Error('Idempotency conflict: this source/action already names a different request.');return this.receipt(raced);}
         }
+        const projectLocation=input.provider&&input.provider!=='chatgpt'&&input.project
+            ?await this.dependencies.owner!.prepareProjectLocation(input.project):undefined;
         const id = randomUUID();
         const now = this.now();
         db.transaction(() => {
@@ -1702,7 +1708,7 @@ export class SessionCommunicationCoordinator {
             const firstInput={text:toChatgpt?chatgptText:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${history?.text?`${history.text}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(routedFrom)firstInput.text=`This request carries Tejas’s exact Inbox message ${routedFrom.messageId} into this session. Reply to this request; the answer appears under that message in its original thread.\n\n${firstInput.text}`;
             if(input.provider) {
-                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,escalationReason:input.escalationReason,project:input.project,title,summary:input.summary,smallTask:input.smallTask,outside:input.outside,onRunner:input.onRunner,standingRole,firstInput,saved:input.saved});
+                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,escalationReason:input.escalationReason,project:input.project,projectLocation,title,summary:input.summary,smallTask:input.smallTask,outside:input.outside,onRunner:input.onRunner,standingRole,firstInput,saved:input.saved});
                 target={session:created.session_id,channel:null,root:null,native:true};
             }
             if(input.saved&&requestedRole&&!input.provider){

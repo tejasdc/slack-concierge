@@ -136,7 +136,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'mac-need') return Response.json(sessions.macNeed(input));
         if (operation === 'note') return Response.json(await sessions.note(input));
         if (operation === 'title') return Response.json(sessions.title(input));
-        if (operation === 'move') return Response.json(sessions.move(input));
+        if (operation === 'move') return Response.json(await sessions.move(input));
         if (operation === 'post') return Response.json(await withLinkCheck(sessions.post(input),input,owner));
         if (operation === 'outcome') return Response.json(sessions.outcome(await withTodoState(input)));
         if (operation === 'answer') return Response.json(sessions.handleChatGptAnswer(input));
