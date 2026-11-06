@@ -430,7 +430,9 @@ custody while an earlier cancellation is awaited. A release cancellation also re
 custody when the provider callback becomes available; a real Stop retains priority. Fresh
 hosted provider admission is fenced after the durability wait, so a turn still preparing when
 drain begins can return its exact unsent input to the queue. A pending cancellation
-completes once that requeue commits. Adopted outside runs use their recorded runner
+completes once that requeue commits. When a person's Stop or banked yield was already
+pending, Mac shutdown waits for that cancellation or settlement of the exact dispatch;
+an earlier cancellation's failure alone does not reject shutdown. Adopted outside runs use their recorded runner
 supervisor when reconnecting. Held-host probes and deferred adoption
 also recheck drain after their awaits, leaving already claimed work for the next
 coordinator once this one exits. Until the update gate is removed (design

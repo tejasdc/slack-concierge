@@ -30,6 +30,7 @@ export interface ActiveSteeringTarget {
   sessionId?: number;
   controller: TurnSteeringController;
   cancellation: TurnCancellationController;
+  settled: Promise<void>;
 }
 
 export class TurnCancellationController {
@@ -180,7 +181,9 @@ export class ActiveTurnDispatchRegistry {
     const key = input.channelId === undefined ? null : steeringTargetKey(input.channelId, input.threadTs!);
     const controller = new TurnSteeringController();
     const cancellation = new TurnCancellationController();
-    const target = { turnId: input.turnId, sessionId: input.sessionId, controller, cancellation };
+    let resolveSettled: () => void = () => {};
+    const settled = new Promise<void>(resolve => { resolveSettled = resolve; });
+    const target = { turnId: input.turnId, sessionId: input.sessionId, controller, cancellation, settled };
     let closed = false;
     const closeSteering = (reason?: Error) => {
       if (closed) return;
@@ -204,7 +207,8 @@ export class ActiveTurnDispatchRegistry {
       closeSteering();
       this.activeTurnIds.delete(input.turnId);
       if (input.sessionId !== undefined) this.activeSessionIds.delete(input.sessionId);
-      this.lifecycle.onSettled(input.turnId);
+      try { this.lifecycle.onSettled(input.turnId); }
+      finally { resolveSettled(); }
     }
   }
 
@@ -242,7 +246,14 @@ export class ActiveTurnDispatchRegistry {
   ): { matched: false } | { matched: true; completion: Promise<void> } {
     const target = this.sessions.get(sessionId);
     if (!target || target.turnId !== turnId) return { matched: false };
-    return { matched: true, completion: target.cancellation.requestForDrain(mayCancel) };
+    const cancellation = target.cancellation.requestForDrain(mayCancel);
+    // An earlier Stop or banked yield has its own outcome. A release can proceed
+    // when that cancellation succeeds or the exact dispatch has settled; an
+    // inherited cancellation failure alone must not abort service shutdown.
+    return { matched: true, completion: Promise.race([
+      target.settled,
+      cancellation.catch(() => target.settled),
+    ]) };
   }
 
   requestSessionStop(sessionId: number, turnId: number): { matched: false } | { matched: true; completion: Promise<void> } {
