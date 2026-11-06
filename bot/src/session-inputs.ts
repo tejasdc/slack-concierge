@@ -12,6 +12,7 @@ import {log} from './log';
 import {claudeAllowanceHeld,CLAUDE_ALLOWANCE_HOLD_MESSAGE} from './claude-allowance-hold';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
+import {acknowledgedProviderRunner as findAcknowledgedProviderRunner} from './provider-machine-binding';
 import {projectCoordinates} from './session-projects';
 
 const eventWriteCounts=new Map<string,{writes:number;rootCommits:number}>();
@@ -104,6 +105,10 @@ export function providerRunnerForSession(session:SessionRow):{status:'bound';run
   const metadata=sessionMetadata(session);
   return Object.prototype.hasOwnProperty.call(metadata,'providerRunner')
     ?{status:'bound',runner:metadata.providerRunner??null}:{status:'legacy'};
+}
+/** Legacy conversations have no saved machine. Only a provider-acknowledged execution can locate one. */
+export function acknowledgedProviderRunner(session:SessionRow):{status:'found';runner:string|null}|{status:'missing'} {
+  return findAcknowledgedProviderRunner(db,session);
 }
 /** The stable provider account label chosen for this conversation; never infer from the current login. */
 export function providerAccountForSession(session:SessionRow):{status:'bound';account:string}|{status:'legacy'} {

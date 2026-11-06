@@ -2,6 +2,7 @@
 import {strict as assert} from 'node:assert';
 import {Database} from 'bun:sqlite';
 import {initializeRunnerSchema,RunnerLeases,LEASE_MS} from '../src/runner-leases';
+import {acknowledgedProviderRunner} from '../src/provider-machine-binding';
 
 const db=new Database(':memory:');
 initializeRunnerSchema(db);initializeRunnerSchema(db);
@@ -86,3 +87,34 @@ assert.equal(leases.job('turn-3')!.state,'leased');
 void quiet;
 
 console.log('runner leases: claim, contiguous events, commands, epoch fencing, computed expiry, idempotent finish and bounded restart extension hold');
+
+// A legacy conversation's machine comes from acknowledged work, never a newer launch intent.
+db.exec(`CREATE TABLE turns(id INTEGER PRIMARY KEY,provider_input_acknowledged_at TEXT);
+  CREATE TABLE executions(execution_id TEXT PRIMARY KEY,turn_id INTEGER,session_id INTEGER,
+    provider TEXT,supervisor TEXT,state TEXT,created_at_ms INTEGER);`);
+const session={id:8945,provider_id:'claude-code'};
+const addTurn=(id:number,acknowledged:boolean)=>db.query('INSERT INTO turns VALUES (?,?)').run(id,acknowledged?'received':null);
+const addExecution=(id:string,turnId:number,supervisor:string,state:string,created:number)=>
+  db.query('INSERT INTO executions VALUES (?,?,?,?,?,?,?)').run(id,turnId,session.id,session.provider_id,supervisor,state,created);
+addTurn(1,true);addExecution('original',1,'runner','released',100);
+leases.enqueue({jobId:'turn:original',kind:'turn',payload:{}});
+db.query("INSERT INTO runner_attempts(attempt_id,job_id,runner,epoch,state,lease_expires_at_ms,started_at_ms) VALUES (?,?,?,?,?,?,?)")
+  .run('binding-original','turn:original','ax41',1,'finished',101,101);
+addTurn(2,false);addExecution('unclaimed',2,'runner','lost',200);
+assert.deepEqual(acknowledgedProviderRunner(db,session),{status:'found',runner:'ax41'},
+  'An unsent newer launch intent must not erase the machine that acknowledged the conversation.');
+addTurn(3,true);addExecution('local',3,'systemd','released',300);
+assert.deepEqual(acknowledgedProviderRunner(db,session),{status:'found',runner:null},
+  'A later acknowledged local turn is the current machine, even after an earlier runner lease.');
+addTurn(4,false);addExecution('claimed-but-unsent',4,'runner','lost',400);
+leases.enqueue({jobId:'turn:claimed-but-unsent',kind:'turn',payload:{}});
+db.query("INSERT INTO runner_attempts(attempt_id,job_id,runner,epoch,state,lease_expires_at_ms,started_at_ms) VALUES (?,?,?,?,?,?,?)")
+  .run('binding-unsent','turn:claimed-but-unsent','other',1,'expired',401,401);
+assert.deepEqual(acknowledgedProviderRunner(db,session),{status:'found',runner:null},
+  'A runner claim alone does not move a conversation whose input never reached the provider.');
+addTurn(5,true);addExecution('missing-lease',5,'runner','lost',500);
+assert.throws(()=>acknowledgedProviderRunner(db,session),/exact runner lease is unavailable/,
+  'An acknowledged runner turn with missing custody cannot be guessed from an older machine.');
+db.query('DELETE FROM turns WHERE provider_input_acknowledged_at IS NOT NULL').run();
+assert.deepEqual(acknowledgedProviderRunner(db,session),{status:'missing'});
+console.log('provider machine binding: acknowledged custody survives trailing unsent attempts');

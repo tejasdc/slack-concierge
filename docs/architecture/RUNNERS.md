@@ -146,6 +146,12 @@ What happens for a turn on a runner:
    environment is not in the job.
 2. A turn bound to a runner carries that runner's name in its queued job. The lease engine only
    offers it to that runner, so a later turn cannot move away from its account and transcript.
+   For a legacy conversation without a saved runner binding, the owner recovers its machine from
+   the newest execution whose input the provider acknowledged. An unclaimed or unacknowledged
+   launch intent is not evidence that the conversation moved. The recovered machine is then saved
+   with the session before the next launch; missing or incomplete acknowledged custody refuses
+   the launch rather than selecting today's configured runner. The owner uses this same evidence
+   when locating the session's project.
    The owner's `CONCIERGE_TURN_RUNNER` names the current Claude target; the Codex relay target is
    configured independently. A runner claims it within two minutes (`CONCIERGE_RUNNER_CLAIM_MS`), or the owner withdraws the
    still-queued job in one statement. The ordinary claim-timeout path parks the turn for custody
