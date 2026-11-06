@@ -53,6 +53,12 @@ checks, never private content. A fresh run of the same isolated check passing do
 establish why an earlier candidate timed out; compare its last marker with the host's
 resources before changing the gate's deadline or candidate behavior.
 
+The serving coordinator records the start and elapsed time of each request-surface stop during
+SIGTERM. For a long `verifying` interval, compare `service_drain_surface_stopping` and
+`service_drain_surface_stopped` in `concierge-bot.service`'s journal with the deployment run's
+`verifying` and `releasing` events. A release can wait for active provider work while the old
+service is still serving; the duration of the whole release is not the duration of the restart.
+
 The stable controller launcher resolves its control artifact once for each invocation.
 Restoring or promoting the control pointer cannot switch a running deployment's helper
 programs midway through the run; the following invocation takes the new artifact.
