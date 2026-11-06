@@ -268,8 +268,23 @@ export function sessionInputProvenance(input:AcceptedSessionInput) {
       const peer=request?null:current.kind==='request'?db.query('SELECT payload_json FROM session_peer_requests WHERE request_id=? AND source_session_id=? AND source_input_id=? AND source_turn_id=?')
         .get(current.request_id,current.session_id,parent.id,parent.turn_id) as {payload_json:string}|null:null;
       if(!request&&!peer)break;
-      const effect=JSON.parse((request??peer)!.payload_json).requestedEffect??'informational';
+      const details=JSON.parse((request??peer)!.payload_json);
+      const effect=details.requestedEffect??'informational';
       effectScope=effectScope==='informational'||effect!=='work'?'informational':'work';
+      // The owner may retain an earlier, still-open work input as the authority for an ask
+      // made from a later informational wake. Preserve the ask's actual source identity, but
+      // derive its delegated scope and human lineage from that exact work input.
+      if(effect==='work'&&typeof details.authorityInputId==='string'){
+        const grant=getAcceptedSessionInput(details.authorityInputId);
+        if(grant?.session_id===parent.session_id&&grant.id!==parent.id){
+          const granted=sessionInputProvenance(grant);
+          if(granted?.effectScope!=='informational'){
+            effectScope='work';human=granted?.originatingHuman??(humanAuthored(grant)
+              ?{inputId:grant.id,runId:grant.turn_id?nativeRunId(grant.turn_id):'',sessionId:`concierge:${grant.session_id}`}:null);
+            break;
+          }
+        }
+      }
     }
     const routedParent=routedHuman(parent);
     if(routedParent){human=routedParent;break;}

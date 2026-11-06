@@ -500,6 +500,8 @@ The session action `clear-queue` settles the same human waiting messages without
 it is used to recover a queue that remained after an older Stop. It does not continue a paused
 session or change any original input text.
 
+### Forwarded input provenance
+
 Forwarded input receipts and provider identity headers may include owner-resolved
 `provenance:{source:{inputId,runId,sessionId},requestId,effectScope,originatingHuman}`.
 `originatingHuman` is null when unproven, otherwise `{inputId,runId,sessionId,captureId?}`;
@@ -507,6 +509,14 @@ the optional capture ID identifies retained Inbox custody. The owner follows ret
 source/run links and exact communication request records, never text claims.
 `effectScope` is informational/work or null, and a delegated informational request
 cannot widen to work. This is task provenance, not a new grant of human authority.
+When a session still holds an open, delivered work request, a later informational wake
+does not revoke that existing grant. A work ask made during that wake retains the wake's
+actual source input and run, plus the exact earlier work input used as its authority.
+The receiver's provenance follows that retained authority link for scope and original
+human attribution. The owner checks that the work input belongs to the same session,
+was handed to a run, remains open, and itself has work scope before accepting the ask.
+Once the original request closes, that authority cannot support another ask. A session
+holding only informational requests remains information-only.
 The forwarded input's `origin` remains agent/service. Ordinary develop-session messages
 need no workspace selection or work intent; only explicitly confirmed context is shared.
 
