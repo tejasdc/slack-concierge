@@ -44,6 +44,7 @@ import {
   OwnerDrainBeforeProviderAdmissionError,
 } from "./provider-failures";
 import {queueTurnContinuation} from './session-inputs';
+import {forgetHostedExecution} from './executions';
 import { ChatGptDispatchError } from './session-capability-client';
 import type { AgentProvider } from "./providers";
 import { slackCall } from "./rate-limit";
@@ -59,6 +60,7 @@ import {
   cancelRunningTurnAndReleaseSession,
   createTurnArtifactBatch,
   ensureSlackThreadStatusMessage,
+  executionChanged,
   failRunningTurnAndReleaseSession,
   findLegacySlackThreadStatusMessage,
   finishDeliveredTurn,
@@ -1253,13 +1255,19 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     if (preserveDispatchFailure && input.presentation === 'native'
       && error instanceof OwnerDrainBeforeProviderAdmissionError
       && requeueOrphanedPreAdmissionTurn(input.turnId,input.ownerInstanceId)) {
+      // The exact input is queued and no provider was admitted; a pending release or
+      // allowance-boundary cancellation has no running provider left to stop.
+      input.cancellationController?.resolveWithoutProviderCancellation();
       await progressController?.pauseForRetry();
       await statusController?.stop();
       log('info','codex_readiness_requeued_on_owner_drain',{turn_id:input.turnId,dispatch_attempt:dispatchAttempt});
       return {status:'retry_queued',turnId:input.turnId};
     }
-    if (preserveDispatchFailure && input.presentation === 'native'
-      && requeueWithdrawnRunnerTurn(input.turnId,input.ownerInstanceId,dispatchAttempt)) {
+    const withdrawnExecutionId = preserveDispatchFailure && input.presentation === 'native'
+      ? requeueWithdrawnRunnerTurn(input.turnId,input.ownerInstanceId,dispatchAttempt) : null;
+    if (withdrawnExecutionId) {
+      forgetHostedExecution(withdrawnExecutionId);
+      executionChanged();
       await progressController?.pauseForRetry();
       await statusController?.stop();
       log('info','runner_turn_requeued_unsent',{turn_id:input.turnId,dispatch_attempt:dispatchAttempt});

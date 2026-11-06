@@ -41,6 +41,7 @@ export class TurnCancellationController {
   private completion: Promise<void> | null = null;
   private resolveCompletion: (() => void) | null = null;
   private rejectCompletion: ((error: Error) => void) | null = null;
+  private drainMayCancel: (() => boolean) | null = null;
 
   register(cancel: () => Promise<void>) {
     if (this.cancel || this.dispatched) return;
@@ -49,6 +50,29 @@ export class TurnCancellationController {
   }
 
   request() {
+    // A person's Stop overrides an earlier release-only request.
+    this.drainMayCancel = null;
+    return this.requestInternal();
+  }
+
+  requestForDrain(mayCancel: () => boolean) {
+    if (this.requested) return this.completion ?? Promise.resolve();
+    this.drainMayCancel = mayCancel;
+    return this.requestInternal();
+  }
+
+  resolveWithoutProviderCancellation() {
+    if (!this.requested || this.dispatched) return;
+    this.requested = false;
+    this.drainMayCancel = null;
+    const resolve = this.resolveCompletion;
+    this.completion = null;
+    this.resolveCompletion = null;
+    this.rejectCompletion = null;
+    resolve?.();
+  }
+
+  private requestInternal() {
     this.requested = true;
     this.waitForTools = false;
     if (!this.completion) {
@@ -62,6 +86,7 @@ export class TurnCancellationController {
   }
 
   requestAtSafePoint() {
+    this.drainMayCancel = null;
     this.requested = true;
     this.waitForTools = true;
     if (!this.completion) {
@@ -87,6 +112,12 @@ export class TurnCancellationController {
 
   close(reason = new Error("The turn ended before provider cancellation was available.")) {
     if (!this.requested || this.dispatched) return;
+    // A release only needs to stop work still owned by this dispatch. Settlement
+    // ends that obligation even if no provider callback was ever registered.
+    if (this.drainMayCancel) {
+      this.resolveWithoutProviderCancellation();
+      return;
+    }
     this.rejectCompletion?.(reason);
     this.resolveCompletion = null;
     this.rejectCompletion = null;
@@ -94,6 +125,11 @@ export class TurnCancellationController {
 
   private dispatch() {
     if (!this.requested || !this.cancel || this.dispatched || this.waitForTools && this.activeTools.size>0) return;
+    if (this.drainMayCancel && !this.drainMayCancel()) {
+      this.resolveWithoutProviderCancellation();
+      return;
+    }
+    this.drainMayCancel = null;
     this.dispatched = true;
     const cancel = this.cancel;
     this.cancel = null;
@@ -197,6 +233,16 @@ export class ActiveTurnDispatchRegistry {
     const target = this.sessions.get(sessionId);
     if (!target || target.turnId !== turnId) return { matched: false };
     return { matched: true, completion: target.cancellation.request() };
+  }
+
+  requestSessionDrainCancellation(
+    sessionId: number,
+    turnId: number,
+    mayCancel: () => boolean,
+  ): { matched: false } | { matched: true; completion: Promise<void> } {
+    const target = this.sessions.get(sessionId);
+    if (!target || target.turnId !== turnId) return { matched: false };
+    return { matched: true, completion: target.cancellation.requestForDrain(mayCancel) };
   }
 
   requestSessionStop(sessionId: number, turnId: number): { matched: false } | { matched: true; completion: Promise<void> } {

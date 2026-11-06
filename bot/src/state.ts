@@ -4242,7 +4242,7 @@ export function requeueOrphanedPreAdmissionTurn(
 }
 
 /** A withdrawn runner launch is proof of no provider admission even though intent was recorded. */
-export function requeueWithdrawnRunnerTurn(turnId: number, ownerInstanceId: string, dispatchAttempt: number): boolean {
+export function requeueWithdrawnRunnerTurn(turnId: number, ownerInstanceId: string, dispatchAttempt: number): string | null {
   return db.transaction(() => {
     const row = db.query(`SELECT turn.session_id, turn.projection_mode, turn.progress_stream_state,
         turn.progress_stream_ts, execution.execution_id
@@ -4265,14 +4265,14 @@ export function requeueWithdrawnRunnerTurn(turnId: number, ownerInstanceId: stri
           WHERE turn_id=turn.id AND status<>'collecting')`)
       .get(turnId,ownerInstanceId,dispatchAttempt,ownerInstanceId,OWNER_DRAIN_WITHDRAWAL_REASON) as {session_id:number;projection_mode:string;
         progress_stream_state:string;progress_stream_ts:string|null;execution_id:string}|null;
-    if(!row||turnHasAmbiguousAgentProgressStart(turnId))return false;
+    if(!row||turnHasAmbiguousAgentProgressStart(turnId))return null;
     const changed=db.query(`UPDATE turns SET status='queued',owner_instance_id=NULL,
       provider_admission_intended_at=NULL,dispatch_failure_class=NULL,dispatch_next_attempt_ms=0,
       agent_text=NULL,ended_at=NULL,status_projection_status='not_needed',
       status_projection_error=NULL,status_projection_attempts=0,status_projection_next_attempt_ms=0
       WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?`)
       .run(turnId,ownerInstanceId,dispatchAttempt).changes;
-    if(changed!==1)return false;
+    if(changed!==1)return null;
     db.query("UPDATE executions SET state='lost',detail='runner job withdrawn before claim',updated_at_ms=? WHERE execution_id=?")
       .run(Date.now(),row.execution_id);
     if(row.projection_mode==='agent'&&row.progress_stream_state==='starting'&&!row.progress_stream_ts){
@@ -4283,7 +4283,7 @@ export function requeueWithdrawnRunnerTurn(turnId: number, ownerInstanceId: stri
     db.query("UPDATE sessions SET status=CASE WHEN status='archived' THEN status ELSE 'idle' END WHERE id=?")
       .run(row.session_id);
     turnFactChanged(turnId,'queued');
-    return true;
+    return row.execution_id;
   })();
 }
 

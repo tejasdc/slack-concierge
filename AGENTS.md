@@ -57,7 +57,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   and [durable watches](docs/architecture/WATCHES.md).
 - Project creation validates organizer placement in the owner ledger and performs scaffold and
   GitHub work as a replay-safe job on the configured project runner. See [runners](docs/architecture/RUNNERS.md).
-- Hosted run adoption and parked-run recovery follow the
+- Hosted run adoption, parked-run recovery, and shutdown custody decisions follow the
   [execution host](docs/architecture/EXECUTION-HOST.md) contract; never reset their ledger status by hand.
 - Outside Codex repair sessions use a one-input command line and take follow-ups
   in the next turn; see [router actions](docs/runbooks/ROUTER-ACTIONS.md#outside-requests).

@@ -1075,6 +1075,18 @@ the `capture_delivery` drain-step duration before attributing an unmarked pause
 to cancellation. Delivery acknowledgment remains awaited to preserve its exact
 receipt.
 
+The server's local-turn drain decision uses the open hosted-execution records already
+mirrored by its active dispatches. The 2026-11-06 08:13 release spent 3.841 seconds
+preparing a ledger statement for that decision after closing request surfaces, even
+though the installed index and query plan were correct. Keeping the exact custody
+classification current as execution records change removes that ledger read from the
+offline interval. The next coordinator still reads the durable records when adopting
+those turns. Mac shutdown rechecks hosted custody when its pending release cancellation
+actually reaches a provider. Turns still preparing when drain starts are returned to
+their exact queue position before cancellation is considered complete; a person's Stop
+remains a separate, stronger request. Fresh hosted provider admission is checked after the
+durability wait, before any hosted execution intent is retained.
+
 The unit starts the already-installed managed Codex App Server if it is absent,
 but ordinary deployment and autonomous repair never update, stop, or restart
 that daemon. See [Codex App Server lifecycle](CODEX-APP-SERVER.md).

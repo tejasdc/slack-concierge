@@ -420,7 +420,20 @@ alert enters the standing Repair agent queue through the allowlisted Grafana con
 the alert's browser count is evidence to investigate, not proof a live browser is orphaned.
 
 Server (`drainAndStop`) waits only for turns that end with the process (`turnsThatEndWithThisProcess`)
-and exits; the Mac composition does not cancel hosted turns. Until the update gate is removed (design
+and exits; the Mac composition does not cancel hosted turns. Each active native dispatch seeds
+its in-process view of open execution records before running, and successful intent, loss and
+release writes update that view. Shutdown reads this view instead of preparing a new ledger
+statement after request surfaces close. The ledger remains authoritative for adoption by the
+next coordinator; the view is rebuilt for each adopted dispatch. The Mac stop checks that
+view separately for each turn before cancellation because another turn can gain hosted
+custody while an earlier cancellation is awaited. A release cancellation also rechecks
+custody when the provider callback becomes available; a real Stop retains priority. Fresh
+hosted provider admission is fenced after the durability wait, so a turn still preparing when
+drain begins can return its exact unsent input to the queue. A pending cancellation
+completes once that requeue commits. Adopted outside runs use their recorded runner
+supervisor when reconnecting. Held-host probes and deferred adoption
+also recheck drain after their awaits, leaving already claimed work for the next
+coordinator once this one exits. Until the update gate is removed (design
 step 7) the deployment still waits for idle, so this matters for restarts outside deployments now and
 for every update after step 7.
 
