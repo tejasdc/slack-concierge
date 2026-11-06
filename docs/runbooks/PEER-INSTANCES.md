@@ -46,6 +46,32 @@ presentation protocol on both peers and observing a refresh, sleep and wake on t
 
 ## Install or update the Mac instance
 
+The Mac speech listener also owns a bounded read-only voice process observer. Its existing
+launchd job samples the listener's Bun process, Apple speech engine and signed launcher, plus
+WebContent children of the installed thnkr.ing Safari Web App. Each reading uses
+`proc_pid_rusage(RUSAGE_INFO_V0)` for cumulative CPU time, current physical footprint and
+process birth time. A 20-sample, 15-second pre-event ring stays in memory. A natural speech
+`begin` starts two-second samples for at most 120 seconds, then 30 seconds after finish/cancel;
+at most four events coexist. The latest four bounded event records live in the private
+`~/Library/Application Support/concierge/speech/voice-process-events.json`. They hold no
+audio or words. CPU use for an interval is the delta of cumulative user plus system nanoseconds
+for the same PID and birth identity divided by the sample interval; never join different births.
+Older `begin` callers remain valid and have unknown mode and page session ID.
+
+The observer names a page renderer only when the Web App's own WebKit main-frame commit and
+close logs leave one live page proxy, `launchctl print pid/<Web App PID>` still lists that
+WebContent child, its birth identity matches the process reading, and no service-worker-only
+log has ever named that PID in the bounded log window. Missing logs, a renderer older than the
+30-minute log window, multiple pages or reused service-worker processes produce unknown.
+The request's optional mode and page session ID are correlation hints, not independent proof
+of a renderer. Browser network routing may prevent proof that the process making a loopback
+request is that renderer, so this is a conservative Web App page candidate rather than a
+claim about all browser processes. `GET /speech/v1/observer/status` on the existing loopback
+listener reports active recording count, ring size and latest sampling overhead without words.
+The Mac updater builds the one-shot native reader from `bot/native/process-footprint.c` and
+defers a speech-listener restart while a recording or its decoder is active; the existing
+`com.tejasdc.concierge-autoupdate` watcher retries on its next pass.
+
 ```sh
 cd ~/workspace/slack-concierge && git pull --ff-only && scripts/install-mac.sh
 ```
