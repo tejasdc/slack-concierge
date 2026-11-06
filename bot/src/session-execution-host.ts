@@ -218,7 +218,7 @@ export class SessionExecutionHost {
   // How the last sign-in that finished on its own ended, for the screen that waited on it.
   private readonly lastSignIn=new Map<ProviderKey,{ok:boolean;detail:string|null}>();
   private readonly runnerSignIns=new Map<ProviderKey,RunnerSignInState>();
-  constructor(readonly options:{instanceId:string;registry:ActiveTurnDispatchRegistry;providers:Partial<Record<ProviderId,AgentProvider>>;defaultCwd:string;wake():void;history?:SessionOwnerRuntime['history'];sources?:SessionOwnerRuntime['sources'];capabilitySocket?:string;capabilityClient?:SessionCapabilityClient;findForks?(pin:NativeForkPin):Promise<string[]>;providerSessionBound?(providerThreadUuid:string):Promise<void>;claudeAuthRefreshCommand?:string}) {
+  constructor(readonly options:{instanceId:string;registry:ActiveTurnDispatchRegistry;providers:Partial<Record<ProviderId,AgentProvider>>;defaultCwd:string;wake():void;history?:SessionOwnerRuntime['history'];sources?:SessionOwnerRuntime['sources'];capabilitySocket?:string;capabilityClient?:SessionCapabilityClient;thesaurusContext?:(text:string)=>Promise<string>;findForks?(pin:NativeForkPin):Promise<string[]>;providerSessionBound?(providerThreadUuid:string):Promise<void>;claudeAuthRefreshCommand?:string}) {
     for(const provider of ['codex','claude-code'] as const)if(providerRunnerTarget(provider))setRunnerAccountInUse(provider,null);
     for(const provider of ['codex','claude-code'] as const){
       const pending=pendingRunnerSignIn(provider);
@@ -1477,7 +1477,7 @@ export class SessionExecutionHost {
       if(nativeContext&&!adoption) {
         const runId=nativeRunId(claim.turn_id);
         // His meanings for his own terms in these words, so no agent guesses at one (thesaurus-context.ts).
-        const thesaurus=await thesaurusTurnContext(prompt);
+        const thesaurus=await (this.options.thesaurusContext??thesaurusTurnContext)(prompt);
         canvasApplicationContext=canvasSpeechApplicationContext(input,runId,session.id);
         if(canvasApplicationContext)canvasApplicationContext=`${canvasApplicationContext}\n\n${thesaurus}`;
         else {
