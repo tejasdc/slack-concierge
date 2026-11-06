@@ -347,8 +347,15 @@ The owner keeps one in-memory index of every Inbox message and its thread root
 (`entryIndex` in `session-topics.ts`), built once per process and extended only over new
 rows. After a restart it is filled by `warmEntryIndex` in bounded steps that yield the
 owner between them, started once the owner is online in both runtime compositions, and
-logged as `inbox_entry_index_warmed`; a read or human action that arrives before the warm
-finishes completes only what is left. Before this (2026-10-12) the whole build ran inside
+logged as `inbox_entry_index_warmed`. Before constructing a new Inbox provider prompt or
+follow-up, the dispatch path waits asynchronously for that yielding warm-up to finish. The
+accepted input keeps its identity and durability fence; the owner can serve other requests
+between warm-up steps. General topic reads and actions that arrive first still finish the
+remaining index synchronously. On 2026-11-06, a prompt arriving during restart warm-up had
+forced 115,370 ledger calls and an 18.5-second owner-loop block; the installed statement
+observer measured about two million read calls in its longest sampled statement. This
+change removes that synchronous prompt-path join, not the cost of the index build itself.
+Before the original warm-up (2026-10-12) the whole build ran inside
 whichever read came first after each restart, which was his first tap on a thread: about
 3 s and 157 MB inside that action's own write transaction, with every other read behind
 it; see [the incident](../incidents/2026-10-12-thread-index-rebuilt-in-his-first-tap.md).

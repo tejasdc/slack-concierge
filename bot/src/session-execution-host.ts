@@ -98,7 +98,7 @@ import {thinkAloudInstructions} from './think-aloud-instructions';
 import {INBOX_INSTRUCTIONS,markResultAnsweredByPost,minutesText,pebbleArrivalWaitMs,relayUnpostedAnswer} from './session-inbox';
 import {readClaudeCachedMessage,readCodexHistoryMessage,readClaudeHistory,readCodexHistory} from './provider-history';
 import {ProviderHistoryPageClient} from './provider-history-page-client';
-import {ATTENTION_INSTRUCTION,releaseFocusForPost,settleExitedProcessReport,topicPromptContext} from './session-topics';
+import {ATTENTION_INSTRUCTION,releaseFocusForPost,settleExitedProcessReport,topicPromptContext,warmEntryIndex} from './session-topics';
 import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,reservePendingRunnerSignIn,clearPendingSignIn,pendingRunnerSignIn} from './state';
 import {log,errorFields} from './log';
 import {attachedRecordingWords,transcriptionPrompt} from './transcription';
@@ -1094,9 +1094,12 @@ export class SessionExecutionHost {
         // of showing it queued until their next periodic check.
         const deliveryChanged=(state:'sent'|'ambiguous'|'failed')=>recordSessionEvent({eventId:steeringAttemptEventId(`delivery:${input.id}:${state}`,input.id,steeringId),
           sessionId:input.session_id,inputId:input.id,turnId:target.turnId,kind:'delivery',payload:{state}});
-        const accepted=target.controller.enqueue({clientMessageId:input.id,text:this.prompt(attached),
+        // prepareText always supplies the actual provider words. Preparing them here would
+        // synchronously finish the Inbox history index before the message even enters its queue.
+        const accepted=target.controller.enqueue({clientMessageId:input.id,text:'',
           prepareText:async root=>{
             const attachments=this.owner.attachments(body.attachments);
+            if(sessionMetadata(session).inbox)await warmEntryIndex();
             let text=this.prompt(attached);
             if(attachments.length) {
               if(!root)throw new Error('The active turn has no owned attachment root.');
@@ -1462,6 +1465,7 @@ export class SessionExecutionHost {
     const attachments=this.owner.attachments(payload.attachments);
     // An adopted run continues exactly what was started: the same words, files and folders, never
     // a re-preparation that could differ from what the agent already read.
+    if(!adoption&&metadata.inbox)await warmEntryIndex();
     let prompt=adoption?String(adoption.processor.replayPrompt):this.prompt(input),staging:string|null=adoption?.processor.staging??null;
     const additionalDirs=adoption?[...adoption.processor.runAdditionalDirs as string[]]:[...(metadata.additionalDirs??parseAdditionalPaths(channel))];
     // A new Claude turn may run on a runner machine (RUNNERS.md, "Turns on a runner"): it then
