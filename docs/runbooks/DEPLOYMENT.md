@@ -58,6 +58,12 @@ SIGTERM. For a long `verifying` interval, compare `service_drain_surface_stoppin
 `service_drain_surface_stopped` in `concierge-bot.service`'s journal with the deployment run's
 `verifying` and `releasing` events. A release can wait for active provider work while the old
 service is still serving; the duration of the whole release is not the duration of the restart.
+When the server owner stops, peer request status and reply reads are canceled before it waits
+for its request workers. The exact request and reply identities remain in its ledger for the
+next owner to reconcile; a peer admission POST is never canceled on the assumption that it did
+not arrive. This keeps a sleeping Mac from holding Concierge's server shutdown through the
+peer read deadline. The foreground request gateway still becomes unavailable at stop start,
+so compare that timestamp with the final request-surface stop marker to measure the actual gap.
 
 The stable controller launcher resolves its control artifact once for each invocation.
 Restoring or promoting the control pointer cannot switch a running deployment's helper
