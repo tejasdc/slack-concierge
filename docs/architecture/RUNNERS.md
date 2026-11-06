@@ -526,6 +526,9 @@ private repository and commit; it never overwrites a different remote history. T
 queued if its runner is away; transient completed failures get a fresh lease job identity while
 reusing the same order and staging folder. The runner's `gh` identity and availability are required
 for project creation, while organizer proof and project-creation records remain owner-ledger facts.
+Network Git calls keep system and global Git configuration disabled, but explicitly use the runner's
+signed-in GitHub CLI credential helper. If `gh repo create --push` creates the private repository
+before its push fails, the retry verifies the exact repository and staged origin before pushing again.
 
 Peer project placement is a separate replay-safe `project-place` runner job. The owner validates and
 retains the peer's original placement order, then sends only its order identity, project name,
