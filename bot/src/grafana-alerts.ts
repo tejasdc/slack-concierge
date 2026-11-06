@@ -167,12 +167,6 @@ export class GrafanaAlerts {
       WHERE status='firing' ORDER BY starts_at LIMIT 500`).all() as Pick<GrafanaAlertRow, "fingerprint" | "condition" | "starts_at" | "revision" | "delivery_status" | "channel">[];
   }
   /**
-   * Grafana retries a refused notification only briefly and never resends a recovery, so a
-   * recovery lost while this receiver refused deliveries would leave the episode firing forever.
-   * The outside reconciler reads Grafana's own state history and submits the recovery Grafana
-   * recorded; it is applied exactly as a delivered resolved notification would be.
-   */
-  /**
    * Alertmanager deduplicates by the set of firing fingerprints, so when a recovery is lost and the
    * same alert fires again it sends nothing new until its repeat interval (a day here). The outside
    * reconciler submits the episode Grafana's Alertmanager currently holds; it is applied exactly as
@@ -202,6 +196,12 @@ export class GrafanaAlerts {
       starts_at: current.starts_at, revision: current.revision, rule_uid: input.ruleUid });
     return { status: 200, outcome: "firing_settled", starts_at: current.starts_at, revision: current.revision };
   }
+  /**
+   * Grafana retries a refused notification only briefly and never resends a recovery, so a
+   * recovery lost while this receiver refused deliveries would leave the episode firing forever.
+   * The outside reconciler reads Grafana's own state history and submits the recovery Grafana
+   * recorded; it is applied exactly as a delivered resolved notification would be.
+   */
   reconcileRecovery(input: GrafanaRecoveryEvidence): GrafanaRecoveryResult {
     const startsAt = isoInstant(input.startsAt), endsAt = isoInstant(input.endsAt);
     if (typeof input.fingerprint !== "string" || !/^[a-f0-9]{16,64}$/.test(input.fingerprint)
