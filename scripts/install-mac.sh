@@ -258,13 +258,18 @@ launchctl kickstart -k "gui/$(id -u)/$LABEL"
 echo "Concierge (mac) started: state $STATE, peer listener $TAILNET_IP:8788, logs $STATE/logs/"
 
 if [ -n "$speech_revision" ] && [ "$speech_revision" != "$installed_speech_revision" ]; then
-  speech_active=$(curl -fsS --max-time 2 -H 'Origin: https://thnkr.ing' "http://127.0.0.1:8790/speech/v1/observer/status" 2>/dev/null || true)
+  speech_response=$(curl -sS --max-time 2 -w ' %{http_code}' -H 'Origin: https://thnkr.ing' "http://127.0.0.1:8790/speech/v1/observer/status" 2>/dev/null || true)
+  speech_status=${speech_response##* }
+  speech_body=${speech_response% *}
   # Before this endpoint is installed, a live recording always has an ffmpeg child of the
   # listener's Bun process. Unknown status plus a decoder means leave speech running.
   speech_decoder=$(ps -axo pid=,ppid=,comm= | awk '$3 ~ /(^|\/)ffmpeg$/ { print $2 }' | while read -r parent; do
     ps -p "$parent" -o args= 2>/dev/null | grep -q 'live-speech-service.ts' && echo active
   done | head -1 || true)
-  if [ -z "$speech_decoder" ] && { [[ "$speech_active" == *'"activeOperations":0'* ]] || [ -z "$speech_active" ]; }; then
+  if [ -z "$speech_decoder" ] && {
+    { [ "$speech_status" = 200 ] && [[ "$speech_body" == *'"activeOperations":0'* ]]; } ||
+    { [ "$speech_status" = 404 ] && [[ "$speech_body" == *'"error":"SPEECH_NOT_FOUND"'* ]]; }
+  }; then
     launchctl bootout "gui/$(id -u)/$SPEECH_LABEL" 2>/dev/null || true
     for _ in $(seq 1 30); do launchctl print "gui/$(id -u)/$SPEECH_LABEL" >/dev/null 2>&1 || break; sleep 1; done
     launchctl bootstrap "gui/$(id -u)" "$SPEECH_PLIST"

@@ -57,6 +57,8 @@ at most four events coexist. The latest four bounded event records live in the p
 audio or words. CPU use for an interval is the delta of cumulative user plus system nanoseconds
 for the same PID and birth identity divided by the sample interval; never join different births.
 Older `begin` callers remain valid and have unknown mode and page session ID.
+`endedAt` means the recording actually finished or was cancelled. If the 120-second observation
+limit arrives first, the record has `cutoffAt` and no `endedAt`; the limit is not a speech stop.
 
 The observer names a page renderer only when the Web App's own WebKit main-frame commit and
 close logs leave one live page proxy, `launchctl print pid/<Web App PID>` still lists that
@@ -69,7 +71,9 @@ request is that renderer, so this is a conservative Web App page candidate rathe
 claim about all browser processes. `GET /speech/v1/observer/status` on the existing loopback
 listener reports active recording count, ring size and latest sampling overhead without words.
 The Mac updater builds the one-shot native reader from `bot/native/process-footprint.c` and
-defers a speech-listener restart while a recording or its decoder is active; the existing
+defers a speech-listener restart while a recording or its decoder is active. An unavailable or
+malformed observer status also defers it; only the prior listener's explicit 404
+`SPEECH_NOT_FOUND` can use the decoder-only fallback. The existing
 `com.tejasdc.concierge-autoupdate` watcher retries on its next pass.
 
 ```sh

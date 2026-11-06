@@ -17,7 +17,7 @@ let last: Sample | undefined;
 
 type ProcessReading = { pid: number; birthAbstime: number; userNs: number; systemNs: number; physicalBytes: number; path: string };
 type Sample = { at: string; elapsedMs: number; helper: ProcessReading | null; engine: ProcessReading | null; launcher: ProcessReading | null; shell: ProcessReading | null; children: ProcessReading[]; error?: string };
-type VoiceEvent = { id: string; mode: "dictation" | "canvas_voice" | "think_aloud" | "unknown"; pageSessionId: string | null; beganAt: string; endedAt?: string; page: { pid: number; birthAbstime: number; evidence: string } | null; attribution: string; samples: Sample[]; deadline: number; afterUntil?: number };
+type VoiceEvent = { id: string; mode: "dictation" | "canvas_voice" | "think_aloud" | "unknown"; pageSessionId: string | null; beganAt: string; endedAt?: string; cutoffAt?: string; page: { pid: number; birthAbstime: number; evidence: string } | null; attribution: string; samples: Sample[]; deadline: number; afterUntil?: number };
 
 async function command(file: string, args: string[], timeout = 1500) {
   const answer = await exec(file, args, { timeout, maxBuffer: 512 * 1024 });
@@ -118,7 +118,7 @@ async function tick() {
       if (event.samples.length > 100) event.samples.shift();
       if (now < (event.afterUntil ?? event.deadline)) continue;
       events.delete(id);
-      event.endedAt ??= new Date().toISOString();
+      if (now >= event.deadline) event.cutoffAt = new Date().toISOString();
       void persist(event).catch(() => {});
     }
     if (!events.size && eventTimer) { clearInterval(eventTimer); eventTimer = undefined; }
@@ -151,6 +151,6 @@ export const macVoiceObserver = {
       event.attribution = answer.attribution;
     })().catch(() => { event.attribution = "observer_error"; });
   },
-  end(id: string) { const event = events.get(id); if (event) event.afterUntil = Math.min(Date.now() + 30_000, event.deadline); },
+  end(id: string) { const event = events.get(id); if (event) { event.endedAt = new Date().toISOString(); event.afterUntil = Math.min(Date.now() + 30_000, event.deadline); } },
   status() { return { activeEvents: events.size, ringSamples: pre.length, lastSampleAt: last?.at ?? null, lastSampleElapsedMs: last?.elapsedMs ?? null, lastPageAttribution: [...events.values()].at(-1)?.attribution ?? null }; },
 };
