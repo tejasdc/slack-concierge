@@ -1714,7 +1714,8 @@ export class SessionExecutionHost {
   private adoptedOutsideRun(prepared:Parameters<AgentProvider['run']>[0],adoption:Adoption):Parameters<AgentProvider['run']>[0] {
     const stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!);
     return {...prepared,...adoption.processor.run,adopted:true,
-      transport:this.hostedTransport(adoption.mode,adoption.execution.execution_id,stateDir,'/bin/sh',{inactivityMs:null})} as any;
+      transport:this.hostedTransport(adoption.mode,adoption.execution.execution_id,stateDir,'/bin/sh',{inactivityMs:null},
+        adoption.execution.supervisor===RUNNER_SUPERVISOR?[]:undefined)} as any;
   }
   /** Follow the daemon's turn by its exact thread and turn; never start one (design §4.2). */
   private adoptedCodexRun(prepared:Parameters<AgentProvider['run']>[0],adoption:Adoption,session:SessionRow):Parameters<AgentProvider['run']>[0] {
