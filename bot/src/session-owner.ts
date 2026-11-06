@@ -4052,7 +4052,8 @@ export class SessionOwner {
         if(claudeAllowanceHeld())throw new SessionOwnerError(CLAUDE_ALLOWANCE_HOLD_MESSAGE,409,'CLAUDE_ALLOWANCE_HELD');
         if(!this.runtime.auth?.chooseClaudeLaunch)throw new SessionOwnerError('Claude account selection is unavailable.',503);
         const model=url.searchParams.get('model');
-        if(model&&(!/^[A-Za-z0-9._-]{1,100}$/.test(model)))throw new SessionOwnerError('Invalid Claude model.',400);
+        // The alias table offers the one-million-token Opus as 'opus[1m]', so its suffix is a valid model.
+        if(model&&(!/^[A-Za-z0-9._-]{1,100}(\[1m\])?$/.test(model)))throw new SessionOwnerError('Invalid Claude model.',400);
         result={choice:this.runtime.auth.chooseClaudeLaunch(model)};
       }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='topics'&&parts.length===2){
@@ -4277,7 +4278,7 @@ export class SessionOwner {
         if(request.method==='GET'&&parts.length===2)result={operation:requestOperation(parts[1]!),events:this.communication.inspect(parts[1]!).events};
         else {
           object(body);const source={input_id:body.sourceInputId,run_id:body.sourceRunId};
-          if(request.method==='POST'&&parts.length===1){only(body,['clientActionId','sourceInputId','sourceRunId','targetAddress','targetProvider','effort','project','title','text','attachments','files','captureId','evidence','requestedEffect','afterRequestIds']);const accepted=await this.communication.ask({source,action_id:actionId(body),address:body.targetAddress,provider:body.targetProvider,effort:body.effort,project:body.project,title:body.title,text:inputText(body),after:body.afterRequestIds,attachments:body.attachments,files:body.files,captureId:body.captureId,evidence:body.evidence,requestedEffect:body.requestedEffect});result='request_id' in accepted?{operation:requestOperation(accepted.request_id)}:{answer:accepted};}
+          if(request.method==='POST'&&parts.length===1){only(body,['clientActionId','sourceInputId','sourceRunId','targetAddress','targetProvider','effort','project','title','text','attachments','files','captureId','evidence','requestedEffect','afterRequestIds','forTask','recoveryOf','correctionOf']);const accepted=await this.communication.ask({source,action_id:actionId(body),address:body.targetAddress,provider:body.targetProvider,effort:body.effort,project:body.project,title:body.title,text:inputText(body),after:body.afterRequestIds,attachments:body.attachments,files:body.files,captureId:body.captureId,evidence:body.evidence,requestedEffect:body.requestedEffect,for_task:body.forTask,recovery_of:body.recoveryOf,correction_of:body.correctionOf});result='request_id' in accepted?{operation:requestOperation(accepted.request_id)}:{answer:accepted};}
           else if(request.method==='POST'&&parts[2]==='replies'){only(body,['clientActionId','sourceInputId','sourceRunId','kind','text','evidence','workDisposition','attachments','files']);if(!['partial','final'].includes(body.kind))throw new SessionOwnerError('Reply kind must be partial or final.');await this.communication.reply({source,action_id:actionId(body),request_id:parts[1]!,text:replyText(body),final:body.kind==='final',workDisposition:body.workDisposition,evidence:body.evidence,attachments:body.attachments,files:body.files});result={operation:requestOperation(parts[1]!,'reply',body.sourceInputId,body.clientActionId)};}
           else if(request.method==='POST'&&parts[2]==='cancel'){only(body,['clientActionId','sourceInputId','sourceRunId','reason']);this.communication.cancel({source,action_id:actionId(body),request_id:parts[1]!,reason:body.reason});result={operation:requestOperation(parts[1]!)};}
           else throw new SessionOwnerError('Unknown request route.',404);
