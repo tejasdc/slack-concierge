@@ -212,11 +212,11 @@ export const offlineNote=(peer:string)=>`${peer} is offline — its sessions com
 /**
  * A peer's catalogue stores its prepared session card, not the full session view every reader
  * of a session expects. Where that card is all this instance knows of a session (the peer is
- * unreachable, or its archive matched first) it is presented as a session nothing here can act
+ * unreachable, or search itself returned only a card) it is presented as a session nothing here can act
  * on: every control explicitly unavailable, with why, never absent. thnkr.ing's Sessions search read the
  * missing control list of a sleeping Mac's session and failed the whole page (report c6513f14).
  */
-const catalogueOnlyView=(card:any,peer:string,availability:unknown,updatedAtMs:number)=>{const reason=`Known here only from the ${peer}'s last catalogue; its controls are on the ${peer}.`;return {
+const catalogueOnlyView=(card:any,peer:string,availability:unknown,updatedAtMs:number)=>{const reason=`Search has only a summary of this session; open it on the ${peer} to see its controls.`;return {
   activeRunId:null,latestRunId:null,nativeKey:null,nativeBinding:null,standingRole:null,handoff:null,generation:0,
   attention:{sessionId:card.id,actorId:'owner',readGeneration:0,dismissedGeneration:0,open:[]},withdrawnNeeds:[],backgroundWait:null,
   lineage:null,resurrection:null,resumeMachine:null,continuedAs:null,consultationSource:null,policyLabel:null,
@@ -420,7 +420,10 @@ export class SessionPeers {
     const merged=new Map<string,any>();
     const add=(result:any)=>{const id=result.session?.id;const prior=id?merged.get(id):null;
       if(prior){prior.evidence=[...prior.evidence,...(result.evidence??[])];if(result.session.execution)prior.session={...prior.session,...result.session};}
-      else merged.set(id??`local:${merged.size}`,{...result,evidence:[...(result.evidence??[])]});};
+      else merged.set(id??`local:${merged.size}`,{...result,evidence:[...(result.evidence??[])]});
+      const stored=id?merged.get(id):null;
+      const session=stored?.session;
+      if(session?.peer&&!session.capabilities)stored.session=catalogueOnlyView(session,session.peer,session.availability??this.availability(session.peer),Date.parse(session.updatedAt??'')||this.now());};
     for(const result of own.results as any[]){
       const session=result.session;
       if(session?.origin==='imported'){
