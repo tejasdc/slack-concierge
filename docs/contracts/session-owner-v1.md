@@ -651,7 +651,7 @@ failure is terminal. Orders do not expire. One live order exists per project and
 refusal, permanent failure or cancellation records a new attempt with a new order ID, because
 the receiver keeps a permanent failure as that order's final answer.
 
-Peer sessions in search results carry `availability:{state:"live"|"archived-only", reachable, note}`: `live` when the running peer confirmed the session, `archived-only` when this instance's transcript archive or the peer's last catalogue found it and the peer did not answer. A session is never omitted because its instance is offline. `coverage.peers` reports each peer's availability.
+Peer sessions in search results carry `availability:{state:"live"|"archived-only", reachable, note}`: `live` when the running peer confirmed the session, `archived-only` when this instance's transcript archive or the peer's last catalogue found it and the peer did not answer. A session is never omitted because its instance is offline. `coverage.peers` reports each peer's availability. A peer search can return a compact catalogue card even while that peer is live. Before returning any peer match, Concierge supplies the complete session-view shape; a card with no current control facts has every control explicitly unavailable with a reason. Opening the exact session fetches its current controls.
 
 Cross-instance session identities read `<peer>:<n>` in receipts, provenance and events
 (`request.targetSessionId`, `provenance.source.sessionId`); an instance's own sessions
