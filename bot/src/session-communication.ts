@@ -711,16 +711,23 @@ export class SessionCommunicationCoordinator {
             if(typeof kind==='string'&&kind&&kind!=='provider-renewal'){
                 const accepted=getAcceptedSessionInput(row.id);
                 const provenance=accepted?sessionInputProvenance(accepted):null;
+                const updateDelivery=db.query(`SELECT 1 FROM session_peer_deliveries
+                    WHERE target_input_id=? AND target_session_id=? AND request_id=?
+                      AND peer='cloud' AND origin_session_id='cloud:9118'
+                      AND origin_input_id=? AND origin_run_id=?
+                      AND requested_effect='work' AND closed_at_ms IS NULL`).get(
+                    row.id,running.session_id,MAC_UPDATE_REQUEST_ID,MAC_UPDATE_SOURCE_INPUT,MAC_UPDATE_SOURCE_RUN);
                 const updateAuthorization=process.platform==='darwin'&&kind==='mac-app'
                     &&provenance?.peer==='cloud'&&provenance.source?.sessionId==='cloud:9118'
                     &&provenance.source.inputId===MAC_UPDATE_SOURCE_INPUT
                     &&provenance.source.runId===MAC_UPDATE_SOURCE_RUN
                     &&provenance.requestId===MAC_UPDATE_REQUEST_ID
-                    &&provenance.effectScope==='work'
+                    &&!!updateDelivery
                     &&typeof need.why==='string'&&need.why.includes('535c73c7')
                     &&macUpdateSourceProven();
                 return {kind,why:typeof need.why==='string'?need.why:'',
-                    humanInputId:provenance?.originatingHuman?.inputId,effectScope:provenance?.effectScope,
+                    humanInputId:provenance?.originatingHuman?.inputId,
+                    effectScope:updateAuthorization?'work':provenance?.effectScope,
                     updateAuthorization};
             }
             // A renewal remains current while its exact accepted request is open in this

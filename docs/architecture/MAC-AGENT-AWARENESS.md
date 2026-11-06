@@ -127,6 +127,17 @@ installed update. The local Codex transcript is verified on the Mac at the tool
 boundary because that machine holds the original provider history and the app.
 This is an audit and cooperative-agent policy boundary, not protection against an
 agent able to rewrite its own host's transcript or installed guard.
+The build named in the request identifies the offer observed before the ask; it is
+not a promise that the app will install that exact build. thnkr.ing's page-local
+update contract can carry one tap to a newer server release within its two-minute
+attempt, while the old page alone decides when saved work permits reload. The Mac
+worker must observe the actual running build after the page opens.
+The fixed program invokes the app's ordinary Update now action once. That action
+checks unsaved drafts before beginning an install and shows a separate Update
+anyway choice when they exist; the guard never admits that second choice. The
+app's own reload guard also waits for recordings and unsaved work. Concierge
+does not infer that no unsaved work exists merely from AX text, and the Mac
+worker still inspects the page before invoking this program.
 
 The question gate accepts a device-only claim when its question names one action on a
 physical device. The agent first uses its available device route. If that route reaches
