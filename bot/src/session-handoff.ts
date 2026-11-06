@@ -76,11 +76,18 @@ function ledgerItems(sessionId:number):Item[] {
     WHERE i.session_id=? AND t.session_id=? AND t.status='queued' AND t.accepted_input_id=i.id ORDER BY t.id`).all(sessionId,sessionId) as any[]){
     // A request's target input is already represented by its owed item; it is still a queued
     // execution and is shown here so the successor can see whether it is safe to move.
-    items.push({id:`queued:${input.input_id}`,kind:'queued',ref:input.input_id,holder,turnId:input.turn_id,movable:safeTurn(input as WaitingTurn,getAcceptedSessionInput(input.input_id)!)});
+    const accepted=getAcceptedSessionInput(input.input_id)!;
+    items.push({id:`queued:${input.input_id}`,kind:'queued',ref:input.input_id,holder,turnId:input.turn_id,
+      movable:safeTurn(input as WaitingTurn,accepted),obsolete:closedThreadUpkeep(accepted)});
   }
   for(const watch of db.query("SELECT watch_id,state FROM watches WHERE session_id=? AND (state IN ('accepted','observing') OR delivery_state='pending') ORDER BY created_at_ms,watch_id").all(sessionId) as any[])
     items.push({id:`watch:${watch.watch_id}`,kind:'watch',ref:watch.watch_id,holder,state:watch.state});
   return items;
+}
+
+function closedThreadUpkeep(input:ReturnType<typeof getAcceptedSessionInput>):boolean {
+  if(!input||input.origin!=='service'||!input.id.startsWith('thread-upkeep:')||!input.request_id)return false;
+  return !!db.query("SELECT 1 FROM inbox_requests WHERE request_id=? AND state='closed'").get(input.request_id);
 }
 
 /**
@@ -253,7 +260,7 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
   const observed=await inventory(proposed.predecessor_session_id,{inputId:input.inputId,runId:input.runId});
   const current=inventoryLocalWithExternal(proposed.predecessor_session_id,observed),currentDigest=digest(current);
   if(input.digest!==currentDigest) return {accepted:false,handoffId:input.handoffId,inventory:current,digest:currentDigest,reason:'Inventory changed; acknowledge this exact digest.'};
-  if(current.items.some(item=>item.kind==='queued'&&!item.movable))
+  if(current.items.some(item=>item.kind==='queued'&&!item.movable&&!item.obsolete))
     return {accepted:false,handoffId:input.handoffId,inventory:current,digest:currentDigest,reason:'A queued input may have reached its provider or has dependencies. Let its exact outcome settle before accepting ownership.'};
   const result=db.transaction(()=>{
     const state=row(input.handoffId);if(!state||state.state!=='proposed')throw new Error('This handoff changed while it was being accepted.');
@@ -281,6 +288,17 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
           :db.query(`UPDATE ${table} SET target_session_id=?,target_input_id=? WHERE request_id=? AND target_session_id=? AND ${open}`)
             .run(to,movesInput?item.targetInputId:successorInputId,item.ref,from);
         if(changed.changes!==1)throw new Error(`Owed request ${item.ref} changed during handoff.`);record(item.kind,item.ref);
+      }else if(item.kind==='queued'&&item.obsolete){
+        const original=getAcceptedSessionInput(item.ref);
+        const turn=original?.turn_id?db.query('SELECT status,accepted_input_id FROM turns WHERE id=?').get(original.turn_id) as {status:string;accepted_input_id:string}|null:null;
+        if(!original||!turn||turn.status!=='queued'||turn.accepted_input_id!==original.id||!closedThreadUpkeep(original))
+          throw new Error(`Closed-request upkeep ${item.ref} changed during handoff.`);
+        // The request has its own final receipt. This reminder has no remaining work to transfer.
+        // Retire its exact queued turn; never submit its words to another provider.
+        finishTurn(original.turn_id!,'cancelled','The exact Inbox request closed before this reminder ran.');
+        settleTurnDependencies(original.turn_id!);
+        db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+          .run(JSON.stringify({state:'canceled',reason:'inbox_request_closed'}),original.id);
       }else if(item.kind==='queued'&&item.movable){
         const original=getAcceptedSessionInput(item.ref)!;
         const turn=db.query(`SELECT id,session_id,accepted_input_id,status,dispatch_attempt,dispatch_hold,provider_admission_intended_at,
