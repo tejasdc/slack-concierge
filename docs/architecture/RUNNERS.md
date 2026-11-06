@@ -156,6 +156,11 @@ What happens for a turn on a runner:
    when set) plus the run's variables, and starts the host under its own systemd. A command it
    cannot find, a missing folder or a host protocol the owner does not adopt is its definite
    refusal (`notStarted`), which the owner treats like a host that never started.
+   If the runner's project call channel is temporarily absent before provider admission, the
+   owner requeues that exact unsent turn with ordinary dispatch backoff; it does not fail the input
+   or try the owner's workspace. A runner-side credential or paid-credit preflight refusal is
+   returned as `notStarted` before the host launches, so the lease can settle without waiting for
+   an attachment that will never arrive.
 3. The runner reports `attached` (protocol, pids), then ships every journal frame as an event
    (`{k:'host', f, h}`; `h` is the highest host sequence shipped). The owner's link reads them from
    `runner_events`, woken in-process when a runner write commits (`runnerActivity`), so replay and

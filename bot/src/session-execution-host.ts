@@ -1,7 +1,7 @@
 import {onCodexHistoryChanged} from './codex-session-observer';
 import { codexAppServerReady, codexRelayRunner, waitForCodexAppServerOrDrain } from "./codex-app-server-client";
 import {CODEX_PROCESS_REPORT_GRACE_MS,codexLeftoverProcesses,codexProcessStillRunning,type CodexLeftoverProcess} from './codex-leftover-processes';
-import {runnerMachineCall} from './runner-machine-calls';
+import {runnerMachineCall,RunnerUnreachableError} from './runner-machine-calls';
 import {resolveRunnerProjectLocation} from './runner-project-location';
 import {createHash,randomUUID} from 'node:crypto';
 import {ledgerDurable} from './ledger-durability-barrier';
@@ -9,7 +9,7 @@ import {thesaurusTurnContext} from './thesaurus-context';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {basename,join} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
-import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,requeueProvenUnsentNativeChatGptTurn,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
+import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,settleTurnDependencies,relinquishTurnDelivery,requeueProvenUnsentNativeChatGptTurn,requeueOrphanedPreAdmissionTurn,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
 import {acceptedInputForTurn,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,providerRunnerForSession,recordRecoveredResultAttention,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
 import {flushPendingProviderProgressEvents} from './session-projection';
@@ -1344,8 +1344,11 @@ export class SessionExecutionHost {
     const boundary=getRunningTurnDispatchBoundary(claim.turn_id,this.options.instanceId,claim.dispatch_attempt);
     if(!boundary)return false;
     const message=error instanceof Error?error.message:String(error);
-    if(!boundary.admissionIntended&&!boundary.unsafeSteering&&!boundary.durableArtifactActivity)
+    if(!boundary.admissionIntended&&!boundary.unsafeSteering&&!boundary.durableArtifactActivity){
+      if(error instanceof RunnerUnreachableError&&requeueOrphanedPreAdmissionTurn(claim.turn_id,this.options.instanceId,
+        Date.now()+providerRetryDelayMs(claim.dispatch_attempt)))return true;
       return failRunningTurnAndReleaseSession(claim.turn_id,this.options.instanceId,message);
+    }
     return parkRunningTurnAfterProviderFailure({turnId:claim.turn_id,ownerInstanceId:this.options.instanceId,dispatchAttempt:claim.dispatch_attempt,failureClass:'parked_ambiguous',error:message});
   }
   /**

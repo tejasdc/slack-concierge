@@ -4181,6 +4181,7 @@ export function requeueProvenUnsentNativeChatGptTurn(input: {
 export function requeueOrphanedPreAdmissionTurn(
   turnId: number,
   ownerInstanceId: string | null,
+  nextAttemptMs = 0,
 ): boolean {
   return db.transaction(() => {
     const turn = db.query(`
@@ -4209,7 +4210,7 @@ export function requeueOrphanedPreAdmissionTurn(
       UPDATE turns
       SET status='queued', owner_instance_id=NULL, ended_at=NULL,
           dispatch_failure_class=CASE WHEN saved_kind='banked' THEN NULL ELSE 'backoff' END,
-          dispatch_next_attempt_ms=CASE WHEN saved_kind='banked' THEN ? ELSE 0 END,
+          dispatch_next_attempt_ms=CASE WHEN saved_kind='banked' THEN ? ELSE ? END,
           saved_account=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_account END,
           saved_window=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_window END,
           saved_boundary_ms=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_boundary_ms END,
@@ -4220,7 +4221,7 @@ export function requeueOrphanedPreAdmissionTurn(
           status_projection_parked_at=NULL
       WHERE id=? AND status='running' AND owner_instance_id IS ?
         AND stop_requested_at IS NULL AND provider_admission_intended_at IS NULL
-    `).run(Date.now()+3*60_000, RETRYING_PROVIDER_TURN_STATUS_TEXT, turnId, ownerInstanceId);
+    `).run(Date.now()+3*60_000, nextAttemptMs, RETRYING_PROVIDER_TURN_STATUS_TEXT, turnId, ownerInstanceId);
     if (changed.changes !== 1) return false;
     if (turn.projection_mode === "agent" && turn.progress_stream_state === "starting" && !turn.progress_stream_ts) {
       db.query("DELETE FROM agent_progress_messages WHERE turn_id=? AND creation_state='pending'").run(turnId);

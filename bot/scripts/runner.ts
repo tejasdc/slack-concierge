@@ -308,9 +308,15 @@ class Turn {
     if(!Array.isArray(payload.protocols)||!payload.protocols.includes(HOST_PROTOCOL_VERSION))
       return this.finish({notStarted:`this runner's host speaks protocol ${HOST_PROTOCOL_VERSION}, which the owner does not adopt`});
     const manifest=payload.manifest;
-    this.environment=turnEnvironment(manifest);
-    const executable=resolveExecutable(String(manifest.executable),this.environment);
+    let executable:string|null;
+    try {
+      this.environment=turnEnvironment(manifest);
+      executable=resolveExecutable(String(manifest.executable),this.environment);
+    } catch(error) {
+      return this.finish({notStarted:error instanceof Error?error.message:String(error),localPrerequisiteUnavailable:true});
+    }
     if(!executable)return this.finish({notStarted:`cannot find ${manifest.executable} on this runner`,localPrerequisiteUnavailable:true});
+    let hostLaunchAttempted=false;
     try {
       for(const file of payload.files??[]) {
         if(file?.scope==='runner-state') {
@@ -333,12 +339,14 @@ class Turn {
       }
       if(!existsSync(manifest.cwd))throw new HostNotStartedError(`the turn's folder ${manifest.cwd} does not exist on this runner`);
       const args=manifest.args.map((arg:string)=>resolveRunnerArg(String(arg),this.executionId));
+      hostLaunchAttempted=true;
       await startHost({stateDir:stateDir!,executionId:this.executionId,routerBotDir:botDir,
         hiddenPaths:(process.env.CONCIERGE_RUNNER_HIDE_PATHS??'').split(':').filter(Boolean),
         manifest:{executable,args,cwd:manifest.cwd,environment:this.environment,initialInput:manifest.initialInput,initialMeta:manifest.initialMeta,
           ownerContact:{file:ownerContactFile,fenceMs:RUNNER_FENCE_MS}}});
     } catch(error) {
-      if(error instanceof HostNotStartedError)return this.finish({notStarted:error.message});
+      if(!hostLaunchAttempted||error instanceof HostNotStartedError)
+        return this.finish({notStarted:error instanceof Error?error.message:String(error)});
       // The supervisor may have started it without answering: custody below decides.
       say('runner_host_start_unanswered',{job:this.job.jobId,error:String(error)});
     }
@@ -347,7 +355,8 @@ class Turn {
 
   /** A restarted runner takes the turn back: reattach after the host frames the owner already holds. */
   async resume(watches:Record<string,string>={}) {
-    this.environment=turnEnvironment(this.job.payload?.manifest??{environment:{},inheritEnvironment:true});
+    try {this.environment=turnEnvironment(this.job.payload?.manifest??{environment:{},inheritEnvironment:true});}
+    catch(error){say('runner_turn_resume_environment_unavailable',{job:this.job.jobId,error:String(error)});}
     // Transcript watches the owner asked for before the restart go on; reading from the start again
     // reports pickups made meanwhile, and the owner ignores ones it already counted.
     for(const [id,sessionUuid] of Object.entries(watches))this.watch(id,sessionUuid,true);
@@ -506,7 +515,7 @@ if(Object.keys(before).length){
     const turn=new Turn({jobId:prior.jobId,attemptId:attempt.attemptId,payload:{executionId:prior.executionId,manifest:prior.manifest}},attempt.epoch,
       {ackedSeq:attempt.ackedSeq,hostSeq:lastEvent?.frame?.h??0});
     turns.set(attempt.attemptId,turn);
-    void turn.resume(prior.watches);
+    void turn.resume(prior.watches).catch(error=>say('runner_turn_resume_failed',{job:prior.jobId,error:String(error)}));
   }
   say('runner_reacquired',{attempts});
 }
