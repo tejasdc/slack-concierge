@@ -194,6 +194,10 @@ before creating a project. Its completed work reply is one JSON object with the 
 `null` for the workspace root, or the established `agent-ecology/expertise` lab group).
 For the example above, a grouped answer is
 `{"project":"canvas-essay-notes","purpose":"An essay exploring how Canvas changes drafting.","template":"writing","group":"canvases"}`.
+The decision is read from the organizer's own words: the required "What came before" lead a
+first reply carries (recorded as its own reply field) is set aside, and the one JSON object may
+stand alone or among the organizer's prose or a fenced block; two candidate objects are refused
+as ambiguous. The Canvas policy answer below is read the same way.
 Pass that request ID with `--consultation` and the creator's current source input and run. The creation API checks that the bound organizer
 answered the asking session, completed the request, and accepted these exact fields before
 creating any folder. It reserves that exact answer for one project, allows retries of the
