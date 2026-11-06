@@ -783,12 +783,15 @@ remain in their exact receipts; a transcript root alone grants no human-work sta
 For each eligible root the migration creates one topic (`recovered:1`), one open request
 with its linked dispatches, and one question per legacy attention entry retaining its id.
 The manifest `{roots,topics,requests,questions,unresolved}` is written into the guard event.
-An owner-ledger correction retires previously recovered return and upkeep requests only when every
-root in their topic is a service-origin return or upkeep input, there is one request sourced to one of those
-roots, and there is no question, human reply or dispatch added after migration. A returned result and its later upkeep notices
+An owner-ledger correction retires previously recovered service-notice requests (returns, upkeep,
+allowance, area, cut-off turn, background-job and watch notices alike) only when every
+root in their topic is a service-origin input, there is one request sourced to one of those
+roots, no question is still unsettled, there is no human reply, and every dispatch added after migration
+has its own home in another thread (where its request or original thread root is placed), which keeps
+owning that work. A dispatch homed in this thread or in none keeps the request open. A returned result and its later upkeep notices
 can therefore share one synthetic topic without becoming human work. Agent-authored work roots stay open even
 when the root itself is not human-authored: its source may carry Tejas's delegated work. The correction records
-the exact migration event and all roots as closure evidence, alongside the original request identity
+the exact migration event, all roots and each later dispatch's request as closure evidence, alongside the original request identity
 and source input when retained. It keeps the original request, source inputs, result receipts
 and topic history. The original migration event proves which dispatches were present before any later assignment.
 Completion of original work remains governed
