@@ -644,6 +644,9 @@ unit starts again after its durable run has already reached `succeeded`,
 `failed`, or `ambiguous`, the claim command reports that terminal state and the
 runner exits successfully without repeating deployment work. This prevents a
 terminal run from becoming a permanent ten-second systemd restart loop.
+If the repair supervisor owns a nonterminal run, claim reports that ownership
+and the old runner also exits successfully. A later reviewed retry gets a new
+claim only when the durable run returns to `retrying`.
 
 Terminal diagnostics lead with the deployment outcome and a plain-language
 reason for the failed operation. No deployment outcome starts a feature-agent
@@ -815,10 +818,15 @@ live ledger (missing tables or columns, and indexes, triggers or views that are 
 SQL differs; spacing and keyword case outside quoted text are not differences, because
 SQLite keeps each object's text as first written and two indexes written with different
 spacing made every update from 2026-11-04 copy and re-check the 8.4 GB ledger with Concierge
-stopped for over two minutes). With no difference it prints `no_schema_change` and copies nothing, and the
-schema phase (`--schema-only` with no backup path) re-checks with the coordinator stopped,
-copies first if a difference has appeared, and otherwise exits `unchanged` without the
-whole-ledger checks. `--plan` prints the comparison read-only. Copying 2.3 GB on every update
+stopped for over two minutes). With no difference it prints `no_schema_change`, copies nothing,
+and the runner skips the offline schema phase. The serving owner's schema initialization
+already finished before that comparison; stopping the same owner cannot introduce a new
+schema change. A previously pinned controller still calls the candidate migrator after the
+stop; in that managed run the candidate returns the same no-change result without a second
+live-ledger read. A manual schema-only invocation still compares the schema. A release with a schema change takes a verified backup before the stop and
+still runs the schema phase with the coordinator fully stopped. The runner refuses an
+unexpected or contradictory planning result instead of treating an absent backup path as
+proof that no migration is needed. `--plan` prints the comparison read-only. Copying 2.3 GB on every update
 filled the disk to 99% on 2026-10-10 (ten copies in 90 minutes). Only copies with matching
 verification records qualify for automatic retention. The newest two verified copies are
 kept after a new copy is durably published, including when a later deployment step fails,

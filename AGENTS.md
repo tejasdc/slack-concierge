@@ -29,6 +29,10 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [attributed systemd stop path](docs/runbooks/DEPLOYMENT.md#runtime-dependencies-and-service-shutdown).
 - Operator-controlled offline releases stop the old owner before candidate activation;
   see the [deployment runbook](docs/runbooks/DEPLOYMENT.md#runtime-dependencies-and-service-shutdown).
+- Releases without schema changes use the serving owner's completed schema comparison;
+  releases with schema changes keep the verified backup and offline migration.
+  A repair-owned run ends the old runner without reclaiming the repair. See
+  [state migration](docs/runbooks/DEPLOYMENT.md#state-migration-and-backups).
 - Owner startup timing and deferred history catch-up follow the
   [deployment startup contract](docs/runbooks/DEPLOYMENT.md#owner-startup-and-history-catch-up).
 - Every commit carries an `Update-note:` sentence in product language and a

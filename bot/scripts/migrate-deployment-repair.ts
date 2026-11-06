@@ -215,6 +215,14 @@ if (backupIfNeeded) {
     : { status: 'no_schema_change', backup_path: null, changes }));
   process.exit(0);
 }
+if (schemaOnly && !namedBackup && process.env.CONCIERGE_DEPLOY_DETACHED === '1'
+  && process.env.CONCIERGE_DEPLOY_RUN_ID) {
+  // A managed runner reaches this command only after this candidate's online comparison
+  // succeeded. No backup path is its proof of no schema change. The previous pinned
+  // controller still invokes this command even though its newer version skips it.
+  console.log(JSON.stringify({ status: 'unchanged', backup_path: null }));
+  process.exit(0);
+}
 // What this migration will add, read with the coordinator stopped. It also bounds the check after
 // the migration to the tables the migration could have written.
 const changes = backupOnly ? [] : schemaChanges();

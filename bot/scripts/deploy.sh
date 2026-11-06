@@ -258,7 +258,8 @@ claim_deployment_run() {
   printf '%s\n' "$claim_output"
   claim_status=$(printf '%s\n' "$claim_output" | jq -er '.status')
   DEPLOY_DESIRED_COMMIT=$(printf '%s\n' "$claim_output" | jq -r '.desired_commit // empty')
-  if [ "$claim_status" = "terminal" ]; then
+  if [ "$claim_status" = "terminal" ] || [ "$claim_status" = "repair_owned" ]; then
+    # This runner is finished; a repair-owned durable run remains nonterminal under its supervisor.
     DEPLOY_RUN_TERMINAL=1
     INTERRUPTED_RECOVERY_HANDLED=1
     return 0
@@ -1174,7 +1175,21 @@ deploy() {
     fi
     migration_backup=$CAPTURED_OUTPUT
     echo "$migration_backup"
+    local migration_result
+    migration_result=$(printf '%s\n' "$migration_backup" | jq -er '.status')
     MIGRATION_BACKUP_PATH=$(printf '%s\n' "$migration_backup" | jq -r '.backup_path // empty')
+    if [ "$migration_result" = "no_schema_change" ]; then
+      [ -z "$MIGRATION_BACKUP_PATH" ] || {
+        echo "DEPLOY FAILED: a no-change schema plan unexpectedly supplied a backup." >&2
+        return 1
+      }
+      # The candidate already compared its schema with this live owner. Schema initialization
+      # runs at owner start, so stopping that owner cannot introduce a new migration.
+      MIGRATION_DONE=1
+    elif [ "$migration_result" != "backed_up" ] || [ -z "$MIGRATION_BACKUP_PATH" ]; then
+      echo "DEPLOY FAILED: schema planning returned an unexpected result." >&2
+      return 1
+    fi
     DEPLOY_FAILURE_REASON="No verified immutable last-known-good release was available for rollback."
     require_last_known_good_release
   fi
@@ -1292,8 +1307,7 @@ deploy() {
   relocate_ledger_to_own_filesystem
   if [ -n "$DEPLOY_RUN_ID" ] && [ "$MIGRATION_DONE" != "1" ]; then
     DEPLOY_FAILURE_REASON="Offline additive schema migration failed."
-    # No path means no copy was needed: the schema step re-checks with the coordinator stopped and
-    # copies then if the release would change the schema after all.
+    # A backed-up schema change still migrates with the coordinator fully stopped.
     CONCIERGE_STATE_DIR="$STATE_DIR" CONCIERGE_SERVICE="$SERVICE" "$BUN_BIN" run \
       "$CANDIDATE_ARTIFACT_PATH/control/migrate-deployment-repair.js" --schema-only \
       ${MIGRATION_BACKUP_PATH:+--backup-path "$MIGRATION_BACKUP_PATH"}
