@@ -152,6 +152,11 @@ the successor receives a linked copy, and the request keeps its own ID. Sent req
 and their targets do not change. An owed request's current
 recipient binding points to the successor's accepted run; its earlier delivery remains in
 the predecessor's history, and original input provenance does not change.
+An Inbox upkeep reminder for an exact request that has already closed is retired in that
+same transaction, even if admission uncertainty makes the reminder unsafe to replay. The
+closed request's final receipt is authoritative; the reminder is not sent to the successor.
+If the request reopens before acceptance, the inventory changes and the handoff must be
+acknowledged again.
 The predecessor is then superseded: owner writes from its run and new requests to it
 are refused with the successor's address. Its live run receives a notice and can finish,
 but cannot write through the owner; its own outcome and reads remain allowed. Suspension
