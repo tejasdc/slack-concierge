@@ -67,6 +67,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   GitHub work as a replay-safe job on the configured project runner. See [runners](docs/architecture/RUNNERS.md).
 - Hosted run adoption and parked-run recovery follow the
   [execution host](docs/architecture/EXECUTION-HOST.md) contract; never reset their ledger status by hand.
+- Legacy conversation runner recovery uses the most recent launched host, excluding unclaimed
+  execution intents; see [runners](docs/architecture/RUNNERS.md).
 - Outside Codex repair sessions use a one-input command line and take follow-ups
   in the next turn; a runner-hosted outside turn is adopted through that runner's
   retained journal; see [router actions](docs/runbooks/ROUTER-ACTIONS.md#outside-requests)

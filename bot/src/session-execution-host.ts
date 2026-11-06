@@ -11,6 +11,7 @@ import {basename,join} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
 import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,requeueProvenUnsentNativeChatGptTurn,requeueOrphanedPreAdmissionTurn,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
 import {acceptedInputForTurn,adoptProviderConversationTitle,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,providerRunnerForSession,recordRecoveredResultAttention,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {lastLaunchedConversationHome} from './session-runner-home';
 import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
 import {flushPendingProviderProgressEvents} from './session-projection';
 import {recordResultTurnOutcome,recordUnsaidTurnOutcome} from './session-turn-outcome';
@@ -2061,11 +2062,7 @@ export function chooseTurnRunner(session:SessionRow,metadata=sessionMetadata(ses
     // A bound native conversation keeps the machine that last ran it. Current deployment
     // settings cannot recover that fact: use the durable execution and lease that actually
     // launched its latest turn, and refuse if that evidence is incomplete or ambiguous.
-    const prior=db.query(`SELECT execution.supervisor,attempt.runner FROM executions execution
-      LEFT JOIN runner_attempts attempt ON attempt.job_id='turn:'||execution.execution_id
-      WHERE execution.session_id=? AND execution.provider=?
-      ORDER BY execution.created_at_ms DESC,attempt.started_at_ms DESC LIMIT 1`).get(session.id,session.provider_id) as
-      {supervisor:string;runner:string|null}|null;
+    const prior=lastLaunchedConversationHome(db,session.id,session.provider_id);
     if(!prior){
       // Older local copies predate the explicit local binding. A fork inherited its parent's
       // machine; a local resurrection copied the transcript into this machine's provider home.
