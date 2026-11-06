@@ -60,6 +60,11 @@ header. The Pebble route accepts that key only with the header; ordinary Pebble
 requests still use the phone key. The canonical owner validates the named input and
 run before it records an agent capture.
 
+Monologue, Alexa and Voice Memos tests use the same agent-to-owner connection as
+`sessions` commands. This works for a run outside Concierge's process, where the
+owner's local socket is not mounted. The returned Inbox receipt identifies the accepted
+capture and its agent origin; these marked tests do not start an Inbox turn.
+
 His own messages show the door they came through ("You · iPhone Action Button", "You · Mac
 quick capture", "You · Pebble", "You · web", "You · web (password)"), derived by the owner from
 the capture's recorded source or the door thnkr.ing names for its own screens.
