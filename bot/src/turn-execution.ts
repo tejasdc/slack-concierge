@@ -40,6 +40,7 @@ import {
   providerInterruptionDetail,
   providerDispatchError,
   providerRetryDelayMs,
+  ProviderDispatchError,
   ProviderTurnCancelledError,
   OwnerDrainBeforeProviderAdmissionError,
 } from "./provider-failures";
