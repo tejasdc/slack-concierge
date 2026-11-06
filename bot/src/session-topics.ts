@@ -4091,6 +4091,14 @@ function trackedInHomeThread(dispatchId:string,fromTopicId:string):boolean {
   if(!home||home===fromTopicId)return false;
   return topicRequests(home).some(request=>request.state==='open'&&request.dispatches.some((dispatch:any)=>String(dispatch.requestId)===dispatchId));
 }
+/**
+ * A dispatch that holds no live work: it was answered, the answer is not a question for Tejas,
+ * not a failure and not an unverified completion. Its result stays in its own request's receipt.
+ */
+function finishedWithCheckedAnswer(dispatchId:string):boolean {
+  const work=workRow(dispatchId);
+  return !!work&&work.outcome==='answered'&&work.disposition!=='needs_decision'&&work.disposition!=='failed'&&!work.notCheckedReason;
+}
 /** Retire migration-created bookkeeping requests through owner events, keeping their history. */
 export function retireRecoveredBookkeepingRequests() {
   const session=inboxSession();
@@ -4129,7 +4137,7 @@ export function retireRecoveredBookkeepingRequests() {
     if(!migration?.dispatches)continue;
     const initialIds=new Set((JSON.parse(migration.dispatches) as {requestId:string}[]).map(dispatch=>dispatch.requestId));
     const laterIds=request.dispatches.map((dispatch:any)=>String(dispatch.requestId)).filter(id=>!initialIds.has(id));
-    if(laterIds.some(id=>!trackedInHomeThread(id,topicId)))continue;
+    if(laterIds.some(id=>!trackedInHomeThread(id,topicId)&&!finishedWithCheckedAnswer(id)))continue;
     const input=inputs.find(candidate=>candidate?.id===request.sources[0]!.inputId)!;
     const evidence=[`topic-migration:${request.sources[0]!.inputId}`,...roots];
     if(input.id.startsWith('return:')) {
