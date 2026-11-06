@@ -144,6 +144,26 @@ try {
   assert.equal((db.query('SELECT state FROM inbox_requests WHERE request_id=?').get(earlierRequest) as {state:string}).state,'closed');
   assert.equal((db.query('SELECT session_id FROM session_owner_events WHERE event_id=?').get(`topic-bookkeeping-retired:${earlierRequest}`) as {session_id:number}).session_id,inbox.id);
   assert.equal((db.query('SELECT count(*) AS n FROM inbox_requests WHERE state=?').get('open') as {n:number}).n,9);
+  // A later dispatch that finished with a checked answer holds no live work, even when no open request
+  // elsewhere lists it. One that ended in a question for Tejas still holds the thread open.
+  const finishedWork=(workDisposition:string)=>{
+    const id=randomUUID();
+    db.exec('PRAGMA foreign_keys=OFF');
+    db.query(`INSERT INTO session_peer_requests (request_id,peer,source_session_id,source_turn_id,source_input_id,action_id,payload_json,payload_hash,
+      remote_session_id,remote_address,remote_operation_id,status,outcome,result_json,due_at_ms,created_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(id,'mac',inbox.id,0,human,id,'{}','x','mac:1','mac/session:1',id,'settled','answered',JSON.stringify({workDisposition}),Date.now(),Date.now());
+    db.exec('PRAGMA foreign_keys=ON');
+    return id;
+  };
+  const answeredReturn=`return:${randomUUID()}`;
+  accepted('service',answeredReturn,'A return linked to finished, answered work.',agentWork,agentWork.slice('request:'.length));
+  const answeredLinked=recovered(answeredReturn,[],finishedWork('completed'));
+  const decisionReturn=`return:${randomUUID()}`;
+  accepted('service',decisionReturn,'A return linked to work that ended in his decision.',agentWork,agentWork.slice('request:'.length));
+  const decisionLinked=recovered(decisionReturn,[],finishedWork('needs_decision'));
+  assert.deepEqual(topics.retireRecoveredBookkeepingRequests(),{retired:1});
+  assert.equal((db.query('SELECT state FROM inbox_requests WHERE request_id=?').get(answeredLinked) as {state:string}).state,'closed');
+  assert.equal((db.query('SELECT state FROM inbox_requests WHERE request_id=?').get(decisionLinked) as {state:string}).state,'open');
   console.log('Inbox bookkeeping recovery fixture passed: recovered service notices retired; human, agent, questioned and thread-owned later work stayed open.');
 } finally {
   rmSync(scratch,{recursive:true,force:true});
