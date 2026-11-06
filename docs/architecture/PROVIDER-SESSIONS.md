@@ -870,6 +870,10 @@ Authority: `bot/src/fork-requests.ts`, fork transitions in `bot/src/state.ts`, `
   agents send research and second opinions there first [decision: chatgpt-pro-is-the-big-guns].
   A ChatGPT attachment carries only its custody pin (id, name, type, digest, bytes): Thinkering
   refuses any other field, and an added transcript field broke every ChatGPT file send.
+  A ChatGPT session is named by ChatGPT: its answer carries the name ChatGPT gave that
+  conversation, and the owner adopts it for a session nobody named. Every other provider runs
+  the self-title command instead, which ChatGPT cannot. See the
+  [wire contract's session names](../contracts/session-owner-v1.md#session-names).
 - A follow-up to a running Claude session joins Claude Code's own streaming-input queue
   as a uuid-stamped message; it never interrupts the agent and has no per-message
   deadline while the turn is live. Stop is the only interrupt. Tejas approved this on

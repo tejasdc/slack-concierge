@@ -32,6 +32,12 @@ export function checkProviderContract(root=resolve(import.meta.dir,'..')) {
     for(const flag of ['steer','stop','history','fork'])
       assert.match(block,new RegExp(`${flag}: guaranteeMet\\("${id}", "${flag}"\\)`),`${name}.${flag} must come from the provider contract`);
   }
+  // Each way a session gets its name exists in the code that claims it: the command the instructed
+  // providers run, and the owner adopting the name ChatGPT gave its own conversation. ChatGPT has no
+  // tools, so Tejas's "every session names itself" was delivered for three providers and silently
+  // missed the fourth (2026-11-05); a guarantee nothing reads would have missed it again.
+  assert.match(read('src/session-input-context.ts'),/sessions title/,'the per-run instructions must carry the self-title command');
+  assert.match(read('src/session-execution-host.ts'),/onConversationTitle:/,"the ChatGPT run must take the name ChatGPT gave its conversation");
   // What an update waits for and what may start during one come from the contract.
   const survival=read('src/execution-survival.ts');
   assert.match(survival,/PROVIDER_CONTRACT/,'the update rule must read the provider contract');
