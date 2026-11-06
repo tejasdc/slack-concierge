@@ -567,8 +567,10 @@ The owner clamps a read or dismiss generation to the session's own attention cou
   follows the link for file or directory changes and, for new watches, also records the exact
   symlink target. An atomic link swap is observed even if the old and new release directories
   happen to have the same metadata; older active watches retain their original comparison.
-  A peer agent uses the same local watch
-  on its own machine. An open request with no actual wake condition still receives the stalled
+  A peer agent uses the same local watch on its own machine. An outside request uses the same
+  recipient-session watch check, records the watch in its partial reply, and is exempt from its
+  Stop hook while that exact request has an active wait. Its renewing series ends after the
+  outside request closes. An open request with no actual wake condition still receives the stalled
   notice after its report-back attempt; waiting prose alone does not hide a silent stop.
   A child request placed in a named thread counts as a wake only with an explicit return to
   the requester; thread-only delivery cannot keep the worker's other work open silently.
