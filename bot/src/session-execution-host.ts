@@ -19,6 +19,7 @@ import {SessionOwner,type SessionOwnerRuntime} from './session-owner';
 import type {AgentProvider} from './providers';
 import {antigravityExecutable} from './antigravity';
 import {runOutsideCodexTurn,type OutsideRun} from './outside-codex';
+import {outsideCodexPromptContent} from './outside-codex';
 import type {ProviderId} from './state';
 import {thinkeringConfigured} from './thinkering-capability-target';
 import {SessionCapabilityClient,chatGptCapabilities,type ChatGptAdmission,type CapabilityEvidence,type ChatGptReceipt} from './session-capability-client';
@@ -32,6 +33,9 @@ import {chooseClaudeDispatch} from './provider-account-dispatch';
 import {maybeStartInboxProviderFailover} from './inbox-provider-failover';
 import {CHATGPT_THINKING_LEVELS,HIS_CHATGPT_PREFIX,PROVIDER_ALIASES, providerDisplayName } from './aliases';
 import {recordRepairNotice} from './repair-notices';
+import {runnerMachineCall} from './runner-machine-calls';
+import type {HostRunnerFile} from './host-access';
+import {projectCoordinates} from './session-projects';
 
 /**
  * A ChatGPT request that fails because the channel itself broke (the page changed, sign-in failed,
@@ -1220,7 +1224,20 @@ export class SessionExecutionHost {
     }
     const metadata=sessionMetadata(session);
     const channel=session.slack_channel_id?getChannel(session.slack_channel_id):null;
-    const cwd=this.cwd(session);
+    const outsideCodex=session.provider_id==='codex'&&metadata.outside===true;
+    const configuredRunner=process.env.CONCIERGE_TURN_RUNNER?.trim()||null;
+    const runnerTarget=metadata.providerRunner??(session.provider_id==='claude-code'&&turnRunsOnRunner(metadata)
+      ||session.provider_id==='antigravity'||outsideCodex?configuredRunner:null);
+    // A runner-bound conversation resolves its stable project identity on that machine. Owner
+    // absolute cwd paths are retained for presentation only and never go into a remote manifest.
+    const onRunner=!adoption&&!!runnerTarget&&(session.provider_id==='claude-code'||session.provider_id==='antigravity'||outsideCodex);
+    let cwd=this.cwd(session);
+    if(onRunner) {
+      const resolved=typeof metadata.projectName==='string'
+        ?await runnerMachineCall<{cwd:string}>(runnerTarget!,'projects.resolve',{project:metadata.projectName,path:metadata.projectPath??''})
+        :await runnerMachineCall<{cwd:string}>(runnerTarget!,'projects.default',{});
+      cwd=resolved.cwd;
+    }
     const body=JSON.parse(input.payload_json),payload=input.kind==='create'?body.firstInput:body;
     const attachments=this.owner.attachments(payload.attachments);
     // An adopted run continues exactly what was started: the same words, files and folders, never
@@ -1229,7 +1246,6 @@ export class SessionExecutionHost {
     const additionalDirs=adoption?[...adoption.processor.runAdditionalDirs as string[]]:[...(metadata.additionalDirs??parseAdditionalPaths(channel))];
     // A new Claude turn may run on a runner machine (RUNNERS.md, "Turns on a runner"): it then
     // carries its files' bytes and a run token, and nothing in it relies on this machine.
-    const onRunner=!adoption&&session.provider_id==='claude-code'&&turnRunsOnRunner(metadata);
     const sharedCodex=!adoption&&session.provider_id==='codex'&&metadata.outside!==true&&executionHostsEnabled();
     const stagedFiles:{path:string;base64:string}[]=[];
     try {
@@ -1254,6 +1270,17 @@ export class SessionExecutionHost {
         }
       }
       const replayPrompt=prompt,runAdditionalDirs=[...additionalDirs];
+      if(onRunner) {
+        const workspace=process.env.CONCIERGE_WORKSPACE_ROOT?.trim()||join(homedir(),'workspace');
+        for(let index=0;index<runAdditionalDirs.length;index++) {
+          const directory=runAdditionalDirs[index]!;
+          if(staging&&directory===staging)continue;
+          const coordinates=projectCoordinates(workspace,directory);
+          if(!coordinates)throw new ProviderCapabilityUnavailableError('execution','An additional folder is not inside a registered project on this runner.');
+          const remote=await runnerMachineCall<{cwd:string}>(runnerTarget!,'projects.resolve',{project:coordinates.projectName,path:coordinates.projectPath});
+          runAdditionalDirs[index]=remote.cwd;
+        }
+      }
       let launchClaudeExecutable:string|undefined;
       const underlying=this.options.providers[session.provider_id];
       const provider:AgentProvider={id:session.provider_id,capabilities:underlying?.capabilities,
@@ -1277,13 +1304,16 @@ export class SessionExecutionHost {
             ?{account:prepared.accountLabel,home:(session.provider_id==='codex'?prepared.environment?.CODEX_HOME:prepared.environment?.CLAUDE_CONFIG_DIR)??null}:null};
           if(outside) {
             if(!adoption&&!executionHostsEnabled())throw new ProviderCapabilityUnavailableError('execution','An outside run needs an execution host on this machine.');
-            actual=adoption?this.adoptedOutsideRun(prepared,adoption):this.outsideRun(prepared,claim,session,kept);
+            actual=adoption?this.adoptedOutsideRun(prepared,adoption):this.outsideRun(prepared,claim,session,kept,onRunner?runnerTarget!:undefined);
           } else if(session.provider_id==='antigravity') {
             if(!adoption&&!executionHostsEnabled())throw new ProviderCapabilityUnavailableError('execution','Google work requires a durable execution host on this machine.');
+            const googleExecutable=onRunner
+              ?(await runnerMachineCall<{executable:string}>(runnerTarget!,'google.executable',{})).executable
+              :antigravityExecutable();
             actual=adoption?this.adoptedRun(prepared,adoption)
-              :this.hostedRun(prepared,claim,session,kept,antigravityExecutable());
+              :this.hostedRun(prepared,claim,session,kept,googleExecutable,onRunner?stagedFiles:undefined,onRunner?runnerTarget!:undefined);
           } else if(onRunner) {
-            actual=this.hostedRun(prepared,claim,session,kept,process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE||'claude',stagedFiles);
+            actual=this.hostedRun(prepared,claim,session,kept,process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE||'claude',stagedFiles,runnerTarget!);
           } else if(session.provider_id==='claude-code'&&(adoption||executionHostsEnabled())) {
             actual=adoption?this.adoptedRun(prepared,adoption):this.hostedRun(prepared,claim,session,kept,launchClaudeExecutable);
           } else if(privateCodex) {
@@ -1354,6 +1384,8 @@ export class SessionExecutionHost {
       interactionPolicy:metadata.interactionPolicy??'standard',
       ownerInstanceId:this.options.instanceId,dispatchAttempt:claim.dispatch_attempt,steeringController,closeSteering,cancellationController,
       providerEnvironment:{CONCIERGE_SOURCE_INPUT_ID:input.id,CONCIERGE_SOURCE_RUN_ID:nativeRunId(claim.turn_id),
+        CONCIERGE_ROUTER_ACTIONS:process.env.CONCIERGE_ROUTER_ACTIONS||join(homedir(),'.local','bin','router-actions.sh'),
+        CONCIERGE_CODEX_CLI:Bun.which('codex')||join(homedir(),'.local','bin','codex'),
         CONCIERGE_MAC_NEED:process.platform==='darwin'&&typeof payload.machineNeed?.kind==='string'?payload.machineNeed.kind:'',
         // A runner's agents can reach this owner only over its network entrance, with this run's token.
         ...(onRunner?agentRunEnvironment({turnId:claim.turn_id,sessionId:session.id},process.env,{network:true}):{})},
@@ -1398,14 +1430,24 @@ export class SessionExecutionHost {
    */
   private hostedRun(prepared:Parameters<AgentProvider['run']>[0],claim:QueuedTurnClaimRow,session:SessionRow,
     kept:{replayPrompt:string;runAdditionalDirs:string[];staging:string|null;account:{account:string;home:string|null}|null},executable?:string,
-    runnerFiles?:{path:string;base64:string}[]):Parameters<AgentProvider['run']>[0] {
+    runnerFiles?:HostRunnerFile[],targetRunner?:string):Parameters<AgentProvider['run']>[0] {
     const executionId=newExecutionId(),stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!);
+    let runnerPrepared=prepared;
+    if(targetRunner) {
+      const additionalDirs=[...(prepared.additionalDirs??[])];
+      for(let index=0;index<additionalDirs.length;index++)if(/(?:^|\/)concierge-turn-\d+-attachments-[^/]+$/.test(additionalDirs[index]!)) {
+        additionalDirs[index]=`@runner-state/attachments/${executionId}`;
+        runnerFiles??=[];
+        runnerFiles.push({scope:'runner-state',relativePath:`attachments/${executionId}`,base64:'',kind:'directory'});
+      }
+      runnerPrepared={...prepared,additionalDirs};
+    }
     const {onProgress,onProviderMessage,onProviderThreadStarted,onProviderTurnStarted,onSteeringReady,onCancellationReady,onProviderTerminal,
-      onBackgroundWait,onBackgroundReportMissing,onBackgroundReleaseReady,onProviderRetry,onRetryRestartReady,onInputAcknowledged,onPreferredModel,...data}=prepared as any;
+      onBackgroundWait,onBackgroundReportMissing,onBackgroundReleaseReady,onProviderRetry,onRetryRestartReady,onInputAcknowledged,onPreferredModel,...data}=runnerPrepared as any;
     retainExecutionIntent({executionId,turnId:claim.turn_id,dispatchAttempt:claim.dispatch_attempt,sessionId:session.id,provider:session.provider_id,
       directory:runnerFiles?'':executionDirectory(stateDir,executionId),coordinatorInstanceId:this.options.instanceId,processor:{...kept,run:data},
       ...(runnerFiles?{supervisor:RUNNER_SUPERVISOR}:{})});
-    return {...prepared,transport:this.hostedTransport('launch',executionId,stateDir,executable,undefined,runnerFiles)} as any;
+    return {...runnerPrepared,transport:this.hostedTransport('launch',executionId,stateDir,executable,undefined,runnerFiles,targetRunner)} as any;
   }
   private adoptedRun(prepared:Parameters<AgentProvider['run']>[0],adoption:Adoption,executable?:string):Parameters<AgentProvider['run']>[0] {
     const stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!);
@@ -1439,14 +1481,18 @@ export class SessionExecutionHost {
    * (outside-codex.ts). Its opening words go in a private file beside the state, read once by the CLI.
    */
   private outsideRun(prepared:Parameters<AgentProvider['run']>[0],claim:QueuedTurnClaimRow,session:SessionRow,
-    kept:{replayPrompt:string;runAdditionalDirs:string[];staging:string|null;account:{account:string;home:string|null}|null}):Parameters<AgentProvider['run']>[0] {
+    kept:{replayPrompt:string;runAdditionalDirs:string[];staging:string|null;account:{account:string;home:string|null}|null},targetRunner?:string):Parameters<AgentProvider['run']>[0] {
     const executionId=newExecutionId(),stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!);
-    const outside={...prepared,promptFile:join(stateDir,'outside-prompts',executionId),codexExecutable:MANAGED_CODEX};
+    const runnerFiles:HostRunnerFile[]|undefined=targetRunner?[{scope:'runner-state',relativePath:`outside-prompts/${executionId}`,
+      base64:Buffer.from(outsideCodexPromptContent(prepared)).toString('base64')}]:undefined;
+    const outside={...prepared,promptFile:targetRunner?`@runner-state/outside-prompts/${executionId}`:join(stateDir,'outside-prompts',executionId),
+      ...(targetRunner?{runnerPromptFile:true}:{}),codexExecutable:MANAGED_CODEX};
     const {onProgress,onProviderMessage,onProviderThreadStarted,onProviderTurnStarted,onSteeringReady,onCancellationReady,onProviderTerminal,
       onBackgroundWait,onBackgroundReportMissing,onBackgroundReleaseReady,onProviderRetry,onRetryRestartReady,onInputAcknowledged,onPreferredModel,...data}=outside as any;
     retainExecutionIntent({executionId,turnId:claim.turn_id,dispatchAttempt:claim.dispatch_attempt,sessionId:session.id,provider:'codex',
-      directory:executionDirectory(stateDir,executionId),coordinatorInstanceId:this.options.instanceId,processor:{...kept,run:data}});
-    return {...outside,transport:this.hostedTransport('launch',executionId,stateDir,'/bin/sh',{inactivityMs:null})} as any;
+      directory:targetRunner?'':executionDirectory(stateDir,executionId),coordinatorInstanceId:this.options.instanceId,
+      ...(targetRunner?{supervisor:RUNNER_SUPERVISOR}:{}),processor:{...kept,run:data}});
+    return {...outside,transport:this.hostedTransport('launch',executionId,stateDir,'/bin/sh',{inactivityMs:null},runnerFiles,targetRunner)} as any;
   }
   private adoptedOutsideRun(prepared:Parameters<AgentProvider['run']>[0],adoption:Adoption):Parameters<AgentProvider['run']>[0] {
     const stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!);
@@ -1468,13 +1514,13 @@ export class SessionExecutionHost {
   }
   /** `runnerFiles` places the host on a runner (an empty list when taking a runner's run back). */
   private hostedTransport(mode:'launch'|'adopt'|'adopt-record',executionId:string,stateDir:string,executable?:string,timeouts?:{inactivityMs:number|null},
-    runnerFiles?:{path:string;base64:string}[]) {
+    runnerFiles?:HostRunnerFile[],targetRunner?:string) {
     // From the owner, not the run's environment: an information-only consultation runs without it.
     const routerBotDir=runnerFiles?undefined:providerOwnerEnvironment().CONCIERGE_ROUTER_BOT_DIR;
     // Only a launch resolves the CLI. On 2026-11-04 Claude Code was reinstalled during a Concierge
     // restart; adoption looked it up, found no `claude` and parked 25 agents that were still running.
     return new HostedClaudeCodeTransport({mode,executionId,stateDir,routerBotDir,
-      ...(runnerFiles?{access:new RunnerHostAccess(executionId,mode==='launch'?this.options.instanceId:undefined)}:{}),
+      ...(runnerFiles?{access:new RunnerHostAccess(executionId,mode==='launch'?this.options.instanceId:undefined,targetRunner)}:{}),
       executable:executable??(mode==='launch'?claudeExecutable():undefined),
       onLaunched:launch=>recordExecutionLaunched(executionId,launch),
       onAttached:status=>{
