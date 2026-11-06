@@ -472,6 +472,14 @@ file into its provider home without replacing an existing transcript, then recor
 state so a retry returns the first result. Neither owner paths nor arbitrary filesystem paths are
 accepted by these methods. Check with `bun bot/scripts/runner-provider-history-check.ts`.
 
+Usage breakdown follows the same boundary. The runner scans its registered account homes into its
+own incremental cache and returns path-free, ordered pages of provider usage records. Each cursor
+pins the report's time window, a stable row high-water mark and the provider/home set, so the owner can fetch every page
+without double counting. The owner joins those records to its local session, turn and account
+events, keeping the existing page classifications and cache diagnostics. It replaces cached runner
+rows only after every configured runner answers; a missing runner leaves the previously published
+report and its timestamp intact. Relay pages are capped at 100 records and 192 KiB.
+
 ## Heavy work out of the owner's request loop
 
 The repair agent's ranking of today's owner stalls (1,202 s of lag over the day): Inbox thread upkeep
@@ -518,6 +526,13 @@ Sources: [GetActivityTask](https://docs.aws.amazon.com/step-functions/latest/api
 3. Thinkering's capability socket moves behind Thinkering's own HTTPS entrance (its step 2).
 
 ## Checks
+
+- `bot/scripts/runner-provider-usage-breakdown-check.ts`: the runner scans fixture account homes,
+  emits no provider path, bounds pages, preserves first-call metadata, and keeps records appended
+  after a page snapshot out of its remaining cursor pages; the owner collector holds one report
+  window across pages and propagates a runner failure before the report cache can be replaced.
+- `bot/scripts/runner-provider-history-check.ts`: bounded exact transcript reads and identity
+  fencing, exact-byte provider-home restore/retry, no-overwrite, and unique legacy subject match.
 
 - `bot/scripts/agent-entrance-check.ts`: the real gateway refuses missing, malformed, forged and
   foreign-key tokens before the owner, forwards run and runner principals that callers cannot spoof,
