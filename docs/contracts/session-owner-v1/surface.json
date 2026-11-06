@@ -1722,6 +1722,43 @@
       }
     },
     {
+      "name": "marked-agent-attachment-custody",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/attachments",
+        "body": {
+          "clientActionId": "fixture-marked-upload",
+          "name": "pixel.png",
+          "contentType": "image/png",
+          "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jA1cAAAAASUVORK5CYII=",
+          "agentSource": {
+            "inputId": "10000000-0000-4000-8000-000000000001",
+            "runId": "20000000-0000-4000-8000-000000000001"
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "attachment": {
+            "id": "fixture-marked-attachment-1",
+            "name": "pixel.png",
+            "contentType": "image/png",
+            "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af",
+            "agentSource": {
+              "inputId": "10000000-0000-4000-8000-000000000001",
+              "runId": "20000000-0000-4000-8000-000000000001"
+            }
+          }
+        }
+      },
+      "expect": {
+        "providerStarts": 0,
+        "sourceVerifiedBeforeCustody": true,
+        "conflictingSourceStatus": 409
+      }
+    },
+    {
       "name": "input-references-retained-attachment",
       "request": {
         "method": "POST",
