@@ -128,20 +128,30 @@ export async function pruneExecutionRecordsInPages(shouldStop: () => boolean, no
       scanned++;
       if (!(['released', 'lost'].includes(row.state) && row.updated_at_ms < cutoff && row.detail !== 'pruned')) continue;
       changed++;
+      // A prior directory removal yielded to foreground work. Recheck this row under the
+      // serving owner's ledger before applying the next destructive step.
+      const eligible = () => !!db.query(`SELECT 1 FROM executions WHERE execution_id=? AND directory=?
+        AND state IN ('released','lost') AND updated_at_ms<? AND detail IS NOT 'pruned'`)
+        .get(row.execution_id, row.directory, cutoff);
       // A runner's record is its job's events in this ledger: they and the job's payload (its prompt
       // and attachment bytes) go after the same month a local journal is kept.
       if (!row.directory) {
-        db.transaction(() => {
+        const removed = db.transaction(() => {
+          if (!eligible()) return false;
           db.query(`DELETE FROM runner_events WHERE attempt_id IN (SELECT attempt_id FROM runner_attempts WHERE job_id=?)`).run(turnJobId(row.execution_id));
           db.query(`UPDATE runner_jobs SET payload_json='null' WHERE job_id=? AND state IN ('finished','unconfirmed')`).run(turnJobId(row.execution_id));
           db.query("UPDATE executions SET detail='pruned' WHERE execution_id=?").run(row.execution_id);
+          return true;
         })();
-        pruned++;
+        if (removed) pruned++;
       } else {
+        if (!eligible()) continue;
         try {
           await rm(row.directory, { recursive: true, force: true });
-          db.query("UPDATE executions SET detail='pruned' WHERE execution_id=?").run(row.execution_id);
-          pruned++;
+          const marked = db.query(`UPDATE executions SET detail='pruned' WHERE execution_id=? AND directory=?
+            AND state IN ('released','lost') AND updated_at_ms<? AND detail IS NOT 'pruned'`)
+            .run(row.execution_id, row.directory, cutoff);
+          if (marked.changes) pruned++;
         } catch (error) {
           log("warn", "execution_record_prune_failed", { execution_id: row.execution_id, ...errorFields(error) });
         }
