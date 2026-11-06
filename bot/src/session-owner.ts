@@ -118,8 +118,8 @@ export class SessionOwnerError extends Error {
   constructor(message:string,public status=400,public code=/idempotency conflict/i.test(message)?'IDEMPOTENCY_CONFLICT':'INVALID_INPUT'){super(message);}
 }
 function automaticProvider(canStart: (provider: AutomaticProvider) => boolean, choiceKey:string,
-  delegatedFromClaude = false, smallTask = false): AutomaticProvider {
-  try { return chooseProviderForNewWork(canStart, choiceKey, Date.now(), delegatedFromClaude, smallTask); }
+  delegatedFrom: 'claude-code' | 'codex' | null = null, smallTask = false): AutomaticProvider {
+  try { return chooseProviderForNewWork(canStart, choiceKey, Date.now(), delegatedFrom, smallTask); }
   catch (error) {
     // The choice is synchronous because it runs in the session creation transaction.
     // Ask the existing reader for a new observation, then report unknown for this request.
@@ -1370,8 +1370,9 @@ export class SessionOwner {
   createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;escalationReason?:string;attestedHumanModel?:string;project?:string;projectLocation?:{name:string;path:string;cwd:string;runner:string|null};title?:string;summary?:string;smallTask?:boolean;outside?:boolean;onRunner?:boolean;standingRole?:StandingAgentRole;firstInput:{text:string;machineNeed?:import('./machine-need').MachineNeed;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean}}) {
     const title=normalizeSessionTitle(input.title);
     const source=input.sourceInputId?getAcceptedSessionInput(input.sourceInputId):null;
-    const fromClaude=!!source&&getSessionById(source.session_id)?.provider_id==='claude-code';
-    const selected=this.requestTarget({...input,choiceKey:input.requestId},fromClaude);
+    const sourceProvider=source&&getSessionById(source.session_id)?.provider_id;
+    const delegatedFrom=sourceProvider==='claude-code'||sourceProvider==='codex'?sourceProvider:null;
+    const selected=this.requestTarget({...input,choiceKey:input.requestId},delegatedFrom);
     const humanChoice=selected.model&&topModel(selected.model)?input.attestedHumanModel===selected.model||humanChoseTopModel(input.sourceInputId,selected.model):false;
     const refused=escalationReason(selected.model,input.escalationReason,humanChoice);
     if(refused)throw new SessionOwnerError(refused,409,'MODEL_ESCALATION_REASON_REQUIRED');
@@ -2250,7 +2251,7 @@ export class SessionOwner {
       throw error;
     }
   }
-  private requestTarget(input:{provider:string;effort?:string;project?:string;projectLocation?:{name:string;path:string;cwd:string;runner:string|null};choiceKey?:string;smallTask?:boolean},delegatedFromClaude=false) {
+  private requestTarget(input:{provider:string;effort?:string;project?:string;projectLocation?:{name:string;path:string;cwd:string;runner:string|null};choiceKey?:string;smallTask?:boolean},delegatedFrom: 'claude-code' | 'codex' | null = null) {
     if(input.provider==='chatgpt') {
       if(input.project!==undefined)throw new SessionOwnerError('ChatGPT creation does not accept a development project.');
       // The thinking level travels as the session's model, so the admission names it and the
@@ -2260,7 +2261,7 @@ export class SessionOwner {
       return {provider:'chatgpt' as ProviderId,model:thinking,purpose:'chat',cwd:this.defaultCwd};
     }
     if(input.smallTask&&(input.provider!=='auto'||!input.choiceKey))throw new SessionOwnerError('Small task selection belongs to a new Automatic session.');
-    const selectedProvider=input.provider==='auto'?automaticProvider(provider=>this.runtime.available(provider),input.choiceKey??'',delegatedFromClaude,!!input.smallTask):null;
+    const selectedProvider=input.provider==='auto'?automaticProvider(provider=>this.runtime.available(provider),input.choiceKey??'',delegatedFrom,!!input.smallTask):null;
     const selector=parseProviderSelector(selectedProvider?AUTOMATIC_PROVIDER_ALIASES[selectedProvider]:input.provider);
     if(!selector)throw new SessionOwnerError('Select a supported provider alias.');
     if(input.effort!==undefined) {
