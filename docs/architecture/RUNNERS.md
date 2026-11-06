@@ -380,6 +380,8 @@ the read and the next preparation takes a fresh snapshot.
 
 The closed `provider-history.*` relay methods return timestamps for requested Codex item identities,
 match an authored subject against one exact transcript, and restore a transcript in bounded chunks.
+Commit attribution reads an agent's authored subject from the runner recorded for that turn or
+session; it does not scan the owner's provider home when the turn ran remotely.
 Legacy authored-subject reads without an account label scan registered account homes and return a
 timestamp only for one unique exact native-ID match. Missing and ambiguous matches remain explicit;
 the owner's current account is never used as historical evidence.
