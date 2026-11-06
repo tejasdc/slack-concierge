@@ -7,7 +7,8 @@ import {createHash} from 'node:crypto';
 import {jsonLines} from '../src/json-lines';
 import {CLAUDE_HELPER_CACHE_LIFETIME_MS,CLAUDE_MAIN_CACHE_LIFETIME_MS} from '../src/prompt-cache-lifetime';
 import {closeRunnerMachineCalls} from '../src/runner-machine-calls';
-import {collectRunnerUsageRecords,type RemoteUsageRecord} from '../src/provider-usage-breakdown-client';
+import {decodeUsageSnapshot,ledgerFromUsageSnapshot,captureUsageLedgerSnapshot,encodeUsageSnapshot} from '../src/usage-breakdown-ledger-snapshot';
+import {collectRunnerUsageReports} from '../src/provider-usage-report-client';
 
 type Counts={input:number;cacheWrite:number;cacheWrite1h:number;cacheRead:number;output:number};
 type FileRow={offset:number;size:number;mtime:number;total_json:string};
@@ -18,7 +19,7 @@ const cachePath=process.env.USAGE_BREAKDOWN_CACHE??join(state,'usage-breakdown.d
 const empty=():Counts=>({input:0,cacheWrite:0,cacheWrite1h:0,cacheRead:0,output:0});
 const number=(v:unknown)=>typeof v==='number'&&Number.isFinite(v)?Math.max(0,v):0;
 const stamp=(v:unknown)=>typeof v==='string'?Date.parse(v):NaN;
-const oneWeekAgo=Date.now()-7*86400_000;
+let oneWeekAgo=Date.now()-7*86400_000;
 let activeUsageWindowStartMs=oneWeekAgo;
 let ledger:Database|null=null;
 function ownerLedger(){return ledger??=new Database(ledgerPath,{readonly:true});}
@@ -431,6 +432,8 @@ function report(period:'today'|'week',since:number,zone:string){
     cacheDiagnostics:{meaning:'Cached input was read from the provider cache; rewritten input was sent as uncached input or cache creation. Cause reasons are coincident observed changes, not proof that a specific change invalidated the cache prefix. Possible reasons include submitted Claude instructions that its recorded prompt may have ignored.',
       flagRule:'A call rewrites over half of more than 50000 input tokens after an earlier call, with no observed compaction or provider-supported cache lifetime elapsed. A turn or session is a bug candidate when its flagged-call rate exceeds both 5% and twice its provider period baseline.',
       ordinaryMissRate,
+      ordinaryCallCount,
+      providerRates:Object.fromEntries(providerRates),
       callCount:calls.length,turnCount:callsByTurn.size,
       last48Hours:summarySince(Date.now()-48*3600_000),
       last15Minutes:summarySince(Date.now()-15*60_000),
@@ -459,16 +462,9 @@ function decodeRunnerCursor(value:string):{snapshotMaxRowid:number;afterRowid:nu
   return parsed;
 }
 function encodeRunnerCursor(value:{snapshotMaxRowid:number;afterRowid:number;providers:string;roots:string;sinceMs:number}){return Buffer.from(JSON.stringify(value)).toString('base64url');}
-async function runnerProviderPage(argument:string){
-  let input:any;try{input=JSON.parse(argument);}catch{throw new Error('INVALID_USAGE_BREAKDOWN_PAGE');}
-  if(!input||input.cursor!==null&&typeof input.cursor!=='string'||input.limit!==undefined&&(!Number.isSafeInteger(input.limit)||input.limit<1||input.limit>100)
-    ||!Array.isArray(input.providers)||!input.providers.length||input.providers.some((provider:unknown)=>provider!=='claude-code'&&provider!=='codex')
-    ||!Number.isSafeInteger(input.sinceMs)||input.sinceMs<0||input.sinceMs>Date.now())
-    throw new Error('INVALID_USAGE_BREAKDOWN_PAGE');
-  const providers=[...new Set(input.providers)].sort() as string[],providersKey=providers.join(',');
+async function scanRunnerProviderRoots(providers:string[],sinceMs:number,buildSequence:boolean){
   const roots=configuredRoots().filter(root=>providers.includes(root.provider));if(!roots.length)throw new Error('NO_PROVIDER_USAGE_HOMES');
-  const rootsKey=createHash('sha256').update(JSON.stringify(roots.map(root=>[root.provider,root.account,root.home]).sort())).digest('hex');
-  activeUsageWindowStartMs=input.sinceMs;
+  activeUsageWindowStartMs=sinceMs;
   cache.exec('BEGIN IMMEDIATE');
   try{
     for(const root of roots){
@@ -488,9 +484,21 @@ async function runnerProviderPage(argument:string){
     cache.query('DELETE FROM records WHERE at_ms<?').run(activeUsageWindowStartMs);
     cache.query('DELETE FROM cache_boundaries WHERE at_ms<?').run(activeUsageWindowStartMs);
     cache.query('DELETE FROM provider_record_sequence WHERE at_ms<?').run(activeUsageWindowStartMs);
-    cache.query('INSERT OR IGNORE INTO provider_record_sequence(path,record_id,at_ms) SELECT path,record_id,at_ms FROM records WHERE at_ms>=?').run(activeUsageWindowStartMs);
+    if(buildSequence)cache.query('INSERT OR IGNORE INTO provider_record_sequence(path,record_id,at_ms) SELECT path,record_id,at_ms FROM records WHERE at_ms>=?').run(activeUsageWindowStartMs);
     cache.exec('COMMIT');
   }catch(error){cache.exec('ROLLBACK');throw error;}
+  return roots;
+}
+async function runnerProviderPage(argument:string){
+  let input:any;try{input=JSON.parse(argument);}catch{throw new Error('INVALID_USAGE_BREAKDOWN_PAGE');}
+  if(!input||input.cursor!==null&&typeof input.cursor!=='string'||input.limit!==undefined&&(!Number.isSafeInteger(input.limit)||input.limit<1||input.limit>100)
+    ||!Array.isArray(input.providers)||!input.providers.length||input.providers.some((provider:unknown)=>provider!=='claude-code'&&provider!=='codex')
+    ||!Number.isSafeInteger(input.sinceMs)||input.sinceMs<0||input.sinceMs>Date.now())
+    throw new Error('INVALID_USAGE_BREAKDOWN_PAGE');
+  const providers=[...new Set(input.providers)].sort() as string[],providersKey=providers.join(',');
+  const roots=configuredRoots().filter(root=>providers.includes(root.provider));if(!roots.length)throw new Error('NO_PROVIDER_USAGE_HOMES');
+  const rootsKey=createHash('sha256').update(JSON.stringify(roots.map(root=>[root.provider,root.account,root.home]).sort())).digest('hex');
+  await scanRunnerProviderRoots(providers,input.sinceMs,true);
   const cursor=input.cursor===null?null:decodeRunnerCursor(input.cursor);
   if(cursor&&(cursor.providers!==providersKey||cursor.roots!==rootsKey||cursor.sinceMs!==activeUsageWindowStartMs))throw new Error('INVALID_USAGE_BREAKDOWN_CURSOR');
   const snapshotMaxRowid=cursor?.snapshotMaxRowid??Number((cache.query('SELECT COALESCE(MAX(id),0) AS n FROM provider_record_sequence').get() as {n:number}).n);
@@ -517,6 +525,16 @@ async function runnerProviderPage(argument:string){
   if(Buffer.byteLength(serialized)>192*1024)throw new Error('USAGE_BREAKDOWN_PAGE_TOO_LARGE');
   console.log(JSON.stringify({snapshotMaxRowid,records,nextCursor:hasMore?encodeRunnerCursor({snapshotMaxRowid,afterRowid:nextRowid,providers:providersKey,roots:rootsKey,sinceMs:activeUsageWindowStartMs}):null}));
 }
+async function runnerProviderReport(){
+  const snapshot=decodeUsageSnapshot(readFileSync(0,'utf8'));
+  oneWeekAgo=snapshot.sinceMs;
+  ledger=ledgerFromUsageSnapshot(snapshot);
+  const providers=[...new Set(configuredRoots().map(root=>root.provider))];
+  await scanRunnerProviderRoots(providers,oneWeekAgo,false);
+  const week=report('week',oneWeekAgo,snapshot.timeZone),today=report('today',midnight(snapshot.timeZone),snapshot.timeZone);
+  today.cacheDiagnostics.last48Hours=week.cacheDiagnostics.last48Hours;
+  console.log(JSON.stringify({today,week}));
+}
 
 function configuredRunnerProviders(){
   const result=new Map<string,Set<'claude-code'|'codex'>>();
@@ -533,48 +551,20 @@ function configuredRunnerProviders(){
   return result;
 }
 
-async function refreshFromRunners(runners:Map<string,Set<'claude-code'|'codex'>>){
-  const collected:{runner:string;row:RemoteUsageRecord}[]=[];
-  for(const [runner,providers] of runners){
-    for(const row of await collectRunnerUsageRecords(runner,[...providers],oneWeekAgo))collected.push({runner,row});
-  }
-  cache.exec('BEGIN IMMEDIATE');
-  try{
-    cache.query('DELETE FROM records').run();
-    cache.query('DELETE FROM cache_boundaries').run();
-    cache.query('DELETE FROM files').run();
-    const files=new Map<string,{firstUsageId:string|null;parentThreadId:string|null;conversation:string}>();
-    for(const {runner,row} of collected){
-      const path=`runner:${runner}:${row.sourceId}`;
-      if(row.firstUsage){const file=files.get(path)??{firstUsageId:null,parentThreadId:null,conversation:row.conversation};file.firstUsageId=row.recordId;files.set(path,file);}
-      const file=files.get(path)??{firstUsageId:null,parentThreadId:null,conversation:row.conversation};
-      file.parentThreadId=row.parentThreadId??file.parentThreadId;files.set(path,file);
-      cache.query(`INSERT INTO records(path,record_id,provider,conversation,helper,at_ms,model,input,cache_write,cache_write_1h,cache_read,output,
-        provider_turn_id,client_version,source_account,parent_thread_id,first_usage) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(path,row.recordId,row.provider,row.conversation,row.helper?1:0,row.atMs,row.model,row.input,row.cacheWrite,row.cacheWrite1h,row.cacheRead,row.output,
-          row.providerTurnId,row.clientVersion,row.sourceAccount,row.parentThreadId,row.firstUsage?1:0);
-      for(const at of row.boundaries)cache.query('INSERT OR IGNORE INTO cache_boundaries VALUES(?,?,?)').run(path,at,'compaction');
-    }
-    for(const [path,file] of files)cache.query(`INSERT INTO files(path,offset,size,mtime,total_json) VALUES(?,0,0,0,?)`)
-      .run(path,JSON.stringify({schemaVersion:4,...file}));
-    cache.query('DELETE FROM records WHERE at_ms<?').run(oneWeekAgo);
-    cache.query('DELETE FROM cache_boundaries WHERE at_ms<?').run(oneWeekAgo);
-    cache.exec('COMMIT');
-  }catch(error){cache.exec('ROLLBACK');throw error;}
-}
-
 async function main(){
   if(process.argv[2]==='--provider-page'){
     await runnerProviderPage(process.argv[3]??'');
     return;
   }
+  if(process.argv[2]==='--provider-report'){
+    await runnerProviderReport();
+    return;
+  }
   const started=performance.now();
   const runners=configuredRunnerProviders();
   if(!runners.size)throw new Error('NO_PROVIDER_USAGE_RUNNERS_CONFIGURED');
-  await refreshFromRunners(runners);
-  const zone=(ownerLedger().query('SELECT time_zone FROM saved_work_settings WHERE singleton=1').get() as {time_zone:string}|null)?.time_zone??'America/New_York';
-  const week=report('week',oneWeekAgo,zone),today=report('today',midnight(zone),zone);
-  today.cacheDiagnostics.last48Hours=week.cacheDiagnostics.last48Hours;
+  const snapshot=encodeUsageSnapshot(captureUsageLedgerSnapshot(ownerLedger(),oneWeekAgo));
+  const {today,week}=await collectRunnerUsageReports(runners,snapshot);
   console.log(JSON.stringify({today,week,scanMs:Math.round(performance.now()-started)}));
 }
 main().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>closeRunnerMachineCalls());

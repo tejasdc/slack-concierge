@@ -983,10 +983,12 @@ and accepted agent-shell Astra command starts from the owner's escalation log
 by model. This measures model calls, not price or task quality, and the transcript
 scanner's `computedAt` bounds freshness.
 Today starts at midnight in the owner's saved-work time zone; week means the last
-seven days. A separate worker reads provider transcripts incrementally and keeps its
-cursor and deduplicated usage records in `usage-breakdown.db` beside, never inside,
-the ledger. The ledger is read only for session titles, projects, and account choices.
-The worker does not copy or modify transcripts and does not hold the owner event loop.
+seven days. Each runner reads its provider transcripts incrementally and keeps its
+cursor and deduplicated usage records in its own usage cache, never in the owner ledger.
+The owner sends only the relevant one-week session, turn, account and prompt-cache facts to
+the runner for attribution. The runner computes the account/session report and cache diagnostics
+beside its cache; the owner combines runner reports. Raw provider records do not cross the relay
+on each refresh. Neither scanner modifies transcripts or holds the owner event loop.
 It runs in the background: every usage reading starts a scan when the last one is over five
 minutes old, and a read answers from the latest result with its `computedAt` (only the first
 read ever waits for a scan). Until 2026-10-08 it was scanned per read; while the owner

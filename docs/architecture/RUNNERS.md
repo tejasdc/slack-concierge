@@ -637,12 +637,15 @@ state so a retry returns the first result. Neither owner paths nor arbitrary fil
 accepted by these methods. Check with `bun bot/scripts/runner-provider-history-check.ts`.
 
 Usage breakdown follows the same boundary. The runner scans its registered account homes into its
-own incremental cache and returns path-free, ordered pages of provider usage records. Each cursor
-pins the report's time window, a stable row high-water mark and the provider/home set, so the owner can fetch every page
-without double counting. The owner joins those records to its local session, turn and account
-events, keeping the existing page classifications and cache diagnostics. It replaces cached runner
-rows only after every configured runner answers; a missing runner leaves the previously published
-report and its timestamp intact. Relay pages are capped at 100 records and 192 KiB.
+own incremental cache. For a report, the owner sends a compressed, one-week snapshot of the
+session, turn, account and prompt-cache facts needed for attribution. The runner joins those facts
+to its local usage cache and returns a compressed report, including the account/session breakdown
+and bounded cache diagnostics. The owner combines reports from its configured runners and publishes
+the new result only after all answer. A missing runner leaves the previous result and its timestamp
+intact. The owner no longer retransfers every raw usage record on each five-minute refresh. The
+older path-free record pages remain for focused diagnostics, not the recurring report. The report
+call caps its compressed request and response independently of the number of usage records; a
+one-person fixture with 100,004 calls returned in two runner calls.
 
 ## Heavy work out of the owner's request loop
 
