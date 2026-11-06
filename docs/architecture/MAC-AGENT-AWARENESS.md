@@ -116,13 +116,13 @@ outside agent's statement that Tejas authorized an update does not turn into a h
 input. A missing or changed local transcript refuses the grant.
 
 For this grant, Computer Use may select the exact web app and make a same-program
-passive accessibility or screenshot read. The only admitted update action is the
-policy's fixed program: it reads the current accessibility tree, requires one
-Thinkering window and exactly one `Update now` button, rejects an `Update anyway`
-warning, clicks that freshly read item, then reads the resulting state. Other clicks,
-reloads, apps and browser tools remain refused. A successful hook admission does not
+passive accessibility or screenshot read. Update clicks remain refused. Computer Use
+exposes a numeric accessibility index for a click, but no stable page ID, ready
+release identity or stable control handle. The former fixed program could identify
+the app window and an `Update now` label, but could not prove that the control
+belonged to the authorized page or release at click time. A read receipt does not
 prove the original page is still open, that its edits are saved, or that the new
-release loaded; the Mac worker must establish those separately before reporting an
+release loaded. The Mac worker must establish those separately before reporting an
 installed update. The local Codex transcript is verified on the Mac at the tool
 boundary because that machine holds the original provider history and the app.
 This is an audit and cooperative-agent policy boundary, not protection against an
@@ -132,12 +132,12 @@ not a promise that the app will install that exact build. thnkr.ing's page-local
 update contract can carry one tap to a newer server release within its two-minute
 attempt, while the old page alone decides when saved work permits reload. The Mac
 worker must observe the actual running build after the page opens.
-The fixed program invokes the app's ordinary Update now action once. That action
-checks unsaved drafts before beginning an install and shows a separate Update
-anyway choice when they exist; the guard never admits that second choice. The
-app's own reload guard also waits for recordings and unsaved work. Concierge
-does not infer that no unsaved work exists merely from AX text, and the Mac
-worker still inspects the page before invoking this program.
+The app's ordinary Update now action checks unsaved drafts before beginning an
+install and shows a separate Update anyway choice when they exist. Its reload
+guard also waits for recordings and unsaved work. Those app checks do not turn
+an accessibility label into proof of the current page or ready release. A future
+update route needs a fresh, action-bound page and release identity, a positive
+safe-state signal and a stable target before Concierge can admit its click.
 
 The question gate accepts a device-only claim when its question names one action on a
 physical device. The agent first uses its available device route. If that route reaches

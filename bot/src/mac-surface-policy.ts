@@ -7,13 +7,6 @@ export const CANVAS_AUTHORIZING_HUMAN_INPUT='capture:7bad480ccf4350922acb3ac750c
 export const RETIREMENT_AUTHORIZING_HUMAN_INPUT='capture:2a296c24ca627e68981feab3c3e56a32b3e43cf317d0eb545ee4cab23801270b';
 export const RETIREMENT_UNLOCK_HUMAN_INPUT='1ba89166-c732-481b-b53a-e77e85ba93ba';
 export const RETIREMENT_CURRENT_UNLOCK_HUMAN_INPUT='a806ad0a-a0d8-4f72-b603-b245c95de638';
-export const MAC_UPDATE_PROGRAM=String.raw`var thnkrUpdateApp = await cua.getApp("${AUTHORIZED_WEB_APP}");
-var thnkrUpdateState = await thnkrUpdateApp.getAXState({disableDiffing:true});
-var thnkrUpdateWindows = thnkrUpdateState.match(/^\d+ standard window thnkr\.ing, ID: WebAppWindow-Thinkering(?:,.*)?$/gm) ?? [];
-var thnkrUpdateButtons = [...thnkrUpdateState.matchAll(/^\s*(\d+) button Update now(?:,.*)?$/gm)];
-if (thnkrUpdateWindows.length !== 1 || thnkrUpdateButtons.length !== 1 || /\bUpdate anyway\b/.test(thnkrUpdateState)) throw new Error("Exact thnkr.ing Update now control not found or unsaved work is present");
-await thnkrUpdateApp.click(Number(thnkrUpdateButtons[0][1]));
-await thnkrUpdateApp.getAXStateAndScreenshot({disableDiffing:true});`;
 export const RETIREMENT_FILE_MENU_PROGRAM=String.raw`var thnkrRetirementMenuApp = await cua.getApp("${AUTHORIZED_WEB_APP}");
 var thnkrRetirementMenuState = await thnkrRetirementMenuApp.getAXState({disableDiffing:true});
 var thnkrRetirementWindowLines = thnkrRetirementMenuState.match(/^\d+ standard window thnkr\.ing, ID: WebAppWindow-Thinkering(?:,.*)?$/gm) ?? [];
@@ -61,10 +54,6 @@ function authorizedRetirementInspectionNeed(need:RecordedNeed,toolName:string):n
 
 function authorizedCurrentWebAppNeed(need:RecordedNeed,toolName:string):boolean {
   return authorizedWebAppNeed(need,toolName)||authorizedRetirementInspectionNeed(need,toolName)||authorizedUpdateNeed(need,toolName);
-}
-
-function authorizedUpdateClick(need:RecordedNeed,toolName:string,code:string):boolean {
-  return authorizedUpdateNeed(need,toolName)&&code===MAC_UPDATE_PROGRAM;
 }
 
 function authorizedRetirementFileMenuOpen(need:RecordedNeed,toolName:string,code:string):boolean {
@@ -139,7 +128,7 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
       &&!authorizedWebAppInspectorOpen(need,toolName,code)
       &&!authorizedRetirementFileMenuOpen(need,toolName,code)
       &&!authorizedRetirementNewWindowOpen(need,toolName,code)
-      &&!authorizedUpdateClick(need,toolName,code)) {
+      ) {
     if(!authorizedCurrentWebAppNeed(need,toolName))return !COMPUTER_CONTROL.test(toolName)
       ? 'This Safari web app needs an active Mac-app request naming its exact bundle and page IDs, followed by a direct Computer Use getApp call for that bundle. Reissue the request with Tejas’s authorization; do not ask him to copy the app’s contents.'
       : retirementHumanInput(need.humanInputId)
@@ -148,7 +137,7 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
       ? 'This human work authorization covers only passive inspection of the exact thnkr.ing web app. Select its bundle again in the same Computer Use program as each read; Inspector, input, other apps and whole-screen calls remain refused.'
       : 'This Safari web app needs an active Mac-app request naming its exact bundle and page IDs, followed by a direct Computer Use getApp call for that bundle. Reissue the request with Tejas’s authorization; do not ask him to copy the app’s contents.';
     return authorizedUpdateNeed(need,toolName)
-      ? 'This work request covers the exact thnkr.ing app and its Update now control only. The app must show one window, one Update now control and no Update anyway warning; other clicks and reloads remain refused.'
+      ? 'This work request covers passive inspection of the exact thnkr.ing app. Update now remains refused because Computer Use cannot prove the current page and ready release or bind the click to a stable control; other clicks and reloads remain refused.'
       : authorizedRetirementInspectionNeed(need,toolName)
       ? 'This human work authorization covers exact thnkr.ing app reads, guarded File-menu inspection, and guarded New Window selection when the recorded need names it. Other apps, page input, reload and whole-screen calls remain refused.'
       : typeof need!=='string'&&need.humanInputId!==AUTHORIZING_HUMAN_INPUT
@@ -161,7 +150,7 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
       &&/\b(?:Google Chrome|Chrome|Safari|Thinkering)\b/i.test(code)
       &&!authorizedWebAppInspection(need,toolName,code)&&!authorizedScopedRead(need,toolName,code)
       &&!authorizedWebAppInspectorOpen(need,toolName,code)&&!authorizedRetirementFileMenuOpen(need,toolName,code)
-      &&!authorizedRetirementNewWindowOpen(need,toolName,code)&&!authorizedUpdateClick(need,toolName,code))
+      &&!authorizedRetirementNewWindowOpen(need,toolName,code))
     return code.includes('com.apple.Safari.WebApp.')
       ? 'This Safari web app needs an active Mac-app request naming its exact bundle and page IDs, followed by a direct Computer Use getApp call for that bundle. Reissue the request with Tejas’s authorization; do not ask him to copy the app’s contents.'
       : 'Computer Use cannot target Tejas’s personal browser. Run the website on the server, or use the isolated Mac browser after a recorded server failure.';
