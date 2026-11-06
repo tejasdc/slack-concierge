@@ -97,7 +97,13 @@ export async function serveRunnerProviderForkCall(method:string,params:any,servi
   const client=services.codexClient?.()??new CodexAppServerClient();
   try{
     if(method==='provider-fork.find')return {sessionUUIDs:await findCodexForks(client,{account,cwd,sessionUUID,threadSource})};
-    const forked=await codexFork(client,{account,cwd,additionalDirs,sessionUUID,boundary,threadSource});
-    return {sessionUUID:forked};
+    try{
+      const forked=await codexFork(client,{account,cwd,additionalDirs,sessionUUID,boundary,threadSource});
+      return {sessionUUID:forked};
+    }catch(error){
+      if(error instanceof Error&&error.message==='PROVIDER_FORK_ACCOUNT_MISMATCH')
+        return {status:'rejected',reason:'The running Codex App Server has a different account; no fork was started.'};
+      throw error;
+    }
   }finally{await client.close().catch(()=>{});}
 }

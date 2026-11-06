@@ -1810,8 +1810,10 @@ export class SessionExecutionHost {
         db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({...JSON.parse(operation.receipt_json!),fork:retained}),operation.id);
       })();
       effectIntended=true;
+      const remoteResult=remoteCall?await runnerMachineCall<any>(runner!,'provider-fork.execute',remoteCall,120_000):null;
+      if(remoteResult?.status==='rejected')throw Object.assign(new Error(String(remoteResult.reason)),{outcome:'rejected'});
       const result:RunResult=remoteCall
-        ?{text:'Fork created.',sessionUUID:(await runnerMachineCall<any>(runner!,'provider-fork.execute',remoteCall,120_000))?.sessionUUID,toolsUsed:[],providerTurnId:null}
+        ?{text:'Fork created.',sessionUUID:remoteResult?.sessionUUID,toolsUsed:[],providerTurnId:null}
         :await provider.fork({sessionUUID:pin.parentSessionUUID,cwd:retained.cwd,additionalDirs:retained.additionalDirs,lastTurnId:pin.boundary,threadSource:retained.threadSource,interactionPolicy:'standard'});
       if(typeof result.sessionUUID!=='string'||result.sessionUUID===pin.parentSessionUUID)throw new Error('The runner did not return a distinct provider fork identity.');
       completeNativeFork(operation.id,this.options.instanceId,result);

@@ -221,7 +221,8 @@ conversation ID, exact turn boundary, stable fork source and project identities;
 its own account home and project folders before asking Claude Code or its local Codex App Server to
 fork. The new conversation records the fork's exact runner and account; a local copy records an
 explicit local binding. Codex forks check the daemon's account without changing its login while
-another turn may be running. Recovery searches that exact runner and account for a matching Codex fork. A lost runner
+another turn may be running. A daemon account mismatch is a definite refusal before any fork;
+the control turn settles as failed rather than uncertain. Recovery searches that exact runner and account for a matching Codex fork. A lost runner
 answer remains uncertain instead of starting an owner-local fork. Check with
 `bun bot/scripts/runner-provider-fork-check.ts`.
 

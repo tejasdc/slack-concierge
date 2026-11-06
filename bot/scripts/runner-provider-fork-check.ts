@@ -38,6 +38,16 @@ assert.equal(codexRequests[1].method,'thread/fork');
 assert.deepEqual(codexRequests[1].params,{threadId:parent,cwd:'/runner/workspace',runtimeWorkspaceRoots:['/runner/workspace','/runner/workspace/thinkering/notes'],
   approvalPolicy:'never',sandbox:'danger-full-access',deferGoalContinuation:true,excludeTurns:true,lastTurnId:'turn_17',threadSource:source});
 
+const mismatchRequests:string[]=[];
+const mismatch=await serveRunnerProviderForkCall('provider-fork.execute',{
+  provider:'codex',account:'codex@example.test',sessionUUID:parent,boundary:'turn_17',threadSource:source,
+  location:{project:null,path:''},additionalLocations:[],
+},{resolveHome:()=>'/runner/accounts/codex',resolveProject:projectCwd,codexClient:()=>({
+  request:async(method:string)=>{mismatchRequests.push(method);return {account:{email:'another@example.test'}};},close:async()=>{},
+} as any)}) as any;
+assert.equal(mismatch.status,'rejected');
+assert.deepEqual(mismatchRequests,['account/read']);
+
 await assert.rejects(()=>serveRunnerProviderForkCall('provider-fork.execute',{
   provider:'claude-code',account:'tejas@example.test',sessionUUID:parent,boundary,threadSource:source,
   location:{project:'thinkering',path:'../outside'},additionalLocations:[],
