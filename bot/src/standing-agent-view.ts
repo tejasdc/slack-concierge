@@ -1,4 +1,4 @@
-import {relative} from 'node:path';
+import {basename,relative} from 'node:path';
 import type {Database} from 'bun:sqlite';
 import type {SessionRow} from './state';
 import {STANDING_AGENTS} from './standing-agents';
@@ -58,7 +58,10 @@ export function standingAgentView(db:Database,workspaceRoot:string) {
   const agents=STANDING_AGENTS.map(agent=>{
     const row=db.query(`SELECT * FROM sessions WHERE status!='archived'
       AND json_extract(native_metadata_json,'$.standingRole')=? ORDER BY id DESC LIMIT 1`).get(agent.role) as SessionRow|null;
-    const bound=row&&relative(workspaceRoot,sessionMetadata(row).cwd??'')===agent.project?row:null;
+    const meta=row?sessionMetadata(row):null;
+    const runnerBound=!!meta&&typeof meta.providerRunner==='string'&&!!meta.providerRunner.trim()
+      &&meta.projectName===basename(agent.project)&&(!meta.projectPath||meta.projectPath==='');
+    const bound=row&&(runnerBound||relative(workspaceRoot,meta?.cwd??'')===agent.project)?row:null;
     const own=bound?db.query(`SELECT id AS repeat_turn_id,saved_root_id,saved_repeat_ms,saved_fire_at_ms,dispatch_next_attempt_ms
       FROM turns WHERE session_id=? AND status='queued' AND saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL
       ORDER BY id LIMIT 1`).get(bound.id) as ScheduleRow|null:null;
@@ -79,8 +82,11 @@ export function standingAgentView(db:Database,workspaceRoot:string) {
   const unowned=repeats.flatMap(repeat=>{
     const session=sessionView(repeat)!;
     if(owned.has(session.address))return [];
-    const cwd=sessionMetadata(repeat).cwd;
-    return [{kind:'unowned' as const,session,folder:cwd?relative(workspaceRoot,cwd):null,
+    const meta=sessionMetadata(repeat),cwd=meta.cwd;
+    const folder=typeof meta.projectName==='string'
+      ?`${meta.projectName}${typeof meta.projectPath==='string'&&meta.projectPath?`/${meta.projectPath}`:''}`
+      :cwd?relative(workspaceRoot,cwd):null;
+    return [{kind:'unowned' as const,session,folder,
       repeatingSchedule:schedule(repeat)!,lastRun:lastRun(db,repeat.id,repeat.saved_root_id)}];
   });
   return {agents,unownedSchedules:unowned,coverage:{complete:!incomplete,limit:MAX_SCHEDULES,

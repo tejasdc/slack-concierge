@@ -68,7 +68,8 @@ import {noticeTime} from './provider-free-notice';
 import {movedToCodex} from './provider-exhaustion-recovery';
 import {SIGNIN_WORKER,signInRenewalOf,signInWorkerActionId,signInWorkerText} from './signin-renewal';
 import {markRepairNoticesDelivered,pendingRepairNotices,repairNoticeText,REPAIR_AGENT_PROVIDER,REPAIR_AGENT_TITLE} from './repair-notices';
-import {standingAgentForSession,standingAgentSession,standingAgentProject,assertStandingAgentFolder,bindStandingAgentSession,unboundJournalKeeperSession,unboundRepairAgentSession,canOwnStandingWork,STANDING_WORK_REFUSAL,type StandingAgentRole} from './standing-agents';
+import {standingAgent,standingAgentForSession,standingAgentSession,assertStandingAgentPlacement,bindStandingAgentSession,unboundJournalKeeperSession,unboundRepairAgentSession,canOwnStandingWork,STANDING_WORK_REFUSAL,type StandingAgentRole} from './standing-agents';
+import {resolveRunnerProjectLocation} from './runner-project-location';
 import {standingAgentView} from './standing-agent-view';
 import {hostTimerView} from './host-timer-view';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
@@ -1153,6 +1154,7 @@ export class SessionOwner {
       timing:presence.timing,cancellation:presence.cancellation,agentName:presence.agentName,presenceRevision:presence.presenceRevision,
       runtimeThreadId:session.agent_session_uuid,activeRunId:active?nativeRunId(active.id):null,latestRunId:latest?nativeRunId(latest.id):null,
       nativeKey:meta.source?.id??null,nativeBinding:meta.nativeBinding??null,title:labels.title,summary:labels.summary,project:labels.project,
+      projectName:meta.projectName??null,projectPath:meta.projectPath??null,
       standingRole:standingAgentForSession(this.defaultCwd,session),
       handoff:handoffView(session.id),
       workflowId:meta.workflowId??null,mode:meta.purpose??'chat',purpose:meta.purpose??'chat',model:presence.model,reasoningEffort:presence.reasoningEffort,
@@ -1378,7 +1380,7 @@ export class SessionOwner {
     if(input.onRunner&&selected.provider!=='claude-code')throw new SessionOwnerError('--on-runner runs a Claude Code session; choose a Claude alias (Automatic chose '+selected.provider+').',400);
     const {provider,...metadata}={...selected,...(input.outside?{outside:true}:{}),...(input.onRunner?{onRunner:true}:{})};
     if(input.standingRole){
-      assertStandingAgentFolder(this.defaultCwd,input.standingRole,metadata.cwd);
+      assertStandingAgentPlacement(this.defaultCwd,input.standingRole,metadata as NativeSessionMetadata);
       if(standingAgentSession(this.defaultCwd,input.standingRole))throw new SessionOwnerError('This standing role was bound while the request was being prepared; retry against its current session.',409,'STANDING_AGENT_ALREADY_BOUND');
     }
     if(input.saved&&!this.runtime.available(provider))throw new SessionOwnerError(`${provider} start unavailable; saved work was not created.`,409);
@@ -1403,15 +1405,17 @@ export class SessionOwner {
    * hears only what it declares needs him (`repair-notices.ts`). One input carries every notice
    * pending at that moment, so a burst of crashes is one turn, not one each.
    */
-  deliverRepairNotices():number {
+  async deliverRepairNotices():Promise<number> {
     const pending=pendingRepairNotices(db);
     if(!pending.length)return 0;
     let session=standingAgentSession(this.defaultCwd,'concierge-repair')??unboundRepairAgentSession(this.defaultCwd);
     if(!session) {
-      const target=this.requestTarget({provider:REPAIR_AGENT_PROVIDER,project:standingAgentProject(this.defaultCwd,'concierge-repair')?.cwd});
+      const project=await this.standingProjectLocation('concierge-repair');
+      if(!project)throw new SessionOwnerError('The concierge repair project is unavailable on its configured runner.',424,'PROJECT_UNAVAILABLE');
+      const target=this.requestTarget({provider:REPAIR_AGENT_PROVIDER,project:project.cwd,projectLocation:project});
       if(!this.runtime.available(target.provider))return 0;
       const {provider,...metadata}=target;
-      assertStandingAgentFolder(this.defaultCwd,'concierge-repair',metadata.cwd);
+      assertStandingAgentPlacement(this.defaultCwd,'concierge-repair',metadata as NativeSessionMetadata);
       session=createNativeSession(provider,{title:REPAIR_AGENT_TITLE,summary:REPAIR_AGENT_PURPOSE,...metadata,repairAgent:true,standingRole:'concierge-repair'});
       bindStandingAgentSession(this.defaultCwd,'concierge-repair',session);
       const created=retainSessionInput({sessionId:session.id,scope:'service:repair-agent',actionId:`repair-agent:${session.id}`,kind:'create',origin:'service',
@@ -1464,6 +1468,31 @@ export class SessionOwner {
   savedWorkControl(turnId:number,action:string,body:Record<string,unknown>){return updateSavedTurn(turnId,action,body);}
   private configuredProjectRunner():string|null { return process.env.CONCIERGE_TURN_RUNNER?.trim()||null; }
   async prepareProjectLocation(location:string,runner?:string|null) { return this.locateProject(location,runner); }
+  async preparePersistedProjectLocation(metadata:NativeSessionMetadata):Promise<{name:string|null;path:string;cwd:string;runner:string|null}> {
+    const runner=metadata.providerRunner??this.configuredProjectRunner();
+    if(runner){
+      const resolved=await resolveRunnerProjectLocation(runner,metadata);
+      return {name:resolved.project,path:resolved.path,cwd:resolved.cwd,runner};
+    }
+    const location=typeof metadata.projectName==='string'
+      ?`${metadata.projectName}${typeof metadata.projectPath==='string'&&metadata.projectPath?`/${metadata.projectPath}`:''}`
+      :typeof metadata.project==='string'?metadata.project:typeof metadata.cwd==='string'?metadata.cwd:'';
+    if(!location)return {name:null,path:'',cwd:this.defaultCwd,runner:null};
+    const local=sessionProject(this.defaultCwd,location,{inside:true});
+    if(!local)throw new SessionOwnerError('This session has no registered project folder on this machine.',424,'PROJECT_UNAVAILABLE');
+    const project=containingProject(this.defaultCwd,local.cwd);
+    if(!project)throw new SessionOwnerError('This session folder is outside a registered project.',424,'PROJECT_UNAVAILABLE');
+    return {name:project.name,path:relative(project.cwd,local.cwd),cwd:local.cwd,runner:null};
+  }
+  async hasRegisteredProject(session:SessionRow):Promise<boolean> {
+    try{return !!(await this.preparePersistedProjectLocation(sessionMetadata(session))).name;}
+    catch{return false;}
+  }
+  private async standingProjectLocation(role:StandingAgentRole) {
+    const agent=standingAgent(role);
+    if(!agent)return null;
+    return this.locateProject(agent.project);
+  }
   private async locateProject(location:string,runnerOverride?:string|null):Promise<{name:string;path:string;cwd:string;runner:string|null}> {
     const runner=runnerOverride??this.configuredProjectRunner();
     if(runner) {
@@ -1729,16 +1758,20 @@ export class SessionOwner {
       tries:0,since:new Date(startsAtMs).toISOString(),failedAt:null,repair:null,stopped:null};
   }
   private ensureInboxSession() {
-    const project=sessionProject(this.defaultCwd,'slack-inbox');
-    if(!project)throw new SessionOwnerError('The slack-inbox project is unavailable.',503,'PROJECT_UNAVAILABLE');
     const current=inboxSession(),meta=current?sessionMetadata(current):null;
-    if(current&&meta?.cwd===project.cwd&&meta.inboxRole==='project-router'){
+    if(current&&meta?.inboxRole==='project-router'&&meta.standingRole==='inbox'){
       maybeStartInboxProviderFailover(current);
       return current;
     }
+    const runner=this.configuredProjectRunner();
+    const project=runner
+      ?{name:'slack-inbox',path:'',cwd:join(this.defaultCwd,'slack-inbox'),runner}
+      :sessionProject(this.defaultCwd,'slack-inbox')&&{name:'slack-inbox',path:'',cwd:sessionProject(this.defaultCwd,'slack-inbox')!.cwd,runner:null};
+    if(!project)throw new SessionOwnerError('The slack-inbox project is unavailable.',503,'PROJECT_UNAVAILABLE');
     const provider=claudeAllowanceHeld()?'codex':'claude-code';
     return createNativeSession(provider,{title:'Inbox',summary:INBOX_PURPOSE,inbox:true,inboxRole:'project-router',standingRole:'inbox',
-      purpose:'chat',cwd:project.cwd,project:project.cwd,model:provider==='claude-code'?'opus[1m]':undefined});
+      purpose:'chat',cwd:project.cwd,project:project.cwd,projectName:project.name,projectPath:project.path,
+      ...(project.runner?{providerRunner:project.runner}:{}),model:provider==='claude-code'?'opus[1m]':undefined});
   }
   inbox() {
     if(process.env.CONCIERGE_READ_WORKER==='1'){
@@ -1882,13 +1915,12 @@ export class SessionOwner {
   }
   async createTask(id:string,body:unknown) {
     const session=this.session(id),input=object(body);only(input,['clientActionId','reference']);const action=actionId(input),selected=this.selectedMessage(session,input.reference),metadata=sessionMetadata(session);
-    const runner=typeof metadata.providerRunner==='string'?metadata.providerRunner:null;
-    let projectName=typeof metadata.projectName==='string'?metadata.projectName:null;
-    let project=metadata.project?containingProject(this.defaultCwd,metadata.project):null;
-    if(runner&&!projectName&&typeof metadata.project==='string') {
-      const located=await this.runnerProjectCall<{project:string}>('projects.locate',{location:metadata.project});
-      projectName=located?.project??null;
-    }
+    const runner=metadata.providerRunner??this.configuredProjectRunner();
+    let projectName:string|null=null,project:ReturnType<typeof containingProject>=null;
+    if(runner) {
+      const location=await this.preparePersistedProjectLocation(metadata);
+      projectName=location.name;
+    } else project=metadata.project?containingProject(this.defaultCwd,metadata.project):null;
     if(runner&&!projectName)throw new SessionOwnerError('This session has no stable runner project identity for task creation.',409,'PROJECT_UNAVAILABLE');
     if(!runner&&!project)throw new SessionOwnerError('This session has no exact registered project task authority.',409,'PROJECT_UNAVAILABLE');
     const accepted=db.transaction(()=>{
@@ -2229,7 +2261,7 @@ export class SessionOwner {
       ...('runner' in project?{projectName:project.name,projectPath:project.path,...(project.runner?{providerRunner:project.runner}:{})}:{}),
       ...(input.provider==='auto'?{automaticProviderChoice:true,...(input.smallTask?{automaticSmallTask:true}:{})}:{})};
   }
-  async create(body:unknown) {
+  async create(body:unknown,projectLocationOverride?:{name:string;path:string;cwd:string;runner:string|null}) {
     const input=object(body);only(input,['clientActionId','provider','purpose','title','workflowId','project','model','reasoningEffort','firstInput','door','savedWork']);
     const savedWork=input.savedWork===undefined?null:object(input.savedWork);
     if(savedWork){only(savedWork,['kind','atMs','expiresAtMs','repeatEveryMs','quietOnly']);if(!input.firstInput||!input.title||input.provider==='chatgpt'||!['scheduled','banked'].includes(savedWork.kind))
@@ -2245,8 +2277,8 @@ export class SessionOwner {
     if(input.provider==='auto'&&(input.model!==undefined||input.reasoningEffort!==undefined))throw new SessionOwnerError('Choose a provider before setting its model or effort.');
     if(input.purpose==='develop'&&input.project===undefined)throw new SessionOwnerError('Development sessions require an explicit project.');
     if(input.project!==undefined&&typeof input.project!=='string')throw new SessionOwnerError('Choose an exact project from the project list.');
-    const project=input.project===undefined?null:await this.locateProject(input.project);
-    if(savedWork?.repeatEveryMs!==undefined&&(!project||!canOwnStandingWork(this.defaultCwd,this.managedProjectRecord(project.name)?.code_path??project.cwd)))
+    const project=input.project===undefined?null:projectLocationOverride??await this.locateProject(input.project);
+    if(savedWork?.repeatEveryMs!==undefined&&(!project||(!project.runner&&!canOwnStandingWork(this.defaultCwd,this.managedProjectRecord(project.name)?.code_path??project.cwd))))
       throw new SessionOwnerError(STANDING_WORK_REFUSAL,409,'STANDING_WORK_PROJECT_REQUIRED');
     if(input.model!==undefined){
       if(typeof input.model!=='string'||!input.model.trim())throw new SessionOwnerError('Select a supported provider model.');
@@ -2864,10 +2896,13 @@ export class SessionOwner {
     let rerunSessionId:string|null=null;
     if(chosen&&chosen.provider!==session.provider_id) {
       const meta=sessionMetadata(session),payload=JSON.parse(target.payload_json),first=target.kind==='create'?payload.firstInput:payload;
-      const project=sessionProject(this.defaultCwd,String(meta.project??meta.cwd??''),{inside:true});
-      const created=this.create({clientActionId:`${actionId(input)}:rerun`,provider:chosen.provider,purpose:meta.purpose==='develop'&&project?'develop':'chat',
-        title:`${this.catalogueLabels(session).title} (on ${chosen.label} during ${modelLabel(offer.model)}'s outage)`,...(project?{project:project.cwd}:{}),model:chosen.model,
-        firstInput:{text:first.text??'',...(Array.isArray(first.attachments)&&first.attachments.length?{attachments:first.attachments}:{})}});
+      const persisted=await this.preparePersistedProjectLocation(meta);
+      if(meta.purpose==='develop'&&!persisted.name)throw new SessionOwnerError('This session has no runner-resolved project for its outage rerun.',424,'PROJECT_UNAVAILABLE');
+      const location=persisted.name?{name:persisted.name,path:persisted.path,cwd:persisted.cwd,runner:persisted.runner}:undefined;
+      const project=location?`${location.name}${location.path?`/${location.path}`:''}`:undefined;
+      const created=await this.create({clientActionId:`${actionId(input)}:rerun`,provider:chosen.provider,purpose:meta.purpose==='develop'?'develop':'chat',
+        title:`${this.catalogueLabels(session).title} (on ${chosen.label} during ${modelLabel(offer.model)}'s outage)`,...(project?{project}:{}),model:chosen.model,
+        firstInput:{text:first.text??'',...(Array.isArray(first.attachments)&&first.attachments.length?{attachments:first.attachments}:{})}},location);
       rerunSessionId=created.session.id;
     }
     const operation=this.saveControl(session,'outage-choice',input,()=>{

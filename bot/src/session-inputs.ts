@@ -150,7 +150,14 @@ export function createNativeSession(provider:ProviderId, metadata:NativeSessionM
   const summary=purposeLine(metadata.summary)??purposeLine(metadata.title);
   if(!summary)throw new Error('A session needs a purpose: say in one line what it is for.');
   const cwd=metadata.cwd??metadata.project??null;
-  const coordinates=typeof cwd==='string'?projectCoordinates(process.env.CONCIERGE_WORKSPACE_ROOT?.trim()||join(homedir(),'workspace'),cwd):null;
+  // A runner-bound session's project identity was resolved on that runner. Its `cwd` is
+  // presentation metadata and may be meaningless on the owner machine, so never infer or
+  // overwrite the durable project name from the owner's filesystem.
+  const hasStableProjectIdentity=metadata.providerRunner!==undefined
+    ||metadata.projectName!==undefined||metadata.projectPath!==undefined;
+  const coordinates=!hasStableProjectIdentity&&typeof cwd==='string'
+    ?projectCoordinates(process.env.CONCIERGE_WORKSPACE_ROOT?.trim()||join(homedir(),'workspace'),cwd)
+    :null;
   const placed=coordinates?{...metadata,projectName:coordinates.projectName,projectPath:coordinates.projectPath}:metadata;
   const result=db.query(`INSERT INTO sessions(slack_channel_id,slack_thread_ts,provider_id,native_metadata_json)
     VALUES(NULL,NULL,?,?)`).run(provider,JSON.stringify({...placed,summary}));
