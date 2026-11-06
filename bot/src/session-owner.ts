@@ -4052,7 +4052,9 @@ export class SessionOwner {
         if(claudeAllowanceHeld())throw new SessionOwnerError(CLAUDE_ALLOWANCE_HOLD_MESSAGE,409,'CLAUDE_ALLOWANCE_HELD');
         if(!this.runtime.auth?.chooseClaudeLaunch)throw new SessionOwnerError('Claude account selection is unavailable.',503);
         const model=url.searchParams.get('model');
-        if(model&&(!/^[A-Za-z0-9._-]{1,100}$/.test(model)))throw new SessionOwnerError('Invalid Claude model.',400);
+        if(model&&(model.length>100||(!/^[A-Za-z0-9._-]+$/.test(model)
+          &&!modelCatalogue('claude-code').some(choice=>choice.id===model))))
+          throw new SessionOwnerError('Invalid Claude model.',400);
         result={choice:this.runtime.auth.chooseClaudeLaunch(model)};
       }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='topics'&&parts.length===2){
