@@ -289,6 +289,40 @@ export function recordSessionEvent(input:{eventId:string;sessionId:number;inputI
   eventWriteCounts.set(input.kind,count);
   executionChanged();
 }
+/**
+ * A surface input can be durably retained while its session is paused, archived or otherwise
+ * unable to admit a provider turn. That changes the operation receipt even though no `accepted`
+ * execution event exists. Publish the exact input as a receipt delta without claiming queue or
+ * provider admission; the deterministic identity makes retries and startup repair harmless.
+ */
+export function recordHeldInputReceiptEvent(input:AcceptedSessionInput) {
+  if(input.kind!=='input'||input.turn_id!==null||input.steering_id!==null||input.request_id!==null
+    ||input.scope!=='surface:thinkering')return false;
+  const eventId=`receipt:${input.id}:retained`;
+  const existing=db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId);
+  if(existing)return false;
+  recordSessionEvent({eventId,sessionId:input.session_id,inputId:input.id,kind:'receipt',payload:{change:'retained'}});
+  return true;
+}
+/**
+ * Releases can meet inputs retained by the previous owner. Seek only unresolved surface inputs
+ * and publish the missing receipt delta; Focus-review captures and settled inputs carry a state
+ * and remain intentionally hidden until their own release path records its event.
+ */
+export function backfillHeldInputReceiptEvents() {
+  const rows=db.query(`SELECT input.* FROM session_inputs input INDEXED BY session_inputs_surface_recovery
+    WHERE input.scope='surface:thinkering' AND input.kind='input'
+      AND input.turn_id IS NULL AND input.steering_id IS NULL AND input.request_id IS NULL
+      AND json_extract(input.receipt_json,'$.admissionIntent')='queue'
+      AND json_extract(input.receipt_json,'$.state') IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM session_owner_events event
+        WHERE event.input_id=input.id AND event.kind IN ('accepted','inbox_capture','receipt')
+      ) ORDER BY input.rowid`).all() as AcceptedSessionInput[];
+  let recorded=0;
+  db.transaction(()=>{for(const input of rows)if(recordHeldInputReceiptEvent(input))recorded++;})();
+  return recorded;
+}
 export function recordSessionInputAttention(inputId:string) {
   return db.transaction(()=>{
     const input=getAcceptedSessionInput(inputId);

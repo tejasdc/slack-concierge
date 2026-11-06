@@ -2,7 +2,7 @@ import {afterEach,beforeEach,expect,test} from 'bun:test';
 import {createHash,randomUUID} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {db,claimNextQueuedTurn,getSessionById,registerProcessInstance,markTurnDelivering,markTurnProviderAdmissionIntended,interruptOrphanedTurn,finishTurn,createOrGetSession,upsertChannel} from '../src/state';
-import {bindSessionProvider,createNativeSession,getAcceptedSessionInput,nativeRunId,updateSessionMetadata} from '../src/session-inputs';
+import {backfillHeldInputReceiptEvents,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,retainSessionInput,updateSessionMetadata} from '../src/session-inputs';
 import {SessionOwner} from '../src/session-owner';
 import {SessionExecutionHost} from '../src/session-execution-host';
 import {SessionCapabilityClient} from '../src/session-capability-client';
@@ -56,6 +56,40 @@ test('real HTTP wrappers preserve first acceptance, duplicate receipt identity a
   expect((await request(host.owner,`runs/${first.body.operation.runId}`)).body.run).toMatchObject({id:first.body.operation.runId,state:'completed',turnId:'native-turn'});
   expect(db.query('SELECT slack_user_msg_ts,slack_reply_thread_ts FROM turns WHERE id=?').get(claim.turn_id)).toEqual({slack_user_msg_ts:null,slack_reply_thread_ts:null});
   expect(db.query('SELECT count(*) AS n FROM slack_user_input_claims').get()).toEqual({n:0});
+});
+
+test('a held marked-agent input publishes one receipt delta without provider admission and startup repair restores it',async()=>{
+  const source=createNativeSession('codex',{title:'Marked source',purpose:'chat',cwd:'/tmp'});
+  const sourceInput=retainSessionInput({sessionId:source.id,scope:'surface:thinkering',actionId:randomUUID(),kind:'input',origin:'human',payload:{text:'Authorize the marked acceptance check.'}}).input;
+  const sourceTurn=enqueueSessionInput(sourceInput.id).turn_id!;
+  const target=createNativeSession('codex',{title:'Paused receiver',purpose:'chat',cwd:'/tmp',suspended:true});
+  const body={clientActionId:randomUUID(),text:'Retain this while paused.',agentSource:{inputId:sourceInput.id,runId:nativeRunId(sourceTurn)}};
+  const first=await request(host.owner,`sessions/concierge:${target.id}/inputs`,body);
+  expect(first.status).toBe(202);
+  expect(first.body.operation).toMatchObject({state:'waiting',origin:'agent',runId:null,admission:null});
+  const operationId=first.body.operation.operationId;
+  const heldEvents=()=>host.owner.events(0,`concierge:${target.id}`).filter(event=>event.kind==='receipt');
+  expect(heldEvents()).toEqual([expect.objectContaining({eventId:`receipt:${operationId}:retained`,sessionId:`concierge:${target.id}`,
+    operationId,inputId:operationId,runId:null,kind:'receipt',payload:{change:'retained'}})]);
+  expect(db.query('SELECT count(*) AS n FROM turns WHERE session_id=?').get(target.id)).toEqual({n:0});
+
+  const duplicate=await request(host.owner,`sessions/concierge:${target.id}/inputs`,body);
+  expect(duplicate.status).toBe(200);
+  expect(duplicate.body.operation.operationId).toBe(operationId);
+  expect(heldEvents()).toHaveLength(1);
+
+  const ambiguous=retainSessionInput({sessionId:target.id,scope:'surface:thinkering',actionId:randomUUID(),kind:'input',origin:'human',
+    payload:{text:'Legacy input with no explicit queue custody.'}}).input;
+  const hidden=retainSessionInput({sessionId:target.id,scope:'surface:thinkering',actionId:randomUUID(),kind:'input',origin:'human',
+    payload:{text:'Intentionally hidden held input.'}}).input;
+  db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({admissionIntent:'queue',state:'held'}),hidden.id);
+  db.query('DELETE FROM session_owner_events WHERE event_id=?').run(`receipt:${operationId}:retained`);
+  expect(heldEvents()).toEqual([]);
+  expect(backfillHeldInputReceiptEvents()).toBe(1);
+  expect(backfillHeldInputReceiptEvents()).toBe(0);
+  expect(heldEvents()).toHaveLength(1);
+  expect(db.query("SELECT count(*) AS n FROM session_owner_events WHERE input_id IN (?,?) AND kind='receipt'").get(ambiguous.id,hidden.id)).toEqual({n:0});
+  expect(db.query('SELECT count(*) AS n FROM turns WHERE session_id=?').get(target.id)).toEqual({n:0});
 });
 
 test('full operation receipts publish ordered attachment custody metadata without changing request IDs',async()=>{
