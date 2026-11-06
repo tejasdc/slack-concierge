@@ -17,6 +17,9 @@ import type { ResetAdvice } from "./provider-reset-facts";
 import { noticeTime } from "./notice-time";
 import { resolveProviderAlias } from "./aliases";
 import { renewSavedCodexLogin } from './codex-saved-login-renewal';
+import { providerRunnerTarget } from './provider-runner-target';
+import { runnerMachineCall } from './runner-machine-calls';
+import { setRunnerAccountInUse } from './provider-accounts';
 
 /**
  * Usage limits for every account of a provider, not only the one agents use.
@@ -104,6 +107,8 @@ export type ProviderUsage = Readonly<{
   observedAt: string;
   accounts: readonly AccountUsage[];
   problem: string | null;
+  /** Credential and usage homes that produced this reading, when a runner owns them. */
+  sourceRunner?: string | null;
   /** A reading is running right now, so an account without one is being fetched, not absent. */
   refreshing?: boolean;
 }>;
@@ -604,16 +609,28 @@ async function peerAccounts(provider: ProviderKey): Promise<AccountUsage[]> {
 export async function refreshProviderAccountUsage(): Promise<void> {
   for (const [provider, read] of [["codex", readCodex], ["claude-code", readClaude]] as const) {
     try {
-      let usage = await read();
+      const runner=providerRunnerTarget(provider);
+      let usage:ProviderUsage;
+      if(runner){
+        const readings=await runnerMachineCall<Record<string,ProviderUsage>>(runner,'accounts.readings',{},100_000);
+        const remote=readings?.[provider];
+        if(!remote||!Array.isArray(remote.accounts)||typeof remote.observedAt!=='string')
+          throw new Error(`runner ${runner} returned no ${provider} account readings`);
+        usage={...remote,sourceRunner:runner};
+        try {
+          const identity=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider});
+          setRunnerAccountInUse(provider,identity&&typeof identity.id==='string'&&typeof identity.label==='string'?identity:null);
+        } catch { setRunnerAccountInUse(provider,null); }
+      }else usage=await read();
       // The provider's source time chooses between two observations for the same label.
       // A fresh peer reading may replace a stale local cache; a fresh local one stays local.
       // The join is label-only and retained as such, never described as credential proof.
       // Claude accounts added on the other machine must be discoverable even when every
       // local login reads successfully. Otherwise two freshly exhausted Mac accounts hide
       // a newly added server account from the Mac's local sign-in repair path.
-      const borrowed=provider === "claude-code" || usage.problem||!usage.accounts.length
+      const borrowed=!runner&&(provider === "claude-code" || usage.problem||!usage.accounts.length
         ||usage.accounts.some(account=>!accountReadingFresh(provider,usage,account))
-        ?await peerAccounts(provider):[];
+        ?await peerAccounts(provider):[]);
       if (borrowed.length) {
         const merged = new Map(usage.accounts.map(account=>[account.label,account]));
         for (const account of borrowed) {
@@ -747,7 +764,12 @@ export function providerAccountUsage(provider: AccountIdentityProvider): Provide
   const row = db.query(`SELECT usage_json FROM ${accountUsageTable(provider)} WHERE provider = ?`)
     .get(provider) as { usage_json: string } | null;
   if (!row) return null;
-  try { return { ...withAgentsAccountCurrent(provider, JSON.parse(row.usage_json) as ProviderUsage), refreshing: usageRefreshing() }; }
+  try {
+    const stored=JSON.parse(row.usage_json) as ProviderUsage;
+    const runner=provider==='antigravity'?null:providerRunnerTarget(provider);
+    if(runner&&stored.sourceRunner!==runner)return null;
+    return { ...withAgentsAccountCurrent(provider, stored), refreshing: usageRefreshing() };
+  }
   catch (error) {
     // Said out loud: this catch once hid a stack overflow from an account-list cycle for hours
     // while every Accounts read froze the owner (2026-10-08).

@@ -6,6 +6,7 @@ import {accountReadingAt,accountReadingFresh,includedAllowanceWindows,accountCan
 import { BUDGET_NOTICE_MAX_AGE_MS, type AccountIdentityProvider } from "./provider-accounts";
 import { accountUsageTable } from "./provider-usage-tables";
 import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
+import { providerRunnerTarget } from "./provider-runner-target";
 import { cachedUsageLimit, claudeAccountCachedReset, usageAttempt } from "./provider-usage";
 import { RESET_FACTS, resetAdvice } from "./provider-reset-facts";
 import { noticeTime } from "./notice-time";
@@ -97,6 +98,7 @@ export function storedUsage(provider: AccountIdentityProvider): ProviderUsage | 
 export function withAgentsAccountCurrent(provider: AccountIdentityProvider, usage: ProviderUsage): ProviderUsage {
   if (provider !== "claude-code" || !claudeRunsFromOwnHomes()) return usage;
   const chosen = selectedClaudeHome()?.label ?? null;
+  if(providerRunnerTarget('claude-code')&&!chosen)return usage;
   return withLocalCurrentAccount(usage,chosen);
 }
 

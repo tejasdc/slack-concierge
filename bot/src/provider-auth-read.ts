@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import { providerDisplayName } from "./aliases";
 import {currentAccount,listProfiles,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage,type ProviderUsage} from './provider-account-usage';
@@ -6,6 +7,7 @@ import {withResetAdvice} from './provider-usage-forecast';
 import {claudeRunsFromOwnHomes} from './provider-account-dispatch';
 import {claudeAccountSelection} from './provider-account-selection';
 import {noticeTime} from './provider-free-notice';
+import {providerRunnerTarget} from './provider-runner-target';
 import {db} from './state-database';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 import type {ProviderAuthView} from './session-execution-host';
@@ -44,17 +46,18 @@ export function antigravityAuthView(ephemera:ProviderAuthEphemera):ProviderAuthV
 }
 
 function providerAuthView(provider:ProviderKey,ephemera:ProviderAuthEphemera):ProviderAuthView {
-  const defaultAccount=currentAccount(provider)??ephemera.accountFallback[provider];
+  const remoteRunner=providerRunnerTarget(provider);
+  const defaultAccount=remoteRunner?ephemera.accountFallback[provider]:currentAccount(provider)??ephemera.accountFallback[provider];
   const selection=provider==='claude-code'?claudeAccountSelection():null;
-  const saved=listProfiles(provider);
+  const saved=remoteRunner?[]:listProfiles(provider);
   const ownHomes=provider==='claude-code'&&claudeRunsFromOwnHomes();
-  const profiles=provider==='claude-code'&&ownHomes
+  let profiles=provider==='claude-code'&&ownHomes
     ?saved.map(profile=>({...profile,current:selection?.profileId===profile.id}))
     :provider==='claude-code'&&defaultAccount
     ?[{id:'default',label:defaultAccount.label,detail:defaultAccount.detail,current:!selection||selection.profileId==='default',signedIn:true},
       ...saved.filter(profile=>profile.label!==defaultAccount.label).map(profile=>({...profile,current:selection?.profileId===profile.id}))]
     :saved;
-  const account=provider==='claude-code'&&ownHomes
+  let account=provider==='claude-code'&&ownHomes
     ?profiles.find(profile=>profile.current)??null
     :provider==='claude-code'&&selection&&selection.profileId!=='default'
     ?profiles.find(profile=>profile.id===selection.profileId)??defaultAccount:defaultAccount;
@@ -63,6 +66,14 @@ function providerAuthView(provider:ProviderKey,ephemera:ProviderAuthEphemera):Pr
   // This reader answers the Accounts page; the command owner's own view says the same.
   const usage=storedUsage?{...markUncurrentAccountReadings(provider,withResetAdvice(provider,storedUsage)),
     refreshing:ephemera.usageRefreshing}:null;
+  if(remoteRunner){
+    profiles=(usage?.accounts??[]).map(item=>({id:`runner-${createHash('sha256').update(item.label).digest('hex').slice(0,16)}`,
+      label:item.label,detail:item.problem,current:item.label===(selection?.label??usage?.accounts.find(account=>account.current)?.label),signedIn:item.signedOut!==true}));
+    if(provider==='claude-code'){
+      const active=profiles.find(profile=>profile.current);
+      account=active?{id:active.id,label:active.label,detail:active.detail}:null;
+    }
+  }
   const refused=new Set((usage?.accounts??[]).filter(entry=>entry.signedOut).map(entry=>entry.label));
   const brokenInUse=provider==='codex'&&ephemera.codexSignIn==='signed-out';
   const listed=provider==='codex'&&account&&!profiles.some(profile=>profile.current)

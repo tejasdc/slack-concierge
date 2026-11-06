@@ -439,7 +439,10 @@ CREATE TABLE IF NOT EXISTS pending_sign_ins (
   provider           TEXT PRIMARY KEY,
   owner_instance_id  TEXT NOT NULL,
   started_at_ms      INTEGER NOT NULL,
-  expires_at_ms      INTEGER NOT NULL
+  expires_at_ms      INTEGER NOT NULL,
+  runner_name        TEXT,
+  operation_id       TEXT,
+  profile_id         TEXT
 );
 
 CREATE TABLE IF NOT EXISTS background_job_status (
@@ -773,6 +776,9 @@ CREATE INDEX IF NOT EXISTS executions_open ON executions(turn_id) WHERE state IN
 CREATE INDEX IF NOT EXISTS executions_turn ON executions(turn_id,dispatch_attempt);`);
 addColumn('executions','adopted_live','adopted_live INTEGER NOT NULL DEFAULT 0');
 addColumn('executions','host_digest','host_digest TEXT');
+addColumn('pending_sign_ins','runner_name','runner_name TEXT');
+addColumn('pending_sign_ins','operation_id','operation_id TEXT');
+addColumn('pending_sign_ins','profile_id','profile_id TEXT');
 db.exec("CREATE INDEX IF NOT EXISTS executions_survival ON executions(provider,supervisor) WHERE adopted_live=1 AND state='released'");
 db.transaction(() => {
 migrateLegacyCodexRemoteMirrorEvents();
@@ -1215,12 +1221,14 @@ export function stopProcessInstance(instanceId: string) {
 }
 
 /** A sign-in he has started is now waiting; nothing may be restarted out from under it. */
-export function recordPendingSignIn(provider: string, ownerInstanceId: string, expiresAtMs: number) {
-  db.query(`INSERT INTO pending_sign_ins (provider, owner_instance_id, started_at_ms, expires_at_ms)
-    VALUES (?, ?, ?, ?)
+export function recordPendingSignIn(provider: string, ownerInstanceId: string, expiresAtMs: number,
+  runner?: { runner: string; operationId: string; profileId?: string | null }) {
+  db.query(`INSERT INTO pending_sign_ins (provider, owner_instance_id, started_at_ms, expires_at_ms, runner_name, operation_id, profile_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(provider) DO UPDATE SET owner_instance_id=excluded.owner_instance_id,
-      started_at_ms=excluded.started_at_ms, expires_at_ms=excluded.expires_at_ms`)
-    .run(provider, ownerInstanceId, Date.now(), expiresAtMs);
+      started_at_ms=excluded.started_at_ms, expires_at_ms=excluded.expires_at_ms,
+      runner_name=excluded.runner_name,operation_id=excluded.operation_id,profile_id=excluded.profile_id`)
+    .run(provider, ownerInstanceId, Date.now(), expiresAtMs, runner?.runner ?? null, runner?.operationId ?? null, runner?.profileId ?? null);
 }
 
 export function clearPendingSignIn(provider: string) {
@@ -1230,6 +1238,16 @@ export function clearPendingSignIn(provider: string) {
 /** Only sign-ins that could still be finished; an expired one holds nothing back. */
 export function listPendingSignIns(nowMs = Date.now()): Array<{ provider: string; owner_instance_id: string; started_at_ms: number; expires_at_ms: number }> {
   return db.query("SELECT * FROM pending_sign_ins WHERE expires_at_ms > ? ORDER BY provider").all(nowMs) as any[];
+}
+
+/** A runner's durable operation identity, restored after the owner process restarts. */
+export function pendingRunnerSignIn(provider: string, nowMs = Date.now()):
+  { runner: string; operationId: string; profileId: string | null; expiresAtMs: number } | null {
+  const row = db.query(`SELECT runner_name,operation_id,profile_id,expires_at_ms FROM pending_sign_ins
+    WHERE provider=? AND expires_at_ms>?`).get(provider, nowMs) as
+    {runner_name:string|null;operation_id:string|null;profile_id:string|null;expires_at_ms:number}|null;
+  return row?.runner_name&&row.operation_id
+    ?{runner:row.runner_name,operationId:row.operation_id,profileId:row.profile_id,expiresAtMs:row.expires_at_ms}:null;
 }
 
 export function clearAbandonedDrain(isAlive: (identity: { pid: number; bootId: string; startTicks: string }) => boolean) {

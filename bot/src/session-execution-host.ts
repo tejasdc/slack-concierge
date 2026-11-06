@@ -2,7 +2,7 @@ import {onCodexHistoryChanged} from './codex-session-observer';
 import { codexAppServerReady, codexRelayRunner, waitForCodexAppServerOrDrain } from "./codex-app-server-client";
 import {CODEX_PROCESS_REPORT_GRACE_MS,codexLeftoverProcesses,codexProcessStillRunning,type CodexLeftoverProcess} from './codex-leftover-processes';
 import {runnerMachineCall} from './runner-machine-calls';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {ledgerDurable} from './ledger-durability-barrier';
 import {thesaurusTurnContext} from './thesaurus-context';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
@@ -98,7 +98,7 @@ import {INBOX_INSTRUCTIONS,markResultAnsweredByPost,minutesText,pebbleArrivalWai
 import {readClaudeCachedMessage,readCodexHistoryMessage,readClaudeHistory,readCodexHistory} from './provider-history';
 import {ProviderHistoryPageClient} from './provider-history-page-client';
 import {ATTENTION_INSTRUCTION,releaseFocusForPost,settleExitedProcessReport,topicPromptContext} from './session-topics';
-import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,clearPendingSignIn} from './state';
+import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,clearPendingSignIn,pendingRunnerSignIn} from './state';
 import {log,errorFields} from './log';
 import {attachedRecordingWords,transcriptionPrompt} from './transcription';
 import {ProviderLoginManager} from './auth-login';
@@ -120,8 +120,11 @@ import {budgetBriefWithProviderRoom} from './provider-start-choice';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 import {MANAGED_CODEX,activateCredentials,claudeAccountWorks,claudeCredentialsAnswer,runningCodexTurns,type ActivationReport} from './provider-activation';
 import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork,observeExecutionChanges} from './state';
+import {runnerMachineCall} from './runner-machine-calls';
+import {activateRunnerCodexAccount} from './runner-provider-account-owner';
 import {noticeTime,publishProviderFreeNotice} from './provider-free-notice';
-import {accountHome} from './provider-accounts';
+import {accountHome,setRunnerAccountInUse} from './provider-accounts';
+import {providerRunnerTarget} from './provider-runner-target';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
 import {claudeAccountCachedReset,clearCodexAccountUsage,releaseCodexOrdinaryUsageHeldWork,releaseUsageHeldWork,releaseProvenUsageHolds,usageAttempt,cachedUsageLimit} from './provider-usage';
 import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
@@ -140,6 +143,8 @@ export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex'|'antigravi
  * that had been taken away by a restart was reported to him as a wrong code.
  */
 export type ProviderAuthRefreshResult=Readonly<{status:'awaiting_code'|'awaiting_approval'|'completed'|'failed'|'no_pending_login';url?:string;userCode?:string|null;detail?:string;needsSignIn?:boolean;resumedTurnIds?:readonly number[];activation?:ActivationReport|null}>;
+
+type RunnerSignInState={runner:string;operationId:string;profileId:string|null;status:string;url?:string;userCode?:string|null;account?:string;detail?:string};
 
 const SIGN_IN_FAILURE_DETAIL:Record<string,string>={
   no_url_before_timeout:'The sign-in tool did not produce a link. Nothing changed.',
@@ -212,7 +217,13 @@ export class SessionExecutionHost {
   private readonly stopCodexMoves:()=>void;
   // How the last sign-in that finished on its own ended, for the screen that waited on it.
   private readonly lastSignIn=new Map<ProviderKey,{ok:boolean;detail:string|null}>();
+  private readonly runnerSignIns=new Map<ProviderKey,RunnerSignInState>();
   constructor(readonly options:{instanceId:string;registry:ActiveTurnDispatchRegistry;providers:Partial<Record<ProviderId,AgentProvider>>;defaultCwd:string;wake():void;history?:SessionOwnerRuntime['history'];sources?:SessionOwnerRuntime['sources'];capabilitySocket?:string;capabilityClient?:SessionCapabilityClient;findForks?(pin:NativeForkPin):Promise<string[]>;providerSessionBound?(providerThreadUuid:string):Promise<void>;claudeAuthRefreshCommand?:string}) {
+    for(const provider of ['codex','claude-code'] as const)if(providerRunnerTarget(provider))setRunnerAccountInUse(provider,null);
+    for(const provider of ['codex','claude-code'] as const){
+      const pending=pendingRunnerSignIn(provider);
+      if(pending)this.runnerSignIns.set(provider,{runner:pending.runner,operationId:pending.operationId,profileId:pending.profileId,status:'starting'});
+    }
     // Codex work moves to an account with room by itself, as Claude's does (Tejas, 2026-10-08, capture
     // f48861f1: "Can we extend the same Claude code automation for account switching here to Codex too").
     // Checked whenever work stops or starts and once a minute, since a usage reading can arrive between.
@@ -268,41 +279,156 @@ export class SessionExecutionHost {
     // Each change to a Codex conversation's history tops up its kept window off the owner loop.
     this.stopCodexWindows=onCodexHistoryChanged((sessionId,thread)=>this.historyPages.prepareCodexWindow(sessionId,thread));
   }
+  private runnerAuthTarget(provider:ProviderKey):string|null{
+    return providerRunnerTarget(provider);
+  }
+  private restoreRunnerSignIn(provider:ProviderKey):RunnerSignInState|null{
+    const known=this.runnerSignIns.get(provider);if(known)return known;
+    const pending=pendingRunnerSignIn(provider);if(!pending)return null;
+    const restored={runner:pending.runner,operationId:pending.operationId,profileId:pending.profileId,status:'starting'};
+    this.runnerSignIns.set(provider,restored);return restored;
+  }
+  private async finishRunnerSignIn(provider:ProviderKey,answer:any):Promise<ProviderAuthRefreshResult>{
+    const operation=this.restoreRunnerSignIn(provider);
+    if(!operation||answer?.status!=='completed'||typeof answer.account!=='string')return {status:'failed',detail:'The runner did not confirm a completed sign-in.'};
+    const account=answer.account as string;
+    if(provider==='codex'){
+      let activation:ActivationReport;
+      try{
+        const result=await activateRunnerCodexAccount(operation.runner,account,`activate:${operation.operationId}`) as any;
+        activation={status:result?.status==='applied'?'applied':result?.status==='deferred'?'deferred':'failed',detail:String(result?.detail??'')};
+      }catch(error){activation={status:'failed',detail:'The runner account was saved, but Codex could not be switched on the runner.'};log('warn','runner_codex_activation_failed',{error_name:(error as Error)?.name??'Error'});}
+      const activated=activation.status==='applied';
+      this.lastSignIn.set(provider,{ok:activated,detail:activated?null:activation.detail||'The runner saved the account, but could not confirm that Codex switched to it.'});
+      if(activated){void scheduleProviderAccountUsageRefresh().catch(()=>{});this.resumeParkedWorkAfterAuthRefresh(provider);}
+      this.runnerSignIns.delete(provider);clearPendingSignIn(provider);
+      return {status:activated?'completed':'failed',detail:activated?`Codex on runner ${operation.runner} now uses ${account}.`:activation.detail,
+        activation,resumedTurnIds:activated?[]:undefined};
+    }
+    const expected=operation.profileId?this.claudeProfile(operation.profileId)?.label??null:null;
+    if(expected&&expected!==account){
+      this.lastSignIn.set(provider,{ok:false,detail:`That signed in ${account}, not ${expected}. ${account} is kept on runner ${operation.runner}; nothing was selected.`});
+      this.runnerSignIns.delete(provider);clearPendingSignIn(provider);
+      return {status:'failed',detail:this.lastSignIn.get(provider)?.detail};
+    }
+    const profileId=`runner-${createHash('sha256').update(account).digest('hex').slice(0,16)}`;
+    selectClaudeAccount(profileId,account);
+    this.lastSignIn.set(provider,{ok:true,detail:`${account} is saved on runner ${operation.runner}.`});
+    this.runnerSignIns.delete(provider);clearPendingSignIn(provider);
+    void scheduleProviderAccountUsageRefresh().catch(()=>{});
+    return {status:'completed',detail:`${account} is saved on runner ${operation.runner} and selected for new Claude turns.`,
+      resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh(provider)};
+  }
+  private async refreshRunnerSignIn(provider:ProviderKey):Promise<void>{
+    const operation=this.restoreRunnerSignIn(provider);if(!operation)return;
+    try{
+      const answer=await runnerMachineCall<any>(operation.runner,'accounts.signin.status',{operationId:operation.operationId});
+      if(!answer||typeof answer.status!=='string')return;
+      this.runnerSignIns.set(provider,{...operation,...answer});
+      if(answer.status==='completed')await this.finishRunnerSignIn(provider,answer);
+      else if(['failed','interrupted','not_found'].includes(answer.status)){
+        this.lastSignIn.set(provider,{ok:false,detail:answer.detail??'The runner sign-in ended before it could be completed. Start it again.'});
+        this.runnerSignIns.delete(provider);clearPendingSignIn(provider);
+      }
+    }catch(error){log('warn','runner_signin_status_unavailable',{provider,runner:operation.runner,error_name:(error as Error)?.name??'Error'});}
+  }
+  private async startRunnerSignIn(provider:ProviderKey,profileId?:string|null):Promise<ProviderAuthRefreshResult>{
+    const runner=this.runnerAuthTarget(provider);if(!runner)return {status:'failed',detail:'No runner is configured for this provider.'};
+    if(this.restoreRunnerSignIn(provider))return {status:'failed',detail:'A sign-in is already waiting on the runner. Refresh the Accounts page to continue it.'};
+    const operationId=`signin:${randomUUID()}`;
+    const operation:RunnerSignInState={runner,operationId,profileId:profileId??null,status:'starting'};
+    this.runnerSignIns.set(provider,operation);
+    recordPendingSignIn(provider,this.options.instanceId,Date.now()+10*60_000,{runner,operationId,profileId});
+    try{
+      const answer=await runnerMachineCall<any>(runner,'accounts.signin.start',{operationId,provider});
+      if(!answer||typeof answer.status!=='string')throw new Error('The runner returned no sign-in outcome.');
+      this.runnerSignIns.set(provider,{...operation,...answer});
+      if(answer.status==='completed')return await this.finishRunnerSignIn(provider,answer);
+      if(answer.status==='awaiting_approval')return {status:'awaiting_approval',url:answer.url,userCode:answer.userCode};
+      if(answer.status==='awaiting_code')return {status:'awaiting_code',url:answer.url};
+      this.lastSignIn.set(provider,{ok:false,detail:answer.detail??'The runner could not start sign-in.'});
+      this.runnerSignIns.delete(provider);clearPendingSignIn(provider);
+      return {status:'failed',detail:answer.detail??'The runner could not start sign-in.'};
+    }catch(error){
+      // The request may have reached the runner even when its reply was lost. Keep the same
+      // durable operation ID so refresh/status can recover it without starting a second login.
+      this.runnerSignIns.set(provider,{...operation,status:'unknown'});
+      log('warn','runner_signin_start_failed',{provider,runner,error_name:(error as Error)?.name??'Error'});
+      return {status:'failed',detail:'The runner could not confirm whether sign-in started. Refresh the Accounts page before trying again.'};
+    }
+  }
+  private async completeRunnerSignIn(provider:ProviderKey,code:string):Promise<ProviderAuthRefreshResult>{
+    const operation=this.restoreRunnerSignIn(provider);
+    if(!operation)return {status:'no_pending_login',detail:'This runner sign-in is no longer waiting. Start it again.'};
+    try{
+      const status=await runnerMachineCall<any>(operation.runner,'accounts.signin.status',{operationId:operation.operationId});
+      if(status?.status==='completed')return this.finishRunnerSignIn(provider,status);
+      if(status?.status==='interrupted'||status?.status==='not_found'){
+        this.runnerSignIns.delete(provider);clearPendingSignIn(provider);
+        return {status:'no_pending_login',detail:'This runner sign-in ended before the code was submitted. Start it again.'};
+      }
+      if(status?.status!=='awaiting_code'||provider!=='claude-code')
+        return {status:'no_pending_login',detail:'The runner is not waiting for a pasted sign-in code.'};
+      this.runnerSignIns.set(provider,{...operation,...status,status:'completing'});
+      const answer=await runnerMachineCall<any>(operation.runner,'accounts.signin.complete',{operationId:operation.operationId,code});
+      if(answer?.status==='completed')return this.finishRunnerSignIn(provider,answer);
+      if(answer?.status==='awaiting_code')return {status:'awaiting_code',url:answer.url};
+      this.lastSignIn.set(provider,{ok:false,detail:answer?.detail??'The runner did not accept that sign-in code.'});
+      this.runnerSignIns.delete(provider);clearPendingSignIn(provider);
+      return {status:'failed',detail:answer?.detail??'The runner did not accept that sign-in code.'};
+    }catch(error){
+      log('warn','runner_signin_complete_failed',{provider,runner:operation.runner,error_name:(error as Error)?.name??'Error'});
+      return {status:'failed',detail:'The runner could not confirm the sign-in code outcome. Refresh the Accounts page before trying again.'};
+    }
+  }
   /** What Codex itself last said about its sign-in; see codexSignInState. */
   private codexSignIn:'signed-in'|'signed-out'|'unknown'='unknown';
   /** Private control answer: never reads credentials, usage, SQLite or the filesystem. */
   authEphemera():ProviderAuthEphemera {
+    const remoteCodex=this.runnerSignIns.get('codex'),remoteClaude=this.runnerSignIns.get('claude-code');
     return {observedAtMs:Date.now(),checking:this.providerAuthCheck!==null,usageRefreshing:usageRefreshing(),codexSignIn:this.codexSignIn,
       antigravityAccount:currentAccount('antigravity'),
       accountFallback:{codex:accountMemoryFallback('codex'),'claude-code':accountMemoryFallback('claude-code')},
-      codexPending:this.codexLogin.hasPending(),claudePending:this.claudeLogin.hasPending(),
-      claudePendingFor:this.claudeLogin.pendingFor(),claudePendingUrl:this.claudeLogin.pendingUrl(),
+      codexPending:remoteCodex?['starting','awaiting_approval','completing','unknown'].includes(remoteCodex.status):this.codexLogin.hasPending(),
+      claudePending:remoteClaude?['starting','awaiting_code','completing','unknown'].includes(remoteClaude.status):this.claudeLogin.hasPending(),
+      claudePendingFor:remoteClaude?.profileId??this.claudeLogin.pendingFor(),claudePendingUrl:remoteClaude?.url??this.claudeLogin.pendingUrl(),
       lastSignIn:{codex:this.lastSignIn.get('codex')??null,'claude-code':this.lastSignIn.get('claude-code')??null}};
   }
   private providerAuthView(provider:ProviderKey):ProviderAuthView{
     let mark=performance.now();
     const step=(name:string)=>{const now=performance.now();this.authViewSteps[name]=Math.round(now-mark);mark=now;};
+    const remoteRunner=this.runnerAuthTarget(provider);
     const defaultAccount=currentAccount(provider);step('current_account_ms');
     const selection=provider==='claude-code'?claudeAccountSelection():null;step('selection_ms');
-    const saved=listProfiles(provider);step('list_profiles_ms');
+    const saved=remoteRunner?[]:listProfiles(provider);step('list_profiles_ms');
     // Where accounts have homes of their own, the main folder's login is a terminal's and is never
     // offered: agents never run on it, so a hand sign-in there cannot displace theirs.
     const ownHomes=provider==='claude-code'&&claudeRunsFromOwnHomes();step('own_homes_ms');
-    const profiles=provider==='claude-code'&&ownHomes
+    let profiles=provider==='claude-code'&&ownHomes
       ?saved.map(profile=>({...profile,current:selection?.profileId===profile.id}))
       :provider==='claude-code'&&defaultAccount
       ?[{id:'default',label:defaultAccount.label,detail:defaultAccount.detail,current:!selection||selection.profileId==='default',signedIn:true},
         ...saved.filter(profile=>profile.label!==defaultAccount.label).map(profile=>({...profile,current:selection?.profileId===profile.id}))]
       :saved;
-    const account=provider==='claude-code'&&ownHomes
+    let account=provider==='claude-code'&&ownHomes
       ?profiles.find(profile=>profile.current)??null
       :provider==='claude-code'&&selection&&selection.profileId!=='default'
       ?profiles.find(profile=>profile.id===selection.profileId)??defaultAccount:defaultAccount;
+    const runnerSignIn=this.runnerSignIns.get(provider);
+    const signInPending=runnerSignIn?['starting','awaiting_code','awaiting_approval','completing'].includes(runnerSignIn.status)
+      :provider==='codex'?this.codexLogin.hasPending():this.claudeLogin.hasPending();
     // A sign-in Codex refused shows as signed out, on the account in use and on any kept
     // account whose usage reading was refused, so the row offers "Sign in again".
     // Each account row carries what a reset would do for it right now (provider-reset-facts.ts).
     const stored=providerAccountUsage(provider);
     const usage=stored?markUncurrentAccountReadings(provider,withResetAdvice(provider,stored)):null;step('usage_ms');
+    if(this.runnerAuthTarget(provider)){
+      const selectedLabel=selection?.label??usage?.accounts.find(item=>item.current)?.label??null;
+      profiles=(usage?.accounts??[]).map(item=>({id:`runner-${createHash('sha256').update(item.label).digest('hex').slice(0,16)}`,
+        label:item.label,detail:item.problem,current:item.label===selectedLabel,signedIn:item.signedOut!==true}));
+      const active=profiles.find(item=>item.current);
+      account=active?{id:active.id,label:active.label,detail:active.detail}:null;
+    }
     const refused=new Set((usage?.accounts??[]).filter(entry=>entry.signedOut).map(entry=>entry.label));
     const brokenInUse=provider==='codex'&&this.codexSignIn==='signed-out';
     // The Codex login in use lives in the agents' own home, not in a kept account's folder, so it
@@ -311,22 +437,22 @@ export class SessionExecutionHost {
       ?[{id:'in-use',label:account.label,detail:account.detail,current:true,signedIn:true},...profiles.filter(profile=>profile.label!==account.label)]
       :profiles;
     const checked=listed.map(profile=>({...profile,signedIn:profile.signedIn!==false&&!refused.has(profile.label)&&!(brokenInUse&&profile.current)}));
-    if(provider==='codex'&&account)return {provider,mode:'device',pending:this.codexLogin.hasPending(),signInKeepsCurrent:true,pendingFor:null,pendingUrl:null,
+    if(provider==='codex'&&account)return {provider,mode:'device',pending:signInPending,signInKeepsCurrent:true,pendingFor:null,pendingUrl:runnerSignIn?.url??null,
       lastSignIn:this.lastSignIn.get(provider)??null,
       message:brokenInUse||refused.has(account.label)?`Codex on this machine is signed out: the sign-in for ${account.label} stopped working. Sign in again to run Codex work here.`:'',
       signedIn:!(brokenInUse||refused.has(account.label)),account,profiles:checked,usage};
     return {provider,mode:provider==='codex'?'device':'interactive',
-      pending:provider==='codex'?this.codexLogin.hasPending():this.claudeLogin.hasPending(),
+      pending:signInPending,
       // A signed-in account is kept before anything replaces it. A surface talking to an
       // older build sees this absent and warns him first, and stops once this is live.
       signInKeepsCurrent:true,
       // Which account's row a waiting sign-in belongs to, so a reloaded page puts the code
       // box back under the account he pressed rather than under "another account".
-      pendingFor:provider==='claude-code'?this.claudeLogin.pendingFor():null,
+      pendingFor:provider==='claude-code'?runnerSignIn?.profileId??this.claudeLogin.pendingFor():null,
       // The page that sign-in is waiting on, so a page that lost the answer to its press (a reload,
       // or a read that raced the start) can still open it; the Mac's browser agent was left with a
       // code box and no link on 2026-10-08. It goes only to the authenticated Accounts read.
-      pendingUrl:provider==='claude-code'?this.claudeLogin.pendingUrl():null,
+      pendingUrl:provider==='claude-code'?runnerSignIn?.url??this.claudeLogin.pendingUrl():null,
       // A Codex sign-in finishes in the browser, so its refusal can only reach him here.
       lastSignIn:this.lastSignIn.get(provider)??null,
       message:account?(provider==='claude-code'?this.claudeInUseSentence(account.label,usage):'')
@@ -370,12 +496,14 @@ export class SessionExecutionHost {
    */
   async refreshAuthEphemera():Promise<ProviderAuthEphemera>{
     this.checkProviderAuth(true);
+    for(const provider of ['codex','claude-code'] as const)void this.refreshRunnerSignIn(provider);
     return this.authEphemera();
   }
   private checkProviderAuth(fresh=false):void{
     const recent=Date.now()-this.providerAuthCheckedAt<30_000;
-    this.providerAuthCheck??=!fresh&&recent?null:Promise.all([refreshClaudeAccount(),
-      codexSignInState().then(answer=>{this.codexSignIn=answer.state;if(answer.state==='signed-in')setCodexAccountInUse(answer);}).catch(()=>{}),
+    this.providerAuthCheck??=!fresh&&recent?null:Promise.all([
+      providerRunnerTarget('claude-code')?Promise.resolve():refreshClaudeAccount(),
+      providerRunnerTarget('codex')?Promise.resolve():codexSignInState().then(answer=>{this.codexSignIn=answer.state;if(answer.state==='signed-in')setCodexAccountInUse(answer);}).catch(()=>{}),
       scheduleProviderAccountUsageRefresh().catch(()=>{})]).then(()=>undefined,()=>undefined)
       .finally(()=>{this.providerAuthCheck=null;this.providerAuthCheckedAt=Date.now();});
   }
@@ -407,7 +535,10 @@ export class SessionExecutionHost {
    */
   private async useProviderResetCredit(provider:string,account:string){
     if(provider!=='codex')throw new ProviderCapabilityUnavailableError('auth','This provider does not grant allowance resets.');
-    let outcome=await useCodexResetCredit(account);
+    const runner=this.runnerAuthTarget('codex');
+    let outcome=runner
+      ?await runnerMachineCall<any>(runner,'accounts.codex.resetCredit',{account,operationId:`owner-reset:${randomUUID()}`})
+      :await useCodexResetCredit(account);
     if(outcome.status==='used'&&outcome.accountId&&outcome.verifiedReadStartedAtMs){
       try {
         const cleared=clearCodexAccountUsage(outcome.accountId,outcome.verifiedReadStartedAtMs);
@@ -547,6 +678,7 @@ export class SessionExecutionHost {
    */
   private async startProviderAuthRefresh(provider:string,profileId?:string|null):Promise<ProviderAuthRefreshResult>{
     const key=this.assertAuthProvider(provider);
+    if(this.runnerAuthTarget(key))return this.startRunnerSignIn(key,profileId);
     if(key==='codex'){
       this.lastSignIn.delete('codex');
       const started=await this.codexLogin.start();
@@ -564,6 +696,7 @@ export class SessionExecutionHost {
   }
   private async completeProviderAuthRefresh(provider:string,code:string):Promise<ProviderAuthRefreshResult>{
     const key=this.assertAuthProvider(provider);
+    if(this.runnerAuthTarget(key))return this.completeRunnerSignIn(key,code);
     const completion=key==='claude-code'?await this.claudeLogin.complete(code):await this.providerLoginManager.complete(key,code);
     // Not a wrong code: the waiting sign-in is gone, most often because Concierge updated
     // between his opening the link and his pasting what it gave him. Telling him the code
@@ -590,6 +723,11 @@ export class SessionExecutionHost {
     return this.switchProviderAuthProfile('claude-code',basename(filed.home));
   }
   private claudeProfile(profileId:string):{id:string;label:string}|null{
+    if(this.runnerAuthTarget('claude-code')){
+      const account=providerAccountUsage('claude-code')?.accounts.find(item=>
+        `runner-${createHash('sha256').update(item.label).digest('hex').slice(0,16)}`===profileId);
+      return account?{id:profileId,label:account.label}:null;
+    }
     const defaultAccount=currentAccount('claude-code');
     return profileId==='default'&&defaultAccount&&!claudeRunsFromOwnHomes()?{id:'default',label:defaultAccount.label}
       :listProfiles('claude-code').find(item=>item.id===profileId)??null;
@@ -603,6 +741,18 @@ export class SessionExecutionHost {
    * and restarts Codex onto the one it had, so a refused switch leaves his machine unchanged.
    */
   private async putCodexAccountInUse(source:string):Promise<ProviderAuthRefreshResult>{
+    const runner=this.runnerAuthTarget('codex');
+    if(runner){
+      if(this.codexSwitching)return {status:'failed',detail:'Another Codex switch is still finishing on the runner. Nothing was changed.'};
+      this.codexSwitching=true;
+      try{
+        const activation=await activateRunnerCodexAccount(runner,source,`switch:${randomUUID()}`) as any;
+        if(activation?.status!=='applied')return {status:'failed',detail:activation?.detail??'Codex account switching on the runner could not be confirmed.'};
+        void scheduleProviderAccountUsageRefresh().catch(()=>{});
+        return {status:'completed',activation:{status:'applied',detail:`Codex on runner ${runner} now uses ${source}.`},
+          resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh('codex')};
+      }finally{this.codexSwitching=false;}
+    }
     if(this.codexSwitching)return {status:'failed',detail:'Another Codex switch is still finishing on this machine. Nothing was changed.'};
     if(runningCodexTurns()!==0)return {status:'failed',detail:'Codex is working on this machine right now, so nothing was changed. Switch once that work finishes.'};
     const releaseSavedLogin=beginCodexAccountSwitch();
@@ -635,6 +785,15 @@ export class SessionExecutionHost {
     const key='claude-code' as const;
     const profile=this.claudeProfile(profileId);
     if(!profile)throw new ProviderCapabilityUnavailableError('auth','That Claude account is not available on this machine.');
+    const runner=this.runnerAuthTarget(key);
+    if(runner){
+      const check=await runnerMachineCall<{available:boolean;resolution:string}>(runner,'accounts.validate',{provider:key,account:profile.label});
+      if(!check?.available)return {status:'failed',detail:`${profile.label} is not uniquely available on runner ${runner}. Nothing was switched.`};
+      selectClaudeAccount(profile.id,profile.label);
+      void scheduleProviderAccountUsageRefresh().catch(()=>{});
+      return {status:'completed',detail:`New Claude turns will use ${profile.label} on runner ${runner}.`,
+        resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh(key)};
+    }
     const home=profile.id==='default'?null:accountHome(key,profile.id);
     if(profile.id!=='default'){
       if(!sharedClaudeHome(profile.label,home!,true)){
@@ -686,6 +845,17 @@ export class SessionExecutionHost {
       if(this.claudeSwitching)return {status:'failed',detail:'Another Claude switch is still finishing on this machine. Nothing was changed.'};
       this.claudeSwitching=true;
       try { return await this.switchClaudeAccount(profileId); } finally { this.claudeSwitching=false; }
+    }
+    const runner=this.runnerAuthTarget('codex');
+    if(runner){
+      const account=providerAccountUsage('codex')?.accounts.find(item=>
+        `runner-${createHash('sha256').update(item.label).digest('hex').slice(0,16)}`===profileId);
+      if(!account)throw new ProviderCapabilityUnavailableError('auth','That Codex account is not available on the configured runner.');
+      const activation=await activateRunnerCodexAccount(runner,account.label,`switch:${randomUUID()}`) as any;
+      if(activation?.status!=='applied')return {status:'failed',detail:activation?.detail??'Codex account switching on the runner could not be confirmed.'};
+      void scheduleProviderAccountUsageRefresh().catch(()=>{});
+      return {status:'completed',activation:{status:'applied',detail:`Codex on runner ${runner} now uses ${account.label}.`},
+        resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh('codex')};
     }
     const source=codexProfileSource(profileId);
     if(!source)throw new ProviderCapabilityUnavailableError('auth','That Codex account is not available on this machine.');
@@ -1751,8 +1921,8 @@ export class SessionExecutionHost {
  * cannot send the machine back. Among accounts with room in every window, the least used wins.
  */
 function codexAccountWithRoomWhileInUseIsSpent():{label:string;source:string}|null{
-  const inUse=currentAccount('codex')?.label;
   const usage=storedUsage('codex');
+  const inUse=currentAccount('codex')?.label??(providerRunnerTarget('codex')?usage?.accounts.find(item=>item.current)?.label:null);
   if(!inUse||!usage)return null;
   const current=usage.accounts.find(account=>account.label===inUse);
   const availability=accountAvailability('codex');
@@ -1764,6 +1934,10 @@ function codexAccountWithRoomWhileInUseIsSpent():{label:string;source:string}|nu
   const room=usage.accounts.filter(account=>account.label!==inUse&&available.has(account.label)&&!account.signedOut
     &&(includedRoom(account)||!selected.hasRoom))
     .sort((a,b)=>Number(includedRoom(b))-Number(includedRoom(a))||used(a)-used(b));
+  if(providerRunnerTarget('codex')){
+    const account=room[0];
+    return account?{label:account.label,source:account.label}:null;
+  }
   const profiles=listProfiles('codex');
   for(const account of room){
     const profile=profiles.find(each=>each.label===account.label);
