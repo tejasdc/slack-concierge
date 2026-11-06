@@ -135,6 +135,15 @@ try {
   assert.deepEqual(topics.migrateInboxTopics(),{migrated:false,reason:'already_migrated'});
   assert.equal(topics.migrateInboxAttention().migrated,false);
   assert.equal((db.query('SELECT count(*) AS n FROM inbox_topics').get() as {n:number}).n,topicsBefore);
+  // The successor Inbox session does not adopt the earlier session's recovered threads by handoff;
+  // the correction still retires a service notice the earlier session converted, under that session.
+  const earlierNotice=`return:${randomUUID()}`;
+  accepted('service',earlierNotice,'A return converted by the earlier Inbox session.',agentWork,agentWork.slice('request:'.length));
+  const earlierRequest=recovered(earlierNotice);
+  assert.deepEqual(topics.retireRecoveredBookkeepingRequests(),{retired:1});
+  assert.equal((db.query('SELECT state FROM inbox_requests WHERE request_id=?').get(earlierRequest) as {state:string}).state,'closed');
+  assert.equal((db.query('SELECT session_id FROM session_owner_events WHERE event_id=?').get(`topic-bookkeeping-retired:${earlierRequest}`) as {session_id:number}).session_id,inbox.id);
+  assert.equal((db.query('SELECT count(*) AS n FROM inbox_requests WHERE state=?').get('open') as {n:number}).n,9);
   console.log('Inbox bookkeeping recovery fixture passed: recovered service notices retired; human, agent, questioned and thread-owned later work stayed open.');
 } finally {
   rmSync(scratch,{recursive:true,force:true});
