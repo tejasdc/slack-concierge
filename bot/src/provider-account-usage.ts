@@ -5,9 +5,9 @@ import { db, moveUsageHoldsEarlier, releaseUsageContinuationHolds } from "./stat
 import { log } from "./log";
 import { earliestRoomAt, recordUsageReading, usageReadingIsUrgent, withAgentsAccountCurrent } from "./provider-usage-forecast";
 import { peerSettings } from "./session-peers";
-import { cachedUsageLimit, claudeAccountCachedReset, releaseUsageHeldWork, usageAttempt } from "./provider-usage";
+import { cachedUsageLimit, claudeAccountCachedReset, releaseUsageHeldWork, retireCodexRefusalSupersededByReading, usageAttempt } from "./provider-usage";
 import { ACCOUNT_READING_MAX_AGE_MS, listProfiles, setAntigravityAccountInUse, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
-import {accountReadingFresh,chooseAccountObservation,includedAllowanceWindows,accountCanTakeWork} from './account-allowance-observation';
+import {accountReadingAt,accountReadingFresh,chooseAccountObservation,includedAllowanceWindows,accountCanTakeWork} from './account-allowance-observation';
 import { claudeEveryAccountClearsAt, claudeHeldWorkCanRun, proveClaudeHomesAhead, requestMissingClaudeHomes } from "./provider-account-dispatch";
 import { needSignInRenewal } from "./signin-renewal";
 import { accountUsageTable } from "./provider-usage-tables";
@@ -637,6 +637,9 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       // A sign-in the provider refused is renewed through the Mac's browser, once per episode.
       for (const account of usage.accounts) if (account.signedOut) needSignInRenewal(provider, account.label, "its usage could not be read because the sign-in stopped working");
       const current=agentUsage.accounts.find(account=>account.current);
+      const currentReadAt=current?accountReadingAt(current):null;
+      if(provider==='codex'&&current&&currentReadAt!==null&&accountReadingFresh(provider,usage,current))
+        retireCodexRefusalSupersededByReading(current.label,includedAllowanceWindows(provider,current,null),currentReadAt);
       // A provider-wide release has no turn model. It needs evidence across every Claude
       // window; an Opus-only reading cannot wake a Fable hold.
       const activeWindows=current?includedAllowanceWindows(provider,current,null):[];
