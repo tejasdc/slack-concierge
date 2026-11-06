@@ -58,11 +58,14 @@ export function handoffView(sessionId:number):{continues:string[];supersededBy:s
 
 function ledgerItems(sessionId:number):Item[] {
   const holder=canonical(sessionId),items:Item[]=[];
-  for(const request of db.query(`SELECT request_id,target_session_id,target_input_id,status FROM session_communication_requests
-    WHERE source_session_id=? AND outcome IS NULL ORDER BY created_at_ms,request_id`).all(sessionId) as any[]){
+  for(const request of db.query(`SELECT request_id,target_session_id,target_input_id,status,outcome FROM session_communication_requests request
+    WHERE source_session_id=? AND (outcome IS NULL OR EXISTS (
+      SELECT 1 FROM session_communication_events event WHERE event.request_id=request.request_id
+        AND event.kind='final' AND event.superseded_by_event_id IS NULL AND event.status NOT IN ('received','retained'))) ORDER BY created_at_ms,request_id`).all(sessionId) as any[]){
     const turn=request.target_input_id?db.query('SELECT t.provider_input_acknowledged_at,t.provider_turn_id,t.status FROM session_inputs i LEFT JOIN turns t ON t.id=i.turn_id WHERE i.id=?').get(request.target_input_id) as any:null;
     const target=getSessionById(request.target_session_id);
     items.push({id:`sent:${request.request_id}`,kind:'sent',ref:request.request_id,holder,target:canonical(request.target_session_id),status:request.status,
+      pendingReturn:request.outcome!==null,
       doNotRedispatch:!!turn?.provider_input_acknowledged_at||!!turn?.provider_turn_id||target?.provider_id==='chatgpt'});
   }
   for(const request of db.query('SELECT request_id,peer,remote_session_id,status FROM session_peer_requests WHERE source_session_id=? AND outcome IS NULL ORDER BY created_at_ms,request_id').all(sessionId) as any[])
@@ -262,6 +265,13 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
   if(input.digest!==currentDigest) return {accepted:false,handoffId:input.handoffId,inventory:current,digest:currentDigest,reason:'Inventory changed; acknowledge this exact digest.'};
   if(current.items.some(item=>item.kind==='queued'&&!item.movable&&!item.obsolete))
     return {accepted:false,handoffId:input.handoffId,inventory:current,digest:currentDigest,reason:'A queued input may have reached its provider or has dependencies. Let its exact outcome settle before accepting ownership.'};
+  const movableReturns=new Set(current.items.filter(item=>item.kind==='queued'&&item.movable).map(item=>item.ref));
+  if(current.items.some(item=>item.kind==='sent'&&item.pendingReturn&&
+    (db.query(`SELECT event.accepted_input_id FROM session_communication_events event
+      WHERE event.request_id=? AND event.kind='final' AND event.superseded_by_event_id IS NULL
+        AND event.status NOT IN ('received','retained') AND event.accepted_input_id IS NOT NULL`)
+      .all(item.ref) as {accepted_input_id:string}[]).some(event=>!movableReturns.has(event.accepted_input_id))))
+    return {accepted:false,handoffId:input.handoffId,inventory:current,digest:currentDigest,reason:'A final return is already admitted to the predecessor and cannot safely move. Let its exact delivery settle before accepting ownership.'};
   const result=db.transaction(()=>{
     const state=row(input.handoffId);if(!state||state.state!=='proposed')throw new Error('This handoff changed while it was being accepted.');
     const verified=inventoryLocalWithExternal(state.predecessor_session_id,current),verifiedDigest=digest(verified);
@@ -276,7 +286,10 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
     for(const item of verified.items){
       if(item.kind==='sent'){
         const table=db.query('SELECT 1 FROM session_communication_requests WHERE request_id=?').get(item.ref)?'session_communication_requests':'session_peer_requests';
-        const changed=db.query(`UPDATE ${table} SET source_session_id=? WHERE request_id=? AND source_session_id=? AND outcome IS NULL`).run(to,item.ref,from);
+        const changed=db.query(`UPDATE ${table} SET source_session_id=? WHERE request_id=? AND source_session_id=? AND
+          (outcome IS NULL OR EXISTS (SELECT 1 FROM session_communication_events event WHERE event.request_id=?
+            AND event.kind='final' AND event.superseded_by_event_id IS NULL AND event.status NOT IN ('received','retained')))`)
+          .run(to,item.ref,from,item.ref);
         if(changed.changes!==1)throw new Error(`Sent request ${item.ref} changed during handoff.`);record(item.kind,item.ref);
       }else if(item.kind==='owed'){
         const table=item.source==='peer'?'session_peer_deliveries':item.source==='outside'?'session_external_requests':'session_communication_requests';
@@ -325,6 +338,8 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
           .run(cloned.id,moved.turn_id,item.ref,to);
         db.query('UPDATE session_external_requests SET target_input_id=? WHERE target_input_id=? AND target_session_id=? AND outcome IS NULL')
           .run(cloned.id,item.ref,to);
+        db.query("UPDATE session_communication_events SET accepted_input_id=? WHERE accepted_input_id=? AND status NOT IN ('received','retained')")
+          .run(cloned.id,item.ref);
         record(item.kind,item.ref);
       }else if(item.kind==='watch'){
         const changed=db.query("UPDATE watches SET session_id=? WHERE watch_id=? AND session_id=? AND (state IN ('accepted','observing') OR delivery_state='pending')").run(to,item.ref,from);
