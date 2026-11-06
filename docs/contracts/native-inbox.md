@@ -505,6 +505,11 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   the answer again in the topic. A failed final or one marked not checked cannot qualify;
   for older answers without a structured check, the router must inspect the retained words
   and live evidence before making its request-specific closure judgment.
+  A migrated request with no linked dispatch can also close against an exact later answer
+  post in its own thread from an accepted Inbox successor. The owner compares the post's
+  retained time and thread root with that request's creation and topic; a post in another
+  thread or an answer predating the request cannot qualify. The router still checks that
+  the words answer the whole human request before it names the post as evidence.
   Linked attempts are evaluated in admission order, including when an older failed
   attempt is discovered and linked after its checked successor. The old failure remains
   visible without becoming current merely because it was linked last.

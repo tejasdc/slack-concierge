@@ -247,7 +247,7 @@ const linkedTodoId=(question:StoredQuestion):string|null=>{
 };
 
 const nowIso=()=>new Date().toISOString();
-const iso=(value:string|null|undefined)=>value?(value.includes('T')?value:value.replace(' ','T')+'Z'):null;
+const iso=(value:string|null|undefined)=>value?(value.includes('T')?value:value.replace(' ','T').replace(/Z?$/,'Z')):null;
 const text=(value:unknown,field:string,max=4000)=>{
   if(typeof value!=='string'||!value.trim())throw new TopicError(`${field} is required.`);
   if(value.length>max)throw new TopicError(`${field} must be at most ${max} characters.`);
