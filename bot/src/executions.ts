@@ -302,8 +302,11 @@ export function watchHeldExecution(held: HeldExecution, handlers: {
 
 /** Hosts still holding the record of a run whose turn has already settled let it go. */
 async function releaseSettledExecutions() {
+  // Match the existing partial index's predicate before narrowing to settled-host states.
+  // Otherwise SQLite scans every historical released execution during owner recovery.
   const settled = db.query(`SELECT e.* FROM executions e JOIN turns t ON t.id=e.turn_id
-      WHERE e.state IN ('live','exited') AND (t.status NOT IN ('running','delivering') OR t.dispatch_attempt<>e.dispatch_attempt)`).all() as ExecutionRow[];
+      WHERE e.state IN ('intended','live','exited') AND e.state IN ('live','exited')
+        AND (t.status NOT IN ('running','delivering') OR t.dispatch_attempt<>e.dispatch_attempt)`).all() as ExecutionRow[];
   for (const execution of settled) await releaseExecution(execution);
 }
 

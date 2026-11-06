@@ -4138,6 +4138,11 @@ export function migrateInboxAttention() {
 export function expireUnreadableReadingItems() {
   const session=inboxSession();
   if(!session)return {expired:0};
+  // This repairs items filed before the read-content admission rule. Once the full
+  // historical pass commits, every new item is checked at admission, so a restart
+  // need not resolve all existing reading items again.
+  const completionId='unreadable-reading-items:admission-rule-v1';
+  if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(completionId))return {expired:0};
   refreshRootMemo();
   const by:TopicBy={kind:'owner',sessionId:`concierge:${session.id}`};
   const at=nowIso();
@@ -4153,6 +4158,8 @@ export function expireUnreadableReadingItems() {
       recordSessionEvent({eventId:`topic-unreadable-expiry:${question.questionId}`,sessionId:session.id,kind:'topic_question',payload});
       applyTopicChange('topic_question',payload);
     }
+    recordSessionEvent({eventId:completionId,sessionId:session.id,kind:'startup_catch_up',
+      payload:{name:'unreadable-reading-items',completedAt:at,expired:unreadable.length}});
   })();
   if(unreadable.length)log('info','inbox_unreadable_reading_items_expired',{session_id:session.id,expired:unreadable.length,question_ids:unreadable.map(question=>question.questionId)});
   return {expired:unreadable.length};
