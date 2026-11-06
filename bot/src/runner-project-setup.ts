@@ -11,6 +11,7 @@ import { homedir } from 'node:os';
 import { canonicalAgentsTemplate, canonicalDocsIndexTemplate } from './project-scaffold';
 import { projectTemplate, templateAgentsSection, templateFiles, type ProjectTemplate } from './project-templates';
 import { sessionProject } from './session-projects';
+import {runnerGithubGitEnvironment} from './runner-git-auth';
 
 const execFile = promisify(execFileCallback);
 const NAME=/^[a-z][a-z0-9]*(-[a-z0-9]+)+$/;
@@ -41,7 +42,7 @@ function repositoryName(project:string,group?:string){return group===LAB_GROUP?`
 export function expectedRunnerProjectOrigin(project:string,group?:string){return `https://github.com/tejasdc/${repositoryName(project,group)}`;}
 function destinationFor(root:string,project:string,group?:string){return group?join(root,group,project):join(root,project);}
 function classify(error:unknown):'transient'|'permanent'{
-  return /timed? ?out|econn(?:reset|refused|aborted)|network|temporary|socket|fetch failed|rate limit|could not resolve|remote end hung up|service unavailable/i.test(String(error))?'transient':'permanent';
+  return /timed? ?out|econn(?:reset|refused|aborted)|network|temporary|socket|fetch failed|rate limit|could not resolve|remote end hung up|service unavailable|authentication failed|could not read username|credential helper/i.test(String(error))?'transient':'permanent';
 }
 function message(error:unknown){return (error instanceof Error?error.message:String(error)).replace(/[\r\n]/g,' ').slice(0,400);}
 function projectPredicate(path:string){try{return lstatSync(join(path,'.git')).isDirectory()&&lstatSync(join(path,'AGENTS.md')).isFile();}catch{return false;}}
@@ -50,7 +51,7 @@ function verifyDirectory(path:string,root:string){
   catch(error){if((error as any)?.code==='ENOENT')return false;throw error;}
   return true;
 }
-function gitEnv(){return {...process.env,HOME:process.env.HOME??homedir(),GIT_TERMINAL_PROMPT:'0',GCM_INTERACTIVE:'never',GIT_LFS_SKIP_SMUDGE:'1',GIT_ALLOW_PROTOCOL:'https',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null'};}
+function gitEnv(){return {...runnerGithubGitEnvironment(),GIT_ALLOW_PROTOCOL:'https'};}
 async function defaultRun(file:string,args:string[],cwd?:string,signal?:AbortSignal){return (await execFile(file,args,{cwd,encoding:'utf8',env:gitEnv(),maxBuffer:16*1024*1024,timeout:120_000,signal})).stdout.trim();}
 function createScaffold(path:string,project:string,purpose:string,template?:ProjectTemplate,canonicalPath=path){
   const intent=join(path,'tmp','project-setup-intent.json');mkdirSync(dirname(intent),{recursive:true});
@@ -134,7 +135,13 @@ export async function runProjectSetupJob(value:unknown,services:ProjectSetupRunn
         if(repository.visibility!=='PRIVATE'||repository.url!==expected)throw createError;
         const remoteHead=(await run('git',[...PRIVATE_GIT_OPTIONS,'ls-remote',`${expected}.git`,'HEAD'])).split(/\s+/)[0];
         if(remoteHead&&remoteHead!==commit)throw new Error('A GitHub repository with this name already contains different project history.');
-        await run('git',[...PRIVATE_GIT_OPTIONS,'-C',staging,'remote','add','origin',`${expected}.git`]);
+        // `gh repo create --source --push` can create the private repo and add origin before
+        // its push fails. Reconcile that exact partial success instead of treating the existing
+        // remote as a permanent error; never replace a different staged origin.
+        const stagedOrigin=await run('git',[...PRIVATE_GIT_OPTIONS,'-C',staging,'remote','get-url','origin']).catch(()=>null);
+        if(stagedOrigin&&String(stagedOrigin).replace(/\.git$/,'')!==expected)
+          throw new Error('The staged project has a different GitHub origin.');
+        if(!stagedOrigin)await run('git',[...PRIVATE_GIT_OPTIONS,'-C',staging,'remote','add','origin',`${expected}.git`]);
       }
     }
     const repository=JSON.parse(await run('gh',['repo','view',`tejasdc/${repositoryName(project,group)}`,'--json','visibility,url']));

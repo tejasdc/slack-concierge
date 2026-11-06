@@ -6,7 +6,7 @@ import {runProjectSetupJob} from '../src/runner-project-setup';
 
 const root=mkdtempSync(join(tmpdir(),'runner-project-setup-check-'));
 process.env.CONCIERGE_RUNNER_NAME='ax41';
-const commit='a'.repeat(40);let origin:string|null=null,remoteHead='';let publicRepo=false;
+const commit='a'.repeat(40);let origin:string|null=null,remoteHead='';let publicRepo=false,failNextPush=false;
 const calls:string[]=[];
 const run=async(file:string,args:string[],cwd?:string):Promise<string>=>{
   calls.push(`${file} ${args.join(' ')}`);
@@ -18,18 +18,20 @@ const run=async(file:string,args:string[],cwd?:string):Promise<string>=>{
     if(args.includes('branch'))return 'main';
     if(args.includes('remote')&&args.includes('add')){origin=args.at(-1)!;return '';}
     if(args.includes('remote')&&args.includes('set-url')){origin=args.at(-1)!;return '';}
-    if(args.includes('push')){remoteHead=commit;return '';}
+    if(args.includes('push')){if(failNextPush){failNextPush=false;throw new Error('remote: HTTP Basic: Access denied. fatal: Authentication failed');}remoteHead=commit;return '';}
     if(args.includes('ls-remote'))return `${remoteHead}\tHEAD`;
     return '';
   }
-  if(file==='gh'&&args[0]==='repo'&&args[1]==='create'){origin='https://github.com/tejasdc/field-notes.git';remoteHead=commit;return '';}
+  if(file==='gh'&&args[0]==='repo'&&args[1]==='create'){origin='https://github.com/tejasdc/field-notes.git';failNextPush=true;return '';}
   if(file==='gh'&&args[0]==='repo'&&args[1]==='view')return JSON.stringify({visibility:publicRepo?'PUBLIC':'PRIVATE',url:'https://github.com/tejasdc/field-notes'});
   throw new Error(`unexpected command ${file} ${args.join(' ')}`);
 };
 try{
   const input={orderId:'a'.repeat(32),project:'field-notes',purpose:'A project for field notes.',targetRunner:'ax41'};
   const first=await runProjectSetupJob(input,{workspaceRoot:root,run});
-  assert.deepEqual(first,{state:'done',project:'field-notes',relativePath:'field-notes',commit});
+  assert.deepEqual(first,{state:'failed',project:'field-notes',relativePath:'field-notes',failureClass:'transient',reason:'remote: HTTP Basic: Access denied. fatal: Authentication failed'},'an auth failure after remote creation stays retryable');
+  const retried=await runProjectSetupJob(input,{workspaceRoot:root,run});
+  assert.deepEqual(retried,{state:'done',project:'field-notes',relativePath:'field-notes',commit},'retry reconciles the already-created remote and retained origin');
   assert.match(readFileSync(join(root,'field-notes','AGENTS.md'),'utf8'),new RegExp(join(root,'field-notes').replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
   assert.equal(readFileSync(join(root,'field-notes','CLAUDE.md'),'utf8'),readFileSync(join(root,'field-notes','AGENTS.md'),'utf8'));
   const second=await runProjectSetupJob(input,{workspaceRoot:root,run});
