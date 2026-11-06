@@ -183,6 +183,9 @@ are command hooks in `--settings`, held by the unchanged process).
   agent shipping Concierge from outside never holds its own update. The CLI shares `~/.codex/auth.json`
   with the App Server; Codex 0.162 reloads that file before renewing and skips the renewal when
   another process already renewed, so the two never spend each other's login.
+  An outside turn launched on a runner keeps that runner as its host location during adoption.
+  Its finished journal and exit receipt are read through the runner even if the coordinator
+  restarts; a local host socket is not a substitute for that retained custody.
 - **Every other new Codex turn** uses the shared Codex App Server daemon, which already outlives Concierge.
   Each such run is recorded as an execution with supervisor `codex-daemon` (no host, live at once).
   After a restart the next coordinator follows the turn by its exact thread (the session's bound
@@ -434,7 +437,7 @@ preflight that refuses a candidate missing a protocol in use belongs to the depl
 
 ## Hosts on a runner
 
-A Claude Code turn can also run in a host on a runner machine: same host program and protocol, started
+A Claude Code or outside Codex turn can also run in a host on a runner machine: same host program and protocol, started
 by the runner, with the journal reaching this ledger as the runner job's events and commands going
 back as job commands (supervisor `runner`). Adoption, replay, held runs, release after settlement and
 survival proof follow the rules above through the same host-access interface; see
