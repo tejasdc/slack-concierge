@@ -90,6 +90,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - Held final returns retry delivery to their asker while completed Inbox answer
   upkeep is retained once per exact event; the yielding open-thread sweep is
   described in [native Inbox](docs/contracts/native-inbox.md#owner-upkeep-under-held-returns).
+- Thread upkeep admitted as no-reply service work can settle quietly after reconciliation;
+  the [native Inbox thread contract](docs/contracts/native-inbox.md) keeps agent answers
+  and ordinary service returns subject to their thread reply obligation.
 - ChatGPT questions carry an exact task and remain open through failed attempts,
   return receipt, and explicit answer handling. See [ChatGPT answer obligations](docs/architecture/CHATGPT-ANSWER-OBLIGATIONS.md).
 - Preserve exact accepted input, run, action, source-message and target identity.
