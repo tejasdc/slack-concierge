@@ -12,7 +12,7 @@ process.env.CONCIERGE_TEST_MODE='1';
 process.env.CONCIERGE_TEST_AUTHORIZATION=LEGACY_TOPIC_COMPLETION_TEST_AUTHORIZATION;
 
 const [{db,claimNextQueuedTurn,markTurnProviderAdmissionIntended,acknowledgeTurnProviderInput},
-  {SessionOwner},{SessionCommunicationCoordinator},{nativeRunId,updateSessionMetadata},
+  {SessionOwner},{SessionCommunicationCoordinator},{nativeRunId,updateSessionMetadata,recordSessionEvent},
   {topicsCommand}]=await Promise.all([
   import('../src/state'),import('../src/session-owner'),import('../src/session-communication'),
   import('../src/session-inputs'),import('../src/session-topics')]);
@@ -102,8 +102,31 @@ try {
     assert.deepEqual(result.request.closure.evidence,[typedEvent.event_id]);
   }
   assert.equal(answerPosts().n,postsBeforeClosure);
+
+  // An accepted Inbox successor can answer a request retained under its predecessor.
+  // The message projection gives SQLite timestamps as "YYYY-MM-DD HH:MM:SSZ"; the
+  // completion check must normalize that timestamp before comparing it to the request.
+  const inherited=topicsCommand(current.actor,{verb:'request.add',topic_id:topicId,action_id:'inherited-request',
+    title:'Answer after Inbox handoff',sources:[rootId],brief:'Answer the existing human request in its thread.'});
+  db.query("UPDATE inbox_requests SET created_at=datetime('now','-1 minute') WHERE request_id=?").run(inherited.request.requestId);
+  const successor=await owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',firstInput:{text:'Continue Inbox work'}});
+  const successorId=Number(successor.session.id.slice(10));updateSessionMetadata(successorId,{inbox:true});
+  const successorTurn=run();
+  const wrongPost='post:successor-unrelated';
+  recordSessionEvent({eventId:wrongPost,sessionId:successorId,inputId:successorTurn.actor.inputId,
+    turnId:successorTurn.actor.turnId,kind:'post',payload:{text:'An unrelated answer',threadRoot:'other-root'}});
+  assert.throws(()=>topicsCommand(successorTurn.actor,{verb:'request.close',request_id:inherited.request.requestId,
+    action_id:'successor-wrong-thread',disposition:'completed',evidence:[wrongPost],reason:'Checked the answer.'}),
+    /name the later answer in this thread/);
+  const answerPost='post:successor-inherited-answer';
+  recordSessionEvent({eventId:answerPost,sessionId:successorId,inputId:successorTurn.actor.inputId,
+    turnId:successorTurn.actor.turnId,kind:'post',payload:{text:'The existing request is answered.',threadRoot:rootId}});
+  const inheritedClosed=topicsCommand(successorTurn.actor,{verb:'request.close',request_id:inherited.request.requestId,
+    action_id:'successor-inherited-close',disposition:'completed',evidence:[answerPost],reason:'Checked the exact answer in the original thread.'});
+  assert.equal(inheritedClosed.request.state,'closed');
+  assert.deepEqual(inheritedClosed.request.closure.evidence,[answerPost]);
   assert.deepEqual(errors,[]);
-  console.log('Legacy topic completion fixture passed: uncertain and unrelated evidence stayed open; exact legacy and typed finals closed without duplicate posts.');
+  console.log('Legacy topic completion fixture passed: uncertain and unrelated evidence stayed open; exact finals and successor thread answer closed without duplicate posts.');
 } finally {
   await communication.stop();
   rmSync(scratch,{recursive:true,force:true});
