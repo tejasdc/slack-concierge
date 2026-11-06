@@ -48,7 +48,7 @@ import {providerOwnerEnvironment} from './provider-owner-environment';
 import {escalationReason,topModel} from './model-escalation';
 import {humanChoseTopModel} from './model-escalation-custody';
 import {STILL_WAITING_MINUTES} from './request-liveness';
-import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,discardQueuedTurnContinuations,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
+import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,discardQueuedTurnContinuations,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordHeldInputReceiptEvent,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
 import {INBOX_PURPOSE,REPAIR_AGENT_PURPOSE,purposeFromFirstWords} from './session-purpose';
 import {getRouterThreadContext} from './router-search';
@@ -2379,6 +2379,9 @@ export class SessionOwner {
         // A temporarily unavailable recipient keeps an explicit, recoverable queue intent.
         db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({admissionIntent:'queue'}),saved.input.id);
       }
+      // A paused, archived or unavailable session has accepted custody but no turn. Publish that
+      // receipt change in the same transaction without pretending the provider accepted work.
+      if(!forward&&!saved.duplicate&&!canceled&&!this.canSend(session))recordHeldInputReceiptEvent(saved.input);
       return saved;
     })();
     if(heldCaptureId)return {operation:this.receipt(getAcceptedSessionInput(retained.input.id)!)};

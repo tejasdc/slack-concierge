@@ -2,7 +2,7 @@ import {closeModuleLoadStorage} from './owner-task-labels-install';
 import { App, LogLevel } from "@slack/bolt";
 import { recordModuleLoadStep, runStartupPhase, runStartupStep } from './startup-phase';
 import { RoutedRequestCoordinator } from "./routed-requests";
-import { initializeSessionTitle } from "./session-inputs";
+import { backfillHeldInputReceiptEvents, initializeSessionTitle } from "./session-inputs";
 import {backfillResultAnsweredByPost} from './session-inbox';
 import { startRoutedRequestApi } from "./routed-request-api";
 import { peerSettings } from "./session-peers";
@@ -536,6 +536,8 @@ bindOwner();
 for(const held of recoverProviderRefusalContinuations())noticeTurnContinuation({
   provider:held.provider,model:null,turnId:held.turnId,reason:held.reason},recordOwnerEvent);
 runStartupStep('session_projection', () => installSessionProjection(sessionExecutionHost.owner));
+try {log('info','held_input_receipt_events_backfilled',{count:runStartupStep('held_input_receipt_events',backfillHeldInputReceiptEvents)});}
+catch(error) {log('error','held_input_receipt_event_backfill_failed',errorFields(error));}
 // Every startup step below is timed and named (runStartupStep). Sweeps over history are catch-ups
 // with a high-water mark: their remaining work runs page by page after Concierge is online
 // (startup-repairs.ts). File-authored purposes finish before the generic fallback begins.
