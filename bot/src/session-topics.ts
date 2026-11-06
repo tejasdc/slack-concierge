@@ -1506,8 +1506,11 @@ function verifiedFinalEvidence(dispatchId:string,row:CompletionRow|null,evidence
   if(!retained)return false;
   try {
     const payload=JSON.parse(retained.payload_json);
+    // The event row binds the final to this dispatch. A recipient may answer it from a
+    // later accepted input, such as a return, while preserving that input's own source.
     return payload.final===true
-      &&payload.source?.input_id===`request:${dispatchId}`
+      &&typeof payload.source?.input_id==='string'&&!!payload.source.input_id
+      &&typeof payload.source?.run_id==='string'&&!!payload.source.run_id
       &&payload.text===result.text
       &&payload.responding_session_id===result.responding_session_id
       &&payload.workDisposition===result.workDisposition;

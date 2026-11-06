@@ -503,8 +503,12 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   never close a request automatically. The router may close one request after checking the
   historical answer against that request's whole scope, citing the exact final answer event as
   evidence. The owner accepts that evidence only when the linked dispatch ended `answered`, the
-  named event is its unsuperseded final, and the retained request, source, responder and answer
-  bytes agree. An uncertain outcome, a sibling answer, a different event, or an answer that does
+  named event is its unsuperseded final, and the retained result agrees with the final's
+  responder, answer bytes and disposition. The event's request ID binds it to the dispatch;
+  the final retains its authenticated source input and run, which can be a later accepted
+  input in the same recipient session, such as a helper's return. The source identity is
+  never rewritten to the original request input. An uncertain outcome, a sibling answer,
+  a different event, or an answer that does
   not prove delivery, deployment or live acceptance stays open. This request-specific closure
   does not edit the historical result or dispatch another worker. The same exact-final evidence
   also lets the router close a migrated request whose checked, completed answer predates its
