@@ -446,8 +446,8 @@ async function runnerSocketRepair(activeTurns:number):Promise<{status:string;det
     codexRepairActive=true;
     try{
       const check=await runCommand(MANAGED_CODEX,['app-server','daemon','version'],20_000);
-      if(check.code!==0||!check.output.includes('"running"'))
-        return {status:'managed_or_absent'};
+      if(check.code!==0)return {status:'uncertain',detail:'The Codex daemon did not answer its status check.'};
+      if(!check.output.includes('"running"'))return {status:'managed_or_absent'};
       const managedPid=check.output.includes('"backend":"pid"');
       const unmanaged=!check.output.includes('"backend"');
       if(!managedPid&&!unmanaged)return {status:'managed_or_absent'};

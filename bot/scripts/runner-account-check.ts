@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { tmpdir } from "node:os";
@@ -12,8 +12,11 @@ import {withCodexRestartLock} from '../src/codex-restart-lock';
 if (process.env.RUNNER_ACCOUNT_CHECK_CHILD !== "1") {
   const isolatedHome = mkdtempSync(join(tmpdir(), "runner-account-check-"));
   try {
+    const codexStub=join(isolatedHome,'codex-stub');
+    writeFileSync(codexStub,"#!/bin/sh\nprintf '%s\\n' '{\"status\":\"stopped\"}'\n");
+    chmodSync(codexStub,0o700);
     const child = Bun.spawnSync([process.execPath, import.meta.path], {
-      env: { ...process.env, HOME: isolatedHome, CONCIERGE_RUNNER_STATE: join(isolatedHome, "runner-state"), RUNNER_ACCOUNT_CHECK_CHILD: "1" }, stdout: "pipe", stderr: "pipe",
+      env: { ...process.env, HOME: isolatedHome, CONCIERGE_RUNNER_STATE: join(isolatedHome, "runner-state"), CONCIERGE_CODEX_EXECUTABLE:codexStub, RUNNER_ACCOUNT_CHECK_CHILD: "1" }, stdout: "pipe", stderr: "pipe",
     });
     if (child.stdout) process.stdout.write(child.stdout);
     if (child.stderr) process.stderr.write(child.stderr);
@@ -102,6 +105,10 @@ try {
     { status: "managed_or_absent" },
     "an absent App Server is proven without waiting for an unrelated hosted turn");
   assert.equal(accounts.runnerCodexRepairActive(), false, "read-only proof must not fence runner turn claims");
+  writeFileSync(process.env.CONCIERGE_CODEX_EXECUTABLE!,"#!/bin/sh\nexit 1\n");
+  assert.deepEqual(await accounts.serveRunnerAccountCall("accounts.codex.repairUnmanaged", {}, { activeTurns: 1 }),
+    {status:"uncertain",detail:"The Codex daemon did not answer its status check."},
+    "a failed daemon probe must not be mistaken for proof that the App Server is absent");
   assert.deepEqual(accounts.runnerAccountIdentity("codex"), { id: "active-id", label: "active@example.com" });
   assert.equal(accounts.runnerAccountHome("codex", "saved@example.com"), join(root, ".codex-accounts", "saved"));
   assert.equal(accounts.runnerAccountHome("claude-code", "writer@example.com"), claude);
