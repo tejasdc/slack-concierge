@@ -195,6 +195,16 @@ notice promised the work would move to that account, and his 7:28 PM message mov
 session instead while he was signing in. Record:
 `docs/incidents/2026-11-02-mac-signin-wait-read-as-usage.md`.
 
+The Inbox router keeps one canonical role across providers. When its current provider has no
+launchable allowance and another provider has a launchable account with room, a confirmed
+usage-held Inbox turn can propose the existing session handoff even if a later input is queued
+or the refused attempt recorded admission intent. The successor accepts an exact inventory;
+only then does the role move and safe queued inputs retain their original source and request
+identity. An ambiguous or acknowledged input blocks acceptance. A fresh reading showing room
+on the current provider instead releases its held work there; a provider reset does not switch
+an already running conversation in place. The generic Claude recovery excludes Inbox because
+it cannot own this canonical role transfer.
+
 The first held input of an episode records one internal `provider_hold_observed` event with an
 `auth` payload: account, machine and number of held inputs. It does not itself push a
 notification. The sign-in renewal path asks Tejas only when the Mac browser agent cannot
