@@ -75,10 +75,12 @@ const ended = (state: string) => state === "finished" || state === "unconfirmed"
 export class RunnerHostAccess implements HostAccess {
   readonly place = "runner" as const;
   readonly jobId: string;
-  constructor(readonly executionId: string, private readonly ownerInstanceId?: string) { this.jobId = turnJobId(executionId); }
+  constructor(readonly executionId: string, private readonly ownerInstanceId?: string,
+    private readonly targetRunner?: string) { this.jobId = turnJobId(executionId); }
 
   async launch(manifest: HostManifest, files: { path: string; base64: string }[] = []): Promise<HostLaunch> {
-    const payload = { executionId: this.executionId, manifest, files, protocols: ADOPTABLE_HOST_PROTOCOLS };
+    const payload = { executionId: this.executionId, manifest, files, protocols: ADOPTABLE_HOST_PROTOCOLS,
+      ...(this.targetRunner ? { targetRunner: this.targetRunner } : {}) };
     // The execution's intent and turn are on disk before any runner can see the work.
     await ledgerDurable();
     engine().enqueue({ jobId: this.jobId, kind: TURN_JOB_KIND, payload, replaySafe: false });

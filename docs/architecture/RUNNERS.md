@@ -143,7 +143,10 @@ What happens for a turn on a runner:
    working folder, the run's own variables (identity, run token, account home, model settings),
    the opening input, attachment bytes, and the host protocols the owner adopts. The owner's own
    environment is not in it.
-2. A runner claims it within two minutes (`CONCIERGE_RUNNER_CLAIM_MS`), or the owner withdraws the
+2. A turn bound to a runner carries that runner's name in its queued job. The lease engine only
+   offers it to that runner, so a later turn cannot move away from its account and transcript.
+   The owner's `CONCIERGE_TURN_RUNNER` names the current Claude target; the Codex relay target is
+   configured independently. A runner claims it within two minutes (`CONCIERGE_RUNNER_CLAIM_MS`), or the owner withdraws the
    still-queued job in one statement. The ordinary claim-timeout path parks the turn for custody
    reconciliation after its admission intent; only the owner-drain withdrawal in step 7 returns
    the turn unsent. The runner writes the

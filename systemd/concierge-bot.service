@@ -50,6 +50,7 @@ Environment=CONCIERGE_AGENT_API_LISTEN=100.118.245.110:8789
 # order"). Google and outside-Codex turns stay local until their runner-side steps exist
 # (docs/architecture/RUNNERS.md "Not on runners yet"). Setting either to off/unset is the rollback.
 Environment=CONCIERGE_TURN_RUNNERS=all
+Environment=CONCIERGE_TURN_RUNNER=ax41
 Environment=CONCIERGE_CODEX_RUNNER=ax41
 # Concierge's own thnkr.ing calls (ChatGPT runs, native reads, human commands, to-dos, thesaurus)
 # take thnkr.ing's network entrance with the owner's service token, so nothing in the owner needs
