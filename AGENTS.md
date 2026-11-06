@@ -81,6 +81,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   helper directory; see [runners](docs/architecture/RUNNERS.md#agent-session-commands).
 - Agent-started top-model choices and helper defaults follow [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#delegation-and-escalation);
   model and helper call shares are in [usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
+- External Codex resets on a saved account clear that account's older refusal on a fresh direct reading before automatic account switching; see [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md#what-the-allowance-evidence-means).
 
 ## Session and Inbox obligations
 
