@@ -143,6 +143,19 @@ else
 fi
 command -v ffmpeg >/dev/null 2>&1 || echo "Speech-to-text also needs ffmpeg to read browser recordings: brew install ffmpeg" >&2
 
+# The observer is a one-shot libproc reader invoked by the existing signed speech listener.
+# It has no independent launchd lifetime or permission request.
+FOOTPRINT_SRC="$REPO/bot/native/process-footprint.c"
+FOOTPRINT_BIN="$STATE/speech/process-footprint"
+if command -v clang >/dev/null 2>&1; then
+  footprint_fingerprint=$(shasum -a 256 "$FOOTPRINT_SRC" | cut -d' ' -f1)
+  if [ ! -x "$FOOTPRINT_BIN" ] || [ "$(cat "$STATE/speech/.footprint-fingerprint" 2>/dev/null)" != "$footprint_fingerprint" ]; then
+    clang -O2 -Wall "$FOOTPRINT_SRC" -o "$FOOTPRINT_BIN.build"
+    mv "$FOOTPRINT_BIN.build" "$FOOTPRINT_BIN"
+    echo "$footprint_fingerprint" > "$STATE/speech/.footprint-fingerprint"
+  fi
+fi
+
 # Screenshots for agents (bot/native/mac-capture.swift, run through ~/.local/bin/mac-screenshot).
 # Nothing here asks for the Screen Recording permission: the helper asks the first time a
 # capture is actually wanted, and macOS attributes it to the signed agent-host app above it.
@@ -233,8 +246,8 @@ if [ -x "$SPEECH_BIN" ]; then
   plutil -lint "$SPEECH_PLIST.tmp" >/dev/null
   mv "$SPEECH_PLIST.tmp" "$SPEECH_PLIST"
   speech_revision=$(shasum -a 256 "$REPO/bot/scripts/live-speech-service.ts" "$REPO/bot/src/live-speech.ts" \
-    "$REPO/bot/src/speech-engine.ts" "$REPO/bot/src/transcription.ts" "$REPO/bot/src/log.ts" \
-    "$SPEECH_BIN" "$SPEECH_TLS/cert.pem" "$SPEECH_TLS/key.pem" | shasum -a 256 | cut -d' ' -f1)
+    "$REPO/bot/src/mac-voice-observer.ts" "$REPO/bot/src/speech-engine.ts" "$REPO/bot/src/transcription.ts" "$REPO/bot/src/log.ts" \
+    "$SPEECH_BIN" "$FOOTPRINT_BIN" "$SPEECH_TLS/cert.pem" "$SPEECH_TLS/key.pem" | shasum -a 256 | cut -d' ' -f1)
 fi
 installed_speech_revision=$(cat "$STATE/speech/.service-revision" 2>/dev/null || true)
 
@@ -246,10 +259,20 @@ launchctl kickstart -k "gui/$(id -u)/$LABEL"
 echo "Concierge (mac) started: state $STATE, peer listener $TAILNET_IP:8788, logs $STATE/logs/"
 
 if [ -n "$speech_revision" ] && [ "$speech_revision" != "$installed_speech_revision" ]; then
-  launchctl bootout "gui/$(id -u)/$SPEECH_LABEL" 2>/dev/null || true
-  for _ in $(seq 1 30); do launchctl print "gui/$(id -u)/$SPEECH_LABEL" >/dev/null 2>&1 || break; sleep 1; done
-  launchctl bootstrap "gui/$(id -u)" "$SPEECH_PLIST"
-  echo "$speech_revision" > "$STATE/speech/.service-revision"
+  speech_active=$(curl -fsS --max-time 2 -H 'Origin: https://thnkr.ing' "http://127.0.0.1:8790/speech/v1/observer/status" 2>/dev/null || true)
+  # Before this endpoint is installed, a live recording always has an ffmpeg child of the
+  # listener's Bun process. Unknown status plus a decoder means leave speech running.
+  speech_decoder=$(ps -axo pid=,ppid=,comm= | awk '$3 ~ /(^|\/)ffmpeg$/ { print $2 }' | while read -r parent; do
+    ps -p "$parent" -o args= 2>/dev/null | grep -q 'live-speech-service.ts' && echo active
+  done | head -1 || true)
+  if [ -z "$speech_decoder" ] && { [[ "$speech_active" == *'"activeOperations":0'* ]] || [ -z "$speech_active" ]; }; then
+    launchctl bootout "gui/$(id -u)/$SPEECH_LABEL" 2>/dev/null || true
+    for _ in $(seq 1 30); do launchctl print "gui/$(id -u)/$SPEECH_LABEL" >/dev/null 2>&1 || break; sleep 1; done
+    launchctl bootstrap "gui/$(id -u)" "$SPEECH_PLIST"
+    echo "$speech_revision" > "$STATE/speech/.service-revision"
+  else
+    echo "Speech is active or its status is uncertain; leaving it running for the next updater pass."
+  fi
 elif [ -n "$speech_revision" ] && ! launchctl print "gui/$(id -u)/$SPEECH_LABEL" >/dev/null 2>&1; then
   launchctl bootstrap "gui/$(id -u)" "$SPEECH_PLIST"
 fi
