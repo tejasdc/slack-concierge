@@ -25,12 +25,13 @@ import {spawnSync} from 'node:child_process';
 import {ADOPTABLE_HOST_PROTOCOLS,HOST_PROTOCOL_VERSION,HostConnection,HostNotStartedError,connectWhenReady,executionDirectory,
   executionUnit,hostCustody,hostSocketPath,startHost,stopSupersededHost,streamJournal,type HostFrame} from '../src/execution-host-client';
 import {watchClaudeTranscript} from '../src/claude-transcript-watch';
-import {RUNNER_FENCE_MS} from '../src/runner-leases';
+import {HEARTBEAT_MS,RUNNER_FENCE_MS} from '../src/runner-leases';
 import {codexAppServerSocketPath} from '../src/codex-app-server-client';
 import {controlSocketListeners,moveCodexDaemonToOwnScope,raiseCodexDaemonFileLimit,startCodexDaemonWhenAbsent} from '../src/codex-daemon-file-limit';
 import {serveRunnerMachineCalls} from '../src/runner-machine-calls';
 import {localWatchMachine,serveWatchCall} from '../src/watch-machine';
 import {rewriteRelayedCodexRequest,runnerMachineEnvironment,writeRunnerConnection,type RunnerMachine} from '../src/runner-machine';
+import {runProjectSetupJob} from '../src/runner-project-setup';
 
 const owner=process.env.CONCIERGE_OWNER_URL?.replace(/\/+$/,'');
 const tokenFile=process.env.CONCIERGE_RUNNER_TOKEN_FILE;
@@ -75,7 +76,7 @@ function resolveRunnerArg(value:string,executionId:string):string {
   return path;
 }
 const once=process.argv.includes('--once');
-const kinds=(process.env.CONCIERGE_RUNNER_KINDS??'probe,turn,codex').split(',').map(kind=>kind.trim()).filter(Boolean);
+const kinds=(process.env.CONCIERGE_RUNNER_KINDS??'probe,turn,codex,project-setup').split(',').map(kind=>kind.trim()).filter(Boolean);
 const maxTurns=Number(process.env.CONCIERGE_RUNNER_MAX_TURNS)||64;
 /** This runner's release: the host program and the agents' helpers come from here, never from the owner. */
 const botDir=resolve(import.meta.dir,'..');
@@ -145,6 +146,29 @@ async function runProbe(job:{jobId:string;attemptId:string;epoch:number;payload:
     result:{echoed:job.payload?.text??null,ackedSeq:acked.ackedSeq,resendAckedSeq:again.ackedSeq}});
   updateHeld(state=>{delete state[job.attemptId];});
   return finished;
+}
+
+/** Project setup is one closed replay-safe job; its filesystem and GitHub effects converge by order ID. */
+async function runProjectSetup(job:{jobId:string;attemptId:string;epoch:number;payload:any}) {
+  const controller=new AbortController();let done=false,heartbeatError:unknown=null;
+  const heartbeat=(async()=>{
+    while(!done){
+      await Bun.sleep(HEARTBEAT_MS);
+      if(done)break;
+      try{await call('heartbeat',{attemptId:job.attemptId,epoch:job.epoch});recordOwnerContact();}
+      catch(error){if(lostCustody(error)){heartbeatError=error;controller.abort();break;}say('runner_project_setup_heartbeat_retry',{job:job.jobId,error:String(error)});}
+    }
+  })();
+  let result:any;
+  try{result=await runProjectSetupJob(job.payload,{signal:controller.signal});}
+  catch(error){result={state:'failed',failureClass:'permanent',reason:String(error).replace(/[\r\n]/g,' ').slice(0,400)};}
+  done=true;await heartbeat;
+  if(heartbeatError){say('runner_project_setup_lost_custody',{job:job.jobId,attemptId:job.attemptId});return;}
+  for(;;){
+    try{await call('finish',{attemptId:job.attemptId,epoch:job.epoch,operationId:`finish:${job.attemptId}`,result});break;}
+    catch(error){if(lostCustody(error))break;say('runner_project_setup_finish_retry',{job:job.jobId,error:String(error)});await Bun.sleep(2_000);}
+  }
+  say('runner_project_setup_finished',{jobId:job.jobId,attemptId:job.attemptId,state:result?.state??'failed'});
 }
 
 /**
@@ -611,6 +635,10 @@ for(let idle=0;;) {
       void turn.start().catch(error=>say('runner_turn_failed',{job:job.jobId,error:String(error)}));
       say('runner_turn_claimed',{jobId:job.jobId,attemptId:job.attemptId});
       continue;
+    }
+    if(job.kind==='project-setup'){
+      void runProjectSetup(job).catch(error=>say('runner_project_setup_failed',{job:job.jobId,error:String(error)}));
+      idle=0;continue;
     }
     const result=job.kind==='probe'?await runProbe(job):null;
     say('runner_job_finished',{jobId:job.jobId,attemptId:job.attemptId,result});

@@ -384,13 +384,19 @@ manifest never carries the owner's absolute working directory. Google executable
 checks run on the runner before a Google host starts. Outside Codex prompt bytes are written beneath
 that execution's private runner state folder and the CLI receives only its execution-bound path.
 
-These calls do not create projects. Project creation currently stays on the owner machine:
-`project-setup.ts` validates the completed workspace-organizer answer against the owner's request
-ledger, writes the scaffold in the owner's workspace, and runs `git`/`gh` with that machine's
-credentials before coordinating cross-peer placement. The runner protocol has no project-creation
-job or receipt that carries this exact organizer proof and safely owns retries of the GitHub
-repository mutation. Moving this action requires that validated, idempotent job and a runner with
-its own GitHub identity; until then the owner keeps project creation and its ledger decision.
+Project creation is a replay-safe `project-setup` runner job. The owner first validates the exact
+completed workspace-organizer answer against its request ledger and reserves the placement receipt.
+It then enqueues a deterministic job for the configured project runner, carrying only the project
+name, purpose, group, template, order identity, and target runner. The runner stages the scaffold in
+its own workspace, disables Git hooks and non-HTTPS Git transports, and uses its own `gh` login to
+create or verify the expected private repository. It proves the remote head matches the staged
+commit before renaming the checkout into the registered project location. The owner records the
+creation and sends the existing peer placement jobs only after receiving that proof. A retry uses
+the same order identity, so a lost reply resumes from the staged checkout or recognizes the exact
+private repository and commit; it never overwrites a different remote history. The job remains
+queued if its runner is away; transient completed failures get a fresh lease job identity while
+reusing the same order and staging folder. The runner's `gh` identity and availability are required
+for project creation, while organizer proof and project-creation records remain owner-ledger facts.
 
 ## Concierge's own thnkr.ing calls (built)
 
