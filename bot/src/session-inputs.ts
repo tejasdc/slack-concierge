@@ -132,6 +132,20 @@ export function initializeSessionTitle(sessionId:number, title:string|undefined)
   })();
 }
 /**
+ * ChatGPT has no tools, so it can never run the self-title command every other provider uses:
+ * the name it gave its own conversation is the only name that model chose. Adopt it for a
+ * session that still has no name — the manually started chats Tejas opens himself — and never
+ * over the name a creator or Tejas chose, which `initializeSessionTitle` already protects.
+ * An unusable value is ignored rather than refused, because naming a session must never be
+ * able to fail a turn ChatGPT already answered; `ChatGPT conversation` is the capability
+ * host's own placeholder for a conversation ChatGPT has not titled yet.
+ */
+export function adoptProviderConversationTitle(sessionId:number, reported:string) {
+  const title=reported.trim().replace(/\s+/g,' ').slice(0,120);
+  if(!title||title.toLowerCase()==='chatgpt conversation')return;
+  initializeSessionTitle(sessionId,title);
+}
+/**
  * Whether Tejas named this session himself, with the app's Rename control. His name is the
  * one a session may not write over: everything else a session carries as a name — one it
  * chose earlier, one another agent gave it at creation — is the session's own to correct.

@@ -242,6 +242,7 @@ function localOwnerRequest(shared:(request:Request)=>Promise<Response>,sessions?
           catch(error){
             const run=getDeploymentRun(input.runId);
             if(run&&['succeeded','failed','ambiguous'].includes(run.status))return Response.json({terminal:true,run});
+            if(run?.repair_state&&run.repair_state!=='retrying')return Response.json({repairOwned:true,run});
             throw error;
           }
         }

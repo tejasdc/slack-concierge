@@ -532,6 +532,17 @@ SQL treats them as comment text, but the TypeScript parser sees them first. A
 compile failure leaves no candidate artifact and the deploy restores the prior
 LKG without changing the immutable control authority.
 
+### Candidate schema comparison
+
+The candidate's schema comparison scans the live ledger read-only both before and
+after the coordinator stops. SQLite can refuse a WAL reader while another
+connection closes or recovers. On `SQLITE_BUSY`, the comparison closes its
+connection and retries the entire scan up to three times, with one second between
+attempts; a persistent refusal still fails the release and preserves the
+last-known-good recovery path. The retry never reuses a partial schema result,
+changes the backup decision, or starts the coordinator. See the
+[November 5 lock incident](../incidents/2026-11-05-offline-schema-read-busy.md).
+
 Dependency directories are mutable installation output and must never be
 committed, including as absolute symlinks from a task worktree. A symlink that
 targets the service checkout's own dependency directory becomes self-referential
@@ -644,6 +655,9 @@ unit starts again after its durable run has already reached `succeeded`,
 `failed`, or `ambiguous`, the claim command reports that terminal state and the
 runner exits successfully without repeating deployment work. This prevents a
 terminal run from becoming a permanent ten-second systemd restart loop.
+While the repair supervisor owns a nonterminal run, claim reports that ownership
+and the old runner also exits successfully. A later reviewed retry gets a new
+claim only when the durable run returns to `retrying`.
 
 Terminal diagnostics lead with the deployment outcome and a plain-language
 reason for the failed operation. No deployment outcome starts a feature-agent

@@ -83,14 +83,18 @@ export function readWorkspaceFile(input: { machine: string; workspaceRoot: strin
   const path = resolve(expandHome(requested));
   if (!isAbsolute(path)) throw new WorkspaceFileError('A file path must be absolute or start with ~.', 400, 'FILE_PATH_INVALID');
   const name = path.split(sep).pop() ?? path;
+  let root: string;
+  try { root = realpathSync(input.workspaceRoot); } catch { throw new WorkspaceFileError('This machine has no readable workspace root.', 503, 'WORKSPACE_ROOT_UNAVAILABLE'); }
+  // Where it is decides before what it is, so a file outside the workspace is refused for being
+  // outside it. The sensitive-name rule reads a path relative to the root, and an outside path
+  // makes that `../…`, whose `..` it reads as a hidden name: a Markdown file one folder over was
+  // refused as an unreadable kind, which is not why it cannot be opened.
+  if (!within(root, path)) throw new WorkspaceFileError(`Only files under ${root} can be opened here.`, 403, 'FILE_OUTSIDE_WORKSPACE');
   // A dotfile is configuration and credentials rather than something an agent asks him to
   // read: `.env` would otherwise arrive as ordinary text.
   const extension = name.toLowerCase().slice(name.toLowerCase().lastIndexOf('.'));
-  const kind = isSensitiveWorkspacePath(relative(input.workspaceRoot,path)) ? undefined : VIEWABLE_EXTENSIONS[extension];
+  const kind = isSensitiveWorkspacePath(relative(root,path)) ? undefined : VIEWABLE_EXTENSIONS[extension];
   if (!kind) throw new WorkspaceFileError('That kind of file cannot be opened here.', 415, 'FILE_TYPE_UNSUPPORTED');
-  let root: string;
-  try { root = realpathSync(input.workspaceRoot); } catch { throw new WorkspaceFileError('This machine has no readable workspace root.', 503, 'WORKSPACE_ROOT_UNAVAILABLE'); }
-  if (!within(root, path)) throw new WorkspaceFileError(`Only files under ${root} can be opened here.`, 403, 'FILE_OUTSIDE_WORKSPACE');
   let real: string;
   let stats: ReturnType<typeof statSync>;
   try { real = realpathSync(path); stats = statSync(real); }

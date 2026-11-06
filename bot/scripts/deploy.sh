@@ -258,7 +258,8 @@ claim_deployment_run() {
   printf '%s\n' "$claim_output"
   claim_status=$(printf '%s\n' "$claim_output" | jq -er '.status')
   DEPLOY_DESIRED_COMMIT=$(printf '%s\n' "$claim_output" | jq -r '.desired_commit // empty')
-  if [ "$claim_status" = "terminal" ]; then
+  if [ "$claim_status" = "terminal" ] || [ "$claim_status" = "repair_owned" ]; then
+    # This runner is finished; a repair-owned durable run remains nonterminal under its supervisor.
     DEPLOY_RUN_TERMINAL=1
     INTERRUPTED_RECOVERY_HANDLED=1
     return 0
