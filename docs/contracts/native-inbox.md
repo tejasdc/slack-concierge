@@ -427,6 +427,10 @@ that work closes; the open-work guard applies to new posts. `sessions topics obl
 one view with their current destination and age, without creating another store. The
 reported owner follows live attempts and existing decision waits, including a decision
 in another thread that holds an agent's work; ended attempts return to Inbox recovery.
+That full view rebuilds every request's owner and waiting reason, so thnkr.ing's Open
+requests chip reads `GET /inbox/obligations?view=count` instead: the same open requests,
+counted by one indexed statement, with no items. The full view is read only when he opens
+the Open requests list (2026-11-05: the chip's re-reads cost 5 s and 15,800 statements each).
 
 The request's source input and its named thread answer different questions. The source is
 the event that caused this send; the named thread message is the return address for its
