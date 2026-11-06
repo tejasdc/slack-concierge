@@ -1086,6 +1086,26 @@ export class SessionOwner {
   }
   private session(id:string) {const row=getSessionById(parseSessionId(id));if(!row)throw new SessionOwnerError('Unknown session.',404);return row;}
   private input(id:string) {const row=getAcceptedSessionInput(id);if(!row)throw new SessionOwnerError('Unknown operation.',404);return row;}
+  private agentBrowserBinding(request:Request,sessionId?:string) {
+    const marked=request.headers.get('x-concierge-verified-agent-source');
+    const createId=request.headers.get('x-concierge-agent-test-create');
+    if(!marked||!createId||!/^request:[0-9a-f-]{36}$/i.test(createId))
+      throw new SessionOwnerError('A verified agent source and exact creation request are required.',403,'AGENT_TEST_SCOPE_REQUIRED');
+    const pair=/^(\S+) (\S+)$/.exec(marked);
+    if(!pair)throw new SessionOwnerError('A verified agent source pair is required.',403,'AGENT_TEST_SCOPE_REQUIRED');
+    const source=agentTestSource({inputId:pair[1],runId:pair[2]})!;
+    const created=getAcceptedSessionInput(createId);
+    if(!created||created.kind!=='create'||created.origin!=='agent'||created.source_input_id!==source.inputId||created.source_run_id!==source.runId
+      ||created.request_id!==createId.slice('request:'.length)||sessionId&&`concierge:${created.session_id}`!==sessionId)
+      throw new SessionOwnerError('This agent did not create the exact test session.',403,'AGENT_TEST_SCOPE_REFUSED');
+    // A later human or another agent can write to an ordinary session. Once that happens,
+    // this browser entrance must not expose their words or provider response to them.
+    const foreign=db.query(`SELECT 1 FROM session_inputs WHERE session_id=? AND
+      (origin<>'agent' OR source_input_id IS NOT ? OR source_run_id IS NOT ?) LIMIT 1`)
+      .get(created.session_id,source.inputId,source.runId);
+    if(foreign)throw new SessionOwnerError('This session now contains other authorship.',403,'AGENT_TEST_SCOPE_CHANGED');
+    return {source,sessionId:`concierge:${created.session_id}`};
+  }
   private existingAction(sessionId:number,kind:string,body:Record<string,any>) {
     const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(actionId(body)) as AcceptedSessionInput|null;
     if(prior&&(prior.session_id!==sessionId||prior.kind!==kind||stablePayload(JSON.parse(prior.payload_json))!==stablePayload(body)))throw new SessionOwnerError('Idempotency conflict.',409);
@@ -3989,7 +4009,7 @@ export class SessionOwner {
     // so a continuation never re-reads or skips a filtered event.
     return {events,nextCursor:rows.length?String(rows.at(-1).sequence):null,hasMore:limit!==null&&rows.length===limit};
   }
-  private stream(request:Request,url:URL) {
+  private stream(request:Request,url:URL,scope?:()=>void) {
     let detach=()=>{},dispose=()=>{},readable=()=>{};
     const stream=new ReadableStream<Uint8Array>({start:controller=>{
       const resume=request.headers.get('last-event-id')??url.searchParams.get('after');
@@ -4007,6 +4027,7 @@ export class SessionOwner {
         try{
           for(;;){
             if(closed)return;changed=false;
+            scope?.();
             const query=new URLSearchParams({after:String(after),limit:String(STREAM_PAGE_EVENTS)});
             for(const name of ['sessionId','runId','kind'] as const){const value=url.searchParams.get(name);if(value!==null)query.set(name,value);}
             const response=await fetch('http://localhost/internal/event-stream-page?'+query,{
@@ -4016,6 +4037,7 @@ export class SessionOwner {
             const nextCursor=response.headers.get('x-event-next-cursor');
             const hasMore=response.headers.get('x-event-has-more')==='1';
             const bytes=new Uint8Array(await response.arrayBuffer());
+            scope?.();
             if(bytes.byteLength)controller.enqueue(bytes);
             if(nextCursor)after=Number(nextCursor);
             if(!hasMore&&!changed)break;
@@ -4120,6 +4142,67 @@ export class SessionOwner {
       // Tailscale relay while this awaits. On 2026-10-24 a 7.3 MB reply took 13.7 s to arrive and
       // was counted as owner slowness (work-flow supervisor incident a8216a4c). It is awaited time.
       const body=request.method==='POST'?await awaitingOutside(()=>request.json()):null;
+      if(parts[0]==='agent-test'&&parts[1]==='sessions'){
+        if(request.method!=='GET'||parts.length<4)throw new SessionOwnerError('Unknown agent browser read.',404);
+        const {source,sessionId}=this.agentBrowserBinding(request,parts[2]);
+        const tail=parts.slice(3),child=tail[1];
+        let target:string|null=null;
+        if(tail.length===1&&['view','capabilities','history','receipts','events'].includes(tail[0]!)){
+          if(tail[0]==='receipts'){
+            return ownerJson(this.presentationReceiptWindow(sessionId,boundedLimit(url.searchParams.get('limit'),PRESENTATION_PAGE),url.searchParams.get('cursor')));
+          }
+          if(tail[0]==='events'){
+            const page=this.eventPage(Number(url.searchParams.get('after'))||0,sessionId,null,
+              {kind:url.searchParams.get('kind'),limit:boundedLimit(url.searchParams.get('limit'),1000)});
+            return ownerJson({events:page.events,nextCursor:page.nextCursor??url.searchParams.get('after')??null,hasMore:page.hasMore});
+          }
+          target=`/sessions/${encodeURIComponent(sessionId)}/${tail[0]}`;
+        } else if(tail.length===2&&tail[0]==='receipts'&&child==='changes'){
+          const after=url.searchParams.get('after');
+          if(!after)throw new SessionOwnerError('An exact receipt position is required.',400,'RECEIPT_POSITION_REQUIRED');
+          return ownerJson(this.presentationReceiptChanges(sessionId,after,boundedLimit(url.searchParams.get('limit'),PRESENTATION_PAGE)));
+        } else if(tail.length===2&&tail[0]==='events'&&child==='stream'){
+          const streamed=new URL(request.url);streamed.pathname='/sessions/v1/events/stream';streamed.searchParams.set('sessionId',sessionId);
+          streamed.searchParams.delete('runId');
+          return this.stream(request,streamed,()=>{this.agentBrowserBinding(request,sessionId);});
+        } else if(tail.length===4&&tail[0]==='history'&&tail[1]==='messages'&&tail[3]==='detail')
+          target=`/sessions/${encodeURIComponent(sessionId)}/history/messages/${encodeURIComponent(tail[2]!)}/detail`;
+        else if(tail.length===2&&tail[0]==='operations'){
+          const operation=this.input(child!);
+          if(operation.session_id!==Number(sessionId.slice('concierge:'.length))||operation.origin!=='agent'
+            ||operation.source_input_id!==source.inputId||operation.source_run_id!==source.runId)
+            throw new SessionOwnerError('This operation is outside the test session.',403,'AGENT_TEST_CHILD_REFUSED');
+          return ownerJson(this.receipt(operation));
+        } else if(tail.length===2&&tail[0]==='attachments'){
+          const attachment=db.query('SELECT source_input_id,source_run_id FROM session_attachments WHERE id=?').get(child!) as {source_input_id:string|null;source_run_id:string|null}|null;
+          if(!attachment||attachment.source_input_id!==source.inputId||attachment.source_run_id!==source.runId)
+            throw new SessionOwnerError('This attachment is outside the test session.',403,'AGENT_TEST_CHILD_REFUSED');
+          return ownerJson(this.attachment(child!));
+        } else if(tail.length===2&&tail[0]==='runs'){
+          const turn=db.query('SELECT session_id FROM turns WHERE native_run_id=?').get(child!) as {session_id:number}|null;
+          if(!turn||`concierge:${turn.session_id}`!==sessionId)throw new SessionOwnerError('This run is outside the test session.',403,'AGENT_TEST_CHILD_REFUSED');
+          return ownerJson({run:this.run(child!)});
+        }
+        if(!target)throw new SessionOwnerError('Unknown agent browser read.',404);
+        const delegated=new URL(request.url);delegated.pathname='/sessions/v1'+target;
+        const headers=new Headers(request.headers);
+        headers.delete('x-concierge-verified-agent-source');headers.delete('x-concierge-agent-test-create');
+        return this.handleRequest(new Request(delegated,{headers,signal:request.signal}));
+      }
+      if(request.headers.has('x-concierge-verified-agent-source')||request.headers.has('x-concierge-agent-test-create')){
+        if(request.method!=='POST'||!((parts[0]==='attachments'&&parts.length===1)
+          ||(parts[0]==='sessions'&&parts[2]==='inputs'&&parts.length===3)))
+          throw new SessionOwnerError('This marked browser route is not available.',403,'AGENT_TEST_SCOPE_REFUSED');
+        const {source,sessionId}=this.agentBrowserBinding(request,parts[0]==='sessions'?parts[1]:undefined);
+        if(parts[0]==='sessions'&&parts[1]!==sessionId)throw new SessionOwnerError('The target session changed.',403,'AGENT_TEST_SCOPE_REFUSED');
+        if(body?.agentSource?.inputId!==source.inputId||body?.agentSource?.runId!==source.runId)
+          throw new SessionOwnerError('The marked write source changed.',403,'AGENT_TEST_SCOPE_REFUSED');
+        if(parts[0]==='sessions'&&Array.isArray(body.attachments))for(const id of body.attachments){
+          const attachment=db.query('SELECT source_input_id,source_run_id FROM session_attachments WHERE id=?').get(id) as {source_input_id:string|null;source_run_id:string|null}|null;
+          if(!attachment||attachment.source_input_id!==source.inputId||attachment.source_run_id!==source.runId)
+            throw new SessionOwnerError('The marked input names another attachment.',403,'AGENT_TEST_CHILD_REFUSED');
+        }
+      }
       // The read-only predecessor remains in history, but Thinkering must not open
       // another operation on it after its obligations have moved to the successor.
       if(request.method==='POST'&&parts[0]==='sessions'&&parts.length>=3){
