@@ -3899,9 +3899,16 @@ export function topicPromptContext(sessionId:number,inputId:string,payload:any):
 /* ------------------------------------------------------------------ migration */
 
 const MIGRATION_VERSION=1;
-function migrationDone(sessionId:number) {
-  return !!db.query(`SELECT 1 FROM session_owner_events WHERE session_id=? AND kind='topics_migration'
-    AND json_extract(payload_json,'$.version')=?`).get(sessionId,MIGRATION_VERSION);
+/**
+ * Tejas has one Inbox. A provider or folder cutover makes a new Inbox session, but the
+ * legacy backlog was already converted by whichever Inbox session ran first, and every later
+ * thread is filed live. Rerunning per session rebuilt every historical thread at startup
+ * (30.8 s on 2026-11-05) and opened 948 phantom requests; see
+ * docs/incidents/2026-11-05-inbox-migration-reran-for-new-inbox-session.md.
+ */
+function inboxMigrationRan(version:number) {
+  return !!db.query(`SELECT 1 FROM sessions s JOIN session_owner_events e ON e.session_id=s.id AND e.kind='topics_migration'
+    WHERE json_extract(s.native_metadata_json,'$.inbox')=1 AND json_extract(e.payload_json,'$.version')=? LIMIT 1`).get(version);
 }
 function firstLine(value:string,limit=80) {
   const line=value.split('\n').map(part=>part.trim()).find(part=>part.length)??'';
@@ -3972,7 +3979,7 @@ export function migrateInboxTopics(options:{batch?:number}={}) {
   const session=inboxSession();
   if(!session)return {migrated:false,reason:'no_inbox_session'};
   forwardRecoveryStartMs(session.id);
-  if(migrationDone(session.id))return {migrated:false,reason:'already_migrated'};
+  if(inboxMigrationRan(MIGRATION_VERSION))return {migrated:false,reason:'already_migrated'};
   invalidateTopicRoots();
   const index=entryIndex();
   const manifest={roots:0,topics:0,requests:0,questions:0,unresolved:[] as {inputId:string;reason:string}[]};
@@ -4120,8 +4127,7 @@ const ATTENTION_MIGRATION_VERSION=2;
 export function migrateInboxAttention() {
   const session=inboxSession();
   if(!session)return {migrated:false,reason:'no_inbox_session'};
-  if(db.query(`SELECT 1 FROM session_owner_events WHERE session_id=? AND kind='topics_migration' AND json_extract(payload_json,'$.version')=?`)
-    .get(session.id,ATTENTION_MIGRATION_VERSION))return {migrated:false,reason:'already_migrated'};
+  if(inboxMigrationRan(ATTENTION_MIGRATION_VERSION))return {migrated:false,reason:'already_migrated'};
   refreshRootMemo();
   const meta=sessionMetadata(session);
   const dismissed=meta.dismissedGeneration??0;
