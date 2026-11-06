@@ -149,9 +149,12 @@ acknowledgement. Acceptance transfers the open request return and reply ownershi
 safe never-started queued inputs, and watches in one ledger transaction, recording each
 moved item. A queued input's original acceptance and history stay with the predecessor;
 the successor receives a linked copy, and the request keeps its own ID. Sent request IDs
-and their targets do not change. An owed request's current
-recipient binding points to the successor's accepted run; its earlier delivery remains in
-the predecessor's history, and original input provenance does not change.
+and their targets do not change. An owed request's reply ownership moves to the
+successor. An outside request retains its unique accepted input as the custody key
+until that exact queued input is safely copied; several outside requests never collapse
+onto the same handoff brief. Repeating an outside ask after transfer returns its existing
+request without dispatching an input retained in the predecessor's history. Other owed
+requests bind to the successor's accepted run, and original input provenance does not change.
 An Inbox upkeep reminder for an exact request that has already closed is retired in that
 same transaction, even if admission uncertainty makes the reminder unsafe to replay. The
 closed request's final receipt is authoritative; the reminder is not sent to the successor.

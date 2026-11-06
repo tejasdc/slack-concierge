@@ -285,6 +285,11 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
         const changed=table==='session_communication_requests'
           ?db.query(`UPDATE ${table} SET target_session_id=?,target_input_id=?,target_turn_id=? WHERE request_id=? AND target_session_id=? AND ${open}`)
             .run(to,movesInput?item.targetInputId:successorInputId,movesInput?item.turnId??null:successorTurnId,item.ref,from)
+          :table==='session_external_requests'
+          // Each outside request owns a unique accepted input. Keep that custody key until
+          // its exact queued input is cloned below; many requests cannot share the brief ID.
+          ?db.query(`UPDATE ${table} SET target_session_id=? WHERE request_id=? AND target_session_id=? AND ${open} AND target_input_id=?`)
+            .run(to,item.ref,from,item.targetInputId)
           :db.query(`UPDATE ${table} SET target_session_id=?,target_input_id=? WHERE request_id=? AND target_session_id=? AND ${open}`)
             .run(to,movesInput?item.targetInputId:successorInputId,item.ref,from);
         if(changed.changes!==1)throw new Error(`Owed request ${item.ref} changed during handoff.`);record(item.kind,item.ref);
