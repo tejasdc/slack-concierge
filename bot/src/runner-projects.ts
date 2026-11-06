@@ -13,6 +13,7 @@ import { sessionProject, sessionProjects } from './session-projects';
 import { isSensitiveWorkspacePath, readWorkspaceFile } from './workspace-files';
 import { renderTodoItemContents } from './todo-markdown';
 import { expectedRunnerProjectOrigin } from './runner-project-setup';
+import {runnerGithubGitEnvironment} from './runner-git-auth';
 
 const workspaceRoot=()=>process.env.CONCIERGE_WORKSPACE_ROOT?.trim()||join(homedir(),'workspace');
 const within=(root:string,path:string)=>path===root||path.startsWith(root.endsWith(sep)?root:root+sep);
@@ -208,7 +209,7 @@ export async function serveProjectCall(method:string,params:Record<string,unknow
     const {root,project}=projectFolder(params.project),parent=join(project.cwd,'..');
     const group=realpathSync(parent)===root?undefined:relative(root,realpathSync(parent));
     const expected=expectedRunnerProjectOrigin(project.name,group);
-    const env={PATH:process.env.PATH??'/usr/local/bin:/usr/bin:/bin',HOME:homedir(),GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_OPTIONAL_LOCKS:'0'};
+    const env={...runnerGithubGitEnvironment(),PATH:process.env.PATH??'/usr/local/bin:/usr/bin:/bin',HOME:homedir(),GIT_OPTIONAL_LOCKS:'0'};
     const git=async(...args:string[])=>services.git?services.git(project.cwd,args):(
       await execFile('git',['-c','core.fsmonitor=false','-c','protocol.file.allow=never','-C',project.cwd,...args],
         {timeout:10000,maxBuffer:1024*1024,env})).stdout;

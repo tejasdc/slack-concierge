@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import { sessionProject } from './session-projects';
 import { expectedRunnerProjectOrigin } from './runner-project-setup';
+import {runnerGithubGitEnvironment} from './runner-git-auth';
 
 const execFile=promisify(execFileCallback);
 const LAB_GROUP='agent-ecology/expertise';
@@ -13,7 +14,7 @@ const NAME=/^[a-z][a-z0-9]*(-[a-z0-9]+)+$/;
 const GROUP=/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const within=(root:string,path:string)=>path===root||path.startsWith(root.endsWith(sep)?root:`${root}${sep}`);
 const exists=(path:string)=>{try{lstatSync(path);return true;}catch(error:any){if(error?.code==='ENOENT')return false;throw error;}};
-const transient=(error:unknown)=>/timed? ?out|econn(?:reset|refused|aborted)|network|temporary|socket|fetch failed|rate limit|could not resolve|remote end hung up|service unavailable/i.test(String(error));
+const transient=(error:unknown)=>/timed? ?out|econn(?:reset|refused|aborted)|network|temporary|socket|fetch failed|rate limit|could not resolve|remote end hung up|service unavailable|authentication failed|could not read username|credential helper/i.test(String(error));
 
 export type RunnerProjectPlacementInput={orderId:string;project:string;group?:string;targetRunner:string};
 export type RunnerProjectPlacementResult={state:'done'|'already_present'|'refused'|'failed';project:string;relativePath:string;commit?:string;reason?:string;failureClass?:'transient'|'permanent'};
@@ -23,7 +24,7 @@ function exactKeys(value:unknown,keys:string[]):Record<string,any>{
   if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(key=>!keys.includes(key)))throw new Error('Invalid project placement job fields.');
   return value as Record<string,any>;
 }
-function gitEnv(){return {...process.env,HOME:process.env.HOME??homedir(),GIT_TERMINAL_PROMPT:'0',GCM_INTERACTIVE:'never',GIT_LFS_SKIP_SMUDGE:'1',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null'};}
+function gitEnv(){return runnerGithubGitEnvironment();}
 async function defaultRun(file:string,args:string[],cwd?:string){return (await execFile(file,args,{cwd,encoding:'utf8',env:gitEnv(),maxBuffer:16*1024*1024,timeout:120_000})).stdout.trim();}
 function validate(value:unknown):RunnerProjectPlacementInput{
   const data=exactKeys(value,['orderId','project','group','targetRunner']);
