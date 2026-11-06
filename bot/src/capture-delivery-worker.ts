@@ -251,6 +251,7 @@ export class CaptureDeliveryWorker {
   private readonly fetchImpl: typeof fetch;
   private readonly wait: (milliseconds: number) => Promise<void>;
   private readonly pollIntervalMs: number;
+  private readonly stopController = new AbortController();
   private stopping = false;
   private running: Promise<void> | null = null;
   private fatalReported = false;
@@ -286,8 +287,22 @@ export class CaptureDeliveryWorker {
 
   async stop() {
     this.stopping = true;
+    this.stopController.abort(new CaptureWorkerStopped());
     await this.running;
     this.queueAvailable = false;
+  }
+
+  private waitForQueueRetry(milliseconds: number): Promise<void> {
+    const signal = this.stopController.signal;
+    if (signal.aborted) return Promise.reject(new CaptureWorkerStopped());
+    return new Promise<void>((resolveWait, rejectWait) => {
+      const onStop = () => { signal.removeEventListener("abort", onStop); rejectWait(new CaptureWorkerStopped()); };
+      signal.addEventListener("abort", onStop, { once: true });
+      this.wait(milliseconds).then(
+        () => { signal.removeEventListener("abort", onStop); resolveWait(); },
+        (error) => { signal.removeEventListener("abort", onStop); rejectWait(error); },
+      );
+    });
   }
 
   private async run() {
@@ -296,6 +311,7 @@ export class CaptureDeliveryWorker {
       try {
         const claimId = randomUUID();
         const event = await this.claimNext(claimId);
+        if (this.stopping) throw new CaptureWorkerStopped();
         if (!this.queueAvailable) {
           this.queueAvailable = true;
           this.queueError = null;
@@ -327,8 +343,9 @@ export class CaptureDeliveryWorker {
   private async queueRequest(path: string, body?: Record<string, unknown>): Promise<Response> {
     if (this.stopping) throw new CaptureWorkerStopped();
     return withRetry({ operation: "capture-queue", key: this.options.queueUrl, policy: RETRY_POLICIES.captureDelivery,
-      wait: this.wait,
+      wait: milliseconds => this.waitForQueueRetry(milliseconds),
       run: async () => {
+        if (this.stopping) throw new CaptureWorkerStopped();
         const response = await this.fetchImpl(`${this.options.queueUrl}${path}`, {
           method: body ? "POST" : "GET",
           headers: {
@@ -336,13 +353,19 @@ export class CaptureDeliveryWorker {
             ...(body ? { "content-type": "application/json" } : {}),
           },
           ...(body ? { body: JSON.stringify(body) } : {}),
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          signal: AbortSignal.any([this.stopController.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
         });
         if (response.status >= 500) throw new Error(`Capture queue answered ${response.status}.`);
         return response;
       },
-      classifyError: () => "transient",
-    }).catch((error) => { throw new CaptureQueueUnavailable(error); });
+      classifyError: () => {
+        if (this.stopping) throw new CaptureWorkerStopped();
+        return "transient";
+      },
+    }).catch((error) => {
+      if (error instanceof CaptureWorkerStopped) throw error;
+      throw new CaptureQueueUnavailable(error);
+    });
   }
 
   private async claimNext(claimId: string): Promise<CaptureEventRow | null> {
