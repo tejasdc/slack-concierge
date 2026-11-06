@@ -9,6 +9,15 @@ receipt-per-request promise: the eleven original `return:<event>` inputs do not
 exist in the installed owner's accepted-input ledger. Do not replay these answers;
 the requester already received their words, and some describe effects already made.
 
+The September 16 rule deliberately retained completed results without a requester
+return. The September 21 repair removed that rule (`ff10f874`), then removed the
+remaining wait for the answering session's whole run to end (`ab190a1a`). That
+second wait mattered for a Mac Claude session that accepted new requests into one
+long-running run. Failures and decisions had continued to return, explaining the
+apparently intermittent symptom. The current contract has since added a named
+Inbox-thread destination: a confirmed answer posted there does not also wake the
+requester, while unresolved work and explicit returns do.
+
 | Request | Original final event | Subject in the delivered digest |
 | --- | --- | --- |
 | `45da7e9a-1027-4ab1-8f61-004d6a42e15a` | `2f133fd5-79dd-4f46-ba02-7d9900d61152` | Watch recording row stuck after phone receipt |
@@ -42,9 +51,15 @@ the requester already received their words, and some describe effects already ma
   This is consistent with the reported zero individual returns. The runner's
   local SQLite database is not the owner ledger; this audit used the installed
   owner through its supported report route and the retained provider transcript.
-- The installed release artifact `572b7ee7687a20163d866c2769f48aba5a582782b20cc02ceaa743cd35cdaa0f`
+- The two requests that were still `admitted` at the first September inspection
+  were not part of the eleven missing completed returns. `a843bcfa-350e-45d3-8197-64303d85d111`
+  later produced its own accepted return input, visible in the Inbox transcript
+  at 21:44 UTC. `f25ec807-e6fc-47b6-8abf-db227b3f4490` settled at 20:33:42 UTC
+  and appears as entry 65 of the delivered digest. These are separate outcomes;
+  neither justifies replaying its work.
+- The artifact inspected in the first audit, `572b7ee7687a20163d866c2769f48aba5a582782b20cc02ceaa743cd35cdaa0f`,
   names source commit `57d89c7909aa76f2662e19951cad261366723ae4`. Its
-  current contract sends ordinary completed work in a named Inbox thread to
+  contract sends ordinary completed work in a named Inbox thread to
   that thread; requests without a thread, failed work, decisions, and explicit
   returns wake the requester. A return can carry several requests only when
   each final event is linked to the carrier. That linkage is absent for this
@@ -52,12 +67,28 @@ the requester already received their words, and some describe effects already ma
 - A harmless November 6 request `8af6a474-30a8-4cc8-b00c-69b64b4458ca`
   settled `answered` while its Codex requester run was active. The installed
   owner admitted `return:4ce8c633-f072-46af-86ea-4d3e5a7afe95` to that
-  requester within the same minute. This requester is an independent Codex run
-  that cannot take provider steering; admission is not proof that the current
-  provider turn read it. Its next turn owns that read. Separately, the current
-  named-thread request's prompt answer was posted through a received partial.
+  requester within the same minute. That check proved owner admission only.
+  A separate exact active-run probe then proved the next boundary: request
+  `e52b856c-a9c2-4943-89f9-04442cff1a8c` produced one final event
+  `3a5cbb13-157b-47aa-be6c-1bff82b4b54d`; its one accepted return was
+  steered into requester turn 24521 and acknowledged by the Codex provider at
+  2026-11-06 13:51:15 UTC. The return text appeared in that running turn.
+  Separately, the named-thread request's prompt answer was posted through a
+  received partial.
+- As of the later installed artifact `e000f15344b76d01cdbeb2e72161fb80c9776a3c1eed544161fa887186135425`
+  (source `3032adc9838d7bf19abff809aa793ec219820cf2`), the delivery and
+  return-audit functions exercised by that probe are unchanged from the
+  earlier artifact. The service is running; its `stuck_work_watch_started`
+  record at 2026-11-06 20:52:23 UTC confirms the omission watch started.
+  The watch checks eligible results after ten minutes, wakes the queues, and
+  raises one Inbox notice if they remain stuck five minutes later. No positive
+  stuck-result alarm was induced in production, so the watch's active state is
+  the installed evidence, not proof of a production alarm firing.
 
 There is no basis to re-run the eleven original requests or send their answers
 again. A durable ledger-level attribution would need an owner-mediated command
 that checks the existing digest carrier and each original final event before
 linking them; a direct database edit would evade Concierge's custody rules.
+The historical individual receipt guarantee remains unproven. The delivered
+digest is an explicit historical exception, not eleven retroactively invented
+return inputs.
