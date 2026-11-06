@@ -110,10 +110,15 @@ function namesLiveStore(text: string, cwd: string, stores: LiveStores): boolean 
   return false;
 }
 
-export function liveStoreCopyRefusal(command: string | null, cwd = '', stores = liveStores()): string | null {
+/** `inspectScripts: false` is for the sealed private code entrance only: the code it runs cannot
+ * see the live stores (hidden mounts), so reading a fixture's own test strings, which name live
+ * paths and copy commands on purpose, refused the documented entrance (2026-11-06). The command
+ * as typed is still checked. */
+export function liveStoreCopyRefusal(command: string | null, cwd = '', stores = liveStores(),
+  { inspectScripts = true }: { inspectScripts?: boolean } = {}): string | null {
   if (!command) return null;
   if (standaloneRouterCall(command)) return null;
-  const inspected = command + mentionedScripts(command, cwd);
+  const inspected = inspectScripts ? command + mentionedScripts(command, cwd) : command;
   let canonicalCwd = cwd;
   try { canonicalCwd = realpathSync(cwd); } catch {}
   const inLiveDirectory = STATE_DIR.test(canonicalCwd) || stores.directories.includes(canonicalCwd);
