@@ -30,6 +30,16 @@ try {
   const listed=await serveProjectCall('projects.list',{}) as any;
   assert.deepEqual(listed.projects.map((entry:any)=>entry.name),['example-project']);
   assert.equal(listed.workspaceRoot,workspace);
+  assert.deepEqual(await serveProjectCall('projects.exists',{project:'example-project'}),{exists:true});
+  assert.deepEqual(await serveProjectCall('projects.exists',{project:'missing-project'}),{exists:false});
+  const shareStatus=await serveProjectCall('projects.shareStatus',{project:'example-project'},{git:async(_cwd,args)=>{
+    if(args[0]==='remote')return 'https://github.com/tejasdc/example-project.git';
+    if(args[0]==='branch')return 'main';
+    if(args[0]==='rev-parse')return 'a'.repeat(40);
+    if(args[0]==='ls-remote')return `${'a'.repeat(40)}\trefs/heads/main\n`;
+    throw new Error(`unexpected git read ${args.join(' ')}`);
+  }}) as any;
+  assert.equal(shareStatus.remoteHead,shareStatus.head);
   assert.equal((await serveProjectCall('projects.resolve',{project:'example-project',path:'docs'} ) as any).cwd,join(project,'docs'));
   assert.deepEqual(await serveProjectCall('projects.locate',{location:join(workspace,'legacy-copy','example-project','docs')}),
     {project:'example-project',path:'docs',cwd:join(project,'docs')});
