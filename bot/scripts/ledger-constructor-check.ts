@@ -16,6 +16,7 @@ const NON_LEDGER_WRITERS: Readonly<Record<string, readonly string[]>> = {
   'scripts/usage-breakdown-reader.ts': ['new Database(cachePath)'],
 };
 const FIXTURE_WRITERS: Readonly<Record<string, readonly string[]>> = {
+  'scripts/agent-report-reads-check.ts': ["new Database(':memory:')"],
   'scripts/watch-observation-acceptance.ts': ["new Database(join(dir,'state.db'))", 'new Database(sidecarPath)', "new Database(join(dir,'watch-observations.db'))"],
   'scripts/check-presentation-worker.ts': ["new Database(join(dir,'state.db'),{create:true})", "new Database(join(dir,'state.db'))"],
   'scripts/release-application-compatibility.ts': ["new Database(join(workerState,'presentation.db'))", "new Database(join(workerState,'state.db'))"],
