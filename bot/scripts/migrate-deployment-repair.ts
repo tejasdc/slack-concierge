@@ -58,7 +58,7 @@ mkdirSync(dirname(backupPath), { recursive: true, mode: 0o700 });
  * every update anyway filled the disk to 99% on 2026-10-10 (ten copies in 90 minutes) and added
  * gigabytes of writes an hour on the disk that stalls the owner.
  */
-function schemaChanges(): string[] {
+async function schemaChanges(): Promise<string[]> {
   const scratch = mkdtempSync(join(tmpdir(), "concierge-schema-plan-"));
   try {
     const { CONCIERGE_DEPLOYMENT_MIGRATION_BACKUP: _drop, ...environment } = process.env;
@@ -66,9 +66,23 @@ function schemaChanges(): string[] {
       encoding: "utf8", timeout: 120_000, env: { ...environment, CONCIERGE_STATE_DIR: scratch } });
     if (child.status !== 0) throw new Error(`The release's schema could not be built for comparison: ${(child.stderr || String(child.error ?? "")).slice(-1500)}`);
     const wanted = JSON.parse(child.stdout.trim().split("\n").at(-1)!) as SchemaShape;
-    const live = new Database(statePath, { readonly: true });
-    let have: SchemaShape;
-    try { live.exec("PRAGMA busy_timeout=5000"); have = schemaShape(live); } finally { live.close(); }
+    let have!: SchemaShape;
+    // A WAL reader can receive SQLITE_BUSY during another connection's final close or
+    // recovery. Retry the whole read on a fresh connection so the next attempt gets a new
+    // snapshot. This scan has no effects; every attempt must still compare the full schema.
+    for (let attempt = 1; ; attempt++) {
+      let live: Database | null = null;
+      try {
+        live = new Database(statePath, { readonly: true });
+        live.exec("PRAGMA busy_timeout=5000");
+        have = schemaShape(live);
+        break;
+      } catch (error) {
+        if ((error as { code?: string }).code !== 'SQLITE_BUSY' || attempt === 3) throw error;
+        console.error(JSON.stringify({ event: 'deployment_schema_read_busy', attempt }));
+      } finally { live?.close(); }
+      await Bun.sleep(1000);
+    }
     const changes: string[] = [];
     for (const [table, columns] of Object.entries(wanted.tables)) {
       const present = have.tables[table];
@@ -202,13 +216,13 @@ function backUp() {
 
 if (process.argv.includes('--plan')) {
   // Read-only: what this release's schema step would add to the live ledger.
-  console.log(JSON.stringify({ status: 'planned', changes: schemaChanges() }));
+  console.log(JSON.stringify({ status: 'planned', changes: await schemaChanges() }));
   process.exit(0);
 }
 if (backupIfNeeded) {
   // Run from the release being installed, before the coordinator stops: its own code says what its
   // schema step would add, and only then is the ledger copied.
-  const changes = schemaChanges();
+  const changes = await schemaChanges();
   if (changes.length) backUp();
   else pruneAutomaticCopies();
   console.log(JSON.stringify(changes.length ? { status: 'backed_up', backup_path: backupPath, changes }
@@ -217,7 +231,7 @@ if (backupIfNeeded) {
 }
 // What this migration will add, read with the coordinator stopped. It also bounds the check after
 // the migration to the tables the migration could have written.
-const changes = backupOnly ? [] : schemaChanges();
+const changes = backupOnly ? [] : await schemaChanges();
 if (schemaOnly && !namedBackup) {
   // No copy was taken because the release would change nothing. Confirm that with the coordinator
   // stopped; if it no longer holds, copy now rather than change the schema without one.
