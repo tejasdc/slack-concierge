@@ -361,8 +361,9 @@ Why not a port on the runner: runners open none.
 Users: durable watches ([watches](WATCHES.md), `watch-machine.ts`, methods `watch.*`). Turn artifacts need none: only the retired Slack presentation makes an artifact folder; a native turn makes none.
 
 Project reads use the same call channel (`runner-projects.ts`): `projects.list`, `projects.resolve`,
-`projects.locate`, `projects.files`, `projects.instructions`, `projects.file`, `projects.fileAt`, `projects.todos`, and
-`projects.worktrees`. The owner sends a registered project name and a relative path; the runner
+`projects.locate`, `projects.files`, `projects.instructions`, `projects.file`, `projects.fileAt`,
+`projects.todos`, `projects.todos.update`, `projects.todos.append`, and `projects.worktrees`. The owner
+sends a registered project name and a relative path; the runner
 resolves it under its own workspace (`CONCIERGE_WORKSPACE_ROOT`, default `~/workspace`). `projects.locate`
 can migrate an older absolute session folder by matching its registered project name and relative suffix;
 the resulting directory must exist inside exactly one runner project. The supplied absolute root never
@@ -374,8 +375,10 @@ existing sensitive-name, symlink, file-type, and size limits. Worktree reads req
 native session UUID and account label; the runner resolves that exact transcript on its own verified
 account home and compares its path references with registered Git worktrees. It returns only the
 matching worktrees with branch, head, and uncommitted file count. Git runs with system and global
-configuration disabled, optional locks off, and fsmonitor disabled. TODO updates are runner-local,
-compare the observed SHA-256 before replacing the canonical file, and use an atomic rename.
+configuration disabled, optional locks off, and fsmonitor disabled. TODO reads and updates are
+runner-local; updates compare the observed SHA-256 before replacing the canonical file and use an
+atomic rename. Task appends carry an owner-generated idempotency marker, so a retry after an uncertain
+reply finds the existing item instead of duplicating it.
 
 The Google paid-credit check and CLI lookup is `google.executable` (`runner-providers.ts`). It runs
 against the runner's Google settings and returns only the executable path. A missing or unreachable

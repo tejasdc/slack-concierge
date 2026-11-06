@@ -38,6 +38,9 @@ try {
   assert.equal((await serveProjectCall('projects.fileAt',{path:join(project,'docs','guide.md')}) as any).file.content,'Readable guide\n');
   assert.deepEqual(await serveProjectCall('projects.fileAt',{path:join(outside,'secret.md')}),{workspaceRoot:workspace,matched:false});
   assert.equal((await serveProjectCall('projects.todos',{project:'example-project'}) as any).content,'# Tasks\n');
+  const marker='<!-- concierge-capture-v1:'+'a'.repeat(64)+' -->';
+  assert.equal((await serveProjectCall('projects.todos.append',{project:'example-project',text:'A task from the runner',marker}) as any).appended,true);
+  assert.equal((await serveProjectCall('projects.todos.append',{project:'example-project',text:'A task from the runner',marker}) as any).appended,false);
   const priorTodos=await serveProjectCall('projects.todos',{project:'example-project'}) as any;
   const changedTodos=await serveProjectCall('projects.todos.update',{project:'example-project',content:'# Updated\n',sha256:priorTodos.sha256}) as any;
   assert.equal(changedTodos.content,'# Updated\n');

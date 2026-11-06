@@ -3,7 +3,7 @@
  * project and a path inside it; this module never accepts a workspace root or arbitrary absolute
  * path from the owner.
  */
-import { existsSync, lstatSync, opendirSync, realpathSync, readFileSync, statSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
+import { appendFileSync, existsSync, lstatSync, mkdirSync, opendirSync, realpathSync, readFileSync, statSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -11,6 +11,7 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { sessionProject, sessionProjects } from './session-projects';
 import { isSensitiveWorkspacePath, readWorkspaceFile } from './workspace-files';
+import { renderTodoItemContents } from './todo-markdown';
 
 const workspaceRoot=()=>process.env.CONCIERGE_WORKSPACE_ROOT?.trim()||join(homedir(),'workspace');
 const within=(root:string,path:string)=>path===root||path.startsWith(root.endsWith(sep)?root:root+sep);
@@ -144,6 +145,22 @@ export async function serveProjectCall(method:string,params:Record<string,unknow
     try {writeFileSync(temporary,params.content,{encoding:'utf8',flag:'wx',mode:0o600});renameSync(temporary,path);}
     catch(error){try{if(existsSync(temporary))unlinkSync(temporary);}catch{}throw error;}
     return {project:project.name,content:params.content,sha256:createHash('sha256').update(params.content).digest('hex')};
+  }
+  if(method==='projects.todos.append') {
+    const {root,project}=projectFolder(params.project),path=join(project.cwd,'notes','TODOS.md');
+    if(typeof params.text!=='string'||!params.text.trim()||params.text.length>64*1024
+      ||typeof params.marker!=='string'||!/^<!-- concierge-capture-v1:[a-f0-9]{64} -->$/.test(params.marker))
+      throw new Error('A task needs text and its exact owner-generated idempotency marker.');
+    mkdirSync(join(project.cwd,'notes'),{recursive:true});
+    if(!existsSync(path))writeFileSync(path,`# ${project.name} tasks\n`,{flag:'wx',mode:0o600});
+    const real=realpathSync(path);
+    if(!within(root,real)||!within(project.cwd,real)||isSensitiveWorkspacePath(relative(root,real))||!lstatSync(path).isFile())
+      throw new Error('Canonical project TODOs are unavailable.');
+    const markerToken=params.marker.match(/concierge-capture-v1:[a-f0-9]{64}/)![0]!;
+    if(readFileSync(path,'utf8').includes(markerToken))return {project:project.name,path:'notes/TODOS.md',appended:false};
+    const item=renderTodoItemContents({title:params.text,captureMarker:params.marker}).join('\n');
+    appendFileSync(path,`\n${item}\n`,{encoding:'utf8'});
+    return {project:project.name,path:'notes/TODOS.md',appended:true};
   }
   if(method==='projects.worktrees') {
     const {project}=projectFolder(params.project);
