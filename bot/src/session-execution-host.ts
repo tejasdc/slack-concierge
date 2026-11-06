@@ -1277,9 +1277,9 @@ export class SessionExecutionHost {
         for(let index=0;index<runAdditionalDirs.length;index++) {
           const directory=runAdditionalDirs[index]!;
           if(staging&&directory===staging)continue;
-        const remote=await runnerMachineCall<{cwd:string}>(runnerTarget!,'projects.locate',{location:directory}).catch(error=>{
-          throw new ProviderCapabilityUnavailableError('execution',`An additional folder cannot be resolved on runner ${runnerTarget}: ${error instanceof Error?error.message:String(error)}`);
-        });
+          const remote=await runnerMachineCall<{cwd:string}>(runnerTarget!,'projects.locate',{location:directory}).catch(error=>{
+            throw new ProviderCapabilityUnavailableError('execution',`An additional folder cannot be resolved on runner ${runnerTarget}: ${error instanceof Error?error.message:String(error)}`);
+          });
           runAdditionalDirs[index]=remote.cwd;
         }
       }
