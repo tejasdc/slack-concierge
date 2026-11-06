@@ -20,7 +20,7 @@ afterEach(()=>{
   }
   release();
 });
-function session(){const value=createNativeSession('codex',{cwd:'/tmp',purpose:'chat'});owned.push(value.id);return value;}
+function session(){const value=createNativeSession('codex',{cwd:'/tmp',purpose:'chat',summary:'Session input fixture'});owned.push(value.id);return value;}
 function input(sessionId:number,actionId=randomUUID(),text='question') {
   return db.transaction(()=>retainSessionInput({sessionId,scope:'surface:thinkering',actionId,kind:'input',origin:'human',payload:{text}}))();
 }
@@ -65,20 +65,24 @@ test('steering binds one accepted input to one exact existing execution without 
 test('adapter-nullability upgrade preserves exact old identities, foreign keys, indexes, triggers and sequence',()=>{
   const store=new Database(':memory:');
   try {
-    store.exec(`PRAGMA foreign_keys=ON;
-      CREATE TABLE sessions(id INTEGER PRIMARY KEY AUTOINCREMENT,slack_channel_id TEXT NOT NULL,slack_thread_ts TEXT NOT NULL,provider_id TEXT NOT NULL,agent_session_uuid TEXT,UNIQUE(slack_channel_id,slack_thread_ts));
-      CREATE TABLE turns(id INTEGER PRIMARY KEY AUTOINCREMENT,session_id INTEGER REFERENCES sessions(id),slack_user_msg_ts TEXT NOT NULL);
-      CREATE TABLE turn_steering_messages(id INTEGER PRIMARY KEY,turn_id INTEGER REFERENCES turns(id),slack_user_msg_ts TEXT NOT NULL);
-      CREATE TABLE session_communication_requests(request_id TEXT PRIMARY KEY,source_channel TEXT NOT NULL,source_message_ts TEXT NOT NULL,source_root_ts TEXT NOT NULL,target_channel TEXT NOT NULL,target_root_ts TEXT NOT NULL,action_id TEXT);
-      CREATE TABLE session_communication_events(event_id TEXT PRIMARY KEY);
+    // The old ledger is today's ledger with the adapter fields still required: copying the
+    // real tables keeps this fixture current as other migrations add columns and tables.
+    store.exec('PRAGMA foreign_keys=ON');
+    const required:Record<string,string[]>={sessions:['slack_channel_id','slack_thread_ts'],turns:['slack_user_msg_ts'],turn_steering_messages:['slack_user_msg_ts'],session_communication_requests:['source_channel','source_message_ts','source_root_ts','target_channel','target_root_ts']};
+    for(const table of db.query("SELECT name,sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY rowid").all() as {name:string;sql:string}[]) {
+      if(store.query("SELECT 1 FROM sqlite_master WHERE name=?").get(table.name))continue;
+      const sql=(required[table.name]??[]).reduce((ddl,field)=>ddl.replace(new RegExp(`\\b${field}(\\s+)TEXT\\b(?! NOT NULL)`),`${field}$1TEXT NOT NULL`),table.sql);
+      store.exec(sql);
+    }
+    store.exec(`
       CREATE INDEX fixture_provider ON sessions(provider_id);
       CREATE TABLE fixture_audit(id INTEGER);
       CREATE TRIGGER fixture_update AFTER UPDATE ON sessions BEGIN INSERT INTO fixture_audit VALUES(new.id); END;
       CREATE VIEW fixture_existing_session_history AS SELECT sessions.id, turns.slack_user_msg_ts
         FROM sessions JOIN turns ON turns.session_id=sessions.id;
-      INSERT INTO sessions VALUES(17,'C1','1.000001','codex','native-old');
-      INSERT INTO turns VALUES(23,17,'1.000002');
-      INSERT INTO sessions VALUES(99,'C2','2.000001','codex','removed');
+      INSERT INTO sessions(id,slack_channel_id,slack_thread_ts,provider_id,agent_session_uuid) VALUES(17,'C1','1.000001','codex','native-old');
+      INSERT INTO turns(id,session_id,slack_user_msg_ts,user_text) VALUES(23,17,'1.000002','old question');
+      INSERT INTO sessions(id,slack_channel_id,slack_thread_ts,provider_id,agent_session_uuid) VALUES(99,'C2','2.000001','codex','removed');
       DELETE FROM sessions WHERE id=99;`);
     initializeSessionOwnerSchema(store);
     initializeSessionOwnerSchema(store);
