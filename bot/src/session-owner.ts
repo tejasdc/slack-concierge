@@ -2527,11 +2527,13 @@ export class SessionOwner {
     const fromHumanSurface=input.scope==='surface:thinkering'
       &&(input.origin==='human'&&input.source_input_id===null&&input.source_run_id===null||markedAgent);
     const capture=body.capture,source=capture?.source;
-    // A Reader save by an agent carries that agent's run as its author; any other capture carries none.
-    const readerAgent=source?.kind==='reader'&&input.origin==='agent'?source.metadata?.agentSource:null;
+    // Locally authored Reader saves and issue reports retain the exact reporting run.
+    // Peer reports are verified at intake and have no local source input relationship.
+    const captureAgent=['reader','agent-report'].includes(source?.kind)&&input.origin==='agent'
+      &&input.source_input_id!==null?source.metadata?.agentSource:null;
     const fromCapture=input.scope===`capture:${source?.kind}`&&input.id===`capture:${capture?.id}`
-      &&receipt?.admissionIntent==='live'&&(readerAgent
-        ?input.source_input_id===readerAgent.inputId&&input.source_run_id===readerAgent.runId
+      &&receipt?.admissionIntent==='live'&&(captureAgent
+        ?input.source_input_id===captureAgent.inputId&&input.source_run_id===captureAgent.runId
         :input.source_input_id===null&&input.source_run_id===null)
       &&capturesEnterRouter(input.origin,source?.kind);
     if(!fromHumanSurface&&!fromCapture)return;
