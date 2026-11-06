@@ -20,6 +20,10 @@ export type HostManifest = {
   initialInput: string; initialMeta?: Record<string, unknown>;
 };
 
+/** Files copied into a runner host: existing absolute staging files or a fixed runner-state file. */
+export type HostRunnerFile = {path:string;base64:string}
+  | {scope:'runner-state';relativePath:string;base64:string;kind?:'file'|'directory'};
+
 /** One attached connection to a host: the only writer of its execution while it holds. */
 export interface HostLink {
   /** The protocol the host speaks, learned at attach. */
@@ -44,7 +48,7 @@ export interface HostAccess {
   /** `local` or `runner`, the executions row's supervisor family. */
   readonly place: "local" | "runner";
   /** Start the host; a HostNotStartedError proves nothing runs. */
-  launch(manifest: HostManifest, files?: { path: string; base64: string }[]): Promise<HostLaunch>;
+  launch(manifest: HostManifest, files?: HostRunnerFile[]): Promise<HostLaunch>;
   /** Attach after a launch: waits for the host to open; `adopt` uses connect. */
   connectWhenReady(): Promise<HostLink>;
   connect(timeoutMs?: number): Promise<HostLink>;

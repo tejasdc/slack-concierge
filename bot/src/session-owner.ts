@@ -2,6 +2,8 @@ import {threadOnlyReturnInputSql} from "./inbox-request-root";
 import {ownerRequestLabel} from './owner-request-label';
 import {parseMachineNeed} from './machine-need';
 import {askAsideOnce} from './session-asides';
+import {resolveRunnerProjectLocation} from './runner-project-location';
+import {restoreRunnerProviderTranscript} from './runner-provider-history-client';
 import {sessionTouch} from './prepared-session-cards';
 import {randomUUID,createHash} from 'node:crypto';
 import {peerLabRequest} from './commons-board-service';
@@ -66,7 +68,8 @@ import {noticeTime} from './provider-free-notice';
 import {movedToCodex} from './provider-exhaustion-recovery';
 import {SIGNIN_WORKER,signInRenewalOf,signInWorkerActionId,signInWorkerText} from './signin-renewal';
 import {markRepairNoticesDelivered,pendingRepairNotices,repairNoticeText,REPAIR_AGENT_PROVIDER,REPAIR_AGENT_TITLE} from './repair-notices';
-import {standingAgentForSession,standingAgentSession,standingAgentProject,assertStandingAgentFolder,bindStandingAgentSession,unboundJournalKeeperSession,unboundRepairAgentSession,canOwnStandingWork,STANDING_WORK_REFUSAL,type StandingAgentRole} from './standing-agents';
+import {standingAgent,standingAgentForSession,standingAgentSession,assertStandingAgentPlacement,bindStandingAgentSession,unboundJournalKeeperSession,unboundRepairAgentSession,canOwnStandingWork,STANDING_WORK_REFUSAL,type StandingAgentRole} from './standing-agents';
+import {resolveRunnerProjectLocation} from './runner-project-location';
 import {standingAgentView} from './standing-agent-view';
 import {hostTimerView} from './host-timer-view';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
@@ -87,9 +90,11 @@ import {workThread} from './session-fit';
 import {sessionMutuals,mutualLift} from './session-mutuals';
 import {commitWork,originInput} from './commit-work';
 import {appendAgentReportObservation,closeQuestionsAnsweredByTodos,createTopicByHuman,inboxAttention,inboxDismiss,invalidateTopicRoots,openAgentReport,replyTargets,topicEntries,topicHumanAction,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
-import {containingProject,sessionProject,sessionProjects} from './session-projects';
+import {containingProject,projectCoordinates,sessionProject,sessionProjects} from './session-projects';
 import {expandHome,isSensitiveWorkspacePath,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
+import {runnerMachineCall} from './runner-machine-calls';
+import {selectedClaudeHome} from './provider-account-dispatch';
 import {sessionSpace,type SessionSpace} from './session-roles';
 import {preparedSessionWindow,preparedSessionChanges,preparedInboxAttention,preparedLabRequestIds} from './presentation-session-reader';
 import {preparedReceiptWindow,preparedReceiptChanges} from './presentation-receipt-reader';
@@ -98,7 +103,7 @@ import {TURN_STATE,inputExecutionFacts,receiptOperationState} from './session-re
 import {receiptStatusFromFacts,type InputStatusDetail} from './session-receipt-status';
 import {PROJECT_FOLDERS_OPERATION,PROJECT_NESTED_EXPERTISE_OPERATION,type ProjectSetup} from './project-setup';
 import type {PeerLinks} from './peer-links';
-import {appendTodoFile} from './todo-file';
+import {appendTodoFile,captureMarker} from './todo-file';
 import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn} from './saved-work';
 import {usageBreakdown} from './usage-breakdown';
 import {chooseProviderForNewWork,type AutomaticProvider} from './provider-start-choice';
@@ -1150,6 +1155,7 @@ export class SessionOwner {
       timing:presence.timing,cancellation:presence.cancellation,agentName:presence.agentName,presenceRevision:presence.presenceRevision,
       runtimeThreadId:session.agent_session_uuid,activeRunId:active?nativeRunId(active.id):null,latestRunId:latest?nativeRunId(latest.id):null,
       nativeKey:meta.source?.id??null,nativeBinding:meta.nativeBinding??null,title:labels.title,summary:labels.summary,project:labels.project,
+      projectName:meta.projectName??null,projectPath:meta.projectPath??null,
       standingRole:standingAgentForSession(this.defaultCwd,session),
       handoff:handoffView(session.id),
       workflowId:meta.workflowId??null,mode:meta.purpose??'chat',purpose:meta.purpose??'chat',model:presence.model,reasoningEffort:presence.reasoningEffort,
@@ -1182,14 +1188,15 @@ export class SessionOwner {
    * the next turn resumes the same conversation there; a session with work running or queued is
    * refused, so no turn starts in a folder that is being moved.
    */
-  moveSession(sessionId:number,requested:string) {
-    const project=sessionProject(this.defaultCwd,requested,{inside:true});
+  moveSession(sessionId:number,requested:string,projectLocation:{name:string;path:string;cwd:string;runner:string|null}) {
+    const project=projectLocation;
     if(!project)throw new SessionOwnerError('Choose a registered project or an existing folder inside one (for example agent-ecology/expertise/alan-kay).');
     const busy=db.query("SELECT 1 FROM turns WHERE session_id=? AND status IN ('queued','running','delivering') LIMIT 1").get(sessionId);
     if(busy)throw new SessionOwnerError('That session has work running or queued; move it once it is idle.',409,'SESSION_BUSY');
     const from=sessionMetadata(getSessionById(sessionId)!).cwd??null;
     const current=sessionMetadata(getSessionById(sessionId)!);
-    updateSessionMetadata(sessionId,{cwd:project.cwd,project:project.cwd,
+    updateSessionMetadata(sessionId,{cwd:project.cwd,project:project.cwd,projectName:project.name,projectPath:project.path,
+      ...(project.runner?{providerRunner:project.runner}:{}),
       ...(current.standingRole&&current.cwd!==project.cwd?{standingRole:null}:{})});
     return {from,to:project.cwd};
   }
@@ -1360,7 +1367,7 @@ export class SessionOwner {
   }
   /** Called only inside the communication owner's source-validated request transaction. */
   /** A peer instance's request has no local source input; its scope names the peer and the remote input instead. */
-  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;escalationReason?:string;attestedHumanModel?:string;project?:string;title?:string;summary?:string;smallTask?:boolean;outside?:boolean;onRunner?:boolean;standingRole?:StandingAgentRole;firstInput:{text:string;machineNeed?:import('./machine-need').MachineNeed;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean}}) {
+  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;escalationReason?:string;attestedHumanModel?:string;project?:string;projectLocation?:{name:string;path:string;cwd:string;runner:string|null};title?:string;summary?:string;smallTask?:boolean;outside?:boolean;onRunner?:boolean;standingRole?:StandingAgentRole;firstInput:{text:string;machineNeed?:import('./machine-need').MachineNeed;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean}}) {
     const title=normalizeSessionTitle(input.title);
     const source=input.sourceInputId?getAcceptedSessionInput(input.sourceInputId):null;
     const fromClaude=!!source&&getSessionById(source.session_id)?.provider_id==='claude-code';
@@ -1374,7 +1381,7 @@ export class SessionOwner {
     if(input.onRunner&&selected.provider!=='claude-code')throw new SessionOwnerError('--on-runner runs a Claude Code session; choose a Claude alias (Automatic chose '+selected.provider+').',400);
     const {provider,...metadata}={...selected,...(input.outside?{outside:true}:{}),...(input.onRunner?{onRunner:true}:{})};
     if(input.standingRole){
-      assertStandingAgentFolder(this.defaultCwd,input.standingRole,metadata.cwd);
+      assertStandingAgentPlacement(this.defaultCwd,input.standingRole,metadata as NativeSessionMetadata);
       if(standingAgentSession(this.defaultCwd,input.standingRole))throw new SessionOwnerError('This standing role was bound while the request was being prepared; retry against its current session.',409,'STANDING_AGENT_ALREADY_BOUND');
     }
     if(input.saved&&!this.runtime.available(provider))throw new SessionOwnerError(`${provider} start unavailable; saved work was not created.`,409);
@@ -1399,15 +1406,17 @@ export class SessionOwner {
    * hears only what it declares needs him (`repair-notices.ts`). One input carries every notice
    * pending at that moment, so a burst of crashes is one turn, not one each.
    */
-  deliverRepairNotices():number {
+  async deliverRepairNotices():Promise<number> {
     const pending=pendingRepairNotices(db);
     if(!pending.length)return 0;
     let session=standingAgentSession(this.defaultCwd,'concierge-repair')??unboundRepairAgentSession(this.defaultCwd);
     if(!session) {
-      const target=this.requestTarget({provider:REPAIR_AGENT_PROVIDER,project:standingAgentProject(this.defaultCwd,'concierge-repair')?.cwd});
+      const project=await this.standingProjectLocation('concierge-repair');
+      if(!project)throw new SessionOwnerError('The concierge repair project is unavailable on its configured runner.',424,'PROJECT_UNAVAILABLE');
+      const target=this.requestTarget({provider:REPAIR_AGENT_PROVIDER,project:project.cwd,projectLocation:project});
       if(!this.runtime.available(target.provider))return 0;
       const {provider,...metadata}=target;
-      assertStandingAgentFolder(this.defaultCwd,'concierge-repair',metadata.cwd);
+      assertStandingAgentPlacement(this.defaultCwd,'concierge-repair',metadata as NativeSessionMetadata);
       session=createNativeSession(provider,{title:REPAIR_AGENT_TITLE,summary:REPAIR_AGENT_PURPOSE,...metadata,repairAgent:true,standingRole:'concierge-repair'});
       bindStandingAgentSession(this.defaultCwd,'concierge-repair',session);
       const created=retainSessionInput({sessionId:session.id,scope:'service:repair-agent',actionId:`repair-agent:${session.id}`,kind:'create',origin:'service',
@@ -1458,9 +1467,81 @@ export class SessionOwner {
   }
   savedWorkList(cursor:string|null=null){return savedWorkListPage(db,cursor);}
   savedWorkControl(turnId:number,action:string,body:Record<string,unknown>){return updateSavedTurn(turnId,action,body);}
-  projects() {
+  private configuredProjectRunner():string|null { return process.env.CONCIERGE_TURN_RUNNER?.trim()||null; }
+  async prepareProjectLocation(location:string,runner?:string|null) { return this.locateProject(location,runner); }
+  private persistedProjectRunner(metadata:NativeSessionMetadata,session?:SessionRow):string|null {
+    if(Object.hasOwn(metadata,'providerRunner'))return metadata.providerRunner??null;
+    if(session?.agent_session_uuid){
+      const last=db.query(`SELECT execution.supervisor,attempt.runner FROM executions execution
+        LEFT JOIN runner_attempts attempt ON attempt.job_id='turn:'||execution.execution_id
+        WHERE execution.session_id=? ORDER BY execution.created_at_ms DESC,attempt.started_at_ms DESC LIMIT 1`)
+        .get(session.id) as {supervisor:string;runner:string|null}|null;
+      if(last?.supervisor==='runner'){
+        if(!last.runner)throw new SessionOwnerError('This conversation ran on a runner, but its exact runner is unavailable.',424,'PROVIDER_RUNNER_UNKNOWN');
+        return last.runner;
+      }
+      return null;
+    }
+    return this.configuredProjectRunner();
+  }
+  async preparePersistedProjectLocation(metadata:NativeSessionMetadata,session?:SessionRow):Promise<{name:string|null;path:string;cwd:string;runner:string|null}> {
+    const runner=this.persistedProjectRunner(metadata,session);
+    if(runner){
+      const resolved=await resolveRunnerProjectLocation(runner,metadata);
+      return {name:resolved.project,path:resolved.path,cwd:resolved.cwd,runner};
+    }
+    const location=typeof metadata.projectName==='string'
+      ?`${metadata.projectName}${typeof metadata.projectPath==='string'&&metadata.projectPath?`/${metadata.projectPath}`:''}`
+      :typeof metadata.project==='string'?metadata.project:typeof metadata.cwd==='string'?metadata.cwd:'';
+    if(!location)return {name:null,path:'',cwd:this.defaultCwd,runner:null};
+    const local=sessionProject(this.defaultCwd,location,{inside:true});
+    if(!local)throw new SessionOwnerError('This session has no registered project folder on this machine.',424,'PROJECT_UNAVAILABLE');
+    const project=containingProject(this.defaultCwd,local.cwd);
+    if(!project)throw new SessionOwnerError('This session folder is outside a registered project.',424,'PROJECT_UNAVAILABLE');
+    return {name:project.name,path:relative(project.cwd,local.cwd),cwd:local.cwd,runner:null};
+  }
+  async hasRegisteredProject(session:SessionRow):Promise<boolean> {
+    try{return !!(await this.preparePersistedProjectLocation(sessionMetadata(session),session)).name;}
+    catch{return false;}
+  }
+  private async standingProjectLocation(role:StandingAgentRole) {
+    const agent=standingAgent(role);
+    if(!agent)return null;
+    return this.locateProject(agent.project);
+  }
+  private async locateProject(location:string,runnerOverride?:string|null):Promise<{name:string;path:string;cwd:string;runner:string|null}> {
+    const runner=runnerOverride??this.configuredProjectRunner();
+    if(runner) {
+      const located=await this.runnerProjectCall<{project:string;path:string;cwd:string}>('projects.locate',{location},runner);
+      if(!located)throw new SessionOwnerError('The configured project runner did not resolve this project.',424,'PROJECT_RUNNER_UNAVAILABLE');
+      return {name:located.project,path:located.path,cwd:located.cwd,runner};
+    }
+    const local=sessionProject(this.defaultCwd,location,{inside:true});
+    if(!local)throw new SessionOwnerError('Project is unknown or unavailable. Choose an exact project from sessions projects; do not use the Inbox or another project as a fallback.');
+    const project=containingProject(this.defaultCwd,local.cwd);
+    if(!project)throw new SessionOwnerError('This folder is outside a registered project.');
+    return {name:project.name,path:relative(project.cwd,local.cwd),cwd:local.cwd,runner:null};
+  }
+  private async runnerProjectCall<T>(method:string,params:Record<string,unknown>,runnerOverride?:string|null):Promise<T|null> {
+    const runner=runnerOverride??this.configuredProjectRunner();if(!runner)return null;
+    try{return await runnerMachineCall<T>(runner,method,params);}
+    catch(error){
+      const message=error instanceof Error?error.message:String(error);
+      if(method==='projects.todos.update'&&message.includes('Canonical TODOs changed'))
+        throw new SessionOwnerError('Canonical TODOs changed. Reload before saving.',409,'PROJECT_TODOS_CONFLICT');
+      throw new SessionOwnerError(`Runner ${runner} is unavailable for this project operation: ${message}`,424,'PROJECT_RUNNER_UNAVAILABLE');
+    }
+  }
+  async projects() {
     const canvasTitles=this.projectSetup?.canvasProjectTitles();
-    return {projects:sessionProjects(this.defaultCwd).map(project=>({...project,...(canvasTitles?.has(project.name)?{canvasTitle:canvasTitles.get(project.name)}:{}),defaultProvider:project.name==='slack-inbox'?(claudeAllowanceHeld()?'codex':'cc-opus-1m'):configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)}))};
+    const remote=await this.runnerProjectCall<{workspaceRoot:string;projects:{name:string;path:string}[]}>('projects.list',{});
+    const projects=remote?remote.projects.map(project=>({name:project.name,cwd:join(remote.workspaceRoot,project.path)})):sessionProjects(this.defaultCwd);
+    return {projects:projects.map(project=>({...project,...(canvasTitles?.has(project.name)?{canvasTitle:canvasTitles.get(project.name)}:{}),defaultProvider:project.name==='slack-inbox'?(claudeAllowanceHeld()?'codex':'cc-opus-1m'):configuredProviderDefault(remote?this.managedProjectRecord(project.name)?.provider_default:getChannelByCodePath(project.cwd)?.provider_default)}))};
+  }
+  private managedProjectRecord(id:string) {
+    const rows=db.query('SELECT rowid AS rowId,* FROM channels WHERE code_path IS NOT NULL').all() as Array<{rowId:number;name:string;code_path:string;provider_default:string;slack_channel_id:string|null}>;
+    const matches=rows.filter(row=>row.name===id||basename(row.code_path)===id);
+    return matches.length===1?matches[0]!:null;
   }
   async standingAgents() {return {...standingAgentView(db,this.defaultCwd),hostTimers:await hostTimerView()};}
   private project(id:string) {
@@ -1473,15 +1554,19 @@ export class SessionOwner {
     if(!record)throw new SessionOwnerError('This trusted project has no canonical task record.',409,'PROJECT_METADATA_UNAVAILABLE');
     return {project,record};
   }
-  projectDefault(id:string,body:unknown) {
+  async projectDefault(id:string,body:unknown) {
     const input=object(body);only(input,['provider']);
     const selector=typeof input.provider==='string'?parseProviderSelector(input.provider):null;
     if(!selector)throw new SessionOwnerError('Choose a supported provider/model alias.');
-    const {project}=this.managedProject(id);
+    const remote=await this.runnerProjectCall<{project:string;path:string;cwd:string}>('projects.resolve',{project:id,path:''});
+    const project=remote?{name:remote.project,cwd:remote.cwd}:this.project(id);
+    const record=remote?this.managedProjectRecord(id):getChannelByCodePath(project.cwd);
+    if(!record)throw new SessionOwnerError('This trusted project has no canonical task record.',409,'PROJECT_METADATA_UNAVAILABLE');
     // Store the canonical alias so a deliberate Codex choice is never spelled
     // like the column's unset sentinel and silently re-read as the default.
     const stored=selector.effort?`${selector.alias}-${selector.effort}`:selector.alias;
-    updateManagedProjectProvider(project.cwd,stored);
+    if(remote)db.query('UPDATE channels SET provider_default=? WHERE rowid=?').run(stored,record.rowId);
+    else updateManagedProjectProvider(project.cwd,stored);
     return {project:{...project,defaultProvider:stored}};
   }
   /**
@@ -1505,6 +1590,14 @@ export class SessionOwner {
         throw error;
       }
     }
+    if(machine===null&&this.configuredProjectRunner()) {
+      const remote=await this.runnerProjectCall<{workspaceRoot:string;matched:boolean;file?:WorkspaceFile}>('projects.fileAt',{path:expandHome(path)});
+      if(remote?.matched&&remote.file)return {file:remote.file};
+      if(remote&&remote.workspaceRoot!==''&&isAbsolute(remote.workspaceRoot)) {
+        const requested=expandHome(path),root=remote.workspaceRoot;
+        if(requested===root||requested.startsWith(root+sep))throw new SessionOwnerError('That file is not available on the configured project runner.',404,'FILE_UNAVAILABLE');
+      }
+    }
     try {return {file:readWorkspaceFile({machine:self,workspaceRoot:this.defaultCwd,path})};}
     catch(error) {throw error instanceof WorkspaceFileError?new SessionOwnerError(error.message,error.status,error.code):error;}
   }
@@ -1525,6 +1618,8 @@ export class SessionOwner {
         throw error;
       }
     }
+    const runnerFiles=await this.runnerProjectCall<ProjectFilesView>('projects.files',{project:id,path:typeof path==='string'?path:''});
+    if(runnerFiles)return runnerFiles;
     const project=this.project(id);
     const requested=path===null||path===undefined?'':typeof path==='string'?path.trim():'';
     if(requested.length>4096||requested.includes('\0')||requested.includes('\\')||isAbsolute(requested)||requested.split('/').some(part=>part==='..')||isSensitiveWorkspacePath(requested))
@@ -1554,20 +1649,26 @@ export class SessionOwner {
     entries.sort((a,b)=>a.kind===b.kind?a.name.localeCompare(b.name):a.kind==='directory'?-1:1);
     return {project:{name:project.name,cwd:project.cwd},path:relativePath,entries,truncated};
   }
-  projectInstructions(id:string) {
+  async projectInstructions(id:string) {
+    const remote=await this.runnerProjectCall<{project:string;path:string;content:string}>('projects.instructions',{project:id});
+    if(remote)return remote;
     const project=this.project(id),path=join(project.cwd,'AGENTS.md');
     if(!existsSync(path))throw new SessionOwnerError('Canonical project instructions are unavailable.',404,'PROJECT_INSTRUCTIONS_UNAVAILABLE');
     return {project:project.name,path:'AGENTS.md',content:readFileSync(path,'utf8')};
   }
-  projectTodos(id:string) {
+  async projectTodos(id:string) {
+    const remote=await this.runnerProjectCall<{project:string;content:string;sha256:string}>('projects.todos',{project:id});
+    if(remote)return remote;
     const {project,record}=this.managedProject(id),path=join(record.vault_path,'notes','TODOS.md');
     if(!existsSync(path))throw new SessionOwnerError('Canonical project TODOs are unavailable.',404,'PROJECT_TODOS_UNAVAILABLE');
     const content=readFileSync(path,'utf8');
     return {project:project.name,content,sha256:hash(content)};
   }
-  updateProjectTodos(id:string,body:unknown) {
+  async updateProjectTodos(id:string,body:unknown) {
     const input=object(body);only(input,['content','sha256']);
     if(typeof input.content!=='string'||typeof input.sha256!=='string'||!input.content.endsWith('\n'))throw new SessionOwnerError('TODO update requires complete newline-terminated canonical content and its observed hash.');
+    const remote=await this.runnerProjectCall<{project:string;content:string;sha256:string}>('projects.todos.update',{project:id,content:input.content,sha256:input.sha256});
+    if(remote)return remote;
     const {project,record}=this.managedProject(id),path=join(record.vault_path,'notes','TODOS.md');
     if(!existsSync(path)||hash(readFileSync(path,'utf8'))!==input.sha256)throw new SessionOwnerError('Canonical TODOs changed. Reload before saving.',409,'PROJECT_TODOS_CONFLICT');
     const temporary=join(dirname(path),`.TODOS.${randomUUID()}.tmp`);
@@ -1575,7 +1676,8 @@ export class SessionOwner {
     return {project:project.name,content:input.content,sha256:hash(input.content)};
   }
   async status() {
-    return {owner:{available:true},captureDelivery:this.captureDeliveryStatus?.()??null,providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),antigravity:this.runtime.available('antigravity'),chatgpt:this.runtime.available('chatgpt')},projects:this.projects().projects.length,deployment:await this.deploymentWait(),deploymentStuck:await this.stuckUpdate(),
+    const projects=await this.projects();
+    return {owner:{available:true},captureDelivery:this.captureDeliveryStatus?.()??null,providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),antigravity:this.runtime.available('antigravity'),chatgpt:this.runtime.available('chatgpt')},projects:projects.projects.length,deployment:await this.deploymentWait(),deploymentStuck:await this.stuckUpdate(),
       executionsOnPreviousVersion:this.executionsOnPreviousVersion()};
   }
   /**
@@ -1672,16 +1774,20 @@ export class SessionOwner {
       tries:0,since:new Date(startsAtMs).toISOString(),failedAt:null,repair:null,stopped:null};
   }
   private ensureInboxSession() {
-    const project=sessionProject(this.defaultCwd,'slack-inbox');
-    if(!project)throw new SessionOwnerError('The slack-inbox project is unavailable.',503,'PROJECT_UNAVAILABLE');
     const current=inboxSession(),meta=current?sessionMetadata(current):null;
-    if(current&&meta?.cwd===project.cwd&&meta.inboxRole==='project-router'){
+    if(current&&meta?.inboxRole==='project-router'&&meta.standingRole==='inbox'){
       maybeStartInboxProviderFailover(current);
       return current;
     }
+    const runner=this.configuredProjectRunner();
+    const project=runner
+      ?{name:'slack-inbox',path:'',cwd:join(this.defaultCwd,'slack-inbox'),runner}
+      :sessionProject(this.defaultCwd,'slack-inbox')&&{name:'slack-inbox',path:'',cwd:sessionProject(this.defaultCwd,'slack-inbox')!.cwd,runner:null};
+    if(!project)throw new SessionOwnerError('The slack-inbox project is unavailable.',503,'PROJECT_UNAVAILABLE');
     const provider=claudeAllowanceHeld()?'codex':'claude-code';
     return createNativeSession(provider,{title:'Inbox',summary:INBOX_PURPOSE,inbox:true,inboxRole:'project-router',standingRole:'inbox',
-      purpose:'chat',cwd:project.cwd,project:project.cwd,model:provider==='claude-code'?'opus[1m]':undefined});
+      purpose:'chat',cwd:project.cwd,project:project.cwd,projectName:project.name,projectPath:project.path,
+      ...(project.runner?{providerRunner:project.runner}:{}),model:provider==='claude-code'?'opus[1m]':undefined});
   }
   inbox() {
     if(process.env.CONCIERGE_READ_WORKER==='1'){
@@ -1823,20 +1929,35 @@ export class SessionOwner {
     const inbox=getSessionById(accepted.session_id)!;
     return {inbox:{sessionId:`concierge:${inbox.id}`,address:sessionAddress(inbox)},operation:this.receipt(accepted)};
   }
-  createTask(id:string,body:unknown) {
+  async createTask(id:string,body:unknown) {
     const session=this.session(id),input=object(body);only(input,['clientActionId','reference']);const action=actionId(input),selected=this.selectedMessage(session,input.reference),metadata=sessionMetadata(session);
-    const project=metadata.project?containingProject(this.defaultCwd,metadata.project):null;
-    if(!project)throw new SessionOwnerError('This session has no exact registered project task authority.',409,'PROJECT_UNAVAILABLE');
+    const runner=this.persistedProjectRunner(metadata,session);
+    let projectName:string|null=null,project:ReturnType<typeof containingProject>=null;
+    if(runner) {
+      const location=await this.preparePersistedProjectLocation(metadata,session);
+      projectName=location.name;
+    } else project=metadata.project?containingProject(this.defaultCwd,metadata.project):null;
+    if(runner&&!projectName)throw new SessionOwnerError('This session has no stable runner project identity for task creation.',409,'PROJECT_UNAVAILABLE');
+    if(!runner&&!project)throw new SessionOwnerError('This session has no exact registered project task authority.',409,'PROJECT_UNAVAILABLE');
     const accepted=db.transaction(()=>{
       const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
       if(prior){if(prior.kind!=='project-task'||stablePayload(JSON.parse(prior.payload_json))!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);return prior;}
-      const saved=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:action,kind:'project-task',origin:'human',payload:input}).input;
-      const path=appendTodoFile(db,{path:join(project.cwd,'notes','TODOS.md'),channelName:project.name,text:selected.message.content,idempotencyKey:saved.id,idempotencySecret:'native-session-owner'});
-      db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',task:{path,reference:selected.reference}}),saved.id);
-      recordSessionEvent({eventId:`project-task:${saved.id}`,sessionId:session.id,inputId:saved.id,kind:'project_task',payload:{reference:selected.reference,path}});
-      return getAcceptedSessionInput(saved.id)!;
+      return retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:action,kind:'project-task',origin:'human',payload:input}).input;
     })();
-    return {operation:this.receipt(accepted)};
+    const prior=accepted.receipt_json?JSON.parse(accepted.receipt_json):{};
+    if(prior.state==='completed')return {operation:this.receipt(accepted)};
+    try {
+      const path=runner
+        ?(await this.runnerProjectCall<{path:string}>('projects.todos.append',{project:projectName,text:selected.message.content,marker:captureMarker(accepted.id,'native-session-owner')}))?.path
+        :appendTodoFile(db,{path:join(project!.cwd,'notes','TODOS.md'),channelName:project!.name,text:selected.message.content,idempotencyKey:accepted.id,idempotencySecret:'native-session-owner'});
+      if(!path)throw new SessionOwnerError('Runner did not confirm the project task append.',424,'PROJECT_RUNNER_UNAVAILABLE');
+      db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',task:{path,reference:selected.reference}}),accepted.id);
+      recordSessionEvent({eventId:`project-task:${accepted.id}`,sessionId:session.id,inputId:accepted.id,kind:'project_task',payload:{reference:selected.reference,path}});
+      return {operation:this.receipt(getAcceptedSessionInput(accepted.id)!)};
+    } catch(error) {
+      db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'uncertain',error:{code:'PROJECT_TASK_UNCONFIRMED',message:error instanceof Error?error.message:String(error)}}),accepted.id);
+      throw error;
+    }
   }
   inboxCapture(captureId:string) {
     const input=retainedInboxCapture(captureId),body=JSON.parse(input.payload_json);
@@ -2129,7 +2250,7 @@ export class SessionOwner {
       throw error;
     }
   }
-  private requestTarget(input:{provider:string;effort?:string;project?:string;choiceKey?:string;smallTask?:boolean},delegatedFromClaude=false) {
+  private requestTarget(input:{provider:string;effort?:string;project?:string;projectLocation?:{name:string;path:string;cwd:string;runner:string|null};choiceKey?:string;smallTask?:boolean},delegatedFromClaude=false) {
     if(input.provider==='chatgpt') {
       if(input.project!==undefined)throw new SessionOwnerError('ChatGPT creation does not accept a development project.');
       // The thinking level travels as the session's model, so the admission names it and the
@@ -2148,22 +2269,21 @@ export class SessionOwner {
       selector.effort=effort;
     }
     if(typeof input.project!=='string'||!input.project)throw new SessionOwnerError('New coding sessions require an explicit registered project; use sessions projects.');
-    const project=sessionProject(this.defaultCwd,input.project,{inside:true});
+    const project=input.projectLocation??sessionProject(this.defaultCwd,input.project,{inside:true});
     if(!project)throw new SessionOwnerError('Project is unknown or unavailable. Choose an exact project from sessions projects; do not use the Inbox or another project as a fallback.');
     const selected=resolveProviderSelector(selector),cwd=project.cwd;
     if(selected.provider==='claude-code'&&claudeAllowanceHeld())throw new SessionOwnerError(CLAUDE_ALLOWANCE_HOLD_MESSAGE,409,'CLAUDE_ALLOWANCE_HELD');
     return {provider:selected.provider,model:selected.model,reasoningEffort:selected.reasoning_effort,purpose:'develop',cwd,project:cwd,
+      ...('runner' in project?{projectName:project.name,projectPath:project.path,...(project.runner?{providerRunner:project.runner}:{})}:{}),
       ...(input.provider==='auto'?{automaticProviderChoice:true,...(input.smallTask?{automaticSmallTask:true}:{})}:{})};
   }
-  create(body:unknown) {
+  async create(body:unknown,projectLocationOverride?:{name:string;path:string;cwd:string;runner:string|null}) {
     const input=object(body);only(input,['clientActionId','provider','purpose','title','workflowId','project','model','reasoningEffort','firstInput','door','savedWork']);
     const savedWork=input.savedWork===undefined?null:object(input.savedWork);
     if(savedWork){only(savedWork,['kind','atMs','expiresAtMs','repeatEveryMs','quietOnly']);if(!input.firstInput||!input.title||input.provider==='chatgpt'||!['scheduled','banked'].includes(savedWork.kind))
       throw new SessionOwnerError('Saved work needs a named new coding session and its first input.');}
     if(savedWork?.quietOnly!==undefined&&(savedWork.kind!=='banked'||savedWork.quietOnly!==true))
       throw new SessionOwnerError('Quiet-only is an explicit banked-work choice.');
-    if(savedWork?.repeatEveryMs!==undefined&&(!input.project||typeof input.project!=='string'||!canOwnStandingWork(this.defaultCwd,sessionProject(this.defaultCwd,input.project,{inside:true})?.cwd)))
-      throw new SessionOwnerError(STANDING_WORK_REFUSAL,409,'STANDING_WORK_PROJECT_REQUIRED');
     if(input.door!==undefined&&(typeof input.door!=='string'||!input.door.trim()||input.door.length>60))throw new SessionOwnerError('A door is a short label of how the message came in.');
     const title=normalizeSessionTitle(input.title);
     const action=actionId(input);
@@ -2173,6 +2293,9 @@ export class SessionOwner {
     if(input.provider==='auto'&&(input.model!==undefined||input.reasoningEffort!==undefined))throw new SessionOwnerError('Choose a provider before setting its model or effort.');
     if(input.purpose==='develop'&&input.project===undefined)throw new SessionOwnerError('Development sessions require an explicit project.');
     if(input.project!==undefined&&typeof input.project!=='string')throw new SessionOwnerError('Choose an exact project from the project list.');
+    const project=input.project===undefined?null:projectLocationOverride??await this.locateProject(input.project);
+    if(savedWork?.repeatEveryMs!==undefined&&(!project||(!project.runner&&!canOwnStandingWork(this.defaultCwd,this.managedProjectRecord(project.name)?.code_path??project.cwd))))
+      throw new SessionOwnerError(STANDING_WORK_REFUSAL,409,'STANDING_WORK_PROJECT_REQUIRED');
     if(input.model!==undefined){
       if(typeof input.model!=='string'||!input.model.trim())throw new SessionOwnerError('Select a supported provider model.');
       const supported=new Set(Object.values(PROVIDER_ALIASES).filter(alias=>alias.provider===input.provider).map(alias=>alias.model));
@@ -2191,21 +2314,19 @@ export class SessionOwner {
         if(existing.kind!=='create'||stablePayload(kept)!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);
         return existing;
       }
-      const project=input.project===undefined?null:sessionProject(this.defaultCwd,input.project,{inside:true});
-      if(input.project!==undefined&&!project)throw new SessionOwnerError('Choose an exact project from the project list.');
       const provider=input.provider==='auto'?automaticProvider(provider=>this.runtime.available(provider),action):input.provider as ProviderId;
       if(provider==='claude-code'&&claudeAllowanceHeld())throw new SessionOwnerError(CLAUDE_ALLOWANCE_HOLD_MESSAGE,409,'CLAUDE_ALLOWANCE_HELD');
       if(input.firstInput?.canvasContext&&provider!=='codex')throw new SessionOwnerError('Argument-map think-aloud requires an ordinary Codex session.',409,'CAPABILITY_UNAVAILABLE');
       const providerDefault=input.provider==='auto'?resolveProviderAlias(AUTOMATIC_PROVIDER_ALIASES[provider as AutomaticProvider]):
         provider==='codex'?resolveProviderDefault('codex'):
         provider==='antigravity'?resolveProviderAlias('google'):null;
-      const preferred=project&&provider!=='chatgpt'?parseProviderSelector(configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)):null;
+      const preferred=project&&provider!=='chatgpt'?parseProviderSelector(configuredProviderDefault(project.runner?this.managedProjectRecord(project.name)?.provider_default:getChannelByCodePath(project.cwd)?.provider_default)):null;
       const selected=preferred?resolveProviderSelector(preferred):null;
       const defaults=input.provider!=='auto'&&selected?.provider===provider?{model:selected.model,reasoningEffort:selected.reasoning_effort}:{};
       if(savedWork&&!this.runtime.available(provider))throw new SessionOwnerError(`${provider} start unavailable; saved work was not created.`,409);
       const session=createNativeSession(provider,{title,summary:purposeFromFirstWords(input.firstInput?.text)??(title?undefined:'A conversation you started that has no message yet.'),purpose:input.purpose,workflowId:input.workflowId,cwd:project?.cwd??this.defaultCwd,
         ...(input.provider==='auto'?{automaticProviderChoice:true}:{}),
-        ...(providerDefault?{model:providerDefault.model,reasoningEffort:providerDefault.reasoning_effort}:{}),...(project?{project:project.cwd}:{}),...defaults,...(input.model?{model:input.model}:{}),...(input.reasoningEffort?{reasoningEffort:input.reasoningEffort}:{})});
+        ...(providerDefault?{model:providerDefault.model,reasoningEffort:providerDefault.reasoning_effort}:{}),...(project?{project:project.cwd,projectName:project.name,projectPath:project.path,...(project.runner?{providerRunner:project.runner}:{})}:{}),...defaults,...(input.model?{model:input.model}:{}),...(input.reasoningEffort?{reasoningEffort:input.reasoningEffort}:{})});
       this.validateAttachments(session,input.firstInput?.attachments);
       const operation=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:action,kind:'create',origin:'human',payload:input}).input;
       const recorded=this.recordCreation(session,operation,!!input.firstInput);
@@ -2794,10 +2915,13 @@ export class SessionOwner {
     let rerunSessionId:string|null=null;
     if(chosen&&chosen.provider!==session.provider_id) {
       const meta=sessionMetadata(session),payload=JSON.parse(target.payload_json),first=target.kind==='create'?payload.firstInput:payload;
-      const project=sessionProject(this.defaultCwd,String(meta.project??meta.cwd??''),{inside:true});
-      const created=this.create({clientActionId:`${actionId(input)}:rerun`,provider:chosen.provider,purpose:meta.purpose==='develop'&&project?'develop':'chat',
-        title:`${this.catalogueLabels(session).title} (on ${chosen.label} during ${modelLabel(offer.model)}'s outage)`,...(project?{project:project.cwd}:{}),model:chosen.model,
-        firstInput:{text:first.text??'',...(Array.isArray(first.attachments)&&first.attachments.length?{attachments:first.attachments}:{})}});
+      const persisted=await this.preparePersistedProjectLocation(meta,session);
+      if(meta.purpose==='develop'&&!persisted.name)throw new SessionOwnerError('This session has no runner-resolved project for its outage rerun.',424,'PROJECT_UNAVAILABLE');
+      const location=persisted.name?{name:persisted.name,path:persisted.path,cwd:persisted.cwd,runner:persisted.runner}:undefined;
+      const project=location?`${location.name}${location.path?`/${location.path}`:''}`:undefined;
+      const created=await this.create({clientActionId:`${actionId(input)}:rerun`,provider:chosen.provider,purpose:meta.purpose==='develop'?'develop':'chat',
+        title:`${this.catalogueLabels(session).title} (on ${chosen.label} during ${modelLabel(offer.model)}'s outage)`,...(project?{project}:{}),model:chosen.model,
+        firstInput:{text:first.text??'',...(Array.isArray(first.attachments)&&first.attachments.length?{attachments:first.attachments}:{})}},location);
       rerunSessionId=created.session.id;
     }
     const operation=this.saveControl(session,'outage-choice',input,()=>{
@@ -2858,10 +2982,21 @@ export class SessionOwner {
     if(!session.agent_session_uuid)throw new SessionOwnerError('This session has no conversation to ask about yet.',409,'CAPABILITY_UNAVAILABLE');
     const meta=sessionMetadata(session),channel=session.slack_channel_id?getChannel(session.slack_channel_id):null;
     const cwd=meta.cwd??channel?.code_path??channel?.vault_path??this.defaultCwd;
+    const persistedRunner=Object.hasOwn(meta,'providerRunner')?meta.providerRunner:undefined;
+    const executionRunner=persistedRunner===undefined?db.query(`SELECT attempt.runner FROM executions execution
+      LEFT JOIN runner_attempts attempt ON attempt.job_id='turn:'||execution.execution_id
+      WHERE execution.session_id=? AND execution.supervisor='runner'
+      ORDER BY execution.created_at_ms DESC,attempt.started_at_ms DESC LIMIT 1`).get(session.id) as {runner:string|null}|null:null;
+    if(executionRunner&&!executionRunner.runner)throw new SessionOwnerError('The runner that owns this conversation is not known.',424,'PROVIDER_RUNNER_UNKNOWN');
+    const runner=typeof persistedRunner==='string'?persistedRunner:executionRunner?.runner??(
+      persistedRunner===undefined&&session.provider_id==='codex'?process.env.CONCIERGE_CODEX_RUNNER?.trim()||null:null);
+    const location=runner?await resolveRunnerProjectLocation(runner,meta):null;
     try {
       // Under the gateway's 120 s command deadline; a longer answer is collected by asking again with the same id.
       // The wait is for the throwaway copy, not the owner: it is recorded as awaited, never as owner slowness.
-      return await awaitingOutside(()=>askAsideOnce(`${session.id}:${input.asideId}`,()=>({provider:session.provider_id,sessionUuid:session.agent_session_uuid!,cwd,model:meta.model??null,running:this.view(session).execution==='running',passage,question,earlier}),90_000));
+      return await awaitingOutside(()=>askAsideOnce(`${session.id}:${input.asideId}`,()=>({provider:session.provider_id,
+        sessionUuid:session.agent_session_uuid!,cwd,model:meta.model??null,running:this.view(session).execution==='running',passage,question,earlier,
+        ...(runner?{runner,account:meta.providerAccount??meta.claudeAccount??null,project:location?.project??null,projectPath:location?.path??''}:{})}),90_000));
     } catch(error) {
       throw new SessionOwnerError(error instanceof Error?error.message:String(error),502,'ASIDE_FAILED');
     }
@@ -3584,6 +3719,9 @@ export class SessionOwner {
       return {text:(db.query('SELECT transcript_text FROM session_attachments WHERE id=?').get(row.id) as {transcript_text:string}).transcript_text};
     }finally{await rm(directory,{recursive:true,force:true});}
   }
+  /** Stable identity for a bounded restore, so a retry rejoins the same runner transfer. */
+  private restoreOperationId(value:string){const hash=createHash('sha256').update(value).digest('hex');
+    return `${hash.slice(0,8)}-${hash.slice(8,12)}-4${hash.slice(13,16)}-8${hash.slice(17,20)}-${hash.slice(20,32)}`;}
   /** Put an archived copy of this machine's own provider transcript back where the provider resumes it. */
   private restoreNativeTranscript(provider:string,nativeId:string,claudePath:string|null,restore:unknown){
     const packet=restore&&typeof restore==='object'?restore as Record<string,unknown>:{};
@@ -3607,7 +3745,7 @@ export class SessionOwner {
     log('info','native_transcript_restored',{provider,native_id:nativeId,bytes:bytes.length,sha256:packet.sha256});
   }
   /** Bind an existing provider transcript on the machine whose folder contains it. */
-  private resumeNative(body:unknown) {
+  private async resumeNative(body:unknown) {
     const body_=object(body);only(body_,['clientActionId','provider','nativeId','project','title','sourceAddress','sourceSessionId','sourcePeer','restore']);
     const {restore,...input}=body_;const action=actionId(input);
     const provider=input.provider,nativeId=input.nativeId,cwd=input.project;
@@ -3616,25 +3754,58 @@ export class SessionOwner {
     if(prior){if(prior.kind!=='resurrect-native'||stablePayload(JSON.parse(prior.payload_json))!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);return {session:this.view(getSessionById(prior.session_id)!),reused:true};}
     const existing=db.query("SELECT * FROM sessions WHERE provider_id=? AND agent_session_uuid=? AND status<>'archived' ORDER BY id LIMIT 1").get(provider,nativeId) as SessionRow|null;
     if(existing)return {session:this.view(existing),reused:true};
-    let actual:string,root:string;
-    try{actual=realpathSync(cwd);root=realpathSync(this.defaultCwd);if(!statSync(actual).isDirectory()||(!relative(root,actual)||relative(root,actual).startsWith('..'+sep)||relative(root,actual)==='..'))throw new Error('outside workspace');}
-    catch{throw new SessionOwnerError(`The original folder ${cwd} is not available in this machine's workspace.`,409,'RESUME_FOLDER_UNAVAILABLE');}
-    const transcript=provider==='claude-code'?join(homedir(),'.claude','projects',cwd.replace(/[\\/.]/g,'-'),`${nativeId}.jsonl`):null;
-    const codexTranscript=(directory:string):boolean=>{let entries:import('node:fs').Dirent[];try{entries=readdirSync(directory,{withFileTypes:true});}catch{return false;}return entries.some(entry=>entry.isFile()&&entry.name.endsWith('.jsonl')&&entry.name.includes(nativeId)||entry.isDirectory()&&codexTranscript(join(directory,entry.name)));};
-    if(!(transcript?existsSync(transcript):codexTranscript(join(homedir(),'.codex','sessions')))){
-      // This machine's own copy can be gone while the server's transcript archive still holds the
-      // same file (the fashion conversation, deleted from the Mac after August 4, 2026). The
-      // requester then sends the archived bytes; they are put back exactly where the provider
-      // keeps this conversation, only when nothing is there, so resume continues the original.
-      if(!restore)throw new SessionOwnerError('The original provider conversation is not in this machine’s history yet.',409,'NATIVE_TRANSCRIPT_UNAVAILABLE');
-      this.restoreNativeTranscript(provider,nativeId,transcript,restore);
+    const runner=provider==='codex'?process.env.CONCIERGE_CODEX_RUNNER?.trim()||null:process.env.CONCIERGE_TURN_RUNNER?.trim()||null;
+    let location:{cwd:string;project:string|null;path:string}|null=null,account:string|null=null;
+    if(runner){
+      location=await resolveRunnerProjectLocation(runner,{project:cwd,cwd});
+      const found=await runnerMachineCall<{account:string|null;resolution:'unique'|'shared'|'missing'|'ambiguous'}>(runner,'accounts.transcript',
+        {provider,account:null,nativeId});
+      if(found.resolution==='ambiguous')throw new SessionOwnerError('This provider conversation has more than one account copy on its runner.',409,'NATIVE_TRANSCRIPT_AMBIGUOUS');
+      account=found.resolution==='unique'?found.account:null;
+      if(found.resolution==='shared'){
+        const selected=provider==='claude-code'?selectedClaudeHome()?.label:null;
+        if(!selected)throw new SessionOwnerError('Choose a Claude account available on the runner to continue this shared conversation.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
+        const validation=await runnerMachineCall<{available:boolean}>(runner,'accounts.validate',{provider,account:selected});
+        if(!validation.available)throw new SessionOwnerError('The selected Claude account is unavailable on this runner.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
+        account=selected;
+      }
+      if(!account){
+        if(!restore)throw new SessionOwnerError('The original provider conversation is not in this runner’s history yet.',409,'NATIVE_TRANSCRIPT_UNAVAILABLE');
+        const packet=restore&&typeof restore==='object'?restore as Record<string,unknown>:{};
+        if(typeof packet.base64!=='string'||typeof packet.sha256!=='string'||typeof packet.name!=='string')
+          throw new SessionOwnerError('The archived copy of this conversation was incomplete.',409,'NATIVE_TRANSCRIPT_RESTORE_REFUSED');
+        const bytes=Buffer.from(packet.base64,'base64');
+        if(createHash('sha256').update(bytes).digest('hex')!==packet.sha256
+          ||!bytes.subarray(0,262_144).toString('utf8').includes(nativeId))
+          throw new SessionOwnerError('The archived copy does not match this conversation.',409,'NATIVE_TRANSCRIPT_RESTORE_REFUSED');
+        const selected=provider==='claude-code'?selectedClaudeHome()?.label:null;
+        const active=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider,...(selected?{account:selected}:{})});
+        if(!active?.label)throw new SessionOwnerError('No signed-in account is available on the runner for this conversation.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
+        account=active.label;
+        await restoreRunnerProviderTranscript({runner,account,provider:provider as 'claude-code'|'codex',nativeId,
+          cwd:location.cwd,name:packet.name,bytes,restoreId:this.restoreOperationId(`native:${action}`)});
+      }
+    } else {
+      let actual:string,root:string;
+      try{actual=realpathSync(cwd);root=realpathSync(this.defaultCwd);if(!statSync(actual).isDirectory()||(!relative(root,actual)||relative(root,actual).startsWith('..'+sep)||relative(root,actual)==='..'))throw new Error('outside workspace');}
+      catch{throw new SessionOwnerError(`The original folder ${cwd} is not available in this machine's workspace.`,409,'RESUME_FOLDER_UNAVAILABLE');}
+      const transcript=provider==='claude-code'?join(homedir(),'.claude','projects',cwd.replace(/[\\/.]/g,'-'),`${nativeId}.jsonl`):null;
+      const codexTranscript=(directory:string):boolean=>{let entries:import('node:fs').Dirent[];try{entries=readdirSync(directory,{withFileTypes:true});}catch{return false;}return entries.some(entry=>entry.isFile()&&entry.name.endsWith('.jsonl')&&entry.name.includes(nativeId)||entry.isDirectory()&&codexTranscript(join(directory,entry.name)));};
+      if(!(transcript?existsSync(transcript):codexTranscript(join(homedir(),'.codex','sessions')))){
+        if(!restore)throw new SessionOwnerError('The original provider conversation is not in this machine’s history yet.',409,'NATIVE_TRANSCRIPT_UNAVAILABLE');
+        this.restoreNativeTranscript(provider,nativeId,transcript,restore);
+      }
     }
     const configured=resolveProviderDefault(configuredProviderDefault(null));
     const defaultModel=provider==='codex'?resolveProviderAlias('cx'):configured.provider==='claude-code'?configured:resolveProviderAlias('cc-opus');
     const created=db.transaction(()=>{
       const duplicate=db.query("SELECT * FROM sessions WHERE provider_id=? AND agent_session_uuid=? AND status<>'archived' ORDER BY id LIMIT 1").get(provider,nativeId) as SessionRow|null;
       if(duplicate)return {session:duplicate,reused:true};
-      const session=createNativeSession(provider,{origin:'native',purpose:'chat',title:input.title.trim().slice(0,120),summary:purposeFromFirstWords(input.title),cwd,project:cwd,model:defaultModel.model,reasoningEffort:defaultModel.reasoning_effort,
+      const session=createNativeSession(provider,{origin:'native',purpose:'chat',title:input.title.trim().slice(0,120),summary:purposeFromFirstWords(input.title),
+        cwd:location?.cwd??cwd,project:location?.cwd??cwd,
+        ...(runner&&location&&account?{providerRunner:runner,providerAccount:account,projectName:location.project,projectPath:location.path}
+          :{providerRunner:null}),
+        model:defaultModel.model,reasoningEffort:defaultModel.reasoning_effort,
         resurrection:{peer:input.sourcePeer??this.selfMachine,sessionId:input.sourceSessionId,address:input.sourceAddress,threadId:nativeId,archivedAt:new Date().toISOString(),archivePath:'',resurrectedAt:new Date().toISOString(),kind:'continued-in-place'}});
       bindSessionProvider(session.id,provider,nativeId);
       this.saveControl(session,'resurrect-native',input,()=>({sessionId:`concierge:${session.id}`}));
@@ -3675,12 +3846,48 @@ export class SessionOwner {
           target={...value.session,id:`${machine}:${value.session.id.slice(10)}`,address:`${machine}/${value.session.address}`,peer:machine};
         }
         catch(error){if(error instanceof PeerError&&error.kind==='unreachable')throw new SessionOwnerError(`${machine} is not answering. This conversation lives in ${project} there; try again when it is on.`,424,'MACHINE_UNREACHABLE');if(error instanceof PeerError)throw new SessionOwnerError(error.message,error.status??502,error.code??'PEER_REFUSED');throw error;}
-      }else target=this.resumeNative(packet).session;
+      }else target=(await this.resumeNative(packet)).session;
       const operation=this.saveControl(source,'resurrect',input,()=>({sessionId:target.id,session:target}));
       return {session:target,operation:this.receipt(operation)};
     }
     if(!peers)throw new SessionOwnerError('No peer instance is configured here.',503,'CAPABILITY_UNAVAILABLE');
-    const created=peers.resurrect(remote.peer,remote.address,{defaultCwd:this.defaultCwd,createSession:(provider,metadata)=>createNativeSession(provider,metadata as any),bind:(sessionId,provider,uuid)=>bindSessionProvider(sessionId,provider,uuid)});
+    const runnerResurrection=process.env.CONCIERGE_TURN_RUNNER?.trim()||process.env.CONCIERGE_CODEX_RUNNER?.trim();
+    const created=await peers.resurrect(remote.peer,remote.address,{defaultCwd:this.defaultCwd,
+      createSession:(provider,metadata)=>createNativeSession(provider,metadata as any),
+      bind:(sessionId,provider,uuid)=>bindSessionProvider(sessionId,provider,uuid),
+      ...(runnerResurrection?{prepare:async ({provider,threadId,archived,projectName,projectPath}:{
+        provider:'claude-code'|'codex';threadId:string;archived:{path:string;archivedAt:string};projectName:string|null;projectPath:string|null;
+      })=>{
+        const runner=(provider==='codex'?process.env.CONCIERGE_CODEX_RUNNER:process.env.CONCIERGE_TURN_RUNNER)?.trim();
+        if(!runner)throw new SessionOwnerError('This provider has no runner for restored conversations.',409,'RUNNER_UNAVAILABLE');
+        const location=await resolveRunnerProjectLocation(runner,{projectName,projectPath});
+        const found=await runnerMachineCall<{account:string|null;resolution:'unique'|'shared'|'missing'|'ambiguous'}>(runner,'accounts.transcript',
+          {provider,account:null,nativeId:threadId});
+        if(found.resolution==='ambiguous')throw new SessionOwnerError('This conversation has more than one account copy on its runner.',409,'NATIVE_TRANSCRIPT_AMBIGUOUS');
+        let account=found.resolution==='unique'?found.account:null;
+        if(found.resolution==='shared'){
+          const selected=provider==='claude-code'?selectedClaudeHome()?.label:null;
+          if(!selected)throw new SessionOwnerError('Choose a Claude account available on the runner to continue this shared conversation.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
+          const validation=await runnerMachineCall<{available:boolean}>(runner,'accounts.validate',{provider,account:selected});
+          if(!validation.available)throw new SessionOwnerError('The selected Claude account is unavailable on this runner.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
+          account=selected;
+        }
+        if(!account){
+          const selected=provider==='claude-code'?selectedClaudeHome()?.label:null;
+          const active=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider,...(selected?{account:selected}:{})});
+          if(!active?.label)throw new SessionOwnerError('No signed-in account is available on the runner for this conversation.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
+          account=active.label;
+          const size=statSync(archived.path).size;
+          if(size<1||size>64*1024*1024)throw new SessionOwnerError('The archived conversation is outside the supported restore size.',409,'NATIVE_TRANSCRIPT_RESTORE_REFUSED');
+          const bytes=readFileSync(archived.path);
+          if(!bytes.subarray(0,262_144).toString('utf8').includes(threadId))throw new SessionOwnerError('The archived copy does not match this conversation.',409,'NATIVE_TRANSCRIPT_RESTORE_REFUSED');
+          await restoreRunnerProviderTranscript({runner,account,provider,nativeId:threadId,cwd:location.cwd,
+            name:basename(archived.path),bytes,restoreId:this.restoreOperationId(`peer:${remote.peer}:${remote.address}:${threadId}`)});
+        }
+        return {cwd:location.cwd,project:location.cwd,projectName:location.project,projectPath:location.path,
+          providerRunner:runner,providerAccount:account};
+      }}:{}),
+    });
     const session=getSessionById(created.sessionId)!;
     const operation=this.saveControl(session,'resurrect',input,()=>({sessionId:`concierge:${session.id}`,reused:created.reused}));
     return {session:this.view(session),operation:this.receipt(operation)};
@@ -4024,7 +4231,7 @@ export class SessionOwner {
       }
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts[1]==='settings'&&parts.length===2) result={settings:changeSavedWorkSettings(object(body))};
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts.length===3) result=this.savedWorkControl(Number(parts[1]),parts[2]!,object(body));
-      else if(request.method==='GET'&&parts[0]==='projects'&&parts.length===1) result=this.projects();
+      else if(request.method==='GET'&&parts[0]==='projects'&&parts.length===1) result=await this.projects();
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='canvas-policy'&&parts.length===2&&this.projectSetup) result=this.projectSetup.setCanvasPolicy(body);
       else if(request.method==='POST'&&parts[0]==='canvas-projects'&&parts[1]==='ensure'&&parts.length===2&&this.projectSetup) result=await this.projectSetup.ensureCanvas(body);
       else if(request.method==='GET'&&parts[0]==='canvas-projects'&&parts.length===2&&this.projectSetup){
@@ -4038,10 +4245,10 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='status'&&parts.length===1) result={...await this.status(),operations:[...(this.projectSetup?['project.setup',PROJECT_FOLDERS_OPERATION,PROJECT_NESTED_EXPERTISE_OPERATION]:[]),...(this.peerLinks?['link.open']:[])]};
       else if(request.method==='GET'&&parts[0]==='releases'&&parts.length===1) result=await releaseHistory();
       else if(request.method==='GET'&&parts[0]==='files'&&parts.length===1) result=await this.file(url.searchParams.get('path'),url.searchParams.get('machine'));
-      else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='instructions'&&parts.length===3) result=this.projectInstructions(parts[1]!);
-      else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='todos'&&parts.length===3) result=this.projectTodos(parts[1]!);
-      else if(request.method==='POST'&&parts[0]==='projects'&&parts[2]==='default'&&parts.length===3) result=this.projectDefault(parts[1]!,body);
-      else if(request.method==='POST'&&parts[0]==='projects'&&parts[2]==='todos'&&parts.length===3) result=this.updateProjectTodos(parts[1]!,body);
+      else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='instructions'&&parts.length===3) result=await this.projectInstructions(parts[1]!);
+      else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='todos'&&parts.length===3) result=await this.projectTodos(parts[1]!);
+      else if(request.method==='POST'&&parts[0]==='projects'&&parts[2]==='default'&&parts.length===3) result=await this.projectDefault(parts[1]!,body);
+      else if(request.method==='POST'&&parts[0]==='projects'&&parts[2]==='todos'&&parts.length===3) result=await this.updateProjectTodos(parts[1]!,body);
       // The selectable models, so a client picker never keeps its own list. Derived from
       // the alias table, so it cannot disagree with what a session can actually run.
       else if(request.method==='GET'&&parts[0]==='models'&&parts.length===1)
@@ -4177,7 +4384,7 @@ export class SessionOwner {
       }
       else if(request.method==='GET'&&parts[0]==='runs'&&parts.length===2)result={run:this.run(parts[1]!)};
       else if(request.method==='GET'&&parts[0]==='attachments'&&parts.length===2)result=this.attachment(parts[1]!);
-      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===1) result=this.create(body);
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===1) result=await this.create(body);
       else if(request.method==='POST'&&parts[0]==='canvas-observations'&&parts.length===1) result=this.createCanvasObservation(body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='canvas-observations') result=this.appendCanvasObservation(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='journal'&&parts[1]==='observations'&&parts.length===2) result=this.submitJournalObservation(body);
@@ -4192,7 +4399,7 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='forks') result=this.fork(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='asides') result=await this.aside(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='comparisons') result=await this.compare(parts[1]!,body);
-      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='tasks') result=this.createTask(parts[1]!,body);
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='tasks') result=await this.createTask(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='captures') result=this.captureSelectedMessage(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='reconcile') result=await this.reconcile(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='operations'&&parts.length===3&&parts[2]==='cancel') result=this.cancel(parts[1]!,body);
@@ -4245,7 +4452,7 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=await this.transcribeAttachment(parts[1]!,body,url.searchParams.get('async')==='1');
       else if(request.method==='POST'&&parts[0]==='consultations'&&parts.length===1)result=await this.consult(body);
       else if(request.method==='POST'&&parts[0]==='resurrections'&&parts.length===1)result=await this.resurrect(body);
-      else if(request.method==='POST'&&parts[0]==='resurrections'&&parts[1]==='native'&&parts.length===2)result=this.resumeNative(body);
+      else if(request.method==='POST'&&parts[0]==='resurrections'&&parts[1]==='native'&&parts.length===2)result=await this.resumeNative(body);
       else if(parts[0]==='peers'&&this.communication?.peersOrNull()) {
         const peers=this.communication.peersOrNull()!;
         if(request.method==='GET'&&parts.length===1)result=peers.inventory();

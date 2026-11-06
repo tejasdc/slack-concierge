@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, settleTurnDependencies, SETTLED_EXECUTION_SQL, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
-import { bindSessionProvider, carryingTurn, createNativeSession, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, HOLDING_OUTCOMES, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
+import { carryingTurn, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, HOLDING_OUTCOMES, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
@@ -40,8 +40,7 @@ import { cancelledWithoutHisStopText, stoppedByTejas, stoppedByTejasText } from 
 import { noticeTime } from './provider-free-notice';
 import { endedWorkInPlainWords } from './provider-failures';
 import { isWritingSession, takesManySubjects, WRITING_SESSION_REFUSAL } from './session-roles';
-import {standingAgent,standingAgentProject,standingAgentSession,bindStandingAgentSession,canOwnStandingWork,STANDING_WORK_REFUSAL} from './standing-agents';
-import {sessionProject} from './session-projects';
+import {standingAgent,standingAgentSession,bindStandingAgentSession,STANDING_WORK_REFUSAL} from './standing-agents';
 import {parseMachineNeed} from './machine-need';
 import {signInWorkerActionId} from './signin-renewal';
 import { backfillRequestTopics, consultPointer, forTopic, handBackText, newTopicNote, sessionWorkload, topicOf, topicRootFor } from './session-fit';
@@ -765,18 +764,22 @@ export class SessionCommunicationCoordinator {
      * 2026). A name Tejas set himself still wins and is never written over.
      */
     /** Moves a session (this one or another on this machine) to a project or a folder inside one; see SessionOwner.moveSession. */
-    move(input:{source:CommunicationSource;action_id:string;address:string;project:string}) {
+    async move(input:{source:CommunicationSource;action_id:string;address:string;project:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.fenced(this.actor(input.source));
         action(input.action_id);
         if(!this.dependencies.owner)throw new Error('Native session owner is unavailable.');
         if(!actor.inputId)throw new Error('Moving a session needs a native source input.');
         const target=resolveSessionAddress(input.address);
+        const targetRow=getSessionById(target.id);
+        if(!targetRow)throw new Error('That session address is unknown here.');
+        const binding=sessionMetadata(targetRow).providerRunner;
+        const projectLocation=await this.dependencies.owner!.prepareProjectLocation(input.project,typeof binding==='string'?binding:undefined);
         return db.transaction(()=>{
             const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
                 kind:'action',origin:'agent',payload:{kind:'move-session',session:target.id,project:input.project},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn)});
             if(saved.duplicate)return {session:this.dependencies.owner!.view(getSessionById(target.id)!),...JSON.parse(saved.input.receipt_json??'{}').moved};
-            const moved=this.dependencies.owner!.moveSession(target.id,input.project);
+            const moved=this.dependencies.owner!.moveSession(target.id,input.project,projectLocation);
             recordSessionEvent({eventId:`moved:${saved.input.id}`,sessionId:target.id,inputId:saved.input.id,kind:'moved',payload:{...moved,by:`concierge:${actor.session}`}});
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',moved}),saved.input.id);
             return {session:this.dependencies.owner!.view(getSessionById(target.id)!),...moved};
@@ -1331,7 +1334,7 @@ export class SessionCommunicationCoordinator {
         return links.open({source:{session:actor.session,input:actor.inputId!,run:nativeRunId(actor.turn)},actionId:input.action_id,url:input.url,
             ...(input.on===undefined?{}:{peer:input.on}),...(input.browser===undefined?{}:{browser:input.browser})});
     }
-    watch(input:{source:CommunicationSource;verb:'file'|'command'|'list'|'cancel';action_id?:string;until?:string;renew?:boolean;path?:string;argv?:string[];cwd?:string;watch_id?:string;runner?:string}) {
+    async watch(input:{source:CommunicationSource;verb:'file'|'command'|'list'|'cancel';action_id?:string;until?:string;renew?:boolean;path?:string;argv?:string[];cwd?:string;watch_id?:string;runner?:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         if(!input.source?.input_id)throw new Error('A watch is registered from an admitted native run: use --source-input and --source-run.');
         const actor=this.actor(input.source),origin={originInputId:actor.inputId!,originRunId:nativeRunId(actor.turn)};
@@ -1346,7 +1349,7 @@ export class SessionCommunicationCoordinator {
         if(typeof input.until!=='string'||!input.until.trim())throw new Error('--until is required.');
         if(input.verb==='file'){
             if(typeof input.path!=='string')throw new Error('Name the file or directory to watch.');
-            if(input.renew&&!canOwnStandingWork(this.dependencies.owner.defaultCwd,sessionMetadata(getSessionById(actor.session)!).cwd))
+            if(input.renew&&(!this.dependencies.owner||!await this.dependencies.owner.hasRegisteredProject(getSessionById(actor.session)!)))
                 throw new Error(STANDING_WORK_REFUSAL);
             return registerWatch({kind:'file',sessionId:actor.session,...origin,actionId:input.action_id,until:input.until,path:input.path,renew:input.renew,runner:input.runner??null});
         }
@@ -1412,17 +1415,17 @@ export class SessionCommunicationCoordinator {
         const requestedRole=input.role;
         const requestedTitle=input.title;
         let standingRole:import('./standing-agents').StandingAgentRole|undefined;
+        let standingLocation:{name:string;path:string;cwd:string;runner:string|null}|undefined;
         if(input.role!==undefined) {
             const agent=standingAgent(input.role);
             if(!agent)throw new Error(`Unknown standing agent role ${input.role}; use sessions agents.`);
             if(input.address||input.provider||input.project||input.peer||input.outside||input.resurrect||input.saved?.kind==='banked'||input.consult)
                 throw new Error('--role chooses the standing agent session and project; do not combine it with an address, provider, project, peer or banked work.');
-            const project=standingAgentProject(this.dependencies.owner.defaultCwd,agent.role);
-            if(!project)throw new Error(`The ${agent.role} agent project is unavailable on this machine.`);
+            standingLocation=await this.dependencies.owner.prepareProjectLocation(agent.project);
             const session=standingAgentSession(this.dependencies.owner.defaultCwd,agent.role);
             if(!session)standingRole=agent.role;
             input=session?{...input,role:undefined,address:sessionAddress(session)}
-                :{...input,role:undefined,provider:'auto',project:project.cwd,title:input.title??agent.description};
+                :{...input,role:undefined,provider:'auto',project:standingLocation.cwd,title:input.title??agent.description};
         }
         let routedFrom:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'}|null=null;
         if(input.routeMessageId!==undefined){
@@ -1495,11 +1498,10 @@ export class SessionCommunicationCoordinator {
             if (input.peer !== undefined && input.peer !== remote.peer) throw new Error('The address names a different peer than --peer.');
             if (input.resurrect) {
                 // Continue the peer session here, from its archived transcript, as a distinct session.
-                const owner = this.dependencies.owner;
-                const created = this.dependencies.peers!.resurrect(remote.peer, remote.address, {defaultCwd: owner.defaultCwd,
-                    createSession: (provider, metadata) => createNativeSession(provider, metadata as any), bind: (sessionId, provider, uuid) => bindSessionProvider(sessionId, provider, uuid)});
-                const local = getSessionById(created.sessionId)!;
-                input = {...input, peer: undefined, address: sessionAddress(local), resurrect: undefined};
+                const continued=await this.dependencies.owner.resurrect({
+                    clientActionId:`ask-resurrect:${hash(`${actor.session}:${actor.turn}:${actor.inputId??''}:${input.action_id}`)}`,
+                    address:input.address});
+                input = {...input, peer: undefined, address: continued.session.address, resurrect: undefined};
             } else input = {...input, peer: remote.peer, address: remote.address};
         }
         // The thread this request works for, decided here and recorded on the request, so its
@@ -1513,6 +1515,9 @@ export class SessionCommunicationCoordinator {
         if(input.return_to_requester!==undefined&&input.return_to_requester!==true)
             throw new Error('Requester returns must be explicitly enabled.');
         const title=normalizeSessionTitle(input.title);
+        let projectLocation=standingLocation;
+        if(input.provider&&input.provider!=='chatgpt'&&input.project&&!projectLocation)
+            projectLocation=await this.dependencies.owner!.prepareProjectLocation(input.project);
         if(input.saved) {
             if((!input.provider&&!requestedRole)||input.peer||(!requestedRole&&!title)||input.after?.length)
                 throw new Error('Saved work needs a standing role or a newly named local session with no prerequisites.');
@@ -1521,10 +1526,8 @@ export class SessionCommunicationCoordinator {
             if(input.saved.kind==='scheduled'&&(!Number.isFinite(input.saved.atMs)||input.saved.atMs!<=Date.now()))
                 throw new Error('Scheduled work needs a future time.');
             if(input.saved.repeatEveryMs!==undefined) {
-                const root=this.dependencies.owner.defaultCwd;
-                const target=input.project?sessionProject(root,input.project,{inside:true}):null;
-                if((!requestedRole&&!canOwnStandingWork(root,sessionMetadata(getSessionById(actor.session)!).cwd))
-                  ||!canOwnStandingWork(root,target?.cwd??sessionMetadata(getSessionById(this.address(input.address!).session)!).cwd))
+                const sourceSession=getSessionById(actor.session)!;
+                if((!requestedRole&&!await this.dependencies.owner.hasRegisteredProject(sourceSession))||!projectLocation)
                     throw new Error(STANDING_WORK_REFUSAL);
             }
         }
@@ -1712,7 +1715,7 @@ export class SessionCommunicationCoordinator {
             const firstInput={text:toChatgpt?chatgptText:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${history?.text?`${history.text}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(routedFrom)firstInput.text=`This request carries Tejas’s exact Inbox message ${routedFrom.messageId} into this session. Reply to this request; the answer appears under that message in its original thread.\n\n${firstInput.text}`;
             if(input.provider) {
-                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,escalationReason:input.escalationReason,project:input.project,title,summary:input.summary,smallTask:input.smallTask,outside:input.outside,onRunner:input.onRunner,standingRole,firstInput,saved:input.saved});
+                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,escalationReason:input.escalationReason,project:input.project,projectLocation,title,summary:input.summary,smallTask:input.smallTask,outside:input.outside,onRunner:input.onRunner,standingRole,firstInput,saved:input.saved});
                 target={session:created.session_id,channel:null,root:null,native:true};
             }
             if(input.saved&&requestedRole&&!input.provider){

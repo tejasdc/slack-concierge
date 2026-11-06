@@ -4,6 +4,8 @@ import {SessionOwner} from './session-owner';
 import {log} from './log';
 import {sharedCodexAppServerClient} from './codex-app-server-client';
 import {readClaudeHistory,readCodexHistory,readCodexHistoryWindow} from './provider-history';
+import {getSessionById} from './state';
+import {sessionMetadata} from './session-inputs';
 
 type Work={id:number;operation:'page'|'delta'|'prepare';sessionId:string;cwd:string;cursor:string|null;limit:number;after:string|null;
   want?:{dialogue:number;untilInput:boolean};thread?:string};
@@ -16,9 +18,14 @@ parentPort.on('message',async(input:Work)=>{
   try {
     // Codex activity tops up that conversation's kept window, so the next open reads it ready.
     if(input.operation==='prepare'){
-      if(!Number.isSafeInteger(input.id)||typeof input.thread!=='string'||!/^[A-Za-z0-9-]{8,80}$/.test(input.thread))
+      if(!Number.isSafeInteger(input.id)||typeof input.sessionId!=='string'||!/^concierge:[1-9][0-9]*$/.test(input.sessionId)
+        ||typeof input.thread!=='string'||!/^[A-Za-z0-9-]{8,80}$/.test(input.thread))
         throw new Error('INVALID_HISTORY_PAGE_WORK');
-      await readCodexHistoryWindow({sessionUuid:input.thread});
+      const sessionId=Number(input.sessionId.slice('concierge:'.length)),session=Number.isSafeInteger(sessionId)?getSessionById(sessionId):null;
+      const metadata=session?sessionMetadata(session):{};
+      await readCodexHistoryWindow({sessionUuid:input.thread,
+        ...(typeof (metadata as any).providerRunner==='string'?{runner:(metadata as any).providerRunner}:{}),
+        ...(typeof (metadata as any).providerAccount==='string'?{account:(metadata as any).providerAccount}:{})});
       parentPort!.postMessage({id:input.id,result:{prepared:true}});
       return;
     }
@@ -30,11 +37,16 @@ parentPort.on('message',async(input:Work)=>{
     const owner=new SessionOwner({wake(){},steer(){return false;},async stop(){return false;},available(){return false;},
       history:async(session,cursor,limit)=>{
         if(!session.agent_session_uuid)return null;
-        const options={sessionUuid:session.agent_session_uuid,cwd:input.cwd,cursor,limit,ownerSessionId:session.id};
+        const metadata=sessionMetadata(session);
+        const options={sessionUuid:session.agent_session_uuid,cwd:input.cwd,cursor,limit,ownerSessionId:session.id,
+          ...(typeof (metadata as any).providerRunner==='string'?{runner:(metadata as any).providerRunner}:{}),
+          ...(typeof (metadata as any).providerAccount==='string'?{account:(metadata as any).providerAccount}:{})};
         // The newest page of a window read is the conversation's kept window, not a listing.
         // A kept window that cannot be read or topped up falls back to the ordinary listing.
         if(session.provider_id==='codex'&&cursor===null&&input.operation==='page'&&input.want&&(input.want.dialogue||input.want.untilInput))
-          try{return await readCodexHistoryWindow({sessionUuid:session.agent_session_uuid,want:input.want});}
+          try{return await readCodexHistoryWindow({sessionUuid:session.agent_session_uuid,want:input.want,
+            ...(typeof (metadata as any).providerRunner==='string'?{runner:(metadata as any).providerRunner}:{}),
+            ...(typeof (metadata as any).providerAccount==='string'?{account:(metadata as any).providerAccount}:{})});}
           catch(error){log('warn','codex_history_window_unavailable',{session_id:session.id,error:String(error).slice(0,300)});}
         return session.provider_id==='claude-code'?readClaudeHistory(options):session.provider_id==='codex'?readCodexHistory(options):null;
       }},input.cwd);

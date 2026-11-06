@@ -17,6 +17,12 @@ assert.equal(leases.claim('ax41',['other']),null);
 const turn=leases.claim('ax41',['turn'])!;
 assert.equal(turn.epoch,1);
 assert.equal(leases.claim('ax41',['turn']),null,'A leased job is not claimed twice.');
+leases.enqueue({jobId:'turn-targeted',kind:'turn',payload:{targetRunner:'ax41'}});
+assert.equal(leases.claim('other',['turn']),null,'A different runner cannot claim the bound turn.');
+const targeted=leases.claim('ax41',['turn'])!;
+assert.equal(targeted.jobId,'turn-targeted');
+assert.equal(targeted.payload.targetRunner,'ax41');
+leases.finish('ax41',targeted.attemptId,1,'targeted-finish',{ok:true});
 
 // Events: contiguous prefix only, resends store nothing twice, the answer is the durable cursor.
 assert.equal(leases.appendEvents('ax41',turn.attemptId,1,[{seq:1,frame:'a'},{seq:2,frame:'b'},{seq:4,frame:'d'}]).ackedSeq,2);

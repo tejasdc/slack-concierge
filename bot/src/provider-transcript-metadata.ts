@@ -76,8 +76,7 @@ const THREAD_READ_WAIT_MS=2000;
  * App Server's thread/read is the last resort, bounded: for two long conversations it went
  * unanswered for 30 s on every call, and every history open waited on it (2026-10-30).
  */
-async function codexRolloutPath(thread:string,request:Request):Promise<string|null>{
-  const home=process.env.CODEX_HOME||join(homedir(),'.codex');
+async function codexRolloutPath(thread:string,request:Request,home=process.env.CODEX_HOME||join(homedir(),'.codex')):Promise<string|null>{
   const created=/^[0-9a-f]{8}-[0-9a-f]{4}-7/i.test(thread)?parseInt(thread.replace(/-/g,'').slice(0,12),16):NaN;
   if(Number.isFinite(created)){
     for(const offset of [0,-1,1]){
@@ -98,10 +97,10 @@ async function codexRolloutPath(thread:string,request:Request):Promise<string|nu
 }
 
 /** Exact thread/turn/item evidence; unavailable or conflicting metadata never invents a date. */
-export async function codexTranscriptTimestamps(thread:string,request:Request):Promise<Timestamps> {
+export async function codexTranscriptTimestamps(thread:string,request:Request,home?:string):Promise<Timestamps> {
   let owned=paths.get(request);if(!owned){owned=new Map();paths.set(request,owned);}
   let pending=owned.get(thread);
-  if(!pending){pending=codexRolloutPath(thread,request);
+  if(!pending){pending=codexRolloutPath(thread,request,home);
     owned.set(thread,pending);}
   const path=await pending;if(!path){owned.delete(thread);return new Map();}
   const key=JSON.stringify([thread,path]);

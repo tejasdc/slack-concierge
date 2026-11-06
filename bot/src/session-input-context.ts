@@ -1,13 +1,11 @@
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
 import { REQUEST_PROTOCOL } from './request-protocol';
 import { STILL_WAITING_MINUTES } from './request-liveness';
 
 // Provider children inherit the service's PATH, which does not include the operator's
 // ~/.local/bin, so a bare "router-actions.sh" is "command not found" for every agent.
-const ROUTER_ACTIONS = join(homedir(), '.local', 'bin', 'router-actions.sh');
-const CODEX_CLI = join(homedir(), '.local', 'bin', 'codex');
+const ROUTER_ACTIONS = '"$CONCIERGE_ROUTER_ACTIONS"';
+const CODEX_CLI = '"$CONCIERGE_CODEX_CLI"';
 
 export const SESSION_ROUTING_INSTRUCTIONS = [
   `The session tool is ${ROUTER_ACTIONS}; call it by that full path, because its folder is not on this shell's PATH. Every router-actions.sh command below means that path.`,

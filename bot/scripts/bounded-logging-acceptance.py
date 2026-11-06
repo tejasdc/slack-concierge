@@ -17,9 +17,10 @@ CHILD = ROOT / "scripts/bounded-logging-child.ts"
 
 
 def source_guard():
-    # This one-shot search helper's stdout is a JSON result protocol read by its parent.
+    # These one-shot helpers' stdout is a JSON result protocol read by their parent.
     # It is not an application log and must not acquire a newline or loss semantics.
-    protocol_outputs = {"presentation-search-read.ts": {"process.stdout.write"}}
+    protocol_outputs = {"presentation-search-read.ts": {"process.stdout.write"},
+                        "provider-fork-worker.ts": {"process.stdout.write"}}
     direct = re.compile(r"\bconsole\s*(?:\.\s*\w+|\[)|\bprocess\s*\.\s*(?:stdout|stderr)\s*\.\s*write\s*\(")
     checked = 0
     for path in sorted((ROOT / "src").rglob("*.ts")):

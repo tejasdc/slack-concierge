@@ -1,4 +1,4 @@
-import {relative} from 'node:path';
+import {basename,relative} from 'node:path';
 import {realpathSync} from 'node:fs';
 import {db,getSessionById,type SessionRow} from './state';
 import {sessionMetadata,updateSessionMetadata,type NativeSessionMetadata as SessionMetadata} from './session-inputs';
@@ -54,12 +54,32 @@ export function standingAgentForCwd(workspaceRoot:string,cwd:string|null|undefin
 
 export function standingAgentForSession(workspaceRoot:string,session:SessionRow) {
   const meta=sessionMetadata(session);
-  return meta.standingRole&&standingAgentForCwd(workspaceRoot,meta.cwd)?.role===meta.standingRole?meta.standingRole:null;
+  if(!meta.standingRole)return null;
+  if(typeof meta.providerRunner==='string'&&meta.providerRunner.trim()) {
+    const agent=standingAgent(meta.standingRole);
+    return agent&&meta.projectName===basename(agent.project)&&(!meta.projectPath||meta.projectPath==='')?agent.role:null;
+  }
+  return standingAgentForCwd(workspaceRoot,meta.cwd)?.role===meta.standingRole?meta.standingRole:null;
 }
 
 export function assertStandingAgentFolder(workspaceRoot:string,role:string,cwd:string|null|undefined) {
   const project=standingAgentProject(workspaceRoot,role);
   if(!project||cwd!==project.cwd)throw new Error(`The ${role} binding requires a session in its declared agent folder.`);
+}
+
+export function assertStandingAgentPlacement(workspaceRoot:string,role:string,meta:ReturnType<typeof sessionMetadata>) {
+  const agent=standingAgent(role);
+  if(!agent)throw new Error(`Unknown standing agent role ${role}; use sessions agents.`);
+  if(typeof meta.providerRunner==='string'&&meta.providerRunner.trim()) {
+    if(meta.projectName!==basename(agent.project)||meta.projectPath&&meta.projectPath!=='')
+      throw new Error(`The ${role} binding requires its declared project on its bound runner.`);
+    return;
+  }
+  assertStandingAgentFolder(workspaceRoot,role,meta.cwd);
+}
+
+export function assertStandingAgentSession(workspaceRoot:string,role:string,session:SessionRow) {
+  assertStandingAgentPlacement(workspaceRoot,role,sessionMetadata(session));
 }
 
 /** The target and every former holder change in one owner transaction. */
@@ -68,7 +88,7 @@ export function bindStandingAgentSession(workspaceRoot:string,role:string,sessio
     const agent=standingAgent(role);
     if(!agent)throw new Error(`Unknown standing agent role ${role}; use sessions agents.`);
     if(session.status==='archived')throw new Error('An archived session cannot hold a standing agent role.');
-    assertStandingAgentFolder(workspaceRoot,agent.role,sessionMetadata(session).cwd);
+    assertStandingAgentSession(workspaceRoot,agent.role,session);
     if(agent.role==='inbox'){
       const former=db.query(CURRENT_INBOX_ID_SQL).get() as {id:number}|null;
       const formerSession=former&&former.id!==session.id?getSessionById(former.id):null;
@@ -113,6 +133,16 @@ export const STANDING_WORK_REFUSAL =
   + 'Ask the workspace organizer to place a new project before creating one.';
 
 export function standingAgentSession(workspaceRoot:string,role:string):SessionRow|null {
+  const agent=standingAgent(role);
+  if(!agent)return null;
+  const bound=db.query(`SELECT * FROM sessions WHERE status!='archived'
+    AND json_extract(native_metadata_json,'$.standingRole')=? ORDER BY id DESC`).all(role) as SessionRow[];
+  const remote=bound.find(row=>{
+    const meta=sessionMetadata(row);
+    return typeof meta.providerRunner==='string'&&!!meta.providerRunner.trim()
+      &&meta.projectName===basename(agent.project)&&(!meta.projectPath||meta.projectPath==='');
+  });
+  if(remote)return remote;
   const project=standingAgentProject(workspaceRoot,role);
   return project?db.query(`SELECT * FROM sessions WHERE status!='archived'
     AND json_extract(native_metadata_json,'$.cwd')=?
@@ -127,8 +157,13 @@ function hasStandingAgentBinding(role:string):boolean {
 export function unboundJournalKeeperSession(workspaceRoot:string):SessionRow|null {
   // 2026-10-29: concierge:4571 is the known keeper until sessions agents bind journal-keeper has run.
   if(hasStandingAgentBinding('journal-keeper'))return null;
-  const project=standingAgentProject(workspaceRoot,'journal-keeper');
   const session=getSessionById(4571);
+  if(session&&session.status!=='archived'){
+    const meta=sessionMetadata(session),agent=standingAgent('journal-keeper');
+    if(typeof meta.providerRunner==='string'&&meta.providerRunner.trim()
+      &&meta.projectName===basename(agent!.project)&&(!meta.projectPath||meta.projectPath===''))return session;
+  }
+  const project=standingAgentProject(workspaceRoot,'journal-keeper');
   if(!project||!session||session.status==='archived')return null;
   return sessionMetadata(session).cwd===project.cwd?session:null;
 }
@@ -136,6 +171,15 @@ export function unboundJournalKeeperSession(workspaceRoot:string):SessionRow|nul
 export function unboundRepairAgentSession(workspaceRoot:string):SessionRow|null {
   // 2026-10-29: exact-title repair delivery ends once sessions agents bind concierge-repair has run.
   if(hasStandingAgentBinding('concierge-repair'))return null;
+  const agent=standingAgent('concierge-repair');
+  const remote=db.query(`SELECT * FROM sessions WHERE status!='archived'
+    AND json_extract(native_metadata_json,'$.title')=? ORDER BY id DESC`).all(REPAIR_AGENT_TITLE) as SessionRow[];
+  const runnerSession=remote.find(session=>{
+    const meta=sessionMetadata(session);
+    return typeof meta.providerRunner==='string'&&!!meta.providerRunner.trim()
+      &&meta.projectName===basename(agent!.project)&&(!meta.projectPath||meta.projectPath==='');
+  });
+  if(runnerSession)return runnerSession;
   const project=standingAgentProject(workspaceRoot,'concierge-repair');
   return project?db.query(`SELECT * FROM sessions WHERE status!='archived'
     AND json_extract(native_metadata_json,'$.cwd')=?

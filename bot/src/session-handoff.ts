@@ -13,6 +13,8 @@ import {humanChoseTopModel} from './model-escalation-custody';
 import {sessionAddress} from './session-address';
 import {takeInboxRouterRole} from './standing-agents';
 import {claudeConfigDir,locateClaudeTranscript} from './claude-transcript-watch';
+import {runnerMachineCall} from './runner-machine-calls';
+import {resolveRunnerProjectLocation} from './runner-project-location';
 
 const run=promisify(execFile);
 type Item={id:string;kind:'sent'|'owed'|'queued'|'watch'|'lab'|'worktree';ref:string;holder:string;[key:string]:unknown};
@@ -99,6 +101,33 @@ async function codexRollout(thread:string):Promise<string|null> {
 
 async function worktrees(sessionId:number):Promise<{items:Item[];omissions:string[]}> {
   const session=getSessionById(sessionId)!;const meta=sessionMetadata(session);
+  let runner=typeof meta.providerRunner==='string'?meta.providerRunner:null;
+  if(meta.providerRunner===undefined&&session.provider_id==='codex')runner=process.env.CONCIERGE_CODEX_RUNNER?.trim()||null;
+  if(meta.providerRunner===undefined&&session.provider_id==='claude-code'&&session.agent_session_uuid){
+    const prior=db.query(`SELECT execution.supervisor,attempt.runner FROM executions execution
+      LEFT JOIN runner_attempts attempt ON attempt.job_id='turn:'||execution.execution_id
+      WHERE execution.session_id=? AND execution.provider='claude-code'
+      ORDER BY execution.created_at_ms DESC,attempt.started_at_ms DESC LIMIT 1`).get(sessionId) as
+      {supervisor:string;runner:string|null}|null;
+    if(prior?.supervisor==='runner'){
+      if(!prior.runner)return {items:[],omissions:['The exact runner lease for this conversation is unavailable; worktrees were not inspected.']};
+      runner=prior.runner;
+    }
+  }
+  if(runner&&session.agent_session_uuid&&['codex','claude-code'].includes(session.provider_id)) {
+    try {
+      const location=await resolveRunnerProjectLocation(runner,meta);
+      if(!location.project)return {items:[],omissions:['This conversation has no registered runner project for worktree inspection.']};
+      const remote=await runnerMachineCall<{items:{path:string;branch:string;head:string;uncommittedFiles:number}[];transcriptAvailable:boolean}>(
+        runner,'projects.worktrees',{project:location.project,provider:session.provider_id as 'codex'|'claude-code',sessionUUID:session.agent_session_uuid,
+          account:typeof meta.providerAccount==='string'?meta.providerAccount:null});
+      return {items:remote.items.map(item=>({id:`worktree:${item.path}`,kind:'worktree',ref:item.path,holder:canonical(sessionId),
+        branch:item.branch,head:item.head,uncommittedFiles:item.uncommittedFiles})),
+        omissions:remote.transcriptAvailable?[]:['Provider transcript unavailable on its runner; worktree references were omitted.']};
+    } catch {
+      return {items:[],omissions:['The session runner is unavailable; runner worktrees could not be inspected.']};
+    }
+  }
   const roots=[meta.cwd,...(meta.additionalDirs??[])].filter((value):value is string=>typeof value==='string'&&!!value);
   const items:Item[]=[],omissions:string[]=[];
   let transcript:string|null=null;

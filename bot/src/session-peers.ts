@@ -487,7 +487,11 @@ export class SessionPeers {
    * provider's own resume by session UUID, fed the transcript copied into its local store.
    * The peer's session stays parked; this is a distinct session with `resurrection` lineage.
    */
-  resurrect(peer:string,address:string,options:{createSession:(provider:'claude-code'|'codex',metadata:Record<string,unknown>)=>{id:number};bind:(sessionId:number,provider:'claude-code'|'codex',uuid:string)=>void;defaultCwd:string}) {
+  async resurrect(peer:string,address:string,options:{createSession:(provider:'claude-code'|'codex',metadata:Record<string,unknown>)=>{id:number};
+    bind:(sessionId:number,provider:'claude-code'|'codex',uuid:string)=>void;defaultCwd:string;
+    prepare?:(input:{provider:'claude-code'|'codex';threadId:string;archived:{path:string;archivedAt:string};
+      projectName:string|null;projectPath:string|null})=>Promise<{cwd:string;project:string|null;projectName:string|null;projectPath:string;
+      providerRunner:string;providerAccount:string}>}) {
     this.client(peer);
     let tuple:any=null;try{tuple=JSON.parse(Buffer.from(address.slice(8),'base64url').toString());}catch{}
     const remote=Array.isArray(tuple)&&Number.isSafeInteger(tuple[1])?`concierge:${tuple[1]}`:null;
@@ -504,19 +508,27 @@ export class SessionPeers {
     if(!archived)throw new SessionOwnerError(`${peer}'s transcript for this session has not reached this instance's archive yet (it is pushed every few minutes); try again shortly or wait for ${peer}.`,409,'ARCHIVE_NOT_YET_SYNCED');
     if(view.projectNameTruncated||view.projectTruncated&&typeof view.projectName!=='string')throw new SessionOwnerError('The exact project identity has not reached this instance yet. Refresh this peer before resurrecting the session.',409,'PEER_PROJECT_IDENTITY_INCOMPLETE');
     const projectName=typeof view.projectName==='string'?view.projectName:typeof view.project==='string'?basename(view.project.replace(/\/+$/,'')):null;
-    const project=projectName?sessionProject(options.defaultCwd,projectName):null;
-    if(!project)throw new SessionOwnerError(`This instance has no registered project folder named ${projectName??'(unknown)'} to resurrect into.`,409,'PROJECT_UNAVAILABLE');
-    // Place the transcript where the provider's own resume finds it for this cwd.
-    let destination:string;
-    if(provider==='claude-code'){
-      const slug=project.cwd.replace(/[\/.]/g,'-');
-      destination=join(homedir(),'.claude','projects',slug,`${threadId}.jsonl`);
-    } else {
-      const day=archived.archivedAt.slice(0,10).split('-');
-      destination=join(homedir(),'.codex','sessions',day[0]!,day[1]!,day[2]!,basename(archived.path));
+    let location:{cwd:string;project:string|null;projectName:string|null;projectPath:string;providerRunner?:string;providerAccount?:string};
+    if(options.prepare)location=await options.prepare({provider,threadId,archived,projectName,
+      projectPath:typeof view.projectPath==='string'?view.projectPath:null});
+    else {
+      const project=projectName?sessionProject(options.defaultCwd,projectName):null;
+      if(!project)throw new SessionOwnerError(`This instance has no registered project folder named ${projectName??'(unknown)'} to resurrect into.`,409,'PROJECT_UNAVAILABLE');
+      // Local peers keep their provider home on this instance.
+      let destination:string;
+      if(provider==='claude-code'){
+        const slug=project.cwd.replace(/[\/.]/g,'-');
+        destination=join(homedir(),'.claude','projects',slug,`${threadId}.jsonl`);
+      } else {
+        const day=archived.archivedAt.slice(0,10).split('-');
+        destination=join(homedir(),'.codex','sessions',day[0]!,day[1]!,day[2]!,basename(archived.path));
+      }
+      if(!existsSync(destination)){mkdirSync(join(destination,'..'),{recursive:true,mode:0o700});copyFileSync(archived.path,destination);}
+      location={cwd:project.cwd,project:project.cwd,projectName:project.name,projectPath:''};
     }
-    if(!existsSync(destination)){mkdirSync(join(destination,'..'),{recursive:true,mode:0o700});copyFileSync(archived.path,destination);}
-    const created=options.createSession(provider,{origin:'reconstructed',purpose:view.purpose??'chat',title:`${view.title} (resurrected from ${peer})`,cwd:project.cwd,project:project.cwd,
+    const created=options.createSession(provider,{origin:'reconstructed',purpose:view.purpose??'chat',title:`${view.title} (resurrected from ${peer})`,cwd:location.cwd,project:location.project,
+      ...(location.providerRunner?{providerRunner:location.providerRunner,providerAccount:location.providerAccount,
+        projectName:location.projectName,projectPath:location.projectPath}:{providerRunner:null}),
       ...(view.model?{model:view.model}:{}),...(view.reasoningEffort?{reasoningEffort:view.reasoningEffort}:{}),
       resurrection:{peer,sessionId:presented,address:`${peer}/${address}`,threadId,archivedAt:archived.archivedAt,archivePath:archived.path,resurrectedAt:new Date(this.now()).toISOString()}});
     options.bind(created.id,provider,threadId);

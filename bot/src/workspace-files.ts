@@ -147,3 +147,18 @@ export function unopenableLinks(text: string, workspaceRoot: string): Unopenable
   }
   return refused;
 }
+
+/** The same link vocabulary judged by a machine supplied reader, such as the runner's project file call. */
+export async function unopenableLinksWithReader(text:string,read:(path:string)=>Promise<unknown>):Promise<UnopenableLink[]> {
+  const seen=new Set<string>(),refused:UnopenableLink[]=[];
+  for(const match of text.replace(WEB_ADDRESS,' ').matchAll(LINKED_PATH)) {
+    const path=match[0].replace(/[.,;:!?]+$/,'');
+    if(seen.has(path)||!VIEWABLE_EXTENSIONS[path.slice(path.lastIndexOf('.')).toLowerCase()])continue;
+    seen.add(path);
+    try{await read(path);}catch(error){
+      if(error instanceof WorkspaceFileError)refused.push({path,code:error.code,reason:error.message});
+      else refused.push({path,code:'FILE_UNAVAILABLE',reason:error instanceof Error?error.message:'This file is unavailable.'});
+    }
+  }
+  return refused;
+}

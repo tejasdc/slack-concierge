@@ -19,6 +19,7 @@ import { log } from "./log";
 import { quietOnlyAdmits } from './quiet-hours';
 import { OWNER_DRAIN_WITHDRAWAL_REASON } from './runner-leases';
 import {CLAUDE_ALLOWANCE_HOLD_UNTIL_MS} from './claude-allowance-hold';
+import {CodexAdmissionHolds} from './codex-admission-holds';
 
 // Only the canonical writer owns schema upgrades. Read executors open a physically read-only
 // connection and must never run migration code during module initialization.
@@ -30,6 +31,11 @@ db.exec(`CREATE TABLE IF NOT EXISTS provider_usage_cache (
   generation INTEGER NOT NULL DEFAULT 0,
   revision INTEGER NOT NULL DEFAULT 0,
   limits_json TEXT NOT NULL DEFAULT '{}'
+)`);
+db.exec(`CREATE TABLE IF NOT EXISTS codex_admission_holds (
+  holder TEXT PRIMARY KEY,
+  recovery_json TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL
 )`);
 // Google joins through an additive table: deployment never rebuilds the live provider cache.
 db.exec(`CREATE TABLE IF NOT EXISTS antigravity_usage_cache (
@@ -439,7 +445,10 @@ CREATE TABLE IF NOT EXISTS pending_sign_ins (
   provider           TEXT PRIMARY KEY,
   owner_instance_id  TEXT NOT NULL,
   started_at_ms      INTEGER NOT NULL,
-  expires_at_ms      INTEGER NOT NULL
+  expires_at_ms      INTEGER NOT NULL,
+  runner_name        TEXT,
+  operation_id       TEXT,
+  profile_id         TEXT
 );
 
 CREATE TABLE IF NOT EXISTS background_job_status (
@@ -773,6 +782,9 @@ CREATE INDEX IF NOT EXISTS executions_open ON executions(turn_id) WHERE state IN
 CREATE INDEX IF NOT EXISTS executions_turn ON executions(turn_id,dispatch_attempt);`);
 addColumn('executions','adopted_live','adopted_live INTEGER NOT NULL DEFAULT 0');
 addColumn('executions','host_digest','host_digest TEXT');
+addColumn('pending_sign_ins','runner_name','runner_name TEXT');
+addColumn('pending_sign_ins','operation_id','operation_id TEXT');
+addColumn('pending_sign_ins','profile_id','profile_id TEXT');
 db.exec("CREATE INDEX IF NOT EXISTS executions_survival ON executions(provider,supervisor) WHERE adopted_live=1 AND state='released'");
 db.transaction(() => {
 migrateLegacyCodexRemoteMirrorEvents();
@@ -1215,12 +1227,14 @@ export function stopProcessInstance(instanceId: string) {
 }
 
 /** A sign-in he has started is now waiting; nothing may be restarted out from under it. */
-export function recordPendingSignIn(provider: string, ownerInstanceId: string, expiresAtMs: number) {
-  db.query(`INSERT INTO pending_sign_ins (provider, owner_instance_id, started_at_ms, expires_at_ms)
-    VALUES (?, ?, ?, ?)
+export function recordPendingSignIn(provider: string, ownerInstanceId: string, expiresAtMs: number,
+  runner?: { runner: string; operationId: string; profileId?: string | null }) {
+  db.query(`INSERT INTO pending_sign_ins (provider, owner_instance_id, started_at_ms, expires_at_ms, runner_name, operation_id, profile_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(provider) DO UPDATE SET owner_instance_id=excluded.owner_instance_id,
-      started_at_ms=excluded.started_at_ms, expires_at_ms=excluded.expires_at_ms`)
-    .run(provider, ownerInstanceId, Date.now(), expiresAtMs);
+      started_at_ms=excluded.started_at_ms, expires_at_ms=excluded.expires_at_ms,
+      runner_name=excluded.runner_name,operation_id=excluded.operation_id,profile_id=excluded.profile_id`)
+    .run(provider, ownerInstanceId, Date.now(), expiresAtMs, runner?.runner ?? null, runner?.operationId ?? null, runner?.profileId ?? null);
 }
 
 export function clearPendingSignIn(provider: string) {
@@ -1230,6 +1244,16 @@ export function clearPendingSignIn(provider: string) {
 /** Only sign-ins that could still be finished; an expired one holds nothing back. */
 export function listPendingSignIns(nowMs = Date.now()): Array<{ provider: string; owner_instance_id: string; started_at_ms: number; expires_at_ms: number }> {
   return db.query("SELECT * FROM pending_sign_ins WHERE expires_at_ms > ? ORDER BY provider").all(nowMs) as any[];
+}
+
+/** A runner's durable operation identity, restored after the owner process restarts. */
+export function pendingRunnerSignIn(provider: string, nowMs = Date.now()):
+  { runner: string; operationId: string; profileId: string | null; expiresAtMs: number } | null {
+  const row = db.query(`SELECT runner_name,operation_id,profile_id,expires_at_ms FROM pending_sign_ins
+    WHERE provider=? AND expires_at_ms>?`).get(provider, nowMs) as
+    {runner_name:string|null;operation_id:string|null;profile_id:string|null;expires_at_ms:number}|null;
+  return row?.runner_name&&row.operation_id
+    ?{runner:row.runner_name,operationId:row.operation_id,profileId:row.profile_id,expiresAtMs:row.expires_at_ms}:null;
 }
 
 export function clearAbandonedDrain(isAlive: (identity: { pid: number; bootId: string; startTicks: string }) => boolean) {
@@ -4163,6 +4187,7 @@ export function requeueProvenUnsentNativeChatGptTurn(input: {
 export function requeueOrphanedPreAdmissionTurn(
   turnId: number,
   ownerInstanceId: string | null,
+  nextAttemptMs = 0,
 ): boolean {
   return db.transaction(() => {
     const turn = db.query(`
@@ -4191,7 +4216,7 @@ export function requeueOrphanedPreAdmissionTurn(
       UPDATE turns
       SET status='queued', owner_instance_id=NULL, ended_at=NULL,
           dispatch_failure_class=CASE WHEN saved_kind='banked' THEN NULL ELSE 'backoff' END,
-          dispatch_next_attempt_ms=CASE WHEN saved_kind='banked' THEN ? ELSE 0 END,
+          dispatch_next_attempt_ms=CASE WHEN saved_kind='banked' THEN ? ELSE ? END,
           saved_account=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_account END,
           saved_window=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_window END,
           saved_boundary_ms=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_boundary_ms END,
@@ -4202,7 +4227,7 @@ export function requeueOrphanedPreAdmissionTurn(
           status_projection_parked_at=NULL
       WHERE id=? AND status='running' AND owner_instance_id IS ?
         AND stop_requested_at IS NULL AND provider_admission_intended_at IS NULL
-    `).run(Date.now()+3*60_000, RETRYING_PROVIDER_TURN_STATUS_TEXT, turnId, ownerInstanceId);
+    `).run(Date.now()+3*60_000, nextAttemptMs, RETRYING_PROVIDER_TURN_STATUS_TEXT, turnId, ownerInstanceId);
     if (changed.changes !== 1) return false;
     if (turn.projection_mode === "agent" && turn.progress_stream_state === "starting" && !turn.progress_stream_ts) {
       db.query("DELETE FROM agent_progress_messages WHERE turn_id=? AND creation_state='pending'").run(turnId);
@@ -5504,16 +5529,29 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
     AND session.provider_id IN (SELECT value FROM json_each(?))))
   AND NOT (session.provider_id='codex' AND ?=1)`;
 
-// Set only while Codex's App Server is being restarted (provider-activation.ts): a Codex turn
-// claimed in that window would start on a server that is about to stop. In-process on purpose: the
-// restart runs in this process, and a restart of this process ends the hold with it.
-let codexAdmissionHeld=false;
-export function holdCodexAdmission(held:boolean){codexAdmissionHeld=held;if(!held)executionChanged();}
+// Runner replacements survive an owner restart, so their admission holders are restored from the
+// ledger and reconciled asynchronously before they can release queued Codex turns.
+const codexAdmissionHolders=new CodexAdmissionHolds();
+for(const row of db.query('SELECT holder FROM codex_admission_holds').all() as {holder:string}[])
+  codexAdmissionHolders.set(row.holder,true);
+export type CodexAdmissionRecovery={kind:'runner-activation';runner:string;account:string;operationId:string}|{kind:'runner-rehome';runner:string};
+export function holdCodexAdmission(holder:string,held:boolean,recovery?:CodexAdmissionRecovery){
+  if(held&&recovery){
+    db.query('INSERT INTO codex_admission_holds(holder,recovery_json,created_at_ms) VALUES(?,?,?) ON CONFLICT(holder) DO UPDATE SET recovery_json=excluded.recovery_json')
+      .run(holder,JSON.stringify(recovery),Date.now());
+  }
+  const changed=codexAdmissionHolders.set(holder,held);
+  if(!held){db.query('DELETE FROM codex_admission_holds WHERE holder=?').run(holder);if(changed)executionChanged();}
+}
+export function codexAdmissionRecoveryHolds():Array<{holder:string;recovery:CodexAdmissionRecovery}>{
+  return (db.query('SELECT holder,recovery_json FROM codex_admission_holds').all() as {holder:string;recovery_json:string}[])
+    .flatMap(row=>{try{const recovery=JSON.parse(row.recovery_json);return recovery&&typeof recovery.runner==='string'?[{holder:row.holder,recovery}]:[];}catch{return [];}});
+}
 
 function claimableQueuedTurnParameters(nowMs:number,activeSessionIds:readonly number[],survivable:ReturnType<typeof survivableRunKinds>|null) {
   const quietSettings=db.query('SELECT quiet_start_hour,quiet_end_hour,time_zone FROM saved_work_settings WHERE singleton=1').get() as {quiet_start_hour:number;quiet_end_hour:number;time_zone:string};
   return [nowMs,CLAUDE_ALLOWANCE_HOLD_UNTIL_MS,nowMs,nowMs,quietOnlyAdmits(nowMs,quietSettings)?1:0,nowMs,nowMs,nowMs,nowMs,JSON.stringify(activeSessionIds),nowMs,
-    survivable ? 1 : 0,JSON.stringify(survivable?.providers ?? []),codexAdmissionHeld ? 1 : 0] as const;
+    survivable ? 1 : 0,JSON.stringify(survivable?.providers ?? []),codexAdmissionHolders.isHeld ? 1 : 0] as const;
 }
 
 function currentClaimSurvivability() {
