@@ -611,6 +611,7 @@ export async function refreshProviderAccountUsage(): Promise<void> {
     try {
     const runner=providerRunnerTarget(provider);
       let usage:ProviderUsage;
+      let runnerIdentityConfirmed=true;
       if(runner){
         const readings=await runnerMachineCall<Record<string,ProviderUsage>>(runner,'accounts.readings',{},100_000);
         const remote=readings?.[provider];
@@ -620,8 +621,9 @@ export async function refreshProviderAccountUsage(): Promise<void> {
         try {
           const selected=provider==='claude-code'?selectedClaudeHome()?.label:null;
           const identity=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider,...(selected?{account:selected}:{})});
-          setRunnerAccountInUse(provider,identity&&typeof identity.id==='string'&&typeof identity.label==='string'?identity:null);
-        } catch { setRunnerAccountInUse(provider,null); }
+          runnerIdentityConfirmed=!!identity&&typeof identity.id==='string'&&typeof identity.label==='string';
+          setRunnerAccountInUse(provider,runnerIdentityConfirmed?identity:null);
+        } catch { runnerIdentityConfirmed=false;setRunnerAccountInUse(provider,null); }
       }else usage=await read();
       // The provider's source time chooses between two observations for the same label.
       // A fresh peer reading may replace a stale local cache; a fresh local one stays local.
@@ -661,6 +663,7 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       const activeWindows=current?includedAllowanceWindows(provider,current,null):[];
       const activeHasRoom=!!current && accountReadingFresh(provider,usage,current,Date.now(),undefined,null) && activeWindows.length>0
         && accountCanTakeWork(provider,current,null)
+        &&(provider!=='codex'||runnerIdentityConfirmed)
         &&(provider!=='claude-code'||!claudeAccountCachedReset(current.label,null))
         &&(provider!=='codex'||!cachedUsageLimit(usageAttempt('codex',undefined,current.label)));
       // A percentage drop cannot identify which window caused a model-specific refusal.

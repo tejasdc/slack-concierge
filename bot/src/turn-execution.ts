@@ -617,17 +617,19 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     runningClaudeModel=claudeLaunchModel;
     const remoteClaudeRunner=input.providerId==='claude-code'?input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER?.trim()||null:null;
     const remoteGoogleRunner=input.providerId==='antigravity'?input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER?.trim()||null:null;
-    if(remoteClaudeRunner&&providerAccountUsage('claude-code')?.sourceRunner!==remoteClaudeRunner){
-      void scheduleProviderAccountUsageRefresh().catch(()=>{});
+    if(remoteClaudeRunner&&!input.adopted&&providerAccountUsage('claude-code')?.sourceRunner!==remoteClaudeRunner){
       throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,
         accountReadingWait:true,
         message:`Claude was placed on runner ${remoteClaudeRunner}, but the owner's saved Claude allowance reading is not from that runner. This unsent turn will retry after the owner reads that runner's allowance.`});
     }
+    const adoptedClaudeAccount=input.boundAccount?.account??previousClaudeAccount;
     let claudeChoice=input.providerId==='claude-code'
-      ?input.boundAccount?{...input.boundAccount,because:'spending-this-window' as const,expected:input.boundAccount.account,selectionRevision:sessionMetadata(input.session).claudeSelectionRevision??0}
+      ?input.adopted?(adoptedClaudeAccount?{account:adoptedClaudeAccount,home:input.boundAccount?.home??null,because:'spending-this-window' as const,expected:adoptedClaudeAccount,
+          selectionRevision:sessionMetadata(input.session).claudeSelectionRevision??0}:null)
+      :input.boundAccount?{...input.boundAccount,because:'spending-this-window' as const,expected:input.boundAccount.account,selectionRevision:sessionMetadata(input.session).claudeSelectionRevision??0}
         :chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0,input.turnId,claudeLaunchModel,warmClaudeCacheAccount)
       :null;
-    if(remoteClaudeRunner){
+    if(remoteClaudeRunner&&!input.adopted){
       if(!claudeChoice)throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,
         message:`No cached Claude account choice is available for runner ${remoteClaudeRunner}; the turn remains held until owner account readings are available.`});
       let validation:{available:boolean;resolution:string}|null=null;
@@ -641,24 +643,39 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     runningClaudeAccount=input.providerId==='claude-code'
       ?(remoteClaudeRunner?claudeChoice?.account??null
         :claudeChoice?.account??currentAccount('claude-code')?.label??null):null;
-    if(remoteClaudeRunner&&!runningClaudeAccount)throw new Error(`Runner ${remoteClaudeRunner} could not identify a signed-in Claude account.`);
+    if(remoteClaudeRunner&&!input.adopted&&!runningClaudeAccount)throw new Error(`Runner ${remoteClaudeRunner} could not identify a signed-in Claude account.`);
     const savedGoogleAccount=sessionMetadata(input.session).providerAccount;
-    const remoteGoogleIdentity=remoteGoogleRunner
-      ?await runnerMachineCall<{id:string;label:string}|null>(remoteGoogleRunner,'accounts.identity',{provider:'antigravity'}):null;
-    if(remoteGoogleRunner&&savedGoogleAccount&&remoteGoogleIdentity?.label!==savedGoogleAccount)
+    let remoteGoogleIdentity:{id:string;label:string}|null=null;
+    if(remoteGoogleRunner&&!input.adopted){
+      try{remoteGoogleIdentity=await runnerMachineCall<{id:string;label:string}|null>(remoteGoogleRunner,'accounts.identity',{provider:'antigravity'},45_000);}
+      catch(error){
+        throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,accountReadingWait:true,
+          message:`Runner ${remoteGoogleRunner} could not read its Google account before this turn started: ${error instanceof Error?error.message:String(error)}`});
+      }
+      if(!remoteGoogleIdentity){
+        throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,accountReadingWait:true,
+          message:`Runner ${remoteGoogleRunner} has not identified its Google account; this unsent turn waits for a fresh account reading.`});
+      }
+    }
+    if(remoteGoogleRunner&&!input.adopted&&savedGoogleAccount&&remoteGoogleIdentity?.label!==savedGoogleAccount)
       throw new Error(`Runner ${remoteGoogleRunner} is signed in to a different Google account than this conversation; refusing to resume it under another identity.`);
     const runningGoogleAccount=input.providerId==='antigravity'
       ?savedGoogleAccount??remoteGoogleIdentity?.label??null:null;
-    if(remoteGoogleRunner&&!runningGoogleAccount)throw new Error(`Runner ${remoteGoogleRunner} could not identify a signed-in Google account.`);
+    if(remoteGoogleRunner&&!input.adopted&&!runningGoogleAccount)throw new Error(`Runner ${remoteGoogleRunner} could not identify a signed-in Google account.`);
     if(input.providerId==='codex'){
       const metadata=sessionMetadata(input.session);
       const runner=metadata.providerAccount!==undefined
         ?metadata.providerRunner??null:codexRelayRunner();
-      const identity=metadata.providerAccount!==undefined
+      let identity:{label:string}|null=metadata.providerAccount!==undefined
         ?{label:metadata.providerAccount}
-        :runner
-          ?await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider:'codex'})
-          :currentAccount('codex');
+        :runner?null:currentAccount('codex');
+      if(runner&&metadata.providerAccount===undefined&&!input.adopted){
+        try{identity=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider:'codex'});}
+        catch(error){
+          throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,accountReadingWait:true,
+            message:`Runner ${runner} could not read its Codex account before this turn started: ${error instanceof Error?error.message:String(error)}`});
+        }
+      }
       runningCodexAccount=identity?.label??null;
       runningCodexRunner=metadata.providerAccount!==undefined?metadata.providerRunner??null:runner;
     }
@@ -1409,6 +1426,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
               : `Status: parked - provider dispatch failed; input preserved as turn ${input.turnId} until resumed`,
           });
       if (!preserved) throw new Error("Provider dispatch failure could not be durably preserved.");
+      if(runnerAccountReadingWait)void scheduleProviderAccountUsageRefresh().catch(()=>{});
       preserveWorkingReaction = retryable;
       if (input.presentation !== "native") {
         if (!useAgentExperience) {
