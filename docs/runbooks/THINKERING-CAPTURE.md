@@ -50,7 +50,8 @@ thnkr.ing keeps at `THINKERING_AGENT_TEST_KEY_FILE`), `notification-reply` (thnk
 as `X-Concierge-Agent-Source: <input> <run>` on the drop-off and thnkr.ing, and as
 `source.metadata.agentSource` or `agentSource` at the owner. The owner (`agentTestSource`)
 records the capture with origin agent and that source, shows it in the Inbox under the agent's
-name and starts no Inbox turn; a reply is an agent input to its session. Naming a run can only
+name and starts no Inbox turn; a reply is an agent input to its session. The named run must be
+the run assigned to that exact accepted input. Naming a run can only
 label something as an agent's, never as his. thnkr.ing refuses its agent test key without the
 header.
 

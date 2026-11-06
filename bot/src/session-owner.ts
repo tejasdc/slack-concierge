@@ -573,7 +573,8 @@ export function agentTestSource(value:unknown):{inputId:string;runId:string;sess
   const named=object(value);only(named,['inputId','runId']);
   const input=typeof named.inputId==='string'?getAcceptedSessionInput(named.inputId):null;
   const turn=input&&typeof named.runId==='string'?db.query('SELECT id FROM turns WHERE session_id=? AND native_run_id=?').get(input.session_id,named.runId) as {id:number}|null:null;
-  if(!input||!turn)throw new SessionOwnerError('An agent test delivery must name its own accepted input and run.',403,'AGENT_SOURCE_UNKNOWN');
+  if(!input||!turn||input.turn_id!==turn.id)
+    throw new SessionOwnerError('An agent test delivery must name the run that accepted its source input.',403,'AGENT_SOURCE_UNKNOWN');
   return {inputId:input.id,runId:named.runId as string,sessionId:input.session_id};
 }
 export function readInputExecution(input:AcceptedSessionInput) {
