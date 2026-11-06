@@ -82,6 +82,7 @@ export type GrafanaRecoveryEvidence = {
   /** Grafana's rule and state-history instance whose Normal transition is the recovery. */
   ruleUid: string; stateFingerprint: string;
 };
+export type GrafanaFiringEvidence = { fingerprint: string; condition: string; startsAt: string; ruleUid: string };
 export type GrafanaRecoveryResult = { status: number; outcome: string; starts_at?: string; ends_at?: string | null; revision?: number; episode_status?: string };
 
 function isoInstant(value: unknown) {
@@ -164,6 +165,36 @@ export class GrafanaAlerts {
   firing() {
     return this.options.db.query(`SELECT fingerprint,condition,starts_at,revision,delivery_status,channel FROM grafana_alerts
       WHERE status='firing' ORDER BY starts_at LIMIT 500`).all() as Pick<GrafanaAlertRow, "fingerprint" | "condition" | "starts_at" | "revision" | "delivery_status" | "channel">[];
+  }
+  /**
+   * Alertmanager deduplicates by the set of firing fingerprints, so when a recovery is lost and the
+   * same alert fires again it sends nothing new until its repeat interval (a day here). The outside
+   * reconciler submits the episode Grafana's Alertmanager currently holds; it is applied exactly as
+   * a delivered firing notification. A still-open older episode must be settled first so its repair
+   * notice is resolved rather than silently replaced.
+   */
+  reconcileFiring(input: GrafanaFiringEvidence): GrafanaRecoveryResult {
+    const startsAt = isoInstant(input.startsAt);
+    if (typeof input.fingerprint !== "string" || !/^[a-f0-9]{16,64}$/.test(input.fingerprint)
+        || typeof input.condition !== "string" || !Object.hasOwn(GRAFANA_CONDITIONS, input.condition)
+        || !startsAt || Date.parse(startsAt) > Date.now() + 60_000
+        || typeof input.ruleUid !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(input.ruleUid)) {
+      return { status: 422, outcome: "invalid_firing_evidence" };
+    }
+    const row = this.row(input.fingerprint);
+    if (row && row.condition !== input.condition) return { status: 409, outcome: "condition_mismatch" };
+    if (row && row.starts_at === startsAt) {
+      return row.status === "firing"
+        ? { status: 200, outcome: "already_firing", starts_at: row.starts_at, revision: row.revision }
+        : { status: 409, outcome: "episode_already_resolved", starts_at: row.starts_at, episode_status: row.status };
+    }
+    if (row && startsAt < row.starts_at) return { status: 409, outcome: "episode_not_newer", starts_at: row.starts_at, episode_status: row.status };
+    if (row && row.status === "firing") return { status: 409, outcome: "previous_episode_open", starts_at: row.starts_at, episode_status: row.status };
+    this.accept([{ fingerprint: input.fingerprint, condition: input.condition, startsAt, endsAt: null, status: "firing", omitted: row?.omitted ?? 0 }]);
+    const current = this.row(input.fingerprint)!;
+    this.observe("grafana_alert_firing_reconciled", { fingerprint: current.fingerprint, condition: current.condition,
+      starts_at: current.starts_at, revision: current.revision, rule_uid: input.ruleUid });
+    return { status: 200, outcome: "firing_settled", starts_at: current.starts_at, revision: current.revision };
   }
   /**
    * Grafana retries a refused notification only briefly and never resends a recovery, so a
