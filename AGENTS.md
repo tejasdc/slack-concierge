@@ -70,6 +70,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md#claude-code-started-by-an-agent).
 - Shared Codex turn recovery and its exact identity boundary follow
   [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#codex-provider-turn-reconciliation).
+- Agent session command paths use each machine's installed wrapper, never a release's
+  helper directory; see [runners](docs/architecture/RUNNERS.md#agent-session-commands).
 - Agent-started top-model choices and helper defaults follow [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#delegation-and-escalation);
   model and helper call shares are in [usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
 
