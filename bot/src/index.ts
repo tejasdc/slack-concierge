@@ -4147,29 +4147,34 @@ async function drainAndStop(signal: string) {
   await stopRequestSurface("routed_requests", () => routedRequests.stop());
   await stopRequestSurface("session_execution_host", () => sessionExecutionHost.stop());
   log("info", "service_drain_request_surfaces_closed", { signal, active_turns: activeTurnCount, instance_id: instanceId });
+  const stopDrainStep = async (step: string, stop: () => Promise<unknown>) => {
+    const startedAt = performance.now();
+    try { await stop(); }
+    finally { log("info", "service_drain_step_finished", { signal, step, duration_ms: Math.round(performance.now() - startedAt), instance_id: instanceId }); }
+  };
   if (deploymentEventServer) {
     const server = deploymentEventServer;
     deploymentEventServer = null;
-    await server.stop(false);
+    await stopDrainStep("deployment_event_server", () => server.stop(false));
   }
-  if (captureDeliveryWorker) await captureDeliveryWorker.stop();
-  if (humanCommandWorker) await humanCommandWorker.stop();
-  await grafanaAlerts?.stop();
-  if (codexRemoteObserver) await codexRemoteObserver.stop();
-  if (codexSessionObserver) await codexSessionObserver.stop();
-  try { await app.stop(); } catch (error) { log("warn", "slack_app_stop_failed", { signal, error: error instanceof Error ? error.message : String(error) }); }
+  if (captureDeliveryWorker) await stopDrainStep("capture_delivery", () => captureDeliveryWorker!.stop());
+  if (humanCommandWorker) await stopDrainStep("human_commands", () => humanCommandWorker!.stop());
+  if (grafanaAlerts) await stopDrainStep("grafana_alerts", () => grafanaAlerts!.stop());
+  if (codexRemoteObserver) await stopDrainStep("codex_remote_observer", () => codexRemoteObserver!.stop());
+  if (codexSessionObserver) await stopDrainStep("codex_session_observer", () => codexSessionObserver!.stop());
+  try { await stopDrainStep("slack_app", () => app.stop()); } catch (error) { log("warn", "slack_app_stop_failed", { signal, error: error instanceof Error ? error.message : String(error) }); }
   if (turnsThatEndWithThisProcess() > 0 || activeInputHandlerCount > 0) {
-    await new Promise<void>((resolve) => { resolveDrained = resolve; });
+    await stopDrainStep("local_turns", () => new Promise<void>((resolve) => { resolveDrained = resolve; }));
   }
   const activeDeploymentWork = deploymentWorkRunner.active();
-  if (activeDeploymentWork) await activeDeploymentWork;
+  if (activeDeploymentWork) await stopDrainStep("deployment_work", () => activeDeploymentWork);
   canvasCommitWatcher?.close();
   todoFileWatcher?.close();
-  await todoProjectionManager?.drain();
-  await closeSharedCodexAppServerClient();
+  if (todoProjectionManager) await stopDrainStep("todo_projection", () => todoProjectionManager!.drain());
+  await stopDrainStep("shared_codex_client", () => closeSharedCodexAppServerClient());
   // Last, as the local App Server socket is: a Codex turn relayed to a runner keeps its connection
   // through the drain, and the next owner follows it as it does after any restart.
-  await routedRequestServer?.closeRelays();
+  if (routedRequestServer) await stopDrainStep("runner_relays", () => routedRequestServer!.closeRelays());
   stopProcessInstance(instanceId);
   log("info", "service_drain_complete", { signal, instance_id: instanceId });
   process.exit(0);
