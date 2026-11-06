@@ -949,7 +949,9 @@ additional hook runs the same current decision before its pinned semantic pass.
 The private entrance creates fresh temporary ledger and capture paths
 before executing any requested code and applies the same Linux mount isolation as release
 checks. Use the exact installed command printed by the guard, followed by `--` and the
-check command. Router API commands and ordinary shell inspection remain available outside
+check command. For that exact entrance the raw-copy check reads only the typed command,
+not the source of the scripts it runs: fixtures name live paths and copy commands as test
+data, and the hidden live mounts, not text matching, keep their code from the ledger. Router API commands and ordinary shell inspection remain available outside
 it; inside it Concierge is hidden, so router commands and fresh Claude launches refuse at
 once with that explanation instead of waiting for a restart. This
 closes the observed old archive-check import path; shell text checks are not a security
