@@ -236,6 +236,14 @@ const routedAuthorValid=(value:unknown,kind:unknown)=>{
   if(value.correction!==undefined&&(!record(value.correction)||typeof value.correction.reason!=='string'||typeof value.correction.at!=='string'))return false;
   return true;
 };
+const receivedRoutedFrom=(route:Record<string,any>,peer:string)=>{
+  const session=(value:Record<string,any>)=>({...value,id:receiveSessionFromPeer(value.id,peer)});
+  const author=route.author as Record<string,any>|undefined;
+  return {...route,sessionId:receiveSessionFromPeer(route.sessionId,peer),
+    ...(author?{author:{...author,...(author.session?{session:session(author.session)}:{}),
+      ...(author.originatingHuman?.session?{originatingHuman:{...author.originatingHuman,session:session(author.originatingHuman.session)}}:{}),
+      ...(author.quoted?.session?{quoted:{...author.quoted,session:session(author.quoted.session)}}:{})}}:{})};
+};
 /** The request ID is a function of the source input and action, so a retry after a lost response reaches the same peer row. */
 export const requestIdFor=(sourceInputId:string,actionId:string)=>{const h=hash(`peer-request:${sourceInputId}:${actionId}`);return `${h.slice(0,8)}-${h.slice(8,12)}-4${h.slice(13,16)}-8${h.slice(17,20)}-${h.slice(20,32)}`;};
 
@@ -1483,7 +1491,7 @@ export class SessionPeers {
       ||(input.forwardedReply.messageThreadRootId!==undefined&&typeof input.forwardedReply.messageThreadRootId!=='string')
       ||(input.forwardedReply.messageThreadRequestId!==undefined&&typeof input.forwardedReply.messageThreadRequestId!=='string')))
       throw new SessionOwnerError('A forwarded thread reply needs its exact source input and topic.');
-    if(input.routedFrom!==undefined&&(typeof input.routedFrom?.messageId!=='string'||typeof input.routedFrom?.topicId!=='string'||typeof input.routedFrom?.originalText!=='string'||typeof input.routedFrom?.originalCreatedAt!=='string'||!['human','agent','service','unknown'].includes(input.routedFrom?.authorKind)))
+    if(input.routedFrom!==undefined&&(typeof input.routedFrom?.sessionId!=='string'||typeof input.routedFrom?.messageId!=='string'||typeof input.routedFrom?.topicId!=='string'||typeof input.routedFrom?.originalText!=='string'||typeof input.routedFrom?.originalCreatedAt!=='string'||!['human','agent','service','unknown'].includes(input.routedFrom?.authorKind)))
       throw new SessionOwnerError('A routed message needs its exact source and original words.');
     if(input.routedFrom?.author!==undefined&&!routedAuthorValid(input.routedFrom.author,input.routedFrom.authorKind))
       throw new SessionOwnerError('A routed message must preserve one valid source author.',400,'ROUTED_AUTHOR_INVALID');
@@ -1546,6 +1554,7 @@ export class SessionPeers {
       ...(machineNeed?{machineNeed}:{}),
       ...(typeof input.message==='string'&&input.message.trim()?{message:input.message}:{}),...(forwardedIntent?{forwardedIntent}:{}),
       ...(input.routedFrom?{routedFrom:input.routedFrom}:{})};
+    const routedFrom=input.routedFrom?receivedRoutedFrom(input.routedFrom,origin.peer):null;
     const created=db.transaction(()=>{
       const attachments=((input.files??[]) as {name:string;contentType:string;base64:string}[]).map((file,index)=>owner.upload({name:file.name,contentType:file.contentType,base64:file.base64,clientActionId:`peer-file:${requestId}:${index}`}).attachment.id);
       const scope=`peer:${origin.peer}:${origin.inputId}`;
@@ -1561,7 +1570,7 @@ export class SessionPeers {
         if(!owner.canSend(target))throw new SessionOwnerError('The exact session is not currently messageable.',409,'CAPABILITY_UNAVAILABLE');
         owner.attachments(attachments);
         retainSessionInput({id:`request:${requestId}`,sessionId:target.id,scope,actionId:`request:${requestId}`,kind:'input',origin:'agent',
-          payload:{text:input.text,...(machineNeed?{machineNeed}:{}),...(attachments.length?{attachments}:{}),...(input.routedFrom?{routedFrom:input.routedFrom}:{}),
+          payload:{text:input.text,...(machineNeed?{machineNeed}:{}),...(attachments.length?{attachments}:{}),...(routedFrom?{routedFrom}:{}),
             ...(target.provider_id==='chatgpt'||sessionMetadata(target).interactionPolicy==='consultation-only'?{delivery:'queue'}:{})},requestId});
         sessionId=target.id;
       }

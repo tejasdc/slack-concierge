@@ -339,8 +339,9 @@ service origin and named agent session. The routed copy and any request that car
 derive authorship from the source's historical origin alone or default a missing author to Tejas.
 When the destination is on the other Concierge instance, the authenticated peer request carries
 the full author object and validates its kind against the route marker; the recipient keeps that
-identity instead of rebuilding an anonymous agent. The original accepted input and the correction
-record remain intact.
+identity instead of rebuilding an anonymous agent. Session IDs in that author are translated to
+the receiving instance's peer namespace before the message is retained. The original accepted
+input and the correction record remain intact.
 
 The owner keeps one in-memory index of every Inbox message and its thread root
 (`entryIndex` in `session-topics.ts`), built once per process and extended only over new
