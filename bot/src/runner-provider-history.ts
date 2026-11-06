@@ -33,8 +33,8 @@ function provider(value:unknown):Provider {
   if(value!=='claude-code'&&value!=='codex')throw new Error('INVALID_PROVIDER_HISTORY_PROVIDER');
   return value;
 }
-function sourceIdentity(info:{dev:number|bigint;ino:number|bigint;birthtimeMs:number;size:number}):string {
-  return createHash('sha256').update(JSON.stringify([String(info.dev),String(info.ino),info.birthtimeMs])).digest('hex');
+function sourceIdentity(info:{dev:number|bigint;ino:number|bigint;birthtimeMs:number;ctimeMs:number;mtimeMs:number}):string {
+  return createHash('sha256').update(JSON.stringify([String(info.dev),String(info.ino),info.birthtimeMs,info.ctimeMs,info.mtimeMs])).digest('hex');
 }
 function restoreId(value:unknown):string{
   if(typeof value!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value))throw new Error('INVALID_PROVIDER_RESTORE_ID');
@@ -144,6 +144,7 @@ export async function serveProviderHistoryCall(method:string,params:any,resolveH
         throw new Error('PROVIDER_TRANSCRIPT_CHANGED');
       const size=Math.min(limit,snapshotSize-offset),buffer=Buffer.alloc(size);
       if(size)await handle.read(buffer,0,size,offset);
+      if(sourceIdentity(await handle.stat())!==identity)throw new Error('PROVIDER_TRANSCRIPT_CHANGED');
       return {sourceIdentity:identity,snapshotSize,bytes:buffer.toString('base64'),eof:offset+size>=snapshotSize};
     }finally{await handle.close();}
   }
