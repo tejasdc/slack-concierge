@@ -576,6 +576,7 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS inbox_requests_topic ON inbox_requests(topic_id,state);
+        CREATE INDEX IF NOT EXISTS inbox_requests_state ON inbox_requests(state);
         CREATE TABLE IF NOT EXISTS inbox_questions (
           question_id TEXT PRIMARY KEY,
           topic_id TEXT NOT NULL,
