@@ -4052,6 +4052,7 @@ export class SessionOwner {
         if(claudeAllowanceHeld())throw new SessionOwnerError(CLAUDE_ALLOWANCE_HOLD_MESSAGE,409,'CLAUDE_ALLOWANCE_HELD');
         if(!this.runtime.auth?.chooseClaudeLaunch)throw new SessionOwnerError('Claude account selection is unavailable.',503);
         const model=url.searchParams.get('model');
+        // Registered models may include provider syntax such as the extended-context suffix.
         if(model&&(model.length>100||(!/^[A-Za-z0-9._-]+$/.test(model)
           &&!modelCatalogue('claude-code').some(choice=>choice.id===model))))
           throw new SessionOwnerError('Invalid Claude model.',400);
