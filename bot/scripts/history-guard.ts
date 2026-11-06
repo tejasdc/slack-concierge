@@ -120,7 +120,7 @@ try {
     const recorded=await fetch('http://localhost/session-communication/mac-need',{method:'POST',headers:{'content-type':'application/json'},
       body:JSON.stringify({provider_session_id:hook.session_id}),
       unix:join(userInfo().homedir,'Library','Application Support','concierge','requests.sock'),signal:AbortSignal.timeout(3000),
-    } as RequestInit & {unix:string}).then(response=>response.ok?response.json():null).then((answer:any)=>typeof answer?.kind==='string'?{kind:answer.kind,why:typeof answer.why==='string'?answer.why:'',humanInputId:typeof answer.humanInputId==='string'?answer.humanInputId:'',effectScope:typeof answer.effectScope==='string'?answer.effectScope:''}:null,()=>null);
+    } as RequestInit & {unix:string}).then(response=>response.ok?response.json():null).then((answer:any)=>typeof answer?.kind==='string'?{kind:answer.kind,why:typeof answer.why==='string'?answer.why:'',humanInputId:typeof answer.humanInputId==='string'?answer.humanInputId:'',effectScope:typeof answer.effectScope==='string'?answer.effectScope:'',updateAuthorization:answer.updateAuthorization===true}:null,()=>null);
     if(computerUse)reason=macSurfaceRefusal({...surface,need:recorded??''});
     else if(recorded&&recorded.kind!==(process.env.CONCIERGE_MAC_NEED??''))reason=macSurfaceRefusal({...surface,need:recorded});
   }

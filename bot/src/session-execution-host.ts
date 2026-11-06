@@ -11,6 +11,7 @@ import {basename,join} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
 import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,requeueProvenUnsentNativeChatGptTurn,requeueOrphanedPreAdmissionTurn,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
 import {acceptedInputForTurn,adoptProviderConversationTitle,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,providerRunnerForSession,recordRecoveredResultAttention,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {lastLaunchedConversationHome} from './session-runner-home';
 import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
 import {flushPendingProviderProgressEvents} from './session-projection';
 import {recordResultTurnOutcome,recordUnsaidTurnOutcome} from './session-turn-outcome';
@@ -98,7 +99,7 @@ import {INBOX_INSTRUCTIONS,markResultAnsweredByPost,minutesText,pebbleArrivalWai
 import {readClaudeCachedMessage,readCodexHistoryMessage,readClaudeHistory,readCodexHistory} from './provider-history';
 import {ProviderHistoryPageClient} from './provider-history-page-client';
 import {ATTENTION_INSTRUCTION,releaseFocusForPost,settleExitedProcessReport,topicPromptContext} from './session-topics';
-import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,clearPendingSignIn,pendingRunnerSignIn} from './state';
+import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,reservePendingRunnerSignIn,clearPendingSignIn,pendingRunnerSignIn} from './state';
 import {log,errorFields} from './log';
 import {attachedRecordingWords,transcriptionPrompt} from './transcription';
 import {ProviderLoginManager} from './auth-login';
@@ -125,7 +126,7 @@ import {noticeTime,publishProviderFreeNotice} from './provider-free-notice';
 import {accountHome,setRunnerAccountInUse} from './provider-accounts';
 import {providerRunnerTarget} from './provider-runner-target';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
-import {claudeAccountCachedReset,clearCodexAccountUsage,releaseCodexOrdinaryUsageHeldWork,releaseUsageHeldWork,releaseProvenUsageHolds,usageAttempt,cachedUsageLimit} from './provider-usage';
+import {claudeAccountCachedReset,clearCodexAccountUsage,releaseCodexUnboundUsageHeldWork,releaseUsageHeldWork,releaseProvenUsageHolds,usageAttempt,cachedUsageLimit} from './provider-usage';
 import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
 import {readFileSync,realpathSync,writeFileSync} from 'node:fs';
 import {providerOwnerEnvironment} from './provider-owner-environment';
@@ -337,8 +338,9 @@ export class SessionExecutionHost {
     if(this.restoreRunnerSignIn(provider))return {status:'failed',detail:'A sign-in is already waiting on the runner. Refresh the Accounts page to continue it.'};
     const operationId=`signin:${randomUUID()}`;
     const operation:RunnerSignInState={runner,operationId,profileId:profileId??null,status:'starting'};
+    if(!reservePendingRunnerSignIn(provider,this.options.instanceId,Date.now()+10*60_000,{runner,operationId,profileId}))
+      return {status:'failed',detail:'This machine is installing an update. No sign-in started; try again after the update finishes.'};
     this.runnerSignIns.set(provider,operation);
-    recordPendingSignIn(provider,this.options.instanceId,Date.now()+10*60_000,{runner,operationId,profileId});
     try{
       const answer=await runnerMachineCall<any>(runner,'accounts.signin.start',{operationId,provider});
       if(!answer||typeof answer.status!=='string')throw new Error('The runner returned no sign-in outcome.');
@@ -543,7 +545,7 @@ export class SessionExecutionHost {
       try {
         const cleared=clearCodexAccountUsage(outcome.accountId,outcome.verifiedReadStartedAtMs);
         if(cleared){
-          if(currentAccount('codex')?.id===outcome.accountId){releaseCodexOrdinaryUsageHeldWork(outcome.accountId);this.options.wake();}
+          if(currentAccount('codex')?.id===outcome.accountId){releaseCodexUnboundUsageHeldWork(outcome.accountId);this.options.wake();}
         } else outcome={...outcome,status:'redeemed',detail:'The reset was redeemed, but a newer refusal prevents confirming launch availability. Work remains held.'};
       } catch(error) {
         log('error','codex_reset_cache_clear_failed',errorFields(error));
@@ -582,7 +584,7 @@ export class SessionExecutionHost {
       const waiting=db.query(`SELECT COALESCE(turns.provider_model,
           (SELECT earlier.provider_model FROM turns earlier WHERE earlier.session_id=turns.session_id
             AND earlier.id<turns.id AND earlier.provider_model IS NOT NULL ORDER BY earlier.id DESC LIMIT 1)) AS model,
-          sessions.metadata_json
+          sessions.native_metadata_json AS metadata_json
         FROM turns JOIN sessions ON sessions.id=turns.session_id
         WHERE turns.status='queued' AND turns.dispatch_hold='usage'
           AND turns.dispatch_failure_class IN ('backoff','usage_wait')
@@ -2060,11 +2062,7 @@ export function chooseTurnRunner(session:SessionRow,metadata=sessionMetadata(ses
     // A bound native conversation keeps the machine that last ran it. Current deployment
     // settings cannot recover that fact: use the durable execution and lease that actually
     // launched its latest turn, and refuse if that evidence is incomplete or ambiguous.
-    const prior=db.query(`SELECT execution.supervisor,attempt.runner FROM executions execution
-      LEFT JOIN runner_attempts attempt ON attempt.job_id='turn:'||execution.execution_id
-      WHERE execution.session_id=? AND execution.provider=?
-      ORDER BY execution.created_at_ms DESC,attempt.started_at_ms DESC LIMIT 1`).get(session.id,session.provider_id) as
-      {supervisor:string;runner:string|null}|null;
+    const prior=lastLaunchedConversationHome(db,session.id,session.provider_id);
     if(!prior){
       // Older local copies predate the explicit local binding. A fork inherited its parent's
       // machine; a local resurrection copied the transcript into this machine's provider home.

@@ -1,4 +1,4 @@
-import {sessionAuthor,withCurrentAuthors} from './session-message-author';
+import {acceptedInputAuthor,sessionAuthor,withCurrentAuthors} from './session-message-author';
 import {questionDisplay} from './topic-display-rules';
 import {topicReplyTargets,type ReplyTargets} from './reply-target-rules';
 import {answerLine,fragmentReason} from './answer-line';
@@ -926,12 +926,16 @@ export function inboxMessageWords(session:SessionRow,messageId:string) {
   // A request shows in its thread as "Sent to <agent>"; its words are the input it delivered.
   const sent=entry&&messageId.startsWith('request:')?getAcceptedSessionInput(messageId):null;
   const sentText=sent?(JSON.parse(sent.payload_json).firstInput??JSON.parse(sent.payload_json)).text:null;
-  if(entry)return {messageId,from:entry.author?.kind??(entry.role==='user'?'human':'agent'),
+  if(entry){
+    const source=getAcceptedSessionInput(messageId);
+    const author=source?acceptedInputAuthor(source).author:entry.author??{kind:entry.role==='user'?'unknown':'agent'};
+    return {messageId,from:author.kind,author,
     session:typeof entry.sourceSessionId==='number'?`concierge:${entry.sourceSessionId}`:null,
     at:entry.createdAt??null,words:typeof sentText==='string'?sentText:typeof entry.content==='string'?entry.content:'',
     ...(sent?{sentTo:`concierge:${sent.session_id}`}:{}),
     attachments:(entry.attachments??[]).map((file:any)=>({id:file.id,name:file.name,contentType:file.contentType})),
     threadRoot:root,topicId};
+  }
   // A request input sits in its target session; it is Inbox material only when a topic request names it.
   const named=db.query(`SELECT topic_id FROM inbox_requests WHERE EXISTS (SELECT 1 FROM json_each(sources_json) WHERE json_extract(value,'$.inputId')=?1)
       OR EXISTS (SELECT 1 FROM json_each(dispatches_json) WHERE 'request:' || json_extract(value,'$.requestId')=?1 OR json_extract(value,'$.sourceInputId')=?1)
@@ -939,7 +943,8 @@ export function inboxMessageWords(session:SessionRow,messageId:string) {
   const input=named?getAcceptedSessionInput(messageId):null;
   if(!input)throw new TopicError('No Inbox message or topic-named request has that exact id.',404,'MESSAGE_NOT_FOUND');
   const payload=JSON.parse(input.payload_json),first=payload.firstInput??payload;
-  return {messageId,from:input.origin,session:`concierge:${input.session_id}`,at:input.created_at,
+  const author=acceptedInputAuthor(input).author;
+  return {messageId,from:author.kind,author,session:`concierge:${input.session_id}`,at:input.created_at,
     words:typeof first.text==='string'?first.text:'',
     attachments:((first.attachments??[]) as string[]).map(id=>db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean),
     threadRoot:root,topicId:topicId??named!.topic_id};

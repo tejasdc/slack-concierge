@@ -658,9 +658,11 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       for (const account of usage.accounts) if (account.signedOut) needSignInRenewal(provider, account.label,
         `its sign-in on ${runner?`runner ${runner}`:'this machine'} stopped working`);
       const current=agentUsage.accounts.find(account=>account.current);
-      const currentReadAt=current?accountReadingAt(current):null;
-      if(provider==='codex'&&current&&!current.viaPeer&&currentReadAt!==null&&accountReadingFresh(provider,usage,current))
-        retireCodexRefusalSupersededByReading(current.label,includedAllowanceWindows(provider,current,null),currentReadAt);
+      if(provider==='codex')for(const account of agentUsage.accounts){
+        const readAt=accountReadingAt(account);
+        if(!account.viaPeer&&readAt!==null&&accountReadingFresh(provider,usage,account))
+          retireCodexRefusalSupersededByReading(account.label,includedAllowanceWindows(provider,account,null),readAt);
+      }
       // A provider-wide release has no turn model. It needs evidence across every Claude
       // window; an Opus-only reading cannot wake a Fable hold.
       const activeWindows=current?includedAllowanceWindows(provider,current,null):[];

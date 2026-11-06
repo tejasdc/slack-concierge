@@ -573,7 +573,8 @@ export function agentTestSource(value:unknown):{inputId:string;runId:string;sess
   const named=object(value);only(named,['inputId','runId']);
   const input=typeof named.inputId==='string'?getAcceptedSessionInput(named.inputId):null;
   const turn=input&&typeof named.runId==='string'?db.query('SELECT id FROM turns WHERE session_id=? AND native_run_id=?').get(input.session_id,named.runId) as {id:number}|null:null;
-  if(!input||!turn)throw new SessionOwnerError('An agent test delivery must name its own accepted input and run.',403,'AGENT_SOURCE_UNKNOWN');
+  if(!input||!turn||input.turn_id!==turn.id)
+    throw new SessionOwnerError('An agent test delivery must name the run that accepted its source input.',403,'AGENT_SOURCE_UNKNOWN');
   return {inputId:input.id,runId:named.runId as string,sessionId:input.session_id};
 }
 export function readInputExecution(input:AcceptedSessionInput) {
@@ -2526,11 +2527,13 @@ export class SessionOwner {
     const fromHumanSurface=input.scope==='surface:thinkering'
       &&(input.origin==='human'&&input.source_input_id===null&&input.source_run_id===null||markedAgent);
     const capture=body.capture,source=capture?.source;
-    // A Reader save by an agent carries that agent's run as its author; any other capture carries none.
-    const readerAgent=source?.kind==='reader'&&input.origin==='agent'?source.metadata?.agentSource:null;
+    // Locally authored Reader saves and issue reports retain the exact reporting run.
+    // Peer reports are verified at intake and have no local source input relationship.
+    const captureAgent=['reader','agent-report'].includes(source?.kind)&&input.origin==='agent'
+      &&input.source_input_id!==null?source.metadata?.agentSource:null;
     const fromCapture=input.scope===`capture:${source?.kind}`&&input.id===`capture:${capture?.id}`
-      &&receipt?.admissionIntent==='live'&&(readerAgent
-        ?input.source_input_id===readerAgent.inputId&&input.source_run_id===readerAgent.runId
+      &&receipt?.admissionIntent==='live'&&(captureAgent
+        ?input.source_input_id===captureAgent.inputId&&input.source_run_id===captureAgent.runId
         :input.source_input_id===null&&input.source_run_id===null)
       &&capturesEnterRouter(input.origin,source?.kind);
     if(!fromHumanSurface&&!fromCapture)return;

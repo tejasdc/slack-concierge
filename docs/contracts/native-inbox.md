@@ -334,6 +334,14 @@ or scan other threads while the owner holds its write transaction.
 Routing one accepted message to a second thread checks earlier routes through the retained
 source-message index before it writes another destination; the query uses the index's
 two-kind predicate and then selects topic routes, preserving the independent-route rule.
+Every route projects the source message's current author, including an authorship correction,
+service origin and named agent session. The routed copy and any request that carries it must not
+derive authorship from the source's historical origin alone or default a missing author to Tejas.
+When the destination is on the other Concierge instance, the authenticated peer request carries
+the full author object and validates its kind against the route marker; the recipient keeps that
+identity instead of rebuilding an anonymous agent. Session IDs in that author are translated to
+the receiving instance's peer namespace before the message is retained. The original accepted
+input and the correction record remain intact.
 
 The owner keeps one in-memory index of every Inbox message and its thread root
 (`entryIndex` in `session-topics.ts`), built once per process and extended only over new
@@ -400,6 +408,8 @@ to open a guessed object.
 ### Agent issue reports
 
 `router-actions.sh report --source-input <id> --source-run <id> --action-id <stable id> --title "<issue>" [--file <path> ...] -- <observation, expected behavior, impact>` sends a likely bug or concerning issue the agent noticed outside its task. The local owner verifies the reporting run. A Mac report crosses the authenticated Concierge peer link to the server Inbox; no Mac Inbox is created. The server gateway marks only authenticated peer traffic, and the owner requires that mark before accepting Mac attribution; a local caller cannot assert it in a request header. The server retains the exact text and files under the agent's authorship, and atomically creates an Inbox thread in Agent reports with one open request before admitting it to the router. The receipt names the capture, thread and request. Repeating the action ID with the same text returns the same receipt; changing the text under that ID is refused. The router dispatches work from the report's capture root and links the dispatch to the existing request. Its stop check refuses an Inbox turn that received a report whose open request still has no linked dispatch; the router must check for a prior unlinked dispatch before sending another, or explicitly resolve the report. A settled answer closes the request under the normal thread upkeep rules; an uncertain end leaves it open for the router to resolve. The report cannot be imported silently or attributed to Tejas. A peer connection loss before a receipt is ambiguous; the caller retries the same action ID, and the owner returns the one retained report if it arrived.
+
+Admission recovery checks the exact accepted capture and live intent before starting a router turn. A locally authored report also has to match its retained source input and run; a verified Mac report has no local source-input relationship. This check applies both immediately after acceptance and during the owner's recovery sweep. It never releases a Focus review hold or replays a report that already has a turn.
 
 The server Codex turn-exit audit has one narrowly scoped report group for surviving non-browser processes. A repeated sighting while its agent-report request remains open appends the new process evidence to that request and returns the first report's receipt, preserving its original agent attribution and Inbox work item. The group is recorded on the capture, so older ungrouped reports with the same title cannot absorb new evidence. The owner closes the grouped request itself, as completed, once every process recorded on it has exited (rechecked by PID and start time each minute); a sighting whose processes exit within ten minutes of its turn is never reported. Once the request closes, a newly observed survivor can open a fresh report. Ordinary agent reports keep their source-and-action identity above.
 

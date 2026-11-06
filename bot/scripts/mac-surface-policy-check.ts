@@ -36,6 +36,14 @@ assert.match(macSurfaceRefusal({command:null,need:'',platform:'darwin',toolName:
 assert.match(macSurfaceRefusal({command:null,need:'mac-file',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Voice Memos")'}})??'',/accepted Mac/);
 assert.equal(macSurfaceRefusal({command:null,need:'mac-app',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Voice Memos")'}}),null);
 const webAppNeed={kind:'mac-app',why:'Inspect the already-open thnkr.ing web app com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 page faf63877-6536-4ac6-86e9-5d63e03d3369, directly authorized by Tejas.',humanInputId:'f66f15dd-e251-4537-a9cd-347d0548434b',effectScope:'work'};
+const updateNeed={kind:'mac-app',why:'Inspect exact bundle com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 page faf63877-6536-4ac6-86e9-5d63e03d3369 and install ready 535c73c7 update safely',effectScope:'work',updateAuthorization:true};
+const updateCall='var thnkrUpdateInspectionApp = await cua.getApp("com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792"); await thnkrUpdateInspectionApp.getAXStateAndScreenshot()';
+assert.equal(macSurfaceRefusal({command:null,need:updateNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:updateCall}}),null);
+const formerUpdateProgram='var thnkrUpdateApp = await cua.getApp("com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792"); var state = await thnkrUpdateApp.getAXState({disableDiffing:true}); await thnkrUpdateApp.click(3);';
+assert.match(macSurfaceRefusal({command:null,need:updateNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:formerUpdateProgram}})??'',/Update now remains refused/);
+for(const need of [{...updateNeed,updateAuthorization:false},{...updateNeed,effectScope:'informational'},{...updateNeed,why:updateNeed.why.replace('535c73c7','other build')},webAppNeed])
+  assert.ok(macSurfaceRefusal({command:null,need,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:formerUpdateProgram}}));
+assert.ok(macSurfaceRefusal({command:null,need:updateNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Safari")'}}));
 const canvasNeed={...webAppNeed,humanInputId:'capture:7bad480ccf4350922acb3ac750cc0ba0b7a990f596acd92b5fe98403f6f0e7a0'};
 const recoveryNeed={...webAppNeed,humanInputId:'capture:5b6622afea9fe89950abaf423874a4b1e48a0c92420527f40a9570643d5ece8b'};
 const retirementNeed={kind:'mac-app',why:'Inspect only com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 current thnkr.ing window and normal File menu for second-window delivery of authorized exact53 retirement',humanInputId:'capture:2a296c24ca627e68981feab3c3e56a32b3e43cf317d0eb545ee4cab23801270b',effectScope:'work'};

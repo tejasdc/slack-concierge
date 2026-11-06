@@ -22,7 +22,14 @@ if (!thnkrRetirementOpenFileState.startsWith('Window: "thnkr.ing", App: Thinkeri
 await thnkrRetirementNewWindowApp.click(Number(thnkrRetirementFileMenuMatches[0][1]));
 await thnkrRetirementNewWindowApp.getAXStateAndScreenshot({disableDiffing:true});`;
 
-type RecordedNeed=string|{kind:string;why?:string;humanInputId?:string;effectScope?:string};
+type RecordedNeed=string|{kind:string;why?:string;humanInputId?:string;effectScope?:string;updateAuthorization?:boolean};
+
+function authorizedUpdateNeed(need:RecordedNeed,toolName:string):need is Exclude<RecordedNeed,string> {
+  return typeof need!=='string'&&need.kind==='mac-app'&&need.updateAuthorization===true
+    &&need.effectScope==='work'&&typeof need.why==='string'
+    &&need.why.includes(AUTHORIZED_WEB_APP)&&need.why.includes(AUTHORIZED_PAGE)
+    &&need.why.includes('535c73c7')&&COMPUTER_CONTROL.test(toolName);
+}
 
 function retirementHumanInput(id:string|undefined):boolean {
   return id===RETIREMENT_AUTHORIZING_HUMAN_INPUT
@@ -46,7 +53,7 @@ function authorizedRetirementInspectionNeed(need:RecordedNeed,toolName:string):n
 }
 
 function authorizedCurrentWebAppNeed(need:RecordedNeed,toolName:string):boolean {
-  return authorizedWebAppNeed(need,toolName)||authorizedRetirementInspectionNeed(need,toolName);
+  return authorizedWebAppNeed(need,toolName)||authorizedRetirementInspectionNeed(need,toolName)||authorizedUpdateNeed(need,toolName);
 }
 
 function authorizedRetirementFileMenuOpen(need:RecordedNeed,toolName:string,code:string):boolean {
@@ -64,7 +71,7 @@ function restrictedWebAppTask(need:RecordedNeed,toolName:string,toolInput:unknow
     &&((typeof need.why==='string'&&need.why.includes(AUTHORIZED_WEB_APP))
       ||need.humanInputId===AUTHORIZING_HUMAN_INPUT
       ||need.humanInputId===CANVAS_AUTHORIZING_HUMAN_INPUT
-      ||retirementHumanInput(need.humanInputId));
+      ||retirementHumanInput(need.humanInputId)||need.updateAuthorization===true);
 }
 
 function exactWebAppSelector():string {
@@ -84,7 +91,8 @@ function authorizedWebAppRead(need:RecordedNeed,toolName:string,code:string):boo
 
 function authorizedScopedRead(need:RecordedNeed,toolName:string,code:string):boolean {
   if(!authorizedCurrentWebAppNeed(need,toolName))return false;
-  const handle=authorizedRetirementInspectionNeed(need,toolName)?'thnkrRetirementInspectionApp':'thnkrCanvasInspectionApp';
+  const handle=authorizedRetirementInspectionNeed(need,toolName)?'thnkrRetirementInspectionApp'
+    :authorizedUpdateNeed(need,toolName)?'thnkrUpdateInspectionApp':'thnkrCanvasInspectionApp';
   return new RegExp(`^\\s*var\\s+${handle}\\s*=\\s*await\\s+${exactWebAppSelector()}\\s*;\\s*await\\s+${handle}\\.(?:getAXState|getAXStateAndScreenshot|getScreenshot)\\(\\s*\\)\\s*;?\\s*$`).test(code);
 }
 
@@ -119,7 +127,8 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
       &&!authorizedScopedRead(need,toolName,code)
       &&!authorizedWebAppInspectorOpen(need,toolName,code)
       &&!authorizedRetirementFileMenuOpen(need,toolName,code)
-      &&!authorizedRetirementNewWindowOpen(need,toolName,code)) {
+      &&!authorizedRetirementNewWindowOpen(need,toolName,code)
+      ) {
     if(!authorizedCurrentWebAppNeed(need,toolName))return !COMPUTER_CONTROL.test(toolName)
       ? 'This Safari web app needs an active Mac-app request naming its exact bundle and page IDs, followed by a direct Computer Use getApp call for that bundle. Reissue the request with Tejas’s authorization; do not ask him to copy the app’s contents.'
       : retirementHumanInput(need.humanInputId)
@@ -127,7 +136,9 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
       : need.humanInputId===AUTHORIZING_HUMAN_INPUT||need.humanInputId===CANVAS_AUTHORIZING_HUMAN_INPUT
       ? 'This human work authorization covers only passive inspection of the exact thnkr.ing web app. Select its bundle again in the same Computer Use program as each read; Inspector, input, other apps and whole-screen calls remain refused.'
       : 'This Safari web app needs an active Mac-app request naming its exact bundle and page IDs, followed by a direct Computer Use getApp call for that bundle. Reissue the request with Tejas’s authorization; do not ask him to copy the app’s contents.';
-    return authorizedRetirementInspectionNeed(need,toolName)
+    return authorizedUpdateNeed(need,toolName)
+      ? 'This work request covers passive inspection of the exact thnkr.ing app. Update now remains refused because Computer Use cannot prove the current page and ready release or bind the click to a stable control; other clicks and reloads remain refused.'
+      : authorizedRetirementInspectionNeed(need,toolName)
       ? 'This human work authorization covers exact thnkr.ing app reads, guarded File-menu inspection, and guarded New Window selection when the recorded need names it. Other apps, page input, reload and whole-screen calls remain refused.'
       : typeof need!=='string'&&need.humanInputId!==AUTHORIZING_HUMAN_INPUT
       ? 'This human work authorization covers only passive inspection of the exact thnkr.ing web app. Select its bundle again in the same Computer Use program as each read; Inspector, input, other apps and whole-screen calls remain refused.'
