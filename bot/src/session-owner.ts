@@ -1468,8 +1468,23 @@ export class SessionOwner {
   savedWorkControl(turnId:number,action:string,body:Record<string,unknown>){return updateSavedTurn(turnId,action,body);}
   private configuredProjectRunner():string|null { return process.env.CONCIERGE_TURN_RUNNER?.trim()||null; }
   async prepareProjectLocation(location:string,runner?:string|null) { return this.locateProject(location,runner); }
-  async preparePersistedProjectLocation(metadata:NativeSessionMetadata):Promise<{name:string|null;path:string;cwd:string;runner:string|null}> {
-    const runner=metadata.providerRunner??this.configuredProjectRunner();
+  private persistedProjectRunner(metadata:NativeSessionMetadata,session?:SessionRow):string|null {
+    if(Object.hasOwn(metadata,'providerRunner'))return metadata.providerRunner??null;
+    if(session?.agent_session_uuid){
+      const last=db.query(`SELECT execution.supervisor,attempt.runner FROM executions execution
+        LEFT JOIN runner_attempts attempt ON attempt.job_id='turn:'||execution.execution_id
+        WHERE execution.session_id=? ORDER BY execution.created_at_ms DESC,attempt.started_at_ms DESC LIMIT 1`)
+        .get(session.id) as {supervisor:string;runner:string|null}|null;
+      if(last?.supervisor==='runner'){
+        if(!last.runner)throw new SessionOwnerError('This conversation ran on a runner, but its exact runner is unavailable.',424,'PROVIDER_RUNNER_UNKNOWN');
+        return last.runner;
+      }
+      return null;
+    }
+    return this.configuredProjectRunner();
+  }
+  async preparePersistedProjectLocation(metadata:NativeSessionMetadata,session?:SessionRow):Promise<{name:string|null;path:string;cwd:string;runner:string|null}> {
+    const runner=this.persistedProjectRunner(metadata,session);
     if(runner){
       const resolved=await resolveRunnerProjectLocation(runner,metadata);
       return {name:resolved.project,path:resolved.path,cwd:resolved.cwd,runner};
@@ -1485,7 +1500,7 @@ export class SessionOwner {
     return {name:project.name,path:relative(project.cwd,local.cwd),cwd:local.cwd,runner:null};
   }
   async hasRegisteredProject(session:SessionRow):Promise<boolean> {
-    try{return !!(await this.preparePersistedProjectLocation(sessionMetadata(session))).name;}
+    try{return !!(await this.preparePersistedProjectLocation(sessionMetadata(session),session)).name;}
     catch{return false;}
   }
   private async standingProjectLocation(role:StandingAgentRole) {
@@ -1915,10 +1930,10 @@ export class SessionOwner {
   }
   async createTask(id:string,body:unknown) {
     const session=this.session(id),input=object(body);only(input,['clientActionId','reference']);const action=actionId(input),selected=this.selectedMessage(session,input.reference),metadata=sessionMetadata(session);
-    const runner=metadata.providerRunner??this.configuredProjectRunner();
+    const runner=this.persistedProjectRunner(metadata,session);
     let projectName:string|null=null,project:ReturnType<typeof containingProject>=null;
     if(runner) {
-      const location=await this.preparePersistedProjectLocation(metadata);
+      const location=await this.preparePersistedProjectLocation(metadata,session);
       projectName=location.name;
     } else project=metadata.project?containingProject(this.defaultCwd,metadata.project):null;
     if(runner&&!projectName)throw new SessionOwnerError('This session has no stable runner project identity for task creation.',409,'PROJECT_UNAVAILABLE');
@@ -2896,7 +2911,7 @@ export class SessionOwner {
     let rerunSessionId:string|null=null;
     if(chosen&&chosen.provider!==session.provider_id) {
       const meta=sessionMetadata(session),payload=JSON.parse(target.payload_json),first=target.kind==='create'?payload.firstInput:payload;
-      const persisted=await this.preparePersistedProjectLocation(meta);
+      const persisted=await this.preparePersistedProjectLocation(meta,session);
       if(meta.purpose==='develop'&&!persisted.name)throw new SessionOwnerError('This session has no runner-resolved project for its outage rerun.',424,'PROJECT_UNAVAILABLE');
       const location=persisted.name?{name:persisted.name,path:persisted.path,cwd:persisted.cwd,runner:persisted.runner}:undefined;
       const project=location?`${location.name}${location.path?`/${location.path}`:''}`:undefined;
