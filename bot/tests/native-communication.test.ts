@@ -204,6 +204,42 @@ test('one explicit multi-request reply produces one return without comparing ans
   expect(db.query("SELECT count(*) AS n FROM session_inputs WHERE id LIKE 'return:%'").get()).toEqual({n:1});
 });
 
+// The Inbox sends one request per thread and they routinely steer into one recipient turn, so
+// sharing a turn is not evidence of a shared answer. A September rule copied one request's reply
+// onto every other request that turn held and closed two unrelated threads on the wrong words
+// (docs/incidents/2026-11-04-one-reply-closed-sibling-requests.md). Its acceptance scenario.
+test('a final reply to one request leaves another sharing its turn open for its own reply',async()=>{
+  session();const requester=run(),target=session(),worker=run();
+  const first=await ask(requester.source,target,'first-shared');
+  const second=await ask(requester.source,target,'second-shared');
+  await communication.idle();
+  const opened=getAcceptedSessionInput('request:'+first.request_id)!,steered=getAcceptedSessionInput('request:'+second.request_id)!;
+  expect(opened.turn_id).toBe(worker.claim.turn_id);
+  expect(steered.turn_id).toBe(worker.claim.turn_id);
+  expect(steered.steering_id).not.toBeNull();
+  communication.reply({source:worker.source,action_id:'answer-first',request_id:first.request_id,
+    text:'The first thread’s answer.',final:true,workDisposition:'completed',all_done:true,checked:'the first thread’s result was inspected'});
+  finishTurn(worker.claim.turn_id,'done','Whole-run text that addressed only the first request');
+  await communication.idle();
+  expect(communication.inspect(first.request_id)).toMatchObject({outcome:'answered',
+    result:{text:expect.stringContaining('The first thread’s answer.')}});
+  const open=communication.inspect(second.request_id);
+  expect(open.outcome).toBeNull();
+  expect(open.result).toBeNull();
+  expect(open.events).toEqual([]);
+  // The turn ending is not an answer either way: the recipient is sent back for what it still owes.
+  const reminder=getAcceptedSessionInput(`report-back:${second.request_id}`);
+  expect(reminder).toMatchObject({origin:'service',request_id:second.request_id});
+  const again=run();
+  expect(again.claim.accepted_input_id).toBe(reminder!.id);
+  communication.reply({source:again.source,action_id:'answer-second',request_id:second.request_id,
+    text:'The second thread’s own answer.',final:true,workDisposition:'completed',all_done:true,checked:'the second thread’s result was inspected'});
+  await communication.idle();
+  expect(communication.inspect(second.request_id)).toMatchObject({outcome:'answered',
+    result:{text:expect.stringContaining('The second thread’s own answer.')}});
+  expect(errors).toEqual([]);
+});
+
 test('a final body after a prompt answer remains a visible new post',async()=>{
   const inbox=session(),inboxId=Number(inbox.session.id.slice(10));
   const root=(db.query('SELECT id FROM session_inputs WHERE session_id=? ORDER BY rowid LIMIT 1').get(inboxId) as {id:string}).id;
