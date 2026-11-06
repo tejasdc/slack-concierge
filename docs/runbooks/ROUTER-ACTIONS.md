@@ -74,10 +74,16 @@ that return.
 
 ## Report evidence reads
 
+`router-actions.sh reports capture <captureId>` reads one retained capture's exact words, source,
+attachment list and held state by its ID (with or without the `capture:` prefix), at any age and
+from any earlier Inbox session. Use it when a request cites his capture; the paged captures list
+covers only the current Inbox's recent captures.
+
 `router-actions.sh reports chain <accepted-input-or-request-id>` reads up to eight source links
 from the owner. A bare UUID is a communication request ID. The JSON includes each accepted input's
-session, origin, source input and run, capture marker, own files, and the communication request's
-carried files. `inboxLinks` lists every exact Inbox obligation whose dispatch matches a request in
+session, origin, source input and run, capture marker, own files, exact words (`text`; a human's
+words up to 65,536 characters, an agent or service input's up to 8,192, with `textTruncated`), and
+the communication request's carried files. `inboxLinks` lists every exact Inbox obligation whose dispatch matches a request in
 the chain, with its source captures. `direct: true` means the link belongs to the named request or
 to a request sent directly from the named input; ancestral links are labeled `direct: false`.
 The Inbox's link can name several human reports across topics. The legacy `resolvedCapture` and
@@ -194,6 +200,10 @@ before creating a project. Its completed work reply is one JSON object with the 
 `null` for the workspace root, or the established `agent-ecology/expertise` lab group).
 For the example above, a grouped answer is
 `{"project":"canvas-essay-notes","purpose":"An essay exploring how Canvas changes drafting.","template":"writing","group":"canvases"}`.
+The decision is read from the organizer's own words: the required "What came before" lead a
+first reply carries (recorded as its own reply field) is set aside, and the one JSON object may
+stand alone or among the organizer's prose or a fenced block; two candidate objects are refused
+as ambiguous. The Canvas policy answer below is read the same way.
 Pass that request ID with `--consultation` and the creator's current source input and run. The creation API checks that the bound organizer
 answered the asking session, completed the request, and accepted these exact fields before
 creating any folder. It reserves that exact answer for one project, allows retries of the
