@@ -1,0 +1,1 @@
+A voice message sent as a recording now reaches the agent even when it is silent or can't be turned into words; the agent is told when it couldn't hear it.
