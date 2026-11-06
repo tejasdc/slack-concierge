@@ -99,12 +99,21 @@ test('a healthy request rechecks without a ledger deadline write or duplicate re
   const storedDue=Date.now()-1;
   db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=?').run(storedDue,request.request_id);
   db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=?').run(storedDue,other.request_id);
+  const scan=(communication as any).scanRows.bind(communication);
+  let dueScans=0;
+  (communication as any).scanRows=(table:string,sql:string,...args:unknown[])=>{
+    if(table==='session_communication_requests'&&sql.includes('request_id NOT IN'))dueScans++;
+    return scan(table,sql,...args);
+  };
+  (communication as any).nextRequestInspectionAt=0;
   communication.wake();await communication.idle();
+  expect(dueScans).toBe(1);
   expect(db.query('SELECT due_at_ms FROM session_communication_requests WHERE request_id=?').get(request.request_id)).toEqual({due_at_ms:storedDue});
   expect(communication.inspect(request.request_id)).toMatchObject({overdue_at_ms:null,events:[],due_at_ms:expect.any(Number)});
   expect(communication.inspect(request.request_id).due_at_ms).toBeGreaterThan(storedDue);
   expect(communication.inspect(other.request_id).overdue_at_ms).not.toBeNull();
   communication.wake();await communication.idle();
+  expect(dueScans).toBe(1);
   expect(db.query('SELECT due_at_ms FROM session_communication_requests WHERE request_id=?').get(request.request_id)).toEqual({due_at_ms:storedDue});
   await communication.stop();
   await build('/tmp');

@@ -210,6 +210,7 @@ export class SessionCommunicationCoordinator {
     private disarm: (() => void) | null = null;
     private detach: (() => void) | null = null;
     private readonly healthyRechecks = new Map<string, { storedDue: number; nextCheck: number }>();
+    private nextRequestInspectionAt = 0;
     private readonly now: () => number;
     constructor(private readonly dependencies: Dependencies) { this.now = dependencies.now ?? Date.now; }
     /**
@@ -2251,9 +2252,11 @@ export class SessionCommunicationCoordinator {
             if (input.final && inferred)
                 db.query('UPDATE session_communication_events SET superseded_by_event_id=? WHERE event_id=?').run(eventId, inferred.event_id);
             const id = this.event(request, input.final ? 'final' : 'progress', payload, key, eventId);
-            if(requestPayload.promptAnswer&&(input.final||input.answers_question))
+            if(requestPayload.promptAnswer&&(input.final||input.answers_question)) {
+                this.healthyRechecks.delete(request.request_id);
                 db.query('UPDATE session_communication_requests SET prompt_answered_at_ms=?,due_at_ms=? WHERE request_id=? AND prompt_answered_at_ms IS NULL')
                     .run(this.now(),this.now()+STILL_WAITING_AFTER_MS,request.request_id);
+            }
             if(actor.inputId) {
                 const operation=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,kind:'reply',origin:'agent',
                     payload:{text:input.text,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),kind:input.final?'final':'partial',workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{})},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId:request.request_id}).input;
@@ -2557,9 +2560,11 @@ export class SessionCommunicationCoordinator {
         let routed = this.binding(request);
         // A request that waited behind others starts its reminder clock when it is handed over,
         // not when it was asked, so its agent gets the same time as any other request.
-        if(!routed&&(payload.after.length||payload.pace?.length))
+        if(!routed&&(payload.after.length||payload.pace?.length)) {
+            this.healthyRechecks.delete(request.request_id);
             db.query('UPDATE session_communication_requests SET due_at_ms=max(due_at_ms,?) WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
                 .run(this.now()+STILL_WAITING_AFTER_MS, request.request_id);
+        }
         if(routed?.status==='failed') {
             if(this.holdFailedChatGptRequest(request,routed.error??'The target could not receive this request.'))return;
             this.settle(request,'failed',routed.error??'The target could not receive this request.');
@@ -2884,6 +2889,7 @@ export class SessionCommunicationCoordinator {
             // 2026-11-02.
             const queuedBehind=JSON.parse(request.payload_json) as {after?:string[];pace?:string[]};
             if((queuedBehind.after??[]).some(id=>!this.row(id).outcome)||(queuedBehind.pace??[]).some(id=>this.pacingWaitsOn(id))) {
+                this.healthyRechecks.delete(request.request_id);
                 db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
                     .run(now + STILL_WAITING_AFTER_MS, request.request_id);
                 return;
@@ -2894,6 +2900,7 @@ export class SessionCommunicationCoordinator {
                     const current=this.row(request.request_id);
                     if(current.outcome||current.prompt_answered_at_ms!==null||current.overdue_at_ms!==null)return;
                     if(current.prompt_reminded_at_ms===null) {
+                        this.healthyRechecks.delete(current.request_id);
                         // One reminder joins the recipient's current run. The retained input ID
                         // makes a restart or reconciliation harmless.
                         this.dependencies.owner!.admit({sessionId:current.target_session_id,inputId:`question-reminder:${current.request_id}`,
@@ -2916,6 +2923,7 @@ export class SessionCommunicationCoordinator {
             // scheduled for 18:42:30 was reported as 15 minutes overdue at 18:42:31 (2026-11-04).
             if (turn?.status === 'queued' && turn.saved_kind === 'scheduled' && turn.saved_fire_at_ms !== null
                 && turn.saved_fire_at_ms + STILL_WAITING_AFTER_MS > now) {
+                this.healthyRechecks.delete(request.request_id);
                 db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
                     .run(turn.saved_fire_at_ms + STILL_WAITING_AFTER_MS, request.request_id);
                 return;
@@ -2988,6 +2996,11 @@ export class SessionCommunicationCoordinator {
             visit(row);
             await new Promise<void>(resolve => setImmediate(resolve));
         }
+    }
+    private deferredRequestIds(now: number) {
+        for (const [id, recheck] of this.healthyRechecks)
+            if (recheck.nextCheck <= now) this.healthyRechecks.delete(id);
+        return JSON.stringify([...this.healthyRechecks.keys()]);
     }
     private async scanExternalRequests() {
         if (this.incidentScanTraceRemaining-- > 0)
@@ -3152,14 +3165,14 @@ export class SessionCommunicationCoordinator {
                 JOIN session_inputs i ON i.id=r.target_input_id JOIN turns t ON t.id=i.turn_id
                 WHERE r.outcome IS NULL AND r.overdue_at_ms IS NULL AND t.status='queued' AND r.rowid<=? AND r.rowid>?
                 ORDER BY r.rowid LIMIT 1`, request => this.inspectProviderHold(request));
-            await this.scanRows<RequestRow>('session_communication_requests', `SELECT rowid AS reconciliation_rowid,* FROM session_communication_requests
-                WHERE ${AWAITING_INSPECTION} AND due_at_ms<=? AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
-                request => {
-                    const recheck = this.healthyRechecks.get(request.request_id);
-                    if (recheck && recheck.storedDue === request.due_at_ms && recheck.nextCheck > this.now()) return;
-                    this.healthyRechecks.delete(request.request_id);
-                    this.inspectOverdueRequest(request);
-                }, this.now());
+            if (this.now() >= this.nextRequestInspectionAt)
+                await this.scanRows<RequestRow>('session_communication_requests', `SELECT rowid AS reconciliation_rowid,* FROM session_communication_requests
+                    WHERE ${AWAITING_INSPECTION} AND request_id NOT IN (SELECT value FROM json_each(?))
+                      AND due_at_ms<=? AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
+                    request => {
+                        this.healthyRechecks.delete(request.request_id);
+                        this.inspectOverdueRequest(request);
+                    }, this.deferredRequestIds(this.now()), this.now());
             if (this.stopped) break;
             await auditUndeliveredReturns(this.now(), () => this.stopped);
             await this.scanExternalRequests();
@@ -3209,24 +3222,13 @@ export class SessionCommunicationCoordinator {
         if (this.stopped)
             return;
         const now = this.now();
-        for (const [id, recheck] of this.healthyRechecks)
-            if (recheck.nextCheck <= now) this.healthyRechecks.delete(id);
-        // Only rows deferred in this process can precede the next actionable stored deadline.
-        // The extra row finds that deadline; changes to a stored due time invalidate its deferral.
-        const deadlines = db.query(`SELECT request_id,due_at_ms FROM session_communication_requests INDEXED BY session_communication_due
+        const excluded = this.deferredRequestIds(now);
+        const storedDue = db.query(`SELECT min(due_at_ms) AS due FROM session_communication_requests INDEXED BY session_communication_due
             WHERE ${AWAITING_INSPECTION} AND source_input_id IS NOT NULL AND target_input_id IS NOT NULL
-            ORDER BY due_at_ms LIMIT ?`).all(this.healthyRechecks.size + 1) as { request_id: string; due_at_ms: number }[];
-        let requestDue = Infinity;
-        for (const row of deadlines) {
-            const recheck = this.healthyRechecks.get(row.request_id);
-            if (recheck && recheck.storedDue === row.due_at_ms) {
-                requestDue = Math.min(requestDue, recheck.nextCheck);
-                continue;
-            }
-            this.healthyRechecks.delete(row.request_id);
-            requestDue = Math.min(requestDue, row.due_at_ms);
-            break;
-        }
+              AND request_id NOT IN (SELECT value FROM json_each(?))`).get(excluded) as {due:number|null};
+        let requestDue = storedDue.due ?? Infinity;
+        for (const recheck of this.healthyRechecks.values()) requestDue = Math.min(requestDue, recheck.nextCheck);
+        this.nextRequestInspectionAt = requestDue;
         const chatGptNext=db.query(`SELECT min(due_at_ms) AS due FROM session_chatgpt_obligations INDEXED BY chatgpt_obligations_due
             WHERE state NOT IN ('resolved','withdrawn_by_tejas') AND due_at_ms IS NOT NULL`).get() as {due:number|null};
         if (requestDue === Infinity && chatGptNext.due===null && !this.pendingAcceptedRecovery)
@@ -3250,5 +3252,5 @@ export class SessionCommunicationCoordinator {
         await this.reconciliation;
         await Promise.all([...this.tasks.values()]);
     } while (this.tasks.size || this.reconciliation || this.reconciliationDirty); }
-    async stop() { this.stopped = true; this.reconciliationDirty = false; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; const peerStop=this.dependencies.peers?.stop(); await this.reconciliation; await Promise.allSettled([...this.tasks.values()]); await peerStop; }
+    async stop() { this.stopped = true; this.reconciliationDirty = false; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; const peerStop=this.dependencies.peers?.stop(); await this.reconciliation; await Promise.allSettled([...this.tasks.values()]); await peerStop; this.healthyRechecks.clear(); this.nextRequestInspectionAt = 0; }
 }

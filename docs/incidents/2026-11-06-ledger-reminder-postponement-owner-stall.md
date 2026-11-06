@@ -32,8 +32,10 @@ Keep this optional next inspection in the coordinator's memory for fifteen minut
 The accepted request and any actual overdue event remain in the ledger. The request
 receipt reports the effective next inspection. A restart rechecks the still-due
 request against its current health; it does not replay a reminder or an accepted
-request. The timer also considers other stored deadlines, so one healthy request
-cannot hide another request that becomes due sooner. This change removes only the
+request. The due scan excludes requests already awaiting that memory recheck, and
+unrelated wakes skip the due scan until a deadline arrives. The timer also considers
+other stored deadlines, so one healthy request cannot hide another request that
+becomes due sooner. This change removes only the
 optional postponement write; it does not shorten a WAL sync or another ledger read.
 
 ## Acceptance scenario
