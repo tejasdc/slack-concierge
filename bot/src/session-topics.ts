@@ -4032,6 +4032,16 @@ function dispatchHomeTopic(dispatchId:string):string|null {
     ??db.query('SELECT thread_root_input_id AS root FROM session_peer_requests WHERE request_id=?').get(dispatchId)) as {root:string|null}|null;
   return topicOfRoot(`request:${dispatchId}`)??(root?.root?topicOfRoot(root.root):null);
 }
+/**
+ * Whether a dispatch linked into `fromTopicId` is owned by a request in its own, different home
+ * thread. A home placement alone is not ownership: only a request there that lists the dispatch
+ * keeps the work visible once the linking thread's request closes.
+ */
+function trackedInHomeThread(dispatchId:string,fromTopicId:string):boolean {
+  const home=dispatchHomeTopic(dispatchId);
+  if(!home||home===fromTopicId)return false;
+  return topicRequests(home).some(request=>request.dispatches.some((dispatch:any)=>String(dispatch.requestId)===dispatchId));
+}
 /** Retire migration-created bookkeeping requests through owner events, keeping their history. */
 export function retireRecoveredBookkeepingRequests() {
   const session=inboxSession();
@@ -4065,7 +4075,7 @@ export function retireRecoveredBookkeepingRequests() {
     if(!migration?.dispatches)continue;
     const initialIds=new Set((JSON.parse(migration.dispatches) as {requestId:string}[]).map(dispatch=>dispatch.requestId));
     const laterIds=request.dispatches.map((dispatch:any)=>String(dispatch.requestId)).filter(id=>!initialIds.has(id));
-    if(laterIds.some(id=>dispatchHomeTopic(id)===null||dispatchHomeTopic(id)===topicId))continue;
+    if(laterIds.some(id=>!trackedInHomeThread(id,topicId)))continue;
     const input=inputs.find(candidate=>candidate?.id===request.sources[0]!.inputId)!;
     const evidence=[`topic-migration:${request.sources[0]!.inputId}`,...roots];
     if(input.id.startsWith('return:')) {
@@ -4096,8 +4106,8 @@ export function retireRecoveredBookkeepingRequests() {
     }
     if(input.request_id)evidence.push(input.request_id);
     if(input.source_input_id)evidence.push(input.source_input_id);
-    const exactEvidence=[...new Set(evidence)];
     for(const id of laterIds)evidence.push(`request:${id}`);
+    const exactEvidence=[...new Set(evidence)];
     const at=nowIso(),reason='Recovered service notice is not a separate request from Tejas.';
     db.transaction(()=>{
       const topic=topicRow(topicId);

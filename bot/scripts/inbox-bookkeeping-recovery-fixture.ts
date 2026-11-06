@@ -79,10 +79,20 @@ try {
   const budgetNotice=`budget-room-v1:${randomUUID()}`;
   accepted('service',budgetNotice,'Claude allowance is almost used.');
   const serviceBudget=recovered(budgetNotice);
-  // A return whose thread later got a link to work owned by another thread: that thread keeps it.
+  // A return whose thread later got a link to work whose home thread's request lists it: that request keeps it.
+  const ownedWork=`request:${randomUUID()}`,ownedWorkId=ownedWork.slice('request:'.length);
+  accepted('agent',ownedWork,'Other delegated work, tracked in its own thread.',human,ownedWorkId);
+  const ownedRequest=recovered(ownedWork,[],ownedWorkId);
   const linkedReturn=`return:${randomUUID()}`;
-  accepted('service',linkedReturn,'The agent answered; the router linked the original work.',agentWork,agentWork.slice('request:'.length));
-  const linkedElsewhere=recovered(linkedReturn,[],agentWork.slice('request:'.length));
+  accepted('service',linkedReturn,'The agent answered; the router linked other work.',agentWork,agentWork.slice('request:'.length));
+  const linkedElsewhere=recovered(linkedReturn,[],ownedWorkId);
+  // Work homed in another thread whose request never listed it: closing here would hide it, so it stays open.
+  const untrackedWork=`request:${randomUUID()}`,untrackedWorkId=untrackedWork.slice('request:'.length);
+  accepted('agent',untrackedWork,'Delegated work placed but never linked.',human,untrackedWorkId);
+  const untrackedRequest=recovered(untrackedWork);
+  const untrackedReturn=`return:${randomUUID()}`;
+  accepted('service',untrackedReturn,'A return linked to untracked work.',agentWork,agentWork.slice('request:'.length));
+  const linkedUntracked=recovered(untrackedReturn,[],untrackedWorkId);
   // A settled reading item does not hold the thread open.
   const readReturn=`return:${randomUUID()}`;
   accepted('service',readReturn,'A return he already read.',agentWork,agentWork.slice('request:'.length));
@@ -95,7 +105,9 @@ try {
     assert.equal((db.query('SELECT state FROM inbox_requests WHERE request_id=?').get(requestId) as {state:string}).state,'closed');
   const linkedEvidence=JSON.parse((db.query('SELECT closure_json FROM inbox_requests WHERE request_id=?').get(linkedElsewhere) as {closure_json:string}).closure_json).evidence as string[];
   assert.ok(linkedEvidence.includes(`topic-migration:${linkedReturn}`));
-  assert.ok(linkedEvidence.includes(agentWork));
+  assert.ok(linkedEvidence.includes(ownedWork));
+  for(const requestId of [ownedRequest,untrackedRequest,linkedUntracked])
+    assert.equal((db.query('SELECT state FROM inbox_requests WHERE request_id=?').get(requestId) as {state:string}).state,'open');
   for(const requestId of [serviceReturn,serviceUpkeep]){
     const row=db.query('SELECT state,closure_json FROM inbox_requests WHERE request_id=?').get(requestId) as {state:string;closure_json:string};
     assert.equal(row.state,'closed');
@@ -106,7 +118,7 @@ try {
   }
   for(const requestId of [assignedUpkeep,agentRequest,mixedRoot,questionedRequest])
     assert.equal((db.query('SELECT state FROM inbox_requests WHERE request_id=?').get(requestId) as {state:string}).state,'open');
-  assert.equal((db.query('SELECT count(*) AS n FROM inbox_requests WHERE state=?').get('open') as {n:number}).n,5);
+  assert.equal((db.query('SELECT count(*) AS n FROM inbox_requests WHERE state=?').get('open') as {n:number}).n,8);
   console.log('Inbox bookkeeping recovery fixture passed: recovered service notices retired; human, agent, questioned and thread-owned later work stayed open.');
 } finally {
   rmSync(scratch,{recursive:true,force:true});
