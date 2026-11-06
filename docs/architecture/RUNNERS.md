@@ -438,7 +438,8 @@ Users: durable watches ([watches](WATCHES.md), `watch-machine.ts`, methods `watc
 
 Project reads use the same call channel (`runner-projects.ts`): `projects.list`, `projects.exists`,
 `projects.resolve`, `projects.locate`, `projects.files`, `projects.instructions`, `projects.file`, `projects.fileAt`,
-`projects.todos`, `projects.todos.update`, `projects.todos.append`, and `projects.worktrees`. The owner
+`projects.todos`, `projects.todos.update`, `projects.todos.append`, `projects.worktrees`, and
+`projects.shareStatus`. The owner
 sends a registered project name and a relative path; the runner
 resolves it under its own workspace (`CONCIERGE_WORKSPACE_ROOT`, default `~/workspace`). `projects.locate`
 can migrate an older absolute session folder by matching its registered project name and relative suffix;
