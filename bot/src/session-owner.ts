@@ -3791,7 +3791,8 @@ export class SessionOwner {
       if(duplicate)return {session:duplicate,reused:true};
       const session=createNativeSession(provider,{origin:'native',purpose:'chat',title:input.title.trim().slice(0,120),summary:purposeFromFirstWords(input.title),
         cwd:location?.cwd??cwd,project:location?.cwd??cwd,
-        ...(runner&&location&&account?{providerRunner:runner,providerAccount:account,projectName:location.project,projectPath:location.path}:{}),
+        ...(runner&&location&&account?{providerRunner:runner,providerAccount:account,projectName:location.project,projectPath:location.path}
+          :{providerRunner:null}),
         model:defaultModel.model,reasoningEffort:defaultModel.reasoning_effort,
         resurrection:{peer:input.sourcePeer??this.selfMachine,sessionId:input.sourceSessionId,address:input.sourceAddress,threadId:nativeId,archivedAt:new Date().toISOString(),archivePath:'',resurrectedAt:new Date().toISOString(),kind:'continued-in-place'}});
       bindSessionProvider(session.id,provider,nativeId);

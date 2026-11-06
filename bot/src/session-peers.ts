@@ -514,7 +514,7 @@ export class SessionPeers {
     }
     const created=options.createSession(provider,{origin:'reconstructed',purpose:view.purpose??'chat',title:`${view.title} (resurrected from ${peer})`,cwd:location.cwd,project:location.project,
       ...(location.providerRunner?{providerRunner:location.providerRunner,providerAccount:location.providerAccount,
-        projectName:location.projectName,projectPath:location.projectPath}:{}),
+        projectName:location.projectName,projectPath:location.projectPath}:{providerRunner:null}),
       ...(view.model?{model:view.model}:{}),...(view.reasoningEffort?{reasoningEffort:view.reasoningEffort}:{}),
       resurrection:{peer,sessionId:presented,address:`${peer}/${address}`,threadId,archivedAt:archived.archivedAt,archivePath:archived.path,resurrectedAt:new Date(this.now()).toISOString()}});
     options.bind(created.id,provider,threadId);

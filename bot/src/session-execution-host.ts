@@ -1801,10 +1801,6 @@ export class SessionExecutionHost {
           return {project:resolved.project,path:resolved.path};
         }));
         retained.runner=runner;retained.account=account;retained.location=location;retained.additionalLocations=additionalLocations;
-        if(pin.provider==='codex'){
-          const activation=await activateRunnerCodexAccount(runner,account,`native-fork:${operation.id}`,claim.turn_id) as any;
-          if(activation?.status!=='applied')throw new ProviderCapabilityUnavailableError('fork',activation?.detail??'The conversation’s Codex account could not be activated on its runner.');
-        }
         remoteCall={provider:pin.provider,account,sessionUUID:pin.parentSessionUUID,boundary:pin.boundary,
           threadSource:retained.threadSource,location,additionalLocations};
       }
@@ -2049,7 +2045,16 @@ export function chooseTurnRunner(session:SessionRow,metadata=sessionMetadata(ses
       WHERE execution.session_id=? AND execution.provider=?
       ORDER BY execution.created_at_ms DESC,attempt.started_at_ms DESC LIMIT 1`).get(session.id,session.provider_id) as
       {supervisor:string;runner:string|null}|null;
-    if(!prior)throw new Error(`This ${session.provider_id} conversation has no saved machine binding and no exact execution record; refusing to guess its home.`);
+    if(!prior){
+      // Older local copies predate the explicit local binding. A fork inherited its parent's
+      // machine; a local resurrection copied the transcript into this machine's provider home.
+      if(metadata.lineage&&session.parent_session_id){
+        const parent=getSessionById(session.parent_session_id);
+        if(parent?.provider_id===session.provider_id)return chooseTurnRunner(parent);
+      }
+      if(metadata.resurrection)return null;
+      throw new Error(`This ${session.provider_id} conversation has no saved machine binding and no exact execution record; refusing to guess its home.`);
+    }
     if(prior.supervisor===RUNNER_SUPERVISOR){
       if(!prior.runner)throw new Error(`This ${session.provider_id} conversation ran on a runner, but its exact runner lease is unavailable.`);
       return prior.runner;

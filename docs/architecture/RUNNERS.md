@@ -219,7 +219,9 @@ copy refuses the operation. Local-only peer conversations keep their existing lo
 Native forks use the same saved runner, account and project binding. The owner sends the native
 conversation ID, exact turn boundary, stable fork source and project identities; the runner resolves
 its own account home and project folders before asking Claude Code or its local Codex App Server to
-fork. Recovery searches that exact runner and account for a matching Codex fork. A lost runner
+fork. The new conversation records the fork's exact runner and account; a local copy records an
+explicit local binding. Codex forks check the daemon's account without changing its login while
+another turn may be running. Recovery searches that exact runner and account for a matching Codex fork. A lost runner
 answer remains uncertain instead of starting an owner-local fork. Check with
 `bun bot/scripts/runner-provider-fork-check.ts`.
 
