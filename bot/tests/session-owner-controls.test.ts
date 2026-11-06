@@ -58,6 +58,17 @@ test('real HTTP wrappers preserve first acceptance, duplicate receipt identity a
   expect(db.query('SELECT count(*) AS n FROM slack_user_input_claims').get()).toEqual({n:0});
 });
 
+test('full operation receipts publish ordered attachment custody metadata without changing request IDs',async()=>{
+  const first=await request(host.owner,'attachments',{clientActionId:randomUUID(),name:'first.txt',contentType:'text/plain',base64:Buffer.from('first').toString('base64')});
+  const second=await request(host.owner,'attachments',{clientActionId:randomUUID(),name:'second.png',contentType:'image/png',base64:Buffer.from('second').toString('base64')});
+  const descriptors=[second.body.attachment,first.body.attachment].map(({agentSource:_,...attachment}:any)=>attachment);
+  const created=host.owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',
+    firstInput:{text:'Keep both files',attachments:descriptors.map(file=>file.id)}});
+  expect(created.operation.request.firstInput.attachments).toEqual(descriptors.map(file=>file.id));
+  expect(created.operation.attachments).toEqual(descriptors);
+  expect((await request(host.owner,`operations/${created.operation.operationId}`)).body.attachments).toEqual(descriptors);
+});
+
 test('attachment custody downloads exact bytes and initial plus steering attachments reach the same provider',async()=>{
   const bytes=Buffer.from('Exact attachment bytes\n\u0000'),upload=await request(host.owner,'attachments',{clientActionId:randomUUID(),name:'notes.txt',contentType:'text/plain',base64:bytes.toString('base64')});
   expect(upload.status).toBe(200);

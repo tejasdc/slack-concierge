@@ -5,6 +5,7 @@ import {survivableRunKinds} from './execution-survival';
 import {modelDisplayName} from './aliases';
 import {noticeTime} from './notice-time';
 import {receiveSessionFromPeer} from './peer-identity';
+import {receiptAttachmentProjection,type ReceiptAttachment} from './receipt-attachments';
 
 type SourceInput={id:string;session_id:number;kind:string;origin:string;source_input_id:string|null;
   source_run_id:string|null;
@@ -16,7 +17,8 @@ type Turn=NonNullable<ReceiptTurnFacts>&{id:number;native_run_id:string|null;end
 type Steering=ReceiptSteeringFacts&{error:string|null};
 type Conversation={known:boolean;outcome:string|null;targetSessionId:string|null;targetAddress:string|null;
   sourceInputId:string|null;resultPreview:string|null;acknowledgedAt:string|null};
-export type ReceiptDynamicFacts={kind:'exact';statusDetail:InputStatusDetail|null;providerOutage:unknown|null;provenance?:unknown|null};
+export type ReceiptDynamicFacts={kind:'exact';statusDetail:InputStatusDetail|null;providerOutage:unknown|null;
+  attachments:readonly ReceiptAttachment[];attachmentCount:number;provenance?:unknown|null};
 type ThreadLink={thread:string;attached:boolean;routedBy:unknown}|null;
 export type PreparedReceipt=Readonly<{
   operationId:string;sessionId:string;inputId:string|null;requestId:string|null;runId:string|null;
@@ -25,6 +27,8 @@ export type PreparedReceipt=Readonly<{
   replyToMessage:unknown|null;routedBy:unknown|null;settlementOutcome:string|null;childSessionId:string|null;
   textPreview:string|null;resultPreview:string|null;errorPreview:string|null;errorCode:string|null;
   textTruncated:boolean;resultTruncated:boolean;errorTruncated:boolean;
+  attachments:readonly ReceiptAttachment[];
+  attachmentsCoverage:Readonly<{complete:boolean;count:number}>;
   provenance:unknown|null;
   statusDetail:{code:string;message:string;messageTruncated:boolean;clearsAt:string|null;automaticRetry:boolean}|null;
   providerOutage:unknown|null;statusCoverage:'complete'|'catching_up';nextRefreshAtMs:number|null;detail:{operationId:string};
@@ -104,7 +108,7 @@ export function compactReceiptFromFacts(input:SourceInput,turn:Turn|null,steerin
   const detail=dynamic.statusDetail;
   const detailMessage=preview(detail?.message,384);
   const textValue=preview(text),resultValue=preview(result),errorValue=preview(typeof error==='string'?error:error?.message);
-  const card:PreparedReceipt={operationId:input.id,sessionId:`concierge:${input.session_id}`,
+  let card:PreparedReceipt={operationId:input.id,sessionId:`concierge:${input.session_id}`,
     inputId:['input','create','consultation','comparison'].includes(input.kind)?input.id:
       ['request','reply'].includes(input.kind)?input.source_input_id:null,
     requestId:input.request_id,runId:input.kind==='stop'?payload.runId??null:control?null:turn?.native_run_id??null,
@@ -120,6 +124,7 @@ export function compactReceiptFromFacts(input:SourceInput,turn:Turn|null,steerin
     resultPreview:resultValue.text,errorPreview:errorValue.text,
     errorCode:typeof error==='object'&&error&&typeof error.code==='string'?preview(error.code,80).text:null,
     textTruncated:textValue.truncated,resultTruncated:resultValue.truncated,errorTruncated:errorValue.truncated,
+    attachments:[],attachmentsCoverage:{complete:false,count:dynamic.attachmentCount},
     provenance:dynamic.provenance??null,
     statusDetail:detail?{code:detail.code,message:detailMessage.text??'',messageTruncated:detailMessage.truncated,
       clearsAt:detail.clearsAt,automaticRetry:detail.automaticRetry}:null,
@@ -128,6 +133,15 @@ export function compactReceiptFromFacts(input:SourceInput,turn:Turn|null,steerin
       turn.dispatch_next_attempt_ms!==null&&turn.dispatch_next_attempt_ms>nowMs
       ?turn.dispatch_next_attempt_ms:null,
     detail:{operationId:input.id}};
+  // A bounded collection cannot contain an unbounded child collection. Carry the largest ordered
+  // prefix that fits; the existing exact detail reference owns the rare overflow.
+  for(const attachment of dynamic.attachments){
+    const candidate={...card,attachments:[...card.attachments,attachment]};
+    if(Buffer.byteLength(JSON.stringify(candidate))>4*1024)break;
+    card=candidate;
+  }
+  card={...card,attachmentsCoverage:{complete:card.attachments.length===dynamic.attachmentCount,
+    count:dynamic.attachmentCount}};
   // The list contract is a finite preview. A new field must not smuggle full retained text in.
   if(Buffer.byteLength(JSON.stringify(card))>4*1024)throw new Error('PREPARED_RECEIPT_EXCEEDS_BOUND');
   return card;
@@ -231,6 +245,9 @@ export function readCompactReceipt(source:Database,inputId:string):PreparedRecei
     WHERE session_id=? AND kind='thread_link' AND input_id=? ORDER BY sequence DESC LIMIT 1`)
     .get(input.session_id,input.id) as {payload_json:string}|null:null;
   const link=linkRow?json(linkRow.payload_json) as ThreadLink:null;
+  const attachmentProjection=receiptAttachmentProjection(source,input.kind,json(input.payload_json));
   return compactReceiptFromFacts(input,turn,steering,conversation,stopped?.status??null,
-    {kind:'exact',statusDetail,providerOutage,provenance:sourceProvenance(source,input)},nowMs,link);
+    {kind:'exact',statusDetail,providerOutage,attachments:attachmentProjection.attachments,
+      attachmentCount:attachmentProjection.count,
+      provenance:sourceProvenance(source,input)},nowMs,link);
 }

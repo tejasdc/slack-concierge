@@ -1,5 +1,7 @@
 import {Database} from 'bun:sqlite';
 import {readCompactReceipt} from '../src/prepared-receipt-core';
+import {PreparedReceipts,readPreparedReceiptChanges,readPreparedReceiptWindow} from '../src/prepared-receipts';
+import {receiptAttachmentProjection} from '../src/receipt-attachments';
 
 const db=new Database(':memory:');
 db.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,status TEXT,provider_id TEXT,native_metadata_json TEXT);
@@ -10,6 +12,7 @@ db.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,status TEXT,provider_id TE
   CREATE TABLE session_inputs(id TEXT PRIMARY KEY,session_id INTEGER,kind TEXT,origin TEXT,source_input_id TEXT,
     request_id TEXT,turn_id INTEGER,steering_id INTEGER,created_at TEXT,updated_at TEXT,
     payload_json TEXT,receipt_json TEXT);
+  CREATE TABLE session_attachments(id TEXT PRIMARY KEY,name TEXT,content_type TEXT,sha256 TEXT);
   CREATE TABLE turn_steering_messages(id INTEGER PRIMARY KEY,status TEXT,provider_sent_at TEXT,error TEXT);
   CREATE TABLE session_communication_requests(request_id TEXT PRIMARY KEY,target_input_id TEXT,payload_json TEXT,
     outcome TEXT,target_session_id INTEGER,source_input_id TEXT,result_json TEXT);
@@ -28,12 +31,20 @@ db.exec(`CREATE TABLE session_peer_deliveries(target_input_id TEXT,peer TEXT,ori
   origin_input_id TEXT,origin_run_id TEXT,requested_effect TEXT,origin_provenance_json TEXT);
   CREATE TABLE session_input_author_corrections(input_id TEXT PRIMARY KEY);`);
 db.query('INSERT INTO sessions VALUES(1,?,?,?)').run('active','claude-code','{}');
+db.query('INSERT INTO session_attachments VALUES(?,?,?,?)')
+  .run('attachment-1','held-note.txt','text/plain','a'.repeat(64));
+const crowdedAttachmentIds:string[]=[];
+for(let index=0;index<20;index++){
+  const id=`crowded-${index}`;crowdedAttachmentIds.push(id);
+  db.query('INSERT INTO session_attachments VALUES(?,?,?,?)')
+    .run(id,`${'long-name-'.repeat(28)}${index}.txt`,'text/plain',String(index).padStart(64,'0'));
+}
 db.query(`INSERT INTO turns(id,session_id,status,native_run_id,ended_at,provider_input_acknowledged_at,
   agent_text,dispatch_failure_class,dispatch_next_attempt_ms,dispatch_attempt,saved_kind,turn_kind) VALUES(1,1,?,?,?,?,?,?,?,?,?,?)`)
   .run('running','run-1',null,null,null,null,null,1,null,'native');
 db.query('INSERT INTO session_inputs VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
   .run('input-1',1,'input','human',null,null,1,null,'2026-10-08T00:00:00Z','2026-10-08T00:00:00Z',
-    JSON.stringify({text:'x'.repeat(20000)}),null);
+    JSON.stringify({text:'x'.repeat(20000),attachments:['attachment-1']}),null);
 db.query('INSERT INTO provider_retry_incarnation VALUES(1,?)').run('owner-a');
 db.query('INSERT INTO provider_retry_observations VALUES(1,?,?,?,?,?,?)')
   .run('owner-a',Date.now(),2,4,529,Date.now()+10000);
@@ -41,7 +52,21 @@ const receipt=()=>readCompactReceipt(db,'input-1')!;
 const expect=(condition:unknown,description:string)=>{if(!condition)throw new Error(description);};
 expect(receipt().statusDetail?.code==='PROVIDER_RETRYING','live retry remains visible');
 expect(receipt().statusDetail?.automaticRetry===true,'retry tells the truth about automatic retry');
+expect(JSON.stringify(receipt().attachments)===JSON.stringify([
+  {id:'attachment-1',name:'held-note.txt',contentType:'text/plain',sha256:'a'.repeat(64)}
+]),'compact receipt publishes ordered retained attachment metadata');
 expect(Buffer.byteLength(JSON.stringify(receipt()))<4096,'retained text remains outside receipt window');
+db.query('INSERT INTO session_inputs VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+  .run('crowded-input',1,'input','agent',null,null,null,null,'2026-10-08T00:00:30Z','2026-10-08T00:00:30Z',
+    JSON.stringify({text:'Many retained files',attachments:crowdedAttachmentIds}),JSON.stringify({state:'waiting'}));
+const crowded=readCompactReceipt(db,'crowded-input')!;
+expect(crowded.attachmentsCoverage.complete===false&&crowded.attachmentsCoverage.count===crowdedAttachmentIds.length,
+  'an unbounded attachment list becomes an explicit bounded prepared prefix');
+expect(crowded.attachments.length>0&&crowded.attachments.length<crowdedAttachmentIds.length,
+  'the bounded prepared prefix remains useful without pretending to be exhaustive');
+expect(Buffer.byteLength(JSON.stringify(crowded))<4096,'many long attachment names cannot overflow a prepared card');
+expect(receiptAttachmentProjection(db,'input',{attachments:crowdedAttachmentIds}).attachments.length===crowdedAttachmentIds.length,
+  'the exact attachment projection remains exhaustive');
 db.query('UPDATE provider_retry_incarnation SET incarnation=? WHERE singleton=1').run('owner-b');
 expect(receipt().statusDetail===null,'old owner retry is never shown after restart');
 db.query('UPDATE provider_retry_observations SET incarnation=? WHERE turn_id=1').run('owner-b');
@@ -78,4 +103,26 @@ db.query('INSERT INTO provider_outage_offers VALUES(?,?,?,?,?)')
   .run(1,JSON.stringify({offeredAt:'2026-10-08T00:00:00Z',provider:'claude-code',model:null,status:529,
     incident:{name:'x'.repeat(4000)},alternatives:[]}),null,null,null);
 expect(Buffer.byteLength(JSON.stringify(receipt()))<4096,'a large incident title cannot stall the projection');
+
+db.query('INSERT INTO session_inputs VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+  .run('held-input',1,'input','agent',null,null,null,null,'2026-10-08T00:03:00Z','2026-10-08T00:03:00Z',
+    JSON.stringify({text:'Held with its file',attachments:['attachment-1']}),JSON.stringify({state:'waiting'}));
+const prepared=new Database(':memory:'),projection=new PreparedReceipts(db,prepared),generation=projection.nextGeneration();
+projection.beginRebuild(generation);
+for(let after=0;;){const page=projection.rebuildPage(generation,after,20);after=page.lastRowid;if(!page.hasMore)break;}
+projection.activate(generation,100,'fixture-revision');
+const window=readPreparedReceiptWindow(prepared,1,100,null,40),held=window.operations.find(item=>item.operationId==='held-input');
+expect(held?.state==='waiting','historical held receipt rebuild preserves its waiting state');
+expect(held?.attachments[0]?.id==='attachment-1'&&held.attachments[0]?.sha256==='a'.repeat(64),
+  'prepared receipt window carries the retained attachment reference');
+const crowdedPrepared=window.operations.find(item=>item.operationId==='crowded-input');
+expect(crowdedPrepared?.attachmentsCoverage.complete===false&&crowdedPrepared.attachmentsCoverage.count===20,
+  'historical rebuild retains explicit incomplete coverage for an oversized attachment list');
+db.query("UPDATE session_inputs SET updated_at='2026-10-08T00:04:00Z' WHERE id='held-input'").run();
+projection.apply(generation,[{sequence:101,source_table:'session_inputs',row_key:'held-input',session_id:1,
+  input_id:'held-input',target_input_id:null,turn_id:null,request_id:null}]);
+projection.checkpoint(generation,101);
+const changes=readPreparedReceiptChanges(prepared,1,101,window.asOf,40),changed=changes.operations.find(item=>item.operationId==='held-input');
+expect(changed?.attachments[0]?.name==='held-note.txt'&&changed.attachments[0]?.contentType==='text/plain',
+  'prepared receipt change page carries the same retained attachment reference');
 console.log('receipt-projection: retry set, restart, clear, hold, readable ChatGPT failure and bounded preview passed');
