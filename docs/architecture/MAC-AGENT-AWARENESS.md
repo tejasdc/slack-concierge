@@ -106,14 +106,20 @@ provider-native user message, not a Concierge human input. The same retained Mac
 thread later issued the outside request that reached the server repair worker. The Mac
 owner independently reads that local Codex transcript and verifies the exact user
 message, later request command and owner receipt before it marks the one peer request
-as update-authorized. The accepted peer request must use action ID
-`mac-update-authorized-535c73c7` (which yields request ID
-`4e3ffc00-7347-49e6-8829-dfc9980d81ee`),
-come from the exact server worker
-and outside request, carry a work effect, and name the exact Safari web-app bundle,
-page and ready release. This evidence is kept separate from `originatingHuman`: an
+as update-authorized. Each accepted peer request must come from the exact server
+worker's still-running outside-request input and run, carry a work effect, and
+name the exact Safari web-app bundle, page and ready release. The Mac owner joins
+the currently open delivery by its own request ID and target input, so a failed
+request can be renewed with a fresh action ID without accepting a prose claim or
+replaying the same request ID. This evidence is kept separate from `originatingHuman`: an
 outside agent's statement that Tejas authorized an update does not turn into a human
 input. A missing or changed local transcript refuses the grant.
+
+The peer delivery row keeps the sender's local `concierge:9118` identity alongside
+peer `cloud`; provenance reads present that same session as `cloud:9118` on the Mac.
+The Mac guard uses the normalized source identity and joins the same exact delivery
+row by target input and request ID. Comparing the raw stored session to the
+normalized `cloud:9118` rejected the first exact passive request before Computer Use.
 
 For this grant, Computer Use may select the exact web app and make a same-program
 passive accessibility or screenshot read. Update clicks remain refused. Computer Use
