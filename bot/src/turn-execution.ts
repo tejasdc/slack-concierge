@@ -11,6 +11,7 @@ import {yieldBankedTurn} from './saved-work';
 import {recordSessionEvent,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {codexRelayRunner} from './codex-app-server-client';
 import {runnerMachineCall} from './runner-machine-calls';
+import {claudeAccountSelection} from './provider-account-selection';
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {homedir} from 'node:os';
@@ -624,11 +625,19 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     const claudeLaunchModel=input.providerId==='claude-code'
       ?input.model||getClaudePreferredModel(input.session.id,input.turnId)||null:null;
     runningClaudeModel=claudeLaunchModel;
-    const claudeChoice=input.providerId==='claude-code'
+    const remoteClaudeRunner=input.providerId==='claude-code'?input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER?.trim()||null:null;
+    const claudeChoice=input.providerId==='claude-code'&&!remoteClaudeRunner
       ?input.boundAccount?{...input.boundAccount,because:'spending-this-window' as const,expected:input.boundAccount.account,selectionRevision:sessionMetadata(input.session).claudeSelectionRevision??0}
         :chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0,input.turnId,claudeLaunchModel,warmClaudeCacheAccount)
       :null;
-    runningClaudeAccount=input.providerId==='claude-code'?(claudeChoice?.account??currentAccount('claude-code')?.label??null):null;
+    const savedClaudeAccount=sessionMetadata(input.session).providerAccount;
+    const selectedRemoteClaudeAccount=claudeAccountSelection()?.label??null;
+    const remoteClaudeIdentity=remoteClaudeRunner&&!savedClaudeAccount&&!selectedRemoteClaudeAccount
+      ?await runnerMachineCall<{id:string;label:string}|null>(remoteClaudeRunner,'accounts.identity',{provider:'claude-code'}):null;
+    runningClaudeAccount=input.providerId==='claude-code'
+      ?(remoteClaudeRunner?savedClaudeAccount??selectedRemoteClaudeAccount??remoteClaudeIdentity?.label??null
+        :claudeChoice?.account??currentAccount('claude-code')?.label??null):null;
+    if(remoteClaudeRunner&&!runningClaudeAccount)throw new Error(`Runner ${remoteClaudeRunner} could not identify a signed-in Claude account.`);
     if(input.providerId==='codex'){
       const metadata=sessionMetadata(input.session);
       const runner=metadata.providerAccount!==undefined
@@ -641,7 +650,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       runningCodexAccount=identity?.label??null;
       runningCodexRunner=metadata.providerAccount!==undefined?metadata.providerRunner??null:runner;
     }
-    const remoteProviderRunner=input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER?.trim()||null;
+    const remoteProviderRunner=remoteClaudeRunner;
     runningClaudeHome=remoteProviderRunner?null:claudeChoice?.home??null;
     const actualClaudeBrief=input.presentation==='native'&&!input.adopted&&runningClaudeAccount
       ?budgetBriefWithProviderRoom('claude-code',Date.now(),runningClaudeAccount):null;

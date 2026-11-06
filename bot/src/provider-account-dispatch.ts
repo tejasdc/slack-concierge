@@ -17,6 +17,7 @@ import {accountAvailability} from './provider-usage-forecast';
 import {claudeKeychainMayHoldLogin} from './claude-keychain';
 import {needClaudeSignInRenewal} from './signin-renewal';
 import {claudeAccountWorks,releaseAuthHold} from './provider-activation';
+import {providerRunnerTarget} from './provider-runner-target';
 
 /**
  * What an extra Claude home keeps for itself: its own login and the per-login state Claude writes
@@ -158,6 +159,7 @@ function provenOrProve(account:string,home:string):boolean{
  * moment of need held six turns at 2:54 AM on 2026-10-08 for the forty seconds the check took.
  */
 export function proveClaudeHomesAhead(accounts:readonly string[]):void{
+  if(providerRunnerTarget('claude-code'))return;
   for(const account of accounts){
     const home=sharedClaudeHome(account,undefined,false,false);
     if(home)provenOrProve(account,home);
@@ -170,6 +172,7 @@ export function proveClaudeHomesAhead(accounts:readonly string[]):void{
  * free while its home was signed out, and the hold notice promised work would "move to it by itself".
  */
 export function claudeAccountLaunchableHere(account:string):boolean{
+  if(providerRunnerTarget('claude-code'))return providerAccountUsage('claude-code')?.accounts.some(item=>item.label===account&&item.signedOut!==true)??false;
   if(!claudeRunsFromOwnHomes())return true;
   const home=sharedClaudeHome(account,undefined,false,false);
   if(!home)return false;
@@ -184,6 +187,7 @@ export function claudeAccountLaunchableHere(account:string):boolean{
  */
 export function claudeAccountAwaitingSignIn(account:string):boolean{
   if(!claudeRunsFromOwnHomes())return false;
+  if(providerRunnerTarget('claude-code'))return providerAccountUsage('claude-code')?.accounts.some(item=>item.label===account&&item.signedOut===true)??false;
   const profile=listProfiles('claude-code').find(item=>item.label===account);
   return !!profile&&claudeHomeSignedOut(accountHome('claude-code',profile.id));
 }
@@ -209,18 +213,23 @@ function accountUsedPercent(provider:AccountIdentityProvider,account:AccountUsag
  * logins are not files (the Mac keeps them in the Keychain) has no such homes and is unchanged.
  */
 export function claudeRunsFromOwnHomes():boolean {
-  return keptProfileCount('claude-code')>0;
+  return !!providerRunnerTarget('claude-code')||keptProfileCount('claude-code')>0;
 }
 
 /** The account selected for agents and its home, when that is one of the homes (never the main folder's login). */
 export function selectedClaudeHome():{label:string;home:string}|null {
   const selection=claudeAccountSelection();
   if(!selection||selection.profileId==='default')return null;
+  if(providerRunnerTarget('claude-code'))return {label:selection.label,home:`runner-account:${selection.label}`};
   return {label:selection.label,home:accountHome('claude-code',selection.profileId)};
 }
 
 /** The home a Claude account launches from: the selected account's complete home, or another proven one. */
 function launchableClaudeHome(account:string,selected:string|null,prepare:boolean,home?:string):string|null {
+  if(providerRunnerTarget('claude-code')){
+    const reading=providerAccountUsage('claude-code')?.accounts.find(item=>item.label===account);
+    return reading?.signedOut?null:`runner-account:${account}`;
+  }
   const complete=sharedClaudeHome(account,home,prepare,false);
   // The selected account was proven when he chose it and stays his choice across restarts; a
   // sign-in refusal from it holds the work for a sign-in. Proof only gates automatic moves.
@@ -231,7 +240,7 @@ export function savedWorkAccountRooms(provider:AccountIdentityProvider,usage:Pro
   // Codex turns all use the shared daemon. Other homes are read for usage and kept for
   // switching, but a banked turn cannot launch against one without changing that daemon.
   if(provider==='codex'||provider==='antigravity'){
-    const active=currentAccount(provider)?.label;
+    const active=currentAccount(provider)?.label??(provider==='codex'&&providerRunnerTarget('codex')?usage.accounts.find(item=>item.current)?.label:null);
     const account=usage.accounts.find(item=>item.label===active);
     if(!account)return [];
     const fresh=accountReadingFresh(provider,usage,account,now,undefined,model);
@@ -240,6 +249,11 @@ export function savedWorkAccountRooms(provider:AccountIdentityProvider,usage:Pro
       problem:!fresh?'Usage reading is stale.':account.problem}];
   }
   const ownHomes=provider==='claude-code'&&claudeRunsFromOwnHomes();
+  if(provider==='claude-code'&&providerRunnerTarget('claude-code')){
+    return usage.accounts.map(account=>({account:account.label,home:`runner-account:${account.label}`,isDefault:false,
+      tightestUsedPercent:accountReadingFresh(provider,usage,account,now,undefined,model)?accountUsedPercent(provider,account,model):null,
+      problem:accountReadingFresh(provider,usage,account,now,undefined,model)?account.problem:'Usage reading is stale.'}));
+  }
   const defaultLabel=ownHomes?null:currentAccount(provider)?.label;
   const selected=provider==='claude-code'?selectedClaudeHome()?.label??null:null;
   const profiles=listProfiles(provider);
@@ -284,7 +298,7 @@ export function claudeHeldWorkCanRun(model?:string|null):boolean{
 
 /** Bring a peer-discovered account with room into this machine's own login path. */
 export function requestMissingClaudeHomes(model?:string|null):void{
-  if(!claudeRunsFromOwnHomes())return;
+  if(!claudeRunsFromOwnHomes()||providerRunnerTarget('claude-code'))return;
   const local=new Set(listProfiles('claude-code').map(profile=>profile.label));
   for(const room of accountAvailability('claude-code',model))
     if(room.hasRoom&&!local.has(room.account))

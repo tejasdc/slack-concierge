@@ -8,6 +8,7 @@ import { ProviderLoginManager, type AuthLoginStartResult } from "./auth-login";
 import { codexUpdaterDisabled } from "./codex-updater-settings";
 import { holdCodexDaemonAutoStart } from "./codex-daemon-file-limit";
 import { CodexAppServerClient } from "./codex-app-server-client";
+import { useCodexResetCredit } from "./codex-reset-credit";
 
 type AccountProvider = "codex" | "claude-code";
 const providers = new Set<AccountProvider>(["codex", "claude-code"]);
@@ -452,6 +453,12 @@ export async function serveRunnerAccountCall(method: string, params: Record<stri
     const key = provider(params.provider);
     return runnerAccountIdentity(key);
   }
+  if (method === "accounts.validate") {
+    const key = provider(params.provider);
+    if (typeof params.account !== "string" || !params.account.trim()) throw new Error("A provider account label is required.");
+    const matches = runnerAccountHomes(key).filter(home => home.account === params.account);
+    return { available: matches.length === 1, resolution: matches.length === 1 ? "unique" : matches.length ? "ambiguous" : "missing" };
+  }
   if (method === "accounts.transcript") {
     const key = provider(params.provider);
     const account = params.account === null ? null : typeof params.account === "string" ? params.account : null;
@@ -476,5 +483,14 @@ export async function serveRunnerAccountCall(method: string, params: Record<stri
     return publicSignIn(signinOperations.get(id));
   }
   if (method === "accounts.codex.activate") return activateCodex(params);
+  if (method === "accounts.codex.resetCredit") {
+    const account = params.account, operationId = params.operationId;
+    if (typeof account !== "string" || !account.trim() || typeof operationId !== "string"
+      || !/^[A-Za-z0-9._:-]{8,160}$/.test(operationId))
+      throw new Error("A Codex account label and stable reset operation id are required.");
+    if (runnerAccountHomes("codex").filter(home => home.account === account).length !== 1)
+      throw new Error("The requested Codex account is not uniquely available on this runner.");
+    return useCodexResetCredit(account, operationId);
+  }
   throw new Error(`this runner does not answer ${method}`);
 }

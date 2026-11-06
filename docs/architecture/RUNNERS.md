@@ -39,7 +39,7 @@ Everything the owner assumes because agents run beside it. Each line names where
 | Execution hosts | `systemd-run` on the owner's machine, owner attaches to `host.sock`, reads the journal from disk | started by the runner; journal frames shipped to the owner as sequenced events (below) |
 | Shared Codex App Server | started by the owner's unit (`ExecStartPre`), reached over a local socket | started and supervised by the runner (built 2026-11-05) |
 | Claude transcript watch, provider history, handoff/resurrection writes into `~/.claude` and `~/.codex` | owner reads/writes its own home | runner-side, results sent as events |
-| Provider account homes, usage readings, sign-in CLIs | owner's home | runner-side API built in source; owner dispatch and live acceptance remain outstanding |
+| Provider account homes, usage readings, sign-in CLIs | owner's home | account identity, readings, sign-in and Codex reset-credit calls run on the selected runner; owner retains account selection, usage ledger and allowance holds |
 | Project folders, worktrees, `git` in checkouts, file watches, artifact folders, links judged by reading files | owner's disk (`/root/workspace`) | runner-side; jobs name a project, the runner resolves its folder |
 | Attachments passed by path (`/tmp/concierge-native-*`) | owner writes, agent reads | bytes travel in the job (or by digest from the owner); the runner writes them locally |
 | Thinkering capability socket (`/run/thinkering/session-capabilities.sock`) used by agents with curl | local socket | Thinkering's own authenticated HTTPS with the same run token, Thinkering's step 2 |
@@ -367,7 +367,9 @@ Why not a port on the runner: runners open none.
 `runner-provider-accounts.ts` is runner-safe: it reads that runner's credential files, provider
 CLIs and session folders; it does not import the owner's SQLite or usage ledger. The owner asks for
 `accounts.identity` and `accounts.readings`; the response contains account identity labels and
-usage snapshots, while the owner continues to store readings, choose an account and enforce holds.
+usage snapshots. The owner stores runner-tagged readings, chooses accounts and enforces holds;
+when the configured runner is unavailable, its prior snapshot remains visible with its original
+timestamp and cannot be refreshed from the owner's credential files.
 The runner resolves a provider account label to its own verified home before launching Claude Code.
 Home paths stay on that machine. `accounts.transcript` reports `unique`, `missing` or `ambiguous`
 for an exact provider session UUID and returns an account label only for one matching transcript.
@@ -381,20 +383,43 @@ provider is refused. If the runner restarts during sign-in, the pending operatio
 `interrupted`; the caller must start a new operation. If the runner is unreachable, the call has no
 answer and its outcome is unknown until the same operation ID is queried again.
 
+The owner stores only the selected runner, operation ID and optional saved profile ID in its
+pending sign-in row. After an owner restart it asks that same runner for the operation's status;
+it does not start a local provider CLI. A completed Codex login is activated under the owner's
+Codex admission hold, then the owner refreshes its usage ledger. Claude selection stores a stable
+account label; each remote Claude turn sends that label and the runner resolves its own home.
+Codex reset-credit redemption also runs on the runner after the owner sends the account label and
+a one-use operation ID. The runner returns its provider outcome; the owner remains responsible for
+clearing stale usage evidence and releasing held work only after a confirming reading.
+
 Codex account activation uses `accounts.codex.activate` with an operation ID. The owner wrapper
 holds Codex admission and refuses the switch while an active-turn count is nonzero or unreadable.
 The runner holds its App Server auto-start, moves only credential files, restarts its own daemon and
 asks that daemon to refresh and report the requested account. It rolls back on a definite failure;
 an unconfirmed rollback is durably `uncertain` and blocks another switch until reconciled. Repeating
-an operation ID returns its recorded result. These source paths have not yet been wired into the
-runner relay dispatcher or proved against real provider sign-in/restart behavior.
+an operation ID returns its recorded result. The dispatcher also exposes
+`accounts.codex.resetCredit`; the runner validates a unique account home and runs the provider's
+own redemption protocol there.
+
+Offline acceptance state card (source and isolated runner fixtures, not a live runner):
+
+- Verified: an exact provider/account identity resolves from runner-owned homes, and ambiguous
+  transcript ownership is refused.
+- Verified: duplicate sign-in start with the same operation ID returns the original outcome and
+  does not start another CLI operation.
+- Verified: the isolated sign-in check has no provider CLI available and reports a bounded failure;
+  no owner-side sign-in fallback is attempted by the remote route.
+- Unknown: provider-native interactive sign-in, owner restart recovery against a live runner,
+  Codex App Server account activation, reset-credit redemption, and held-work release after a
+  fresh live usage reading have not been exercised on AX41.
 
 | Capability | Source state | Verified here | Live runner |
 | --- | --- | --- | --- |
 | Account identity and verified home resolution | Implemented | Isolated credential-home check | Not checked |
 | Usage snapshot collection | Implemented | Bundles; no provider usage run | Not checked |
-| Sign-in start/status/complete | Implemented | Offline CLI refusal and duplicate start outcome | Not checked |
+| Sign-in start/status/complete and owner restart recovery | Implemented | Offline CLI refusal and duplicate start outcome; owner and runner bundles | Not checked |
 | Codex activation and owner admission hold | Implemented | Bundles; no daemon restart | Not checked |
+| Codex reset-credit redemption | Implemented | Runner bundle only; no provider redemption | Not checked |
 | Exact transcript resolution | Implemented | Unique, missing and ambiguous fixtures | Not checked |
 
 Users: durable watches ([watches](WATCHES.md), `watch-machine.ts`, methods `watch.*`). Turn artifacts need none: only the retired Slack presentation makes an artifact folder; a native turn makes none.
