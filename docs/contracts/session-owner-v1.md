@@ -95,6 +95,17 @@ applies the same reminder and stalled eligibility as local agent requests, so an
 unanswered outside request is not offered in every later run forever; the outside
 caller reads `stalled` by polling instead of receiving a return or notice.
 
+`POST /external/withdraw` accepts `{name,request_id,ask_action_id,action_id}` on the
+same root-private socket. The outside requester must name the exact retained request
+and its original ask action ID; the withdrawal action ID makes retries idempotent.
+The owner revokes the recipient's queued turn and its usage hold in the same ledger
+transaction that settles the outside request as `canceled`. It refuses the withdrawal
+if provider admission has begun, the target has run, or either identity differs; a
+refusal changes neither the request outcome nor the recipient input. `get` retains
+the cancellation receipt. Withdrawing the outside agent's attempt does not close the
+human request that prompted it. A repeated `ask` using the original action ID returns
+the canceled receipt and cannot redispatch the input.
+
 An outside name matches `^[a-z][a-z0-9-]{2,40}$`. Accepted input authorship carries
 `author.kind:"agent"` and `author.outsideAgent:{name,label}`; the label is
 `Outside agent · <name>`. It never claims a human or Concierge session identity.
