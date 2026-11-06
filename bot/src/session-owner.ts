@@ -23,6 +23,7 @@ import {SessionCapabilityError} from './session-capability-client';
 import {awaitingOutside,observeStorageOperation,storageObservationFailures,withStorageReadBudget,StorageReadBudgetError,type StorageWork} from './storage-observation';
 import {startStorageIntervals,takeStorageInterval} from './storage-interval';
 import {ownerGetPolicy} from './owner-get-policy';
+import {reportSourceChain,reportWindow} from './agent-report-reads';
 import {savedMessagePage,savedWorkListPage} from './owner-collection-pages';
 import {boundedChangedMessageIds,HISTORY_CHANGE_LIMIT} from './bounded-history-changes';
 import {historyContent,previewHistoryMessage} from './history-message-preview';
@@ -4030,7 +4031,11 @@ export class SessionOwner {
       }
       if(request.method==='GET'&&parts[0]==='presentation'&&['topics','questions'].includes(parts[1]??''))
         await closeQuestionsAnsweredByTodos(admission=>this.admit(admission),'inbox');
-      if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===1)result=this.inbox();
+      if(request.method==='GET'&&parts[0]==='reports'&&parts[1]==='chain'&&parts.length===3)
+        result=reportSourceChain(db,parts[2]!);
+      else if(request.method==='GET'&&parts[0]==='reports'&&parts[1]==='window'&&parts.length===2)
+        result=reportWindow(db,url.searchParams.get('since'),url.searchParams.get('until'));
+      else if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===1)result=this.inbox();
       else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='obligations'&&parts.length===2)result=openInboxObligations();
       else if(request.method==='POST'&&parts[0]==='mac-browser-fallback'&&parts.length===1)result=this.macBrowserFallback(body);
       else if(request.method==='GET'&&parts[0]==='focus-hold'&&parts.length===1)result=await this.focusHoldStatus();

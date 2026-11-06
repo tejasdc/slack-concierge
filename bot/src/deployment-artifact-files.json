@@ -2,6 +2,7 @@
   "format": 1,
   "controlBundles": {
     "control/bot/scripts/router-sessions.js": "bot/scripts/router-sessions.ts",
+    "control/bot/scripts/router-reports.js": "bot/scripts/router-reports.ts",
     "control/bot/scripts/mac-browser-fallback.js": "bot/scripts/mac-browser-fallback.ts",
     "control/bot/scripts/agent-claude-launch.js": "bot/scripts/agent-claude-launch.ts",
     "control/bot/scripts/agent-codex-launch.js": "bot/scripts/agent-codex-launch.ts",
