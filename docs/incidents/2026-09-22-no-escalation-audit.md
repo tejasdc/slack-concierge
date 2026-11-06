@@ -53,3 +53,19 @@ Tejas chose Astra-first over Fable-first later that morning. Concierge's
 per-turn prompt carries a summary so resumed sessions hear it on every run, and
 the Inbox states the directive in forwarded requests so a Claude run already in
 progress hears it too. See [delegation and escalation](../architecture/PROVIDER-SESSIONS.md#delegation-and-escalation).
+
+## Superseded, November 6, 2026
+
+The triggers, the no-guessing rule and the `Escalated:` announcement still
+stand. The investigator does not: Tejas replaced Astra-first with GPT-6 Sol on
+September 23 ("only get the big guns of Astra if … I'm complaining about the
+same issue like more than 3 times"), and ChatGPT Pro on his own subscription is
+now the first second opinion because it spends no Claude or Codex allowance.
+Astra needs three reports or failed fixes; Fable stands in only when the named
+model is unavailable. Two guards enforce it rather than instruction text: a new
+Fable or Astra session is refused without an escalation reason naming the
+trigger, and an Astra start is refused below the repeat threshold — both
+observed refusing on the installed release on November 6, 2026. Read the
+`model-selection` skill for the rule and
+[delegation and escalation](../architecture/PROVIDER-SESSIONS.md#delegation-and-escalation)
+for the alias table; this record is dated evidence, not current authority.
