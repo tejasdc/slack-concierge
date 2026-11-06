@@ -1,5 +1,5 @@
 import {onCodexHistoryChanged} from './codex-session-observer';
-import { codexAppServerReady, waitForCodexAppServerOrDrain } from "./codex-app-server-client";
+import { codexAppServerReady, codexRelayRunner, waitForCodexAppServerOrDrain } from "./codex-app-server-client";
 import {CODEX_PROCESS_REPORT_GRACE_MS,codexLeftoverProcesses,codexProcessStillRunning,type CodexLeftoverProcess} from './codex-leftover-processes';
 import {runnerMachineCall} from './runner-machine-calls';
 import {createHash} from 'node:crypto';
@@ -9,7 +9,7 @@ import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {basename,join} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
 import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,requeueProvenUnsentNativeChatGptTurn,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
-import {acceptedInputForTurn,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordRecoveredResultAttention,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {acceptedInputForTurn,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,providerRunnerForSession,recordRecoveredResultAttention,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
 import {flushPendingProviderProgressEvents} from './session-projection';
 import {recordResultTurnOutcome,recordUnsaidTurnOutcome} from './session-turn-outcome';
@@ -1226,11 +1226,15 @@ export class SessionExecutionHost {
     const channel=session.slack_channel_id?getChannel(session.slack_channel_id):null;
     const outsideCodex=session.provider_id==='codex'&&metadata.outside===true;
     const configuredRunner=process.env.CONCIERGE_TURN_RUNNER?.trim()||null;
-    const runnerTarget=metadata.providerRunner??(session.provider_id==='claude-code'&&turnRunsOnRunner(metadata)
-      ||session.provider_id==='antigravity'||outsideCodex?configuredRunner:null);
+    const providerRunner=chooseTurnRunner(session,metadata);
+    const runnerTarget=session.provider_id==='claude-code'||session.provider_id==='codex'?providerRunner
+      :metadata.providerRunner!==undefined?metadata.providerRunner
+      :session.provider_id==='antigravity'||outsideCodex?configuredRunner:null;
     // A runner-bound conversation resolves its stable project identity on that machine. Owner
     // absolute cwd paths are retained for presentation only and never go into a remote manifest.
     const onRunner=!adoption&&!!runnerTarget&&(session.provider_id==='claude-code'||session.provider_id==='antigravity'||outsideCodex);
+    if(onRunner&&providerRunnerForSession(session).status==='legacy'&&session.agent_session_uuid===null)
+      updateSessionMetadata(session.id,{providerRunner:runnerTarget});
     let cwd=this.cwd(session);
     if(onRunner) {
       const resolved=typeof metadata.projectName==='string'
@@ -1384,8 +1388,9 @@ export class SessionExecutionHost {
       interactionPolicy:metadata.interactionPolicy??'standard',
       ownerInstanceId:this.options.instanceId,dispatchAttempt:claim.dispatch_attempt,steeringController,closeSteering,cancellationController,
       providerEnvironment:{CONCIERGE_SOURCE_INPUT_ID:input.id,CONCIERGE_SOURCE_RUN_ID:nativeRunId(claim.turn_id),
-        CONCIERGE_ROUTER_ACTIONS:process.env.CONCIERGE_ROUTER_ACTIONS||join(homedir(),'.local','bin','router-actions.sh'),
-        CONCIERGE_CODEX_CLI:Bun.which('codex')||join(homedir(),'.local','bin','codex'),
+        ...(onRunner?{CONCIERGE_PROVIDER_RUNNER:runnerTarget!}:{
+          CONCIERGE_ROUTER_ACTIONS:process.env.CONCIERGE_ROUTER_ACTIONS||join(homedir(),'.local','bin','router-actions.sh'),
+          CONCIERGE_CODEX_CLI:Bun.which('codex')||join(homedir(),'.local','bin','codex')}),
         CONCIERGE_MAC_NEED:process.platform==='darwin'&&typeof payload.machineNeed?.kind==='string'?payload.machineNeed.kind:'',
         // A runner's agents can reach this owner only over its network entrance, with this run's token.
         ...(onRunner?agentRunEnvironment({turnId:claim.turn_id,sessionId:session.id},process.env,{network:true}):{})},
@@ -1779,4 +1784,24 @@ export function turnRunsOnRunner(metadata:{onRunner?:unknown},mode=process.env.C
   if(mode==='all')return true;
   if(mode==='off')return false;
   return metadata.onRunner===true;
+}
+
+/** Stable machine for this provider conversation; a legacy binding is never guessed from today's config. */
+export function chooseTurnRunner(session:SessionRow,metadata=sessionMetadata(session)):string|null {
+  const saved=providerRunnerForSession(session);
+  if(session.provider_id==='codex'){
+    const configured=codexRelayRunner();
+    if(saved.status==='bound'&&saved.runner!==configured)
+      throw new Error('This Codex conversation is bound to a different runner than the configured App Server.');
+    return saved.status==='bound'?saved.runner:configured;
+  }
+  if(saved.status==='bound')return saved.runner;
+  if(session.provider_id!=='claude-code')return null;
+  if(session.agent_session_uuid&&metadata.onRunner===true)
+    throw new Error('This Claude conversation has runner placement recorded but no exact runner identity.');
+  if(!turnRunsOnRunner(metadata))return null;
+  if(session.agent_session_uuid)return null;
+  const selected=process.env.CONCIERGE_TURN_RUNNER?.trim()||codexRelayRunner();
+  if(!selected)throw new Error('Claude runner placement is enabled, but no runner target is configured.');
+  return selected;
 }

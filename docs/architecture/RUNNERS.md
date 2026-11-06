@@ -39,7 +39,7 @@ Everything the owner assumes because agents run beside it. Each line names where
 | Execution hosts | `systemd-run` on the owner's machine, owner attaches to `host.sock`, reads the journal from disk | started by the runner; journal frames shipped to the owner as sequenced events (below) |
 | Shared Codex App Server | started by the owner's unit (`ExecStartPre`), reached over a local socket | started and supervised by the runner (built 2026-11-05) |
 | Claude transcript watch, provider history, handoff/resurrection writes into `~/.claude` and `~/.codex` | owner reads/writes its own home | runner-side, results sent as events |
-| Provider account homes, usage readings, sign-in CLIs | owner's home | runner-side; the owner keeps the allowance decision and receives readings |
+| Provider account homes, usage readings, sign-in CLIs | owner's home | runner-side API built in source; owner dispatch and live acceptance remain outstanding |
 | Project folders, worktrees, `git` in checkouts, file watches, artifact folders, links judged by reading files | owner's disk (`/root/workspace`) | runner-side; jobs name a project, the runner resolves its folder |
 | Attachments passed by path (`/tmp/concierge-native-*`) | owner writes, agent reads | bytes travel in the job (or by digest from the owner); the runner writes them locally |
 | Thinkering capability socket (`/run/thinkering/session-capabilities.sock`) used by agents with curl | local socket | Thinkering's own authenticated HTTPS with the same run token, Thinkering's step 2 |
@@ -209,7 +209,11 @@ Exact locations and a plan for every item below: [what still ties the owner to t
 - Google turns and outside Codex hosts stay local. Google's launch first reads the owner's own
   `~/.gemini` settings (the paid-credit guard), and an outside run's prompt file is written into the
   owner's state folder, which runners hide; both need the runner-side account step below first.
-- Provider account usage readings, sign-in commands and history writes read the owner's home.
+- Owner dispatch for provider account readings, sign-ins and Codex activation is not wired yet; the
+  runner-side source API below is not reachable until that dispatch lands.
+- The owner still starts held-usage and Claude account probes locally, reset-credit reads local
+  credentials, startup repairs the owner's Codex daemon, and the auth watcher watches owner
+  credential folders. These paths still need runner calls or runner events.
 - Project folders: the job names an absolute folder; a runner must have the same checkout layout, and
   the Claude command's hook settings name the owner's release path, so a runner on another machine
   needs the same release installed.
@@ -351,6 +355,41 @@ folder and release; a host record outside the runner's own `exec` folder is refu
 Why not the job protocol: these are reads and idempotent starts the owner already records and
 retries per poll; leases, events and fencing would add ledger writes to every five-second watch poll.
 Why not a port on the runner: runners open none.
+
+### Provider accounts on runners
+
+`runner-provider-accounts.ts` is runner-safe: it reads that runner's credential files, provider
+CLIs and session folders; it does not import the owner's SQLite or usage ledger. The owner asks for
+`accounts.identity` and `accounts.readings`; the response contains account identity labels and
+usage snapshots, while the owner continues to store readings, choose an account and enforce holds.
+The runner resolves a provider account label to its own verified home before launching Claude Code.
+Home paths stay on that machine. `accounts.transcript` reports `unique`, `missing` or `ambiguous`
+for an exact provider session UUID and returns an account label only for one matching transcript.
+
+Interactive sign-in uses `accounts.signin.start`, `.status` and `.complete`, keyed by one stable
+operation ID. A start returns the provider's one-time link and, for device sign-in, its code; the
+runner's durable journal stores only the operation ID, provider, outcome and account label. It never
+stores the link or pasted code. Retrying a start or completion with the same ID returns the recorded
+operation outcome and does not launch or submit twice. A different active sign-in for the same
+provider is refused. If the runner restarts during sign-in, the pending operation becomes
+`interrupted`; the caller must start a new operation. If the runner is unreachable, the call has no
+answer and its outcome is unknown until the same operation ID is queried again.
+
+Codex account activation uses `accounts.codex.activate` with an operation ID. The owner wrapper
+holds Codex admission and refuses the switch while an active-turn count is nonzero or unreadable.
+The runner holds its App Server auto-start, moves only credential files, restarts its own daemon and
+asks that daemon to refresh and report the requested account. It rolls back on a definite failure;
+an unconfirmed rollback is durably `uncertain` and blocks another switch until reconciled. Repeating
+an operation ID returns its recorded result. These source paths have not yet been wired into the
+runner relay dispatcher or proved against real provider sign-in/restart behavior.
+
+| Capability | Source state | Verified here | Live runner |
+| --- | --- | --- | --- |
+| Account identity and verified home resolution | Implemented | Isolated credential-home check | Not checked |
+| Usage snapshot collection | Implemented | Bundles; no provider usage run | Not checked |
+| Sign-in start/status/complete | Implemented | Offline CLI refusal and duplicate start outcome | Not checked |
+| Codex activation and owner admission hold | Implemented | Bundles; no daemon restart | Not checked |
+| Exact transcript resolution | Implemented | Unique, missing and ambiguous fixtures | Not checked |
 
 Users: durable watches ([watches](WATCHES.md), `watch-machine.ts`, methods `watch.*`). Turn artifacts need none: only the retired Slack presentation makes an artifact folder; a native turn makes none.
 
