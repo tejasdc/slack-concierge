@@ -57,6 +57,12 @@ function wordsOf(input: AcceptedSessionInput): string {
   return parts.join('\n');
 }
 
+function completeMessageWordsOf(input: AcceptedSessionInput): string[] {
+  let payload: any = {};
+  try { payload = JSON.parse(input.payload_json); } catch {}
+  return [payload.text, payload.content].filter((part): part is string => typeof part === 'string');
+}
+
 type Verdict = 'his' | 'not-his' | 'unverifiable';
 
 /**
@@ -64,19 +70,24 @@ type Verdict = 'his' | 'not-his' | 'unverifiable';
  * in the last thirty days (a thread's question can rest on an earlier message of his). Work whose
  * originating message lives on the other machine cannot be checked here and is taken as given.
  */
-function quoteVerdict(actorInputId: string, quote: string): Verdict {
+function quoteVerdict(actorInputId: string, quote: string, wholeMessageOnly = false): Verdict {
   const wanted = normalized(quote);
+  const matches = (input: AcceptedSessionInput) => {
+    if (wholeMessageOnly) return completeMessageWordsOf(input).some(words => normalized(words) === wanted)
+      || normalized(wordsOf(input)) === wanted;
+    return normalized(wordsOf(input)).includes(wanted);
+  };
   const actor = getAcceptedSessionInput(actorInputId);
   if (!actor) return 'unverifiable';
   const origin = humanAuthored(actor) ? actor : (() => {
     const human = sessionInputProvenance(actor)?.originatingHuman;
     return human ? getAcceptedSessionInput(human.inputId) : null;
   })();
-  if (origin && normalized(wordsOf(origin)).includes(wanted)) return 'his';
+  if (origin && humanAuthored(origin) && matches(origin)) return 'his';
   const provenance = humanAuthored(actor) ? null : sessionInputProvenance(actor);
   if (provenance?.peer || (provenance?.originatingHuman && !origin)) return 'unverifiable';
   const recent = db.query(`SELECT * FROM session_inputs WHERE origin='human' AND created_at >= datetime('now','-30 days') ORDER BY rowid DESC`).all() as AcceptedSessionInput[];
-  return recent.some(input => humanAuthored(input) && normalized(wordsOf(input)).includes(wanted)) ? 'his' : 'not-his';
+  return recent.some(input => humanAuthored(input) && matches(input)) ? 'his' : 'not-his';
 }
 
 /**
@@ -119,8 +130,10 @@ export function requireOnlyHeCan(kind: unknown, message = ONLY_HE_CAN_REQUIRED):
 export function requireHisWords(input: { actorInputId: string; hisWords?: string; whyNotAnswered?: string }, fieldNames = QUESTION_FIELDS_REQUIRED, decisionId?: string) {
   const hisWords = input.hisWords?.trim() ?? '', why = input.whyNotAnswered?.trim() ?? '';
   if (!hisWords || !why) throw new Error(fieldNames);
-  if (normalized(hisWords).split(' ').length < 2) throw new Error('His words must quote at least a phrase of his, not a single word.');
-  const verdict=quoteVerdict(input.actorInputId, hisWords);
+  const singleWord = !normalized(hisWords).includes(' ');
+  const verdict=quoteVerdict(input.actorInputId, hisWords, singleWord);
+  if (singleWord && verdict !== 'his')
+    throw new Error('A one-word quote must be the complete text of a retained message Tejas sent, not a fragment or an unverifiable message.');
   const decisionWords=decisionId?normalized(decisionSection(decisionRecord(decisionId),'Words')):'';
   if (decisionId ? verdict!=='his'&&!decisionWords.includes(normalized(hisWords)) : verdict==='not-his')
     throw new Error('His words must be copied exactly from a message Tejas sent (the one that started this work, or another of his from the last thirty days); these words are not in any of them.');
