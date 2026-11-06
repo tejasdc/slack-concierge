@@ -22,12 +22,17 @@ if (setup.role === 'sync') {
   const fd = openSync(walPath, 'r');
   const inode = fstatSync(fd).ino;
   port.postMessage({ ready: true });
-  port.on('message', (message: { id: number }) => {
+  port.on('message', (message: { id: number; sentAtMs?: number }) => {
+    const receivedAtMs = performance.timeOrigin + performance.now();
     const started = performance.now();
     try {
       if (statSync(walPath).ino !== inode) throw new Error('the write-ahead log was replaced');
+      const syncStarted = performance.now();
       fdatasyncSync(fd);
-      port.postMessage({ id: message.id, ms: performance.now() - started });
+      const fdatasyncMs = performance.now() - syncStarted;
+      port.postMessage({ id: message.id, ms: performance.now() - started,
+        queueMs: message.sentAtMs == null ? null : receivedAtMs - message.sentAtMs,
+        fdatasyncMs, postedAtMs: performance.timeOrigin + performance.now() });
     } catch (error) {
       port.postMessage({ id: message.id, error: error instanceof Error ? error.message : String(error) });
     }

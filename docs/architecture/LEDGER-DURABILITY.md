@@ -264,7 +264,15 @@ until those passages are indexed again.
 ## Signals
 
 - `GET /supervisor/ping` → `ledgerDurability`: mode, sync count, slow syncs, slowest and last sync
-  time, waiters, age of the sync in flight, unsynced changes, checkpoint counts. This is database
-  completion latency, kept apart from the owner's loop lag (`owner_event_loop_lag`).
+  time, last worker-queue, `fdatasync` and worker-to-owner delivery times, waiters, age of the sync
+  in flight, unsynced changes, checkpoint counts. The owner and worker timestamp messages on a
+  shared epoch to split a sync request into queueing before the worker receives it, the syscall itself,
+  and delivery after the worker posts its reply. Delivery includes time spent waiting for the
+  owner's event loop; compare it with `owner_event_loop_lag.storage` and the gateway's
+  `foreground_owner_dependency_delayed` header time to distinguish disk sync from owner admission.
+  Negative cross-thread intervals, which can result from a clock adjustment, are reported as
+  unknown. The remaining worker time includes the WAL-inode check. These timings change observation only:
+  the owner still releases waiters only after the worker reports a successful sync.
 - `ledger_durability_slow_sync` (warn, sync ≥ 1 s), `ledger_checkpoint` (each checkpoint, with
-  bytes, pressure and SQLite's result), `ledger_durability_started`, `ledger_durability_lost`, `ledger_durability_thread_failed`, `ledger_durability_sync_stalled`.
+  bytes, pressure and SQLite's result), `ledger_durability_started`, `ledger_durability_lost`, `ledger_durability_thread_failed`, `ledger_durability_sync_stalled`. A slow sync includes the same
+  queue, syscall and delivery fields alongside its established total and worker time.

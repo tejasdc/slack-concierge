@@ -23,7 +23,8 @@ const CHECKPOINT = { quietBytes: 64 * 1024 * 1024, forceBytes: 256 * 1024 * 1024
 
 type Waiter = { changes: number; resolve: () => void };
 const counters = { syncs: 0, slowSyncs: 0, slowestSyncMs: 0, lastSyncMs: 0, checkpoints: 0, slowestCheckpointMs: 0,
-  lastCheckpointAt: null as string | null, failure: null as string | null };
+  lastCheckpointAt: null as string | null, failure: null as string | null,
+  lastQueueMs: null as number | null, lastFdatasyncMs: null as number | null, lastDeliveryMs: null as number | null };
 /** Once the owner's connection stops syncing (`deferred`), it never syncs again for the life of
  * the process, and only a confirmed sync releases anything. A thread that fails is replaced while
  * waiters keep waiting: returning to synchronous commits would put the disk wait back on the loop. */
@@ -43,7 +44,7 @@ function pump() {
   const changes = totalChanges();
   if (changes <= synced) { settle(); return; }
   inFlight = { changes, since: performance.now(), loggedAt: performance.now() };
-  threads.sync.postMessage({ id: ++nextId });
+  threads.sync.postMessage({ id: ++nextId, sentAtMs: performance.timeOrigin + performance.now() });
 }
 
 /** Resolves once every ledger commit made before the call is on disk. Waiters resolve in call
@@ -119,7 +120,8 @@ function startThreads() {
     return;
   }
   threads = { sync, checkpoint };
-  sync.on('message', (reply: { ready?: boolean; id?: number; ms?: number; error?: string }) => {
+  sync.on('message', (reply: { ready?: boolean; id?: number; ms?: number; error?: string;
+    queueMs?: number | null; fdatasyncMs?: number; postedAtMs?: number }) => {
     if (threads?.sync !== sync) return;
     if (reply.ready) {
       // The sync thread holds its descriptor before any commit skips the sync, so a writeback
@@ -138,12 +140,19 @@ function startThreads() {
     if (!inFlight) return;
     if (reply.error) { fail('sync', `log sync failed: ${reply.error}`); return; }
     const ms = performance.now() - inFlight.since;
+    const deliveryMs = reply.postedAtMs == null ? null
+      : performance.timeOrigin + performance.now() - reply.postedAtMs;
     synced = Math.max(synced, inFlight.changes);
     inFlight = null;
     counters.syncs++; counters.lastSyncMs = Math.round(ms); counters.slowestSyncMs = Math.max(counters.slowestSyncMs, Math.round(ms));
-    // Database completion latency, kept apart from the owner's loop lag: a slow sync here is
-    // the disk being slow while the owner keeps working.
-    if (ms >= SLOW_SYNC_MS) { counters.slowSyncs++; log('warn', 'ledger_durability_slow_sync', { ms: Math.round(ms), sync_ms: Math.round(reply.ms ?? 0), waiters: waiters.length }); }
+    counters.lastQueueMs = reply.queueMs == null || reply.queueMs < 0 ? null : Math.round(reply.queueMs);
+    counters.lastFdatasyncMs = reply.fdatasyncMs == null ? null : Math.round(reply.fdatasyncMs);
+    counters.lastDeliveryMs = deliveryMs == null || deliveryMs < 0 ? null : Math.round(deliveryMs);
+    // The worker's syscall and the owner's callback can each be delayed independently.
+    if (ms >= SLOW_SYNC_MS) { counters.slowSyncs++; log('warn', 'ledger_durability_slow_sync', {
+      ms: Math.round(ms), sync_ms: Math.round(reply.ms ?? 0), queue_ms: counters.lastQueueMs,
+      fdatasync_ms: counters.lastFdatasyncMs, delivery_ms: counters.lastDeliveryMs, waiters: waiters.length,
+    }); }
     settle();
     pump();
   });
