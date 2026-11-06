@@ -1458,6 +1458,19 @@ export class SessionOwner {
   savedWorkList(cursor:string|null=null){return savedWorkListPage(db,cursor);}
   savedWorkControl(turnId:number,action:string,body:Record<string,unknown>){return updateSavedTurn(turnId,action,body);}
   private configuredProjectRunner():string|null { return process.env.CONCIERGE_TURN_RUNNER?.trim()||null; }
+  private async locateProject(location:string):Promise<{name:string;path:string;cwd:string;runner:string|null}> {
+    const runner=this.configuredProjectRunner();
+    if(runner) {
+      const located=await this.runnerProjectCall<{project:string;path:string;cwd:string}>('projects.locate',{location});
+      if(!located)throw new SessionOwnerError('The configured project runner did not resolve this project.',424,'PROJECT_RUNNER_UNAVAILABLE');
+      return {name:located.project,path:located.path,cwd:located.cwd,runner};
+    }
+    const local=sessionProject(this.defaultCwd,location,{inside:true});
+    if(!local)throw new SessionOwnerError('Project is unknown or unavailable. Choose an exact project from sessions projects; do not use the Inbox or another project as a fallback.');
+    const project=containingProject(this.defaultCwd,local.cwd);
+    if(!project)throw new SessionOwnerError('This folder is outside a registered project.');
+    return {name:project.name,path:relative(project.cwd,local.cwd),cwd:local.cwd,runner:null};
+  }
   private async runnerProjectCall<T>(method:string,params:Record<string,unknown>):Promise<T|null> {
     const runner=this.configuredProjectRunner();if(!runner)return null;
     try{return await runnerMachineCall<T>(runner,method,params);}
@@ -1470,9 +1483,14 @@ export class SessionOwner {
   }
   async projects() {
     const canvasTitles=this.projectSetup?.canvasProjectTitles();
-    const remote=await this.runnerProjectCall<{projects:{name:string;path:string}[]}>('projects.list',{});
-    const projects=remote?remote.projects.map(project=>({name:project.name,cwd:join(this.defaultCwd,project.path)})):sessionProjects(this.defaultCwd);
-    return {projects:projects.map(project=>({...project,...(canvasTitles?.has(project.name)?{canvasTitle:canvasTitles.get(project.name)}:{}),defaultProvider:project.name==='slack-inbox'?(claudeAllowanceHeld()?'codex':'cc-opus-1m'):configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)}))};
+    const remote=await this.runnerProjectCall<{workspaceRoot:string;projects:{name:string;path:string}[]}>('projects.list',{});
+    const projects=remote?remote.projects.map(project=>({name:project.name,cwd:join(remote.workspaceRoot,project.path)})):sessionProjects(this.defaultCwd);
+    return {projects:projects.map(project=>({...project,...(canvasTitles?.has(project.name)?{canvasTitle:canvasTitles.get(project.name)}:{}),defaultProvider:project.name==='slack-inbox'?(claudeAllowanceHeld()?'codex':'cc-opus-1m'):configuredProviderDefault(remote?this.managedProjectRecord(project.name)?.provider_default:getChannelByCodePath(project.cwd)?.provider_default)}))};
+  }
+  private managedProjectRecord(id:string) {
+    const rows=db.query('SELECT rowid AS rowId,* FROM channels WHERE code_path IS NOT NULL').all() as Array<{rowId:number;name:string;code_path:string;provider_default:string;slack_channel_id:string|null}>;
+    const matches=rows.filter(row=>row.name===id||basename(row.code_path)===id);
+    return matches.length===1?matches[0]!:null;
   }
   async standingAgents() {return {...standingAgentView(db,this.defaultCwd),hostTimers:await hostTimerView()};}
   private project(id:string) {
@@ -1485,15 +1503,19 @@ export class SessionOwner {
     if(!record)throw new SessionOwnerError('This trusted project has no canonical task record.',409,'PROJECT_METADATA_UNAVAILABLE');
     return {project,record};
   }
-  projectDefault(id:string,body:unknown) {
+  async projectDefault(id:string,body:unknown) {
     const input=object(body);only(input,['provider']);
     const selector=typeof input.provider==='string'?parseProviderSelector(input.provider):null;
     if(!selector)throw new SessionOwnerError('Choose a supported provider/model alias.');
-    const {project}=this.managedProject(id);
+    const remote=await this.runnerProjectCall<{project:string;path:string;cwd:string}>('projects.resolve',{project:id,path:''});
+    const project=remote?{name:remote.project,cwd:remote.cwd}:this.project(id);
+    const record=remote?this.managedProjectRecord(id):getChannelByCodePath(project.cwd);
+    if(!record)throw new SessionOwnerError('This trusted project has no canonical task record.',409,'PROJECT_METADATA_UNAVAILABLE');
     // Store the canonical alias so a deliberate Codex choice is never spelled
     // like the column's unset sentinel and silently re-read as the default.
     const stored=selector.effort?`${selector.alias}-${selector.effort}`:selector.alias;
-    updateManagedProjectProvider(project.cwd,stored);
+    if(remote)db.query('UPDATE channels SET provider_default=? WHERE rowid=?').run(stored,record.rowId);
+    else updateManagedProjectProvider(project.cwd,stored);
     return {project:{...project,defaultProvider:stored}};
   }
   /**
@@ -1518,17 +1540,11 @@ export class SessionOwner {
       }
     }
     if(machine===null&&this.configuredProjectRunner()) {
-      const runner=this.configuredProjectRunner()!;
-      const listed=await this.runnerProjectCall<{projects:{name:string;path:string}[]}>('projects.list',{});
-      if(listed&&typeof path==='string') {
-        const requested=expandHome(path);
-        const project=listed.projects.map(item=>({name:item.name,cwd:join(this.defaultCwd,item.path),runnerPath:item.path}))
-          .filter(item=>requested===item.cwd||requested.startsWith(item.cwd+sep)).sort((a,b)=>b.cwd.length-a.cwd.length)[0];
-        if(project) {
-          const relativePath=relative(project.cwd,requested);
-          try {return await this.runnerProjectCall<{file:WorkspaceFile}>('projects.file',{project:project.name,path:relativePath}) as {file:WorkspaceFile};}
-          catch(error){throw error;}
-        }
+      const remote=await this.runnerProjectCall<{workspaceRoot:string;matched:boolean;file?:WorkspaceFile}>('projects.fileAt',{path:expandHome(path)});
+      if(remote?.matched&&remote.file)return {file:remote.file};
+      if(remote&&remote.workspaceRoot!==''&&isAbsolute(remote.workspaceRoot)) {
+        const requested=expandHome(path),root=remote.workspaceRoot;
+        if(requested===root||requested.startsWith(root+sep))throw new SessionOwnerError('That file is not available on the configured project runner.',404,'FILE_UNAVAILABLE');
       }
     }
     try {return {file:readWorkspaceFile({machine:self,workspaceRoot:this.defaultCwd,path})};}
@@ -2190,15 +2206,13 @@ export class SessionOwner {
     return {provider:selected.provider,model:selected.model,reasoningEffort:selected.reasoning_effort,purpose:'develop',cwd,project:cwd,
       ...(input.provider==='auto'?{automaticProviderChoice:true,...(input.smallTask?{automaticSmallTask:true}:{})}:{})};
   }
-  create(body:unknown) {
+  async create(body:unknown) {
     const input=object(body);only(input,['clientActionId','provider','purpose','title','workflowId','project','model','reasoningEffort','firstInput','door','savedWork']);
     const savedWork=input.savedWork===undefined?null:object(input.savedWork);
     if(savedWork){only(savedWork,['kind','atMs','expiresAtMs','repeatEveryMs','quietOnly']);if(!input.firstInput||!input.title||input.provider==='chatgpt'||!['scheduled','banked'].includes(savedWork.kind))
       throw new SessionOwnerError('Saved work needs a named new coding session and its first input.');}
     if(savedWork?.quietOnly!==undefined&&(savedWork.kind!=='banked'||savedWork.quietOnly!==true))
       throw new SessionOwnerError('Quiet-only is an explicit banked-work choice.');
-    if(savedWork?.repeatEveryMs!==undefined&&(!input.project||typeof input.project!=='string'||!canOwnStandingWork(this.defaultCwd,sessionProject(this.defaultCwd,input.project,{inside:true})?.cwd)))
-      throw new SessionOwnerError(STANDING_WORK_REFUSAL,409,'STANDING_WORK_PROJECT_REQUIRED');
     if(input.door!==undefined&&(typeof input.door!=='string'||!input.door.trim()||input.door.length>60))throw new SessionOwnerError('A door is a short label of how the message came in.');
     const title=normalizeSessionTitle(input.title);
     const action=actionId(input);
@@ -2208,6 +2222,9 @@ export class SessionOwner {
     if(input.provider==='auto'&&(input.model!==undefined||input.reasoningEffort!==undefined))throw new SessionOwnerError('Choose a provider before setting its model or effort.');
     if(input.purpose==='develop'&&input.project===undefined)throw new SessionOwnerError('Development sessions require an explicit project.');
     if(input.project!==undefined&&typeof input.project!=='string')throw new SessionOwnerError('Choose an exact project from the project list.');
+    const project=input.project===undefined?null:await this.locateProject(input.project);
+    if(savedWork?.repeatEveryMs!==undefined&&(!project||!canOwnStandingWork(this.defaultCwd,this.managedProjectRecord(project.name)?.code_path??project.cwd)))
+      throw new SessionOwnerError(STANDING_WORK_REFUSAL,409,'STANDING_WORK_PROJECT_REQUIRED');
     if(input.model!==undefined){
       if(typeof input.model!=='string'||!input.model.trim())throw new SessionOwnerError('Select a supported provider model.');
       const supported=new Set(Object.values(PROVIDER_ALIASES).filter(alias=>alias.provider===input.provider).map(alias=>alias.model));
@@ -2226,21 +2243,19 @@ export class SessionOwner {
         if(existing.kind!=='create'||stablePayload(kept)!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);
         return existing;
       }
-      const project=input.project===undefined?null:sessionProject(this.defaultCwd,input.project,{inside:true});
-      if(input.project!==undefined&&!project)throw new SessionOwnerError('Choose an exact project from the project list.');
       const provider=input.provider==='auto'?automaticProvider(provider=>this.runtime.available(provider),action):input.provider as ProviderId;
       if(provider==='claude-code'&&claudeAllowanceHeld())throw new SessionOwnerError(CLAUDE_ALLOWANCE_HOLD_MESSAGE,409,'CLAUDE_ALLOWANCE_HELD');
       if(input.firstInput?.canvasContext&&provider!=='codex')throw new SessionOwnerError('Argument-map think-aloud requires an ordinary Codex session.',409,'CAPABILITY_UNAVAILABLE');
       const providerDefault=input.provider==='auto'?resolveProviderAlias(AUTOMATIC_PROVIDER_ALIASES[provider as AutomaticProvider]):
         provider==='codex'?resolveProviderDefault('codex'):
         provider==='antigravity'?resolveProviderAlias('google'):null;
-      const preferred=project&&provider!=='chatgpt'?parseProviderSelector(configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)):null;
+      const preferred=project&&provider!=='chatgpt'?parseProviderSelector(configuredProviderDefault(project.runner?this.managedProjectRecord(project.name)?.provider_default:getChannelByCodePath(project.cwd)?.provider_default)):null;
       const selected=preferred?resolveProviderSelector(preferred):null;
       const defaults=input.provider!=='auto'&&selected?.provider===provider?{model:selected.model,reasoningEffort:selected.reasoning_effort}:{};
       if(savedWork&&!this.runtime.available(provider))throw new SessionOwnerError(`${provider} start unavailable; saved work was not created.`,409);
       const session=createNativeSession(provider,{title,summary:purposeFromFirstWords(input.firstInput?.text)??(title?undefined:'A conversation you started that has no message yet.'),purpose:input.purpose,workflowId:input.workflowId,cwd:project?.cwd??this.defaultCwd,
         ...(input.provider==='auto'?{automaticProviderChoice:true}:{}),
-        ...(providerDefault?{model:providerDefault.model,reasoningEffort:providerDefault.reasoning_effort}:{}),...(project?{project:project.cwd}:{}),...defaults,...(input.model?{model:input.model}:{}),...(input.reasoningEffort?{reasoningEffort:input.reasoningEffort}:{})});
+        ...(providerDefault?{model:providerDefault.model,reasoningEffort:providerDefault.reasoning_effort}:{}),...(project?{project:project.cwd,projectName:project.name,projectPath:project.path,...(project.runner?{providerRunner:project.runner}:{})}:{}),...defaults,...(input.model?{model:input.model}:{}),...(input.reasoningEffort?{reasoningEffort:input.reasoningEffort}:{})});
       this.validateAttachments(session,input.firstInput?.attachments);
       const operation=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:action,kind:'create',origin:'human',payload:input}).input;
       const recorded=this.recordCreation(session,operation,!!input.firstInput);
@@ -4065,7 +4080,7 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='files'&&parts.length===1) result=await this.file(url.searchParams.get('path'),url.searchParams.get('machine'));
       else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='instructions'&&parts.length===3) result=await this.projectInstructions(parts[1]!);
       else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='todos'&&parts.length===3) result=await this.projectTodos(parts[1]!);
-      else if(request.method==='POST'&&parts[0]==='projects'&&parts[2]==='default'&&parts.length===3) result=this.projectDefault(parts[1]!,body);
+      else if(request.method==='POST'&&parts[0]==='projects'&&parts[2]==='default'&&parts.length===3) result=await this.projectDefault(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[2]==='todos'&&parts.length===3) result=await this.updateProjectTodos(parts[1]!,body);
       // The selectable models, so a client picker never keeps its own list. Derived from
       // the alias table, so it cannot disagree with what a session can actually run.
@@ -4199,7 +4214,7 @@ export class SessionOwner {
       }
       else if(request.method==='GET'&&parts[0]==='runs'&&parts.length===2)result={run:this.run(parts[1]!)};
       else if(request.method==='GET'&&parts[0]==='attachments'&&parts.length===2)result=this.attachment(parts[1]!);
-      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===1) result=this.create(body);
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===1) result=await this.create(body);
       else if(request.method==='POST'&&parts[0]==='canvas-observations'&&parts.length===1) result=this.createCanvasObservation(body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='canvas-observations') result=this.appendCanvasObservation(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='journal'&&parts[1]==='observations'&&parts.length===2) result=this.submitJournalObservation(body);
