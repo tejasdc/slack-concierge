@@ -1148,6 +1148,16 @@ export function listTopics(options:{state?:string|null;order?:string|null;query?
     sorting:sortingCaptures(session,index),asOf:nowIso()};
 }
 
+/** How many human obligations are open, for the Open requests chip. One indexed count, so a list
+ * that changes while he watches can ask again cheaply; the full view below rebuilds each request's
+ * owner and waiting reason (about 15,800 statements and 5 s for 405 requests on 2026-11-05) and is
+ * read only when he opens the list itself. Both count the same rows: every open request. */
+export function openInboxObligationCount() {
+  inboxOrThrow();
+  const {count}=db.query(`SELECT COUNT(*) AS count FROM inbox_requests WHERE state='open'`).get() as {count:number};
+  return {count,asOf:nowIso(),items:[] as never[],view:'count' as const};
+}
+
 /** One bounded view of every open human obligation, independent of thread-list paging. */
 export function openInboxObligations() {
   const inbox=inboxOrThrow();

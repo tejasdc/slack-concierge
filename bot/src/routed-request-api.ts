@@ -27,6 +27,7 @@ import {resolveDeploymentReactionTargets} from './deployment-reaction-provenance
 import {releaseFilesInUse} from './executions';
 import {enrollNativePipelineContinuation,tickNativePipelineContinuation} from './native-pipeline-continuation-owner';
 import {runnerRoutes} from './runner-routes';
+import {activeGrafanaAlerts,type GrafanaRecoveryEvidence} from './grafana-alerts';
 
 function requestFailure(request:Request,error:unknown):Response {
   const transient=isTransientDatabaseError(error);
@@ -191,6 +192,18 @@ function localOwnerRequest(shared:(request:Request)=>Promise<Response>,sessions?
         return Response.json(await owner.refreshAuthEphemera());
       if(request.method==='GET'&&url.pathname==='/supervisor/ping')
         return Response.json({ok:true,pid:process.pid,startedAt,release,logging:logSinkCounters(),ledgerDurability:ledgerDurabilityCounters()});
+      // The outside Grafana reconciler (remote-box) reads retained firing episodes and submits
+      // recoveries Grafana recorded but whose notification this receiver never accepted.
+      if(url.pathname==='/grafana/v1/firing'||url.pathname==='/grafana/v1/recoveries'){
+        const alerts=activeGrafanaAlerts();
+        if(!alerts)return Response.json({error:'alert_receiver_unavailable'},{status:503});
+        if(request.method==='GET'&&url.pathname==='/grafana/v1/firing')return Response.json({episodes:alerts.firing()});
+        if(request.method==='POST'&&url.pathname==='/grafana/v1/recoveries'){
+          const result=alerts.reconcileRecovery(await request.json() as GrafanaRecoveryEvidence);
+          return Response.json(result,{status:result.status});
+        }
+        return Response.json({error:'method_not_allowed'},{status:405});
+      }
       if(request.method==='GET'&&url.pathname==='/internal/deployment-last-known-good'&&owner)
         return Response.json(getLastKnownGoodRelease());
       if(request.method==='GET'&&url.pathname==='/internal/deployment-release-files-in-use'&&owner)
