@@ -12,7 +12,7 @@ import {strict as assert} from 'node:assert';
 delete process.env.THINKERING_CAPABILITY_URL;
 import {chmod,mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {existsSync,readFileSync} from 'node:fs';
-import {tmpdir} from 'node:os';
+import {homedir,tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 
 if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
@@ -82,13 +82,14 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
     // the owner is in its connection file (runner-machine.ts).
     const runnerState=join(root,'runner');
     const {withoutMachinePaths,readRunnerConnection}=await import('../src/runner-machine');
-    const ownerShell=withoutMachinePaths({PATH:'/owner/bot/scripts:/usr/bin',CONCIERGE_STATE_DIR:'/owner/state',CONCIERGE_ROUTER_BOT_DIR:'/owner/bot',CONCIERGE_TURN_ID:'9'});
+    const ownerShell=withoutMachinePaths({PATH:'/owner/bot/scripts:/usr/bin',CONCIERGE_STATE_DIR:'/owner/state',CONCIERGE_ROUTER_BOT_DIR:'/owner/bot',CONCIERGE_ROUTER_ACTIONS:'/owner/bot/scripts/router-actions.sh',CONCIERGE_TURN_ID:'9'});
     const started=await client.request('thread/start',{cwd:root,config:{shell_environment_policy:{inherit:'all',set:ownerShell}}},{requestTimeoutMs:10_000});
     const set=started.received.config.shell_environment_policy.set;
     assert.equal(set.CONCIERGE_TURN_ID,'9');
     assert.equal(set.CONCIERGE_STATE_DIR,runnerState);
     assert.equal(set.CONCIERGE_RUNNER_STATE,runnerState);
     assert.equal(set.CONCIERGE_ROUTER_BOT_DIR,resolve(import.meta.dir,'..'));
+    assert.equal(set.CONCIERGE_ROUTER_ACTIONS,join(homedir(),'.local','bin','router-actions.sh'));
     assert.ok(set.PATH.startsWith(`${resolve(import.meta.dir,'..')}/scripts:`),set.PATH);
     assert.ok(!JSON.stringify(set).includes('/owner/'),'An owner folder reached the runner\'s App Server.');
     const consulted=await client.request('thread/start',{cwd:root,config:{shell_environment_policy:{inherit:'none',set:{}}}},{requestTimeoutMs:10_000});

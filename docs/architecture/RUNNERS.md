@@ -318,6 +318,16 @@ service sets `CONCIERGE_CODEX_RUNNER=ax41` again now that a failed Codex probe c
 owner. On 2026-11-05 each failing owner had exited about 0.1 s after its gateway opened, while the
 runner retries its listen channel every 5 s, so the channel could not reconnect before the exit.
 
+## Agent session commands
+
+The session command named in agent instructions resolves to the wrapper installed in that
+machine's `~/.local/bin`, outside release directories. The owner sets this path for local
+provider turns; a runner replaces the owner's machine path with its own before launching a
+Claude turn or relaying a Codex thread. The wrapper routes server session commands to the
+current installed command parser. A release's `control/bot/scripts` contains the parser and
+other helpers, but no `router-actions.sh` wrapper. See the [missing command path failure
+record](../incidents/2026-11-06-injected-session-command-path.md).
+
 ## Agents' thnkr.ing calls
 
 Agent wording (canvas think-aloud, the `--todo` hint) names the release's `thinkering` helper

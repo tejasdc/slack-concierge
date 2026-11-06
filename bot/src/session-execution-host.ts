@@ -129,6 +129,7 @@ import {claudeAccountCachedReset,clearCodexAccountUsage,releaseCodexOrdinaryUsag
 import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
 import {readFileSync,realpathSync,writeFileSync} from 'node:fs';
 import {providerOwnerEnvironment} from './provider-owner-environment';
+import {installedRouterActionsPath} from './session-command-path';
 import {pinCodexThreadHooks} from './hook-pins';
 import {HostedClaudeCodeTransport,HostUnavailableError,claudeExecutable,executionDirectory,executionHostsEnabled,newExecutionId,streamJournal} from './execution-host-client';
 import {RUNNER_SUPERVISOR,RunnerHostAccess} from './runner-host-access';
@@ -1600,7 +1601,7 @@ export class SessionExecutionHost {
       ownerInstanceId:this.options.instanceId,dispatchAttempt:claim.dispatch_attempt,steeringController,closeSteering,cancellationController,
       providerEnvironment:{CONCIERGE_SOURCE_INPUT_ID:input.id,CONCIERGE_SOURCE_RUN_ID:nativeRunId(claim.turn_id),
         ...(onRunner?{CONCIERGE_PROVIDER_RUNNER:runnerTarget!}:{
-          CONCIERGE_ROUTER_ACTIONS:process.env.CONCIERGE_ROUTER_ACTIONS||join(homedir(),'.local','bin','router-actions.sh'),
+          CONCIERGE_ROUTER_ACTIONS:installedRouterActionsPath(),
           CONCIERGE_CODEX_CLI:Bun.which('codex')||join(homedir(),'.local','bin','codex')}),
         CONCIERGE_MAC_NEED:process.platform==='darwin'&&typeof payload.machineNeed?.kind==='string'?payload.machineNeed.kind:'',
         // A runner's agents can reach this owner only over its network entrance, with this run's token.

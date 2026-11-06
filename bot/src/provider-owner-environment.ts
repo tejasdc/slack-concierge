@@ -1,6 +1,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { resolveRuntimeProfile } from "./runtime-profile";
+import { installedRouterActionsPath } from "./session-command-path";
 
 function routerBotDirectory(environment: NodeJS.ProcessEnv, moduleDirectory: string, installedProduction: boolean): string {
   // The Mac runs from a checkout its updates rewrite, so its runs use the helpers built for the
@@ -44,6 +45,7 @@ export function providerOwnerEnvironment(
     CONCIERGE_STATE_DIR: stateDirectory,
     CONCIERGE_STATE_DB: join(stateDirectory, "state.db"),
     CONCIERGE_ROUTER_BOT_DIR: botDirectory,
+    CONCIERGE_ROUTER_ACTIONS: installedRouterActionsPath(),
     CONCIERGE_BUN_BIN: environment.CONCIERGE_BUN_BIN ?? process.execPath,
     CONCIERGE_RUNTIME_PROFILE: runtime.profile,
     CONCIERGE_SLACK_ENABLED: runtime.slackConfigPath === null ? "0" : "1",
