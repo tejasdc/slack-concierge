@@ -8,6 +8,7 @@ import {log} from './log';
 // occupied ms], ms since `origin`.
 const shared=new Int32Array(workerData.shared as SharedArrayBuffer);
 const times=new Float64Array(workerData.times as SharedArrayBuffer);
+const statement=new Int32Array(workerData.statement as SharedArrayBuffer);
 const origin=workerData.origin as number;
 const labels:string[]=[...(workerData.labels as string[])];
 parentPort?.on('message',(message:{id:number;label:string})=>{labels[message.id]=message.label;});
@@ -25,6 +26,14 @@ function taskFile(name:string):string|null {
   try {return readFileSync(`${ownerTask}/${name}`,'utf8');} catch {return null;}
 }
 type ThreadReads={calls:number;chars:number;diskBytes:number};
+type StatementSample={at:number;version:number;fingerprint:string;reads:ThreadReads;state:string;syscall:string};
+function currentStatement():{version:number;fingerprint:string}|null {
+  const version=Atomics.load(statement,0);
+  if(version&1||!Atomics.load(statement,3))return null;
+  const high=Atomics.load(statement,1),low=Atomics.load(statement,2);
+  if(version!==Atomics.load(statement,0))return null;
+  return {version,fingerprint:(high>>>0).toString(16).padStart(8,'0')+(low>>>0).toString(16).padStart(8,'0')};
+}
 function threadReads():ThreadReads|null {
   const counters=taskFile('io');
   if(!counters)return null;
@@ -60,12 +69,37 @@ function threadEvidence(samples:ThreadSample[]) {
     thread_states:counts('state'),thread_wait_channels:counts('wchan'),thread_syscalls:counts('syscall')};
 }
 
+/** Only a contiguous, unchanged statement identity is attributed. These periodic samples
+ * are an interval inside the statement, not its exact begin/end or a syscall trace. */
+function statementEvidence(samples:StatementSample[],truncated:boolean) {
+  let longest:StatementSample[]=[];
+  for(let i=0;i<samples.length;){
+    let end=i+1;
+    while(end<samples.length&&samples[end]!.version===samples[i]!.version)end++;
+    if(end-i>longest.length)longest=samples.slice(i,end);
+    i=end;
+  }
+  const first=longest[0],last=longest.at(-1);
+  if(!first||!last||longest.length<2||last.reads.calls<first.reads.calls||last.reads.chars<first.reads.chars||last.reads.diskBytes<first.reads.diskBytes)
+    return {statement_reads_available:false,statement_sample_count:longest.length,statement_history_truncated:truncated};
+  return {statement_reads_available:true,statement_fingerprint:first.fingerprint,
+    statement_sample_span_ms:Math.round(last.at-first.at),statement_sample_count:longest.length,
+    statement_history_truncated:truncated,
+    statement_read_calls:last.reads.calls-first.reads.calls,
+    statement_read_chars:last.reads.chars-first.reads.chars,
+    statement_disk_read_bytes:last.reads.diskBytes-first.reads.diskBytes,
+    // Cumulative read calls show whether the long D-state interval contains one slow read
+    // or repeated reads. No SQL, values, file paths or syscall arguments are retained.
+    statement_read_timeline:longest.map(sample=>[Math.round(sample.at-first.at),sample.reads.calls-first.reads.calls,
+      sample.reads.diskBytes-first.reads.diskBytes,sample.state,sample.syscall])};
+}
+
 // Shares: the running label is sampled every check while a block lasts, so a stretch in which
 // several pieces of work ran back to back names each one (2026-11-05: a 10.9 s block named only
 // the timer that started it, while an unlabelled runner-route transaction took 6.6 s of it).
 type Block={running:number;lastEnded:number;endedBeforeMs:number;markedBeforeMs:number;startMb:number;peakMb:number;heldMs:number;stillLogged:boolean;
   ledgerAtStart:number;shareMs:Map<string,number>;sampledHeldMs:number;threadSamples:ThreadSample[];nextThreadSampleAt:number;
-  readsAtFirstSample:ThreadReads|null;firstSampleAtMs:number};
+  readsAtFirstSample:ThreadReads|null;firstSampleAtMs:number;statementSamples:StatementSample[];statementHistoryTruncated:boolean};
 let block:Block|null=null,sequence=0;
 let previousMb=rssMb(),previousAt=nowMs(),lastJumpAt=-Infinity;
 
@@ -89,7 +123,7 @@ setInterval(()=>{
       const blockStart=times[0]!,running=Atomics.load(shared,0),lastEnded=Atomics.load(shared,1);
       block={running,lastEnded,endedBeforeMs:blockStart-times[2]!,markedBeforeMs:blockStart-times[1]!,startMb:mb,peakMb:mb,heldMs,stillLogged:false,
         ledgerAtStart:times[4]!,shareMs:new Map(),sampledHeldMs:0,threadSamples:[],nextThreadSampleAt:now,
-        readsAtFirstSample:threadReads(),firstSampleAtMs:heldMs};
+        readsAtFirstSample:threadReads(),firstSampleAtMs:heldMs,statementSamples:[],statementHistoryTruncated:false};
       times[3]=blockStart;Atomics.store(shared,2,running?running:-lastEnded);Atomics.store(shared,3,++sequence);
     }
     block.peakMb=Math.max(block.peakMb,mb);block.heldMs=heldMs;
@@ -98,18 +132,26 @@ setInterval(()=>{
     const sampled=Atomics.load(shared,0),sampledLabel=sampled?labels[sampled]??'unknown':'unmarked';
     block.shareMs.set(sampledLabel,(block.shareMs.get(sampledLabel)??0)+heldMs-block.sampledHeldMs);block.sampledHeldMs=heldMs;
     if(now>=block.nextThreadSampleAt){
-      block.threadSamples.push(threadSample(now));
+      const sample=threadSample(now);
+      block.threadSamples.push(sample);
       if(block.threadSamples.length>40)block.threadSamples.shift();
+      const active=currentStatement(),reads=active?threadReads():null;
+      if(active&&reads&&currentStatement()?.version===active.version){
+        block.statementSamples.push({at:now,version:active.version,fingerprint:active.fingerprint,reads,state:sample.state,syscall:sample.syscall});
+        if(block.statementSamples.length>40){block.statementSamples.shift();block.statementHistoryTruncated=true;}
+      }
       block.nextThreadSampleAt=now+500;
     }
     // Logged while still blocked too, in case the process dies before the loop answers again.
     if(heldMs>=STILL_MS&&!block.stillLogged){block.stillLogged=true;log('warn','owner_task_still_blocked',{...describe(block),blocked_ms:heldMs,rss_start_mb:block.startMb,rss_now_mb:mb,
-      ...threadEvidence(block.threadSamples),...readEvidence(block.readsAtFirstSample,threadReads(),block.firstSampleAtMs)});}
+      ...threadEvidence(block.threadSamples),...readEvidence(block.readsAtFirstSample,threadReads(),block.firstSampleAtMs),
+      ...statementEvidence(block.statementSamples,block.statementHistoryTruncated)});}
   } else if(block) {
     // Ledger time is added when each statement ends, so after the block it covers the whole block.
     if(block.heldMs>=LOG_MS)log('warn','owner_task_blocked',{...describe(block),blocked_ms:block.heldMs,label_shares_ms:shares(block),
       ledger_wait_ms:Math.round(times[4]!-block.ledgerAtStart),rss_start_mb:block.startMb,rss_peak_mb:block.peakMb,rss_end_mb:rssMb(),
-      ...threadEvidence([...block.threadSamples,threadSample(now)]),...readEvidence(block.readsAtFirstSample,threadReads(),block.firstSampleAtMs)});
+      ...threadEvidence([...block.threadSamples,threadSample(now)]),...readEvidence(block.readsAtFirstSample,threadReads(),block.firstSampleAtMs),
+      ...statementEvidence(block.statementSamples,block.statementHistoryTruncated)});
     block=null;
   }
   if(now-previousAt>=1000){
