@@ -177,6 +177,27 @@ export function clearCodexAccountUsage(accountId: string, verifiedReadStartedAtM
   return cleared;
 }
 
+/**
+ * A Codex refusal is retired by a later reading of the same account that shows every window
+ * with room and no window still ending at the refused reset time: the window that refused has
+ * been replaced (a reset spent elsewhere, or on another machine sharing the login). Without
+ * this, only a reset Concierge spent itself cleared the mark, and on 2026-11-06 a Nov 3 refusal
+ * of tejas@chann.app (cached until Nov 9 19:36 UTC) held every Codex turn while the account read
+ * 7% used with its week ending Nov 12. A reading of the same window at 99% keeps the refusal.
+ */
+export function retireCodexRefusalSupersededByReading(label: string,
+  windows: ReadonlyArray<{ usedPercent: number; resetsAt: string | null }>, readAtMs: number): boolean {
+  const attempt = usageAttempt("codex", undefined, label);
+  const limit = cachedUsageLimit(attempt);
+  if (!limit || limit.resetAt === null || limit.observedAt >= readAtMs) return false;
+  if (!windows.length || !windows.every(window => window.usedPercent < 100 && window.resetsAt)) return false;
+  if (windows.some(window => Math.abs(Date.parse(window.resetsAt!) - limit.resetAt!) < 60_000)) return false;
+  const cleared = clearCodexAccountUsage(attempt.scope, readAtMs);
+  log("info", "codex_refusal_superseded_by_reading", { cleared, refused_until: new Date(limit.resetAt).toISOString(),
+    refused_observed_at: new Date(limit.observedAt).toISOString(), read_at: new Date(readAtMs).toISOString() });
+  return cleared;
+}
+
 /** The verified reset permits ordinary work on the active Codex login, not saved bindings. */
 export function releaseCodexOrdinaryUsageHeldWork(accountId: string): number {
   if (!accountId || currentAccount("codex")?.id !== accountId) return 0;

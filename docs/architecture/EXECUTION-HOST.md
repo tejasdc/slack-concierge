@@ -131,6 +131,10 @@ Taking back:
    separate event identities. Each further restart uses the host's durable adoption count for
    its run events. A later provider admission blocks recovery so two processes cannot be adopted
    into the same conversation.
+   Like its account, an adopted run's prompt-cache identity (system-instruction hash and effort)
+   is the one recorded at launch; the new release's rebuilt instructions never reached that
+   process, so adoption records none (on 2026-11-05 re-recording it logged an identity conflict
+   for every adopted turn).
    While Concierge stays online, it rechecks parked host custody each minute without touching
    already running executions. A superseded parked host is signalled to stop; after its provider
    exits, the older turn is marked interrupted and the later turn stays in place.
