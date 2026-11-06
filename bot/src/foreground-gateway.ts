@@ -51,7 +51,7 @@ export async function startForegroundGateway(config:{stateDir:string;ownerSocket
     const nativePath=url.pathname==='/sessions/v1'||url.pathname.startsWith('/sessions/v1/');
     if(request.method==='GET'&&nativePath&&!read)
       return unavailable('UNREGISTERED_READ_ROUTE','This read has no registered execution boundary.');
-    if(request.method==='GET'&&!nativePath&&url.pathname!=='/supervisor/ping'&&url.pathname!=='/executions'&&!url.pathname.startsWith('/requests/')&&!url.pathname.startsWith('/runner/v1/jobs/'))
+    if(request.method==='GET'&&!nativePath&&url.pathname!=='/supervisor/ping'&&url.pathname!=='/grafana/v1/firing'&&url.pathname!=='/executions'&&!url.pathname.startsWith('/requests/')&&!url.pathname.startsWith('/runner/v1/jobs/'))
       return Response.json({error:'Unknown request API route.'},{status:404});
     const began=performance.now();
     const mutation=request.method!=='GET'&&request.method!=='HEAD';

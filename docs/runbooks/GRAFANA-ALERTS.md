@@ -78,6 +78,35 @@ fact, not fabricated delivery; the Grafana ledger retains the condition history.
 native `root_ts` values are opaque receipt keys, not Slack timestamps or human messages.
 A 202 proves retention only, not agent admission, execution, recovery or hosted delivery.
 
+## Lost recoveries are reconciled from Grafana
+
+Grafana retries a refused notification only briefly and never resends a recovery, so a
+recovery this receiver refused (for example the 503s while the owner restarted repeatedly
+on 2026-11-05) would otherwise leave its episode firing here forever. Remote-box's
+Grafana recovery reconciler, which holds the Grafana credential and runs every 15 minutes
+outside Concierge, closes that gap through two owner-socket routes (local socket and
+agents' entrance, never the public door):
+
+- `GET /grafana/v1/firing` lists every retained episode still firing (fingerprint,
+  condition, start, revision).
+- `POST /grafana/v1/recoveries` takes `{fingerprint, condition, startsAt, endsAt,
+  ruleUid, stateFingerprint}`. It refuses an unknown episode (404), a different condition
+  or a start that no longer matches the retained episode (409), or an end in the future
+  (422), and answers `already_resolved` without change when the recovery already landed.
+  Otherwise it applies the recovery exactly as a delivered resolved notification would:
+  same fingerprint and start, the next revision, Grafana's recorded end time, and the same
+  idempotent repair-notice recovery. It logs `grafana_alert_recovery_reconciled` with the
+  Grafana rule and state-history instance that supplied the time. A Slack-era receipt has
+  no current destination, so its recovery is recorded as the final delivered revision
+  without any publication.
+
+The reconciler submits only episodes Grafana's own Alertmanager no longer holds, and only
+with the first exit from Alerting that Grafana's state history recorded for the one
+instance that began alerting at the episode's start. Ambiguous or missing history leaves
+the episode untouched and logged. A settled alert does not prove the underlying problem
+was fixed; the repair agent still verifies recovery. Remote-box owns the script and timer
+([observability](https://github.com/tejasdc/remote-box/blob/main/docs/observability.md)).
+
 ## Safe acceptance and diagnosis
 
 Read the configured contact and rule-group using the existing remote-box provisioning
