@@ -414,7 +414,10 @@ Users: durable watches ([watches](WATCHES.md), `watch-machine.ts`, methods `watc
 Project reads use the same call channel (`runner-projects.ts`): `projects.list`, `projects.resolve`,
 `projects.locate`, `projects.files`, `projects.instructions`, `projects.file`, `projects.fileAt`, `projects.todos`, and
 `projects.worktrees`. The owner sends a registered project name and a relative path; the runner
-resolves it under its own workspace (`CONCIERGE_WORKSPACE_ROOT`, default `~/workspace`). `projects.fileAt`
+resolves it under its own workspace (`CONCIERGE_WORKSPACE_ROOT`, default `~/workspace`). `projects.locate`
+can migrate an older absolute session folder by matching its registered project name and relative suffix;
+the resulting directory must exist inside exactly one runner project. The supplied absolute root never
+selects a filesystem authority. `projects.fileAt`
 accepts a file path only when that path is already under the runner's own workspace; paths outside
 that root are reported as unmatched so the owner can route them to the machine that owns them. It never
 accepts an owner-supplied workspace root or uses an absolute path to choose a project. File reads keep the

@@ -35,7 +35,6 @@ import {CHATGPT_THINKING_LEVELS,HIS_CHATGPT_PREFIX,PROVIDER_ALIASES, providerDis
 import {recordRepairNotice} from './repair-notices';
 import {runnerMachineCall} from './runner-machine-calls';
 import type {HostRunnerFile} from './host-access';
-import {projectCoordinates} from './session-projects';
 
 /**
  * A ChatGPT request that fails because the channel itself broke (the page changed, sign-in failed,
@@ -1275,13 +1274,12 @@ export class SessionExecutionHost {
       }
       const replayPrompt=prompt,runAdditionalDirs=[...additionalDirs];
       if(onRunner) {
-        const workspace=process.env.CONCIERGE_WORKSPACE_ROOT?.trim()||join(homedir(),'workspace');
         for(let index=0;index<runAdditionalDirs.length;index++) {
           const directory=runAdditionalDirs[index]!;
           if(staging&&directory===staging)continue;
-          const coordinates=projectCoordinates(workspace,directory);
-          if(!coordinates)throw new ProviderCapabilityUnavailableError('execution','An additional folder is not inside a registered project on this runner.');
-          const remote=await runnerMachineCall<{cwd:string}>(runnerTarget!,'projects.resolve',{project:coordinates.projectName,path:coordinates.projectPath});
+        const remote=await runnerMachineCall<{cwd:string}>(runnerTarget!,'projects.locate',{location:directory}).catch(error=>{
+          throw new ProviderCapabilityUnavailableError('execution',`An additional folder cannot be resolved on runner ${runnerTarget}: ${error instanceof Error?error.message:String(error)}`);
+        });
           runAdditionalDirs[index]=remote.cwd;
         }
       }

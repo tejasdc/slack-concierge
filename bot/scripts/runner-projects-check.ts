@@ -31,6 +31,8 @@ try {
   assert.deepEqual(listed.projects.map((entry:any)=>entry.name),['example-project']);
   assert.equal(listed.workspaceRoot,workspace);
   assert.equal((await serveProjectCall('projects.resolve',{project:'example-project',path:'docs'} ) as any).cwd,join(project,'docs'));
+  assert.deepEqual(await serveProjectCall('projects.locate',{location:join(workspace,'legacy-copy','example-project','docs')}),
+    {project:'example-project',path:'docs',cwd:join(project,'docs')});
   assert.equal((await serveProjectCall('projects.instructions',{project:'example-project'}) as any).content,'Project guide\n');
   assert.equal((await serveProjectCall('projects.file',{project:'example-project',path:'docs/guide.md'}) as any).file.content,'Readable guide\n');
   assert.equal((await serveProjectCall('projects.fileAt',{path:join(project,'docs','guide.md')}) as any).file.content,'Readable guide\n');
