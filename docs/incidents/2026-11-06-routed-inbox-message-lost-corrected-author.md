@@ -30,7 +30,8 @@ current author projection. One fallback treated every value other than agent as 
 ## Fix
 
 The route now reads the current author projection, including corrections, and carries human,
-agent, service or unknown explicitly. The destination projects only those exact values. Thread
+agent, service or unknown explicitly along with the full author identity. The destination
+projects only those exact values, and a peer validates the carried identity. Thread
 routes retain the original author rather than synthesizing one. The source input and correction
 are not rewritten. Forwarded replies resolve the source message's current author when read.
 Source review found the gap; a live route of a corrected historical message has not been
@@ -40,5 +41,5 @@ exercised, so installed route verification remains open.
 
 - **Seed:** An accepted Inbox message whose retained origin is human and whose current author is a corrected agent; a separate accepted service message.
 - **Action:** Route each message to another Inbox thread and to a session, then read both destinations.
-- **Expected:** The corrected message names the agent in both copies; the service message says Service. Neither copy says You. The original inputs and correction remain unchanged.
+- **Expected:** The corrected message names the agent in both copies, including a peer session; the service message says Service. Neither copy says You. The original inputs and correction remain unchanged.
 - **Replayable offline:** yes (with retained inputs, correction and route projection).

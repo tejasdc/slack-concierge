@@ -19,7 +19,9 @@ export function projectAcceptedInput(message:ProviderHistoryMessage,input:Accept
       ?acceptedInputAuthor(original).author:null;
     const routedAuthor=payload.routedFrom.authorKind;
     const kind=routedAuthor==='human'||routedAuthor==='agent'||routedAuthor==='service'?routedAuthor:'unknown';
-    return {...message,role:'user',author:currentAuthor??{kind},createdAt:payload.routedFrom.originalCreatedAt,timestampSource:'submitted',
+    const carried=payload.routedFrom.author;
+    const author=currentAuthor??(carried?.kind===kind?carried:{kind});
+    return {...message,role:'user',author,createdAt:payload.routedFrom.originalCreatedAt,timestampSource:'submitted',
       content:payload.routedFrom.originalText,submissionId:input.id,routedFrom:payload.routedFrom,
       ...(attachments.length?{attachments}:{})};
   }

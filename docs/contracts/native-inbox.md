@@ -337,7 +337,10 @@ two-kind predicate and then selects topic routes, preserving the independent-rou
 Every route projects the source message's current author, including an authorship correction,
 service origin and named agent session. The routed copy and any request that carries it must not
 derive authorship from the source's historical origin alone or default a missing author to Tejas.
-The original accepted input and the correction record remain intact.
+When the destination is on the other Concierge instance, the authenticated peer request carries
+the full author object and validates its kind against the route marker; the recipient keeps that
+identity instead of rebuilding an anonymous agent. The original accepted input and the correction
+record remain intact.
 
 The owner keeps one in-memory index of every Inbox message and its thread root
 (`entryIndex` in `session-topics.ts`), built once per process and extended only over new
