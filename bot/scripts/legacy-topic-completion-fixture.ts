@@ -33,7 +33,7 @@ function run(){
 
 try {
   communication.start();await communication.idle();
-  const inbox=owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',firstInput:{text:'Reconcile retained work'}});
+  const inbox=await owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',firstInput:{text:'Reconcile retained work'}});
   const inboxId=Number(inbox.session.id.slice(10));updateSessionMetadata(inboxId,{inbox:true});
   const current=run();
   const rootId=current.actor.inputId;
@@ -44,7 +44,7 @@ try {
     sources:[rootId],brief:'Check the queue, recover it if needed, and explain the outcome.'});
   const requestId=added.request.requestId;
 
-  const target=owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat'});
+  const target=await owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat'});
   const dispatch=await communication.ask({source:current.source,action_id:'legacy-dispatch',address:target.session.address,
     thread:rootId,summary:'Inspect and resolve the queued message',text:'Inspect the queued message and resolve it.',requestedEffect:'informational'});
   await communication.idle();const worker=run();
@@ -75,7 +75,7 @@ try {
 
   // A completed final can be shared by several migrated requests. Each request must cite that
   // one retained final; closure never manufactures another answer post.
-  const typedTarget=owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat'});
+  const typedTarget=await owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat'});
   const typedDispatch=await communication.ask({source:current.source,action_id:'typed-dispatch',address:typedTarget.session.address,
     thread:rootId,summary:'Repair both parts',text:'Repair both parts and check them.',requestedEffect:'work'});
   await communication.idle();const typedWorker=run();
