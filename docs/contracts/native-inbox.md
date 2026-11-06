@@ -446,6 +446,10 @@ before the browser change reached a device.
 
 Both server and Mac startup reconcile requests placed after their answers arrived: they close
 the answered request and move its existing reading item without notifying twice.
+When the router links one dispatch after its final answer, the owner finds that answer through
+the dispatch's indexed request events and its exact forwarded post. It does not scan historical
+Inbox posts for every link; the linking command runs on the owner's admission thread and must
+remain bounded while many retained requests are being placed.
 
 **Threads keep themselves current** (thread upkeep in `session-topics.ts`; Tejas, 2026-10-12,
 capture `d30a141a`: "you're not maintaining the threads, so a lot of threads that could be closed

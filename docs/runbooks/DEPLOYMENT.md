@@ -754,7 +754,14 @@ including every module's import-time schema work. Each step runs under its own w
 long block's `owner_task_blocked` names it, and the watchdog's `ledger_wait_ms` counts ledger time
 from the first statement (before 2026-11-05 it began only once the owner object existed and read 0
 for a 126 s start, incident ce2c2192). Startup costs what changed since the last start, not the size
-of history. Each sweep over history (forwarded final answers, timed-post retirement, the purpose
+of history. The schema owner checks all foreign keys only when this startup changes the schema;
+ordinary writes enforce foreign keys, and the release controller verifies migration backups.
+Recovery scans the existing index of open execution hosts rather than historical released hosts.
+The historical unreadable-reading repair records its completion; new reading items are checked
+at admission. During shutdown the read-only provider-history worker is asked to terminate without
+holding the service for a synchronous read, and each execution-host stop component logs its time.
+See [the restart-gap incident](../incidents/2026-11-06-owner-restart-gap.md) for the measured boundary.
+Each sweep over history (forwarded final answers, timed-post retirement, the purpose
 backfill) is a catch-up over a key range with a high-water mark recorded as a `startup_catch_up`
 event on the Inbox session. Every unfinished range, including work left by an interrupted pass,
 runs two minutes after Concierge reports online, in small pages with a pause between them and a

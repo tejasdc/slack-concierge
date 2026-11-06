@@ -912,7 +912,20 @@ export class SessionExecutionHost {
       log('warn','codex_account_move_failed',{detail:String(result.detail??'').slice(0,300)});
     }
   }
-  async stop():Promise<void>{this.beginDrain();this.stopCodexMoves();this.stopCodexWindows();await Promise.all([this.providerLoginManager.stop(),this.codexLogin.stop(),this.claudeLogin.stop(),this.historyPages.close()]);}
+  async stop():Promise<void>{
+    this.beginDrain();this.stopCodexMoves();this.stopCodexWindows();
+    const timedStop=async(name:string,stop:()=>Promise<void>)=>{
+      const started=performance.now();
+      try{await stop();}
+      finally{log('info','execution_host_stop_component',{component:name,duration_ms:Math.round(performance.now()-started)});}
+    };
+    await Promise.all([
+      timedStop('provider_login',()=>this.providerLoginManager.stop()),
+      timedStop('codex_login',()=>this.codexLogin.stop()),
+      timedStop('claude_login',()=>this.claudeLogin.stop()),
+      timedStop('history_pages',()=>this.historyPages.close()),
+    ]);
+  }
   private capabilities(session:SessionRow) {
     if(session.provider_id==='chatgpt'&&this.capabilityClient)return {...chatGptCapabilities,recover:true,models:['chat','work',...CHATGPT_THINKING_LEVELS,...CHATGPT_THINKING_LEVELS.map(level=>HIS_CHATGPT_PREFIX+level)],attachments:['*/*']};
     const provider=this.options.providers[session.provider_id],restricted=sessionMetadata(session).interactionPolicy==='consultation-only';

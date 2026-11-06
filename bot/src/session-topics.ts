@@ -2922,14 +2922,26 @@ export function reconcilePlacedRequestAnswers(onlyRequestId?:string):number {
 export function reconcileForwardedFinalAnswers(onlyRequestId?:string,range?:{afterSequence:number;throughSequence:number}):number {
   const inbox=inboxSession();
   if(!inbox)return 0;
+  // A request link reconciles one dispatch. Find its final event through the request index,
+  // then fetch the forwarded post by primary key; scanning every historical Inbox post
+  // blocked admission while the router linked a backlog of unrelated requests.
   const bounded=!!range,idColumn=bounded?'+event_id':'event_id';
-  const rows=db.query(`SELECT event_id,session_id,input_id,payload_json FROM session_owner_events
-    WHERE ${bounded?'+kind':'kind'}='post' AND ${idColumn} >= 'post:forward:' AND ${idColumn} < 'post:forward;'
-      AND event_id NOT LIKE 'post:forward:shared:%'
-      AND json_extract(payload_json,'$.replyKind')='final'
-      AND json_extract(payload_json,'$.workDisposition') IS NOT NULL
-      AND sequence > ? AND sequence <= ?
-      AND (? IS NULL OR json_extract(payload_json,'$.requestId')=?)`).all(range?.afterSequence??0,range?.throughSequence??Number.MAX_SAFE_INTEGER,onlyRequestId??null,onlyRequestId??null) as
+  const rows=(onlyRequestId
+    ?db.query(`SELECT post.event_id,post.session_id,post.input_id,post.payload_json FROM (
+        SELECT event_id FROM session_communication_events WHERE request_id=? AND kind='final'
+        UNION ALL SELECT event_id FROM session_peer_events WHERE request_id=? AND kind='final'
+      ) reply JOIN session_owner_events post ON post.event_id='post:forward:' || reply.event_id
+      WHERE post.kind='post' AND json_extract(post.payload_json,'$.replyKind')='final'
+        AND json_extract(post.payload_json,'$.workDisposition') IS NOT NULL
+        AND post.sequence > ? AND post.sequence <= ?`).all(onlyRequestId,onlyRequestId,
+          range?.afterSequence??0,range?.throughSequence??Number.MAX_SAFE_INTEGER)
+    :db.query(`SELECT event_id,session_id,input_id,payload_json FROM session_owner_events
+      WHERE ${bounded?'+kind':'kind'}='post' AND ${idColumn} >= 'post:forward:' AND ${idColumn} < 'post:forward;'
+        AND event_id NOT LIKE 'post:forward:shared:%'
+        AND json_extract(payload_json,'$.replyKind')='final'
+        AND json_extract(payload_json,'$.workDisposition') IS NOT NULL
+        AND sequence > ? AND sequence <= ?`).all(range?.afterSequence??0,
+          range?.throughSequence??Number.MAX_SAFE_INTEGER)) as
       {event_id:string;session_id:number;input_id:string;payload_json:string}[];
   let reconciled=0;
   for(const row of rows){
@@ -4126,6 +4138,11 @@ export function migrateInboxAttention() {
 export function expireUnreadableReadingItems() {
   const session=inboxSession();
   if(!session)return {expired:0};
+  // This repairs items filed before the read-content admission rule. Once the full
+  // historical pass commits, every new item is checked at admission, so a restart
+  // need not resolve all existing reading items again.
+  const completionId='unreadable-reading-items:admission-rule-v1';
+  if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(completionId))return {expired:0};
   refreshRootMemo();
   const by:TopicBy={kind:'owner',sessionId:`concierge:${session.id}`};
   const at=nowIso();
@@ -4141,6 +4158,8 @@ export function expireUnreadableReadingItems() {
       recordSessionEvent({eventId:`topic-unreadable-expiry:${question.questionId}`,sessionId:session.id,kind:'topic_question',payload});
       applyTopicChange('topic_question',payload);
     }
+    recordSessionEvent({eventId:completionId,sessionId:session.id,kind:'startup_catch_up',
+      payload:{name:'unreadable-reading-items',completedAt:at,expired:unreadable.length}});
   })();
   if(unreadable.length)log('info','inbox_unreadable_reading_items_expired',{session_id:session.id,expired:unreadable.length,question_ids:unreadable.map(question=>question.questionId)});
   return {expired:unreadable.length};

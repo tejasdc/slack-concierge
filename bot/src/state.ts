@@ -2,7 +2,7 @@ import { initializeSessionOwnerSchema } from "./session-schema";
 import {threadOnlyReturnInputSql} from './inbox-request-root';
 import { randomUUID } from "node:crypto";
 import { lstatSync, readdirSync } from "node:fs";
-import { db, initializeLedgerSchema } from "./state-database";
+import { db, initializeLedgerSchema, schemaVersionAtOpen } from "./state-database";
 import { initializeRouterSearchIndex, projectRouterSearchSource, refreshRouterSearchTurnIdentity } from "./router-search-index";
 import { isolatedSessionThread, resolveReplySession, visibleSlackRootSql } from "./slack-thread-identity";
 import {
@@ -1045,7 +1045,7 @@ db.exec("CREATE INDEX IF NOT EXISTS codex_remote_mirror_events_thread_status_seq
 }).immediate();
 // This schema owner changes foreign_keys before its own transaction. Keep it outside
 // the legacy-upgrade batch so that SQLite can apply that connection-level setting.
-initializeSessionOwnerSchema(db);
+initializeSessionOwnerSchema(db, schemaVersionAtOpen);
 // Older continuations used retryable for a time deliberately chosen by the agent.
 // Preserve that intent before normalizing the old retry vocabulary. Session inputs
 // are initialized above, so this also works on checkouts with old ledger rows.

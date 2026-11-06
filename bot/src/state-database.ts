@@ -83,3 +83,6 @@ db.exec("PRAGMA foreign_keys = ON");
 // deleted again, about three a second on the owner's event loop, and every create and delete waited
 // on the filesystem journal under agent disk load (2026-10-10). See docs/architecture/LEDGER-DURABILITY.md.
 db.exec("PRAGMA temp_store = MEMORY");
+// A serving start only needs the full foreign-key scan when its schema initialization
+// actually changes the schema. The release controller separately verifies backups.
+export const schemaVersionAtOpen = (db.query('PRAGMA schema_version').get() as { schema_version: number }).schema_version;
