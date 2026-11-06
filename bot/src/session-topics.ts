@@ -4094,12 +4094,17 @@ export function retireRecoveredBookkeepingRequests() {
   const session=inboxSession();
   if(!session)return {retired:0};
   refreshRootMemo();
-  const replies=readIndex(session.id,true).humanReplies;
   const by:TopicBy={kind:'owner',sessionId:`concierge:${session.id}`};
   let retired=0;
-  const candidates=db.query("SELECT topic_id FROM inbox_topics WHERE session_id=? AND recovered=1 AND state='open'")
-    .all(session.id) as {topic_id:string}[];
-  for(const {topic_id:topicId} of candidates) {
+  // Recovered threads keep the Inbox session that converted them. A later Inbox session
+  // (provider cutover or an acting router) does not adopt them by handoff, so the correction
+  // reads every Inbox session's recovered threads and every one of those sessions' human replies.
+  const candidates=db.query("SELECT topic_id,session_id FROM inbox_topics WHERE recovered=1 AND state='open'")
+    .all() as {topic_id:string;session_id:number}[];
+  const replies=new Set<string>();
+  for(const sessionId of new Set([session.id,...candidates.map(candidate=>candidate.session_id)]))
+    for(const root of readIndex(sessionId,true).humanReplies)replies.add(root);
+  for(const {topic_id:topicId,session_id:topicSessionId} of candidates) {
     const roots=topicRoots(topicId);
     if(!roots.length||roots.some(root=>replies.has(root)))continue;
     const inputs=roots.map(root=>getAcceptedSessionInput(root));
@@ -4161,7 +4166,7 @@ export function retireRecoveredBookkeepingRequests() {
       const closedRequest={...request,state:'closed' as const,disposition:'superseded',
         closure:{by,at,reason,evidence:exactEvidence},revision:request.revision+1,updatedAt:at};
       const next=bumped(topic);
-      recordOwnerTopicChange(session.id,`topic-bookkeeping-retired:${request.requestId}`,'topic_request',
+      recordOwnerTopicChange(topicSessionId,`topic-bookkeeping-retired:${request.requestId}`,'topic_request',
         {change:'request_closed',topicId,topic:next,request:closedRequest,by,reason,revision:next.revision});
       // Request closure may automatically close the topic. If work is still running, the
       // receipt remains available and the normal owner pass closes it after that work ends.

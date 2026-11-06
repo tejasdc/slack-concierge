@@ -23,6 +23,8 @@ The first correction was too broad. A fresh Claude Code review found it would al
 
 The narrow correction left two groups open. About 135 other recovered service notices (allowance, area suggestion, cut-off turn, background-job, watch and secret notices) were closed by hand by the acting Inbox router on November 6. Fifteen recovered threads rooted only in returns and upkeep stayed open because the router had since linked the original task, which is owned by another thread; each was flagged again every few hours ("Its work ended as answered") and drew another upkeep round. The correction now accepts every service-origin root, treats settled reading items as finished, and accepts later dispatches whose home thread has an open request listing them, citing each as evidence. A dispatch homed in the same thread, or nowhere, still keeps the request open.
 
+The first install of that widened correction (November 6, 05:24 UTC) still retired none of the fifteen: the correction only read threads owned by the current Inbox session, and the acting Inbox router is a new session that never took over the earlier router's threads by handoff. It now reads recovered threads from every Inbox session and checks human replies across all of them.
+
 ## Acceptance scenario
 
 - **Seed:** Retain a human message, an agent-work request sourced from it, and service return/upkeep inputs. Recreate older recovered topics for service roots, agent work, a mixed human/service root, a question and later assigned work.
