@@ -33,7 +33,6 @@ import {chooseClaudeDispatch} from './provider-account-dispatch';
 import {maybeStartInboxProviderFailover} from './inbox-provider-failover';
 import {CHATGPT_THINKING_LEVELS,HIS_CHATGPT_PREFIX,PROVIDER_ALIASES, providerDisplayName } from './aliases';
 import {recordRepairNotice} from './repair-notices';
-import {runnerMachineCall} from './runner-machine-calls';
 import type {HostRunnerFile} from './host-access';
 
 /**
@@ -120,7 +119,6 @@ import {budgetBriefWithProviderRoom} from './provider-start-choice';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 import {MANAGED_CODEX,activateCredentials,claudeAccountWorks,claudeCredentialsAnswer,runningCodexTurns,type ActivationReport} from './provider-activation';
 import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork,observeExecutionChanges} from './state';
-import {runnerMachineCall} from './runner-machine-calls';
 import {activateRunnerCodexAccount} from './runner-provider-account-owner';
 import {noticeTime,publishProviderFreeNotice} from './provider-free-notice';
 import {accountHome,setRunnerAccountInUse} from './provider-accounts';
