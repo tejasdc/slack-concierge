@@ -12,6 +12,7 @@ import {escalationReason,topModel} from './model-escalation';
 import {humanChoseTopModel} from './model-escalation-custody';
 import {sessionAddress} from './session-address';
 import {claudeConfigDir,locateClaudeTranscript} from './claude-transcript-watch';
+import {runnerMachineCall} from './runner-machine-calls';
 
 const run=promisify(execFile);
 type Item={id:string;kind:'sent'|'owed'|'queued'|'watch'|'lab'|'worktree';ref:string;holder:string;[key:string]:unknown};
@@ -98,6 +99,19 @@ async function codexRollout(thread:string):Promise<string|null> {
 
 async function worktrees(sessionId:number):Promise<{items:Item[];omissions:string[]}> {
   const session=getSessionById(sessionId)!;const meta=sessionMetadata(session);
+  if(typeof meta.providerRunner==='string'&&meta.providerRunner&&typeof meta.projectName==='string'&&session.agent_session_uuid
+    &&['codex','claude-code'].includes(session.provider_id)) {
+    try {
+      const remote=await runnerMachineCall<{items:{path:string;branch:string;head:string;uncommittedFiles:number}[];transcriptAvailable:boolean}>(
+        meta.providerRunner,'projects.worktrees',{project:meta.projectName,provider:session.provider_id,sessionUUID:session.agent_session_uuid,
+          account:typeof meta.providerAccount==='string'?meta.providerAccount:null});
+      return {items:remote.items.map(item=>({id:`worktree:${item.path}`,kind:'worktree',ref:item.path,holder:canonical(sessionId),
+        branch:item.branch,head:item.head,uncommittedFiles:item.uncommittedFiles})),
+        omissions:remote.transcriptAvailable?[]:['Provider transcript unavailable on its runner; worktree references were omitted.']};
+    } catch {
+      return {items:[],omissions:['The session runner is unavailable; runner worktrees could not be inspected.']};
+    }
+  }
   const roots=[meta.cwd,...(meta.additionalDirs??[])].filter((value):value is string=>typeof value==='string'&&!!value);
   const items:Item[]=[],omissions:string[]=[];
   let transcript:string|null=null;

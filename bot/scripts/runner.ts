@@ -19,7 +19,7 @@
  *   finishes after that. A turn is never replayed: if this runner loses its lease, the owner has
  *   already settled the turn as unconfirmed and the local host is stopped.
  */
-import {mkdirSync,readFileSync,writeFileSync,renameSync,existsSync,readdirSync,rmSync,statSync} from 'node:fs';
+import {mkdirSync,readFileSync,writeFileSync,renameSync,existsSync,readdirSync,rmSync,statSync,lstatSync,realpathSync} from 'node:fs';
 import {dirname,isAbsolute,join,resolve} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {ADOPTABLE_HOST_PROTOCOLS,HOST_PROTOCOL_VERSION,HostConnection,HostNotStartedError,connectWhenReady,executionDirectory,
@@ -53,6 +53,27 @@ const recordOwnerContact=()=>{
   try{writeFileSync(ownerContactFile+'.tmp',String(now),{mode:0o600});renameSync(ownerContactFile+'.tmp',ownerContactFile);}
   catch(error){say('runner_owner_contact_write_failed',{error:String(error)});}
 };
+
+function runnerStateFile(relativePath:string,executionId:string):string {
+  if(!/^[0-9a-f]{16}$/.test(executionId)||!([`outside-prompts/${executionId}`,`attachments/${executionId}`].includes(relativePath)))
+    throw new HostNotStartedError('The runner-state file does not match this execution.');
+  const directory=join(stateDir,relativePath.startsWith('outside-prompts/')?'outside-prompts':'attachments');
+  try {
+    if(existsSync(directory)&&(!lstatSync(directory).isDirectory()||lstatSync(directory).isSymbolicLink()))
+      throw new HostNotStartedError('The runner-state prompt folder is not a private directory.');
+    mkdirSync(directory,{recursive:true,mode:0o700});
+    const realDirectory=realpathSync(directory);
+    if(realDirectory!==directory)throw new HostNotStartedError('The runner-state prompt folder escaped runner state.');
+  } catch(error) { if(error instanceof HostNotStartedError)throw error;throw new HostNotStartedError('The runner-state prompt folder is unavailable.'); }
+  return join(directory,executionId);
+}
+
+function resolveRunnerArg(value:string,executionId:string):string {
+  if(!value.startsWith('@runner-state/'))return value;
+  const path=runnerStateFile(value.slice('@runner-state/'.length),executionId);
+  if(!existsSync(path))throw new HostNotStartedError('The runner-state file was not delivered with this execution.');
+  return path;
+}
 const once=process.argv.includes('--once');
 const kinds=(process.env.CONCIERGE_RUNNER_KINDS??'probe,turn,codex').split(',').map(kind=>kind.trim()).filter(Boolean);
 const maxTurns=Number(process.env.CONCIERGE_RUNNER_MAX_TURNS)||64;
@@ -248,14 +269,29 @@ class Turn {
     if(!executable)return this.finish({notStarted:`cannot find ${manifest.executable} on this runner`,localPrerequisiteUnavailable:true});
     try {
       for(const file of payload.files??[]) {
-        if(!isAbsolute(file.path))throw new HostNotStartedError(`attachment path ${file.path} is not absolute`);
+        if(file?.scope==='runner-state') {
+          const path=runnerStateFile(String(file.relativePath??''),this.executionId);
+          if(typeof file.base64!=='string')throw new HostNotStartedError('The runner-state file has no content.');
+          if(file.kind==='directory') {
+            if(existsSync(path)&&(!lstatSync(path).isDirectory()||lstatSync(path).isSymbolicLink()))
+              throw new HostNotStartedError('The runner-state attachment folder is not a private directory.');
+            mkdirSync(path,{recursive:true,mode:0o700});
+          } else {
+            if(existsSync(path))throw new HostNotStartedError('The runner-state file already exists for this execution.');
+            writeFileSync(path,Buffer.from(file.base64,'base64'),{mode:0o600,flag:'wx'});
+          }
+          continue;
+        }
+        if(!isAbsolute(file.path)||typeof file.base64!=='string'||file.path.includes('\0'))
+          throw new HostNotStartedError(`attachment path ${String(file.path)} is invalid`);
         mkdirSync(dirname(file.path),{recursive:true,mode:0o700});
-        writeFileSync(file.path,Buffer.from(String(file.base64),'base64'),{mode:0o600});
+        writeFileSync(file.path,Buffer.from(file.base64,'base64'),{mode:0o600});
       }
       if(!existsSync(manifest.cwd))throw new HostNotStartedError(`the turn's folder ${manifest.cwd} does not exist on this runner`);
+      const args=manifest.args.map((arg:string)=>resolveRunnerArg(String(arg),this.executionId));
       await startHost({stateDir:stateDir!,executionId:this.executionId,routerBotDir:botDir,
         hiddenPaths:(process.env.CONCIERGE_RUNNER_HIDE_PATHS??'').split(':').filter(Boolean),
-        manifest:{executable,args:manifest.args,cwd:manifest.cwd,environment:this.environment,initialInput:manifest.initialInput,initialMeta:manifest.initialMeta,
+        manifest:{executable,args,cwd:manifest.cwd,environment:this.environment,initialInput:manifest.initialInput,initialMeta:manifest.initialMeta,
           ownerContact:{file:ownerContactFile,fenceMs:RUNNER_FENCE_MS}}});
     } catch(error) {
       if(error instanceof HostNotStartedError)return this.finish({notStarted:error.message});

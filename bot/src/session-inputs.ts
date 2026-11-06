@@ -10,6 +10,9 @@ import {topicRouteAnchor} from './inbox-request-root';
 import {capturesEnterRouter} from './inbox-producer-sources';
 import {log} from './log';
 import {claudeAllowanceHeld,CLAUDE_ALLOWANCE_HOLD_MESSAGE} from './claude-allowance-hold';
+import {homedir} from 'node:os';
+import {join} from 'node:path';
+import {projectCoordinates} from './session-projects';
 
 const eventWriteCounts=new Map<string,{writes:number;rootCommits:number}>();
 setInterval(()=>{
@@ -49,7 +52,11 @@ export type NativeSessionMetadata = {
   claudeAccountNotice?:null;
   /** Every turn runs as the Codex command line in its own unit, started and watched, never driven (outside-codex.ts). */
   outside?:boolean;
-  project?:string|null; workflowId?:string; model?:string|null; reasoningEffort?:string; inbox?:boolean; inboxRole?:'project-router'; repairAgent?:boolean; standingRole?:import('./standing-agents').StandingAgentRole|null; suspended?:boolean; pinned?:boolean;
+  project?:string|null; /** Stable runner identity; the absolute `cwd` remains local presentation metadata. */
+  projectName?:string|null; projectPath?:string|null;
+  /** The exact machine and account home chosen for this provider conversation. */
+  providerRunner?:string|null; providerAccount?:string|null;
+  workflowId?:string; model?:string|null; reasoningEffort?:string; inbox?:boolean; inboxRole?:'project-router'; repairAgent?:boolean; standingRole?:import('./standing-agents').StandingAgentRole|null; suspended?:boolean; pinned?:boolean;
   outcome?:'open'|'done'|'shipped'; saved?:boolean; generation?:number; readGeneration?:number; dismissedGeneration?:number;
   needs?:import('./session-turn-outcome').OpenNeed[]; turnOutcome?:import('./session-turn-outcome').TurnOutcomeView;
   withdrawnNeeds?:import('./session-turn-outcome').WithdrawnNeed[];
@@ -129,8 +136,11 @@ export function createNativeSession(provider:ProviderId, metadata:NativeSessionM
   if(provider==='claude-code'&&claudeAllowanceHeld())throw new Error(CLAUDE_ALLOWANCE_HOLD_MESSAGE);
   const summary=purposeLine(metadata.summary)??purposeLine(metadata.title);
   if(!summary)throw new Error('A session needs a purpose: say in one line what it is for.');
+  const cwd=metadata.cwd??metadata.project??null;
+  const coordinates=typeof cwd==='string'?projectCoordinates(process.env.CONCIERGE_WORKSPACE_ROOT?.trim()||join(homedir(),'workspace'),cwd):null;
+  const placed=coordinates?{...metadata,projectName:coordinates.projectName,projectPath:coordinates.projectPath}:metadata;
   const result=db.query(`INSERT INTO sessions(slack_channel_id,slack_thread_ts,provider_id,native_metadata_json)
-    VALUES(NULL,NULL,?,?)`).run(provider,JSON.stringify({...metadata,summary}));
+    VALUES(NULL,NULL,?,?)`).run(provider,JSON.stringify({...placed,summary}));
   return getSessionById(Number(result.lastInsertRowid))!;
 }
 export function bindSessionProvider(sessionId:number, provider:ProviderId, uuid:string) {

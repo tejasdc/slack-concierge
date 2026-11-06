@@ -34,6 +34,8 @@ export function runnerMachineEnvironment(machine:RunnerMachine,runPath='',ownerS
     CONCIERGE_STATE_DIR:machine.stateDir,
     CONCIERGE_STATE_DB:join(machine.stateDir,'no-ledger-on-a-runner.db'),
     CONCIERGE_ROUTER_BOT_DIR:machine.botDir,
+    CONCIERGE_ROUTER_ACTIONS:join(machine.botDir,'scripts','router-actions.sh'),
+    CONCIERGE_CODEX_CLI:'codex',
     CONCIERGE_BUN_BIN:machine.bunPath,
     // The helpers find this runner's connection file (below) through it.
     CONCIERGE_RUNNER_STATE:machine.stateDir,

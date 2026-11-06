@@ -360,6 +360,38 @@ Why not a port on the runner: runners open none.
 
 Users: durable watches ([watches](WATCHES.md), `watch-machine.ts`, methods `watch.*`). Turn artifacts need none: only the retired Slack presentation makes an artifact folder; a native turn makes none.
 
+Project reads use the same call channel (`runner-projects.ts`): `projects.list`, `projects.resolve`,
+`projects.files`, `projects.instructions`, `projects.file`, `projects.todos`, and
+`projects.worktrees`. The owner sends a registered project name and a relative path; the runner
+resolves it under its own workspace (`CONCIERGE_WORKSPACE_ROOT`, default `~/workspace`). It never
+accepts an owner-supplied workspace root or an arbitrary absolute project path. File reads keep the
+existing sensitive-name, symlink, file-type, and size limits. Worktree reads require the provider,
+native session UUID and account label; the runner resolves that exact transcript on its own verified
+account home and compares its path references with registered Git worktrees. It returns only the
+matching worktrees with branch, head, and uncommitted file count. Git runs with system and global
+configuration disabled, optional locks off, and fsmonitor disabled. TODO updates are runner-local,
+compare the observed SHA-256 before replacing the canonical file, and use an atomic rename.
+
+The Google paid-credit check and CLI lookup is `google.executable` (`runner-providers.ts`). It runs
+against the runner's Google settings and returns only the executable path. A missing or unreachable
+runner is an unknown check; it cannot be treated as proof that paid credits are disabled.
+
+Claude hook settings contain runner-local environment references for Bun and the optional managed
+history hook. The owner may prepare the settings JSON, but the command paths resolve when Claude runs
+on the runner, using that machine's helper release and executable. When a session is assigned to a
+runner, its project name and relative subfolder are resolved there before the host starts; the job
+manifest never carries the owner's absolute working directory. Google executable and paid-credit
+checks run on the runner before a Google host starts. Outside Codex prompt bytes are written beneath
+that execution's private runner state folder and the CLI receives only its execution-bound path.
+
+These calls do not create projects. Project creation currently stays on the owner machine:
+`project-setup.ts` validates the completed workspace-organizer answer against the owner's request
+ledger, writes the scaffold in the owner's workspace, and runs `git`/`gh` with that machine's
+credentials before coordinating cross-peer placement. The runner protocol has no project-creation
+job or receipt that carries this exact organizer proof and safely owns retries of the GitHub
+repository mutation. Moving this action requires that validated, idempotent job and a runner with
+its own GitHub identity; until then the owner keeps project creation and its ledger decision.
+
 ## Concierge's own thnkr.ing calls (built)
 
 Every call the owner itself makes to thnkr.ing (ChatGPT runs and their source search, native reads,

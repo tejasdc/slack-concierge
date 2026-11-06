@@ -87,9 +87,10 @@ import {workThread} from './session-fit';
 import {sessionMutuals,mutualLift} from './session-mutuals';
 import {commitWork,originInput} from './commit-work';
 import {appendAgentReportObservation,closeQuestionsAnsweredByTodos,createTopicByHuman,inboxAttention,inboxDismiss,invalidateTopicRoots,openAgentReport,replyTargets,topicEntries,topicHumanAction,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
-import {containingProject,sessionProject,sessionProjects} from './session-projects';
+import {containingProject,projectCoordinates,sessionProject,sessionProjects} from './session-projects';
 import {expandHome,isSensitiveWorkspacePath,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
+import {runnerMachineCall} from './runner-machine-calls';
 import {sessionSpace,type SessionSpace} from './session-roles';
 import {preparedSessionWindow,preparedSessionChanges,preparedInboxAttention,preparedLabRequestIds} from './presentation-session-reader';
 import {preparedReceiptWindow,preparedReceiptChanges} from './presentation-receipt-reader';
@@ -1188,7 +1189,8 @@ export class SessionOwner {
     if(busy)throw new SessionOwnerError('That session has work running or queued; move it once it is idle.',409,'SESSION_BUSY');
     const from=sessionMetadata(getSessionById(sessionId)!).cwd??null;
     const current=sessionMetadata(getSessionById(sessionId)!);
-    updateSessionMetadata(sessionId,{cwd:project.cwd,project:project.cwd,
+    const coordinates=projectCoordinates(this.defaultCwd,project.cwd);
+    updateSessionMetadata(sessionId,{cwd:project.cwd,project:project.cwd,...(coordinates??{}),
       ...(current.standingRole&&current.cwd!==project.cwd?{standingRole:null}:{})});
     return {from,to:project.cwd};
   }
@@ -1455,9 +1457,17 @@ export class SessionOwner {
   }
   savedWorkList(cursor:string|null=null){return savedWorkListPage(db,cursor);}
   savedWorkControl(turnId:number,action:string,body:Record<string,unknown>){return updateSavedTurn(turnId,action,body);}
-  projects() {
+  private configuredProjectRunner():string|null { return process.env.CONCIERGE_TURN_RUNNER?.trim()||null; }
+  private async runnerProjectCall<T>(method:string,params:Record<string,unknown>):Promise<T|null> {
+    const runner=this.configuredProjectRunner();if(!runner)return null;
+    try{return await runnerMachineCall<T>(runner,method,params);}
+    catch(error){throw new SessionOwnerError(`Runner ${runner} is unavailable for this project operation: ${error instanceof Error?error.message:String(error)}`,424,'PROJECT_RUNNER_UNAVAILABLE');}
+  }
+  async projects() {
     const canvasTitles=this.projectSetup?.canvasProjectTitles();
-    return {projects:sessionProjects(this.defaultCwd).map(project=>({...project,...(canvasTitles?.has(project.name)?{canvasTitle:canvasTitles.get(project.name)}:{}),defaultProvider:project.name==='slack-inbox'?(claudeAllowanceHeld()?'codex':'cc-opus-1m'):configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)}))};
+    const remote=await this.runnerProjectCall<{projects:{name:string;path:string}[]}>('projects.list',{});
+    const projects=remote?remote.projects.map(project=>({name:project.name,cwd:join(this.defaultCwd,project.path)})):sessionProjects(this.defaultCwd);
+    return {projects:projects.map(project=>({...project,...(canvasTitles?.has(project.name)?{canvasTitle:canvasTitles.get(project.name)}:{}),defaultProvider:project.name==='slack-inbox'?(claudeAllowanceHeld()?'codex':'cc-opus-1m'):configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)}))};
   }
   async standingAgents() {return {...standingAgentView(db,this.defaultCwd),hostTimers:await hostTimerView()};}
   private project(id:string) {
@@ -1502,6 +1512,20 @@ export class SessionOwner {
         throw error;
       }
     }
+    if(machine===null&&this.configuredProjectRunner()) {
+      const runner=this.configuredProjectRunner()!;
+      const listed=await this.runnerProjectCall<{projects:{name:string;path:string}[]}>('projects.list',{});
+      if(listed&&typeof path==='string') {
+        const requested=expandHome(path);
+        const project=listed.projects.map(item=>({name:item.name,cwd:join(this.defaultCwd,item.path),runnerPath:item.path}))
+          .filter(item=>requested===item.cwd||requested.startsWith(item.cwd+sep)).sort((a,b)=>b.cwd.length-a.cwd.length)[0];
+        if(project) {
+          const relativePath=relative(project.cwd,requested);
+          try {return await this.runnerProjectCall<{file:WorkspaceFile}>('projects.file',{project:project.name,path:relativePath}) as {file:WorkspaceFile};}
+          catch(error){throw error;}
+        }
+      }
+    }
     try {return {file:readWorkspaceFile({machine:self,workspaceRoot:this.defaultCwd,path})};}
     catch(error) {throw error instanceof WorkspaceFileError?new SessionOwnerError(error.message,error.status,error.code):error;}
   }
@@ -1522,6 +1546,8 @@ export class SessionOwner {
         throw error;
       }
     }
+    const runnerFiles=await this.runnerProjectCall<ProjectFilesView>('projects.files',{project:id,path:typeof path==='string'?path:''});
+    if(runnerFiles)return runnerFiles;
     const project=this.project(id);
     const requested=path===null||path===undefined?'':typeof path==='string'?path.trim():'';
     if(requested.length>4096||requested.includes('\0')||requested.includes('\\')||isAbsolute(requested)||requested.split('/').some(part=>part==='..')||isSensitiveWorkspacePath(requested))
@@ -1551,20 +1577,26 @@ export class SessionOwner {
     entries.sort((a,b)=>a.kind===b.kind?a.name.localeCompare(b.name):a.kind==='directory'?-1:1);
     return {project:{name:project.name,cwd:project.cwd},path:relativePath,entries,truncated};
   }
-  projectInstructions(id:string) {
+  async projectInstructions(id:string) {
+    const remote=await this.runnerProjectCall<{project:string;path:string;content:string}>('projects.instructions',{project:id});
+    if(remote)return remote;
     const project=this.project(id),path=join(project.cwd,'AGENTS.md');
     if(!existsSync(path))throw new SessionOwnerError('Canonical project instructions are unavailable.',404,'PROJECT_INSTRUCTIONS_UNAVAILABLE');
     return {project:project.name,path:'AGENTS.md',content:readFileSync(path,'utf8')};
   }
-  projectTodos(id:string) {
+  async projectTodos(id:string) {
+    const remote=await this.runnerProjectCall<{project:string;content:string;sha256:string}>('projects.todos',{project:id});
+    if(remote)return remote;
     const {project,record}=this.managedProject(id),path=join(record.vault_path,'notes','TODOS.md');
     if(!existsSync(path))throw new SessionOwnerError('Canonical project TODOs are unavailable.',404,'PROJECT_TODOS_UNAVAILABLE');
     const content=readFileSync(path,'utf8');
     return {project:project.name,content,sha256:hash(content)};
   }
-  updateProjectTodos(id:string,body:unknown) {
+  async updateProjectTodos(id:string,body:unknown) {
     const input=object(body);only(input,['content','sha256']);
     if(typeof input.content!=='string'||typeof input.sha256!=='string'||!input.content.endsWith('\n'))throw new SessionOwnerError('TODO update requires complete newline-terminated canonical content and its observed hash.');
+    const remote=await this.runnerProjectCall<{project:string;content:string;sha256:string}>('projects.todos.update',{project:id,content:input.content,sha256:input.sha256});
+    if(remote)return remote;
     const {project,record}=this.managedProject(id),path=join(record.vault_path,'notes','TODOS.md');
     if(!existsSync(path)||hash(readFileSync(path,'utf8'))!==input.sha256)throw new SessionOwnerError('Canonical TODOs changed. Reload before saving.',409,'PROJECT_TODOS_CONFLICT');
     const temporary=join(dirname(path),`.TODOS.${randomUUID()}.tmp`);
@@ -1572,7 +1604,8 @@ export class SessionOwner {
     return {project:project.name,content:input.content,sha256:hash(input.content)};
   }
   async status() {
-    return {owner:{available:true},captureDelivery:this.captureDeliveryStatus?.()??null,providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),antigravity:this.runtime.available('antigravity'),chatgpt:this.runtime.available('chatgpt')},projects:this.projects().projects.length,deployment:await this.deploymentWait(),deploymentStuck:await this.stuckUpdate(),
+    const projects=await this.projects();
+    return {owner:{available:true},captureDelivery:this.captureDeliveryStatus?.()??null,providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),antigravity:this.runtime.available('antigravity'),chatgpt:this.runtime.available('chatgpt')},projects:projects.projects.length,deployment:await this.deploymentWait(),deploymentStuck:await this.stuckUpdate(),
       executionsOnPreviousVersion:this.executionsOnPreviousVersion()};
   }
   /**
@@ -4011,7 +4044,7 @@ export class SessionOwner {
       }
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts[1]==='settings'&&parts.length===2) result={settings:changeSavedWorkSettings(object(body))};
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts.length===3) result=this.savedWorkControl(Number(parts[1]),parts[2]!,object(body));
-      else if(request.method==='GET'&&parts[0]==='projects'&&parts.length===1) result=this.projects();
+      else if(request.method==='GET'&&parts[0]==='projects'&&parts.length===1) result=await this.projects();
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='canvas-policy'&&parts.length===2&&this.projectSetup) result=this.projectSetup.setCanvasPolicy(body);
       else if(request.method==='POST'&&parts[0]==='canvas-projects'&&parts[1]==='ensure'&&parts.length===2&&this.projectSetup) result=await this.projectSetup.ensureCanvas(body);
       else if(request.method==='GET'&&parts[0]==='canvas-projects'&&parts.length===2&&this.projectSetup){
@@ -4025,10 +4058,10 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='status'&&parts.length===1) result={...await this.status(),operations:[...(this.projectSetup?['project.setup',PROJECT_FOLDERS_OPERATION,PROJECT_NESTED_EXPERTISE_OPERATION]:[]),...(this.peerLinks?['link.open']:[])]};
       else if(request.method==='GET'&&parts[0]==='releases'&&parts.length===1) result=await releaseHistory();
       else if(request.method==='GET'&&parts[0]==='files'&&parts.length===1) result=await this.file(url.searchParams.get('path'),url.searchParams.get('machine'));
-      else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='instructions'&&parts.length===3) result=this.projectInstructions(parts[1]!);
-      else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='todos'&&parts.length===3) result=this.projectTodos(parts[1]!);
+      else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='instructions'&&parts.length===3) result=await this.projectInstructions(parts[1]!);
+      else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='todos'&&parts.length===3) result=await this.projectTodos(parts[1]!);
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[2]==='default'&&parts.length===3) result=this.projectDefault(parts[1]!,body);
-      else if(request.method==='POST'&&parts[0]==='projects'&&parts[2]==='todos'&&parts.length===3) result=this.updateProjectTodos(parts[1]!,body);
+      else if(request.method==='POST'&&parts[0]==='projects'&&parts[2]==='todos'&&parts.length===3) result=await this.updateProjectTodos(parts[1]!,body);
       // The selectable models, so a client picker never keeps its own list. Derived from
       // the alias table, so it cannot disagree with what a session can actually run.
       else if(request.method==='GET'&&parts[0]==='models'&&parts.length===1)

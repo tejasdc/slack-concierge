@@ -23,7 +23,7 @@ import { OWNER_DRAIN_WITHDRAWAL_REASON, runnerActivity } from "./runner-leases";
 import { runnerLedger } from "./runner-ledger";
 import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION, HostNotStartedError, HostUnavailableError,
   type HostCustody, type HostFrame, type HostLaunch, type HostStatus, type SupervisorView } from "./execution-host-client";
-import type { HostAccess, HostLink, HostManifest } from "./host-access";
+import type { HostAccess, HostLink, HostManifest, HostRunnerFile } from "./host-access";
 
 export const RUNNER_SUPERVISOR = "runner";
 export const TURN_JOB_KIND = "turn";
@@ -77,7 +77,7 @@ export class RunnerHostAccess implements HostAccess {
   readonly jobId: string;
   constructor(readonly executionId: string, private readonly ownerInstanceId?: string) { this.jobId = turnJobId(executionId); }
 
-  async launch(manifest: HostManifest, files: { path: string; base64: string }[] = []): Promise<HostLaunch> {
+  async launch(manifest: HostManifest, files: HostRunnerFile[] = []): Promise<HostLaunch> {
     const payload = { executionId: this.executionId, manifest, files, protocols: ADOPTABLE_HOST_PROTOCOLS };
     // The execution's intent and turn are on disk before any runner can see the work.
     await ledgerDurable();

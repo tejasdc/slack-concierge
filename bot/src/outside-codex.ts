@@ -35,8 +35,14 @@ export type OutsideRun = Parameters<AgentProvider["run"]>[0] & {
   adopted?: boolean;
   /** Where the opening words are written for the CLI to read as its standard input. */
   promptFile: string;
+  /** The opening prompt is delivered as bytes and written under the runner's private state folder. */
+  runnerPromptFile?: boolean;
   codexExecutable: string;
 };
+
+export function outsideCodexPromptContent(input: Pick<OutsideRun,'systemPrompt'|'prompt'>):string {
+  return [input.systemPrompt, OUTSIDE_RUN_NOTE, input.prompt].filter(Boolean).join("\n\n");
+}
 
 /**
  * Said to every outside agent, before its instructions, because it is the one thing that differs
@@ -67,8 +73,8 @@ export async function runOutsideCodexTurn(input: OutsideRun): Promise<RunResult>
   if (!input.transport)
     throw new ProviderCapabilityUnavailableError("execution", "An outside run needs an execution host on this machine.");
 
-  const content = [input.systemPrompt, OUTSIDE_RUN_NOTE, input.prompt].filter(Boolean).join("\n\n");
-  if (!input.adopted) {
+  const content = outsideCodexPromptContent(input);
+  if (!input.adopted && !input.runnerPromptFile) {
     mkdirSync(dirname(input.promptFile), { recursive: true, mode: 0o700 });
     writeFileSync(input.promptFile, content, { mode: 0o600 });
   }

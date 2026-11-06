@@ -16,7 +16,7 @@ import { nextRetry } from "./retry-core";
 import { log } from "./log";
 import { ledgerDurable } from "./ledger-durability-barrier";
 import { ProviderDispatchError } from "./provider-failures";
-import type { HostAccess, HostLink, HostManifest } from "./host-access";
+import type { HostAccess, HostLink, HostManifest, HostRunnerFile } from "./host-access";
 
 import HOST_PROTOCOLS from "./host-protocols.json";
 /**
@@ -474,7 +474,7 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
     /** `inactivityMs: null` sets no limit: an outside run is watched, never policed (outside-codex.ts). */
     private readonly timeouts: { inactivityMs?: number | null; shutdownGraceMs?: number } = {},
     /** Files the provider reads by path, written where the host runs (a runner writes its own copy). */
-    private readonly files: { path: string; base64: string }[] = []) {
+    private readonly files: HostRunnerFile[] = []) {
     this.access = execution.access ?? new LocalHostAccess(execution.stateDir, execution.executionId, execution.routerBotDir);
   }
 
