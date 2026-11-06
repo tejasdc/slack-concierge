@@ -12,16 +12,19 @@ import {MANAGED_CODEX} from '../src/codex-daemon-file-limit';
 
 type Input={provider:'claude-code'|'codex';sessionUuid:string;cwd:string;model:string|null;running:boolean;prompt:string};
 const TIMEOUT_MS=180_000;
+let activeChild:ReturnType<typeof spawn>|null=null;
+process.on('SIGTERM',()=>{activeChild?.kill('SIGTERM');setTimeout(()=>activeChild?.kill('SIGKILL'),5_000).unref();process.exitCode=143;});
 function run(command:string,args:string[],cwd:string,environment:NodeJS.ProcessEnv=process.env):Promise<{code:number|null;stdout:string;stderr:string}>{
   return new Promise((resolve,reject)=>{
     const child=spawn(command,args,{cwd,env:environment,stdio:['ignore','pipe','pipe']});
+    activeChild=child;
     let stdout='',stderr='';
     const timeout=setTimeout(()=>{child.kill('SIGTERM');setTimeout(()=>child.kill('SIGKILL'),5000).unref();
       reject(new Error('The side question timed out.'));},TIMEOUT_MS);
     child.stdout.setEncoding('utf8').on('data',(chunk:string)=>{stdout+=chunk;});
     child.stderr.setEncoding('utf8').on('data',(chunk:string)=>{stderr=(stderr+chunk).slice(-4000);});
-    child.on('error',error=>{clearTimeout(timeout);reject(error);});
-    child.on('close',code=>{clearTimeout(timeout);resolve({code,stdout,stderr});});
+    child.on('error',error=>{clearTimeout(timeout);if(activeChild===child)activeChild=null;reject(error);});
+    child.on('close',code=>{clearTimeout(timeout);if(activeChild===child)activeChild=null;resolve({code,stdout,stderr});});
   });
 }
 async function lastFinished(uuid:string,cwd:string):Promise<string|null>{
