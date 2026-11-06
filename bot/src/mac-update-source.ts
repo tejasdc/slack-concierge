@@ -5,7 +5,6 @@ import {join} from 'node:path';
 
 export const MAC_UPDATE_SOURCE_INPUT='request:1c9145ce-b0bc-40e6-8b55-6971d4bdd19c';
 export const MAC_UPDATE_SOURCE_RUN='70d098e8-6f4c-45c8-a353-fc15916eec8e';
-export const MAC_UPDATE_REQUEST_ID='4e3ffc00-7347-49e6-8829-dfc9980d81ee';
 const PARENT_THREAD='01a1ad10-c8b0-7571-97f6-e2fdfffba3c5';
 const HUMAN_MESSAGE='msg_01a1aeea-8d60-7543-a30c-f7c5801a3ccc';
 const HUMAN_TEXT_SHA256='dce3b4179d38edd3f1e679adcd41ca5e550c01b4c61600471b335231181515b1';
