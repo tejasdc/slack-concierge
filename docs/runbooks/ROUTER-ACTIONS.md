@@ -163,6 +163,19 @@ name for creation. `sessions agents bind <role> <session-address> <source-flags>
 moves a role's binding to an existing non-archived session in its exact declared folder. The
 source and action ID make retries idempotent. Moving a bound session to another folder clears its
 binding. The role table in `bot/src/standing-agents.ts` is the sole home for these folders and wake facts.
+Binding `inbox` makes that session the Inbox router, exactly as an accepted provider handoff does:
+new captures, his thread replies, thread-named requests (`sessions ask --thread`), topic commands
+and Inbox reads go through it, and it carries the former router's open attention. Every session
+ever marked as the Inbox stays part of the one Inbox, so their threads and topics remain usable
+from the new router. Inputs already queued on the former router stay there; the bind receipt lists
+them under `formerRouter.stillQueued`. A provider handoff moves them; otherwise read and route them
+by exact id. `bot/src/inbox-lineage-sql.ts` holds the one definition of the current router and of
+the Inbox's sessions.
+
+`sessions topics message <messageId>` returns one Inbox message's words, author, time,
+attachments, thread root and topic: a capture, his reply, an agent's post, result or routed request,
+or a request input that a topic request names as its source or dispatch. Topic reads carry ids and
+short excerpts; this is the read for judging the message itself.
 `sessions context` and the session view expose only a session's explicit role binding.
 
 `sessions schedule --role <role> --at <future ISO-8601 time> [--every-ms <interval>] --summary "<one line>" <source-flags> --action-id A -- <text>`

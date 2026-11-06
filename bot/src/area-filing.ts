@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
 import {db} from './state';
+import {CURRENT_INBOX_ID_SQL} from './inbox-lineage-sql';
 import {log} from './log';
 import {recordSessionEvent} from './session-inputs';
 import {applyAreaChange,MEANING_REASON_PREFIX,SYSTEM_NOTICE_AREA,threadChanges} from './session-areas';
@@ -38,7 +39,7 @@ type Thread={id:string;title:string;text:string};
 const pending=new Set<string>();
 let admit:Admit|null=null,search:SessionSearch|null=null,startedMs=Date.now(),timer:ReturnType<typeof setTimeout>|null=null,running=false,catchUp=true;
 
-const inboxSessionId=()=>(db.query("SELECT id FROM sessions WHERE json_extract(native_metadata_json,'$.inbox')=1 ORDER BY id DESC LIMIT 1").get() as {id:number}|null)?.id??null;
+const inboxSessionId=()=>(db.query(CURRENT_INBOX_ID_SQL).get() as {id:number}|null)?.id??null;
 
 /** His own words for a thread: its title and the first captured messages placed in it. */
 function openThreads(sessionId:number):Thread[] {

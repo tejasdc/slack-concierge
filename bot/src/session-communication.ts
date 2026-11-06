@@ -7,6 +7,7 @@ import { bindSessionProvider, carryingTurn, createNativeSession, enqueueSessionI
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
+import { INBOX_LINEAGE_SQL } from './inbox-lineage-sql';
 import { BUG_REPORT_OWN_THREAD, followForwardedReply, forwardedReplyFraming, isBugReportInput } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
 import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWithoutThread, hasOpenInboxWorkForSource, invalidateTopicRoots, linkForwardedReplyWork, linkInboxDispatchWork, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
@@ -618,8 +619,15 @@ export class SessionCommunicationCoordinator {
             if(saved.duplicate)return JSON.parse(saved.input.receipt_json??'{}');
             const session=getSessionById(target.id);
             if(!session)throw new Error('The exact session does not exist.');
-            bindStandingAgentSession(this.dependencies.owner.defaultCwd,input.role,session);
-            const receipt={state:'completed',role:input.role,binding:'bound',session:{id:`concierge:${session.id}`,address:sessionAddress(session)}};
+            const {former}=bindStandingAgentSession(this.dependencies.owner.defaultCwd,input.role,session);
+            // What the binding moves is said in the receipt, so a stand-in knows what it now owns
+            // and what is still waiting on the session it replaced.
+            const stillQueued=former?(db.query(`SELECT input.id FROM session_inputs input JOIN turns turn ON turn.id=input.turn_id
+                WHERE input.session_id=? AND turn.status='queued' ORDER BY turn.id LIMIT 100`).all(former.id) as {id:string}[]).map(row=>row.id):[];
+            const receipt={state:'completed',role:input.role,binding:'bound',session:{id:`concierge:${session.id}`,address:sessionAddress(session)},
+                ...(input.role==='inbox'?{moves:'New Inbox captures, his thread replies, thread-named requests, topic commands and Inbox reads now go to this session. Every earlier Inbox session’s threads stay readable and usable from it.',
+                    ...(former?{formerRouter:{id:`concierge:${former.id}`,address:sessionAddress(former),stillQueued,
+                        note:'Inputs already queued on the former router stay there and run when it can; move them with a provider handoff, or read and route them from here by exact id.'}}:{})}:{})};
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
                 .run(JSON.stringify(receipt),saved.input.id);
             return receipt;
@@ -818,9 +826,7 @@ export class SessionCommunicationCoordinator {
             if(!session)throw new Error('No Inbox session exists yet.');
             const router=session.id===own.id;
             const target=getAcceptedSessionInput(input.input_id);
-            if(!target||!db.query(`WITH RECURSIVE lineage(id) AS (SELECT ? UNION ALL
-              SELECT predecessor_session_id FROM session_handoffs JOIN lineage ON successor_session_id=lineage.id
-              WHERE state='accepted') SELECT 1 FROM lineage WHERE id=? LIMIT 1`).get(session.id,target.session_id))
+            if(!target||!db.query(`SELECT 1 WHERE ? IN (${INBOX_LINEAGE_SQL})`).get(target.session_id,session.id))
                 throw new Error('Thread placement needs an accepted message in the Inbox.');
             const root=detach?null:inboxThreadRoot(session.id,input.thread!);
             if(!detach&&!root)throw new Error('That --thread is not a message in this Inbox.');

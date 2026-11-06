@@ -1,7 +1,8 @@
 import {relative} from 'node:path';
 import {realpathSync} from 'node:fs';
 import {db,getSessionById,type SessionRow} from './state';
-import {sessionMetadata,updateSessionMetadata} from './session-inputs';
+import {sessionMetadata,updateSessionMetadata,type NativeSessionMetadata as SessionMetadata} from './session-inputs';
+import {CURRENT_INBOX_ID_SQL} from './inbox-lineage-sql';
 import {containingProject,sessionProject} from './session-projects';
 import {sessionAddress} from './session-address';
 import {REPAIR_AGENT_TITLE} from './repair-notices';
@@ -63,15 +64,41 @@ export function assertStandingAgentFolder(workspaceRoot:string,role:string,cwd:s
 
 /** The target and every former holder change in one owner transaction. */
 export function bindStandingAgentSession(workspaceRoot:string,role:string,session:SessionRow) {
-  db.transaction(()=>{
+  return db.transaction(()=>{
     const agent=standingAgent(role);
     if(!agent)throw new Error(`Unknown standing agent role ${role}; use sessions agents.`);
     if(session.status==='archived')throw new Error('An archived session cannot hold a standing agent role.');
     assertStandingAgentFolder(workspaceRoot,agent.role,sessionMetadata(session).cwd);
+    if(agent.role==='inbox'){
+      const former=db.query(CURRENT_INBOX_ID_SQL).get() as {id:number}|null;
+      const formerSession=former&&former.id!==session.id?getSessionById(former.id):null;
+      takeInboxRouterRole(session.id,formerSession?sessionMetadata(formerSession):null);
+      return {former:formerSession};
+    }
     db.query(`UPDATE sessions SET native_metadata_json=json_remove(native_metadata_json,'$.standingRole')
       WHERE id<>? AND json_extract(native_metadata_json,'$.standingRole')=?`).run(session.id,agent.role);
     updateSessionMetadata(session.id,{standingRole:agent.role});
+    return {former:null};
   })();
+}
+
+/**
+ * Make one session the current Inbox router: it holds the inbox role and the Inbox marker, so
+ * new captures, thread-named requests, topic commands and the Inbox's own reads go through it,
+ * and it carries the former router's attention so open questions stay in Needs attention.
+ * The former router keeps its marker: its rows stay part of the one Inbox's threads. A provider
+ * handoff and `sessions agents bind inbox` are the two ways the role moves; both come here.
+ */
+export function takeInboxRouterRole(sessionId:number,from:SessionMetadata|null) {
+  db.query(`UPDATE sessions SET native_metadata_json=json_remove(native_metadata_json,'$.standingRole')
+    WHERE id<>? AND json_extract(native_metadata_json,'$.standingRole')='inbox'`).run(sessionId);
+  const own=sessionMetadata(getSessionById(sessionId)!);
+  // The new router keeps its own open questions and gains the former router's, once each.
+  const needs=[...(own.needs??[])];
+  for(const need of from?.needs??[])if(!needs.some(held=>held.eventId===need.eventId))needs.push(need);
+  updateSessionMetadata(sessionId,{inbox:true,inboxRole:'project-router',standingRole:'inbox',
+    ...(from?{needs,generation:Math.max(from.generation??0,own.generation??0),
+      readGeneration:from.readGeneration,dismissedGeneration:from.dismissedGeneration}:{})});
 }
 
 export function canOwnStandingWork(workspaceRoot:string,cwd:string|null|undefined):boolean {

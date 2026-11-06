@@ -299,6 +299,14 @@ acceptance belongs to Tejas. Prior failed evidence remains unchanged.
 
 ## Topics
 
+There is one Inbox. Every session ever marked as the Inbox is part of its one dialogue, its
+threads and its topics; the session holding the `inbox` standing role is the current router.
+A provider handoff and `sessions agents bind inbox` both move that role
+([router actions](../runbooks/ROUTER-ACTIONS.md#standing-agents)). Before 2026-11-06 a bind
+moved only the label: captures, thread-named requests and thread lookups followed the newest
+Inbox-marked session and accepted-handoff chains, so an overnight stand-in received nothing
+and could name no thread.
+
 A topic is the Inbox's recognizable conversation: a stable `topic:<uuid>` owning a set of
 thread roots (each root belongs to at most one topic; the latest placement wins), a title
 with its previous titles as aliases, a one-line summary of the most useful current fact, a
