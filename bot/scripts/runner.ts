@@ -31,6 +31,7 @@ import {controlSocketListeners,moveCodexDaemonToOwnScope,raiseCodexDaemonFileLim
 import {serveRunnerMachineCalls} from '../src/runner-machine-calls';
 import {localWatchMachine,serveWatchCall} from '../src/watch-machine';
 import {rewriteRelayedCodexRequest,runnerMachineEnvironment,writeRunnerConnection,type RunnerMachine} from '../src/runner-machine';
+import {runnerAccountHome} from '../src/runner-provider-accounts';
 
 const owner=process.env.CONCIERGE_OWNER_URL?.replace(/\/+$/,'');
 const tokenFile=process.env.CONCIERGE_RUNNER_TOKEN_FILE;
@@ -132,10 +133,18 @@ async function runProbe(job:{jobId:string;attemptId:string;epoch:number;payload:
  * the job; the paths that name a machine (state folder, helper release, Bun) are this runner's.
  */
 function turnEnvironment(manifest:{environment:Record<string,string>;inheritEnvironment:boolean}) {
-  if(!manifest.inheritEnvironment)return {...manifest.environment};
-  const ownerScripts=manifest.environment.CONCIERGE_ROUTER_BOT_DIR?join(manifest.environment.CONCIERGE_ROUTER_BOT_DIR,'scripts'):null;
-  return {...process.env as Record<string,string>,...manifest.environment,
-    ...runnerMachineEnvironment(machine,manifest.environment.PATH??'',ownerScripts),
+  const localEnvironment={...manifest.environment};
+  const provider=localEnvironment.CONCIERGE_PROVIDER_ID;
+  const account=localEnvironment.CONCIERGE_PROVIDER_ACCOUNT;
+  if(provider==='claude-code'&&account) {
+    const home=runnerAccountHome('claude-code',account);
+    if(!home)throw new Error(`The selected Claude account is not available on runner ${machine.runnerName}.`);
+    localEnvironment.CLAUDE_CONFIG_DIR=home;
+  }
+  if(!manifest.inheritEnvironment)return localEnvironment;
+  const ownerScripts=localEnvironment.CONCIERGE_ROUTER_BOT_DIR?join(localEnvironment.CONCIERGE_ROUTER_BOT_DIR,'scripts'):null;
+  return {...process.env as Record<string,string>,...localEnvironment,
+    ...runnerMachineEnvironment(machine,localEnvironment.PATH??'',ownerScripts),
     // The address this runner reaches the owner at is the one known to work from here.
     CONCIERGE_OWNER_URL:owner!,
     // thnkr.ing's network entrance, reached with the same run token (Thinkering's step 2).

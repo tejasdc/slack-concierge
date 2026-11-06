@@ -40,6 +40,8 @@ export type NativeSessionMetadata = {
   codexLifecycle?:import('./codex-session-lifecycle').CodexSessionLifecycle;
   title?:string; summary?:string; purpose?:string; cwd?:string; additionalDirs?:string[];
   claudeAccount?:string;
+  /** Immutable account and runner that first started this provider conversation; labels only, never machine paths. */
+  providerAccount?:string; providerRunner?:string|null;
   claudeCacheCall?:{account:string;conversation:string|null;callId:string;atMs:number;cacheable:boolean};
   claudeSelectionRevision?:number;
   /** Only a zero-work refused first turn may change the provider selected by Automatic. */
@@ -89,6 +91,17 @@ export function sessionMetadata(session:SessionRow): NativeSessionMetadata {
     }
   }
   return meta;
+}
+/** The stable runner chosen when this provider conversation first ran; legacy means unknown. */
+export function providerRunnerForSession(session:SessionRow):{status:'bound';runner:string|null}|{status:'legacy'} {
+  const metadata=sessionMetadata(session);
+  return Object.prototype.hasOwnProperty.call(metadata,'providerRunner')
+    ?{status:'bound',runner:metadata.providerRunner??null}:{status:'legacy'};
+}
+/** The stable provider account label chosen for this conversation; never infer from the current login. */
+export function providerAccountForSession(session:SessionRow):{status:'bound';account:string}|{status:'legacy'} {
+  const account=sessionMetadata(session).providerAccount;
+  return typeof account==='string'&&account.trim()?{status:'bound',account}:{status:'legacy'};
 }
 export function updateSessionMetadata(sessionId:number, change:Partial<NativeSessionMetadata>) {
   const session = getSessionById(sessionId);

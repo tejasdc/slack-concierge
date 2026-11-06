@@ -9,6 +9,8 @@ import {chooseClaudeDispatch,claudeAccountWithRoomBesides,claudeEveryAccountClea
 import {warmClaudeAccount} from './prompt-cache-lifetime';
 import {yieldBankedTurn} from './saved-work';
 import {recordSessionEvent,sessionMetadata,updateSessionMetadata} from './session-inputs';
+import {codexRelayRunner} from './codex-app-server-client';
+import {runnerMachineCall} from './runner-machine-calls';
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {homedir} from 'node:os';
@@ -453,6 +455,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   let runningClaudeAccount:string|null=null;
   let runningClaudeModel:string|null=null;
   let runningCodexAccount:string|null=null;
+  let runningCodexRunner:string|null=null;
   // The extra Claude home this turn launched from, so its outcome counts as evidence about that
   // home: a finished turn proves it works, a sign-in refusal withdraws that proof.
   let runningClaudeHome:string|null=null;
@@ -626,8 +629,20 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         :chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0,input.turnId,claudeLaunchModel,warmClaudeCacheAccount)
       :null;
     runningClaudeAccount=input.providerId==='claude-code'?(claudeChoice?.account??currentAccount('claude-code')?.label??null):null;
-    runningCodexAccount=input.providerId==='codex'?currentAccount('codex')?.label??null:null;
-    runningClaudeHome=claudeChoice?.home??null;
+    if(input.providerId==='codex'){
+      const metadata=sessionMetadata(input.session);
+      const runner=metadata.providerAccount!==undefined
+        ?metadata.providerRunner??null:codexRelayRunner();
+      const identity=metadata.providerAccount!==undefined
+        ?{label:metadata.providerAccount}
+        :runner
+          ?await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider:'codex'})
+          :currentAccount('codex');
+      runningCodexAccount=identity?.label??null;
+      runningCodexRunner=metadata.providerAccount!==undefined?metadata.providerRunner??null:runner;
+    }
+    const remoteProviderRunner=input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER?.trim()||null;
+    runningClaudeHome=remoteProviderRunner?null:claudeChoice?.home??null;
     const actualClaudeBrief=input.presentation==='native'&&!input.adopted&&runningClaudeAccount
       ?budgetBriefWithProviderRoom('claude-code',Date.now(),runningClaudeAccount):null;
     if(input.presentation==='native'&&(input.providerId==='claude-code'||input.providerId==='codex')){
@@ -660,7 +675,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       environment: {
         AGENT_BROWSER_IDLE_TIMEOUT_MS: String(AGENT_BROWSER_IDLE_MS),
         ...input.providerEnvironment,
-        ...(claudeChoice?.home?{CLAUDE_CONFIG_DIR:claudeChoice.home}:{}),
+        ...(runningClaudeHome?{CLAUDE_CONFIG_DIR:runningClaudeHome}:{}),
+        ...(remoteProviderRunner&&runningClaudeAccount?{CONCIERGE_PROVIDER_ID:'claude-code',CONCIERGE_PROVIDER_ACCOUNT:runningClaudeAccount}:{}),
         // Only an older private execution being adopted needs its original Codex home.
         ...(input.providerId==='codex'&&input.adopted&&input.boundAccount?{CODEX_HOME:input.boundAccount.home??join(homedir(),'.codex')}:{}),
         CONCIERGE_TURN_ID: String(input.turnId),
@@ -716,10 +732,22 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
             updateSessionMetadata(input.session.id,{claudeAccount:runningClaudeAccount,
               claudeSelectionRevision:claudeChoice?.selectionRevision??0,
               claudeAccountNotice:null});
+            if(input.session.agent_session_uuid===null&&sessionMetadata(input.session).providerAccount===undefined){
+              const providerRunner=input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER?.trim()||null;
+              updateSessionMetadata(input.session.id,{providerAccount:runningClaudeAccount,providerRunner});
+            }
             recordSessionEvent({eventId:`claude-account:${input.turnId}:${dispatchAttempt}`,sessionId:input.session.id,turnId:input.turnId,
               kind:'account',payload:{account:runningClaudeAccount,
                 ...(claudeChoice?{because:claudeChoice.because,expected:claudeChoice.expected}:{})}});
           } catch(error){log('warn','claude_account_record_failed',{turn_id:input.turnId,...errorFields(error)});}
+        }
+        if(event.type==='started'&&input.providerId==='codex'&&runningCodexAccount
+          &&input.session.agent_session_uuid===null&&sessionMetadata(input.session).providerAccount===undefined){
+          try{
+            updateSessionMetadata(input.session.id,{providerAccount:runningCodexAccount,providerRunner:runningCodexRunner});
+            recordSessionEvent({eventId:`provider-account:${input.turnId}:${dispatchAttempt}`,sessionId:input.session.id,turnId:input.turnId,
+              kind:'account',payload:{provider:'codex',account:runningCodexAccount,runner:runningCodexRunner}});
+          }catch(error){log('warn','provider_account_record_failed',{turn_id:input.turnId,...errorFields(error)});}
         }
         statusController?.recordProgress(event);
         progressController?.recordProgress(event);
