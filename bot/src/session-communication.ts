@@ -409,7 +409,14 @@ export class SessionCommunicationCoordinator {
         const digest=hash(JSON.stringify([input.address,input.text,effect]));
         const prior=()=>db.query('SELECT * FROM session_external_requests WHERE agent_name=? AND action_id=?').get(input.name,input.action_id) as any;
         const existing=prior();
-        if(existing){if(existing.payload_hash!==digest)throw new Error('Idempotency conflict.');this.dependencies.owner.dispatch(getAcceptedSessionInput(existing.target_input_id)!);return this.externalGet(input.name,existing.request_id);}
+        if(existing){
+            if(existing.payload_hash!==digest)throw new Error('Idempotency conflict.');
+            const accepted=getAcceptedSessionInput(existing.target_input_id);
+            // A handoff can move reply ownership while retaining the predecessor's accepted
+            // input as this request's unique identity. Never dispatch that old input again.
+            if(accepted?.session_id===existing.target_session_id)this.dependencies.owner.dispatch(accepted);
+            return this.externalGet(input.name,existing.request_id);
+        }
         const id=randomUUID(),targetInputId=`request:${id}`;
         db.transaction(()=>{
             const raced=prior();
