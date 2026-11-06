@@ -3405,7 +3405,7 @@ export class SessionOwner {
     return {session:this.view(this.session(id)),operation:this.receipt(this.input(accepted.input.id))};
   }
   upload(body:unknown) {
-    const input=object(body);only(input,['clientActionId','name','contentType','base64']);const action=actionId(input);
+    const input=object(body);only(input,['clientActionId','name','contentType','base64','agentSource']);const action=actionId(input),agent=agentTestSource(input.agentSource);
     if(typeof input.name!=='string'||!input.name||input.name.includes('/')||input.name.includes('\\')||input.name==='.'||input.name==='..'||input.name.includes('\0'))throw new SessionOwnerError('Attachment name must be a file name.');
     if(typeof input.contentType!=='string'||!input.contentType||typeof input.base64!=='string')throw new SessionOwnerError('Attachment type and base64 bytes required.');
     const bytes=Buffer.from(input.base64,'base64');
@@ -3413,11 +3413,13 @@ export class SessionOwner {
     const digest=createHash('sha256').update(bytes).digest('hex');
     const attachment=db.transaction(()=>{
       const old=db.query('SELECT * FROM session_attachments WHERE action_id=?').get(action) as any;
-      if(old){if(old.name!==input.name||old.content_type!==input.contentType||old.sha256!==digest)throw new SessionOwnerError('Attachment action conflict.',409);return old;}
-      const id=randomUUID();db.query('INSERT INTO session_attachments(id,action_id,name,content_type,sha256,bytes) VALUES(?,?,?,?,?,?)').run(id,action,input.name,input.contentType,digest,bytes);
-      return {id,name:input.name,content_type:input.contentType,sha256:digest};
+      if(old){if(old.name!==input.name||old.content_type!==input.contentType||old.sha256!==digest||old.source_input_id!==(agent?.inputId??null)||old.source_run_id!==(agent?.runId??null))throw new SessionOwnerError('Attachment action conflict.',409);return old;}
+      const id=randomUUID();db.query('INSERT INTO session_attachments(id,action_id,name,content_type,sha256,bytes,source_input_id,source_run_id) VALUES(?,?,?,?,?,?,?,?)')
+        .run(id,action,input.name,input.contentType,digest,bytes,agent?.inputId??null,agent?.runId??null);
+      return {id,name:input.name,content_type:input.contentType,sha256:digest,source_input_id:agent?.inputId??null,source_run_id:agent?.runId??null};
     })();
-    return {attachment:{id:attachment.id,name:attachment.name,contentType:attachment.content_type,sha256:attachment.sha256}};
+    return {attachment:{id:attachment.id,name:attachment.name,contentType:attachment.content_type,sha256:attachment.sha256,
+      ...(attachment.source_input_id&&attachment.source_run_id?{agentSource:{inputId:attachment.source_input_id,runId:attachment.source_run_id}}:{})}};
   }
   attachments(ids:unknown) {
     if(ids===undefined)return [];
@@ -3429,7 +3431,8 @@ export class SessionOwner {
       // transcript, so a copy reuses the words its original already has (the phone's own, usually)
       // instead of being transcribed again on this server (Tejas, September 21, 2026).
       const transcriptText=(row.transcript_text??(row.content_type.startsWith('audio/')?(db.query('SELECT transcript_text FROM session_attachments WHERE sha256=? AND transcript_text IS NOT NULL ORDER BY created_at LIMIT 1').get(row.sha256) as {transcript_text:string}|null)?.transcript_text:null)??null) as string|null;
-      return {id:row.id,name:row.name,contentType:row.content_type,sha256:row.sha256,base64:Buffer.from(row.bytes).toString('base64'),transcriptText};
+      return {id:row.id,name:row.name,contentType:row.content_type,sha256:row.sha256,base64:Buffer.from(row.bytes).toString('base64'),transcriptText,
+        ...(row.source_input_id&&row.source_run_id?{agentSource:{inputId:row.source_input_id,runId:row.source_run_id}}:{})};
     });
   }
   attachment(id:string) {

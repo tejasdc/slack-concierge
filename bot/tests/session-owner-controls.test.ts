@@ -76,6 +76,30 @@ test('attachment custody downloads exact bytes and initial plus steering attachm
   expect((await request(host.owner,`attachments/${upload.body.attachment.id}`)).status).toBe(409);
 });
 
+test('marked attachment custody verifies and retains its agent source without changing human upload receipts',async()=>{
+  const source=host.owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',firstInput:{text:'Agent source'}});
+  const agentSource={inputId:source.operation.inputId,runId:source.operation.runId};
+  const bytes=Buffer.from('Synthetic marked attachment'),action=randomUUID();
+  const body={clientActionId:action,name:'marked.txt',contentType:'text/plain',base64:bytes.toString('base64'),agentSource};
+  const first=await request(host.owner,'attachments',body),duplicate=await request(host.owner,'attachments',body);
+  expect(first.status).toBe(200);expect(duplicate.body).toEqual(first.body);
+  expect(first.body.attachment).toMatchObject({name:'marked.txt',agentSource});
+  expect((await request(host.owner,`attachments/${first.body.attachment.id}`)).body).toMatchObject({
+    name:'marked.txt',base64:bytes.toString('base64'),agentSource});
+  expect(db.query('SELECT source_input_id,source_run_id FROM session_attachments WHERE id=?').get(first.body.attachment.id))
+    .toEqual({source_input_id:agentSource.inputId,source_run_id:agentSource.runId});
+
+  const other=host.owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',firstInput:{text:'Other source'}});
+  const otherSource={inputId:other.operation.inputId,runId:other.operation.runId};
+  expect((await request(host.owner,'attachments',{...body,agentSource:otherSource})).status).toBe(409);
+  expect((await request(host.owner,'attachments',{...body,agentSource:undefined})).status).toBe(409);
+  expect((await request(host.owner,'attachments',{...body,clientActionId:randomUUID(),agentSource:{inputId:agentSource.inputId,runId:otherSource.runId}})).status).toBe(403);
+  expect((db.query('SELECT count(*) AS count FROM session_attachments').get() as {count:number}).count).toBe(1);
+
+  const human=await request(host.owner,'attachments',{clientActionId:randomUUID(),name:'human.txt',contentType:'text/plain',base64:bytes.toString('base64')});
+  expect(human.body.attachment).toEqual({id:human.body.attachment.id,name:'human.txt',contentType:'text/plain',sha256:createHash('sha256').update(bytes).digest('hex')});
+});
+
 test('exact native fork uses the parent FIFO and creates one distinct child without a model input or parent rebind',async()=>{
   const parent=bound(),id=`concierge:${parent.id}`,body={clientActionId:randomUUID(),boundary:'cutoff',provider:'codex'};
   const first=await request(host.owner,`sessions/${id}/forks`,body);
