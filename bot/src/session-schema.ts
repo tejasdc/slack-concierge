@@ -496,6 +496,11 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
           request_id TEXT PRIMARY KEY, project TEXT NOT NULL, purpose TEXT NOT NULL,
           template TEXT, group_name TEXT, reserved_at_ms INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS project_setup_runner_jobs (
+          creation_key TEXT PRIMARY KEY, body_json TEXT NOT NULL, target_runner TEXT NOT NULL,
+          attempt INTEGER NOT NULL, job_id TEXT NOT NULL UNIQUE, state TEXT NOT NULL,
+          result_json TEXT, updated_at_ms INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS project_setup_receipts (
           order_id TEXT PRIMARY KEY, body_json TEXT NOT NULL, result_json TEXT
         );

@@ -58,7 +58,10 @@ export function createNativeReadComposition(defaultCwd:string,capabilitySocket:s
       }
       const provider=providers[session.provider_id];
       if(!provider?.history||!session.agent_session_uuid)return null;
-      return provider.history({sessionUuid:session.agent_session_uuid,cwd:cwd(session),cursor,limit,ownerSessionId:session.id});
+      const metadata=sessionMetadata(session);
+      return provider.history({sessionUuid:session.agent_session_uuid,cwd:cwd(session),cursor,limit,ownerSessionId:session.id,
+        ...(typeof metadata.providerRunner==='string'?{runner:metadata.providerRunner}:{}),
+        ...(typeof metadata.providerAccount==='string'?{account:metadata.providerAccount}:{})});
     },
     projectedHistory:(session,operation,cursor,limit,after,want)=>historyPages.request({operation,
       sessionId:`concierge:${session.id}`,cwd:cwd(session),cursor,limit,after,want}),

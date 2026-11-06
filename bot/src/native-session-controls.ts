@@ -11,6 +11,9 @@ export interface NativeForkPin {
   additionalDirs?: string[];
   metadata?: NativeSessionMetadata;
   threadSource?: string;
+  runner?: string;
+  account?: string;
+  location?: {project:string|null;path:string};
 }
 
 export function readNativeForkPin(operation: AcceptedSessionInput): NativeForkPin {
@@ -37,6 +40,11 @@ export function forkedSessionMetadata(pin: NativeForkPin): NativeSessionMetadata
   const parent = pin.metadata ?? {};
   return { title: `Fork: ${parent.title ?? "Agent session"}`, summary: parent.summary ?? `Continues “${parent.title ?? "an agent session"}” separately from an earlier point.`, purpose: parent.purpose,
     cwd: parent.cwd, additionalDirs: parent.additionalDirs, project: parent.project,
+    projectName:pin.location?pin.location.project:parent.projectName,
+    projectPath:pin.location?pin.location.path:parent.projectPath,
+    ...(pin.runner!==undefined?{providerRunner:pin.runner}
+      :Object.hasOwn(parent,'providerRunner')?{providerRunner:parent.providerRunner??null}:{}),
+    ...((pin.account??parent.providerAccount)?{providerAccount:pin.account??parent.providerAccount}:{}),
     model: parent.model, reasoningEffort: parent.reasoningEffort, workflowId: parent.workflowId,
     origin: "native", suspended: false, pinned: false, saved: false, outcome: "open",
     generation: 0, readGeneration: 0, dismissedGeneration: 0, needs: [],

@@ -47,9 +47,11 @@ Environment=CONCIERGE_PEER_TOKEN_FILE=%d/peer
 Environment=CONCIERGE_AGENT_API_LISTEN=100.118.245.110:8789
 # Claude turns run on runner ax41; Codex connections use its relay. Codex readiness never fails
 # startup: Codex turns wait at one gate until the runner's App Server answers (RUNNERS.md "Startup
-# order"). Google and outside-Codex turns stay local until their runner-side steps exist
-# (docs/architecture/RUNNERS.md "Not on runners yet"). Setting either to off/unset is the rollback.
+# order"). Google and outside-Codex turns use the named runner for new conversations;
+# older conversations keep their recorded machine (docs/architecture/RUNNERS.md).
+# Rollback changes new placement only; recorded conversations retain their machine binding.
 Environment=CONCIERGE_TURN_RUNNERS=all
+Environment=CONCIERGE_TURN_RUNNER=ax41
 Environment=CONCIERGE_CODEX_RUNNER=ax41
 # Concierge's own thnkr.ing calls (ChatGPT runs, native reads, human commands, to-dos, thesaurus)
 # take thnkr.ing's network entrance with the owner's service token, so nothing in the owner needs
