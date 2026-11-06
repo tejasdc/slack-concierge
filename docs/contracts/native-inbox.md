@@ -789,8 +789,8 @@ An owner-ledger correction retires previously recovered service-notice requests 
 allowance, area, cut-off turn, background-job and watch notices alike) only when every
 root in their topic is a service-origin input, there is one request sourced to one of those
 roots, no question is still unsettled, there is no human reply, and every dispatch added after migration
-has its own home in another thread (where its request or original thread root is placed) whose request lists it, which keeps
-owning that work. A dispatch homed in this thread, in none, or in a thread whose requests never list it keeps the request open. A returned result and its later upkeep notices
+has its own home in another thread (where its request or original thread root is placed) whose open request lists it, which keeps
+owning that work. A dispatch homed in this thread, in none, or in a thread with no open request listing it keeps the request open. A returned result and its later upkeep notices
 can therefore share one synthetic topic without becoming human work. Agent-authored work roots stay open even
 when the root itself is not human-authored: its source may carry Tejas's delegated work. The correction records
 the exact migration event, all roots and each later dispatch's request as closure evidence, alongside the original request identity

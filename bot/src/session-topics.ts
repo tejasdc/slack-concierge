@@ -4041,13 +4041,13 @@ function dispatchHomeTopic(dispatchId:string):string|null {
 }
 /**
  * Whether a dispatch linked into `fromTopicId` is owned by a request in its own, different home
- * thread. A home placement alone is not ownership: only a request there that lists the dispatch
+ * thread. A home placement alone is not ownership: only an open request there that lists the dispatch
  * keeps the work visible once the linking thread's request closes.
  */
 function trackedInHomeThread(dispatchId:string,fromTopicId:string):boolean {
   const home=dispatchHomeTopic(dispatchId);
   if(!home||home===fromTopicId)return false;
-  return topicRequests(home).some(request=>request.dispatches.some((dispatch:any)=>String(dispatch.requestId)===dispatchId));
+  return topicRequests(home).some(request=>request.state==='open'&&request.dispatches.some((dispatch:any)=>String(dispatch.requestId)===dispatchId));
 }
 /** Retire migration-created bookkeeping requests through owner events, keeping their history. */
 export function retireRecoveredBookkeepingRequests() {

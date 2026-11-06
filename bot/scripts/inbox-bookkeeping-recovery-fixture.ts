@@ -93,6 +93,14 @@ try {
   const untrackedReturn=`return:${randomUUID()}`;
   accepted('service',untrackedReturn,'A return linked to untracked work.',agentWork,agentWork.slice('request:'.length));
   const linkedUntracked=recovered(untrackedReturn,[],untrackedWorkId);
+  // Work whose home request already closed is tracked nowhere open, so the linking thread stays open too.
+  const closedWork=`request:${randomUUID()}`,closedWorkId=closedWork.slice('request:'.length);
+  accepted('agent',closedWork,'Delegated work whose own request closed.',human,closedWorkId);
+  const closedHome=recovered(closedWork,[],closedWorkId);
+  db.query("UPDATE inbox_requests SET state='closed' WHERE request_id=?").run(closedHome);
+  const closedHomeReturn=`return:${randomUUID()}`;
+  accepted('service',closedHomeReturn,'A return linked to work whose own request closed.',agentWork,agentWork.slice('request:'.length));
+  const linkedClosedHome=recovered(closedHomeReturn,[],closedWorkId);
   // A settled reading item does not hold the thread open.
   const readReturn=`return:${randomUUID()}`;
   accepted('service',readReturn,'A return he already read.',agentWork,agentWork.slice('request:'.length));
@@ -106,7 +114,7 @@ try {
   const linkedEvidence=JSON.parse((db.query('SELECT closure_json FROM inbox_requests WHERE request_id=?').get(linkedElsewhere) as {closure_json:string}).closure_json).evidence as string[];
   assert.ok(linkedEvidence.includes(`topic-migration:${linkedReturn}`));
   assert.ok(linkedEvidence.includes(ownedWork));
-  for(const requestId of [ownedRequest,untrackedRequest,linkedUntracked])
+  for(const requestId of [ownedRequest,untrackedRequest,linkedUntracked,linkedClosedHome])
     assert.equal((db.query('SELECT state FROM inbox_requests WHERE request_id=?').get(requestId) as {state:string}).state,'open');
   for(const requestId of [serviceReturn,serviceUpkeep]){
     const row=db.query('SELECT state,closure_json FROM inbox_requests WHERE request_id=?').get(requestId) as {state:string;closure_json:string};
@@ -118,7 +126,7 @@ try {
   }
   for(const requestId of [assignedUpkeep,agentRequest,mixedRoot,questionedRequest])
     assert.equal((db.query('SELECT state FROM inbox_requests WHERE request_id=?').get(requestId) as {state:string}).state,'open');
-  assert.equal((db.query('SELECT count(*) AS n FROM inbox_requests WHERE state=?').get('open') as {n:number}).n,8);
+  assert.equal((db.query('SELECT count(*) AS n FROM inbox_requests WHERE state=?').get('open') as {n:number}).n,9);
   // A provider/folder cutover makes a new Inbox session. The one-time conversion already ran
   // for the Inbox, so neither migration may rebuild history or reopen recovered requests.
   topics.migrateInboxAttention();
