@@ -10,8 +10,10 @@ cause_status: confirmed
 ## What was seen
 
 The owner logged the same setup refusal for session 8945 at 06:43:38, 07:10:01 and
-07:24:20 UTC. The last was turn 23953. The separate release drain began at 07:24:23 UTC,
-after that refusal. The retained report says the exact runner lease was unavailable. The
+07:24:20 UTC. The last was turn 23953. An earlier owner drain at 06:43:10 withdrew
+the runner job for turn 23814 before a runner claimed it. A different release drain
+began at 07:24:23, after the last setup refusal. The retained report says the exact
+runner lease was unavailable. The
 authorized read-only owner-ledger query confirmed turn 23953 had no execution row or
 runner job: setup failed before runner custody. Its accepted input was the fired watch
 `watch:58f08cbd91c7:fired`, not a direct human instruction. Turn 23907 also failed with
@@ -21,8 +23,10 @@ has no stored provider-runner binding. The Grafana reconciler request
 `721ddbc0-4734-4b04-a746-775c45ed485c` remains admitted and open. A second
 read-only owner-ledger query found provider input acknowledged at 06:11:03 UTC for
 turn 23697. Turns 23814, 23907 and 23953 have no provider-input acknowledgment,
-and no later turn for this session does. The 23814 runner job was withdrawn before
-claim. Thus the repaired lookup selects the AX41 execution from turn 23697.
+and no later turn for this session does. The 23814 runner job was created at
+06:43:09.418 and withdrawn at 06:43:10.765 during the owner drain, before claim.
+The owner then recorded the unsent turn as requeued at 06:43:11.242. Thus the
+repaired lookup selects the AX41 execution from turn 23697.
 
 ## Cause
 
@@ -32,8 +36,9 @@ After one such setup attempt, later turns could select it instead of an older ex
 actually held the conversation. The owner ledger confirms the intervening no-attempt
 execution never delivered provider input, whereas turn 23697 did so on AX41. The
 newer failed intent therefore cannot displace AX41 as the last evidenced placement.
-The original failure that withdrew turn 23814's runner job remains a separate cause
-to diagnose; this record confirms why later turns kept failing setup.
+The first job was withdrawn by the 06:43 owner drain, an allowed interruption
+before claim; the defect was letting that unclaimed record displace the established
+AX41 placement. The 07:24 drain neither caused nor repaired the prior setup failures.
 
 ## Fix
 
@@ -57,9 +62,10 @@ incomplete acknowledged custody.
   ledger. The runner may outlive an owner release; a new owner reads the same binding.
 - **Old readers:** No schema or wire record changes. The existing session metadata field holds
   the recovered binding.
-- **Failure trace:** Turn 23697 completed with an AX41 runner attempt. Turn 23814 recorded
-  runner supervision without an attempt, then two later watch turns failed setup without
-  execution rows. The last failure preceded the release drain by three seconds.
+- **Failure trace:** Turn 23697 completed with an AX41 runner attempt. The 06:43 owner
+  drain withdrew turn 23814's runner job before claim but left its execution record.
+  Turns 23907 and 23953 failed setup without execution rows. The latter preceded a
+  separate 07:24 release drain by three seconds.
 - **Falsifying check:** `bot/scripts/runner-lease-check.ts` would fail on the old
   latest-intent lookup and passes when acknowledged custody wins.
 
