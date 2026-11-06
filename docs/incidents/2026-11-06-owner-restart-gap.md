@@ -67,6 +67,21 @@ retention rule and only marks an execution pruned after its folder or runner
 payload cleanup succeeds. An interrupted pass revisits remaining rows on the
 next start, after the request entrance opens.
 
+The 04:11 UTC managed release installed that follow-up. The measured gap fell
+to 14.358 seconds, from drain at 04:11:30.778 to request API completion at
+04:11:45.136. The old owner's execution-host stop took 1 ms; all four logged
+components took 0 ms at the available precision. Its request surfaces were
+closed by 04:11:30.838, but full drain did not complete until 04:11:36.813.
+The old owner exited at 04:11:37; the replacement started at 04:11:39.
+Module load took 0.798 seconds, prior-turn recovery 0.945 seconds, and request
+API opening 1.405 seconds. Active execution hosts were adopted after restart.
+The remaining roughly six seconds after request-surface closure are not yet
+attributed to a specific shutdown step. Logs show a 5.8-second event-loop stall
+and a delayed durability-worker reply in that interval; the worker's own disk
+sync took only 28 ms, so that delay cannot be assigned to disk sync alone.
+The next release logs each remaining awaited drain step before changing its
+custody or shutdown semantics.
+
 ## Acceptance scenario
 
 Acceptance requires the next normal managed release's old-owner drain, new

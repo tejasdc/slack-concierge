@@ -764,6 +764,8 @@ resume on the next owner.
 The historical unreadable-reading repair records its completion; new reading items are checked
 at admission. During shutdown the read-only provider-history worker is asked to terminate without
 holding the service for a synchronous read, and each execution-host stop component logs its time.
+Every awaited stop after the request surfaces close also logs its duration, so an
+ordinary release can distinguish cleanup work from custody-preserving waits.
 See [the restart-gap incident](../incidents/2026-11-06-owner-restart-gap.md) for the measured boundary.
 Each sweep over history (forwarded final answers, timed-post retirement, the purpose
 backfill) is a catch-up over a key range with a high-water mark recorded as a `startup_catch_up`
