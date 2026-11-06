@@ -363,6 +363,30 @@ missing file fails that call instead of falling back to a socket another machine
 Tests and sandbox lanes that switch thnkr.ing off clear these variables too. Deploy refuses any
 unit whose `LoadCredential=` file is missing (it would never start). The Mac's owner keeps reaching thnkr.ing over `ssh remote-box`.
 
+## Provider history and transcript restores (runner calls)
+
+Provider histories stay in the provider account home on the runner. The owner keeps the parsed
+history index and its allowance decisions. It asks the runner for metadata tied to one exact
+provider account and native conversation ID; transcript reads return at most 256 KiB and pin the
+source file identity and snapshot size across every chunk. The owner mirrors a Claude transcript
+into its private state folder only while importing it into the existing history index. That mirror
+is a cache of runner-owned source bytes, not a new authority; a changed or shortened source refuses
+the read and the next preparation takes a fresh snapshot.
+
+The closed `provider-history.*` relay methods return timestamps for requested Codex item identities,
+match an authored subject against one exact transcript, and restore a transcript in bounded chunks.
+Legacy authored-subject reads without an account label scan registered account homes and return a
+timestamp only for one unique exact native-ID match. Missing and ambiguous matches remain explicit;
+the owner's current account is never used as historical evidence.
+
+Restore uses a durable state card on the runner containing the operation UUID, provider/account,
+native ID, destination, byte count, SHA-256 and current state. The owner sends a bounded chunk only
+to that operation. Replaying the same chunk bytes at the same offset is idempotent; changed bytes,
+offset gaps, digest mismatch and a conflicting destination refuse. Finish links the verified staged
+file into its provider home without replacing an existing transcript, then records the terminal
+state so a retry returns the first result. Neither owner paths nor arbitrary filesystem paths are
+accepted by these methods. Check with `bun bot/scripts/runner-provider-history-check.ts`.
+
 ## Heavy work out of the owner's request loop
 
 The repair agent's ranking of today's owner stalls (1,202 s of lag over the day): Inbox thread upkeep

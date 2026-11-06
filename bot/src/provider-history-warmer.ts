@@ -33,7 +33,10 @@ export function startProviderHistoryWarmer(defaultCwd:string):()=>void {
     const started=performance.now(),outcomes:Record<string,number>={};
     for(const session of due){
       if(stopped)return;
-      const outcome=await prepareClaudeHistory(session.agent_session_uuid!,cwd(session),session.id)
+      const metadata=sessionMetadata(session);
+      const machine=typeof (metadata as any).providerRunner==='string'&&typeof (metadata as any).providerAccount==='string'
+        ?{runner:(metadata as any).providerRunner,account:(metadata as any).providerAccount}:undefined;
+      const outcome=await prepareClaudeHistory(session.agent_session_uuid!,cwd(session),session.id,machine)
         .catch(()=>'unprepared' as const);
       outcomes[outcome]=(outcomes[outcome]??0)+1;
       // An unprepared conversation is tried again after its next turn or restart, not every pass.

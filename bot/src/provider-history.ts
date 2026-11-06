@@ -1,8 +1,9 @@
 import {releaseWorkerPath} from "./release-worker";
 import { forkSession, getSessionMessages, type GetSessionMessagesOptions, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import { Database } from "bun:sqlite";
+import {createHash,randomUUID} from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { stat } from "node:fs/promises";
+import {copyFile,mkdir,open as openFile,readFile,rename,rm,stat,utimes,writeFile} from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { claudeQueuedMessages, withQueuedMessages } from "./claude-queued-messages";
@@ -16,6 +17,7 @@ import { sharedCodexAppServerClient } from "./codex-app-server-client";
 import { assertProviderForkPolicy, type ProviderInteractionPolicy } from "./provider-policy";
 import { codexTranscriptTimestamps, codexTranscriptTimestampsAfter, type CodexTranscriptMark } from './provider-transcript-metadata';
 import { LEGACY_STRUCTURED_OUTPUT_TOOL, legacyStructuredOutputMessage, splitTurnOutcomeMarker } from './turn-outcome-marker';
+import {readRunnerClaudeTranscriptChunk,readRunnerCodexTimestamps,statRunnerClaudeTranscript} from './runner-provider-history-client';
 
 /**
  * The session a message came from, and who that agent is by the one presence rule
@@ -99,6 +101,8 @@ export interface ProviderHistoryInput {
   cursor: string | null;
   limit: number;
   ownerSessionId?: number;
+  runner?:string;
+  account?:string;
 }
 
 export interface ProviderHistoryPage {
@@ -193,7 +197,9 @@ export async function readCodexHistory(input: ProviderHistoryInput,
     if (typeof entry?.turnId !== "string") throw new Error("PROVIDER_HISTORY_INVALID");
     messages.push(...codexHistoryMessages(entry.item, entry.turnId, input.sessionUuid, omissions));
   }
-  const timestamps = await codexTranscriptTimestamps(input.sessionUuid, request);
+  const timestamps = input.runner&&input.account
+    ?await readRunnerCodexTimestamps(input.runner,input.account,input.sessionUuid,page.data.flatMap(entry=>typeof entry?.turnId==='string'&&typeof entry?.item?.id==='string'?[{turnId:entry.turnId,itemId:entry.item.id}]:[]))
+    :await codexTranscriptTimestamps(input.sessionUuid, request);
   for (const message of messages) {
     const timestamp = timestamps.get(JSON.stringify([message.turnId,message.id]));
     if (timestamp) { message.createdAt=timestamp; message.timestampSource='provider'; }
@@ -266,7 +272,7 @@ const windowDialogue=(segments:readonly CodexWindowSegment[])=>{
 };
 
 /** The kept window for one thread, topped up from the App Server; built once when none is kept. */
-export async function readCodexHistoryWindow(input:{sessionUuid:string;want?:{dialogue:number;untilInput:boolean}},
+export async function readCodexHistoryWindow(input:{sessionUuid:string;want?:{dialogue:number;untilInput:boolean};runner?:string;account?:string},
   request:CodexHistoryRequest=codexRequest()):Promise<ProviderHistoryPage>{
   const thread=input.sessionUuid,loaded=loadCodexWindow(thread),kept=loaded?.window??null;
   const head=kept?.segments[0]?.entries.at(-1);
@@ -299,8 +305,11 @@ export async function readCodexHistoryWindow(input:{sessionUuid:string;want?:{di
     // Timestamps for listed items not already kept: only the rollout bytes after the kept mark,
     // or the whole rollout when nothing usable is kept.
     const resumable=met>=0?loaded!.mark:null;
-    const read=await codexTranscriptTimestampsAfter(thread,request,resumable);
-    const timestamps=read?.timestamps??new Map<string,string|null>();
+    const identities=pages.flatMap(page=>page.data.flatMap(entry=>typeof entry?.turnId==='string'&&typeof entry?.item?.id==='string'?[{turnId:entry.turnId,itemId:entry.item.id}]:[]));
+    const read=input.runner&&input.account?null:await codexTranscriptTimestampsAfter(thread,request,resumable);
+    const timestamps=input.runner&&input.account
+      ?await readRunnerCodexTimestamps(input.runner,input.account,thread,identities)
+      :read?.timestamps??new Map<string,string|null>();
     const omissions=new Set<string>(met>=0?kept!.omissions:[]);
     const segments:CodexWindowSegment[]=pages.map(page=>({next:page.next,entries:page.data.slice().reverse().map(entry=>{
       if(typeof entry?.turnId!=="string")throw new Error("PROVIDER_HISTORY_INVALID");
@@ -435,13 +444,55 @@ function openCache(sessionUuid: string): { db: Database; meta: ClaudeCacheMeta }
   }
 }
 
-async function sourceVersion(sessionUuid: string, cwd: string) {
+type HistoryMachine={runner:string;account:string};
+function remoteTranscriptPaths(sessionUuid:string,cwd:string,machine:HistoryMachine){
+  const key=createHash('sha256').update(JSON.stringify([machine.runner,machine.account,sessionUuid,cwd])).digest('hex');
+  const root=join(process.env.CONCIERGE_STATE_DIR||join(homedir(),'.local/state/concierge'),'provider-history-source-cache',key);
+  return {root,path:join(root,'projects',cwd.replace(/[^a-zA-Z0-9]/g,'-'),`${sessionUuid}.jsonl`),meta:join(root,'source.json')};
+}
+
+async function materializeRunnerTranscript(sessionUuid:string,cwd:string,machine:HistoryMachine){
+  const remote=await statRunnerClaudeTranscript({runner:machine.runner,account:machine.account,sessionUuid,cwd});
+  if(remote.sourceIdentity===null||remote.size===null||remote.mtimeMs===null)return null;
+  const paths=remoteTranscriptPaths(sessionUuid,cwd,machine);
+  await mkdir(dirname(paths.path),{recursive:true,mode:0o700});
+  let old:{sourceIdentity:string;size:number}|null=null,localSize=0;
+  try{old=JSON.parse(await readFile(paths.meta,'utf8'));localSize=(await stat(paths.path)).size;
+    if(old?.sourceIdentity!==remote.sourceIdentity||!Number.isSafeInteger(old.size)||old.size!==localSize||localSize>remote.size){old=null;localSize=0;}
+    else if(localSize===remote.size&&old.size===remote.size){await utimes(paths.path,remote.mtimeMs/1000,remote.mtimeMs/1000);return {path:paths.path,configDir:paths.root,size:remote.size,mtimeMs:remote.mtimeMs,sourceIdentity:remote.sourceIdentity};}
+  }catch{old=null;localSize=0;}
+  const temporary=`${paths.path}.${process.pid}.${randomUUID()}.next`;
+  try{
+    if(old&&localSize>0)await copyFile(paths.path,temporary);
+    const file=await openFile(temporary,old&&localSize>0?'a':'w',0o600);
+    try{
+      for(let offset=localSize;offset<remote.size;){
+        const chunk=await readRunnerClaudeTranscriptChunk({runner:machine.runner,account:machine.account,sessionUuid,cwd,offset,maxBytes:256*1024,
+          source:{sourceIdentity:remote.sourceIdentity,snapshotSize:remote.size}});
+        if(!chunk.source||chunk.source.sourceIdentity!==remote.sourceIdentity||chunk.source.snapshotSize!==remote.size
+          ||chunk.bytes.length===0||chunk.bytes.length>remote.size-offset||chunk.eof!==(offset+chunk.bytes.length>=remote.size))throw new Error('INVALID_PROVIDER_TRANSCRIPT_CHUNK');
+        await file.write(chunk.bytes);offset+=chunk.bytes.length;
+      }
+      await file.sync();
+    }finally{await file.close();}
+    const ready=await stat(temporary);if(ready.size!==remote.size)throw new Error('PROVIDER_TRANSCRIPT_SNAPSHOT_INCOMPLETE');
+    await utimes(temporary,remote.mtimeMs/1000,remote.mtimeMs/1000);
+    await rename(temporary,paths.path);
+    const metadata=`${paths.meta}.${process.pid}.${randomUUID()}.next`;
+    await writeFile(metadata,JSON.stringify({sourceIdentity:remote.sourceIdentity,size:remote.size}),{mode:0o600});
+    await rename(metadata,paths.meta);
+    return {path:paths.path,configDir:paths.root,size:remote.size,mtimeMs:remote.mtimeMs,sourceIdentity:remote.sourceIdentity};
+  }catch(error){await rm(temporary,{force:true}).catch(()=>{});throw error;}
+}
+
+async function sourceVersion(sessionUuid: string, cwd: string,machine?:HistoryMachine) {
+  if(machine)return materializeRunnerTranscript(sessionUuid,cwd,machine);
   const config = claudeConfigDir();
   const local = join(config, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${sessionUuid}.jsonl`);
   let path = local;
   try { await stat(local); } catch { path = await locateClaudeTranscript(config, sessionUuid) || ""; }
   if (!path) return null;
-  try { const file = await stat(path); return { path, size: file.size, mtimeMs: file.mtimeMs }; }
+  try { const file = await stat(path); return { path,configDir:config,size: file.size, mtimeMs: file.mtimeMs }; }
   catch { return null; }
 }
 
@@ -472,7 +523,7 @@ function queueHistoryVerification(sessionUuid:string,ownerSessionId:number) {
   return work;
 }
 
-function queueCanonicalImport(sessionUuid: string, cwd: string, sourcePath: string, ownerSessionId?: number) {
+function queueCanonicalImport(sessionUuid: string, cwd: string, sourcePath: string, ownerSessionId?: number,sourceConfigDir?:string) {
   if (queuedImports.has(sessionUuid) || Date.now() < (retryImportAt.get(sessionUuid) || 0)) return;
   let succeeded = false;
   const work = importLane.then(async () => {
@@ -484,7 +535,7 @@ function queueCanonicalImport(sessionUuid: string, cwd: string, sourcePath: stri
       : [process.execPath, "run", worker, sessionUuid, cwd, sourcePath, cachePath(sessionUuid), String(cutoff)];
     const child = Bun.spawn(command, { stdout: "ignore", stderr: "ignore",
       env: { HOME: process.env.HOME || homedir(),
-        ...(process.env.CLAUDE_CONFIG_DIR ? { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR } : {}) } });
+        ...(sourceConfigDir?{CLAUDE_CONFIG_DIR:sourceConfigDir}:process.env.CLAUDE_CONFIG_DIR ? { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR } : {}) } });
     activeImportChildren.add(child);
     const timeout = setTimeout(() => child.kill(), 120_000);
     try {
@@ -507,7 +558,7 @@ function queueCanonicalImport(sessionUuid: string, cwd: string, sourcePath: stri
   });
 }
 
-function scheduleQuietRefresh(sessionUuid: string, cwd: string, source: {path:string;size:number;mtimeMs:number}, ownerSessionId?: number) {
+function scheduleQuietRefresh(sessionUuid: string, cwd: string, source: {path:string;configDir?:string;size:number;mtimeMs:number}, ownerSessionId?: number,machine?:HistoryMachine) {
   const version = `${source.path}:${source.size}:${source.mtimeMs}`;
   if (observedVersions.get(sessionUuid) === version && pendingRefresh.has(sessionUuid)) return;
   observedVersions.set(sessionUuid, version);
@@ -515,10 +566,10 @@ function scheduleQuietRefresh(sessionUuid: string, cwd: string, source: {path:st
   if (old) clearTimeout(old);
   const timer = setTimeout(async () => {
     pendingRefresh.delete(sessionUuid);
-    const current = await sourceVersion(sessionUuid, cwd);
+    const current = await sourceVersion(sessionUuid, cwd,machine);
     if (!current) return;
     if (`${current.path}:${current.size}:${current.mtimeMs}` !== version) {
-      scheduleQuietRefresh(sessionUuid, cwd, current, ownerSessionId);
+      scheduleQuietRefresh(sessionUuid, cwd, current, ownerSessionId,machine);
       return;
     }
     if(ownerSessionId)await queueHistoryVerification(sessionUuid,ownerSessionId);
@@ -526,7 +577,7 @@ function scheduleQuietRefresh(sessionUuid: string, cwd: string, source: {path:st
     const stillUncovered=!cache || cache.meta.source_path!==current.path || cache.meta.needs_reimport===1 || cache.meta.verified_source_size!==current.size
       || cache.meta.verified_source_mtime_ms!==current.mtimeMs;
     cache?.db.close();
-    if(stillUncovered)queueCanonicalImport(sessionUuid, cwd, current.path, ownerSessionId);
+    if(stillUncovered)queueCanonicalImport(sessionUuid, cwd, current.path, ownerSessionId,current.configDir);
   }, 5_000);
   timer.unref?.();
   pendingRefresh.set(sessionUuid, timer);
@@ -543,9 +594,9 @@ function snapshotMatches(meta: ClaudeCacheMeta, source: {path:string;size:number
  * answered with no messages while the import ran, so the first open of most conversations
  * was blank (2026-10-13). Resolves once this conversation's preparation has finished.
  */
-export async function prepareClaudeHistory(sessionUuid: string, cwd: string, ownerSessionId: number):
+export async function prepareClaudeHistory(sessionUuid: string, cwd: string, ownerSessionId: number,machine?:HistoryMachine):
   Promise<"current"|"prepared"|"unprepared"|"unavailable"> {
-  const source = await sourceVersion(sessionUuid, cwd);
+  const source = await sourceVersion(sessionUuid, cwd,machine);
   if (!source) return "unavailable";
   const current = () => {
     const cache = openCache(sessionUuid);
@@ -557,7 +608,7 @@ export async function prepareClaudeHistory(sessionUuid: string, cwd: string, own
   // Verification walks only the appended bytes, so it comes first whenever a snapshot exists.
   if (before === false) await queueHistoryVerification(sessionUuid, ownerSessionId);
   if (current()) return "prepared";
-  queueCanonicalImport(sessionUuid, cwd, source.path, ownerSessionId);
+  queueCanonicalImport(sessionUuid, cwd, source.path, ownerSessionId,source.configDir);
   await queuedImports.get(sessionUuid);
   return current() ? "prepared" : "unprepared";
 }
@@ -603,10 +654,11 @@ function retainedVersionMessage(sessionId:number,id:string,head:number):{message
 }
 
 async function claudeCachedPage(input: ProviderHistoryInput): Promise<ProviderHistoryPage> {
-  const source = await sourceVersion(input.sessionUuid, input.cwd);
+  const machine=input.runner&&input.account?{runner:input.runner,account:input.account}:undefined;
+  const source = await sourceVersion(input.sessionUuid, input.cwd,machine);
   const cache = openCache(input.sessionUuid);
   if (!source && !cache) throw new Error("PROVIDER_HISTORY_UNAVAILABLE");
-  if (source && !cache) queueCanonicalImport(input.sessionUuid, input.cwd, source.path, input.ownerSessionId);
+  if (source && !cache) queueCanonicalImport(input.sessionUuid, input.cwd, source.path, input.ownerSessionId,source.configDir);
   if (!cache) return { messages: [], nextCursor: null, coverage: cacheCoverage(input.sessionUuid) };
   try {
     const { db, meta } = cache;
@@ -665,7 +717,7 @@ async function claudeCachedPage(input: ProviderHistoryInput): Promise<ProviderHi
     if(sourceChanged && source && input.ownerSessionId && !meta.needs_reimport && !pathChanged)
       queueHistoryVerification(input.sessionUuid,input.ownerSessionId);
     if((sourceChanged || meta.needs_reimport) && source && (!input.ownerSessionId || meta.needs_reimport || pathChanged))
-      scheduleQuietRefresh(input.sessionUuid,input.cwd,source,input.ownerSessionId);
+      scheduleQuietRefresh(input.sessionUuid,input.cwd,source,input.ownerSessionId,machine);
     const covered=!sourceChanged && !meta.needs_reimport && meta.cwd===input.cwd && novel.complete && !missingVersion;
     const coverage=!covered ? cacheCoverage(input.sessionUuid) : omissions.size ? {complete:false,omissions:[...omissions]} : undefined;
     const nextCursor=novel.hasMore ? encode({sessionUuid:input.sessionUuid,phase:"overlay",
