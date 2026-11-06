@@ -345,7 +345,9 @@ the host's aged-controller alert for owner investigation; the host observer neve
 
 On the server, Concierge records a Codex process-audit intent when a native turn starts.
 After the turn has a settled done, error or cancelled state and its execution unit has been released, the owner
-scans live processes for that Codex thread's exact `CODEX_THREAD_ID`. A resumed thread keeps
+asks the configured Codex runner to scan its live processes for that thread's exact `CODEX_THREAD_ID`
+(or scans locally when Codex is local). An unanswered runner call leaves the audit intent open
+for the next sweep; it never counts as an empty result. A resumed thread keeps
 this identity across turns; its shell may retain the first turn's source run ID. The scan
 excludes browsers handled by the Stop hook and `concierge-exec-*` units, which Concierge
 releases with control-group killing. Registered command watches are in those units and have
@@ -355,8 +357,8 @@ Concierge turn or an external Codex client is using that session's thread, then 
 after reading processes before filing anything. Only processes in the shared
 `codex-app-server-*.scope` count: that scope has no turn-end custody, while execution units,
 command watches and other systemd services (a Thinkering ship job) stop their own children.
-A survivor is recorded as a sighting with its PID, process start time and cgroup, not
-reported. The owner's minute sweep rechecks each recorded PID against its start time. If
+A survivor is recorded as a sighting with its runner, PID, process start time and cgroup, not
+reported. The owner's minute sweep asks the same runner to recheck each recorded PID against its start time. If
 every process has exited, the sighting settles with no Inbox report; most detached builds
 and short waits end this way. If one is still running ten minutes after the turn, the owner
 files one agent issue report naming the survivors, and the sweep closes that report itself
@@ -368,7 +370,7 @@ cannot absorb a new sighting. A fresh report may be
 filed after that request closes. The retained audit intent is retried on startup and every
 minute until its checked event is recorded; the execution host starts that sweep in both owner
 compositions (the server runs the main entry, not the session runtime), because the audit at
-turn end usually runs before the turn row is marked done and defers to it. The scan is server-only; a child that removes
+turn end usually runs before the turn row is marked done and defers to it. The scan needs Linux on the runner; a child that removes
 its thread identity, a native subagent with a separate thread, and Mac non-browser jobs
 need separate custody mechanisms. The prior Stop-hook process check ran before the provider
 had finished and produced repeated reports from still-owned processes; it no longer reports

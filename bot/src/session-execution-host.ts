@@ -1,6 +1,7 @@
 import {onCodexHistoryChanged} from './codex-session-observer';
 import { codexAppServerReady, waitForCodexAppServerOrDrain } from "./codex-app-server-client";
 import {CODEX_PROCESS_REPORT_GRACE_MS,codexLeftoverProcesses,codexProcessStillRunning,type CodexLeftoverProcess} from './codex-leftover-processes';
+import {runnerMachineCall} from './runner-machine-calls';
 import {createHash} from 'node:crypto';
 import {ledgerDurable} from './ledger-durability-barrier';
 import {thesaurusTurnContext} from './thesaurus-context';
@@ -991,7 +992,7 @@ export class SessionExecutionHost {
         :`terminal:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'run',payload:{run:this.owner.run(nativeRunId(claim.turn_id))}});
       // A drain's proven-unsent requeue is a handoff, not a provider failure.
       if(!this.draining&&sessionMetadata(session).inboxRole==='project-router')maybeStartInboxProviderFailover(session);
-      if(session.provider_id==='codex'&&process.platform==='linux')await this.auditCodexTurn(claim.turn_id).catch(error=>
+      if(session.provider_id==='codex'&&(process.platform==='linux'||process.env.CONCIERGE_CODEX_RUNNER))await this.auditCodexTurn(claim.turn_id).catch(error=>
         log('warn','codex_process_audit_failed',{turn_id:claim.turn_id,...errorFields(error)}));
     }
   }
@@ -1001,7 +1002,7 @@ export class SessionExecutionHost {
    * marked done and defers; this sweep is what completes it.
    */
   startCodexProcessAuditSweep(stopped:()=>boolean):()=>void {
-    if(process.platform!=='linux')return ()=>{};
+    if(process.platform!=='linux'&&!process.env.CONCIERGE_CODEX_RUNNER)return ()=>{};
     const sweep=()=>{if(!stopped())void this.reconcileCodexProcessAudits().catch(error=>
       log('error','codex_process_audit_recovery_failed',errorFields(error)));};
     sweep();
@@ -1045,9 +1046,15 @@ export class SessionExecutionHost {
   private async followCodexProcessSighting(row:{turn_id:number;session_id:number;input_id:string;payload_json:string;
     native_run_id:string|null;reported_json:string|null}) {
     {
-      const sighting=JSON.parse(row.payload_json) as {threadId:string;processes:CodexLeftoverProcess[];sightedAtMs:number};
+      const sighting=JSON.parse(row.payload_json) as {threadId:string;runner?:string;processes:CodexLeftoverProcess[];sightedAtMs:number};
       const reportRequestId=row.reported_json?JSON.parse(row.reported_json).requestId as string|null:null;
-      const alive=sighting.processes.filter(codexProcessStillRunning);
+      // Older sightings predate runner attribution but used this runner when the relay was on.
+      const sightingRunner=sighting.runner||process.env.CONCIERGE_CODEX_RUNNER?.trim();
+      const alive=sightingRunner
+        ?(await Promise.all(sighting.processes.map(async processRecord =>
+          await runnerMachineCall<boolean>(sightingRunner,'codex.processAlive',{process:processRecord})?processRecord:null)))
+          .filter((record):record is CodexLeftoverProcess=>record!==null)
+        :sighting.processes.filter(codexProcessStillRunning);
       if(!alive.length){
         recordSessionEvent({eventId:`codex-process-sighting-settled:${row.turn_id}`,sessionId:row.session_id,inputId:row.input_id,
           turnId:row.turn_id,kind:'process_audit',payload:{outcome:'exited',requestId:reportRequestId}});
@@ -1100,10 +1107,10 @@ export class SessionExecutionHost {
     if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`codex-process-audit-done:${turnId}`))return;
     this.codexProcessAudits.add(turnId);
     try {
-      const row=db.query(`SELECT turn.session_id,turn.accepted_input_id,turn.native_run_id,session.agent_session_uuid
+      const row=db.query(`SELECT turn.session_id,turn.accepted_input_id,turn.native_run_id,session.agent_session_uuid,session.native_metadata_json
         FROM turns turn JOIN sessions session ON session.id=turn.session_id
         WHERE turn.id=? AND session.provider_id='codex'`)
-        .get(turnId) as {session_id:number;accepted_input_id:string;native_run_id:string|null;agent_session_uuid:string|null}|null;
+        .get(turnId) as {session_id:number;accepted_input_id:string;native_run_id:string|null;agent_session_uuid:string|null;native_metadata_json:string|null}|null;
       if(!row)throw new Error('Codex process audit intent has no turn.');
       // A terminal event records the coordinator's attempt, including one that parks because
       // provider completion is uncertain. Only a settled turn proves its tools have stopped.
@@ -1113,7 +1120,11 @@ export class SessionExecutionHost {
           inputId:row.accepted_input_id,turnId,kind:'process_audit',payload:{reason:'no-provider-thread'}});
         return;
       }
-      const remaining=await codexLeftoverProcesses(row.agent_session_uuid);
+      const savedRunner=row.native_metadata_json?JSON.parse(row.native_metadata_json)?.providerRunner:null;
+      const runner=typeof savedRunner==='string'&&savedRunner? savedRunner : process.env.CONCIERGE_CODEX_RUNNER?.trim()||null;
+      const remaining=runner
+        ?await runnerMachineCall<CodexLeftoverProcess[]>(runner,'codex.leftoverProcesses',{threadId:row.agent_session_uuid})
+        :await codexLeftoverProcesses(row.agent_session_uuid);
       if(!this.codexProcessAuditReady(turnId,row.session_id))return;
       // A sighting is held, not reported: most detached jobs (a build, a short wait) finish on
       // their own within minutes, and only one that keeps running needs anyone's attention.
@@ -1121,7 +1132,7 @@ export class SessionExecutionHost {
       if(remaining.length&&!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`codex-process-sighting:${turnId}`))
         recordSessionEvent({eventId:`codex-process-sighting:${turnId}`,sessionId:row.session_id,
         inputId:row.accepted_input_id,turnId,kind:'process_audit',
-        payload:{threadId:row.agent_session_uuid,processes:remaining,sightedAtMs:Date.now()}});
+        payload:{threadId:row.agent_session_uuid,runner,processes:remaining,sightedAtMs:Date.now()}});
       recordSessionEvent({eventId:`codex-process-audit-done:${turnId}`,sessionId:row.session_id,
         inputId:row.accepted_input_id,turnId,kind:'process_audit',payload:{threadId:row.agent_session_uuid,remaining:remaining.length}});
     } finally {this.codexProcessAudits.delete(turnId);}

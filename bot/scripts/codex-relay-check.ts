@@ -109,6 +109,9 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
     await assert.rejects(runnerMachineCall('ax41','watch.prune',{executionId:'etc',directory:'/etc'}),/not an execution id/);
     await assert.rejects(runnerMachineCall('ax41','watch.signal',{executionId:'0123456789abcdef',directory:'/etc',signal:'SIGKILL',commandId:'x'}),/not this runner's/);
     assert.equal(await runnerMachineCall('ax41','ping',{}),true);
+    assert.deepEqual(await runnerMachineCall('ax41','codex.leftoverProcesses',{threadId:'00000000-0000-0000-0000-000000000000'}),[]);
+    await assert.rejects(runnerMachineCall('ax41','codex.processAlive',{process:{pid:0,startTicks:'1'}}),/process identity/);
+    assert.equal(await runnerMachineCall('ax41','codex.processAlive',{process:{pid:999999999,startTicks:'1'}}),false);
     // A real watch execution's record is the runner's to remove; a turn's is refused.
     const {mkdirSync:makeDir,writeFileSync:writeSync}=await import('node:fs');
     for(const [id,args] of [['0123456789abcdef',['-c','exec "$@"','concierge-watch','/bin/true']],['fedcba9876543210',['--print']]] as const){

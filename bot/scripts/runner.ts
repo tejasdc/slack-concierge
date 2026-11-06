@@ -29,6 +29,7 @@ import {RUNNER_FENCE_MS} from '../src/runner-leases';
 import {codexAppServerSocketPath} from '../src/codex-app-server-client';
 import {controlSocketListeners,moveCodexDaemonToOwnScope,raiseCodexDaemonFileLimit,startCodexDaemonWhenAbsent} from '../src/codex-daemon-file-limit';
 import {serveRunnerMachineCalls} from '../src/runner-machine-calls';
+import {codexLeftoverProcesses,codexProcessStillRunning} from '../src/codex-leftover-processes';
 import {localWatchMachine,serveWatchCall} from '../src/watch-machine';
 import {rewriteRelayedCodexRequest,runnerMachineEnvironment,writeRunnerConnection,type RunnerMachine} from '../src/runner-machine';
 
@@ -531,6 +532,13 @@ function answerMachineCalls(id:string) {
     recordOwnerContact();
     if(method==='ping')return true;
     if(method.startsWith('watch.'))return serveWatchCall(watchMachine,stateDir,method.slice('watch.'.length),params);
+    if(method==='codex.leftoverProcesses')return codexLeftoverProcesses(params.threadId);
+    if(method==='codex.processAlive'){
+      const processRecord=params.process;
+      if(!processRecord||!Number.isSafeInteger(processRecord.pid)||processRecord.pid<=0||typeof processRecord.startTicks!=='string'||!/^\d+$/.test(processRecord.startTicks))
+        throw new Error('a process identity needs a PID and start time');
+      return codexProcessStillRunning(processRecord);
+    }
     throw new Error(`this runner does not answer ${method}`);
   });
   remote.onclose=event=>say('runner_machine_calls_closed',{relay:id,code:event.code});

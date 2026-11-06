@@ -322,8 +322,10 @@ stores nothing and keeps the App Server's own protocol end to end. Why not a por
 runners open none (decided plan, "How the parts talk", 3).
 
 Not yet, before a runner on another machine can hold Codex:
-- The leftover-process audit after a Codex turn reads the owner's `/proc`; the Codex Remote observer
-  would watch the runner's App Server while his own command-line turns run elsewhere.
+- The post-turn leftover-process audit uses `codex.leftoverProcesses` and `codex.processAlive`
+  on the runner that hosts the App Server. The owner retains the audit intent, sightings, grace
+  period and Inbox report; a lost runner call leaves the intent or sighting open for retry.
+  The Codex Remote observer remains separate from this native-turn audit.
 - One relayed message is limited to 64 MB, the same as the backpressure limit.
 - Account switching restarts the App Server on the owner's machine (`provider-activation.ts`).
 - Threads started before 2026-11-05 keep the owner's folders in their shell settings for life; they
