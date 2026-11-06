@@ -57,7 +57,16 @@ export async function serveProjectCall(method:string,params:Record<string,unknow
   }
   if(method==='projects.list') {
     const root=realpathSync(workspaceRoot());
-    return {projects:sessionProjects(root).map(project=>({name:project.name,path:relative(root,project.cwd)}))};
+    return {workspaceRoot:root,projects:sessionProjects(root).map(project=>({name:project.name,path:relative(root,project.cwd)}))};
+  }
+  if(method==='projects.fileAt') {
+    const root=realpathSync(workspaceRoot());
+    if(typeof params.path!=='string'||!params.path.trim())throw new Error('A file path is required.');
+    const path=params.path.trim();
+    if(!isAbsolute(path)&&path!=='~'&&!path.startsWith('~/'))throw new Error('A file path must be absolute or start with ~.');
+    const requested=isAbsolute(path)?path:path==='~'?homedir():join(homedir(),path.slice(2));
+    if(!within(root,requested))return {workspaceRoot:root,matched:false};
+    return {workspaceRoot:root,matched:true,file:readWorkspaceFile({machine:process.env.CONCIERGE_RUNNER_NAME||'runner',workspaceRoot:root,path:requested})};
   }
   if(method==='projects.resolve') {
     const {project}=projectFolder(params.project);
@@ -65,6 +74,15 @@ export async function serveProjectCall(method:string,params:Record<string,unknow
     const {real}=exactFolder(project.cwd,path);
     if(!lstatSync(real).isDirectory())throw new Error('Choose a project folder.');
     return {project:project.name,path,cwd:real};
+  }
+  if(method==='projects.locate') {
+    if(typeof params.location!=='string'||!params.location.trim())throw new Error('A registered project location is required.');
+    const root=realpathSync(workspaceRoot()),located=sessionProject(root,params.location,{inside:true});
+    if(!located)throw new Error('The requested project location is not registered on this runner.');
+    const registered=sessionProjects(root).filter(project=>within(project.cwd,located.cwd)).sort((a,b)=>b.cwd.length-a.cwd.length)[0];
+    if(!registered)throw new Error('The requested folder is outside a registered project.');
+    const path=relative(registered.cwd,located.cwd);
+    return {project:registered.name,path,cwd:located.cwd};
   }
   if(method==='projects.files') {
     const {project}=projectFolder(params.project),path=safeRelativePath(params.path);

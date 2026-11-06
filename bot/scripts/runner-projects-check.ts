@@ -29,9 +29,12 @@ try {
 
   const listed=await serveProjectCall('projects.list',{}) as any;
   assert.deepEqual(listed.projects.map((entry:any)=>entry.name),['example-project']);
+  assert.equal(listed.workspaceRoot,workspace);
   assert.equal((await serveProjectCall('projects.resolve',{project:'example-project',path:'docs'} ) as any).cwd,join(project,'docs'));
   assert.equal((await serveProjectCall('projects.instructions',{project:'example-project'}) as any).content,'Project guide\n');
   assert.equal((await serveProjectCall('projects.file',{project:'example-project',path:'docs/guide.md'}) as any).file.content,'Readable guide\n');
+  assert.equal((await serveProjectCall('projects.fileAt',{path:join(project,'docs','guide.md')}) as any).file.content,'Readable guide\n');
+  assert.deepEqual(await serveProjectCall('projects.fileAt',{path:join(outside,'secret.md')}),{workspaceRoot:workspace,matched:false});
   assert.equal((await serveProjectCall('projects.todos',{project:'example-project'}) as any).content,'# Tasks\n');
   const priorTodos=await serveProjectCall('projects.todos',{project:'example-project'}) as any;
   const changedTodos=await serveProjectCall('projects.todos.update',{project:'example-project',content:'# Updated\n',sha256:priorTodos.sha256}) as any;
