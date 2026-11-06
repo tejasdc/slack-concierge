@@ -53,7 +53,7 @@ export type RunnerProjectServices={findProviderSessionHome?:(provider:'codex'|'c
 export async function serveProjectCall(method:string,params:Record<string,unknown>,services:RunnerProjectServices={}):Promise<unknown> {
   if(method==='projects.default') {
     const root=realpathSync(workspaceRoot());
-    return {cwd:root,project:null};
+    return {cwd:root,project:null,path:''};
   }
   if(method==='projects.list') {
     const root=realpathSync(workspaceRoot());
