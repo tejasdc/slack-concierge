@@ -655,6 +655,9 @@ unit starts again after its durable run has already reached `succeeded`,
 `failed`, or `ambiguous`, the claim command reports that terminal state and the
 runner exits successfully without repeating deployment work. This prevents a
 terminal run from becoming a permanent ten-second systemd restart loop.
+While the repair supervisor owns a nonterminal run, claim reports that ownership
+and the old runner also exits successfully. A later reviewed retry gets a new
+claim only when the durable run returns to `retrying`.
 
 Terminal diagnostics lead with the deployment outcome and a plain-language
 reason for the failed operation. No deployment outcome starts a feature-agent

@@ -140,17 +140,27 @@ try {
           status: "terminal", run_status: result.run.status,
           run_id: result.run.id, unit_name: result.run.unit_name,
         });
+        if (result?.repairOwned && result?.run) finish(0, {
+          status: "repair_owned", run_status: result.run.status,
+          run_id: result.run.id, unit_name: result.run.unit_name,
+        });
         run = result;
       } else run = claimDeploymentRun(claim);
     } catch (error) {
       if (ownerServedDeploymentCommand) throw error;
-      const terminalRun = getDeploymentRun(runId);
-      if (terminalRun && ["succeeded", "failed", "ambiguous"].includes(terminalRun.status)) {
+      const currentRun = getDeploymentRun(runId);
+      if (currentRun && ["succeeded", "failed", "ambiguous"].includes(currentRun.status)) {
         finish(0, {
           status: "terminal",
-          run_status: terminalRun.status,
-          run_id: terminalRun.id,
-          unit_name: terminalRun.unit_name,
+          run_status: currentRun.status,
+          run_id: currentRun.id,
+          unit_name: currentRun.unit_name,
+        });
+      }
+      if (currentRun?.repair_state && currentRun.repair_state !== "retrying") {
+        finish(0, {
+          status: "repair_owned", run_status: currentRun.status,
+          run_id: currentRun.id, unit_name: currentRun.unit_name,
         });
       }
       throw error;
