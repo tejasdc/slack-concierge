@@ -34,6 +34,7 @@ import {localWatchMachine,serveWatchCall} from '../src/watch-machine';
 import {rewriteRelayedCodexRequest,runnerMachineEnvironment,writeRunnerConnection,type RunnerMachine} from '../src/runner-machine';
 import {runnerAccountHome,runnerAccountHomes,findRunnerProviderSessionHome,runnerCodexRepairActive,serveRunnerAccountCall} from '../src/runner-provider-accounts';
 import {serveProviderHistoryCall} from '../src/runner-provider-history';
+import {serveRunnerProviderForkCall} from '../src/runner-provider-fork';
 import {serveProjectCall} from '../src/runner-projects';
 import {serveRunnerProviderCall} from '../src/runner-providers';
 import {serveRunnerAside} from '../src/runner-asides';
@@ -612,6 +613,14 @@ function answerMachineCalls(id:string) {
     if(method.startsWith('watch.'))return serveWatchCall(watchMachine,stateDir,method.slice('watch.'.length),params);
     if(method.startsWith('accounts.'))return serveRunnerAccountCall(method,params,{activeTurns:turns.size});
     if(method.startsWith('provider-history.'))return serveProviderHistoryCall(method,params,runnerAccountHome,stateDir,runnerAccountHomes);
+    if(method.startsWith('provider-fork.'))return serveRunnerProviderForkCall(method,params,{
+      resolveHome:runnerAccountHome,
+      resolveProject:async(project,path)=>{
+        const result=await serveProjectCall(project===null?'projects.default':'projects.resolve',
+          project===null?{}:{project,path}) as {cwd:string};
+        return result.cwd;
+      },
+    });
     if(method==='provider-usage-breakdown.page')return serveProviderUsageBreakdownCall(method,params,stateDir,runnerAccountHomes);
     if(method.startsWith('projects.'))return serveProjectCall(method,params,{findProviderSessionHome:findRunnerProviderSessionHome});
     if(method==='google.executable')return serveRunnerProviderCall(method,params);

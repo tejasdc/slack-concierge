@@ -37,9 +37,11 @@ session, turn, account and runner identities to reconcile.
 ## Acceptance
 
 Build checks cover each closed operation, path refusal, old-session compatibility and runner
-disconnect. The installed check runs a Claude turn, Codex turn, file watch, command watch,
-account reading and sign-in status against a runner while the owner's homes and workspace are hidden
-from runner processes. The interactive sign-in completion is checked with a controlled provider
-fixture; a real renewal needs a provider code if no self-service credential is available. A source
-or build check alone does not establish the rest of this result. The release
-report names separately what was committed, installed and observed on the real runner.
+disconnect with separate owner and runner roots. The installed check runs a Claude turn, Codex
+turn, file watch, command watch, account reading and sign-in status against the real AX41 runner.
+The AX41 currently shares the owner's filesystem, so that check cannot establish physical disk
+isolation; the app-server move must prove that property after installation there. Interactive
+sign-in completion is checked with a controlled provider fixture; a real renewal needs a provider
+code if no self-service credential is available. A source or build check alone does not establish
+the rest of this result. The release report names separately what was committed, installed and
+observed on the real runner.

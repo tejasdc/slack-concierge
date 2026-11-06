@@ -1,19 +1,20 @@
 # Runners and the owner on its own app server
 
-**Status (2026-11-04):** built: the agents' network entrance, per-run and per-runner tokens, the
-runner lease engine with its routes, a probe runner, and **Claude Code turns on runners** ("Turns on
-a runner" below): a new Claude turn can run on a runner, whose agents reach the owner only over
-the network entrance. **This source configures every new Claude turn for runner `ax41`
-(`CONCIERGE_TURN_RUNNERS=all`) and Codex App Server connections through its relay
-(`CONCIERGE_CODEX_RUNNER=ax41`) in `systemd/concierge-bot.service`.** The first candidate with the
-Codex setting failed startup on 2026-11-04 and was rolled back; the repaired startup order below
-awaits integration and runtime proof by the detached controller. `claude-code/runner`
-earned its survival proof in the 2026-11-05 acceptance restart (execution `b212ed3c76cd9766`, taken
-over live by the restarted owner). Command and file watches run on the registering agent's runner. **Still on the owner's machine:** outside-Codex hosts and project checkouts (a runner
-must have the same folders). The AX41's Codex App Server is started and supervised by the runner, and
-a Codex thread's shell names the runner's folders, never the owner's (2026-11-05). Concierge's own thnkr.ing
-calls already use thnkr.ing's network entrance. The owner therefore
-**cannot move to the app server yet**; the remaining work is listed under "Not on runners yet".
+**Source state (2026-11-06):** the agents' network entrance, runner lease engine and authenticated
+relay carry Claude Code turns, Codex App Server traffic, runner machine calls and watches. The
+service configures new Claude, Google and outside-Codex execution for `ax41`, and uses the Codex
+App Server supervised there. Existing conversations retain their recorded machine; an unavailable
+runner fails the affected action without making owner startup wait for it. Provider homes, history
+and project work use runner operations described below. Concierge's own thnkr.ing calls use
+thnkr.ing's network entrance. Installed and live proof is recorded separately in the acceptance
+cards below; moving the owner to its own app server is a later deployment operation.
+
+The first Codex runner candidate failed owner startup on 2026-11-04 and was rolled back. The
+repaired order gates Codex readiness per turn, not at owner startup. A Claude runner turn survived
+the 2026-11-05 owner restart (execution `b212ed3c76cd9766`). Command and file watches run on the
+registering agent's runner. The AX41 runner starts and supervises its Codex App Server, and new
+Codex threads' shells name the runner's folders. Historical threads keep the shell settings they
+started with.
 Decided plan: remote-box `docs/plans/2026-11-04-off-one-server-architecture.md` ("Decisions after
 review"), steps 2 and 3.
 
@@ -26,7 +27,7 @@ session catalogue, presentation) on a small dedicated app server, and **runners*
 checkouts, provider accounts and agent processes) that pull work from it. The AX41 becomes the
 first runner. The owner must never again share a processor or disk with an agent.
 
-## Today's couplings (inventory 2026-11-04)
+## Original couplings (inventory 2026-11-04)
 
 Everything the owner assumes because agents run beside it. Each line names where it goes.
 
@@ -123,8 +124,8 @@ Invariants:
 
 The runner daemon is `bot/scripts/runner.ts` (`CONCIERGE_OWNER_URL`, `CONCIERGE_RUNNER_TOKEN_FILE`,
 `CONCIERGE_RUNNER_STATE`; `--once` for checks). It records held attempts in its own folder and
-reacquires them at start (a reacquired probe is left to expire; turn jobs will resume heartbeats).
-Today it runs `probe` jobs only.
+reacquires them at start. It runs probe, turn, project setup and peer placement jobs; its
+authenticated relay also serves Codex App Server traffic and bounded machine calls.
 
 ## Turns on a runner (built for Claude Code turns)
 
@@ -139,9 +140,10 @@ What happens for a turn on a runner:
 
 1. The owner records the execution (`executions.supervisor = 'runner'`, no folder) and queues a
    `turn` job (not replay safe) whose payload is the launch manifest: provider command name, args,
-   working folder, the run's own variables (identity, run token, account home, model settings),
-   the opening input, attachment bytes, and the host protocols the owner adopts. The owner's own
-   environment is not in it.
+   project and relative subfolder, provider account label, the run's own variables (identity,
+   run token, model settings), the opening input, attachment bytes, and the host protocols the
+   owner adopts. The runner resolves its own project folder and account home. The owner's own
+   environment is not in the job.
 2. A turn bound to a runner carries that runner's name in its queued job. The lease engine only
    offers it to that runner, so a later turn cannot move away from its account and transcript.
    The owner's `CONCIERGE_TURN_RUNNER` names the current Claude target; the Codex relay target is
@@ -201,7 +203,7 @@ What happens for a turn on a runner:
 Survival through owner updates uses the existing rule: `claude-code/runner` counts as surviving only
 after one such run was taken over live by a later owner. Until then updates wait for runner turns.
 
-### Not on runners yet
+### Side questions and resurrection
 
 Runner-bound side questions and resurrected conversations now resolve their project and provider
 account on the runner. The owner sends a bounded side-question job or archived transcript through
@@ -209,20 +211,19 @@ the authenticated machine relay; the runner reads its provider home and starts t
 there. Resurrection records the chosen runner and account with the new conversation so a later
 turn cannot silently resume against the owner's home. A missing or ambiguous provider history
 copy refuses the operation. Local-only peer conversations keep their existing local restore path.
+Native forks use the same saved runner, account and project binding. The owner sends the native
+conversation ID, exact turn boundary, stable fork source and project identities; the runner resolves
+its own account home and project folders before asking Claude Code or its local Codex App Server to
+fork. Recovery searches that exact runner and account for a matching Codex fork. A lost runner
+answer remains uncertain instead of starting an owner-local fork. Check with
+`bun bot/scripts/runner-provider-fork-check.ts`.
 
-Exact locations and a plan for every item below: [what still ties the owner to the agents' machine](../plans/2026-11-05-owner-off-agent-machine-remaining.md).
-
-- Google turns and outside Codex hosts stay local. Google's launch first reads the owner's own
-  `~/.gemini` settings (the paid-credit guard), and an outside run's prompt file is written into the
-  owner's state folder, which runners hide; both need the runner-side account step below first.
-- Owner dispatch for provider account readings, sign-ins and Codex activation is not wired yet; the
-  runner-side source API below is not reachable until that dispatch lands.
-- The owner still starts held-usage and Claude account probes locally, reset-credit reads local
-  credentials, startup repairs the owner's Codex daemon, and the auth watcher watches owner
-  credential folders. These paths still need runner calls or runner events.
-- Project folders: the job names an absolute folder; a runner must have the same checkout layout, and
-  the Claude command's hook settings name the owner's release path, so a runner on another machine
-  needs the same release installed.
+The original [same-machine inventory](../plans/2026-11-05-owner-off-agent-machine-remaining.md)
+records why these paths existed. Account and project dispatch, Google, outside Codex, held-usage
+probes, auth holds, Codex repair and hook settings now use the runner operations below. Source checks
+use separate owner and runner roots. The AX41 still shares its filesystem with the current owner,
+so an installed check there cannot by itself prove physical disk isolation; moving the owner to the
+app server is the final deployment step for that property.
 
 ## Codex App Server on a runner (built, off until `CONCIERGE_CODEX_RUNNER` is set)
 
@@ -345,13 +346,12 @@ delta into the ledger the move is meant to relieve, and add half a second per re
 stores nothing and keeps the App Server's own protocol end to end. Why not a port on the runner:
 runners open none (decided plan, "How the parts talk", 3).
 
-Not yet, before a runner on another machine can hold Codex:
+Current Codex migration limits:
 - The post-turn leftover-process audit uses `codex.leftoverProcesses` and `codex.processAlive`
   on the runner that hosts the App Server. The owner retains the audit intent, sightings, grace
   period and Inbox report; a lost runner call leaves the intent or sighting open for retry.
   The Codex Remote observer remains separate from this native-turn audit.
 - One relayed message is limited to 64 MB, the same as the backpressure limit.
-- Account switching restarts the App Server on the owner's machine (`provider-activation.ts`).
 - Threads started before 2026-11-05 keep the owner's folders in their shell settings for life; they
   work on the AX41, where those folders exist, and only there. The AX41's running App Server was
   started by the owner's unit and keeps the owner's environment (its hooks read the owner's pins)
@@ -627,6 +627,8 @@ Sources: [GetActivityTask](https://docs.aws.amazon.com/step-functions/latest/api
   window across pages and propagates a runner failure before the report cache can be replaced.
 - `bot/scripts/runner-provider-history-check.ts`: bounded exact transcript reads and identity
   fencing, exact-byte provider-home restore/retry, no-overwrite, and unique legacy subject match.
+- `bot/scripts/runner-provider-fork-check.ts`: exact native fork and recovery identities, runner
+  account and project resolution, Codex source provenance, and path traversal refusal.
 
 - `bot/scripts/agent-entrance-check.ts`: the real gateway refuses missing, malformed, forged and
   foreign-key tokens before the owner, forwards run and runner principals that callers cannot spoof,
