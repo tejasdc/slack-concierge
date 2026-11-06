@@ -236,7 +236,9 @@ async function reconcileRunnerCodexRepair(runner:string):Promise<void>{
         run:()=>withCodexRestartLock(()=>runnerMachineCall<{status:string;detail?:string}>(runner,'accounts.codex.repairUnmanaged',{},RUNNER_REPAIR_TIMEOUT_MS)),
         classifyError:()=> 'transient'});
       if(result.status==='busy'){
-        pendingCodexRepair=true;holdCodexAdmission(`codex:runner-rehome:${runner}`,false);return;
+        // A busy runner has not proved that a previously lost repair response was harmless.
+        // Keep its durable hold until the execution-change repair path can check it again.
+        pendingCodexRepair=true;return;
       }
       if(result.status!=='repaired'&&result.status!=='managed_or_absent'){
         log('error','codex_runner_rehome_unproven',{runner,status:result.status,detail:result.detail??null});
@@ -263,8 +265,9 @@ function repairUnmanagedCodexServer(): Promise<void> {
       if(process.platform!=='linux'){pendingCodexRepair=false;return;}
       pendingCodexRepair=true;
       const repairHold=`codex:runner-rehome:${runner}`;
+      const recovering=codexAdmissionRecoveryHolds().some(({holder})=>holder===repairHold);
       holdCodexAdmission(repairHold,true,{kind:'runner-rehome',runner});
-      let retainAdmission=false;
+      let retainAdmission=recovering;
       try{
         const running=runningCodexTurns(),external=externallyRunningCodexTurns();
         if(running!==0||external!==0){log('info','codex_unmanaged_server_repair_waiting',{runner,running,external});return;}
@@ -279,6 +282,7 @@ function repairUnmanagedCodexServer(): Promise<void> {
           return;
         }
         pendingCodexRepair=false;
+        retainAdmission=false;
         if(result.status==='repaired')log('warn','codex_unmanaged_server_repaired_on_runner',{runner});
       }catch(error){
         log('error','codex_unmanaged_server_repair_unconfirmed_on_runner',{runner,error:error instanceof Error?error.message:String(error)});
