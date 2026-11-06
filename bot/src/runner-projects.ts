@@ -12,6 +12,7 @@ import { isAbsolute, join, relative, sep } from 'node:path';
 import { sessionProject, sessionProjects } from './session-projects';
 import { isSensitiveWorkspacePath, readWorkspaceFile } from './workspace-files';
 import { renderTodoItemContents } from './todo-markdown';
+import { expectedRunnerProjectOrigin } from './runner-project-setup';
 
 const workspaceRoot=()=>process.env.CONCIERGE_WORKSPACE_ROOT?.trim()||join(homedir(),'workspace');
 const within=(root:string,path:string)=>path===root||path.startsWith(root.endsWith(sep)?root:root+sep);
@@ -50,7 +51,7 @@ function exactFolder(projectPath:string,path:string) {
  * Answer only the project vocabulary used by the owner. Each operation has a fixed filesystem
  * action and an authority rooted in this runner's own registered checkout.
  */
-export type RunnerProjectServices={findProviderSessionHome?:(provider:'codex'|'claude-code',account:string|null,nativeId:string)=>{account:string;home:string;transcript:string}|null};
+export type RunnerProjectServices={findProviderSessionHome?:(provider:'codex'|'claude-code',account:string|null,nativeId:string)=>{account:string;home:string;transcript:string}|null;git?:(cwd:string,args:string[])=>Promise<string>};
 export async function serveProjectCall(method:string,params:Record<string,unknown>,services:RunnerProjectServices={}):Promise<unknown> {
   if(method==='projects.default') {
     const root=realpathSync(workspaceRoot());
@@ -59,6 +60,12 @@ export async function serveProjectCall(method:string,params:Record<string,unknow
   if(method==='projects.list') {
     const root=realpathSync(workspaceRoot());
     return {workspaceRoot:root,projects:sessionProjects(root).map(project=>({name:project.name,path:relative(root,project.cwd)}))};
+  }
+  if(method==='projects.exists') {
+    const root=realpathSync(workspaceRoot());
+    if(typeof params.project!=='string'||!params.project.trim()||params.project.includes('/')||params.project.includes('\\'))
+      throw new Error('An exact project name is required.');
+    return {exists:!!sessionProject(root,params.project)};
   }
   if(method==='projects.fileAt') {
     const root=realpathSync(workspaceRoot());
@@ -196,6 +203,20 @@ export async function serveProjectCall(method:string,params:Record<string,unknow
       }catch{/* A stale or unreadable path stays absent from this bounded read. */}
     }
     return {project:project.name,items,transcriptAvailable:true};
+  }
+  if(method==='projects.shareStatus') {
+    const {root,project}=projectFolder(params.project),parent=join(project.cwd,'..');
+    const group=realpathSync(parent)===root?undefined:relative(root,realpathSync(parent));
+    const expected=expectedRunnerProjectOrigin(project.name,group);
+    const env={PATH:process.env.PATH??'/usr/local/bin:/usr/bin:/bin',HOME:homedir(),GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_OPTIONAL_LOCKS:'0'};
+    const git=async(...args:string[])=>services.git?services.git(project.cwd,args):(
+      await execFile('git',['-c','core.fsmonitor=false','-c','protocol.file.allow=never','-C',project.cwd,...args],
+        {timeout:10000,maxBuffer:1024*1024,env})).stdout;
+    const [origin,branch,head]=await Promise.all([git('remote','get-url','origin'),git('branch','--show-current'),git('rev-parse','HEAD')]);
+    if(origin.trim().replace(/\.git$/,'')!==expected)throw new Error('This project is not from its expected GitHub repository.');
+    if(!branch.trim())throw new Error('Push the project branch before sharing.');
+    const remoteHead=await git('ls-remote','--heads','origin',branch.trim());
+    return {project:project.name,group:group??null,branch:branch.trim(),head:head.trim(),remoteHead:remoteHead.trim().split(/\s+/)[0]??''};
   }
   throw new Error(`Unknown runner project operation: ${method}`);
 }

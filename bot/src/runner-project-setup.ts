@@ -38,7 +38,7 @@ function safeOrderId(value:unknown){if(typeof value!=='string'||!/^[a-f0-9]{32}$
 function within(root:string,path:string){return path===root||path.startsWith(root.endsWith(sep)?root:`${root}${sep}`);}
 function pathExists(path:string){try{lstatSync(path);return true;}catch(error:any){if(error?.code==='ENOENT')return false;throw error;}}
 function repositoryName(project:string,group?:string){return group===LAB_GROUP?`expertise-${project}`:project;}
-function expectedOrigin(project:string,group?:string){return `https://github.com/tejasdc/${repositoryName(project,group)}`;}
+export function expectedRunnerProjectOrigin(project:string,group?:string){return `https://github.com/tejasdc/${repositoryName(project,group)}`;}
 function destinationFor(root:string,project:string,group?:string){return group?join(root,group,project):join(root,project);}
 function classify(error:unknown):'transient'|'permanent'{
   return /timed? ?out|econn(?:reset|refused|aborted)|network|temporary|socket|fetch failed|rate limit|could not resolve|remote end hung up|service unavailable/i.test(String(error))?'transient':'permanent';
@@ -99,9 +99,9 @@ export async function runProjectSetupJob(value:unknown,services:ProjectSetupRunn
   if(pathExists(destination)){
     if(!verifyDirectory(destination,root)||!projectPredicate(destination))return {state:'refused',project,relativePath,reason:'A different folder already uses this project name.'};
     const origin=await (services.run??defaultRun)('git',['-c','core.hooksPath=/dev/null','-C',destination,'remote','get-url','origin']).catch(()=>null);
-    if(String(origin).replace(/\.git$/,'')!==expectedOrigin(project,group))return {state:'refused',project,relativePath,reason:'The existing project has a different GitHub origin.'};
+    if(String(origin).replace(/\.git$/,'')!==expectedRunnerProjectOrigin(project,group))return {state:'refused',project,relativePath,reason:'The existing project has a different GitHub origin.'};
     const repository=JSON.parse(await (services.run??defaultRun)('gh',['repo','view',`tejasdc/${repositoryName(project,group)}`,'--json','visibility,url']));
-    if(repository.visibility!=='PRIVATE'||repository.url!==expectedOrigin(project,group))return {state:'refused',project,relativePath,reason:'The existing GitHub repository is not the expected private repository.'};
+    if(repository.visibility!=='PRIVATE'||repository.url!==expectedRunnerProjectOrigin(project,group))return {state:'refused',project,relativePath,reason:'The existing GitHub repository is not the expected private repository.'};
     const commit=await (services.run??defaultRun)('git',[...PRIVATE_GIT_OPTIONS,'-C',destination,'rev-parse','HEAD']);
     const remoteHead=(await (services.run??defaultRun)('git',[...PRIVATE_GIT_OPTIONS,'-C',destination,'ls-remote','--exit-code','origin','HEAD'])).split(/\s+/)[0];
     if(remoteHead!==commit)return {state:'refused',project,relativePath,reason:'The existing project and private GitHub repository do not have the same commit.'};
@@ -124,7 +124,7 @@ export async function runProjectSetupJob(value:unknown,services:ProjectSetupRunn
     try{commit=await run('git',[...PRIVATE_GIT_OPTIONS,'-C',staging,'rev-parse','HEAD']);}
     catch{await run('git',[...PRIVATE_GIT_OPTIONS,'-C',staging,'add','--all']);await run('git',[...PRIVATE_GIT_OPTIONS,'-C',staging,'-c','user.name=Concierge project setup','-c','user.email=concierge-project-setup@users.noreply.github.com','commit','-m',`Create ${project} project`]);commit=await run('git',[...PRIVATE_GIT_OPTIONS,'-C',staging,'rev-parse','HEAD']);}
     const status=await run('git',[...PRIVATE_GIT_OPTIONS,'-C',staging,'status','--porcelain']);if(status)throw new Error('The project scaffold has uncommitted files.');
-    const expected=expectedOrigin(project,group);
+    const expected=expectedRunnerProjectOrigin(project,group);
     const origin=await run('git',[...PRIVATE_GIT_OPTIONS,'-C',staging,'remote','get-url','origin']).catch(()=>null);
     if(origin&&String(origin).replace(/\.git$/,'')!==expected)throw new Error('The staged project has a different GitHub origin.');
     if(!origin){

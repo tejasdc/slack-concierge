@@ -360,8 +360,8 @@ Why not a port on the runner: runners open none.
 
 Users: durable watches ([watches](WATCHES.md), `watch-machine.ts`, methods `watch.*`). Turn artifacts need none: only the retired Slack presentation makes an artifact folder; a native turn makes none.
 
-Project reads use the same call channel (`runner-projects.ts`): `projects.list`, `projects.resolve`,
-`projects.locate`, `projects.files`, `projects.instructions`, `projects.file`, `projects.fileAt`,
+Project reads use the same call channel (`runner-projects.ts`): `projects.list`, `projects.exists`,
+`projects.resolve`, `projects.locate`, `projects.files`, `projects.instructions`, `projects.file`, `projects.fileAt`,
 `projects.todos`, `projects.todos.update`, `projects.todos.append`, and `projects.worktrees`. The owner
 sends a registered project name and a relative path; the runner
 resolves it under its own workspace (`CONCIERGE_WORKSPACE_ROOT`, default `~/workspace`). `projects.locate`
@@ -405,6 +405,16 @@ private repository and commit; it never overwrites a different remote history. T
 queued if its runner is away; transient completed failures get a fresh lease job identity while
 reusing the same order and staging folder. The runner's `gh` identity and availability are required
 for project creation, while organizer proof and project-creation records remain owner-ledger facts.
+
+Peer project placement is a separate replay-safe `project-place` runner job. The owner validates and
+retains the peer's original placement order, then sends only its order identity, project name,
+grouping folder, and target runner. The runner uses its own GitHub identity to confirm the expected
+repository is private, stages the checkout under its private workspace placement area, verifies
+the checkout origin and that its commit matches the repository head, then atomically renames it into
+the registered project folder. A retry recognizes that exact checkout; a conflicting folder or
+different repository is refused. This keeps peer placement from requiring an owner-side project
+checkout or GitHub login. The runner's GitHub login is required for placement; the original order
+and its outcome remain in the owner's ledger.
 
 ## Concierge's own thnkr.ing calls (built)
 
