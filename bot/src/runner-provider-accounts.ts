@@ -1,15 +1,16 @@
 /** Provider-account facts and actions that belong to this runner's machine. */
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { readRunnerProviderAccountReadings } from "./runner-provider-account-readings";
 import { ProviderLoginManager, type AuthLoginStartResult } from "./auth-login";
 import { codexUpdaterDisabled } from "./codex-updater-settings";
-import { holdCodexDaemonAutoStart } from "./codex-daemon-file-limit";
-import { CodexAppServerClient } from "./codex-app-server-client";
+import { MANAGED_CODEX, controlSocketListeners, holdCodexDaemonAutoStart, startCodexDaemonInOwnScope } from "./codex-daemon-file-limit";
+import { CodexAppServerClient, codexAppServerSocketPath } from "./codex-app-server-client";
 import { useCodexResetCredit } from "./codex-reset-credit";
 import { readRunnerGoogleUsage } from "./runner-google-usage";
+import {createConnection} from 'node:net';
 
 type AccountProvider = "codex" | "claude-code";
 const providers = new Set<AccountProvider>(["codex", "claude-code"]);
@@ -21,6 +22,9 @@ const signinOperations = new Map<string, SignInOperation>();
 const pendingSignins = new Map<AccountProvider, string>();
 type ActivationOperation = { id: string; account: string; status: "starting" | "applied" | "failed" | "uncertain"; detail?: string };
 const activationOperations = new Map<string, ActivationOperation>();
+let unmanagedRepair:Promise<{status:string;detail?:string}>|null=null;
+let codexRepairActive=false;
+export function runnerCodexRepairActive():boolean{return codexRepairActive;}
 
 function writeSignInState(operation: SignInOperation) {
   const rows = [...signinOperations.values()].map(({id,provider,status,account,detail}) => ({id,provider,status,account,detail,updatedAt:Date.now()}));
@@ -365,6 +369,64 @@ function activateCodex(params: Record<string, unknown>) {
   return codexActivationFlight;
 }
 
+function socketAnswers(path:string):Promise<boolean>{return new Promise(resolve=>{
+  const socket=createConnection(path);const finish=(answer:boolean)=>{socket.destroy();resolve(answer);};
+  socket.once('connect',()=>finish(true));socket.once('error',()=>finish(false));
+  setTimeout(()=>finish(false),1_000).unref?.();
+});}
+function processTree(roots:number[]):number[]{
+  const parentOf=new Map<number,number>();
+  try{
+    for(const entry of readdirSync('/proc')){
+      if(!/^\d+$/.test(entry))continue;
+      const pid=Number(entry);
+      try{const stat=readFileSync(`/proc/${pid}/stat`,'utf8');
+        parentOf.set(pid,Number(stat.slice(stat.lastIndexOf(')')+2).split(' ')[1]));}catch{}
+    }
+  }catch{return roots;}
+  const result=new Set(roots),queue=[...roots];
+  while(queue.length){const parent=queue.shift()!;for(const [pid,ppid] of parentOf)if(ppid===parent&&!result.has(pid)){result.add(pid);queue.push(pid);}}
+  return [...result];
+}
+const processAlive=(pid:number)=>{try{process.kill(pid,0);return true;}catch{return false;}};
+async function runnerSocketRepair(activeTurns:number):Promise<{status:string;detail?:string}>{
+  if(unmanagedRepair)return unmanagedRepair;
+  unmanagedRepair=(async()=>{
+    if(activeTurns!==0)return {status:'busy',detail:'The runner still owns an active turn.'};
+    if(process.platform!=='linux'||process.env.CONCIERGE_CODEX_APP_SERVER_SOCKET?.trim())
+      return {status:'unsupported',detail:'Unmanaged App Server repair is supported only for the runner-owned Linux socket.'};
+    codexRepairActive=true;
+    try{
+      const check=await runCommand(MANAGED_CODEX,['app-server','daemon','version'],20_000);
+      if(check.code!==0||!check.output.includes('"running"')||check.output.includes('"backend"'))
+        return {status:'managed_or_absent'};
+      if(!codexUpdaterDisabled())return {status:'refused',detail:'Codex automatic updates are not disabled on this runner.'};
+      const socket=codexAppServerSocketPath(),servers=controlSocketListeners(socket);
+      if(!servers.length)return {status:'uncertain',detail:'Codex reported an unmanaged server, but no exact listener owns its control socket.'};
+      const tree=processTree(servers);
+      holdCodexDaemonAutoStart(true);
+      try{
+      for(const pid of servers)try{process.kill(pid,'SIGTERM');}catch{}
+      const deadline=Date.now()+70_000;
+      while(servers.some(processAlive)&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,500));
+      if(servers.some(processAlive))for(const pid of [...tree].reverse())try{process.kill(pid,'SIGKILL');}catch{}
+      const stopped=Date.now()+5_000;
+      while(servers.some(processAlive)&&Date.now()<stopped)await new Promise(resolve=>setTimeout(resolve,100));
+      if(servers.some(processAlive))return {status:'uncertain',detail:'The unmanaged Codex listener did not stop.'};
+      if(await socketAnswers(socket))return {status:'managed_or_absent',detail:'A replacement App Server answered during repair.'};
+      let present=false;try{lstatSync(socket);present=true;}catch{}
+      if(present)renameSync(socket,`${socket}.stale-${new Date().toISOString().replace(/[:.]/g,'-')}`);
+      const started=await startCodexDaemonInOwnScope();
+      const after=await runCommand(MANAGED_CODEX,['app-server','daemon','version'],20_000);
+      if(started.code===0&&after.code===0&&after.output.includes('"backend":"pid"'))
+        return {status:'repaired'};
+      return {status:'uncertain',detail:'The replacement App Server did not confirm a managed backend.'};
+      }finally{holdCodexDaemonAutoStart(false);}
+    }finally{codexRepairActive=false;}
+  })().finally(()=>{unmanagedRepair=null;});
+  return unmanagedRepair;
+}
+
 /** Resolve a label to this runner's home after validating the account stored there. */
 export function runnerAccountHome(key: AccountProvider, accountLabel: string): string | null {
   if (!accountLabel.trim()) return null;
@@ -449,7 +511,7 @@ export async function runnerAccountReadings() {
 }
 
 /** Closed vocabulary for the account operations exposed on the runner-machine relay. */
-export async function serveRunnerAccountCall(method: string, params: Record<string, unknown>): Promise<unknown> {
+export async function serveRunnerAccountCall(method: string, params: Record<string, unknown>,context:{activeTurns:number}={activeTurns:0}): Promise<unknown> {
   if (method === "accounts.identity") {
     if(params.provider==='antigravity'){
       const usage=await readRunnerGoogleUsage();
@@ -490,6 +552,7 @@ export async function serveRunnerAccountCall(method: string, params: Record<stri
     return publicSignIn(signinOperations.get(id));
   }
   if (method === "accounts.codex.activate") return activateCodex(params);
+  if (method === "accounts.codex.repairUnmanaged") return runnerSocketRepair(context.activeTurns);
   if (method === "accounts.codex.resetCredit") {
     const account = params.account, operationId = params.operationId;
     if (typeof account !== "string" || !account.trim() || typeof operationId !== "string"

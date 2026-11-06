@@ -21,6 +21,8 @@ import { CLAUDE_AGENT_HOOK_SETTINGS } from "./claude-code";
 import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
 import { isClaudeUsageExhaustion } from "./provider-failures";
+import {providerRunnerTarget} from './provider-runner-target';
+import {runnerMachineCall} from './runner-machine-calls';
 
 // Making a credential change take effect on the provider runtime that is
 // already running.
@@ -234,6 +236,29 @@ let pendingCodexRepair = false;
  */
 function repairUnmanagedCodexServer(): Promise<void> {
   return oneCodexRestartAtATime(async () => {
+    const runner=providerRunnerTarget('codex');
+    if(runner){
+      if(process.platform!=='linux'){pendingCodexRepair=false;return;}
+      pendingCodexRepair=true;
+      holdCodexAdmission(true);
+      try{
+        const running=runningCodexTurns(),external=externallyRunningCodexTurns();
+        if(running!==0||external!==0){log('info','codex_unmanaged_server_repair_waiting',{runner,running,external});return;}
+        const result=await runnerMachineCall<{status:string;detail?:string}>(runner,'accounts.codex.repairUnmanaged',{},110_000);
+        if(result.status==='busy'){
+          log('info','codex_unmanaged_server_repair_waiting',{runner,reason:result.detail??'runner_has_active_turn'});
+          return;
+        }
+        pendingCodexRepair=false;
+        if(result.status==='repaired')log('warn','codex_unmanaged_server_repaired_on_runner',{runner});
+        else if(result.status==='uncertain'||result.status==='refused'||result.status==='unsupported')
+          log('error','codex_unmanaged_server_repair_refused_on_runner',{runner,status:result.status,detail:result.detail??null});
+      }catch(error){
+        pendingCodexRepair=false;
+        log('error','codex_unmanaged_server_repair_unconfirmed_on_runner',{runner,error:error instanceof Error?error.message:String(error)});
+      }finally{holdCodexAdmission(false);}
+      return;
+    }
     if (process.platform !== "linux" || !(await codexServerUnmanaged())) { pendingCodexRepair = false; return; }
     pendingCodexRepair = true;
     if (!codexUpdaterDisabled()) { log("error", "codex_unmanaged_server_repair_refused", { reason: "automatic_updater_not_disabled" }); return; }
@@ -431,8 +456,10 @@ export function watchAuthHeldCredentials(): () => void {
   const check=(provider:ProviderKey,source:ReleaseSource)=>{
     if(stopped || checking.has(provider) || (!authHeldInputCount(provider) && !(provider==='codex'&&pendingCodexActivation)))return;
     checking.add(provider);
-    void activateCredentials(provider,source).catch(error=>log('error','provider_auth_hold_activation_failed',{
-      provider,source,error:error instanceof Error?error.message:String(error)})).finally(()=>{checking.delete(provider);updateInterval();});
+    const runner=providerRunnerTarget(provider);
+    const work=runner?checkRunnerAuthHeld(provider,runner,source):activateCredentials(provider,source);
+    void work.catch(error=>log('error',runner?'runner_provider_auth_hold_check_failed':'provider_auth_hold_activation_failed',{
+      provider,runner,source,error:error instanceof Error?error.message:String(error)})).finally(()=>{checking.delete(provider);updateInterval();});
   };
   const watchCredential=(path:string,provider:ProviderKey,source:ReleaseSource)=>{
     try {
@@ -447,8 +474,8 @@ export function watchAuthHeldCredentials(): () => void {
       watchers.push(watcher);
     } catch(error){log('error','provider_auth_hold_watch_failed',{provider,source,error:String(error)});}
   };
-  for(const provider of providers)watchCredential(credentialPath(provider),provider,'file_event');
-  if(process.platform==='darwin'){
+  for(const provider of providers)if(!providerRunnerTarget(provider))watchCredential(credentialPath(provider),provider,'file_event');
+  if(process.platform==='darwin'&&!providerRunnerTarget('claude-code')){
     try {
       const keychain=execFileSync('/usr/bin/security',['login-keychain','-d','user'],{encoding:'utf8'}).trim().replace(/^"|"$/g,'');
       if(keychain)watchCredential(keychain,'claude-code','keychain_event');
@@ -468,4 +495,23 @@ export function watchAuthHeldCredentials(): () => void {
   updateInterval();
   return ()=>{stopped=true;detach();if(interval)clearInterval(interval);
     for(const timer of debounce.values())clearTimeout(timer);for(const watcher of watchers)watcher.close();};
+}
+
+/** A runner's fresh usage/auth answer clears an auth hold without probing owner credentials. */
+async function checkRunnerAuthHeld(provider:ProviderKey,runner:string,source:ReleaseSource):Promise<void>{
+  const identity=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider});
+  const readings=await runnerMachineCall<Record<string,{observedAt:string;accounts:readonly {label:string;signedOut?:boolean;problem:string|null;readAt?:string|null}[];problem:string|null}>>(
+    runner,'accounts.readings',{},100_000);
+  const usage=readings?.[provider],account=usage?.accounts.find(item=>item.label===identity?.label);
+  const observed=usage?Date.parse(usage.observedAt):NaN;
+  const readAt=account?.readAt?Date.parse(account.readAt):observed;
+  const fresh=Number.isFinite(observed)&&observed<=Date.now()+30_000&&Date.now()-observed<=6*60_000
+    &&Number.isFinite(readAt)&&readAt<=Date.now()+30_000&&Date.now()-readAt<=6*60_000;
+  if(!identity||!account||!fresh||account.signedOut===true||account.problem){
+    log('info','runner_provider_auth_hold_unconfirmed',{provider,runner,source,account:identity?.label??null,
+      reason:!identity?'no_runner_identity':!account?'identity_not_in_reading':!fresh?'reading_not_fresh':account?.signedOut?'signed_out':'reading_problem'});
+    return;
+  }
+  const released=releaseAuthHold(provider,source);
+  if(released)log('info','runner_provider_auth_hold_released',{provider,runner,account:identity.label,source,released});
 }

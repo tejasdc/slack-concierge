@@ -32,7 +32,7 @@ import {serveRunnerMachineCalls} from '../src/runner-machine-calls';
 import {codexLeftoverProcesses,codexProcessStillRunning} from '../src/codex-leftover-processes';
 import {localWatchMachine,serveWatchCall} from '../src/watch-machine';
 import {rewriteRelayedCodexRequest,runnerMachineEnvironment,writeRunnerConnection,type RunnerMachine} from '../src/runner-machine';
-import {runnerAccountHome,runnerAccountHomes,findRunnerProviderSessionHome,serveRunnerAccountCall} from '../src/runner-provider-accounts';
+import {runnerAccountHome,runnerAccountHomes,findRunnerProviderSessionHome,runnerCodexRepairActive,serveRunnerAccountCall} from '../src/runner-provider-accounts';
 import {serveProviderHistoryCall} from '../src/runner-provider-history';
 import {serveProjectCall} from '../src/runner-projects';
 import {serveRunnerProviderCall} from '../src/runner-providers';
@@ -610,7 +610,7 @@ function answerMachineCalls(id:string) {
     recordOwnerContact();
     if(method==='ping')return true;
     if(method.startsWith('watch.'))return serveWatchCall(watchMachine,stateDir,method.slice('watch.'.length),params);
-    if(method.startsWith('accounts.'))return serveRunnerAccountCall(method,params);
+    if(method.startsWith('accounts.'))return serveRunnerAccountCall(method,params,{activeTurns:turns.size});
     if(method.startsWith('provider-history.'))return serveProviderHistoryCall(method,params,runnerAccountHome,stateDir,runnerAccountHomes);
     if(method==='provider-usage-breakdown.page')return serveProviderUsageBreakdownCall(method,params,stateDir,runnerAccountHomes);
     if(method.startsWith('projects.'))return serveProjectCall(method,params,{findProviderSessionHome:findRunnerProviderSessionHome});
@@ -661,7 +661,7 @@ if(!once&&kinds.includes('codex')){
 if(!once)listenForRelays();
 
 for(let idle=0;;) {
-  const jobKinds=kinds.filter(kind=>kind!=='codex');
+  const jobKinds=kinds.filter(kind=>kind!=='codex'&&!(kind==='turn'&&runnerCodexRepairActive()));
   const offered=turns.size>=maxTurns?jobKinds.filter(kind=>kind!=='turn'):jobKinds;
   const {job}=offered.length?await call('claim',{kinds:once?['probe']:offered}).catch(error=>{say('runner_claim_failed',{error:String(error)});return {job:null};}):{job:null};
   if(job){

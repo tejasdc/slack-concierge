@@ -44,6 +44,10 @@ try {
   writeFileSync(join(claude, ".account-email"), "writer@example.com");
 
   const accounts = await import("../src/runner-provider-accounts");
+  assert.deepEqual(await accounts.serveRunnerAccountCall("accounts.codex.repairUnmanaged", {}, { activeTurns: 1 }),
+    { status: "busy", detail: "The runner still owns an active turn." },
+    "unmanaged-server repair must refuse while the runner owns a turn");
+  assert.equal(accounts.runnerCodexRepairActive(), false, "a refused repair must not fence runner turn claims");
   assert.deepEqual(accounts.runnerAccountIdentity("codex"), { id: "active-id", label: "active@example.com" });
   assert.equal(accounts.runnerAccountHome("codex", "saved@example.com"), join(root, ".codex-accounts", "saved"));
   assert.equal(accounts.runnerAccountHome("claude-code", "writer@example.com"), claude);
