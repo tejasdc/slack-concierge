@@ -77,6 +77,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   carry the live syntax and enforcement. The [request and return contract](docs/architecture/SESSION-OWNER.md#requests-and-returns)
   and [prompt thread answers](docs/architecture/PROMPT-THREAD-ANSWERS.md)
   own return position, partial answers and final disposition.
+- Held final returns retry delivery to their asker while completed Inbox answer
+  upkeep is retained once per exact event; the yielding open-thread sweep is
+  described in [native Inbox](docs/contracts/native-inbox.md#owner-upkeep-under-held-returns).
 - ChatGPT questions carry an exact task and remain open through failed attempts,
   return receipt, and explicit answer handling. See [ChatGPT answer obligations](docs/architecture/CHATGPT-ANSWER-OBLIGATIONS.md).
 - Preserve exact accepted input, run, action, source-message and target identity.

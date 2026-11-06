@@ -2711,13 +2711,22 @@ export function wakeDeferredQuestions(now=Date.now(),admit?:(input:{sessionId:nu
  */
 export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnswer>[0]&{respondingTitle?:string|null;informational?:boolean;notify?:boolean;summary?:string|null;todoId?:string|null}):string|null {
   if(!answer.final&&!answer.stalled&&!answer.answersQuestion&&!answer.notify)return null;
+  const upkeepEventId=`answer-upkeep:${answer.eventId}`;
+  if(answer.final){
+    const completed=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(upkeepEventId) as {payload_json:string}|null;
+    if(completed)return JSON.parse(completed.payload_json).postId as string;
+  }
   answer={...answer,root:inboxRequestRoot(db,answer.requestId,answer.root)??answer.root};
   const post=postForwardedThreadAnswer(answer);
   if(post&&!answer.final&&answer.notify){
     const row=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(post) as {payload_json:string}|null;
     notifyAgentPost(answer.inboxSessionId,answer.root,post,String(row?JSON.parse(row.payload_json).text??'':answer.text),answer.notify===true);
   }
-  if(!post||!answer.final||(answer.stalled&&answer.quiet))return post;
+  if(!post||!answer.final)return post;
+  if(answer.stalled&&answer.quiet){
+    recordSessionEvent({eventId:upkeepEventId,sessionId:answer.inboxSessionId,kind:'answer_upkeep',payload:{postId:post}});
+    return post;
+  }
   const postText=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(post) as {payload_json:string}|null;
   const filedText=postText?String(JSON.parse(postText.payload_json).text??answer.text):answer.text;
   const disposition=answer.stalled?'failed':answer.informational?'completed':answer.workDisposition;
@@ -2749,7 +2758,11 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
     if(topicId){keepThreadOpenOrClosed({topicId});keepThreadCurrent(topicId,forwardedReplies(),true);}
   } catch(error) {
     log('error','inbox_thread_upkeep_failed',{request_id:answer.requestId,thread:answer.root,message:error instanceof Error?error.message:String(error)});
+    return post;
   }
+  // A held return can retry every poll while its requester is unavailable. The post, filing,
+  // linked copies and upkeep must all finish before that retry can skip this work.
+  recordSessionEvent({eventId:upkeepEventId,sessionId:answer.inboxSessionId,kind:'answer_upkeep',payload:{postId:post}});
   return post;
 }
 
@@ -3693,7 +3706,17 @@ export function reopenThreadForHisMessage(sessionId:number,inputId:string,replyT
  * requests it named; a closed thread with other open work still receives recovery.
  * Runs on the reading cadence and startup.
  */
-export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown) {
+type ThreadUpkeepResult={threads:number;closed:number;settled:number;flagged:number};
+let threadUpkeepPass:Promise<ThreadUpkeepResult>|null=null;
+const yieldThreadUpkeep=()=>new Promise<void>(resolve=>setImmediate(resolve));
+export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown):Promise<ThreadUpkeepResult> {
+  if(threadUpkeepPass)return threadUpkeepPass;
+  const pass=keepThreadsCurrentPass(admit);
+  threadUpkeepPass=pass;
+  void pass.then(()=>{if(threadUpkeepPass===pass)threadUpkeepPass=null;},()=>{if(threadUpkeepPass===pass)threadUpkeepPass=null;});
+  return pass;
+}
+async function keepThreadsCurrentPass(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown):Promise<ThreadUpkeepResult> {
   const session=inboxSession();
   if(!session)return {threads:0,closed:0,settled:0,flagged:0};
   refreshRootMemo();
@@ -3712,17 +3735,31 @@ export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:strin
   const closedBefore=(db.query(`SELECT count(*) AS count FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) AND state='closed'`).get(session.id) as {count:number}).count;
   const openRequestsBefore=(db.query("SELECT count(*) AS count FROM inbox_requests WHERE state='open'").get() as {count:number}).count;
   const stuck:Stuck[]=[];
+  let nextYield=Date.now()+40;
   for(const topicId of new Set([...open,...running,...closedWithOpenRequests])) {
     try{stuck.push(...keepThreadCurrent(topicId,forwards,false,read));}
     catch(error){log('error','inbox_thread_upkeep_failed',{topic_id:topicId,message:error instanceof Error?error.message:String(error)});}
+    if(Date.now()>=nextYield){await yieldThreadUpkeep();nextYield=Date.now()+40;}
   }
-  const fresh=stuck.flatMap(item=>{const attempt=nextRecoveryAttempt(item);return attempt===null?[]:[{...item,attempt}];});
+  const fresh:(Stuck&{attempt:number})[]=[];
+  for(const item of stuck){
+    const attempt=nextRecoveryAttempt(item);
+    if(attempt!==null)fresh.push({...item,attempt});
+    if(Date.now()>=nextYield){await yieldThreadUpkeep();nextYield=Date.now()+40;}
+  }
   let flagged=0;
   if(fresh.length&&admit) {
-    for(const item of fresh)try {
+    for(const snapshot of fresh)try {
+      if(flagged>=5)break;
+      if(Date.now()>=nextYield){await yieldThreadUpkeep();nextYield=Date.now()+40;}
+      // Another owner action can run while the sweep yields. Recheck exact work and human
+      // answers before admitting recovery from an earlier view of this thread.
+      const current=keepThreadCurrent(snapshot.topicId,forwards,false,readIndex(session.id,true))
+        .find(candidate=>candidate.requestId===snapshot.requestId);
+      if(!current||nextRecoveryAttempt(current)!==snapshot.attempt)continue;
+      const item={...current,attempt:snapshot.attempt};
       // Keep historical recovery from flooding one router turn. A refused admission does not
       // consume capacity, so an inaccessible first request cannot starve every later one.
-      if(flagged>=5)break;
       const inputId=`thread-upkeep:${createHash('sha256').update(`${item.key}:${item.attempt}`).digest('hex')}`;
       // An input already retained under this id was admitted by an earlier pass; only its flags are missing.
       if(!db.query('SELECT 1 FROM session_inputs WHERE id=?').get(inputId))
@@ -3746,7 +3783,7 @@ export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:strin
             attachments:[],stalled:false,final:false,notify:false,workDisposition:null});
       }
       flagged++;
-    } catch(error) {log('error','inbox_thread_upkeep_flag_failed',{request_id:item.requestId,message:error instanceof Error?error.message:String(error)});}
+    } catch(error) {log('error','inbox_thread_upkeep_flag_failed',{request_id:snapshot.requestId,message:error instanceof Error?error.message:String(error)});}
   }
   const closed=(db.query(`SELECT count(*) AS count FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) AND state='closed'`).get(session.id) as {count:number}).count-closedBefore;
   const settled=openRequestsBefore-(db.query("SELECT count(*) AS count FROM inbox_requests WHERE state='open'").get() as {count:number}).count;
