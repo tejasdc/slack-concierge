@@ -11,6 +11,7 @@ import { isAbsolute, join } from "node:path";
 import { createHash } from "node:crypto";
 import { SteeringNotSentError } from "./steering";
 import { WriteOutcomeUnknownError } from "./execution-host-client";
+import {providerRunnerTarget} from './provider-runner-target';
 
 /** Execution hosts have a supervisor PATH, so resolve the CLI on the owner before launch. */
 export function antigravityExecutable(): string {
@@ -34,6 +35,7 @@ export function antigravityExecutable(): string {
 }
 
 export function antigravityInstalled(): boolean {
+  if(providerRunnerTarget('antigravity'))return true;
   try { antigravityExecutable(); return true; } catch { return false; }
 }
 

@@ -609,7 +609,7 @@ async function peerAccounts(provider: ProviderKey): Promise<AccountUsage[]> {
 export async function refreshProviderAccountUsage(): Promise<void> {
   for (const [provider, read] of [["codex", readCodex], ["claude-code", readClaude]] as const) {
     try {
-      const runner=providerRunnerTarget(provider);
+    const runner=providerRunnerTarget(provider);
       let usage:ProviderUsage;
       if(runner){
         const readings=await runnerMachineCall<Record<string,ProviderUsage>>(runner,'accounts.readings',{},100_000);
@@ -652,7 +652,7 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       releaseIfAccountChanged(provider, agentUsage);
       if (provider === "claude-code") proveClaudeHomesAhead(usage.accounts.map(account => account.label));
       // A sign-in the provider refused is renewed through the Mac's browser, once per episode.
-      for (const account of usage.accounts) if (account.signedOut) needSignInRenewal(provider, account.label, "its usage could not be read because the sign-in stopped working");
+      if(!runner)for (const account of usage.accounts) if (account.signedOut) needSignInRenewal(provider, account.label, "its usage could not be read because the sign-in stopped working");
       const current=agentUsage.accounts.find(account=>account.current);
       // A provider-wide release has no turn model. It needs evidence across every Claude
       // window; an Opus-only reading cannot wake a Fable hold.
@@ -689,7 +689,15 @@ export async function refreshProviderAccountUsage(): Promise<void> {
   // machine permission to launch, and an unreadable current answer never revives old quota.
   try {
     const provider = "antigravity";
-    const usage = await readAntigravity();
+    const runner=providerRunnerTarget('antigravity');
+    let usage:ProviderUsage;
+    if(runner){
+      const remote=await runnerMachineCall<ProviderUsage>(runner,'accounts.google.readings',{},45_000);
+      if(!remote||!Array.isArray(remote.accounts)||typeof remote.observedAt!=='string')throw new Error('runner returned no Google allowance reading');
+      usage={...remote,sourceRunner:runner};
+      const active=remote.accounts.find(account=>account.current);
+      setAntigravityAccountInUse(active?{email:active.label,plan:active.plan}:null);
+    }else usage = await readAntigravity();
     db.query(`INSERT INTO ${accountUsageTable(provider)} (provider, observed_at, usage_json) VALUES (?, ?, ?)
       ON CONFLICT(provider) DO UPDATE SET observed_at=excluded.observed_at, usage_json=excluded.usage_json`)
       .run(provider, usage.observedAt, JSON.stringify(usage));
@@ -766,7 +774,7 @@ export function providerAccountUsage(provider: AccountIdentityProvider): Provide
   if (!row) return null;
   try {
     const stored=JSON.parse(row.usage_json) as ProviderUsage;
-    const runner=provider==='antigravity'?null:providerRunnerTarget(provider);
+    const runner=providerRunnerTarget(provider);
     if(runner&&stored.sourceRunner!==runner)return null;
     return { ...withAgentsAccountCurrent(provider, stored), refreshing: usageRefreshing() };
   }

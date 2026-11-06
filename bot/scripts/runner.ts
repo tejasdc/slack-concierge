@@ -31,7 +31,8 @@ import {controlSocketListeners,moveCodexDaemonToOwnScope,raiseCodexDaemonFileLim
 import {serveRunnerMachineCalls} from '../src/runner-machine-calls';
 import {localWatchMachine,serveWatchCall} from '../src/watch-machine';
 import {rewriteRelayedCodexRequest,runnerMachineEnvironment,writeRunnerConnection,type RunnerMachine} from '../src/runner-machine';
-import {runnerAccountHome} from '../src/runner-provider-accounts';
+import {runnerAccountHome,serveRunnerAccountCall} from '../src/runner-provider-accounts';
+import {assertRunnerGoogleCreditPolicy} from '../src/runner-google-policy';
 
 const owner=process.env.CONCIERGE_OWNER_URL?.replace(/\/+$/,'');
 const tokenFile=process.env.CONCIERGE_RUNNER_TOKEN_FILE;
@@ -141,6 +142,7 @@ function turnEnvironment(manifest:{environment:Record<string,string>;inheritEnvi
     if(!home)throw new Error(`The selected Claude account is not available on runner ${machine.runnerName}.`);
     localEnvironment.CLAUDE_CONFIG_DIR=home;
   }
+  if(provider==='antigravity')assertRunnerGoogleCreditPolicy();
   if(!manifest.inheritEnvironment)return localEnvironment;
   const ownerScripts=localEnvironment.CONCIERGE_ROUTER_BOT_DIR?join(localEnvironment.CONCIERGE_ROUTER_BOT_DIR,'scripts'):null;
   return {...process.env as Record<string,string>,...localEnvironment,
@@ -540,6 +542,7 @@ function answerMachineCalls(id:string) {
     recordOwnerContact();
     if(method==='ping')return true;
     if(method.startsWith('watch.'))return serveWatchCall(watchMachine,stateDir,method.slice('watch.'.length),params);
+    if(method.startsWith('accounts.'))return serveRunnerAccountCall(method,params);
     throw new Error(`this runner does not answer ${method}`);
   });
   remote.onclose=event=>say('runner_machine_calls_closed',{relay:id,code:event.code});
