@@ -652,8 +652,14 @@ and names the `codex` CLI by full path for a cross-provider consultation, which 
 provider child's PATH lacks. A
 message that steers into a Claude run already in progress gets neither, which is
 why the Inbox router states the escalation directive in the forwarded request
-itself when a trigger applies. `scripts/model-use-audit.py` counts delegation and
-escalation per session from the transcript archive.
+itself when a trigger applies. The owner's escalation log and the usage report's
+[call shares](PROVIDER-USAGE.md#who-used-the-allowance) are the live counters;
+`scripts/model-use-audit.py` adds the transcript view they cannot give — what a
+session actually ran (helpers and their models, read-only second opinions,
+ChatGPT Pro asks, starts carrying an escalation reason) and whether an escalated
+turn announced itself with an `Escalated:` line. It reads every Claude
+transcript location on the machine, including each signed-in account's own live
+folder, and skips archive files untouched within the window.
 
 ### His thesaurus in every turn
 
