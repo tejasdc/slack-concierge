@@ -192,6 +192,10 @@ schedule is refused with its exact turn ID; change its time in Thinkering Saved 
 with `sessions saved cancel <turn-id>` before replacing it. `sessions schedule --project` remains available for
 registered projects. The read caps repeating schedules at 32, watches per role at 20, and host
 timers at 128; its coverage field says when a cap was reached.
+On a runner, the role's declared workspace-relative folder (such as `agents/concierge-repair`)
+must resolve to that runner's registered project at that exact folder before a wake is saved.
+The returned project identity belongs to the existing bound session; a nested agent folder does
+not cause a new session or a fallback to a similarly named root project.
 
 To stop any repeating schedule, run `sessions cancel <request-id>` on the request that created it, or
 `sessions saved cancel <turn-id>` on its queued firing. Either one withdraws every queued firing and
