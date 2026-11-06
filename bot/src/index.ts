@@ -4402,6 +4402,9 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
             port: runtime.profile === "sandbox" ? 8380 + runtime.sandboxLane! : 8082,
             deploymentEnabled: runtime.ownership.deployment,
             acceptAlerts: async (alerts) => grafanaAlerts!.accept(alerts),
+            observeAlerts: (http_status, accepted_instances, omitted, reason) => {
+              if (http_status >= 400) log("warn", "grafana_receiver_refused", { http_status, accepted_instances, omitted, reason });
+            },
             accept: async (push) => {
               const result = await acceptGitHubDeploymentPush(push, deploymentRepositoryRoot);
               log("info", "github_deployment_push_accepted", {

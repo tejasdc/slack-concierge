@@ -125,13 +125,20 @@ export async function readGrafanaBody(request: Request) {
   catch { throw new WebhookError(400, "invalid_json"); }
 }
 
+/** One bounded line naming why a delivery was refused; bearer values never reach an error message. */
+export function grafanaRefusalReason(error: unknown) {
+  const name = error instanceof Error ? error.name : typeof error;
+  const message = error instanceof Error ? error.message : String(error);
+  return `${name}: ${message}`.replace(/\s+/g, " ").slice(0, 200);
+}
+
 export function createGrafanaWebhookHandler(input: {
   token: string;
   accept(alerts: GrafanaAlert[]): Promise<Record<string, unknown>>;
-  observe?(status: number, accepted: number, omitted: number): void;
+  observe?(status: number, accepted: number, omitted: number, reason: string | null): void;
 }) {
   return async (request: Request) => {
-    let status = 503, count = 0, omitted = 0;
+    let status = 503, count = 0, omitted = 0, reason: string | null = null;
     const response = (code: number, body: Record<string, unknown>) => {
       status = code;
       return Response.json(body, { status: code, headers: { "cache-control": "no-store" } });
@@ -147,11 +154,13 @@ export function createGrafanaWebhookHandler(input: {
       count = alerts.length;
       return response(202, { accepted: true, omitted, ...receipt });
     } catch (error) {
+      // A refused delivery may be Grafana's only recovery for an episode, so the log keeps why.
+      reason = grafanaRefusalReason(error);
       return error instanceof WebhookError
         ? response(error.status, { error: error.message })
         : response(503, { error: "alert_receiver_unavailable" });
     } finally {
-      try { input.observe?.(status, count, omitted); } catch { /* Diagnostics cannot change acceptance. */ }
+      try { input.observe?.(status, count, omitted, reason); } catch { /* Diagnostics cannot change acceptance. */ }
     }
   };
 }

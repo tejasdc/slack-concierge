@@ -124,7 +124,12 @@ Do not manufacture an outage or modify production observations to provoke repair
 Isolated coverage is in `grafana-repair-first.test.ts` and
 `grafana-native-ownership.test.ts`: pending versus admitted recovery, repeated episodes,
 no human thread, no competing native investigator, and all allowlisted conditions.
-Inspect `grafana_webhook_completed`, `grafana_alert_delivered`,
+A refused delivery logs its `reason` on `grafana_webhook_completed` (public door) and
+`grafana_receiver_refused` (owner). Grafana does not resend a recovery whose delivery failed, so a
+503 during a firing episode can leave that episode retained as firing; compare Grafana's own
+state history before trusting a retained firing row (2026-11-05: the Journal episode of
+18:24:30Z recovered at 18:31:30Z while 385 of 457 deliveries between 15:00 and 21:00 UTC were refused).
+Inspect `grafana_webhook_completed`, `grafana_receiver_refused`, `grafana_alert_delivered`,
 `grafana_alert_investigation`, `repair_notices_delivered`, and retained owner/external
 incident evidence. Event labels alone never prove repair succeeded.
 
