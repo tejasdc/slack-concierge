@@ -39,6 +39,7 @@ import {serveRunnerProviderCall} from '../src/runner-providers';
 import {serveRunnerAside} from '../src/runner-asides';
 import {serveProviderUsageBreakdownCall} from '../src/runner-provider-usage-breakdown';
 import {runProjectSetupJob} from '../src/runner-project-setup';
+import {runProjectPlacementJob} from '../src/runner-project-placement';
 
 const owner=process.env.CONCIERGE_OWNER_URL?.replace(/\/+$/,'');
 const tokenFile=process.env.CONCIERGE_RUNNER_TOKEN_FILE;
@@ -83,7 +84,7 @@ function resolveRunnerArg(value:string,executionId:string):string {
   return path;
 }
 const once=process.argv.includes('--once');
-const kinds=(process.env.CONCIERGE_RUNNER_KINDS??'probe,turn,codex,project-setup').split(',').map(kind=>kind.trim()).filter(Boolean);
+const kinds=(process.env.CONCIERGE_RUNNER_KINDS??'probe,turn,codex,project-setup,project-place').split(',').map(kind=>kind.trim()).filter(Boolean);
 const maxTurns=Number(process.env.CONCIERGE_RUNNER_MAX_TURNS)||64;
 /** This runner's release: the host program and the agents' helpers come from here, never from the owner. */
 const botDir=resolve(import.meta.dir,'..');
@@ -155,27 +156,28 @@ async function runProbe(job:{jobId:string;attemptId:string;epoch:number;payload:
   return finished;
 }
 
-/** Project setup is one closed replay-safe job; its filesystem and GitHub effects converge by order ID. */
-async function runProjectSetup(job:{jobId:string;attemptId:string;epoch:number;payload:any}) {
+/** Project jobs are replay-safe; their filesystem and GitHub effects converge by order ID. */
+async function runProjectJob(job:{jobId:string;attemptId:string;epoch:number;payload:any},
+  event:string,work:(payload:any,signal:AbortSignal)=>Promise<any>) {
   const controller=new AbortController();let done=false,heartbeatError:unknown=null;
   const heartbeat=(async()=>{
     while(!done){
       await Bun.sleep(HEARTBEAT_MS);
       if(done)break;
       try{await call('heartbeat',{attemptId:job.attemptId,epoch:job.epoch});recordOwnerContact();}
-      catch(error){if(lostCustody(error)){heartbeatError=error;controller.abort();break;}say('runner_project_setup_heartbeat_retry',{job:job.jobId,error:String(error)});}
+      catch(error){if(lostCustody(error)){heartbeatError=error;controller.abort();break;}say(`${event}_heartbeat_retry`,{job:job.jobId,error:String(error)});}
     }
   })();
   let result:any;
-  try{result=await runProjectSetupJob(job.payload,{signal:controller.signal});}
+  try{result=await work(job.payload,controller.signal);}
   catch(error){result={state:'failed',failureClass:'permanent',reason:String(error).replace(/[\r\n]/g,' ').slice(0,400)};}
   done=true;await heartbeat;
-  if(heartbeatError){say('runner_project_setup_lost_custody',{job:job.jobId,attemptId:job.attemptId});return;}
+  if(heartbeatError){say(`${event}_lost_custody`,{job:job.jobId,attemptId:job.attemptId});return;}
   for(;;){
     try{await call('finish',{attemptId:job.attemptId,epoch:job.epoch,operationId:`finish:${job.attemptId}`,result});break;}
-    catch(error){if(lostCustody(error))break;say('runner_project_setup_finish_retry',{job:job.jobId,error:String(error)});await Bun.sleep(2_000);}
+    catch(error){if(lostCustody(error))break;say(`${event}_finish_retry`,{job:job.jobId,error:String(error)});await Bun.sleep(2_000);}
   }
-  say('runner_project_setup_finished',{jobId:job.jobId,attemptId:job.attemptId,state:result?.state??'failed'});
+  say(`${event}_finished`,{jobId:job.jobId,attemptId:job.attemptId,state:result?.state??'failed'});
 }
 
 /**
@@ -670,7 +672,13 @@ for(let idle=0;;) {
       continue;
     }
     if(job.kind==='project-setup'){
-      void runProjectSetup(job).catch(error=>say('runner_project_setup_failed',{job:job.jobId,error:String(error)}));
+      void runProjectJob(job,'runner_project_setup',(payload,signal)=>runProjectSetupJob(payload,{signal}))
+        .catch(error=>say('runner_project_setup_failed',{job:job.jobId,error:String(error)}));
+      idle=0;continue;
+    }
+    if(job.kind==='project-place'){
+      void runProjectJob(job,'runner_project_place',payload=>runProjectPlacementJob(payload))
+        .catch(error=>say('runner_project_place_failed',{job:job.jobId,error:String(error)}));
       idle=0;continue;
     }
     const result=job.kind==='probe'?await runProbe(job):null;
