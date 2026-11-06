@@ -41,6 +41,9 @@ export function createRetryBreaker(db: Database, publishNotice?: PublishNotice, 
      *  breaker still backs off and logs, but nothing is published to Tejas about the dependency
      *  itself. The work waiting on it reports through its own path. */
     announce?: boolean;
+    /** Do not publish an exhausted-breaker notice until this failure has persisted.
+     * The breaker still switches from fast retries to capped probes immediately. */
+    noticeAfterMs?: number;
   }): RetryDecision {
     const nowMs = input.nowMs ?? Date.now();
     const policy = RETRY_POLICY_FOR_SITE[input.site];
@@ -69,7 +72,8 @@ export function createRetryBreaker(db: Database, publishNotice?: PublishNotice, 
       if (!priorTrip || probe) log("error", "retry_budget_exhausted", { operation: input.site,
         attempts, elapsed_ms: nowMs - firstFailureMs, last_error: input.failure.reason,
         reason: schedule.action === "stop" ? schedule.reason : "attempts" });
-      const announced = input.announce !== false && !row?.notice_sent && publishNotice?.({ key: `${input.key}:${firstFailureMs}`,
+      const noticeDue = nowMs - firstFailureMs >= (input.noticeAfterMs ?? 0);
+      const announced = input.announce !== false && noticeDue && !row?.notice_sent && publishNotice?.({ key: `${input.key}:${firstFailureMs}`,
         what: input.what, reason: input.failure.reason, sinceMs: firstFailureMs,
         restartSignal: input.failure.restartSignal ?? "the dependency answers or a retry is requested" });
       if (announced) db.query("UPDATE retry_breakers SET notice_sent=1 WHERE key=?").run(input.key);

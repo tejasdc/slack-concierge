@@ -5,7 +5,7 @@ import {
 } from "./codex-app-server-client";
 import { errorFields, log } from "./log";
 import { retryDelayMs } from "./retry";
-import { RETRY_POLICIES } from "./retry-policies";
+import { CODEX_OBSERVER_NOTICE_AFTER_MS, RETRY_POLICIES } from "./retry-policies";
 import { clearRetryBreaker, recordRetryFailure } from "./retry-breaker";
 import { slackCall } from "./rate-limit";
 import { isTransientSlackError } from "./slack-errors";
@@ -303,6 +303,7 @@ export class CodexRemoteObserver {
       if (!this.stopped) {
         failures += 1;
         const decision = recordRetryFailure({ key: "codex-remote-observer:app-server", site: "codex-observer",
+          noticeAfterMs: CODEX_OBSERVER_NOTICE_AFTER_MS,
           what: "Codex Remote observation", failure: { kind: "transient",
             reason: "The Codex App Server did not answer.", restartSignal: "the Codex App Server answers a capped probe" } });
         await Promise.race([wait(decision.action === "retry" ? Math.max(0, decision.atMs - Date.now()) : RETRY_POLICIES.observer.capDelayMs), this.stoppedSignal]);

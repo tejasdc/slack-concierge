@@ -15,6 +15,16 @@ closes that observer connection without restarting the daemon; Codex can then un
 the idle threads after its grace period. Verify the loaded-thread count and daemon
 memory after release, and do not manually restart a daemon with running turns.
 
+The shared readiness probe answers `model/list` and gates new Codex turn admission;
+it does not prove either observer's separate connection or subscription is ready.
+Observers begin after the owner request API opens and retry their own connections.
+Five fast failures switch each observer to one capped probe per minute. That switch
+alone does not file a Repair stopped notice: a failure must persist for at least
+one minute from the first durable failure before a failed probe publishes one.
+An observer success clears its breaker and any already-published notice. This
+keeps the runner relay's brief 503 during an ordinary owner handoff out of Needs
+attention while an outage continuing through the later probe still appears.
+
 ## Lifecycle Invariants
 
 - `/root/.codex/packages/standalone/` is the canonical install channel because `concierge-bot.service` invokes that path directly. Package releases, `current`, sockets, PID files, and logs are machine-owned runtime state and must never sync from another OS.
