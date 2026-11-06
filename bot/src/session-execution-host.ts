@@ -2,6 +2,7 @@ import {onCodexHistoryChanged} from './codex-session-observer';
 import { codexAppServerReady, codexRelayRunner, waitForCodexAppServerOrDrain } from "./codex-app-server-client";
 import {CODEX_PROCESS_REPORT_GRACE_MS,codexLeftoverProcesses,codexProcessStillRunning,type CodexLeftoverProcess} from './codex-leftover-processes';
 import {runnerMachineCall} from './runner-machine-calls';
+import {resolveRunnerProjectLocation} from './runner-project-location';
 import {createHash,randomUUID} from 'node:crypto';
 import {ledgerDurable} from './ledger-durability-barrier';
 import {thesaurusTurnContext} from './thesaurus-context';
@@ -1751,11 +1752,12 @@ export class SessionExecutionHost {
     try {
       const pin=readNativeForkPin(operation),provider=this.options.providers[pin.provider];
       if(session.provider_id!==pin.provider||session.agent_session_uuid!==pin.parentSessionUUID||session.binding_generation!==pin.bindingGeneration||sessionMetadata(session).interactionPolicy==='consultation-only'||!provider?.capabilities?.fork||!provider.history)throw new ProviderCapabilityUnavailableError('fork','The pinned native fork capability or parent binding is unavailable.');
+      const metadata=sessionMetadata(session),runnerBinding=providerRunnerForSession(session);
+      const runner=runnerBinding.status==='bound'?runnerBinding.runner:null;
       let cursor:string|null=null,found=false;const cursors=new Set<string>();
       do {
-        const metadata=sessionMetadata(session);
         const page=await provider.history({sessionUuid:pin.parentSessionUUID,cwd:this.cwd(session),cursor,limit:100,
-          ...(typeof metadata.providerRunner==='string'?{runner:metadata.providerRunner}:{}),
+          ...(runner?{runner}:{}),
           ...(typeof metadata.providerAccount==='string'?{account:metadata.providerAccount}:{})});
         found=page.messages.some(message=>provider.capabilities!.forkBoundary==='message'?message.id===pin.boundary:message.turnId===pin.boundary);
         if(found)break;
@@ -1769,13 +1771,49 @@ export class SessionExecutionHost {
       const stop=db.query('SELECT stop_requested_at FROM turns WHERE id=?').get(claim.turn_id) as {stop_requested_at:string|null}|null;
       if(stop?.stop_requested_at){cancelRunningTurnAndReleaseSession(claim.turn_id,this.options.instanceId,'Stopped before native fork admission.');return;}
       const channel=current.slack_channel_id?getChannel(current.slack_channel_id):null;
-      const retained={...pin,cwd:this.cwd(current),additionalDirs:sessionMetadata(current).additionalDirs??parseAdditionalPaths(channel),metadata:sessionMetadata(current),threadSource:`concierge-native-fork:${operation.id}`};
+      const additionalDirs=metadata.additionalDirs??parseAdditionalPaths(channel);
+      const retained:any={...pin,cwd:this.cwd(current),additionalDirs,metadata,threadSource:`concierge-native-fork:${operation.id}`};
+      let remoteCall:Record<string,unknown>|null=null;
+      if(runner) {
+        let account=typeof metadata.providerAccount==='string'?metadata.providerAccount:null;
+        if(account){
+          const validation=await runnerMachineCall<any>(runner,'accounts.validate',{provider:pin.provider,account});
+          if(validation?.available!==true)throw new ProviderCapabilityUnavailableError('fork','The conversation’s recorded provider account is not uniquely available on its runner.');
+        }else{
+          const discovery=await runnerMachineCall<any>(runner,'accounts.transcript',{provider:pin.provider,account:null,nativeId:pin.parentSessionUUID});
+          if(discovery?.resolution!=='unique'||typeof discovery.account!=='string'||!discovery.account)
+            throw new ProviderCapabilityUnavailableError('fork','This older conversation does not identify one unique provider account on its runner.');
+          account=discovery.account;
+        }
+        let location:{project:string|null;path:string};
+        if(typeof metadata.projectName==='string')location={project:metadata.projectName,path:typeof metadata.projectPath==='string'?metadata.projectPath:''};
+        else {
+          const resolved=await resolveRunnerProjectLocation(runner,{project:metadata.project,cwd:metadata.cwd??pin.cwd});
+          location={project:resolved.project,path:resolved.path};
+        }
+        const additionalLocations=await Promise.all(additionalDirs.map(async directory=>{
+          const resolved=await runnerMachineCall<any>(runner,'projects.locate',{location:directory});
+          if(typeof resolved?.project!=='string'||typeof resolved?.path!=='string')
+            throw new ProviderCapabilityUnavailableError('fork','An additional project folder cannot be resolved on the conversation’s runner.');
+          return {project:resolved.project,path:resolved.path};
+        }));
+        retained.runner=runner;retained.account=account;retained.location=location;retained.additionalLocations=additionalLocations;
+        if(pin.provider==='codex'){
+          const activation=await activateRunnerCodexAccount(runner,account,`native-fork:${operation.id}`,claim.turn_id) as any;
+          if(activation?.status!=='applied')throw new ProviderCapabilityUnavailableError('fork',activation?.detail??'The conversation’s Codex account could not be activated on its runner.');
+        }
+        remoteCall={provider:pin.provider,account,sessionUUID:pin.parentSessionUUID,boundary:pin.boundary,
+          threadSource:retained.threadSource,location,additionalLocations};
+      }
       db.transaction(()=>{
         if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))throw new Error('Native fork control lost its owner.');
         db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({...JSON.parse(operation.receipt_json!),fork:retained}),operation.id);
       })();
       effectIntended=true;
-      const result=await provider.fork({sessionUUID:pin.parentSessionUUID,cwd:retained.cwd,additionalDirs:retained.additionalDirs,lastTurnId:pin.boundary,threadSource:retained.threadSource,interactionPolicy:'standard'});
+      const result:RunResult=remoteCall
+        ?{text:'Fork created.',sessionUUID:(await runnerMachineCall<any>(runner!,'provider-fork.execute',remoteCall,120_000))?.sessionUUID,toolsUsed:[],providerTurnId:null}
+        :await provider.fork({sessionUUID:pin.parentSessionUUID,cwd:retained.cwd,additionalDirs:retained.additionalDirs,lastTurnId:pin.boundary,threadSource:retained.threadSource,interactionPolicy:'standard'});
+      if(typeof result.sessionUUID!=='string'||result.sessionUUID===pin.parentSessionUUID)throw new Error('The runner did not return a distinct provider fork identity.');
       completeNativeFork(operation.id,this.options.instanceId,result);
     } catch(error) {
       const reason=error instanceof Error?error.message:String(error);
@@ -1868,7 +1906,11 @@ export class SessionExecutionHost {
     if(operation.kind==='fork') {
       const pin=readNativeForkPin(operation);
       if(pin.provider!=='codex'||!pin.threadSource||!pin.cwd)return;
-      const matches=await (this.options.findForks?this.options.findForks(pin):(await import('./codex')).findCodexForksByThreadSource({sourceSessionUUID:pin.parentSessionUUID,threadSource:pin.threadSource,cwd:pin.cwd}));
+      const retained=pin as NativeForkPin&{runner?:string;account?:string;location?:{project:string|null;path:string}};
+      const matches=retained.runner&&retained.account&&retained.location
+        ?(await runnerMachineCall<any>(retained.runner,'provider-fork.find',{provider:'codex',account:retained.account,sessionUUID:pin.parentSessionUUID,
+          threadSource:pin.threadSource,location:retained.location},120_000))?.sessionUUIDs??[]
+        :await (this.options.findForks?this.options.findForks(pin):(await import('./codex')).findCodexForksByThreadSource({sourceSessionUUID:pin.parentSessionUUID,threadSource:pin.threadSource,cwd:pin.cwd}));
       if(matches.length!==1||matches[0]===pin.parentSessionUUID)return;
       const result:RunResult={text:'Fork recovered from exact native provenance.',sessionUUID:matches[0]!,toolsUsed:[],providerTurnId:null};
       db.transaction(()=>{if(this.claimResult(turn,result))completeNativeFork(operation.id,this.options.instanceId,result);})();
