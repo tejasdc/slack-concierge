@@ -1,6 +1,7 @@
 import { db, finishTurn, getSessionById, settleTurnDependencies } from './state';
 import { canceledNotice, requestLabel } from './session-notices';
 import { getAcceptedSessionInput } from './session-inputs';
+import { markRepeatingScheduleEnded, repeatingScheduleOf } from './saved-work';
 import type { SessionOwner } from './session-owner';
 import {resolveUsageHoldNoticesForSettledTurn,type UsageProvider} from './provider-usage';
 
@@ -167,19 +168,41 @@ export function tellWorkerCanceled(owner: SessionOwner, input: { requestId: stri
     });
 }
 
+/** Withdraws one queued turn of withdrawn work, settling what waits on it and any usage-hold notice. */
+function revokeQueuedTurn(inputId: string, turnId: number, sessionId: number, reason: string) {
+    finishTurn(turnId, 'cancelled', reason);
+    settleTurnDependencies(turnId);
+    const session = getSessionById(sessionId);
+    if (session && ['codex', 'claude-code', 'antigravity'].includes(session.provider_id))
+        resolveUsageHoldNoticesForSettledTurn(session.provider_id as UsageProvider, turnId, 'request_withdrawn');
+    db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled'),updated_at=CURRENT_TIMESTAMP WHERE id=?")
+        .run(inputId);
+}
+
+/**
+ * Ends the repeating schedule this input started: each queued firing is revoked like any withdrawn
+ * request turn, and the schedule is marked ended. A firing already running finishes. Returns how many
+ * firings were withdrawn, or null when the input starts no repeating schedule.
+ */
+export function endRepeatingScheduleForInput(inputId: string): number | null {
+    const schedule = repeatingScheduleOf(inputId);
+    if (!schedule) return null;
+    for (const firing of schedule.queued)
+        revokeQueuedTurn(firing.accepted_input_id, firing.id, firing.session_id, 'The requesting session cancelled this repeating schedule.');
+    markRepeatingScheduleEnded(schedule.root, 'The requesting session cancelled this repeating schedule.', schedule.queued.length);
+    return schedule.queued.length;
+}
+
 /** A withdrawn request that never reached a provider has no worker to notify. */
 export function cancelQueuedWithdrawnRequest(targetInputId: string): boolean {
     const target = getAcceptedSessionInput(targetInputId);
     if (!target) return false;
-    const revokeQueued=(inputId:string,turnId:number,sessionId:number)=>{
-        finishTurn(turnId, 'cancelled', 'The requesting session withdrew this work before it resumed.');
-        settleTurnDependencies(turnId);
-        const session=getSessionById(sessionId);
-        if(session&&['codex','claude-code','antigravity'].includes(session.provider_id))
-            resolveUsageHoldNoticesForSettledTurn(session.provider_id as UsageProvider,turnId,'request_withdrawn');
-        db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled'),updated_at=CURRENT_TIMESTAMP WHERE id=?")
-            .run(inputId);
-    };
+    const revokeQueued=(inputId:string,turnId:number,sessionId:number)=>
+        revokeQueuedTurn(inputId,turnId,sessionId,'The requesting session withdrew this work before it resumed.');
+    // A repeating schedule's request names only its first firing; ending the schedule withdraws
+    // every queued later firing the same way and stops new ones being booked.
+    const withdrawnFirings = endRepeatingScheduleForInput(target.id);
+    if (withdrawnFirings) return true;
     if (target.turn_id !== null) {
         const queued = db.query("SELECT status FROM turns WHERE id=? AND session_id=?")
             .get(target.turn_id, target.session_id) as { status: string } | null;

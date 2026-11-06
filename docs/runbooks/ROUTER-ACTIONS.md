@@ -186,6 +186,13 @@ with `sessions saved cancel <turn-id>` before replacing it. `sessions schedule -
 registered projects. The read caps repeating schedules at 32, watches per role at 20, and host
 timers at 128; its coverage field says when a cap was reached.
 
+To stop any repeating schedule, run `sessions cancel <request-id>` on the request that created it, or
+`sessions saved cancel <turn-id>` on its queued firing. Either one withdraws every queued firing and
+books no more; a firing already running finishes. The request names only the first firing, so the
+saved-work step that books each next firing checks whether the schedule was dropped or its request
+cancelled. Until 2026-11-06 a cancelled request left later firings running. `sessions saved list`
+shows each armed schedule's next firing, turn ID and interval.
+
 New repeating schedules and renewing file watches require both the requesting session and
 the scheduled session, where applicable, to belong to a registered project. Placement under
 `agents/`, `canvases/` or the workspace root does not change eligibility. A continuing role
