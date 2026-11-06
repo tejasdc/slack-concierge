@@ -2169,9 +2169,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
         const local=db.query('SELECT target_session_id,outcome,status FROM session_communication_requests WHERE request_id=?').get(dispatchId) as any;
         const peer=local?null:db.query('SELECT peer,remote_session_id,outcome,status FROM session_peer_requests WHERE request_id=?').get(dispatchId) as any;
         if(!local&&!peer)throw new TopicError('That dispatch is not a request this owner sent.',404,'DISPATCH_UNKNOWN');
-        const originalRoot=(db.query('SELECT thread_root_input_id AS root FROM session_communication_requests WHERE request_id=?').get(dispatchId)
-          ??db.query('SELECT thread_root_input_id AS root FROM session_peer_requests WHERE request_id=?').get(dispatchId)) as {root:string|null}|null;
-        const ownTopic=topicOfRoot(`request:${dispatchId}`)??(originalRoot?.root?topicOfRoot(originalRoot.root):null);
+        const ownTopic=dispatchHomeTopic(dispatchId);
         if(!ownTopic)throw new TopicError('Place the dispatch in an Inbox thread before linking its work. Nothing was linked.',409,'DISPATCH_TOPIC_MISSING');
         const dispatch={requestId:dispatchId,targetSessionId:local?`concierge:${local.target_session_id}`:receiveSessionFromPeer(peer.remote_session_id,peer.peer),
           targetTitle:local?(getSessionById(local.target_session_id)&&sessionMetadata(getSessionById(local.target_session_id)!).title)??null:null,
@@ -4070,6 +4068,23 @@ export function migrateInboxTopics(options:{batch?:number}={}) {
   return {migrated:true,manifest};
 }
 
+const SETTLED_QUESTION_STATES:ReadonlySet<string>=new Set(['answered','declined','withdrawn','superseded','read','expired']);
+/** The thread that owns a dispatch's work: where its request or its original thread root was placed. */
+function dispatchHomeTopic(dispatchId:string):string|null {
+  const root=(db.query('SELECT thread_root_input_id AS root FROM session_communication_requests WHERE request_id=?').get(dispatchId)
+    ??db.query('SELECT thread_root_input_id AS root FROM session_peer_requests WHERE request_id=?').get(dispatchId)) as {root:string|null}|null;
+  return topicOfRoot(`request:${dispatchId}`)??(root?.root?topicOfRoot(root.root):null);
+}
+/**
+ * Whether a dispatch linked into `fromTopicId` is owned by a request in its own, different home
+ * thread. A home placement alone is not ownership: only an open request there that lists the dispatch
+ * keeps the work visible once the linking thread's request closes.
+ */
+function trackedInHomeThread(dispatchId:string,fromTopicId:string):boolean {
+  const home=dispatchHomeTopic(dispatchId);
+  if(!home||home===fromTopicId)return false;
+  return topicRequests(home).some(request=>request.state==='open'&&request.dispatches.some((dispatch:any)=>String(dispatch.requestId)===dispatchId));
+}
 /** Retire migration-created bookkeeping requests through owner events, keeping their history. */
 export function retireRecoveredBookkeepingRequests() {
   const session=inboxSession();
@@ -4084,22 +4099,26 @@ export function retireRecoveredBookkeepingRequests() {
     const roots=topicRoots(topicId);
     if(!roots.length||roots.some(root=>replies.has(root)))continue;
     const inputs=roots.map(root=>getAcceptedSessionInput(root));
-    if(inputs.some(input=>!input||input.origin!=='service'
-      ||!input.id.startsWith('return:')&&!input.id.startsWith('thread-upkeep:')))continue;
+    // A service input is an automatic event or result for an existing request, never a new
+    // request from Tejas, whatever kind of notice it is. Agent roots stay open: their source
+    // may carry his delegated work.
+    if(inputs.some(input=>!input||input.origin!=='service'))continue;
     const requests=topicRequests(topicId);
     if(requests.length!==1||requests[0]!.state!=='open'||requests[0]!.sources.length!==1
-      ||!roots.includes(requests[0]!.sources[0]!.inputId)||topicQuestions(topicId).length)continue;
+      ||!roots.includes(requests[0]!.sources[0]!.inputId)
+      ||topicQuestions(topicId).some(question=>!SETTLED_QUESTION_STATES.has(question.state)))continue;
     const request=requests[0]!;
     // The router may have since assigned real work to this recovered thread. Its
     // request then owns that dispatch until the normal checked-outcome path settles
-    // it; the migration correction must only retire the original phantom row.
+    // it; the migration correction must only retire the original phantom row. A later
+    // dispatch whose own work lives in another thread is only a link to that thread's
+    // request, which keeps owning it.
     const migration=db.query("SELECT json_extract(payload_json,'$.request.dispatches') AS dispatches FROM session_owner_events WHERE event_id=? AND kind='topic'")
       .get(`topic-migration:${request.sources[0]!.inputId}`) as {dispatches:string|null}|null;
     if(!migration?.dispatches)continue;
-    const initialDispatches=JSON.parse(migration.dispatches) as {requestId:string}[];
-    const initialIds=initialDispatches.map(dispatch=>dispatch.requestId).sort();
-    const currentIds=request.dispatches.map((dispatch:any)=>String(dispatch.requestId)).sort();
-    if(JSON.stringify(currentIds)!==JSON.stringify(initialIds))continue;
+    const initialIds=new Set((JSON.parse(migration.dispatches) as {requestId:string}[]).map(dispatch=>dispatch.requestId));
+    const laterIds=request.dispatches.map((dispatch:any)=>String(dispatch.requestId)).filter(id=>!initialIds.has(id));
+    if(laterIds.some(id=>!trackedInHomeThread(id,topicId)))continue;
     const input=inputs.find(candidate=>candidate?.id===request.sources[0]!.inputId)!;
     const evidence=[`topic-migration:${request.sources[0]!.inputId}`,...roots];
     if(input.id.startsWith('return:')) {
@@ -4130,8 +4149,9 @@ export function retireRecoveredBookkeepingRequests() {
     }
     if(input.request_id)evidence.push(input.request_id);
     if(input.source_input_id)evidence.push(input.source_input_id);
+    for(const id of laterIds)evidence.push(`request:${id}`);
     const exactEvidence=[...new Set(evidence)];
-    const at=nowIso(),reason='Recovered service return or upkeep is not a separate request from Tejas.';
+    const at=nowIso(),reason='Recovered service notice is not a separate request from Tejas.';
     db.transaction(()=>{
       const topic=topicRow(topicId);
       const closedRequest={...request,state:'closed' as const,disposition:'superseded',

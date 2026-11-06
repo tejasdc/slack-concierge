@@ -19,7 +19,9 @@ The one-time migration treated every Inbox transcript root as a new human work r
 
 Future migration requires a human-authored root or a marked, routable agent capture. The correction for historical rows retires a recovered request only when every root in its topic is a service-origin return or upkeep input, one request was created from one of those roots, and there is no question, human reply or dispatch added after migration. The exact migration event, service roots, original request identity and source input become closure evidence. A matching communication or project-setup receipt is also cited when retained. The original request, outcome receipts, source inputs and topic history stay intact; the original work still needs its own checked answer.
 
-The first correction was too broad. A fresh Claude Code review found it would also close 355 agent-work roots, including 291 on Tejas's own messages. Those roots may carry his delegated work and are excluded. Other service notices outside the return/upkeep boundary are left to their own repair.
+The first correction was too broad. A fresh Claude Code review found it would also close 355 agent-work roots, including 291 on Tejas's own messages. Those roots may carry his delegated work and are excluded.
+
+The narrow correction left two groups open. About 135 other recovered service notices (allowance, area suggestion, cut-off turn, background-job, watch and secret notices) were closed by hand by the acting Inbox router on November 6. Fifteen recovered threads rooted only in returns and upkeep stayed open because the router had since linked the original task, which is owned by another thread; each was flagged again every few hours ("Its work ended as answered") and drew another upkeep round. The correction now accepts every service-origin root, treats settled reading items as finished, and accepts later dispatches whose home thread has an open request listing them, citing each as evidence. A dispatch homed in the same thread, or nowhere, still keeps the request open.
 
 ## Acceptance scenario
 
