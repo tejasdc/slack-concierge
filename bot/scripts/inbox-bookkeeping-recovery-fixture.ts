@@ -119,6 +119,14 @@ try {
   for(const requestId of [assignedUpkeep,agentRequest,mixedRoot,questionedRequest])
     assert.equal((db.query('SELECT state FROM inbox_requests WHERE request_id=?').get(requestId) as {state:string}).state,'open');
   assert.equal((db.query('SELECT count(*) AS n FROM inbox_requests WHERE state=?').get('open') as {n:number}).n,8);
+  // A provider/folder cutover makes a new Inbox session. The one-time conversion already ran
+  // for the Inbox, so neither migration may rebuild history or reopen recovered requests.
+  topics.migrateInboxAttention();
+  const topicsBefore=(db.query('SELECT count(*) AS n FROM inbox_topics').get() as {n:number}).n;
+  createNativeSession('codex',{title:'Inbox successor fixture',summary:'Inbox successor fixture',inbox:true});
+  assert.deepEqual(topics.migrateInboxTopics(),{migrated:false,reason:'already_migrated'});
+  assert.equal(topics.migrateInboxAttention().migrated,false);
+  assert.equal((db.query('SELECT count(*) AS n FROM inbox_topics').get() as {n:number}).n,topicsBefore);
   console.log('Inbox bookkeeping recovery fixture passed: recovered service notices retired; human, agent, questioned and thread-owned later work stayed open.');
 } finally {
   rmSync(scratch,{recursive:true,force:true});
