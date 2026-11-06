@@ -207,6 +207,9 @@ What happens for a turn on a runner:
 
 Survival through owner updates uses the existing rule: `claude-code/runner` counts as surviving only
 after one such run was taken over live by a later owner. Until then updates wait for runner turns.
+On runner reacquisition, Claude transcript watches resume only after that runner resolves the
+turn's saved account home. If it cannot resolve the home, it keeps the hosted turn attached but
+refuses a watch instead of reading the runner's default Claude home.
 
 ### Side questions and resurrection
 

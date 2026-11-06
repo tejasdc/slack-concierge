@@ -359,7 +359,7 @@ class Turn {
     catch(error){say('runner_turn_resume_environment_unavailable',{job:this.job.jobId,error:String(error)});}
     // Transcript watches the owner asked for before the restart go on; reading from the start again
     // reports pickups made meanwhile, and the owner ignores ones it already counted.
-    for(const [id,sessionUuid] of Object.entries(watches))this.watch(id,sessionUuid,true);
+    if(this.environment)for(const [id,sessionUuid] of Object.entries(watches))this.watch(id,sessionUuid,true);
     await this.follow(false);
   }
 
@@ -418,6 +418,7 @@ class Turn {
   }
 
   private watch(id:string,sessionUuid:string,fromStart:boolean) {
+    if(!this.environment)throw new Error('The runner cannot resolve this turn’s provider home for transcript watch.');
     this.watches.get(id)?.();
     this.watches.set(id,watchClaudeTranscript({sessionUuid,fromStart,environment:this.environment,
       onPickup:pickup=>this.emit({k:'pickup',watch:id,pickup:{text:pickup.text,uuid:pickup.uuid}})}));
