@@ -241,13 +241,12 @@ async function reconcileRunnerCodexRepair(runner:string):Promise<void>{
       if(result.status==='busy'){
         pendingCodexRepair=true;holdCodexAdmission(false);return;
       }
-      if(result.status==='uncertain'){
-        log('error','codex_runner_rehome_uncertain',{runner,detail:result.detail??null});
+      if(result.status!=='repaired'&&result.status!=='managed_or_absent'){
+        log('error','codex_runner_rehome_unproven',{runner,status:result.status,detail:result.detail??null});
         return;
       }
       pendingCodexRepair=false;holdCodexAdmission(false);
       if(result.status==='repaired')log('warn','codex_unmanaged_server_repaired_on_runner',{runner,detail:result.detail??null});
-      else if(result.status==='refused'||result.status==='unsupported')log('error','codex_unmanaged_server_repair_refused_on_runner',{runner,status:result.status,detail:result.detail??null});
       return;
   }catch(error){
     log('error','codex_runner_rehome_reconcile_exhausted',{runner,error:error instanceof Error?error.message:String(error)});
@@ -276,15 +275,13 @@ function repairUnmanagedCodexServer(): Promise<void> {
           log('info','codex_unmanaged_server_repair_waiting',{runner,reason:result.detail??'runner_has_active_turn'});
           return;
         }
-        if(result.status==='uncertain'){
+        if(result.status!=='repaired'&&result.status!=='managed_or_absent'){
           retainAdmission=true;
           log('error','codex_unmanaged_server_repair_refused_on_runner',{runner,status:result.status,detail:result.detail??null});
           return;
         }
         pendingCodexRepair=false;
         if(result.status==='repaired')log('warn','codex_unmanaged_server_repaired_on_runner',{runner});
-        else if(result.status==='uncertain'||result.status==='refused'||result.status==='unsupported')
-          log('error','codex_unmanaged_server_repair_refused_on_runner',{runner,status:result.status,detail:result.detail??null});
       }catch(error){
         log('error','codex_unmanaged_server_repair_unconfirmed_on_runner',{runner,error:error instanceof Error?error.message:String(error)});
         retainAdmission=true;
