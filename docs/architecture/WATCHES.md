@@ -147,6 +147,16 @@ the command reported was lost, and that any calls the command made to Concierge 
 would have failed. The old file-watch wording sent the canvas reviewers (2026-11-05, 22 gaps
 from releases) looking for a lost observation that could not have happened.
 
+The poller runs on the owner's event loop, so anything that freezes the owner freezes every
+watch with it. On 2026-11-05 from 13:33 to 21:21 UTC the owner froze shortly after each restart
+(Codex recovery and a self-referencing input ancestry walk, fixed by then), and the release watch
+series recorded gaps running from one restart to the next, 30 to 64 minutes long. Deadlines that
+passed during a freeze were settled on the first poll after the restart, while the runner was still
+reconnecting, so they read "runner could not be reached". A poll that itself takes longer than
+the 15 s gap threshold logs `watch_poll_slow` with its duration, open watch count, runner ping
+time and the slowest watch (id, kind, runner, milliseconds), so a gap without a restart or an
+owner freeze names what the poll waited on.
+
 Every unchanged poll advances a persistent cursor so a restart can identify the last observation.
 The dedicated thread writes this cursor and its gaps to a separate SQLite database beside the
 ledger. It never opens the main ledger or takes its writer lock. The owner reads only open watches'
