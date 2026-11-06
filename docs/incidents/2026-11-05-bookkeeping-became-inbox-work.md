@@ -1,5 +1,5 @@
 ---
-failure: Service and agent bookkeeping became open Inbox requests during thread migration.
+failure: Service returns and upkeep notices became open Inbox requests during thread migration.
 date: 2026-11-05
 fix_commits: []
 cause_status: confirmed
@@ -9,19 +9,21 @@ cause_status: confirmed
 
 ## What was seen
 
-The Inbox router received many area suggestions, then recovery notices for requests created from its own upkeep and answer events. At 11:34 UTC on November 5, the live migration recorded open topics and requests rooted in service-origin area suggestions and thread-upkeep notices. Those requests became eligible for another upkeep turn. A later read-only ledger check found 62 open recovered requests rooted in returned results and 295 rooted in upkeep notices. Of the 62 return-rooted topics, 18 had additional upkeep roots and no recorded question. These are separate from their original communication requests or human work.
+At 11:34 UTC on November 5, the Inbox migration made open requests from service-origin transcript roots. A read-only ledger check found 62 open recovered requests rooted in returned results and 295 rooted in upkeep notices. Of the return-rooted topics, 18 had additional upkeep roots. These rows were separate from the original communication request or human work and could trigger more upkeep notices.
 
 ## Cause
 
-The one-time thread migration treated every Inbox transcript root as a human request. A service notice or agent coordination input could be a root without Tejas having requested work there. Upkeep then treated the new request as unfinished human work.
+The one-time migration treated every Inbox transcript root as a new human work request. A service return or upkeep notice could be a root without Tejas asking for work there.
 
 ## Fix
 
-Recovery of a request now requires a human-authored root or an explicitly routable agent capture. The owner retires old migration-created bookkeeping requests through retained topic events only when every root is nonhuman and not routable, one request is sourced to one of those roots, and there is no question or human reply. This includes a returned result grouped with its subsequent upkeep notices. The correction compares the request's current linked dispatches with those in its original migration event. A later assignment keeps the request open for the normal checked-outcome path; this matters because the Inbox router has since sent real repair work from some of the synthetic threads. A returned result's closure cites the matching communication event and original request when its retained receipt matches; a project setup return cites its order when matched. An upkeep notice cites the original Inbox request and source input when that relation can be proven. The synthetic roots themselves prove their extra recovered request was not a human obligation, even if an older receipt lacks the optional link. Original requests, outcome receipts, inputs and topic history stay intact. The original work's completion is still decided by its own exact request and answer.
+Future migration requires a human-authored root or a marked, routable agent capture. The correction for historical rows retires a recovered request only when every root in its topic is a service-origin return or upkeep input, one request was created from one of those roots, and there is no question, human reply or dispatch added after migration. The exact migration event, service roots, original request identity and source input become closure evidence. A matching communication or project-setup receipt is also cited when retained. The original request, outcome receipts, source inputs and topic history stay intact; the original work still needs its own checked answer.
+
+The first correction was too broad. A fresh Claude Code review found it would also close 355 agent-work roots, including 291 on Tejas's own messages. Those roots may carry his delegated work and are excluded. Other service notices outside the return/upkeep boundary are left to their own repair.
 
 ## Acceptance scenario
 
-- **Seed:** One human Inbox message and one service-authored area suggestion, each retained as an Inbox input. Also seed older recovered topics with requests sourced only to a return, an upkeep notice and the service suggestion.
-- **Action:** Run topic migration, then the owner correction and thread upkeep twice.
-- **Expected:** The human message still has its open request. The service suggestion and returned result create no new requests. The old synthetic requests close once and do not generate upkeep inputs; the original requests, result receipts, inputs and topic events remain readable.
-- **Replayable offline:** yes (`bot/tests/inbox-bookkeeping-recovery.test.ts` in an isolated state directory; agent-run tests were disabled on the incident host).
+- **Seed:** Retain a human message, an agent-work request sourced from it, and service return/upkeep inputs. Recreate older recovered topics for service roots, agent work, a mixed human/service root, a question and later assigned work.
+- **Action:** Run migration and the owner correction twice.
+- **Expected:** The human message retains its request. Only untouched service return/upkeep requests close, with exact migration and source identities cited. Agent work, the question, the human root and later assignment stay open.
+- **Replayable offline:** yes (`bot/scripts/inbox-bookkeeping-recovery-fixture.ts` runs in the release build against its own scratch state directory).

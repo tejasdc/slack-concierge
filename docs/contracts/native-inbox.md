@@ -779,15 +779,15 @@ remain in their exact receipts; a transcript root alone grants no human-work sta
 For each eligible root the migration creates one topic (`recovered:1`), one open request
 with its linked dispatches, and one question per legacy attention entry retaining its id.
 The manifest `{roots,topics,requests,questions,unresolved}` is written into the guard event.
-An owner-ledger correction retires previously recovered bookkeeping requests only when every
-root in their topic is nonhuman and nonroutable, there is one request sourced to one of those
-roots, and there is no question or human reply. A returned result and its later upkeep notices
-can therefore share one synthetic topic without becoming human work. The correction records
-all roots as closure evidence and adds the original communication or Inbox request receipt
-where its exact link is retained. It keeps the original request, source inputs, result receipts
-and topic history. If the router assigned work after migration, the correction leaves that
-request open for the normal checked-outcome path; the original migration event proves which
-dispatches were present before that assignment. Completion of original work remains governed
+An owner-ledger correction retires previously recovered return and upkeep requests only when every
+root in their topic is a service-origin return or upkeep input, there is one request sourced to one of those
+roots, and there is no question, human reply or dispatch added after migration. A returned result and its later upkeep notices
+can therefore share one synthetic topic without becoming human work. Agent-authored work roots stay open even
+when the root itself is not human-authored: its source may carry Tejas's delegated work. The correction records
+the exact migration event and all roots as closure evidence, alongside the original request identity
+and source input when retained. It keeps the original request, source inputs, result receipts
+and topic history. The original migration event proves which dispatches were present before any later assignment.
+Completion of original work remains governed
 by its own request's checked answer.
 New human roots stay unplaced until the router or a human
 files them; they appear as the `sorting` pile on the topics read.

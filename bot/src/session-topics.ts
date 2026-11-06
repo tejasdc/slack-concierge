@@ -3992,7 +3992,8 @@ export function retireRecoveredBookkeepingRequests() {
     const roots=topicRoots(topicId);
     if(!roots.length||roots.some(root=>replies.has(root)))continue;
     const inputs=roots.map(root=>getAcceptedSessionInput(root));
-    if(inputs.some(input=>!input||humanAuthored(input)||routableMessage(input)||isServiceNotice(input.id)))continue;
+    if(inputs.some(input=>!input||input.origin!=='service'
+      ||!input.id.startsWith('return:')&&!input.id.startsWith('thread-upkeep:')))continue;
     const requests=topicRequests(topicId);
     if(requests.length!==1||requests[0]!.state!=='open'||requests[0]!.sources.length!==1
       ||!roots.includes(requests[0]!.sources[0]!.inputId)||topicQuestions(topicId).length)continue;
@@ -4008,7 +4009,7 @@ export function retireRecoveredBookkeepingRequests() {
     const currentIds=request.dispatches.map((dispatch:any)=>String(dispatch.requestId)).sort();
     if(JSON.stringify(currentIds)!==JSON.stringify(initialIds))continue;
     const input=inputs.find(candidate=>candidate?.id===request.sources[0]!.inputId)!;
-    const evidence=[...roots];
+    const evidence=[`topic-migration:${request.sources[0]!.inputId}`,...roots];
     if(input.id.startsWith('return:')) {
       // A return is an event on the communication request it names. A prefix alone
       // cannot prove that the input is a return or which obligation owns it.
@@ -4035,11 +4036,14 @@ export function retireRecoveredBookkeepingRequests() {
         }
       }
     }
-    const at=nowIso(),reason='Recovered agent or service bookkeeping is not a request from Tejas.';
+    if(input.request_id)evidence.push(input.request_id);
+    if(input.source_input_id)evidence.push(input.source_input_id);
+    const exactEvidence=[...new Set(evidence)];
+    const at=nowIso(),reason='Recovered service return or upkeep is not a separate request from Tejas.';
     db.transaction(()=>{
       const topic=topicRow(topicId);
       const closedRequest={...request,state:'closed' as const,disposition:'superseded',
-        closure:{by,at,reason,evidence},revision:request.revision+1,updatedAt:at};
+        closure:{by,at,reason,evidence:exactEvidence},revision:request.revision+1,updatedAt:at};
       const next=bumped(topic);
       recordOwnerTopicChange(session.id,`topic-bookkeeping-retired:${request.requestId}`,'topic_request',
         {change:'request_closed',topicId,topic:next,request:closedRequest,by,reason,revision:next.revision});
