@@ -2,7 +2,7 @@
 failure: A queued Claude continuation failed because an unleased launch intent hid the conversation's runner.
 date: 2026-11-06
 fix_commits: []
-cause_status: best-explanation
+cause_status: confirmed
 ---
 
 # A queued Claude continuation could not find its runner
@@ -18,19 +18,22 @@ runner job: setup failed before runner custody. Its accepted input was the fired
 no execution row. The preceding turn 23814 had a runner-supervised execution with no
 runner attempt; turn 23697 completed with a recorded AX41 runner attempt. Session 8945
 has no stored provider-runner binding. The Grafana reconciler request
-`721ddbc0-4734-4b04-a746-775c45ed485c` remains admitted and open. The ledger read
-did not include provider-input acknowledgment timestamps, so the exact execution that
-the repaired lookup would select still needs confirmation.
+`721ddbc0-4734-4b04-a746-775c45ed485c` remains admitted and open. A second
+read-only owner-ledger query found provider input acknowledged at 06:11:03 UTC for
+turn 23697. Turns 23814, 23907 and 23953 have no provider-input acknowledgment,
+and no later turn for this session does. The 23814 runner job was withdrawn before
+claim. Thus the repaired lookup selects the AX41 execution from turn 23697.
 
 ## Cause
 
 The legacy machine lookup selected the newest execution intent whether or not a runner had
 claimed it or the provider had received its input. An unclaimed runner intent has no lease.
 After one such setup attempt, later turns could select it instead of an older execution that
-actually held the conversation. The owner ledger confirms the later failed turns never
-obtained a runner execution and that an earlier AX41 lease exists. Whether the intervening
-no-attempt execution had provider-acknowledged input remains unconfirmed; that distinction
-determines whether recovering AX41 is safe or the owner must refuse and retain the work.
+actually held the conversation. The owner ledger confirms the intervening no-attempt
+execution never delivered provider input, whereas turn 23697 did so on AX41. The
+newer failed intent therefore cannot displace AX41 as the last evidenced placement.
+The original failure that withdrew turn 23814's runner job remains a separate cause
+to diagnose; this record confirms why later turns kept failing setup.
 
 ## Fix
 
