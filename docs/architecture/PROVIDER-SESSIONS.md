@@ -516,13 +516,13 @@ new Concierge session defaults to Automatic. On the server, an agent whose run p
 an update still uses the current installed request helper for a *new* outbound ask; its
 run hooks and recovery helpers remain pinned to their original release.
 
-For an independent helper requested by a Claude session, Automatic also sees the source
-session. When a fresh provider reading puts the selected Claude account at or above 90%
-in a named window and the signed-in Codex account has more launchable room,
-the owner starts that helper on Codex. The decision is repeated at request creation, so
-a previously started Claude run gets the current choice without a router message. A
-provider named by the agent remains explicit; the source session and its admitted work
-stay on Claude. Provider-native child tools still use their parent's provider.
+For independent work requested by a Claude or Codex session, Automatic also sees the
+source session. When a fresh provider reading puts its selected account at or above 90%
+in a lasting window and the other provider has more launchable room, the owner starts
+that work on the other provider. The decision is repeated at request creation, so a
+previously started run gets the current choice without changing its own binding. A
+provider named by the agent remains explicit. Provider-native child tools still use
+their parent's provider.
 
 The usage watch tells a running session about a provider-measured window only at
 or above 90% when that account's provider observation is at most one minute old. The brief names the machine, account, window, measured percentage and
@@ -531,10 +531,12 @@ that run, so a later selection change cannot relabel an older run. An unreadable
 reading, earlier provider refusal, or rate forecast cannot create a threshold brief.
 Dispatch still treats a prior refusal as an operational hold and rechecks account room
 when a helper is requested; its effective capacity is not displayed as a measured usage
-percentage. Under Claude pressure, the same room decision adds
-an instruction to delegate bounded implementation through a new session request, while
-the Claude agent keeps the approach and reviews the result. A change from no Codex
-delegation room to verified room creates one new brief in that allowance episode. New
+percentage. When the other provider has verified launchable room and the current
+provider has less, the brief tells the agent that independent work can start there
+through Automatic. This works in both directions: Claude to Codex and Codex to Claude.
+Provider-native helpers still inherit their parent, and the running agent chooses
+what to delegate while keeping its own work and model. A change from no verified
+other-provider room to verified room creates one new brief in that allowance episode. New
 turns receive the same brief in their opening context. These are service notices to
 the agent, not human Inbox alerts or a provider switch for an active run.
 
