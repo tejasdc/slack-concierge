@@ -82,6 +82,17 @@ sync took only 28 ms, so that delay cannot be assigned to disk sync alone.
 The next release logs each remaining awaited drain step before changing its
 custody or shutdown semantics.
 
+The 07:57 UTC ordinary release exercised the owner with the early Codex observer
+stop installed. Drain began at 07:57:03.783 and the request API opened at
+07:57:13.096, a 9.313-second gap. Observer stop joined in 0 ms and no observer
+lifecycle write started during drain. Capture stop took 4.869 seconds and
+overlapped a 4.777-second unmarked event-loop pause with 1 ms of ledger wait.
+The same overlap occurred at 07:10 and 07:24. The task that ended immediately
+before each pause is not a proven cause. The capture worker now records the
+synchronous cancellation time separately from its remaining stop wait, plus its
+activity at stop, so the next release can distinguish cancellation from another
+pause or an in-flight delivery without relaxing exact receipt custody.
+
 ## Acceptance scenario
 
 Acceptance requires the next normal managed release's old-owner drain, new

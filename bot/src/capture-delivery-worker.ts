@@ -258,6 +258,7 @@ export class CaptureDeliveryWorker {
   private queueAvailable = false;
   private queueError: string | null = null;
   private queueObservedFailure = false;
+  private activity: "claim" | "delivery" | "idle" = "idle";
 
   constructor(private readonly options: CaptureDeliveryWorkerOptions) {
     this.owner = options.owner || currentProcessIdentity();
@@ -286,9 +287,17 @@ export class CaptureDeliveryWorker {
   }
 
   async stop() {
+    const startedAt = performance.now();
+    const activityAtStop = this.activity;
     this.stopping = true;
     this.stopController.abort(new CaptureWorkerStopped());
+    const abortMs = Math.round(performance.now() - startedAt);
     await this.running;
+    log("info", "capture_delivery_stop_timing", {
+      activity_at_stop: activityAtStop,
+      abort_ms: abortMs,
+      join_ms: Math.round(performance.now() - startedAt - abortMs),
+    });
     this.queueAvailable = false;
   }
 
@@ -310,6 +319,7 @@ export class CaptureDeliveryWorker {
       let delivered = false;
       try {
         const claimId = randomUUID();
+        this.activity = "claim";
         const event = await this.claimNext(claimId);
         if (this.stopping) throw new CaptureWorkerStopped();
         if (!this.queueAvailable) {
@@ -320,7 +330,7 @@ export class CaptureDeliveryWorker {
           log("info", this.queueObservedFailure ? "capture_delivery_queue_reconnected" : "capture_delivery_queue_connected",
             { queue_url: this.options.queueUrl });
         }
-        if (event) { await this.deliver(claimId, event); delivered = true; }
+        if (event) { this.activity = "delivery"; await this.deliver(claimId, event); delivered = true; }
       } catch (error) {
         if (!(error instanceof CaptureQueueUnavailable)) throw error;
         this.queueObservedFailure = true;
@@ -336,7 +346,7 @@ export class CaptureDeliveryWorker {
         }
       }
       // A burst of captures is delivered back to back; the pause is only for an empty or unreachable queue.
-      if (!this.stopping && !delivered) await this.wait(this.pollIntervalMs);
+      if (!this.stopping && !delivered) { this.activity = "idle"; await this.wait(this.pollIntervalMs); }
     }
   }
 
