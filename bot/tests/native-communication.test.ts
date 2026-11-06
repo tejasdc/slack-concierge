@@ -1,5 +1,8 @@
 import {afterEach,beforeEach,expect,test} from 'bun:test';
 import {createHash,randomUUID} from 'node:crypto';
+import {mkdirSync,mkdtempSync,writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {db,claimNextQueuedTurn,markTurnProviderAdmissionIntended,acknowledgeTurnProviderInput,markTurnSteeringMessageFailed,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageAmbiguous,finishTurn,getSessionById,upsertChannel,createOrGetSession,claimSlackUserInput,acquireSessionTurn,parkRunningTurnAfterProviderFailure} from '../src/state';
 import {SessionOwner} from '../src/session-owner';
 import {SessionCommunicationCoordinator} from '../src/session-communication';
@@ -9,23 +12,24 @@ import {clearTables} from './clear-tables';
 import {backfillResultAnsweredByPost,inboxHistory,inboxHistoryAfter,inboxMessage,markResultAnsweredByPost,postForwardedThreadAnswer} from '../src/session-inbox';
 import {preparedInboxDisplay} from '../src/presentation-inbox-display';
 import {claimExecutionTurn,retainExecutionIntent} from '../src/executions';
+import {chatGptObligationForAttempt} from '../src/chatgpt-obligations';
 import {inboxRootResolver,sourceMessagePage} from '../src/presentation-message-source';
 
 let unlock:()=>void,owner:SessionOwner,communication:SessionCommunicationCoordinator;
 let steeringMode:'sent'|'pending',errors:unknown[];
 const clear=()=>clearTables(db,['session_owner_events','session_communication_events','session_communication_requests','session_inputs','turn_dependencies','routed_requests','routed_input_events','deployment_drain','comparison_requests','fork_requests','slack_thread_statuses','slack_user_input_claims','turn_steering_messages','turn_delivery_chunks','executions','turns','sessions','channels']);
-beforeEach(async()=>{
-  unlock=await acquireDatabaseTestLock();clear();steeringMode='sent';errors=[];
+async function build(cwd:string) {
   owner=new SessionOwner({available:()=>true,wake:()=>{},stop:async()=>false,steer:input=>{
     const active=db.query("SELECT id FROM turns WHERE session_id=? AND status='running'").get(input.session_id) as any;
     if(!active)return false;
     const accepted=attachSessionSteering(input.id,active.id);
     if(steeringMode==='sent'){markTurnSteeringMessageSending(accepted.steering_id!);markTurnSteeringMessageSent(accepted.steering_id!);}
     return true;
-  }},'/tmp');
+  }},cwd);
   communication=new SessionCommunicationCoordinator({owner,isOwnerAlive:()=>true,onError:error=>errors.push(error)});
   owner.communication=communication;communication.start();await communication.idle();
-});
+}
+beforeEach(async()=>{unlock=await acquireDatabaseTestLock();clear();steeringMode='sent';errors=[];await build('/tmp');});
 afterEach(async()=>{await communication.stop();clear();unlock();});
 function session(){return owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',firstInput:{text:'native input'}});}
 function run(){
@@ -129,10 +133,11 @@ test('a reopened request keeps its new prompt distinct from the old answer addre
   const inbox=session(),inboxId=Number(inbox.session.id.slice(10));
   updateSessionMetadata(inboxId,{inbox:true});
   const current=run(),recipient=session();
+  db.query('INSERT INTO inbox_topic_roots(root_input_id,topic_id) VALUES(?,?)').run(current.source.input_id,'fixture-topic');
   const old='capture:old-request';
   db.query('INSERT INTO session_inputs(id,session_id,scope,action_id,kind,origin,payload_json,receipt_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
     .run(old,inboxId,'fixture','old-request','input','human',JSON.stringify({text:'October request'}),'{}','2026-10-10T00:00:00.000Z');
-  const request=await ask(current.source,recipient,'reopen-test',{summary:'Check the unfinished work',requestedEffect:'work'});
+  const request=await ask(current.source,recipient,'reopen-test',{summary:'Check the unfinished work',requestedEffect:'work',thread:current.source.input_id});
   db.query('UPDATE session_communication_requests SET thread_root_input_id=? WHERE request_id=?').run(old,request.request_id);
   const event=db.query("SELECT sequence,event_id FROM session_owner_events WHERE kind='request' AND json_extract(payload_json,'$.requestId')=?")
     .get(request.request_id) as {sequence:number;event_id:string};
@@ -257,8 +262,9 @@ test('a final body after a prompt answer remains a visible new post',async()=>{
 function historicalFixture() {
   const digest=(value:string)=>createHash('sha256').update(value).digest('hex');
   const source={id:'archive:exact-conversation',version:digest('original immutable transcript'),branch:'branch-one',provider:'codex',title:'Historical orchard decision',
-    consultation:{boundary:'event-2',sourceVersion:digest('original immutable transcript')},
-    messages:[{sourceId:'archive:exact-conversation',sourceVersion:digest('original immutable transcript'),eventId:'event-1',role:'user',locator:'jsonl:1',text:'The orchard uses six pear trees.',textHash:digest('The orchard uses six pear trees.')}]};
+    scope:'fixture-scope',nativeId:'fixture-native-orchard',synthetic:false,createdAt:'2026-10-01T00:00:00.000Z',project:null,omissions:[] as string[],
+    consultation:{sourceId:'archive:exact-conversation',boundary:'event-2',sourceVersion:digest('original immutable transcript'),packetVersion:'dialogue-v1'},
+    messages:[{sourceId:'archive:exact-conversation',sourceVersion:digest('original immutable transcript'),eventId:'event-1',ordinal:0,role:'user',locator:'jsonl:1',text:'The orchard uses six pear trees.',textHash:digest('The orchard uses six pear trees.')}]};
   owner.runtime.capabilities=()=>({consultation:true});
   const calls:any[]=[];
   owner.runtime.sources={search:async()=>({sources:[source],matches:source.messages.map(message=>({...message,branch:source.branch})),complete:true}),
@@ -314,7 +320,7 @@ test('historical evidence and child acceptance reject changed source, unsupporte
 test('a source refresh invalidates prior addresses and a request transaction failure rolls back its historical child and packet',async()=>{
   session();const current=run(),a={native:current.source,turn:current.claim.turn_id},fixture=historicalFixture();
   const parent=(await communication.search({source:a.native,concepts:['orchard']})).results.find(row=>row.session.origin==='imported')!.session;
-  fixture.source.version='a'.repeat(64);fixture.source.messages[0]!.sourceVersion=fixture.source.version;
+  fixture.source.version='a'.repeat(64);fixture.source.messages[0]!.sourceVersion=fixture.source.version;fixture.source.consultation.sourceVersion=fixture.source.version;
   const refreshed=(await communication.search({source:a.native,concepts:['orchard']})).results.find(row=>row.session.id===parent.id)!.session;
   expect(refreshed.id).toBe(parent.id);expect(refreshed.address).not.toBe(parent.address);
   await expect(communication.ask({source:a.native,action_id:'old',address:parent.address,text:'Question'})).rejects.toThrow('binding changed');
@@ -349,7 +355,7 @@ test('native request, immutable metadata and mandatory return are one transactio
 
 test('a proven-unsent live return is queued with the same input/event identity and acknowledged after requester idle',async()=>{
   session();const a=run();const target=session(),b=run();
-  const request=(await ask(a.source,target));await communication.idle();
+  const request=(await ask(a.source,target,'ask',{requestedEffect:'informational'}));await communication.idle();
   steeringMode='pending';
   communication.reply({source:b.source,action_id:'answer',request_id:request.request_id,text:'retained answer',final:true});
   await communication.idle();
@@ -372,7 +378,7 @@ test('a proven-unsent live return is queued with the same input/event identity a
 });
 
 test('an ambiguous live return remains attached to its exact execution and never becomes a new provider input',async()=>{
-  session();const a=run();const target=session(),b=run();const request=(await ask(a.source,target));await communication.idle();
+  session();const a=run();const target=session(),b=run();const request=(await ask(a.source,target,'ask',{requestedEffect:'informational'}));await communication.idle();
   steeringMode='pending';communication.reply({source:b.source,action_id:'answer',request_id:request.request_id,text:'retained answer',final:true});await communication.idle();
   const event=communication.inspect(request.request_id).events[0]!,original=getAcceptedSessionInput('return:'+event.event_id)!;
   markTurnSteeringMessageSending(original.steering_id!);markTurnSteeringMessageAmbiguous(original.steering_id!,'Acknowledgement lost');
@@ -385,7 +391,7 @@ test('an ambiguous live return remains attached to its exact execution and never
 
 test('a dependent request stays outside FIFO while its prerequisite return can enter an idle requester',async()=>{
   const source=session(),a=run(),target=session(),b=run();
-  const first=(await ask(a.source,target,'first')),later=(await ask(a.source,target,'later',{after:[first.request_id]}));
+  const first=(await ask(a.source,target,'first',{requestedEffect:'informational'})),later=(await ask(a.source,target,'later',{after:[first.request_id],requestedEffect:'informational'}));
   await communication.idle();
   expect(getAcceptedSessionInput('request:'+later.request_id)?.turn_id).toBeNull();
   finishTurn(a.claim.turn_id,'done','Independent source work ended');
@@ -424,8 +430,9 @@ for(const provider of ['codex','chatgpt'] as const)test(`${provider} restricted 
   session();const a=run();
   const target=owner.create({clientActionId:randomUUID(),provider,purpose:'chat'});
   if(provider==='codex')updateSessionMetadata(Number(target.session.id.slice(10)),{interactionPolicy:'consultation-only'});
-  const first=(await ask(a.source,target,'first'));await communication.idle();const b=run();
-  const second=(await ask(a.source,target,'second'));await communication.idle();
+  const task=provider==='chatgpt'?{for_task:'direct_input:'+a.source.input_id}:{};
+  const first=(await ask(a.source,target,'first',task));await communication.idle();const b=run();
+  const second=(await ask(a.source,target,'second',task));await communication.idle();
   expect(getAcceptedSessionInput('request:'+second.request_id)!.turn_id).not.toBe(b.claim.turn_id);
   expect(getAcceptedSessionInput('request:'+second.request_id)!.steering_id).toBeNull();
   finishTurn(b.claim.turn_id,'done','Answer for the first exact input');await communication.idle();
@@ -443,7 +450,7 @@ test('a steered restricted recipient cannot turn whole-run output into an answer
   const request=(await ask(a.source,target));await communication.idle();const b=run();
   owner.submit(target.session.id,{clientActionId:randomUUID(),text:'A different question',delivery:'steer',expectedRunId:b.source.run_id});
   finishTurn(b.claim.turn_id,'done','Response after intervening steering');await communication.idle();
-  expect(communication.inspect(request.request_id)).toMatchObject({outcome:'unanswered',result:{output:{turn_id:b.claim.turn_id}}});
+  expect(communication.inspect(request.request_id)).toMatchObject({outcome:null,result:null,events:[],execution:{turn_id:b.claim.turn_id,input_status:'done'}});
   expect(errors).toEqual([]);
 });
 
@@ -451,7 +458,7 @@ test('explicit ChatGPT intent creates one agent-authored target and returns its 
   const requester=session(),a=run();
   const fixtures=await Bun.file(new URL('../../docs/contracts/session-owner-v1/surface.json',import.meta.url)).json();
   const fixture=fixtures.cases.find((value:any)=>value.name==='explicit-chatgpt-agent-request-creates-native-target');
-  const body={...fixture.request.body,sourceInputId:a.source.input_id,sourceRunId:a.source.run_id};
+  const body={...fixture.request.body,sourceInputId:a.source.input_id,sourceRunId:a.source.run_id,forTask:`direct_input:${a.source.input_id}`};
   const post=()=>owner.handle(new Request('http://owner/sessions/v1/requests',{method:'POST',body:JSON.stringify(body)}));
   const response=await post();expect(response!.status).toBe(202);
   const accepted=(await response!.json()).operation;
@@ -477,13 +484,17 @@ test('explicit ChatGPT intent creates one agent-authored target and returns its 
 });
 
 test('unavailable ChatGPT keeps one failed creation and exact return obligation without fallback or retry',async()=>{
-  session();const a=run();owner.runtime.available=provider=>provider!=='chatgpt';
-  const input={source:a.source,action_id:'unavailable-chatgpt',provider:'chatgpt' as const,text:'Ask ChatGPT about shade plants'};
+  session();const a=run();let availabilityChecks=0;owner.runtime.available=provider=>provider!=='chatgpt'||++availabilityChecks===1;
+  const input={source:a.source,action_id:'unavailable-chatgpt',for_task:'direct_input:'+a.source.input_id,provider:'chatgpt' as const,text:'Ask ChatGPT about shade plants'};
   const first=(await communication.ask(input));await communication.idle();
   const target=getAcceptedSessionInput(first.target_input_id!)!;
   expect(owner.receipt(target)).toMatchObject({kind:'create',origin:'agent',state:'failed',error:{message:'chatgpt start unavailable.'}});
   expect(target.turn_id).toBeNull();
-  expect(communication.inspect(first.request_id)).toMatchObject({outcome:'failed',result:{text:'chatgpt start unavailable.'}});
+  // A failed ChatGPT attempt no longer settles the request: the exact answer stays owed to the task
+  // and the obligation moves to receipt reconciliation (ee3a5ff2).
+  expect(communication.inspect(first.request_id)).toMatchObject({outcome:null,result:null});
+  expect(chatGptObligationForAttempt(first.request_id)).toMatchObject({state:'reconcile_receipt'});
+  expect(JSON.parse((db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(`chatgpt-original-attempt-failed:${first.request_id}`) as any).payload_json).text).toContain('failed before an answer returned: chatgpt start unavailable.');
   owner.runtime.available=()=>true;
   expect((await communication.ask(input)).request_id).toBe(first.request_id);communication.wake();await communication.idle();
   expect(getAcceptedSessionInput(target.id)!.turn_id).toBeNull();
@@ -494,35 +505,41 @@ test('unavailable ChatGPT keeps one failed creation and exact return obligation 
 
 test('an uncertain ChatGPT start returns retained failure evidence and never creates a replacement effect',async()=>{
   session();const a=run();
-  const input={source:a.source,action_id:'uncertain-chatgpt',provider:'chatgpt' as const,text:'Shade plants?'};
+  const input={source:a.source,action_id:'uncertain-chatgpt',for_task:'direct_input:'+a.source.input_id,provider:'chatgpt' as const,text:'Shade plants?'};
   const accepted=(await communication.ask(input));await communication.idle();
   const claim=claimNextQueuedTurn('fixture-owner')!;
   markTurnProviderAdmissionIntended(claim.turn_id,'fixture-owner',claim.dispatch_attempt);
   expect(parkRunningTurnAfterProviderFailure({turnId:claim.turn_id,ownerInstanceId:'fixture-owner',dispatchAttempt:claim.dispatch_attempt,failureClass:'parked_ambiguous',error:'ChatGPT send uncertain: browser acknowledgement was lost.'})).toBeTrue();
   await communication.idle();
   const receipt=communication.inspect(accepted.request_id);
-  expect(receipt).toMatchObject({outcome:'failed',execution:{acknowledged_at:null,input_status:'parked'},result:{output:{error:'ChatGPT send uncertain: browser acknowledgement was lost.'}}});
+  expect(receipt).toMatchObject({outcome:null,result:null,execution:{acknowledged_at:null,input_status:'parked'}});
+  expect(chatGptObligationForAttempt(accepted.request_id)).toMatchObject({state:'reconcile_receipt'});
+  expect(JSON.parse((db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(`chatgpt-original-attempt-failed:${accepted.request_id}`) as any).payload_json).text).toContain('failed before an answer returned');
   expect(owner.receipt(getAcceptedSessionInput(accepted.target_input_id!)!)).toMatchObject({state:'uncertain',error:{message:'ChatGPT send uncertain: browser acknowledgement was lost.'}});
   expect((await communication.ask(input)).request_id).toBe(accepted.request_id);
   communication.wake();await communication.idle();
   expect(db.query('SELECT count(*) AS n FROM turns WHERE session_id=?').get(claim.session_id)).toEqual({n:1});
-  expect(communication.inspect(accepted.request_id).events).toHaveLength(1);
+  expect(communication.inspect(accepted.request_id).events).toHaveLength(0);
+  expect(db.query("SELECT count(*) AS n FROM session_owner_events WHERE event_id LIKE 'chatgpt-original-attempt-failed:%'").get()).toEqual({n:1});
   owner.submit(`concierge:${claim.session_id}`,{clientActionId:'later-human-question',text:'Later question'});
-  expect(claimNextQueuedTurn('fixture-owner')).toBeNull();
+  // A parked native turn is history that later input carries as context, not a queue blocker (b7df801b).
+  const later=claimNextQueuedTurn('fixture-owner');
+  expect(later).toMatchObject({turn_user_text:'Later question'});
+  expect(later!.turn_id).not.toBe(claim.turn_id);
   expect(db.query('SELECT status,owner_instance_id,dispatch_failure_class FROM turns WHERE id=?').get(claim.turn_id)).toEqual({status:'parked',owner_instance_id:null,dispatch_failure_class:'parked_ambiguous'});
   expect(errors).toEqual([]);
 });
 
 test('agent and service continuation inputs can use existing scope without acquiring human origin',async()=>{
   session();const a=run(),target=session(),b=run();
-  const existing=(await ask(a.source,target));await communication.idle();
+  const existing=(await ask(a.source,target,'ask',{requestedEffect:'informational'}));await communication.idle();
   const agent=getAcceptedSessionInput('request:'+existing.request_id)!;
   expect(agent.origin).toBe('agent');
-  const agentRequest=(await communication.ask({source:{input_id:agent.id,run_id:b.source.run_id},action_id:'agent-chatgpt',provider:'chatgpt',text:'Continue the authorized information request'}));
+  const agentRequest=(await communication.ask({source:{input_id:agent.id,run_id:b.source.run_id},action_id:'agent-chatgpt',for_task:'direct_input:'+b.source.input_id,provider:'chatgpt',text:'Continue the authorized information request'}));
   communication.reply({source:b.source,action_id:'return',request_id:existing.request_id,text:'Context for the authorized follow-up',final:true});await communication.idle();
   const service=getAcceptedSessionInput('return:'+communication.inspect(existing.request_id).events[0]!.event_id)!;
   expect(service.origin).toBe('service');
-  const serviceRequest=(await communication.ask({source:{input_id:service.id,run_id:a.source.run_id},action_id:'service-chatgpt',provider:'chatgpt',text:'Continue the authorized information request'}));
+  const serviceRequest=(await communication.ask({source:{input_id:service.id,run_id:a.source.run_id},action_id:'service-chatgpt',for_task:'direct_input:'+a.source.input_id,provider:'chatgpt',text:'Continue the authorized information request'}));
   for(const request of [agentRequest,serviceRequest])expect(getAcceptedSessionInput(request.target_input_id!)!.origin).toBe('agent');
   expect(getAcceptedSessionInput(agent.id)!.origin).toBe('agent');
   expect(getAcceptedSessionInput(service.id)!.origin).toBe('service');
@@ -548,7 +565,7 @@ test('ChatGPT creation rejects forged, stale, restricted and provider-origin sou
 test('failure retaining a ChatGPT request rolls back its new session, creation and operation together', async () =>{
   session();const a=run();
   db.exec("CREATE TEMP TRIGGER fail_chatgpt_request BEFORE INSERT ON session_inputs WHEN NEW.kind='request' BEGIN SELECT RAISE(ABORT,'request persistence fault'); END");
-  try{await expect(communication.ask({source:a.source,action_id:'atomic-chatgpt',provider:'chatgpt',text:'Question'})).rejects.toThrow('request persistence fault');}
+  try{await expect(communication.ask({source:a.source,action_id:'atomic-chatgpt',for_task:'direct_input:'+a.source.input_id,provider:'chatgpt',text:'Question'})).rejects.toThrow('request persistence fault');}
   finally{db.exec('DROP TRIGGER fail_chatgpt_request');}
   expect(db.query('SELECT count(*) AS n FROM sessions').get()).toEqual({n:1});
   expect(db.query('SELECT count(*) AS n FROM session_inputs WHERE request_id IS NOT NULL').get()).toEqual({n:0});
@@ -562,7 +579,7 @@ test('a Slack-born admitted source creates ChatGPT through native ownership with
   const turn=acquireSessionTurn(session.id,'100.000001','Ask ChatGPT about shade plants','fixture-owner',claimed.row.claim_token,'100.000001',{userId:'U1'});
   markTurnProviderAdmissionIntended(turn.id,'fixture-owner',turn.dispatchAttempt);
   const source={channel_id:'CCHATGPT',message_ts:'100.000001'};
-  const first=(await communication.ask({source,action_id:'chatgpt-slack',provider:'chatgpt',text:'Shade plants?'}));
+  const first=(await communication.ask({source,action_id:'chatgpt-slack',for_task:'direct_input:slack:CCHATGPT:100.000001',provider:'chatgpt',text:'Shade plants?'}));
   const target=getAcceptedSessionInput(first.target_input_id!)!;
   expect(target.source_input_id).toBe('slack:CCHATGPT:100.000001');
   expect(target.source_run_id).toBe(nativeRunId(turn.id));
@@ -605,7 +622,7 @@ test('historical Slack source and exact destination become native inputs with co
 
 test('partial obligation survives recipient completion and only that session can finish it later',async()=>{
   session();const a=run(),target=session(),b=run(),other=session(),c=run();
-  const request=await ask(a.source,target);await communication.idle();
+  const request=await ask(a.source,target,'ask',{requestedEffect:'informational'});await communication.idle();
   communication.reply({source:b.source,action_id:'partial',request_id:request.request_id,text:'Still working',final:false});
   finishTurn(b.claim.turn_id,'done','This turn is ending');await communication.idle();
   expect(communication.inspect(request.request_id).outcome).toBeNull();
@@ -620,7 +637,7 @@ test('partial obligation survives recipient completion and only that session can
 
 for(const control of ['pause','archive'] as const)test(`${control} holds native request admission and return delivery without creating another input`,async()=>{
   const source=session(),a=run(),target=session(),b=run();
-  const request=await ask(a.source,target);await communication.idle();
+  const request=await ask(a.source,target,'ask',{requestedEffect:'informational'});await communication.idle();
   owner.action(source.session.id,{clientActionId:randomUUID(),action:{kind:control}});
   communication.reply({source:b.source,action_id:'final',request_id:request.request_id,text:'Retained result',final:true});await communication.idle();
   const event=communication.inspect(request.request_id).events[0]!;
@@ -635,7 +652,7 @@ for(const control of ['pause','archive'] as const)test(`${control} holds native 
 
 test('a stopped requester receives a later retained return once as a new service turn',async()=>{
   const source=session(),a=run(),target=session(),b=run();
-  const request=await ask(a.source,target);await communication.idle();
+  const request=await ask(a.source,target,'ask',{requestedEffect:'informational'});await communication.idle();
   await owner.stop(source.session.id,{clientActionId:randomUUID(),runId:a.source.run_id});
   finishTurn(a.claim.turn_id,'cancelled','Native Stop');
   const canceled=db.query('SELECT * FROM turns WHERE id=?').get(a.claim.turn_id);
@@ -653,10 +670,17 @@ test('a stopped requester receives a later retained return once as a new service
 });
 
 test('delegation retains originating human provenance across agent hops without widening an informational request',async()=>{
+  // The Inbox session lives in the registered slack-inbox project, which the shared '/tmp' owner has not got.
+  const workspace=mkdtempSync(join(tmpdir(),'native-communication-workspace-'));
+  mkdirSync(join(workspace,'slack-inbox','.git'),{recursive:true});writeFileSync(join(workspace,'slack-inbox','AGENTS.md'),'# fixture\n');
+  await communication.stop();await build(workspace);
   const inbox=owner.acceptInboxCapture({source:{kind:'monologue',id:'human-routing',recordedAt:'2026-09-16T10:00:00Z'},text:'Repair the named project, asking peers for necessary information.'});
   const human=run();
-  const target=owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'develop'});
-  const first=await ask(human.source,target,'delegate',{requestedEffect:'work'});await communication.idle();const agent=run();
+  // An Inbox request names the placed thread it works for.
+  db.query('INSERT INTO inbox_topic_roots(root_input_id,topic_id) VALUES(?,?)').run(human.source.input_id,'fixture-topic');
+  const thread={thread:human.source.input_id,summary:'Repair the named project'};
+  const target=owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'develop',project:'slack-inbox'});
+  const first=await ask(human.source,target,'delegate',{requestedEffect:'work',...thread});await communication.idle();const agent=run();
   const peer=owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat'});
   const second=await ask(agent.source,peer,'research',{requestedEffect:'informational'});await communication.idle();const researcher=run();
   expect(sessionInputProvenance(getAcceptedSessionInput(first.target_input_id!)!)).toMatchObject({
@@ -682,9 +706,9 @@ test('unresolved legacy requests and returns stay visibly uncertain without sett
     target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(requestId,'COLD','100.000001',a.claim.turn_id,a.claim.session_id,'100.000001','old-action',b.claim.session_id,'COTHER','100.000002',JSON.stringify({text:'Uncertain old question',after:[]}), 'retained-hash',1,1);
   db.query('INSERT INTO session_communication_events(event_id,request_id,kind,payload_json,created_at_ms) VALUES(?,?,?,?,?)')
-    .run(eventId,requestId,'progress',JSON.stringify({text:'Uncertain old return'}),1);
+    .run(eventId,requestId,'final',JSON.stringify({text:'Uncertain old return'}),1);
   const turns=db.query('SELECT count(*) AS n FROM turns').get(),inputs=db.query('SELECT count(*) AS n FROM session_inputs').get();
-  communication.wake();await communication.idle();communication.inspectOverdue();communication.wake();await communication.idle();
+  communication.wake();await communication.idle();communication.wake();await communication.idle();
   expect(communication.inspect(requestId)).toMatchObject({status:'uncertain',outcome:null,overdue_at_ms:null,error:expect.stringContaining('reconciliation'),events:[{event_id:eventId,status:'uncertain'}]});
   expect(db.query('SELECT count(*) AS n FROM turns').get()).toEqual(turns);
   expect(db.query('SELECT count(*) AS n FROM session_inputs').get()).toEqual(inputs);
