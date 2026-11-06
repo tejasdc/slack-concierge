@@ -203,6 +203,10 @@ books no more; a firing already running finishes. The request names only the fir
 saved-work step that books each next firing checks whether the schedule was dropped or its request
 cancelled. Until 2026-11-06 a cancelled request left later firings running. `sessions saved list`
 shows each armed schedule's next firing, turn ID and interval.
+Canceling one saved turn changes only that exact turn and its input receipt. A standing agent
+can hold unrelated one-time schedules in the same session; canceling one must leave the others
+queued. A repeating schedule ends by its own root and firing identity, never by canceling every
+queued turn in its session.
 
 New repeating schedules and renewing file watches require both the requesting session and
 the scheduled session, where applicable, to belong to a registered project. Placement under
