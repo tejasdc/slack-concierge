@@ -87,9 +87,13 @@ export async function serveProjectCall(method:string,params:Record<string,unknow
   if(method==='projects.locate') {
     if(typeof params.location!=='string'||!params.location.trim())throw new Error('A registered project location is required.');
     const root=realpathSync(workspaceRoot());
-    let located=sessionProject(root,params.location,{inside:true});
+    const projects=sessionProjects(root);
+    // Standing roles name their declared workspace folder (for example agents/concierge-repair),
+    // while the project catalogue names the repository itself (concierge-repair).
+    let located=projects.find(project=>relative(root,project.cwd)===params.location)
+      ??sessionProject(root,params.location,{inside:true});
     if(!located&&isAbsolute(params.location)) {
-      const segments=params.location.split(sep).filter(Boolean),projects=sessionProjects(root);
+      const segments=params.location.split(sep).filter(Boolean);
       const candidates=projects.flatMap(project=>{
         const index=segments.lastIndexOf(project.name);
         if(index<0)return [];
@@ -100,7 +104,7 @@ export async function serveProjectCall(method:string,params:Record<string,unknow
       if(candidates.length===1)located=candidates[0]!;
     }
     if(!located)throw new Error('The requested project location is not registered on this runner.');
-    const registered=sessionProjects(root).filter(project=>within(project.cwd,located.cwd)).sort((a,b)=>b.cwd.length-a.cwd.length)[0];
+    const registered=projects.filter(project=>within(project.cwd,located.cwd)).sort((a,b)=>b.cwd.length-a.cwd.length)[0];
     if(!registered)throw new Error('The requested folder is outside a registered project.');
     const path=relative(registered.cwd,located.cwd);
     return {project:registered.name,path,cwd:located.cwd};
