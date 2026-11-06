@@ -35,6 +35,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   see the [deployment runbook](docs/runbooks/DEPLOYMENT.md#runtime-dependencies-and-service-shutdown).
 - Owner startup timing and deferred history catch-up follow the
   [deployment startup contract](docs/runbooks/DEPLOYMENT.md#owner-startup-and-history-catch-up).
+- Runner sign-ins reserve against the deployment drain before launching their provider CLI;
+  see the [deployment runbook](docs/runbooks/DEPLOYMENT.md)
+  and [interruption record](docs/incidents/2026-11-06-signin-started-inside-deployment-drain.md).
 - Candidate schema comparison and its bounded read-only SQLite lock recovery
   follow the [deployment runbook](docs/runbooks/DEPLOYMENT.md#candidate-schema-comparison).
   Its offline migration phase timings and backup boundary are in the same
