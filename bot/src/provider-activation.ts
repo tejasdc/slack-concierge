@@ -234,10 +234,10 @@ async function reconcileRunnerCodexRepair(runner:string):Promise<void>{
   if(runnerRepairReconciliations.has(runner))return;
   runnerRepairReconciliations.add(runner);
   try{
-    for(;;){
-      let result:{status:string;detail?:string};
-      try{result=await runnerMachineCall(runner,'accounts.codex.repairUnmanaged',{},RUNNER_REPAIR_TIMEOUT_MS);}
-      catch{await new Promise(resolve=>setTimeout(resolve,5_000));continue;}
+      const result=await withRetry({operation:'runner-codex-rehome-reconcile',key:runner,
+        policy:RETRY_POLICIES.peerRequest,
+        run:()=>runnerMachineCall<{status:string;detail?:string}>(runner,'accounts.codex.repairUnmanaged',{},RUNNER_REPAIR_TIMEOUT_MS),
+        classifyError:()=> 'transient'});
       if(result.status==='busy'){
         pendingCodexRepair=true;holdCodexAdmission(false);return;
       }
@@ -249,7 +249,8 @@ async function reconcileRunnerCodexRepair(runner:string):Promise<void>{
       if(result.status==='repaired')log('warn','codex_unmanaged_server_repaired_on_runner',{runner,detail:result.detail??null});
       else if(result.status==='refused'||result.status==='unsupported')log('error','codex_unmanaged_server_repair_refused_on_runner',{runner,status:result.status,detail:result.detail??null});
       return;
-    }
+  }catch(error){
+    log('error','codex_runner_rehome_reconcile_exhausted',{runner,error:error instanceof Error?error.message:String(error)});
   }finally{runnerRepairReconciliations.delete(runner);}
 }
 /**
