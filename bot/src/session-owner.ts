@@ -3237,7 +3237,10 @@ export class SessionOwner {
             branch:candidate.source.branch,eventId:candidate.matches[0].eventId},proof);
           if(!source){unavailable++;continue;}
           const session=this.sourceSession(source);
-          add(session,candidate.matches.map((evidence:any)=>({...evidence,branch:candidate.source.branch,sessionId:`concierge:${session.id}`,snippet:searchSnippet(evidence.text??'',terms),at:null})));
+          // An archived transcript dates the conversation, not each message in it. Half the
+          // results showed no date at all; the conversation's own date answers "when was this"
+          // without claiming a precision the archive does not have, so it stays a separate field.
+          add(session,candidate.matches.map((evidence:any)=>({...evidence,branch:candidate.source.branch,sessionId:`concierge:${session.id}`,snippet:searchSnippet(evidence.text??'',terms),at:null,conversationAt:candidate.source.createdAt??null})));
         }
         if(unavailable){const omission=`${unavailable} matched archive source versions could not be retained and were omitted.`;coverage.complete=false;coverage.reason=[coverage.reason,omission].filter(Boolean).join(' ');coverage.omissions.push(omission);}
         coverage={...coverage,complete:coverage.complete&&found.complete,indexedAt:found.indexedAt??coverage.indexedAt,sources:results.size,reason:[coverage.reason,found.reason].filter(Boolean).join(' ')||null,refresh:found.refresh??[],omissions:coverage.omissions};
@@ -3281,7 +3284,10 @@ export class SessionOwner {
         }
         if(!session||meaningRank.has(session.id))continue;
         meaningRank.set(session.id,meaningRank.size+peerHits.length);meaningScore.set(session.id,hit.score);
-        add(session,[{sessionId:`concierge:${session.id}`,sourceId:`meaning:${hit.ref}`,sourceVersion:null,eventId:null,role:'user',locator:hit.ref,textHash:null,text:hit.text,snippet:hit.text,at:hit.at?ledgerTime(hit.at):null,corpus:'meaning',score:hit.score}]);
+        // The meaning index keeps no time for an archived passage either, so date it by its
+        // conversation exactly as the word path above does rather than leaving it blank.
+        const conversationAt=hit.target.kind==='archive'?hit.target.source?.createdAt??null:null;
+        add(session,[{sessionId:`concierge:${session.id}`,sourceId:`meaning:${hit.ref}`,sourceVersion:null,eventId:null,role:'user',locator:hit.ref,textHash:null,text:hit.text,snippet:hit.text,at:hit.at?ledgerTime(hit.at):null,conversationAt,corpus:'meaning',score:hit.score}]);
       }
       if(unretained){coverage.complete=false;coverage.omissions.push(`${unretained} archive meaning matches could not be retained and were omitted.`);}
     }
