@@ -8,6 +8,7 @@ import {SessionCommunicationCoordinator} from '../src/session-communication';
 import {searchRouterThreads} from '../src/router-search';
 import {ActiveTurnDispatchRegistry} from '../src/turn-dispatch-seams';
 import {acquireDatabaseTestLock} from './db-lock';
+import {fixtureThesaurusContext} from './fixture-thesaurus';
 import type {AgentProvider} from '../src/providers';
 import {ProviderTurnCancelledError} from '../src/provider-failures';
 
@@ -29,7 +30,7 @@ beforeEach(async()=>{
     input.onProviderTerminal?.();
     return {text:'retained uncorrelated output',sessionUUID:input.sessionUUID??`native-${calls.indexOf(input)+1}`,toolsUsed:[],actualModel:'fixture'};
   }};
-  host=new SessionExecutionHost({instanceId:'native-owner',registry:new ActiveTurnDispatchRegistry({onStarted:()=>{},onSettled:()=>{}}),providers:{codex:provider},defaultCwd:'/tmp',wake:()=>{}});
+  host=new SessionExecutionHost({instanceId:'native-owner',registry:new ActiveTurnDispatchRegistry({onStarted:()=>{},onSettled:()=>{}}),providers:{codex:provider},defaultCwd:'/tmp',wake:()=>{},thesaurusContext:fixtureThesaurusContext});
   const forbidden=()=>{throw new Error('Slack adapter must be absent');};
   communication=new SessionCommunicationCoordinator({owner:host.owner,routed:{submit:forbidden,result:forbidden,recoverRequest:forbidden,recoverUnsentReturn:forbidden} as any,isOwnerAlive:()=>true,onError:error=>{throw error;}});
   host.owner.communication=communication;communication.start();await communication.idle();
