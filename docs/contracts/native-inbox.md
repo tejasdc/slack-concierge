@@ -389,6 +389,14 @@ the acknowledged items, and clears the legacy `needs` entries whose recovered qu
 now settled. It dispatches nothing: continuations still go out with `sessions ask` and are
 attached with `topics request link`.
 
+A ready `onlyHeCan` question quotes Tejas's retained words and says why they leave a
+decision open. A quote containing one word is accepted only when its normalized text is
+the complete text of a retained human message, either the message behind this work or
+one of his recent messages. A single word extracted from a longer message, or one whose
+human source cannot be checked, is refused. This lets a request such as “Open.” ask which
+object he meant while its original request remains open; it does not authorize an agent
+to open a guessed object.
+
 ### Agent issue reports
 
 `router-actions.sh report --source-input <id> --source-run <id> --action-id <stable id> --title "<issue>" [--file <path> ...] -- <observation, expected behavior, impact>` sends a likely bug or concerning issue the agent noticed outside its task. The local owner verifies the reporting run. A Mac report crosses the authenticated Concierge peer link to the server Inbox; no Mac Inbox is created. The server gateway marks only authenticated peer traffic, and the owner requires that mark before accepting Mac attribution; a local caller cannot assert it in a request header. The server retains the exact text and files under the agent's authorship, and atomically creates an Inbox thread in Agent reports with one open request before admitting it to the router. The receipt names the capture, thread and request. Repeating the action ID with the same text returns the same receipt; changing the text under that ID is refused. The router dispatches work from the report's capture root and links the dispatch to the existing request. Its stop check refuses an Inbox turn that received a report whose open request still has no linked dispatch; the router must check for a prior unlinked dispatch before sending another, or explicitly resolve the report. A settled answer closes the request under the normal thread upkeep rules; an uncertain end leaves it open for the router to resolve. The report cannot be imported silently or attributed to Tejas. A peer connection loss before a receipt is ambiguous; the caller retries the same action ID, and the owner returns the one retained report if it arrived.
