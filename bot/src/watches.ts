@@ -311,8 +311,12 @@ function everyWaitingRequestClosed(row: WatchRow): boolean {
     UNION ALL
     SELECT request.closed_at_ms IS NULL AS open FROM session_peer_replies reply
       JOIN session_peer_deliveries request ON request.request_id=reply.request_id
-      WHERE reply.kind='progress' AND json_extract(reply.payload_json,'$.waitingOnWatch') IN (${marks})`)
-    .all(...series, ...series) as { open: number }[];
+      WHERE reply.kind='progress' AND json_extract(reply.payload_json,'$.waitingOnWatch') IN (${marks})
+    UNION ALL
+    SELECT request.outcome IS NULL AS open FROM session_external_replies reply
+      JOIN session_external_requests request ON request.request_id=reply.request_id
+      WHERE reply.final=0 AND json_extract(reply.payload_json,'$.waitingOnWatch') IN (${marks})`)
+    .all(...series, ...series, ...series) as { open: number }[];
   return waits.length > 0 && waits.every(wait => !wait.open);
 }
 
