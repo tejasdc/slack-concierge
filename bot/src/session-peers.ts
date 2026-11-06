@@ -895,7 +895,7 @@ export class SessionPeers {
       const payload={text:input.text,final,source:{peer:row.peer,input_id:input.responder?.inputId,run_id:input.responder?.runId},responding_session_id:this.presentedSession(row.peer,input.responder?.sessionId??row.remote_session_id),
         ...(final?{settlementProof:input.settlementProof}:{}),
         ...(input.replyBody!==undefined?{replyBody:input.replyBody}:{}),...(input.closingLine?{closingLine:input.closingLine}:{}),...(input.answerGroup?{answerGroup:input.answerGroup}:{}),
-        ...(input.answersQuestion?{answersQuestion:true}:{}),...(answerMarkDropped?{answerMarkDropped:true}:{}),...(input.notify?{notify:true}:{}),...(input.alsoMainThread?{alsoMainThread:true}:{}),
+        ...(input.answersQuestion?{answersQuestion:true}:{}),...(answerMarkDropped?{answerMarkDropped:true}:{}),...(input.waitingOnWatch?{waitingOnWatch:input.waitingOnWatch}:{}),...(input.notify?{notify:true}:{}),...(input.alsoMainThread?{alsoMainThread:true}:{}),
         ...(attachments.length?{attachments}:{}),
         ...(disposition?{workDisposition:disposition,completionTurnId:input.completionTurnId??null}:{}),...(input.evidence?{evidence:input.evidence}:{}),
         ...(typeof input.handBack==='string'&&input.handBack?{handBack:input.handBack}:{}),
@@ -926,7 +926,7 @@ export class SessionPeers {
    */
   private async pullReply(client:PeerClient,row:PeerRequestRow,reply:any,historical:boolean) {
     const responder={peer:row.peer,sessionId:row.remote_session_id,inputId:reply.sourceInputId??null,runId:reply.sourceRunId??null};
-    if(!reply.files)return this.recordReply(this.row(row.request_id),{eventId:reply.eventId,kind:reply.kind,text:reply.text,turnOutcome:reply.turnOutcome,replyBody:reply.replyBody,closingLine:reply.closingLine,answerGroup:reply.answerGroup,answersQuestion:reply.answersQuestion??undefined,notify:reply.notify===true,alsoMainThread:reply.alsoMainThread===true,workDisposition:reply.workDisposition??undefined,settlementProof:reply.settlementProof,completionTurnId:reply.completionTurnId??null,evidence:reply.evidence??undefined,handBack:reply.handBack??undefined,quiet:reply.quiet??undefined,responder});
+    if(!reply.files)return this.recordReply(this.row(row.request_id),{eventId:reply.eventId,kind:reply.kind,text:reply.text,turnOutcome:reply.turnOutcome,replyBody:reply.replyBody,closingLine:reply.closingLine,answerGroup:reply.answerGroup,answersQuestion:reply.answersQuestion??undefined,waitingOnWatch:reply.waitingOnWatch??undefined,notify:reply.notify===true,alsoMainThread:reply.alsoMainThread===true,workDisposition:reply.workDisposition??undefined,settlementProof:reply.settlementProof,completionTurnId:reply.completionTurnId??null,evidence:reply.evidence??undefined,handBack:reply.handBack??undefined,quiet:reply.quiet??undefined,responder});
     let whole:any;
     try {whole=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies/${encodeURIComponent(reply.eventId)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal);}
     catch(error) {
@@ -1372,7 +1372,10 @@ export class SessionPeers {
     if(JSON.parse(row.payload_json).promptAnswer&&row.prompt_answered_at_ms===null&&row.overdue_at_ms===null)return false;
     const remote=JSON.parse(row.remote_status_json);
     const execution=remote.execution;
-    if(!execution||remote.stillWorking||['running','queued'].includes(execution.status))return false;
+    if(!execution||remote.stillWorking||remote.waitingOnDependency||['running','queued'].includes(execution.status))return false;
+    // An older peer does not report whether a partial named a live local watch. During an
+    // update gap, keep that partial open until the peer can supply the missing fact.
+    if(remote.waitingOnDependency===undefined&&db.query("SELECT 1 FROM session_peer_events WHERE request_id=? AND kind='progress' LIMIT 1").get(row.request_id))return false;
     // Failed and cancelled executions, and recipients that answer with their turn, close in dispatch.
     if(execution.settled&&execution.status!=='done')return false;
     if(execution.status==='done'&&execution.answersWithTurn&&execution.dedicated&&execution.text)return false;
@@ -1613,7 +1616,7 @@ export class SessionPeers {
     const replies=(db.query('SELECT * FROM session_peer_replies WHERE request_id=? ORDER BY rowid').all(requestId) as ReplyRow[]).map(reply=>{
       const payload=JSON.parse(reply.payload_json);
       const completionTurn=payload.completionTurnId?db.query(`SELECT prerequisite.status,prerequisite.provider_input_acknowledged_at,prerequisite.stop_requested_at,(${SETTLED_EXECUTION_SQL}) AS settled FROM turns prerequisite WHERE id=?`).get(payload.completionTurnId) as any:null;
-      return {eventId:reply.event_id,kind:reply.kind,status:reply.status,text:payload.text,turnOutcome:payload.turnOutcome??null,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,notify:payload.notify===true,alsoMainThread:payload.alsoMainThread===true,workDisposition:payload.workDisposition??null,settlementProof:payload.settlementProof??null,createdAtMs:reply.created_at_ms,files:payload.attachments?.length??0,
+      return {eventId:reply.event_id,kind:reply.kind,status:reply.status,text:payload.text,turnOutcome:payload.turnOutcome??null,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,waitingOnWatch:payload.waitingOnWatch??null,notify:payload.notify===true,alsoMainThread:payload.alsoMainThread===true,workDisposition:payload.workDisposition??null,settlementProof:payload.settlementProof??null,createdAtMs:reply.created_at_ms,files:payload.attachments?.length??0,
         completionTurnId:payload.completionTurnId??null,sourceInputId:payload.source?.input_id??null,sourceRunId:payload.source?.run_id??null,...(payload.handBack?{handBack:payload.handBack}:{}),...(payload.quiet?{quiet:payload.quiet}:{}),
         completion:completionTurn?{settled:!!completionTurn.settled,status:completionTurn.status,completed:completionTurn.status==='done'&&!!completionTurn.provider_input_acknowledged_at&&!completionTurn.stop_requested_at}:null};
     });
@@ -1623,6 +1626,7 @@ export class SessionPeers {
     return {requestId,answerGuaranteeVersion:1,acceptedAnswerGuaranteeVersion:acceptedAnswerGuaranteeVersion===1?1:null,
       answerTaskReady,unresolvedChatGptObligations:openChatGptObligations(answerTask).length,
       sessionId:`concierge:${session.id}`,address:sessionAddress(session),inputState:current.saved.state??current.observed.state,inputError:current.saved.error??null,stillWorking:['running','queued'].includes(execution),
+      waitingOnDependency:waitingOnDependency(session.id,requestId,row.created_at_ms),
       execution:turn?{turnId:turn.id,runId:nativeRunId(turn.id),status:turn.status,settled:!!turn.settled,acknowledged:!!turn.provider_input_acknowledged_at,acknowledgedAt:observed.acknowledgedAt??null,stopped:!!turn.stop_requested_at,stoppedByTejasAtMs:turn.status==='cancelled'?stoppedByTejas(turn.id)?.atMs??null:null,dedicated,answersWithTurn,
         steeringStatus:observed.steering?.status??null,text:turn.status==='done'?turn.agent_text||null:null,error:turn.status!=='done'?turn.agent_text??null:null,sha256:turn.agent_text?hash(turn.agent_text):null}:null,
       // A continuation held for a sign-in or a reset is this request's hold, told to its sender.
@@ -1661,7 +1665,7 @@ export class SessionPeers {
     const files=payload.attachments?.length
       ?this.dependencies.owner.attachments(payload.attachments).map(({name,contentType,base64})=>({name,contentType,base64}))
       :null;
-    return {eventId:reply.event_id,kind:reply.kind,text:payload.text,turnOutcome:payload.turnOutcome,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,notify:payload.notify===true,alsoMainThread:payload.alsoMainThread===true,workDisposition:payload.workDisposition,evidence:payload.evidence,completionTurnId:payload.completionTurnId??null,
+    return {eventId:reply.event_id,kind:reply.kind,text:payload.text,turnOutcome:payload.turnOutcome,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,waitingOnWatch:payload.waitingOnWatch,notify:payload.notify===true,alsoMainThread:payload.alsoMainThread===true,workDisposition:payload.workDisposition,evidence:payload.evidence,completionTurnId:payload.completionTurnId??null,
       ...(payload.settlementProof?{settlementProof:payload.settlementProof}:{}),
       ...(payload.handBack?{handBack:payload.handBack}:{}),...(payload.quiet?{quiet:payload.quiet}:{}),...(files?{files}:{}),
       responder:{peer:this.self,sessionId:`concierge:${row.target_session_id}`,inputId:payload.source.input_id,runId:payload.source.run_id}};
@@ -1825,7 +1829,7 @@ export class SessionPeers {
     this.chaseStranded(row,this.status(row.request_id));
     row=this.delivery(row.request_id);
     const status=this.status(row.request_id);
-    const fingerprint=JSON.stringify([status.hold?.code??null,status.inputState,status.execution?.status??null,status.execution?.settled??null,status.stillWorking,status.replies.map(reply=>reply.eventId+':'+reply.status),status.stalled?.atMs??null]);
+    const fingerprint=JSON.stringify([status.hold?.code??null,status.inputState,status.execution?.status??null,status.execution?.settled??null,status.stillWorking,status.waitingOnDependency,status.replies.map(reply=>reply.eventId+':'+reply.status),status.stalled?.atMs??null]);
     // A withdrawn origin may have changed while this queued peer turn did not.
     // Poll the origin once after each reconciliation even with the same local
     // fingerprint; otherwise an offline Mac learns of cancellation only at reset.
