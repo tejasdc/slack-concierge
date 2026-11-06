@@ -99,6 +99,22 @@ type TranscribeInput={slackFileId:string;title:string;path:string;runCommand?:ty
 /** The transcriber heard no words. Silence is an answer, never a transcription failure. */
 export class NoSpeech extends Error {}
 
+/**
+ * Words for a recording attached to a session message, made as the turn starts. A recording
+ * never stops the message reaching its agent: silence adds no words, and a transcriber that
+ * fails leaves a note so the agent knows the attached file was not heard. thnkr.ing's Send
+ * while recording attaches the recording itself and relies on this (Tejas, 2026-09-16:
+ * "sometimes I do want to just send my voice recording right away").
+ */
+export async function attachedRecordingWords(input:TranscribeInput):Promise<{transcript:AudioTranscript|null;note:string|null}>{
+ try{return {transcript:await transcribeAudioPath(input),note:null};}
+ catch(error){
+  if(error instanceof NoSpeech)return {transcript:null,note:null};
+  log('warn','attached_recording_untranscribed',{attachment_id:input.slackFileId,reason:error instanceof Error?error.message.slice(0,300):'unknown'});
+  return {transcript:null,note:`The attached recording ${JSON.stringify(input.title)} could not be turned into words before this turn; its audio file is attached above.`};
+ }
+}
+
 /** A whole recording the Mac's browser hands over (live-speech.ts). Silence is an empty answer, not a failure. */
 export async function transcribeWholeRecording(input:{id:string;path:string}):Promise<{text:string;audioMs:number|null}>{
  try{const result=await transcribeAudioPath({slackFileId:input.id,title:'recording',path:input.path});return {text:result.text,audioMs:result.audioMs??null};}
