@@ -1235,7 +1235,7 @@ export class SessionExecutionHost {
     const onRunner=!adoption&&!!runnerTarget&&(session.provider_id==='claude-code'||session.provider_id==='antigravity'||outsideCodex);
     if(onRunner&&providerRunnerForSession(session).status==='legacy'&&session.agent_session_uuid===null)
       updateSessionMetadata(session.id,{providerRunner:runnerTarget});
-    let cwd=this.cwd(session);
+    let cwd=onRunner?'':this.cwd(session);
     if(onRunner) {
       const resolved=typeof metadata.projectName==='string'
         ?await runnerMachineCall<{cwd:string}>(runnerTarget!,'projects.resolve',{project:metadata.projectName,path:metadata.projectPath??''})

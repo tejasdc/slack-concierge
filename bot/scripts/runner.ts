@@ -32,7 +32,11 @@ import {serveRunnerMachineCalls} from '../src/runner-machine-calls';
 import {codexLeftoverProcesses,codexProcessStillRunning} from '../src/codex-leftover-processes';
 import {localWatchMachine,serveWatchCall} from '../src/watch-machine';
 import {rewriteRelayedCodexRequest,runnerMachineEnvironment,writeRunnerConnection,type RunnerMachine} from '../src/runner-machine';
-import {runnerAccountHome} from '../src/runner-provider-accounts';
+import {runnerAccountHome,runnerAccountHomes,findRunnerProviderSessionHome,serveRunnerAccountCall} from '../src/runner-provider-accounts';
+import {serveProviderHistoryCall} from '../src/runner-provider-history';
+import {serveProjectCall} from '../src/runner-projects';
+import {serveRunnerProviderCall} from '../src/runner-providers';
+import {serveRunnerAside} from '../src/runner-asides';
 
 const owner=process.env.CONCIERGE_OWNER_URL?.replace(/\/+$/,'');
 const tokenFile=process.env.CONCIERGE_RUNNER_TOKEN_FILE;
@@ -577,6 +581,16 @@ function answerMachineCalls(id:string) {
     recordOwnerContact();
     if(method==='ping')return true;
     if(method.startsWith('watch.'))return serveWatchCall(watchMachine,stateDir,method.slice('watch.'.length),params);
+    if(method.startsWith('accounts.'))return serveRunnerAccountCall(method,params);
+    if(method.startsWith('provider-history.'))return serveProviderHistoryCall(method,params,runnerAccountHome,stateDir,runnerAccountHomes);
+    if(method.startsWith('projects.'))return serveProjectCall(method,params,{findProviderSessionHome:findRunnerProviderSessionHome});
+    if(method==='google.executable')return serveRunnerProviderCall(method,params);
+    if(method==='asides.ask')return serveRunnerAside(params,{botDir,bunPath:process.execPath,
+      resolveCwd:async(project,path)=>{
+        const result=await serveProjectCall(project===null?'projects.default':'projects.resolve',
+          project===null?{}:{project,path}) as {cwd:string};
+        return result.cwd;
+      },findHome:findRunnerProviderSessionHome,accountHome:runnerAccountHome});
     if(method==='codex.leftoverProcesses')return codexLeftoverProcesses(params.threadId);
     if(method==='codex.processAlive'){
       const processRecord=params.process;

@@ -204,6 +204,13 @@ after one such run was taken over live by a later owner. Until then updates wait
 
 ### Not on runners yet
 
+Runner-bound side questions and resurrected conversations now resolve their project and provider
+account on the runner. The owner sends a bounded side-question job or archived transcript through
+the authenticated machine relay; the runner reads its provider home and starts the private fork
+there. Resurrection records the chosen runner and account with the new conversation so a later
+turn cannot silently resume against the owner's home. A missing or ambiguous provider history
+copy refuses the operation. Local-only peer conversations keep their existing local restore path.
+
 Exact locations and a plan for every item below: [what still ties the owner to the agents' machine](../plans/2026-11-05-owner-off-agent-machine-remaining.md).
 
 - Google turns and outside Codex hosts stay local. Google's launch first reads the owner's own

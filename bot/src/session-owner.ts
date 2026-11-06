@@ -2,6 +2,8 @@ import {threadOnlyReturnInputSql} from "./inbox-request-root";
 import {ownerRequestLabel} from './owner-request-label';
 import {parseMachineNeed} from './machine-need';
 import {askAsideOnce} from './session-asides';
+import {resolveRunnerProjectLocation} from './runner-project-location';
+import {restoreRunnerProviderTranscript} from './runner-provider-history-client';
 import {sessionTouch} from './prepared-session-cards';
 import {randomUUID,createHash} from 'node:crypto';
 import {peerLabRequest} from './commons-board-service';
@@ -2889,10 +2891,21 @@ export class SessionOwner {
     if(!session.agent_session_uuid)throw new SessionOwnerError('This session has no conversation to ask about yet.',409,'CAPABILITY_UNAVAILABLE');
     const meta=sessionMetadata(session),channel=session.slack_channel_id?getChannel(session.slack_channel_id):null;
     const cwd=meta.cwd??channel?.code_path??channel?.vault_path??this.defaultCwd;
+    const persistedRunner=Object.hasOwn(meta,'providerRunner')?meta.providerRunner:undefined;
+    const executionRunner=persistedRunner===undefined?db.query(`SELECT attempt.runner FROM executions execution
+      LEFT JOIN runner_attempts attempt ON attempt.job_id='turn:'||execution.execution_id
+      WHERE execution.session_id=? AND execution.supervisor='runner'
+      ORDER BY execution.created_at_ms DESC,attempt.started_at_ms DESC LIMIT 1`).get(session.id) as {runner:string|null}|null:null;
+    if(executionRunner&&!executionRunner.runner)throw new SessionOwnerError('The runner that owns this conversation is not known.',424,'PROVIDER_RUNNER_UNKNOWN');
+    const runner=typeof persistedRunner==='string'?persistedRunner:executionRunner?.runner??(
+      persistedRunner===undefined&&session.provider_id==='codex'?process.env.CONCIERGE_CODEX_RUNNER?.trim()||null:null);
+    const location=runner?await resolveRunnerProjectLocation(runner,meta):null;
     try {
       // Under the gateway's 120 s command deadline; a longer answer is collected by asking again with the same id.
       // The wait is for the throwaway copy, not the owner: it is recorded as awaited, never as owner slowness.
-      return await awaitingOutside(()=>askAsideOnce(`${session.id}:${input.asideId}`,()=>({provider:session.provider_id,sessionUuid:session.agent_session_uuid!,cwd,model:meta.model??null,running:this.view(session).execution==='running',passage,question,earlier}),90_000));
+      return await awaitingOutside(()=>askAsideOnce(`${session.id}:${input.asideId}`,()=>({provider:session.provider_id,
+        sessionUuid:session.agent_session_uuid!,cwd,model:meta.model??null,running:this.view(session).execution==='running',passage,question,earlier,
+        ...(runner?{runner,account:meta.providerAccount??null,project:location?.project??null,projectPath:location?.path??''}:{})}),90_000));
     } catch(error) {
       throw new SessionOwnerError(error instanceof Error?error.message:String(error),502,'ASIDE_FAILED');
     }
@@ -3609,6 +3622,9 @@ export class SessionOwner {
       return {text:(db.query('SELECT transcript_text FROM session_attachments WHERE id=?').get(row.id) as {transcript_text:string}).transcript_text};
     }finally{await rm(directory,{recursive:true,force:true});}
   }
+  /** Stable identity for a bounded restore, so a retry rejoins the same runner transfer. */
+  private restoreOperationId(value:string){const hash=createHash('sha256').update(value).digest('hex');
+    return `${hash.slice(0,8)}-${hash.slice(8,12)}-4${hash.slice(13,16)}-8${hash.slice(17,20)}-${hash.slice(20,32)}`;}
   /** Put an archived copy of this machine's own provider transcript back where the provider resumes it. */
   private restoreNativeTranscript(provider:string,nativeId:string,claudePath:string|null,restore:unknown){
     const packet=restore&&typeof restore==='object'?restore as Record<string,unknown>:{};
@@ -3632,7 +3648,7 @@ export class SessionOwner {
     log('info','native_transcript_restored',{provider,native_id:nativeId,bytes:bytes.length,sha256:packet.sha256});
   }
   /** Bind an existing provider transcript on the machine whose folder contains it. */
-  private resumeNative(body:unknown) {
+  private async resumeNative(body:unknown) {
     const body_=object(body);only(body_,['clientActionId','provider','nativeId','project','title','sourceAddress','sourceSessionId','sourcePeer','restore']);
     const {restore,...input}=body_;const action=actionId(input);
     const provider=input.provider,nativeId=input.nativeId,cwd=input.project;
@@ -3641,25 +3657,49 @@ export class SessionOwner {
     if(prior){if(prior.kind!=='resurrect-native'||stablePayload(JSON.parse(prior.payload_json))!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);return {session:this.view(getSessionById(prior.session_id)!),reused:true};}
     const existing=db.query("SELECT * FROM sessions WHERE provider_id=? AND agent_session_uuid=? AND status<>'archived' ORDER BY id LIMIT 1").get(provider,nativeId) as SessionRow|null;
     if(existing)return {session:this.view(existing),reused:true};
-    let actual:string,root:string;
-    try{actual=realpathSync(cwd);root=realpathSync(this.defaultCwd);if(!statSync(actual).isDirectory()||(!relative(root,actual)||relative(root,actual).startsWith('..'+sep)||relative(root,actual)==='..'))throw new Error('outside workspace');}
-    catch{throw new SessionOwnerError(`The original folder ${cwd} is not available in this machine's workspace.`,409,'RESUME_FOLDER_UNAVAILABLE');}
-    const transcript=provider==='claude-code'?join(homedir(),'.claude','projects',cwd.replace(/[\\/.]/g,'-'),`${nativeId}.jsonl`):null;
-    const codexTranscript=(directory:string):boolean=>{let entries:import('node:fs').Dirent[];try{entries=readdirSync(directory,{withFileTypes:true});}catch{return false;}return entries.some(entry=>entry.isFile()&&entry.name.endsWith('.jsonl')&&entry.name.includes(nativeId)||entry.isDirectory()&&codexTranscript(join(directory,entry.name)));};
-    if(!(transcript?existsSync(transcript):codexTranscript(join(homedir(),'.codex','sessions')))){
-      // This machine's own copy can be gone while the server's transcript archive still holds the
-      // same file (the fashion conversation, deleted from the Mac after August 4, 2026). The
-      // requester then sends the archived bytes; they are put back exactly where the provider
-      // keeps this conversation, only when nothing is there, so resume continues the original.
-      if(!restore)throw new SessionOwnerError('The original provider conversation is not in this machine’s history yet.',409,'NATIVE_TRANSCRIPT_UNAVAILABLE');
-      this.restoreNativeTranscript(provider,nativeId,transcript,restore);
+    const runner=provider==='codex'?process.env.CONCIERGE_CODEX_RUNNER?.trim()||null:process.env.CONCIERGE_TURN_RUNNER?.trim()||null;
+    let location:{cwd:string;project:string|null;path:string}|null=null,account:string|null=null;
+    if(runner){
+      location=await resolveRunnerProjectLocation(runner,{project:cwd,cwd});
+      const found=await runnerMachineCall<{account:string|null;resolution:'unique'|'missing'|'ambiguous'}>(runner,'accounts.transcript',
+        {provider,account:null,nativeId});
+      if(found.resolution==='ambiguous')throw new SessionOwnerError('This provider conversation has more than one account copy on its runner.',409,'NATIVE_TRANSCRIPT_AMBIGUOUS');
+      account=found.resolution==='unique'?found.account:null;
+      if(!account){
+        if(!restore)throw new SessionOwnerError('The original provider conversation is not in this runner’s history yet.',409,'NATIVE_TRANSCRIPT_UNAVAILABLE');
+        const packet=restore&&typeof restore==='object'?restore as Record<string,unknown>:{};
+        if(typeof packet.base64!=='string'||typeof packet.sha256!=='string'||typeof packet.name!=='string')
+          throw new SessionOwnerError('The archived copy of this conversation was incomplete.',409,'NATIVE_TRANSCRIPT_RESTORE_REFUSED');
+        const bytes=Buffer.from(packet.base64,'base64');
+        if(createHash('sha256').update(bytes).digest('hex')!==packet.sha256
+          ||!bytes.subarray(0,262_144).toString('utf8').includes(nativeId))
+          throw new SessionOwnerError('The archived copy does not match this conversation.',409,'NATIVE_TRANSCRIPT_RESTORE_REFUSED');
+        const active=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider});
+        if(!active?.label)throw new SessionOwnerError('No signed-in account is available on the runner for this conversation.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
+        account=active.label;
+        await restoreRunnerProviderTranscript({runner,account,provider:provider as 'claude-code'|'codex',nativeId,
+          cwd:location.cwd,name:packet.name,bytes,restoreId:this.restoreOperationId(`native:${action}`)});
+      }
+    } else {
+      let actual:string,root:string;
+      try{actual=realpathSync(cwd);root=realpathSync(this.defaultCwd);if(!statSync(actual).isDirectory()||(!relative(root,actual)||relative(root,actual).startsWith('..'+sep)||relative(root,actual)==='..'))throw new Error('outside workspace');}
+      catch{throw new SessionOwnerError(`The original folder ${cwd} is not available in this machine's workspace.`,409,'RESUME_FOLDER_UNAVAILABLE');}
+      const transcript=provider==='claude-code'?join(homedir(),'.claude','projects',cwd.replace(/[\\/.]/g,'-'),`${nativeId}.jsonl`):null;
+      const codexTranscript=(directory:string):boolean=>{let entries:import('node:fs').Dirent[];try{entries=readdirSync(directory,{withFileTypes:true});}catch{return false;}return entries.some(entry=>entry.isFile()&&entry.name.endsWith('.jsonl')&&entry.name.includes(nativeId)||entry.isDirectory()&&codexTranscript(join(directory,entry.name)));};
+      if(!(transcript?existsSync(transcript):codexTranscript(join(homedir(),'.codex','sessions')))){
+        if(!restore)throw new SessionOwnerError('The original provider conversation is not in this machine’s history yet.',409,'NATIVE_TRANSCRIPT_UNAVAILABLE');
+        this.restoreNativeTranscript(provider,nativeId,transcript,restore);
+      }
     }
     const configured=resolveProviderDefault(configuredProviderDefault(null));
     const defaultModel=provider==='codex'?resolveProviderAlias('cx'):configured.provider==='claude-code'?configured:resolveProviderAlias('cc-opus');
     const created=db.transaction(()=>{
       const duplicate=db.query("SELECT * FROM sessions WHERE provider_id=? AND agent_session_uuid=? AND status<>'archived' ORDER BY id LIMIT 1").get(provider,nativeId) as SessionRow|null;
       if(duplicate)return {session:duplicate,reused:true};
-      const session=createNativeSession(provider,{origin:'native',purpose:'chat',title:input.title.trim().slice(0,120),summary:purposeFromFirstWords(input.title),cwd,project:cwd,model:defaultModel.model,reasoningEffort:defaultModel.reasoning_effort,
+      const session=createNativeSession(provider,{origin:'native',purpose:'chat',title:input.title.trim().slice(0,120),summary:purposeFromFirstWords(input.title),
+        cwd:location?.cwd??cwd,project:location?.cwd??cwd,
+        ...(runner&&location&&account?{providerRunner:runner,providerAccount:account,projectName:location.project,projectPath:location.path}:{}),
+        model:defaultModel.model,reasoningEffort:defaultModel.reasoning_effort,
         resurrection:{peer:input.sourcePeer??this.selfMachine,sessionId:input.sourceSessionId,address:input.sourceAddress,threadId:nativeId,archivedAt:new Date().toISOString(),archivePath:'',resurrectedAt:new Date().toISOString(),kind:'continued-in-place'}});
       bindSessionProvider(session.id,provider,nativeId);
       this.saveControl(session,'resurrect-native',input,()=>({sessionId:`concierge:${session.id}`}));
@@ -3700,12 +3740,40 @@ export class SessionOwner {
           target={...value.session,id:`${machine}:${value.session.id.slice(10)}`,address:`${machine}/${value.session.address}`,peer:machine};
         }
         catch(error){if(error instanceof PeerError&&error.kind==='unreachable')throw new SessionOwnerError(`${machine} is not answering. This conversation lives in ${project} there; try again when it is on.`,424,'MACHINE_UNREACHABLE');if(error instanceof PeerError)throw new SessionOwnerError(error.message,error.status??502,error.code??'PEER_REFUSED');throw error;}
-      }else target=this.resumeNative(packet).session;
+      }else target=(await this.resumeNative(packet)).session;
       const operation=this.saveControl(source,'resurrect',input,()=>({sessionId:target.id,session:target}));
       return {session:target,operation:this.receipt(operation)};
     }
     if(!peers)throw new SessionOwnerError('No peer instance is configured here.',503,'CAPABILITY_UNAVAILABLE');
-    const created=peers.resurrect(remote.peer,remote.address,{defaultCwd:this.defaultCwd,createSession:(provider,metadata)=>createNativeSession(provider,metadata as any),bind:(sessionId,provider,uuid)=>bindSessionProvider(sessionId,provider,uuid)});
+    const runnerResurrection=process.env.CONCIERGE_TURN_RUNNER?.trim()||process.env.CONCIERGE_CODEX_RUNNER?.trim();
+    const created=await peers.resurrect(remote.peer,remote.address,{defaultCwd:this.defaultCwd,
+      createSession:(provider,metadata)=>createNativeSession(provider,metadata as any),
+      bind:(sessionId,provider,uuid)=>bindSessionProvider(sessionId,provider,uuid),
+      ...(runnerResurrection?{prepare:async ({provider,threadId,archived,projectName,projectPath}:{
+        provider:'claude-code'|'codex';threadId:string;archived:{path:string;archivedAt:string};projectName:string|null;projectPath:string|null;
+      })=>{
+        const runner=(provider==='codex'?process.env.CONCIERGE_CODEX_RUNNER:process.env.CONCIERGE_TURN_RUNNER)?.trim();
+        if(!runner)throw new SessionOwnerError('This provider has no runner for restored conversations.',409,'RUNNER_UNAVAILABLE');
+        const location=await resolveRunnerProjectLocation(runner,{projectName,projectPath});
+        const found=await runnerMachineCall<{account:string|null;resolution:'unique'|'missing'|'ambiguous'}>(runner,'accounts.transcript',
+          {provider,account:null,nativeId:threadId});
+        if(found.resolution==='ambiguous')throw new SessionOwnerError('This conversation has more than one account copy on its runner.',409,'NATIVE_TRANSCRIPT_AMBIGUOUS');
+        let account=found.resolution==='unique'?found.account:null;
+        if(!account){
+          const active=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider});
+          if(!active?.label)throw new SessionOwnerError('No signed-in account is available on the runner for this conversation.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
+          account=active.label;
+          const size=statSync(archived.path).size;
+          if(size<1||size>64*1024*1024)throw new SessionOwnerError('The archived conversation is outside the supported restore size.',409,'NATIVE_TRANSCRIPT_RESTORE_REFUSED');
+          const bytes=readFileSync(archived.path);
+          if(!bytes.subarray(0,262_144).toString('utf8').includes(threadId))throw new SessionOwnerError('The archived copy does not match this conversation.',409,'NATIVE_TRANSCRIPT_RESTORE_REFUSED');
+          await restoreRunnerProviderTranscript({runner,account,provider,nativeId:threadId,cwd:location.cwd,
+            name:basename(archived.path),bytes,restoreId:this.restoreOperationId(`peer:${remote.peer}:${remote.address}:${threadId}`)});
+        }
+        return {cwd:location.cwd,project:location.cwd,projectName:location.project,projectPath:location.path,
+          providerRunner:runner,providerAccount:account};
+      }}:{}),
+    });
     const session=getSessionById(created.sessionId)!;
     const operation=this.saveControl(session,'resurrect',input,()=>({sessionId:`concierge:${session.id}`,reused:created.reused}));
     return {session:this.view(session),operation:this.receipt(operation)};
@@ -4262,7 +4330,7 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=await this.transcribeAttachment(parts[1]!,body,url.searchParams.get('async')==='1');
       else if(request.method==='POST'&&parts[0]==='consultations'&&parts.length===1)result=await this.consult(body);
       else if(request.method==='POST'&&parts[0]==='resurrections'&&parts.length===1)result=await this.resurrect(body);
-      else if(request.method==='POST'&&parts[0]==='resurrections'&&parts[1]==='native'&&parts.length===2)result=this.resumeNative(body);
+      else if(request.method==='POST'&&parts[0]==='resurrections'&&parts[1]==='native'&&parts.length===2)result=await this.resumeNative(body);
       else if(parts[0]==='peers'&&this.communication?.peersOrNull()) {
         const peers=this.communication.peersOrNull()!;
         if(request.method==='GET'&&parts.length===1)result=peers.inventory();

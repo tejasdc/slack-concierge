@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, settleTurnDependencies, SETTLED_EXECUTION_SQL, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
-import { bindSessionProvider, carryingTurn, createNativeSession, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, HOLDING_OUTCOMES, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
+import { carryingTurn, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, HOLDING_OUTCOMES, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
@@ -1486,11 +1486,10 @@ export class SessionCommunicationCoordinator {
             if (input.peer !== undefined && input.peer !== remote.peer) throw new Error('The address names a different peer than --peer.');
             if (input.resurrect) {
                 // Continue the peer session here, from its archived transcript, as a distinct session.
-                const owner = this.dependencies.owner;
-                const created = this.dependencies.peers!.resurrect(remote.peer, remote.address, {defaultCwd: owner.defaultCwd,
-                    createSession: (provider, metadata) => createNativeSession(provider, metadata as any), bind: (sessionId, provider, uuid) => bindSessionProvider(sessionId, provider, uuid)});
-                const local = getSessionById(created.sessionId)!;
-                input = {...input, peer: undefined, address: sessionAddress(local), resurrect: undefined};
+                const continued=await this.dependencies.owner.resurrect({
+                    clientActionId:`ask-resurrect:${hash(`${actor.session}:${actor.turn}:${actor.inputId??''}:${input.action_id}`)}`,
+                    address:input.address});
+                input = {...input, peer: undefined, address: continued.session.address, resurrect: undefined};
             } else input = {...input, peer: remote.peer, address: remote.address};
         }
         // The thread this request works for, decided here and recorded on the request, so its
