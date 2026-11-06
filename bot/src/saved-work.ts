@@ -221,9 +221,9 @@ export function updateSavedTurn(turnId:number,action:string,body:Record<string,u
       const reason=typeof cancelingSessionId==='number'&&Number.isSafeInteger(cancelingSessionId)
         ?`Agent session concierge:${cancelingSessionId} canceled this saved work.`:'Tejas dropped this saved work.';
       db.query(`UPDATE turns SET status='cancelled',agent_text=?,ended_at=CURRENT_TIMESTAMP
-        WHERE session_id=? AND status='queued'`).run(reason,row.session_id);
+        WHERE id=? AND status='queued'`).run(reason,turnId);
       db.query(`UPDATE session_inputs SET receipt_json=json_set(COALESCE(receipt_json,'{}'),'$.state','canceled')
-        WHERE session_id=? AND turn_id IN (SELECT id FROM turns WHERE session_id=? AND status='cancelled')`).run(row.session_id,row.session_id);
+        WHERE id=? AND turn_id=?`).run(row.accepted_input_id,turnId);
     }
     const session=getSessionById(row.session_id);
     if(session){const meta=sessionMetadata(session);const needs=(meta.needs??[]).filter(need=>need.eventId!==`saved-work-alert:${turnId}`);
