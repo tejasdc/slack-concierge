@@ -757,6 +757,10 @@ for a 126 s start, incident ce2c2192). Startup costs what changed since the last
 of history. The schema owner checks all foreign keys only when this startup changes the schema;
 ordinary writes enforce foreign keys, and the release controller verifies migration backups.
 Recovery scans the existing index of open execution hosts rather than historical released hosts.
+Historical execution-folder pruning starts after online, two minutes later,
+in small pages. It never gates adoption or the request entrance; each pruned
+record is marked only after its cleanup finishes, so a stopped pass can safely
+resume on the next owner.
 The historical unreadable-reading repair records its completion; new reading items are checked
 at admission. During shutdown the read-only provider-history worker is asked to terminate without
 holding the service for a synchronous read, and each execution-host stop component logs its time.

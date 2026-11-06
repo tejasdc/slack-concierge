@@ -27,6 +27,16 @@ showed it scanning all 13,338 historical execution rows, with only 13 still live
 Adding the predicate of the existing partial index made SQLite scan that index.
 The request entrance itself then took 2,112 ms to open.
 
+The next managed release, at 03:49 UTC, installed the first repair. Its measured
+gap was 31.159 seconds (03:49:10.867 to 03:49:42.026). Module load fell to
+1.411 seconds, including 0.985 seconds of ledger work. The old execution-host
+stop still took 7.567 seconds; this was the last start without per-component
+stop timing. Prior-turn recovery took 8.541 seconds, including 8.482 seconds
+of ledger work. Its slowest statement took 7.389 seconds and scanned settled
+execution records for folders due for deletion; the live query returned no
+eligible folders. The historical unreadable-reading sweep cost 2.722 seconds
+and 40,712 ledger calls on this first start, then recorded its completion mark.
+
 ## Cause
 
 Module-load's slowest ledger operation was an outer transaction, so its fingerprint
@@ -47,6 +57,15 @@ have nothing to read. The execution-host shutdown now logs each component's
 duration, and asks its read-only history worker to terminate without waiting
 for the worker's synchronous read to return. The next managed release must be
 measured to determine whether that worker accounted for the 8,096 ms stop.
+
+The second release exposed another startup dependency: month-old execution
+folder cleanup ran inside prior-turn custody recovery, even when no folder
+was due. Custody recovery only needs active executions. The follow-up moves
+historical folder cleanup after the request entrance opens and pages through
+the execution ledger in small reads with pauses. It retains the one-month
+retention rule and only marks an execution pruned after its folder or runner
+payload cleanup succeeds. An interrupted pass revisits remaining rows on the
+next start, after the request entrance opens.
 
 ## Acceptance scenario
 
