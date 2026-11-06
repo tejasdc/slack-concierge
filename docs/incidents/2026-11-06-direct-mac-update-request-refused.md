@@ -32,14 +32,16 @@ direct human instruction and later request receipt.
 
 For this one request, the Mac owner verifies its local Codex transcript has the
 direct user message and later exact outside request receipt in the same provider
-thread. It then grants only exact-bundle/page passive reads and a fixed `Update now`
-program for the ready release. The program refuses `Update anyway`, multiple
-windows, missing or duplicate Update buttons, and arbitrary clicks. The normal
-Mac worker still must check the page and unsaved work before any update action.
+thread. PR #660 granted exact-bundle passive reads and a fixed `Update now` program.
+An independent critique identified that the program could not prove the current
+page, ready release or stable control target at click time. A corrective release
+keeps the passive read and refuses the update click until an action-bound route
+can prove those facts. The transcript is a cooperative audit record, not a
+security boundary against an agent able to rewrite files on its host.
 
 ## Acceptance scenario
 
 - **Seed:** The exact retained Mac Codex transcript and an active work request from the recorded server worker for the exact thnkr.ing web app, page and ready release.
-- **Action:** The Mac worker inspects the app, then invokes the fixed guarded Update now program only after confirming the target and unsaved-work state.
-- **Expected:** The guard admits the exact app read and guarded update action; a different source, app, release, arbitrary click, missing transcript, or Update anyway state is refused. The Mac worker separately observes the loaded build before reporting installation.
+- **Action:** The Mac worker inspects the app through the exact-bundle read. An attempted Update now click is refused.
+- **Expected:** The guard admits the exact app read and refuses every update click, including the former fixed program. A different source, app, release or missing transcript is refused. No installed build is claimed from the read.
 - **Replayable offline:** yes, for guard decisions with `bot/scripts/mac-surface-policy-check.ts`; the physical Mac update and loaded build require live observation.
