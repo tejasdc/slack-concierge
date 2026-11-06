@@ -1482,7 +1482,10 @@ export class SessionPeers {
     let machineNeed:MachineNeed|undefined;
     if(this.self==='mac'&&(typeof input.provider==='string'||input.requestedEffect==='work'&&!input.forwardedReply)) {
       try { machineNeed=input.machineNeed?.kind==='provider-renewal'
-        && typeof origin.inputId==='string' && /^repair-notice:(?:claude|codex)-signin:/.test(origin.inputId)
+        // The owner may bundle several repair notices under its first notice's input ID.
+        // The provider-renewal need is internal-only; the authenticated peer, repair-notice
+        // provenance, and fixed browser-worker address together authorize this route.
+        && typeof origin.inputId==='string' && origin.inputId.startsWith('repair-notice:')
         && typeof input.address==='string' && input.address==='session:WzIsMTAwLDFd'
           ? {kind:'provider-renewal',why:'Concierge provider sign-in repair request'}
           : parseMachineNeed(typeof input.machineNeed?.kind==='string'&&typeof input.machineNeed?.why==='string'
