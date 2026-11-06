@@ -1420,11 +1420,7 @@ export class SessionExecutionHost {
     const metadata=sessionMetadata(session);
     const channel=session.slack_channel_id?getChannel(session.slack_channel_id):null;
     const outsideCodex=session.provider_id==='codex'&&metadata.outside===true;
-    const configuredRunner=process.env.CONCIERGE_TURN_RUNNER?.trim()||null;
-    const providerRunner=chooseTurnRunner(session,metadata);
-    const runnerTarget=session.provider_id==='claude-code'||session.provider_id==='codex'?providerRunner
-      :metadata.providerRunner!==undefined?metadata.providerRunner
-      :session.provider_id==='antigravity'||outsideCodex?configuredRunner:null;
+    const runnerTarget=chooseTurnRunner(session,metadata);
     // A runner-bound conversation resolves its stable project identity on that machine. Owner
     // absolute cwd paths are retained for presentation only and never go into a remote manifest.
     const onRunner=!adoption&&!!runnerTarget&&(session.provider_id==='claude-code'||session.provider_id==='antigravity'||outsideCodex);
