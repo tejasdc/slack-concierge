@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { tmpdir } from "node:os";
 import {assertRunnerGoogleCreditPolicy} from '../src/runner-google-policy';
+import {providerAccountHomeForPlacement} from '../src/provider-account-home';
+import {CodexAdmissionHolds} from '../src/codex-admission-holds';
+import {withCodexRestartLock} from '../src/codex-restart-lock';
 
 if (process.env.RUNNER_ACCOUNT_CHECK_CHILD !== "1") {
   const isolatedHome = mkdtempSync(join(tmpdir(), "runner-account-check-"));
@@ -19,6 +22,25 @@ if (process.env.RUNNER_ACCOUNT_CHECK_CHILD !== "1") {
 } else {
 
 const root = homedir();
+assert.equal(providerAccountHomeForPlacement(null,'writer@example.com','/owner/.claude-accounts/writer'),'/owner/.claude-accounts/writer',
+  'a local Claude turn must receive its actual local account home even when runner dispatch is configured globally');
+assert.equal(providerAccountHomeForPlacement('ax41','writer@example.com','/owner/.claude-accounts/writer'),'runner-account:writer@example.com',
+  'a runner-bound Claude turn carries only the account label for runner-side home resolution');
+const admission=new CodexAdmissionHolds();
+admission.set('account-switch',true);admission.set('server-rehome',true);
+admission.set('account-switch',false);
+assert.equal(admission.isHeld,true,'settling an account switch cannot release the re-home admission hold');
+admission.set('server-rehome',false);
+assert.equal(admission.isHeld,false,'admission opens only after both operations settle');
+const restartOrder:string[]=[];
+let finishRestart!:()=>void;
+const firstRestart=withCodexRestartLock(async()=>{restartOrder.push('switch-start');await new Promise<void>(resolve=>finishRestart=resolve);restartOrder.push('switch-finish');});
+const secondRestart=withCodexRestartLock(async()=>{restartOrder.push('rehome');});
+await Promise.resolve();
+assert.deepEqual(restartOrder,['switch-start'],'account switch and re-home must not enter the restart path together');
+finishRestart();
+await Promise.all([firstRestart,secondRestart]);
+assert.deepEqual(restartOrder,['switch-start','switch-finish','rehome'],'queued restart work begins only after the active replacement settles');
 mkdirSync(root, { recursive: true });
 const googleSettings=join(root,'google-settings.json');
 assertRunnerGoogleCreditPolicy(googleSettings); // No setting preserves subscription-only behavior.

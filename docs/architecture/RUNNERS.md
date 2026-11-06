@@ -416,7 +416,13 @@ a one-use operation ID. The runner returns its provider outcome; the owner remai
 clearing stale usage evidence and releasing held work only after a confirming reading.
 
 Codex account activation uses `accounts.codex.activate` with an operation ID. The owner wrapper
-holds Codex admission and refuses the switch while an active-turn count is nonzero or unreadable.
+holds Codex admission under that activation's identity and refuses the switch while an active-turn
+count is nonzero or unreadable, including turns observed from another Codex client. App Server
+re-home has a separate admission holder, so settling or deferring one operation cannot release the
+other operation's hold. The owner serializes account switches and re-homes through one restart
+queue; the runner also refuses a switch during a re-home and a re-home during a switch. A `busy`
+reply means that operation did not start, so it releases only its own admission holder and remains
+eligible for a later retry.
 The runner holds its App Server auto-start, moves only credential files, restarts its own daemon and
 asks that daemon to refresh and report the requested account. It rolls back on a definite failure;
 an unconfirmed rollback is durably `uncertain` and blocks another switch until reconciled. Repeating

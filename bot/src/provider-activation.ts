@@ -5,7 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { forgetAccountFiles } from "./account-files-memo";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, watch, type FSWatcher } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { authHeldInputCount, db, holdCodexAdmission, observeExecutionChanges, releaseAuthHeldWork } from "./state";
+import { authHeldInputCount, codexAdmissionRecoveryHolds, db, holdCodexAdmission, observeExecutionChanges, releaseAuthHeldWork } from "./state";
 import { log } from "./log";
 import { recordSessionEvent } from "./session-inputs";
 import { releaseUsageHeldWork } from "./provider-usage";
@@ -23,6 +23,7 @@ import { providerOwnerEnvironment } from "./provider-owner-environment";
 import { isClaudeUsageExhaustion } from "./provider-failures";
 import {providerRunnerTarget} from './provider-runner-target';
 import {runnerMachineCall} from './runner-machine-calls';
+import {withCodexRestartLock} from './codex-restart-lock';
 
 // Making a credential change take effect on the provider runtime that is
 // already running.
@@ -103,12 +104,8 @@ function run(command: string, args: string[], timeoutMs: number, environment:Nod
 
 // One Codex restart at a time: a switch that arrives during a replacement waits for it and then
 // restarts onto its own account, rather than sharing a result that loaded the old one.
-let codexRestarts: Promise<unknown> = Promise.resolve();
-function oneCodexRestartAtATime<T>(work: () => Promise<T>): Promise<T> {
-  const next = codexRestarts.then(work, work);
-  codexRestarts = next.catch(() => undefined);
-  return next;
-}
+const LOCAL_CODEX_ACTIVATION_HOLD='codex:local-account-activation';
+function oneCodexRestartAtATime<T>(work: () => Promise<T>): Promise<T> { return withCodexRestartLock(work); }
 
 function activateCodex(): Promise<ActivationReport> { return oneCodexRestartAtATime(activateCodexNow); }
 async function activateCodexNow(): Promise<ActivationReport> {
@@ -116,7 +113,7 @@ async function activateCodexNow(): Promise<ActivationReport> {
   // counted: counting first left a window in which a turn could be claimed onto a server about to
   // stop (outage review, 2026-10-08). Running work is never waited on here; the restart is
   // deferred and retried when it finishes, so nothing queued is held while an agent works.
-  holdCodexAdmission(true);
+  holdCodexAdmission(LOCAL_CODEX_ACTIVATION_HOLD,true);
   try {
     const running = runningCodexTurns();
     if (running !== 0) {
@@ -154,7 +151,7 @@ async function activateCodexNow(): Promise<ActivationReport> {
       ? { status: "applied", detail: "Done. This machine is using the new account now." }
       : { status: "failed", detail: "Signed in, and this machine restarted Codex, but Codex did not come back healthy here." };
   } finally {
-    holdCodexAdmission(false);
+    holdCodexAdmission(LOCAL_CODEX_ACTIVATION_HOLD,false);
   }
 }
 
@@ -219,7 +216,7 @@ async function codexServerUnmanaged(): Promise<boolean> {
 }
 
 /** Codex turns another client (the Mac Codex app) is running on the shared server, as last observed. */
-function externallyRunningCodexTurns(): number {
+export function externallyRunningCodexTurns(): number {
   try {
     return (db.query(`SELECT COUNT(*) AS count FROM sessions WHERE provider_id='codex'
       AND COALESCE(json_extract(native_metadata_json,'$.outside'),0)=0
@@ -236,16 +233,16 @@ async function reconcileRunnerCodexRepair(runner:string):Promise<void>{
   try{
     for(;;){
       let result:{status:string;detail?:string};
-      try{result=await runnerMachineCall(runner,'accounts.codex.repairUnmanaged',{},RUNNER_REPAIR_TIMEOUT_MS);}
+      try{result=await withCodexRestartLock(()=>runnerMachineCall(runner,'accounts.codex.repairUnmanaged',{},RUNNER_REPAIR_TIMEOUT_MS));}
       catch{await new Promise(resolve=>setTimeout(resolve,5_000));continue;}
       if(result.status==='busy'){
-        pendingCodexRepair=true;holdCodexAdmission(false);return;
+        pendingCodexRepair=true;holdCodexAdmission(`codex:runner-rehome:${runner}`,false);return;
       }
       if(result.status==='uncertain'){
         log('error','codex_runner_rehome_uncertain',{runner,detail:result.detail??null});
         return;
       }
-      pendingCodexRepair=false;holdCodexAdmission(false);
+      pendingCodexRepair=false;holdCodexAdmission(`codex:runner-rehome:${runner}`,false);
       if(result.status==='repaired')log('warn','codex_unmanaged_server_repaired_on_runner',{runner,detail:result.detail??null});
       else if(result.status==='refused'||result.status==='unsupported')log('error','codex_unmanaged_server_repair_refused_on_runner',{runner,status:result.status,detail:result.detail??null});
       return;
@@ -265,7 +262,8 @@ function repairUnmanagedCodexServer(): Promise<void> {
     if(runner){
       if(process.platform!=='linux'){pendingCodexRepair=false;return;}
       pendingCodexRepair=true;
-      holdCodexAdmission(true);
+      const repairHold=`codex:runner-rehome:${runner}`;
+      holdCodexAdmission(repairHold,true,{kind:'runner-rehome',runner});
       let retainAdmission=false;
       try{
         const running=runningCodexTurns(),external=externallyRunningCodexTurns();
@@ -288,13 +286,14 @@ function repairUnmanagedCodexServer(): Promise<void> {
         log('error','codex_unmanaged_server_repair_unconfirmed_on_runner',{runner,error:error instanceof Error?error.message:String(error)});
         retainAdmission=true;
         void reconcileRunnerCodexRepair(runner);
-      }finally{if(!retainAdmission)holdCodexAdmission(false);}
+      }finally{if(!retainAdmission)holdCodexAdmission(repairHold,false);}
       return;
     }
     if (process.platform !== "linux" || !(await codexServerUnmanaged())) { pendingCodexRepair = false; return; }
     pendingCodexRepair = true;
     if (!codexUpdaterDisabled()) { log("error", "codex_unmanaged_server_repair_refused", { reason: "automatic_updater_not_disabled" }); return; }
-    holdCodexAdmission(true);
+    const repairHold='codex:local-rehome';
+    holdCodexAdmission(repairHold,true);
     try {
       const running = runningCodexTurns(), external = externallyRunningCodexTurns();
       if (running !== 0 || external !== 0) { log("info", "codex_unmanaged_server_repair_waiting", { running, external }); return; }
@@ -306,7 +305,7 @@ function repairUnmanagedCodexServer(): Promise<void> {
       // Concierge, or an account switch (which replaces it too), tries again.
       pendingCodexRepair = false;
     } finally {
-      holdCodexAdmission(false);
+      holdCodexAdmission(repairHold,false);
     }
   });
 }
@@ -517,6 +516,10 @@ export function watchAuthHeldCredentials(): () => void {
   let repairing=false;
   const repair=()=>{if(stopped||repairing)return;repairing=true;
     void repairUnmanagedCodexServer().catch(error=>log('error','codex_unmanaged_server_repair_failed',{error:String(error)})).finally(()=>{repairing=false;});};
+  const durableCodexHolds=codexAdmissionRecoveryHolds();
+  if(durableCodexHolds.some(({recovery})=>recovery.kind==='runner-rehome'))pendingCodexRepair=true;
+  void import('./runner-provider-account-owner').then(module=>module.resumeRunnerCodexAdmissionHolds())
+    .catch(error=>log('error','codex_runner_admission_recovery_failed',{error:error instanceof Error?error.message:String(error)}));
   repair();
   const detach=observeExecutionChanges(()=>{
     updateInterval();
