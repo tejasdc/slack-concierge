@@ -91,8 +91,8 @@ agents' entrance, never the public door):
   condition, start, revision).
 - `POST /grafana/v1/recoveries` takes `{fingerprint, condition, startsAt, endsAt,
   ruleUid, stateFingerprint}`. It refuses an unknown episode (404), a different condition
-  or a start that no longer matches the retained episode (409), or an end in the future
-  (422), and answers `already_resolved` without change when the recovery already landed.
+  or a start that no longer matches the retained episode (409), malformed evidence or an
+  end before the start or in the future (422), and answers `already_resolved` without change when the recovery already landed.
   Otherwise it applies the recovery exactly as a delivered resolved notification would:
   same fingerprint and start, the next revision, Grafana's recorded end time, and the same
   idempotent repair-notice recovery. It logs `grafana_alert_recovery_reconciled` with the

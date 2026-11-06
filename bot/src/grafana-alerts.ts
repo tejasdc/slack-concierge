@@ -190,9 +190,11 @@ export class GrafanaAlerts {
       if (this.stopping) throw new Error("Alert receiver is draining.");
       // A Slack-era receipt has no current destination to publish its recovery to (Slack was
       // retired 2026-09-15); record Grafana's recovery as the episode's final, delivered revision.
-      this.options.db.query(`UPDATE grafana_alerts SET status='resolved',ends_at=?,revision=revision+1,
+      // An in-flight delivery owns the row until it finishes; the next reconciler pass settles it.
+      const changed = this.options.db.query(`UPDATE grafana_alerts SET status='resolved',ends_at=?,revision=revision+1,
         delivered_revision=revision+1,delivery_status='delivered',owner_id=NULL,error=NULL,updated_at=CURRENT_TIMESTAMP
-        WHERE fingerprint=? AND starts_at=? AND status='firing'`).run(endsAt, row.fingerprint, startsAt);
+        WHERE fingerprint=? AND starts_at=? AND status='firing' AND delivery_status<>'sending'`).run(endsAt, row.fingerprint, startsAt);
+      if (!changed.changes) return { status: 409, outcome: "delivery_in_progress", starts_at: row.starts_at, episode_status: row.status };
     } else {
       this.accept([{ fingerprint: row.fingerprint, condition: row.condition, startsAt, endsAt, status: "resolved", omitted: row.omitted }]);
     }
