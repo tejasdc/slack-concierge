@@ -548,10 +548,12 @@ runner-local; updates compare the observed SHA-256 before replacing the canonica
 atomic rename. Task appends carry an owner-generated idempotency marker, so a retry after an uncertain
 reply finds the existing item instead of duplicating it.
 
-A handoff first recovers the conversation's exact runner from its saved binding
-or most recent execution lease, resolves its project there, and reads the worktrees there. If a
-runner lease or project identity is unavailable, the handoff reports that omission instead of
-examining the owner's checkout.
+A bound conversation without a saved runner recovers its machine from the most recent
+execution whose host actually launched (`executions.unit` is present). A later unclaimed
+or withdrawn execution intent cannot move the conversation or hide its earlier runner.
+If that launched execution was on a runner but its exact lease is missing, resume refuses
+to guess the machine; a handoff reports the omission instead of examining the owner's
+checkout. Handoffs resolve the recovered runner's project and read worktrees there.
 
 The Google paid-credit check and CLI lookup is `google.executable` (`runner-providers.ts`). It runs
 against the runner's Google settings and returns only the executable path. A missing or unreachable
