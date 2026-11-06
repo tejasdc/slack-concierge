@@ -165,7 +165,9 @@ history, operation and attachment primitives; they are not model human-admission
 Agent `POST /sessions/v1/requests` creation accepts `targetProvider` from the existing
 alias table (or `chatgpt`), `effort?`, `project?`, `title?`, `summary?`, `text`, `files?` with exact
 `{name,contentType,base64}` bytes, `captureId?`, and the existing source/action/request
-fields. Coding providers require a registered project, resolved at the owner, never
+fields. A ChatGPT question also accepts `forTask?`, `recoveryOf?` and `correctionOf?`,
+the same task, recovery and correction references as `sessions ask --for-task`,
+`--recovery-of` and `--correction-of`; a human-origin source must name its task. Coding providers require a registered project, resolved at the owner, never
 an arbitrary caller cwd. Addressed requests cannot change model/effort/project. The
 first agent input and original attachment custody are retained in the request
 transaction; the queued turn receives the selected reasoning effort. The trusted
