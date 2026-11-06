@@ -617,9 +617,12 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     runningClaudeModel=claudeLaunchModel;
     const remoteClaudeRunner=input.providerId==='claude-code'?input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER?.trim()||null:null;
     const remoteGoogleRunner=input.providerId==='antigravity'?input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER?.trim()||null:null;
-    if(remoteClaudeRunner&&providerAccountUsage('claude-code')?.sourceRunner!==remoteClaudeRunner)
-      throw new ProviderDispatchError({failureClass:'parked_access',terminalConfirmed:true,
-        message:`Claude was placed on runner ${remoteClaudeRunner}, but the owner's saved Claude allowance reading is not from that runner. This turn remains held until the owner has a reading for its selected runner.`});
+    if(remoteClaudeRunner&&providerAccountUsage('claude-code')?.sourceRunner!==remoteClaudeRunner){
+      void scheduleProviderAccountUsageRefresh().catch(()=>{});
+      throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,
+        accountReadingWait:true,
+        message:`Claude was placed on runner ${remoteClaudeRunner}, but the owner's saved Claude allowance reading is not from that runner. This unsent turn will retry after the owner reads that runner's allowance.`});
+    }
     let claudeChoice=input.providerId==='claude-code'
       ?input.boundAccount?{...input.boundAccount,because:'spending-this-window' as const,expected:input.boundAccount.account,selectionRevision:sessionMetadata(input.session).claudeSelectionRevision??0}
         :chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0,input.turnId,claudeLaunchModel,warmClaudeCacheAccount)
@@ -1298,6 +1301,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // later fresh allowance reading proves room; a guessed timer could replay it early.
       const googleUsageWait=replaySafe&&input.providerId==='antigravity'&&heldUntilMs===null
         &&/RESOURCE_EXHAUSTED|individual quota reached|quota exhausted/i.test(message);
+      const runnerAccountReadingWait=replaySafe&&structuredFailure?.accountReadingWait===true;
       // A first turn the owner placed on this provider by itself, refused for allowance before any
       // work, goes to a provider with room instead of waiting for this one's reset. On 2026-10-31 his
       // 4 AM afterparties request was placed on Google with 65 hours left on its quota and ended.
@@ -1330,7 +1334,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         && error.evidence.code === 'CHATGPT_NOT_SENT';
       const localPrerequisiteWait = replaySafe && structuredFailure?.localPrerequisiteUnavailable === true;
       let retryable = replaySafe
-        && (authWait || googleUsageWait || chatgptNeverSent || localPrerequisiteWait || structuredFailure?.failureClass === "retryable" ||
+        && (authWait || googleUsageWait || runnerAccountReadingWait || chatgptNeverSent || localPrerequisiteWait || structuredFailure?.failureClass === "retryable" ||
           structuredFailure?.modelAtCapacity === true || heldUntilMs !== null || switchClaudeAccount);
       let policyRetryAtMs: number | null = null;
       // A rejected model is a property of this session's binding, not of the Google
@@ -1339,7 +1343,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       if (invalidGoogleModel) retryable = false;
       // Sign-in and allowance holds have their own release signals, so they do not
       // consume a timed provider-request retry budget.
-      if (replaySafe && !authWait && !googleUsageWait && heldUntilMs === null && !switchClaudeAccount &&
+      if (replaySafe && !authWait && !googleUsageWait && !runnerAccountReadingWait && heldUntilMs === null && !switchClaudeAccount &&
         !invalidGoogleModel && !chatgptNeverSent && !structuredFailure?.threadWriterConflict) {
         const failure = retryable
           ? { kind: 'transient' as const, reason: message, retryAtMs: heldUntilMs,
@@ -1383,8 +1387,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
             dispatchAttempt,
             error: message,
             authWait,
-            usageHold: heldUntilMs !== null || googleUsageWait,
-            usageResetUnknown: googleUsageWait,
+            usageHold: heldUntilMs !== null || googleUsageWait || runnerAccountReadingWait,
+            usageResetUnknown: googleUsageWait || runnerAccountReadingWait,
             nextAttemptMs: switchClaudeAccount || providerDispatchError(error)?.immediateRetry
               ? Date.now() : policyRetryAtMs ?? heldUntilMs ?? Date.now() + providerRetryDelayMs(dispatchAttempt),
           })
@@ -1470,7 +1474,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         session_id: input.session.id,
         dispatch_attempt: dispatchAttempt,
         failure_class: retryable
-          ? authWait ? "auth_wait" : googleUsageWait ? "usage_wait" : "backoff"
+          ? authWait ? "auth_wait" : googleUsageWait || runnerAccountReadingWait ? "usage_wait" : "backoff"
           : ambiguous
           ? "parked_ambiguous"
           : structuredFailure?.failureClass || "parked_terminal",
