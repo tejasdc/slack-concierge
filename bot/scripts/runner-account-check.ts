@@ -64,6 +64,7 @@ try {
   writeFileSync(join(root,".claude","settings.json"),JSON.stringify({permissions:{allow:["Read"]}}));
 
   const accounts = await import("../src/runner-provider-accounts");
+  const {samePhysicalFile,serveRunnerAside}=await import("../src/runner-asides");
   assert.equal(accounts.runnerCodexServerNeedsRehome('{"running":true,"backend":"pid"}',false),true);
   assert.equal(accounts.runnerCodexServerNeedsRehome('{"running":true,"backend":"pid"}',null),false,
     "an unreadable listener environment must never be treated as a safe re-home target");
@@ -87,8 +88,30 @@ try {
     "Claude identity must not read the blank/default home or invent its account label");
   assert.deepEqual(await accounts.serveRunnerAccountCall("accounts.identity", { provider: "claude-code", account: "writer@example.com" }),
     { id: createHash("sha256").update("opaque-refresh").digest("hex").slice(0, 16), label: "writer@example.com" });
+  assert.deepEqual(await accounts.serveRunnerAccountCall("accounts.validate", { provider: "claude-code", account: "writer@example.com" }),
+    { available: true, resolution: "unique" }, "the owner can bind shared history only after validating its chosen account on the runner");
   assert.deepEqual(await accounts.serveRunnerAccountCall("accounts.transcript", { provider: "claude-code", account: null, nativeId: claudeTranscriptId }),
-    { account: null, resolution: "ambiguous" }, "shared symlinks prove one file, not which Claude account owns it");
+    { account: null, resolution: "shared" }, "shared symlinks identify one physical transcript while leaving account binding to the owner");
+  const distinctClaudeHome=join(root,".claude-accounts","distinct");
+  mkdirSync(distinctClaudeHome,{recursive:true});
+  writeFileSync(join(distinctClaudeHome,".credentials.json"),JSON.stringify({claudeAiOauth:{refreshToken:"distinct-refresh"}}));
+  writeFileSync(join(distinctClaudeHome,".account-email"),"distinct@example.com");
+  const freshTranscript=join(distinctClaudeHome,"projects","-project",`${claudeTranscriptId}.jsonl`);
+  mkdirSync(join(freshTranscript,".."),{recursive:true});
+  writeFileSync(freshTranscript,"{}");
+  assert.deepEqual(await accounts.serveRunnerAccountCall("accounts.transcript", { provider: "claude-code", account: null, nativeId: claudeTranscriptId }),
+    { account: null, resolution: "ambiguous" }, "distinct physical Claude transcript copies remain ambiguous");
+  rmSync(freshTranscript);
+  assert.equal(samePhysicalFile(claudeTranscript,join(claudeOther,"projects","-project",`${claudeTranscriptId}.jsonl`)),true,
+    "side-question copy must recognize account homes that link the same transcript file");
+  assert.equal(samePhysicalFile(claudeTranscript,freshTranscript),false,
+    "a missing destination must still be copied rather than treated as the source file");
+  await assert.rejects(serveRunnerAside({operationId:"aside-null-home",provider:"claude-code",account:null,
+    spendAccount:"writer@example.com",sessionUuid:claudeTranscriptId,project:null,path:"",model:null,running:false,prompt:"question"},
+  {botDir:root,bunPath:process.execPath,resolveCwd:async()=>root,
+    findHome:()=>({account:null,home:null,transcript:claudeTranscript}),
+    accountHome:()=>claude}),/not bound/,
+  "a content-only shared transcript cannot launch a side question with a null Claude home");
   assert.deepEqual(await accounts.serveRunnerAccountCall("accounts.transcript", { provider: "claude-code", account: "writer@example.com", nativeId: claudeTranscriptId }),
     { account: "writer@example.com", resolution: "unique" }, "saved Claude account identity resolves its shared transcript without relabeling it");
   const sharedTranscript = accounts.findRunnerProviderSessionHome("claude-code", null, claudeTranscriptId);

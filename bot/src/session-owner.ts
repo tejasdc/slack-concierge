@@ -2993,7 +2993,7 @@ export class SessionOwner {
       // The wait is for the throwaway copy, not the owner: it is recorded as awaited, never as owner slowness.
       return await awaitingOutside(()=>askAsideOnce(`${session.id}:${input.asideId}`,()=>({provider:session.provider_id,
         sessionUuid:session.agent_session_uuid!,cwd,model:meta.model??null,running:this.view(session).execution==='running',passage,question,earlier,
-        ...(runner?{runner,account:meta.providerAccount??null,project:location?.project??null,projectPath:location?.path??''}:{})}),90_000));
+        ...(runner?{runner,account:meta.providerAccount??meta.claudeAccount??null,project:location?.project??null,projectPath:location?.path??''}:{})}),90_000));
     } catch(error) {
       throw new SessionOwnerError(error instanceof Error?error.message:String(error),502,'ASIDE_FAILED');
     }
@@ -3755,10 +3755,17 @@ export class SessionOwner {
     let location:{cwd:string;project:string|null;path:string}|null=null,account:string|null=null;
     if(runner){
       location=await resolveRunnerProjectLocation(runner,{project:cwd,cwd});
-      const found=await runnerMachineCall<{account:string|null;resolution:'unique'|'missing'|'ambiguous'}>(runner,'accounts.transcript',
+      const found=await runnerMachineCall<{account:string|null;resolution:'unique'|'shared'|'missing'|'ambiguous'}>(runner,'accounts.transcript',
         {provider,account:null,nativeId});
       if(found.resolution==='ambiguous')throw new SessionOwnerError('This provider conversation has more than one account copy on its runner.',409,'NATIVE_TRANSCRIPT_AMBIGUOUS');
       account=found.resolution==='unique'?found.account:null;
+      if(found.resolution==='shared'){
+        const selected=provider==='claude-code'?selectedClaudeHome()?.label:null;
+        if(!selected)throw new SessionOwnerError('Choose a Claude account available on the runner to continue this shared conversation.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
+        const validation=await runnerMachineCall<{available:boolean}>(runner,'accounts.validate',{provider,account:selected});
+        if(!validation.available)throw new SessionOwnerError('The selected Claude account is unavailable on this runner.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
+        account=selected;
+      }
       if(!account){
         if(!restore)throw new SessionOwnerError('The original provider conversation is not in this runner’s history yet.',409,'NATIVE_TRANSCRIPT_UNAVAILABLE');
         const packet=restore&&typeof restore==='object'?restore as Record<string,unknown>:{};
@@ -3851,10 +3858,17 @@ export class SessionOwner {
         const runner=(provider==='codex'?process.env.CONCIERGE_CODEX_RUNNER:process.env.CONCIERGE_TURN_RUNNER)?.trim();
         if(!runner)throw new SessionOwnerError('This provider has no runner for restored conversations.',409,'RUNNER_UNAVAILABLE');
         const location=await resolveRunnerProjectLocation(runner,{projectName,projectPath});
-        const found=await runnerMachineCall<{account:string|null;resolution:'unique'|'missing'|'ambiguous'}>(runner,'accounts.transcript',
+        const found=await runnerMachineCall<{account:string|null;resolution:'unique'|'shared'|'missing'|'ambiguous'}>(runner,'accounts.transcript',
           {provider,account:null,nativeId:threadId});
         if(found.resolution==='ambiguous')throw new SessionOwnerError('This conversation has more than one account copy on its runner.',409,'NATIVE_TRANSCRIPT_AMBIGUOUS');
         let account=found.resolution==='unique'?found.account:null;
+        if(found.resolution==='shared'){
+          const selected=provider==='claude-code'?selectedClaudeHome()?.label:null;
+          if(!selected)throw new SessionOwnerError('Choose a Claude account available on the runner to continue this shared conversation.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
+          const validation=await runnerMachineCall<{available:boolean}>(runner,'accounts.validate',{provider,account:selected});
+          if(!validation.available)throw new SessionOwnerError('The selected Claude account is unavailable on this runner.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
+          account=selected;
+        }
         if(!account){
           const selected=provider==='claude-code'?selectedClaudeHome()?.label:null;
           const active=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider,...(selected?{account:selected}:{})});

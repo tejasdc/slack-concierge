@@ -9,6 +9,7 @@ import {join} from 'node:path';
 import {forkSession,getSessionMessages} from '@anthropic-ai/claude-agent-sdk';
 import {claudeConfigDir,locateClaudeTranscript} from '../src/claude-transcript-watch';
 import {MANAGED_CODEX} from '../src/codex-daemon-file-limit';
+import {samePhysicalFile} from '../src/runner-asides';
 
 type Input={provider:'claude-code'|'codex';sessionUuid:string;cwd:string;model:string|null;running:boolean;prompt:string};
 const TIMEOUT_MS=180_000;
@@ -41,14 +42,14 @@ async function answer(input:Input){
     // crosses between the runner's verified provider homes; the original stays with its account.
     const fork=(await forkSession(input.sessionUuid,{dir:input.cwd,...(boundary?{upToMessageId:boundary}:{}),title:'Side question copy'})).sessionId;
     const source=await locateClaudeTranscript(claudeConfigDir(),fork);
-    if(!source)throw new Error('The side question copy was not found in its source account.');
+    if(typeof source!=='string')throw new Error('The side question copy was not found in its source account.');
     const spendHome=process.env.CONCIERGE_ASIDE_SPEND_HOME||claudeConfigDir();
     let copied:string|null=null;
     try{
       if(spendHome!==claudeConfigDir()){
         const slug=input.cwd.replace(/[\\/.]/g,'-'),directory=join(spendHome,'projects',slug);
         mkdirSync(directory,{recursive:true,mode:0o700});copied=join(directory,`${fork}.jsonl`);
-        copyFileSync(source,copied,constants.COPYFILE_EXCL);
+        if(!samePhysicalFile(source,copied))copyFileSync(source,copied,constants.COPYFILE_EXCL);
       }
       const args=['-p','--resume',fork,'--fork-session','--no-session-persistence',
         '--tools','','--strict-mcp-config','--output-format','json',...(input.model?['--model',input.model]:[]),input.prompt];

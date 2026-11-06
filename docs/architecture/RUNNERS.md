@@ -216,9 +216,12 @@ refuses a watch instead of reading the runner's default Claude home.
 Runner-bound side questions and resurrected conversations now resolve their project and provider
 account on the runner. The owner sends a bounded side-question job or archived transcript through
 the authenticated machine relay; the runner reads its provider home and starts the private fork
-there. Resurrection records the chosen runner and account with the new conversation so a later
-turn cannot silently resume against the owner's home. A missing or ambiguous provider history
-copy refuses the operation. Local-only peer conversations keep their existing local restore path.
+there. Older Claude sessions use their saved Claude account label; if that identity is absent, the
+runner refuses instead of launching with an empty home. When the chosen side-question account
+shares the same physical project history, the runner uses the fork in place and avoids copying the
+file onto itself. Resurrection records the chosen runner and account with the new conversation so
+a later turn cannot silently resume against the owner's home. Distinct or missing provider history
+copies refuse continuation. Local-only peer conversations keep their existing local restore path.
 Native forks use the same saved runner, account and project binding. The owner sends the native
 conversation ID, exact turn boundary, stable fork source and project identities; the runner resolves
 its own account home and project folders before asking Claude Code or its local Codex App Server to
@@ -400,12 +403,13 @@ sign-in links the machine-shared settings, instructions, hooks, skills and proje
 that account home while keeping credentials and other per-login files separate. Conflicting
 private shared files are retained under `.unlinked-*` before the shared link is installed.
 The runner resolves a provider account label to its own verified home before launching Claude Code.
-Home paths stay on that machine. `accounts.transcript` reports `unique`, `missing` or `ambiguous`
-for an exact provider session UUID and returns an account label only for one matching transcript.
-When Claude account homes link the same physical `projects` transcript, an unbound transcript
-lookup remains `ambiguous`: one physical file does not prove which account label owns the history.
-Content-only authored-subject and worktree reads may deduplicate that same physical file, but they
-return no account identity and do not authorize provider execution.
+Home paths stay on that machine. `accounts.transcript` reports `unique`, `shared`, `missing` or
+`ambiguous` for an exact provider session UUID. `shared` means Claude account homes expose the same
+physical transcript; it returns no account label. Before continuing that transcript, the owner
+chooses its selected Claude account and asks the runner to validate that exact label. Distinct
+physical copies remain ambiguous and refuse continuation. Content-only authored-subject and
+worktree reads may deduplicate a shared physical file, but return no account identity and do not
+authorize provider execution.
 
 Interactive sign-in uses `accounts.signin.start`, `.status` and `.complete`, keyed by one stable
 operation ID. A start returns the provider's one-time link and, for device sign-in, its code; the
@@ -469,8 +473,8 @@ an unreachable runner does not gate startup.
 Offline acceptance state card (source and isolated runner fixtures, not a live runner):
 
 - Verified in isolated fixtures: exact provider/account identity resolves from runner-owned homes,
-  shared Claude transcript links do not choose an account, and content-only readers deduplicate the
-  same physical transcript.
+  shared Claude transcript links identify one physical file without choosing its account, distinct
+  copies stay ambiguous, and content-only readers deduplicate the shared transcript.
 - Verified: duplicate sign-in start with the same operation ID returns the original outcome and
   does not start another CLI operation.
 - Verified: the isolated sign-in check has no provider CLI available and reports a bounded failure;

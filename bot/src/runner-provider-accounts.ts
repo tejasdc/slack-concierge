@@ -634,8 +634,8 @@ export async function serveRunnerAccountCall(method: string, params: Record<stri
     const matches = candidates.flatMap(candidate => exactProviderTranscripts(key, candidate.home, params.nativeId as string)
       .map(transcript => ({ account: candidate.account, transcript: safeRealpath(transcript) })));
     // A shared Claude projects symlink may expose one physical transcript through several
-    // account homes. That proves file identity, not account identity; unbound resolution stays
-    // ambiguous until the caller supplies the saved account label.
+    // account homes. It proves the transcript is present once, but not which account should
+    // be bound to a continued session; the owner must validate and choose that identity.
     if (account !== null) {
       const physical = new Set(matches.map(match => match.transcript));
       if (physical.size === 1 && matches.length === 1) return { account: matches[0]!.account, resolution: "unique" };
@@ -644,6 +644,9 @@ export async function serveRunnerAccountCall(method: string, params: Record<stri
     if(key==='codex'&&matches.length===1
       &&homes.filter(home=>home.account===matches[0]!.account).length===1)
       return {account:matches[0]!.account,resolution:'unique'};
+    if (key === "claude-code" && matches.length > 0
+      && new Set(matches.map(match => match.transcript)).size === 1)
+      return { account: null, resolution: "shared" };
     return { account: null, resolution: matches.length ? "ambiguous" : "missing" };
   }
   if (method === "accounts.readings") return runnerAccountReadings();

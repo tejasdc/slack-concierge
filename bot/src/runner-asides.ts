@@ -1,16 +1,22 @@
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {existsSync} from 'node:fs';
+import {realpathSync} from 'node:fs';
 import {join} from 'node:path';
 
 type AsideRequest={operationId:string;provider:'claude-code'|'codex';account:string|null;spendAccount:string|null;sessionUuid:string;
   project:string|null;path:string;model:string|null;running:boolean;prompt:string};
 type AsideAnswer={answer:string;model:string|null;durationMs:number};
-type Home={account:string;home:string;transcript:string};
+type Home={account:string|null;home:string|null;transcript:string};
 type Services={botDir:string;bunPath:string;resolveCwd:(project:string|null,path:string)=>Promise<string>;
   findHome:(provider:'claude-code'|'codex',account:string|null,sessionUuid:string)=>Home|null;
   accountHome:(provider:'claude-code'|'codex',account:string)=>string|null};
 const retained=new Map<string,{promise:Promise<AsideAnswer>;at:number;digest:string}>();
+
+/** True only when both names resolve to one existing physical file. */
+export function samePhysicalFile(left:string,right:string):boolean{
+  try{return realpathSync(left)===realpathSync(right);}catch{return false;}
+}
 
 export function serveRunnerAside(params:unknown,services:Services):Promise<AsideAnswer>{
   const input=params as AsideRequest;
@@ -27,6 +33,10 @@ export function serveRunnerAside(params:unknown,services:Services):Promise<Aside
   const promise=(async()=>{
     const found=services.findHome(input.provider,input.account,input.sessionUuid);
     if(!found)throw new Error('The exact provider conversation is unavailable on this runner.');
+    if(typeof found.home!=='string')
+      throw new Error(input.provider==='claude-code'
+        ?'The exact Claude account for this conversation is not bound on this runner.'
+        :'The exact provider account for this conversation is not bound on this runner.');
     const spendHome=input.provider==='claude-code'&&input.spendAccount
       ?services.accountHome('claude-code',input.spendAccount):found.home;
     if(!spendHome)throw new Error('The account selected for the side question is unavailable on this runner.');
