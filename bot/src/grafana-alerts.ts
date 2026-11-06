@@ -77,6 +77,22 @@ export async function publishGrafanaAlert(input: {
   return body.ts as string;
 }
 
+export type GrafanaRecoveryEvidence = {
+  fingerprint: string; condition: string; startsAt: string; endsAt: string;
+  /** Grafana's rule and state-history instance whose Normal transition is the recovery. */
+  ruleUid: string; stateFingerprint: string;
+};
+export type GrafanaRecoveryResult = { status: number; outcome: string; starts_at?: string; ends_at?: string | null; revision?: number; episode_status?: string };
+
+function isoInstant(value: unknown) {
+  if (typeof value !== "string" || value.length > 40 || !/^\d{4}-\d\d-\d\dT/.test(value) || !Number.isFinite(Date.parse(value))) return null;
+  return new Date(value).toISOString();
+}
+
+let activeReceiver: GrafanaAlerts | null = null;
+/** The one receiver this owner runs; the owner socket's reconciliation routes act through it. */
+export function activeGrafanaAlerts() { return activeReceiver; }
+
 export class GrafanaAlerts {
   private stopping = false;
   private readonly runner;
@@ -100,6 +116,7 @@ export class GrafanaAlerts {
     )`);
     options.db.exec("CREATE INDEX IF NOT EXISTS grafana_condition_state ON grafana_alerts(condition,status,starts_at)");
     this.runner = createCoalescingEventRunner({ run: () => this.deliver(), shouldStop: () => this.stopping });
+    activeReceiver = this;
   }
   private observe(event: string, fields: Record<string, unknown>) {
     try { this.options.observe(event, fields); } catch { /* Evidence cannot change committed acceptance. */ }
@@ -143,6 +160,50 @@ export class GrafanaAlerts {
     this.wake();
     return { alerts: receipts };
   }
+  /** Retained episodes Concierge still holds firing, for the outside Grafana reconciler. */
+  firing() {
+    return this.options.db.query(`SELECT fingerprint,condition,starts_at,revision,delivery_status,channel FROM grafana_alerts
+      WHERE status='firing' ORDER BY starts_at LIMIT 500`).all() as Pick<GrafanaAlertRow, "fingerprint" | "condition" | "starts_at" | "revision" | "delivery_status" | "channel">[];
+  }
+  /**
+   * Grafana retries a refused notification only briefly and never resends a recovery, so a
+   * recovery lost while this receiver refused deliveries would leave the episode firing forever.
+   * The outside reconciler reads Grafana's own state history and submits the recovery Grafana
+   * recorded; it is applied exactly as a delivered resolved notification would be.
+   */
+  reconcileRecovery(input: GrafanaRecoveryEvidence): GrafanaRecoveryResult {
+    const startsAt = isoInstant(input.startsAt), endsAt = isoInstant(input.endsAt);
+    if (typeof input.fingerprint !== "string" || !/^[a-f0-9]{16,64}$/.test(input.fingerprint)
+        || typeof input.condition !== "string" || !startsAt || !endsAt || endsAt < startsAt
+        || Date.parse(endsAt) > Date.now() + 60_000
+        || typeof input.ruleUid !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(input.ruleUid)
+        || typeof input.stateFingerprint !== "string" || !/^[a-f0-9]{8,64}$/.test(input.stateFingerprint)) {
+      return { status: 422, outcome: "invalid_recovery_evidence" };
+    }
+    const row = this.row(input.fingerprint);
+    if (!row) return { status: 404, outcome: "episode_unknown" };
+    if (row.condition !== input.condition) return { status: 409, outcome: "condition_mismatch" };
+    if (row.starts_at !== startsAt) return { status: 409, outcome: "episode_changed", starts_at: row.starts_at, episode_status: row.status };
+    if (row.status !== "firing") return { status: 200, outcome: "already_resolved", starts_at: row.starts_at, ends_at: row.ends_at, revision: row.revision };
+    const retiredDestination = row.channel !== this.options.destinationChannel;
+    if (retiredDestination) {
+      if (this.stopping) throw new Error("Alert receiver is draining.");
+      // A Slack-era receipt has no current destination to publish its recovery to (Slack was
+      // retired 2026-09-15); record Grafana's recovery as the episode's final, delivered revision.
+      // An in-flight delivery owns the row until it finishes; the next reconciler pass settles it.
+      const changed = this.options.db.query(`UPDATE grafana_alerts SET status='resolved',ends_at=?,revision=revision+1,
+        delivered_revision=revision+1,delivery_status='delivered',owner_id=NULL,error=NULL,updated_at=CURRENT_TIMESTAMP
+        WHERE fingerprint=? AND starts_at=? AND status='firing' AND delivery_status<>'sending'`).run(endsAt, row.fingerprint, startsAt);
+      if (!changed.changes) return { status: 409, outcome: "delivery_in_progress", starts_at: row.starts_at, episode_status: row.status };
+    } else {
+      this.accept([{ fingerprint: row.fingerprint, condition: row.condition, startsAt, endsAt, status: "resolved", omitted: row.omitted }]);
+    }
+    const settled = this.row(row.fingerprint)!;
+    this.observe("grafana_alert_recovery_reconciled", { fingerprint: settled.fingerprint, condition: settled.condition,
+      starts_at: settled.starts_at, ends_at: settled.ends_at, revision: settled.revision, retired_destination: retiredDestination,
+      rule_uid: input.ruleUid, state_fingerprint: input.stateFingerprint });
+    return { status: 200, outcome: "recovery_settled", starts_at: settled.starts_at, ends_at: settled.ends_at, revision: settled.revision };
+  }
   recover() {
     for (const row of this.options.db.query("SELECT * FROM grafana_alerts WHERE delivery_status='sending'").all() as GrafanaAlertRow[]) {
       if (row.owner_id && this.options.isOwnerAlive(row.owner_id)) continue;
@@ -157,7 +218,11 @@ export class GrafanaAlerts {
     void this.runner.request("event").catch(() => this.observe("grafana_alert_worker_failed", { reason: "delivery_or_persistence_failed" }));
   }
   async settled() { await this.runner.active(); }
-  async stop() { this.stopping = true; await this.settled(); }
+  async stop() {
+    this.stopping = true;
+    if (activeReceiver === this) activeReceiver = null;
+    await this.settled();
+  }
   private investigate(row: GrafanaAlertRow) {
     // Historical delivery proves only its old destination. A fresh firing is retargeted by
     // accept(); startup must not launch work from a retired channel's retained receipt.
