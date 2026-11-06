@@ -228,6 +228,9 @@ const routedAuthorValid=(value:unknown,kind:unknown)=>{
   if(value.session!==undefined&&!authorSession(value.session))return false;
   if(value.outsideAgent!==undefined&&(!record(value.outsideAgent)||typeof value.outsideAgent.name!=='string'||typeof value.outsideAgent.label!=='string'))return false;
   if(['inputId','runId','requestId','via'].some(key=>value[key]!==undefined&&typeof value[key]!=='string'))return false;
+  if(value.communication!==undefined&&!['request','reply','result','overdue','post','notice'].includes(value.communication))return false;
+  if(value.replyKind!==undefined&&!['partial','final'].includes(value.replyKind))return false;
+  if(value.effectScope!==undefined&&!['informational','work'].includes(value.effectScope))return false;
   if(value.originatingHuman!==undefined&&(!record(value.originatingHuman)||typeof value.originatingHuman.inputId!=='string'
     ||typeof value.originatingHuman.runId!=='string'||(value.originatingHuman.captureId!==undefined&&typeof value.originatingHuman.captureId!=='string')
     ||(value.originatingHuman.session!==undefined&&!authorSession(value.originatingHuman.session))))return false;
