@@ -1,6 +1,7 @@
 import { db, finishTurn, getSessionById, settleTurnDependencies } from './state';
 import { canceledNotice, requestLabel } from './session-notices';
 import { getAcceptedSessionInput } from './session-inputs';
+import { endRepeatingScheduleOf } from './saved-work';
 import type { SessionOwner } from './session-owner';
 import {resolveUsageHoldNoticesForSettledTurn,type UsageProvider} from './provider-usage';
 
@@ -171,6 +172,10 @@ export function tellWorkerCanceled(owner: SessionOwner, input: { requestId: stri
 export function cancelQueuedWithdrawnRequest(targetInputId: string): boolean {
     const target = getAcceptedSessionInput(targetInputId);
     if (!target) return false;
+    // A repeating schedule's request names only its first firing; ending the schedule withdraws
+    // every queued later firing too and stops new ones being booked.
+    const withdrawnFirings = endRepeatingScheduleOf(target.id, 'The requesting session cancelled this repeating schedule.');
+    if (withdrawnFirings !== null) return withdrawnFirings > 0;
     const revokeQueued=(inputId:string,turnId:number,sessionId:number)=>{
         finishTurn(turnId, 'cancelled', 'The requesting session withdrew this work before it resumed.');
         settleTurnDependencies(turnId);

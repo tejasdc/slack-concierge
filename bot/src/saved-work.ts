@@ -326,8 +326,10 @@ export function advanceRepeatingSchedules(now=Date.now()):number {
       const current=savedTurn(row.id);
       if(!current||current.saved_repeat_ms===null||current.saved_root_id===null||current.saved_sequence===null)return;
       const left=current.status!=='queued';
-      if(left&&db.query(`SELECT 1 FROM session_owner_events WHERE turn_id=? AND kind='saved_control'
-        AND json_extract(payload_json,'$.action')='drop'`).get(current.id))return;
+      if(repeatingScheduleEnded(current.saved_root_id,current.id)) {
+        if(!left)cancelQueuedFiring(current.id,current.accepted_input_id,'This repeating schedule was cancelled.');
+        return;
+      }
       if(left&&db.query(`SELECT 1 FROM sessions WHERE id=? AND (status='archived'
         OR COALESCE(json_extract(native_metadata_json,'$.suspended'),0)<>0)`).get(current.session_id))return;
       const interval=current.saved_repeat_ms,root=current.saved_root_id;
@@ -370,6 +372,50 @@ export function advanceRepeatingSchedules(now=Date.now()):number {
   }
   if(advanced)executionChanged();
   return advanced;
+}
+
+/**
+ * Whether a repeating schedule has been ended: dropped in Saved work (recorded on its latest
+ * firing), ended through its request, or its creating request withdrawn. Every later firing is
+ * its own input that the request never names, so the request alone cannot reach them; this is
+ * the one place the booking step asks (2026-11-06: a cancelled 15-minute schedule kept firing).
+ */
+function repeatingScheduleEnded(root:number,latestId:number):boolean {
+  if(db.query(`SELECT 1 FROM session_owner_events WHERE turn_id=? AND kind='saved_control'
+    AND json_extract(payload_json,'$.action') IN ('drop','schedule_ended')`).get(latestId))return true;
+  return !!db.query(`SELECT 1 FROM turns root JOIN session_inputs input ON input.id=root.accepted_input_id
+    JOIN session_communication_requests request ON request.request_id=input.request_id
+    WHERE root.id=? AND request.outcome='canceled'`).get(root);
+}
+
+function cancelQueuedFiring(turnId:number,inputId:string|null,reason:string) {
+  db.query(`UPDATE turns SET status='cancelled',agent_text=?,ended_at=CURRENT_TIMESTAMP WHERE id=? AND status='queued'`).run(reason,turnId);
+  if(inputId)db.query(`UPDATE session_inputs SET receipt_json=json_set(COALESCE(receipt_json,'{}'),'$.state','canceled'),
+    updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(inputId);
+}
+
+/**
+ * Ends the repeating schedule whose first firing is this accepted input: every queued firing is
+ * withdrawn and no later one is booked. A firing already running finishes. Returns the number of
+ * queued firings withdrawn, or null when the input does not start a repeating schedule.
+ */
+export function endRepeatingScheduleOf(inputId:string,reason:string):number|null {
+  const root=db.query(`SELECT id FROM turns WHERE accepted_input_id=? AND saved_kind='scheduled'
+    AND saved_repeat_ms IS NOT NULL AND saved_root_id=id`).get(inputId) as {id:number}|null;
+  if(!root)return null;
+  return db.transaction(()=>{
+    const queued=db.query(`SELECT id,accepted_input_id FROM turns WHERE saved_root_id=? AND status='queued'`)
+      .all(root.id) as {id:number;accepted_input_id:string|null}[];
+    for(const firing of queued)cancelQueuedFiring(firing.id,firing.accepted_input_id,reason);
+    const latest=db.query('SELECT id,session_id,accepted_input_id FROM turns WHERE saved_root_id=? ORDER BY saved_sequence DESC LIMIT 1')
+      .get(root.id) as {id:number;session_id:number;accepted_input_id:string|null};
+    const eventId=`saved-repeat-ended:${root.id}`;
+    if(!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))
+      recordSessionEvent({eventId,sessionId:latest.session_id,inputId:latest.accepted_input_id,turnId:latest.id,
+        kind:'saved_control',payload:{action:'schedule_ended',reason,withdrawn:queued.length}});
+    if(queued.length)executionChanged();
+    return queued.length;
+  })();
 }
 
 /** Run the saved-work clock once before a queue wake drains claims. */

@@ -21,7 +21,7 @@ import {ProviderCapabilityUnavailableError} from './provider-policy';
 import { log } from './log';
 import { STEP_ASKS, finishedTodoRefusal, type TodoState } from './question-todos';
 import {boundSearchResponse} from './search-response-boundary';
-import {saveQueuedTurn,savedWorkSettings} from './saved-work';
+import {endRepeatingScheduleOf,saveQueuedTurn,savedWorkSettings} from './saved-work';
 import {cancelWatch,listWatches,registerWatch} from './watches';
 import {boardCommand,type BoardActor,type BoardInput} from './commons-board-service';
 import {notifyAgentPost} from './thread-notifications';
@@ -1212,6 +1212,8 @@ export class SessionCommunicationCoordinator {
             // request revokes that turn before a later account reset or Continue can claim it.
             if(this.row(row.request_id).outcome==='canceled'&&row.target_input_id)
                 stoppedQueuedTarget=cancelQueuedWithdrawnRequest(row.target_input_id);
+            // A schedule whose first firing already answered still ends when its request is cancelled.
+            else if(row.target_input_id)endRepeatingScheduleOf(row.target_input_id,'The requesting session cancelled this repeating schedule.');
             if(stoppedQueuedTarget)withdrawUnstartedServiceInput(`canceled:${row.request_id}`,'The request was withdrawn before its worker began.');
         })();
         // A worker already holding it is told to stop (the FIPA cancel reaches the participant).

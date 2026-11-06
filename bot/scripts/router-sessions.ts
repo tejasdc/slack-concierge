@@ -59,6 +59,7 @@ router-actions.sh sessions obligations [<address>] <source-flags>
 Provider changes use handoff between sessions on the same machine. Choose a coding provider alias: ChatGPT cannot acknowledge a handoff. The successor reads the predecessor's context and acknowledges the exact inventory digest before the owner moves obligations. A proposed handoff can be withdrawn while the predecessor keeps working. cancel --reason provider-change is refused with the handoff command.
 router-actions.sh sessions saved list <source-flags> [--cursor <nextCursor>]
 router-actions.sh sessions saved start|cancel <turn-id> <source-flags> --action-id A
+Stopping a repeating schedule (sessions schedule --every-ms): sessions cancel <its request-id> withdraws every queued firing and books no more (a firing already running finishes); sessions saved cancel <turn-id> of its queued firing does the same. sessions saved list shows each armed schedule's next firing, turn ID and interval.
 router-actions.sh sessions pause status|all|resume <source-flags> [--action-id A] [--session <concierge:N|mac:N> ...]  # --session is for resume only
 router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> [--renew] <source-flags> --action-id A
 router-actions.sh sessions watch command --cwd <dir> --until <ISO time | duration> <source-flags> --action-id A -- <argv...>
