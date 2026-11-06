@@ -132,7 +132,7 @@ import { recordTurnProviderRetry, registerTurnRetryRestart } from "./provider-re
 import { OUTAGE_CONFIRM_MS, offerOutageChoices, providerTroubleStatus } from "./provider-outage";
 import { noticeUsageHold, noticeAuthHold, noticeTurnContinuation, useResetIfWorkStopped } from "./provider-usage-notice";
 import { useCodexResetCredit } from "./codex-reset-credit";
-import { releaseCodexOrdinaryUsageHeldWork,resolveUsageHoldNoticesForSettledTurn } from "./provider-usage";
+import { releaseCodexUnboundUsageHeldWork,resolveUsageHoldNoticesForSettledTurn } from "./provider-usage";
 import { scheduleProviderAccountUsageRefresh } from "./provider-account-usage";
 import type { ProgressCb, RunResult } from "./codex";
 
@@ -1479,9 +1479,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         // 2026-09-23: "You don't have to wait for me to reset the usage."
         void useResetIfWorkStopped(hold, recordSessionEvent,
           (account,idempotencyKey,beforeConsume)=>useCodexResetCredit(account,idempotencyKey,true,beforeConsume), async (accountId) => {
-          // Count the exact ordinary releases before the asynchronous Accounts refresh.
-          // That refresh uses the same ordinary-only Codex wake contract.
-          const released=releaseCodexOrdinaryUsageHeldWork(accountId);
+          // Count unbound releases before the asynchronous Accounts refresh.
+          const released=releaseCodexUnboundUsageHeldWork(accountId);
           void scheduleProviderAccountUsageRefresh().catch(()=>{});
           return released;
         }).catch(error => log("error", "provider_reset_auto_error", errorFields(error)));
