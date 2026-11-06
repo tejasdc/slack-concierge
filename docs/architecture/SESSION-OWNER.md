@@ -136,8 +136,9 @@ to `sessions context` for the predecessor's decisions, and references to worktre
 The predecessor still owns and can work on every obligation while the handoff is proposed.
 Only one proposal may be open per predecessor; the caller or predecessor can withdraw it.
 
-The inventory names open requests sent by and owed by the predecessor, queued inputs,
-active watches, open Lab roles where available, and referenced worktrees. Each item has
+The inventory names open requests sent by and owed by the predecessor, plus settled requests
+whose final return has not reached the requester. It also names queued inputs, active
+watches, open Lab roles where available, and referenced worktrees. Each item has
 a stable kind and reference. Sent requests retain whether their target has acknowledged
 or started work; those and ChatGPT requests must not be dispatched again. A missing Lab
 read is stated as an omission. Worktrees, provider transcripts, past answers and Lab
@@ -145,9 +146,13 @@ entries stay where they were and keep their original authors.
 
 Only a live successor run can accept with the inventory digest. The owner recomputes the
 inventory; a changed digest or an unsafe queued input refuses acceptance and returns the current inventory for
-acknowledgement. Acceptance transfers the open request return and reply ownership,
-safe never-started queued inputs, and watches in one ledger transaction, recording each
-moved item. A queued input's original acceptance and history stay with the predecessor;
+acknowledgement. Acceptance transfers open request return and reply ownership and pending
+final return ownership in the same ledger transaction. An already admitted final return must
+have a safely movable queued input; its accepted input is copied and the return event follows
+that copy. A final return already sent toward the predecessor blocks acceptance until its
+exact delivery settles. No return or request ID is replayed. Acceptance also transfers
+safe never-started queued inputs and watches, recording each moved item. A queued input's
+original acceptance and history stay with the predecessor;
 the successor receives a linked copy, and the request keeps its own ID. Sent request IDs
 and their targets do not change. An owed request's reply ownership moves to the
 successor. An outside request retains its unique accepted input as the custody key
