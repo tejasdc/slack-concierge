@@ -33,6 +33,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [deployment startup contract](docs/runbooks/DEPLOYMENT.md#owner-startup-and-history-catch-up).
 - Candidate schema comparison and its bounded read-only SQLite lock recovery
   follow the [deployment runbook](docs/runbooks/DEPLOYMENT.md#candidate-schema-comparison).
+  Its offline migration phase timings and backup boundary are in the same
+  [deployment runbook](docs/runbooks/DEPLOYMENT.md#runtime-dependencies-and-service-shutdown).
 - A repair-owned deployment run ends its old transient runner without reclaiming the repair;
   see [automatic failure behavior](docs/runbooks/DEPLOYMENT.md#automatic-failure-behavior).
 - Every commit carries an `Update-note:` sentence in product language and a
