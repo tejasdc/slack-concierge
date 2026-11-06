@@ -43,6 +43,7 @@ import { isWritingSession, takesManySubjects, WRITING_SESSION_REFUSAL } from './
 import {standingAgent,standingAgentSession,bindStandingAgentSession,STANDING_WORK_REFUSAL} from './standing-agents';
 import {parseMachineNeed} from './machine-need';
 import {signInWorkerActionId} from './signin-renewal';
+import {MAC_UPDATE_REQUEST_ID,MAC_UPDATE_SOURCE_INPUT,MAC_UPDATE_SOURCE_RUN,macUpdateSourceProven} from './mac-update-source';
 import { backfillRequestTopics, consultPointer, forTopic, handBackText, newTopicNote, sessionWorkload, topicOf, topicRootFor } from './session-fit';
 export type CommunicationSource = {
     channel_id?: string;
@@ -710,8 +711,17 @@ export class SessionCommunicationCoordinator {
             if(typeof kind==='string'&&kind&&kind!=='provider-renewal'){
                 const accepted=getAcceptedSessionInput(row.id);
                 const provenance=accepted?sessionInputProvenance(accepted):null;
+                const updateAuthorization=process.platform==='darwin'&&kind==='mac-app'
+                    &&provenance?.peer==='cloud'&&provenance.source?.sessionId==='cloud:9118'
+                    &&provenance.source.inputId===MAC_UPDATE_SOURCE_INPUT
+                    &&provenance.source.runId===MAC_UPDATE_SOURCE_RUN
+                    &&provenance.requestId===MAC_UPDATE_REQUEST_ID
+                    &&provenance.effectScope==='work'
+                    &&typeof need.why==='string'&&need.why.includes('535c73c7')
+                    &&macUpdateSourceProven();
                 return {kind,why:typeof need.why==='string'?need.why:'',
-                    humanInputId:provenance?.originatingHuman?.inputId,effectScope:provenance?.effectScope};
+                    humanInputId:provenance?.originatingHuman?.inputId,effectScope:provenance?.effectScope,
+                    updateAuthorization};
             }
             // A renewal remains current while its exact accepted request is open in this
             // turn. A later budget or progress input cannot erase that request's custody.
