@@ -29,7 +29,7 @@ import {boundedChangedMessageIds,HISTORY_CHANGE_LIMIT} from './bounded-history-c
 import {historyContent,previewHistoryMessage} from './history-message-preview';
 import {HistoryDetailCache} from './history-detail-cache';
 import {preparedTopics,preparedIncoming,preparedTopicOverview,preparedTopicItems,preparedQuestions,preparedTopicChanges,
-  preparedTopicResolution,preparedTopicDetail,preparedTopicsReady,preparedAreas,preparedArea,preparedThreadAreas} from './presentation-topic-reader';
+  preparedTopicResolution,preparedTopicDetail,preparedTopicsReady,preparedTopicsAfterCatchUp,preparedAreas,preparedArea,preparedThreadAreas} from './presentation-topic-reader';
 import {createAreaByHuman,areaHumanAction,AreaError} from './session-areas';
 import {presentationChangesForSession,presentationEpoch,presentationHead} from './presentation-changes';
 import {noteOwnerStall,noteSlowOwnerRequest,startOwnerResponsivenessWatch} from './owner-responsiveness';
@@ -4273,7 +4273,7 @@ export class SessionOwner {
         const order=url.searchParams.get('order')??'updated';
         if(!['updated','started'].includes(order))throw new SessionOwnerError('Unknown thread order.');
         const options={state:state as 'open'|'closed'|'background'|'all',order:order as 'updated'|'started',query,cursor:url.searchParams.get('cursor'),limit:boundedLimit(url.searchParams.get('limit'),20)??20};
-        result=preparedTopicsReady()?preparedTopics(options):directTopicList(options);
+        result=preparedTopicsReady()?await preparedTopicsAfterCatchUp(options,request.signal):directTopicList(options);
       }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='areas'&&parts.length===2){
         const query=url.searchParams.get('query');if(query&&query.length>200)throw new SessionOwnerError('Area search is too long.');
