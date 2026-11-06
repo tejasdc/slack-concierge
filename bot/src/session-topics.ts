@@ -923,9 +923,13 @@ export function inboxMessageWords(session:SessionRow,messageId:string) {
   const entry=inboxMessageById(session.id,messageId) as any;
   const root=inboxThreadRoot(session.id,messageId);
   const topicId=root?topicOfRoot(root):null;
+  // A request shows in its thread as "Sent to <agent>"; its words are the input it delivered.
+  const sent=entry&&messageId.startsWith('request:')?getAcceptedSessionInput(messageId):null;
+  const sentText=sent?(JSON.parse(sent.payload_json).firstInput??JSON.parse(sent.payload_json)).text:null;
   if(entry)return {messageId,from:entry.author?.kind??(entry.role==='user'?'human':'agent'),
     session:typeof entry.sourceSessionId==='number'?`concierge:${entry.sourceSessionId}`:null,
-    at:entry.createdAt??null,words:typeof entry.content==='string'?entry.content:'',
+    at:entry.createdAt??null,words:typeof sentText==='string'?sentText:typeof entry.content==='string'?entry.content:'',
+    ...(sent?{sentTo:`concierge:${sent.session_id}`}:{}),
     attachments:(entry.attachments??[]).map((file:any)=>({id:file.id,name:file.name,contentType:file.contentType})),
     threadRoot:root,topicId};
   // A request input sits in its target session; it is Inbox material only when a topic request names it.
