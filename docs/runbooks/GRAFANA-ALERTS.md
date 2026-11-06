@@ -99,8 +99,21 @@ agents' entrance, never the public door):
   Grafana rule and state-history instance that supplied the time. A Slack-era receipt has
   no current destination, so its recovery is recorded as the final delivered revision
   without any publication.
+- `POST /grafana/v1/firings` takes `{fingerprint, condition, startsAt, ruleUid}` for an
+  episode Grafana's Alertmanager currently holds firing. Grafana's Alertmanager
+  deduplicates by which fingerprints are firing, not by when they started, so when a
+  recovery is lost and the same alert fires again it sends nothing new until its repeat
+  interval (one day on these rules). On 2026-11-05 `AX41DiskFillingEarly` recovered at
+  18:22:30Z, that notice was refused, and its 18:53:30Z episode was never sent. The route
+  applies the episode exactly as a delivered firing would, including the repair notice.
+  It refuses an unconfigured condition or bad evidence (422), and a different condition,
+  an episode not newer than the retained one, or a resolved episode with the same start
+  (409). It also refuses (409 `previous_episode_open`) while the older episode is still
+  open, so its repair notice is resolved through the recovery route rather than silently
+  replaced. It answers `already_firing` for the current episode, logs
+  `grafana_alert_firing_reconciled`, and also admits a fingerprint Concierge never received.
 
-The reconciler submits only episodes Grafana's own Alertmanager no longer holds, and only
+The reconciler submits recoveries only for episodes Grafana's own Alertmanager no longer holds, and only
 with the first exit from Alerting that Grafana's state history recorded for the one
 instance that began alerting at the episode's start. Ambiguous or missing history leaves
 the episode untouched and logged. A settled alert does not prove the underlying problem
