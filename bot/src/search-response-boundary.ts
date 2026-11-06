@@ -1,4 +1,5 @@
 /** Search shows bounded previews; exact message bytes stay behind the selected context read. */
+import {peerCatalogueView} from './peer-catalogue-view';
 const MAX_SEARCH_RESPONSE_BYTES=512*1024;
 const MAX_EVIDENCE_PER_SESSION=3;
 const MAX_PREVIEW_CHARS=320;
@@ -9,13 +10,17 @@ function preview(text:string) {
 
 export function boundSearchResponse<T extends {results:any[];coverage:any}>(answer:T):T {
   const results=answer.results.map(result=>{
+    const raw=result.session;
+    const session=raw?.peer&&!raw.capabilities
+      ?peerCatalogueView(raw,raw.peer,raw.availability??{state:'archived-only',reachable:false,note:'This search has only a stored session summary.'},Date.parse(raw.lastSeenAt??raw.updatedAt??''))
+      :raw;
     const evidence=(result.evidence??[]).slice(0,MAX_EVIDENCE_PER_SESSION).map((item:any)=>{
       const original=typeof item.text==='string'?item.text:'';
       const snippet=preview(typeof item.snippet==='string'?item.snippet:original);
       return {...item,text:original.length<=MAX_PREVIEW_CHARS?original:snippet,snippet,
         ...((original.length>MAX_PREVIEW_CHARS||item.snippet?.length>MAX_PREVIEW_CHARS)?{previewTruncated:true}:{})};
     });
-    return {...result,evidence,...((result.evidence?.length??0)>evidence.length?{moreEvidence:result.evidence.length-evidence.length}:{})};
+    return {...result,session,evidence,...((result.evidence?.length??0)>evidence.length?{moreEvidence:result.evidence.length-evidence.length}:{})};
   });
   let response:any={...answer,results};
   let omitted=0;
