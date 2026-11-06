@@ -546,6 +546,15 @@ For Claude, the account is decided **fresh at every dispatch**:
 For Codex, every turn uses the shared App Server. A banked turn can select only its currently
 signed-in account; other Codex accounts still have usage readings and can be selected through
 Accounts, which moves the login after running turns finish. There is no per-turn Codex home.
+Ordinary turns and scheduled firings without a saved account binding use that current login at
+their next dispatch. A fresh reading with room, a completed account switch, or a confirmed reset
+therefore releases their queued usage holds; the queue still enforces each scheduled firing's
+original fire time. Banked turns remain bound to the account and allowance window they saved.
+On 2026-11-06 the hourly overnight checkpoint's 14:00 firing waited for a spent account's
+November 12 reset even after the shared App Server moved to a personal account with room:
+the release path excluded every saved turn, including an unbound schedule. The Accounts
+tool-free retry had a separate stale session-column name and could not recover that hold either.
+See [the failure record](../incidents/2026-11-06-unbound-schedule-stayed-usage-held.md).
 
 Running out mid-turn needs no new machinery: the turn fails with the provider's usage refusal
 carrying its reset instant and returns to its own queue. The next Claude attempt re-runs its
