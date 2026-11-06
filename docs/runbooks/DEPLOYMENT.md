@@ -897,6 +897,11 @@ checks integrity and foreign keys after `COMMIT` on only the tables it changed (
 each added index or trigger, each added table or column; the whole ledger when a change names
 something else), closes the migrator, then the runner
 starts the coordinator and checks health and adoption. Execution hosts are never stopped.
+The offline migrator emits `deployment_migration_phase` start and completion records for schema
+comparison, backup verification or a late backup, schema import and commit, integrity checks,
+and backup retention. A missing completion record identifies the phase that failed or stalled;
+durations are measured inside the migrator, so an operator can distinguish its work from the
+service stop, candidate launch and request API opening before changing a safety gate.
 Control recovery uses the same ordering. The combined manual command also requires the
 coordinator fully stopped; it cannot run schema work against a serving owner.
 
