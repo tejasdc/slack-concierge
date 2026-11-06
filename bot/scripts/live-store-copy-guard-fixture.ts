@@ -97,6 +97,11 @@ process.stdout.write(JSON.stringify({hookSpecificOutput})+'\\n');`);
   check(execute(wrappedRelease+'; npm run build').permissionDecision==='deny','a second package launch escaped the private wrapper');
   check(execute(`${bun} run ${privateCommand} -- npm run ship -- --checked "$(npm run build)"`).permissionDecision==='deny','command substitution escaped the private wrapper');
   check(execute('npm run ship -- --checked "Web build passed; handwriting panel checked"').permissionDecision==='deny','direct release escaped the inherited-live guard');
+  // A fixture's source names live paths and copy commands as test data (2026-11-06 refusal).
+  const sourceFixture=join(root,'copy-strings-fixture.ts');
+  writeFileSync(sourceFixture,`const example='sqlite3 /root/.local/state/${'concierge'}/state.db ".backup /tmp/copy.db"';\n`);
+  check(execute(`${bun} run ${privateCommand} -- ${bun} ${sourceFixture}`).additionalContext==='PINNED_OLD_SEMANTIC','private entrance was refused for a fixture whose source names live paths');
+  check(execute(`${bun} ${sourceFixture}`).permissionDecision==='deny','a live-path fixture outside the private entrance was not refused');
   const privateEnv=run(bun,['run',privateCommand,'--','/usr/bin/env'],{CONCIERGE_STATE_DIR:join(homedir(),'.local/state/'+'concierge')});
   check(/CONCIERGE_STATE_DIR=\/tmp\/concierge-private-code-/.test(privateEnv),'private command did not replace inherited live state');
   const canonical=join(homedir(),'.local/state/'+'concierge');
