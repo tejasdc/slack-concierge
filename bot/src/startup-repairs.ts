@@ -4,6 +4,7 @@ import { recordSessionEvent } from './session-inputs';
 import { inboxSession } from './session-inbox';
 import { runStartupStep } from './startup-phase';
 import {applySessionPurposeEntries,fillMissingSessionPurposes,markSessionPurposeFileApplied,readSessionPurposeFile} from './session-purpose';
+import { pruneExecutionRecordsInPages } from './executions';
 
 /**
  * Startup costs what changed since the last start, not the size of history. Sweeps written for
@@ -70,8 +71,7 @@ export function scheduleSessionPurposeRepair(stateDir: string): unknown {
 
 /** Called once Concierge reports online; works through each deferred first pass page by page. */
 export function startDeferredStartupRepairs(shouldStop: () => boolean) {
-  if (!deferred.length) return;
-  log('info', 'startup_repairs_deferred', { names: deferred.map(item => item.name), delay_ms: DEFERRED_START_DELAY_MS });
+  log('info', 'startup_repairs_deferred', { names: [...deferred.map(item => item.name), 'execution-record-prune'], delay_ms: DEFERRED_START_DELAY_MS });
   setTimeout(() => { void runDeferred(shouldStop); }, DEFERRED_START_DELAY_MS).unref?.();
 }
 
@@ -84,6 +84,10 @@ async function runDeferred(shouldStop: () => boolean) {
       try { item.onCompleted?.(); }
       catch (error) { log('error', 'startup_catch_up_completion_failed', { name: item.name, ...errorFields(error) }); }
     }
+  }
+  if (!shouldStop()) {
+    try { await pruneExecutionRecordsInPages(shouldStop); }
+    catch (error) { log('error', 'execution_record_prune_failed', errorFields(error)); }
   }
 }
 
