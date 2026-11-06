@@ -37,6 +37,7 @@ import {serveProviderHistoryCall} from '../src/runner-provider-history';
 import {serveProjectCall} from '../src/runner-projects';
 import {serveRunnerProviderCall} from '../src/runner-providers';
 import {serveRunnerAside} from '../src/runner-asides';
+import {serveProviderUsageBreakdownCall} from '../src/runner-provider-usage-breakdown';
 
 const owner=process.env.CONCIERGE_OWNER_URL?.replace(/\/+$/,'');
 const tokenFile=process.env.CONCIERGE_RUNNER_TOKEN_FILE;
@@ -583,6 +584,7 @@ function answerMachineCalls(id:string) {
     if(method.startsWith('watch.'))return serveWatchCall(watchMachine,stateDir,method.slice('watch.'.length),params);
     if(method.startsWith('accounts.'))return serveRunnerAccountCall(method,params);
     if(method.startsWith('provider-history.'))return serveProviderHistoryCall(method,params,runnerAccountHome,stateDir,runnerAccountHomes);
+    if(method==='provider-usage-breakdown.page')return serveProviderUsageBreakdownCall(method,params,stateDir,runnerAccountHomes);
     if(method.startsWith('projects.'))return serveProjectCall(method,params,{findProviderSessionHome:findRunnerProviderSessionHome});
     if(method==='google.executable')return serveRunnerProviderCall(method,params);
     if(method==='asides.ask')return serveRunnerAside(params,{botDir,bunPath:process.execPath,
