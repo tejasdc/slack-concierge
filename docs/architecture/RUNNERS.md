@@ -423,6 +423,11 @@ matching worktrees with branch, head, and uncommitted file count. Git runs with 
 configuration disabled, optional locks off, and fsmonitor disabled. TODO updates are runner-local,
 compare the observed SHA-256 before replacing the canonical file, and use an atomic rename.
 
+A handoff first recovers the conversation's exact runner from its saved binding
+or most recent execution lease, resolves its project there, and reads the worktrees there. If a
+runner lease or project identity is unavailable, the handoff reports that omission instead of
+examining the owner's checkout.
+
 The Google paid-credit check and CLI lookup is `google.executable` (`runner-providers.ts`). It runs
 against the runner's Google settings and returns only the executable path. A missing or unreachable
 runner is an unknown check; it cannot be treated as proof that paid credits are disabled.
