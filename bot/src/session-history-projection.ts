@@ -14,8 +14,12 @@ export function projectAcceptedInput(message:ProviderHistoryMessage,input:Accept
     return attachment?[attachment]:[];
   }) as NonNullable<ProviderHistoryMessage['attachments']>;
   if(payload.routedFrom&&typeof payload.routedFrom.originalText==='string'){
-    const kind:'human'|'agent'=payload.routedFrom.authorKind==='agent'?'agent':'human';
-    return {...message,role:'user',author:{kind},createdAt:payload.routedFrom.originalCreatedAt,timestampSource:'submitted',
+    const original=getAcceptedSessionInput(payload.routedFrom.messageId);
+    const currentAuthor=original&&payload.routedFrom.sessionId===`concierge:${original.session_id}`
+      ?acceptedInputAuthor(original).author:null;
+    const routedAuthor=payload.routedFrom.authorKind;
+    const kind=routedAuthor==='human'||routedAuthor==='agent'||routedAuthor==='service'?routedAuthor:'unknown';
+    return {...message,role:'user',author:currentAuthor??{kind},createdAt:payload.routedFrom.originalCreatedAt,timestampSource:'submitted',
       content:payload.routedFrom.originalText,submissionId:input.id,routedFrom:payload.routedFrom,
       ...(attachments.length?{attachments}:{})};
   }

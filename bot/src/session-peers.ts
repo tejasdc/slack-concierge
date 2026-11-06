@@ -557,7 +557,7 @@ export class SessionPeers {
     forTask?:string;recoveryOf?:string;correctionOf?:string;
     machineNeed?:MachineNeed;
     requestedEffect?:'informational'|'work';files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null;threadSourceMessageId?:string;returnToRequester?:boolean;
-    routedFrom?:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'};
+    routedFrom?:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'|'service'|'unknown'};
     /** The words the recipient reads instead of the standard agent-request framing (his thread reply), and the thread message it answers so its replies post there. */
     framing?:(id:string)=>string;forwardedReply?:{inboxInputId:string;topicId:string;authorKind?:'human'|'agent';messageThreadRootId?:string;messageThreadRequestId?:string}}) {
     if(this.stopped)throw new Error('Session communication is not accepting requests.');
@@ -648,7 +648,7 @@ export class SessionPeers {
     const providerSelector=parseProviderSelector(input.provider);
     const selectedModel=providerSelector?resolveProviderSelector(providerSelector).model:undefined;
     const humanModelChoice=!!selectedModel&&humanModelChoices.includes(selectedModel as 'claude-fable-5-1'|'gpt-6-astra');
-    const text=input.framing?input.framing(id):`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. ${input.routedFrom?`This carries Tejas’s exact Inbox message ${input.routedFrom.messageId} into this session. Reply to this request; the answer appears under that message in its original thread.`:'This is agent-authored input within the originating human task, not a new human message.'} Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`;
+    const text=input.framing?input.framing(id):`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. ${input.routedFrom?`This carries the exact Inbox message ${input.routedFrom.messageId} into this session. Reply to this request; the answer appears under that message in its original thread.`:'This is agent-authored input within the originating human task, not a new human message.'} Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`;
     const delivery={requestId:id,answerGuaranteeVersion:1,
       ...(task?{answerObligation:{id:input.correctionOf??input.recoveryOf??id,task,attemptId:id}}:{}),
       origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,originatingHuman,effectScope:provenance?.effectScope??null},
@@ -1465,7 +1465,7 @@ export class SessionPeers {
       ||(input.forwardedReply.messageThreadRootId!==undefined&&typeof input.forwardedReply.messageThreadRootId!=='string')
       ||(input.forwardedReply.messageThreadRequestId!==undefined&&typeof input.forwardedReply.messageThreadRequestId!=='string')))
       throw new SessionOwnerError('A forwarded thread reply needs its exact source input and topic.');
-    if(input.routedFrom!==undefined&&(typeof input.routedFrom?.messageId!=='string'||typeof input.routedFrom?.topicId!=='string'||typeof input.routedFrom?.originalText!=='string'||typeof input.routedFrom?.originalCreatedAt!=='string'||!['human','agent'].includes(input.routedFrom?.authorKind)))
+    if(input.routedFrom!==undefined&&(typeof input.routedFrom?.messageId!=='string'||typeof input.routedFrom?.topicId!=='string'||typeof input.routedFrom?.originalText!=='string'||typeof input.routedFrom?.originalCreatedAt!=='string'||!['human','agent','service','unknown'].includes(input.routedFrom?.authorKind)))
       throw new SessionOwnerError('A routed message needs its exact source and original words.');
     if(input.files!==undefined&&(!Array.isArray(input.files)||input.files.some((file:any)=>typeof file?.name!=='string'||typeof file.contentType!=='string'||typeof file.base64!=='string')))throw new SessionOwnerError('Files must contain named attachment bytes.');
     if(input.summary!==undefined&&(typeof input.summary!=='string'||!input.summary.trim()||input.summary.includes('\n')||input.summary.length>200))throw new SessionOwnerError('A session description is one line of at most 200 characters.');

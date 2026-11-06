@@ -14,7 +14,7 @@ import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWit
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordRequesterDecisionReturn, recordTurnOutcome, turnDeclaredByAction, withdrawOpenNeed, type DeclaredTurnOutcome } from './session-turn-outcome';
 import {turnRoutedInput} from './inbox-routing-result';
-import {sessionAuthor} from './session-message-author';
+import {acceptedInputAuthor,sessionAuthor} from './session-message-author';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
 import {ProviderCapabilityUnavailableError} from './provider-policy';
@@ -1492,7 +1492,7 @@ export class SessionCommunicationCoordinator {
             input=session?{...input,role:undefined,address:sessionAddress(session)}
                 :{...input,role:undefined,provider:'auto',project:standingLocation.cwd,title:input.title??agent.description};
         }
-        let routedFrom:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'}|null=null;
+        let routedFrom:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'|'service'|'unknown'}|null=null;
         if(input.routeMessageId!==undefined){
             if(input.provider||!input.address||input.saved||input.after?.length||input.consult||input.thread||input.return_to_requester)
                 throw new Error('Routing one message to a session needs one exact existing address, without a second thread or request destination.');
@@ -1509,7 +1509,7 @@ export class SessionCommunicationCoordinator {
             if(!originalText.trim()&&!attachments.length)throw new Error('The routed message has no words or attachments.');
             const title=(db.query('SELECT title FROM inbox_topics WHERE topic_id=?').get(topicId) as {title:string}|null)?.title??topicId;
             routedFrom={sessionId:`concierge:${source.session_id}`,messageId:source.id,topicId,root,title,originalText,
-                originalCreatedAt:source.created_at.replace(' ','T')+'Z',authorKind:source.origin==='human'?'human':'agent'};
+                originalCreatedAt:source.created_at.replace(' ','T')+'Z',authorKind:acceptedInputAuthor(source).author.kind};
             input={...input,text:originalText.trim()?originalText:'Attachment message from the Inbox.',attachments};
         }
         text(input.text);
