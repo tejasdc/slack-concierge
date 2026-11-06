@@ -458,7 +458,10 @@ export async function serveRunnerAccountCall(method: string, params: Record<stri
     if (params.account !== null && account === null) throw new Error("account must be a provider label or null.");
     if (typeof params.nativeId !== "string") throw new Error("an exact native session id is required.");
     if (!/^[A-Za-z0-9-]{8,128}$/.test(params.nativeId)) return { account: null, resolution: "missing" };
-    const candidates = (account === null ? runnerAccountHomes(key) : runnerAccountHomes(key).filter(home => home.account === account));
+    const homes = runnerAccountHomes(key);
+    const candidates = account === null ? homes : homes.filter(home => home.account === account);
+    if (account !== null && candidates.length !== 1)
+      return { account: null, resolution: candidates.length > 1 ? "ambiguous" : "missing" };
     const matches = candidates.flatMap(candidate => exactProviderTranscripts(key, candidate.home, params.nativeId as string)
       .map(transcript => ({ account: candidate.account, transcript })));
     if (matches.length === 1) return { account: matches[0]!.account, resolution: "unique" };
