@@ -32,7 +32,7 @@ function allowAbsentAdapterFields(db: Database, table: string, names: string[]) 
   for (const item of auxiliary) db.exec(item.sql);
 }
 
-export function initializeSessionOwnerSchema(db: Database) {
+export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: number) {
   const foreignKeys = (db.query('PRAGMA foreign_keys').get() as {foreign_keys:number}).foreign_keys;
   db.exec('PRAGMA foreign_keys=OFF');
   try {
@@ -795,8 +795,13 @@ export function initializeSessionOwnerSchema(db: Database) {
           AND json_extract(native_metadata_json, '$.source.nativeId') IS NOT NULL;`);
       initializePresentationChanges(db);
       initializeRunnerSchema(db);
-      const violation = db.query('PRAGMA foreign_key_check').get();
-      if (violation) throw new Error(`Session owner migration violates a foreign key: ${JSON.stringify(violation)}`);
+      // This whole-ledger scan grows with history. Foreign keys guard ordinary writes; run
+      // the full check when this startup changed the schema, including earlier state batches.
+      const schemaVersionNow = (db.query('PRAGMA schema_version').get() as { schema_version: number }).schema_version;
+      if (schemaVersionNow !== schemaVersionAtOpen) {
+        const violation = db.query('PRAGMA foreign_key_check').get();
+        if (violation) throw new Error(`Session owner migration violates a foreign key: ${JSON.stringify(violation)}`);
+      }
     // Immediate: it reads the schema and then writes (idempotent inserts, index statements). A
     // deferred transaction that upgrades to write fails at once with SQLITE_BUSY when the running
     // service has committed in between, whatever the busy timeout; that failed a deployment's run

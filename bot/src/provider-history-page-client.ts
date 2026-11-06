@@ -1,5 +1,6 @@
 import {Worker} from 'node:worker_threads';
 import {releaseWorkerPath} from './release-worker';
+import {log,errorFields} from './log';
 
 type Work={operation:'page'|'delta'|'prepare';sessionId:string;cwd:string;cursor:string|null;limit:number;after:string|null;
   want?:{dialogue:number;untilInput:boolean};thread?:string};
@@ -57,6 +58,9 @@ export class ProviderHistoryPageClient {
   async close(){
     const worker=this.worker;this.worker=null;
     for(const [id,item] of this.pending){clearTimeout(item.timer);item.reject(new Error('HISTORY_PAGE_WORKER_STOPPED'));this.pending.delete(id);}
-    if(worker)await worker.terminate();
+    // This worker only reads provider history. Termination may wait for its current
+    // synchronous read, while the serving process is already draining for a release.
+    // The process exit ends the worker even if that read has not returned yet.
+    if(worker)void worker.terminate().catch(error=>log('warn','provider_history_worker_stop_failed',errorFields(error)));
   }
 }
