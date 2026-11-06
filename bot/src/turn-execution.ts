@@ -1311,9 +1311,11 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       }
       if(isRefreshableAuthFailure(message)){
         markClaudeHomeRefused(runningClaudeHome);
-        // An expired login on an account's own home is renewed by the Mac's browser agent, once per episode.
-        if(runningClaudeHome)needClaudeSignInRenewal(runningClaudeAccount,'a turn was refused');
-        if(input.providerId==='codex')needSignInRenewal('codex',currentAccount('codex')?.label??null,'a turn was refused');
+        // A runner account has no owner-local home; its exact saved label still names the
+        // sign-in that the Mac browser agent must renew.
+        if(runningClaudeHome||input.providerId==='claude-code'&&input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER)
+          needClaudeSignInRenewal(runningClaudeAccount,'a turn was refused');
+        if(input.providerId==='codex')needSignInRenewal('codex',runningCodexAccount??currentAccount('codex')?.label??null,'a turn was refused');
       }
       const authWait = replaySafe && input.providerId !== 'chatgpt'
         && isRefreshableAuthFailure(message)

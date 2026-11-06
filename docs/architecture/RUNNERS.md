@@ -414,8 +414,9 @@ operation outcome and does not launch or submit twice. A different active sign-i
 provider is refused. If the runner restarts during sign-in, the pending operation becomes
 `interrupted`; the caller must start a new operation. If the runner is unreachable, the call has no
 answer and its outcome is unknown until the same operation ID is queried again.
-When runner readings show a saved Claude login has stopped working, the owner creates the existing
-Mac-browser renewal request for that exact account; it does not try the owner's local Claude home.
+When runner readings or an exact runner turn refusal show a saved Claude login has stopped working,
+the owner creates the existing Mac-browser renewal request for that account; it does not try the
+owner's local Claude home. A Codex turn refusal likewise names the account that actually ran.
 
 The owner stores only the selected runner, operation ID and optional saved profile ID in its
 pending sign-in row. After an owner restart it asks that same runner for the operation's status;
