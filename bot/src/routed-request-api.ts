@@ -304,6 +304,8 @@ function localOwnerRequest(shared:(request:Request)=>Promise<Response>,sessions?
         const input=await request.json() as {name:string;request_id:string};
         return Response.json(sessions.externalGet(input.name,input.request_id));
       }
+      if(request.method==='POST'&&url.pathname==='/external/withdraw'&&sessions)
+        return Response.json(sessions.externalWithdraw(await request.json()));
       return shared(request);
     } catch(error) {
       return requestFailure(request,error);

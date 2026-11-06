@@ -445,6 +445,40 @@ export class SessionCommunicationCoordinator {
             events:(db.query('SELECT event_id,payload_json,final,created_at_ms FROM session_external_replies WHERE request_id=? ORDER BY created_at_ms').all(id) as any[])
                 .map(event=>({event_id:event.event_id,final:!!event.final,payload:JSON.parse(event.payload_json),created_at_ms:event.created_at_ms}))};
     }
+    externalWithdraw(input:{name:string;request_id:string;ask_action_id:string;action_id:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        if(!/^[a-z][a-z0-9-]{2,40}$/.test(input.name))throw new Error('Invalid outside agent name.');
+        action(input.ask_action_id);action(input.action_id);
+        db.transaction(()=>{
+            const row=db.query('SELECT * FROM session_external_requests WHERE request_id=? AND agent_name=?')
+                .get(input.request_id,input.name) as any;
+            if(!row)throw new Error('Unknown outside request.');
+            if(row.action_id!==input.ask_action_id)throw new Error('The original ask action ID does not match this request.');
+            if(row.outcome){
+                const result=row.result_json?JSON.parse(row.result_json):null;
+                if(row.outcome==='canceled'&&result?.withdrawActionId===input.action_id)return;
+                throw new Error('This outside request already has a different final outcome.');
+            }
+            const target=getAcceptedSessionInput(row.target_input_id);
+            if(!target)throw new Error('The target input is missing; withdrawal needs owner reconciliation.');
+            if(target.turn_id!==null){
+                const turn=db.query(`SELECT status,owner_instance_id,provider_admission_intended_at,
+                    provider_started_at,provider_turn_id,provider_input_acknowledged_at FROM turns WHERE id=? AND session_id=?`)
+                    .get(target.turn_id,target.session_id) as any;
+                if(!turn||turn.status!=='queued'||turn.owner_instance_id!==null||turn.provider_admission_intended_at!==null
+                    ||turn.provider_started_at!==null||turn.provider_turn_id!==null||turn.provider_input_acknowledged_at!==null)
+                    throw new Error('The recipient turn has started or its start is uncertain; this request cannot be withdrawn as unstarted.');
+            } else if(target.steering_id!==null||JSON.parse(target.receipt_json??'{}').state!=null)
+                throw new Error('The recipient input is not an unstarted queued request.');
+            if(!cancelQueuedWithdrawnRequest(target.id))
+                throw new Error('The recipient input could not be revoked; no request outcome was changed.');
+            db.query("UPDATE session_external_requests SET status='settled',outcome='canceled',result_json=? WHERE request_id=? AND outcome IS NULL")
+                .run(JSON.stringify({withdrawActionId:input.action_id,askActionId:input.ask_action_id,
+                    targetInputId:target.id,reason:'The outside requester withdrew this unstarted request.'}),row.request_id);
+        })();
+        this.wake();
+        return this.externalGet(input.name,input.request_id);
+    }
     private externalReply(input:{source:CommunicationSource;action_id:string;request_id:string;text:string;reply_body?:string;final:boolean;waiting_on_watch?:string;workDisposition?:WorkDisposition;openChatGptIds?:string[];attachments?:string[];files?:AttachedFile[];evidence?:unknown[];hand_back?:string}) {
         const request=db.query('SELECT * FROM session_external_requests WHERE request_id=?').get(input.request_id) as any;
         if(!request)return null;
