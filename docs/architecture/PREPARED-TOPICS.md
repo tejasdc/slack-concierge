@@ -24,6 +24,9 @@ Lists retain exact counts and expose a detail reference when their value needs a
 Large individual values are retained as SHA-256-addressed, sixteen-KiB UTF-8 chunks.
 Clients must verify the concatenated digest before displaying a complete value. A newer
 generation invalidates old list cursors; source lag is indexing, never an empty complete list.
+Before an Inbox session exists, both list entrances return an empty page with incomplete
+`presentation_indexing` coverage. Once the Inbox exists, an initial prepared-list rebuild
+uses the ledger list until the prepared generation is ready, so existing threads stay visible.
 The change feed carries both sides of each update and a null after-value for deletion.
 It retains seven days of revisions and explicitly resets an older cursor. Garbage collection
 walks finite batches, removes superseded generations and unreferenced chunks, and never

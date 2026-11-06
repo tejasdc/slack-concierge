@@ -18,12 +18,13 @@ function prepared(){
  return connection.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='presentation_topics' LIMIT 1").get()?connection:null;
 }
 const indexing=()=>({complete:false,code:'presentation_indexing',appliedSequence:0,retryAfterMs:1000});
+export const unpreparedTopics=()=>({topics:[],nextCursor:null,asOf:'',sorting:{count:0,captures:[]},coverage:indexing()});
 export function preparedTopicEventDisplays(sequences:readonly number[]){
  const reader=prepared();return reader?readPreparedTopicEvents(reader,sequences):sequences.map(()=>null);
 }
 export function preparedTopics(options:Omit<Parameters<typeof readPreparedTopics>[1],'canonicalHead'>){
  const reader=prepared();return reader?readPreparedTopics(reader,{...options,canonicalHead:presentationHead(db)}):
-  {topics:[],nextCursor:null,asOf:'',sorting:{count:0,captures:[]},coverage:indexing()};
+  unpreparedTopics();
 }
 export function preparedAreas(query:string|null,cursor:string|null,limit:number){
  const reader=prepared();return reader&&reader.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='presentation_areas'").get()?readPreparedAreas(reader,presentationHead(db),query,cursor,limit):
