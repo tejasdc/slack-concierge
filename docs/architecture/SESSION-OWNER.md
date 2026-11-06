@@ -567,7 +567,11 @@ The owner clamps a read or dismiss generation to the session's own attention cou
   follows the link for file or directory changes and, for new watches, also records the exact
   symlink target. An atomic link swap is observed even if the old and new release directories
   happen to have the same metadata; older active watches retain their original comparison.
-  A peer agent uses the same local watch on its own machine. An outside request uses the same
+  A peer agent uses the same local watch on its own machine. Its accepted partial carries the
+  watch ID through peer push and pull. The peer reports whether that exact request still has a
+  live dependency, so the originating machine keeps a finished peer turn pending until the
+  watch fires or expires and the agent can answer. During an update gap, an older peer that
+  cannot report this fact leaves a partial reply pending until it updates. An outside request uses the same
   recipient-session watch check, records the watch in its partial reply, and is exempt from its
   Stop hook while that exact request has an active wait. Its renewing series ends after the
   outside request closes. An open request with no actual wake condition still receives the stalled
