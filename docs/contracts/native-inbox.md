@@ -299,6 +299,14 @@ acceptance belongs to Tejas. Prior failed evidence remains unchanged.
 
 ## Topics
 
+There is one Inbox. Every session ever marked as the Inbox is part of its one dialogue, its
+threads and its topics; the session holding the `inbox` standing role is the current router.
+A provider handoff and `sessions agents bind inbox` both move that role
+([router actions](../runbooks/ROUTER-ACTIONS.md#standing-agents)). Before 2026-11-06 a bind
+moved only the label: captures, thread-named requests and thread lookups followed the newest
+Inbox-marked session and accepted-handoff chains, so an overnight stand-in received nothing
+and could name no thread.
+
 A topic is the Inbox's recognizable conversation: a stable `topic:<uuid>` owning a set of
 thread roots (each root belongs to at most one topic; the latest placement wins), a title
 with its previous titles as aliases, a one-line summary of the most useful current fact, a
@@ -427,6 +435,10 @@ that work closes; the open-work guard applies to new posts. `sessions topics obl
 one view with their current destination and age, without creating another store. The
 reported owner follows live attempts and existing decision waits, including a decision
 in another thread that holds an agent's work; ended attempts return to Inbox recovery.
+That full view rebuilds every request's owner and waiting reason, so thnkr.ing's Open
+requests chip reads `GET /inbox/obligations?view=count` instead: the same open requests,
+counted by one indexed statement, with no items. The full view is read only when he opens
+the Open requests list (2026-11-05: the chip's re-reads cost 5 s and 15,800 statements each).
 
 The request's source input and its named thread answer different questions. The source is
 the event that caused this send; the named thread message is the return address for its
@@ -777,19 +789,24 @@ identity and these per-input facts. The routing preamble was prefixed to every i
 September 23, 2026; the attention rule moved there before its release.
 
 Migration runs once at owner startup, guarded by a `topics_migration` event with
-`version:1`. Only a human-authored Inbox root or a marked, routable agent capture can
+`version:1` on any Inbox session: a provider or folder cutover that makes a new Inbox
+session does not rerun it (or attention migration version 2), because later threads are
+filed live ([failure record](../incidents/2026-11-05-inbox-migration-reran-for-new-inbox-session.md)). Only a human-authored Inbox root or a marked, routable agent capture can
 become a recovered request. Agent coordination, returned answers and service upkeep
 remain in their exact receipts; a transcript root alone grants no human-work standing.
 For each eligible root the migration creates one topic (`recovered:1`), one open request
 with its linked dispatches, and one question per legacy attention entry retaining its id.
 The manifest `{roots,topics,requests,questions,unresolved}` is written into the guard event.
-An owner-ledger correction retires previously recovered return and upkeep requests only when every
-root in their topic is a service-origin return or upkeep input, there is one request sourced to one of those
-roots, and there is no question, human reply or dispatch added after migration. A returned result and its later upkeep notices
+An owner-ledger correction retires previously recovered service-notice requests (returns, upkeep,
+allowance, area, cut-off turn, background-job and watch notices alike) only when every
+root in their topic is a service-origin input, there is one request sourced to one of those
+roots, no question is still unsettled, there is no human reply, and every dispatch added after migration
+has its own home in another thread (where its request or original thread root is placed) whose open request lists it, which keeps
+owning that work. A dispatch homed in this thread, in none, or in a thread with no open request listing it keeps the request open. A returned result and its later upkeep notices
 can therefore share one synthetic topic without becoming human work. Agent-authored work roots stay open even
 when the root itself is not human-authored: its source may carry Tejas's delegated work. The correction records
-the exact migration event and all roots as closure evidence, alongside the original request identity
-and source input when retained. It keeps the original request, source inputs, result receipts
+the exact migration event, all roots and each later dispatch's request as closure evidence, alongside the original request identity
+and source input when retained. It reads recovered threads of every Inbox session, not only the current one, because a later Inbox session (provider cutover or acting router) does not adopt them by handoff, and records each retirement under the thread's own session. It keeps the original request, source inputs, result receipts
 and topic history. The original migration event proves which dispatches were present before any later assignment.
 Completion of original work remains governed
 by its own request's checked answer.

@@ -764,6 +764,8 @@ resume on the next owner.
 The historical unreadable-reading repair records its completion; new reading items are checked
 at admission. During shutdown the read-only provider-history worker is asked to terminate without
 holding the service for a synchronous read, and each execution-host stop component logs its time.
+Every awaited stop after the request surfaces close also logs its duration, so an
+ordinary release can distinguish cleanup work from custody-preserving waits.
 See [the restart-gap incident](../incidents/2026-11-06-owner-restart-gap.md) for the measured boundary.
 Each sweep over history (forwarded final answers, timed-post retirement, the purpose
 backfill) is a catch-up over a key range with a high-water mark recorded as a `startup_catch_up`
@@ -895,6 +897,11 @@ checks integrity and foreign keys after `COMMIT` on only the tables it changed (
 each added index or trigger, each added table or column; the whole ledger when a change names
 something else), closes the migrator, then the runner
 starts the coordinator and checks health and adoption. Execution hosts are never stopped.
+The offline migrator emits `deployment_migration_phase` start and completion records for schema
+comparison, backup verification or a late backup, schema import and commit, integrity checks,
+and backup retention. A missing completion record identifies the phase that failed or stalled;
+durations are measured inside the migrator, so an operator can distinguish its work from the
+service stop, candidate launch and request API opening before changing a safety gate.
 Control recovery uses the same ordering. The combined manual command also requires the
 coordinator fully stopped; it cannot run schema work against a serving owner.
 
@@ -947,7 +954,9 @@ additional hook runs the same current decision before its pinned semantic pass.
 The private entrance creates fresh temporary ledger and capture paths
 before executing any requested code and applies the same Linux mount isolation as release
 checks. Use the exact installed command printed by the guard, followed by `--` and the
-check command. Router API commands and ordinary shell inspection remain available outside
+check command. For that exact entrance the raw-copy check reads only the typed command,
+not the source of the scripts it runs: fixtures name live paths and copy commands as test
+data, and the hidden live mounts, not text matching, keep their code from the ledger. Router API commands and ordinary shell inspection remain available outside
 it; inside it Concierge is hidden, so router commands and fresh Claude launches refuse at
 once with that explanation instead of waiting for a restart. This
 closes the observed old archive-check import path; shell text checks are not a security

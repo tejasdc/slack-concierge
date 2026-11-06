@@ -683,7 +683,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     runningClaudeHome=remoteProviderRunner?null:claudeChoice?.home??null;
     const actualClaudeBrief=input.presentation==='native'&&!input.adopted&&runningClaudeAccount
       ?budgetBriefWithProviderRoom('claude-code',Date.now(),runningClaudeAccount):null;
-    if(input.presentation==='native'&&(input.providerId==='claude-code'||input.providerId==='codex')){
+    // An adopted run keeps the identity recorded when its provider started; this release's
+    // rebuilt instructions were never sent to it.
+    if(input.presentation==='native'&&!input.adopted&&(input.providerId==='claude-code'||input.providerId==='codex')){
       try{
         recordSessionEvent({eventId:`prompt-cache-identity:${input.turnId}:${dispatchAttempt}`,
           sessionId:input.session.id,turnId:input.turnId,kind:'prompt_cache_identity',

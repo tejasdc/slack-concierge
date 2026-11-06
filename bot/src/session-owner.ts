@@ -50,7 +50,7 @@ import {providerOwnerEnvironment} from './provider-owner-environment';
 import {escalationReason,topModel} from './model-escalation';
 import {humanChoseTopModel} from './model-escalation-custody';
 import {STILL_WAITING_MINUTES} from './request-liveness';
-import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,discardQueuedTurnContinuations,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
+import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,discardQueuedTurnContinuations,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordHeldInputReceiptEvent,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
 import {INBOX_PURPOSE,REPAIR_AGENT_PURPOSE,purposeFromFirstWords} from './session-purpose';
 import {getRouterThreadContext} from './router-search';
@@ -85,7 +85,7 @@ import {sessionAddress} from './session-address';
 import {handoffView,supersededBy,supersededAddress,withdrawnSuccessor} from './session-handoff';
 import {sessionExecution,sessionPresence} from './session-presence';
 import {inboxAttribution} from './inbox-attribution-read';
-import {directTopicList,openInboxObligations} from './session-topics';
+import {directTopicList,openInboxObligationCount,openInboxObligations} from './session-topics';
 import {workThread} from './session-fit';
 import {sessionMutuals,mutualLift} from './session-mutuals';
 import {commitWork,originInput} from './commit-work';
@@ -2500,6 +2500,9 @@ export class SessionOwner {
         // A temporarily unavailable recipient keeps an explicit, recoverable queue intent.
         db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({admissionIntent:'queue'}),saved.input.id);
       }
+      // A paused, archived or unavailable session has accepted custody but no turn. Publish that
+      // receipt change in the same transaction without pretending the provider accepted work.
+      if(!forward&&!saved.duplicate&&!canceled&&!this.canSend(session))recordHeldInputReceiptEvent(saved.input);
       return saved;
     })();
     if(heldCaptureId)return {operation:this.receipt(getAcceptedSessionInput(retained.input.id)!)};
@@ -4146,7 +4149,8 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='reports'&&parts[1]==='window'&&parts.length===2)
         result=reportWindow(db,url.searchParams.get('since'),url.searchParams.get('until'));
       else if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===1)result=this.inbox();
-      else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='obligations'&&parts.length===2)result=openInboxObligations();
+      else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='obligations'&&parts.length===2)
+        result=url.searchParams.get('view')==='count'?openInboxObligationCount():openInboxObligations();
       else if(request.method==='POST'&&parts[0]==='mac-browser-fallback'&&parts.length===1)result=this.macBrowserFallback(body);
       else if(request.method==='GET'&&parts[0]==='focus-hold'&&parts.length===1)result=await this.focusHoldStatus();
       else if(request.method==='POST'&&parts[0]==='focus-hold'&&parts.length===1)result=await this.focusHoldControl(body);
@@ -4255,7 +4259,10 @@ export class SessionOwner {
         if(claudeAllowanceHeld())throw new SessionOwnerError(CLAUDE_ALLOWANCE_HOLD_MESSAGE,409,'CLAUDE_ALLOWANCE_HELD');
         if(!this.runtime.auth?.chooseClaudeLaunch)throw new SessionOwnerError('Claude account selection is unavailable.',503);
         const model=url.searchParams.get('model');
-        if(model&&(!/^[A-Za-z0-9._-]{1,100}$/.test(model)))throw new SessionOwnerError('Invalid Claude model.',400);
+        // Registered models may include provider syntax such as the extended-context suffix.
+        if(model&&(model.length>100||(!/^[A-Za-z0-9._-]+$/.test(model)
+          &&!modelCatalogue('claude-code').some(choice=>choice.id===model))))
+          throw new SessionOwnerError('Invalid Claude model.',400);
         result={choice:this.runtime.auth.chooseClaudeLaunch(model)};
       }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='topics'&&parts.length===2){
@@ -4480,7 +4487,7 @@ export class SessionOwner {
         if(request.method==='GET'&&parts.length===2)result={operation:requestOperation(parts[1]!),events:this.communication.inspect(parts[1]!).events};
         else {
           object(body);const source={input_id:body.sourceInputId,run_id:body.sourceRunId};
-          if(request.method==='POST'&&parts.length===1){only(body,['clientActionId','sourceInputId','sourceRunId','targetAddress','targetProvider','effort','project','title','text','attachments','files','captureId','evidence','requestedEffect','afterRequestIds']);const accepted=await this.communication.ask({source,action_id:actionId(body),address:body.targetAddress,provider:body.targetProvider,effort:body.effort,project:body.project,title:body.title,text:inputText(body),after:body.afterRequestIds,attachments:body.attachments,files:body.files,captureId:body.captureId,evidence:body.evidence,requestedEffect:body.requestedEffect});result='request_id' in accepted?{operation:requestOperation(accepted.request_id)}:{answer:accepted};}
+          if(request.method==='POST'&&parts.length===1){only(body,['clientActionId','sourceInputId','sourceRunId','targetAddress','targetProvider','effort','project','title','text','attachments','files','captureId','evidence','requestedEffect','afterRequestIds','forTask','recoveryOf','correctionOf']);const accepted=await this.communication.ask({source,action_id:actionId(body),address:body.targetAddress,provider:body.targetProvider,effort:body.effort,project:body.project,title:body.title,text:inputText(body),after:body.afterRequestIds,attachments:body.attachments,files:body.files,captureId:body.captureId,evidence:body.evidence,requestedEffect:body.requestedEffect,for_task:body.forTask,recovery_of:body.recoveryOf,correction_of:body.correctionOf});result='request_id' in accepted?{operation:requestOperation(accepted.request_id)}:{answer:accepted};}
           else if(request.method==='POST'&&parts[2]==='replies'){only(body,['clientActionId','sourceInputId','sourceRunId','kind','text','evidence','workDisposition','attachments','files']);if(!['partial','final'].includes(body.kind))throw new SessionOwnerError('Reply kind must be partial or final.');await this.communication.reply({source,action_id:actionId(body),request_id:parts[1]!,text:replyText(body),final:body.kind==='final',workDisposition:body.workDisposition,evidence:body.evidence,attachments:body.attachments,files:body.files});result={operation:requestOperation(parts[1]!,'reply',body.sourceInputId,body.clientActionId)};}
           else if(request.method==='POST'&&parts[2]==='cancel'){only(body,['clientActionId','sourceInputId','sourceRunId','reason']);this.communication.cancel({source,action_id:actionId(body),request_id:parts[1]!,reason:body.reason});result={operation:requestOperation(parts[1]!)};}
           else throw new SessionOwnerError('Unknown request route.',404);

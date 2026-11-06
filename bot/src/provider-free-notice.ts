@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { recordRepairNotice, REPAIR_FIRST_KINDS } from "./repair-notices";
 import { writeLogLine } from "./log";
+import { CURRENT_INBOX_ID_SQL } from "./inbox-lineage-sql";
 
 /** The scope every service notice input carries; the one mark that says "nobody's turn wrote this". */
 export const SERVICE_NOTICE_SCOPE = "service:provider-free-notice";
@@ -26,8 +27,7 @@ export function publishProviderFreeNotice(db: Database, input: {
 }): boolean {
   // A health notice is the repair agent's to work on first; he hears only what it cannot solve.
   if (REPAIR_FIRST_KINDS.has(input.kind)) return recordRepairNotice(db, input);
-  const inbox = db.query(`SELECT id,native_metadata_json FROM sessions
-    WHERE json_extract(native_metadata_json,'$.inbox')=1 ORDER BY id DESC LIMIT 1`)
+  const inbox = db.query(`SELECT id,native_metadata_json FROM sessions WHERE id=(${CURRENT_INBOX_ID_SQL})`)
     .get() as { id: number; native_metadata_json: string | null } | null;
   if (!inbox) throw new Error("No Inbox session exists for the service notice.");
   const eventId = `service-notice:${input.key}`;

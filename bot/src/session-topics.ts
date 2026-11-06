@@ -7,6 +7,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
 import {db,getSessionById,type SessionRow} from './state';
 import {carryingTurn,getAcceptedSessionInput,humanAuthored,nativeRunId,sessionInputProvenance,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput,type RetainInputTiming} from './session-inputs';
+import {INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
 import {BUG_REPORT_OWN_THREAD,isBugReportInput,capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot,postForwardedThreadAnswer} from './session-inbox';
 import {answerClosingLine} from './answer-closing-line';
 import {notSeenWorking} from './answers-to-tejas';
@@ -168,9 +169,7 @@ function resolveAskedSource(rawId:string,topic:StoredTopic):{source:AcceptedSess
 
 function routerSessionOwnsTopic(sourceSessionId:number,topicSessionId:number):boolean {
   if(sourceSessionId===topicSessionId)return true;
-  return !!db.query(`WITH RECURSIVE lineage(id) AS (SELECT ? UNION ALL
-    SELECT predecessor_session_id FROM session_handoffs JOIN lineage ON successor_session_id=lineage.id
-    WHERE state='accepted') SELECT 1 FROM lineage WHERE id=? LIMIT 1`).get(sourceSessionId,topicSessionId);
+  return !!db.query(`SELECT 1 WHERE ? IN (${INBOX_LINEAGE_SQL})`).get(topicSessionId,sourceSessionId);
 }
 
 export function readsFor(question:{topicId:string;kind?:QuestionKind;legacyNeedEventId:string|null;owner:any;brief:any;sources?:string[]}):ReadingText[] {
@@ -807,10 +806,7 @@ function unfiledNeeds(session:SessionRow):OpenNeed[] {
  */
 type HumanReply={inputId:string;at:string;reviews:string[];replyTo:string|null};
 type ReadIndex={humanReplies:Map<string,HumanReply[]>};
-const inboxLineageSql=`WITH RECURSIVE lineage(id) AS (
-  SELECT ? UNION ALL SELECT handoff.predecessor_session_id FROM session_handoffs handoff
-  JOIN lineage ON handoff.successor_session_id=lineage.id WHERE handoff.state='accepted'
-) SELECT id FROM lineage`;
+const inboxLineageSql=INBOX_LINEAGE_SQL;
 function readIndex(sessionId:number,completeReplies=false):ReadIndex {
   refreshRootMemo();
   // Every human message per thread root, newest first, with the questions it reviewed and the
@@ -914,6 +910,39 @@ function topicSummary(topic:StoredTopic,session:SessionRow,index:EntryIndex,work
       deferred:views.filter(question=>question.state==='deferred').length},
     requests:{open:requests.filter(request=>request.state==='open').length,closed:requests.filter(request=>request.state==='closed').length},
     work:topicWork(topic,roots,work,index)};
+}
+
+/**
+ * The words of one Inbox message, by the exact id a topic, thread or request shows for it: a
+ * capture, his reply, an agent's post or result, a routed request, or the request input a topic
+ * request names as its source or dispatch. Topic reads carry ids, titles and short dispatch
+ * excerpts; before 2026-11-06 the only way to read the message itself was to be the router the
+ * input had been delivered to, so a stand-in router could not judge the requests it inherited.
+ */
+export function inboxMessageWords(session:SessionRow,messageId:string) {
+  const entry=inboxMessageById(session.id,messageId) as any;
+  const root=inboxThreadRoot(session.id,messageId);
+  const topicId=root?topicOfRoot(root):null;
+  // A request shows in its thread as "Sent to <agent>"; its words are the input it delivered.
+  const sent=entry&&messageId.startsWith('request:')?getAcceptedSessionInput(messageId):null;
+  const sentText=sent?(JSON.parse(sent.payload_json).firstInput??JSON.parse(sent.payload_json)).text:null;
+  if(entry)return {messageId,from:entry.author?.kind??(entry.role==='user'?'human':'agent'),
+    session:typeof entry.sourceSessionId==='number'?`concierge:${entry.sourceSessionId}`:null,
+    at:entry.createdAt??null,words:typeof sentText==='string'?sentText:typeof entry.content==='string'?entry.content:'',
+    ...(sent?{sentTo:`concierge:${sent.session_id}`}:{}),
+    attachments:(entry.attachments??[]).map((file:any)=>({id:file.id,name:file.name,contentType:file.contentType})),
+    threadRoot:root,topicId};
+  // A request input sits in its target session; it is Inbox material only when a topic request names it.
+  const named=db.query(`SELECT topic_id FROM inbox_requests WHERE EXISTS (SELECT 1 FROM json_each(sources_json) WHERE json_extract(value,'$.inputId')=?1)
+      OR EXISTS (SELECT 1 FROM json_each(dispatches_json) WHERE 'request:' || json_extract(value,'$.requestId')=?1 OR json_extract(value,'$.sourceInputId')=?1)
+    UNION ALL SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?1 LIMIT 1`).get(messageId) as {topic_id:string}|null;
+  const input=named?getAcceptedSessionInput(messageId):null;
+  if(!input)throw new TopicError('No Inbox message or topic-named request has that exact id.',404,'MESSAGE_NOT_FOUND');
+  const payload=JSON.parse(input.payload_json),first=payload.firstInput??payload;
+  return {messageId,from:input.origin,session:`concierge:${input.session_id}`,at:input.created_at,
+    words:typeof first.text==='string'?first.text:'',
+    attachments:((first.attachments??[]) as string[]).map(id=>db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean),
+    threadRoot:root,topicId:topicId??named!.topic_id};
 }
 
 function inboxOrThrow():SessionRow {
@@ -1146,6 +1175,16 @@ export function listTopics(options:{state?:string|null;order?:string|null;query?
   const page=summaries.slice(offset,offset+limit);
   return {topics:page,nextCursor:offset+limit<summaries.length?String(offset+limit):null,
     sorting:sortingCaptures(session,index),asOf:nowIso()};
+}
+
+/** How many human obligations are open, for the Open requests chip. One indexed count, so a list
+ * that changes while he watches can ask again cheaply; the full view below rebuilds each request's
+ * owner and waiting reason (about 15,800 statements and 5 s for 405 requests on 2026-11-05) and is
+ * read only when he opens the list itself. Both count the same rows: every open request. */
+export function openInboxObligationCount() {
+  inboxOrThrow();
+  const {count}=db.query(`SELECT COUNT(*) AS count FROM inbox_requests WHERE state='open'`).get() as {count:number};
+  return {count,asOf:nowIso(),items:[] as never[],view:'count' as const};
 }
 
 /** One bounded view of every open human obligation, independent of thread-list paging. */
@@ -1948,6 +1987,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
     case 'obligations':return openInboxObligations();
     case 'read':return preparedTopicOverview(text(body?.topic_id,'topic id',200),body?.state??'open');
     case 'resolve':guard();return preparedTopicResolution(text(body?.message_id,'message id',500));
+    case 'message':guard();return inboxMessageWords(session,text(body?.message_id,'message id',500));
     case 'questions-read':guard();return preparedQuestions({state:body?.state??'open',cursor:body?.cursor,limit:body?.limit});
     case 'items':{
       const topicId=text(body?.topic_id,'topic id',200);guard(topicId);
@@ -2133,9 +2173,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
         const local=db.query('SELECT target_session_id,outcome,status FROM session_communication_requests WHERE request_id=?').get(dispatchId) as any;
         const peer=local?null:db.query('SELECT peer,remote_session_id,outcome,status FROM session_peer_requests WHERE request_id=?').get(dispatchId) as any;
         if(!local&&!peer)throw new TopicError('That dispatch is not a request this owner sent.',404,'DISPATCH_UNKNOWN');
-        const originalRoot=(db.query('SELECT thread_root_input_id AS root FROM session_communication_requests WHERE request_id=?').get(dispatchId)
-          ??db.query('SELECT thread_root_input_id AS root FROM session_peer_requests WHERE request_id=?').get(dispatchId)) as {root:string|null}|null;
-        const ownTopic=topicOfRoot(`request:${dispatchId}`)??(originalRoot?.root?topicOfRoot(originalRoot.root):null);
+        const ownTopic=dispatchHomeTopic(dispatchId);
         if(!ownTopic)throw new TopicError('Place the dispatch in an Inbox thread before linking its work. Nothing was linked.',409,'DISPATCH_TOPIC_MISSING');
         const dispatch={requestId:dispatchId,targetSessionId:local?`concierge:${local.target_session_id}`:receiveSessionFromPeer(peer.remote_session_id,peer.peer),
           targetTitle:local?(getSessionById(local.target_session_id)&&sessionMetadata(getSessionById(local.target_session_id)!).title)??null:null,
@@ -3899,9 +3937,18 @@ export function topicPromptContext(sessionId:number,inputId:string,payload:any):
 /* ------------------------------------------------------------------ migration */
 
 const MIGRATION_VERSION=1;
-function migrationDone(sessionId:number) {
-  return !!db.query(`SELECT 1 FROM session_owner_events WHERE session_id=? AND kind='topics_migration'
-    AND json_extract(payload_json,'$.version')=?`).get(sessionId,MIGRATION_VERSION);
+/**
+ * Tejas has one Inbox. A provider or folder cutover makes a new Inbox session, but the
+ * legacy backlog was already converted by whichever Inbox session ran first, and every later
+ * thread is filed live. Rerunning per session rebuilt every historical thread at startup
+ * (30.8 s on 2026-11-05) and opened 948 phantom requests; see
+ * docs/incidents/2026-11-05-inbox-migration-reran-for-new-inbox-session.md.
+ */
+function inboxMigrationRan(version:number) {
+  // Driven from the Inbox sessions so SQLite searches each one's (session, kind) index; the
+  // join form scanned every owner event and cost 0.5 to 0.7 s per start.
+  return !!db.query(`SELECT 1 FROM session_owner_events WHERE kind='topics_migration' AND json_extract(payload_json,'$.version')=?
+    AND session_id IN (SELECT id FROM sessions WHERE json_extract(native_metadata_json,'$.inbox')=1) LIMIT 1`).get(version);
 }
 function firstLine(value:string,limit=80) {
   const line=value.split('\n').map(part=>part.trim()).find(part=>part.length)??'';
@@ -3972,7 +4019,7 @@ export function migrateInboxTopics(options:{batch?:number}={}) {
   const session=inboxSession();
   if(!session)return {migrated:false,reason:'no_inbox_session'};
   forwardRecoveryStartMs(session.id);
-  if(migrationDone(session.id))return {migrated:false,reason:'already_migrated'};
+  if(inboxMigrationRan(MIGRATION_VERSION))return {migrated:false,reason:'already_migrated'};
   invalidateTopicRoots();
   const index=entryIndex();
   const manifest={roots:0,topics:0,requests:0,questions:0,unresolved:[] as {inputId:string;reason:string}[]};
@@ -4027,36 +4074,62 @@ export function migrateInboxTopics(options:{batch?:number}={}) {
   return {migrated:true,manifest};
 }
 
+const SETTLED_QUESTION_STATES:ReadonlySet<string>=new Set(['answered','declined','withdrawn','superseded','read','expired']);
+/** The thread that owns a dispatch's work: where its request or its original thread root was placed. */
+function dispatchHomeTopic(dispatchId:string):string|null {
+  const root=(db.query('SELECT thread_root_input_id AS root FROM session_communication_requests WHERE request_id=?').get(dispatchId)
+    ??db.query('SELECT thread_root_input_id AS root FROM session_peer_requests WHERE request_id=?').get(dispatchId)) as {root:string|null}|null;
+  return topicOfRoot(`request:${dispatchId}`)??(root?.root?topicOfRoot(root.root):null);
+}
+/**
+ * Whether a dispatch linked into `fromTopicId` is owned by a request in its own, different home
+ * thread. A home placement alone is not ownership: only an open request there that lists the dispatch
+ * keeps the work visible once the linking thread's request closes.
+ */
+function trackedInHomeThread(dispatchId:string,fromTopicId:string):boolean {
+  const home=dispatchHomeTopic(dispatchId);
+  if(!home||home===fromTopicId)return false;
+  return topicRequests(home).some(request=>request.state==='open'&&request.dispatches.some((dispatch:any)=>String(dispatch.requestId)===dispatchId));
+}
 /** Retire migration-created bookkeeping requests through owner events, keeping their history. */
 export function retireRecoveredBookkeepingRequests() {
   const session=inboxSession();
   if(!session)return {retired:0};
   refreshRootMemo();
-  const replies=readIndex(session.id,true).humanReplies;
   const by:TopicBy={kind:'owner',sessionId:`concierge:${session.id}`};
   let retired=0;
-  const candidates=db.query("SELECT topic_id FROM inbox_topics WHERE session_id=? AND recovered=1 AND state='open'")
-    .all(session.id) as {topic_id:string}[];
-  for(const {topic_id:topicId} of candidates) {
+  // Recovered threads keep the Inbox session that converted them. A later Inbox session
+  // (provider cutover or an acting router) does not adopt them by handoff, so the correction
+  // reads every Inbox session's recovered threads and every one of those sessions' human replies.
+  const candidates=db.query("SELECT topic_id,session_id FROM inbox_topics WHERE recovered=1 AND state='open'")
+    .all() as {topic_id:string;session_id:number}[];
+  const replies=new Set<string>();
+  for(const sessionId of new Set([session.id,...candidates.map(candidate=>candidate.session_id)]))
+    for(const root of readIndex(sessionId,true).humanReplies)replies.add(root);
+  for(const {topic_id:topicId,session_id:topicSessionId} of candidates) {
     const roots=topicRoots(topicId);
     if(!roots.length||roots.some(root=>replies.has(root)))continue;
     const inputs=roots.map(root=>getAcceptedSessionInput(root));
-    if(inputs.some(input=>!input||input.origin!=='service'
-      ||!input.id.startsWith('return:')&&!input.id.startsWith('thread-upkeep:')))continue;
+    // A service input is an automatic event or result for an existing request, never a new
+    // request from Tejas, whatever kind of notice it is. Agent roots stay open: their source
+    // may carry his delegated work.
+    if(inputs.some(input=>!input||input.origin!=='service'))continue;
     const requests=topicRequests(topicId);
     if(requests.length!==1||requests[0]!.state!=='open'||requests[0]!.sources.length!==1
-      ||!roots.includes(requests[0]!.sources[0]!.inputId)||topicQuestions(topicId).length)continue;
+      ||!roots.includes(requests[0]!.sources[0]!.inputId)
+      ||topicQuestions(topicId).some(question=>!SETTLED_QUESTION_STATES.has(question.state)))continue;
     const request=requests[0]!;
     // The router may have since assigned real work to this recovered thread. Its
     // request then owns that dispatch until the normal checked-outcome path settles
-    // it; the migration correction must only retire the original phantom row.
+    // it; the migration correction must only retire the original phantom row. A later
+    // dispatch whose own work lives in another thread is only a link to that thread's
+    // request, which keeps owning it.
     const migration=db.query("SELECT json_extract(payload_json,'$.request.dispatches') AS dispatches FROM session_owner_events WHERE event_id=? AND kind='topic'")
       .get(`topic-migration:${request.sources[0]!.inputId}`) as {dispatches:string|null}|null;
     if(!migration?.dispatches)continue;
-    const initialDispatches=JSON.parse(migration.dispatches) as {requestId:string}[];
-    const initialIds=initialDispatches.map(dispatch=>dispatch.requestId).sort();
-    const currentIds=request.dispatches.map((dispatch:any)=>String(dispatch.requestId)).sort();
-    if(JSON.stringify(currentIds)!==JSON.stringify(initialIds))continue;
+    const initialIds=new Set((JSON.parse(migration.dispatches) as {requestId:string}[]).map(dispatch=>dispatch.requestId));
+    const laterIds=request.dispatches.map((dispatch:any)=>String(dispatch.requestId)).filter(id=>!initialIds.has(id));
+    if(laterIds.some(id=>!trackedInHomeThread(id,topicId)))continue;
     const input=inputs.find(candidate=>candidate?.id===request.sources[0]!.inputId)!;
     const evidence=[`topic-migration:${request.sources[0]!.inputId}`,...roots];
     if(input.id.startsWith('return:')) {
@@ -4087,14 +4160,15 @@ export function retireRecoveredBookkeepingRequests() {
     }
     if(input.request_id)evidence.push(input.request_id);
     if(input.source_input_id)evidence.push(input.source_input_id);
+    for(const id of laterIds)evidence.push(`request:${id}`);
     const exactEvidence=[...new Set(evidence)];
-    const at=nowIso(),reason='Recovered service return or upkeep is not a separate request from Tejas.';
+    const at=nowIso(),reason='Recovered service notice is not a separate request from Tejas.';
     db.transaction(()=>{
       const topic=topicRow(topicId);
       const closedRequest={...request,state:'closed' as const,disposition:'superseded',
         closure:{by,at,reason,evidence:exactEvidence},revision:request.revision+1,updatedAt:at};
       const next=bumped(topic);
-      recordOwnerTopicChange(session.id,`topic-bookkeeping-retired:${request.requestId}`,'topic_request',
+      recordOwnerTopicChange(topicSessionId,`topic-bookkeeping-retired:${request.requestId}`,'topic_request',
         {change:'request_closed',topicId,topic:next,request:closedRequest,by,reason,revision:next.revision});
       // Request closure may automatically close the topic. If work is still running, the
       // receipt remains available and the normal owner pass closes it after that work ends.
@@ -4120,8 +4194,7 @@ const ATTENTION_MIGRATION_VERSION=2;
 export function migrateInboxAttention() {
   const session=inboxSession();
   if(!session)return {migrated:false,reason:'no_inbox_session'};
-  if(db.query(`SELECT 1 FROM session_owner_events WHERE session_id=? AND kind='topics_migration' AND json_extract(payload_json,'$.version')=?`)
-    .get(session.id,ATTENTION_MIGRATION_VERSION))return {migrated:false,reason:'already_migrated'};
+  if(inboxMigrationRan(ATTENTION_MIGRATION_VERSION))return {migrated:false,reason:'already_migrated'};
   refreshRootMemo();
   const meta=sessionMetadata(session);
   const dismissed=meta.dismissedGeneration??0;

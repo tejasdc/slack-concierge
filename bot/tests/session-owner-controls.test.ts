@@ -2,7 +2,7 @@ import {afterEach,beforeEach,expect,test} from 'bun:test';
 import {createHash,randomUUID} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {db,claimNextQueuedTurn,getSessionById,registerProcessInstance,markTurnDelivering,markTurnProviderAdmissionIntended,interruptOrphanedTurn,finishTurn,createOrGetSession,upsertChannel} from '../src/state';
-import {bindSessionProvider,createNativeSession,getAcceptedSessionInput,nativeRunId,updateSessionMetadata} from '../src/session-inputs';
+import {backfillHeldInputReceiptEvents,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,retainSessionInput,updateSessionMetadata} from '../src/session-inputs';
 import {SessionOwner} from '../src/session-owner';
 import {SessionExecutionHost} from '../src/session-execution-host';
 import {SessionCapabilityClient} from '../src/session-capability-client';
@@ -13,7 +13,11 @@ import type {AgentProvider} from '../src/providers';
 
 let unlock:()=>void,host:SessionExecutionHost,provider:AgentProvider;
 let runs:Parameters<AgentProvider['run']>[0][],forks:Parameters<AgentProvider['fork']>[0][];
-const clear=()=>{for(const table of ['session_owner_events','session_communication_events','session_communication_requests','session_inputs','session_attachments','turn_dependencies','routed_requests','routed_input_events','deployment_drain','comparison_requests','fork_requests','slack_thread_statuses','slack_user_input_claims','turn_steering_messages','turn_delivery_chunks','turns','sessions','channels','process_instances'])db.query(`DELETE FROM ${table}`).run();};
+// Every table that refers to a cleared table is cleared with it, so a table a later change adds
+// cannot leave a row whose foreign key blocks the next test's cleanup.
+const clearedRoots=['session_owner_events','session_communication_events','session_communication_requests','session_inputs','session_attachments','turn_dependencies','routed_requests','routed_input_events','deployment_drain','comparison_requests','fork_requests','slack_thread_statuses','slack_user_input_claims','turn_steering_messages','turn_delivery_chunks','turns','sessions','channels','process_instances'];
+function clearedTables(){const tables=(db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as {name:string}[]).map(row=>row.name),cleared=new Set(clearedRoots);for(let grew=true;grew;){grew=false;for(const table of tables)if(!cleared.has(table)&&(db.query(`PRAGMA foreign_key_list(${JSON.stringify(table)})`).all() as {table:string}[]).some(key=>cleared.has(key.table))){cleared.add(table);grew=true;}}return [...cleared];}
+const clear=()=>{db.exec('PRAGMA foreign_keys=OFF');try{db.transaction(()=>{for(const table of clearedTables())db.query(`DELETE FROM ${JSON.stringify(table)}`).run();})();}finally{db.exec('PRAGMA foreign_keys=ON');};};
 const registry=()=>new ActiveTurnDispatchRegistry({onStarted:()=>{},onSettled:()=>{}});
 const capability=()=>new SessionCapabilityClient({socketPath:'/tmp/never-open-native-capability.sock'});
 beforeEach(async()=>{
@@ -58,6 +62,40 @@ test('real HTTP wrappers preserve first acceptance, duplicate receipt identity a
   expect(db.query('SELECT count(*) AS n FROM slack_user_input_claims').get()).toEqual({n:0});
 });
 
+test('a held marked-agent input publishes one receipt delta without provider admission and startup repair restores it',async()=>{
+  const source=createNativeSession('codex',{title:'Marked source',purpose:'chat',cwd:'/tmp'});
+  const sourceInput=retainSessionInput({sessionId:source.id,scope:'surface:thinkering',actionId:randomUUID(),kind:'input',origin:'human',payload:{text:'Authorize the marked acceptance check.'}}).input;
+  const sourceTurn=enqueueSessionInput(sourceInput.id).turn_id!;
+  const target=createNativeSession('codex',{title:'Paused receiver',purpose:'chat',cwd:'/tmp',suspended:true});
+  const body={clientActionId:randomUUID(),text:'Retain this while paused.',agentSource:{inputId:sourceInput.id,runId:nativeRunId(sourceTurn)}};
+  const first=await request(host.owner,`sessions/concierge:${target.id}/inputs`,body);
+  expect(first.status).toBe(202);
+  expect(first.body.operation).toMatchObject({state:'waiting',origin:'agent',runId:null,admission:null});
+  const operationId=first.body.operation.operationId;
+  const heldEvents=()=>host.owner.events(0,`concierge:${target.id}`).filter(event=>event.kind==='receipt');
+  expect(heldEvents()).toEqual([expect.objectContaining({eventId:`receipt:${operationId}:retained`,sessionId:`concierge:${target.id}`,
+    operationId,inputId:operationId,runId:null,kind:'receipt',payload:{change:'retained'}})]);
+  expect(db.query('SELECT count(*) AS n FROM turns WHERE session_id=?').get(target.id)).toEqual({n:0});
+
+  const duplicate=await request(host.owner,`sessions/concierge:${target.id}/inputs`,body);
+  expect(duplicate.status).toBe(200);
+  expect(duplicate.body.operation.operationId).toBe(operationId);
+  expect(heldEvents()).toHaveLength(1);
+
+  const ambiguous=retainSessionInput({sessionId:target.id,scope:'surface:thinkering',actionId:randomUUID(),kind:'input',origin:'human',
+    payload:{text:'Legacy input with no explicit queue custody.'}}).input;
+  const hidden=retainSessionInput({sessionId:target.id,scope:'surface:thinkering',actionId:randomUUID(),kind:'input',origin:'human',
+    payload:{text:'Intentionally hidden held input.'}}).input;
+  db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({admissionIntent:'queue',state:'held'}),hidden.id);
+  db.query('DELETE FROM session_owner_events WHERE event_id=?').run(`receipt:${operationId}:retained`);
+  expect(heldEvents()).toEqual([]);
+  expect(backfillHeldInputReceiptEvents()).toBe(1);
+  expect(backfillHeldInputReceiptEvents()).toBe(0);
+  expect(heldEvents()).toHaveLength(1);
+  expect(db.query("SELECT count(*) AS n FROM session_owner_events WHERE input_id IN (?,?) AND kind='receipt'").get(ambiguous.id,hidden.id)).toEqual({n:0});
+  expect(db.query('SELECT count(*) AS n FROM turns WHERE session_id=?').get(target.id)).toEqual({n:0});
+});
+
 test('full operation receipts publish ordered attachment custody metadata without changing request IDs',async()=>{
   const first=await request(host.owner,'attachments',{clientActionId:randomUUID(),name:'first.txt',contentType:'text/plain',base64:Buffer.from('first').toString('base64')});
   const second=await request(host.owner,'attachments',{clientActionId:randomUUID(),name:'second.png',contentType:'image/png',base64:Buffer.from('second').toString('base64')});
@@ -69,14 +107,16 @@ test('full operation receipts publish ordered attachment custody metadata withou
   expect((await request(host.owner,`operations/${created.operation.operationId}`)).body.attachments).toEqual(descriptors);
 });
 
+// The attachment line names its local copy; later prompt sections may follow it.
+const attachedPath=(text:string)=>text.match(/Attached text\/plain file "notes\.txt": (\S+)/)![1]!;
 test('attachment custody downloads exact bytes and initial plus steering attachments reach the same provider',async()=>{
   const bytes=Buffer.from('Exact attachment bytes\n\u0000'),upload=await request(host.owner,'attachments',{clientActionId:randomUUID(),name:'notes.txt',contentType:'text/plain',base64:bytes.toString('base64')});
   expect(upload.status).toBe(200);
-  expect((await request(host.owner,`attachments/${upload.body.attachment.id}`)).body).toEqual({name:'notes.txt',contentType:'text/plain',base64:bytes.toString('base64'),sha256:createHash('sha256').update(bytes).digest('hex')});
+  expect((await request(host.owner,`attachments/${upload.body.attachment.id}`)).body).toEqual({name:'notes.txt',contentType:'text/plain',base64:bytes.toString('base64'),sha256:createHash('sha256').update(bytes).digest('hex'),transcriptText:null});
   let ready!:()=>void,finish!:()=>void;const started=new Promise<void>(resolve=>ready=resolve),completed=new Promise<void>(resolve=>finish=resolve);
   const sent:string[]=[];
-  provider.run=async input=>{runs.push(input);input.onProviderThreadStarted?.('native-thread');input.onInputAcknowledged?.();input.onSteeringReady?.(async message=>{sent.push(message.text);const path=message.text.split(': ').at(-1)!;expect(await readFile(path)).toEqual(bytes);finish();});
-    expect(await readFile(input.prompt.split(': ').at(-1)!)).toEqual(bytes);ready();await completed;input.onProviderTerminal?.();return {text:'',sessionUUID:'native-thread',toolsUsed:[]};};
+  provider.run=async input=>{runs.push(input);input.onProviderThreadStarted?.('native-thread');input.onInputAcknowledged?.();input.onSteeringReady?.(async message=>{sent.push(message.text);expect(await readFile(attachedPath(message.text))).toEqual(bytes);finish();});
+    expect(await readFile(attachedPath(input.prompt))).toEqual(bytes);ready();await completed;input.onProviderTerminal?.();return {text:'',sessionUUID:'native-thread',toolsUsed:[]};};
   const created=host.owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',firstInput:{text:'Inspect initial',attachments:[upload.body.attachment.id]}}),claim=claimNextQueuedTurn('owner')!,task=host.run(claim);
   await started;
   host.owner.submit(created.session.id,{clientActionId:randomUUID(),text:'Inspect steering',attachments:[upload.body.attachment.id],delivery:'steer',expectedRunId:created.operation.runId});
@@ -244,11 +284,11 @@ test('ChatGPT admission pins the shared executor final prompt including interrup
     expect(stored.admission).toEqual(options.admission);
     expect(host.owner.receipt(getAcceptedSessionInput(options.run.operationId)!)).toMatchObject({state:'running',text:'current request',admission:options.admission});
     actual.onProviderThreadStarted?.('original-browser');actual.onProviderTurnStarted?.('browser-turn');actual.onInputAcknowledged?.();actual.onProviderTerminal?.();
-    return {text:'',sessionUUID:'original-browser',providerTurnId:'browser-turn',toolsUsed:[]};
+    return {text:'pinned answer',sessionUUID:'original-browser',providerTurnId:'browser-turn',toolsUsed:[]};
   }});
   host=new SessionExecutionHost({instanceId:'owner',registry:registry(),providers:{},capabilityClient:client,defaultCwd:'/tmp',wake:()=>{}});
   const accepted=host.owner.submit(`concierge:${session.id}`,{clientActionId:randomUUID(),text:'current request'});await execute();
-  expect(effects).toBe(1);expect(host.owner.receipt(getAcceptedSessionInput(accepted.operation.operationId)!)).toMatchObject({state:'completed',result:''});
+  expect(effects).toBe(1);expect(host.owner.receipt(getAcceptedSessionInput(accepted.operation.operationId)!)).toMatchObject({state:'completed',result:'pinned answer'});
 });
 
 test('consultation creates a distinct pinned child and same-child follow-up preserves enforced policy and source evidence',async()=>{
@@ -319,7 +359,7 @@ test.each(['failed','canceled'] as const)('reconcile settles explicit native %s 
 test('Claude fork uses the exact native message boundary rather than a turn alias',async()=>{
   provider.id='claude-code';provider.capabilities!.forkBoundary='message';
   host=new SessionExecutionHost({instanceId:'owner',registry:registry(),providers:{'claude-code':provider},defaultCwd:'/tmp',wake:()=>{}});
-  const session=createNativeSession('claude-code',{cwd:'/tmp'});bindSessionProvider(session.id,'claude-code','original-claude');
+  const session=createNativeSession('claude-code',{cwd:'/tmp',summary:'Claude fork boundary fixture'});bindSessionProvider(session.id,'claude-code','original-claude');
   const rejected=host.owner.fork(`concierge:${session.id}`,{clientActionId:randomUUID(),boundary:'cutoff'});await execute();
   expect(host.owner.receipt(getAcceptedSessionInput(rejected.operation.operationId)!).state).toBe('failed');expect(forks).toHaveLength(0);
   const accepted=host.owner.fork(`concierge:${session.id}`,{clientActionId:randomUUID(),boundary:'message-before'});await execute();

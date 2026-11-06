@@ -63,10 +63,13 @@ export function startDeploymentEventIngress(input: {
   host?: string;
   port?: number;
   acceptAlerts?(alerts: GrafanaAlert[]): Promise<Record<string, unknown>>;
+  observeAlerts?(status: number, accepted: number, omitted: number, reason: string | null): void;
   deploymentEnabled?: boolean;
 }) {
   const handler = createDeploymentEventHandler(input);
-  const alerts = input.acceptAlerts ? createGrafanaWebhookHandler({ token: input.token, accept: input.acceptAlerts }) : null;
+  const alerts = input.acceptAlerts
+    ? createGrafanaWebhookHandler({ token: input.token, accept: input.acceptAlerts, observe: input.observeAlerts })
+    : null;
   if (input.host && !["127.0.0.1", "::1"].includes(input.host)) throw new Error("Service event ingress must bind loopback.");
   return Bun.serve({
     hostname: input.host || "127.0.0.1",

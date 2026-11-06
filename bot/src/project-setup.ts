@@ -13,6 +13,7 @@ import {containingProject,sessionProject} from './session-projects';
 import {standingAgentSession} from './standing-agents';
 import {getAcceptedSessionInput,nativeRunId,sessionInputProvenance} from './session-inputs';
 import {publishProviderFreeNotice} from './provider-free-notice';
+import {oneJsonObject,replyOwnWords} from './reply-before';
 import {fileServiceNotices} from './session-topics';
 import type {SessionOwner} from './session-owner';
 import type {PeerClient} from './session-peers';
@@ -93,12 +94,14 @@ function placementDecision(workspace:string,requestId:unknown,project:string,pur
     {source_session_id:number;target_session_id:number;outcome:string|null;payload_json:string;created_at_ms:number}|null;
   if(!row||row.target_session_id!==organizer.id||row.outcome!=='answered'||row.source_session_id!==sourceSession)
     throw new Error('The consultation must be a completed answer from the bound workspace organizer to this creating session.');
-  const result=JSON.parse(row.payload_json) as {replyBody?:unknown;workDisposition?:unknown};
-  // Completed replies also carry display text with a completion footer. The original body
-  // is retained separately and is the only field that can be an exact JSON decision.
-  if(result.workDisposition!=='completed'||typeof result.replyBody!=='string')throw new Error('The organizer has not accepted a placement.');
+  const result=JSON.parse(row.payload_json) as {replyBody?:unknown;before?:unknown;workDisposition?:unknown};
+  // Completed replies also carry display text with a completion footer, and a first reply leads
+  // with the required "What came before". The organizer's own words, without either, hold the
+  // decision: one JSON object, alone or among the organizer's prose.
+  const ownWords=replyOwnWords(result);
+  if(result.workDisposition!=='completed'||ownWords===null)throw new Error('The organizer has not accepted a placement.');
   let decision:Record<string,unknown>;
-  try{decision=exactKeys(JSON.parse(result.replyBody),['project','purpose','template','group']);}
+  try{decision=exactKeys(oneJsonObject(ownWords),['project','purpose','template','group']);}
   catch{throw new Error('The organizer answer must be one JSON placement decision.');}
   if(!Object.hasOwn(decision,'group')||decision.project!==project||decision.purpose!==purpose||decision.template!==template)
     throw new Error('The organizer decision does not match this project, purpose and template.');
@@ -447,7 +450,7 @@ export class ProjectSetup {
     if(!accepted?.turn_id||accepted.session_id!==organizer.id||nativeRunId(accepted.turn_id)!==answer.source.run_id)
       throw new Error('The workspace organizer answer source is invalid.');
     let decision:Record<string,unknown>;
-    try{decision=exactKeys(JSON.parse(answer.replyBody),['group','template']);}catch{throw new Error('The workspace organizer answer must be one exact Canvas policy JSON object.');}
+    try{decision=exactKeys(oneJsonObject(replyOwnWords(answer)!),['group','template']);}catch{throw new Error('The workspace organizer answer must be one exact Canvas policy JSON object.');}
     const group=projectGroup(decision.group),template=projectTemplate(decision.template);
     if(!group||!template)throw new Error('Canvas project policy needs one grouping folder and one project template.');
     const revision=createHash('sha256').update(JSON.stringify([data.consultation,answer.source.input_id,answer.source.run_id,group,template])).digest('hex').slice(0,32);

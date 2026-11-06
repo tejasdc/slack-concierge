@@ -1483,6 +1483,10 @@ export async function runClaudeCodeTurn(input: {
     });
   }
   if (!initialPromptAcknowledged) {
+    // Claude exits before its session exists when its launch itself is refused, and no transcript is
+    // written then; its own words on stderr are the only record of why (8876, 2026-11-06).
+    log("warn", "claude_code_ended_before_ack", { model: input.model ?? null, resumed: !!input.sessionUUID,
+      stderr_tail: stderr.replace(/\s+/g, " ").trim().slice(-600) || null });
     throw new Error("Claude Code ended before acknowledging the initial user message.");
   }
   if (!providerProducedResult) {

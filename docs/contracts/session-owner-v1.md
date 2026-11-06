@@ -57,6 +57,9 @@ The owner upgrade already accepts every older Thinkering payload.
 
 ## Outside-agent owner socket entrance
 
+The same socket serves the outside Grafana recovery reconciler's `GET /grafana/v1/firing`,
+`POST /grafana/v1/recoveries` and `POST /grafana/v1/firings` ([Grafana alerts](../runbooks/GRAFANA-ALERTS.md#lost-recoveries-are-reconciled-from-grafana)).
+
 The root-only `requests.sock` also accepts `GET /supervisor/ping`. It reads no ledger and
 returns canonical `{ok,pid,startedAt,release,logging}` through the storage-free gateway,
 which adds `readCapacity`, `readerHealth` and `gatewayLogging`. The gateway leaves a frozen
@@ -162,7 +165,9 @@ history, operation and attachment primitives; they are not model human-admission
 Agent `POST /sessions/v1/requests` creation accepts `targetProvider` from the existing
 alias table (or `chatgpt`), `effort?`, `project?`, `title?`, `summary?`, `text`, `files?` with exact
 `{name,contentType,base64}` bytes, `captureId?`, and the existing source/action/request
-fields. Coding providers require a registered project, resolved at the owner, never
+fields. A ChatGPT question also accepts `forTask?`, `recoveryOf?` and `correctionOf?`,
+the same task, recovery and correction references as `sessions ask --for-task`,
+`--recovery-of` and `--correction-of`; a human-origin source must name its task. Coding providers require a registered project, resolved at the owner, never
 an arbitrary caller cwd. Addressed requests cannot change model/effort/project. The
 first agent input and original attachment custody are retained in the request
 transaction; the queued turn receives the selected reasoning effort. The trusted
@@ -666,6 +671,7 @@ Reconnect replays observations only, never resubmits a run. Durable admission, a
 For a cold read cache, SSE accepts `after=now` to begin at the current ledger head, paired with authoritative history reads. The owner sends a reconnect's gap in pages of 200 events, releasing its loop between pages and waiting while the client has unread data, so a far-behind cursor receives its whole gap without holding the owner (a single-read replay held it 5.6 s and queued 674 MB, incident bfb3021e, 2026-10-12); the frames and order are unchanged. After initial catch-up, it emits `event: caught-up`, `id: <cursor>`, and `data: {"cursor":"<cursor>"}`. This control frame is not a session message. `Last-Event-ID` takes precedence on reconnect. Consumers persist cursor and corresponding cached state together and coalesce catch-up invalidations before refreshing changed sessions.
 
 - `kind:"run"`, payload `{run:RunView}`. RunView is `{id, threadId, provider, purpose, state, createdAt, updatedAt, sessionId, turnId, error, worktree, changedFiles, verification, selection, nativeBinding}`. Here id is the common run UUID and threadId the canonical session ID; the nested sessionId/turnId retain the native provider session/turn identity (nullable). State is queued/running/completed/failed/canceled/uncertain. Worktree is a trusted configured path or null, never an authority accepted from a caller; changedFiles is string[]; verification is null or `{state:"not-run"|"passed"|"failed",fingerprint:string|null}`; selection is pinned object references; nativeBinding is Binding or null. Error is a safe string or null, matching the existing run UI.
+- `kind:"receipt"`, payload `{change:"retained"}`, names the exact accepted input in both `operationId` and `inputId` when the surface receipt becomes durable while no turn exists. It is a receipt delta only: it proves owner custody, not queue or provider admission. A later `accepted` event may bind the same input to a turn. The owner commits this event with a newly held surface input; startup adds the same deterministic event for a still-held older surface input with explicit queue intent and no receipt-changing event. It does not infer custody for ambiguous legacy inputs. Reconnect replays it without admitting work.
 - `kind:"delivery"`, payload `{state:"sent"|"ambiguous"|"failed"}`, on the exact input whose live delivery into a running turn changed, keyed `delivery:<inputId>:<state>`. A follow-up can be confirmed mid-turn with no other owner event on it; this lets a surface refresh that input's receipt at once. It changes no unread or attention state; the receipt remains the authority.
 - `kind:"human_command"`, `operationId` is the browser action ID, payload `{command:CommandStatus}` with the full terminal authenticated command status, including immutable `commandIdentity`, `status`, `decisionStage`, `ownerStatus`, and `ownerResponse`. The capture database commits settlement and an outbox entry together; the owner records this event durably before acknowledging that entry. A duplicate uses the same event ID. A consumer accepts it only for its exact saved action and uses the command status read after a missed event or reconnect. The event neither resubmits the command nor changes unread state. The event `sessionId` is the addressed local session, containing Inbox session for a topic, or Inbox stream anchor for commands without an existing target session.
 - `kind:"message"`, payload `{message:Message}` with exact stable message ID, common run alias on the envelope, native turn/tool/detail/rich-content fields retained and submission attribution as specified below. A proven native input match uses that input's ID for event inputId/operationId, including steering. The surface adapter can emit `{kind:"run",run}` or `{kind:"message",message}` after provider spelling conversion. A terminal run event remains terminal when a delayed transient progress event arrives.

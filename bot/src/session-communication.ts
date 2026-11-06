@@ -7,6 +7,7 @@ import { carryingTurn, enqueueSessionInput, getAcceptedSessionInput, handedToARu
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
+import { INBOX_LINEAGE_SQL } from './inbox-lineage-sql';
 import { BUG_REPORT_OWN_THREAD, followForwardedReply, forwardedReplyFraming, isBugReportInput } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
 import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWithoutThread, hasOpenInboxWorkForSource, invalidateTopicRoots, linkForwardedReplyWork, linkInboxDispatchWork, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
@@ -28,6 +29,7 @@ import {acceptHandoff,handoffObligations,proposeHandoff,supersededAddress,supers
 import {askAsideOnce} from './session-asides';
 import {awaitingOutside} from './storage-observation';
 import {earlierWorkFor,type EarlierWork} from './request-history';
+import {withBefore} from './reply-before';
 import { isHisChatGpt } from './aliases';
 import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindDirectChatGptTaskSource,chatGptAnswerCommand,chatGptObligationForAttempt,classifyLegacyChatGptAsk,holdUnmessageableChatGptAsker,migrateOpenLegacyChatGptAsks,openChatGptObligations,recordChatGptAttemptResult,recordChatGptOriginalRequeued,recordChatGptReturnReceipt,reconcileCanceledChatGptObligations,requireChatGptTaskDisposition,requireChatGptTaskResolved,resolveChatGptAnswer,resolveChatGptTask,resumeMessageableChatGptAsker,withdrawCanceledChatGptAttempt,type ChatGptObligationRow} from './chatgpt-obligations';
 import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, reportBackNotice, strandedStep, stalledNotice, tellWorkerCanceled, cancelQueuedWithdrawnRequest, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
@@ -616,8 +618,15 @@ export class SessionCommunicationCoordinator {
             if(saved.duplicate)return JSON.parse(saved.input.receipt_json??'{}');
             const session=getSessionById(target.id);
             if(!session)throw new Error('The exact session does not exist.');
-            bindStandingAgentSession(this.dependencies.owner.defaultCwd,input.role,session);
-            const receipt={state:'completed',role:input.role,binding:'bound',session:{id:`concierge:${session.id}`,address:sessionAddress(session)}};
+            const {former}=bindStandingAgentSession(this.dependencies.owner.defaultCwd,input.role,session);
+            // What the binding moves is said in the receipt, so a stand-in knows what it now owns
+            // and what is still waiting on the session it replaced.
+            const stillQueued=former?(db.query(`SELECT input.id FROM session_inputs input JOIN turns turn ON turn.id=input.turn_id
+                WHERE input.session_id=? AND turn.status='queued' ORDER BY turn.id LIMIT 100`).all(former.id) as {id:string}[]).map(row=>row.id):[];
+            const receipt={state:'completed',role:input.role,binding:'bound',session:{id:`concierge:${session.id}`,address:sessionAddress(session)},
+                ...(input.role==='inbox'?{moves:'New Inbox captures, his thread replies, thread-named requests, topic commands and Inbox reads now go to this session. Every earlier Inbox session’s threads stay readable and usable from it.',
+                    ...(former?{formerRouter:{id:`concierge:${former.id}`,address:sessionAddress(former),stillQueued,
+                        note:'Inputs already queued on the former router stay there and run when it can; move them with a provider handoff, or read and route them from here by exact id.'}}:{})}:{})};
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
                 .run(JSON.stringify(receipt),saved.input.id);
             return receipt;
@@ -820,9 +829,7 @@ export class SessionCommunicationCoordinator {
             if(!session)throw new Error('No Inbox session exists yet.');
             const router=session.id===own.id;
             const target=getAcceptedSessionInput(input.input_id);
-            if(!target||!db.query(`WITH RECURSIVE lineage(id) AS (SELECT ? UNION ALL
-              SELECT predecessor_session_id FROM session_handoffs JOIN lineage ON successor_session_id=lineage.id
-              WHERE state='accepted') SELECT 1 FROM lineage WHERE id=? LIMIT 1`).get(session.id,target.session_id))
+            if(!target||!db.query(`SELECT 1 WHERE ? IN (${INBOX_LINEAGE_SQL})`).get(target.session_id,session.id))
                 throw new Error('Thread placement needs an accepted message in the Inbox.');
             const root=detach?null:inboxThreadRoot(session.id,input.thread!);
             if(!detach&&!root)throw new Error('That --thread is not a message in this Inbox.');
@@ -1995,7 +2002,7 @@ export class SessionCommunicationCoordinator {
               &&!db.query("SELECT 1 FROM session_communication_events WHERE request_id=? AND kind IN ('progress','final')").get(input.request_id))
                 throw new Error('This request came with WHAT CAME BEFORE: earlier work on the same problem. Your first reply must say what that work did and how your approach differs: add --before "<what came before and how this differs>" to this reply.');
         }
-        if(before)input={...input,text:`What came before: ${before}${input.text.trim()?`\n\n${input.text}`:''}`};
+        if(before)input={...input,before,text:withBefore(before,input.text)};
         if(input.final)input={...input,reply_body:input.text};
         // An answer is never refused for how it was marked: a flag that does not fit is dropped,
         // the reply is recorded as written, and the worker is told why in its receipt. Refusing
@@ -2160,6 +2167,7 @@ export class SessionCommunicationCoordinator {
             : [];
         const payload = { text: input.text, final: input.final, source: actor.source, responding_session_id: `concierge:${actor.session}`,
             ...(input.reply_body!==undefined?{replyBody:input.reply_body}:{}),
+            ...(input.before?{before:input.before}:{}),
             ...(input.answer_group?{answerGroup:input.answer_group}:{}),
             ...(input.final&&input.workDisposition?{closingLine:finalClosingLine(input.workDisposition,{checked:input.checked,notChecked:input.not_checked,nothingChanged:input.nothing_changed})}:{}),
             ...(input.summary?{summary:input.summary}:{}),

@@ -78,6 +78,48 @@ fact, not fabricated delivery; the Grafana ledger retains the condition history.
 native `root_ts` values are opaque receipt keys, not Slack timestamps or human messages.
 A 202 proves retention only, not agent admission, execution, recovery or hosted delivery.
 
+## Lost recoveries are reconciled from Grafana
+
+Grafana retries a refused notification only briefly and never resends a recovery, so a
+recovery this receiver refused (for example the 503s while the owner restarted repeatedly
+on 2026-11-05) would otherwise leave its episode firing here forever. Remote-box's
+Grafana recovery reconciler, which holds the Grafana credential and runs every 15 minutes
+outside Concierge, closes that gap through two owner-socket routes (local socket and
+agents' entrance, never the public door):
+
+- `GET /grafana/v1/firing` lists every retained episode still firing (fingerprint,
+  condition, start, revision).
+- `POST /grafana/v1/recoveries` takes `{fingerprint, condition, startsAt, endsAt,
+  ruleUid, stateFingerprint}`. It refuses an unknown episode (404), a different condition
+  or a start that no longer matches the retained episode (409), malformed evidence or an
+  end before the start or in the future (422), and answers `already_resolved` without change when the recovery already landed.
+  Otherwise it applies the recovery exactly as a delivered resolved notification would:
+  same fingerprint and start, the next revision, Grafana's recorded end time, and the same
+  idempotent repair-notice recovery. It logs `grafana_alert_recovery_reconciled` with the
+  Grafana rule and state-history instance that supplied the time. A Slack-era receipt has
+  no current destination, so its recovery is recorded as the final delivered revision
+  without any publication.
+- `POST /grafana/v1/firings` takes `{fingerprint, condition, startsAt, ruleUid}` for an
+  episode Grafana's Alertmanager currently holds firing. Grafana's Alertmanager
+  deduplicates by which fingerprints are firing, not by when they started, so when a
+  recovery is lost and the same alert fires again it sends nothing new until its repeat
+  interval (one day on these rules). On 2026-11-05 `AX41DiskFillingEarly` recovered at
+  18:22:30Z, that notice was refused, and its 18:53:30Z episode was never sent. The route
+  applies the episode exactly as a delivered firing would, including the repair notice.
+  It refuses an unconfigured condition or bad evidence (422), and a different condition,
+  an episode not newer than the retained one, or a resolved episode with the same start
+  (409). It also refuses (409 `previous_episode_open`) while the older episode is still
+  open, so its repair notice is resolved through the recovery route rather than silently
+  replaced. It answers `already_firing` for the current episode, logs
+  `grafana_alert_firing_reconciled`, and also admits a fingerprint Concierge never received.
+
+The reconciler submits recoveries only for episodes Grafana's own Alertmanager no longer holds, and only
+with the first exit from Alerting that Grafana's state history recorded for the one
+instance that began alerting at the episode's start. Ambiguous or missing history leaves
+the episode untouched and logged. A settled alert does not prove the underlying problem
+was fixed; the repair agent still verifies recovery. Remote-box owns the script and timer
+([observability](https://github.com/tejasdc/remote-box/blob/main/docs/observability.md)).
+
 ## Safe acceptance and diagnosis
 
 Read the configured contact and rule-group using the existing remote-box provisioning
@@ -95,7 +137,12 @@ Do not manufacture an outage or modify production observations to provoke repair
 Isolated coverage is in `grafana-repair-first.test.ts` and
 `grafana-native-ownership.test.ts`: pending versus admitted recovery, repeated episodes,
 no human thread, no competing native investigator, and all allowlisted conditions.
-Inspect `grafana_webhook_completed`, `grafana_alert_delivered`,
+A refused delivery logs its `reason` on `grafana_webhook_completed` (public door) and
+`grafana_receiver_refused` (owner). Grafana does not resend a recovery whose delivery failed, so a
+503 during a firing episode can leave that episode retained as firing; compare Grafana's own
+state history before trusting a retained firing row (2026-11-05: the Journal episode of
+18:24:30Z recovered at 18:31:30Z while 385 of 457 deliveries between 15:00 and 21:00 UTC were refused).
+Inspect `grafana_webhook_completed`, `grafana_receiver_refused`, `grafana_alert_delivered`,
 `grafana_alert_investigation`, `repair_notices_delivered`, and retained owner/external
 incident evidence. Event labels alone never prove repair succeeded.
 

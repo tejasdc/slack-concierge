@@ -2,7 +2,7 @@ import {closeModuleLoadStorage} from './owner-task-labels-install';
 import { App, LogLevel } from "@slack/bolt";
 import { recordModuleLoadStep, runStartupPhase, runStartupStep } from './startup-phase';
 import { RoutedRequestCoordinator } from "./routed-requests";
-import { initializeSessionTitle } from "./session-inputs";
+import { backfillHeldInputReceiptEvents, initializeSessionTitle } from "./session-inputs";
 import {backfillResultAnsweredByPost} from './session-inbox';
 import { startRoutedRequestApi } from "./routed-request-api";
 import { peerSettings } from "./session-peers";
@@ -536,6 +536,8 @@ bindOwner();
 for(const held of recoverProviderRefusalContinuations())noticeTurnContinuation({
   provider:held.provider,model:null,turnId:held.turnId,reason:held.reason},recordOwnerEvent);
 runStartupStep('session_projection', () => installSessionProjection(sessionExecutionHost.owner));
+try {log('info','held_input_receipt_events_backfilled',{count:runStartupStep('held_input_receipt_events',backfillHeldInputReceiptEvents)});}
+catch(error) {log('error','held_input_receipt_event_backfill_failed',errorFields(error));}
 // Every startup step below is timed and named (runStartupStep). Sweeps over history are catch-ups
 // with a high-water mark: their remaining work runs page by page after Concierge is online
 // (startup-repairs.ts). File-authored purposes finish before the generic fallback begins.
@@ -4145,29 +4147,34 @@ async function drainAndStop(signal: string) {
   await stopRequestSurface("routed_requests", () => routedRequests.stop());
   await stopRequestSurface("session_execution_host", () => sessionExecutionHost.stop());
   log("info", "service_drain_request_surfaces_closed", { signal, active_turns: activeTurnCount, instance_id: instanceId });
+  const stopDrainStep = async (step: string, stop: () => Promise<unknown>) => {
+    const startedAt = performance.now();
+    try { await stop(); }
+    finally { log("info", "service_drain_step_finished", { signal, step, duration_ms: Math.round(performance.now() - startedAt), instance_id: instanceId }); }
+  };
   if (deploymentEventServer) {
     const server = deploymentEventServer;
     deploymentEventServer = null;
-    await server.stop(false);
+    await stopDrainStep("deployment_event_server", () => server.stop(false));
   }
-  if (captureDeliveryWorker) await captureDeliveryWorker.stop();
-  if (humanCommandWorker) await humanCommandWorker.stop();
-  await grafanaAlerts?.stop();
-  if (codexRemoteObserver) await codexRemoteObserver.stop();
-  if (codexSessionObserver) await codexSessionObserver.stop();
-  try { await app.stop(); } catch (error) { log("warn", "slack_app_stop_failed", { signal, error: error instanceof Error ? error.message : String(error) }); }
+  if (captureDeliveryWorker) await stopDrainStep("capture_delivery", () => captureDeliveryWorker!.stop());
+  if (humanCommandWorker) await stopDrainStep("human_commands", () => humanCommandWorker!.stop());
+  if (grafanaAlerts) await stopDrainStep("grafana_alerts", () => grafanaAlerts!.stop());
+  if (codexRemoteObserver) await stopDrainStep("codex_remote_observer", () => codexRemoteObserver!.stop());
+  if (codexSessionObserver) await stopDrainStep("codex_session_observer", () => codexSessionObserver!.stop());
+  try { await stopDrainStep("slack_app", () => app.stop()); } catch (error) { log("warn", "slack_app_stop_failed", { signal, error: error instanceof Error ? error.message : String(error) }); }
   if (turnsThatEndWithThisProcess() > 0 || activeInputHandlerCount > 0) {
-    await new Promise<void>((resolve) => { resolveDrained = resolve; });
+    await stopDrainStep("local_turns", () => new Promise<void>((resolve) => { resolveDrained = resolve; }));
   }
   const activeDeploymentWork = deploymentWorkRunner.active();
-  if (activeDeploymentWork) await activeDeploymentWork;
+  if (activeDeploymentWork) await stopDrainStep("deployment_work", () => activeDeploymentWork);
   canvasCommitWatcher?.close();
   todoFileWatcher?.close();
-  await todoProjectionManager?.drain();
-  await closeSharedCodexAppServerClient();
+  if (todoProjectionManager) await stopDrainStep("todo_projection", () => todoProjectionManager!.drain());
+  await stopDrainStep("shared_codex_client", () => closeSharedCodexAppServerClient());
   // Last, as the local App Server socket is: a Codex turn relayed to a runner keeps its connection
   // through the drain, and the next owner follows it as it does after any restart.
-  await routedRequestServer?.closeRelays();
+  if (routedRequestServer) await stopDrainStep("runner_relays", () => routedRequestServer!.closeRelays());
   stopProcessInstance(instanceId);
   log("info", "service_drain_complete", { signal, instance_id: instanceId });
   process.exit(0);
@@ -4395,6 +4402,9 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
             port: runtime.profile === "sandbox" ? 8380 + runtime.sandboxLane! : 8082,
             deploymentEnabled: runtime.ownership.deployment,
             acceptAlerts: async (alerts) => grafanaAlerts!.accept(alerts),
+            observeAlerts: (http_status, accepted_instances, omitted, reason) => {
+              if (http_status >= 400) log("warn", "grafana_receiver_refused", { http_status, accepted_instances, omitted, reason });
+            },
             accept: async (push) => {
               const result = await acceptGitHubDeploymentPush(push, deploymentRepositoryRoot);
               log("info", "github_deployment_push_accepted", {

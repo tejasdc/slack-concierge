@@ -2,6 +2,7 @@ import {questionDisplay} from './topic-display-rules';
 import {topicCurrentWorkers} from './topic-current-workers';
 import {topicReplyTargets} from './reply-target-rules';
 import type {Database} from 'bun:sqlite';
+import {INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
 import {inboxRootResolver} from './presentation-message-source';
 import {preparedInboxDisplay} from './presentation-inbox-display';
 import {awaitingHim,missingFor,preparingForHim,questionReadiness,toReadByHim,OPEN_QUESTION_STATES} from './topic-attention-rules';
@@ -24,9 +25,7 @@ function sessionTitle(source:Database,id:number):string|null{
 function peerAddress(peer:string,id:string){return `${peer}:${String(id).replace(/^concierge:/,'')}`;}
 /** All shared read indexes are assembled once for a bounded change batch, in the worker. */
 export function topicContext(source:Database,prepared:Database,generation:number,sessionId:number):TopicContext{
- const sessionIds=(source.query(`WITH RECURSIVE lineage(id) AS (SELECT ? UNION ALL
-   SELECT predecessor_session_id FROM session_handoffs JOIN lineage ON successor_session_id=lineage.id
-   WHERE state='accepted') SELECT id FROM lineage`).all(sessionId) as {id:number}[]).map(row=>row.id);
+ const sessionIds=(source.query(INBOX_LINEAGE_SQL).all(sessionId) as {id:number}[]).map(row=>row.id);
  const resolve=inboxRootResolver(source);
  const root:ReturnType<typeof inboxRootResolver>=(session,id,seen)=>resolve(session,id,seen)??
   (prepared.query('SELECT root_input_id AS root FROM presentation_messages WHERE generation=? AND message_id=? ORDER BY event_sequence LIMIT 1')
@@ -34,9 +33,7 @@ export function topicContext(source:Database,prepared:Database,generation:number
  const humanReplies=new Map<string,{inputId:string;at:string;reviews:string[];replyTo:string|null}[]>();
  const replyRows=source.query(`SELECT id,session_id,created_at,json_extract(payload_json,'$.review.questions') AS review,
    json_extract(payload_json,'$.replyToMessage.messageId') AS reply_to FROM session_inputs
-   WHERE session_id IN (WITH RECURSIVE lineage(id) AS (SELECT ? UNION ALL
-     SELECT predecessor_session_id FROM session_handoffs JOIN lineage ON successor_session_id=lineage.id
-     WHERE state='accepted') SELECT id FROM lineage)
+   WHERE session_id IN (${INBOX_LINEAGE_SQL})
    AND origin='human' AND kind IN ('input','create','inbox-capture')
    AND id NOT IN (SELECT input_id FROM session_input_author_corrections) ORDER BY rowid DESC LIMIT 2000`).all(sessionId) as any[];
  for(const row of replyRows){const where=root(row.session_id,row.id);if(!where)continue;

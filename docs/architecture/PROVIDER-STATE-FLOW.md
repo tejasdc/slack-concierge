@@ -24,6 +24,8 @@ The launcher resolves the installed Claude Code command before account selection
 
 An explicit account pin and a resumed or continued Claude conversation retain their existing credentials. An intentional API or cloud-provider credential needs an explicit pin; otherwise a competing credential refuses the automatic subscription route. Claude Code's built-in subagents belong to their running parent session and share its allowance; they are not independent account choices. The command path applies to agent shell invocations of `claude`; direct absolute executable paths are outside this command entrance and should not be used for fresh agent work. If the owner cannot answer, the launcher refuses instead of falling back to a default account that may be exhausted. A model request can still meet a limit after selection; a failed run with possible effects is not blindly replayed.
 
+The account-choice entrance accepts every model in Concierge's Claude alias catalogue, including Claude Opus's extended-context spelling with brackets. Other model spellings remain limited to simple command-safe names.
+
 ## What the allowance evidence means
 
 - Each account and model has its own applicable windows. The provider's current five-hour, weekly, and model-specific windows are considered together. A full weekly window on one account says nothing about another account. A reset timestamp is attached to its account and window, never treated as a universal daily reset.

@@ -16,7 +16,7 @@ export async function checkAcceptedInputAdmission() {
 async function child() {
  const phase=(name:string)=>console.error(JSON.stringify({phase:name}));
  phase('starting');
- const [{db},{createNativeSession,retainSessionInput,enqueueSessionInput},{SessionOwner,sessionAddress},{SessionCommunicationCoordinator},{recordForwardedThreadReply},{SessionPeers,PeerClient},{claimQueuedTurnWithSavedWork}]=await Promise.all([
+ const [{db},{backfillHeldInputReceiptEvents,createNativeSession,retainSessionInput,enqueueSessionInput,nativeRunId},{SessionOwner,sessionAddress},{SessionCommunicationCoordinator},{recordForwardedThreadReply},{SessionPeers,PeerClient},{claimQueuedTurnWithSavedWork}]=await Promise.all([
   import('../src/state'),import('../src/session-inputs'),import('../src/session-owner'),import('../src/session-communication'),import('../src/session-inbox'),import('../src/session-peers'),import('../src/saved-work')]);
  phase('owner-loaded');
  const {requestApiHandler}=await import('../src/routed-request-api');
@@ -51,9 +51,28 @@ async function child() {
  owner.submit(`concierge:${session.id}`,first);
  assert.equal((db.query('SELECT count(*) AS n FROM turns WHERE accepted_input_id=?').get(accepted.operationId) as {n:number}).n,1);
  assert.throws(()=>owner.submit(`concierge:${session.id}`,{...first,text:'A different request'}),/Idempotency conflict/);
+ const heldSession=createNativeSession('codex',{title:'Private held receipt fixture',suspended:true});
+ const heldBody={clientActionId:'fixture-held-agent',text:'Retain this marked input while paused.',agentSource:{inputId:accepted.operationId,runId:nativeRunId(claim!.turn_id)}};
+ const held=owner.submit(`concierge:${heldSession.id}`,heldBody).operation as {operationId:string;runId:string|null;admission:unknown};
+ assert.equal(held.runId,null);assert.equal(held.admission,null);
+ assert.equal((db.query('SELECT count(*) AS n FROM turns WHERE session_id=?').get(heldSession.id) as {n:number}).n,0);
+ const receiptEventId=`receipt:${held.operationId}:retained`;
+ const receiptEvent=()=>db.query('SELECT kind,input_id,turn_id,payload_json FROM session_owner_events WHERE event_id=?').get(receiptEventId) as
+  {kind:string;input_id:string;turn_id:number|null;payload_json:string}|null;
+ assert.deepEqual(receiptEvent(),{kind:'receipt',input_id:held.operationId,turn_id:null,payload_json:'{"change":"retained"}'});
+ owner.submit(`concierge:${heldSession.id}`,heldBody);
+ assert.equal((db.query('SELECT count(*) AS n FROM session_owner_events WHERE event_id=?').get(receiptEventId) as {n:number}).n,1);
+ db.query('DELETE FROM session_owner_events WHERE event_id=?').run(receiptEventId);
+ assert.equal(backfillHeldInputReceiptEvents(),1);
+ assert.equal(backfillHeldInputReceiptEvents(),0);
+ assert.ok(receiptEvent(),'startup repair must restore the missing receipt delta');
+ assert.equal((db.query('SELECT count(*) AS n FROM turns WHERE session_id=?').get(heldSession.id) as {n:number}).n,0,
+  'receipt repair must not admit provider work');
  // A pre-repair orphan has no proof that provider custody is absent; leave it untouched.
  const orphan=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:'fixture-legacy-orphan',kind:'input',origin:'human',
   payload:{clientActionId:'fixture-legacy-orphan',text:'A retained input from before atomic admission'}}).input;
+ assert.equal(backfillHeldInputReceiptEvents(),0);
+ assert.equal((db.query("SELECT count(*) AS n FROM session_owner_events WHERE input_id=? AND kind='receipt'").get(orphan.id) as {n:number}).n,0);
  const restarted=new SessionOwner({wake(){},steer(){return false;},async stop(){return false;},available(){return true;}} as any,process.cwd());
  restarted.submit(`concierge:${session.id}`,{clientActionId:'fixture-legacy-orphan',text:'A retained input from before atomic admission'});
  assert.equal((db.query('SELECT count(*) AS n FROM turns WHERE accepted_input_id=?').get(orphan.id) as {n:number}).n,0);
@@ -122,7 +141,7 @@ async function child() {
  phase('peer-forward-verified');
  assert.equal((db.query('SELECT count(*) AS n FROM session_peer_deliveries WHERE request_id=?').get(peerBody.requestId) as {n:number}).n,1);
  assert.equal((db.query('SELECT count(*) AS n FROM turns WHERE accepted_input_id=?').get(`request:${peerBody.requestId}`) as {n:number}).n,1);
- console.log(JSON.stringify({fixture:'accepted-input-admission',rollback:true,duplicateOneTurn:true,payloadConflict:true,unprovenOrphanHeld:true,recoveredOneTurn:true,
+ console.log(JSON.stringify({fixture:'accepted-input-admission',rollback:true,duplicateOneTurn:true,payloadConflict:true,heldReceiptEvent:true,heldReceiptBackfillNoTurn:true,unprovenOrphanHeld:true,recoveredOneTurn:true,
   forwardingRollback:true,forwardingRecoveryOneRequest:true,peerForwardingRecoveryOneRequest:true,peerPayloadConflict:true}));
 }
 
