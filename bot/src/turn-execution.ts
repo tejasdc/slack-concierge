@@ -664,8 +664,10 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         :claudeChoice?.account??currentAccount('claude-code')?.label??null):null;
     if(remoteClaudeRunner&&!runningClaudeAccount)throw new Error(`Runner ${remoteClaudeRunner} could not identify a signed-in Claude account.`);
     const savedGoogleAccount=sessionMetadata(input.session).providerAccount;
-    const remoteGoogleIdentity=remoteGoogleRunner&&!savedGoogleAccount
+    const remoteGoogleIdentity=remoteGoogleRunner
       ?await runnerMachineCall<{id:string;label:string}|null>(remoteGoogleRunner,'accounts.identity',{provider:'antigravity'}):null;
+    if(remoteGoogleRunner&&savedGoogleAccount&&remoteGoogleIdentity?.label!==savedGoogleAccount)
+      throw new Error(`Runner ${remoteGoogleRunner} is signed in to a different Google account than this conversation; refusing to resume it under another identity.`);
     const runningGoogleAccount=input.providerId==='antigravity'
       ?savedGoogleAccount??remoteGoogleIdentity?.label??null:null;
     if(remoteGoogleRunner&&!runningGoogleAccount)throw new Error(`Runner ${remoteGoogleRunner} could not identify a signed-in Google account.`);

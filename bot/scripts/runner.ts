@@ -31,7 +31,7 @@ import {controlSocketListeners,moveCodexDaemonToOwnScope,raiseCodexDaemonFileLim
 import {serveRunnerMachineCalls} from '../src/runner-machine-calls';
 import {localWatchMachine,serveWatchCall} from '../src/watch-machine';
 import {rewriteRelayedCodexRequest,runnerMachineEnvironment,writeRunnerConnection,type RunnerMachine} from '../src/runner-machine';
-import {runnerAccountHome,serveRunnerAccountCall} from '../src/runner-provider-accounts';
+import {runnerAccountHome,runnerCodexRepairActive,serveRunnerAccountCall} from '../src/runner-provider-accounts';
 import {assertRunnerGoogleCreditPolicy} from '../src/runner-google-policy';
 
 const owner=process.env.CONCIERGE_OWNER_URL?.replace(/\/+$/,'');
@@ -542,7 +542,7 @@ function answerMachineCalls(id:string) {
     recordOwnerContact();
     if(method==='ping')return true;
     if(method.startsWith('watch.'))return serveWatchCall(watchMachine,stateDir,method.slice('watch.'.length),params);
-    if(method.startsWith('accounts.'))return serveRunnerAccountCall(method,params);
+    if(method.startsWith('accounts.'))return serveRunnerAccountCall(method,params,{activeTurns:turns.size});
     throw new Error(`this runner does not answer ${method}`);
   });
   remote.onclose=event=>say('runner_machine_calls_closed',{relay:id,code:event.code});
@@ -576,7 +576,7 @@ if(!once&&kinds.includes('codex')){
 if(!once)listenForRelays();
 
 for(let idle=0;;) {
-  const jobKinds=kinds.filter(kind=>kind!=='codex');
+  const jobKinds=kinds.filter(kind=>kind!=='codex'&&!(kind==='turn'&&runnerCodexRepairActive()));
   const offered=turns.size>=maxTurns?jobKinds.filter(kind=>kind!=='turn'):jobKinds;
   const {job}=offered.length?await call('claim',{kinds:once?['probe']:offered}).catch(error=>{say('runner_claim_failed',{error:String(error)});return {job:null};}):{job:null};
   if(job){

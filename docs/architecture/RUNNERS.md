@@ -414,6 +414,14 @@ from the owner's current account selection without runner validation. The shared
 continues to describe its configured provider source; per-session runner placement is retained in
 the session binding.
 
+When a runner owns Codex or Claude credentials, the owner's auth-held watcher does not watch or probe
+the owner's credential files. It polls the exact runner's identity and a fresh account reading; only
+a matching, signed-in reading clears the owner's auth hold. A failed or stale runner answer keeps the
+hold. Unmanaged Codex App Server repair is also sent to the selected runner: the owner first holds
+new Codex admission and checks its own active/external turn records, then the runner refuses while
+it owns any turn and stops only the process holding its own control socket. This call is asynchronous
+to owner startup; an unreachable runner does not gate startup.
+
 Offline acceptance state card (source and isolated runner fixtures, not a live runner):
 
 - Verified: an exact provider/account identity resolves from runner-owned homes, and ambiguous
@@ -426,7 +434,8 @@ Offline acceptance state card (source and isolated runner fixtures, not a live r
   Codex App Server account activation, reset-credit redemption, and held-work release after a
   fresh live usage reading have not been exercised on AX41. Google quota parsing, runner-side
   paid-credit refusal and Google turn execution have not been exercised against AX41's real `agy`
-  installation.
+  installation. Runner auth-hold polling and unmanaged-server repair have not been exercised with
+  an auth-held turn or an intentionally unmanaged AX41 App Server.
 
 | Capability | Source state | Verified here | Live runner |
 | --- | --- | --- | --- |
@@ -436,6 +445,7 @@ Offline acceptance state card (source and isolated runner fixtures, not a live r
 | Codex activation and owner admission hold | Implemented | Bundles; no daemon restart | Not checked |
 | Codex reset-credit redemption | Implemented | Runner bundle only; no provider redemption | Not checked |
 | Google quota and paid-credit guard | Implemented | Settings absent permits; enabled and unreadable settings refuse; bundles | Not checked |
+| Runner auth-held polling and Codex unmanaged-server repair | Implemented | Owner/runner bundles; no live auth hold or socket replacement | Not checked |
 | Exact transcript resolution | Implemented | Unique, missing and ambiguous fixtures | Not checked |
 
 Users: durable watches ([watches](WATCHES.md), `watch-machine.ts`, methods `watch.*`). Turn artifacts need none: only the retired Slack presentation makes an artifact folder; a native turn makes none.
