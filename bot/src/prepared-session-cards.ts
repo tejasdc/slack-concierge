@@ -1,4 +1,4 @@
-import {basename} from 'node:path';
+import {basename,isAbsolute,relative} from 'node:path';
 import type {Database} from 'bun:sqlite';
 import {spaceForCwd,type SessionSpace} from './session-space';
 import {savedStartAt} from './saved-start-time';
@@ -10,7 +10,7 @@ type SourceSession={id:number;provider_id:string;status:string;native_metadata_j
 type Labels={title:string;summary:string;project:string|null};
 type SourceChange={sequence:number;source_table?:string;row_key?:string;session_id?:number|null;target_session_id?:number|null};
 export type SessionCard=Readonly<{id:string;title:string;titleTruncated:boolean;summary:string;summaryTruncated:boolean;
-  project:string|null;projectTruncated:boolean;projectName:string|null;projectNameTruncated:boolean;provider:string;origin:string;catalogueKind:'conversation'|'historical-evidence';
+  project:string|null;projectTruncated:boolean;projectName:string|null;projectNameTruncated:boolean;projectPath:string|null;provider:string;origin:string;catalogueKind:'conversation'|'historical-evidence';
   address:string;bindingGeneration:number;runtimeThreadId:string|null;workflowId:string|null;purpose:string;mode:string;
   createdAt:string;updatedAt:string;archived:boolean;suspended:boolean;pinned:boolean;saved:boolean;
   outcome:string;space:SessionSpace;needsAttention:boolean|null;attentionCoverage:'complete'|'catching_up';
@@ -154,10 +154,14 @@ export class PreparedSessionCards {
     const question=typeof meta.turnOutcome?.question==='string'?preview(meta.turnOutcome.question,512):null;
     const touch=sessionTouch(this.source,sessionId,meta,session.last_turn_at??session.created_at);
     const projectName=labels.project?preview(basename(labels.project.replace(/\/+$/,'')),255):null;
+    const projectPath=typeof meta.projectPath==='string'?meta.projectPath
+      :typeof meta.project==='string'&&typeof meta.cwd==='string'&&isAbsolute(meta.project)&&isAbsolute(meta.cwd)&&meta.cwd.startsWith(`${meta.project.replace(/\/+$/,'')}/`)
+        ?relative(meta.project,meta.cwd):'';
     const card:SessionCard={id:`concierge:${sessionId}`,address:sessionAddress(session),bindingGeneration:session.binding_generation??1,
       runtimeThreadId:session.agent_session_uuid,workflowId:typeof meta.workflowId==='string'?meta.workflowId:null,
       purpose:meta.purpose??'chat',mode:meta.purpose??'chat',title:title.text,titleTruncated:title.truncated,
       summary:summary.text,summaryTruncated:summary.truncated,project:project?.text??null,projectTruncated:project?.truncated??false,projectName:projectName?.text??null,projectNameTruncated:projectName?.truncated??false,
+      projectPath:projectPath?preview(projectPath,600).text:'',
       provider:session.provider_id,origin,catalogueKind:origin==='imported'&&!meta.nativeBinding?'historical-evidence':'conversation',
       createdAt:iso(session.created_at),updatedAt:iso(session.last_turn_at??session.created_at),
       archived:session.status==='archived',suspended:meta.suspended??false,pinned:meta.pinned??false,saved:meta.saved??false,

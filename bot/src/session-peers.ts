@@ -3,7 +3,6 @@ import {copyFileSync,existsSync,mkdirSync,readFileSync,readdirSync,statSync} fro
 import {homedir} from 'node:os';
 import {basename,join} from 'node:path';
 import {PeerCatalogueSync} from './peer-catalogue-sync';
-import {sessionProject} from './session-projects';
 import {parseProviderSelector,resolveProviderSelector} from './aliases';
 import {humanChoseTopModel} from './model-escalation-custody';
 import {AWAITING_INSPECTION,PROMPT_ANSWER_REMINDER_MS,PROMPT_ANSWER_OVERDUE_MS,REMINDERS_SINCE_MS,STILL_WAITING_AFTER_MS,STILL_WAITING_MINUTES,updateDraining,replyCommand,stalledNotice,strandedStep,tellWorkerCanceled,cancelQueuedWithdrawnRequest,waitingOnDependency,type OwedRequest} from './request-liveness';
@@ -467,7 +466,7 @@ export class SessionPeers {
    * provider's own resume by session UUID, fed the transcript copied into its local store.
    * The peer's session stays parked; this is a distinct session with `resurrection` lineage.
    */
-  resurrect(peer:string,address:string,options:{createSession:(provider:'claude-code'|'codex',metadata:Record<string,unknown>)=>{id:number};bind:(sessionId:number,provider:'claude-code'|'codex',uuid:string)=>void;defaultCwd:string}) {
+  async resurrect(peer:string,address:string,options:{createSession:(provider:'claude-code'|'codex',metadata:Record<string,unknown>)=>{id:number};bind:(sessionId:number,provider:'claude-code'|'codex',uuid:string)=>void;resolveProject:(metadata:Record<string,unknown>)=>Promise<{name:string|null;path:string;cwd:string;runner:string|null}>}) {
     this.client(peer);
     let tuple:any=null;try{tuple=JSON.parse(Buffer.from(address.slice(8),'base64url').toString());}catch{}
     const remote=Array.isArray(tuple)&&Number.isSafeInteger(tuple[1])?`concierge:${tuple[1]}`:null;
@@ -483,20 +482,24 @@ export class SessionPeers {
     const archived=this.archivedTranscript(peer,threadId);
     if(!archived)throw new SessionOwnerError(`${peer}'s transcript for this session has not reached this instance's archive yet (it is pushed every few minutes); try again shortly or wait for ${peer}.`,409,'ARCHIVE_NOT_YET_SYNCED');
     if(view.projectNameTruncated||view.projectTruncated&&typeof view.projectName!=='string')throw new SessionOwnerError('The exact project identity has not reached this instance yet. Refresh this peer before resurrecting the session.',409,'PEER_PROJECT_IDENTITY_INCOMPLETE');
-    const projectName=typeof view.projectName==='string'?view.projectName:typeof view.project==='string'?basename(view.project.replace(/\/+$/,'')):null;
-    const project=projectName?sessionProject(options.defaultCwd,projectName):null;
-    if(!project)throw new SessionOwnerError(`This instance has no registered project folder named ${projectName??'(unknown)'} to resurrect into.`,409,'PROJECT_UNAVAILABLE');
+    const project=await options.resolveProject({
+      ...(typeof view.projectName==='string'?{projectName:view.projectName}:{}),
+      ...(typeof view.projectPath==='string'?{projectPath:view.projectPath}:{}),
+      ...(typeof view.project==='string'?{project:view.project}:{}),
+      ...(typeof view.cwd==='string'?{cwd:view.cwd}:{}),
+    });
     // Place the transcript where the provider's own resume finds it for this cwd.
-    let destination:string;
-    if(provider==='claude-code'){
+    let destination:string|undefined;
+    if(provider==='claude-code'&&project.name){
       const slug=project.cwd.replace(/[\/.]/g,'-');
       destination=join(homedir(),'.claude','projects',slug,`${threadId}.jsonl`);
-    } else {
+    } else if(provider==='codex') {
       const day=archived.archivedAt.slice(0,10).split('-');
       destination=join(homedir(),'.codex','sessions',day[0]!,day[1]!,day[2]!,basename(archived.path));
     }
-    if(!existsSync(destination)){mkdirSync(join(destination,'..'),{recursive:true,mode:0o700});copyFileSync(archived.path,destination);}
-    const created=options.createSession(provider,{origin:'reconstructed',purpose:view.purpose??'chat',title:`${view.title} (resurrected from ${peer})`,cwd:project.cwd,project:project.cwd,
+    if(destination&&!existsSync(destination)){mkdirSync(join(destination,'..'),{recursive:true,mode:0o700});copyFileSync(archived.path,destination);}
+    const created=options.createSession(provider,{origin:'reconstructed',purpose:view.purpose??'chat',title:`${view.title} (resurrected from ${peer})`,cwd:project.cwd,
+      project:project.name?project.cwd:null,...(project.name?{projectName:project.name,projectPath:project.path}:{}),...(project.runner?{providerRunner:project.runner}:{}),
       ...(view.model?{model:view.model}:{}),...(view.reasoningEffort?{reasoningEffort:view.reasoningEffort}:{}),
       resurrection:{peer,sessionId:presented,address:`${peer}/${address}`,threadId,archivedAt:archived.archivedAt,archivePath:archived.path,resurrectedAt:new Date(this.now()).toISOString()}});
     options.bind(created.id,provider,threadId);
