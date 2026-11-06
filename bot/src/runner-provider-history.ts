@@ -1,12 +1,12 @@
 import {createHash} from 'node:crypto';
 import {createReadStream} from 'node:fs';
-import {createInterface} from 'node:readline';
 import {link,mkdir,open,readFile,readdir,stat,unlink,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {homedir} from 'node:os';
 import {dirname} from 'node:path';
 import {codexTranscriptTimestamps} from './provider-transcript-metadata';
 import {sharedCodexAppServerClient} from './codex-app-server-client';
+import {jsonLines} from './json-lines';
 
 const MAX_TRANSCRIPT_CHUNK=256*1024;
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -99,7 +99,7 @@ async function authoredTimestamp(path:string,kind:Provider,threadId:string,subje
   const needle=subject.split(/["\\]/).sort((a,b)=>b.length-a.length)[0]??'';
   if(needle.length<12)return null;
   const search=JSON.stringify(subject).slice(1,-1);
-  const lines=createInterface({input:createReadStream(path,{encoding:'utf8'}),crlfDelay:Infinity});
+  const lines=jsonLines(createReadStream(path,{encoding:'utf8'}));
   let best:number|null=null;
   for await(const line of lines){
     if(line.length>32*1024*1024||!line.includes(needle))continue;
