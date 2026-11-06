@@ -11,6 +11,7 @@ import {db} from './state-database';
 import {noticeTime} from './notice-time';
 import {MANAGED_CODEX} from './codex-daemon-file-limit';
 import {log} from './log';
+import {runnerMachineCall} from './runner-machine-calls';
 
 /**
  * A side question: answered from a throwaway copy of a session's conversation, the way Claude
@@ -25,7 +26,8 @@ export type AsideInput={provider:string;sessionUuid:string;cwd:string;model:stri
   /** The session is working now: its unfinished turn is left out, so the copy ends at its last finished answer. */
   running:boolean;passage:string;question:string;earlier:AsideExchange[];
   /** Another agent asking about this archived or paused session's work, instead of Tejas asking about a passage he selected. */
-  agentAsker?:string};
+  agentAsker?:string;runner?:string;account?:string|null;project?:string|null;projectPath?:string;
+  operationId?:string};
 export type AsideAnswer={answer:string;model:string|null;durationMs:number};
 
 const ASIDE_TIMEOUT_MS=180_000;
@@ -165,6 +167,14 @@ async function codexAside(input:AsideInput,prompt:string):Promise<AsideAnswer> {
 
 export async function askAside(input:AsideInput):Promise<AsideAnswer> {
   const prompt=asidePrompt(input);
+  if(input.runner){
+    if(!input.operationId)throw new Error('A runner side question needs its operation identity.');
+    if(input.provider!=='claude-code'&&input.provider!=='codex')throw new Error('Side questions are available for Claude and Codex sessions.');
+    const spendAccount=input.provider==='claude-code'?claudeAsideAccount(input.model)?.account??null:null;
+    return runnerMachineCall<AsideAnswer>(input.runner,'asides.ask',{
+      operationId:input.operationId,provider:input.provider,account:input.account??null,sessionUuid:input.sessionUuid,
+      spendAccount,project:input.project??null,path:input.projectPath??'',model:input.model,running:input.running,prompt},195_000);
+  }
   if(input.provider==='claude-code')return claudeAside(input,prompt);
   if(input.provider==='codex')return codexAside(input,prompt);
   throw new Error('Side questions are available for Claude and Codex sessions.');
@@ -183,7 +193,7 @@ export async function askAsideOnce(id:string,input:()=>AsideInput,waitMs:number)
   for(const [key,job] of jobs)if(job.settled&&now-job.at>JOB_KEEP_MS)jobs.delete(key);
   let job=jobs.get(id);
   if(!job){
-    const created={promise:askAside(input()),settled:null as {answer?:AsideAnswer;error?:string}|null,at:now};
+    const created={promise:askAside({...input(),operationId:id}),settled:null as {answer?:AsideAnswer;error?:string}|null,at:now};
     created.promise.then(answer=>{created.settled={answer};created.at=Date.now();},
       error=>{created.settled={error:error instanceof Error?error.message:String(error)};created.at=Date.now();});
     jobs.set(id,created);job=created;

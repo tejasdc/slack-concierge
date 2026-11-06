@@ -773,13 +773,24 @@ identity and these per-input facts. The routing preamble was prefixed to every i
 September 23, 2026; the attention rule moved there before its release.
 
 Migration runs once at owner startup, guarded by a `topics_migration` event with
-`version:1`, and is additive, resumable and safe while the Inbox is live: one topic per
-existing thread root (`recovered:1`), one open request per topic with that root as its
-source and its dispatches linked, and one open question per legacy attention entry, which
-retains the entry's id so answering it clears the entry. Nothing is closed, notified,
-dispatched or deleted, and the manifest `{roots,topics,requests,questions,unresolved}` is
-written into the guard event and logged as counts only. New roots stay unplaced until the
-router or a human places them; they appear as the `sorting` pile on the topics read.
+`version:1`. Only a human-authored Inbox root or a marked, routable agent capture can
+become a recovered request. Agent coordination, returned answers and service upkeep
+remain in their exact receipts; a transcript root alone grants no human-work standing.
+For each eligible root the migration creates one topic (`recovered:1`), one open request
+with its linked dispatches, and one question per legacy attention entry retaining its id.
+The manifest `{roots,topics,requests,questions,unresolved}` is written into the guard event.
+An owner-ledger correction retires previously recovered return and upkeep requests only when every
+root in their topic is a service-origin return or upkeep input, there is one request sourced to one of those
+roots, and there is no question, human reply or dispatch added after migration. A returned result and its later upkeep notices
+can therefore share one synthetic topic without becoming human work. Agent-authored work roots stay open even
+when the root itself is not human-authored: its source may carry Tejas's delegated work. The correction records
+the exact migration event and all roots as closure evidence, alongside the original request identity
+and source input when retained. It keeps the original request, source inputs, result receipts
+and topic history. The original migration event proves which dispatches were present before any later assignment.
+Completion of original work remains governed
+by its own request's checked answer.
+New human roots stay unplaced until the router or a human
+files them; they appear as the `sorting` pile on the topics read.
 
 ## Filing before stopping
 

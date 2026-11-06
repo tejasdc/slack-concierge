@@ -19,7 +19,7 @@ import {startProviderUsageWatch} from './provider-account-usage';
 import {watchAuthHeldCredentials} from './provider-activation';
 import {refreshUsageBreakdownIfStale} from './usage-breakdown';
 import {briefRunningSessions,noticeTurnContinuation,publishExpiringResetNotices,publishUsageForecastNotices} from './provider-usage-notice';
-import {keepThreadsCurrent,migrateInboxTopics,reconcileCarriedClosures,reconcileForwardedFinalAnswers,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
+import {keepThreadsCurrent,migrateInboxTopics,reconcileCarriedClosures,reconcileForwardedFinalAnswers,retireRecoveredBookkeepingRequests,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
 import {log,errorFields} from './log';
 import {startStuckWorkWatch} from './stuck-work-watch';
 import {startRepairNoticeDelivery} from './repair-notices';
@@ -109,6 +109,7 @@ export async function startSessionRuntime() {
   // One topic per existing Inbox thread, once, after the schema migration state.ts ran.
   // Additive and safe while the Inbox is live; a second start finds its guard event.
   try {runStartupStep('inbox_topics_migration',()=>migrateInboxTopics());} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
+  try {runStartupStep('inbox_bookkeeping_repair',()=>retireRecoveredBookkeepingRequests());} catch(error) {log('error','inbox_bookkeeping_repair_failed',errorFields(error));}
   try {runStartupStep('forwarded_final_answers',()=>runStartupCatchUp('forwarded-final-answers',ownerEventMaxSequence,(afterSequence,throughSequence)=>reconcileForwardedFinalAnswers(undefined,{afterSequence,throughSequence}),20_000));runStartupStep('carried_closures',()=>runStartupSweep('carried-closures',ownerEventMaxSequence,(afterSequence,throughSequence)=>reconcileCarriedClosures(undefined,{afterSequence,throughSequence}),20_000));} catch(error) {log('error','inbox_request_answer_reconciliation_failed',errorFields(error));}
   const queue=new SessionTurnQueueCoordinator({beforeClaims:prepareSavedWorkForClaims,
     claim:activeTurnIds=>claimNextQueuedTurn(instanceId,Date.now(),registry.activeSessions,[...new Set([...activeTurnIds,...active])]),shouldStop:()=>draining,

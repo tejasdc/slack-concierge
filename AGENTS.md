@@ -45,6 +45,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   through an Inbox agent report.
   See [execution host](docs/architecture/EXECUTION-HOST.md#agent-browser-process-ownership)
   and [durable watches](docs/architecture/WATCHES.md).
+- Project creation validates organizer placement in the owner ledger and performs scaffold and
+  GitHub work as a replay-safe job on the configured project runner. See [runners](docs/architecture/RUNNERS.md).
 - Hosted run adoption and parked-run recovery follow the
   [execution host](docs/architecture/EXECUTION-HOST.md) contract; never reset their ledger status by hand.
 - Outside Codex repair sessions use a one-input command line and take follow-ups
@@ -124,6 +126,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 | Shared Codex App Server lifecycle, post-turn process audit and session observation | [Execution host](docs/architecture/EXECUTION-HOST.md), [Codex App Server](docs/runbooks/CODEX-APP-SERVER.md), [external Codex turns](docs/architecture/SESSION-OWNER.md#externally-submitted-codex-turns) |
 | Owner on its own app server, agents' network entrance and tokens, runner lease protocol | [Runners](docs/architecture/RUNNERS.md), [execution host](docs/architecture/EXECUTION-HOST.md) |
 | Runner reads of report source chains and bounded report windows | [Runners](docs/architecture/RUNNERS.md) |
+| Runner-resolved project folders and bounded project file, TODO, worktree, Google and outside-run operations | [Runners](docs/architecture/RUNNERS.md#runner-machine-calls) |
+| Provider accounts, sign-in custody and account homes on runners | [Runners](docs/architecture/RUNNERS.md#provider-accounts-on-runners), [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md) |
 | Bounded reads, SQLite ledger durability and diagnostic snapshots | [Storage observation](docs/architecture/STORAGE-OBSERVATION.md), [ledger durability](docs/architecture/LEDGER-DURABILITY.md), [native read execution](docs/architecture/NATIVE-READ-EXECUTION.md), [diagnostic snapshot](docs/runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md) |
 | Releases, autonomous repair, host alerts and Mac installation | [Deployment](docs/runbooks/DEPLOYMENT.md), [repair architecture](docs/architecture/DEPLOYMENT-REPAIR.md), [repair agent](docs/runbooks/REPAIR-AGENT.md), [Grafana alerts](docs/runbooks/GRAFANA-ALERTS.md), [peer instances](docs/runbooks/PEER-INSTANCES.md) |
 | Project, session, Inbox and saved-work commands | [Router actions](docs/runbooks/ROUTER-ACTIONS.md), [saved work](docs/plans/2026-09-23-saved-work-scheduled-and-banked.md) |

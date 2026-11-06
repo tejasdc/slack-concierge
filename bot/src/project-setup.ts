@@ -1,11 +1,14 @@
 import {createHash} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {existsSync,lstatSync,mkdirSync,readFileSync,readlinkSync,renameSync,rmSync,symlinkSync,writeFileSync} from 'node:fs';
+import {existsSync,lstatSync,mkdirSync,readFileSync,renameSync,rmSync,symlinkSync,writeFileSync} from 'node:fs';
 import {join,relative,dirname} from 'node:path';
 import {db,getSessionById} from './state';
-import {canonicalAgentsTemplate,canonicalDocsIndexTemplate} from './project-scaffold';
-import {projectTemplate,templateAgentsSection,templateFiles,type ProjectTemplate} from './project-templates';
+import {projectTemplate,type ProjectTemplate} from './project-templates';
+import {projectSetupJobId} from './runner-project-setup';
+import {runnerLedger} from './runner-ledger';
+import {runnerMachineCall} from './runner-machine-calls';
+import {ledgerDurable} from './ledger-durability-barrier';
 import {containingProject,sessionProject} from './session-projects';
 import {standingAgentSession} from './standing-agents';
 import {getAcceptedSessionInput,nativeRunId,sessionInputProvenance} from './session-inputs';
@@ -146,27 +149,6 @@ function repositoryName(project:string,folder?:string){return folder===LAB_EXPER
 function expectedOrigin(project:string,folder?:string){return `https://github.com/tejasdc/${repositoryName(project,folder)}`;}
 function head(path:string){return git(path,'rev-parse','HEAD');}
 function projectPredicate(path:string){try{return lstatSync(join(path,'.git')).isDirectory()&&lstatSync(join(path,'AGENTS.md')).isFile();}catch{return false;}}
-async function createScaffold(path:string,project:string,purpose:string,workspace:string,template?:ProjectTemplate){
-  const intent=join(path,'tmp','project-setup-intent.json');
-  mkdirSync(join(path,'tmp'),{recursive:true});
-  const intended=JSON.stringify({project,purpose,...(template?{template}:{})});
-  if(pathExists(intent)){
-    if(readFileSync(intent,'utf8')!==intended)throw new Error('This folder has a different unfinished project setup.');
-  }else writeFileSync(intent,intended,{flag:'wx'});
-  const file=(name:string,content:string)=>{const target=join(path,name);if(pathExists(target)){if(readFileSync(target,'utf8')!==content)throw new Error(`Existing ${name} differs from the project scaffold.`);}else writeFileSync(target,content,{flag:'wx'});};
-  mkdirSync(join(path,'docs'),{recursive:true});
-  file('AGENTS.md',canonicalAgentsTemplate(project,path).replace(`Working directory: \`${path}\``,`${purpose}\n\nWorking directory: \`${path}\``)+(template?templateAgentsSection(template):''));
-  if(template)for(const [name,content] of Object.entries(templateFiles(template,project,purpose))){mkdirSync(dirname(join(path,name)),{recursive:true});file(name,content);}
-  const claude=join(path,'CLAUDE.md');
-  if(pathExists(claude)){if(!lstatSync(claude).isSymbolicLink()||readlinkSync(claude)!=='AGENTS.md')throw new Error('Existing CLAUDE.md is not the canonical link.');}
-  else symlinkSync('AGENTS.md',claude);
-  file('docs/README.md',canonicalDocsIndexTemplate(project));// notes/ links into this machine's vault, which lives at a different path on each machine;
-  // it must never be committed, or the other machine clones a link that points nowhere.
-  file('.gitignore','tmp/\nnotes\n');
-  notesLink(workspace,project,path);
-  if(!pathExists(join(path,'.git')))await git(path,'init');
-  try{await head(path);}catch{await git(path,'add','--all');await git(path,'commit','-m',`Create ${project} project`);}
-}
 function vaultRoot(workspace:string){const candidates=[join(workspace,'vault'),join(workspace,'obsidian-vault','journalmaxx')];return candidates.find(path=>{try{return lstatSync(path).isDirectory()&&lstatSync(join(path,'.obsidian')).isDirectory();}catch{return false;}})??(existsSync(join(workspace,'vault','projects'))?join(workspace,'vault'):null);}
 function notesLink(workspace:string,project:string,destination:string,createNotes=true){
   const vault=vaultRoot(workspace);if(!vault)return;
@@ -195,6 +177,21 @@ export class ProjectSetup {
   private readonly sending=new Set<string>();
   private readonly receiving=new Set<string>();
   constructor(private readonly workspace:string,private readonly self:string,private readonly clients:Map<string,PeerClient>,private readonly owner:()=>SessionOwner,private readonly onRecorded?:()=>void){}
+  private projectRunner(){return process.env.CONCIERGE_TURN_RUNNER?.trim()||null;}
+  private async projectLocation(location:string){
+    const runner=this.projectRunner();
+    if(runner)return runnerMachineCall<{project:string;path:string;cwd:string}>(runner,'projects.locate',{location});
+    const local=sessionProject(this.workspace,location,{inside:true});
+    if(!local)throw new Error('Project is not registered on this machine.');
+    const root=containingProject(this.workspace,local.cwd);
+    if(!root)throw new Error('Project location is outside a registered project.');
+    return {project:root.name,path:relative(root.cwd,local.cwd),cwd:local.cwd};
+  }
+  private async projectAvailable(name:string){
+    const runner=this.projectRunner();
+    if(runner)return !(await runnerMachineCall<{exists:boolean}>(runner,'projects.exists',{project:name})).exists;
+    return !sessionProject(this.workspace,name);
+  }
   hasPending(){return this.localOperations.size>0||!!db.query("SELECT 1 FROM project_setup_orders WHERE state NOT IN ('done','already_present','refused','failed','cancelled') OR notice_kind LIKE 'pending:%' OR (source_session_id IS NOT NULL AND state IN ('done','already_present','refused','failed','cancelled') AND return_input_id IS NULL) LIMIT 1").get();}
   private source(value:unknown):{session:number;input:string;run:string;originatingHuman:unknown}|null {
     if(value===undefined||value===null)return null;
@@ -228,6 +225,83 @@ export class ProjectSetup {
     this.localOperations.set(project,current);
     try{return await current;}finally{if(this.localOperations.get(project)===current)this.localOperations.delete(project);}
   }
+  private async createOnRunner(creationKey:string,project:string,purpose:string,group:string|undefined,template:ProjectTemplate|undefined){
+    const targetRunner=process.env.CONCIERGE_TURN_RUNNER?.trim();
+    if(!targetRunner)throw new Error('Project setup needs the configured project runner; the owner machine will not create a local copy.');
+    const orderId=createHash('sha256').update(`project-creation:${creationKey}`).digest('hex').slice(0,32);
+    const body={orderId,project,purpose,group:group??null,template:template??null,targetRunner};
+    const bodyJson=JSON.stringify(body);
+    let row=db.query('SELECT * FROM project_setup_runner_jobs WHERE creation_key=?').get(creationKey) as
+      {creation_key:string;body_json:string;target_runner:string;attempt:number;job_id:string;state:string;result_json:string|null;updated_at_ms:number}|null;
+    if(row&& (row.body_json!==bodyJson||row.target_runner!==targetRunner))throw new Error('This project setup identity already names a different placement or runner.');
+    if(!row){
+      const jobId=projectSetupJobId(`${orderId}:0`);
+      db.query(`INSERT INTO project_setup_runner_jobs(creation_key,body_json,target_runner,attempt,job_id,state,result_json,updated_at_ms)
+        VALUES(?,?,?,0,?,'queued',NULL,?)`).run(creationKey,bodyJson,targetRunner,jobId,Date.now());
+      row=db.query('SELECT * FROM project_setup_runner_jobs WHERE creation_key=?').get(creationKey) as typeof row;
+    }
+    const enqueueAttempt=async()=>{
+      row=db.query('SELECT * FROM project_setup_runner_jobs WHERE creation_key=?').get(creationKey) as typeof row;
+      if(!row)throw new Error('Project setup job record disappeared.');
+      if(row.result_json){
+        const previous=JSON.parse(row.result_json);
+        if(previous.failureClass==='transient'){
+          const attempt=row.attempt+1,jobId=projectSetupJobId(`${orderId}:${attempt}`);
+          db.query(`UPDATE project_setup_runner_jobs SET attempt=?,job_id=?,state='queued',result_json=NULL,updated_at_ms=? WHERE creation_key=?`)
+            .run(attempt,jobId,Date.now(),creationKey);
+          row=db.query('SELECT * FROM project_setup_runner_jobs WHERE creation_key=?').get(creationKey) as typeof row;
+        } else return previous;
+      }
+      if(!row)throw new Error('Project setup job record disappeared.');
+      await ledgerDurable();
+      runnerLedger().enqueue({jobId:row.job_id,kind:'project-setup',payload:body,replaySafe:true});
+      const deadline=Date.now()+180_000;
+      for(;;){
+        const job=runnerLedger().job(row.job_id,Number.MAX_SAFE_INTEGER);
+        if(!job)throw new Error('Project setup job is missing from the owner ledger.');
+        if(job.state==='finished'){
+          const result=job.result as {state?:string;failureClass?:string}|null;
+          if(!result||!['done','already_present','refused','failed'].includes(String(result.state)))throw new Error('The project runner returned an invalid setup result.');
+          db.query('UPDATE project_setup_runner_jobs SET state=?,result_json=?,updated_at_ms=? WHERE creation_key=? AND job_id=?')
+            .run(result.state,JSON.stringify(result),Date.now(),creationKey,row.job_id);
+          return result;
+        }
+        if(job.state==='unconfirmed')throw new Error('Project setup has uncertain runner custody; retry the same project request to reconcile its durable job.');
+        if(Date.now()>=deadline)throw new Error(`Project setup is still ${job.state} on runner ${targetRunner}; retry the same request to receive its recorded result.`);
+        await new Promise(resolve=>setTimeout(resolve,500));
+      }
+    };
+    let result=await enqueueAttempt();
+    // A definite transient failure has an immutable job result. A fresh job identity retries the
+    // same order's filesystem and repository checks; at most one such retry is started per call.
+    if(result.failureClass==='transient')result=await enqueueAttempt();
+    if(result.state==='done'||result.state==='already_present')return result as {state:'done'|'already_present';relativePath:string;commit:string};
+    throw new Error(result.reason??`Project setup on runner ${targetRunner} ended as ${result.state??'unknown'}.`);
+  }
+  private async placeOnRunner(orderId:string,project:string,folder:string|undefined):Promise<Outcome|null>{
+    const targetRunner=this.projectRunner();if(!targetRunner)throw new Error('No project runner is configured.');
+    const payload={orderId,project,group:folder??null,targetRunner};
+    for(let attempt=0;attempt<2;attempt++){
+      const jobId=projectSetupJobId(`${orderId}:placement:${attempt}`);
+      let job=runnerLedger().job(jobId,Number.MAX_SAFE_INTEGER);
+      if(!job){await ledgerDurable();runnerLedger().enqueue({jobId,kind:'project-place',payload,replaySafe:true});}
+      const deadline=Date.now()+95_000;
+      for(;;){
+        job=runnerLedger().job(jobId,Number.MAX_SAFE_INTEGER);
+        if(!job)throw new Error('Project placement job disappeared from the owner ledger.');
+        if(job.state==='finished'){
+          const result=job.result as Outcome|null;
+          if(!result||!['done','already_present','refused','failed'].includes(result.state))throw new Error('The project runner returned an invalid placement result.');
+          if(result.state==='failed'&&result.failureClass==='transient'&&attempt===0)break;
+          return result;
+        }
+        if(job.state==='unconfirmed')return null;
+        if(Date.now()>=deadline)return null;
+        await new Promise(resolve=>setTimeout(resolve,500));
+      }
+    }
+    return {state:'failed',failureClass:'transient',reason:'The project runner could not confirm placement yet.'};
+  }
   private async createLocal(data:Record<string,any>,project:string,placed?:{group:string|undefined;receipt:string},onLocalReady?:()=>void){
     if(this.self==='mac')throw new Error('New projects start on the server, where the workspace organizer holds the consultation. Run project new on the server.');
     if(typeof data.purpose!=='string'||!data.purpose.trim()||/[\r\n]/.test(data.purpose))throw new Error('A one-sentence --purpose is required.');
@@ -238,39 +312,10 @@ export class ProjectSetup {
     if(!placed&&!source)throw new Error('Project creation needs the current session input and run so its organizer consultation can be bound to this creator.');
     const template=projectTemplate(data.template);
     const folder=placed?.group??placementDecision(this.workspace,data.consultation,project,data.purpose.trim(),source!.session,template);
-    const destination=projectFolder(this.workspace,project,folder);
-    const intent=join(destination,'tmp','project-setup-intent.json');
-    const elsewhere=sessionProject(this.workspace,project);
-    if(elsewhere&&elsewhere.cwd!==destination)throw new Error(`${elsewhere.cwd} already uses this name; one name is one project, wherever it sits.`);
-    if(pathExists(destination)&&!pathExists(intent))throw new Error('A local folder already uses this name; use projects share for an existing project.');
-    if(folder)ensureGroupFolder(this.workspace,folder);
-    if(pathExists(intent)&&await originOf(destination)&&await originOf(destination)!==expectedOrigin(project,folder))throw new Error('The unfinished project has a different GitHub origin.');
-    if(!pathExists(destination))mkdirSync(destination);
-    if(pathExists(intent))await createScaffold(destination,project,data.purpose.trim(),this.workspace,template);
-    else if(!projectPredicate(destination))await createScaffold(destination,project,data.purpose.trim(),this.workspace,template);
-    const current=await git(destination,'status','--porcelain');if(current)throw new Error('The existing project has unpushed or uncommitted files; finish and push it first.');
+    const creationKey=placed?`canvas:${placed.receipt}:${project}`:`consultation:${String(data.consultation)}`;
+    const created=await this.createOnRunner(creationKey,project,data.purpose.trim(),folder,template);
     onLocalReady?.();
-    if(await originOf(destination)!==expectedOrigin(project,folder)){
-      if(await originOf(destination))throw new Error('This folder has a different GitHub origin.');
-      try{await run('gh',['repo','create',`tejasdc/${repositoryName(project,folder)}`,'--private','--description',data.purpose.trim(),'--source',destination,'--push']);}
-      catch(error){
-        const repository=JSON.parse(await run('gh',['repo','view',`tejasdc/${repositoryName(project,folder)}`,'--json','visibility,url']));
-        if(repository.visibility!=='PRIVATE'||repository.url!==expectedOrigin(project,folder))throw error;
-        const remoteHead=(await run('git',['ls-remote',`${expectedOrigin(project,folder)}.git`,'HEAD'])).split(/\s+/)[0];
-        if(remoteHead&&remoteHead!==await head(destination))throw new Error('A GitHub repository with this name already exists; choose another descriptive name.');
-        if(!await originOf(destination))await git(destination,'remote','add','origin',`${expectedOrigin(project,folder)}.git`);
-      }
-    }
-    const repository=JSON.parse(await run('gh',['repo','view',`tejasdc/${repositoryName(project,folder)}`,'--json','visibility,url']));
-    if(repository.visibility!=='PRIVATE'||repository.url!==expectedOrigin(project,folder))throw new Error('The GitHub repository is not the expected private tejasdc repository.');
-    if(await originOf(destination)!==expectedOrigin(project,folder))throw new Error('The local Git origin does not name the created repository.');
-    if(await git(destination,'remote','get-url','origin')!==`${expectedOrigin(project,folder)}.git`)await git(destination,'remote','set-url','origin',`${expectedOrigin(project,folder)}.git`);
-    const branch=await git(destination,'branch','--show-current');
-    if(!branch)throw new Error('The project has no branch to push.');
-    await git(destination,'push','-u','origin',branch);
-    const remote=await git(destination,'ls-remote','--exit-code','origin','HEAD');
-    if(!remote.startsWith(await head(destination)))throw new Error('The project was not pushed to its private GitHub repository; setup order was not recorded.');
-    const commit=await head(destination);
+    const commit=created.commit;
     const orders=db.transaction(()=>{
       const prior=db.query('SELECT purpose FROM project_creations WHERE project=?').get(project) as {purpose:string}|null;
       if(prior&&prior.purpose!==data.purpose.trim())throw new Error('This project was created with a different purpose.');
@@ -278,23 +323,23 @@ export class ProjectSetup {
       return data.hereOnly?[]:[...this.clients.keys()].map(peer=>this.record(project,peer,source,folder));
     })();
     log('info','project_created',{project,commit,here_only:!!data.hereOnly,folder:folder??null});
-    return {project,local:'done',path:destination,commit,orders};
+    return {project,local:'done',path:created.relativePath,commit,orders};
   }
   private canvasRow(board:string){return db.query('SELECT * FROM canvas_project_ensures WHERE board_id=?').get(board) as CanvasEnsureRow|null;}
   canvasProjectTitles(){
     return new Map((db.query("SELECT project,title FROM canvas_project_ensures WHERE policy_revision_id IS NOT NULL AND inside IS NULL AND state='ready' AND created_project=1").all() as Array<{project:string;title:string}>).map(row=>[row.project,row.title]));
   }
   private canvasPolicy(){return db.query('SELECT * FROM canvas_project_policies ORDER BY created_at_ms DESC,rowid DESC LIMIT 1').get() as CanvasPolicyRow|null;}
-  private canvasName(title:string,board:string){
+  private async canvasName(title:string,board:string){
     const placeholder=/^canvas(?:\s+\d+)?$/i.test(title)||/^(?:new|untitled)\s+canvas$/i.test(title);
     const digest=createHash('sha256').update(board).digest('hex');
     const slug=canvasSlug(title),fallback=`canvas-${digest.slice(0,12)}`;
     const base=newName(placeholder||!slug?fallback:slug);
-    const available=(candidate:string)=>!sessionProject(this.workspace,candidate)&&!db.query('SELECT 1 FROM canvas_project_ensures WHERE project=? AND inside IS NULL AND board_id<>?').get(candidate,board);
-    if(available(base))return base;
+    const available=async(candidate:string)=>await this.projectAvailable(candidate)&&!db.query('SELECT 1 FROM canvas_project_ensures WHERE project=? AND inside IS NULL AND board_id<>?').get(candidate,board);
+    if(await available(base))return base;
     for(let length=16;length<=digest.length;length+=4){
       const candidate=newName(`${base}-${digest.slice(0,length)}`.slice(0,100).replace(/-$/,''));
-      if(available(candidate))return candidate;
+      if(await available(candidate))return candidate;
     }
     throw new Error('No unique project name is available for this Canvas identity.');
   }
@@ -311,7 +356,7 @@ export class ProjectSetup {
   }
   private async canvasView(row:CanvasEnsureRow){
     const sessionName=row.inside?`${row.project}/${row.inside}`:row.project;
-    const local=sessionProject(this.workspace,sessionName,{inside:true});
+    const local=await this.projectLocation(sessionName).catch(()=>null);
     const order=(db.query("SELECT state FROM project_setup_orders WHERE project=? AND peer='mac' ORDER BY created_at_ms DESC,rowid DESC LIMIT 1").get(row.project) as {state:string}|null)?.state??null;
     const explicit=row.policy_revision_id===null&&!row.created_project;
     const macPath=explicit||order==='done'||order==='already_present'?await this.peerProjectPath('mac',row.project,row.inside):null;
@@ -370,10 +415,10 @@ export class ProjectSetup {
       let project:string,inside:string|null=null,state:'ready'|'awaiting_policy'='awaiting_policy',created=0;
       if(requestedExisting){
         const name=requestedExisting.name;inside=requestedExisting.inside;
-        const requested=inside?`${name}/${inside}`:name,resolved=sessionProject(this.workspace,requested,{inside:true}),registered=resolved&&containingProject(this.workspace,resolved.cwd);
-        if(!resolved||!registered||registered.name!==name)throw new Error('The existing Canvas project is not registered at that folder.');
+        const requested=inside?`${name}/${inside}`:name,resolved=await this.projectLocation(requested);
+        if(!resolved||resolved.project!==name)throw new Error('The existing Canvas project is not registered at that folder.');
         project=name;state='ready';
-      }else project=this.canvasName(title,board);
+      }else project=await this.canvasName(title,board);
       const purpose=canvasPurpose(title),now=Date.now(),policy=state==='ready'?null:this.canvasPolicy();
       db.query(`INSERT INTO canvas_project_ensures(board_id,client_action_id,project,inside,title,title_clock,purpose,template,state,policy_revision_id,created_project,created_at_ms,updated_at_ms)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(board,actionId,project,inside,title,titleClock,purpose,policy?.template??'writing',state==='ready'?'ready':policy?'creating':'awaiting_policy',policy?.revision_id??null,created,now,now);
@@ -414,6 +459,13 @@ export class ProjectSetup {
   }
   async share(input:unknown){const data=exactKeys(input,['name','to','source']);const project=existingName(data.name),peer=this.peer(data.to),source=this.source(data.source);
     return this.serialProject(project,async()=>{
+    const runner=this.projectRunner();
+    if(runner){
+      const status=await runnerMachineCall<{project:string;group:string|null;branch:string;head:string;remoteHead:string}>(runner,'projects.shareStatus',{project});
+      if(status.project!==project)throw new Error('The runner returned a different project identity.');
+      if(status.head!==status.remoteHead)throw new Error('The project branch is not fully pushed to its origin; push first.');
+      return this.record(project,peer,source,status.group??undefined);
+    }
     const registered=sessionProject(this.workspace,project);
     const destination=registered?.cwd??join(this.workspace,project);
     const folder=dirname(destination)===this.workspace?undefined:relative(this.workspace,dirname(destination));
@@ -543,6 +595,10 @@ export class ProjectSetup {
     try{folder=projectGroup(raw.folder);}catch{return fail({state:'refused',reason:'unknown_field'});}
     if(!raw.origin||typeof raw.origin!=='object'||Array.isArray(raw.origin)||Object.keys(raw.origin).some(key=>!['peer','session','input','run','originatingHuman','terminal'].includes(key)))return fail({state:'refused',reason:'invalid_repository'});
     if(raw.origin.terminal!==true&&(!this.clients.has(raw.origin.peer)||typeof raw.origin.session!=='string'||typeof raw.origin.input!=='string'||typeof raw.origin.run!=='string'))return fail({state:'refused',reason:'invalid_repository'});
+    if(this.projectRunner()) {
+      const outcome=await this.placeOnRunner(raw.orderId,project,folder);
+      return outcome?fail(outcome):{state:'running'};
+    }
     return this.serialProject(project,async()=>{
     const latest=db.query('SELECT result_json FROM project_setup_receipts WHERE order_id=?').get(raw.orderId) as {result_json:string|null}|null;
     if(latest?.result_json){const outcome=JSON.parse(latest.result_json) as Outcome;

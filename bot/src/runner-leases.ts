@@ -143,13 +143,15 @@ export class RunnerLeases {
   claim(runner:string,kinds:readonly string[]) {
     if(!kinds.length)return null;
     const marks=kinds.map(()=>'?').join(',');
+    // A named turn stays on the machine that owns its account and provider history.
+    const eligible=`(json_extract(payload_json,'$.targetRunner') IS NULL OR json_extract(payload_json,'$.targetRunner')=?)`;
     // An idle runner polls every few seconds: with nothing queued and no lease due, answer from a read.
-    if(!this.db.query(`SELECT 1 FROM runner_jobs WHERE state='queued' AND kind IN (${marks}) LIMIT 1`).get(...kinds)
+    if(!this.db.query(`SELECT 1 FROM runner_jobs WHERE state='queued' AND kind IN (${marks}) AND ${eligible} LIMIT 1`).get(...kinds,runner)
       &&!this.db.query("SELECT 1 FROM runner_attempts WHERE state='live' AND lease_expires_at_ms<=? LIMIT 1").get(this.now()))return null;
     return this.db.transaction(()=>{
       this.settleExpired();
-      const job=this.db.query(`SELECT * FROM runner_jobs WHERE state='queued' AND kind IN (${marks})
-        ORDER BY created_at_ms LIMIT 1`).get(...kinds) as Job|null;
+      const job=this.db.query(`SELECT * FROM runner_jobs WHERE state='queued' AND kind IN (${marks}) AND ${eligible}
+        ORDER BY created_at_ms LIMIT 1`).get(...kinds,runner) as Job|null;
       if(!job)return null;
       const now=this.now(),attemptId=randomUUID();
       this.db.query("UPDATE runner_jobs SET state='leased' WHERE job_id=? AND state='queued'").run(job.job_id);

@@ -9,8 +9,7 @@ the network entrance. **This source configures every new Claude turn for runner 
 Codex setting failed startup on 2026-11-04 and was rolled back; the repaired startup order below
 awaits integration and runtime proof by the detached controller. `claude-code/runner`
 earned its survival proof in the 2026-11-05 acceptance restart (execution `b212ed3c76cd9766`, taken
-over live by the restarted owner). Command and file watches run on the registering agent's runner. **Still on the owner's machine:** Google and outside-Codex hosts,
-the provider account readings and sign-ins, and project checkouts (a runner
+over live by the restarted owner). Command and file watches run on the registering agent's runner. **Still on the owner's machine:** outside-Codex hosts and project checkouts (a runner
 must have the same folders). The AX41's Codex App Server is started and supervised by the runner, and
 a Codex thread's shell names the runner's folders, never the owner's (2026-11-05). Concierge's own thnkr.ing
 calls already use thnkr.ing's network entrance. The owner therefore
@@ -39,7 +38,7 @@ Everything the owner assumes because agents run beside it. Each line names where
 | Execution hosts | `systemd-run` on the owner's machine, owner attaches to `host.sock`, reads the journal from disk | started by the runner; journal frames shipped to the owner as sequenced events (below) |
 | Shared Codex App Server | started by the owner's unit (`ExecStartPre`), reached over a local socket | started and supervised by the runner (built 2026-11-05) |
 | Claude transcript watch, provider history, handoff/resurrection writes into `~/.claude` and `~/.codex` | owner reads/writes its own home | runner-side, results sent as events |
-| Provider account homes, usage readings, sign-in CLIs | owner's home | runner-side; the owner keeps the allowance decision and receives readings |
+| Provider account homes, usage readings, sign-in CLIs | owner's home | account identity, readings, sign-in and Codex reset-credit calls run on the selected runner; owner retains account selection, usage ledger and allowance holds |
 | Project folders, worktrees, `git` in checkouts, file watches, artifact folders, links judged by reading files | owner's disk (`/root/workspace`) | runner-side; jobs name a project, the runner resolves its folder |
 | Attachments passed by path (`/tmp/concierge-native-*`) | owner writes, agent reads | bytes travel in the job (or by digest from the owner); the runner writes them locally |
 | Thinkering capability socket (`/run/thinkering/session-capabilities.sock`) used by agents with curl | local socket | Thinkering's own authenticated HTTPS with the same run token, Thinkering's step 2 |
@@ -143,7 +142,10 @@ What happens for a turn on a runner:
    working folder, the run's own variables (identity, run token, account home, model settings),
    the opening input, attachment bytes, and the host protocols the owner adopts. The owner's own
    environment is not in it.
-2. A runner claims it within two minutes (`CONCIERGE_RUNNER_CLAIM_MS`), or the owner withdraws the
+2. A turn bound to a runner carries that runner's name in its queued job. The lease engine only
+   offers it to that runner, so a later turn cannot move away from its account and transcript.
+   The owner's `CONCIERGE_TURN_RUNNER` names the current Claude target; the Codex relay target is
+   configured independently. A runner claims it within two minutes (`CONCIERGE_RUNNER_CLAIM_MS`), or the owner withdraws the
    still-queued job in one statement. The ordinary claim-timeout path parks the turn for custody
    reconciliation after its admission intent; only the owner-drain withdrawal in step 7 returns
    the turn unsent. The runner writes the
@@ -201,12 +203,23 @@ after one such run was taken over live by a later owner. Until then updates wait
 
 ### Not on runners yet
 
+Runner-bound side questions and resurrected conversations now resolve their project and provider
+account on the runner. The owner sends a bounded side-question job or archived transcript through
+the authenticated machine relay; the runner reads its provider home and starts the private fork
+there. Resurrection records the chosen runner and account with the new conversation so a later
+turn cannot silently resume against the owner's home. A missing or ambiguous provider history
+copy refuses the operation. Local-only peer conversations keep their existing local restore path.
+
 Exact locations and a plan for every item below: [what still ties the owner to the agents' machine](../plans/2026-11-05-owner-off-agent-machine-remaining.md).
 
 - Google turns and outside Codex hosts stay local. Google's launch first reads the owner's own
   `~/.gemini` settings (the paid-credit guard), and an outside run's prompt file is written into the
   owner's state folder, which runners hide; both need the runner-side account step below first.
-- Provider account usage readings, sign-in commands and history writes read the owner's home.
+- Owner dispatch for provider account readings, sign-ins and Codex activation is not wired yet; the
+  runner-side source API below is not reachable until that dispatch lands.
+- The owner still starts held-usage and Claude account probes locally, reset-credit reads local
+  credentials, startup repairs the owner's Codex daemon, and the auth watcher watches owner
+  credential folders. These paths still need runner calls or runner events.
 - Project folders: the job names an absolute folder; a runner must have the same checkout layout, and
   the Claude command's hook settings name the owner's release path, so a runner on another machine
   needs the same release installed.
@@ -333,8 +346,10 @@ stores nothing and keeps the App Server's own protocol end to end. Why not a por
 runners open none (decided plan, "How the parts talk", 3).
 
 Not yet, before a runner on another machine can hold Codex:
-- The leftover-process audit after a Codex turn reads the owner's `/proc`; the Codex Remote observer
-  would watch the runner's App Server while his own command-line turns run elsewhere.
+- The post-turn leftover-process audit uses `codex.leftoverProcesses` and `codex.processAlive`
+  on the runner that hosts the App Server. The owner retains the audit intent, sightings, grace
+  period and Inbox report; a lost runner call leaves the intent or sighting open for retry.
+  The Codex Remote observer remains separate from this native-turn audit.
 - One relayed message is limited to 64 MB, the same as the backpressure limit.
 - Account switching restarts the App Server on the owner's machine (`provider-activation.ts`).
 - Threads started before 2026-11-05 keep the owner's folders in their shell settings for life; they
@@ -358,7 +373,148 @@ Why not the job protocol: these are reads and idempotent starts the owner alread
 retries per poll; leases, events and fencing would add ledger writes to every five-second watch poll.
 Why not a port on the runner: runners open none.
 
+### Provider accounts on runners
+
+`runner-provider-accounts.ts` is runner-safe: it reads that runner's credential files, provider
+CLIs and session folders; it does not import the owner's SQLite or usage ledger. The owner asks for
+`accounts.identity` and `accounts.readings`; the response contains account identity labels and
+usage snapshots. The owner stores runner-tagged readings, chooses accounts and enforces holds;
+when the configured runner is unavailable, its prior snapshot remains visible with its original
+timestamp and cannot be refreshed from the owner's credential files.
+The runner resolves a provider account label to its own verified home before launching Claude Code.
+Home paths stay on that machine. `accounts.transcript` reports `unique`, `missing` or `ambiguous`
+for an exact provider session UUID and returns an account label only for one matching transcript.
+
+Interactive sign-in uses `accounts.signin.start`, `.status` and `.complete`, keyed by one stable
+operation ID. A start returns the provider's one-time link and, for device sign-in, its code; the
+runner's durable journal stores only the operation ID, provider, outcome and account label. It never
+stores the link or pasted code. Retrying a start or completion with the same ID returns the recorded
+operation outcome and does not launch or submit twice. A different active sign-in for the same
+provider is refused. If the runner restarts during sign-in, the pending operation becomes
+`interrupted`; the caller must start a new operation. If the runner is unreachable, the call has no
+answer and its outcome is unknown until the same operation ID is queried again.
+
+The owner stores only the selected runner, operation ID and optional saved profile ID in its
+pending sign-in row. After an owner restart it asks that same runner for the operation's status;
+it does not start a local provider CLI. A completed Codex login is activated under the owner's
+Codex admission hold, then the owner refreshes its usage ledger. Claude selection stores a stable
+account label; each remote Claude turn sends that label and the runner resolves its own home.
+Codex reset-credit redemption also runs on the runner after the owner sends the account label and
+a one-use operation ID. The runner returns its provider outcome; the owner remains responsible for
+clearing stale usage evidence and releasing held work only after a confirming reading.
+
+Codex account activation uses `accounts.codex.activate` with an operation ID. The owner wrapper
+holds Codex admission and refuses the switch while an active-turn count is nonzero or unreadable.
+The runner holds its App Server auto-start, moves only credential files, restarts its own daemon and
+asks that daemon to refresh and report the requested account. It rolls back on a definite failure;
+an unconfirmed rollback is durably `uncertain` and blocks another switch until reconciled. Repeating
+an operation ID returns its recorded result. The dispatcher also exposes
+`accounts.codex.resetCredit`; the runner validates a unique account home and runs the provider's
+own redemption protocol there.
+
+Google/Antigravity turns can target the configured turn runner. The owner stores the selected
+runner and account label; the runner starts its own `agy` executable and checks its own
+`~/.gemini/antigravity-cli/settings.json` before launch. If the setting is unreadable or
+`useG1Credits` is true, dispatch refuses before starting the provider, so a runner cannot silently
+spend paid credits. `accounts.google.readings` reads quota and account identity on that runner;
+the owner stores the runner-tagged result and keeps the allowance ledger. Provider identity for a
+new Google session is recorded from the runner's reading, not from the owner's local profile.
+
+For Claude turns explicitly marked for a runner while `CONCIERGE_TURN_RUNNERS=marked`, the runner
+identity and account home are resolved on that machine. A marked turn never sends a profile label
+from the owner's current account selection without runner validation. The shared owner usage view
+continues to describe its configured provider source; per-session runner placement is retained in
+the session binding.
+
+Offline acceptance state card (source and isolated runner fixtures, not a live runner):
+
+- Verified: an exact provider/account identity resolves from runner-owned homes, and ambiguous
+  transcript ownership is refused.
+- Verified: duplicate sign-in start with the same operation ID returns the original outcome and
+  does not start another CLI operation.
+- Verified: the isolated sign-in check has no provider CLI available and reports a bounded failure;
+  no owner-side sign-in fallback is attempted by the remote route.
+- Unknown: provider-native interactive sign-in, owner restart recovery against a live runner,
+  Codex App Server account activation, reset-credit redemption, and held-work release after a
+  fresh live usage reading have not been exercised on AX41. Google quota parsing, runner-side
+  paid-credit refusal and Google turn execution have not been exercised against AX41's real `agy`
+  installation.
+
+| Capability | Source state | Verified here | Live runner |
+| --- | --- | --- | --- |
+| Account identity and verified home resolution | Implemented | Isolated credential-home check | Not checked |
+| Usage snapshot collection | Implemented | Bundles; no provider usage run | Not checked |
+| Sign-in start/status/complete and owner restart recovery | Implemented | Offline CLI refusal and duplicate start outcome; owner and runner bundles | Not checked |
+| Codex activation and owner admission hold | Implemented | Bundles; no daemon restart | Not checked |
+| Codex reset-credit redemption | Implemented | Runner bundle only; no provider redemption | Not checked |
+| Google quota and paid-credit guard | Implemented | Settings absent permits; enabled and unreadable settings refuse; bundles | Not checked |
+| Exact transcript resolution | Implemented | Unique, missing and ambiguous fixtures | Not checked |
+
 Users: durable watches ([watches](WATCHES.md), `watch-machine.ts`, methods `watch.*`). Turn artifacts need none: only the retired Slack presentation makes an artifact folder; a native turn makes none.
+
+Project reads use the same call channel (`runner-projects.ts`): `projects.list`, `projects.exists`,
+`projects.resolve`, `projects.locate`, `projects.files`, `projects.instructions`, `projects.file`, `projects.fileAt`,
+`projects.todos`, `projects.todos.update`, `projects.todos.append`, `projects.worktrees`, and
+`projects.shareStatus`. The owner
+sends a registered project name and a relative path; the runner
+resolves it under its own workspace (`CONCIERGE_WORKSPACE_ROOT`, default `~/workspace`). `projects.locate`
+can migrate an older absolute session folder by matching its registered project name and relative suffix;
+the resulting directory must exist inside exactly one runner project. The supplied absolute root never
+selects a filesystem authority. `projects.fileAt`
+accepts a file path only when that path is already under the runner's own workspace; paths outside
+that root are reported as unmatched so the owner can route them to the machine that owns them. It never
+accepts an owner-supplied workspace root or uses an absolute path to choose a project. File reads keep the
+existing sensitive-name, symlink, file-type, and size limits. Worktree reads require the provider,
+native session UUID and account label; the runner resolves that exact transcript on its own verified
+account home and compares its path references with registered Git worktrees. It returns only the
+matching worktrees with branch, head, and uncommitted file count. Git runs with system and global
+configuration disabled, optional locks off, and fsmonitor disabled. TODO reads and updates are
+runner-local; updates compare the observed SHA-256 before replacing the canonical file and use an
+atomic rename. Task appends carry an owner-generated idempotency marker, so a retry after an uncertain
+reply finds the existing item instead of duplicating it.
+
+A handoff first recovers the conversation's exact runner from its saved binding
+or most recent execution lease, resolves its project there, and reads the worktrees there. If a
+runner lease or project identity is unavailable, the handoff reports that omission instead of
+examining the owner's checkout.
+
+The Google paid-credit check and CLI lookup is `google.executable` (`runner-providers.ts`). It runs
+against the runner's Google settings and returns only the executable path. A missing or unreachable
+runner is an unknown check; it cannot be treated as proof that paid credits are disabled.
+
+Claude hook settings contain runner-local environment references for Bun and the optional managed
+history hook. The owner may prepare the settings JSON, but the command paths resolve when Claude runs
+on the runner, using that machine's helper release and executable. A runner-hosted Claude turn names
+`claude` for the runner to find on its own PATH; an absolute executable from the owner's service
+environment is never sent. When a session is assigned to a
+runner, its project name and relative subfolder are resolved there before the host starts; the job
+manifest never carries the owner's absolute working directory. Google executable and paid-credit
+checks run on the runner before a Google host starts. Outside Codex prompt bytes are written beneath
+that execution's private runner state folder and the CLI receives only its execution-bound path.
+
+Project creation is a replay-safe `project-setup` runner job. The owner first validates the exact
+completed workspace-organizer answer against its request ledger and reserves the placement receipt.
+It then enqueues a deterministic job for the configured project runner, carrying only the project
+name, purpose, group, template, order identity, and target runner. The runner stages the scaffold in
+its own workspace, disables Git hooks and non-HTTPS Git transports, and uses its own `gh` login to
+create or verify the expected private repository. It proves the remote head matches the staged
+commit before renaming the checkout into the registered project location. The owner records the
+creation and sends the existing peer placement jobs only after receiving that proof. A retry uses
+the same order identity, so a lost reply resumes from the staged checkout or recognizes the exact
+private repository and commit; it never overwrites a different remote history. The job remains
+queued if its runner is away; transient completed failures get a fresh lease job identity while
+reusing the same order and staging folder. The runner's `gh` identity and availability are required
+for project creation, while organizer proof and project-creation records remain owner-ledger facts.
+
+Peer project placement is a separate replay-safe `project-place` runner job. The owner validates and
+retains the peer's original placement order, then sends only its order identity, project name,
+grouping folder, and target runner. The runner uses its own GitHub identity to confirm the expected
+repository is private, stages the checkout under its private workspace placement area, verifies
+the checkout origin and that its commit matches the repository head, then atomically renames it into
+the registered project folder. A retry recognizes that exact checkout; a conflicting folder or
+different repository is refused. This keeps peer placement from requiring an owner-side project
+checkout or GitHub login. The runner's GitHub login is required for placement; the original order
+and its outcome remain in the owner's ledger.
 
 ## Concierge's own thnkr.ing calls (built)
 
@@ -386,6 +542,8 @@ the read and the next preparation takes a fresh snapshot.
 
 The closed `provider-history.*` relay methods return timestamps for requested Codex item identities,
 match an authored subject against one exact transcript, and restore a transcript in bounded chunks.
+Commit attribution reads an agent's authored subject from the runner recorded for that turn or
+session; it does not scan the owner's provider home when the turn ran remotely.
 Legacy authored-subject reads without an account label scan registered account homes and return a
 timestamp only for one unique exact native-ID match. Missing and ambiguous matches remain explicit;
 the owner's current account is never used as historical evidence.

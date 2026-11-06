@@ -1,5 +1,5 @@
 import { lstatSync, readdirSync, realpathSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 
 export type SessionProject = {name:string;cwd:string};
 
@@ -80,4 +80,13 @@ function resolvesToFile(path:string):boolean {try {return statSync(path).isFile(
 export function containingProject(workspaceRoot:string,cwd:string):SessionProject|null {
   return sessionProjects(workspaceRoot).filter(project=>cwd===project.cwd||cwd.startsWith(`${project.cwd}/`))
     .sort((left,right)=>right.cwd.length-left.cwd.length)[0]??null;
+}
+
+/** Stable project identity for persisted session placement; absolute paths are machine-local. */
+export function projectCoordinates(workspaceRoot:string,cwd:string):{projectName:string;projectPath:string}|null {
+  try {
+    const root=realpathSync(workspaceRoot),location=realpathSync(cwd),project=containingProject(root,location);
+    if(!project)return null;
+    return {projectName:project.name,projectPath:relative(project.cwd,location)};
+  } catch { return null; }
 }

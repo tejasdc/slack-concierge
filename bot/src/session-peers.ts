@@ -227,6 +227,7 @@ export class SessionPeers {
   private reconciliation:Promise<void>|null=null;
   private reconciliationDirty=false;
   private stopped=true;
+  private peerReadController=new AbortController();
   private disarm:(()=>void)|null=null;
   private readonly now:()=>number;
   private readonly unreachable=new Map<string,number>();
@@ -467,7 +468,11 @@ export class SessionPeers {
    * provider's own resume by session UUID, fed the transcript copied into its local store.
    * The peer's session stays parked; this is a distinct session with `resurrection` lineage.
    */
-  resurrect(peer:string,address:string,options:{createSession:(provider:'claude-code'|'codex',metadata:Record<string,unknown>)=>{id:number};bind:(sessionId:number,provider:'claude-code'|'codex',uuid:string)=>void;defaultCwd:string}) {
+  async resurrect(peer:string,address:string,options:{createSession:(provider:'claude-code'|'codex',metadata:Record<string,unknown>)=>{id:number};
+    bind:(sessionId:number,provider:'claude-code'|'codex',uuid:string)=>void;defaultCwd:string;
+    prepare?:(input:{provider:'claude-code'|'codex';threadId:string;archived:{path:string;archivedAt:string};
+      projectName:string|null;projectPath:string|null})=>Promise<{cwd:string;project:string|null;projectName:string|null;projectPath:string;
+      providerRunner:string;providerAccount:string}>}) {
     this.client(peer);
     let tuple:any=null;try{tuple=JSON.parse(Buffer.from(address.slice(8),'base64url').toString());}catch{}
     const remote=Array.isArray(tuple)&&Number.isSafeInteger(tuple[1])?`concierge:${tuple[1]}`:null;
@@ -484,19 +489,27 @@ export class SessionPeers {
     if(!archived)throw new SessionOwnerError(`${peer}'s transcript for this session has not reached this instance's archive yet (it is pushed every few minutes); try again shortly or wait for ${peer}.`,409,'ARCHIVE_NOT_YET_SYNCED');
     if(view.projectNameTruncated||view.projectTruncated&&typeof view.projectName!=='string')throw new SessionOwnerError('The exact project identity has not reached this instance yet. Refresh this peer before resurrecting the session.',409,'PEER_PROJECT_IDENTITY_INCOMPLETE');
     const projectName=typeof view.projectName==='string'?view.projectName:typeof view.project==='string'?basename(view.project.replace(/\/+$/,'')):null;
-    const project=projectName?sessionProject(options.defaultCwd,projectName):null;
-    if(!project)throw new SessionOwnerError(`This instance has no registered project folder named ${projectName??'(unknown)'} to resurrect into.`,409,'PROJECT_UNAVAILABLE');
-    // Place the transcript where the provider's own resume finds it for this cwd.
-    let destination:string;
-    if(provider==='claude-code'){
-      const slug=project.cwd.replace(/[\/.]/g,'-');
-      destination=join(homedir(),'.claude','projects',slug,`${threadId}.jsonl`);
-    } else {
-      const day=archived.archivedAt.slice(0,10).split('-');
-      destination=join(homedir(),'.codex','sessions',day[0]!,day[1]!,day[2]!,basename(archived.path));
+    let location:{cwd:string;project:string|null;projectName:string|null;projectPath:string;providerRunner?:string;providerAccount?:string};
+    if(options.prepare)location=await options.prepare({provider,threadId,archived,projectName,
+      projectPath:typeof view.projectPath==='string'?view.projectPath:null});
+    else {
+      const project=projectName?sessionProject(options.defaultCwd,projectName):null;
+      if(!project)throw new SessionOwnerError(`This instance has no registered project folder named ${projectName??'(unknown)'} to resurrect into.`,409,'PROJECT_UNAVAILABLE');
+      // Local peers keep their provider home on this instance.
+      let destination:string;
+      if(provider==='claude-code'){
+        const slug=project.cwd.replace(/[\/.]/g,'-');
+        destination=join(homedir(),'.claude','projects',slug,`${threadId}.jsonl`);
+      } else {
+        const day=archived.archivedAt.slice(0,10).split('-');
+        destination=join(homedir(),'.codex','sessions',day[0]!,day[1]!,day[2]!,basename(archived.path));
+      }
+      if(!existsSync(destination)){mkdirSync(join(destination,'..'),{recursive:true,mode:0o700});copyFileSync(archived.path,destination);}
+      location={cwd:project.cwd,project:project.cwd,projectName:project.name,projectPath:''};
     }
-    if(!existsSync(destination)){mkdirSync(join(destination,'..'),{recursive:true,mode:0o700});copyFileSync(archived.path,destination);}
-    const created=options.createSession(provider,{origin:'reconstructed',purpose:view.purpose??'chat',title:`${view.title} (resurrected from ${peer})`,cwd:project.cwd,project:project.cwd,
+    const created=options.createSession(provider,{origin:'reconstructed',purpose:view.purpose??'chat',title:`${view.title} (resurrected from ${peer})`,cwd:location.cwd,project:location.project,
+      ...(location.providerRunner?{providerRunner:location.providerRunner,providerAccount:location.providerAccount,
+        projectName:location.projectName,projectPath:location.projectPath}:{}),
       ...(view.model?{model:view.model}:{}),...(view.reasoningEffort?{reasoningEffort:view.reasoningEffort}:{}),
       resurrection:{peer,sessionId:presented,address:`${peer}/${address}`,threadId,archivedAt:archived.archivedAt,archivePath:archived.path,resurrectedAt:new Date(this.now()).toISOString()}});
     options.bind(created.id,provider,threadId);
@@ -907,12 +920,14 @@ export class SessionPeers {
     const responder={peer:row.peer,sessionId:row.remote_session_id,inputId:reply.sourceInputId??null,runId:reply.sourceRunId??null};
     if(!reply.files)return this.recordReply(this.row(row.request_id),{eventId:reply.eventId,kind:reply.kind,text:reply.text,turnOutcome:reply.turnOutcome,replyBody:reply.replyBody,closingLine:reply.closingLine,answerGroup:reply.answerGroup,answersQuestion:reply.answersQuestion??undefined,notify:reply.notify===true,alsoMainThread:reply.alsoMainThread===true,workDisposition:reply.workDisposition??undefined,settlementProof:reply.settlementProof,completionTurnId:reply.completionTurnId??null,evidence:reply.evidence??undefined,handBack:reply.handBack??undefined,quiet:reply.quiet??undefined,responder});
     let whole:any;
-    try {whole=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies/${encodeURIComponent(reply.eventId)}`);}
+    try {whole=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies/${encodeURIComponent(reply.eventId)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal);}
     catch(error) {
+      if(this.stopped)return null;
       log('warn','session_peer_reply_fetch_failed',{request_id:row.request_id,peer:row.peer,event_id:reply.eventId,historical,...errorFields(error)});
       if(historical)throw error;
       return null;
     }
+    if(this.stopped)return null;
     return this.recordReply(this.row(row.request_id),whole);
   }
   /** The request's final that still stands; a superseded inference is history. */
@@ -960,7 +975,8 @@ export class SessionPeers {
     // replayed; the upgraded receiver checks the exact retained task, including legacy asks.
     if(row.status==='version_hold'){
       try{
-        const remote=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`);
+        const remote=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal);
+        if(this.stopped)return;
         if(remote?.answerGuaranteeVersion!==1)return;
         db.transaction(()=>{
           db.query("UPDATE session_peer_requests SET status='recorded',remote_status_json=?,delivery_json=NULL WHERE request_id=? AND status='version_hold'")
@@ -968,7 +984,7 @@ export class SessionPeers {
           bindChatGptPeerTarget(row.request_id,`${row.peer}/${remote.sessionId}`,this.now());
         })();
         row=this.row(row.request_id);
-      }catch(error){this.note(row.peer,error);return;}
+      }catch(error){if(!this.stopped)this.note(row.peer,error);return;}
     }
     if(row.status==='queued_offline'){
       if(!row.delivery_json){this.settle(row,'failed','The queued delivery body is missing.');return;}
@@ -983,7 +999,8 @@ export class SessionPeers {
           // A prior POST may have reached the peer despite a lost response. Inspect that
           // same request ID; never issue another corrected browser send after withdrawal.
           try{
-            const remote=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`);
+            const remote=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal);
+            if(this.stopped)return;
             if(remote?.requestId===row.request_id&&typeof remote.sessionId==='string'){
               this.settle(row,'canceled','The original answer duty ended after this exact corrected request may have reached the peer.');
               db.query('UPDATE session_peer_requests SET remote_session_id=?,remote_address=?,remote_status_json=?,delivery_json=NULL WHERE request_id=?')
@@ -991,7 +1008,7 @@ export class SessionPeers {
               await this.revokeCanceledRemote(row.request_id);
               return;
             }
-          }catch(error){this.note(row.peer,error);}
+          }catch(error){if(this.stopped)return;this.note(row.peer,error);}
           const eventId=`peer-correction-withdrawn-uncertain:${row.request_id}`;
           if(!db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(eventId))
             this.event(row,'overdue',{text:`The original ChatGPT duty ended while corrected request ${row.request_id} had an uncertain peer admission. Its exact receipt still needs reconciliation; no replacement send will occur.`,
@@ -1051,13 +1068,15 @@ export class SessionPeers {
       }
     }
     let remote:any;
-    try {remote=await client.request('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`);this.unreachable.delete(row.peer);}
+    try {remote=await client.request('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal);this.unreachable.delete(row.peer);}
     catch(error) {
+      if(this.stopped)return;
       this.note(row.peer,error);
       if(error instanceof PeerError&&error.kind==='refused'&&error.status===404){this.settle(row,'failed','The peer no longer holds this request; its target session was not found.');return;}
       log('warn','session_peer_request_unavailable',{request_id:row.request_id,peer:row.peer,...errorFields(error)});
       return;
     }
+    if(this.stopped)return;
     remote={...remote,observedAt:new Date(this.now()).toISOString()};
     if(JSON.parse(row.payload_json).answerGuaranteeVersion===1&&remote.answerGuaranteeVersion!==1){
       db.transaction(()=>{
@@ -1089,6 +1108,7 @@ export class SessionPeers {
       // take it. Writing the request off lost a finished Mac answer whose single push met the
       // server mid-restart (2026-10-04, request c5a8444f). Fail only if it cannot be fetched.
       const pulled=await this.pullReply(client,row,reply,false);
+      if(this.stopped)return;
       if(!pulled&&(reply.status==='failed_deadline'||reply.status==='failed_budget')){
         this.settle(row,'failed',`The peer could not return its answer: ${reply.status==='failed_deadline'?'delivery reached its deadline':'delivery exhausted its retry budget'}, and fetching it failed. ${reply.eventId}`);
         return;
@@ -1931,7 +1951,7 @@ export class SessionPeers {
     timer.unref();
     this.disarm=()=>clearTimeout(timer);
   }
-  start(){if(!this.stopped)return;this.stopped=false;this.unrecovered=new Set(this.dependencies.clients.keys());this.wake();}
+  start(){if(!this.stopped)return;this.peerReadController=new AbortController();this.stopped=false;this.unrecovered=new Set(this.dependencies.clients.keys());this.wake();}
   /**
    * Before September 23, 2026 this instance closed peer requests by inference from a finished
    * turn and then discarded the recipient's later replies while telling the peer they arrived,
@@ -1958,15 +1978,16 @@ export class SessionPeers {
       const client=this.dependencies.clients.get(row.peer);
       if(!client)continue;
       try {
-        const remote=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`);
+        const remote=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal);
+        if(this.stopped)return;
         for(const reply of (remote.replies as any[])??[])if(!db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(reply.eventId)){
           const result=await this.pullReply(client,row,reply,true);
           log('info','session_peer_discarded_reply_recovered',{request_id:row.request_id,peer:row.peer,event_id:reply.eventId,kind:reply.kind,recorded:result?.recorded??'left for push'});
         }
-      } catch(error) {failed.add(row.peer);log('warn','session_peer_discarded_reply_recovery_failed',{request_id:row.request_id,peer:row.peer,...errorFields(error)});}
+      } catch(error) {if(this.stopped)return;failed.add(row.peer);log('warn','session_peer_discarded_reply_recovery_failed',{request_id:row.request_id,peer:row.peer,...errorFields(error)});}
     }
     if(this.stopped)return;
     for(const peer of [...this.unrecovered])if(!failed.has(peer))this.unrecovered.delete(peer);
   }
-  async stop(){this.stopped=true;this.reconciliationDirty=false;this.disarm?.();this.disarm=null;for(const job of this.catalogueTasks.values())job.controller.abort();await this.reconciliation;await Promise.allSettled([...this.tasks.values(),...[...this.catalogueTasks.values()].map(job=>job.promise)]);}
+  async stop(){this.stopped=true;this.peerReadController.abort();this.reconciliationDirty=false;this.disarm?.();this.disarm=null;for(const job of this.catalogueTasks.values())job.controller.abort();await this.reconciliation;await Promise.allSettled([...this.tasks.values(),...[...this.catalogueTasks.values()].map(job=>job.promise)]);}
 }

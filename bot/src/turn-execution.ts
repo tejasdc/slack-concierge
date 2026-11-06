@@ -6,9 +6,15 @@ import {budgetBriefWithProviderRoom,chooseProviderForNewWork,newWorkCapacity,cap
 import {clearModelCapacityRefusal,modelCapacityRefused,rememberModelCapacityRefusal} from './provider-model-capacity';
 import {needClaudeSignInRenewal,needSignInRenewal} from './signin-renewal';
 import {chooseClaudeDispatch,claudeAccountWithRoomBesides,claudeEveryAccountClearsAt,markClaudeHomeRefused,markClaudeHomeVerified} from './provider-account-dispatch';
+import type {ProviderUsage} from './provider-account-usage';
 import {warmClaudeAccount} from './prompt-cache-lifetime';
 import {yieldBankedTurn} from './saved-work';
 import {recordSessionEvent,sessionMetadata,updateSessionMetadata} from './session-inputs';
+import {codexRelayRunner} from './codex-app-server-client';
+import {runnerMachineCall} from './runner-machine-calls';
+import {claudeAccountSelection} from './provider-account-selection';
+import {accountReadingFresh,includedAllowanceWindows} from './account-allowance-observation';
+import {chooseAccountForTurn} from './provider-account-choice';
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {homedir} from 'node:os';
@@ -129,7 +135,6 @@ import { noticeUsageHold, noticeAuthHold, noticeTurnContinuation, useResetIfWork
 import { useCodexResetCredit } from "./codex-reset-credit";
 import { releaseCodexOrdinaryUsageHeldWork,resolveUsageHoldNoticesForSettledTurn } from "./provider-usage";
 import { scheduleProviderAccountUsageRefresh } from "./provider-account-usage";
-import { recordSessionEvent } from "./session-inputs";
 import type { ProgressCb, RunResult } from "./codex";
 
 // Agents in long turns open a fresh `agent-browser --session` per check and never close the old
@@ -453,6 +458,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   let runningClaudeAccount:string|null=null;
   let runningClaudeModel:string|null=null;
   let runningCodexAccount:string|null=null;
+  let runningCodexRunner:string|null=null;
   // The extra Claude home this turn launched from, so its outcome counts as evidence about that
   // home: a finished turn proves it works, a sign-in refusal withdraws that proof.
   let runningClaudeHome:string|null=null;
@@ -621,13 +627,62 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     const claudeLaunchModel=input.providerId==='claude-code'
       ?input.model||getClaudePreferredModel(input.session.id,input.turnId)||null:null;
     runningClaudeModel=claudeLaunchModel;
-    const claudeChoice=input.providerId==='claude-code'
+    const remoteClaudeRunner=input.providerId==='claude-code'?input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER?.trim()||null:null;
+    const remoteGoogleRunner=input.providerId==='antigravity'?input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER?.trim()||null:null;
+    let claudeChoice=input.providerId==='claude-code'&&!remoteClaudeRunner
       ?input.boundAccount?{...input.boundAccount,because:'spending-this-window' as const,expected:input.boundAccount.account,selectionRevision:sessionMetadata(input.session).claudeSelectionRevision??0}
         :chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0,input.turnId,claudeLaunchModel,warmClaudeCacheAccount)
       :null;
-    runningClaudeAccount=input.providerId==='claude-code'?(claudeChoice?.account??currentAccount('claude-code')?.label??null):null;
-    runningCodexAccount=input.providerId==='codex'?currentAccount('codex')?.label??null:null;
-    runningClaudeHome=claudeChoice?.home??null;
+    if(remoteClaudeRunner){
+      const readings=await runnerMachineCall<Record<string,ProviderUsage>>(remoteClaudeRunner,'accounts.readings',{},100_000);
+      const usage=readings?.['claude-code'];
+      if(!usage||!Array.isArray(usage.accounts))throw new Error(`Runner ${remoteClaudeRunner} returned no Claude allowance readings.`);
+      const rooms=usage.accounts.map(account=>{
+        const windows=includedAllowanceWindows('claude-code',account,claudeLaunchModel);
+        const fresh=accountReadingFresh('claude-code',usage,account,Date.now(),undefined,claudeLaunchModel);
+        const weekly=windows.find(window=>/weekly/i.test(window.name));
+        return {account:account.label,home:`runner-account:${account.label}`,isDefault:false,
+          tightestUsedPercent:fresh&&windows.length?Math.max(...windows.map(window=>window.usedPercent)):null,
+          weeklyUsedPercent:fresh&&weekly?weekly.usedPercent:null,
+          weeklyResetsAtMs:fresh&&weekly?.resetsAt?Date.parse(weekly.resetsAt):null,
+          problem:account.signedOut?'This runner account is signed out.':fresh?account.problem:'Runner allowance reading is stale.'};
+      });
+      const selection=claudeAccountSelection();
+      const choice=chooseAccountForTurn({accounts:rooms,
+        bound:input.boundAccount?{account:input.boundAccount.account,reason:'spending-this-window'}:null,
+        prefer:previousClaudeAccount,newlySelected:!!selection&&selection.revision>(sessionMetadata(input.session).claudeSelectionRevision??0),
+        warmCacheAccount:warmClaudeCacheAccount,nowMs:Date.now()});
+      if(!choice.account)throw new Error(`Runner ${remoteClaudeRunner} has no verified Claude account with allowance for this turn.`);
+      const validation=await runnerMachineCall<{available:boolean;resolution:string}>(remoteClaudeRunner,'accounts.validate',
+        {provider:'claude-code',account:choice.account});
+      if(!validation?.available)throw new Error(`Runner ${remoteClaudeRunner} cannot resolve its selected Claude account; refusing to launch against another home.`);
+      claudeChoice={account:choice.account,home:null,because:choice.because,expected:selection?.label??null,
+        selectionRevision:selection?.revision??sessionMetadata(input.session).claudeSelectionRevision??0};
+    }
+    runningClaudeAccount=input.providerId==='claude-code'
+      ?(remoteClaudeRunner?claudeChoice?.account??null
+        :claudeChoice?.account??currentAccount('claude-code')?.label??null):null;
+    if(remoteClaudeRunner&&!runningClaudeAccount)throw new Error(`Runner ${remoteClaudeRunner} could not identify a signed-in Claude account.`);
+    const savedGoogleAccount=sessionMetadata(input.session).providerAccount;
+    const remoteGoogleIdentity=remoteGoogleRunner&&!savedGoogleAccount
+      ?await runnerMachineCall<{id:string;label:string}|null>(remoteGoogleRunner,'accounts.identity',{provider:'antigravity'}):null;
+    const runningGoogleAccount=input.providerId==='antigravity'
+      ?savedGoogleAccount??remoteGoogleIdentity?.label??null:null;
+    if(remoteGoogleRunner&&!runningGoogleAccount)throw new Error(`Runner ${remoteGoogleRunner} could not identify a signed-in Google account.`);
+    if(input.providerId==='codex'){
+      const metadata=sessionMetadata(input.session);
+      const runner=metadata.providerAccount!==undefined
+        ?metadata.providerRunner??null:codexRelayRunner();
+      const identity=metadata.providerAccount!==undefined
+        ?{label:metadata.providerAccount}
+        :runner
+          ?await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider:'codex'})
+          :currentAccount('codex');
+      runningCodexAccount=identity?.label??null;
+      runningCodexRunner=metadata.providerAccount!==undefined?metadata.providerRunner??null:runner;
+    }
+    const remoteProviderRunner=remoteClaudeRunner;
+    runningClaudeHome=remoteProviderRunner?null:claudeChoice?.home??null;
     const actualClaudeBrief=input.presentation==='native'&&!input.adopted&&runningClaudeAccount
       ?budgetBriefWithProviderRoom('claude-code',Date.now(),runningClaudeAccount):null;
     if(input.presentation==='native'&&(input.providerId==='claude-code'||input.providerId==='codex')){
@@ -660,7 +715,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       environment: {
         AGENT_BROWSER_IDLE_TIMEOUT_MS: String(AGENT_BROWSER_IDLE_MS),
         ...input.providerEnvironment,
-        ...(claudeChoice?.home?{CLAUDE_CONFIG_DIR:claudeChoice.home}:{}),
+        ...(runningClaudeHome?{CLAUDE_CONFIG_DIR:runningClaudeHome}:{}),
+        ...(remoteProviderRunner&&runningClaudeAccount?{CONCIERGE_PROVIDER_ID:'claude-code',CONCIERGE_PROVIDER_ACCOUNT:runningClaudeAccount}:{}),
+        ...(remoteGoogleRunner?{CONCIERGE_PROVIDER_ID:'antigravity',...(runningGoogleAccount?{CONCIERGE_PROVIDER_ACCOUNT:runningGoogleAccount}:{})}:{}),
         // Only an older private execution being adopted needs its original Codex home.
         ...(input.providerId==='codex'&&input.adopted&&input.boundAccount?{CODEX_HOME:input.boundAccount.home??join(homedir(),'.codex')}:{}),
         CONCIERGE_TURN_ID: String(input.turnId),
@@ -716,10 +773,31 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
             updateSessionMetadata(input.session.id,{claudeAccount:runningClaudeAccount,
               claudeSelectionRevision:claudeChoice?.selectionRevision??0,
               claudeAccountNotice:null});
+            if(input.session.agent_session_uuid===null&&sessionMetadata(input.session).providerAccount===undefined){
+              const providerRunner=input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER?.trim()||null;
+              updateSessionMetadata(input.session.id,{providerAccount:runningClaudeAccount,providerRunner});
+            }
             recordSessionEvent({eventId:`claude-account:${input.turnId}:${dispatchAttempt}`,sessionId:input.session.id,turnId:input.turnId,
               kind:'account',payload:{account:runningClaudeAccount,
                 ...(claudeChoice?{because:claudeChoice.because,expected:claudeChoice.expected}:{})}});
           } catch(error){log('warn','claude_account_record_failed',{turn_id:input.turnId,...errorFields(error)});}
+        }
+        if(event.type==='started'&&input.providerId==='codex'&&runningCodexAccount
+          &&input.session.agent_session_uuid===null&&sessionMetadata(input.session).providerAccount===undefined){
+          try{
+            updateSessionMetadata(input.session.id,{providerAccount:runningCodexAccount,providerRunner:runningCodexRunner});
+            recordSessionEvent({eventId:`provider-account:${input.turnId}:${dispatchAttempt}`,sessionId:input.session.id,turnId:input.turnId,
+              kind:'account',payload:{provider:'codex',account:runningCodexAccount,runner:runningCodexRunner}});
+          }catch(error){log('warn','provider_account_record_failed',{turn_id:input.turnId,...errorFields(error)});}
+        }
+        if(event.type==='started'&&input.providerId==='antigravity'&&runningGoogleAccount
+          &&input.session.agent_session_uuid===null&&sessionMetadata(input.session).providerAccount===undefined){
+          try{
+            updateSessionMetadata(input.session.id,{providerAccount:runningGoogleAccount,
+              providerRunner:remoteGoogleRunner??null});
+            recordSessionEvent({eventId:`provider-account:${input.turnId}:${dispatchAttempt}`,sessionId:input.session.id,turnId:input.turnId,
+              kind:'account',payload:{provider:'antigravity',account:runningGoogleAccount,runner:remoteGoogleRunner}});
+          }catch(error){log('warn','provider_account_record_failed',{turn_id:input.turnId,...errorFields(error)});}
         }
         statusController?.recordProgress(event);
         progressController?.recordProgress(event);

@@ -3944,6 +3944,9 @@ export function migrateInboxTopics(options:{batch?:number}={}) {
         if(topicOfRoot(root))continue;
         const input=getAcceptedSessionInput(root);
         if(!input){manifest.unresolved.push({inputId:root,reason:'no retained input'});continue;}
+        // Agent coordination, returned answers and service upkeep have their own receipts.
+        // A root in the Inbox transcript does not make them requests from Tejas.
+        if(!humanAuthored(input)&&!routableMessage(input))continue;
         const at=iso(input.created_at)??entry.at;
         // A topic belongs to the active Inbox, whichever Inbox session its thread was
         // accepted in: a provider/cwd cutover created new sessions, and Tejas has one Inbox.
@@ -3973,6 +3976,85 @@ export function migrateInboxTopics(options:{batch?:number}={}) {
   log('info','inbox_topics_migrated',{session_id:session.id,roots:manifest.roots,topics:manifest.topics,
     requests:manifest.requests,questions:manifest.questions,unresolved:manifest.unresolved.length});
   return {migrated:true,manifest};
+}
+
+/** Retire migration-created bookkeeping requests through owner events, keeping their history. */
+export function retireRecoveredBookkeepingRequests() {
+  const session=inboxSession();
+  if(!session)return {retired:0};
+  refreshRootMemo();
+  const replies=readIndex(session.id,true).humanReplies;
+  const by:TopicBy={kind:'owner',sessionId:`concierge:${session.id}`};
+  let retired=0;
+  const candidates=db.query("SELECT topic_id FROM inbox_topics WHERE session_id=? AND recovered=1 AND state='open'")
+    .all(session.id) as {topic_id:string}[];
+  for(const {topic_id:topicId} of candidates) {
+    const roots=topicRoots(topicId);
+    if(!roots.length||roots.some(root=>replies.has(root)))continue;
+    const inputs=roots.map(root=>getAcceptedSessionInput(root));
+    if(inputs.some(input=>!input||input.origin!=='service'
+      ||!input.id.startsWith('return:')&&!input.id.startsWith('thread-upkeep:')))continue;
+    const requests=topicRequests(topicId);
+    if(requests.length!==1||requests[0]!.state!=='open'||requests[0]!.sources.length!==1
+      ||!roots.includes(requests[0]!.sources[0]!.inputId)||topicQuestions(topicId).length)continue;
+    const request=requests[0]!;
+    // The router may have since assigned real work to this recovered thread. Its
+    // request then owns that dispatch until the normal checked-outcome path settles
+    // it; the migration correction must only retire the original phantom row.
+    const migration=db.query("SELECT json_extract(payload_json,'$.request.dispatches') AS dispatches FROM session_owner_events WHERE event_id=? AND kind='topic'")
+      .get(`topic-migration:${request.sources[0]!.inputId}`) as {dispatches:string|null}|null;
+    if(!migration?.dispatches)continue;
+    const initialDispatches=JSON.parse(migration.dispatches) as {requestId:string}[];
+    const initialIds=initialDispatches.map(dispatch=>dispatch.requestId).sort();
+    const currentIds=request.dispatches.map((dispatch:any)=>String(dispatch.requestId)).sort();
+    if(JSON.stringify(currentIds)!==JSON.stringify(initialIds))continue;
+    const input=inputs.find(candidate=>candidate?.id===request.sources[0]!.inputId)!;
+    const evidence=[`topic-migration:${request.sources[0]!.inputId}`,...roots];
+    if(input.id.startsWith('return:')) {
+      // A return is an event on the communication request it names. A prefix alone
+      // cannot prove that the input is a return or which obligation owns it.
+      const eventId=input.id.slice('return:'.length);
+      const event=(db.query('SELECT request_id FROM session_communication_events WHERE event_id=?').get(eventId)
+        ??db.query('SELECT request_id FROM session_peer_events WHERE event_id=?').get(eventId)) as {request_id:string}|null;
+      if(event?.request_id===input.request_id)evidence.push(eventId,`request:${event.request_id}`);
+      else if(input.id.startsWith('return:project-setup:')) {
+        const order=db.query('SELECT order_id FROM project_setup_orders WHERE return_input_id=? AND order_id=?').get(input.id,input.request_id) as {order_id:string}|null;
+        if(order)evidence.push(`project-setup:${order.order_id}`);
+      }
+    } else if(input.id.startsWith('thread-upkeep:')) {
+      // An upkeep notice points at the request it was trying to recover. Keep
+      // that request open; only retire the extra request made from the notice.
+      const source=input.source_input_id?getAcceptedSessionInput(input.source_input_id):null;
+      if(source&&source.id!==input.id) {
+        if(input.request_id===request.requestId) {
+          if(source.id.startsWith('request:')
+            &&request.dispatches.some((dispatch:any)=>dispatch.requestId===source.id.slice('request:'.length)))evidence.push(source.id);
+        } else if(input.request_id) {
+          const original=db.query('SELECT sources_json FROM inbox_requests WHERE request_id=?').get(input.request_id) as {sources_json:string}|null;
+          if(original&&JSON.parse(original.sources_json).some((item:{inputId:string})=>item.inputId===source.id))
+            evidence.push(input.request_id,source.id);
+        }
+      }
+    }
+    if(input.request_id)evidence.push(input.request_id);
+    if(input.source_input_id)evidence.push(input.source_input_id);
+    const exactEvidence=[...new Set(evidence)];
+    const at=nowIso(),reason='Recovered service return or upkeep is not a separate request from Tejas.';
+    db.transaction(()=>{
+      const topic=topicRow(topicId);
+      const closedRequest={...request,state:'closed' as const,disposition:'superseded',
+        closure:{by,at,reason,evidence:exactEvidence},revision:request.revision+1,updatedAt:at};
+      const next=bumped(topic);
+      recordOwnerTopicChange(session.id,`topic-bookkeeping-retired:${request.requestId}`,'topic_request',
+        {change:'request_closed',topicId,topic:next,request:closedRequest,by,reason,revision:next.revision});
+      // Request closure may automatically close the topic. If work is still running, the
+      // receipt remains available and the normal owner pass closes it after that work ends.
+      closeThreadIfFinished(topicId,'bookkeeping retired');
+    })();
+    retired++;
+  }
+  if(retired)log('info','inbox_recovered_bookkeeping_retired',{session_id:session.id,retired});
+  return {retired};
 }
 
 const ATTENTION_MIGRATION_VERSION=2;

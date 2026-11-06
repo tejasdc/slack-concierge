@@ -19,18 +19,28 @@
  *   finishes after that. A turn is never replayed: if this runner loses its lease, the owner has
  *   already settled the turn as unconfirmed and the local host is stopped.
  */
-import {mkdirSync,readFileSync,writeFileSync,renameSync,existsSync,readdirSync,rmSync,statSync} from 'node:fs';
+import {mkdirSync,readFileSync,writeFileSync,renameSync,existsSync,readdirSync,rmSync,statSync,lstatSync,realpathSync} from 'node:fs';
 import {dirname,isAbsolute,join,resolve} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {ADOPTABLE_HOST_PROTOCOLS,HOST_PROTOCOL_VERSION,HostConnection,HostNotStartedError,connectWhenReady,executionDirectory,
   executionUnit,hostCustody,hostSocketPath,startHost,stopSupersededHost,streamJournal,type HostFrame} from '../src/execution-host-client';
 import {watchClaudeTranscript} from '../src/claude-transcript-watch';
-import {RUNNER_FENCE_MS} from '../src/runner-leases';
+import {HEARTBEAT_MS,RUNNER_FENCE_MS} from '../src/runner-leases';
 import {codexAppServerSocketPath} from '../src/codex-app-server-client';
 import {controlSocketListeners,moveCodexDaemonToOwnScope,raiseCodexDaemonFileLimit,startCodexDaemonWhenAbsent} from '../src/codex-daemon-file-limit';
 import {serveRunnerMachineCalls} from '../src/runner-machine-calls';
+import {codexLeftoverProcesses,codexProcessStillRunning} from '../src/codex-leftover-processes';
 import {localWatchMachine,serveWatchCall} from '../src/watch-machine';
 import {rewriteRelayedCodexRequest,runnerMachineEnvironment,writeRunnerConnection,type RunnerMachine} from '../src/runner-machine';
+import {runnerAccountHome,runnerAccountHomes,findRunnerProviderSessionHome,serveRunnerAccountCall} from '../src/runner-provider-accounts';
+import {serveProviderHistoryCall} from '../src/runner-provider-history';
+import {serveProjectCall} from '../src/runner-projects';
+import {serveRunnerProviderCall} from '../src/runner-providers';
+import {serveRunnerAside} from '../src/runner-asides';
+import {serveProviderUsageBreakdownCall} from '../src/runner-provider-usage-breakdown';
+import {runProjectSetupJob} from '../src/runner-project-setup';
+import {runProjectPlacementJob} from '../src/runner-project-placement';
+import {assertRunnerGoogleCreditPolicy} from '../src/runner-google-policy';
 
 const owner=process.env.CONCIERGE_OWNER_URL?.replace(/\/+$/,'');
 const tokenFile=process.env.CONCIERGE_RUNNER_TOKEN_FILE;
@@ -53,8 +63,29 @@ const recordOwnerContact=()=>{
   try{writeFileSync(ownerContactFile+'.tmp',String(now),{mode:0o600});renameSync(ownerContactFile+'.tmp',ownerContactFile);}
   catch(error){say('runner_owner_contact_write_failed',{error:String(error)});}
 };
+
+function runnerStateFile(relativePath:string,executionId:string):string {
+  if(!/^[0-9a-f]{16}$/.test(executionId)||!([`outside-prompts/${executionId}`,`attachments/${executionId}`].includes(relativePath)))
+    throw new HostNotStartedError('The runner-state file does not match this execution.');
+  const directory=join(stateDir,relativePath.startsWith('outside-prompts/')?'outside-prompts':'attachments');
+  try {
+    if(existsSync(directory)&&(!lstatSync(directory).isDirectory()||lstatSync(directory).isSymbolicLink()))
+      throw new HostNotStartedError('The runner-state prompt folder is not a private directory.');
+    mkdirSync(directory,{recursive:true,mode:0o700});
+    const realDirectory=realpathSync(directory);
+    if(realDirectory!==directory)throw new HostNotStartedError('The runner-state prompt folder escaped runner state.');
+  } catch(error) { if(error instanceof HostNotStartedError)throw error;throw new HostNotStartedError('The runner-state prompt folder is unavailable.'); }
+  return join(directory,executionId);
+}
+
+function resolveRunnerArg(value:string,executionId:string):string {
+  if(!value.startsWith('@runner-state/'))return value;
+  const path=runnerStateFile(value.slice('@runner-state/'.length),executionId);
+  if(!existsSync(path))throw new HostNotStartedError('The runner-state file was not delivered with this execution.');
+  return path;
+}
 const once=process.argv.includes('--once');
-const kinds=(process.env.CONCIERGE_RUNNER_KINDS??'probe,turn,codex').split(',').map(kind=>kind.trim()).filter(Boolean);
+const kinds=(process.env.CONCIERGE_RUNNER_KINDS??'probe,turn,codex,project-setup,project-place').split(',').map(kind=>kind.trim()).filter(Boolean);
 const maxTurns=Number(process.env.CONCIERGE_RUNNER_MAX_TURNS)||64;
 /** This runner's release: the host program and the agents' helpers come from here, never from the owner. */
 const botDir=resolve(import.meta.dir,'..');
@@ -126,16 +157,49 @@ async function runProbe(job:{jobId:string;attemptId:string;epoch:number;payload:
   return finished;
 }
 
+/** Project jobs are replay-safe; their filesystem and GitHub effects converge by order ID. */
+async function runProjectJob(job:{jobId:string;attemptId:string;epoch:number;payload:any},
+  event:string,work:(payload:any,signal:AbortSignal)=>Promise<any>) {
+  const controller=new AbortController();let done=false,heartbeatError:unknown=null;
+  const heartbeat=(async()=>{
+    while(!done){
+      await Bun.sleep(HEARTBEAT_MS);
+      if(done)break;
+      try{await call('heartbeat',{attemptId:job.attemptId,epoch:job.epoch});recordOwnerContact();}
+      catch(error){if(lostCustody(error)){heartbeatError=error;controller.abort();break;}say(`${event}_heartbeat_retry`,{job:job.jobId,error:String(error)});}
+    }
+  })();
+  let result:any;
+  try{result=await work(job.payload,controller.signal);}
+  catch(error){result={state:'failed',failureClass:'permanent',reason:String(error).replace(/[\r\n]/g,' ').slice(0,400)};}
+  done=true;await heartbeat;
+  if(heartbeatError){say(`${event}_lost_custody`,{job:job.jobId,attemptId:job.attemptId});return;}
+  for(;;){
+    try{await call('finish',{attemptId:job.attemptId,epoch:job.epoch,operationId:`finish:${job.attemptId}`,result});break;}
+    catch(error){if(lostCustody(error))break;say(`${event}_finish_retry`,{job:job.jobId,error:String(error)});await Bun.sleep(2_000);}
+  }
+  say(`${event}_finished`,{jobId:job.jobId,attemptId:job.attemptId,state:result?.state??'failed'});
+}
+
 /**
  * The provider's environment, built here from this runner's own: the owner's environment never
  * travels. The run's own variables (its identity, token, account home, model settings) come from
  * the job; the paths that name a machine (state folder, helper release, Bun) are this runner's.
  */
 function turnEnvironment(manifest:{environment:Record<string,string>;inheritEnvironment:boolean}) {
-  if(!manifest.inheritEnvironment)return {...manifest.environment};
-  const ownerScripts=manifest.environment.CONCIERGE_ROUTER_BOT_DIR?join(manifest.environment.CONCIERGE_ROUTER_BOT_DIR,'scripts'):null;
-  return {...process.env as Record<string,string>,...manifest.environment,
-    ...runnerMachineEnvironment(machine,manifest.environment.PATH??'',ownerScripts),
+  const localEnvironment={...manifest.environment};
+  const provider=localEnvironment.CONCIERGE_PROVIDER_ID;
+  const account=localEnvironment.CONCIERGE_PROVIDER_ACCOUNT;
+  if(provider==='claude-code'&&account) {
+    const home=runnerAccountHome('claude-code',account);
+    if(!home)throw new Error(`The selected Claude account is not available on runner ${machine.runnerName}.`);
+    localEnvironment.CLAUDE_CONFIG_DIR=home;
+  }
+  if(provider==='antigravity')assertRunnerGoogleCreditPolicy();
+  if(!manifest.inheritEnvironment)return localEnvironment;
+  const ownerScripts=localEnvironment.CONCIERGE_ROUTER_BOT_DIR?join(localEnvironment.CONCIERGE_ROUTER_BOT_DIR,'scripts'):null;
+  return {...process.env as Record<string,string>,...localEnvironment,
+    ...runnerMachineEnvironment(machine,localEnvironment.PATH??'',ownerScripts),
     // The address this runner reaches the owner at is the one known to work from here.
     CONCIERGE_OWNER_URL:owner!,
     // thnkr.ing's network entrance, reached with the same run token (Thinkering's step 2).
@@ -248,14 +312,29 @@ class Turn {
     if(!executable)return this.finish({notStarted:`cannot find ${manifest.executable} on this runner`,localPrerequisiteUnavailable:true});
     try {
       for(const file of payload.files??[]) {
-        if(!isAbsolute(file.path))throw new HostNotStartedError(`attachment path ${file.path} is not absolute`);
+        if(file?.scope==='runner-state') {
+          const path=runnerStateFile(String(file.relativePath??''),this.executionId);
+          if(typeof file.base64!=='string')throw new HostNotStartedError('The runner-state file has no content.');
+          if(file.kind==='directory') {
+            if(existsSync(path)&&(!lstatSync(path).isDirectory()||lstatSync(path).isSymbolicLink()))
+              throw new HostNotStartedError('The runner-state attachment folder is not a private directory.');
+            mkdirSync(path,{recursive:true,mode:0o700});
+          } else {
+            if(existsSync(path))throw new HostNotStartedError('The runner-state file already exists for this execution.');
+            writeFileSync(path,Buffer.from(file.base64,'base64'),{mode:0o600,flag:'wx'});
+          }
+          continue;
+        }
+        if(!isAbsolute(file.path)||typeof file.base64!=='string'||file.path.includes('\0'))
+          throw new HostNotStartedError(`attachment path ${String(file.path)} is invalid`);
         mkdirSync(dirname(file.path),{recursive:true,mode:0o700});
-        writeFileSync(file.path,Buffer.from(String(file.base64),'base64'),{mode:0o600});
+        writeFileSync(file.path,Buffer.from(file.base64,'base64'),{mode:0o600});
       }
       if(!existsSync(manifest.cwd))throw new HostNotStartedError(`the turn's folder ${manifest.cwd} does not exist on this runner`);
+      const args=manifest.args.map((arg:string)=>resolveRunnerArg(String(arg),this.executionId));
       await startHost({stateDir:stateDir!,executionId:this.executionId,routerBotDir:botDir,
         hiddenPaths:(process.env.CONCIERGE_RUNNER_HIDE_PATHS??'').split(':').filter(Boolean),
-        manifest:{executable,args:manifest.args,cwd:manifest.cwd,environment:this.environment,initialInput:manifest.initialInput,initialMeta:manifest.initialMeta,
+        manifest:{executable,args,cwd:manifest.cwd,environment:this.environment,initialInput:manifest.initialInput,initialMeta:manifest.initialMeta,
           ownerContact:{file:ownerContactFile,fenceMs:RUNNER_FENCE_MS}}});
     } catch(error) {
       if(error instanceof HostNotStartedError)return this.finish({notStarted:error.message});
@@ -531,6 +610,24 @@ function answerMachineCalls(id:string) {
     recordOwnerContact();
     if(method==='ping')return true;
     if(method.startsWith('watch.'))return serveWatchCall(watchMachine,stateDir,method.slice('watch.'.length),params);
+    if(method.startsWith('accounts.'))return serveRunnerAccountCall(method,params);
+    if(method.startsWith('provider-history.'))return serveProviderHistoryCall(method,params,runnerAccountHome,stateDir,runnerAccountHomes);
+    if(method==='provider-usage-breakdown.page')return serveProviderUsageBreakdownCall(method,params,stateDir,runnerAccountHomes);
+    if(method.startsWith('projects.'))return serveProjectCall(method,params,{findProviderSessionHome:findRunnerProviderSessionHome});
+    if(method==='google.executable')return serveRunnerProviderCall(method,params);
+    if(method==='asides.ask')return serveRunnerAside(params,{botDir,bunPath:process.execPath,
+      resolveCwd:async(project,path)=>{
+        const result=await serveProjectCall(project===null?'projects.default':'projects.resolve',
+          project===null?{}:{project,path}) as {cwd:string};
+        return result.cwd;
+      },findHome:findRunnerProviderSessionHome,accountHome:runnerAccountHome});
+    if(method==='codex.leftoverProcesses')return codexLeftoverProcesses(params.threadId);
+    if(method==='codex.processAlive'){
+      const processRecord=params.process;
+      if(!processRecord||!Number.isSafeInteger(processRecord.pid)||processRecord.pid<=0||typeof processRecord.startTicks!=='string'||!/^\d+$/.test(processRecord.startTicks))
+        throw new Error('a process identity needs a PID and start time');
+      return codexProcessStillRunning(processRecord);
+    }
     throw new Error(`this runner does not answer ${method}`);
   });
   remote.onclose=event=>say('runner_machine_calls_closed',{relay:id,code:event.code});
@@ -575,6 +672,16 @@ for(let idle=0;;) {
       void turn.start().catch(error=>say('runner_turn_failed',{job:job.jobId,error:String(error)}));
       say('runner_turn_claimed',{jobId:job.jobId,attemptId:job.attemptId});
       continue;
+    }
+    if(job.kind==='project-setup'){
+      void runProjectJob(job,'runner_project_setup',(payload,signal)=>runProjectSetupJob(payload,{signal}))
+        .catch(error=>say('runner_project_setup_failed',{job:job.jobId,error:String(error)}));
+      idle=0;continue;
+    }
+    if(job.kind==='project-place'){
+      void runProjectJob(job,'runner_project_place',payload=>runProjectPlacementJob(payload))
+        .catch(error=>say('runner_project_place_failed',{job:job.jobId,error:String(error)}));
+      idle=0;continue;
     }
     const result=job.kind==='probe'?await runProbe(job):null;
     say('runner_job_finished',{jobId:job.jobId,attemptId:job.attemptId,result});

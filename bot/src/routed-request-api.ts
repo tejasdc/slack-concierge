@@ -8,7 +8,7 @@ import { dirname,join } from "node:path";
 import { lookupExecutions, readRoutedRequest, RETIRED_SLACK_ROUTING, type RoutedRequestCoordinator } from "./routed-requests";
 import type { SessionCommunicationCoordinator } from './session-communication';
 import type {SessionOwner} from './session-owner';
-import {unopenableLinks} from './workspace-files';
+import {unopenableLinksWithReader} from './workspace-files';
 import {usageBreakdown} from './usage-breakdown';
 import {startPresentationWorker} from './presentation-worker-supervisor';
 import {log,logSinkCounters} from './log';
@@ -53,9 +53,9 @@ const release=(()=>{
  * A post or reply that names files he cannot open tells its author at once, beside the receipt,
  * so the agent sends a path that opens; nothing is refused (agents are never handcuffed).
  */
-function withLinkCheck<T>(result:T,input:{text?:unknown},owner?:SessionOwner):T|(T&{unopenable_links:unknown[];warning:string}){
+async function withLinkCheck<T>(result:T,input:{text?:unknown},owner?:SessionOwner):Promise<T|(T&{unopenable_links:unknown[];warning:string})>{
   if(!owner||typeof input?.text!=='string'||!result||typeof result!=='object')return result;
-  const refused=unopenableLinks(input.text,owner.defaultCwd);
+  const refused=await unopenableLinksWithReader(input.text,path=>owner.file(path,null));
   if(!refused.length)return result;
   return {...result,unopenable_links:refused,
     warning:`Posted, but ${refused.length===1?'this file link':'these file links'} will not open for Tejas: ${refused.map(link=>`${link.path} (${link.reason})`).join('; ')}. Move the file somewhere it opens or send a corrected path.`};
@@ -136,8 +136,8 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'mac-need') return Response.json(sessions.macNeed(input));
         if (operation === 'note') return Response.json(await sessions.note(input));
         if (operation === 'title') return Response.json(sessions.title(input));
-        if (operation === 'move') return Response.json(sessions.move(input));
-        if (operation === 'post') return Response.json(withLinkCheck(sessions.post(input),input,owner));
+        if (operation === 'move') return Response.json(await sessions.move(input));
+        if (operation === 'post') return Response.json(await withLinkCheck(sessions.post(input),input,owner));
         if (operation === 'outcome') return Response.json(sessions.outcome(await withTodoState(input)));
         if (operation === 'answer') return Response.json(sessions.handleChatGptAnswer(input));
         if (operation === 'legacy-link') return Response.json(sessions.classifyLegacyChatGpt(input));
@@ -147,7 +147,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'topics') { await refuseFinishedTodoQuestions(input); return Response.json(sessions.topics(input)); }
         if (operation === 'context') return Response.json(await sessions.context(input));
         if (operation === 'ask') return Response.json(await sessions.ask(input), {status:202});
-        if (operation === 'reply') return Response.json(withLinkCheck(await sessions.reply(await withTodoState(input)),input,owner));
+        if (operation === 'reply') return Response.json(await withLinkCheck(await sessions.reply(await withTodoState(input)),input,owner));
         if (operation === 'get') return Response.json(sessions.get(input));
         if (operation === 'cancel') return Response.json(sessions.cancel(input));
       }

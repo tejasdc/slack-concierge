@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, settleTurnDependencies, SETTLED_EXECUTION_SQL, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
-import { bindSessionProvider, carryingTurn, createNativeSession, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, HOLDING_OUTCOMES, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
+import { carryingTurn, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, HOLDING_OUTCOMES, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
@@ -756,18 +756,22 @@ export class SessionCommunicationCoordinator {
      * 2026). A name Tejas set himself still wins and is never written over.
      */
     /** Moves a session (this one or another on this machine) to a project or a folder inside one; see SessionOwner.moveSession. */
-    move(input:{source:CommunicationSource;action_id:string;address:string;project:string}) {
+    async move(input:{source:CommunicationSource;action_id:string;address:string;project:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.fenced(this.actor(input.source));
         action(input.action_id);
         if(!this.dependencies.owner)throw new Error('Native session owner is unavailable.');
         if(!actor.inputId)throw new Error('Moving a session needs a native source input.');
         const target=resolveSessionAddress(input.address);
+        const targetRow=getSessionById(target.id);
+        if(!targetRow)throw new Error('That session address is unknown here.');
+        const binding=sessionMetadata(targetRow).providerRunner;
+        const projectLocation=await this.dependencies.owner!.prepareProjectLocation(input.project,typeof binding==='string'?binding:undefined);
         return db.transaction(()=>{
             const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
                 kind:'action',origin:'agent',payload:{kind:'move-session',session:target.id,project:input.project},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn)});
             if(saved.duplicate)return {session:this.dependencies.owner!.view(getSessionById(target.id)!),...JSON.parse(saved.input.receipt_json??'{}').moved};
-            const moved=this.dependencies.owner!.moveSession(target.id,input.project);
+            const moved=this.dependencies.owner!.moveSession(target.id,input.project,projectLocation);
             recordSessionEvent({eventId:`moved:${saved.input.id}`,sessionId:target.id,inputId:saved.input.id,kind:'moved',payload:{...moved,by:`concierge:${actor.session}`}});
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',moved}),saved.input.id);
             return {session:this.dependencies.owner!.view(getSessionById(target.id)!),...moved};
@@ -1486,11 +1490,10 @@ export class SessionCommunicationCoordinator {
             if (input.peer !== undefined && input.peer !== remote.peer) throw new Error('The address names a different peer than --peer.');
             if (input.resurrect) {
                 // Continue the peer session here, from its archived transcript, as a distinct session.
-                const owner = this.dependencies.owner;
-                const created = this.dependencies.peers!.resurrect(remote.peer, remote.address, {defaultCwd: owner.defaultCwd,
-                    createSession: (provider, metadata) => createNativeSession(provider, metadata as any), bind: (sessionId, provider, uuid) => bindSessionProvider(sessionId, provider, uuid)});
-                const local = getSessionById(created.sessionId)!;
-                input = {...input, peer: undefined, address: sessionAddress(local), resurrect: undefined};
+                const continued=await this.dependencies.owner.resurrect({
+                    clientActionId:`ask-resurrect:${hash(`${actor.session}:${actor.turn}:${actor.inputId??''}:${input.action_id}`)}`,
+                    address:input.address});
+                input = {...input, peer: undefined, address: continued.session.address, resurrect: undefined};
             } else input = {...input, peer: remote.peer, address: remote.address};
         }
         // The thread this request works for, decided here and recorded on the request, so its
@@ -1672,6 +1675,8 @@ export class SessionCommunicationCoordinator {
             const raced=prior();
             if(raced){if(raced.payload_hash!==digest)throw new Error('Idempotency conflict: this source/action already names a different request.');return this.receipt(raced);}
         }
+        const projectLocation=input.provider&&input.provider!=='chatgpt'&&input.project
+            ?await this.dependencies.owner!.prepareProjectLocation(input.project):undefined;
         const id = randomUUID();
         const now = this.now();
         db.transaction(() => {
@@ -1703,7 +1708,7 @@ export class SessionCommunicationCoordinator {
             const firstInput={text:toChatgpt?chatgptText:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${history?.text?`${history.text}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(routedFrom)firstInput.text=`This request carries Tejas’s exact Inbox message ${routedFrom.messageId} into this session. Reply to this request; the answer appears under that message in its original thread.\n\n${firstInput.text}`;
             if(input.provider) {
-                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,escalationReason:input.escalationReason,project:input.project,title,summary:input.summary,smallTask:input.smallTask,outside:input.outside,onRunner:input.onRunner,standingRole,firstInput,saved:input.saved});
+                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,escalationReason:input.escalationReason,project:input.project,projectLocation,title,summary:input.summary,smallTask:input.smallTask,outside:input.outside,onRunner:input.onRunner,standingRole,firstInput,saved:input.saved});
                 target={session:created.session_id,channel:null,root:null,native:true};
             }
             if(input.saved&&requestedRole&&!input.provider){
@@ -3165,5 +3170,5 @@ export class SessionCommunicationCoordinator {
         await this.reconciliation;
         await Promise.all([...this.tasks.values()]);
     } while (this.tasks.size || this.reconciliation || this.reconciliationDirty); }
-    async stop() { this.stopped = true; this.reconciliationDirty = false; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; await this.reconciliation; await Promise.allSettled([...this.tasks.values()]); await this.dependencies.peers?.stop(); }
+    async stop() { this.stopped = true; this.reconciliationDirty = false; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; const peerStop=this.dependencies.peers?.stop(); await this.reconciliation; await Promise.allSettled([...this.tasks.values()]); await peerStop; }
 }
