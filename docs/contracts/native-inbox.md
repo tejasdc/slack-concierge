@@ -806,7 +806,7 @@ owning that work. A dispatch homed in this thread, in none, or in a thread with 
 can therefore share one synthetic topic without becoming human work. Agent-authored work roots stay open even
 when the root itself is not human-authored: its source may carry Tejas's delegated work. The correction records
 the exact migration event, all roots and each later dispatch's request as closure evidence, alongside the original request identity
-and source input when retained. It keeps the original request, source inputs, result receipts
+and source input when retained. It reads recovered threads of every Inbox session, not only the current one, because a later Inbox session (provider cutover or acting router) does not adopt them by handoff, and records each retirement under the thread's own session. It keeps the original request, source inputs, result receipts
 and topic history. The original migration event proves which dispatches were present before any later assignment.
 Completion of original work remains governed
 by its own request's checked answer.
