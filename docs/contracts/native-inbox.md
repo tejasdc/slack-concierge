@@ -863,3 +863,14 @@ the private continuation text stays in the common ledger.
   “ask ChatGPT”, without requiring magic prefixes. Ideas are not build authorization.
   Ambiguity asks the human. Note saves use the existing Thinkering capability host and
   original retained capture bytes; user edits survive retry. No extraction runner returns.
+
+## Owner upkeep under held returns
+
+The owner files a final agent answer, copies it to any linked requests, and brings its thread
+current once per exact final event. A durable upkeep receipt is written only after all those
+steps succeed. If the asking session is unavailable and its return remains held, delivery
+polls may revisit the final, but the receipt prevents repeated Inbox work. A failed filing or
+upkeep leaves no receipt, so the same exact event can finish safely on retry. The provider
+usage watch checks open work in short, yielding owner turns; its per-thread transactions and
+recovery identities remain the same. A recovery admission rechecks current work and his
+answers after any yield, and a new reading joins an already running pass.
