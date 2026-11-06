@@ -318,7 +318,8 @@ thnkr.ing's nightly report audit and repair commit hook also read that file dire
 uses `router-actions.sh reports window <since-UTC> <until-UTC>` for the accepted in-app report
 captures, their linked dispatches, settlement, and thread-post state; it uses
 `router-actions.sh reports chain <input-or-request-id>` for the exact input ancestry, carried report
-files, and Inbox request links. Both are authenticated reads through the agents' entrance. The owner
+files, Inbox request links and each step's exact words; `router-actions.sh reports capture <captureId>`
+reads one cited capture's exact words by ID. All three are authenticated reads through the agents' entrance. The owner
 executes the bounded database work in its isolated read process, returns an explicit error when the
 owner or range is unavailable, and never treats a missing runner ledger as an empty report window.
 The source chain retains the immediate sending input for authority and returns Inbox request source
