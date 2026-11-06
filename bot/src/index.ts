@@ -4128,10 +4128,21 @@ async function drainAndStop(signal: string) {
   // Bun waits for every in-flight response before a graceful stop resolves, and an
   // event-stream subscriber never ends its response, so the owner ends them first.
   sessionExecutionHost.owner.closeStreams();
-  if (routedRequestServer) await routedRequestServer.stop(false);
-  await sessionCommunication?.stop();
-  await routedRequests.stop();
-  await sessionExecutionHost.stop();
+  const stopRequestSurface = async (surface: string, stop: () => Promise<unknown>) => {
+    const startedAt = performance.now();
+    log("info", "service_drain_surface_stopping", { signal, surface, instance_id: instanceId });
+    try {
+      await stop();
+    } finally {
+      log("info", "service_drain_surface_stopped", {
+        signal, surface, duration_ms: Math.round(performance.now() - startedAt), instance_id: instanceId,
+      });
+    }
+  };
+  if (routedRequestServer) await stopRequestSurface("routed_request_server", () => routedRequestServer.stop(false));
+  if (sessionCommunication) await stopRequestSurface("session_communication", () => sessionCommunication.stop());
+  await stopRequestSurface("routed_requests", () => routedRequests.stop());
+  await stopRequestSurface("session_execution_host", () => sessionExecutionHost.stop());
   log("info", "service_drain_request_surfaces_closed", { signal, active_turns: activeTurnCount, instance_id: instanceId });
   if (deploymentEventServer) {
     const server = deploymentEventServer;
