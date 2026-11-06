@@ -4227,7 +4227,8 @@
           "sourceRunId": "30000000-0000-4000-8000-000000000001",
           "targetProvider": "chatgpt",
           "text": "Which plants tolerate shade?",
-          "requestedEffect": "informational"
+          "requestedEffect": "informational",
+          "forTask": "direct_input:20000000-0000-4000-8000-000000000001"
         }
       },
       "response": {
