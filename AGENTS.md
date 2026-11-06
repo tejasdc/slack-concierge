@@ -79,6 +79,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#codex-provider-turn-reconciliation).
 - Agent session command paths use each machine's installed wrapper, never a release's
   helper directory; see [runners](docs/architecture/RUNNERS.md#agent-session-commands).
+- Runner-owned Codex account switches prove the new login through the bridge inside the sealed
+  release; see [runner App Server](docs/architecture/RUNNERS.md#codex-app-server-on-a-runner-built-off-until-concierge_codex_runner-is-set).
 - Agent-started top-model choices and helper defaults follow [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#delegation-and-escalation);
   model and helper call shares are in [usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
 - External Codex resets on a saved account clear that account's older refusal on a fresh direct reading before automatic account switching; see [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md#what-the-allowance-evidence-means).
