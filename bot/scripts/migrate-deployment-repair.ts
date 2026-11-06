@@ -51,6 +51,14 @@ const namedBackup = (backupArgument >= 0 ? process.argv[backupArgument + 1] : un
 const backupPath = namedBackup || join(stateDirectory, "backups", `state.pre-deployment-repair.${Date.now()}.db`);
 mkdirSync(dirname(backupPath), { recursive: true, mode: 0o700 });
 
+function beginOfflinePhase(phase: string): () => void {
+  if (!schemaOnly) return () => {};
+  const startedAt = performance.now();
+  console.error(JSON.stringify({ event: 'deployment_migration_phase', phase, status: 'started', at: new Date().toISOString() }));
+  return () => console.error(JSON.stringify({ event: 'deployment_migration_phase', phase, status: 'completed',
+    duration_ms: Math.round(performance.now() - startedAt), at: new Date().toISOString() }));
+}
+
 /**
  * What this release's schema step would add to the live ledger: missing tables, columns, indexes,
  * triggers or views, or one whose SQL differs. Nothing means the step only re-runs what every
@@ -231,7 +239,9 @@ if (backupIfNeeded) {
 }
 // What this migration will add, read with the coordinator stopped. It also bounds the check after
 // the migration to the tables the migration could have written.
+const finishSchemaComparison = beginOfflinePhase('schema_comparison');
 const changes = backupOnly ? [] : await schemaChanges();
+finishSchemaComparison();
 if (schemaOnly && !namedBackup) {
   // No copy was taken because the release would change nothing. Confirm that with the coordinator
   // stopped; if it no longer holds, copy now rather than change the schema without one.
@@ -239,15 +249,22 @@ if (schemaOnly && !namedBackup) {
     console.log(JSON.stringify({ status: 'unchanged', backup_path: null }));
     process.exit(0);
   }
+  const finishLateBackup = beginOfflinePhase('late_backup');
   backUp();
+  finishLateBackup();
 } else if (!schemaOnly) backUp();
-else verifyMigrationBackup(backupPath);
+else {
+  const finishBackupVerification = beginOfflinePhase('backup_verification');
+  verifyMigrationBackup(backupPath);
+  finishBackupVerification();
+}
 
 if (backupOnly) {
   console.log(JSON.stringify({ status: 'backed_up', backup_path: backupPath }));
   process.exit(0);
 }
 
+const finishSchemaImport = beginOfflinePhase('schema_import');
 const { db: migrationDatabase } = await import("../src/state-database");
 try {
   // Reserve the writer before either schema owner loads. Importing state first and
@@ -258,6 +275,7 @@ try {
   await import("../src/deployment-state");
   if (process.argv.includes("--force-failure")) throw new Error("forced deployment repair migration failure");
   migrationDatabase.exec("COMMIT");
+  finishSchemaImport();
 } catch (error) {
   try { migrationDatabase.exec("ROLLBACK"); } catch {}
   const restored = new Database(statePath, { readonly: true });
@@ -311,13 +329,18 @@ function checkTables(database: Database, tables: string[]) {
 // took about two minutes with Concierge stopped on 2026-11-04, longer than an agent's command
 // waits for it to come back. A failure here stops the deployment with that backup named.
 try {
+  const finishIntegrityChecks = beginOfflinePhase('integrity_checks');
   const tables = touchedTables(migrationDatabase as unknown as Database, changes);
   if (tables) checkTables(migrationDatabase as unknown as Database, tables);
   else checks(migrationDatabase);
+  finishIntegrityChecks();
 } catch (error) {
   console.error(JSON.stringify({ status: "migrated_check_failed", backup_path: backupPath,
     error: error instanceof Error ? error.message : String(error) }));
   process.exit(1);
 }
-console.log(JSON.stringify({ status: "migrated", backup_path: backupPath, pruned: pruneAutomaticCopies() }));
+const finishBackupRetention = beginOfflinePhase('backup_retention');
+const pruned = pruneAutomaticCopies();
+finishBackupRetention();
+console.log(JSON.stringify({ status: "migrated", backup_path: backupPath, pruned }));
 migrationDatabase.close();
