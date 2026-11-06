@@ -942,6 +942,10 @@ with the exact request ID and source pair; it reads through the owner API.
 The raw-copy check recognizes copy tools in command position, so words such as
 `install` in a quoted reply are ordinary message text. A standalone session helper
 call is handled as an owner API call; a chained shell copy is still checked.
+The agent-ecology committee's direct `open --help` and `twin --help` commands are
+recognized as argparse help, matching their already-allowed Python module form. The
+guard still checks the command text and inspects that script for other actions; see
+[the committee help failure record](../incidents/2026-11-06-committee-help-copy-guard.md).
 The machine wrapper makes this current check authoritative before invoking an
 older running agent's pinned semantic hook. At installation it derives a compatibility
 copy from each retained, recognized bundled hook, removing exactly its duplicate

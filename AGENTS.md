@@ -52,6 +52,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - Protected agent code launches hide the live ledger and its disk image while allowing Thinkering's
   phone-width release check to mount its read-only data view. The
   [deployment runbook](docs/runbooks/DEPLOYMENT.md) owns the isolation contract.
+- The current machine copy guard recognizes the agent-ecology committee's direct help forms while
+  retaining live-ledger copy refusals; see the [deployment runbook](docs/runbooks/DEPLOYMENT.md)
+  and [failure record](docs/incidents/2026-11-06-committee-help-copy-guard.md).
 - Background command watches have Concierge ownership and deadlines; completed Codex turns
   flag surviving server processes outside their owned execution unit by exact run identity
   through an Inbox agent report.
