@@ -4109,6 +4109,10 @@ async function drainAndStop(signal: string) {
       log("warn", "service_drain_error_ignored", { signal, kind, error: reason instanceof Error ? reason.message : String(reason) });
     });
   }
+  // Provider lifecycle observation is recoverable from the App Server. Stop its
+  // ledger writes before any drain await can let a queued notification run.
+  const codexSessionObserverStop = codexSessionObserver?.stop();
+  if (codexSessionObserverStop) void codexSessionObserverStop.catch(() => {});
   stopBackgroundJobWatch();
   stopUpdateWaitWatch();
   stopWatchWorker();
@@ -4161,7 +4165,7 @@ async function drainAndStop(signal: string) {
   if (humanCommandWorker) await stopDrainStep("human_commands", () => humanCommandWorker!.stop());
   if (grafanaAlerts) await stopDrainStep("grafana_alerts", () => grafanaAlerts!.stop());
   if (codexRemoteObserver) await stopDrainStep("codex_remote_observer", () => codexRemoteObserver!.stop());
-  if (codexSessionObserver) await stopDrainStep("codex_session_observer", () => codexSessionObserver!.stop());
+  if (codexSessionObserverStop) await stopDrainStep("codex_session_observer", () => codexSessionObserverStop);
   try { await stopDrainStep("slack_app", () => app.stop()); } catch (error) { log("warn", "slack_app_stop_failed", { signal, error: error instanceof Error ? error.message : String(error) }); }
   if (turnsThatEndWithThisProcess() > 0 || activeInputHandlerCount > 0) {
     await stopDrainStep("local_turns", () => new Promise<void>((resolve) => { resolveDrained = resolve; }));

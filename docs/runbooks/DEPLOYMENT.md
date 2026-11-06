@@ -1053,6 +1053,20 @@ stop deadline and the pending restart proceeds; `systemctl kill --kill-whom=main
 --signal=SIGKILL concierge-bot.service` does the same sooner. Until then the held
 deployment gate queues every session input as `DEPLOYMENT_HOLD`.
 
+At the start of a planned drain, the Codex session observer stops accepting
+notifications before the first awaited shutdown step. Its in-flight provider
+reads check that stop before writing lifecycle or history observations. It
+rejects pending reads and terminates only its separate App Server bridge at
+drain entry, without waiting for the bridge's stream-write callback. The next
+owner refreshes those observations from the App Server after its request API
+opens; the observer does not own turn or request custody. An orderly stop does
+not mark those sessions disconnected. This keeps observational ledger writes
+from blocking the capture worker's stop during a release. Actual connection
+loss while serving still records uncertainty. The 2026-11-06 06:43 release showed a
+9.290-second lifecycle write lock wait after drain began and a 9.304-second
+capture stop despite claim cancellation; this ordering addresses that measured
+overlap without changing capture delivery acknowledgment or adoption.
+
 The unit starts the already-installed managed Codex App Server if it is absent,
 but ordinary deployment and autonomous repair never update, stop, or restart
 that daemon. See [Codex App Server lifecycle](CODEX-APP-SERVER.md).

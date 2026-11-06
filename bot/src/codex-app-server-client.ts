@@ -178,18 +178,25 @@ export class CodexAppServerClient {
     return connection?.generation === generation ? connection.disconnected : Promise.resolve();
   }
 
-  async close() {
+  async close(options: { immediate?: boolean } = {}) {
     if (this.closed) return;
     this.closed = true;
     const connection = this.active;
     if (!connection) return;
-    try {
-      await this.send(connection, { type: "close" });
-    } catch {}
-    this.failConnection(
-      connection,
-      new CodexAppServerClientError("Codex app-server client closed.", "ambiguous"),
-    );
+    if (options.immediate) {
+      // Observer shutdown discards these reads. Reject them before any bridge I/O,
+      // whose stream-write callback can otherwise keep the old owner waiting.
+      this.failConnection(connection, new CodexAppServerClientError("Codex app-server observer closed.", "ambiguous"));
+      connection.process.kill("SIGTERM");
+    } else {
+      try {
+        await this.send(connection, { type: "close" });
+      } catch {}
+      this.failConnection(
+        connection,
+        new CodexAppServerClientError("Codex app-server client closed.", "ambiguous"),
+      );
+    }
     const shutdownGraceMs = this.options.shutdownGraceMs ?? 1_000;
     if (await this.waitForExit(connection, shutdownGraceMs)) return;
     connection.process.kill("SIGTERM");
