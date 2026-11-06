@@ -1,11 +1,19 @@
 import type {Database} from 'bun:sqlite';
 
 type InputRow={id:string;session_id:number;source_input_id:string|null;source_run_id:string|null;
-  origin:string;kind:string;created_at:string;client:string|null;producer:string|null;attachments:string|null};
+  origin:string;kind:string;created_at:string;client:string|null;producer:string|null;attachments:string|null;
+  text:string|null;text_length:number|null};
+/** A request that cites a capture is only actionable when its recipient can read his exact words;
+ * the captures list reaches the current Inbox's recent page, never an older Inbox's capture.
+ * Human words stay whole; agent request bodies are trimmed so a long chain fits the 1 MiB read. */
+const MAX_TEXT_CHARS=65_536,MAX_AGENT_TEXT_CHARS=8_192;
+const textLimit=(row:InputRow)=>row.origin==='human'?MAX_TEXT_CHARS:MAX_AGENT_TEXT_CHARS;
 const inputFields=`id,session_id,source_input_id,source_run_id,origin,kind,created_at,
   json_extract(payload_json,'$.capture.source.metadata.client') AS client,
   json_extract(payload_json,'$.capture.source.metadata.producer') AS producer,
-  json_extract(payload_json,'$.attachments') AS attachments`;
+  json_extract(payload_json,'$.attachments') AS attachments,
+  substr(json_extract(payload_json,'$.text'),1,${MAX_TEXT_CHARS}) AS text,
+  length(json_extract(payload_json,'$.text')) AS text_length`;
 const files=(raw:string|null):string[]=>{
   if(!raw)return [];
   try {const parsed=JSON.parse(raw);return Array.isArray(parsed)?parsed.filter((file):file is string=>typeof file==='string'):[];}
@@ -13,7 +21,8 @@ const files=(raw:string|null):string[]=>{
 };
 const presented=(row:InputRow)=>({id:row.id,session:row.session_id,sourceInput:row.source_input_id,
   sourceRun:row.source_run_id,origin:row.origin,kind:row.kind,createdAt:row.created_at,
-  client:row.client,producer:row.producer,attachments:files(row.attachments)});
+  client:row.client,producer:row.producer,attachments:files(row.attachments),
+  text:row.text===null?null:row.text.slice(0,textLimit(row)),textTruncated:(row.text_length??0)>textLimit(row)});
 const reportMarker=(row:InputRow)=>row.client==='thinkering-bug-report'&&/^capture:[a-f0-9]{64}$/.test(row.id);
 
 /** Same eight-hop and carried-file precedence as thnkr.ing's report-input-chain.mjs. */
