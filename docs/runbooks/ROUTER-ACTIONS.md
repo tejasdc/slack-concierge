@@ -182,7 +182,9 @@ the Inbox's sessions.
 `sessions topics message <messageId>` returns one Inbox message's words, author, time,
 attachments, thread root and topic: a capture, his reply, an agent's post, result or routed request,
 or a request input that a topic request names as its source or dispatch. Topic reads carry ids and
-short excerpts; this is the read for judging the message itself.
+short excerpts; this is the read for judging the message itself. Its `from` and full `author`
+resolve the current author, including a later correction to an originally human-origin input;
+an unproved user-role message reports unknown rather than Tejas.
 `sessions context` and the session view expose only a session's explicit role binding.
 
 `sessions schedule --role <role> --at <future ISO-8601 time> [--every-ms <interval>] --summary "<one line>" <source-flags> --action-id A -- <text>`
