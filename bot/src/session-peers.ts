@@ -394,6 +394,11 @@ export class SessionPeers {
    */
   async federatedSearch(local:()=>Promise<any>,concepts:string[],limit?:number) {
     const [own,...peers]=await Promise.all([local(),...[...this.dependencies.clients.keys()].map(async name=>{
+      // A sleeping laptop answers no faster for being asked again: reaching it costs seconds of
+      // connect timeout, and every search paid them. Within the offline window this reads the
+      // same as a failed probe — archived-only, catalogue matches kept — and the window expiring
+      // probes again, so the peer is found on its own once it is back. meaningHub() skips alike.
+      if(this.offline(name))return {name,value:null,error:offlineNote(name)};
       try{const value=await this.search(name,concepts,limit);this.unreachable.delete(name);this.remember(name,(value?.results??[]).map((result:any)=>result.session));return {name,value,error:null};}
       catch(error){this.note(name,error);return {name,value:null,error:error instanceof Error?error.message:String(error)};}
     })]);
