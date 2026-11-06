@@ -440,7 +440,6 @@ async function runnerSocketRepair(activeTurns:number):Promise<{status:string;det
   if(unmanagedRepair)return unmanagedRepair;
   if(codexActivationFlight)return {status:'busy',detail:'A Codex account switch is active; retry App Server re-home after it finishes.'};
   unmanagedRepair=(async()=>{
-    if(activeTurns!==0)return {status:'busy',detail:'The runner still owns an active turn.'};
     if(process.platform!=='linux'||process.env.CONCIERGE_CODEX_APP_SERVER_SOCKET?.trim())
       return {status:'unsupported',detail:'Unmanaged App Server repair is supported only for the runner-owned Linux socket.'};
     if(codexActivationFlight)return {status:'busy',detail:'A Codex account switch is active; retry App Server re-home after it finishes.'};
@@ -452,27 +451,30 @@ async function runnerSocketRepair(activeTurns:number):Promise<{status:string;det
       const managedPid=check.output.includes('"backend":"pid"');
       const unmanaged=!check.output.includes('"backend"');
       if(!managedPid&&!unmanaged)return {status:'managed_or_absent'};
-      if(!codexUpdaterDisabled())return {status:'refused',detail:'Codex automatic updates are not disabled on this runner.'};
       const socket=codexAppServerSocketPath(),servers=controlSocketListeners(socket);
       if(!servers.length)return {status:'uncertain',detail:'Codex reported an App Server, but no exact listener owns its control socket.'};
       const expectedAccount=codexAccount(liveRoot('codex'))?.label??null;
       if(!expectedAccount)return {status:'refused',detail:'The current Codex account cannot be verified; repair will not change the active identity.'};
-      holdCodexDaemonAutoStart(true);
-      try{
       if(managedPid){
         if(!process.env.CONCIERGE_RUNNER_STATE?.trim())return {status:'refused',detail:'The runner has no runner-state directory configured for a safe App Server re-home.'};
         if(servers.length!==1)return {status:'uncertain',detail:'The managed App Server control socket has multiple listeners; no process was stopped.'};
         const hasRunnerState=processHasRunnerState(servers[0]!);
         if(hasRunnerState===null)return {status:'uncertain',detail:'The exact App Server listener environment could not be read; no process was stopped.'};
-        if(!runnerCodexServerNeedsRehome(check.output,hasRunnerState)){
+        if(hasRunnerState){
           const probe=new CodexAppServerClient();let actual:string|null=null;
           try{const answer=await probe.request('account/read',{refreshToken:true},{requestTimeoutMs:20_000});
             actual=typeof answer?.account?.email==='string'?answer.account.email:null;}
           catch{return {status:'uncertain',detail:'The runner-managed App Server account could not be verified.'};}
           finally{await probe.close();}
-          return actual===expectedAccount?{status:'managed_or_absent'}:
+          return runnerCodexRehomeIsProven(expectedAccount,actual,check.output,hasRunnerState)?{status:'managed_or_absent'}:
             {status:'uncertain',detail:'The runner-managed App Server account does not match the saved Codex account.'};
         }
+      }
+      if(activeTurns!==0)return {status:'busy',detail:'The runner still owns an active turn.'};
+      if(!codexUpdaterDisabled())return {status:'refused',detail:'Codex automatic updates are not disabled on this runner.'};
+      holdCodexDaemonAutoStart(true);
+      try{
+      if(managedPid){
         const stopped=await runCommand(MANAGED_CODEX,['app-server','daemon','stop'],90_000);
         if(stopped.code!==0)return {status:'uncertain',detail:'Codex did not confirm a managed daemon stop; no replacement was started.'};
         const stopDeadline=Date.now()+5_000;

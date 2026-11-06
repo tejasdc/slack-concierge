@@ -238,7 +238,7 @@ function launchableClaudeHome(account:string,selected:string|null,prepare:boolea
   return complete&&(account===selected||provenOrProve(account,complete))?complete:null;
 }
 
-export function savedWorkAccountRooms(provider:AccountIdentityProvider,usage:ProviderUsage,now=Date.now(),model?:string|null):AccountRoom[] {
+export function savedWorkAccountRooms(provider:AccountIdentityProvider,usage:ProviderUsage,now=Date.now(),model?:string|null,runnerTarget:string|null|undefined=undefined):AccountRoom[] {
   // Codex turns all use the shared daemon. Other homes are read for usage and kept for
   // switching, but a banked turn cannot launch against one without changing that daemon.
   if(provider==='codex'||provider==='antigravity'){
@@ -251,19 +251,20 @@ export function savedWorkAccountRooms(provider:AccountIdentityProvider,usage:Pro
       problem:!fresh?'Usage reading is stale.':account.problem}];
   }
   const ownHomes=provider==='claude-code'&&claudeRunsFromOwnHomes();
-  if(provider==='claude-code'&&providerRunnerTarget('claude-code')){
+  const claudeRunner=runnerTarget===undefined?providerRunnerTarget('claude-code'):runnerTarget;
+  if(provider==='claude-code'&&claudeRunner){
     return usage.accounts.map(account=>({account:account.label,home:`runner-account:${account.label}`,isDefault:false,
       tightestUsedPercent:accountReadingFresh(provider,usage,account,now,undefined,model)?accountUsedPercent(provider,account,model):null,
       problem:accountReadingFresh(provider,usage,account,now,undefined,model)?account.problem:'Usage reading is stale.'}));
   }
   const defaultLabel=ownHomes?null:currentAccount(provider)?.label;
-  const selected=provider==='claude-code'?selectedClaudeHome()?.label??null:null;
+  const selected=provider==='claude-code'?selectedClaudeHome(runnerTarget)?.label??null:null;
   const profiles=listProfiles(provider);
   return usage.accounts.map(account=>{
     const isDefault=account.label===defaultLabel;
     const profile=profiles.find(item=>item.label===account.label);
     const home=isDefault?null:profile?accountHome(provider,profile.id):null;
-    const ready=home&&launchableClaudeHome(account.label,selected,false,home)===home;
+    const ready=home&&launchableClaudeHome(account.label,selected,false,home,runnerTarget)===home;
     const fresh=accountReadingFresh(provider,usage,account,now,undefined,model);
     return {account:account.label,home:ready?home:null,isDefault,
       tightestUsedPercent:fresh?accountUsedPercent(provider,account,model):null,

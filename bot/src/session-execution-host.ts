@@ -1420,6 +1420,8 @@ export class SessionExecutionHost {
   }
   private async runModel(claim:QueuedTurnClaimRow,input:AcceptedSessionInput,session:SessionRow,steeringController:TurnSteeringController,closeSteering:(reason?:Error)=>void,cancellationController:TurnCancellationController,adoption?:Adoption) {
     const saved=savedTurn(claim.turn_id);
+    const metadata=sessionMetadata(session);
+    const runnerTarget=chooseTurnRunner(session,metadata);
     let boundAccount:{account:string;home:string|null}|null=adoption?.processor.account??null;
     if(!adoption&&saved?.saved_kind==='banked'&&!saved.saved_manual_start) {
       const usage=session.provider_id==='codex'||session.provider_id==='claude-code'||session.provider_id==='antigravity'
@@ -1428,7 +1430,7 @@ export class SessionExecutionHost {
         ?savedWorkAccountRooms(session.provider_id as ProviderKey|'antigravity',usage,Date.now(),
           session.provider_id==='claude-code'
             ?claim.provider_model??getClaudePreferredModel(session.id,claim.turn_id)??sessionMetadata(session).model??null
-            :undefined):[];
+            :undefined,runnerTarget):[];
       const choice=chooseAccountForTurn({accounts:rooms,
         bound:saved.saved_account?{account:saved.saved_account,reason:'spending-this-window'}:null,prefer:null});
       if(!saved.saved_account||saved.saved_boundary_ms===null||saved.saved_boundary_ms<=Date.now()
@@ -1439,10 +1441,8 @@ export class SessionExecutionHost {
       }
       boundAccount={account:choice.account,home:choice.home};
     }
-    const metadata=sessionMetadata(session);
     const channel=session.slack_channel_id?getChannel(session.slack_channel_id):null;
     const outsideCodex=session.provider_id==='codex'&&metadata.outside===true;
-    const runnerTarget=chooseTurnRunner(session,metadata);
     // A runner-bound conversation resolves its stable project identity on that machine. Owner
     // absolute cwd paths are retained for presentation only and never go into a remote manifest.
     const onRunner=!adoption&&!!runnerTarget&&(session.provider_id==='claude-code'||session.provider_id==='antigravity'||outsideCodex);

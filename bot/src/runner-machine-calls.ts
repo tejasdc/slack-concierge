@@ -22,6 +22,8 @@ const channels = new Map<string, Channel>();
 let nextId = 0;
 
 export class RunnerUnreachableError extends Error {}
+/** The relay never accepted a request message, so this call cannot have acted on the runner. */
+export class RunnerCallNotSentError extends RunnerUnreachableError {}
 
 function requestSocket() {
   return join(realpathSync(process.env.CONCIERGE_STATE_DIR!), "requests.sock");
@@ -66,17 +68,19 @@ export async function runnerMachineCall<T = any>(runner: string, method: string,
   const id = ++nextId;
   return new Promise<T>((resolve, reject) => {
     let expired = false;
+    let sent = false;
     const timer = setTimeout(() => {
       expired = true;
       current.pending.delete(id);
-      reject(new RunnerUnreachableError(`runner ${runner} did not answer ${method} within ${timeoutMs / 1000} s`));
+      const message=`runner ${runner} did not answer ${method} within ${timeoutMs / 1000} s`;
+      reject(sent?new RunnerUnreachableError(message):new RunnerCallNotSentError(message));
     }, timeoutMs);
     current.open.then(() => {
       if (expired) return; // never sent: a late send after the caller gave up would act unseen
       current.pending.set(id, { resolve, reject, timer });
-      try { current.socket.send(JSON.stringify({ id, method, params })); }
+      try { current.socket.send(JSON.stringify({ id, method, params })); sent=true; }
       catch (error) { current.pending.delete(id); clearTimeout(timer); reject(new RunnerUnreachableError(String(error))); }
-    }, error => { clearTimeout(timer); reject(error); });
+    }, error => { clearTimeout(timer); reject(new RunnerCallNotSentError(String(error))); });
   });
 }
 

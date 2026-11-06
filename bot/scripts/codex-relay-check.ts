@@ -101,7 +101,7 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
     // The owner's calls on the runner's machine ride the same channel (runner-machine-calls.ts): a
     // watch reads a path there, and a host record outside the runner's own folder is refused.
     process.env.CONCIERGE_STATE_DIR=root;
-    const {runnerMachineCall,closeRunnerMachineCalls}=await import('../src/runner-machine-calls');
+    const {RunnerCallNotSentError,runnerMachineCall,closeRunnerMachineCalls}=await import('../src/runner-machine-calls');
     await writeFile(join(root,'watched.txt'),'one');
     const seenVersion=await runnerMachineCall('ax41','watch.observe',{path:join(root,'watched.txt')});
     assert.equal(seenVersion.type,'file');assert.equal(seenVersion.mode,'content-hash');
@@ -128,7 +128,8 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
     await runnerMachineCall('ax41','watch.prune',{executionId:'0123456789abcdef',directory:join(runnerState,'exec','0123456789abcdef')});
     assert.ok(!existsSync(join(runnerState,'exec','0123456789abcdef')),'The runner kept a pruned watch record.');
     await assert.rejects(runnerMachineCall('ax41','watch.prune',{executionId:'fedcba9876543210',directory:join(runnerState,'exec','fedcba9876543210')}),/not a watched command/);
-    await assert.rejects(runnerMachineCall('other','watch.observe',{path:root}),/no call channel|not listening|closed/);
+    await assert.rejects(runnerMachineCall('other','watch.observe',{path:root}),error=>error instanceof RunnerCallNotSentError,
+      'An unavailable runner must prove that the call was never sent.');
     closeRunnerMachineCalls();
 
     // The App Server drops its connection: the relay and the client's connection end with it.

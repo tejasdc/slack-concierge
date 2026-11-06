@@ -438,8 +438,11 @@ count is nonzero or unreadable, including turns observed from another Codex clie
 re-home has a separate admission holder, so settling or deferring one operation cannot release the
 other operation's hold. The owner serializes account switches and re-homes through one restart
 queue; the runner also refuses a switch during a re-home and a re-home during a switch. A `busy`
-reply means that operation did not start, so it releases only its own admission holder and remains
-eligible for a later retry.
+reply means the runner started no new replacement. A first attempt releases only its own holder;
+after a lost reply, the durable holder stays until the runner proves the App Server's account and
+runner environment. A call that failed before sending leaves no replacement to reconcile. The
+runner checks an already managed, same-account App Server without requiring all hosted turns to
+finish; only a stop and restart needs an idle runner.
 The runner holds its App Server auto-start, moves only credential files, restarts its own daemon and
 asks that daemon to refresh and report the requested account. It rolls back on a definite failure;
 an unconfirmed rollback is durably `uncertain` and blocks another switch until reconciled. Repeating

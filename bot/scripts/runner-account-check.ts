@@ -99,9 +99,9 @@ try {
   assert.equal(readFileSync(join(freshClaudeHome,".credentials.json"),"utf8").includes("fresh-refresh"),true,
     "runner account setup must keep its own login and must not link the default login");
   assert.deepEqual(await accounts.serveRunnerAccountCall("accounts.codex.repairUnmanaged", {}, { activeTurns: 1 }),
-    { status: "busy", detail: "The runner still owns an active turn." },
-    "unmanaged-server repair must refuse while the runner owns a turn");
-  assert.equal(accounts.runnerCodexRepairActive(), false, "a refused repair must not fence runner turn claims");
+    { status: "managed_or_absent" },
+    "an absent App Server is proven without waiting for an unrelated hosted turn");
+  assert.equal(accounts.runnerCodexRepairActive(), false, "read-only proof must not fence runner turn claims");
   assert.deepEqual(accounts.runnerAccountIdentity("codex"), { id: "active-id", label: "active@example.com" });
   assert.equal(accounts.runnerAccountHome("codex", "saved@example.com"), join(root, ".codex-accounts", "saved"));
   assert.equal(accounts.runnerAccountHome("claude-code", "writer@example.com"), claude);

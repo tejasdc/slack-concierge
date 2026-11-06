@@ -22,7 +22,7 @@ import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-d
 import { providerOwnerEnvironment } from "./provider-owner-environment";
 import { isClaudeUsageExhaustion } from "./provider-failures";
 import {providerRunnerTarget} from './provider-runner-target';
-import {runnerMachineCall} from './runner-machine-calls';
+import {RunnerCallNotSentError,runnerMachineCall} from './runner-machine-calls';
 import {withCodexRestartLock} from './codex-restart-lock';
 
 // Making a credential change take effect on the provider runtime that is
@@ -274,6 +274,7 @@ function repairUnmanagedCodexServer(): Promise<void> {
         const result=await runnerMachineCall<{status:string;detail?:string}>(runner,'accounts.codex.repairUnmanaged',{},RUNNER_REPAIR_TIMEOUT_MS);
         if(result.status==='busy'){
           log('info','codex_unmanaged_server_repair_waiting',{runner,reason:result.detail??'runner_has_active_turn'});
+          retainAdmission=recovering;
           return;
         }
         if(result.status!=='repaired'&&result.status!=='managed_or_absent'){
@@ -286,8 +287,8 @@ function repairUnmanagedCodexServer(): Promise<void> {
         if(result.status==='repaired')log('warn','codex_unmanaged_server_repaired_on_runner',{runner});
       }catch(error){
         log('error','codex_unmanaged_server_repair_unconfirmed_on_runner',{runner,error:error instanceof Error?error.message:String(error)});
-        retainAdmission=true;
-        void reconcileRunnerCodexRepair(runner);
+        retainAdmission=recovering||!(error instanceof RunnerCallNotSentError);
+        if(retainAdmission)void reconcileRunnerCodexRepair(runner);
       }finally{if(!retainAdmission)holdCodexAdmission(repairHold,false);}
       return;
     }
