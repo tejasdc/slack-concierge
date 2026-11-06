@@ -41,7 +41,9 @@ export function chatGptTaskHeldBy(sessionId:number,task:ChatGptTask):boolean {
   if(task.kind==='external_request')return !!db.query(`SELECT 1 FROM session_external_requests
     WHERE request_id=? AND target_session_id=? AND outcome IS NULL`).get(task.id,sessionId);
   const input=getAcceptedSessionInput(task.id);
-  if(!input||input.session_id!==sessionId||input.origin!=='human'||!DIRECT_TURN_KINDS.has(input.kind))return false;
+  if(!input||input.origin!=='human'||!DIRECT_TURN_KINDS.has(input.kind))return false;
+  if(input.session_id!==sessionId)return currentHandoffHolder(input.session_id)===sessionId
+    &&openChatGptObligations(task).some(row=>row.asker_session_id===sessionId);
   // Once this input owns an answer, a later turn's outcome cannot erase that duty.
   if(openChatGptObligations(task).length)return true;
   return !db.query(`SELECT 1 FROM session_owner_events WHERE session_id=? AND kind='turn_outcome'
@@ -54,8 +56,8 @@ export function chatGptTaskHeldBy(sessionId:number,task:ChatGptTask):boolean {
 export function bindDirectChatGptTaskSource(task:ChatGptTask,sourceInputId:string,sessionId:number) {
   if(task.kind!=='direct_input')return;
   const source=getAcceptedSessionInput(sourceInputId),original=getAcceptedSessionInput(task.id);
-  if(!source||!original||source.session_id!==sessionId||original.session_id!==sessionId)
-    throw new Error('A direct task source needs two accepted inputs in the same asking session.');
+  if(!source||!original||source.session_id!==sessionId||!chatGptTaskHeldBy(sessionId,task))
+    throw new Error('A direct task source needs this session’s accepted input and its held human task.');
   db.query('INSERT OR IGNORE INTO session_chatgpt_direct_task_inputs(task_input_id,source_input_id) VALUES(?,?)')
     .run(task.id,sourceInputId);
 }
@@ -68,9 +70,15 @@ export function requireDirectChatGptOutcomeReady(sessionId:number,inputId:string
 function directTaskInputs(sessionId:number,inputId:string):string[] {
   const inputs=db.query(`SELECT task_input_id FROM session_chatgpt_direct_task_inputs WHERE source_input_id=?
     UNION SELECT ? AS task_input_id`).all(inputId,inputId) as {task_input_id:string}[];
-  return inputs.flatMap(({task_input_id})=>{
+  const inherited=db.query(`SELECT DISTINCT task_id AS task_input_id FROM session_chatgpt_obligations
+    WHERE asker_session_id=? AND task_kind='direct_input' AND state NOT IN ('resolved','withdrawn_by_tejas')`)
+    .all(sessionId) as {task_input_id:string}[];
+  const inheritedFromPredecessor=inherited.filter(row=>getAcceptedSessionInput(row.task_input_id)?.session_id!==sessionId);
+  return [...new Set([...inputs,...inheritedFromPredecessor].map(row=>row.task_input_id))].flatMap(task_input_id=>{
     const original=getAcceptedSessionInput(task_input_id);
-    return original?.session_id===sessionId&&humanAuthored(original)&&DIRECT_TURN_KINDS.has(original.kind)?[task_input_id]:[];
+    return original&&humanAuthored(original)&&DIRECT_TURN_KINDS.has(original.kind)
+      &&(original.session_id===sessionId||currentHandoffHolder(original.session_id)===sessionId)
+      ?[task_input_id]:[];
   });
 }
 
@@ -110,6 +118,65 @@ export function resolveChatGptTask(sessionId:number,inputId:string,selection?:st
 export function openChatGptObligations(task:ChatGptTask):ObligationRow[] {
   return db.query(`SELECT * FROM session_chatgpt_obligations WHERE task_kind=? AND task_id=? AND ${OPEN} ORDER BY created_at_ms,obligation_id`)
     .all(task.kind,task.id) as ObligationRow[];
+}
+
+/** Older accepted handoffs moved sent requests without moving their open answer duties. */
+function currentHandoffHolder(sessionId:number):number {
+  const seen=new Set<number>();
+  let holder=sessionId;
+  while(!seen.has(holder)){
+    seen.add(holder);
+    const next=db.query(`SELECT successor_session_id FROM session_handoffs
+      WHERE predecessor_session_id=? AND state='accepted' ORDER BY accepted_at DESC LIMIT 1`)
+      .get(holder) as {successor_session_id:number}|null;
+    if(!next)return holder;
+    holder=next.successor_session_id;
+  }
+  throw new Error(`Accepted session handoffs contain a cycle at concierge:${holder}.`);
+}
+
+/** Called inside the accepting handoff's transaction, or a recovery transaction. */
+export function transferChatGptAnswerOwnership(obligationId:string,from:number,to:number,now:number):boolean {
+  const obligation=db.query(`SELECT * FROM session_chatgpt_obligations WHERE obligation_id=? AND asker_session_id=?
+    AND state NOT IN ('resolved','withdrawn_by_tejas')`).get(obligationId,from) as ObligationRow|null;
+  if(!obligation)return false;
+  if(obligation.answer_event_id&&!obligation.answer_return_input_id)
+    throw new Error(`ChatGPT answer ${obligationId} has no acknowledged return input to transfer.`);
+  withdrawQueuedRepairInputs(obligationId);
+  const generation=obligation.generation+1;
+  db.query(`UPDATE session_chatgpt_obligations SET asker_session_id=?,generation=?,due_at_ms=?,updated_at_ms=?
+    WHERE obligation_id=? AND asker_session_id=?`).run(to,generation,
+      obligation.state==='awaiting_answer'?obligation.due_at_ms:now,now,obligationId,from);
+  db.query(`INSERT INTO session_chatgpt_obligation_events(event_id,obligation_id,action_id,state,evidence_json,created_at_ms)
+    VALUES(?,?,?,?,?,?)`).run(`chatgpt-obligation:${obligationId}:handoff:${generation}`,obligationId,
+      `handoff:${generation}`,obligation.state,JSON.stringify({fromSessionId:from,toSessionId:to}),now);
+  return true;
+}
+
+export function reconcileHandoffChatGptObligations(now:number):{moved:number;errors:string[]} {
+  let moved=0;
+  const errors:string[]=[];
+  const open=db.query(`SELECT obligation_id,asker_session_id FROM session_chatgpt_obligations
+    WHERE state NOT IN ('resolved','withdrawn_by_tejas')`).all() as Pick<ObligationRow,'obligation_id'|'asker_session_id'>[];
+  for(const obligation of open){
+    try{
+      const holder=currentHandoffHolder(obligation.asker_session_id);
+      if(holder===obligation.asker_session_id)continue;
+      const current=db.query('SELECT * FROM session_chatgpt_obligations WHERE obligation_id=?').get(obligation.obligation_id) as ObligationRow;
+      if(current.answer_event_id&&!current.answer_return_input_id){
+        const returned=(db.query(`SELECT status,accepted_input_id FROM session_communication_events WHERE event_id=?`).get(current.answer_event_id)
+          ??db.query(`SELECT status,accepted_input_id FROM session_peer_events WHERE event_id=?`).get(current.answer_event_id)) as
+          {status:string;accepted_input_id:string|null}|null;
+        if(returned?.status==='received'&&returned.accepted_input_id){
+          if(current.state==='external_hold')resumeMessageableChatGptAsker(current.obligation_id,now);
+          recordChatGptReturnReceipt({eventId:current.answer_event_id,returnInputId:returned.accepted_input_id,now});
+        }
+      }
+      if(db.transaction(()=>transferChatGptAnswerOwnership(
+        obligation.obligation_id,obligation.asker_session_id,holder,now))())moved++;
+    }catch(error){errors.push(`${obligation.obligation_id}: ${error instanceof Error?error.message:String(error)}`);}
+  }
+  return {moved,errors};
 }
 
 export function requireChatGptTaskResolved(task:ChatGptTask):void {

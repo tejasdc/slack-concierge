@@ -11,10 +11,11 @@ import {parseProviderSelector,resolveProviderSelector,normalizeReasoningEffort} 
 import {escalationReason,topModel} from './model-escalation';
 import {humanChoseTopModel} from './model-escalation-custody';
 import {sessionAddress} from './session-address';
+import {transferChatGptAnswerOwnership} from './chatgpt-obligations';
 import {claudeConfigDir,locateClaudeTranscript} from './claude-transcript-watch';
 
 const run=promisify(execFile);
-type Item={id:string;kind:'sent'|'owed'|'queued'|'watch'|'lab'|'worktree';ref:string;holder:string;[key:string]:unknown};
+type Item={id:string;kind:'sent'|'owed'|'answer'|'queued'|'watch'|'lab'|'worktree';ref:string;holder:string;[key:string]:unknown};
 type Inventory={items:Item[];omissions:string[]};
 type HandoffRow={id:string;predecessor_session_id:number;successor_session_id:number;state:string;action_id:string;caller_session_id:number;requesting_input_id:string;inventory_json:string;inventory_digest:string};
 const digest=(value:Inventory)=>createHash('sha256').update(stablePayload(value)).digest('hex');
@@ -64,6 +65,10 @@ function ledgerItems(sessionId:number):Item[] {
   }
   for(const request of db.query('SELECT request_id,peer,remote_session_id,status FROM session_peer_requests WHERE source_session_id=? AND outcome IS NULL ORDER BY created_at_ms,request_id').all(sessionId) as any[])
     items.push({id:`sent:${request.request_id}`,kind:'sent',ref:request.request_id,holder,target:`${request.peer}:${request.remote_session_id}`,status:request.status,doNotRedispatch:true});
+  for(const answer of db.query(`SELECT obligation_id,state,answer_event_id,answer_return_input_id FROM session_chatgpt_obligations
+    WHERE asker_session_id=? AND state NOT IN ('resolved','withdrawn_by_tejas') ORDER BY created_at_ms,obligation_id`).all(sessionId) as any[])
+    items.push({id:`answer:${answer.obligation_id}`,kind:'answer',ref:answer.obligation_id,holder,state:answer.state,
+      answerEventId:answer.answer_event_id,answerReturnInputId:answer.answer_return_input_id});
   for(const [table,kind] of [['session_communication_requests','local'],['session_peer_deliveries','peer'],['session_external_requests','outside']] as const){
     const where=table==='session_peer_deliveries'?'closed_at_ms IS NULL':'outcome IS NULL';
     for(const request of db.query(`SELECT request_id,target_input_id FROM ${table} WHERE target_session_id=? AND ${where} ORDER BY rowid`).all(sessionId) as any[])
@@ -71,6 +76,9 @@ function ledgerItems(sessionId:number):Item[] {
   }
   for(const input of db.query(`SELECT i.id AS input_id,i.turn_id,t.* FROM session_inputs i JOIN turns t ON t.id=i.turn_id
     WHERE i.session_id=? AND t.session_id=? AND t.status='queued' AND t.accepted_input_id=i.id ORDER BY t.id`).all(sessionId,sessionId) as any[]){
+    // The answer duty represents its service repair input. Transfer withdraws an unstarted
+    // repair, then the current holder receives a fresh prompt for the same exact answer.
+    if(input.input_id.startsWith('chatgpt-repair:'))continue;
     // A request's target input is already represented by its owed item; it is still a queued
     // execution and is shown here so the successor can see whether it is safe to move.
     items.push({id:`queued:${input.input_id}`,kind:'queued',ref:input.input_id,holder,turnId:input.turn_id,movable:safeTurn(input as WaitingTurn,getAcceptedSessionInput(input.input_id)!)});
@@ -223,6 +231,8 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
   const observed=await inventory(proposed.predecessor_session_id,{inputId:input.inputId,runId:input.runId});
   const current=inventoryLocalWithExternal(proposed.predecessor_session_id,observed),currentDigest=digest(current);
   if(input.digest!==currentDigest) return {accepted:false,handoffId:input.handoffId,inventory:current,digest:currentDigest,reason:'Inventory changed; acknowledge this exact digest.'};
+  if(current.items.some(item=>item.kind==='answer'&&item.answerEventId&&!item.answerReturnInputId))
+    return {accepted:false,handoffId:input.handoffId,inventory:current,digest:currentDigest,reason:'A ChatGPT answer has not reached its asking session yet. Let the exact return receipt settle before handing off its duty.'};
   if(current.items.some(item=>item.kind==='queued'&&!item.movable))
     return {accepted:false,handoffId:input.handoffId,inventory:current,digest:currentDigest,reason:'A queued input may have reached its provider or has dependencies. Let its exact outcome settle before accepting ownership.'};
   const result=db.transaction(()=>{
@@ -241,6 +251,10 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
         const table=db.query('SELECT 1 FROM session_communication_requests WHERE request_id=?').get(item.ref)?'session_communication_requests':'session_peer_requests';
         const changed=db.query(`UPDATE ${table} SET source_session_id=? WHERE request_id=? AND source_session_id=? AND outcome IS NULL`).run(to,item.ref,from);
         if(changed.changes!==1)throw new Error(`Sent request ${item.ref} changed during handoff.`);record(item.kind,item.ref);
+      }else if(item.kind==='answer'){
+        if(!transferChatGptAnswerOwnership(item.ref,from,to,Date.now()))
+          throw new Error(`ChatGPT answer ${item.ref} changed during handoff.`);
+        record(item.kind,item.ref);
       }else if(item.kind==='owed'){
         const table=item.source==='peer'?'session_peer_deliveries':item.source==='outside'?'session_external_requests':'session_communication_requests';
         const open=table==='session_peer_deliveries'?'closed_at_ms IS NULL':'outcome IS NULL';
