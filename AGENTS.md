@@ -77,6 +77,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md#claude-code-started-by-an-agent).
 - Shared Codex turn recovery and its exact identity boundary follow
   [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#codex-provider-turn-reconciliation).
+- Runner account admission failures keep unsent turns retryable; the runtime error
+  that briefly masked this behavior is recorded in the
+  [dispatch failure record](docs/incidents/2026-11-06-provider-dispatch-error-unbound.md).
 - Agent session command paths use each machine's installed wrapper, never a release's
   helper directory; see [runners](docs/architecture/RUNNERS.md#agent-session-commands).
 - Runner-owned Codex account switches prove the new login through the bridge inside the sealed
