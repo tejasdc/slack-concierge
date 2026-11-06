@@ -554,6 +554,13 @@ His words are checked against the message that started the work and his other me
 last thirty days in this ledger; work that began on the other machine is taken as given. A
 session in a writing project (the messaging agent) cannot send `--requested-effect work`.
 
+An `only-he-can device` question may ask for one physical action in its first sentence,
+including saying a named `Alexa, open …` launch phrase to an Echo. For example:
+`Please say “Alexa, open thinkering box” to your Echo.` The reason field explains why
+the agent route cannot perform this check. A server or simulator result does not establish
+what the Echo heard or whether a capture reached the Inbox. Keep the source request open
+until the physical attempt and its resulting capture or refusal are observed.
+
 ### Approval required by a permanent decision
 
 An approval question uses the existing `needs_you` outcome or final `needs_decision` reply.
