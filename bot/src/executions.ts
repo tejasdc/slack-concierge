@@ -5,7 +5,7 @@
  * this table holds custody and what a later coordinator needs to take the run back.
  * `turns.owner_instance_id` stays the coordinator's claim on the turn and nothing else.
  */
-import { rmSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { db, executionChanged, queuedTurnClaimRow, settleSupersededParkedTurn, type QueuedTurnClaimRow } from "./state";
 import { log, errorFields } from "./log";
 import { unpinCodexThreadHooks } from "./hook-pins";
@@ -104,24 +104,64 @@ export function hostProtocolsInUse(): number[] {
 /** A finished execution's record (its journal is the run's raw evidence) is kept this long. */
 const EXECUTION_RECORD_RETENTION_MS = 30 * 24 * 60 * 60_000;
 
-/** Removes the folders of executions that ended more than a month ago; their ledger rows stay. */
-export function pruneExecutionRecords(nowMs = Date.now()) {
-  const old = db.query(`SELECT execution_id, directory FROM executions WHERE state IN ('released','lost') AND updated_at_ms < ? AND detail IS NOT 'pruned'`)
-    .all(nowMs - EXECUTION_RECORD_RETENTION_MS) as { execution_id: string; directory: string }[];
-  for (const row of old) {
-    // A runner's record is its job's events in this ledger: they and the job's payload (its prompt
-    // and attachment bytes) go after the same month a local journal is kept.
-    if (!row.directory) {
-      db.transaction(() => {
-        db.query(`DELETE FROM runner_events WHERE attempt_id IN (SELECT attempt_id FROM runner_attempts WHERE job_id=?)`).run(turnJobId(row.execution_id));
-        db.query(`UPDATE runner_jobs SET payload_json='null' WHERE job_id=? AND state IN ('finished','unconfirmed')`).run(turnJobId(row.execution_id));
-        db.query("UPDATE executions SET detail='pruned' WHERE execution_id=?").run(row.execution_id);
-      })();
-      continue;
+/**
+ * Prune old hosted records after the owner is serving. Custody recovery needs only open
+ * executions; scanning every historical release before the request entrance opens made a
+ * no-op cleanup cost seconds on a cold ledger. A primary-key page bounds each owner-loop read.
+ */
+export async function pruneExecutionRecordsInPages(shouldStop: () => boolean, nowMs = Date.now()) {
+  type PruneRow = { execution_id: string; directory: string; state: string; updated_at_ms: number; detail: string | null };
+  let after = '';
+  let scanned = 0;
+  let pruned = 0;
+  const cutoff = nowMs - EXECUTION_RECORD_RETENTION_MS;
+  while (!shouldStop()) {
+    const page = db.query(`SELECT execution_id,directory,state,updated_at_ms,detail FROM executions
+      WHERE execution_id>? ORDER BY execution_id LIMIT 64`).all(after) as PruneRow[];
+    if (!page.length) break;
+    let handled = 0;
+    let changed = 0;
+    for (const row of page) {
+      if (shouldStop()) return;
+      handled++;
+      after = row.execution_id;
+      scanned++;
+      if (!(['released', 'lost'].includes(row.state) && row.updated_at_ms < cutoff && row.detail !== 'pruned')) continue;
+      changed++;
+      // A prior directory removal yielded to foreground work. Recheck this row under the
+      // serving owner's ledger before applying the next destructive step.
+      const eligible = () => !!db.query(`SELECT 1 FROM executions WHERE execution_id=? AND directory=?
+        AND state IN ('released','lost') AND updated_at_ms<? AND detail IS NOT 'pruned'`)
+        .get(row.execution_id, row.directory, cutoff);
+      // A runner's record is its job's events in this ledger: they and the job's payload (its prompt
+      // and attachment bytes) go after the same month a local journal is kept.
+      if (!row.directory) {
+        const removed = db.transaction(() => {
+          if (!eligible()) return false;
+          db.query(`DELETE FROM runner_events WHERE attempt_id IN (SELECT attempt_id FROM runner_attempts WHERE job_id=?)`).run(turnJobId(row.execution_id));
+          db.query(`UPDATE runner_jobs SET payload_json='null' WHERE job_id=? AND state IN ('finished','unconfirmed')`).run(turnJobId(row.execution_id));
+          db.query("UPDATE executions SET detail='pruned' WHERE execution_id=?").run(row.execution_id);
+          return true;
+        })();
+        if (removed) pruned++;
+      } else {
+        if (!eligible()) continue;
+        try {
+          await rm(row.directory, { recursive: true, force: true });
+          const marked = db.query(`UPDATE executions SET detail='pruned' WHERE execution_id=? AND directory=?
+            AND state IN ('released','lost') AND updated_at_ms<? AND detail IS NOT 'pruned'`)
+            .run(row.execution_id, row.directory, cutoff);
+          if (marked.changes) pruned++;
+        } catch (error) {
+          log("warn", "execution_record_prune_failed", { execution_id: row.execution_id, ...errorFields(error) });
+        }
+      }
+      if (changed >= 2) break;
     }
-    try { rmSync(row.directory, { recursive: true, force: true }); db.query("UPDATE executions SET detail='pruned' WHERE execution_id=?").run(row.execution_id); }
-    catch (error) { log("warn", "execution_record_prune_failed", { execution_id: row.execution_id, ...errorFields(error) }); }
+    if (handled === page.length && page.length < 64) break;
+    await new Promise(resolve => setTimeout(resolve, 250));
   }
+  log('info', 'execution_record_prune_completed', { scanned, pruned });
 }
 
 /** How a run is taken back: attached to its live host, or rebuilt from the record its gone host left. */
@@ -263,7 +303,6 @@ export async function claimAdoptableExecutions(input: { instanceId: string; only
   if (adopted.length || held.length) executionChanged();
   if (!input.onlyParked) {
     await releaseSettledExecutions();
-    pruneExecutionRecords();
     await retireFinishedHostJobs();
   }
   return { adopted, held };
