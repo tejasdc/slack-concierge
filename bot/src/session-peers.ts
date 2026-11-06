@@ -218,6 +218,35 @@ type WorkDisposition='completed'|'failed'|'needs_decision';
 type Dependencies={self:string;clients:Map<string,PeerClient>;owner:SessionOwner;now?:()=>number;onError:(error:unknown)=>void;isOwnerAlive:(owner:string)=>boolean;onWake?:()=>void;hasPendingOperations?:()=>boolean};
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const object=(value:unknown):Record<string,any>=>{if(!value||typeof value!=='object'||Array.isArray(value))throw new SessionOwnerError('A JSON object is required.');return value as Record<string,any>;};
+const record=(value:unknown):value is Record<string,any>=>!!value&&typeof value==='object'&&!Array.isArray(value);
+const authorSession=(value:unknown)=>record(value)&&typeof value.id==='string'&&!!value.id
+  &&typeof value.title==='string'&&(value.provider===null||typeof value.provider==='string')
+  &&['model','reasoningEffort','agentName'].every(key=>value[key]===undefined||value[key]===null||typeof value[key]==='string');
+const routedAuthorValid=(value:unknown,kind:unknown)=>{
+  if(!record(value)||value.kind!==kind||!['human','agent','service','unknown'].includes(value.kind)
+    ||Buffer.byteLength(JSON.stringify(value))>8192)return false;
+  if(value.session!==undefined&&!authorSession(value.session))return false;
+  if(value.outsideAgent!==undefined&&(!record(value.outsideAgent)||typeof value.outsideAgent.name!=='string'||typeof value.outsideAgent.label!=='string'))return false;
+  if(['inputId','runId','requestId','via'].some(key=>value[key]!==undefined&&typeof value[key]!=='string'))return false;
+  if(value.communication!==undefined&&!['request','reply','result','overdue','post','notice'].includes(value.communication))return false;
+  if(value.replyKind!==undefined&&!['partial','final'].includes(value.replyKind))return false;
+  if(value.effectScope!==undefined&&!['informational','work'].includes(value.effectScope))return false;
+  if(value.originatingHuman!==undefined&&(!record(value.originatingHuman)||typeof value.originatingHuman.inputId!=='string'
+    ||typeof value.originatingHuman.runId!=='string'||(value.originatingHuman.captureId!==undefined&&typeof value.originatingHuman.captureId!=='string')
+    ||(value.originatingHuman.session!==undefined&&!authorSession(value.originatingHuman.session))))return false;
+  if(value.quoted!==undefined&&(!record(value.quoted)||!['human','agent','unknown'].includes(value.quoted.kind)
+    ||(value.quoted.session!==undefined&&!authorSession(value.quoted.session))))return false;
+  if(value.correction!==undefined&&(!record(value.correction)||typeof value.correction.reason!=='string'||typeof value.correction.at!=='string'))return false;
+  return true;
+};
+const receivedRoutedFrom=(route:Record<string,any>,peer:string)=>{
+  const session=(value:Record<string,any>)=>({...value,id:receiveSessionFromPeer(value.id,peer)});
+  const author=route.author as Record<string,any>|undefined;
+  return {...route,sessionId:receiveSessionFromPeer(route.sessionId,peer),
+    ...(author?{author:{...author,...(author.session?{session:session(author.session)}:{}),
+      ...(author.originatingHuman?.session?{originatingHuman:{...author.originatingHuman,session:session(author.originatingHuman.session)}}:{}),
+      ...(author.quoted?.session?{quoted:{...author.quoted,session:session(author.quoted.session)}}:{})}}:{})};
+};
 /** The request ID is a function of the source input and action, so a retry after a lost response reaches the same peer row. */
 export const requestIdFor=(sourceInputId:string,actionId:string)=>{const h=hash(`peer-request:${sourceInputId}:${actionId}`);return `${h.slice(0,8)}-${h.slice(8,12)}-4${h.slice(13,16)}-8${h.slice(17,20)}-${h.slice(20,32)}`;};
 
@@ -557,7 +586,7 @@ export class SessionPeers {
     forTask?:string;recoveryOf?:string;correctionOf?:string;
     machineNeed?:MachineNeed;
     requestedEffect?:'informational'|'work';files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null;threadSourceMessageId?:string;returnToRequester?:boolean;
-    routedFrom?:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'};
+    routedFrom?:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'|'service'|'unknown';author?:import('./provider-history').MessageAuthor};
     /** The words the recipient reads instead of the standard agent-request framing (his thread reply), and the thread message it answers so its replies post there. */
     framing?:(id:string)=>string;forwardedReply?:{inboxInputId:string;topicId:string;authorKind?:'human'|'agent';messageThreadRootId?:string;messageThreadRequestId?:string}}) {
     if(this.stopped)throw new Error('Session communication is not accepting requests.');
@@ -648,7 +677,7 @@ export class SessionPeers {
     const providerSelector=parseProviderSelector(input.provider);
     const selectedModel=providerSelector?resolveProviderSelector(providerSelector).model:undefined;
     const humanModelChoice=!!selectedModel&&humanModelChoices.includes(selectedModel as 'claude-fable-5-1'|'gpt-6-astra');
-    const text=input.framing?input.framing(id):`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. ${input.routedFrom?`This carries Tejas’s exact Inbox message ${input.routedFrom.messageId} into this session. Reply to this request; the answer appears under that message in its original thread.`:'This is agent-authored input within the originating human task, not a new human message.'} Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`;
+    const text=input.framing?input.framing(id):`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. ${input.routedFrom?`This carries the exact Inbox message ${input.routedFrom.messageId} into this session. Reply to this request; the answer appears under that message in its original thread.`:'This is agent-authored input within the originating human task, not a new human message.'} Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`;
     const delivery={requestId:id,answerGuaranteeVersion:1,
       ...(task?{answerObligation:{id:input.correctionOf??input.recoveryOf??id,task,attemptId:id}}:{}),
       origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,originatingHuman,effectScope:provenance?.effectScope??null},
@@ -1465,8 +1494,10 @@ export class SessionPeers {
       ||(input.forwardedReply.messageThreadRootId!==undefined&&typeof input.forwardedReply.messageThreadRootId!=='string')
       ||(input.forwardedReply.messageThreadRequestId!==undefined&&typeof input.forwardedReply.messageThreadRequestId!=='string')))
       throw new SessionOwnerError('A forwarded thread reply needs its exact source input and topic.');
-    if(input.routedFrom!==undefined&&(typeof input.routedFrom?.messageId!=='string'||typeof input.routedFrom?.topicId!=='string'||typeof input.routedFrom?.originalText!=='string'||typeof input.routedFrom?.originalCreatedAt!=='string'||!['human','agent'].includes(input.routedFrom?.authorKind)))
+    if(input.routedFrom!==undefined&&(typeof input.routedFrom?.sessionId!=='string'||typeof input.routedFrom?.messageId!=='string'||typeof input.routedFrom?.topicId!=='string'||typeof input.routedFrom?.originalText!=='string'||typeof input.routedFrom?.originalCreatedAt!=='string'||!['human','agent','service','unknown'].includes(input.routedFrom?.authorKind)))
       throw new SessionOwnerError('A routed message needs its exact source and original words.');
+    if(input.routedFrom?.author!==undefined&&!routedAuthorValid(input.routedFrom.author,input.routedFrom.authorKind))
+      throw new SessionOwnerError('A routed message must preserve one valid source author.',400,'ROUTED_AUTHOR_INVALID');
     if(input.files!==undefined&&(!Array.isArray(input.files)||input.files.some((file:any)=>typeof file?.name!=='string'||typeof file.contentType!=='string'||typeof file.base64!=='string')))throw new SessionOwnerError('Files must contain named attachment bytes.');
     if(input.summary!==undefined&&(typeof input.summary!=='string'||!input.summary.trim()||input.summary.includes('\n')||input.summary.length>200))throw new SessionOwnerError('A session description is one line of at most 200 characters.');
     const effect=input.requestedEffect??'informational';
@@ -1526,6 +1557,7 @@ export class SessionPeers {
       ...(machineNeed?{machineNeed}:{}),
       ...(typeof input.message==='string'&&input.message.trim()?{message:input.message}:{}),...(forwardedIntent?{forwardedIntent}:{}),
       ...(input.routedFrom?{routedFrom:input.routedFrom}:{})};
+    const routedFrom=input.routedFrom?receivedRoutedFrom(input.routedFrom,origin.peer):null;
     const created=db.transaction(()=>{
       const attachments=((input.files??[]) as {name:string;contentType:string;base64:string}[]).map((file,index)=>owner.upload({name:file.name,contentType:file.contentType,base64:file.base64,clientActionId:`peer-file:${requestId}:${index}`}).attachment.id);
       const scope=`peer:${origin.peer}:${origin.inputId}`;
@@ -1541,7 +1573,7 @@ export class SessionPeers {
         if(!owner.canSend(target))throw new SessionOwnerError('The exact session is not currently messageable.',409,'CAPABILITY_UNAVAILABLE');
         owner.attachments(attachments);
         retainSessionInput({id:`request:${requestId}`,sessionId:target.id,scope,actionId:`request:${requestId}`,kind:'input',origin:'agent',
-          payload:{text:input.text,...(machineNeed?{machineNeed}:{}),...(attachments.length?{attachments}:{}),...(input.routedFrom?{routedFrom:input.routedFrom}:{}),
+          payload:{text:input.text,...(machineNeed?{machineNeed}:{}),...(attachments.length?{attachments}:{}),...(routedFrom?{routedFrom}:{}),
             ...(target.provider_id==='chatgpt'||sessionMetadata(target).interactionPolicy==='consultation-only'?{delivery:'queue'}:{})},requestId});
         sessionId=target.id;
       }
