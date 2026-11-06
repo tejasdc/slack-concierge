@@ -1098,9 +1098,11 @@ in [capture ingress](../architecture/CAPTURE-INGRESS.md).
 
 The Concierge service journal records `retry_budget_exhausted` with the operation,
 attempt count, elapsed time and last error. Peer reply deadlines also record
-`session_peer_reply_deadline_exhausted`. The same exhausted episode places one
-service message in the native Inbox's Needs attention list; it starts no provider
-turn. Inspect with `journalctl -u concierge-bot.service -u agent-inbox.service
+`session_peer_reply_deadline_exhausted`. An exhausted Codex observer budget
+switches from fast retries to capped probes; its Needs attention notice waits
+until a full minute of failure and another failed probe. Other exhausted episodes
+place one service message in Needs attention immediately. These notices start
+no provider turn. Inspect with `journalctl -u concierge-bot.service -u agent-inbox.service
 --since today` and search those event names. The ledger keeps the one-time notice
 and breaker state; the normal owner of recovery is the agent handling the named
 request or deployment. The status endpoint's `deployment.sessions` lists each

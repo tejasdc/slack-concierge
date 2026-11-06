@@ -51,6 +51,9 @@ export const RETRY_POLICIES = Object.freeze({
 /** An acknowledged response with the wrong schema is version skew, not a transport outage. */
 export const PEER_REPLY_SCHEMA_MISMATCH_ATTEMPTS = 3;
 export const PEER_REQUEST_ORPHAN_GRACE_MS = 10 * 60_000;
+// An ordinary owner handoff briefly returns 503 while the runner relay reconnects. Five fast
+// observer attempts exhaust in about two seconds; a minute of failed capped probes is an outage.
+export const CODEX_OBSERVER_NOTICE_AFTER_MS = 60_000;
 
 export const RETRY_POLICY_FOR_SITE = Object.freeze({
   provider: RETRY_POLICIES.providerRequest,

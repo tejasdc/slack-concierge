@@ -29,6 +29,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [attributed systemd stop path](docs/runbooks/DEPLOYMENT.md#runtime-dependencies-and-service-shutdown).
 - Planned drain stops Codex lifecycle observation before awaited shutdown work;
   see the [deployment runbook](docs/runbooks/DEPLOYMENT.md#runtime-dependencies-and-service-shutdown).
+- Codex observer reconnect warnings distinguish a brief release handoff from a
+  sustained failure; see [Codex App Server lifecycle](docs/runbooks/CODEX-APP-SERVER.md#lifecycle-invariants).
 - Unanswered capture claims cancel on service stop under the existing claim and recovery
   contract; see [capture ingress](docs/architecture/CAPTURE-INGRESS.md).
 - Operator-controlled offline releases stop the old owner before candidate activation;
