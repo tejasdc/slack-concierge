@@ -103,7 +103,7 @@ async function worktrees(sessionId:number):Promise<{items:Item[];omissions:strin
     &&['codex','claude-code'].includes(session.provider_id)) {
     try {
       const remote=await runnerMachineCall<{items:{path:string;branch:string;head:string;uncommittedFiles:number}[];transcriptAvailable:boolean}>(
-        meta.providerRunner,'projects.worktrees',{project:meta.projectName,provider:session.provider_id,sessionUUID:session.agent_session_uuid,
+        meta.providerRunner,'projects.worktrees',{project:meta.projectName,provider:session.provider_id as 'codex'|'claude-code',sessionUUID:session.agent_session_uuid,
           account:typeof meta.providerAccount==='string'?meta.providerAccount:null});
       return {items:remote.items.map(item=>({id:`worktree:${item.path}`,kind:'worktree',ref:item.path,holder:canonical(sessionId),
         branch:item.branch,head:item.head,uncommittedFiles:item.uncommittedFiles})),
