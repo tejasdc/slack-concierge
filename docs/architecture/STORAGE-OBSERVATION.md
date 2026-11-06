@@ -1,5 +1,26 @@
 # Storage work attribution
 
+## Owner-thread reads during a blocked callback
+
+The existing owner-task watchdog samples the main thread while its event loop is blocked.
+For a block lasting at least 500 ms, it also reports the main thread's read-call count,
+read characters, and disk-read bytes between the first detected block sample
+and the first sample after the loop resumes. It reads `/proc/<pid>/task/<pid>/io` from the
+watchdog thread, never from the owner loop; no SQL text, parameters, file paths, or process
+arguments enter the record. A still-blocked record at five seconds carries the same
+partial counters. Missing or resetting procfs counters are reported as unavailable.
+
+The first roughly 200 ms is unobserved, and the end sample can include work after the
+loop resumed. Read calls include every read-family syscall on that thread, while disk
+bytes omit page-cache hits. These are approximate block-level deltas, not per-statement
+or per-syscall latency. Join a record to the existing ledger statement fingerprint and
+duration only when one statement occupies nearly the whole block. A few read calls
+with a long ledger wait point toward one slow page; many calls point toward a read-heavy
+plan. Neither identifies which device or competing workload caused a wait. The watchdog
+also retains its bounded thread-state and wait-channel samples, including D-state counts.
+Use these fields to decide whether the next correction belongs in the query plan or at
+the asynchronous owner boundary; do not add them as independent elapsed times.
+
 The minute-by-minute legacy turn-status recovery pass uses a partial index of
 pending turns. It still retries historical pending statuses, while an empty pass
 reads no retained turn rows. This keeps a large native session history out of
