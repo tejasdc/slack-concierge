@@ -57,8 +57,8 @@ The owner upgrade already accepts every older Thinkering payload.
 
 ## Outside-agent owner socket entrance
 
-The same socket serves the outside Grafana recovery reconciler's `GET /grafana/v1/firing`
-, `POST /grafana/v1/recoveries` and `POST /grafana/v1/firings` ([Grafana alerts](../runbooks/GRAFANA-ALERTS.md#lost-recoveries-are-reconciled-from-grafana)).
+The same socket serves the outside Grafana recovery reconciler's `GET /grafana/v1/firing`,
+`POST /grafana/v1/recoveries` and `POST /grafana/v1/firings` ([Grafana alerts](../runbooks/GRAFANA-ALERTS.md#lost-recoveries-are-reconciled-from-grafana)).
 
 The root-only `requests.sock` also accepts `GET /supervisor/ping`. It reads no ledger and
 returns canonical `{ok,pid,startedAt,release,logging}` through the storage-free gateway,
