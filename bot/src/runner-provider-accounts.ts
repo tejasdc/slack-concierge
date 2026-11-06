@@ -396,6 +396,7 @@ function activateCodex(params: Record<string, unknown>) {
   }
   const uncertain = [...activationOperations.values()].find(operation => operation.status === "uncertain");
   if (uncertain) return { status: "uncertain", detail: "A prior Codex account switch is uncertain and must be reconciled first." };
+  if (codexRepairActive) return {status:"busy",detail:"The Codex App Server is being re-homed; retry this account switch after that operation finishes."};
   if (codexActivationFlight) throw new Error("Another Codex account switch is already active on this runner.");
   const operation: ActivationOperation = { id, account, status: "starting" };
   activationOperations.set(id, operation);
@@ -437,10 +438,12 @@ function processTree(roots:number[]):number[]{
 const processAlive=(pid:number)=>{try{process.kill(pid,0);return true;}catch{return false;}};
 async function runnerSocketRepair(activeTurns:number):Promise<{status:string;detail?:string}>{
   if(unmanagedRepair)return unmanagedRepair;
+  if(codexActivationFlight)return {status:'busy',detail:'A Codex account switch is active; retry App Server re-home after it finishes.'};
   unmanagedRepair=(async()=>{
     if(activeTurns!==0)return {status:'busy',detail:'The runner still owns an active turn.'};
     if(process.platform!=='linux'||process.env.CONCIERGE_CODEX_APP_SERVER_SOCKET?.trim())
       return {status:'unsupported',detail:'Unmanaged App Server repair is supported only for the runner-owned Linux socket.'};
+    if(codexActivationFlight)return {status:'busy',detail:'A Codex account switch is active; retry App Server re-home after it finishes.'};
     codexRepairActive=true;
     try{
       const check=await runCommand(MANAGED_CODEX,['app-server','daemon','version'],20_000);

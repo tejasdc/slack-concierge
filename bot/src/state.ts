@@ -19,6 +19,7 @@ import { log } from "./log";
 import { quietOnlyAdmits } from './quiet-hours';
 import { OWNER_DRAIN_WITHDRAWAL_REASON } from './runner-leases';
 import {CLAUDE_ALLOWANCE_HOLD_UNTIL_MS} from './claude-allowance-hold';
+import {CodexAdmissionHolds} from './codex-admission-holds';
 
 // Only the canonical writer owns schema upgrades. Read executors open a physically read-only
 // connection and must never run migration code during module initialization.
@@ -30,6 +31,11 @@ db.exec(`CREATE TABLE IF NOT EXISTS provider_usage_cache (
   generation INTEGER NOT NULL DEFAULT 0,
   revision INTEGER NOT NULL DEFAULT 0,
   limits_json TEXT NOT NULL DEFAULT '{}'
+)`);
+db.exec(`CREATE TABLE IF NOT EXISTS codex_admission_holds (
+  holder TEXT PRIMARY KEY,
+  recovery_json TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL
 )`);
 // Google joins through an additive table: deployment never rebuilds the live provider cache.
 db.exec(`CREATE TABLE IF NOT EXISTS antigravity_usage_cache (
@@ -5523,16 +5529,29 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
     AND session.provider_id IN (SELECT value FROM json_each(?))))
   AND NOT (session.provider_id='codex' AND ?=1)`;
 
-// Set only while Codex's App Server is being restarted (provider-activation.ts): a Codex turn
-// claimed in that window would start on a server that is about to stop. In-process on purpose: the
-// restart runs in this process, and a restart of this process ends the hold with it.
-let codexAdmissionHeld=false;
-export function holdCodexAdmission(held:boolean){codexAdmissionHeld=held;if(!held)executionChanged();}
+// Runner replacements survive an owner restart, so their admission holders are restored from the
+// ledger and reconciled asynchronously before they can release queued Codex turns.
+const codexAdmissionHolders=new CodexAdmissionHolds();
+for(const row of db.query('SELECT holder FROM codex_admission_holds').all() as {holder:string}[])
+  codexAdmissionHolders.set(row.holder,true);
+export type CodexAdmissionRecovery={kind:'runner-activation';runner:string;account:string;operationId:string}|{kind:'runner-rehome';runner:string};
+export function holdCodexAdmission(holder:string,held:boolean,recovery?:CodexAdmissionRecovery){
+  if(held&&recovery){
+    db.query('INSERT INTO codex_admission_holds(holder,recovery_json,created_at_ms) VALUES(?,?,?) ON CONFLICT(holder) DO UPDATE SET recovery_json=excluded.recovery_json')
+      .run(holder,JSON.stringify(recovery),Date.now());
+  }
+  const changed=codexAdmissionHolders.set(holder,held);
+  if(!held){db.query('DELETE FROM codex_admission_holds WHERE holder=?').run(holder);if(changed)executionChanged();}
+}
+export function codexAdmissionRecoveryHolds():Array<{holder:string;recovery:CodexAdmissionRecovery}>{
+  return (db.query('SELECT holder,recovery_json FROM codex_admission_holds').all() as {holder:string;recovery_json:string}[])
+    .flatMap(row=>{try{const recovery=JSON.parse(row.recovery_json);return recovery&&typeof recovery.runner==='string'?[{holder:row.holder,recovery}]:[];}catch{return [];}});
+}
 
 function claimableQueuedTurnParameters(nowMs:number,activeSessionIds:readonly number[],survivable:ReturnType<typeof survivableRunKinds>|null) {
   const quietSettings=db.query('SELECT quiet_start_hour,quiet_end_hour,time_zone FROM saved_work_settings WHERE singleton=1').get() as {quiet_start_hour:number;quiet_end_hour:number;time_zone:string};
   return [nowMs,CLAUDE_ALLOWANCE_HOLD_UNTIL_MS,nowMs,nowMs,quietOnlyAdmits(nowMs,quietSettings)?1:0,nowMs,nowMs,nowMs,nowMs,JSON.stringify(activeSessionIds),nowMs,
-    survivable ? 1 : 0,JSON.stringify(survivable?.providers ?? []),codexAdmissionHeld ? 1 : 0] as const;
+    survivable ? 1 : 0,JSON.stringify(survivable?.providers ?? []),codexAdmissionHolders.isHeld ? 1 : 0] as const;
 }
 
 function currentClaimSurvivability() {

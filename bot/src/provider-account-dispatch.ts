@@ -18,6 +18,7 @@ import {claudeKeychainMayHoldLogin} from './claude-keychain';
 import {needClaudeSignInRenewal} from './signin-renewal';
 import {claudeAccountWorks,releaseAuthHold} from './provider-activation';
 import {providerRunnerTarget} from './provider-runner-target';
+import {providerAccountHomeForPlacement} from './provider-account-home';
 
 /**
  * What an extra Claude home keeps for itself: its own login and the per-login state Claude writes
@@ -217,18 +218,19 @@ export function claudeRunsFromOwnHomes():boolean {
 }
 
 /** The account selected for agents and its home, when that is one of the homes (never the main folder's login). */
-export function selectedClaudeHome():{label:string;home:string}|null {
+export function selectedClaudeHome(runnerTarget:string|null|undefined=undefined):{label:string;home:string}|null {
   const selection=claudeAccountSelection();
   if(!selection||selection.profileId==='default')return null;
-  if(providerRunnerTarget('claude-code'))return {label:selection.label,home:`runner-account:${selection.label}`};
-  return {label:selection.label,home:accountHome('claude-code',selection.profileId)};
+  const target=runnerTarget===undefined?providerRunnerTarget('claude-code'):runnerTarget;
+  const localHome=accountHome('claude-code',selection.profileId);
+  return {label:selection.label,home:providerAccountHomeForPlacement(target,selection.label,localHome)};
 }
 
 /** The home a Claude account launches from: the selected account's complete home, or another proven one. */
-function launchableClaudeHome(account:string,selected:string|null,prepare:boolean,home?:string):string|null {
-  if(providerRunnerTarget('claude-code')){
+function launchableClaudeHome(account:string,selected:string|null,prepare:boolean,home?:string,runnerTarget:string|null|undefined=undefined):string|null {
+  if(runnerTarget===undefined?providerRunnerTarget('claude-code'):!!runnerTarget){
     const reading=providerAccountUsage('claude-code')?.accounts.find(item=>item.label===account);
-    return reading?.signedOut?null:`runner-account:${account}`;
+    return reading?.signedOut?null:providerAccountHomeForPlacement(runnerTarget===undefined?providerRunnerTarget('claude-code'):runnerTarget,account,home??'');
   }
   const complete=sharedClaudeHome(account,home,prepare,false);
   // The selected account was proven when he chose it and stays his choice across restarts; a
@@ -325,7 +327,7 @@ export function admitProvenClaudeWaitingTurn(turnId:number,account:string,select
 const noOwnClaudeLogin=()=>new ProviderDispatchError({failureClass:'parked_access',terminalConfirmed:true,
   message:'Not logged in: no Claude account on this machine has a working sign-in of its own. Sign in to one in Accounts.'});
 
-export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,turnId?:number,model?:string|null,warmCacheAccount?:string|null):{account:string;home:string|null;because:AccountReason;expected:string|null;selectionRevision:number}|null {
+export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,turnId?:number,model?:string|null,warmCacheAccount?:string|null,runnerTarget:string|null|undefined=undefined):{account:string;home:string|null;because:AccountReason;expected:string|null;selectionRevision:number}|null {
   const proof=turnId===undefined?null:provenWaitingTurns.get(turnId)??null;
   if(turnId!==undefined)provenWaitingTurns.delete(turnId);
   const usage=providerAccountUsage('claude-code');
@@ -335,11 +337,11 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
   const selection=claudeAccountSelection();
   const provenAccount=proof&&proof.selectionRevision===(selection?.revision??0)?proof.account:null;
   const selectedAccount=selection&&selection.revision>seenSelectionRevision?selection.label:null;
-  const selected=selectedClaudeHome()?.label??null;
+  const selected=selectedClaudeHome(runnerTarget)?.label??null;
   // Without a reading of the selected account (none at all, or the usage reader does not know an
   // account just signed in through Accounts) nothing can be compared, so the work runs where he chose.
   if(ownHomes&&(!usage||(selected&&!usage.accounts.some(account=>account.label===selected)))){
-    const home=selected?launchableClaudeHome(selected,selected,true):null;
+    const home=selected?launchableClaudeHome(selected,selected,true,undefined,runnerTarget):null;
     if(home&&!claudeAccountCachedReset(selected!,model))return {account:selected!,home,because:'stayed-on-its-account',expected:selected,selectionRevision:selection?.revision??0};
     if(!usage){
       const refusedUntil=selected?claudeAccountCachedReset(selected,model):null;
@@ -353,7 +355,7 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
   if(!usage||(!ownHomes&&!defaultAccount))return null;
   // Add any link a new shared entry needs before choosing; a home still incomplete is skipped.
   const homes=new Map(usage.accounts.filter(account=>account.label!==defaultAccount)
-    .map(account=>[account.label,launchableClaudeHome(account.label,selected,true)] as const));
+    .map(account=>[account.label,launchableClaudeHome(account.label,selected,true,undefined,runnerTarget)] as const));
   const extraHomes=usage.accounts.filter(account=>homes.get(account.label));
   if(!extraHomes.length){
     if(ownHomes)throw noOwnClaudeLogin();

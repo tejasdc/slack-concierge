@@ -627,7 +627,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       ?input.adopted?(adoptedClaudeAccount?{account:adoptedClaudeAccount,home:input.boundAccount?.home??null,because:'spending-this-window' as const,expected:adoptedClaudeAccount,
           selectionRevision:sessionMetadata(input.session).claudeSelectionRevision??0}:null)
       :input.boundAccount?{...input.boundAccount,because:'spending-this-window' as const,expected:input.boundAccount.account,selectionRevision:sessionMetadata(input.session).claudeSelectionRevision??0}
-        :chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0,input.turnId,claudeLaunchModel,warmClaudeCacheAccount)
+        :chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0,input.turnId,claudeLaunchModel,warmClaudeCacheAccount,remoteClaudeRunner)
       :null;
     if(remoteClaudeRunner&&!input.adopted){
       if(!claudeChoice)throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,
