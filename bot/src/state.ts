@@ -1237,6 +1237,16 @@ export function recordPendingSignIn(provider: string, ownerInstanceId: string, e
     .run(provider, ownerInstanceId, Date.now(), expiresAtMs, runner?.runner ?? null, runner?.operationId ?? null, runner?.profileId ?? null);
 }
 
+/** Reserve a runner sign-in before starting its CLI, serialized with the deployment drain claim. */
+export function reservePendingRunnerSignIn(provider: string, ownerInstanceId: string, expiresAtMs: number,
+  runner: { runner: string; operationId: string; profileId?: string | null }): boolean {
+  return db.transaction(() => {
+    if (db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get()) return false;
+    recordPendingSignIn(provider, ownerInstanceId, expiresAtMs, runner);
+    return true;
+  }).immediate();
+}
+
 export function clearPendingSignIn(provider: string) {
   db.query("DELETE FROM pending_sign_ins WHERE provider=?").run(provider);
 }

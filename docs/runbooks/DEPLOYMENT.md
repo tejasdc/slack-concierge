@@ -403,6 +403,11 @@ remains fully open to new turns and queued user work continues normally. A turn
 completion wakes the runner only after Concierge has synchronously promoted any
 queued successor. A long fallback wake protects liveness if a nonstandard owner
 completion emits no signal; it is not an active two-second provider poll.
+Runner sign-in start reserves its pending operation against that same drain gate
+before launching the provider CLI. If the release has claimed the gate, the
+sign-in does not start; if the sign-in reserved first, drain waits for it. The
+[sign-in interruption record](../incidents/2026-11-06-signin-started-inside-deployment-drain.md)
+captures the race this excludes.
 Further accepted pushes advance the same durable desired record and are included
 by the active pull or the next run after the current run reaches a terminal state.
 

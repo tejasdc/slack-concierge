@@ -98,7 +98,7 @@ import {INBOX_INSTRUCTIONS,markResultAnsweredByPost,minutesText,pebbleArrivalWai
 import {readClaudeCachedMessage,readCodexHistoryMessage,readClaudeHistory,readCodexHistory} from './provider-history';
 import {ProviderHistoryPageClient} from './provider-history-page-client';
 import {ATTENTION_INSTRUCTION,releaseFocusForPost,settleExitedProcessReport,topicPromptContext} from './session-topics';
-import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,clearPendingSignIn,pendingRunnerSignIn} from './state';
+import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,reservePendingRunnerSignIn,clearPendingSignIn,pendingRunnerSignIn} from './state';
 import {log,errorFields} from './log';
 import {attachedRecordingWords,transcriptionPrompt} from './transcription';
 import {ProviderLoginManager} from './auth-login';
@@ -337,8 +337,9 @@ export class SessionExecutionHost {
     if(this.restoreRunnerSignIn(provider))return {status:'failed',detail:'A sign-in is already waiting on the runner. Refresh the Accounts page to continue it.'};
     const operationId=`signin:${randomUUID()}`;
     const operation:RunnerSignInState={runner,operationId,profileId:profileId??null,status:'starting'};
+    if(!reservePendingRunnerSignIn(provider,this.options.instanceId,Date.now()+10*60_000,{runner,operationId,profileId}))
+      return {status:'failed',detail:'This machine is installing an update. No sign-in started; try again after the update finishes.'};
     this.runnerSignIns.set(provider,operation);
-    recordPendingSignIn(provider,this.options.instanceId,Date.now()+10*60_000,{runner,operationId,profileId});
     try{
       const answer=await runnerMachineCall<any>(runner,'accounts.signin.start',{operationId,provider});
       if(!answer||typeof answer.status!=='string')throw new Error('The runner returned no sign-in outcome.');
