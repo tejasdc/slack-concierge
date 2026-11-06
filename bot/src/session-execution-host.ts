@@ -1317,7 +1317,7 @@ export class SessionExecutionHost {
             actual=adoption?this.adoptedRun(prepared,adoption)
               :this.hostedRun(prepared,claim,session,kept,googleExecutable,onRunner?stagedFiles:undefined,onRunner?runnerTarget!:undefined);
           } else if(onRunner) {
-            actual=this.hostedRun(prepared,claim,session,kept,process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE||'claude',stagedFiles,runnerTarget!);
+            actual=this.hostedRun(prepared,claim,session,kept,'claude',stagedFiles,runnerTarget!);
           } else if(session.provider_id==='claude-code'&&(adoption||executionHostsEnabled())) {
             actual=adoption?this.adoptedRun(prepared,adoption):this.hostedRun(prepared,claim,session,kept,launchClaudeExecutable);
           } else if(privateCodex) {

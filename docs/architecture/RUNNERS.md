@@ -434,7 +434,9 @@ runner is an unknown check; it cannot be treated as proof that paid credits are 
 
 Claude hook settings contain runner-local environment references for Bun and the optional managed
 history hook. The owner may prepare the settings JSON, but the command paths resolve when Claude runs
-on the runner, using that machine's helper release and executable. When a session is assigned to a
+on the runner, using that machine's helper release and executable. A runner-hosted Claude turn names
+`claude` for the runner to find on its own PATH; an absolute executable from the owner's service
+environment is never sent. When a session is assigned to a
 runner, its project name and relative subfolder are resolved there before the host starts; the job
 manifest never carries the owner's absolute working directory. Google executable and paid-credit
 checks run on the runner before a Google host starts. Outside Codex prompt bytes are written beneath
