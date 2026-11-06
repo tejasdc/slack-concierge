@@ -245,7 +245,7 @@ import { legacyProgressChunks, progressActivityIdAfterChunks, type SlackAgentPro
 import { beginAgentProgressMessages, createProgressMessageClient, hasAgentProgressMessages, queueAgentProgressMessages, projectAgentProgressMessages } from "./agent-progress-messages";
 import { handleAgentSessionStop } from "./agent-session-stop";
 import { GHOST_TURN_INTERRUPT_AGE_MS, reconcileRecoverableTurns, sweepGhostRunningTurns } from "./turn-recovery";
-import { claimAdoptableExecutions, hostedTurns, watchHeldExecution, type Adoption } from "./executions";
+import { claimAdoptableExecutions, forgetTrackedHostedExecutionsOfTurn, hostedTurns, watchHeldExecution, type Adoption } from "./executions";
 import { beginRunnerTurnDrain } from "./runner-host-access";
 import { interruptOrphanedTurn, observeExecutionChanges } from "./state";
 import {recoverExhaustedClaudeWork} from './provider-exhaustion-recovery';
@@ -505,6 +505,7 @@ const activeTurnDispatch = new ActiveTurnDispatchRegistry({
   onStarted: () => { activeTurnCount += 1; },
   onSettled: (turnId) => {
     activeTurnCount -= 1;
+    forgetTrackedHostedExecutionsOfTurn(turnId);
     resolveDrainIfIdle();
     const settledSessionId = getSessionIdForTurn(turnId);
     if (settledSessionId !== null) consumeParkedResumeGrant(settledSessionId);
@@ -3795,12 +3796,17 @@ async function reconcilePriorInstanceTurns() {
   // Agents still running in their execution hosts are taken back before anything below reads
   // their turns as orphaned, and continue under the same run (design 2026-10-07 §3.1 step 4).
   const runAdopted = (adoption: Adoption) => {
+    if (draining) return;
     adoptedTurnIds.add(adoption.claim.turn_id);
     // A Codex turn is already held by its App Server. Keep its adopted identity through recovery,
     // but do not contact that server until it has answered (after the request socket and any
     // runner relay channel exist).
     const ready = adoption.execution.provider === 'codex' ? codexAppServerReady() : Promise.resolve();
-    void ready.then(() => sessionExecutionHost.run(adoption.claim, adoption)).catch((error) => {
+    void ready.then(() => {
+      if (draining) return;
+      return sessionExecutionHost.run(adoption.claim, adoption);
+    }).catch((error) => {
+      if (draining) return;
       log("error", "execution_adoption_failed", { turn_id: adoption.claim.turn_id, execution_id: adoption.execution.execution_id, ...errorFields(error) });
       settleClaimedTurnSetupFailure(adoption.claim, error);
     }).finally(() => { adoptedTurnIds.delete(adoption.claim.turn_id); sessionTurnQueue?.wake(); });

@@ -134,7 +134,7 @@ import {pinCodexThreadHooks} from './hook-pins';
 import {HostedClaudeCodeTransport,HostUnavailableError,claudeExecutable,executionDirectory,executionHostsEnabled,newExecutionId,streamJournal} from './execution-host-client';
 import {RUNNER_SUPERVISOR,RunnerHostAccess} from './runner-host-access';
 import {agentRunEnvironment} from './agent-run-tokens';
-import {recordExecutionExited,recordExecutionLaunched,recordLiveAdoption,releaseExecution,retainExecutionIntent,type Adoption,type ExecutionRow} from './executions';
+import {recordExecutionExited,recordExecutionLaunched,recordLiveAdoption,releaseExecution,retainExecutionIntent,trackOpenHostedExecutionsOfTurn,type Adoption,type ExecutionRow} from './executions';
 
 export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex'|'antigravity';mode:'interactive'|'device'|'host-managed';pending:boolean;signInKeepsCurrent:true;pendingFor:string|null;pendingUrl:string|null;lastSignIn:{ok:boolean;detail:string|null}|null;message:string;signedIn?:boolean;checking?:boolean;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
 /**
@@ -1192,6 +1192,7 @@ export class SessionExecutionHost {
     }
     try {
       return await this.options.registry.run({turnId:claim.turn_id,sessionId:session.id},async(steeringController,closeSteering,cancellationController)=>{
+        trackOpenHostedExecutionsOfTurn(claim.turn_id);
         if(input.kind==='fork'){closeSteering(new Error('A native fork control has no model input channel.'));return this.runFork(claim,input,session);}
         if(sessionMetadata(session).outside)steeringController.close(new Error('An independent Codex command has no live input channel.'));
         if(adoption)await this.settleUnsentSteering(claim.turn_id,adoption.execution);
@@ -1465,6 +1466,9 @@ export class SessionExecutionHost {
     // A new Claude turn may run on a runner machine (RUNNERS.md, "Turns on a runner"): it then
     // carries its files' bytes and a run token, and nothing in it relies on this machine.
     const sharedCodex=!adoption&&session.provider_id==='codex'&&metadata.outside!==true&&executionHostsEnabled();
+    // Hosted transports sync the intent before launch. Direct and capability runs retain
+    // their original pre-barrier admission ordering.
+    const hostedAdmission=onRunner||(executionHostsEnabled()&&session.provider_id!=='chatgpt');
     const stagedFiles:{path:string;base64:string}[]=[];
     try {
       if(attachments.length&&metadata.interactionPolicy==='consultation-only')throw new ProviderCapabilityUnavailableError('attachments','Information-only consultation cannot read attached files.');
@@ -1503,9 +1507,16 @@ export class SessionExecutionHost {
       const provider:AgentProvider={id:session.provider_id,capabilities:underlying?.capabilities,
         fork:async()=>{throw new Error('Native fork uses its exact control turn.');},
         run:async prepared=>{
-          // The claimed turn, its execution record and its input are on disk before any provider
-          // (Claude, Codex or ChatGPT) is started or told anything.
+          // The claimed turn and its input are durable before admission. The execution intent
+          // is recorded below, before any hosted provider is started or told anything.
           await ledgerDurable();
+          // A fresh admission and its execution intent must not cross a completed drain.
+          // Put the check after the durability wait, immediately before either is recorded.
+          if(!adoption&&hostedAdmission){
+            if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
+            if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
+              throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
+          }
           // A run taken back after a restart takes messages again only once its history is rebuilt;
           // what the restart returned to the queue meanwhile goes into it then.
           if(adoption&&prepared.onSteeringReady){
@@ -1534,13 +1545,7 @@ export class SessionExecutionHost {
           } else if(privateCodex) {
             actual=this.adoptedRun(prepared,adoption!,MANAGED_CODEX);
           } else if(session.provider_id==='codex'&&(adoption||executionHostsEnabled())) {
-            // The readiness wait ended before provider admission. Keep admission and execution
-            // intent adjacent, with no await between them, so drain can requeue a waiting turn.
-            if(!adoption){
-              if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
-              if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
-                throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
-            }
+            // Admission and execution intent remain in one synchronous segment after readiness.
             // The shared daemon already outlives Concierge; recording the run lets the next Concierge follow it.
             actual=adoption?this.adoptedCodexRun(prepared,adoption,session):this.trackedCodexRun(prepared,claim,session,kept);
           }
@@ -1612,8 +1617,7 @@ export class SessionExecutionHost {
         :onRunner
           // The runner finds the Claude CLI on its own machine; a missing one is its definite refusal.
           ?{beforeProviderAdmission:()=>{
-            if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
-              throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
+            if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
           }}
         :session.provider_id==='claude-code'&&executionHostsEnabled()
           ?{beforeProviderAdmission:()=>{
@@ -1623,13 +1627,16 @@ export class SessionExecutionHost {
               throw new ProviderDispatchError({message:error.message,failureClass:'retryable',terminalConfirmed:true,
                 toolsUsed:[],localPrerequisiteUnavailable:true});
             }
-            if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
-              throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
+            if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
           }}
         :sharedCodex?{beforeProviderAdmission:()=>{
           if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
           return waitForCodexAppServerOrDrain(codexAppServerReady(),this.drainStarted,()=>this.draining);
-        }}:{}),
+        }}:{beforeProviderAdmission:()=>{
+          if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
+          if(!hostedAdmission&&!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
+            throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
+        }}),
       services:{bindProviderSession:(sessionId,provider,uuid)=>{
         bindSessionProvider(sessionId,provider,uuid);
         // An outside run's thread lives in its own CLI process; the shared App Server must not load it.

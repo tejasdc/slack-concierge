@@ -31,7 +31,7 @@ import {savedWorkAccountRooms} from './provider-account-dispatch';
 import {startBackgroundJobWatch} from './background-waits';
 import {startUpdateWaitWatch} from './update-wait-notices';
 import {startMachineWatchWorker,wakeWatchWorker} from './watches';
-import {claimAdoptableExecutions,hostedTurns,watchHeldExecution,type Adoption} from './executions';
+import {claimAdoptableExecutions,forgetTrackedHostedExecutionsOfTurn,hostedTurns,watchHeldExecution,type Adoption} from './executions';
 import {interruptOrphanedTurn} from './state';
 import {recoverExhaustedClaudeWork} from './provider-exhaustion-recovery';
 import {maybeStartInboxProviderFailover} from './inbox-provider-failover';
@@ -48,7 +48,7 @@ export async function startSessionRuntime() {
   const active=new Set<number>();
   const yielding=new Map<number,'allowance_boundary'|'deployment_boundary'|'quiet_boundary'>();
   let quietBoundaryTimer:ReturnType<typeof setTimeout>|null=null;
-  const registry=new ActiveTurnDispatchRegistry({onStarted:()=>queueMicrotask(inspectActiveBanked),onSettled:()=>queue.wake()});
+  const registry=new ActiveTurnDispatchRegistry({onStarted:()=>queueMicrotask(inspectActiveBanked),onSettled:turnId=>{forgetTrackedHostedExecutionsOfTurn(turnId);queue.wake();}});
   const requestBankedYield=(turnId:number,reason:'allowance_boundary'|'deployment_boundary'|'quiet_boundary')=>{
     if(yielding.has(turnId))return;
     const row=savedTurn(turnId);
@@ -139,6 +139,7 @@ export async function startSessionRuntime() {
   // Agents still running in their execution hosts are taken back before anything below reads
   // their turns as orphaned, and continue under the same run (design 2026-10-07 §3.1 step 4).
   const runAdopted=(adoption:Adoption)=>{
+    if(draining)return;
     active.add(adoption.claim.turn_id);
     inspectActiveBanked();
     void host.run(adoption.claim,adoption).catch(error=>{
@@ -221,11 +222,13 @@ export async function startSessionRuntime() {
     if(codexSessionObserverStop)void codexSessionObserverStop.catch(()=>{});
     if(quietBoundaryTimer)clearTimeout(quietBoundaryTimer);clearInterval(globalPauseReconcile);clearInterval(ghostSweep);stopProcessAuditSweep();clearInterval(parkedRecovery);clearSandboxReadyReceipt(runtime);stopUsageWatch();stopBackgroundJobWatch();stopUpdateWaitWatch();stopWatchWorker();stopAuthWatch();detach();detachProjection();queue.stop();host.beginDrain();await communication.stop();await codexSessionObserverStop;
     // A hosted agent keeps working through this exit; the next coordinator takes it back.
-    const hosted=hostedTurns(active);
     for(const turnId of active){
-      if(hosted.has(turnId))continue;
+      // Another turn can gain hosted custody while we await a previous cancellation.
+      // Classify each turn at the point we decide whether to cancel it.
+      if(hostedTurns([turnId]).has(turnId))continue;
       const row=db.query('SELECT session_id FROM turns WHERE id=?').get(turnId) as {session_id:number}|null;
-      if(row){const cancellation=registry.requestSessionCancellation(row.session_id,turnId);if(cancellation.matched)await cancellation.completion;}
+      if(row){const cancellation=registry.requestSessionDrainCancellation(row.session_id,turnId,
+        ()=>!hostedTurns([turnId]).has(turnId));if(cancellation.matched)await cancellation.completion;}
     }
     await server.stop(true);
   })();

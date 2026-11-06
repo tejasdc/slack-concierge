@@ -27,6 +27,41 @@ export type ExecutionRow = {
   detail: string | null; created_at_ms: number; updated_at_ms: number;
 };
 
+// The ledger remains authoritative across owners. This process mirrors only the open records
+// of turns it is executing, so drain never has to prepare a SQLite statement after closing
+// the request entrance. An adopted turn is seeded from the ledger when its dispatch starts.
+const openHostedExecutionIdsByTurn = new Map<number, Set<string>>();
+const hostedTurnByExecutionId = new Map<string, number>();
+
+function trackHostedExecution(turnId: number, executionId: string) {
+  let executions = openHostedExecutionIdsByTurn.get(turnId);
+  if (!executions) openHostedExecutionIdsByTurn.set(turnId, executions = new Set());
+  executions.add(executionId);
+  hostedTurnByExecutionId.set(executionId, turnId);
+}
+
+export function forgetHostedExecution(executionId: string) {
+  const turnId = hostedTurnByExecutionId.get(executionId);
+  if (turnId === undefined) return;
+  hostedTurnByExecutionId.delete(executionId);
+  const executions = openHostedExecutionIdsByTurn.get(turnId)!;
+  executions.delete(executionId);
+  if (executions.size === 0) openHostedExecutionIdsByTurn.delete(turnId);
+}
+
+export function trackOpenHostedExecutionsOfTurn(turnId: number) {
+  const rows = db.query("SELECT execution_id FROM executions WHERE turn_id=? AND state IN ('intended','live','exited')")
+    .all(turnId) as { execution_id: string }[];
+  for (const row of rows) trackHostedExecution(turnId, row.execution_id);
+}
+
+export function forgetTrackedHostedExecutionsOfTurn(turnId: number) {
+  const executions = openHostedExecutionIdsByTurn.get(turnId);
+  if (!executions) return;
+  for (const executionId of executions) hostedTurnByExecutionId.delete(executionId);
+  openHostedExecutionIdsByTurn.delete(turnId);
+}
+
 /** Recorded before the host is started, so a coordinator that dies mid-launch leaves evidence, never a second launch. */
 export function retainExecutionIntent(input: { executionId: string; turnId: number; dispatchAttempt: number; sessionId: number;
   provider: string; directory: string; processor: unknown; coordinatorInstanceId: string;
@@ -40,6 +75,7 @@ export function retainExecutionIntent(input: { executionId: string; turnId: numb
     .run(input.executionId, input.turnId, input.dispatchAttempt, input.sessionId, input.provider, HOST_PROTOCOL_VERSION,
       input.supervisor ?? HOST_SUPERVISOR, input.directory, JSON.stringify(input.processor),
       input.supervisor && input.supervisor !== RUNNER_SUPERVISOR ? "live" : "intended", input.coordinatorInstanceId, now, now);
+  trackHostedExecution(input.turnId, input.executionId);
   executionChanged();
 }
 
@@ -64,11 +100,13 @@ export function recordExecutionExited(executionId: string, exit: { code: number 
 
 export function recordExecutionReleased(executionId: string) {
   db.query("UPDATE executions SET state='released', updated_at_ms=? WHERE execution_id=? AND state<>'released'").run(Date.now(), executionId);
+  forgetHostedExecution(executionId);
 }
 
 export function recordExecutionLost(executionId: string, detail: string) {
-  db.query(`UPDATE executions SET state='lost', detail=?, updated_at_ms=? WHERE execution_id=? AND state IN ('intended','live')`)
+  const result = db.query(`UPDATE executions SET state='lost', detail=?, updated_at_ms=? WHERE execution_id=? AND state IN ('intended','live')`)
     .run(detail, Date.now(), executionId);
+  if (result.changes > 0) forgetHostedExecution(executionId);
   executionChanged();
 }
 
@@ -83,7 +121,7 @@ export function hostedTurns(turnIds: Iterable<number>): Set<number> {
   const hosted = new Set<number>();
   // Starting, running and exited-but-unsettled runs all outlive this coordinator: the next one
   // decides each from its host and record.
-  for (const turnId of turnIds) if (db.query("SELECT 1 FROM executions WHERE turn_id=? AND state IN ('intended','live','exited')").get(turnId)) hosted.add(turnId);
+  for (const turnId of turnIds) if (openHostedExecutionIdsByTurn.has(turnId)) hosted.add(turnId);
   return hosted;
 }
 
@@ -322,6 +360,7 @@ export function watchHeldExecution(held: HeldExecution, handlers: {
   const attempt = async () => {
     if (handlers.stopped()) return;
     const probe = await probeHost(held.execution);
+    if (handlers.stopped()) return;
     const claim = queuedTurnClaimRow(held.execution.turn_id);
     if (!claim) return;
     if (probe === "answering" || probe === "gone-with-exit") {
