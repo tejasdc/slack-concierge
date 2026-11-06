@@ -8,6 +8,20 @@ contains stable identities, state, acknowledgment, routing, settlement, a bounde
 preview, hold/retry explanation and an exact detail reference. The worker must not
 rebuild all open receipts when one changes.
 
+Every compact receipt also carries `attachments`, an ordered prefix of the immutable
+custody descriptors `{id,name,contentType,sha256}` for the attachment IDs retained on
+that accepted input (or create's first input), plus
+`attachmentsCoverage:{complete,count}`. `complete:true` means the array is exhaustive;
+`complete:false` preserves the largest prefix that fits the card and the existing
+`detail.operationId` names the exact receipt containing the full ordered array. This
+keeps the ordinary held-file path free of per-row detail reads without putting an
+unbounded child collection inside a bounded receipt window. The IDs remain in the
+exact request body, and bytes plus source attribution remain behind the authenticated
+attachment read. Receipts with no retained attachment IDs carry `attachments:[]` and
+complete coverage with count zero. A projection-code release changes the projection
+revision and rebuilds historical receipts, so already-held inputs gain the same
+descriptors and coverage as newly accepted ones.
+
 `session-receipt-state.ts` and `session-receipt-status.ts` are shared, storage-neutral
 policies used by the canonical owner and the worker. The worker's source adapter in
 `prepared-receipt-core.ts` resolves facts through exact keyed reads. The receipt's

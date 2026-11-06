@@ -96,6 +96,7 @@ import {runnerMachineCall} from './runner-machine-calls';
 import {sessionSpace,type SessionSpace} from './session-roles';
 import {preparedSessionWindow,preparedSessionChanges,preparedInboxAttention,preparedLabRequestIds} from './presentation-session-reader';
 import {preparedReceiptWindow,preparedReceiptChanges} from './presentation-receipt-reader';
+import {receiptAttachmentProjection} from './receipt-attachments';
 import {TURN_STATE,inputExecutionFacts,receiptOperationState} from './session-receipt-state';
 import {receiptStatusFromFacts,type InputStatusDetail} from './session-receipt-status';
 import {PROJECT_FOLDERS_OPERATION,PROJECT_NESTED_EXPERTISE_OPERATION,type ProjectSetup} from './project-setup';
@@ -1244,6 +1245,7 @@ export class SessionOwner {
     const control=['action','stop','reconcile','cancel','cancel-action','bind','fork','project-task','inbox-capture','resurrect','resurrect-native','outage-choice'].includes(input.kind);
     const request=input.kind==='bind'?{reference:parsed.reference}:control?null:Object.fromEntries(Object.entries(parsed).filter(([key])=>key!=='preparedPrompt'&&key!=='forkSource'));
     const provenance=sessionInputProvenance(input);
+    const attachments=receiptAttachmentProjection(db,input.kind,parsed).attachments;
     const retainedError=saved.error??observed.steering?.error??(['failed','uncertain'].includes(observed.state)?observed.turn?.agent_text:null);
     const steeringError=observed.state==='failed'?observed.turn?.agent_text:observed.state==='uncertain'?{code:statusDetail?.code,message:statusDetail?.message}:null;
     return {version:1,operationId:input.id,sessionId:`concierge:${input.session_id}`,humanAuthored:humanAuthored(input),...(provenance?{provenance}:{}),inputId:['input','create','consultation','comparison'].includes(input.kind)?input.id:['request','reply'].includes(input.kind)?input.source_input_id:null,
@@ -1256,6 +1258,7 @@ export class SessionOwner {
       // A delivered request or return carries its routing preamble and envelope to the provider;
       // people read the retained message itself, the same text its history row shows.
       text:control?null:(['input','create'].includes(input.kind)&&input.origin!=='human'&&input.request_id?acceptedInputAuthor(input).text:undefined)??parsed.text??parsed.firstInput?.text??null,request,
+      attachments,
       notificationRequest:input.origin==='human'&&['input','create','inbox-capture'].includes(input.kind)
         ?(Object.hasOwn(parsed,'notificationRequest')?parsed.notificationRequest:legacyNotificationRequest(String(parsed.text??parsed.firstInput?.text??''))):null,
       // Where this input sits: his own reply carries its own link, a routed capture the one recorded for it.

@@ -31,12 +31,23 @@ of verification delay. Neither should be called the confirmed September cause.
 This is not the separate short Thinkering restart issue. A later Concierge update
 at 06:20:45–06:20:52 completed verification in about six seconds.
 
-## Present behavior to check
+## Present behavior and repair
 
-The same class of gap remains possible. On November 5 at 23:04:01, a planned
+The same class of gap was observed. On November 5 at 23:04:01, a planned
 Concierge stop began and its foreground gateway immediately reported the owner
 unavailable. The old owner did not finish closing request surfaces until 23:05:50;
-the release then finished at 23:06:38. The serving source now emits a start and
-elapsed marker for each request-surface shutdown step, so the next long stop can
-identify the actual hold without guessing at a timeout or force-closing accepted
-commands. Until that is observed and repaired, this incident remains open.
+the release then finished at 23:06:38. Instrumentation installed afterwards
+identified a concrete hold during the November 6 02:15 release: the foreground
+gateway became unavailable at 02:15:05.873, the routed request server closed in
+65 milliseconds, and session communication took 15.8 seconds to stop. Six status
+requests to the unreachable Mac ended at that boundary. The peer owner waited for
+those reads to reach their deadline, even though their durable request IDs could
+be reconciled after restart. This establishes the present cause, not the precise
+September cause; the September journal is no longer retained.
+
+The repair cancels only peer status and reply reads during server shutdown and
+starts that cancellation before waiting for session communication workers.
+Peer admission requests retain their previous uncertain-delivery contract. An
+isolated check held a Mac status response indefinitely, then saw shutdown finish
+in 3 milliseconds with the request still open. Installed release timing and live
+request behavior still need to be checked after deployment.
