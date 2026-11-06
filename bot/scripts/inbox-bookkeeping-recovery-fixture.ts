@@ -39,7 +39,7 @@ try {
   // Older versions already recovered these service and agent roots. Recreate their
   // retained migration events and projections, including work assigned later.
   const at=new Date().toISOString(),by={kind:'owner',sessionId:`concierge:${inbox.id}`};
-  const recovered=(root:string,roots:string[]=[],laterDispatch=false)=>{
+  const recovered=(root:string,roots:string[]=[],laterDispatch:boolean|string=false)=>{
     const topicId=`topic:${randomUUID()}`,requestId=`req:${randomUUID()}`;
     const topic={topicId,sessionId:inbox.id,title:'Recovered thread',summary:'',state:'open',setAside:null,
       aliases:[],revision:1,recovered:true,readSequence:0,closure:null,createdBy:by,createdAt:at,updatedAt:at};
@@ -51,7 +51,8 @@ try {
     topics.applyTopicChange('topic',payload);
     if(laterDispatch){
       const updatedAt=new Date().toISOString();
-      const assigned={...request,dispatches:[{requestId:randomUUID()}],revision:2,updatedAt};
+      const dispatchId=typeof laterDispatch==='string'?laterDispatch:randomUUID();
+      const assigned={...request,dispatches:[{requestId:dispatchId}],revision:2,updatedAt};
       const next={...topic,revision:2,updatedAt};
       const assignment={change:'linked',topicId,topic:next,request:assigned,by,reason:'later agent work',revision:2};
       recordSessionEvent({eventId:`assigned:${root}`,sessionId:inbox.id,kind:'topic_request',payload:assignment});
@@ -74,8 +75,47 @@ try {
   const questionedRequest=recovered(questionedReturn);
   const questionedTopic=(db.query('SELECT topic_id FROM inbox_requests WHERE request_id=?').get(questionedRequest) as {topic_id:string}).topic_id;
   db.query('INSERT INTO inbox_questions (question_id,topic_id) VALUES (?,?)').run(`question:${randomUUID()}`,questionedTopic);
-  assert.deepEqual(topics.retireRecoveredBookkeepingRequests(),{retired:2});
+  // Other service notices (budget, area suggestion, cut-off turn) are not his requests either.
+  const budgetNotice=`budget-room-v1:${randomUUID()}`;
+  accepted('service',budgetNotice,'Claude allowance is almost used.');
+  const serviceBudget=recovered(budgetNotice);
+  // A return whose thread later got a link to work whose home thread's request lists it: that request keeps it.
+  const ownedWork=`request:${randomUUID()}`,ownedWorkId=ownedWork.slice('request:'.length);
+  accepted('agent',ownedWork,'Other delegated work, tracked in its own thread.',human,ownedWorkId);
+  const ownedRequest=recovered(ownedWork,[],ownedWorkId);
+  const linkedReturn=`return:${randomUUID()}`;
+  accepted('service',linkedReturn,'The agent answered; the router linked other work.',agentWork,agentWork.slice('request:'.length));
+  const linkedElsewhere=recovered(linkedReturn,[],ownedWorkId);
+  // Work homed in another thread whose request never listed it: closing here would hide it, so it stays open.
+  const untrackedWork=`request:${randomUUID()}`,untrackedWorkId=untrackedWork.slice('request:'.length);
+  accepted('agent',untrackedWork,'Delegated work placed but never linked.',human,untrackedWorkId);
+  const untrackedRequest=recovered(untrackedWork);
+  const untrackedReturn=`return:${randomUUID()}`;
+  accepted('service',untrackedReturn,'A return linked to untracked work.',agentWork,agentWork.slice('request:'.length));
+  const linkedUntracked=recovered(untrackedReturn,[],untrackedWorkId);
+  // Work whose home request already closed is tracked nowhere open, so the linking thread stays open too.
+  const closedWork=`request:${randomUUID()}`,closedWorkId=closedWork.slice('request:'.length);
+  accepted('agent',closedWork,'Delegated work whose own request closed.',human,closedWorkId);
+  const closedHome=recovered(closedWork,[],closedWorkId);
+  db.query("UPDATE inbox_requests SET state='closed' WHERE request_id=?").run(closedHome);
+  const closedHomeReturn=`return:${randomUUID()}`;
+  accepted('service',closedHomeReturn,'A return linked to work whose own request closed.',agentWork,agentWork.slice('request:'.length));
+  const linkedClosedHome=recovered(closedHomeReturn,[],closedWorkId);
+  // A settled reading item does not hold the thread open.
+  const readReturn=`return:${randomUUID()}`;
+  accepted('service',readReturn,'A return he already read.',agentWork,agentWork.slice('request:'.length));
+  const readRequest=recovered(readReturn);
+  const readTopic=(db.query('SELECT topic_id FROM inbox_requests WHERE request_id=?').get(readRequest) as {topic_id:string}).topic_id;
+  db.query("INSERT INTO inbox_questions (question_id,topic_id,state) VALUES (?,?,'read')").run(`question:${randomUUID()}`,readTopic);
+  assert.deepEqual(topics.retireRecoveredBookkeepingRequests(),{retired:5});
   assert.deepEqual(topics.retireRecoveredBookkeepingRequests(),{retired:0});
+  for(const requestId of [serviceBudget,linkedElsewhere,readRequest])
+    assert.equal((db.query('SELECT state FROM inbox_requests WHERE request_id=?').get(requestId) as {state:string}).state,'closed');
+  const linkedEvidence=JSON.parse((db.query('SELECT closure_json FROM inbox_requests WHERE request_id=?').get(linkedElsewhere) as {closure_json:string}).closure_json).evidence as string[];
+  assert.ok(linkedEvidence.includes(`topic-migration:${linkedReturn}`));
+  assert.ok(linkedEvidence.includes(ownedWork));
+  for(const requestId of [ownedRequest,untrackedRequest,linkedUntracked,linkedClosedHome])
+    assert.equal((db.query('SELECT state FROM inbox_requests WHERE request_id=?').get(requestId) as {state:string}).state,'open');
   for(const requestId of [serviceReturn,serviceUpkeep]){
     const row=db.query('SELECT state,closure_json FROM inbox_requests WHERE request_id=?').get(requestId) as {state:string;closure_json:string};
     assert.equal(row.state,'closed');
@@ -86,7 +126,7 @@ try {
   }
   for(const requestId of [assignedUpkeep,agentRequest,mixedRoot,questionedRequest])
     assert.equal((db.query('SELECT state FROM inbox_requests WHERE request_id=?').get(requestId) as {state:string}).state,'open');
-  assert.equal((db.query('SELECT count(*) AS n FROM inbox_requests WHERE state=?').get('open') as {n:number}).n,5);
+  assert.equal((db.query('SELECT count(*) AS n FROM inbox_requests WHERE state=?').get('open') as {n:number}).n,9);
   // A provider/folder cutover makes a new Inbox session. The one-time conversion already ran
   // for the Inbox, so neither migration may rebuild history or reopen recovered requests.
   topics.migrateInboxAttention();
@@ -95,7 +135,7 @@ try {
   assert.deepEqual(topics.migrateInboxTopics(),{migrated:false,reason:'already_migrated'});
   assert.equal(topics.migrateInboxAttention().migrated,false);
   assert.equal((db.query('SELECT count(*) AS n FROM inbox_topics').get() as {n:number}).n,topicsBefore);
-  console.log('Inbox bookkeeping recovery fixture passed: only untouched service return/upkeep requests retired; human and later work stayed open.');
+  console.log('Inbox bookkeeping recovery fixture passed: recovered service notices retired; human, agent, questioned and thread-owned later work stayed open.');
 } finally {
   rmSync(scratch,{recursive:true,force:true});
 }
