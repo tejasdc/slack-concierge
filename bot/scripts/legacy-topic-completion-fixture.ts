@@ -73,11 +73,11 @@ try {
   assert.equal(historical.outcome,'answered');assert.equal(JSON.parse(historical.result_json).workDisposition,undefined);
   assert.deepEqual(db.query('SELECT count(*) AS n FROM session_communication_requests WHERE request_id=?').get(dispatch.request_id),{n:1});
 
-  // A completed final from before a topic existed can be shared by several migrated requests.
-  // Each request must cite that one retained final; no answer post is manufactured to close it.
+  // A completed final can be shared by several migrated requests. Each request must cite that
+  // one retained final; closure never manufactures another answer post.
   const typedTarget=owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat'});
   const typedDispatch=await communication.ask({source:current.source,action_id:'typed-dispatch',address:typedTarget.session.address,
-    summary:'Repair both parts',text:'Repair both parts and check them.',requestedEffect:'work'});
+    thread:rootId,summary:'Repair both parts',text:'Repair both parts and check them.',requestedEffect:'work'});
   await communication.idle();const typedWorker=run();
   communication.reply({source:typedWorker.source,action_id:'typed-final',request_id:typedDispatch.request_id,
     text:'Both parts were repaired and checked.',final:true,workDisposition:'completed',summary:'Both parts repaired',
@@ -85,6 +85,9 @@ try {
   await communication.idle();
   const typedEvent=communication.inspect(typedDispatch.request_id).events.find(event=>event.kind==='final');
   assert.ok(typedEvent);
+  const answerPosts=()=>db.query("SELECT count(*) AS n FROM session_owner_events WHERE kind='post' AND json_extract(payload_json,'$.requestId')=?")
+    .get(typedDispatch.request_id) as {n:number};
+  const postsBeforeClosure=answerPosts().n;
   const sharedIds=['typed-request-a','typed-request-b'].map(action=>{
     const item=topicsCommand(current.actor,{verb:'request.add',topic_id:topicId,action_id:action,title:action,
       sources:[rootId],brief:'Check this part of the repaired work.'});
@@ -98,8 +101,7 @@ try {
       disposition:'completed',evidence:[typedEvent.event_id],reason:`Checked part ${index+1} against the retained final.`});
     assert.deepEqual(result.request.closure.evidence,[typedEvent.event_id]);
   }
-  assert.deepEqual(db.query("SELECT count(*) AS n FROM session_owner_events WHERE kind='post' AND json_extract(payload_json,'$.requestId')=?")
-    .get(typedDispatch.request_id),{n:0});
+  assert.equal(answerPosts().n,postsBeforeClosure);
   assert.deepEqual(errors,[]);
   console.log('Legacy topic completion fixture passed: uncertain and unrelated evidence stayed open; exact legacy and typed finals closed without duplicate posts.');
 } finally {
