@@ -6,15 +6,13 @@ import {budgetBriefWithProviderRoom,chooseProviderForNewWork,newWorkCapacity,cap
 import {clearModelCapacityRefusal,modelCapacityRefused,rememberModelCapacityRefusal} from './provider-model-capacity';
 import {needClaudeSignInRenewal,needSignInRenewal} from './signin-renewal';
 import {chooseClaudeDispatch,claudeAccountWithRoomBesides,claudeEveryAccountClearsAt,markClaudeHomeRefused,markClaudeHomeVerified} from './provider-account-dispatch';
-import type {ProviderUsage} from './provider-account-usage';
+import {providerAccountUsage,type ProviderUsage} from './provider-account-usage';
 import {warmClaudeAccount} from './prompt-cache-lifetime';
 import {yieldBankedTurn} from './saved-work';
 import {recordSessionEvent,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {codexRelayRunner} from './codex-app-server-client';
 import {runnerMachineCall} from './runner-machine-calls';
 import {claudeAccountSelection} from './provider-account-selection';
-import {accountReadingFresh,includedAllowanceWindows} from './account-allowance-observation';
-import {chooseAccountForTurn} from './provider-account-choice';
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {homedir} from 'node:os';
@@ -609,16 +607,6 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       providerStarted = true;
       markTurnProviderStarted(input.turnId);
     };
-    if (input.beforeProviderAdmission) {
-      const prerequisite = input.beforeProviderAdmission();
-      if (prerequisite) await prerequisite;
-    } else if (!markTurnProviderAdmissionIntended(
-      input.turnId,
-      input.ownerInstanceId,
-      dispatchAttempt,
-    )) {
-      throw new Error("Provider admission intent could not be persisted for the current turn attempt.");
-    }
     const commitProvenanceToken = getOrCreateTurnCommitProvenance(input.turnId);
     const previousClaudeAccount=input.providerId==='claude-code'?sessionMetadata(input.session).claudeAccount??null:null;
     const lastClaudeCall=input.providerId==='claude-code'?sessionMetadata(input.session).claudeCacheCall??null:null;
@@ -629,35 +617,23 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     runningClaudeModel=claudeLaunchModel;
     const remoteClaudeRunner=input.providerId==='claude-code'?input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER?.trim()||null:null;
     const remoteGoogleRunner=input.providerId==='antigravity'?input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER?.trim()||null:null;
-    let claudeChoice=input.providerId==='claude-code'&&!remoteClaudeRunner
+    if(remoteClaudeRunner&&providerAccountUsage('claude-code')?.sourceRunner!==remoteClaudeRunner)
+      throw new ProviderDispatchError({failureClass:'parked_access',terminalConfirmed:true,
+        message:`Claude was placed on runner ${remoteClaudeRunner}, but the owner's saved Claude allowance reading is not from that runner. This turn remains held until the owner has a reading for its selected runner.`});
+    let claudeChoice=input.providerId==='claude-code'
       ?input.boundAccount?{...input.boundAccount,because:'spending-this-window' as const,expected:input.boundAccount.account,selectionRevision:sessionMetadata(input.session).claudeSelectionRevision??0}
         :chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0,input.turnId,claudeLaunchModel,warmClaudeCacheAccount)
       :null;
     if(remoteClaudeRunner){
-      const readings=await runnerMachineCall<Record<string,ProviderUsage>>(remoteClaudeRunner,'accounts.readings',{},100_000);
-      const usage=readings?.['claude-code'];
-      if(!usage||!Array.isArray(usage.accounts))throw new Error(`Runner ${remoteClaudeRunner} returned no Claude allowance readings.`);
-      const rooms=usage.accounts.map(account=>{
-        const windows=includedAllowanceWindows('claude-code',account,claudeLaunchModel);
-        const fresh=accountReadingFresh('claude-code',usage,account,Date.now(),undefined,claudeLaunchModel);
-        const weekly=windows.find(window=>/weekly/i.test(window.name));
-        return {account:account.label,home:`runner-account:${account.label}`,isDefault:false,
-          tightestUsedPercent:fresh&&windows.length?Math.max(...windows.map(window=>window.usedPercent)):null,
-          weeklyUsedPercent:fresh&&weekly?weekly.usedPercent:null,
-          weeklyResetsAtMs:fresh&&weekly?.resetsAt?Date.parse(weekly.resetsAt):null,
-          problem:account.signedOut?'This runner account is signed out.':fresh?account.problem:'Runner allowance reading is stale.'};
-      });
-      const selection=claudeAccountSelection();
-      const choice=chooseAccountForTurn({accounts:rooms,
-        bound:input.boundAccount?{account:input.boundAccount.account,reason:'spending-this-window'}:null,
-        prefer:previousClaudeAccount,newlySelected:!!selection&&selection.revision>(sessionMetadata(input.session).claudeSelectionRevision??0),
-        warmCacheAccount:warmClaudeCacheAccount,nowMs:Date.now()});
-      if(!choice.account)throw new Error(`Runner ${remoteClaudeRunner} has no verified Claude account with allowance for this turn.`);
-      const validation=await runnerMachineCall<{available:boolean;resolution:string}>(remoteClaudeRunner,'accounts.validate',
-        {provider:'claude-code',account:choice.account});
-      if(!validation?.available)throw new Error(`Runner ${remoteClaudeRunner} cannot resolve its selected Claude account; refusing to launch against another home.`);
-      claudeChoice={account:choice.account,home:null,because:choice.because,expected:selection?.label??null,
-        selectionRevision:selection?.revision??sessionMetadata(input.session).claudeSelectionRevision??0};
+      if(!claudeChoice)throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,
+        message:`No cached Claude account choice is available for runner ${remoteClaudeRunner}; the turn remains held until owner account readings are available.`});
+      let validation:{available:boolean;resolution:string}|null=null;
+      try{validation=await runnerMachineCall(remoteClaudeRunner,'accounts.validate',
+        {provider:'claude-code',account:claudeChoice.account});}
+      catch(error){throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,
+        message:`Runner ${remoteClaudeRunner} could not validate Claude account ${claudeChoice.account}: ${error instanceof Error?error.message:String(error)}`});}
+      if(!validation?.available)throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,
+        message:`Runner ${remoteClaudeRunner} cannot resolve selected Claude account ${claudeChoice.account} (${validation?.resolution??'unknown'}); the turn remains held.`});
     }
     runningClaudeAccount=input.providerId==='claude-code'
       ?(remoteClaudeRunner?claudeChoice?.account??null
@@ -694,6 +670,12 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
           payload:{systemInstructionsSha256:createHash('sha256').update(preparedTurn.systemPrompt??'').digest('hex'),
             effort:input.reasoningEffort??null}});
       }catch(error){log('warn','prompt_cache_identity_record_failed',{turn_id:input.turnId,...errorFields(error)});}
+    }
+    if (input.beforeProviderAdmission) {
+      const prerequisite = input.beforeProviderAdmission();
+      if (prerequisite) await prerequisite;
+    } else if (!markTurnProviderAdmissionIntended(input.turnId,input.ownerInstanceId,dispatchAttempt)) {
+      throw new Error("Provider admission intent could not be persisted for the current turn attempt.");
     }
     const providerPrompt=[preparedTurn.prompt,actualClaudeBrief].filter(Boolean).join('\n\n');
     // History attribution compares the provider's exact user bytes with this retained replay.

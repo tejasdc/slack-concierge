@@ -52,7 +52,7 @@ function exactFolder(projectPath:string,path:string) {
  * Answer only the project vocabulary used by the owner. Each operation has a fixed filesystem
  * action and an authority rooted in this runner's own registered checkout.
  */
-export type RunnerProjectServices={findProviderSessionHome?:(provider:'codex'|'claude-code',account:string|null,nativeId:string)=>{account:string;home:string;transcript:string}|null;git?:(cwd:string,args:string[])=>Promise<string>};
+export type RunnerProjectServices={findProviderSessionHome?:(provider:'codex'|'claude-code',account:string|null,nativeId:string)=>{account:string|null;home:string|null;transcript:string}|null;git?:(cwd:string,args:string[])=>Promise<string>};
 export async function serveProjectCall(method:string,params:Record<string,unknown>,services:RunnerProjectServices={}):Promise<unknown> {
   if(method==='projects.default') {
     const root=realpathSync(workspaceRoot());

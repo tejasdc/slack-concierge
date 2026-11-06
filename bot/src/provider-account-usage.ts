@@ -8,7 +8,7 @@ import { peerSettings } from "./session-peers";
 import { cachedUsageLimit, claudeAccountCachedReset, releaseUsageHeldWork, usageAttempt } from "./provider-usage";
 import { ACCOUNT_READING_MAX_AGE_MS, listProfiles, setAntigravityAccountInUse, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
 import {accountReadingFresh,chooseAccountObservation,includedAllowanceWindows,accountCanTakeWork} from './account-allowance-observation';
-import { claudeEveryAccountClearsAt, claudeHeldWorkCanRun, proveClaudeHomesAhead, requestMissingClaudeHomes } from "./provider-account-dispatch";
+import { claudeEveryAccountClearsAt, claudeHeldWorkCanRun, proveClaudeHomesAhead, requestMissingClaudeHomes, selectedClaudeHome } from "./provider-account-dispatch";
 import { needSignInRenewal } from "./signin-renewal";
 import { accountUsageTable } from "./provider-usage-tables";
 import { antigravityExecutable } from "./antigravity";
@@ -618,7 +618,8 @@ export async function refreshProviderAccountUsage(): Promise<void> {
           throw new Error(`runner ${runner} returned no ${provider} account readings`);
         usage={...remote,sourceRunner:runner};
         try {
-          const identity=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider});
+          const selected=provider==='claude-code'?selectedClaudeHome()?.label:null;
+          const identity=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider,...(selected?{account:selected}:{})});
           setRunnerAccountInUse(provider,identity&&typeof identity.id==='string'&&typeof identity.label==='string'?identity:null);
         } catch { setRunnerAccountInUse(provider,null); }
       }else usage=await read();
@@ -652,7 +653,8 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       releaseIfAccountChanged(provider, agentUsage);
       if (provider === "claude-code") proveClaudeHomesAhead(usage.accounts.map(account => account.label));
       // A sign-in the provider refused is renewed through the Mac's browser, once per episode.
-      if(!runner)for (const account of usage.accounts) if (account.signedOut) needSignInRenewal(provider, account.label, "its usage could not be read because the sign-in stopped working");
+      for (const account of usage.accounts) if (account.signedOut) needSignInRenewal(provider, account.label,
+        `its sign-in on ${runner?`runner ${runner}`:'this machine'} stopped working`);
       const current=agentUsage.accounts.find(account=>account.current);
       // A provider-wide release has no turn model. It needs evidence across every Claude
       // window; an Opus-only reading cannot wake a Fable hold.

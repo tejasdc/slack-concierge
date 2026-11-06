@@ -1,5 +1,5 @@
 /** Provider-account facts and actions that belong to this runner's machine. */
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -25,6 +25,18 @@ const activationOperations = new Map<string, ActivationOperation>();
 let unmanagedRepair:Promise<{status:string;detail?:string}>|null=null;
 let codexRepairActive=false;
 export function runnerCodexRepairActive():boolean{return codexRepairActive;}
+
+export function runnerCodexServerNeedsRehome(versionOutput:string,hasRunnerState:boolean|null):boolean {
+  return versionOutput.includes('"backend":"pid"')&&hasRunnerState===false;
+}
+export function runnerCodexRehomeIsProven(expectedAccount:string|null,actualAccount:string|null,versionOutput:string,hasRunnerState:boolean|null):boolean {
+  return !!expectedAccount&&actualAccount===expectedAccount&&versionOutput.includes('"backend":"pid"')&&hasRunnerState===true;
+}
+
+function processHasRunnerState(pid:number):boolean|null {
+  try{return readFileSync(`/proc/${pid}/environ`).toString().split("\0").some(entry=>entry.startsWith("CONCIERGE_RUNNER_STATE=")&&entry.length>"CONCIERGE_RUNNER_STATE=".length);}
+  catch{return null;}
+}
 
 function writeSignInState(operation: SignInOperation) {
   const rows = [...signinOperations.values()].map(({id,provider,status,account,detail}) => ({id,provider,status,account,detail,updatedAt:Date.now()}));
@@ -119,6 +131,38 @@ function safeAccountFolder(label: string, id: string): string {
   return `${slug}-${createHash("sha256").update(id).digest("hex").slice(0, 12)}`;
 }
 
+const claudePerLogin = new Set([".credentials.json", ".claude.json", ".claude.json.lock", ".account-email", "backups",
+  "remote-settings.json", "policy-limits.json", "policy-limits.json.stamp.json", "hfi-auth.json", ".session_ingress_token", ".storage-write"]);
+const claudeScratch = new Set(["sessions", "session-env", "shell-snapshots", "cache", "statsig", "paste-cache", ".last-cleanup",
+  ".last-update-result.json", "mcp-needs-auth-cache.json", "teams", "jobs", "daemon"]);
+export function prepareRunnerClaudeAccountHome(home: string): void {
+  const shared = liveRoot("claude-code");
+  for (const name of readdirSync(shared)) {
+    if (claudePerLogin.has(name) || /^\.(credentials|claude)\.json\./.test(name)
+      || /^\.oauth_refresh\.lock/.test(name) || /^\.storage-write\./.test(name)) continue;
+    const source = join(shared, name), target = join(home, name), wanted = source;
+    let sourceReal: string;
+    try { sourceReal = realpathSync(source); } catch { continue; }
+    let targetReal: string | null = null;
+    try { targetReal = realpathSync(target); } catch {}
+    if (targetReal === sourceReal) {
+      if (lstatSync(target).isSymbolicLink() && readlinkSync(target) !== wanted) { unlinkSync(target); symlinkSync(wanted, target); }
+      continue;
+    }
+    const present = targetReal !== null || (() => { try { lstatSync(target); return true; } catch { return false; } })();
+    if (claudeScratch.has(name)) {
+      if (!present) symlinkSync(wanted, target);
+      continue;
+    }
+    if (present) {
+      const aside = join(home, `.unlinked-${Date.now()}`);
+      mkdirSync(aside, { recursive: true, mode: 0o700 });
+      renameSync(target, join(aside, name));
+    }
+    symlinkSync(wanted, target);
+  }
+}
+
 function codexCredentialId(home: string): string | null {
   const value = readJson(join(home, "auth.json"))?.tokens?.account_id;
   return typeof value === "string" && value ? value : null;
@@ -166,6 +210,7 @@ async function fileClaudeSignIn(operation: SignInOperation): Promise<string> {
     renameSync(source, target);
   }
   writeFileSync(join(home, ".account-email"), email, { mode: 0o600 });
+  prepareRunnerClaudeAccountHome(home);
   writeSignInState({ ...operation, status: "completed", account: email, stageHome: "" });
   return email;
 }
@@ -346,6 +391,7 @@ function activateCodex(params: Record<string, unknown>) {
   const prior = activationOperations.get(id);
   if (prior) {
     if (prior.account !== account) throw new Error("An activation operation id cannot change accounts.");
+    if (prior.status === "starting" && codexActivationFlight) return codexActivationFlight;
     return prior;
   }
   const uncertain = [...activationOperations.values()].find(operation => operation.status === "uncertain");
@@ -398,29 +444,60 @@ async function runnerSocketRepair(activeTurns:number):Promise<{status:string;det
     codexRepairActive=true;
     try{
       const check=await runCommand(MANAGED_CODEX,['app-server','daemon','version'],20_000);
-      if(check.code!==0||!check.output.includes('"running"')||check.output.includes('"backend"'))
+      if(check.code!==0||!check.output.includes('"running"'))
         return {status:'managed_or_absent'};
+      const managedPid=check.output.includes('"backend":"pid"');
+      const unmanaged=!check.output.includes('"backend"');
+      if(!managedPid&&!unmanaged)return {status:'managed_or_absent'};
       if(!codexUpdaterDisabled())return {status:'refused',detail:'Codex automatic updates are not disabled on this runner.'};
       const socket=codexAppServerSocketPath(),servers=controlSocketListeners(socket);
-      if(!servers.length)return {status:'uncertain',detail:'Codex reported an unmanaged server, but no exact listener owns its control socket.'};
-      const tree=processTree(servers);
+      if(!servers.length)return {status:'uncertain',detail:'Codex reported an App Server, but no exact listener owns its control socket.'};
+      const expectedAccount=codexAccount(liveRoot('codex'))?.label??null;
+      if(!expectedAccount)return {status:'refused',detail:'The current Codex account cannot be verified; repair will not change the active identity.'};
       holdCodexDaemonAutoStart(true);
       try{
-      for(const pid of servers)try{process.kill(pid,'SIGTERM');}catch{}
-      const deadline=Date.now()+70_000;
-      while(servers.some(processAlive)&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,500));
-      if(servers.some(processAlive))for(const pid of [...tree].reverse())try{process.kill(pid,'SIGKILL');}catch{}
-      const stopped=Date.now()+5_000;
-      while(servers.some(processAlive)&&Date.now()<stopped)await new Promise(resolve=>setTimeout(resolve,100));
-      if(servers.some(processAlive))return {status:'uncertain',detail:'The unmanaged Codex listener did not stop.'};
+      if(managedPid){
+        if(!process.env.CONCIERGE_RUNNER_STATE?.trim())return {status:'refused',detail:'The runner has no runner-state directory configured for a safe App Server re-home.'};
+        if(servers.length!==1)return {status:'uncertain',detail:'The managed App Server control socket has multiple listeners; no process was stopped.'};
+        const hasRunnerState=processHasRunnerState(servers[0]!);
+        if(hasRunnerState===null)return {status:'uncertain',detail:'The exact App Server listener environment could not be read; no process was stopped.'};
+        if(!runnerCodexServerNeedsRehome(check.output,hasRunnerState)){
+          const probe=new CodexAppServerClient();let actual:string|null=null;
+          try{const answer=await probe.request('account/read',{refreshToken:true},{requestTimeoutMs:20_000});
+            actual=typeof answer?.account?.email==='string'?answer.account.email:null;}
+          catch{return {status:'uncertain',detail:'The runner-managed App Server account could not be verified.'};}
+          finally{await probe.close();}
+          return actual===expectedAccount?{status:'managed_or_absent'}:
+            {status:'uncertain',detail:'The runner-managed App Server account does not match the saved Codex account.'};
+        }
+        const stopped=await runCommand(MANAGED_CODEX,['app-server','daemon','stop'],90_000);
+        if(stopped.code!==0)return {status:'uncertain',detail:'Codex did not confirm a managed daemon stop; no replacement was started.'};
+        const stopDeadline=Date.now()+5_000;
+        while(controlSocketListeners(socket).length&&Date.now()<stopDeadline)await new Promise(resolve=>setTimeout(resolve,100));
+        if(controlSocketListeners(socket).length)return {status:'uncertain',detail:'The managed App Server still owns its control socket after daemon stop.'};
+      }else{
+        const tree=processTree(servers);
+        for(const pid of servers)try{process.kill(pid,'SIGTERM');}catch{}
+        const deadline=Date.now()+70_000;
+        while(servers.some(processAlive)&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,500));
+        if(servers.some(processAlive))for(const pid of [...tree].reverse())try{process.kill(pid,'SIGKILL');}catch{}
+        const stopped=Date.now()+5_000;
+        while(servers.some(processAlive)&&Date.now()<stopped)await new Promise(resolve=>setTimeout(resolve,100));
+        if(servers.some(processAlive))return {status:'uncertain',detail:'The unmanaged Codex listener did not stop.'};
+      }
       if(await socketAnswers(socket))return {status:'managed_or_absent',detail:'A replacement App Server answered during repair.'};
       let present=false;try{lstatSync(socket);present=true;}catch{}
-      if(present)renameSync(socket,`${socket}.stale-${new Date().toISOString().replace(/[:.]/g,'-')}`);
+      if(present&&unmanaged)renameSync(socket,`${socket}.stale-${new Date().toISOString().replace(/[:.]/g,'-')}`);
       const started=await startCodexDaemonInOwnScope();
       const after=await runCommand(MANAGED_CODEX,['app-server','daemon','version'],20_000);
-      if(started.code===0&&after.code===0&&after.output.includes('"backend":"pid"'))
-        return {status:'repaired'};
-      return {status:'uncertain',detail:'The replacement App Server did not confirm a managed backend.'};
+      const listeners=controlSocketListeners(socket),hasRunnerState=listeners.length===1?processHasRunnerState(listeners[0]!):null;
+      const probe=new CodexAppServerClient();let actualAccount:string|null=null;
+      try{const answer=await probe.request('account/read',{refreshToken:true},{requestTimeoutMs:20_000});
+        actualAccount=typeof answer?.account?.email==='string'?answer.account.email:null;}
+      finally{await probe.close();}
+      if(started.code===0&&after.code===0&&runnerCodexRehomeIsProven(expectedAccount,actualAccount,after.output,hasRunnerState))
+        return {status:'repaired',detail:managedPid?'The same-account App Server was re-homed into the runner environment.':'The unmanaged App Server was replaced by the runner-managed server.'};
+      return {status:'uncertain',detail:'The replacement App Server did not prove runner ownership and the same Codex account.'};
       }finally{holdCodexDaemonAutoStart(false);}
     }finally{codexRepairActive=false;}
   })().finally(()=>{unmanagedRepair=null;});
@@ -466,7 +543,7 @@ export function runnerAccountHomes(key: AccountProvider): { account: string; hom
  * searched and the result is usable only when exactly one transcript matches.
  */
 export function findRunnerProviderSessionHome(key: AccountProvider, accountLabel: string | null, nativeId: string):
-  { account: string; home: string; transcript: string } | null {
+  { account: string | null; home: string | null; transcript: string } | null {
   if (!/^[A-Za-z0-9-]{8,128}$/.test(nativeId)) return null;
   const candidates = accountLabel === null
     ? runnerAccountHomes(key)
@@ -476,8 +553,22 @@ export function findRunnerProviderSessionHome(key: AccountProvider, accountLabel
     for (const transcript of exactProviderTranscripts(key, candidate.home, nativeId))
       matches.push({ account: candidate.account, home: candidate.home, transcript });
   }
-  const unique = new Map(matches.map(match => [match.transcript, match]));
-  return unique.size === 1 ? [...unique.values()][0]! : null;
+  if(accountLabel!==null){
+    const unique = new Map(matches.map(match => [safeRealpath(match.transcript), match]));
+    return unique.size === 1 ? [...unique.values()][0]! : null;
+  }
+  const physical = new Map<string,{account:string|null;home:string|null;transcript:string}>();
+  for(const match of matches){const path=safeRealpath(match.transcript);
+    if(!physical.has(path))physical.set(path,{account:null,home:null,transcript:path});}
+  if(key==='codex'&&physical.size===1){
+    const labels=new Set(matches.map(match=>match.account));
+    if(labels.size===1){const match=matches[0]!;return {account:match.account,home:match.home,transcript:safeRealpath(match.transcript)};}
+  }
+  return physical.size===1?[...physical.values()][0]!:null;
+}
+
+function safeRealpath(path: string): string {
+  try { return realpathSync(path); } catch { return path; }
 }
 
 function exactProviderTranscripts(key: AccountProvider, home: string, nativeId: string): string[] {
@@ -501,8 +592,11 @@ function exactProviderTranscripts(key: AccountProvider, home: string, nativeId: 
 }
 
 /** Current account identity as read from this runner's own credentials. */
-export function runnerAccountIdentity(key: AccountProvider): { id: string; label: string } | null {
-  return key === "codex" ? codexAccount(liveRoot(key)) : claudeAccount(liveRoot(key));
+export function runnerAccountIdentity(key: AccountProvider, accountLabel?: string): { id: string; label: string } | null {
+  if (key === "codex") return codexAccount(liveRoot(key));
+  if (!accountLabel?.trim()) return null;
+  const home = runnerAccountHome(key, accountLabel);
+  return home ? claudeAccount(home) : null;
 }
 
 /** The account snapshots are observed here; the owner keeps their allowance and request ledger. */
@@ -519,7 +613,7 @@ export async function serveRunnerAccountCall(method: string, params: Record<stri
       return current.length===1?{id:current[0]!.label,label:current[0]!.label}:null;
     }
     const key = provider(params.provider);
-    return runnerAccountIdentity(key);
+    return runnerAccountIdentity(key,typeof params.account==='string'?params.account:undefined);
   }
   if (method === "accounts.validate") {
     const key = provider(params.provider);
@@ -538,8 +632,18 @@ export async function serveRunnerAccountCall(method: string, params: Record<stri
     if (account !== null && candidates.length !== 1)
       return { account: null, resolution: candidates.length > 1 ? "ambiguous" : "missing" };
     const matches = candidates.flatMap(candidate => exactProviderTranscripts(key, candidate.home, params.nativeId as string)
-      .map(transcript => ({ account: candidate.account, transcript })));
-    if (matches.length === 1) return { account: matches[0]!.account, resolution: "unique" };
+      .map(transcript => ({ account: candidate.account, transcript: safeRealpath(transcript) })));
+    // A shared Claude projects symlink may expose one physical transcript through several
+    // account homes. That proves file identity, not account identity; unbound resolution stays
+    // ambiguous until the caller supplies the saved account label.
+    if (account !== null) {
+      const physical = new Set(matches.map(match => match.transcript));
+      if (physical.size === 1 && matches.length === 1) return { account: matches[0]!.account, resolution: "unique" };
+      return { account: null, resolution: matches.length ? "ambiguous" : "missing" };
+    }
+    if(key==='codex'&&matches.length===1
+      &&homes.filter(home=>home.account===matches[0]!.account).length===1)
+      return {account:matches[0]!.account,resolution:'unique'};
     return { account: null, resolution: matches.length ? "ambiguous" : "missing" };
   }
   if (method === "accounts.readings") return runnerAccountReadings();

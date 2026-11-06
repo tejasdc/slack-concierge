@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -42,8 +43,38 @@ try {
   mkdirSync(claude, { recursive: true });
   writeFileSync(join(claude, ".credentials.json"), JSON.stringify({ claudeAiOauth: { refreshToken: "opaque-refresh", subscriptionType: "max" } }));
   writeFileSync(join(claude, ".account-email"), "writer@example.com");
+  const claudeOther = join(root, ".claude-accounts", "other");
+  mkdirSync(claudeOther, { recursive: true });
+  writeFileSync(join(claudeOther, ".credentials.json"), JSON.stringify({ claudeAiOauth: { refreshToken: "other-refresh", subscriptionType: "max" } }));
+  writeFileSync(join(claudeOther, ".account-email"), "other@example.com");
+  const claudeProjectRoot = join(root, ".claude", "projects");
+  const claudeTranscriptId = "87654321-abcd-4321-abcd-123456789abc";
+  const claudeTranscript = join(claudeProjectRoot, "-project", `${claudeTranscriptId}.jsonl`);
+  mkdirSync(join(claudeTranscript, ".."), { recursive: true });
+  writeFileSync(claudeTranscript, "{}");
+  const { symlinkSync } = await import("node:fs");
+  symlinkSync(claudeProjectRoot, join(claude, "projects"));
+  symlinkSync(claudeProjectRoot, join(claudeOther, "projects"));
+  writeFileSync(join(root, ".claude", ".credentials.json"), JSON.stringify({ claudeAiOauth: { refreshToken: "main-refresh" } }));
+  writeFileSync(join(root, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "wrong-default@example.com" } }));
+  const freshClaudeHome=join(root,".claude-accounts","fresh");
+  mkdirSync(freshClaudeHome,{recursive:true});
+  writeFileSync(join(freshClaudeHome,".credentials.json"),JSON.stringify({claudeAiOauth:{refreshToken:"fresh-refresh"}}));
+  writeFileSync(join(freshClaudeHome,".account-email"),"fresh@example.com");
+  writeFileSync(join(root,".claude","settings.json"),JSON.stringify({permissions:{allow:["Read"]}}));
 
   const accounts = await import("../src/runner-provider-accounts");
+  assert.equal(accounts.runnerCodexServerNeedsRehome('{"running":true,"backend":"pid"}',false),true);
+  assert.equal(accounts.runnerCodexServerNeedsRehome('{"running":true,"backend":"pid"}',null),false,
+    "an unreadable listener environment must never be treated as a safe re-home target");
+  assert.equal(accounts.runnerCodexRehomeIsProven("active@example.com","active@example.com",'{"running":true,"backend":"pid"}',true),true);
+  assert.equal(accounts.runnerCodexRehomeIsProven("active@example.com","other@example.com",'{"running":true,"backend":"pid"}',true),false,
+    "a re-home is not proven if the App Server changes accounts");
+  accounts.prepareRunnerClaudeAccountHome(freshClaudeHome);
+  assert.equal(readFileSync(join(freshClaudeHome,"settings.json"),"utf8"),readFileSync(join(root,".claude","settings.json"),"utf8"));
+  assert.equal(await (await import("node:fs/promises")).realpath(join(freshClaudeHome,"settings.json")),await (await import("node:fs/promises")).realpath(join(root,".claude","settings.json")));
+  assert.equal(readFileSync(join(freshClaudeHome,".credentials.json"),"utf8").includes("fresh-refresh"),true,
+    "runner account setup must keep its own login and must not link the default login");
   assert.deepEqual(await accounts.serveRunnerAccountCall("accounts.codex.repairUnmanaged", {}, { activeTurns: 1 }),
     { status: "busy", detail: "The runner still owns an active turn." },
     "unmanaged-server repair must refuse while the runner owns a turn");
@@ -52,6 +83,19 @@ try {
   assert.equal(accounts.runnerAccountHome("codex", "saved@example.com"), join(root, ".codex-accounts", "saved"));
   assert.equal(accounts.runnerAccountHome("claude-code", "writer@example.com"), claude);
   assert.equal(accounts.runnerAccountHome("claude-code", "unknown@example.com"), null);
+  assert.deepEqual(await accounts.serveRunnerAccountCall("accounts.identity", { provider: "claude-code" }), null,
+    "Claude identity must not read the blank/default home or invent its account label");
+  assert.deepEqual(await accounts.serveRunnerAccountCall("accounts.identity", { provider: "claude-code", account: "writer@example.com" }),
+    { id: createHash("sha256").update("opaque-refresh").digest("hex").slice(0, 16), label: "writer@example.com" });
+  assert.deepEqual(await accounts.serveRunnerAccountCall("accounts.transcript", { provider: "claude-code", account: null, nativeId: claudeTranscriptId }),
+    { account: null, resolution: "ambiguous" }, "shared symlinks prove one file, not which Claude account owns it");
+  assert.deepEqual(await accounts.serveRunnerAccountCall("accounts.transcript", { provider: "claude-code", account: "writer@example.com", nativeId: claudeTranscriptId }),
+    { account: "writer@example.com", resolution: "unique" }, "saved Claude account identity resolves its shared transcript without relabeling it");
+  const sharedTranscript = accounts.findRunnerProviderSessionHome("claude-code", null, claudeTranscriptId);
+  assert.equal(sharedTranscript?.account, null, "content-only lookup must not choose an arbitrary linked account");
+  assert.equal(sharedTranscript?.home, null);
+  assert.equal(sharedTranscript?.transcript, claudeTranscript);
+  assert.equal(accounts.findRunnerProviderSessionHome("claude-code", "writer@example.com", claudeTranscriptId)?.account, "writer@example.com");
   assert.equal(accounts.findRunnerProviderSessionHome("codex", null, oldSession)?.account, "saved@example.com");
   writeCodex(join(root, ".codex-accounts", "duplicate"), "saved@example.com", "duplicate-id");
   assert.deepEqual(await accounts.serveRunnerAccountCall("accounts.transcript", { provider: "codex", account: "saved@example.com", nativeId: oldSession }),
