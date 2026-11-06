@@ -584,9 +584,13 @@ export async function runWatchTick(deps: WatchWorkerDeps, now = Date.now()) {
     AND (?=0 OR EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=?
       AND allowed.machine=? AND allowed.session_id=watches.session_id)) ORDER BY created_at_ms`)
     .all(pause.paused?1:0,pause.generation,process.env.CONCIERGE_PEER_NAME==='mac'?'mac':'cloud') as WatchRow[];
+  const started = performance.now();
   deliverPending(deps, now);
   const reachable = pollReachable = await reachableRunners([...open.map(row => row.runner), ...endedCommands().map(row => row.runner)]);
+  const pingMs = performance.now() - started;
+  let slowest: { row: WatchRow; ms: number } | null = null;
   for (const row of open) {
+    const watchStarted = performance.now();
     // An unreachable runner's watches are not observed this poll; the silence becomes a recorded gap.
     if (row.runner && !reachable.has(row.runner)) {
       if (now >= row.deadline_ms) settle(row.watch_id, "expired", { observedAt: null, now, detail:
@@ -599,12 +603,19 @@ export async function runWatchTick(deps: WatchWorkerDeps, now = Date.now()) {
       if (row.kind === "file") await observeFile(row, now);
       else await observeCommand(row, deps, now);
     } catch (error) { log("error", "watch_poll_failed", { watch_id: row.watch_id, ...errorFields(error) }); }
+    const ms = performance.now() - watchStarted;
+    if (!slowest || ms > slowest.ms) slowest = { row, ms };
   }
   for (const row of endedCommands()) {
     if (row.runner && !reachable.has(row.runner)) continue;
     try { await cleanUpHost(row, now); } catch (error) { log("warn", "watch_host_cleanup_failed", { watch_id: row.watch_id, ...errorFields(error) }); }
   }
   deliverPending(deps, now);
+  // A poll longer than the gap threshold is itself a recorded gap; this names what it waited on.
+  const durationMs = performance.now() - started;
+  if (durationMs > WATCH_GAP_MS) log("warn", "watch_poll_slow", { duration_ms: Math.round(durationMs), open_watches: open.length,
+    ping_ms: Math.round(pingMs), slowest_watch_id: slowest?.row.watch_id ?? null, slowest_kind: slowest?.row.kind ?? null,
+    slowest_runner: slowest?.row.runner ?? null, slowest_ms: slowest ? Math.round(slowest.ms) : null });
 }
 
 /** Starts this machine's one watch worker; returns its stop function. */
