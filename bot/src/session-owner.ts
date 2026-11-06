@@ -1460,7 +1460,12 @@ export class SessionOwner {
   private async runnerProjectCall<T>(method:string,params:Record<string,unknown>):Promise<T|null> {
     const runner=this.configuredProjectRunner();if(!runner)return null;
     try{return await runnerMachineCall<T>(runner,method,params);}
-    catch(error){throw new SessionOwnerError(`Runner ${runner} is unavailable for this project operation: ${error instanceof Error?error.message:String(error)}`,424,'PROJECT_RUNNER_UNAVAILABLE');}
+    catch(error){
+      const message=error instanceof Error?error.message:String(error);
+      if(method==='projects.todos.update'&&message.includes('Canonical TODOs changed'))
+        throw new SessionOwnerError('Canonical TODOs changed. Reload before saving.',409,'PROJECT_TODOS_CONFLICT');
+      throw new SessionOwnerError(`Runner ${runner} is unavailable for this project operation: ${message}`,424,'PROJECT_RUNNER_UNAVAILABLE');
+    }
   }
   async projects() {
     const canvasTitles=this.projectSetup?.canvasProjectTitles();
