@@ -65,14 +65,15 @@ export { MANAGED_CODEX };
  * already in flight, so activation waits for the operator instead of deciding
  * for him.
  */
-export function runningCodexTurns(): number {
+export function runningCodexTurns(excludeTurnId?: number): number {
   try {
     // The IN term lets SQLite use the partial running-turn index; without it this check, run on
     // every execution change, walked every Codex turn's stored text (2026-11-03).
     const row = db.query(`SELECT COUNT(*) AS count FROM turns
       JOIN sessions ON sessions.id = turns.session_id
-      WHERE turns.status IN ('running','delivering') AND turns.status = 'running' AND sessions.provider_id = 'codex'`)
-      .get() as { count: number } | null;
+      WHERE turns.status IN ('running','delivering') AND turns.status = 'running' AND sessions.provider_id = 'codex'
+        AND (? IS NULL OR turns.id<>?)`)
+      .get(excludeTurnId??null,excludeTurnId??null) as { count: number } | null;
     return row?.count ?? 0;
   } catch {
     // An unreadable queue is not evidence that restarting is safe.
