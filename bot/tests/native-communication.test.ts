@@ -5,6 +5,7 @@ import {SessionOwner} from '../src/session-owner';
 import {SessionCommunicationCoordinator} from '../src/session-communication';
 import {attachSessionSteering,getAcceptedSessionInput,nativeRunId,recordSessionEvent,retainSessionInput,updateSessionMetadata,sessionInputProvenance} from '../src/session-inputs';
 import {acquireDatabaseTestLock} from './db-lock';
+import {clearTables} from './clear-tables';
 import {backfillResultAnsweredByPost,inboxHistory,inboxHistoryAfter,inboxMessage,markResultAnsweredByPost,postForwardedThreadAnswer} from '../src/session-inbox';
 import {preparedInboxDisplay} from '../src/presentation-inbox-display';
 import {claimExecutionTurn,retainExecutionIntent} from '../src/executions';
@@ -12,7 +13,7 @@ import {inboxRootResolver,sourceMessagePage} from '../src/presentation-message-s
 
 let unlock:()=>void,owner:SessionOwner,communication:SessionCommunicationCoordinator;
 let steeringMode:'sent'|'pending',errors:unknown[];
-const clear=()=>{for(const table of ['session_owner_events','session_communication_events','session_communication_requests','session_inputs','turn_dependencies','routed_requests','routed_input_events','deployment_drain','comparison_requests','fork_requests','slack_thread_statuses','slack_user_input_claims','turn_steering_messages','turn_delivery_chunks','executions','turns','sessions','channels'])db.query(`DELETE FROM ${table}`).run();};
+const clear=()=>clearTables(db,['session_owner_events','session_communication_events','session_communication_requests','session_inputs','turn_dependencies','routed_requests','routed_input_events','deployment_drain','comparison_requests','fork_requests','slack_thread_statuses','slack_user_input_claims','turn_steering_messages','turn_delivery_chunks','executions','turns','sessions','channels']);
 beforeEach(async()=>{
   unlock=await acquireDatabaseTestLock();clear();steeringMode='sent';errors=[];
   owner=new SessionOwner({available:()=>true,wake:()=>{},stop:async()=>false,steer:input=>{
