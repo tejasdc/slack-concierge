@@ -77,7 +77,19 @@ export async function serveProjectCall(method:string,params:Record<string,unknow
   }
   if(method==='projects.locate') {
     if(typeof params.location!=='string'||!params.location.trim())throw new Error('A registered project location is required.');
-    const root=realpathSync(workspaceRoot()),located=sessionProject(root,params.location,{inside:true});
+    const root=realpathSync(workspaceRoot());
+    let located=sessionProject(root,params.location,{inside:true});
+    if(!located&&isAbsolute(params.location)) {
+      const segments=params.location.split(sep).filter(Boolean),projects=sessionProjects(root);
+      const candidates=projects.flatMap(project=>{
+        const index=segments.lastIndexOf(project.name);
+        if(index<0)return [];
+        const suffix=segments.slice(index+1).join('/');
+        const resolved=sessionProject(root,suffix?`${project.name}/${suffix}`:project.name,{inside:true});
+        return resolved?[resolved]:[];
+      });
+      if(candidates.length===1)located=candidates[0]!;
+    }
     if(!located)throw new Error('The requested project location is not registered on this runner.');
     const registered=sessionProjects(root).filter(project=>within(project.cwd,located.cwd)).sort((a,b)=>b.cwd.length-a.cwd.length)[0];
     if(!registered)throw new Error('The requested folder is outside a registered project.');
