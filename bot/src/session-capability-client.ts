@@ -130,6 +130,13 @@ export interface ChatGptResult {
   error: CapabilityFailure | string | null;
   nativeBinding: ChatGptBinding | null;
   preSend?: ChatGptPreSendFailure;
+  /**
+   * The name ChatGPT itself gave this conversation, as Thinkering read it with the answer.
+   * ChatGPT has no tools, so it can never run the self-title command every other provider uses;
+   * its own conversation name is the only name the model actually chose. Absent on an older
+   * capability host, and while ChatGPT has not titled the conversation yet.
+   */
+  conversationTitle?: string | null;
 }
 
 export interface ChatGptReceipt {
@@ -170,6 +177,8 @@ export interface ChatGptRunContext {
   attachments: CapabilityAttachment[];
   onEvidence(evidence: CapabilityEvidence): void | Promise<void>;
   onNativeBinding?(binding: ChatGptBinding): void | Promise<void>;
+  /** The name ChatGPT gave the conversation, reported once per terminal result that carries one. */
+  onConversationTitle?(title: string): void | Promise<void>;
   signal?: AbortSignal;
   /** Taken back after a restart: the send already happened under this run id, so the run asks
    * Thinkering's capability for it (reconcile, then observe from the start) and never sends again.
@@ -297,6 +306,9 @@ function verifyResult(value: ChatGptResult) {
   if (value.nativeBinding !== null) {
     verifyBinding(value.nativeBinding);
     verify(value.sessionId === value.nativeBinding.sessionId, "Result conversation identity does not match its binding.");
+  }
+  if (value.conversationTitle !== undefined && value.conversationTitle !== null) {
+    verify(nonempty(value.conversationTitle.trim()), "ChatGPT reported an empty conversation name.");
   }
   if (value.preSend !== undefined) {
     verify(value.state === "failed" && isRecord(value.preSend)
@@ -642,6 +654,10 @@ export class SessionCapabilityClient {
           "Provider receipt and terminal result disagree on the pre-Send failure.");
       }
       await acceptBinding(result.nativeBinding);
+      // Reported before the terminal states below throw: a failed or cancelled run still has a
+      // conversation ChatGPT named, and that name belongs on the session either way.
+      if (typeof result.conversationTitle === "string" && result.conversationTitle.trim())
+        await context.onConversationTitle?.(result.conversationTitle.trim());
       if (result.sessionId !== null) verify(result.sessionId === binding?.sessionId, "Provider result changed its native conversation.");
       if (turnId !== null && result.turnId !== null) verify(turnId === result.turnId, "Provider result changed its native turn.");
       turnId = result.turnId ?? turnId;

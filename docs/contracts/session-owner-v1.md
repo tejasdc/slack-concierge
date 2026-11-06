@@ -348,6 +348,21 @@ action and outcome are retained, and a name that actually changes emits a normal
 title event so open clients refresh the session view. It cannot name another
 session or act after Stop.
 
+ChatGPT has no tools and can never run that command, so a ChatGPT session takes
+the name ChatGPT gave its own conversation. Every terminal `ChatGptResult` may
+carry `conversationTitle`, the raw title the capability host read with the
+answer; the host sends it only when ChatGPT has actually named the conversation,
+never its own placeholder for one ChatGPT has not named yet. The owner adopts it
+through the same initial-title path a creator's name uses, so it fills only a
+session with no name, never a name its creator or Tejas chose, and emits the
+normal title event. An unusable value is ignored rather than refused: naming a
+session must not fail a turn ChatGPT already answered. It is the provider's own
+name, not a name Concierge derived from prose. ChatGPT names a conversation a
+few seconds after it starts answering, so the first answer normally carries it;
+when ChatGPT had not named it yet, the session stays unnamed until its next
+answer. The field is optional in both directions, so neither side's release has
+to land first.
+
 Report `f5559f18-d82b-43ce-871f-551d665b6fd3` (input `1789502133.501519`)
 showed the previous channel-name fallback while the parameter was still on a
 task branch. The exact viewed session `concierge:2265` had no metadata title.

@@ -25,9 +25,11 @@ export type ProviderGuarantee =
   /** Earlier messages are read from the provider's own conversation record. */
   | "history"
   /** A session can be copied into a new one from a chosen point. */
-  | "fork";
+  | "fork"
+  /** A session gets a name of its own as it begins, without Tejas typing one. */
+  | "namesItself";
 
-export const PROVIDER_GUARANTEES = ["steer", "stop", "carriesOnThroughUpdate", "bothMachines", "history", "fork"] as const satisfies readonly ProviderGuarantee[];
+export const PROVIDER_GUARANTEES = ["steer", "stop", "carriesOnThroughUpdate", "bothMachines", "history", "fork", "namesItself"] as const satisfies readonly ProviderGuarantee[];
 
 export type GuaranteeAnswer =
   | { met: true; how: string }
@@ -52,6 +54,7 @@ export const PROVIDER_CONTRACT: Readonly<Record<ProviderId, ProviderContract>> =
     bothMachines: { met: true, how: "systemd host on the server, launchd host on the Mac." },
     history: { met: true, how: "Claude transcript through the SDK." },
     fork: { met: true, how: "Copies the transcript at a message." },
+    namesItself: { met: true, how: "The agent runs the self-title command on its first request, and a session with no name is told to do that before anything else." },
   } },
   codex: { runsIn: "codex-daemon", machineSetup: ["install-codex-stop-hook.sh"], guarantees: {
     steer: { met: true, how: "The App Server's turn/steer adds it to the running turn." },
@@ -60,6 +63,7 @@ export const PROVIDER_CONTRACT: Readonly<Record<ProviderId, ProviderContract>> =
     bothMachines: { met: true, how: "Shared App Server on each machine." },
     history: { met: true, how: "Codex rollout files." },
     fork: { met: true, how: "Copies the thread at a turn." },
+    namesItself: { met: true, how: "The same self-title command as Claude, from the same per-run instructions." },
   } },
   antigravity: { runsIn: "execution-host", machineSetup: ["install-antigravity-account-hook.sh"], guarantees: {
     steer: { met: true, how: "Written into the running CLI's streaming input; Google's headless CLI answers it as soon as the current answer ends, in the same run (verified with agy 1.3.4 on 2026-10-13: it cannot add it mid-answer)." },
@@ -68,6 +72,7 @@ export const PROVIDER_CONTRACT: Readonly<Record<ProviderId, ProviderContract>> =
     bothMachines: { met: true, how: "The agy CLI in the execution host on each machine, signed in per machine." },
     history: { met: false, notBuilt: "Gemini's own conversation record is not read yet.", instead: "History shows the messages Concierge kept for this session." },
     fork: { met: false, notBuilt: "Copying a Google conversation is not built.", instead: "Start a new session." },
+    namesItself: { met: true, how: "The same self-title command as Claude; the instructions carrying it are the first text of the input, because the CLI has no system-prompt flag." },
   } },
   chatgpt: { runsIn: "capability-host", machineSetup: [], guarantees: {
     steer: { met: false, platformLimit: "ChatGPT's web chat takes one message at a time.", instead: "The message waits and is sent when the current answer ends." },
@@ -76,6 +81,7 @@ export const PROVIDER_CONTRACT: Readonly<Record<ProviderId, ProviderContract>> =
     bothMachines: { met: false, platformLimit: "ChatGPT runs in the server's signed-in Chrome.", instead: "ChatGPT sessions live on the server." },
     history: { met: true, how: "Thinkering's ChatGPT transcript." },
     fork: { met: false, platformLimit: "ChatGPT conversations cannot be branched from outside.", instead: "Start a new session." },
+    namesItself: { met: true, how: "ChatGPT names its own conversation and its answer carries that name, which the owner adopts for a session nobody named; ChatGPT has no tools and cannot run the self-title command." },
   } },
 };
 
