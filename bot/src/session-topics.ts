@@ -7,6 +7,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
 import {db,getSessionById,type SessionRow} from './state';
 import {carryingTurn,getAcceptedSessionInput,humanAuthored,nativeRunId,sessionInputProvenance,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput,type RetainInputTiming} from './session-inputs';
+import {INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
 import {BUG_REPORT_OWN_THREAD,isBugReportInput,capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot,postForwardedThreadAnswer} from './session-inbox';
 import {answerClosingLine} from './answer-closing-line';
 import {notSeenWorking} from './answers-to-tejas';
@@ -168,9 +169,7 @@ function resolveAskedSource(rawId:string,topic:StoredTopic):{source:AcceptedSess
 
 function routerSessionOwnsTopic(sourceSessionId:number,topicSessionId:number):boolean {
   if(sourceSessionId===topicSessionId)return true;
-  return !!db.query(`WITH RECURSIVE lineage(id) AS (SELECT ? UNION ALL
-    SELECT predecessor_session_id FROM session_handoffs JOIN lineage ON successor_session_id=lineage.id
-    WHERE state='accepted') SELECT 1 FROM lineage WHERE id=? LIMIT 1`).get(sourceSessionId,topicSessionId);
+  return !!db.query(`SELECT 1 WHERE ? IN (${INBOX_LINEAGE_SQL})`).get(topicSessionId,sourceSessionId);
 }
 
 export function readsFor(question:{topicId:string;kind?:QuestionKind;legacyNeedEventId:string|null;owner:any;brief:any;sources?:string[]}):ReadingText[] {
@@ -807,10 +806,7 @@ function unfiledNeeds(session:SessionRow):OpenNeed[] {
  */
 type HumanReply={inputId:string;at:string;reviews:string[];replyTo:string|null};
 type ReadIndex={humanReplies:Map<string,HumanReply[]>};
-const inboxLineageSql=`WITH RECURSIVE lineage(id) AS (
-  SELECT ? UNION ALL SELECT handoff.predecessor_session_id FROM session_handoffs handoff
-  JOIN lineage ON handoff.successor_session_id=lineage.id WHERE handoff.state='accepted'
-) SELECT id FROM lineage`;
+const inboxLineageSql=INBOX_LINEAGE_SQL;
 function readIndex(sessionId:number,completeReplies=false):ReadIndex {
   refreshRootMemo();
   // Every human message per thread root, newest first, with the questions it reviewed and the
@@ -914,6 +910,35 @@ function topicSummary(topic:StoredTopic,session:SessionRow,index:EntryIndex,work
       deferred:views.filter(question=>question.state==='deferred').length},
     requests:{open:requests.filter(request=>request.state==='open').length,closed:requests.filter(request=>request.state==='closed').length},
     work:topicWork(topic,roots,work,index)};
+}
+
+/**
+ * The words of one Inbox message, by the exact id a topic, thread or request shows for it: a
+ * capture, his reply, an agent's post or result, a routed request, or the request input a topic
+ * request names as its source or dispatch. Topic reads carry ids, titles and short dispatch
+ * excerpts; before 2026-11-06 the only way to read the message itself was to be the router the
+ * input had been delivered to, so a stand-in router could not judge the requests it inherited.
+ */
+export function inboxMessageWords(session:SessionRow,messageId:string) {
+  const entry=inboxMessageById(session.id,messageId) as any;
+  const root=inboxThreadRoot(session.id,messageId);
+  const topicId=root?topicOfRoot(root):null;
+  if(entry)return {messageId,from:entry.author?.kind??(entry.role==='user'?'human':'agent'),
+    session:typeof entry.sourceSessionId==='number'?`concierge:${entry.sourceSessionId}`:null,
+    at:entry.createdAt??null,words:typeof entry.content==='string'?entry.content:'',
+    attachments:(entry.attachments??[]).map((file:any)=>({id:file.id,name:file.name,contentType:file.contentType})),
+    threadRoot:root,topicId};
+  // A request input sits in its target session; it is Inbox material only when a topic request names it.
+  const named=db.query(`SELECT topic_id FROM inbox_requests WHERE EXISTS (SELECT 1 FROM json_each(sources_json) WHERE json_extract(value,'$.inputId')=?1)
+      OR EXISTS (SELECT 1 FROM json_each(dispatches_json) WHERE 'request:' || json_extract(value,'$.requestId')=?1 OR json_extract(value,'$.sourceInputId')=?1)
+    UNION ALL SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?1 LIMIT 1`).get(messageId) as {topic_id:string}|null;
+  const input=named?getAcceptedSessionInput(messageId):null;
+  if(!input)throw new TopicError('No Inbox message or topic-named request has that exact id.',404,'MESSAGE_NOT_FOUND');
+  const payload=JSON.parse(input.payload_json),first=payload.firstInput??payload;
+  return {messageId,from:input.origin,session:`concierge:${input.session_id}`,at:input.created_at,
+    words:typeof first.text==='string'?first.text:'',
+    attachments:((first.attachments??[]) as string[]).map(id=>db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean),
+    threadRoot:root,topicId:topicId??named!.topic_id};
 }
 
 function inboxOrThrow():SessionRow {
@@ -1958,6 +1983,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
     case 'obligations':return openInboxObligations();
     case 'read':return preparedTopicOverview(text(body?.topic_id,'topic id',200),body?.state??'open');
     case 'resolve':guard();return preparedTopicResolution(text(body?.message_id,'message id',500));
+    case 'message':guard();return inboxMessageWords(session,text(body?.message_id,'message id',500));
     case 'questions-read':guard();return preparedQuestions({state:body?.state??'open',cursor:body?.cursor,limit:body?.limit});
     case 'items':{
       const topicId=text(body?.topic_id,'topic id',200);guard(topicId);
