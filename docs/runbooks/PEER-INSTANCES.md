@@ -648,12 +648,11 @@ by one of the functions above, never by a second, peer-only projection.
   leftovers (`kill -9`, they ignore a plain stop) restored it at once. The gateway and readers
   now exit by a deadline once a stop begins and within five seconds of losing their parent on
   any platform (`exit-with-parent.ts`), because macOS has no parent-death signal.
-- A peer request whose work ended on the peer without a final reply, with nothing there
-  still working on it, closes as `unanswered` (stalled) once past its due time or when the
-  peer reports it stalled, using the last status read from the peer. The requester gets
-  one return per worker session with identical words; each request keeps its last text in
-  its output. A later final from the worker supersedes it and still returns. Nothing is
-  re-run. Before this, such requests were polled on every wake indefinitely.
+- A peer request whose work ended without a final reply stays open. The peer's stalled
+  status or the due-time inspection sends one notice to the requester, without guessing
+  an answer from the worker's turn text or silence. An explicit final from that worker
+  still settles the request and returns across machines; cancellation and execution
+  failure retain their own terminal effects. Nothing is re-run.
 - remote-box down: the Mac keeps running its own sessions; replies to cloud requests stay
   `pending` and forward when the box answers.
 - Neither side ever replays a provider effect for the other.
