@@ -94,6 +94,7 @@ import {containingProject,projectCoordinates,sessionProject,sessionProjects} fro
 import {expandHome,isSensitiveWorkspacePath,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
 import {runnerMachineCall} from './runner-machine-calls';
+import {selectedClaudeHome} from './provider-account-dispatch';
 import {sessionSpace,type SessionSpace} from './session-roles';
 import {preparedSessionWindow,preparedSessionChanges,preparedInboxAttention,preparedLabRequestIds} from './presentation-session-reader';
 import {preparedReceiptWindow,preparedReceiptChanges} from './presentation-receipt-reader';
@@ -3767,7 +3768,8 @@ export class SessionOwner {
         if(createHash('sha256').update(bytes).digest('hex')!==packet.sha256
           ||!bytes.subarray(0,262_144).toString('utf8').includes(nativeId))
           throw new SessionOwnerError('The archived copy does not match this conversation.',409,'NATIVE_TRANSCRIPT_RESTORE_REFUSED');
-        const active=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider});
+        const selected=provider==='claude-code'?selectedClaudeHome()?.label:null;
+        const active=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider,...(selected?{account:selected}:{})});
         if(!active?.label)throw new SessionOwnerError('No signed-in account is available on the runner for this conversation.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
         account=active.label;
         await restoreRunnerProviderTranscript({runner,account,provider:provider as 'claude-code'|'codex',nativeId,
@@ -3853,7 +3855,8 @@ export class SessionOwner {
         if(found.resolution==='ambiguous')throw new SessionOwnerError('This conversation has more than one account copy on its runner.',409,'NATIVE_TRANSCRIPT_AMBIGUOUS');
         let account=found.resolution==='unique'?found.account:null;
         if(!account){
-          const active=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider});
+          const selected=provider==='claude-code'?selectedClaudeHome()?.label:null;
+          const active=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider,...(selected?{account:selected}:{})});
           if(!active?.label)throw new SessionOwnerError('No signed-in account is available on the runner for this conversation.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
           account=active.label;
           const size=statSync(archived.path).size;

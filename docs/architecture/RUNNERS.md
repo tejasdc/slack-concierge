@@ -381,9 +381,19 @@ CLIs and session folders; it does not import the owner's SQLite or usage ledger.
 usage snapshots. The owner stores runner-tagged readings, chooses accounts and enforces holds;
 when the configured runner is unavailable, its prior snapshot remains visible with its original
 timestamp and cannot be refreshed from the owner's credential files.
+Claude identity requires the exact selected account label. The runner verifies that label against
+its own saved home and returns no identity when the label is absent or maps to multiple homes; it
+never treats the runner's default `.claude` folder as the selected account. A newly filed Claude
+sign-in links the machine-shared settings, instructions, hooks, skills and project history into
+that account home while keeping credentials and other per-login files separate. Conflicting
+private shared files are retained under `.unlinked-*` before the shared link is installed.
 The runner resolves a provider account label to its own verified home before launching Claude Code.
 Home paths stay on that machine. `accounts.transcript` reports `unique`, `missing` or `ambiguous`
 for an exact provider session UUID and returns an account label only for one matching transcript.
+When Claude account homes link the same physical `projects` transcript, an unbound transcript
+lookup remains `ambiguous`: one physical file does not prove which account label owns the history.
+Content-only authored-subject and worktree reads may deduplicate that same physical file, but they
+return no account identity and do not authorize provider execution.
 
 Interactive sign-in uses `accounts.signin.start`, `.status` and `.complete`, keyed by one stable
 operation ID. A start returns the provider's one-time link and, for device sign-in, its code; the
@@ -393,6 +403,8 @@ operation outcome and does not launch or submit twice. A different active sign-i
 provider is refused. If the runner restarts during sign-in, the pending operation becomes
 `interrupted`; the caller must start a new operation. If the runner is unreachable, the call has no
 answer and its outcome is unknown until the same operation ID is queried again.
+When runner readings show a saved Claude login has stopped working, the owner creates the existing
+Mac-browser renewal request for that exact account; it does not try the owner's local Claude home.
 
 The owner stores only the selected runner, operation ID and optional saved profile ID in its
 pending sign-in row. After an owner restart it asks that same runner for the operation's status;
@@ -408,7 +420,10 @@ holds Codex admission and refuses the switch while an active-turn count is nonze
 The runner holds its App Server auto-start, moves only credential files, restarts its own daemon and
 asks that daemon to refresh and report the requested account. It rolls back on a definite failure;
 an unconfirmed rollback is durably `uncertain` and blocks another switch until reconciled. Repeating
-an operation ID returns its recorded result. The dispatcher also exposes
+an operation ID returns its recorded result. The owner uses a timeout long enough for the runner's
+restart and account probes; if the relay answer is lost, it keeps Codex admission held and retries
+the same operation ID until the runner reports a settled result. A runner-reported uncertain state
+keeps admission held for inspection. The dispatcher also exposes
 `accounts.codex.resetCredit`; the runner validates a unique account home and runs the provider's
 own redemption protocol there.
 
@@ -429,25 +444,33 @@ the session binding.
 When a runner owns Codex or Claude credentials, the owner's auth-held watcher does not watch or probe
 the owner's credential files. It polls the exact runner's identity and a fresh account reading; only
 a matching, signed-in reading clears the owner's auth hold. A failed or stale runner answer keeps the
-hold. Unmanaged Codex App Server repair is also sent to the selected runner: the owner first holds
-new Codex admission and checks its own active/external turn records, then the runner refuses while
-it owns any turn and stops only the process holding its own control socket. This call is asynchronous
-to owner startup; an unreachable runner does not gate startup.
+hold. Codex App Server repair is also sent to the selected runner: the owner first holds new Codex
+admission and checks its own active/external turn records, then the runner refuses while it owns any
+turn. For a managed server whose exact socket listener lacks the runner-state environment, the
+runner uses Codex's supported daemon stop command, starts it in the runner's own scope, and verifies
+the same account, managed backend and runner-state environment before reporting repair. It keeps the
+existing exact-listener stop path for unmanaged servers. An unreadable listener or failed proof
+stays uncertain; the runner does not switch the account. This call is asynchronous to owner startup;
+an unreachable runner does not gate startup.
 
 Offline acceptance state card (source and isolated runner fixtures, not a live runner):
 
-- Verified: an exact provider/account identity resolves from runner-owned homes, and ambiguous
-  transcript ownership is refused.
+- Verified in isolated fixtures: exact provider/account identity resolves from runner-owned homes,
+  shared Claude transcript links do not choose an account, and content-only readers deduplicate the
+  same physical transcript.
 - Verified: duplicate sign-in start with the same operation ID returns the original outcome and
   does not start another CLI operation.
 - Verified: the isolated sign-in check has no provider CLI available and reports a bounded failure;
   no owner-side sign-in fallback is attempted by the remote route.
 - Unknown: provider-native interactive sign-in, owner restart recovery against a live runner,
-  Codex App Server account activation, reset-credit redemption, and held-work release after a
+  Codex App Server account activation or same-account re-home, reset-credit redemption, and held-work release after a
   fresh live usage reading have not been exercised on AX41. Google quota parsing, runner-side
   paid-credit refusal and Google turn execution have not been exercised against AX41's real `agy`
   installation. Runner auth-hold polling and unmanaged-server repair have not been exercised with
-  an auth-held turn or an intentionally unmanaged AX41 App Server.
+  an auth-held turn or an App Server replacement on AX41. AX41's current exact socket listener was
+  read without changing it: the runner is active, its three labelled Claude homes link the same
+  `projects` tree, and the running Codex App Server PID lacks `CONCIERGE_RUNNER_STATE`. It was not
+  restarted because that daemon owns an active Codex turn.
 
 | Capability | Source state | Verified here | Live runner |
 | --- | --- | --- | --- |
@@ -457,7 +480,7 @@ Offline acceptance state card (source and isolated runner fixtures, not a live r
 | Codex activation and owner admission hold | Implemented | Bundles; no daemon restart | Not checked |
 | Codex reset-credit redemption | Implemented | Runner bundle only; no provider redemption | Not checked |
 | Google quota and paid-credit guard | Implemented | Settings absent permits; enabled and unreadable settings refuse; bundles | Not checked |
-| Runner auth-held polling and Codex unmanaged-server repair | Implemented | Owner/runner bundles; no live auth hold or socket replacement | Not checked |
+| Runner auth-held polling and Codex repair/re-home | Implemented | Owner/runner bundles; exact managed re-home decision and same-account proof fixtures; no daemon restart | Not checked |
 | Exact transcript resolution | Implemented | Unique, missing and ambiguous fixtures | Not checked |
 
 Users: durable watches ([watches](WATCHES.md), `watch-machine.ts`, methods `watch.*`). Turn artifacts need none: only the retired Slack presentation makes an artifact folder; a native turn makes none.

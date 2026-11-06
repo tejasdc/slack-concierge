@@ -587,12 +587,14 @@ export class SessionExecutionHost {
           AND turns.dispatch_failure_class IN ('backoff','usage_wait')
           AND sessions.provider_id=? ORDER BY turns.id LIMIT 1`).get(provider) as {model:string|null;metadata_json:string}|null;
       if(!waiting)continue;
-      let savedRunner:string|null=null;
-      try{const metadata=JSON.parse(waiting.metadata_json);savedRunner=typeof metadata.providerRunner==='string'?metadata.providerRunner:null;}catch{}
+      let savedRunner:string|null=null,savedAccount:string|null=null;
+      try{const metadata=JSON.parse(waiting.metadata_json);savedRunner=typeof metadata.providerRunner==='string'?metadata.providerRunner:null;
+        savedAccount=provider==='claude-code'?(typeof metadata.claudeAccount==='string'?metadata.claudeAccount:
+          typeof metadata.providerAccount==='string'?metadata.providerAccount:null):null;}catch{}
       const runnerTarget=providerRunnerTarget(provider)??savedRunner;
       let runnerIdentity:{id:string;label:string}|null=null;
       if(runnerTarget){
-        try{runnerIdentity=await runnerMachineCall(runnerTarget,'accounts.identity',{provider});}
+        try{runnerIdentity=await runnerMachineCall(runnerTarget,'accounts.identity',{provider,...(savedAccount?{account:savedAccount}:{})});}
         catch{return {status:'unconfirmed',provider,account:null,detail:`Runner ${runnerTarget} could not confirm the account for this held turn.`};}
       }
       const home=runnerTarget?null:provider==='claude-code'?selectedClaudeHome():null;

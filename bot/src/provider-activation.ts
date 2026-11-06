@@ -228,6 +228,30 @@ function externallyRunningCodexTurns(): number {
 }
 
 let pendingCodexRepair = false;
+const runnerRepairReconciliations=new Set<string>();
+const RUNNER_REPAIR_TIMEOUT_MS=220_000;
+async function reconcileRunnerCodexRepair(runner:string):Promise<void>{
+  if(runnerRepairReconciliations.has(runner))return;
+  runnerRepairReconciliations.add(runner);
+  try{
+    for(;;){
+      let result:{status:string;detail?:string};
+      try{result=await runnerMachineCall(runner,'accounts.codex.repairUnmanaged',{},RUNNER_REPAIR_TIMEOUT_MS);}
+      catch{await new Promise(resolve=>setTimeout(resolve,5_000));continue;}
+      if(result.status==='busy'){
+        pendingCodexRepair=true;holdCodexAdmission(false);return;
+      }
+      if(result.status==='uncertain'){
+        log('error','codex_runner_rehome_uncertain',{runner,detail:result.detail??null});
+        return;
+      }
+      pendingCodexRepair=false;holdCodexAdmission(false);
+      if(result.status==='repaired')log('warn','codex_unmanaged_server_repaired_on_runner',{runner,detail:result.detail??null});
+      else if(result.status==='refused'||result.status==='unsupported')log('error','codex_unmanaged_server_repair_refused_on_runner',{runner,status:result.status,detail:result.detail??null});
+      return;
+    }
+  }finally{runnerRepairReconciliations.delete(runner);}
+}
 /**
  * Puts a server started outside its manager back under it, at a moment nothing would be cut: no
  * Concierge Codex turn running, none observed running from another client, and new Codex work held
@@ -242,12 +266,18 @@ function repairUnmanagedCodexServer(): Promise<void> {
       if(process.platform!=='linux'){pendingCodexRepair=false;return;}
       pendingCodexRepair=true;
       holdCodexAdmission(true);
+      let retainAdmission=false;
       try{
         const running=runningCodexTurns(),external=externallyRunningCodexTurns();
         if(running!==0||external!==0){log('info','codex_unmanaged_server_repair_waiting',{runner,running,external});return;}
-        const result=await runnerMachineCall<{status:string;detail?:string}>(runner,'accounts.codex.repairUnmanaged',{},110_000);
+        const result=await runnerMachineCall<{status:string;detail?:string}>(runner,'accounts.codex.repairUnmanaged',{},RUNNER_REPAIR_TIMEOUT_MS);
         if(result.status==='busy'){
           log('info','codex_unmanaged_server_repair_waiting',{runner,reason:result.detail??'runner_has_active_turn'});
+          return;
+        }
+        if(result.status==='uncertain'){
+          retainAdmission=true;
+          log('error','codex_unmanaged_server_repair_refused_on_runner',{runner,status:result.status,detail:result.detail??null});
           return;
         }
         pendingCodexRepair=false;
@@ -255,9 +285,10 @@ function repairUnmanagedCodexServer(): Promise<void> {
         else if(result.status==='uncertain'||result.status==='refused'||result.status==='unsupported')
           log('error','codex_unmanaged_server_repair_refused_on_runner',{runner,status:result.status,detail:result.detail??null});
       }catch(error){
-        pendingCodexRepair=false;
         log('error','codex_unmanaged_server_repair_unconfirmed_on_runner',{runner,error:error instanceof Error?error.message:String(error)});
-      }finally{holdCodexAdmission(false);}
+        retainAdmission=true;
+        void reconcileRunnerCodexRepair(runner);
+      }finally{if(!retainAdmission)holdCodexAdmission(false);}
       return;
     }
     if (process.platform !== "linux" || !(await codexServerUnmanaged())) { pendingCodexRepair = false; return; }
@@ -500,7 +531,8 @@ export function watchAuthHeldCredentials(): () => void {
 
 /** A runner's fresh usage/auth answer clears an auth hold without probing owner credentials. */
 async function checkRunnerAuthHeld(provider:ProviderKey,runner:string,source:ReleaseSource):Promise<void>{
-  const identity=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider});
+  const selected=provider==='claude-code'?selectedClaudeHome()?.label:null;
+  const identity=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider,...(selected?{account:selected}:{})});
   const readings=await runnerMachineCall<Record<string,{observedAt:string;accounts:readonly {label:string;signedOut?:boolean;problem:string|null;readAt?:string|null}[];problem:string|null}>>(
     runner,'accounts.readings',{},100_000);
   const usage=readings?.[provider],account=usage?.accounts.find(item=>item.label===identity?.label);

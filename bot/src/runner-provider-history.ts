@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {createReadStream} from 'node:fs';
-import {link,mkdir,open,readFile,readdir,stat,unlink,writeFile} from 'node:fs/promises';
+import {link,mkdir,open,readFile,readdir,realpath,stat,unlink,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {homedir} from 'node:os';
 import {dirname} from 'node:path';
@@ -169,6 +169,16 @@ export async function serveProviderHistoryCall(method:string,params:any,resolveH
     else {const label=account(params.account),home=resolveHome(kind,label);homes=home?[{account:label,home}]:[];}
     const found=(await Promise.all(homes.map(async entry=>({account:entry.account,paths:await exactTranscriptInHome(kind,entry.home,nativeId)}))))
       .flatMap(entry=>entry.paths.map(path=>({account:entry.account,path})));
+    if(params.account===null){
+      const physical=new Map<string,{account:string;path:string}>();
+      for(const entry of found){let key=entry.path;try{key=await realpath(entry.path);}catch{}
+        // This endpoint only returns content-derived attribution. Shared account symlinks
+        // to the same physical transcript are one file here; account resolution remains
+        // ambiguous in accounts.transcript and exact-history endpoints stay account-scoped.
+        if(!physical.has(key))physical.set(key,entry);
+      }
+      found.splice(0,found.length,...physical.values());
+    }
     if(found.length!==1)return {timestamp:null,resolution:found.length?'ambiguous':'missing'};
     return {timestamp:await authoredTimestamp(found[0]!.path,kind,nativeId,subject,beforeMs),resolution:params.account===null?'unique':'named'};
   }
