@@ -41,6 +41,9 @@ try {
   assert.equal(accounts.runnerAccountHome("claude-code", "writer@example.com"), claude);
   assert.equal(accounts.runnerAccountHome("claude-code", "unknown@example.com"), null);
   assert.equal(accounts.findRunnerProviderSessionHome("codex", null, oldSession)?.account, "saved@example.com");
+  writeCodex(join(root, ".codex-accounts", "duplicate"), "saved@example.com", "duplicate-id");
+  assert.deepEqual(await accounts.serveRunnerAccountCall("accounts.transcript", { provider: "codex", account: "saved@example.com", nativeId: oldSession }),
+    { account: null, resolution: "ambiguous" }, "a duplicated account label cannot select a home by whichever transcript happens to exist");
   const ambiguous = join(root, ".codex", "sessions", "2025", `${oldSession}.jsonl`);
   mkdirSync(join(ambiguous, ".."), { recursive: true });
   writeFileSync(ambiguous, "{}");
