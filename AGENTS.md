@@ -27,7 +27,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   is for capture paths; use a feature's own socket or route when appropriate.
 - Concierge service stops during a release go through the deployment controller's
   [attributed systemd stop path](docs/runbooks/DEPLOYMENT.md#runtime-dependencies-and-service-shutdown).
-- Capture queue calls cancel on service stop under the existing claim and recovery
+- Unanswered capture claims cancel on service stop under the existing claim and recovery
   contract; see [capture ingress](docs/architecture/CAPTURE-INGRESS.md).
 - Operator-controlled offline releases stop the old owner before candidate activation;
   see the [deployment runbook](docs/runbooks/DEPLOYMENT.md#runtime-dependencies-and-service-shutdown).
