@@ -120,6 +120,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   the agent explains the failed route. Returned `needs_you` questions can be withdrawn
   by exact event identity when they become stale. See [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md)
   and the [session owner contract](docs/contracts/session-owner-v1.md).
+- Provider sign-in repair requests to the Mac may come from a batch of owner repair
+  notices; the private Mac admission rule and replay case are in the
+  [batched renewal failure record](docs/incidents/2026-11-06-batched-signin-repair-refused-by-mac.md).
 - The canonical owner, not agent memory, enforces Inbox placement, attention and
   delivery. Unfiled human inputs prevent the Inbox router from ending its turn.
   Direct human thread replies join the same topic request ledger on admission;
