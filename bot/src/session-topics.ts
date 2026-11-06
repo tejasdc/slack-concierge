@@ -3945,8 +3945,10 @@ const MIGRATION_VERSION=1;
  * docs/incidents/2026-11-05-inbox-migration-reran-for-new-inbox-session.md.
  */
 function inboxMigrationRan(version:number) {
-  return !!db.query(`SELECT 1 FROM sessions s JOIN session_owner_events e ON e.session_id=s.id AND e.kind='topics_migration'
-    WHERE json_extract(s.native_metadata_json,'$.inbox')=1 AND json_extract(e.payload_json,'$.version')=? LIMIT 1`).get(version);
+  // Driven from the Inbox sessions so SQLite searches each one's (session, kind) index; the
+  // join form scanned every owner event and cost 0.5 to 0.7 s per start.
+  return !!db.query(`SELECT 1 FROM session_owner_events WHERE kind='topics_migration' AND json_extract(payload_json,'$.version')=?
+    AND session_id IN (SELECT id FROM sessions WHERE json_extract(native_metadata_json,'$.inbox')=1) LIMIT 1`).get(version);
 }
 function firstLine(value:string,limit=80) {
   const line=value.split('\n').map(part=>part.trim()).find(part=>part.length)??'';

@@ -33,6 +33,12 @@ the first conversion is filed live. A fresh installation with no completion even
 runs the conversion once. Moving the work after startup was rejected because the work
 itself was wrong to repeat, not only badly placed.
 
+The first installed form of that check joined sessions to owner events, and Bun's SQLite
+planned it as a scan of every owner event: the 05:24 UTC start on 2026-11-06 logged the
+topics step at 683 ms and the attention step at 520 ms (each was 0 to 1 ms before). The
+follow-up asks for the completion event per Inbox session, which uses the existing
+session-and-kind index.
+
 ## Acceptance scenario
 
 - **Seed:** A ledger whose first Inbox session has completed the topics and attention migrations, with recovered and live topics.
