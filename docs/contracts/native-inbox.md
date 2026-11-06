@@ -781,7 +781,9 @@ identity and these per-input facts. The routing preamble was prefixed to every i
 September 23, 2026; the attention rule moved there before its release.
 
 Migration runs once at owner startup, guarded by a `topics_migration` event with
-`version:1`. Only a human-authored Inbox root or a marked, routable agent capture can
+`version:1` on any Inbox session: a provider or folder cutover that makes a new Inbox
+session does not rerun it (or attention migration version 2), because later threads are
+filed live ([failure record](../incidents/2026-11-05-inbox-migration-reran-for-new-inbox-session.md)). Only a human-authored Inbox root or a marked, routable agent capture can
 become a recovered request. Agent coordination, returned answers and service upkeep
 remain in their exact receipts; a transcript root alone grants no human-work standing.
 For each eligible root the migration creates one topic (`recovered:1`), one open request
