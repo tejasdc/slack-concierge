@@ -1797,10 +1797,23 @@ export function chooseTurnRunner(session:SessionRow,metadata=sessionMetadata(ses
   }
   if(saved.status==='bound')return saved.runner;
   if(session.provider_id!=='claude-code')return null;
-  if(session.agent_session_uuid&&metadata.onRunner===true)
-    throw new Error('This Claude conversation has runner placement recorded but no exact runner identity.');
+  if(session.agent_session_uuid){
+    // A bound native conversation keeps the machine that last ran it. Current deployment
+    // settings cannot recover that fact: use the durable execution and lease that actually
+    // launched its latest turn, and refuse if that evidence is incomplete or ambiguous.
+    const prior=db.query(`SELECT execution.supervisor,attempt.runner FROM executions execution
+      LEFT JOIN runner_attempts attempt ON attempt.job_id='turn:'||execution.execution_id
+      WHERE execution.session_id=? AND execution.provider='claude-code'
+      ORDER BY execution.created_at_ms DESC,attempt.started_at_ms DESC LIMIT 1`).get(session.id) as
+      {supervisor:string;runner:string|null}|null;
+    if(!prior)throw new Error('This Claude conversation has no saved machine binding and no exact execution record; refusing to guess its home.');
+    if(prior.supervisor===RUNNER_SUPERVISOR){
+      if(!prior.runner)throw new Error('This Claude conversation ran on a runner, but its exact runner lease is unavailable.');
+      return prior.runner;
+    }
+    return null;
+  }
   if(!turnRunsOnRunner(metadata))return null;
-  if(session.agent_session_uuid)return null;
   const selected=process.env.CONCIERGE_TURN_RUNNER?.trim()||codexRelayRunner();
   if(!selected)throw new Error('Claude runner placement is enabled, but no runner target is configured.');
   return selected;
