@@ -39,6 +39,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   follow the [deployment runbook](docs/runbooks/DEPLOYMENT.md#candidate-schema-comparison).
   Its offline migration phase timings and backup boundary are in the same
   [deployment runbook](docs/runbooks/DEPLOYMENT.md#runtime-dependencies-and-service-shutdown).
+- Owner-loop pause evidence comes from the separate watchdog thread; interpret its
+  bounded Linux wait samples through [storage observation](docs/architecture/STORAGE-OBSERVATION.md#owner-loop-pause-evidence).
 - A repair-owned deployment run ends its old transient runner without reclaiming the repair;
   see [automatic failure behavior](docs/runbooks/DEPLOYMENT.md#automatic-failure-behavior).
 - Every commit carries an `Update-note:` sentence in product language and a
