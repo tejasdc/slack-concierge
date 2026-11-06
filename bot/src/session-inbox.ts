@@ -5,6 +5,7 @@ import {log} from './log';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {inboxRequestRoot,requestPromptInputId,routeTitle,topicRouteAnchor} from './inbox-request-root';
 import {firstInboxAcceptanceSql} from './inbox-message-identity';
+import {CURRENT_INBOX_ID_SQL,INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
 import type {ProviderHistoryMessage} from './provider-history';
 import {retainedReplyTarget} from './inbox-reply-lineage';
 import {messageDeliveryReceipts,messageRouteReceipts} from './message-route-receipts';
@@ -44,10 +45,11 @@ export function pebbleArrivalWaitMs(source:{kind?:unknown;recordedAt?:unknown}|u
 export const minutesText=(ms:number)=>{const minutes=Math.round(ms/60_000);return minutes>=120?`${Math.round(minutes/60)} hours`:`${minutes} min`;};
 export const captureIdentity=(source:InboxCapture['source'])=>createHash('sha256').update(JSON.stringify([source.kind,source.id])).digest('hex');
 export function inboxSession() {
-  return db.query("SELECT * FROM sessions WHERE json_extract(native_metadata_json,'$.inbox')=1 ORDER BY id DESC LIMIT 1").get() as SessionRow|null;
+  return db.query(`SELECT * FROM sessions WHERE id=(${CURRENT_INBOX_ID_SQL})`).get() as SessionRow|null;
 }
 export function retainedInboxCapture(captureId:string) {
-  const input=getAcceptedSessionInput(`capture:${captureId}`);
+  // The capture's id, or the Inbox message id it is shown under (`capture:<id>`).
+  const input=getAcceptedSessionInput(`capture:${captureId.replace(/^capture:/,'')}`);
   if(!input||!JSON.parse(input.payload_json).capture)throw new Error('Unknown retained Inbox capture.');
   return input;
 }
@@ -231,9 +233,7 @@ export function inboxThreadLink(sessionId:number,inputId:string):InboxThreadLink
  * restart took a minute resolving 2,000 messages, 2026-09-22). Each half uses its own index.
  */
 export function inboxRowByMessageId(sessionId:number|null,messageId:string):any|null {
-  const scope=sessionId===null?'':` AND event.session_id IN (WITH RECURSIVE lineage(id) AS (
-    SELECT ? UNION ALL SELECT predecessor_session_id FROM session_handoffs JOIN lineage
-    ON successor_session_id=lineage.id WHERE state='accepted') SELECT id FROM lineage)`;
+  const scope=sessionId===null?'':` AND event.session_id IN (${INBOX_LINEAGE_SQL})`;
   const bind=sessionId===null?[messageId]:[sessionId,messageId];
   return db.query(`${inboxRows}${scope} AND event.kind IN ('result','post','request','topic_route') AND event.event_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
     ??db.query(`${inboxRows}${scope} AND event.kind NOT IN ('result','post','request','topic_route') AND event.input_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)

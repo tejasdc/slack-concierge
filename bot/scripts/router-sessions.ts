@@ -90,6 +90,7 @@ router-actions.sh sessions topics items <topicId> <source-flags> --kind question
 router-actions.sh sessions topics detail <topicId> <source-flags> --digest HASH [--part N]
 router-actions.sh sessions topics questions-read <source-flags> [--state open|reading|history|deferred|checking] [--cursor C] [--limit N]
 router-actions.sh sessions topics resolve <messageId> <source-flags>
+router-actions.sh sessions topics message <messageId> <source-flags>  # the words, author, time and attachments of one Inbox message or topic-named request
 router-actions.sh sessions topics create <source-flags> --action-id A --title T [--area <areaId> ...] [--from <source-topicId>] [--summary S] [--root <inputId> ...] [--reason R]
 router-actions.sh sessions topics place <topicId> <source-flags> --action-id A --root <conversation-root> [--root ...] [--reason R]
 router-actions.sh sessions topics route <topicId> <source-flags> --action-id A --message <exact-human-input-id> [--reason R]
@@ -202,7 +203,7 @@ function sourceFrom(flags: Map<string, string>): Source {
   return { channel_id: channel, message_ts: timestamp };
 }
 
-const TOPIC_VERBS = ["list","obligations","read","items","detail","resolve","questions-read","create","place","route","link","unlink","rename","summary","merge","close","reopen","pin","unpin","request","questions","question","answer","acknowledge","focus","release","file","area"];
+const TOPIC_VERBS = ["list","obligations","read","items","detail","resolve","message","questions-read","create","place","route","link","unlink","rename","summary","merge","close","reopen","pin","unpin","request","questions","question","answer","acknowledge","focus","release","file","area"];
 const TOPIC_REPEATABLE = ["--root","--source","--item","--input","--evidence","--area"];
 const TOPIC_SINGLE = ["--source-channel","--source-ts","--source-input","--source-run","--action-id","--title","--summary","--reason",
   "--into","--from","--thread","--scope","--dispatch","--disposition","--human-quote","--json-file","--state","--answer","--replacement","--limit","--cursor","--query","--expected-revision","--need","--kind","--part","--digest","--message"];
@@ -250,7 +251,7 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
     }
   }
   const source = sourceFrom(flags);
-  const mutating = !["list","obligations","read","items","detail","resolve","questions-read","area.list","area.suggest"].includes(verb);
+  const mutating = !["list","obligations","read","items","detail","resolve","message","questions-read","area.list","area.suggest"].includes(verb);
   const actionId = flags.get("--action-id");
   if (mutating && !actionId) invalid(`topics ${verb.replace(".", " ")} requires an explicit stable --action-id.`);
   const takesText = ["rename","summary","close","reopen","request.add","request.amend","request.close","request.reopen","question.settle","focus"].includes(verb);
@@ -307,7 +308,7 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
     }
   }
   if (identity) {
-    if (verb === "resolve") body.message_id = identity;
+    if (verb === "resolve" || verb === "message") body.message_id = identity;
     // `request add` opens a request inside a topic; the other request verbs name the request.
     else if (verb.startsWith("request.") && verb !== "request.add") body.request_id = identity;
     else if (verb === "question.settle") body.question_id = identity;

@@ -11,6 +11,7 @@ import {parseProviderSelector,resolveProviderSelector,normalizeReasoningEffort} 
 import {escalationReason,topModel} from './model-escalation';
 import {humanChoseTopModel} from './model-escalation-custody';
 import {sessionAddress} from './session-address';
+import {takeInboxRouterRole} from './standing-agents';
 import {claudeConfigDir,locateClaudeTranscript} from './claude-transcript-watch';
 
 const run=promisify(execFile);
@@ -285,10 +286,7 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
     // The Inbox is one logical router across provider sessions. Promote its role only
     // after acceptance, so a proposed successor cannot receive captures prematurely.
     const predecessorMeta=sessionMetadata(getSessionById(from)!);
-    if(predecessorMeta.inboxRole==='project-router')updateSessionMetadata(to,{inbox:true,inboxRole:'project-router',
-      standingRole:'inbox',needs:predecessorMeta.needs,generation:predecessorMeta.generation,
-      readGeneration:predecessorMeta.readGeneration,attentionGeneration:predecessorMeta.attentionGeneration,
-      dismissedGeneration:predecessorMeta.dismissedGeneration});
+    if(predecessorMeta.inboxRole==='project-router')takeInboxRouterRole(to,predecessorMeta);
     // Suspension prevents the next turn. It does not interrupt an already admitted run;
     // that run receives a direct notice after this transaction commits.
     updateSessionMetadata(from,{suspended:true});

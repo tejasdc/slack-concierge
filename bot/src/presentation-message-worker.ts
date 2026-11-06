@@ -16,6 +16,7 @@ import {PreparedReceipts} from './prepared-receipts';
 import {PreparedTopics} from './prepared-topics';
 import {PreparedAreas} from './prepared-areas';
 import {PreparedLabRequests} from './prepared-lab-requests';
+import {CURRENT_INBOX_ID_SQL} from './inbox-lineage-sql';
 
 const directory=process.env.CONCIERGE_STATE_DIR;
 if(!directory)throw new Error('Presentation worker requires CONCIERGE_STATE_DIR.');
@@ -534,8 +535,8 @@ async function rebuild() {
       if(!page.hasMore)break;
       await yieldProgress();
     }
-    const inboxes=source.query("SELECT id FROM sessions WHERE json_extract(native_metadata_json,'$.inbox')=1 ORDER BY id")
-      .all() as {id:number}[];
+    // Every Inbox session's topics belong to the one Inbox, so one walk from the current router covers them all.
+    const inboxes=source.query(CURRENT_INBOX_ID_SQL).all() as {id:number}[];
     for(const inbox of inboxes){
       let topicAfter='';
       while(true){

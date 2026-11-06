@@ -4,6 +4,7 @@ import {preparedTopicValue,topicContext,type TopicContext} from './prepared-topi
 import {inboxRootResolver} from './presentation-message-source';
 import {gram,shortTokens} from './prepared-search';
 import {topicEventDisplay} from './topic-event-display';
+import {CURRENT_INBOX_ID_SQL,INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
 
 const PAGE=20,CHUNK_BYTES=16*1024;
 type State='open'|'closed'|'background'|'all';
@@ -192,7 +193,7 @@ export class PreparedTopics {
   this.prepared.query('DELETE FROM presentation_topic_chunk_refs WHERE generation=?').run(generation);
   this.prepared.query('DELETE FROM presentation_inbox_attention WHERE generation=?').run(generation);
  }
- private inboxSession(){return (this.source.query("SELECT id FROM sessions WHERE json_extract(native_metadata_json,'$.inbox')=1 ORDER BY id DESC LIMIT 1").get() as {id:number}|null)?.id??0;}
+ private inboxSession(){return (this.source.query(CURRENT_INBOX_ID_SQL).get() as {id:number}|null)?.id??0;}
  context(generation:number,sessionId:number){return {...topicContext(this.source,this.prepared,generation,this.inboxSession()||sessionId),requestedSessionId:sessionId};}
  rebuildRootsPage(generation:number,after='',limit=100){
   const rows=this.prepared.query('SELECT root_input_id AS root FROM presentation_messages WHERE generation=? AND root_input_id>? GROUP BY root_input_id ORDER BY root_input_id LIMIT ?')
@@ -314,9 +315,7 @@ export class PreparedTopics {
    .run(context.generation,json(value));
  }
  rebuildPage(generation:number,sessionId:number,after='',limit=20){
-  const rows=this.source.query(`SELECT topic_id FROM inbox_topics WHERE session_id IN (
-    WITH RECURSIVE lineage(id) AS (SELECT ? UNION ALL SELECT predecessor_session_id FROM session_handoffs
-      JOIN lineage ON successor_session_id=lineage.id WHERE state='accepted') SELECT id FROM lineage)
+  const rows=this.source.query(`SELECT topic_id FROM inbox_topics WHERE session_id IN (${INBOX_LINEAGE_SQL})
     AND topic_id>? ORDER BY topic_id LIMIT ?`)
    .all(sessionId,after,limit+1) as {topic_id:string}[];
   const context=this.context(generation,sessionId);
