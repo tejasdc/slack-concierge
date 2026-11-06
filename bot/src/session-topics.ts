@@ -1506,8 +1506,11 @@ function verifiedFinalEvidence(dispatchId:string,row:CompletionRow|null,evidence
   if(!retained)return false;
   try {
     const payload=JSON.parse(retained.payload_json);
+    // The event row binds the final to this dispatch. A recipient may answer it from a
+    // later accepted input, such as a return, while preserving that input's own source.
     return payload.final===true
-      &&payload.source?.input_id===`request:${dispatchId}`
+      &&typeof payload.source?.input_id==='string'&&!!payload.source.input_id
+      &&typeof payload.source?.run_id==='string'&&!!payload.source.run_id
       &&payload.text===result.text
       &&payload.responding_session_id===result.responding_session_id
       &&payload.workDisposition===result.workDisposition;
@@ -3747,14 +3750,14 @@ export function reopenThreadForHisMessage(sessionId:number,inputId:string,replyT
 type ThreadUpkeepResult={threads:number;closed:number;settled:number;flagged:number};
 let threadUpkeepPass:Promise<ThreadUpkeepResult>|null=null;
 const yieldThreadUpkeep=()=>new Promise<void>(resolve=>setImmediate(resolve));
-export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown):Promise<ThreadUpkeepResult> {
+export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string;threadReplyNotRequired:true})=>unknown):Promise<ThreadUpkeepResult> {
   if(threadUpkeepPass)return threadUpkeepPass;
   const pass=keepThreadsCurrentPass(admit);
   threadUpkeepPass=pass;
   void pass.then(()=>{if(threadUpkeepPass===pass)threadUpkeepPass=null;},()=>{if(threadUpkeepPass===pass)threadUpkeepPass=null;});
   return pass;
 }
-async function keepThreadsCurrentPass(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown):Promise<ThreadUpkeepResult> {
+async function keepThreadsCurrentPass(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string;threadReplyNotRequired:true})=>unknown):Promise<ThreadUpkeepResult> {
   const session=inboxSession();
   if(!session)return {threads:0,closed:0,settled:0,flagged:0};
   refreshRootMemo();
@@ -3801,7 +3804,7 @@ async function keepThreadsCurrentPass(admit?:(input:{sessionId:number;inputId:st
       const inputId=`thread-upkeep:${createHash('sha256').update(`${item.key}:${item.attempt}`).digest('hex')}`;
       // An input already retained under this id was admitted by an earlier pass; only its flags are missing.
       if(!db.query('SELECT 1 FROM session_inputs WHERE id=?').get(inputId))
-        admit({sessionId:session.id,inputId,origin:'service',sourceInputId:!item.sourceUncertain&&item.sourceInputId?item.sourceInputId:inputId,
+        admit({sessionId:session.id,inputId,origin:'service',threadReplyNotRequired:true,sourceInputId:!item.sourceUncertain&&item.sourceInputId?item.sourceInputId:inputId,
           sourceRunId:!item.sourceUncertain&&item.sourceRunId?item.sourceRunId:inputId,requestId:item.requestId,
           text:`The request "${item.title}" (${item.requestId}) in "${item.topicTitle}" (${item.topicId}) is still open. Its latest attempt (${item.work}) ${item.how}. ${item.sourceUncertain?'The exact source of this request is not linked; establish original authorship and task scope from the retained thread before dispatching. ':''}${item.stoppedByTejas?'Tejas stopped that run. Do not restart it or its effects on your own; reconcile any effects already in flight and keep the human task open. If his intent for the remaining task is genuinely ambiguous, ask one focused only-he-can question.':item.sharedAnswerPostId!==null?`The same answer was linked to several requests. Do not dispatch again merely to obtain a separate receipt. Read the answer ${item.sharedAnswerPostId||'on the shared dispatch'} and this request's scope; if it is fully checked, close this request citing that answer post as evidence, otherwise send only the missing work.`:'Inspect the exact prior attempt and its effects, then send the remaining work to its owning agent (sessions ask … --thread, then topics request link).'} Never replay an ambiguous or acknowledged effect. Close only after the work is completed and checked, or keep an only-he-can question open for Tejas. A failure, hand-back, cancellation or provider error cannot close his request. You do not need to reply to this.`});
       recordSessionEvent({eventId:`topic-recovery:${item.key}:${item.attempt}`,sessionId:session.id,kind:'topic_request',

@@ -229,6 +229,29 @@ Routine owner memory readings also export the observation-loss counter, with RSS
 external and array-buffer sizes. They do not walk the heap when it is already large. The
 external host observer owns process/swap/pressure evidence during a blocked event loop.
 
+## Owner-loop pause evidence
+
+The owner-task watchdog runs on a separate thread. When the owner's heartbeat is at least
+200 ms late, it samples the main Linux thread every 500 ms and retains at most 40 samples.
+The `owner_task_still_blocked` record at five seconds and the eventual
+`owner_task_blocked` record include the sampled thread states, kernel wait channels,
+syscall **numbers only**, and the sampled interval's CPU and runqueue-wait milliseconds.
+These records stay in Concierge's local journal; they contain no syscall arguments,
+addresses, request content or ledger values. A missing `/proc` file is reported as
+unavailable and never affects the owner. The watchdog performs the reads itself, so
+sampling cannot add synchronous filesystem work to the request loop.
+
+Compare these fields with the same record's heartbeat delay and ledger occupancy.
+Repeated sleeping states and one wait channel identify where the kernel found the
+thread sleeping; a growing runqueue-wait counter supports scheduler delay. CPU time
+and runqueue time are measured only between the first and last available samples,
+which can cover less than the full pause. Point samples and wait channels do not
+identify a lock holder or prove why a system call slept. A zero or unavailable
+runqueue counter is not proof that the thread was always scheduled. For a suspected
+ledger write stall, join this record to the release's exact phase and, if available,
+the external host observer's storage and holder evidence before changing custody or
+durability behavior.
+
 An operator or outside sampler can ask the owner what it holds with `kill -WINCH <owner pid>`:
 it writes live object counts by type and the allocator's statistics to
 `$CONCIERGE_STATE_DIR/diagnostics/heap-census-<time>.json` (`owner-cpu-profile.ts`), at most once

@@ -976,7 +976,9 @@ source inspection applies to executed scripts, not files merely read by `rg` or 
 When the canonical directory is accessible, the gate exercises the packaged controller with
 private state mounted at the canonical path but configured through its original temporary
 path outside home. The database's matching device/inode identity still selects live-entrypoint
-policy; the test-mode home-directory guard remains enforced. Configuring the child with the
+policy; a scratch owner socket returns the expected missing-release result and records that the
+packaged controller actually used the owner read while a separate database writer is held.
+The test-mode home-directory guard remains enforced. Configuring the child with the
 canonical home path instead caused incident `deb48b05` on October 10: the guard correctly
 refused the child before its `lkg` command could report a missing release. This candidate-owned
 check is also consumed by the preceding installed builder, so the correction needs no control

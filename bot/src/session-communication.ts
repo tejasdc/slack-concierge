@@ -445,7 +445,41 @@ export class SessionCommunicationCoordinator {
             events:(db.query('SELECT event_id,payload_json,final,created_at_ms FROM session_external_replies WHERE request_id=? ORDER BY created_at_ms').all(id) as any[])
                 .map(event=>({event_id:event.event_id,final:!!event.final,payload:JSON.parse(event.payload_json),created_at_ms:event.created_at_ms}))};
     }
-    private externalReply(input:{source:CommunicationSource;action_id:string;request_id:string;text:string;reply_body?:string;final:boolean;workDisposition?:WorkDisposition;openChatGptIds?:string[];attachments?:string[];files?:AttachedFile[];evidence?:unknown[];hand_back?:string}) {
+    externalWithdraw(input:{name:string;request_id:string;ask_action_id:string;action_id:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        if(!/^[a-z][a-z0-9-]{2,40}$/.test(input.name))throw new Error('Invalid outside agent name.');
+        action(input.ask_action_id);action(input.action_id);
+        db.transaction(()=>{
+            const row=db.query('SELECT * FROM session_external_requests WHERE request_id=? AND agent_name=?')
+                .get(input.request_id,input.name) as any;
+            if(!row)throw new Error('Unknown outside request.');
+            if(row.action_id!==input.ask_action_id)throw new Error('The original ask action ID does not match this request.');
+            if(row.outcome){
+                const result=row.result_json?JSON.parse(row.result_json):null;
+                if(row.outcome==='canceled'&&result?.withdrawActionId===input.action_id)return;
+                throw new Error('This outside request already has a different final outcome.');
+            }
+            const target=getAcceptedSessionInput(row.target_input_id);
+            if(!target)throw new Error('The target input is missing; withdrawal needs owner reconciliation.');
+            if(target.turn_id!==null){
+                const turn=db.query(`SELECT status,owner_instance_id,provider_admission_intended_at,
+                    provider_started_at,provider_turn_id,provider_input_acknowledged_at FROM turns WHERE id=? AND session_id=?`)
+                    .get(target.turn_id,target.session_id) as any;
+                if(!turn||turn.status!=='queued'||turn.owner_instance_id!==null||turn.provider_admission_intended_at!==null
+                    ||turn.provider_started_at!==null||turn.provider_turn_id!==null||turn.provider_input_acknowledged_at!==null)
+                    throw new Error('The recipient turn has started or its start is uncertain; this request cannot be withdrawn as unstarted.');
+            } else if(target.steering_id!==null||JSON.parse(target.receipt_json??'{}').state!=null)
+                throw new Error('The recipient input is not an unstarted queued request.');
+            if(!cancelQueuedWithdrawnRequest(target.id))
+                throw new Error('The recipient input could not be revoked; no request outcome was changed.');
+            db.query("UPDATE session_external_requests SET status='settled',outcome='canceled',result_json=? WHERE request_id=? AND outcome IS NULL")
+                .run(JSON.stringify({withdrawActionId:input.action_id,askActionId:input.ask_action_id,
+                    targetInputId:target.id,reason:'The outside requester withdrew this unstarted request.'}),row.request_id);
+        })();
+        this.wake();
+        return this.externalGet(input.name,input.request_id);
+    }
+    private externalReply(input:{source:CommunicationSource;action_id:string;request_id:string;text:string;reply_body?:string;final:boolean;waiting_on_watch?:string;workDisposition?:WorkDisposition;openChatGptIds?:string[];attachments?:string[];files?:AttachedFile[];evidence?:unknown[];hand_back?:string}) {
         const request=db.query('SELECT * FROM session_external_requests WHERE request_id=?').get(input.request_id) as any;
         if(!request)return null;
         const priorKey=input.source.input_id?JSON.stringify(['input',input.source.input_id,input.action_id])
@@ -453,7 +487,7 @@ export class SessionCommunicationCoordinator {
         const committed=priorKey?db.query('SELECT * FROM session_external_replies WHERE action_key=?').get(priorKey) as any:null;
         if(committed){
             const saved=JSON.parse(committed.payload_json);
-            if(committed.request_id!==input.request_id||saved.text!==input.text||saved.replyBody!==input.reply_body||!!committed.final!==input.final||saved.workDisposition!==input.workDisposition)
+            if(committed.request_id!==input.request_id||saved.text!==input.text||saved.replyBody!==input.reply_body||saved.waitingOnWatch!==input.waiting_on_watch||!!committed.final!==input.final||saved.workDisposition!==input.workDisposition)
                 throw new Error('Idempotency conflict: outside reply changed.');
             return this.externalGet(request.agent_name,request.request_id);
         }
@@ -472,6 +506,7 @@ export class SessionCommunicationCoordinator {
         const sourceInputId=actor.inputId??this.peerActor(actor).inputId;
         const attachments=this.retainAttachments(sourceInputId,input.action_id,'reply-file',input);
         const payload={text:input.text,...(input.reply_body!==undefined?{replyBody:input.reply_body}:{}),final:input.final,responding_session_id:`concierge:${actor.session}`,
+            ...(input.waiting_on_watch?{waitingOnWatch:input.waiting_on_watch}:{}),
             ...(input.workDisposition?{workDisposition:input.workDisposition}:{}),...(attachments.length?{attachments}:{}),
             ...(input.evidence?{evidence:input.evidence}:{})};
         const eventId=randomUUID();
@@ -719,6 +754,7 @@ export class SessionCommunicationCoordinator {
             WHERE target_session_id=? AND outcome IS NULL AND stalled_at_ms IS NULL AND created_at_ms>=? ORDER BY created_at_ms`)
             .all(running.session_id,REMINDERS_SINCE_MS) as ExternalRequestRow[]) {
             if(!handedToARun(request.target_input_id))continue;
+            if(waitingOnDependency(running.session_id,request.request_id,request.created_at_ms))continue;
             if(input.offer?.includes(request.request_id))db.query('UPDATE session_external_requests SET hook_offered_run=? WHERE request_id=?').run(runId,request.request_id);
             if(input.remind)db.query("UPDATE session_external_requests SET reminded_at_ms=?,reminded_via='hook' WHERE request_id=? AND reminded_at_ms IS NULL AND hook_offered_run=?").run(this.now(),request.request_id,runId);
             owed.push({request_id:request.request_id,requester:`Outside agent · ${request.agent_name}`,
@@ -2037,12 +2073,14 @@ export class SessionCommunicationCoordinator {
             const source=getAcceptedSessionInput(input.source.input_id??'');
             const actionKey=JSON.stringify(['input',input.source.input_id,input.action_id]);
             const alreadyRecorded=!!db.query('SELECT 1 FROM session_communication_events WHERE action_key=?').get(actionKey)
-                ||!!db.query('SELECT 1 FROM session_peer_replies WHERE action_key=?').get(actionKey);
+                ||!!db.query('SELECT 1 FROM session_peer_replies WHERE action_key=?').get(actionKey)
+                ||!!db.query('SELECT 1 FROM session_external_replies WHERE action_key=?').get(actionKey);
             const watch=source?db.query("SELECT session_id,state,delivery_state FROM watches WHERE watch_id=?").get(input.waiting_on_watch) as
                 {session_id:number;state:string;delivery_state:string|null}|null:null;
-            const request=db.query('SELECT created_at_ms FROM session_communication_requests WHERE request_id=?').get(input.request_id) as {created_at_ms:number}|null;
-            const peerRequest=db.query('SELECT created_at_ms FROM session_peer_deliveries WHERE request_id=?').get(input.request_id) as {created_at_ms:number}|null;
-            if(!alreadyRecorded&&(!source||!watch||watch.session_id!==source.session_id||(!request&&!peerRequest)
+            const knownRequest=!!db.query(`SELECT 1 FROM session_communication_requests WHERE request_id=?
+                UNION ALL SELECT 1 FROM session_peer_deliveries WHERE request_id=?
+                UNION ALL SELECT 1 FROM session_external_requests WHERE request_id=?`).get(input.request_id,input.request_id,input.request_id);
+            if(!alreadyRecorded&&(!source||!watch||watch.session_id!==source.session_id||!knownRequest
                 ||(!['accepted','observing'].includes(watch.state)&&watch.delivery_state!=='pending')))
                 throw new Error('--waiting-on-watch needs an active watch owned by this agent.');
         }

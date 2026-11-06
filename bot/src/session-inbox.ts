@@ -357,7 +357,13 @@ export function threadOwedByTurn(session:SessionRow,openingInputId:string|null):
   if(!openingInputId||!sessionMetadata(session).inbox)return null;
   const opening=getAcceptedSessionInput(openingInputId);
   if(!opening||opening.origin==='human')return null;
-  if(opening.origin==='service'&&JSON.parse(opening.payload_json).alreadyPostedInThread===true)return null;
+  if(opening.origin==='service'){
+    const payload=JSON.parse(opening.payload_json);
+    // Older upkeep inputs were admitted before the explicit mark existed. Their
+    // service identity and owner-generated prefix still prove the no-reply contract.
+    if(payload.alreadyPostedInThread===true||payload.threadReplyNotRequired===true
+      ||opening.id.startsWith('thread-upkeep:'))return null;
+  }
   return inboxThreadRoot(session.id,openingInputId);
 }
 export function turnPostedInto(sessionId:number,turnId:number,root:string):boolean {

@@ -429,7 +429,7 @@ function boundedLimit(value:string|null,max:number) {
  * notice needs that guarantee — a notice that spends a turn on an idle session is the very
  * cost it exists to warn about.
  */
-export type OwnerAdmission = {sessionId:number;inputId:string;origin:'agent'|'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string;attachments?:string[];delivery?:'queue'|'steer';alreadyPostedInThread?:boolean};
+export type OwnerAdmission = {sessionId:number;inputId:string;origin:'agent'|'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string;attachments?:string[];delivery?:'queue'|'steer';alreadyPostedInThread?:boolean;threadReplyNotRequired?:boolean};
 type PreparedConsultation = {address:string;parent:SessionRow;source:any;packet:Array<{role:string;eventId:string;locator:string;textHash:string;text:string}>};
 export type SessionOwnerRuntime = {
   wake():void;
@@ -2609,10 +2609,11 @@ export class SessionOwner {
   admit(input:OwnerAdmission) {
     const target=getSessionById(input.sessionId);
     if(!target||sessionMetadata(target).canvasObservation)throw new SessionOwnerError('This canvas record accepts only on-device speech and observed action results.',409,'CANVAS_OBSERVATION_ONLY');
+    if(input.threadReplyNotRequired&&input.origin!=='service')throw new SessionOwnerError('Only a service input can waive its own thread reply.',400,'SERVICE_INPUT_REQUIRED');
     // A returned answer can carry the files it answered with. They are retained custody the
     // owner verifies here; the execution host writes them beside the turn like any attachment.
     const attachments=input.attachments?.length?this.attachments(input.attachments).map(file=>file.id):[];
-    const saved=db.transaction(()=>retainSessionInput({id:input.inputId,sessionId:input.sessionId,scope:`session:${input.sourceInputId}`,actionId:input.inputId,kind:'input',origin:input.origin,payload:{text:input.text,...(attachments.length?{attachments}:{}),...(input.delivery?{delivery:input.delivery}:{}),...(input.alreadyPostedInThread?{alreadyPostedInThread:true}:{})},sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,requestId:input.requestId}))();
+    const saved=db.transaction(()=>retainSessionInput({id:input.inputId,sessionId:input.sessionId,scope:`session:${input.sourceInputId}`,actionId:input.inputId,kind:'input',origin:input.origin,payload:{text:input.text,...(attachments.length?{attachments}:{}),...(input.delivery?{delivery:input.delivery}:{}),...(input.alreadyPostedInThread?{alreadyPostedInThread:true}:{}),...(input.threadReplyNotRequired?{threadReplyNotRequired:true}:{})},sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,requestId:input.requestId}))();
     return this.dispatch(saved.input);
   }
   /** The trusted thnkr.ing server wakes the existing keeper as a service, never as Tejas. */

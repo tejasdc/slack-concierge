@@ -12,7 +12,7 @@ process.env.CONCIERGE_TEST_MODE='1';
 process.env.CONCIERGE_TEST_AUTHORIZATION=LEGACY_TOPIC_COMPLETION_TEST_AUTHORIZATION;
 
 const [{db,claimNextQueuedTurn,markTurnProviderAdmissionIntended,acknowledgeTurnProviderInput},
-  {SessionOwner},{SessionCommunicationCoordinator},{nativeRunId,updateSessionMetadata,recordSessionEvent},
+  {SessionOwner},{SessionCommunicationCoordinator},{nativeRunId,updateSessionMetadata,recordSessionEvent,retainSessionInput},
   {topicsCommand}]=await Promise.all([
   import('../src/state'),import('../src/session-owner'),import('../src/session-communication'),
   import('../src/session-inputs'),import('../src/session-topics')]);
@@ -101,6 +101,24 @@ try {
       disposition:'completed',evidence:[typedEvent.event_id],reason:`Checked part ${index+1} against the retained final.`});
     assert.deepEqual(result.request.closure.evidence,[typedEvent.event_id]);
   }
+  assert.equal(answerPosts().n,postsBeforeClosure);
+
+  // A recipient can settle its original request during a later return turn. The
+  // final event stays attached to the dispatch but retains that turn's source input.
+  const returnId=`return:${randomUUID()}`;
+  retainSessionInput({id:returnId,sessionId:Number(typedTarget.session.id.slice(10)),scope:`session:${typedWorker.actor.inputId}`,
+    actionId:'typed-later-return',kind:'input',origin:'service',payload:{text:'A helper returned the checked result.'},
+    sourceInputId:typedWorker.actor.inputId,sourceRunId:typedWorker.actor.runId,requestId:typedDispatch.request_id});
+  db.query("UPDATE session_communication_events SET payload_json=json_set(payload_json,'$.source.input_id',?,'$.source.run_id',?) WHERE event_id=?")
+    .run(returnId,typedWorker.actor.runId,typedEvent.event_id);
+  const later=topicsCommand(current.actor,{verb:'request.add',topic_id:topicId,action_id:'typed-later-request',
+    title:'Checked after helper return',sources:[rootId],brief:'Check the retained final for this request.'});
+  topicsCommand(current.actor,{verb:'request.link',request_id:later.request.requestId,action_id:'typed-later-link',dispatch:typedDispatch.request_id});
+  assert.throws(()=>topicsCommand(current.actor,{verb:'request.close',request_id:later.request.requestId,action_id:'typed-later-wrong-final',
+    disposition:'completed',evidence:[finalEvent.event_id],reason:'Checked the retained final.'}),/name the agent answer as evidence/);
+  const laterClosed=topicsCommand(current.actor,{verb:'request.close',request_id:later.request.requestId,action_id:'typed-later-exact-final',
+    disposition:'completed',evidence:[typedEvent.event_id],reason:'Checked the exact unsuperseded final from the later return turn.'});
+  assert.deepEqual(laterClosed.request.closure.evidence,[typedEvent.event_id]);
   assert.equal(answerPosts().n,postsBeforeClosure);
 
   // An accepted Inbox successor can answer a request retained under its predecessor.

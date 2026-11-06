@@ -95,6 +95,17 @@ applies the same reminder and stalled eligibility as local agent requests, so an
 unanswered outside request is not offered in every later run forever; the outside
 caller reads `stalled` by polling instead of receiving a return or notice.
 
+`POST /external/withdraw` accepts `{name,request_id,ask_action_id,action_id}` on the
+same root-private socket. The outside requester must name the exact retained request
+and its original ask action ID; the withdrawal action ID makes retries idempotent.
+The owner revokes the recipient's queued turn and its usage hold in the same ledger
+transaction that settles the outside request as `canceled`. It refuses the withdrawal
+if provider admission has begun, the target has run, or either identity differs; a
+refusal changes neither the request outcome nor the recipient input. `get` retains
+the cancellation receipt. Withdrawing the outside agent's attempt does not close the
+human request that prompted it. A repeated `ask` using the original action ID returns
+the canceled receipt and cannot redispatch the input.
+
 An outside name matches `^[a-z][a-z0-9-]{2,40}$`. Accepted input authorship carries
 `author.kind:"agent"` and `author.outsideAgent:{name,label}`; the label is
 `Outside agent · <name>`. It never claims a human or Concierge session identity.
@@ -651,7 +662,7 @@ failure is terminal. Orders do not expire. One live order exists per project and
 refusal, permanent failure or cancellation records a new attempt with a new order ID, because
 the receiver keeps a permanent failure as that order's final answer.
 
-Peer sessions in search results carry `availability:{state:"live"|"archived-only", reachable, note}`: `live` when the running peer confirmed the session, `archived-only` when this instance's transcript archive or the peer's last catalogue found it and the peer did not answer. A session is never omitted because its instance is offline. `coverage.peers` reports each peer's availability. A peer search can return a compact catalogue card even while that peer is live. Before returning any peer match, Concierge supplies the complete session-view shape; a card with no current control facts has every control explicitly unavailable with a reason. Opening the exact session fetches its current controls.
+Peer sessions in search results carry `availability:{state:"live"|"archived-only", reachable, note}`: `live` when the running peer confirmed the session, `archived-only` when this instance's transcript archive or the peer's last catalogue found it and the peer did not answer. A session is never omitted because its instance is offline. `coverage.peers` reports each peer's availability. A peer search or the local meaning index can return a compact catalogue card even while that peer is live. The shared search response boundary completes every peer card before either the browser or an agent receives it; a card with no current control facts has every control explicitly unavailable with a reason. Opening the exact session fetches its current controls.
 
 Cross-instance session identities read `<peer>:<n>` in receipts, provenance and events
 (`request.targetSessionId`, `provenance.source.sessionId`); an instance's own sessions

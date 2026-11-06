@@ -83,8 +83,13 @@ export function waitingOnDependency(sessionId: number, requestId: string, sinceM
                 JOIN session_peer_replies reply ON reply.request_id=request.request_id AND reply.kind='progress'
                 JOIN watches named ON named.watch_id=json_extract(reply.payload_json,'$.waitingOnWatch')
                 WHERE request.request_id=? AND request.target_session_id=? AND request.closed_at_ms IS NULL AND request.created_at_ms>=?
+                  AND coalesce(named.series_id,named.watch_id)=coalesce(watch.series_id,watch.watch_id))
+              OR EXISTS (SELECT 1 FROM session_external_requests request
+                JOIN session_external_replies reply ON reply.request_id=request.request_id AND reply.final=0
+                JOIN watches named ON named.watch_id=json_extract(reply.payload_json,'$.waitingOnWatch')
+                WHERE request.request_id=? AND request.target_session_id=? AND request.outcome IS NULL AND request.created_at_ms>=?
                   AND coalesce(named.series_id,named.watch_id)=coalesce(watch.series_id,watch.watch_id))) LIMIT 1`)
-            .get(sessionId,requestId,sessionId,sinceMs,requestId,sessionId,sinceMs)
+            .get(sessionId,requestId,sessionId,sinceMs,requestId,sessionId,sinceMs,requestId,sessionId,sinceMs)
         || waitingOnLiveRequest(sessionId, sinceMs, untakenAnswers);
 }
 
