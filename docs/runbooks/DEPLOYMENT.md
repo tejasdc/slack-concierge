@@ -1067,6 +1067,14 @@ loss while serving still records uncertainty. The 2026-11-06 06:43 release showe
 capture stop despite claim cancellation; this ordering addresses that measured
 overlap without changing capture delivery acknowledgment or adoption.
 
+`capture_delivery_stop_timing` divides the capture worker's release stop into
+the synchronous queue-claim cancellation (`abort_ms`) and the remaining join
+(`join_ms`), with `activity_at_stop` identifying whether it was claiming,
+delivering, or between requests. Compare this line with `owner_task_blocked` and
+the `capture_delivery` drain-step duration before attributing an unmarked pause
+to cancellation. Delivery acknowledgment remains awaited to preserve its exact
+receipt.
+
 The unit starts the already-installed managed Codex App Server if it is absent,
 but ordinary deployment and autonomous repair never update, stop, or restart
 that daemon. See [Codex App Server lifecycle](CODEX-APP-SERVER.md).
