@@ -3574,7 +3574,7 @@ export class SessionOwner {
     return {session:this.view(this.session(id)),operation:this.receipt(this.input(accepted.input.id))};
   }
   upload(body:unknown) {
-    const input=object(body);only(input,['clientActionId','name','contentType','base64','agentSource']);const action=actionId(input),agent=agentTestSource(input.agentSource);
+    const input=object(body);only(input,['clientActionId','name','contentType','base64','sessionId','agentSource']);const action=actionId(input),agent=agentTestSource(input.agentSource);
     if(typeof input.name!=='string'||!input.name||input.name.includes('/')||input.name.includes('\\')||input.name==='.'||input.name==='..'||input.name.includes('\0'))throw new SessionOwnerError('Attachment name must be a file name.');
     if(typeof input.contentType!=='string'||!input.contentType||typeof input.base64!=='string')throw new SessionOwnerError('Attachment type and base64 bytes required.');
     const bytes=Buffer.from(input.base64,'base64');
@@ -4195,6 +4195,8 @@ export class SessionOwner {
           throw new SessionOwnerError('This marked browser route is not available.',403,'AGENT_TEST_SCOPE_REFUSED');
         const {source,sessionId}=this.agentBrowserBinding(request,parts[0]==='sessions'?parts[1]:undefined);
         if(parts[0]==='sessions'&&parts[1]!==sessionId)throw new SessionOwnerError('The target session changed.',403,'AGENT_TEST_SCOPE_REFUSED');
+        if(parts[0]==='attachments'&&body?.sessionId!==sessionId)
+          throw new SessionOwnerError('The attachment target session changed.',403,'AGENT_TEST_SCOPE_REFUSED');
         if(body?.agentSource?.inputId!==source.inputId||body?.agentSource?.runId!==source.runId)
           throw new SessionOwnerError('The marked write source changed.',403,'AGENT_TEST_SCOPE_REFUSED');
         if(parts[0]==='sessions'&&Array.isArray(body.attachments))for(const id of body.attachments){
