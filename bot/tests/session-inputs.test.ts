@@ -74,6 +74,7 @@ test('a never-written Google follow-up follows an accepted handoff with its exac
   const accepted=retainSessionInput({sessionId:source.id,scope:'agent-request',actionId:request,
     kind:'input',origin:'agent',payload:{text:'still owed'},requestId:request}).input;
   const owed=attachSessionSteering(accepted.id,first.turn_id!);
+  db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({admissionIntent:'live'}),owed.id);
   markTurnSteeringMessageFailed(owed.steering_id!,'Never written to Google.');
   db.query(`INSERT INTO session_handoffs(id,predecessor_session_id,successor_session_id,state,action_id,caller_session_id,
     reason,requesting_input_id,requesting_run_id,inventory_json,inventory_digest,accepted_at)
@@ -89,7 +90,8 @@ test('a never-written Google follow-up follows an accepted handoff with its exac
   expect(continued.turn_id).not.toBeNull();
   expect(db.query('SELECT target_input_id FROM session_external_requests WHERE request_id=?').get(request))
     .toEqual({target_input_id:continued.id});
-  expect(JSON.parse(getAcceptedSessionInput(owed.id)!.receipt_json!).continuedAs).toBe(continued.id);
+  expect(JSON.parse(getAcceptedSessionInput(owed.id)!.receipt_json!))
+    .toMatchObject({admissionIntent:'live',state:'canceled',continuedAs:continued.id});
   expect(recoverUnsentAntigravityInputs()).toBe(0);
 });
 test('a native input resumes an existing Slack branch without changing its session or native identity',()=>{

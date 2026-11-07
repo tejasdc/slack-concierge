@@ -19,6 +19,7 @@ The executable provider contract advertised live steering even though the Antigr
 
 The provider contract disables live steering for Antigravity. Each new follow-up enters the existing durable session turn queue and runs after the current answer. On startup and after adopting a prior run, recovery scans failed, never-written steering attempts. It requeues the original accepted input only when its exact request remains open, preserving identity and order. Sent or ambiguous attempts, completed receipts, answered or canceled communication requests, and closed thread upkeep are excluded.
 If a handoff already accepted the successor, recovery continues the proven unsent input there and updates its open request target. The original accepted input retains a receipt pointing to that continuation.
+Capture receipts can already contain a nonterminal live-admission marker; recovery adds the canceled continuation state while retaining that marker. A null-only update would leave those captures appearing live and scan them again after each restart.
 
 ## State card
 

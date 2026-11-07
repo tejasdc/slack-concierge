@@ -815,8 +815,10 @@ function continueUnsentAfterHandoff(input:AcceptedSessionInput):AcceptedSessionI
     .run(continued.id,destination,input.id,input.request_id??'');
   db.query('UPDATE session_peer_deliveries SET target_input_id=? WHERE target_session_id=? AND closed_at_ms IS NULL AND (target_input_id=? OR request_id=?)')
     .run(continued.id,destination,input.id,input.request_id??'');
-  db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND receipt_json IS NULL')
-    .run(JSON.stringify({state:'canceled',movedTo:`concierge:${destination}`,continuedAs:continued.id}),input.id);
+  db.query(`UPDATE session_inputs SET receipt_json=json_set(COALESCE(receipt_json,'{}'),
+    '$.state','canceled','$.movedTo',?,'$.continuedAs',?),updated_at=CURRENT_TIMESTAMP
+    WHERE id=? AND json_extract(receipt_json,'$.state') IS NULL`)
+    .run(`concierge:${destination}`,continued.id,input.id);
   return getAcceptedSessionInput(continued.id)!;
 }
 export function recoverUnsentSteeredInput(inputId:string) {
