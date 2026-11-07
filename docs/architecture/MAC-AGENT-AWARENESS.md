@@ -149,10 +149,14 @@ update contract can carry one tap to a newer server release within its two-minut
 attempt, while the old page alone decides when saved work permits reload. The Mac
 worker must observe the actual running build after the page opens.
 The current Lekondo Canvas update recovery no longer uses the historical page ID
-as a click grant. A separate direct Mac work request from the attested server
-source names the exact WebApp bundle, the current board ID, and either Workspace
-menu or Update now. While that exact delivery remains open, the Mac hook admits
-only the matching fixed invocation of `bot/scripts/mac-update-ax.swift`. The
+as a click grant. The Mac-local Codex transcript now proves both Tejas's direct
+overnight instruction and the renewed outside request for the next ready web
+release, in that order. Only the new server source input/run and its still-open
+Mac peer delivery can grant an action; the earlier source is retired. A separate
+direct Mac work request names the exact WebApp bundle, the current board ID, and
+either Workspace menu or Update now. While that exact delivery remains open,
+the Mac hook admits only the matching fixed invocation of
+`bot/scripts/mac-update-ax.swift`. The
 same hook admits exact `shasum -a 256`, `stat -f %Sp`, and `swiftc -typecheck`
 commands against the pinned source path under an ordinary Mac file request.
 Those checks read or compile the source without performing an AX action;
@@ -164,7 +168,9 @@ one current-board WebArea URL, and one matching button under that WebArea. It
 traverses the tree twice, retains the button from the second traversal, re-reads
 the WebArea and button immediately before one native AX Press, and never retries
 an ambiguous result. Immediately before Press, it atomically reserves a durable
-one-shot marker for that exact recovery action; a second invocation refuses even
+one-shot marker for that exact renewed request, board and action. The earlier
+request's spent markers cannot authorize or block this new pair; a second
+invocation of this pair refuses even
 when the first AX result was ambiguous. The Workspace action can only open the menu and report the
 new control counts. A later, separately named Update now request can only press
 that unique first-tap control; any visible Update anyway control refuses it.

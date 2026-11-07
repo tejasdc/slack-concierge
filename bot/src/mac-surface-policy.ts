@@ -22,7 +22,7 @@ const state = await app.getAXState({emit:false,disableDiffing:true});
 const lines = state.split('\n');
 const count = (pattern) => lines.filter((line) => pattern.test(line)).length;
 const urls = [...new Set(state.match(/https?:\/\/thnkr\.ing\/[^\s"<>]*/g) ?? [])].slice(0,3).map((url) => url.slice(0,320));
-nodeRepl.write(JSON.stringify({length:state.length,lineCount:lines.length,windowCount:count(/standard window thnkr\.ing, ID: WebAppWindow-Thinkering/),urls,updateNowCount:count(/\bUpdate now\b/i),updateAnywayCount:count(/\bUpdate anyway\b/i),unsavedCount:count(/\bunsaved\b/i),stillSavingCount:count(/\bstill being saved\b/i),recordingCount:count(/\brecording\b/i),deepWorkCount:count(/\bDeep work\b/i),offerRevisionCount:count(/535c73c7/i)}));
+nodeRepl.write(JSON.stringify({length:state.length,lineCount:lines.length,windowCount:count(/standard window thnkr\.ing, ID: WebAppWindow-Thinkering/),urls,updateNowCount:count(/\bUpdate now\b/i),updateAnywayCount:count(/\bUpdate anyway\b/i),unsavedCount:count(/\bunsaved\b/i),stillSavingCount:count(/\bstill being saved\b/i),recordingCount:count(/\brecording\b/i),deepWorkCount:count(/\bDeep work\b/i),offerRevisionCount:count(/0d90186f/i)}));
 })()`;
 export const RETIREMENT_FILE_MENU_PROGRAM=String.raw`var thnkrRetirementMenuApp = await cua.getApp("${AUTHORIZED_WEB_APP}");
 var thnkrRetirementMenuState = await thnkrRetirementMenuApp.getAXState({disableDiffing:true});
@@ -45,7 +45,7 @@ function authorizedUpdateNeed(need:RecordedNeed,toolName:string):need is Exclude
   return typeof need!=='string'&&need.kind==='mac-app'&&need.updateAuthorization===true
     &&need.effectScope==='work'&&typeof need.why==='string'
     &&need.why.includes(AUTHORIZED_WEB_APP)
-    &&((need.why.includes(AUTHORIZED_PAGE)&&need.why.includes('535c73c7'))
+    &&((need.why.includes(AUTHORIZED_PAGE)&&need.why.includes('0d90186f'))
       ||need.why.includes(AUTHORIZED_UPDATE_BOARD))
     &&COMPUTER_CONTROL.test(toolName);
 }
