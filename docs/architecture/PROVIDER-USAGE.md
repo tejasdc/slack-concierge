@@ -355,8 +355,18 @@ while a pass is already running joins that pass instead of starting a second.
   `cswap status --json` checks only the terminal-active account and is not used here:
   a Concierge turn may run on another saved home without changing terminal selection.
   When claude-swap returns `lastGoodUsage` instead of decision-grade `usage`, Concierge
-  pairs it with `lastGoodFetchedAt`, never the outer scan time. The Mac currently borrows
-  server readings with their source times; local sign-in and selection need local evidence.
+  pairs it with `lastGoodFetchedAt`, never the outer scan time. A Mac Refresh asks its
+  local Keychain logins for a new reading even inside the ordinary five-minute read gap;
+  it joins a running pass, then takes a fresh pass if that pass was periodic.
+  On the Mac, Claude Code keeps each account's only login in its GUI Keychain. Concierge
+  reads the local Keychain item for each signed-in account home and asks Anthropic's usage
+  endpoint with that account's access token. It never copies or writes the login; if the
+  access token expires, Claude Code's local `/usage` renews that same home's Keychain item.
+  The same five-minute per-account read plan and failure backoff apply. A failed read keeps
+  the last good value with its original source time; a server reading can fill a gap but is
+  labelled as a peer reading and cannot prove that the Mac can run that account.
+  This replaces the Mac's former peer-only display, which omitted Mac-only accounts and
+  could show days-old server numbers after a Mac Refresh.
   The Mac's two-home continuation and concurrent use were proven on 2026-09-23;
   see [the shared-history design](../plans/2026-09-23-accounts-share-one-history.md).
 

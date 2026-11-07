@@ -6,7 +6,7 @@ import { log } from "./log";
 import { earliestRoomAt, recordUsageReading, usageReadingIsUrgent, withAgentsAccountCurrent } from "./provider-usage-forecast";
 import { peerSettings } from "./session-peers";
 import { cachedUsageLimit, claudeAccountCachedReset, releaseUsageHeldWork, retireCodexRefusalSupersededByReading, usageAttempt } from "./provider-usage";
-import { ACCOUNT_READING_MAX_AGE_MS, listProfiles, setAntigravityAccountInUse, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
+import { ACCOUNT_READING_MAX_AGE_MS, currentAccount, listProfiles, setAntigravityAccountInUse, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
 import {accountReadingAt,accountReadingFresh,chooseAccountObservation,includedAllowanceWindows,accountCanTakeWork} from './account-allowance-observation';
 import { claudeEveryAccountClearsAt, claudeHeldWorkCanRun, proveClaudeHomesAhead, requestMissingClaudeHomes, selectedClaudeHome } from "./provider-account-dispatch";
 import { needSignInRenewal } from "./signin-renewal";
@@ -319,7 +319,7 @@ async function readCodex(): Promise<ProviderUsage> {
 const OWN_LOGIN_INTERVAL_MS = 5 * 60_000;
 const OWN_LOGIN_MAX_BACKOFF_MS = 30 * 60_000;
 const ownLoginPacing = new Map<string, { nextAtMs: number; failures: number; credentialVersion: string | null }>();
-async function pacedOwnLoginWindows(label: string, previous: AccountUsage | undefined):
+async function pacedOwnLoginWindows(label: string, previous: AccountUsage | undefined, force = false):
     Promise<{ windows: UsageWindow[]; readAt: string | null; problem: string | null; fresh: boolean } | null> {
   const kept = previous && previous.windows.length && previous.readAt
     ? { windows: [...previous.windows], readAt: previous.readAt } : null;
@@ -331,7 +331,7 @@ async function pacedOwnLoginWindows(label: string, previous: AccountUsage | unde
   const pacing = ownLoginPacing.get(label) ?? { nextAtMs: 0, failures: 0, credentialVersion };
   renewClaudeOwnLoginForUsage(label);
   // A kept reading is a good one whose time says how old it is, so the work router can still use it.
-  if (credentialVersion === pacing.credentialVersion && Date.now() < pacing.nextAtMs)
+  if (!force && credentialVersion === pacing.credentialVersion && Date.now() < pacing.nextAtMs)
     return kept ? { ...kept, problem: keptProblem, fresh: false } : null;
   const own = await claudeWindowsFromOwnLogin(label);
   if (own) {
@@ -345,7 +345,26 @@ async function pacedOwnLoginWindows(label: string, previous: AccountUsage | unde
   return kept ? { ...kept, problem: keptProblem, fresh: false } : null;
 }
 
-async function readClaude(): Promise<ProviderUsage> {
+async function readClaude(force = false): Promise<ProviderUsage> {
+  // The Mac's Claude logins live separately in its GUI Keychain; claude-swap has no
+  // accounts there. Read those same local logins rather than borrowing an older peer bar.
+  if (process.platform === "darwin") {
+    const previous = new Map((providerAccountUsage("claude-code")?.accounts ?? []).map(account => [account.label, account] as const));
+    const profiles = listProfiles("claude-code").filter(profile => profile.signedIn && profile.label);
+    const current = currentAccount("claude-code")?.label;
+    if (current && !profiles.some(profile => profile.label === current))
+      profiles.push({ id: "", label: current, detail: null, current: true, signedIn: true });
+    const accounts: AccountUsage[] = [];
+    for (const profile of profiles) {
+      if (accounts.some(account => account.label === profile.label)) continue;
+      const own = await pacedOwnLoginWindows(profile.label, previous.get(profile.label), force);
+      const facts = await claudeAccountFacts(profile.label, ms => noticeTime(db, ms));
+      accounts.push({ label: profile.label, plan: facts?.plan ?? null, current: profile.label === current,
+        windows: own?.windows ?? [], problem: own ? own.problem : "Usage could not be read.",
+        readAt: own?.readAt ?? null, usageCredits: facts?.usageCredits ?? null, apiCredits: facts?.apiCredits ?? null });
+    }
+    return { observedAt: new Date().toISOString(), accounts, problem: accounts.length ? null : "No local Claude account is available to read." };
+  }
   if (!existsSync(CSWAP)) return { observedAt: new Date().toISOString(), accounts: [], problem: "claude-swap is not installed on this host." };
   // `list` checks every managed account that is due under claude-swap's shared
   // per-account poll plan. `status` checks only the terminal-active account, which
@@ -519,6 +538,7 @@ async function readAntigravity(): Promise<ProviderUsage> {
 // showing an account with nothing under it. One pass at a time: a second request while one
 // runs joins it rather than starting a competing read of the same accounts.
 let inFlight: Promise<void> | null = null;
+let inFlightForced = false;
 
 export function usageRefreshing(): boolean { return inFlight !== null; }
 
@@ -528,8 +548,13 @@ export function usageRefreshing(): boolean { return inFlight !== null; }
  * left Tejas looking at an account with no usage line and no way to tell whether it was
  * loading, empty or broken (2026-09-22).
  */
-export function scheduleProviderAccountUsageRefresh(): Promise<void> {
-  if (!inFlight) inFlight = refreshProviderAccountUsage().finally(() => { inFlight = null; });
+export function scheduleProviderAccountUsageRefresh(force = false): Promise<void> {
+  if (inFlight && force && !inFlightForced)
+    return inFlight.then(() => scheduleProviderAccountUsageRefresh(true));
+  if (!inFlight) {
+    inFlightForced = force;
+    inFlight = refreshProviderAccountUsage(force).finally(() => { inFlight = null; inFlightForced = false; });
+  }
   return inFlight;
 }
 
@@ -606,8 +631,8 @@ async function peerAccounts(provider: ProviderKey): Promise<AccountUsage[]> {
   return found;
 }
 
-export async function refreshProviderAccountUsage(): Promise<void> {
-  for (const [provider, read] of [["codex", readCodex], ["claude-code", readClaude]] as const) {
+export async function refreshProviderAccountUsage(force = false): Promise<void> {
+  for (const [provider, read] of [["codex", readCodex], ["claude-code", () => readClaude(force)]] as const) {
     try {
     const runner=providerRunnerTarget(provider);
       let usage:ProviderUsage;

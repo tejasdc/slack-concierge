@@ -506,7 +506,7 @@ export class SessionExecutionHost {
     this.providerAuthCheck??=!fresh&&recent?null:Promise.all([
       providerRunnerTarget('claude-code')?Promise.resolve():refreshClaudeAccount(),
       providerRunnerTarget('codex')?Promise.resolve():codexSignInState().then(answer=>{this.codexSignIn=answer.state;if(answer.state==='signed-in')setCodexAccountInUse(answer);}).catch(()=>{}),
-      scheduleProviderAccountUsageRefresh().catch(()=>{})]).then(()=>undefined,()=>undefined)
+      scheduleProviderAccountUsageRefresh(fresh).catch(()=>{})]).then(()=>undefined,()=>undefined)
       .finally(()=>{this.providerAuthCheck=null;this.providerAuthCheckedAt=Date.now();});
   }
   private async providerAuthStatus(fresh=false):Promise<readonly ProviderAuthView[]>{

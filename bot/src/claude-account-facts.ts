@@ -37,8 +37,10 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { log } from "./log";
 import { CLAUDE_EXECUTABLE, accountHome, credentialPath, currentAccount, listProfiles } from "./provider-accounts";
+import { claudeKeychainOauth } from "./claude-keychain";
 
 export type UsageCreditsFacts = Readonly<{
   line: string;
@@ -201,26 +203,36 @@ function claudeCredentialFor(account: string): string | null {
   return null;
 }
 
-/** A renewed login can be retried immediately without reading or logging its secret. */
-export function claudeCredentialVersion(account: string): string | null {
+function claudeLogin(account: string): { oauth: any; version: string | null; home: string } | null {
+  if (process.platform === "darwin") {
+    const profile = listProfiles("claude-code").find(entry => entry.label === account && entry.signedIn);
+    const home = profile ? accountHome("claude-code", profile.id)
+      : currentAccount("claude-code")?.label === account ? join(homedir(), ".claude") : null;
+    if (!home) return null;
+    const credential = claudeKeychainOauth(home);
+    return credential ? { ...credential, home } : null;
+  }
   const path = claudeCredentialFor(account);
   if (!path) return null;
   try {
+    const oauth = JSON.parse(readFileSync(path, "utf8"))?.claudeAiOauth;
     const stat = statSync(path, { bigint: true });
-    return `${stat.ino}:${stat.mtimeNs}:${stat.size}`;
+    return { oauth, version: `${stat.ino}:${stat.mtimeNs}:${stat.size}`, home: dirname(path) };
   } catch { return null; }
+}
+
+/** A renewed login can be retried immediately without reading or logging its secret. */
+export function claudeCredentialVersion(account: string): string | null {
+  return claudeLogin(account)?.version ?? null;
 }
 
 const renewingOwnLogins = new Set<string>();
 const ownLoginRenewalRetry = new Map<string, { version: string | null; failures: number; nextAt: number }>();
 /** Ask Claude Code to renew its own expired login; /usage is local and uses no model tokens. */
 export function renewClaudeOwnLoginForUsage(account: string): void {
-  const path = claudeCredentialFor(account);
-  if (!path || liveAccessToken(path) || renewingOwnLogins.has(account)) return;
-  let canRenew = false;
-  try { canRenew = !!JSON.parse(readFileSync(path, "utf8"))?.claudeAiOauth?.refreshToken; }
-  catch { return; }
-  if (!canRenew) return;
+  const login = claudeLogin(account);
+  if (!login || liveAccessToken(login.oauth) || renewingOwnLogins.has(account)) return;
+  if (typeof login.oauth?.refreshToken !== "string" || !login.oauth.refreshToken) return;
   const version = claudeCredentialVersion(account);
   const retry = ownLoginRenewalRetry.get(account);
   if (retry?.version === version && Date.now() < retry.nextAt) return;
@@ -229,13 +241,18 @@ export function renewClaudeOwnLoginForUsage(account: string): void {
     nextAt: Date.now() + Math.min(5 * 60_000 * 2 ** (failures - 1), 30 * 60_000) });
   renewingOwnLogins.add(account);
   void (async () => {
+    // Claude Code's default macOS login uses the unsuffixed Keychain service only when
+    // CLAUDE_CONFIG_DIR is absent. Supplying ~/.claude selects another Keychain item.
+    const env = { ...process.env };
+    if (process.platform === "darwin" && login.home === join(homedir(), ".claude")) delete env.CLAUDE_CONFIG_DIR;
+    else env.CLAUDE_CONFIG_DIR = login.home;
     const child = Bun.spawn([CLAUDE_EXECUTABLE, "-p", "/usage", "--no-session-persistence", "--output-format", "json"], {
-      env: { ...process.env, CLAUDE_CONFIG_DIR: dirname(path) }, stdin: "ignore", stdout: "ignore", stderr: "ignore",
+      env, stdin: "ignore", stdout: "ignore", stderr: "ignore",
     });
     const deadline = setTimeout(() => child.kill(), 120_000);
     try {
       const code = await child.exited;
-      const renewed = !!liveAccessToken(path);
+      const renewed = !!liveAccessToken(claudeLogin(account)?.oauth);
       if (renewed) ownLoginRenewalRetry.delete(account);
       log("info", "claude_own_login_renewal", { account, renewed, exit_code: code });
     } finally {
@@ -248,9 +265,8 @@ export function renewClaudeOwnLoginForUsage(account: string): void {
   });
 }
 
-function liveAccessToken(path: string): string | null {
+function liveAccessToken(oauth: any): string | null {
   try {
-    const oauth = JSON.parse(readFileSync(path, "utf8"))?.claudeAiOauth;
     const token = oauth?.accessToken, expiresAt = Number(oauth?.expiresAt);
     if (typeof token !== "string" || !token) return null;
     // The reader never refreshes a token directly; Claude Code handles renewal through /usage.
@@ -278,8 +294,7 @@ export type OwnLoginWindow = Readonly<{ name: string; usedPercent: number; reset
  * never copied; this reads it where it lives after Claude Code renews it when needed.
  */
 export async function claudeWindowsFromOwnLogin(account: string): Promise<OwnLoginWindow[] | null> {
-  const path = claudeCredentialFor(account);
-  const token = path ? liveAccessToken(path) : null;
+  const token = liveAccessToken(claudeLogin(account)?.oauth);
   if (!token) return null;
   try {
     const usage = await oauthGet(token, "/api/oauth/usage");
@@ -309,11 +324,11 @@ const cache = new Map<string, ClaudeAccountFacts>();
 export async function claudeAccountFacts(account: string, when: (ms: number) => string, nowMs = Date.now()): Promise<ClaudeAccountFacts | null> {
   const kept = cache.get(account) ?? null;
   if (kept && nowMs - Date.parse(kept.readAt) < FACTS_REFRESH_MS) return kept;
-  const path = claudeCredentialFor(account);
-  const token = path ? liveAccessToken(path) : null;
+  const login = claudeLogin(account);
+  const token = liveAccessToken(login?.oauth);
   if (!token) {
     // Said in the log, never silently: a row with no plan or credit lines is otherwise undiagnosable.
-    log("info", "claude_account_facts_no_live_login", { credential_found: path !== null, kept: kept !== null });
+    log("info", "claude_account_facts_no_live_login", { credential_found: login !== null, kept: kept !== null });
     return kept;
   }
   try {
