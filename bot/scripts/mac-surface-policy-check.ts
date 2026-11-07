@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {macSurfaceRefusal,RETIREMENT_FILE_MENU_PROGRAM,RETIREMENT_NEW_WINDOW_PROGRAM} from '../src/mac-surface-policy';
+import {macSurfaceRefusal,RETIREMENT_FILE_MENU_PROGRAM,RETIREMENT_NEW_WINDOW_PROGRAM,UPDATE_BOUNDED_AX_PROGRAM} from '../src/mac-surface-policy';
 import {parseMachineNeed} from '../src/machine-need';
 import {deviceQuestionNamesPhysicalPrerequisite} from '../src/agent-reachable-app-question';
 
@@ -39,6 +39,27 @@ const webAppNeed={kind:'mac-app',why:'Inspect the already-open thnkr.ing web app
 const updateNeed={kind:'mac-app',why:'Inspect exact bundle com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 page faf63877-6536-4ac6-86e9-5d63e03d3369 and install ready 535c73c7 update safely',effectScope:'work',updateAuthorization:true};
 const updateCall='var thnkrUpdateInspectionApp = await cua.getApp("com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792"); await thnkrUpdateInspectionApp.getAXStateAndScreenshot()';
 assert.equal(macSurfaceRefusal({command:null,need:updateNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:updateCall}}),null);
+assert.equal(macSurfaceRefusal({command:null,need:updateNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:UPDATE_BOUNDED_AX_PROGRAM}}),null);
+for(const need of [{...updateNeed,updateAuthorization:false},{...updateNeed,effectScope:'informational'},{...updateNeed,why:updateNeed.why.replace('535c73c7','other build')},webAppNeed])
+  assert.ok(macSurfaceRefusal({command:null,need,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:UPDATE_BOUNDED_AX_PROGRAM}}));
+for(const code of [UPDATE_BOUNDED_AX_PROGRAM.replace('getAXState({emit:false,disableDiffing:true})','getAXState()'),
+  UPDATE_BOUNDED_AX_PROGRAM.replace('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792','Safari'),
+  `${UPDATE_BOUNDED_AX_PROGRAM}\nawait cua.getApp('Safari');`])
+  assert.ok(macSurfaceRefusal({command:null,need:updateNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code}}));
+{
+  const privateDraft='private draft words '.repeat(20000);
+  const state=`Window: "thnkr.ing", App: Thinkering.\n0 standard window thnkr.ing, ID: WebAppWindow-Thinkering\nURL: https://thnkr.ing/boards?board=94504c60\n1 Update now\n2 Update anyway\n3 Unsaved note ${privateDraft}\n4 Recording\n535c73c7`;
+  const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
+  const output=JSON.parse(await new AsyncFunction('cua',`return ${UPDATE_BOUNDED_AX_PROGRAM}`)({getApp:async()=>({getAXState:async()=>state})}));
+  assert.deepEqual(output.urls,['https://thnkr.ing/boards?board=94504c60']);
+  assert.equal(output.windowCount,1);
+  assert.equal(output.updateNowCount,1);
+  assert.equal(output.updateAnywayCount,1);
+  assert.equal(output.unsavedCount,1);
+  assert.equal(output.offerRevisionCount,1);
+  assert.ok(JSON.stringify(output).length<1000);
+  assert.ok(!JSON.stringify(output).includes(privateDraft.slice(0,100)));
+}
 const formerUpdateProgram='var thnkrUpdateApp = await cua.getApp("com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792"); var state = await thnkrUpdateApp.getAXState({disableDiffing:true}); await thnkrUpdateApp.click(3);';
 assert.match(macSurfaceRefusal({command:null,need:updateNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:formerUpdateProgram}})??'',/Update now remains refused/);
 for(const need of [{...updateNeed,updateAuthorization:false},{...updateNeed,effectScope:'informational'},{...updateNeed,why:updateNeed.why.replace('535c73c7','other build')},webAppNeed])
