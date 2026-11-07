@@ -87,7 +87,7 @@ function ledgerItems(sessionId:number):Item[] {
 }
 
 function movableQueuedTurn(turn:WaitingTurn,input:NonNullable<ReturnType<typeof getAcceptedSessionInput>>):boolean {
-  // An unfired schedule has no provider effects. Keep its turn and firing identity when
+  // An unfired or replay-safe held schedule has no provider effects. Keep its turn and firing identity when
   // ownership moves: repeating schedules use that identity to book exactly one successor.
   return safeTurn(turn.saved_kind==='scheduled'?{...turn,saved_kind:null}:turn,input);
 }
