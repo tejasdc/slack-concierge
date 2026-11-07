@@ -90,6 +90,11 @@ try {
 
   const accounts = await import("../src/runner-provider-accounts");
   const {samePhysicalFile,serveRunnerAside}=await import("../src/runner-asides");
+  const stampedCodexId="01a1b3f6-75e3-78f1-b56c-92ba4f27fe4e";
+  const stampedCodexFile=join(root,".codex","sessions","2026","11","07",`rollout-2026-11-07T03-00-00-${stampedCodexId}.jsonl`);
+  mkdirSync(join(stampedCodexFile,".."),{recursive:true});writeFileSync(stampedCodexFile,"{}");
+  assert.equal(accounts.findRunnerProviderSessionHome("codex",null,stampedCodexId)?.transcript,stampedCodexFile,
+    "runner side questions must resolve Codex's timestamped rollout filename by exact native id");
   assert.equal(accounts.runnerCodexServerNeedsRehome('{"running":true,"backend":"pid"}',false),true);
   assert.equal(accounts.runnerCodexServerNeedsRehome('{"running":true,"backend":"pid"}',null),false,
     "an unreadable listener environment must never be treated as a safe re-home target");

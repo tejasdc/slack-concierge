@@ -152,7 +152,7 @@ async function codexAside(input:AsideInput,prompt:string):Promise<AsideAnswer> {
   const out=join(mkdtempSync(join(tmpdir(),'concierge-aside-')),'answer.txt');
   // codex exec's own options precede the fork subcommand; --ephemeral writes no session file and
   // the read-only sandbox refuses any change the model might still attempt.
-  const args=['exec','--ephemeral','-s','read-only','--skip-git-repo-check','-o',out,'resume',fork,prompt];
+  const args=['exec','--ephemeral','-s','read-only','--skip-git-repo-check','-o',out,'fork',fork,prompt];
   const result=await run(MANAGED_CODEX,args,{cwd:input.cwd,env:process.env});
   let answer='';
   try{answer=readFileSync(out,'utf8').trim();}catch{}
