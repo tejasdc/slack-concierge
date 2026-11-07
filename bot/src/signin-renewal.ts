@@ -29,13 +29,15 @@ const SITE: Readonly<Record<RenewableProvider, string>> = { "claude-code": "clau
 /** A renewal not yet handed over, or handed over this recently, is the same episode. */
 const SAME_EPISODE_MS = 30 * 60_000;
 /**
- * After the Mac's agent could not finish a renewal, the next one waits this long. On 2026-11-03 Claude
+ * After the Mac's agent began a renewal but could not finish it, the next one waits this long. On 2026-11-03 Claude
  * refused the approval with "Couldn't verify your browser" and a new request went out 30 minutes
  * later; each attempt switches the claude.ai account in his own Chrome, and repeated automated
  * approvals can only make that check stricter. A browser check or an expired saved login does not
  * clear in minutes, so a few hours is the shortest retry that can find it changed.
  */
 const AFTER_UNFINISHED_MS = 6 * 60 * 60_000;
+/** One browser-control failure before any sign-in action gets one prompt retry. */
+const PREAUTH_RETRY_MS = 2 * 60_000;
 /** A spent account is signed in this close to its weekly reset, so it is ready when room returns. */
 const BEFORE_RESET_MS = 60 * 60_000;
 
@@ -59,22 +61,45 @@ function spentUntil(provider: RenewableProvider, account: string): number | null
 }
 
 /**
- * Whether a renewal for these action IDs was answered failed within `AFTER_UNFINISHED_MS`. Neither request
+ * Classifies a renewal answered failed within `AFTER_UNFINISHED_MS`. Neither request
  * table records when an answer arrived, and a sleeping Mac can answer hours after the request was sent,
  * so the first time a failed answer is seen here is stamped and the hold runs from that. The check
  * that calls this runs every few minutes for a signed-out account, so the stamp is that close to the
- * answer. Only failed holds: needs_decision asks him to fix Chrome's own sign-in, after which a
- * renewal should follow at once.
+ * answer. A worker-attested failure before any browser sign-in action permits one short retry;
+ * any other failure, including a provider browser-verification rejection, holds for hours.
+ * needs_decision asks him to fix Chrome's own sign-in, after which a renewal should follow at once.
  */
-function failedRecently(sent: string): boolean {
+type RenewalFailure = { kind: "preauth_browser_unavailable" | "other"; seenAtMs: number; preauthAttempts: number };
+
+function preauthBrowserFailure(resultJson: string | null): boolean {
+  if (!resultJson) return false;
+  try {
+    const result = JSON.parse(resultJson) as { replyBody?: unknown };
+    const body = typeof result.replyBody === "string" ? result.replyBody : "";
+    return body.startsWith("PREAUTH_BROWSER_UNAVAILABLE:")
+      // The first live failure predates the typed worker instruction. Its complete no-effect
+      // attestation is retained under the same request result, so it may receive this one retry.
+      || (body.includes("No task tab was created") && body.includes("no account was switched")
+        && body.includes("no sign-in link or code was accessed"));
+  } catch { return false; }
+}
+
+function recentFailure(sent: string): RenewalFailure | null {
   db.run(`CREATE TABLE IF NOT EXISTS signin_renewal_failures (action_id TEXT PRIMARY KEY, seen_at_ms INTEGER NOT NULL)`);
   const now = Date.now();
-  const failed = db.query(`SELECT action_id FROM session_peer_requests WHERE action_id LIKE ? AND outcome='failed' AND created_at_ms>?
-    UNION SELECT action_id FROM session_external_requests WHERE action_id LIKE ? AND outcome='failed' AND created_at_ms>?`)
-    .all(sent, now - 2 * 86_400_000, sent, now - 2 * 86_400_000) as { action_id: string }[];
+  const failed = db.query(`SELECT action_id,result_json FROM session_peer_requests WHERE action_id LIKE ? AND outcome='failed' AND created_at_ms>?
+    UNION ALL SELECT action_id,result_json FROM session_external_requests WHERE action_id LIKE ? AND outcome='failed' AND created_at_ms>?`)
+    .all(sent, now - 2 * 86_400_000, sent, now - 2 * 86_400_000) as { action_id: string; result_json: string | null }[];
   for (const { action_id } of failed)
     db.run(`INSERT OR IGNORE INTO signin_renewal_failures (action_id, seen_at_ms) VALUES (?, ?)`, [action_id, now]);
-  return !!db.query(`SELECT 1 FROM signin_renewal_failures WHERE action_id LIKE ? AND seen_at_ms>? LIMIT 1`).get(sent, now - AFTER_UNFINISHED_MS);
+  const recentRows = db.query(`SELECT action_id,seen_at_ms FROM signin_renewal_failures WHERE action_id LIKE ? AND seen_at_ms>? ORDER BY seen_at_ms DESC`)
+    .all(sent, now - AFTER_UNFINISHED_MS) as { action_id: string; seen_at_ms: number }[];
+  const recent = recentRows[0] ?? null;
+  if (!recent) return null;
+  const preauthAttempts = recentRows.filter(row => preauthBrowserFailure(failed.find(item => item.action_id === row.action_id)?.result_json ?? null)).length;
+  const result = failed.find(row => row.action_id === recent.action_id);
+  return { kind: preauthBrowserFailure(result?.result_json ?? null) ? "preauth_browser_unavailable" : "other",
+    seenAtMs: recent.seen_at_ms, preauthAttempts };
 }
 
 export function signInRenewalOf(notice: { key: string; kind: string }): { provider: RenewableProvider; account: string } | null {
@@ -89,9 +114,10 @@ export function signInWorkerActionId(key: string): string {
 
 /**
  * Records that `account`'s sign-in here was refused, once per episode: while an earlier renewal for
- * it is waiting to be handed over, was handed over in the last half hour, or is still unanswered by
- * the Mac (asleep, or working), nothing new is started, so two sign-ins never race. Nothing is started
- * either within `AFTER_UNFINISHED_MS` of first seeing a renewal the Mac answered failed, or while a Claude
+ * it is waiting to be handed over, was handed over recently, or is still unanswered by
+ * the Mac (asleep, or working), nothing new is started, so two sign-ins never race. A failed
+ * browser-control preflight may retry once after two minutes; other failed renewals wait six hours.
+ * Nothing is started while a Claude
  * account's week is spent until well after now; the background check asks again on its next pass.
  */
 export function needSignInRenewal(provider: RenewableProvider, account: string | null, why: string): boolean {
@@ -100,14 +126,19 @@ export function needSignInRenewal(provider: RenewableProvider, account: string |
   try {
     ensureTable(db);
     const like = `${PREFIX[provider]}${account}:%`;
-    const recent = db.query(`SELECT 1 FROM repair_notices WHERE key LIKE ? AND (delivered_input_id IS NULL OR created_at_ms>?) LIMIT 1`)
-      .get(like, Date.now() - SAME_EPISODE_MS);
-    if (recent) return false;
     const sent = `${signInWorkerActionId(`${PREFIX[provider]}${account}:`)}%`;
+    const failure = recentFailure(sent);
+    const retriedAfterFailure = failure && !!db.query(`SELECT 1 FROM repair_notices WHERE key LIKE ? AND created_at_ms>? LIMIT 1`)
+      .get(like, failure.seenAtMs);
+    const retryPreauth = failure?.kind === "preauth_browser_unavailable" && failure.preauthAttempts === 1
+      && !retriedAfterFailure && Date.now() - failure.seenAtMs >= PREAUTH_RETRY_MS;
+    const recent = db.query(`SELECT 1 FROM repair_notices WHERE key LIKE ? AND (delivered_input_id IS NULL OR created_at_ms>?) LIMIT 1`)
+      .get(like, retryPreauth ? Date.now() - PREAUTH_RETRY_MS : Date.now() - SAME_EPISODE_MS);
+    if (recent) return false;
     const open = db.query(`SELECT 1 FROM session_peer_requests WHERE action_id LIKE ? AND outcome IS NULL
       UNION ALL SELECT 1 FROM session_external_requests WHERE action_id LIKE ? AND outcome IS NULL LIMIT 1`).get(sent, sent);
     if (open) return false;
-    if (failedRecently(sent)) return false;
+    if (failure && !retryPreauth) return false;
     if (spentUntil(provider, account) !== null) return false;
     const onWorkerMachine = process.platform === "darwin";
     const recorded = recordRepairNotice(db, { key: `${PREFIX[provider]}${account}:${Date.now()}`, kind: SIGNIN_RENEWAL_KINDS[provider],
@@ -151,5 +182,7 @@ export function signInWorkerText(provider: RenewableProvider, account: string, l
     + `if Chrome's own ${site} sign-in for ${account} has expired and needs him`
     + (local ? `, and because this request comes from this Mac's own Concierge with nobody reading its answer, then also declare `
       + `sessions outcome needs_you --summary "<one line>" --only-he-can sign-in telling him to sign in to ${site} as ${account} in Chrome on his Mac` : ``)
-    + `. Do not start a second sign-in while one is waiting.`;
+    + `. Do not start a second sign-in while one is waiting. If browser control fails before any task tab, link, code, `
+    + `or account switch, reply failed and begin the body with PREAUTH_BROWSER_UNAVAILABLE: followed by what failed. `
+    + `Use that prefix only when no sign-in action occurred; Concierge permits one short retry, then waits hours if it fails again.`;
 }

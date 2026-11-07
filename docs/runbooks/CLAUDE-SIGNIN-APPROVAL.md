@@ -29,6 +29,16 @@ the intended sign-in in **This server**, not Your Mac. Never start another pendi
 sign-in while one is already being handled. Verify the exact address displayed by
 Claude against the request before Authorize.
 
+If Chrome control fails before the worker opens a task tab, sees a sign-in link or
+code, or switches an account, the worker's failed reply begins
+`PREAUTH_BROWSER_UNAVAILABLE:` and states what failed. Concierge permits one
+automatic retry after two minutes of this exact no-action failure. A second
+failure waits six hours. A Claude browser-verification rejection still waits
+six hours immediately; it is never classified as a pre-authentication failure.
+An open request or undelivered notice blocks every retry, so two sign-ins never
+run together. The November 7 first failure used a complete no-action attestation
+before the typed prefix existed; the owner recognizes that retained result once.
+
 If Claude shows a different account, use **Switch account → Continue with Google**,
 select the exact saved account, and complete the existing sign-in. Recheck the
 Claude account label after returning. A mismatch is a normal step, not a reason
