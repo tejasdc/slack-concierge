@@ -327,21 +327,24 @@ async function pacedOwnLoginWindows(label: string, previous: AccountUsage | unde
   // the login may be dead (no token reads the same as a refusal), so it says so and stops counting as room.
   const keptProblem = kept && Date.now() - Date.parse(kept.readAt) <= OWN_LOGIN_MAX_BACKOFF_MS
     ? null : "Showing the last reading; the latest could not be taken.";
+  const renewal = renewClaudeOwnLoginForUsage(label);
+  // A pressed Refresh must wait for Claude's own token renewal before asking for usage.
+  if (force) await renewal;
   const credentialVersion = claudeCredentialVersion(label);
   const pacing = ownLoginPacing.get(label) ?? { nextAtMs: 0, failures: 0, credentialVersion };
-  renewClaudeOwnLoginForUsage(label);
   // A kept reading is a good one whose time says how old it is, so the work router can still use it.
   if (!force && credentialVersion === pacing.credentialVersion && Date.now() < pacing.nextAtMs)
     return kept ? { ...kept, problem: keptProblem, fresh: false } : null;
   const own = await claudeWindowsFromOwnLogin(label);
+  const observedVersion = claudeCredentialVersion(label);
   if (own) {
-    ownLoginPacing.set(label, { nextAtMs: Date.now() + OWN_LOGIN_INTERVAL_MS, failures: 0, credentialVersion });
+    ownLoginPacing.set(label, { nextAtMs: Date.now() + OWN_LOGIN_INTERVAL_MS, failures: 0, credentialVersion: observedVersion });
     return { windows: own.map(window => ({ ...window, resetsAt: iso(window.resetsAt), willLastToReset: null, runsOutAt: null })),
       readAt: new Date().toISOString(), problem: null, fresh: true };
   }
-  const failures = credentialVersion === pacing.credentialVersion ? pacing.failures + 1 : 1;
+  const failures = observedVersion === pacing.credentialVersion ? pacing.failures + 1 : 1;
   ownLoginPacing.set(label, { failures,
-    nextAtMs: Date.now() + Math.min(OWN_LOGIN_INTERVAL_MS * 2 ** (failures - 1), OWN_LOGIN_MAX_BACKOFF_MS), credentialVersion });
+    nextAtMs: Date.now() + Math.min(OWN_LOGIN_INTERVAL_MS * 2 ** (failures - 1), OWN_LOGIN_MAX_BACKOFF_MS), credentialVersion: observedVersion });
   return kept ? { ...kept, problem: keptProblem, fresh: false } : null;
 }
 

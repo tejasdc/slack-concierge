@@ -361,14 +361,20 @@ the page watches that state. A press during a forced pass joins that same pass.
   local Keychain logins for a new reading even inside the ordinary five-minute read gap;
   it joins a running pass, then takes a fresh pass if that pass was periodic.
   On the Mac, Claude Code keeps each account's only login in its GUI Keychain. Concierge
-  reads the local Keychain item for each signed-in account home and asks Anthropic's usage
-  endpoint with that account's access token. It never copies or writes the login; if the
-  access token expires, Claude Code's local `/usage` renews that same home's Keychain item.
+  reads the local Keychain item for each saved account home and asks Anthropic's usage
+  endpoint with that home's access token. Keychain item presence alone does not prove that
+  Claude still accepts the login. Concierge never copies or writes the login; if the token
+  expires or Anthropic rejects it with 401, Claude Code's local `/usage` renews that same
+  home's Keychain item. A pressed Refresh waits for renewal, and a rejected-token read
+  retries once after renewal before it settles.
   The same five-minute per-account read plan and failure backoff apply. A failed read keeps
   the last good value with its original source time; a server reading can fill a gap but is
   labelled as a peer reading and cannot prove that the Mac can run that account.
   This replaces the Mac's former peer-only display, which omitted Mac-only accounts and
-  could show days-old server numbers after a Mac Refresh.
+  could show days-old server numbers after a Mac Refresh. On November 6 a Mac-local probe
+  found two saved homes whose initial usage requests returned 401; Claude Code renewed
+  each without a model turn, and subsequent usage and profile requests returned 200 with
+  matching account emails. A third saved home still reported signed out and was not renewed.
   The Mac's two-home continuation and concurrent use were proven on 2026-09-23;
   see [the shared-history design](../plans/2026-09-23-accounts-share-one-history.md).
 

@@ -226,21 +226,22 @@ export function claudeCredentialVersion(account: string): string | null {
   return claudeLogin(account)?.version ?? null;
 }
 
-const renewingOwnLogins = new Set<string>();
+const renewingOwnLogins = new Map<string, Promise<void>>();
 const ownLoginRenewalRetry = new Map<string, { version: string | null; failures: number; nextAt: number }>();
-/** Ask Claude Code to renew its own expired login; /usage is local and uses no model tokens. */
-export function renewClaudeOwnLoginForUsage(account: string): void {
+/** Ask Claude Code to renew its own expired or provider-rejected login; /usage uses no model tokens. */
+export function renewClaudeOwnLoginForUsage(account: string, rejected = false): Promise<void> {
   const login = claudeLogin(account);
-  if (!login || liveAccessToken(login.oauth) || renewingOwnLogins.has(account)) return;
-  if (typeof login.oauth?.refreshToken !== "string" || !login.oauth.refreshToken) return;
+  if (!login || !rejected && liveAccessToken(login.oauth)) return Promise.resolve();
+  const inFlight = renewingOwnLogins.get(account);
+  if (inFlight) return inFlight;
+  if (typeof login.oauth?.refreshToken !== "string" || !login.oauth.refreshToken) return Promise.resolve();
   const version = claudeCredentialVersion(account);
   const retry = ownLoginRenewalRetry.get(account);
-  if (retry?.version === version && Date.now() < retry.nextAt) return;
+  if (retry?.version === version && Date.now() < retry.nextAt) return Promise.resolve();
   const failures = retry?.version === version ? retry.failures + 1 : 1;
   ownLoginRenewalRetry.set(account, { version, failures,
     nextAt: Date.now() + Math.min(5 * 60_000 * 2 ** (failures - 1), 30 * 60_000) });
-  renewingOwnLogins.add(account);
-  void (async () => {
+  const renewal = (async () => {
     // Claude Code's default macOS login uses the unsuffixed Keychain service only when
     // CLAUDE_CONFIG_DIR is absent. Supplying ~/.claude selects another Keychain item.
     const env = { ...process.env };
@@ -252,17 +253,18 @@ export function renewClaudeOwnLoginForUsage(account: string): void {
     const deadline = setTimeout(() => child.kill(), 120_000);
     try {
       const code = await child.exited;
-      const renewed = !!liveAccessToken(claudeLogin(account)?.oauth);
+      const after = claudeLogin(account);
+      const renewed = after?.version !== version && !!liveAccessToken(after?.oauth);
       if (renewed) ownLoginRenewalRetry.delete(account);
       log("info", "claude_own_login_renewal", { account, renewed, exit_code: code });
     } finally {
       clearTimeout(deadline);
-      renewingOwnLogins.delete(account);
     }
   })().catch(error => {
-    renewingOwnLogins.delete(account);
     log("warn", "claude_own_login_renewal_failed", { account, error_name: error instanceof Error ? error.name : "Error" });
-  });
+  }).finally(() => { renewingOwnLogins.delete(account); });
+  renewingOwnLogins.set(account, renewal);
+  return renewal;
 }
 
 function liveAccessToken(oauth: any): string | null {
@@ -296,8 +298,8 @@ export type OwnLoginWindow = Readonly<{ name: string; usedPercent: number; reset
 export async function claudeWindowsFromOwnLogin(account: string): Promise<OwnLoginWindow[] | null> {
   const token = liveAccessToken(claudeLogin(account)?.oauth);
   if (!token) return null;
-  try {
-    const usage = await oauthGet(token, "/api/oauth/usage");
+  const read = async (accessToken: string): Promise<OwnLoginWindow[] | null> => {
+    const usage = await oauthGet(accessToken, "/api/oauth/usage");
     const windows: OwnLoginWindow[] = [];
     const add = (name: string, used: unknown, resetsAt: unknown) => {
       if (typeof used !== "number" || !Number.isFinite(used)) return;
@@ -312,7 +314,18 @@ export async function claudeWindowsFromOwnLogin(account: string): Promise<OwnLog
         add(`Weekly · ${model} only`, limit.percent, limit.resets_at);
     }
     return windows.some(window => window.name === "Weekly") ? windows : null;
+  };
+  try {
+    return await read(token);
   } catch (error) {
+    if (error instanceof Error && error.message === "HTTP 401") {
+      await renewClaudeOwnLoginForUsage(account, true);
+      const renewedToken = liveAccessToken(claudeLogin(account)?.oauth);
+      if (renewedToken) {
+        try { return await read(renewedToken); }
+        catch (retried) { log("info", "claude_own_login_usage_unavailable", { error: retried instanceof Error ? retried.message : String(retried) }); return null; }
+      }
+    }
     log("info", "claude_own_login_usage_unavailable", { error: error instanceof Error ? error.message : String(error) });
     return null;
   }

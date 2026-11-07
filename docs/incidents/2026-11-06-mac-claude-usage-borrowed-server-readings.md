@@ -13,6 +13,10 @@ On November 6, the installed Mac owner listed three Claude homes as signed in be
 had a Keychain item. A read-only local auth check on November 6 confirmed chann.app and
 hey@tejas.nyc as signed in, but Claude reported the Gmail home signed out despite its
 Keychain item. Keychain item presence does not prove a usable Claude login.
+The two confirmed homes initially returned HTTP 401 from Anthropic's usage and profile
+endpoints. Claude Code's own `/usage` command renewed each login in its saved home without
+a model turn or sign-in prompt. Both usage and profile requests then returned HTTP 200;
+the profile emails matched the saved home labels. The Gmail home was not touched.
 Its Claude usage payload had only two account rows, both marked as borrowed from the cloud
 and matched by label. The chann.app row retained a November 5 source time and said the
 latest reading could not be taken. The hey@tejas.nyc account had no usage row.
@@ -27,6 +31,9 @@ server readings. It never asked the Mac's own Keychain logins for their usage.
 
 Read each Mac account's saved Keychain login in place and ask Anthropic for its usage when
 the login is usable. A signed-out home must not acquire an invented fresh reading.
+When an access token has expired or Anthropic rejects it with 401, let Claude Code renew
+that same home's login. A pressed Refresh waits for the renewal, then retries the usage
+read once rather than ending with the old value while renewal runs in the background.
 The existing source-time, backoff and peer merge rules remain. A pressed Refresh asks for a
 new local read even when the next scheduled read is not due.
 
