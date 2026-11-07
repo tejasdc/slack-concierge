@@ -790,6 +790,50 @@ function unrelayedFinal(roots:string[],entries:EntryIndex) {
   return found;
 }
 
+/** A provider prompt needs only this topic's returns. It must not wait for the unrelated
+ * Inbox entry index to rebuild after a restart. Topic dispatches and root-addressed
+ * upkeep requests are both durable request identities; a retained return is eligible
+ * only once it appears in Inbox history. */
+function promptUnrelayedFinal(sessionId:number,topicId:string,roots:string[]) {
+  if(!roots.length)return null;
+  const rootSet=new Set(roots);
+  const finals=new Map<string,EntryRecord&{inputId:string}>();
+  const requestIds=new Set(topicRequests(topicId).flatMap(request=>request.dispatches.map(dispatch=>String(dispatch.requestId??''))).filter(Boolean));
+  const placeholders=roots.map(()=>'?').join(',');
+  for(const table of ['session_communication_requests','session_peer_requests']) {
+    const addressed=db.query(`SELECT request_id FROM ${table} WHERE source_session_id IN (${inboxLineageSql})
+      AND thread_root_input_id IN (${placeholders})`).all(sessionId,...roots) as {request_id:string}[];
+    for(const row of addressed)requestIds.add(row.request_id);
+  }
+  for(const requestId of requestIds)for(const table of ['session_communication_events','session_peer_events']) {
+    const events=db.query(`SELECT event_id FROM ${table} WHERE request_id=? AND kind='final'`).all(requestId) as {event_id:string}[];
+    for(const event of events) {
+      const inputId=`return:${event.event_id}`;
+      const row=inboxRowByMessageId(null,inputId) as {session_id:number;kind:string;origin:string;sequence:number;created_at:string}|null;
+      if(row?.kind!=='accepted'||row.origin!=='service')continue;
+      const root=rootOf(row.session_id,inputId);
+      if(!root||!rootSet.has(root))continue;
+      const record={sequence:row.sequence,at:iso(row.created_at)!,sessionId:row.session_id,inputId};
+      if((finals.get(root)?.sequence??-1)<record.sequence)finals.set(root,record);
+    }
+  }
+  let found:(EntryRecord&{inputId:string})|null=null;
+  for(const [root,final] of finals) {
+    if(final.at<RELAY_RULE_SINCE)continue;
+    // Current posts name their root directly. Historical posts can carry an explicit
+    // threadRoot while naming a different input; both forms count as a relay.
+    const direct=db.query(`${inboxRows} AND event.input_id=? AND event.kind='post'
+      AND event.sequence>? LIMIT 1`).get(root,final.sequence);
+    if(direct)continue;
+    const explicit=db.query(`${inboxRows} AND event.kind='post'
+      AND json_extract(event.payload_json,'$.threadRoot')=? AND event.sequence>? LIMIT 1`)
+      .get(root,final.sequence);
+    if(explicit)continue;
+    if(!found||final.sequence>found.sequence)found=final;
+  }
+  return found;
+}
+
 /**
  * Attention the Inbox holds outside its question records: a turn's end-of-turn marker that no
  * declared question covered. It is not filed anywhere — filing by the thread that happened to
@@ -3936,10 +3980,9 @@ export function topicPromptContext(sessionId:number,inputId:string,payload:any):
     if(answers.length)context.agentAnswers=answers.map(row=>({post:row.event_id,at:iso(row.created_at),from:row.from_session,request:row.request_id,
       kind:row.reply_kind??'answer',...(row.disposition?{disposition:row.disposition}:{}),text:String(row.text??'').slice(0,160)}));
   }
-  const entries=entryIndex();
   const drift=titleDrift(topicId);
   if(drift)context.titleDrift={...drift,instruction:titleDriftInstruction(drift)};
-  const unrelayed=unrelayedFinal(topicRoots(topicId),entries);
+  const unrelayed=promptUnrelayedFinal(sessionId,topicId,roots);
   if(unrelayed)context.unrelayedResult={inputId:unrelayed.inputId,at:unrelayed.at,instruction:'A worker\'s final answer came back into this thread and you have not posted here since; relay it with sessions post --thread, or the thread keeps showing it as not relayed.'};
   return `\n\n<topic>\n${JSON.stringify(context)}\n</topic>`;
 }
