@@ -2,6 +2,9 @@ const CHROME_CONTROL=/claude[-_]in[-_]chrome/i;
 const COMPUTER_CONTROL=/cua[_-]?repl|computer[._-]?use|skycomputeruse/i;
 export const AUTHORIZED_WEB_APP='com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792';
 export const AUTHORIZED_PAGE='faf63877-6536-4ac6-86e9-5d63e03d3369';
+export const AUTHORIZED_UPDATE_BOARD='94504c60-2b34-4fda-ba23-c20a6a71d7df';
+export const UPDATE_WORKSPACE_COMMAND='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-update-ax.swift" open-workspace';
+export const UPDATE_FIRST_TAP_COMMAND='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-update-ax.swift" update-now';
 export const AUTHORIZING_HUMAN_INPUT='f66f15dd-e251-4537-a9cd-347d0548434b';
 export const CANVAS_AUTHORIZING_HUMAN_INPUT='capture:7bad480ccf4350922acb3ac750cc0ba0b7a990f596acd92b5fe98403f6f0e7a0';
 export const RETIREMENT_AUTHORIZING_HUMAN_INPUT='capture:2a296c24ca627e68981feab3c3e56a32b3e43cf317d0eb545ee4cab23801270b';
@@ -35,8 +38,19 @@ type RecordedNeed=string|{kind:string;why?:string;humanInputId?:string;effectSco
 function authorizedUpdateNeed(need:RecordedNeed,toolName:string):need is Exclude<RecordedNeed,string> {
   return typeof need!=='string'&&need.kind==='mac-app'&&need.updateAuthorization===true
     &&need.effectScope==='work'&&typeof need.why==='string'
-    &&need.why.includes(AUTHORIZED_WEB_APP)&&need.why.includes(AUTHORIZED_PAGE)
-    &&need.why.includes('535c73c7')&&COMPUTER_CONTROL.test(toolName);
+    &&need.why.includes(AUTHORIZED_WEB_APP)
+    &&((need.why.includes(AUTHORIZED_PAGE)&&need.why.includes('535c73c7'))
+      ||need.why.includes(AUTHORIZED_UPDATE_BOARD))
+    &&COMPUTER_CONTROL.test(toolName);
+}
+
+function authorizedNativeUpdateCommand(need:RecordedNeed,command:string):boolean {
+  if(typeof need==='string'||need.kind!=='mac-app'||need.updateAuthorization!==true
+      ||need.effectScope!=='work'||typeof need.why!=='string'
+      ||!need.why.includes(AUTHORIZED_WEB_APP)||!need.why.includes(AUTHORIZED_UPDATE_BOARD))return false;
+  if(command===UPDATE_WORKSPACE_COMMAND)return need.why.includes('Workspace menu');
+  if(command===UPDATE_FIRST_TAP_COMMAND)return need.why.includes('Update now');
+  return false;
 }
 
 function retirementHumanInput(id:string|undefined):boolean {
@@ -183,6 +197,9 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
       ||literalCommands.some(match=>match[1]==='`'&&match[2]?.includes('${'))))
     return 'Dynamic shell commands on Tejas’s Mac need a direct tool call so the foreground and browser guard can inspect the exact action.';
   const source=code?literalCommands.map(match=>match[2]).join('\n'):raw;
+  if(platform==='darwin'&&source.includes('mac-update-ax.swift'))
+    return authorizedNativeUpdateCommand(need,source)?null
+      :'The current Thinkering update helper requires the exact attested work request and its fixed single-action command.';
   if(/^(?:rg|grep|sed|cat|ls|head|tail|find|ps|stat|git\s+diff)\b/i.test(source.trim())
       && !/[;&|`\n]|\$\(/.test(source))return null;
   const remote=/\bssh\b[^\n]{0,400}\btejasdc@(?:100\.90\.183\.122|[\w.-]+)\b/i.test(source);
