@@ -11,12 +11,12 @@ export const RETIREMENT_AUTHORIZING_HUMAN_INPUT='capture:2a296c24ca627e68981feab
 export const RETIREMENT_UNLOCK_HUMAN_INPUT='1ba89166-c732-481b-b53a-e77e85ba93ba';
 export const RETIREMENT_CURRENT_UNLOCK_HUMAN_INPUT='a806ad0a-a0d8-4f72-b603-b245c95de638';
 export const UPDATE_BOUNDED_AX_PROGRAM=String.raw`await (async () => {
-const app = await cua.getApp("${AUTHORIZED_WEB_APP}");
+const app = await cua.getApp("${AUTHORIZED_WEB_APP}", {emit:false});
 const state = await app.getAXState({emit:false,disableDiffing:true});
 const lines = state.split('\n');
 const count = (pattern) => lines.filter((line) => pattern.test(line)).length;
 const urls = [...new Set(state.match(/https?:\/\/thnkr\.ing\/[^\s"<>]*/g) ?? [])].slice(0,3).map((url) => url.slice(0,320));
-return JSON.stringify({length:state.length,lineCount:lines.length,windowCount:count(/standard window thnkr\.ing, ID: WebAppWindow-Thinkering/),urls,updateNowCount:count(/\bUpdate now\b/i),updateAnywayCount:count(/\bUpdate anyway\b/i),unsavedCount:count(/\bunsaved\b/i),stillSavingCount:count(/\bstill being saved\b/i),recordingCount:count(/\brecording\b/i),deepWorkCount:count(/\bDeep work\b/i),offerRevisionCount:count(/535c73c7/i)});
+nodeRepl.write(JSON.stringify({length:state.length,lineCount:lines.length,windowCount:count(/standard window thnkr\.ing, ID: WebAppWindow-Thinkering/),urls,updateNowCount:count(/\bUpdate now\b/i),updateAnywayCount:count(/\bUpdate anyway\b/i),unsavedCount:count(/\bunsaved\b/i),stillSavingCount:count(/\bstill being saved\b/i),recordingCount:count(/\brecording\b/i),deepWorkCount:count(/\bDeep work\b/i),offerRevisionCount:count(/535c73c7/i)}));
 })()`;
 export const RETIREMENT_FILE_MENU_PROGRAM=String.raw`var thnkrRetirementMenuApp = await cua.getApp("${AUTHORIZED_WEB_APP}");
 var thnkrRetirementMenuState = await thnkrRetirementMenuApp.getAXState({disableDiffing:true});

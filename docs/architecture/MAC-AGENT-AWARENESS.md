@@ -124,9 +124,11 @@ normalized `cloud:9118` rejected the first exact passive request before Computer
 For this grant, Computer Use may select the exact web app and make a same-program
 passive accessibility or screenshot read. Update clicks remain refused. Computer Use
 may also run one exact, fixed bounded accessibility read under this update grant.
-It selects the bundle again, asks for a full accessibility state without automatic
-emission, and returns only the selected thnkr.ing URLs and counts of window, update,
-unsaved, recording and Deep work labels. This keeps the huge accessibility tree and
+It selects the bundle again and asks for a full accessibility state, suppressing
+automatic emission on both calls. It explicitly writes one computed JSON result
+through the Computer Use REPL output API; an async expression's return value is
+not a tool result. The JSON contains only selected thnkr.ing URLs and counts of
+window, update, unsaved, recording and Deep work labels. This keeps the huge accessibility tree and
 draft text out of the agent result. Counts of zero are inconclusive when a control is
 collapsed or the accessibility tree omits it. The read is diagnostic; it does not
 establish document identity, safe update state or permission to click.

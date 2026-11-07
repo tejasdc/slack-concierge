@@ -67,7 +67,15 @@ for(const code of [UPDATE_BOUNDED_AX_PROGRAM.replace('getAXState({emit:false,dis
   const privateDraft='private draft words '.repeat(20000);
   const state=`Window: "thnkr.ing", App: Thinkering.\n0 standard window thnkr.ing, ID: WebAppWindow-Thinkering\nURL: https://thnkr.ing/boards?board=94504c60\n1 Update now\n2 Update anyway\n3 Unsaved note ${privateDraft}\n4 Recording\n535c73c7`;
   const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
-  const output=JSON.parse(await new AsyncFunction('cua',`return ${UPDATE_BOUNDED_AX_PROGRAM}`)({getApp:async()=>({getAXState:async()=>state})}));
+  const emitted:string[]=[];
+  const appOptions:unknown[]=[];
+  const outputResult=await new AsyncFunction('cua','nodeRepl',UPDATE_BOUNDED_AX_PROGRAM)(
+    {getApp:async(_bundle:string,options:unknown)=>{appOptions.push(options);return {getAXState:async()=>state}}},
+    {write:(value:string)=>emitted.push(value)});
+  assert.equal(outputResult,undefined);
+  assert.deepEqual(appOptions,[{emit:false}]);
+  assert.equal(emitted.length,1);
+  const output=JSON.parse(emitted[0]);
   assert.deepEqual(output.urls,['https://thnkr.ing/boards?board=94504c60']);
   assert.equal(output.windowCount,1);
   assert.equal(output.updateNowCount,1);
