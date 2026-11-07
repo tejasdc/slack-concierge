@@ -24,10 +24,20 @@ router-actions.sh sessions ask mac/session:WzIsMTAwLDFd \
 ```
 
 The request names the account only. The worker opens its own tab at thnkr.ing,
-opens Settings → Provider accounts → Open provider accounts, and starts or continues
+opens the command palette with Command-Shift-K and chooses **Provider Accounts**,
+then starts or continues
 the intended sign-in in **This server**, not Your Mac. Never start another pending
 sign-in while one is already being handled. Verify the exact address displayed by
 Claude against the request before Authorize.
+
+When **Journal to open today** covers the workspace, the palette's existing
+Accounts window opens above that hold. The worker leaves the journal and Tejas's
+emergency opening untouched. If this entrance remains blocked before any provider
+sign-in action, link, code or account switch, its failed reply begins
+`PREAUTH_ENTRANCE_BLOCKED:` and describes the obstruction. The owner permits one
+short retry for this distinct pre-authentication failure; a second such failure
+waits six hours. The retained November 7 journal-lock failure predates the marker
+and is recognized by its complete no-sign-in attestation.
 
 If Chrome control fails before the worker opens a task tab, sees a sign-in link or
 code, or switches an account, the worker's failed reply begins
