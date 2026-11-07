@@ -5,9 +5,10 @@
  * money and identity accounts and his hide list [decision: codes-hidden-only-for-money-and-identity].
  * Agents may not open the Messages database themselves (bot/src/messages-database-policy.ts), so
  * this is their way in. A hidden text is listed by sender, time and kind, never its words, and every
- * read that hid or showed a code is recorded (bot/src/messages-read-log.ts).
+ * completed read is recorded (bot/src/messages-read-log.ts).
  *
  *   router-actions.sh messages [--with <number, address or chat name>] [--q <words>] [--days <n>] [--limit <n>]
+ *   router-actions.sh messages --chat-guid <exact conversation GUID> --from YYYY-MM-DD --before YYYY-MM-DD [--q <words>] [--limit <n>]
  *
  * It runs only on the Mac, where the texts are; the server answers that it has none.
  */
@@ -17,7 +18,7 @@ import { join } from 'node:path';
 import { textWithholding } from '../src/text-code-withholding';
 import { recordMessagesRead } from '../src/messages-read-log';
 
-const usage = 'usage: router-actions.sh messages [--with <number, address or chat name>] [--q <words>] [--days <n, default 7, max 365>] [--limit <n, default 50, max 500>]';
+const usage = 'usage: router-actions.sh messages [--with <number, address or chat name>] [--q <words>] [--days <n, default 7, max 365>] [--limit <n, default 50, max 500>] | --chat-guid <exact conversation GUID> --from YYYY-MM-DD --before YYYY-MM-DD [--q <words>] [--limit <n, max 500>]. Historical windows are at most 45 days; before is exclusive.';
 
 function option(args: string[], name: string): string | undefined {
   const at = args.indexOf(name);
@@ -59,27 +60,60 @@ const days = bounded(option(args, '--days'), 7, 365);
 const limit = bounded(option(args, '--limit'), 50, 500);
 const withWhom = option(args, '--with')?.toLowerCase().trim() || null;
 const query = option(args, '--q')?.toLowerCase().trim() || null;
+const selectedChatGuid = option(args, '--chat-guid')?.trim() || null;
+const from = option(args, '--from');
+const before = option(args, '--before');
+const historical = selectedChatGuid !== null || from !== undefined || before !== undefined;
+function dateStart(value: string | undefined): number | null {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const time = Date.parse(`${value}T00:00:00Z`);
+  return Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === value ? time / 1000 : null;
+}
+const fromTime = dateStart(from);
+const beforeTime = dateStart(before);
+if (historical && (!selectedChatGuid || fromTime === null || beforeTime === null
+    || beforeTime <= fromTime || beforeTime - fromTime > 45 * 86_400
+    || withWhom || args.includes('--days'))) {
+  console.error(JSON.stringify({ error: 'INVALID_HISTORICAL_MESSAGES_WINDOW', usage }));
+  process.exit(2);
+}
 
 // Message dates count nanoseconds (older rows: seconds) from 2001-01-01.
 const APPLE_EPOCH = 978_307_200;
-const since = (Date.now() / 1000 - days * 86_400 - APPLE_EPOCH) * 1e9;
+const since = (historical ? fromTime! : Date.now() / 1000 - days * 86_400) - APPLE_EPOCH;
+const until = (historical ? beforeTime! : Date.now() / 1000) - APPLE_EPOCH;
 const database = new Database(join(homedir(), 'Library', 'Messages', 'chat.db'), { readonly: true });
+const selectedChat = historical ? database.query(`
+  SELECT c.ROWID AS id FROM chat c
+  WHERE c.guid = ?
+`).get(selectedChatGuid) as { id: number } | null : null;
+if (historical && !selectedChat) {
+  database.close();
+  console.error(JSON.stringify({ error: 'CHAT_NOT_FOUND', message: 'Use the exact chatGuid from an approved Messages read of this conversation.' }));
+  process.exit(2);
+}
 const rows = database.query(`
-  SELECT m.ROWID AS id, m.is_from_me AS mine, h.id AS handle, c.display_name AS chat, c.chat_identifier AS chatId,
+  SELECT m.ROWID AS id, m.guid AS messageGuid, m.is_from_me AS mine, h.id AS handle,
+         c.ROWID AS chatRowId, c.guid AS chatGuid, c.display_name AS chat, c.chat_identifier AS chatId,
          (CASE WHEN m.date > 1000000000000 THEN m.date / 1000000000 ELSE m.date END) + ${APPLE_EPOCH} AS at,
          m.text AS text, m.attributedBody AS body
   FROM message m
   LEFT JOIN handle h ON h.ROWID = m.handle_id
   LEFT JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
   LEFT JOIN chat c ON c.ROWID = cmj.chat_id
-  WHERE m.date > ? AND m.associated_message_type = 0
-  ORDER BY m.date DESC`).all(since) as { id: number; mine: number; handle: string | null; chat: string | null; chatId: string | null; at: number; text: string | null; body: Uint8Array | null }[];
-database.close();
-
+  WHERE ((m.date > 1000000000000 AND m.date >= ? AND m.date < ?)
+     OR (m.date <= 1000000000000 AND m.date >= ? AND m.date < ?))
+    AND m.associated_message_type = 0
+    AND (? IS NULL OR c.ROWID = ?)
+  ORDER BY m.date DESC, m.ROWID DESC`).all(since * 1e9, until * 1e9, since, until, selectedChat?.id ?? null, selectedChat?.id ?? null) as {
+    id: number; messageGuid: string | null; mine: number; handle: string | null; chatRowId: number | null;
+    chatGuid: string | null; chat: string | null; chatId: string | null; at: number; text: string | null; body: Uint8Array | null
+  }[];
 // `--limit` counts the texts shown. Withheld texts are counted across the same stretch of time and
 // listed up to WITHHELD_LISTED, so a search is never cut short by codes and never silently.
 const WITHHELD_LISTED = 200;
 const shown: unknown[] = [];
+const shownChats = new Map<number, { chatGuid: string | null; chatId: string | null; chat: string | null }>();
 const withheld: unknown[] = [];
 const counts: Record<string, number> = {};
 const codesShown: Record<string, number> = {};
@@ -126,8 +160,10 @@ for (const { row, words, kind } of scanned) {
     if (query && !(words ?? '').toLowerCase().includes(query)) continue;
     const label = decision.service ?? 'unknown site';
     codesShown[label] = (codesShown[label] ?? 0) + 1;
-    shown.push({ at: when, from: row.mine ? 'Tejas' : row.handle, chat: row.chat || null, text: words,
+    shown.push({ id: row.messageGuid, at: when, from: row.mine ? 'Tejas' : row.handle, chat: row.chat || null,
+      chatGuid: row.chatGuid, text: words,
       codeShown: { category: decision.category, service: decision.service, rule: decision.rule } });
+    if (row.chatRowId !== null) shownChats.set(row.chatRowId, { chatGuid: row.chatGuid, chatId: row.chatId, chat: row.chat || null });
     continue;
   }
   if (kind) {
@@ -139,16 +175,28 @@ for (const { row, words, kind } of scanned) {
     continue;
   }
   if (query && !(words ?? '').toLowerCase().includes(query)) continue;
-  shown.push({ at: when, from: row.mine ? 'Tejas' : row.handle, chat: row.chat || null, text: words });
+  shown.push({ id: row.messageGuid, at: when, from: row.mine ? 'Tejas' : row.handle, chat: row.chat || null,
+    chatGuid: row.chatGuid, text: words });
+  if (row.chatRowId !== null) shownChats.set(row.chatRowId, { chatGuid: row.chatGuid, chatId: row.chatId, chat: row.chat || null });
 }
+const chats = [...shownChats].map(([id, chat]) => {
+  const handles = database.query(`SELECT h.id AS address FROM chat_handle_join chj
+    JOIN handle h ON h.ROWID = chj.handle_id WHERE chj.chat_id = ? ORDER BY h.id`).all(id) as { address: string }[];
+  return { ...chat, participants: handles.map(handle => handle.address) };
+});
+database.close();
 
-if (withheldTotal || Object.keys(codesShown).length) {
-  // The answer matters more than its log line; a log that cannot be written is said on stderr.
-  try { recordMessagesRead({ event: 'messages_withheld', cwd: process.cwd(), with: withWhom, q: query, days, limit, shown: shown.length, withheld: counts, codesShown, codeRuleUnavailable: !!codeRuleUnavailable }); }
-  catch (error) { console.error(JSON.stringify({ event: 'messages_withheld_log_failed', error: String(error) })); }
+{
+  // Record even a no-match historical read. The log contains the scope and counts, never text.
+  try { recordMessagesRead({ event: withheldTotal || Object.keys(codesShown).length ? 'messages_withheld' : 'messages_read',
+    cwd: process.cwd(), with: withWhom, chatGuid: selectedChatGuid, q: query,
+    from: historical ? from : null, before: historical ? before : null, days: historical ? null : days,
+    limit, shown: shown.length, withheld: counts, codesShown, codeRuleUnavailable: !!codeRuleUnavailable }); }
+  catch (error) { console.error(JSON.stringify({ event: 'messages_read_log_failed', error: String(error) })); }
 }
 console.log(JSON.stringify({
   messages: shown,
+  chats,
   withheld,
   withheldCount: withheldTotal,
   withheldByKind: counts,
@@ -160,5 +208,6 @@ console.log(JSON.stringify({
     ? 'Login codes from ordinary sites, or sites on his allow list, are shown so agents can sign in for him; each carries codeShown with the site and rule.'
     : undefined,
   codeRuleUnavailable: codeRuleUnavailable ?? undefined,
-  window: { days, limit, newestFirst: true, truncated: truncatedAt !== null, olderThanThisNotRead: truncatedAt },
+  window: { days: historical ? null : days, from: historical ? from : null, before: historical ? before : null,
+    limit, newestFirst: true, truncated: truncatedAt !== null, olderThanThisNotRead: truncatedAt },
 }, null, 1));
