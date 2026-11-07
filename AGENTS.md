@@ -25,6 +25,13 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [decision: agents-check-real-end-to-end-behavior]. The
   [agent test delivery](docs/runbooks/THINKERING-CAPTURE.md#agent-test-deliveries)
   is for capture paths; use a feature's own socket or route when appropriate.
+- Rebase dirty task worktrees with `scripts/rebase-worktree.sh`, which saves tracked
+  changes under a ref private to that worktree and restores the exact saved object.
+  It refuses untracked files until staged or committed; after a stopped rebase,
+  resolve or abort it and run `scripts/rebase-worktree.sh --restore` from a clean tree.
+  A conflicted restore must be resolved and finished with its exact saved object ID,
+  never applied a second time.
+  See [worktree rebases](docs/runbooks/DEPLOYMENT.md#worktree-rebases).
 - Concierge service stops during a release go through the deployment controller's
   [attributed systemd stop path](docs/runbooks/DEPLOYMENT.md#runtime-dependencies-and-service-shutdown).
 - Planned drain stops Codex lifecycle observation before awaited shutdown work;

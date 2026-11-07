@@ -1159,6 +1159,29 @@ that effect automatically.
   through their Git origins; host services belong in remote-box. Never hand-edit installed
   units or copy source into a service checkout.
 
+### Worktree rebases
+
+From a linked task worktree, run `scripts/rebase-worktree.sh` to fetch and rebase
+onto `origin/main`. The command uses `git stash create` to obtain the exact object
+ID for tracked and staged changes, pins that object under `refs/worktree/` for this
+worktree, then restores from that ID after the rebase. It never reads, pops or drops
+the repository-wide stash stack, so another worktree's stash activity cannot change
+which object is applied here. A clean worktree rebases without saving anything.
+
+Untracked files make the command stop before changing the worktree because `stash
+create` does not include them; stage or commit them first. If the rebase stops, the
+saved object remains pinned. Resolve or abort the rebase, make the worktree clean,
+then run `scripts/rebase-worktree.sh --restore`. If applying the saved object
+conflicts or is interrupted, the saved object and an attempted-restore marker
+remain. The command refuses a second apply, including from a clean tree.
+Resolve the partial result, compare it with the saved object shown in the error,
+and run `scripts/rebase-worktree.sh --finish <saved-object-id>` only after all
+paths are resolved and the intended changes are present. `--finish` requires the
+exact ID, no unresolved merge paths, and visible local changes; run it before
+committing the resolved changes. It then releases both private refs.
+Do not use bare `git stash pop` as a rebase restore: its default target is the
+shared stack's current top, which can belong to another worktree.
+
 - The managed pre-command guard refuses writable delegated Codex CLI launches from a
   repository's canonical checkout and gives `wt <task-name>` as the recovery command.
   Read-only reviews remain allowed. During deployment, the runner commits modified
