@@ -26,7 +26,8 @@ The owner reads the linked release manifest and Git ancestry, then requires a su
 receipt for that installed commit. A release without the target commit advances the watch baseline
 without waking an agent. The duration renews the storage lease silently while the target is absent;
 it is not a recurring agent check. An unconfirmed activation keeps its previous baseline and is
-checked again. Registration also checks the installed revision, so a target already live can fire
+checked again. A Git ancestry error also keeps the previous baseline and is retried; only Git's
+definite non-ancestor result can advance it. Registration also checks the installed revision, so a target already live can fire
 immediately; the caller checks the installed revision again after registering to cover the race with
 its partial reply. The exact target commit is part of the watch condition and idempotency identity.
 This scoped condition is available only on the server's Concierge link; other file watches retain

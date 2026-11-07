@@ -15,7 +15,10 @@ export async function releaseIncludesCommit(input: {
   if (typeof installed !== "string" || !/^[0-9a-f]{40}$/.test(installed)
     || typeof artifact !== "string" || !/^[0-9a-f]{64}$/.test(artifact)) return "unconfirmed";
   const git = Bun.spawn(["git", "-C", input.repositoryRoot,
-    "merge-base", "--is-ancestor", input.requiredCommit, installed], { stdout: "ignore", stderr: "ignore" });
-  if (await git.exited !== 0) return "excluded";
+    "merge-base", "--is-ancestor", input.requiredCommit, installed], { stdout: "ignore", stderr: "pipe" });
+  const stderr = await new Response(git.stderr).text();
+  const exit = await git.exited;
+  if (exit === 1) return "excluded";
+  if (exit !== 0) throw new Error(`Git could not classify release ancestry (exit ${exit}): ${stderr.slice(0, 500)}`);
   return input.succeeded(installed, artifact) ? "included" : "unconfirmed";
 }

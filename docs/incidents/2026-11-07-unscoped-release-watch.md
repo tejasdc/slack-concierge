@@ -30,6 +30,9 @@ Unrelated releases advance the file baseline without generating a turn; an activ
 yet confirmed retains the old baseline; a request-bound series closes quietly after its
 requests close. The requesting agent must replace its earlier unscoped watch with the
 scoped one after this behavior is installed.
+Git's definite non-ancestor result is the only reason to advance the baseline; an ancestry
+error retains it and is retried. This rule was added after review found that an unreadable
+repository during the target release could otherwise silence the watch indefinitely.
 
 Evidence: the exact issue report in topic `topic:511b909c-6800-4522-82bf-781dc6e6c8be`,
 the Echo acceptance session `concierge:9096` and its November 7 partial naming watch
