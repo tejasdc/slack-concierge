@@ -91,3 +91,15 @@ export async function usageBreakdown(period:UsagePeriod):Promise<unknown>{
   const result=known!.both[period] as Record<string,unknown>;
   return {...result,computedAt:known!.computedAt,stale:Date.now()-Date.parse(known!.computedAt)>=RESULT_STALE_MS};
 }
+
+/** One cached lookup for the rows actually visible on a page; never runs the scanner per row. */
+export async function usageAllowanceLookup(sessionIds:string[],topicIds:string[]):Promise<unknown>{
+  if(sessionIds.length+topicIds.length>100||sessionIds.some(id=>!/^concierge:\d+$/.test(id))
+    ||topicIds.some(id=>!id||id.length>160))throw new Error('INVALID_USAGE_ALLOWANCE_LOOKUP');
+  const report=await usageBreakdown('week') as Record<string,any>;
+  const select=(ids:string[],source:Record<string,unknown>|undefined)=>Object.fromEntries(
+    ids.map(id=>[id,source?.[id]??null]));
+  return {period:'week',computedAt:report.computedAt,stale:report.stale,
+    sessions:select(sessionIds,report.sessionAllowanceById),threads:select(topicIds,report.threadAllowanceById),
+    method:report.allowanceMethod};
+}

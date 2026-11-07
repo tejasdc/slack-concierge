@@ -105,7 +105,7 @@ import {PROJECT_FOLDERS_OPERATION,PROJECT_NESTED_EXPERTISE_OPERATION,type Projec
 import type {PeerLinks} from './peer-links';
 import {appendTodoFile,captureMarker} from './todo-file';
 import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn} from './saved-work';
-import {usageBreakdown} from './usage-breakdown';
+import {usageBreakdown,usageAllowanceLookup} from './usage-breakdown';
 import {chooseProviderForNewWork,type AutomaticProvider} from './provider-start-choice';
 import {claudeAllowanceHeld,CLAUDE_ALLOWANCE_HOLD_MESSAGE} from './claude-allowance-hold';
 import {scheduleProviderAccountUsageRefresh} from './provider-account-usage';
@@ -4249,6 +4249,9 @@ export class SessionOwner {
         const period=url.searchParams.get('period')??'today';
         if(period!=='today'&&period!=='week')throw new SessionOwnerError('Use period=today or period=week.');
         result=await usageBreakdown(period);
+      }
+      else if(request.method==='GET'&&parts[0]==='usage'&&parts[1]==='allowance'&&parts.length===2){
+        result=await usageAllowanceLookup(url.searchParams.getAll('session'),url.searchParams.getAll('topic'));
       }
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts[1]==='settings'&&parts.length===2) result={settings:changeSavedWorkSettings(object(body))};
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts.length===3) result=this.savedWorkControl(Number(parts[1]),parts[2]!,object(body));

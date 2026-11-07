@@ -1019,6 +1019,38 @@ removed from the owner's session view; thnkr.ing's banner, its component and its
 
 ## Who used the allowance
 
+Weekly subscription percentages have two meanings. The account's
+`weeklyAllowance.usedPercent` is the provider's latest weekly reading, with its
+reset and observation time, or `unavailable` when the reading is old or absent.
+The per-session, per-topic and repeating-routine `weeklyAllowance.usedPercent`
+is an **estimate**. The scanner compares the provider's percentage change
+between readings of the same weekly reset with transcript usage in that same
+span, then allocates the change in proportion to published API-price weighted
+tokens. Fifteen-minute buckets keep raw provider calls on their runner until
+all runner reports have been merged; a provider percentage is allocated only
+once. A full weekly bar stops allocating at the first observed saturation,
+because later calls may spend credits. The stored weekly-reading history now
+covers up to 2,200 samples per account and window; older history cannot be
+reconstructed on installation. Estimate coverage reports its actual from and
+through instants, observed percentage change, transcript weight, and the fact
+that other provider use is unknown. A missing reading, reset identity, matching
+transcript work, or fresh observation produces `unavailable`, never zero.
+Different account or model-specific meters remain separate components; their
+percentages are not added. The report exposes `sessionAllowanceById` keyed by
+`concierge:<id>`, `threadAllowanceById` keyed by stable topic ID, `byRoutine`
+keyed by repeating schedule root with daily rows, `byDay`, and an explicit
+`unassignedThread`. A call is assigned to a topic only when its exact turn input
+has a recorded request topic, attached thread link, or topic root; work without
+that evidence stays unassigned. Topic and routine rows carry optional display
+titles read from the existing owner ledger after runner merge. Existing token totals and price-proxy `share`
+fields remain for older clients.
+
+The main Threads and Sessions views read
+`GET /sessions/v1/usage/allowance?session=concierge:<id>&topic=<topic-id>` with
+repeated keys for up to 100 visible rows total. It selects from the same cached
+weekly report and returns only those rows plus `computedAt` and `stale`, never a
+transcript scan per row. The Accounts screen can use the complete breakdown.
+
 The owner serves `GET /sessions/v1/usage/breakdown?period=today|week`; agents get the
 same read through `router-actions.sh sessions usage --by-session --period today|week`.
 The read now includes `callMix` for all calls, each account, and each session:

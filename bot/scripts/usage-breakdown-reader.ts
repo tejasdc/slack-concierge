@@ -9,6 +9,7 @@ import {CLAUDE_HELPER_CACHE_LIFETIME_MS,CLAUDE_MAIN_CACHE_LIFETIME_MS} from '../
 import {closeRunnerMachineCalls} from '../src/runner-machine-calls';
 import {decodeUsageSnapshot,ledgerFromUsageSnapshot,captureUsageLedgerSnapshot,encodeUsageSnapshot} from '../src/usage-breakdown-ledger-snapshot';
 import {collectRunnerUsageReports} from '../src/provider-usage-report-client';
+import {attributeWeeklyAllowance,nameAllowanceRows,weeklyReadings} from '../src/weekly-allowance-attribution';
 
 type Counts={input:number;cacheWrite:number;cacheWrite1h:number;cacheRead:number;output:number};
 type FileRow={offset:number;size:number;mtime:number;total_json:string};
@@ -219,7 +220,7 @@ type RecordRow={path:string;record_id:string;provider:string;conversation:string
   source_account:string|null;parent_thread_id:string|null;first_usage:number};
 type Session={id:number;agent_session_uuid:string;native_metadata_json:string;provider_id:string};
 type Turn={id:number;session_id:number;status:string;provider_turn_id:string|null;provider_started_at:string|null;ended_at:string|null;
-  systemInstructionsSha256:string|null;effort:string|null;startMs:number;endMs:number};
+  systemInstructionsSha256:string|null;effort:string|null;topic_id:string|null;startMs:number;endMs:number};
 type ScheduledFiring={id:number;session_id:number;status:string;saved_root_id:number;saved_sequence:number;saved_fire_at_ms:number;
   provider_started_at:string|null;provider_duration_ms:number|null;ended_at:string|null};
 type CallMix={totalCalls:number;helperCalls:number;models:Map<string,{calls:number;helperCalls:number}>};
@@ -242,7 +243,7 @@ function report(period:'today'|'week',since:number,zone:string){
   const accountsByTurn=new Map<number,string>();
   for(const e of events){const a=accounts.get(e.session_id)??[];a.push({at:Date.parse(e.created_at+'Z'),name:e.account});accounts.set(e.session_id,a);
     if(e.turn_id!==null)accountsByTurn.set(e.turn_id,e.account);}
-  const turns=(ledger.query(`SELECT turn.id,turn.session_id,turn.status,turn.provider_turn_id,turn.provider_started_at,turn.ended_at,
+  const turns=(ledger.query(`SELECT turn.id,turn.session_id,turn.status,turn.provider_turn_id,turn.provider_started_at,turn.ended_at,turn.topic_id,
     json_extract(identity.payload_json,'$.systemInstructionsSha256') AS systemInstructionsSha256,
     json_extract(identity.payload_json,'$.effort') AS effort
     FROM turns turn LEFT JOIN session_owner_events identity ON identity.sequence=(
@@ -277,6 +278,8 @@ function report(period:'today'|'week',since:number,zone:string){
     const model=event.model??'unreported';counts[model]=(counts[model]??0)+1;return counts;
   },{}));
   const groups=new Map<string,any>();
+  const attributionBuckets=new Map<string,{provider:string;account:string;window:string;atMs:number;sessionId:string|null;topicId:string|null;
+    routineRootId:number|null;weighted:number;raw:Counts;calls:number}>();
   const scheduled=(ledger.query(`SELECT id,session_id,status,saved_root_id,saved_sequence,saved_fire_at_ms,
     provider_started_at,provider_duration_ms,ended_at FROM turns
     WHERE saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL AND saved_root_id IS NOT NULL
@@ -372,14 +375,25 @@ function report(period:'today'|'week',since:number,zone:string){
     }
     if(!pricing[r.model??'']&&r.input+r.cache_write+r.cache_write_1h+r.cache_read+r.output>0)fallbackModels.add(r.model??'unreported');
     const weighted=(r.input*weights.input+r.cache_write*weights.cacheWrite+r.cache_write_1h*weights.cacheWrite1h+r.cache_read*weights.cacheRead+r.output*weights.output)/1e6;
+    const firing=s?scheduledBySession.get(s.id)?.find(t=>t.providerStartMs!==null&&t.endedMs!==null
+      &&r.at_ms>=t.providerStartMs&&r.at_ms<=t.endedMs):null;
     if(s){
-      const firing=scheduledBySession.get(s.id)?.find(t=>t.providerStartMs!==null&&t.endedMs!==null
-        &&r.at_ms>=t.providerStartMs&&r.at_ms<=t.endedMs);
       if(firing){firing.weighted+=weighted;firing.usageRecords++;
         firing.raw.input+=r.input;firing.raw.cacheWrite+=r.cache_write;firing.raw.cacheWrite1h+=r.cache_write_1h;
         firing.raw.cacheRead+=r.cache_read;firing.raw.output+=r.output;}
     }
     const key=`${r.provider}:${account}`;
+    // Fifteen-minute points let the owner compare transcript work with the same observed
+    // provider-meter span after it has merged all runners. They are never served to clients.
+    const atMs=Math.floor(r.at_ms/900_000)*900_000,sessionId=s?`concierge:${s.id}`:null;
+    const window=r.provider==='claude-code'&&r.model?.includes('fable')?'Weekly · Fable only':'Weekly';
+    const topicId=turn?.topic_id??null,routineRootId=firing?.saved_root_id??null;
+    const bucketKey=JSON.stringify([key,window,atMs,sessionId,topicId,routineRootId]);
+    let bucket=attributionBuckets.get(bucketKey);
+    if(!bucket){bucket={provider:r.provider,account,window,atMs,sessionId,topicId,routineRootId,weighted:0,raw:empty(),calls:0};attributionBuckets.set(bucketKey,bucket);}
+    bucket.weighted+=weighted;bucket.calls++;
+    bucket.raw.input+=r.input;bucket.raw.cacheWrite+=r.cache_write;bucket.raw.cacheWrite1h+=r.cache_write_1h;
+    bucket.raw.cacheRead+=r.cache_read;bucket.raw.output+=r.output;
     let g=groups.get(key);
     if(!g){g={provider:r.provider,account,total:0,raw:empty(),cache:{callCount:0,flaggedCallCount:0,unknownCauseCount:0},
       bySession:new Map(),byKind:new Map(),byModel:new Map(),mix:newCallMix()};groups.set(key,g);}
@@ -454,6 +468,7 @@ function report(period:'today'|'week',since:number,zone:string){
         accountAttribution:counts(item=>item.accountKnown?'known':'unavailable')}};
   };
   return {period,since:new Date(since).toISOString(),through:new Date().toISOString(),timeZone:zone,
+    attributionBuckets:[...attributionBuckets.values()],
     callMix:callMixView(overallMix),escalations:{count:escalations.length,byModel:Object.fromEntries(escalationModels)},
     measure:'Published API price equivalent in USD; a proxy for allowance share, not the provider subscription meter.',
     fallbackModels:[...fallbackModels].sort(),
@@ -608,6 +623,9 @@ async function main(){
   const {today,week}=runners.size
     ?await collectRunnerUsageReports(runners,encodeUsageSnapshot(captureUsageLedgerSnapshot(ownerLedger(),oneWeekAgo)))
     :await macPeerReport();
-  console.log(JSON.stringify({today,week,scanMs:Math.round(performance.now()-started)}));
+  const readings=weeklyReadings(ownerLedger(),oneWeekAgo);
+  console.log(JSON.stringify({today:nameAllowanceRows(attributeWeeklyAllowance(today,readings),ownerLedger()),
+    week:nameAllowanceRows(attributeWeeklyAllowance(week,readings),ownerLedger()),
+    scanMs:Math.round(performance.now()-started)}));
 }
 main().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>closeRunnerMachineCalls());
