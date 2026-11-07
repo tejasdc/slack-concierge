@@ -125,6 +125,15 @@ if (cd "$fixture/apply-conflict" && "$script" --finish "$saved_oid") >/dev/null 
 fi
 printf 'resolved local edit\n' > "$fixture/apply-conflict/own.txt"
 git -C "$fixture/apply-conflict" add own.txt
+lock_path=$(git -C "$fixture/apply-conflict" rev-parse --git-path refs/worktree/concierge-rebase-saved.lock)
+: > "$lock_path"
+if (cd "$fixture/apply-conflict" && "$script" --finish "$saved_oid") >/dev/null 2>&1; then
+  echo 'Expected atomic reference cleanup to fail on a held lock.' >&2
+  exit 1
+fi
+[[ $(git -C "$fixture/apply-conflict" rev-parse --verify refs/worktree/concierge-rebase-saved) == "$saved_oid" ]]
+[[ $(git -C "$fixture/apply-conflict" rev-parse --verify refs/worktree/concierge-rebase-restore-attempted) == "$saved_oid" ]]
+rm "$lock_path"
 (cd "$fixture/apply-conflict" && "$script" --finish "$saved_oid") >/dev/null 2>&1
 [[ $(cat "$fixture/apply-conflict/own.txt") == 'resolved local edit' ]]
 ! git -C "$fixture/apply-conflict" rev-parse --verify --quiet refs/worktree/concierge-rebase-saved >/dev/null
