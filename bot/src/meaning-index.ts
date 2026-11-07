@@ -60,7 +60,7 @@ interface EmbeddingEngine {
   servable():boolean;
 }
 
-/** The same EmbeddingGemma model on Cloudflare Workers AI, so no embedding runs on this machine. */
+/** The Cloudflare embedding model; its vectors are kept in a model-named index. */
 class WorkersAiEngine implements EmbeddingEngine {
   readonly model=WORKERS_AI_EMBEDDING_MODEL;
   readonly batch=50;
@@ -479,7 +479,7 @@ export class MeaningIndex {
 let shared:MeaningIndex|null=null;
 /**
  * The index searches use. With the Workers AI embeddings switch on, an index is built from Workers
- * AI's EmbeddingGemma in a file named for that model, beside the local one, while the local index
+ * AI's model in a file named for that model, beside the local one, while the local index
  * keeps answering. The new index takes over only when it has read everything once (about 96,000
  * passages, archive included) and the switch says `serve`, which is written after the routing
  * comparison on the two full indexes passes (docs/architecture/WORKERS-AI.md). Then the local

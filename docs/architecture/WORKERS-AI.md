@@ -1,19 +1,19 @@
 # Speech and session-search embeddings on Cloudflare Workers AI
 
-Status: current, 2026-11-04. Step 4 of the
-[off-one-server plan](https://github.com/tejasdc/remote-box/blob/main/docs/plans/2026-11-04-off-one-server-architecture.md): the two models that
-ran on the agent server (Parakeet speech-to-text, about 2 cores per recording, and the
-EmbeddingGemma llama.cpp process behind session search, about 1.5 cores) move to Cloudflare, so
-neither competes with agents for the AX41's processors.
+Status: current, 2026-11-06. In step 4 of the
+[off-one-server plan](https://github.com/tejasdc/remote-box/blob/main/docs/plans/2026-11-04-off-one-server-architecture.md),
+speech moved to Cloudflare. Session-search embeddings remain on the server until the optional
+Cloudflare index is built and its routing quality is checked. The local EmbeddingGemma llama.cpp
+process had used about 1.5 cores; moving it remains the goal, not an installed claim.
 
 ## Parts and where they run
 
 | Part | Runs on | Does |
 | --- | --- | --- |
-| `concierge-workers-ai` Worker (`cloudflare/workers-ai`) | Cloudflare, `https://concierge-workers-ai.thnkring.workers.dev` | `POST /v1/transcribe` (16 kHz mono MP3, ≤10 min) → Whisper large-v3-turbo; `POST /v1/embed` (≤100 texts) → EmbeddingGemma-300m. Every answer names its model. |
+| `concierge-workers-ai` Worker (`cloudflare/workers-ai`) | Cloudflare, `https://concierge-workers-ai.thnkring.workers.dev` | `POST /v1/transcribe` (16 kHz mono MP3, ≤10 min) → Whisper large-v3-turbo; optional `POST /v1/embed` (≤100 texts) → Qwen3-Embedding-0.6B. Every answer names its model. |
 | Shared key | Worker secret `CONCIERGE_KEY`; root-only `/etc/concierge/workers-ai.token` on each Concierge machine that uses it | Bearer key for both calls. A machine without the file (the Mac) keeps its own engines. |
 | Speech worker (`concierge-speech-worker.service`) | server | Converts a recording to MP3 pieces with ffmpeg, sends them to the Worker, joins the words. Engine name `workers-ai-whisper`. |
-| Meaning index (session search, earlier work, Inbox areas) | Concierge owner, server | Embeds through the Worker into a file named for the model, beside the local index on the ledger disk. The in-memory int8 scan stays local (49 MB for ~96,000 passages, ~20 ms a search). |
+| Meaning index (session search, earlier work, Inbox areas) | Concierge owner, server | Currently embeds locally. When explicitly enabled, builds a Worker-backed file named for its model beside the local index on the ledger disk. The in-memory int8 scan stays local. |
 
 **Why a Worker and not the REST API.** The one Cloudflare token (`remote-box-workers-deploy`) can
 deploy Workers but is refused by the Workers AI and Vectorize APIs. A Worker's AI binding needs no
@@ -37,13 +37,13 @@ passages), not at 96,000.
   recording is recorded as silent, because Whisper's voice-activity filter can drop quiet speech.
   Recordings longer than ten minutes go in ten-minute pieces; a word cut at a boundary can be garbled.
 - **Embeddings:** each model's index lives in its own file, named for the model
-  (`meaning-index.cf-google-embeddinggemma-300m.db`), and records its model (`watermarks.model`); a
+  (`meaning-index.cf-qwen-qwen3-embedding-0-6b.db` for the new Cloudflare model), and records its model (`watermarks.model`); a
   file written by another model is cleared, never searched with this model's vectors. While the new
   index is built the local index keeps answering. Every caller takes one index per search, so a
   question and its candidates always share a model. If Workers AI is unreachable after the
   hand-over, meaning search says so and word search still answers.
 - **Embeddings switch, two steps:** `/etc/concierge/workers-ai-embeddings.enabled` existing (empty)
-  starts building the Workers AI index at the owner's next restart. The first build embeds ~96,000 passages, several times the
+  starts building the Workers AI index at the owner's next restart. The first build embeds over 100,000 passages, several times the
   free plan's 10,000-neuron daily allowance that speech shares, so it is created only once the
   account is on Workers Paid. Writing `serve` into the same file lets the built index take over
   (`meaning_index_switched`, within a minute, no restart) once it has read everything including the
@@ -78,12 +78,23 @@ Lyft". Whisper sometimes omits punctuation. Whisper was chosen: best on his voca
 Nova's price, and 30 s for nine minutes is far inside what a recording can wait. Busiest day of
 server speech in the last two weeks was 111 minutes, about half the free daily allowance.
 
-Embeddings: Workers AI hosts the same EmbeddingGemma-300m model the server runs (as an 8-bit
-llama.cpp build). Routing comparison: pending, see [below](#routing-comparison).
+Embeddings: the Cloudflare model is now Qwen3-Embedding-0.6B, which produces 1,024-dimensional
+vectors; the index uses its first 512 dimensions and normalizes them. Qwen documents Matryoshka
+dimension support, but this is a different vector space from the local EmbeddingGemma model.
+The local index and its scores remain in service. Cloudflare model responses are checked for
+the exact model, dimensions, vector count and finite values before they can enter the new index.
+The first Qwen build and routing comparison are pending; do not create the embedding switch or
+write `serve` merely because the Worker deployed. The old Cloudflare index, if present on another
+machine, remains a separate, unused derived file and is never read as Qwen vectors.
 
 ## Routing comparison
 
-Pending: the Workers AI half runs after the free allowance resets at 00:00 UTC on 2026-11-05.
+Pending: the server's embedding switch was absent on 2026-11-06, and the complete local index
+contained 114,412 passages. Activation requires a paid-plan build and a fresh comparison of
+full-index top-10 routing and the area-filing and earlier-work thresholds. The old EmbeddingGemma
+comparison does not transfer to Qwen. Cloudflare's replacement named in its deprecation notice,
+EmbeddingGemma-2, was not available when this change was made; the available Qwen model keeps the
+optional Cloudflare endpoint usable before the November 20 deadline without changing live search.
 
 ## Operating
 
