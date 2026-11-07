@@ -63,6 +63,18 @@ for(const command of [
   assert.equal(check(command,'mac-file'),null);
   assert.ok(check(`${command}; ${UPDATE_WORKSPACE_COMMAND}`,'mac-file'));
 }
+const pinnedHelper='"/Users/tejasdc/Library/Application Support/concierge/helpers/7b9f5a8cb1e6ccd8ed16ed01d89d17e014aa069c/bot/scripts/mac-update-ax.swift"';
+for(const command of [
+  `shasum -a 256 ${pinnedHelper}`,
+  `stat -f %Sp ${pinnedHelper}`,
+  `swiftc -typecheck ${pinnedHelper}`,
+]) {
+  assert.equal(check(command,'mac-file'),null);
+  assert.ok(check(`${command}; ${UPDATE_WORKSPACE_COMMAND}`,'mac-file'));
+}
+assert.ok(check(`swift ${pinnedHelper} update-now`,'mac-file'));
+assert.ok(check(`shasum -a 256 ${pinnedHelper} extra`,'mac-file'));
+assert.ok(check(`swiftc -typecheck "/tmp/mac-update-ax.swift"`,'mac-file'));
 assert.ok(check(`swift ${helperPath} update-now`,'mac-file'));
 assert.equal(macSurfaceRefusal({command:null,need:currentUpdateNeed,platform:'darwin',toolName:'functions.exec',
   toolInput:{code:`const r=await tools.exec_command({cmd:'${UPDATE_WORKSPACE_COMMAND}'});text(r.output);`}}),null);
