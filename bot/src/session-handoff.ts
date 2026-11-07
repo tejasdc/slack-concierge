@@ -79,7 +79,7 @@ function ledgerItems(sessionId:number):Item[] {
     // execution and is shown here so the successor can see whether it is safe to move.
     const accepted=getAcceptedSessionInput(input.input_id)!;
     items.push({id:`queued:${input.input_id}`,kind:'queued',ref:input.input_id,holder,turnId:input.turn_id,
-      movable:movableQueuedTurn(input as WaitingTurn,accepted),obsolete:closedThreadUpkeep(accepted)});
+      movable:movableQueuedTurn(input as WaitingTurn,accepted),obsolete:obsoleteQueuedTurn(accepted)});
   }
   for(const watch of db.query("SELECT watch_id,state FROM watches WHERE session_id=? AND (state IN ('accepted','observing') OR delivery_state='pending') ORDER BY created_at_ms,watch_id").all(sessionId) as any[])
     items.push({id:`watch:${watch.watch_id}`,kind:'watch',ref:watch.watch_id,holder,state:watch.state});
@@ -92,9 +92,15 @@ function movableQueuedTurn(turn:WaitingTurn,input:NonNullable<ReturnType<typeof 
   return safeTurn(turn.saved_kind==='scheduled'?{...turn,saved_kind:null}:turn,input);
 }
 
-function closedThreadUpkeep(input:ReturnType<typeof getAcceptedSessionInput>):boolean {
-  if(!input||input.origin!=='service'||!input.id.startsWith('thread-upkeep:')||!input.request_id)return false;
-  return !!db.query("SELECT 1 FROM inbox_requests WHERE request_id=? AND state='closed'").get(input.request_id);
+function obsoleteQueuedTurn(input:ReturnType<typeof getAcceptedSessionInput>):boolean {
+  if(!input)return false;
+  if(input.origin==='service'&&input.id.startsWith('thread-upkeep:')&&input.request_id){
+    return !!db.query("SELECT 1 FROM inbox_requests WHERE request_id=? AND state='closed'").get(input.request_id);
+  }
+  if(input.scope==='turn-continuation'||input.id.startsWith('turn-continuation:')){
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -299,14 +305,15 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
       }else if(item.kind==='queued'&&item.obsolete){
         const original=getAcceptedSessionInput(item.ref);
         const turn=original?.turn_id?db.query('SELECT status,accepted_input_id FROM turns WHERE id=?').get(original.turn_id) as {status:string;accepted_input_id:string}|null:null;
-        if(!original||!turn||turn.status!=='queued'||turn.accepted_input_id!==original.id||!closedThreadUpkeep(original))
-          throw new Error(`Closed-request upkeep ${item.ref} changed during handoff.`);
+        if(!original||!turn||turn.status!=='queued'||turn.accepted_input_id!==original.id||!obsoleteQueuedTurn(original))
+          throw new Error(`Obsolete queued item ${item.ref} changed during handoff.`);
         // The request has its own final receipt. This reminder has no remaining work to transfer.
         // Retire its exact queued turn; never submit its words to another provider.
-        finishTurn(original.turn_id!,'cancelled','The exact Inbox request closed before this reminder ran.');
+        const isContinuation=original.scope==='turn-continuation'||original.id.startsWith('turn-continuation:');
+        finishTurn(original.turn_id!,'cancelled',isContinuation?'Continuation superseded by handoff.':'The exact Inbox request closed before this reminder ran.');
         settleTurnDependencies(original.turn_id!);
         db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
-          .run(JSON.stringify({state:'canceled',reason:'inbox_request_closed'}),original.id);
+          .run(JSON.stringify({state:'canceled',reason:isContinuation?'continuation_superseded':'inbox_request_closed'}),original.id);
       }else if(item.kind==='queued'&&item.movable){
         const original=getAcceptedSessionInput(item.ref)!;
         const turn=db.query(`SELECT id,session_id,accepted_input_id,status,dispatch_attempt,dispatch_hold,provider_admission_intended_at,
