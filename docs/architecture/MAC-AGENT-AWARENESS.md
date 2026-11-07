@@ -204,6 +204,10 @@ physical device. The agent first uses its available device route. If that route 
 a physical prerequisite such as unlocking his Mac, the question names that prerequisite.
 Starting one named app on an e-reader, watch or TV can also be a physical prerequisite:
 for example, KOReader must be started on a Kindle before it exposes an agent connection.
+For a physical USB connection, the question may name the instrument or controller
+and the host device (for example, "Please connect the Maschine+ to your Mac over
+USB."). This keeps the hardware name visible on the phone; a digital account or
+website connection is not a device prerequisite.
 The required explanation says which route was tried and why the agent cannot do that
 step itself. A generic request to open an app or website remains refused.
 The ask is the question's first sentence, phrased "Can you unlock your iPhone?" or

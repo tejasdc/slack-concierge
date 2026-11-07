@@ -280,6 +280,21 @@ for(const question of ['Can you unlock your Mac so the agent can continue?',
   'Can you unlock your iPhone?','Please unlock your iPhone.',
   'Please unlock your iPhone. The device check reached it and reported that it is locked. I will handle the app inspection; the other repair work continues.'])
   assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),true,question);
+for(const question of ['Please connect the Maschine+ to your Mac over USB.',
+  'Can you plug your MIDI keyboard into the Mac with a USB cable?',
+  'Please connect the Akai MPK mini to your laptop via USB. I will inspect it after it appears.',
+  'Please connect the Maschine+ to your Mac over USB. The capture script is installed on the Mac. The Maschine+ was absent from USB. I will inspect it when it appears.'])
+  assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),true,question);
+for(const question of ['Please connect the Maschine+ to your Mac over USB and open Live.',
+  'Connect the Maschine+ to your Mac over USB with its 15 V adapter and tell me what mode its screen shows.',
+  'Please connect the Maschine+ to your Mac over USB. Then open Live.',
+  'Please connect the Maschine+ to your Mac over USB. Can you select its audio input?',
+  'Please connect the Maschine+ to your Mac over USB. Ableton Live 12 Suite was closed.',
+  'Please connect your Google account to your Mac.',
+  'Please connect your Google account to your Mac over USB.',
+  'Please connect to the website over USB.',
+  'Please connect the Maschine+ to your Mac and send me a photo.'])
+  assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),false,question);
 for(const question of ['Please unlock your iPhone. Then open the app.',
   'Please unlock your iPhone. Open Settings and tap Save.',
   'Please unlock your iPhone. Can you copy the notes?',
