@@ -1542,13 +1542,14 @@ type CompletionRow={outcome:string|null;result_json:string|null;requested_effect
  * a typed final must already say completed without a not-checked reason. The router still
  * judges whether the retained answer actually covers this human request.
  */
-function verifiedFinalEvidence(dispatchId:string,row:CompletionRow|null,evidence:readonly string[]):boolean {
-  if(row?.outcome!=='answered'||!row.result_json)return false;
+function verifiedFinalEvidence(dispatchId:string,row:CompletionRow|null,evidence:readonly string[],allowFailedCheck=false):boolean {
+  if((row?.outcome!=='answered'&&!(allowFailedCheck&&row?.outcome==='failed'))||!row.result_json)return false;
   let result:any;
   try{result=JSON.parse(row.result_json);}catch{return false;}
   if(typeof result.event_id!=='string'||!evidence.includes(result.event_id)
     ||result.workDisposition!==undefined
-      &&(result.workDisposition!=='completed'||notSeenWorking(result.closingLine)))return false;
+      &&(allowFailedCheck?result.workDisposition!=='failed':result.workDisposition!=='completed'||notSeenWorking(result.closingLine)))return false;
+  if(allowFailedCheck&&result.workDisposition!=='failed')return false;
   const local=db.query(`SELECT payload_json FROM session_communication_events
     WHERE event_id=? AND request_id=? AND kind='final' AND superseded_by_event_id IS NULL`).get(result.event_id,dispatchId) as {payload_json:string}|null;
   const peer=local?null:db.query(`SELECT payload_json FROM session_peer_events
@@ -1585,6 +1586,14 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evid
   const dispatches=(request.dispatches??[]).map((dispatch:any)=>({id:String(dispatch?.requestId??''),row:settled(String(dispatch?.requestId??''))}))
     .sort((left,right)=>(left.row?.created_at_ms??0)-(right.row?.created_at_ms??0)||left.id.localeCompare(right.id));
   const latest=dispatches.at(-1);
+  // A shared check can fail for another request after this request's own repair finished.
+  // Require both the earlier exact completed final and the later exact failed-check final;
+  // the router then judges the check's request-specific result in its closure reason.
+  const latestShared=latest?db.query(`SELECT count(*) AS count FROM inbox_requests request,json_each(request.dispatches_json) dispatch
+    WHERE json_extract(dispatch.value,'$.requestId')=?`).get(latest.id) as {count:number}:null;
+  const completedBeforeSharedFailure=!!latest&&!!latestShared&&latestShared.count>1
+    &&verifiedFinalEvidence(latest.id,latest.row,evidence,true)
+    &&dispatches.slice(0,-1).some(dispatch=>verifiedFinalEvidence(dispatch.id,dispatch.row,evidence));
   if(!latest){
     if(humanRequest(topic,request)&&!evidence.some(id=>{
       const message=inboxMessageById(topic.sessionId,id) as {role?:string;createdAt?:string}|null;
@@ -1594,7 +1603,7 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evid
     }))throw new TopicError('This human request has no linked work. To close it completed, name the later answer in this thread as evidence of the work you checked.',409,'REQUEST_COMPLETION_EVIDENCE_REQUIRED');
   }
   const unfinished=dispatches.filter(dispatch=>(!dispatch.row?.outcome&&!(dispatch!==latest&&dispatch.row?.stalled_at_ms!=null))
-      ||(dispatch===latest&&dispatch.row!==null&&!done(dispatch.row)
+      ||(dispatch===latest&&dispatch.row!==null&&!completedBeforeSharedFailure&&!done(dispatch.row)
         &&!verifiedFinalEvidence(dispatch.id,dispatch.row,evidence))).map(dispatch=>({requestId:dispatch.id}));
   if(unfinished.length)throw new TopicError(`This request's work has not finished (${unfinished.map((d:any)=>d.requestId).join(', ')}): close it completed only when that work answered as done. If part of what he asked is not done, do it or have it built, then close.`,409,'REQUEST_WORK_UNFINISHED');
   if(request.reopenedAt&&((request.completionFloor??0)>=dispatches.length
@@ -1608,7 +1617,7 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evid
   if(latest&&humanRequest(topic,request)) {
     const shared=db.query(`SELECT count(*) AS count FROM inbox_requests request,json_each(request.dispatches_json) dispatch
       WHERE json_extract(dispatch.value,'$.requestId')=?`).get(latest.id) as {count:number};
-    if(shared.count>1&&!verifiedFinalEvidence(latest.id,latest.row,evidence)&&!evidence.some(id=>{
+    if(shared.count>1&&!completedBeforeSharedFailure&&!verifiedFinalEvidence(latest.id,latest.row,evidence)&&!evidence.some(id=>{
       const post=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=? AND kind=?').get(id,'post') as {payload_json:string}|null;
       return post&&JSON.parse(post.payload_json).requestId===latest.id;
     }))throw new TopicError('This agent answer is linked to several human requests. Check this request separately and name the agent answer as evidence before closing it.',409,'REQUEST_SHARED_COMPLETION_EVIDENCE_REQUIRED');

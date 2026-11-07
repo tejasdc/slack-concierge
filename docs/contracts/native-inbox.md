@@ -548,6 +548,15 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   Linked attempts are evaluated in admission order, including when an older failed
   attempt is discovered and linked after its checked successor. The old failure remains
   visible without becoming current merely because it was linked last.
+  A later shared check can fail for one sibling request after another request's repair
+  was answered. The router may close only the individually checked request by naming
+  two exact unsuperseded final events: an earlier answered final that completed its
+  work, and the later shared failed final whose retained words show this request's
+  check passed. The owner verifies each event belongs to its linked dispatch and
+  records both as closure evidence. The failed final alone cannot close a request,
+  and a sibling without its own completed answer stays open. This avoids redoing a
+  completed check or treating one aggregate failure as every request's result; the
+  router still judges the check's scope and states any untested device behavior.
   A failed,
   cancelled, handed-back or otherwise unfinished attempt leaves his request open. The owner
   gives the Inbox router a retained recovery input with the exact request and latest attempt.
