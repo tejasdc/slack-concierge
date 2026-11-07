@@ -13,7 +13,7 @@ process.env.CONCIERGE_TEST_AUTHORIZATION=LEGACY_TOPIC_COMPLETION_TEST_AUTHORIZAT
 
 const [{db,claimNextQueuedTurn,markTurnProviderAdmissionIntended,acknowledgeTurnProviderInput},
   {SessionOwner},{SessionCommunicationCoordinator},{nativeRunId,updateSessionMetadata,recordSessionEvent,retainSessionInput},
-  {topicsCommand}]=await Promise.all([
+  {topicsCommand,topicPromptContext,invalidateTopicRoots}]=await Promise.all([
   import('../src/state'),import('../src/session-owner'),import('../src/session-communication'),
   import('../src/session-inputs'),import('../src/session-topics')]);
 
@@ -53,6 +53,24 @@ try {
   await communication.idle();
   const finalEvent=communication.inspect(dispatch.request_id).events.find(event=>event.kind==='final');
   assert.ok(finalEvent);
+  // Prompt preparation must read this topic's retained answer after a cold index reset,
+  // without waiting for the global history warm-up to finish.
+  const returnedId=`return:${finalEvent.event_id}`;
+  if(!db.query('SELECT 1 FROM session_inputs WHERE id=?').get(returnedId))retainSessionInput({
+    id:returnedId,sessionId:inboxId,scope:`session:${rootId}`,actionId:returnedId,
+    kind:'input',origin:'service',sourceInputId:rootId,sourceRunId:current.actor.runId,
+    requestId:dispatch.request_id,payload:{text:'The retained worker answer.'},
+  });
+  recordSessionEvent({eventId:'fixture-accepted-return',sessionId:inboxId,inputId:returnedId,kind:'accepted',payload:{}});
+  invalidateTopicRoots();
+  const promptContext=topicPromptContext(inboxId,rootId,{});
+  const topicContext=JSON.parse(promptContext.match(/<topic>\n([\s\S]*?)\n<\/topic>/)?.[1]??'null');
+  assert.equal(topicContext.id,topicId);
+  assert.equal(topicContext.unrelayedResult?.inputId,returnedId);
+  recordSessionEvent({eventId:'fixture-post-after-return',sessionId:inboxId,inputId:rootId,kind:'post',payload:{text:'Relayed'}});
+  invalidateTopicRoots();
+  const relayed=JSON.parse(topicPromptContext(inboxId,rootId,{}).match(/<topic>\n([\s\S]*?)\n<\/topic>/)?.[1]??'null');
+  assert.equal(relayed.unrelayedResult,undefined);
   db.query("UPDATE session_communication_requests SET payload_json=json_set(payload_json,'$.requestedEffect','work') WHERE request_id=?")
     .run(dispatch.request_id);
   topicsCommand(current.actor,{verb:'request.link',request_id:requestId,action_id:'legacy-link',dispatch:dispatch.request_id});
