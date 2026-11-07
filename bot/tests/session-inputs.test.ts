@@ -4,14 +4,16 @@ import {randomUUID} from 'node:crypto';
 import {db,claimNextQueuedTurn,getSessionById,createOrGetSession,upsertChannel,listInterruptedInputContext,finishTurn,markTurnSteeringMessageFailed} from '../src/state';
 import {interruptedInputNotice} from '../src/input-continuity';
 import {initializeSessionOwnerSchema} from '../src/session-schema';
-import {attachSessionSteering,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recoverUnsentAntigravityInputs,retainSessionInput} from '../src/session-inputs';
+import {attachSessionSteering,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recoverUnsentAntigravityInputs,retainSessionInput,updateSessionMetadata} from '../src/session-inputs';
 import {acquireDatabaseTestLock} from './db-lock';
 
 let release:()=>void;
 const owned:number[]=[];
 beforeEach(async()=>{release=await acquireDatabaseTestLock();});
 afterEach(()=>{
-  for(const id of owned.splice(0)) {
+  for(const id of owned.splice(0).reverse()) {
+    db.query('DELETE FROM session_external_requests WHERE target_session_id=?').run(id);
+    db.query('DELETE FROM session_handoffs WHERE predecessor_session_id=? OR successor_session_id=?').run(id,id);
     db.query('DELETE FROM session_owner_events WHERE session_id=?').run(id);
     db.query('DELETE FROM session_inputs WHERE session_id=?').run(id);
     db.query('DELETE FROM turn_steering_messages WHERE turn_id IN (SELECT id FROM turns WHERE session_id=?)').run(id);
@@ -61,6 +63,36 @@ test('a never-written Antigravity follow-up returns to FIFO once after restart',
   expect(claimNextQueuedTurn('native-owner')).toBeNull();
   finishTurn(first.turn_id!,'done');
   expect(claimNextQueuedTurn('native-owner')?.accepted_input_id).toBe(unsent.id);
+});
+test('a never-written Google follow-up follows an accepted handoff with its exact return target',()=>{
+  const source=createNativeSession('antigravity',{cwd:'/tmp',purpose:'chat',summary:'Old Inbox fixture'});
+  const successor=createNativeSession('antigravity',{cwd:'/tmp',purpose:'chat',summary:'New Inbox fixture'});
+  owned.push(source.id,successor.id);
+  const first=enqueueSessionInput(input(source.id).input.id);
+  expect(claimNextQueuedTurn('native-owner')?.turn_id).toBe(first.turn_id);
+  const handoff=randomUUID(),request=randomUUID();
+  const accepted=retainSessionInput({sessionId:source.id,scope:'agent-request',actionId:request,
+    kind:'input',origin:'agent',payload:{text:'still owed'},requestId:request}).input;
+  const owed=attachSessionSteering(accepted.id,first.turn_id!);
+  db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({admissionIntent:'live'}),owed.id);
+  markTurnSteeringMessageFailed(owed.steering_id!,'Never written to Google.');
+  db.query(`INSERT INTO session_handoffs(id,predecessor_session_id,successor_session_id,state,action_id,caller_session_id,
+    reason,requesting_input_id,requesting_run_id,inventory_json,inventory_digest,accepted_at)
+    VALUES(?,?,?,'accepted',?,?,?,?,?,'{}','digest',CURRENT_TIMESTAMP)`).run(handoff,source.id,successor.id,handoff,source.id,
+      'capacity',owed.id,nativeRunId(first.turn_id!));
+  updateSessionMetadata(source.id,{suspended:true});
+  db.query(`INSERT INTO session_external_requests(request_id,agent_name,action_id,target_session_id,target_input_id,
+    requested_effect,text,payload_hash,created_at_ms) VALUES(?,?,?,?,?,'work','follow-up','hash',?)`)
+    .run(request,'test-agent',request,successor.id,`handoff:${handoff}`,Date.now());
+  expect(recoverUnsentAntigravityInputs()).toBe(1);
+  const continued=getAcceptedSessionInput(`handoff-unsent:${owed.id}`)!;
+  expect(continued.session_id).toBe(successor.id);
+  expect(continued.turn_id).not.toBeNull();
+  expect(db.query('SELECT target_input_id FROM session_external_requests WHERE request_id=?').get(request))
+    .toEqual({target_input_id:continued.id});
+  expect(JSON.parse(getAcceptedSessionInput(owed.id)!.receipt_json!))
+    .toMatchObject({admissionIntent:'live',state:'canceled',continuedAs:continued.id});
+  expect(recoverUnsentAntigravityInputs()).toBe(0);
 });
 test('a native input resumes an existing Slack branch without changing its session or native identity',()=>{
   const channel=`C${randomUUID()}`;

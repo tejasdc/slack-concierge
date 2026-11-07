@@ -104,7 +104,8 @@ export class RunnerLeases {
 
   queuedTurnJobsForOwner(ownerInstanceId:string):string[] {
     return (this.db.query(`SELECT job.job_id FROM runner_jobs job
-      JOIN executions execution ON job.job_id='turn:'||execution.execution_id
+      JOIN executions execution ON execution.execution_id=substr(job.job_id,6)
+        AND job.job_id='turn:'||execution.execution_id
       JOIN turns turn ON turn.id=execution.turn_id AND turn.status='running'
         AND turn.owner_instance_id=? AND turn.dispatch_attempt=execution.dispatch_attempt
       WHERE job.kind='turn' AND job.state='queued' AND execution.supervisor='runner'

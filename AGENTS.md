@@ -92,8 +92,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - Runner-owned Codex account switches prove the new login through the bridge inside the sealed
   release; see [runner App Server](docs/architecture/RUNNERS.md#codex-app-server-on-a-runner-built-off-until-concierge_codex_runner-is-set).
 - Agent-started top-model choices and helper defaults follow [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#delegation-and-escalation);
-  model and helper call shares are in [usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
+  measured model, project, session and helper tokens for Accounts follow [usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
 - External Codex resets on a saved account clear that account's older refusal on a fresh direct reading before automatic account switching; see [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md#what-the-allowance-evidence-means).
+- The Mac peer's per-session usage breakdown reads its local transcript history when it has no provider runners; stale results are marked rather than silently presented as current. See [provider usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
 
 ## Session and Inbox obligations
 
@@ -123,8 +124,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [human command custody](docs/architecture/HUMAN-COMMAND-INTAKE.md), and
   [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md) own those boundaries.
 - Banked phone work that Tejas permits only overnight uses the explicit quiet-only saved-work choice; request cancellation also revokes a queued saved turn. See [session ownership](docs/architecture/SESSION-OWNER.md#one-execution-owner) and [router actions](docs/runbooks/ROUTER-ACTIONS.md#current-native-routing).
-- A device question can name an app startup when the physical device has no agent route;
-  the agent explains the failed route. Returned `needs_you` questions can be withdrawn
+- A device question can name a physical instrument or controller in a USB connection
+  request, or an app startup when the device has no agent route; the agent explains
+  the failed route. Returned `needs_you` questions can be withdrawn
   by exact event identity when they become stale. See [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md)
   and the [session owner contract](docs/contracts/session-owner-v1.md).
 - Provider sign-in repair requests to the Mac may come from a batch of owner repair

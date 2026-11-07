@@ -89,5 +89,5 @@ export async function usageBreakdown(period:UsagePeriod):Promise<unknown>{
   if(!known){await scan();known=latest;}
   else if(Date.now()-Date.parse(known.computedAt)>=RESULT_STALE_MS)void scan().catch(()=>{});
   const result=known!.both[period] as Record<string,unknown>;
-  return {...result,computedAt:known!.computedAt};
+  return {...result,computedAt:known!.computedAt,stale:Date.now()-Date.parse(known!.computedAt)>=RESULT_STALE_MS};
 }

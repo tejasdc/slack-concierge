@@ -1018,6 +1018,15 @@ The owner serves `GET /sessions/v1/usage/breakdown?period=today|week`; agents ge
 same read through `router-actions.sh sessions usage --by-session --period today|week`.
 The read now includes `callMix` for all calls, each account, and each session:
 total calls, helper and main calls, helper share, and each model's call share.
+For the Accounts dashboard, each account and session also carries `byModel` with
+the exact transcript token classes, a published-price weighted total, and the
+helper subset of both. Each session carries `byHelper`, keyed by the source
+subagent transcript identity and model. Codex child threads are followed to
+their root session; Claude Code nested subagent files retain their own helper
+identity. These measurements are additive across accounts and projects. The
+dashboard groups the existing session project labels across providers, keeps
+unknown attribution visible, and shows raw token totals beside the weighted
+comparison bars. A call count must never be presented as a token share.
 Codex helper transcripts identify their parent thread; nested helpers follow that
 chain back to the session. It also counts accepted Fable/Astra escalation events
 and accepted agent-shell Astra command starts from the owner's escalation log
@@ -1030,6 +1039,12 @@ The owner sends only the relevant one-week session, turn, account and prompt-cac
 the runner for attribution. The runner computes the account/session report and cache diagnostics
 beside its cache; the owner combines runner reports. Raw provider records do not cross the relay
 on each refresh. Neither scanner modifies transcripts or holds the owner event loop.
+The Mac peer still runs its own native sessions without a configured provider runner. Its
+breakdown reader scans the existing local Claude and Codex transcript trees and joins those
+calls to a bounded snapshot of its own session ledger. Unknown local account homes remain
+unknown in the report; the account allowance reading and dispatch path are separate. Owners
+with configured runners continue to use the runner reports, and a non-Mac owner with no
+runner refuses the scan instead of silently reading the wrong machine's transcripts.
 It runs in the background: every usage reading starts a scan when the last one is over five
 minutes old, and a read answers from the latest result with its `computedAt` (only the first
 read ever waits for a scan). Until 2026-10-08 it was scanned per read; while the owner
@@ -1039,7 +1054,9 @@ separate process, so the latest result is published to `usage-breakdown-latest.j
 the ledger and every process serves that file; until 2026-10-30 each worker kept its own empty
 copy and its reads each waited about 2 s for a scan. A reader scans itself only when no result
 exists or the file is more than fifteen minutes old. `usage_breakdown_refreshed` / `_refresh_failed` log
-each scan's duration.
+each scan's duration. Every response includes `computedAt` and `stale`; a result older than
+fifteen minutes is marked stale while a new scan is attempted, including when that attempt
+fails. The old report remains available for context without claiming it is current.
 
 Shares use published API token prices as an **allowance proxy**, not a claim that a
 subscription's five-hour meter is denominated in dollars. The response includes the

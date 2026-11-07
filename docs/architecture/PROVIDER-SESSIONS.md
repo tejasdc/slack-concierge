@@ -47,7 +47,11 @@ accepted follow-ups to the running answer even when the CLI never wrote them to
 Google. After a restart, the owner recovers only failed, never-written attempts
 whose exact request remains open, preserving each accepted input's identity and
 order in the durable turn queue. Sent or ambiguous attempts and settled requests
-are not replayed. Historical pages, forks, and information-only consultation are also
+are not replayed. If an accepted provider handoff has already moved the Inbox,
+recovery continues the proven unsent input in the successor and updates its exact
+open return target. The old input's nonterminal receipt fields are retained and
+marked canceled with its continuation, so capture status does not stay live.
+Historical pages, forks, and information-only consultation are also
 disabled because their provider contracts are not yet established. The CLI must
 be installed on the machine running the provider and must have that machine's
 own Google sign-in. Credentials are never copied into a Concierge session.

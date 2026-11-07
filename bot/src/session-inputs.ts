@@ -783,10 +783,12 @@ export function withdrawUnstartedServiceInput(inputId:string,reason:string):bool
  * acknowledged or ambiguous send, a Slack-provenance steering message, or a
  * session that cannot accept input at all stays terminal.
  */
-function continueUnsentOutsideHandoff(input:AcceptedSessionInput):AcceptedSessionInput|null {
+function continueUnsentAfterHandoff(input:AcceptedSessionInput):AcceptedSessionInput|null {
   const session=getSessionById(input.session_id);
-  // The independent command may finish after a handoff has suspended its session.
-  if(!session||!sessionMetadata(session).outside||!sessionMetadata(session).suspended||input.origin!=='human')return null;
+  // An independent command may finish after a handoff; an earlier Google release can also
+  // prove a follow-up never reached the provider after its obligations have changed hands.
+  if(!session||!sessionMetadata(session).suspended
+    ||!(sessionMetadata(session).outside&&input.origin==='human'||session.provider_id==='antigravity'))return null;
   let destination=input.session_id;
   const visited=new Set<number>();
   while(true){
@@ -805,10 +807,19 @@ function continueUnsentOutsideHandoff(input:AcceptedSessionInput):AcceptedSessio
   const continued=retainSessionInput({id:`handoff-unsent:${input.id}`,sessionId:destination,
     scope:'handoff-unsent',actionId:input.id,kind:'input',origin:input.origin,payload,
     sourceInputId:input.id,sourceRunId:input.source_run_id??undefined,requestId:input.request_id??undefined}).input;
-  if(enqueueSessionInput(continued.id).turn_id===null)return null;
-  db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND receipt_json IS NULL')
-    .run(JSON.stringify({state:'canceled',movedTo:`concierge:${destination}`,continuedAs:continued.id}),input.id);
-  return continued;
+  const queued=enqueueSessionInput(continued.id);
+  if(queued.turn_id===null)return null;
+  db.query('UPDATE session_communication_requests SET target_input_id=?,target_turn_id=? WHERE target_session_id=? AND outcome IS NULL AND (target_input_id=? OR request_id=?)')
+    .run(continued.id,queued.turn_id,destination,input.id,input.request_id??'');
+  db.query('UPDATE session_external_requests SET target_input_id=? WHERE target_session_id=? AND outcome IS NULL AND (target_input_id=? OR request_id=?)')
+    .run(continued.id,destination,input.id,input.request_id??'');
+  db.query('UPDATE session_peer_deliveries SET target_input_id=? WHERE target_session_id=? AND closed_at_ms IS NULL AND (target_input_id=? OR request_id=?)')
+    .run(continued.id,destination,input.id,input.request_id??'');
+  db.query(`UPDATE session_inputs SET receipt_json=json_set(COALESCE(receipt_json,'{}'),
+    '$.state','canceled','$.movedTo',?,'$.continuedAs',?),updated_at=CURRENT_TIMESTAMP
+    WHERE id=? AND json_extract(receipt_json,'$.state') IS NULL`)
+    .run(`concierge:${destination}`,continued.id,input.id);
+  return getAcceptedSessionInput(continued.id)!;
 }
 export function recoverUnsentSteeredInput(inputId:string) {
   return db.transaction(()=>{
@@ -823,7 +834,7 @@ export function recoverUnsentSteeredInput(inputId:string) {
       if(prior?.status==='failed'&&!prior.provider_sent_at&&input.turn_id===null
         &&!(input.receipt_json&&JSON.parse(input.receipt_json).state)
         &&!(input.origin==='service'&&JSON.parse(input.payload_json).delivery==='steer'))
-        return (prior.slack_user_msg_ts===null?continueUnsentOutsideHandoff(input):null)??enqueueSessionInput(input.id);
+        return (prior.slack_user_msg_ts===null?continueUnsentAfterHandoff(input):null)??enqueueSessionInput(input.id);
       if(prior&&!(prior.status==='failed'&&!prior.provider_sent_at)&&input.turn_id===null){
         db.query('UPDATE session_inputs SET turn_id=?,steering_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id IS NULL AND steering_id IS NULL')
           .run(prior.turn_id,prior.id,input.id);
@@ -842,7 +853,7 @@ export function recoverUnsentSteeredInput(inputId:string) {
     if(steering?.status!=='failed'||steering.provider_sent_at)return input;
     const session=getSessionById(input.session_id);
     if(!session||session.status==='archived')return input;
-    if(sessionMetadata(session).suspended)return continueUnsentOutsideHandoff(input)??input;
+    if(sessionMetadata(session).suspended)return continueUnsentAfterHandoff(input)??input;
     db.query('UPDATE session_inputs SET turn_id=NULL,steering_id=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND steering_id=?').run(input.id,input.steering_id);
     // Queue in the same transaction as detaching. Dispatch must not see the
     // unattached input and attempt another steering insert with this identity.
@@ -869,6 +880,8 @@ export function recoverUnsentAntigravityInputs() {
     // A later answer or cancellation already settled this exact obligation. A closed Inbox
     // request has no thread upkeep left to perform; neither should consume another model turn.
     if(row.request_id&&db.query('SELECT 1 FROM session_communication_requests WHERE request_id=? AND outcome IS NOT NULL').get(row.request_id))continue;
+    if(row.request_id&&db.query('SELECT 1 FROM session_external_requests WHERE request_id=? AND outcome IS NOT NULL').get(row.request_id))continue;
+    if(row.request_id&&db.query('SELECT 1 FROM session_peer_deliveries WHERE request_id=? AND closed_at_ms IS NOT NULL').get(row.request_id))continue;
     if(row.id.startsWith('thread-upkeep:')&&row.request_id
       &&db.query("SELECT 1 FROM inbox_requests WHERE request_id=? AND state='closed'").get(row.request_id))continue;
     const recovered=recoverUnsentSteeredInput(row.id);
