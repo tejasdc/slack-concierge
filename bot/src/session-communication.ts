@@ -14,7 +14,7 @@ import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWit
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordRequesterDecisionReturn, recordTurnOutcome, turnDeclaredByAction, withdrawOpenNeed, type DeclaredTurnOutcome } from './session-turn-outcome';
 import {turnRoutedInput} from './inbox-routing-result';
-import {sessionAuthor} from './session-message-author';
+import {acceptedInputAuthor,sessionAuthor} from './session-message-author';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
 import {ProviderCapabilityUnavailableError} from './provider-policy';
@@ -43,6 +43,8 @@ import { isWritingSession, takesManySubjects, WRITING_SESSION_REFUSAL } from './
 import {standingAgent,standingAgentSession,bindStandingAgentSession,STANDING_WORK_REFUSAL} from './standing-agents';
 import {parseMachineNeed} from './machine-need';
 import {signInWorkerActionId} from './signin-renewal';
+import {MAC_UPDATE_SOURCE_INPUT,MAC_UPDATE_SOURCE_RUN,macUpdateSourceProven} from './mac-update-source';
+import {AUTHORIZED_UPDATE_BOARD} from './mac-surface-policy';
 import { backfillRequestTopics, consultPointer, forTopic, handBackText, newTopicNote, sessionWorkload, topicOf, topicRootFor } from './session-fit';
 export type CommunicationSource = {
     channel_id?: string;
@@ -209,6 +211,8 @@ export class SessionCommunicationCoordinator {
     private stopped = true;
     private disarm: (() => void) | null = null;
     private detach: (() => void) | null = null;
+    private readonly healthyRechecks = new Map<string, { storedDue: number; nextCheck: number }>();
+    private nextRequestInspectionAt = 0;
     private readonly now: () => number;
     constructor(private readonly dependencies: Dependencies) { this.now = dependencies.now ?? Date.now; }
     /**
@@ -445,6 +449,40 @@ export class SessionCommunicationCoordinator {
             events:(db.query('SELECT event_id,payload_json,final,created_at_ms FROM session_external_replies WHERE request_id=? ORDER BY created_at_ms').all(id) as any[])
                 .map(event=>({event_id:event.event_id,final:!!event.final,payload:JSON.parse(event.payload_json),created_at_ms:event.created_at_ms}))};
     }
+    externalWithdraw(input:{name:string;request_id:string;ask_action_id:string;action_id:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        if(!/^[a-z][a-z0-9-]{2,40}$/.test(input.name))throw new Error('Invalid outside agent name.');
+        action(input.ask_action_id);action(input.action_id);
+        db.transaction(()=>{
+            const row=db.query('SELECT * FROM session_external_requests WHERE request_id=? AND agent_name=?')
+                .get(input.request_id,input.name) as any;
+            if(!row)throw new Error('Unknown outside request.');
+            if(row.action_id!==input.ask_action_id)throw new Error('The original ask action ID does not match this request.');
+            if(row.outcome){
+                const result=row.result_json?JSON.parse(row.result_json):null;
+                if(row.outcome==='canceled'&&result?.withdrawActionId===input.action_id)return;
+                throw new Error('This outside request already has a different final outcome.');
+            }
+            const target=getAcceptedSessionInput(row.target_input_id);
+            if(!target)throw new Error('The target input is missing; withdrawal needs owner reconciliation.');
+            if(target.turn_id!==null){
+                const turn=db.query(`SELECT status,owner_instance_id,provider_admission_intended_at,
+                    provider_started_at,provider_turn_id,provider_input_acknowledged_at FROM turns WHERE id=? AND session_id=?`)
+                    .get(target.turn_id,target.session_id) as any;
+                if(!turn||turn.status!=='queued'||turn.owner_instance_id!==null||turn.provider_admission_intended_at!==null
+                    ||turn.provider_started_at!==null||turn.provider_turn_id!==null||turn.provider_input_acknowledged_at!==null)
+                    throw new Error('The recipient turn has started or its start is uncertain; this request cannot be withdrawn as unstarted.');
+            } else if(target.steering_id!==null||JSON.parse(target.receipt_json??'{}').state!=null)
+                throw new Error('The recipient input is not an unstarted queued request.');
+            if(!cancelQueuedWithdrawnRequest(target.id))
+                throw new Error('The recipient input could not be revoked; no request outcome was changed.');
+            db.query("UPDATE session_external_requests SET status='settled',outcome='canceled',result_json=? WHERE request_id=? AND outcome IS NULL")
+                .run(JSON.stringify({withdrawActionId:input.action_id,askActionId:input.ask_action_id,
+                    targetInputId:target.id,reason:'The outside requester withdrew this unstarted request.'}),row.request_id);
+        })();
+        this.wake();
+        return this.externalGet(input.name,input.request_id);
+    }
     private externalReply(input:{source:CommunicationSource;action_id:string;request_id:string;text:string;reply_body?:string;final:boolean;waiting_on_watch?:string;workDisposition?:WorkDisposition;openChatGptIds?:string[];attachments?:string[];files?:AttachedFile[];evidence?:unknown[];hand_back?:string}) {
         const request=db.query('SELECT * FROM session_external_requests WHERE request_id=?').get(input.request_id) as any;
         if(!request)return null;
@@ -674,8 +712,29 @@ export class SessionCommunicationCoordinator {
             if(typeof kind==='string'&&kind&&kind!=='provider-renewal'){
                 const accepted=getAcceptedSessionInput(row.id);
                 const provenance=accepted?sessionInputProvenance(accepted):null;
+                // Peer provenance presents the sender's session after normalization; the
+                // delivery row still stores its raw local identity.
+                const updateDelivery=typeof provenance?.requestId==='string'&&provenance.requestId
+                  ?db.query(`SELECT 1 FROM session_peer_deliveries
+                    WHERE target_input_id=? AND target_session_id=? AND request_id=?
+                      AND peer='cloud'
+                      AND origin_input_id=? AND origin_run_id=?
+                      AND requested_effect='work' AND closed_at_ms IS NULL`).get(
+                    row.id,running.session_id,provenance.requestId,MAC_UPDATE_SOURCE_INPUT,MAC_UPDATE_SOURCE_RUN)
+                  :null;
+                const updateAuthorization=process.platform==='darwin'&&kind==='mac-app'
+                    &&provenance?.peer==='cloud'&&provenance.source?.sessionId==='cloud:9118'
+                    &&provenance.source.inputId===MAC_UPDATE_SOURCE_INPUT
+                    &&provenance.source.runId===MAC_UPDATE_SOURCE_RUN
+                    &&typeof provenance.requestId==='string'
+                    &&!!updateDelivery
+                    &&typeof need.why==='string'
+                    &&(need.why.includes('535c73c7')||need.why.includes(AUTHORIZED_UPDATE_BOARD))
+                    &&macUpdateSourceProven();
                 return {kind,why:typeof need.why==='string'?need.why:'',
-                    humanInputId:provenance?.originatingHuman?.inputId,effectScope:provenance?.effectScope};
+                    humanInputId:provenance?.originatingHuman?.inputId,
+                    effectScope:updateAuthorization?'work':provenance?.effectScope,
+                    updateAuthorization};
             }
             // A renewal remains current while its exact accepted request is open in this
             // turn. A later budget or progress input cannot erase that request's custody.
@@ -1234,6 +1293,9 @@ export class SessionCommunicationCoordinator {
         return this.receipt(this.row(row.request_id));
     }
     private receipt(row: RequestRow, withTarget = true) {
+        const recheck = this.healthyRechecks.get(row.request_id);
+        const due = !row.outcome && row.overdue_at_ms === null && recheck?.storedDue === row.due_at_ms && recheck.nextCheck > this.now()
+            ? recheck.nextCheck : row.due_at_ms;
         const binding = this.binding(row);
         const execution = binding?.turn_id ? db.query('SELECT status,provider_turn_id,provider_input_acknowledged_at FROM turns WHERE id=?').get(binding.turn_id) as any : null;
         const steering = binding?.input_kind === 'steering' ? binding.steering_id
@@ -1247,7 +1309,7 @@ export class SessionCommunicationCoordinator {
             target_session_id: `concierge:${row.target_session_id}`, target_input_id:row.target_input_id,
             operation_id:(db.query("SELECT id FROM session_inputs WHERE request_id=? AND kind='request' ORDER BY rowid LIMIT 1").get(row.request_id) as {id:string}|null)?.id??null,
             routed_request_id: row.routed_request_id, target_turn_id: row.target_turn_id,
-            due_at_ms: row.due_at_ms, overdue_at_ms: row.overdue_at_ms, result: row.result_json ? JSON.parse(row.result_json) : null,
+            due_at_ms: due, overdue_at_ms: row.overdue_at_ms, result: row.result_json ? JSON.parse(row.result_json) : null,
             execution: execution ? { turn_id: binding.turn_id, input_kind: binding.input_kind, input_status: steering?.status ?? execution.status, acknowledged_at: steering?.provider_sent_at ?? (binding.input_kind==='turn'?execution.provider_input_acknowledged_at:null) ?? null, provider_turn_id: execution.provider_turn_id } : null,
             events: (db.query('SELECT * FROM session_communication_events WHERE request_id=? ORDER BY rowid').all(row.request_id) as EventRow[])
                 .map(event => ({ event_id: event.event_id, kind: event.kind, status: event.status, error: event.error, payload: JSON.parse(event.payload_json), routed_request_id: event.routed_request_id })) };
@@ -1436,7 +1498,7 @@ export class SessionCommunicationCoordinator {
             input=session?{...input,role:undefined,address:sessionAddress(session)}
                 :{...input,role:undefined,provider:'auto',project:standingLocation.cwd,title:input.title??agent.description};
         }
-        let routedFrom:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'}|null=null;
+        let routedFrom:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'|'service'|'unknown';author:import('./provider-history').MessageAuthor}|null=null;
         if(input.routeMessageId!==undefined){
             if(input.provider||!input.address||input.saved||input.after?.length||input.consult||input.thread||input.return_to_requester)
                 throw new Error('Routing one message to a session needs one exact existing address, without a second thread or request destination.');
@@ -1452,8 +1514,9 @@ export class SessionCommunicationCoordinator {
             const attachments=Array.isArray(body.attachments)?body.attachments.filter((id:unknown):id is string=>typeof id==='string'):[];
             if(!originalText.trim()&&!attachments.length)throw new Error('The routed message has no words or attachments.');
             const title=(db.query('SELECT title FROM inbox_topics WHERE topic_id=?').get(topicId) as {title:string}|null)?.title??topicId;
+            const author=acceptedInputAuthor(source).author;
             routedFrom={sessionId:`concierge:${source.session_id}`,messageId:source.id,topicId,root,title,originalText,
-                originalCreatedAt:source.created_at.replace(' ','T')+'Z',authorKind:source.origin==='human'?'human':'agent'};
+                originalCreatedAt:source.created_at.replace(' ','T')+'Z',authorKind:author.kind,author};
             input={...input,text:originalText.trim()?originalText:'Attachment message from the Inbox.',attachments};
         }
         text(input.text);
@@ -2213,9 +2276,11 @@ export class SessionCommunicationCoordinator {
             if (input.final && inferred)
                 db.query('UPDATE session_communication_events SET superseded_by_event_id=? WHERE event_id=?').run(eventId, inferred.event_id);
             const id = this.event(request, input.final ? 'final' : 'progress', payload, key, eventId);
-            if(requestPayload.promptAnswer&&(input.final||input.answers_question))
+            if(requestPayload.promptAnswer&&(input.final||input.answers_question)) {
+                this.healthyRechecks.delete(request.request_id);
                 db.query('UPDATE session_communication_requests SET prompt_answered_at_ms=?,due_at_ms=? WHERE request_id=? AND prompt_answered_at_ms IS NULL')
                     .run(this.now(),this.now()+STILL_WAITING_AFTER_MS,request.request_id);
+            }
             if(actor.inputId) {
                 const operation=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,kind:'reply',origin:'agent',
                     payload:{text:input.text,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),kind:input.final?'final':'partial',workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{})},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId:request.request_id}).input;
@@ -2519,9 +2584,11 @@ export class SessionCommunicationCoordinator {
         let routed = this.binding(request);
         // A request that waited behind others starts its reminder clock when it is handed over,
         // not when it was asked, so its agent gets the same time as any other request.
-        if(!routed&&(payload.after.length||payload.pace?.length))
+        if(!routed&&(payload.after.length||payload.pace?.length)) {
+            this.healthyRechecks.delete(request.request_id);
             db.query('UPDATE session_communication_requests SET due_at_ms=max(due_at_ms,?) WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
                 .run(this.now()+STILL_WAITING_AFTER_MS, request.request_id);
+        }
         if(routed?.status==='failed') {
             if(this.holdFailedChatGptRequest(request,routed.error??'The target could not receive this request.'))return;
             this.settle(request,'failed',routed.error??'The target could not receive this request.');
@@ -2846,6 +2913,7 @@ export class SessionCommunicationCoordinator {
             // 2026-11-02.
             const queuedBehind=JSON.parse(request.payload_json) as {after?:string[];pace?:string[]};
             if((queuedBehind.after??[]).some(id=>!this.row(id).outcome)||(queuedBehind.pace??[]).some(id=>this.pacingWaitsOn(id))) {
+                this.healthyRechecks.delete(request.request_id);
                 db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
                     .run(now + STILL_WAITING_AFTER_MS, request.request_id);
                 return;
@@ -2856,6 +2924,7 @@ export class SessionCommunicationCoordinator {
                     const current=this.row(request.request_id);
                     if(current.outcome||current.prompt_answered_at_ms!==null||current.overdue_at_ms!==null)return;
                     if(current.prompt_reminded_at_ms===null) {
+                        this.healthyRechecks.delete(current.request_id);
                         // One reminder joins the recipient's current run. The retained input ID
                         // makes a restart or reconciliation harmless.
                         this.dependencies.owner!.admit({sessionId:current.target_session_id,inputId:`question-reminder:${current.request_id}`,
@@ -2878,6 +2947,7 @@ export class SessionCommunicationCoordinator {
             // scheduled for 18:42:30 was reported as 15 minutes overdue at 18:42:31 (2026-11-04).
             if (turn?.status === 'queued' && turn.saved_kind === 'scheduled' && turn.saved_fire_at_ms !== null
                 && turn.saved_fire_at_ms + STILL_WAITING_AFTER_MS > now) {
+                this.healthyRechecks.delete(request.request_id);
                 db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
                     .run(turn.saved_fire_at_ms + STILL_WAITING_AFTER_MS, request.request_id);
                 return;
@@ -2909,8 +2979,10 @@ export class SessionCommunicationCoordinator {
                 return;
             }
             if (healthy || updateDraining() || (turn?.status === 'done' && waitingOnDependency(request.target_session_id, request.request_id, request.created_at_ms, false))) {
-                db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
-                    .run(now + STILL_WAITING_AFTER_MS, request.request_id);
+                // This is only a recheck of already accepted work. Keeping its next inspection
+                // in memory avoids an optional SQLite write blocking a receipt on the owner loop.
+                // A restart inspects the still-due row again; durable overdue events remain unchanged.
+                this.healthyRechecks.set(request.request_id, { storedDue: request.due_at_ms, nextCheck: now + STILL_WAITING_AFTER_MS });
                 return;
             }
             const held = turn ? null : this.heldPrerequisite(request);
@@ -2948,6 +3020,11 @@ export class SessionCommunicationCoordinator {
             visit(row);
             await new Promise<void>(resolve => setImmediate(resolve));
         }
+    }
+    private deferredRequestIds(now: number) {
+        for (const [id, recheck] of this.healthyRechecks)
+            if (recheck.nextCheck <= now) this.healthyRechecks.delete(id);
+        return JSON.stringify([...this.healthyRechecks.keys()]);
     }
     private async scanExternalRequests() {
         if (this.incidentScanTraceRemaining-- > 0)
@@ -3112,9 +3189,14 @@ export class SessionCommunicationCoordinator {
                 JOIN session_inputs i ON i.id=r.target_input_id JOIN turns t ON t.id=i.turn_id
                 WHERE r.outcome IS NULL AND r.overdue_at_ms IS NULL AND t.status='queued' AND r.rowid<=? AND r.rowid>?
                 ORDER BY r.rowid LIMIT 1`, request => this.inspectProviderHold(request));
-            await this.scanRows<RequestRow>('session_communication_requests', `SELECT rowid AS reconciliation_rowid,* FROM session_communication_requests
-                WHERE ${AWAITING_INSPECTION} AND due_at_ms<=? AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
-                request => this.inspectOverdueRequest(request), this.now());
+            if (this.now() >= this.nextRequestInspectionAt)
+                await this.scanRows<RequestRow>('session_communication_requests', `SELECT rowid AS reconciliation_rowid,* FROM session_communication_requests
+                    WHERE ${AWAITING_INSPECTION} AND request_id NOT IN (SELECT value FROM json_each(?))
+                      AND due_at_ms<=? AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
+                    request => {
+                        this.healthyRechecks.delete(request.request_id);
+                        this.inspectOverdueRequest(request);
+                    }, this.deferredRequestIds(this.now()), this.now());
             if (this.stopped) break;
             await auditUndeliveredReturns(this.now(), () => this.stopped);
             await this.scanExternalRequests();
@@ -3163,15 +3245,20 @@ export class SessionCommunicationCoordinator {
         this.disarm = null;
         if (this.stopped)
             return;
-        const next = db.query(`SELECT min(due_at_ms) AS due FROM session_communication_requests WHERE ${AWAITING_INSPECTION} AND source_input_id IS NOT NULL AND target_input_id IS NOT NULL`).get() as {
-            due: number | null;
-        };
+        const now = this.now();
+        const excluded = this.deferredRequestIds(now);
+        const storedDue = db.query(`SELECT min(due_at_ms) AS due FROM session_communication_requests INDEXED BY session_communication_due
+            WHERE ${AWAITING_INSPECTION} AND source_input_id IS NOT NULL AND target_input_id IS NOT NULL
+              AND request_id NOT IN (SELECT value FROM json_each(?))`).get(excluded) as {due:number|null};
+        let requestDue = storedDue.due ?? Infinity;
+        for (const recheck of this.healthyRechecks.values()) requestDue = Math.min(requestDue, recheck.nextCheck);
+        this.nextRequestInspectionAt = requestDue;
         const chatGptNext=db.query(`SELECT min(due_at_ms) AS due FROM session_chatgpt_obligations INDEXED BY chatgpt_obligations_due
             WHERE state NOT IN ('resolved','withdrawn_by_tejas') AND due_at_ms IS NOT NULL`).get() as {due:number|null};
-        if (next.due === null && chatGptNext.due===null && !this.pendingAcceptedRecovery)
+        if (requestDue === Infinity && chatGptNext.due===null && !this.pendingAcceptedRecovery)
             return;
         const delay = Math.min(this.pendingAcceptedRecovery?60_000:Infinity,24 * 60 * 60_000,
-            Math.max(0,(next.due??Infinity)-this.now()),Math.max(0,(chatGptNext.due??Infinity)-this.now()));
+            Math.max(0,requestDue-now),Math.max(0,(chatGptNext.due??Infinity)-now));
         if (this.dependencies.arm)
             this.disarm = this.dependencies.arm(() => this.wake(), delay);
         else {
@@ -3189,5 +3276,5 @@ export class SessionCommunicationCoordinator {
         await this.reconciliation;
         await Promise.all([...this.tasks.values()]);
     } while (this.tasks.size || this.reconciliation || this.reconciliationDirty); }
-    async stop() { this.stopped = true; this.reconciliationDirty = false; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; const peerStop=this.dependencies.peers?.stop(); await this.reconciliation; await Promise.allSettled([...this.tasks.values()]); await peerStop; }
+    async stop() { this.stopped = true; this.reconciliationDirty = false; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; const peerStop=this.dependencies.peers?.stop(); await this.reconciliation; await Promise.allSettled([...this.tasks.values()]); await peerStop; this.healthyRechecks.clear(); this.nextRequestInspectionAt = 0; }
 }

@@ -1,4 +1,4 @@
-import {sessionAuthor,withCurrentAuthors} from './session-message-author';
+import {acceptedInputAuthor,sessionAuthor,withCurrentAuthors} from './session-message-author';
 import {questionDisplay} from './topic-display-rules';
 import {topicReplyTargets,type ReplyTargets} from './reply-target-rules';
 import {answerLine,fragmentReason} from './answer-line';
@@ -341,6 +341,7 @@ function entryKind(row:any):EntryKind {
 function entryIndex():EntryIndex {
   refreshRootMemo();
   const index=entryIndexState??={watermark:0,messages:new Map(),byRoot:new Map(),finals:new Map(),posts:new Map()};
+  entryIndexState=index;
   extendEntryIndex(index,-1);
   return index;
 }
@@ -357,6 +358,7 @@ export async function warmEntryIndex(options:{stopped?:()=>boolean;batch?:number
     if(options.stopped?.())return {rows,steps,ms:Math.round(performance.now()-started),complete:false};
     refreshRootMemo();
     const index=entryIndexState??={watermark:0,messages:new Map(),byRoot:new Map(),finals:new Map(),posts:new Map()};
+    entryIndexState=index;
     const read=extendEntryIndex(index,batch,performance.now()+ENTRY_INDEX_WARM_STEP_MS);
     rows+=read.rows;steps+=1;
     if(read.exhausted)return {rows,steps,ms:Math.round(performance.now()-started),complete:true};
@@ -788,6 +790,50 @@ function unrelayedFinal(roots:string[],entries:EntryIndex) {
   return found;
 }
 
+/** A provider prompt needs only this topic's returns. It must not wait for the unrelated
+ * Inbox entry index to rebuild after a restart. Topic dispatches and root-addressed
+ * upkeep requests are both durable request identities; a retained return is eligible
+ * only once it appears in Inbox history. */
+function promptUnrelayedFinal(sessionId:number,topicId:string,roots:string[]) {
+  if(!roots.length)return null;
+  const rootSet=new Set(roots);
+  const finals=new Map<string,EntryRecord&{inputId:string}>();
+  const requestIds=new Set(topicRequests(topicId).flatMap(request=>request.dispatches.map(dispatch=>String(dispatch.requestId??''))).filter(Boolean));
+  const placeholders=roots.map(()=>'?').join(',');
+  for(const table of ['session_communication_requests','session_peer_requests']) {
+    const addressed=db.query(`SELECT request_id FROM ${table} WHERE source_session_id IN (${inboxLineageSql})
+      AND thread_root_input_id IN (${placeholders})`).all(sessionId,...roots) as {request_id:string}[];
+    for(const row of addressed)requestIds.add(row.request_id);
+  }
+  for(const requestId of requestIds)for(const table of ['session_communication_events','session_peer_events']) {
+    const events=db.query(`SELECT event_id FROM ${table} WHERE request_id=? AND kind='final'`).all(requestId) as {event_id:string}[];
+    for(const event of events) {
+      const inputId=`return:${event.event_id}`;
+      const row=inboxRowByMessageId(null,inputId) as {session_id:number;kind:string;origin:string;sequence:number;created_at:string}|null;
+      if(row?.kind!=='accepted'||row.origin!=='service')continue;
+      const root=rootOf(row.session_id,inputId);
+      if(!root||!rootSet.has(root))continue;
+      const record={sequence:row.sequence,at:iso(row.created_at)!,sessionId:row.session_id,inputId};
+      if((finals.get(root)?.sequence??-1)<record.sequence)finals.set(root,record);
+    }
+  }
+  let found:(EntryRecord&{inputId:string})|null=null;
+  for(const [root,final] of finals) {
+    if(final.at<RELAY_RULE_SINCE)continue;
+    // Current posts name their root directly. Historical posts can carry an explicit
+    // threadRoot while naming a different input; both forms count as a relay.
+    const direct=db.query(`${inboxRows} AND event.input_id=? AND event.kind='post'
+      AND event.sequence>? LIMIT 1`).get(root,final.sequence);
+    if(direct)continue;
+    const explicit=db.query(`${inboxRows} AND event.kind='post'
+      AND json_extract(event.payload_json,'$.threadRoot')=? AND event.sequence>? LIMIT 1`)
+      .get(root,final.sequence);
+    if(explicit)continue;
+    if(!found||final.sequence>found.sequence)found=final;
+  }
+  return found;
+}
+
 /**
  * Attention the Inbox holds outside its question records: a turn's end-of-turn marker that no
  * declared question covered. It is not filed anywhere — filing by the thread that happened to
@@ -926,12 +972,16 @@ export function inboxMessageWords(session:SessionRow,messageId:string) {
   // A request shows in its thread as "Sent to <agent>"; its words are the input it delivered.
   const sent=entry&&messageId.startsWith('request:')?getAcceptedSessionInput(messageId):null;
   const sentText=sent?(JSON.parse(sent.payload_json).firstInput??JSON.parse(sent.payload_json)).text:null;
-  if(entry)return {messageId,from:entry.author?.kind??(entry.role==='user'?'human':'agent'),
+  if(entry){
+    const source=getAcceptedSessionInput(messageId);
+    const author=source?acceptedInputAuthor(source).author:entry.author??{kind:entry.role==='user'?'unknown':'agent'};
+    return {messageId,from:author.kind,author,
     session:typeof entry.sourceSessionId==='number'?`concierge:${entry.sourceSessionId}`:null,
     at:entry.createdAt??null,words:typeof sentText==='string'?sentText:typeof entry.content==='string'?entry.content:'',
     ...(sent?{sentTo:`concierge:${sent.session_id}`}:{}),
     attachments:(entry.attachments??[]).map((file:any)=>({id:file.id,name:file.name,contentType:file.contentType})),
     threadRoot:root,topicId};
+  }
   // A request input sits in its target session; it is Inbox material only when a topic request names it.
   const named=db.query(`SELECT topic_id FROM inbox_requests WHERE EXISTS (SELECT 1 FROM json_each(sources_json) WHERE json_extract(value,'$.inputId')=?1)
       OR EXISTS (SELECT 1 FROM json_each(dispatches_json) WHERE 'request:' || json_extract(value,'$.requestId')=?1 OR json_extract(value,'$.sourceInputId')=?1)
@@ -939,7 +989,8 @@ export function inboxMessageWords(session:SessionRow,messageId:string) {
   const input=named?getAcceptedSessionInput(messageId):null;
   if(!input)throw new TopicError('No Inbox message or topic-named request has that exact id.',404,'MESSAGE_NOT_FOUND');
   const payload=JSON.parse(input.payload_json),first=payload.firstInput??payload;
-  return {messageId,from:input.origin,session:`concierge:${input.session_id}`,at:input.created_at,
+  const author=acceptedInputAuthor(input).author;
+  return {messageId,from:author.kind,author,session:`concierge:${input.session_id}`,at:input.created_at,
     words:typeof first.text==='string'?first.text:'',
     attachments:((first.attachments??[]) as string[]).map(id=>db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean),
     threadRoot:root,topicId:topicId??named!.topic_id};
@@ -1506,8 +1557,11 @@ function verifiedFinalEvidence(dispatchId:string,row:CompletionRow|null,evidence
   if(!retained)return false;
   try {
     const payload=JSON.parse(retained.payload_json);
+    // The event row binds the final to this dispatch. A recipient may answer it from a
+    // later accepted input, such as a return, while preserving that input's own source.
     return payload.final===true
-      &&payload.source?.input_id===`request:${dispatchId}`
+      &&typeof payload.source?.input_id==='string'&&!!payload.source.input_id
+      &&typeof payload.source?.run_id==='string'&&!!payload.source.run_id
       &&payload.text===result.text
       &&payload.responding_session_id===result.responding_session_id
       &&payload.workDisposition===result.workDisposition;
@@ -3747,14 +3801,14 @@ export function reopenThreadForHisMessage(sessionId:number,inputId:string,replyT
 type ThreadUpkeepResult={threads:number;closed:number;settled:number;flagged:number};
 let threadUpkeepPass:Promise<ThreadUpkeepResult>|null=null;
 const yieldThreadUpkeep=()=>new Promise<void>(resolve=>setImmediate(resolve));
-export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown):Promise<ThreadUpkeepResult> {
+export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string;threadReplyNotRequired:true})=>unknown):Promise<ThreadUpkeepResult> {
   if(threadUpkeepPass)return threadUpkeepPass;
   const pass=keepThreadsCurrentPass(admit);
   threadUpkeepPass=pass;
   void pass.then(()=>{if(threadUpkeepPass===pass)threadUpkeepPass=null;},()=>{if(threadUpkeepPass===pass)threadUpkeepPass=null;});
   return pass;
 }
-async function keepThreadsCurrentPass(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown):Promise<ThreadUpkeepResult> {
+async function keepThreadsCurrentPass(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string;threadReplyNotRequired:true})=>unknown):Promise<ThreadUpkeepResult> {
   const session=inboxSession();
   if(!session)return {threads:0,closed:0,settled:0,flagged:0};
   refreshRootMemo();
@@ -3801,7 +3855,7 @@ async function keepThreadsCurrentPass(admit?:(input:{sessionId:number;inputId:st
       const inputId=`thread-upkeep:${createHash('sha256').update(`${item.key}:${item.attempt}`).digest('hex')}`;
       // An input already retained under this id was admitted by an earlier pass; only its flags are missing.
       if(!db.query('SELECT 1 FROM session_inputs WHERE id=?').get(inputId))
-        admit({sessionId:session.id,inputId,origin:'service',sourceInputId:!item.sourceUncertain&&item.sourceInputId?item.sourceInputId:inputId,
+        admit({sessionId:session.id,inputId,origin:'service',threadReplyNotRequired:true,sourceInputId:!item.sourceUncertain&&item.sourceInputId?item.sourceInputId:inputId,
           sourceRunId:!item.sourceUncertain&&item.sourceRunId?item.sourceRunId:inputId,requestId:item.requestId,
           text:`The request "${item.title}" (${item.requestId}) in "${item.topicTitle}" (${item.topicId}) is still open. Its latest attempt (${item.work}) ${item.how}. ${item.sourceUncertain?'The exact source of this request is not linked; establish original authorship and task scope from the retained thread before dispatching. ':''}${item.stoppedByTejas?'Tejas stopped that run. Do not restart it or its effects on your own; reconcile any effects already in flight and keep the human task open. If his intent for the remaining task is genuinely ambiguous, ask one focused only-he-can question.':item.sharedAnswerPostId!==null?`The same answer was linked to several requests. Do not dispatch again merely to obtain a separate receipt. Read the answer ${item.sharedAnswerPostId||'on the shared dispatch'} and this request's scope; if it is fully checked, close this request citing that answer post as evidence, otherwise send only the missing work.`:'Inspect the exact prior attempt and its effects, then send the remaining work to its owning agent (sessions ask … --thread, then topics request link).'} Never replay an ambiguous or acknowledged effect. Close only after the work is completed and checked, or keep an only-he-can question open for Tejas. A failure, hand-back, cancellation or provider error cannot close his request. You do not need to reply to this.`});
       recordSessionEvent({eventId:`topic-recovery:${item.key}:${item.attempt}`,sessionId:session.id,kind:'topic_request',
@@ -3926,10 +3980,9 @@ export function topicPromptContext(sessionId:number,inputId:string,payload:any):
     if(answers.length)context.agentAnswers=answers.map(row=>({post:row.event_id,at:iso(row.created_at),from:row.from_session,request:row.request_id,
       kind:row.reply_kind??'answer',...(row.disposition?{disposition:row.disposition}:{}),text:String(row.text??'').slice(0,160)}));
   }
-  const entries=entryIndex();
   const drift=titleDrift(topicId);
   if(drift)context.titleDrift={...drift,instruction:titleDriftInstruction(drift)};
-  const unrelayed=unrelayedFinal(topicRoots(topicId),entries);
+  const unrelayed=promptUnrelayedFinal(sessionId,topicId,roots);
   if(unrelayed)context.unrelayedResult={inputId:unrelayed.inputId,at:unrelayed.at,instruction:'A worker\'s final answer came back into this thread and you have not posted here since; relay it with sessions post --thread, or the thread keeps showing it as not relayed.'};
   return `\n\n<topic>\n${JSON.stringify(context)}\n</topic>`;
 }

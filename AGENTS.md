@@ -35,10 +35,15 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   see the [deployment runbook](docs/runbooks/DEPLOYMENT.md#runtime-dependencies-and-service-shutdown).
 - Owner startup timing and deferred history catch-up follow the
   [deployment startup contract](docs/runbooks/DEPLOYMENT.md#owner-startup-and-history-catch-up).
+- Runner sign-ins reserve against the deployment drain before launching their provider CLI;
+  see the [deployment runbook](docs/runbooks/DEPLOYMENT.md)
+  and [interruption record](docs/incidents/2026-11-06-signin-started-inside-deployment-drain.md).
 - Candidate schema comparison and its bounded read-only SQLite lock recovery
   follow the [deployment runbook](docs/runbooks/DEPLOYMENT.md#candidate-schema-comparison).
   Its offline migration phase timings and backup boundary are in the same
   [deployment runbook](docs/runbooks/DEPLOYMENT.md#runtime-dependencies-and-service-shutdown).
+- Owner-loop pause evidence comes from the separate watchdog thread; interpret its
+  bounded Linux wait samples through [storage observation](docs/architecture/STORAGE-OBSERVATION.md#owner-loop-pause-evidence).
 - A repair-owned deployment run ends its old transient runner without reclaiming the repair;
   see [automatic failure behavior](docs/runbooks/DEPLOYMENT.md#automatic-failure-behavior).
 - Every commit carries an `Update-note:` sentence in product language and a
@@ -50,6 +55,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - Protected agent code launches hide the live ledger and its disk image while allowing Thinkering's
   phone-width release check to mount its read-only data view. The
   [deployment runbook](docs/runbooks/DEPLOYMENT.md) owns the isolation contract.
+- The current machine copy guard recognizes the agent-ecology committee's direct help forms while
+  retaining live-ledger copy refusals; see the [deployment runbook](docs/runbooks/DEPLOYMENT.md)
+  and [failure record](docs/incidents/2026-11-06-committee-help-copy-guard.md).
 - Background command watches have Concierge ownership and deadlines; completed Codex turns
   flag surviving server processes outside their owned execution unit by exact run identity
   through an Inbox agent report.
@@ -62,7 +70,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - Legacy Claude runner placement follows acknowledged provider input, and the recovered machine
   is saved before continuation; see [runner custody](docs/architecture/RUNNERS.md#turns-on-a-runner-built-for-claude-code-turns).
 - Outside Codex repair sessions use a one-input command line and take follow-ups
-  in the next turn; see [router actions](docs/runbooks/ROUTER-ACTIONS.md#outside-requests).
+  in the next turn; a runner-hosted outside turn is adopted through that runner's
+  retained journal; see [router actions](docs/runbooks/ROUTER-ACTIONS.md#outside-requests)
+  and [execution host](docs/architecture/EXECUTION-HOST.md#codex-runs-design-step-5).
 - Keep credentials and private dialogue out of unrelated prompts, logs and public
   artifacts. Preserve the authenticated data and capability boundaries in
   [session ownership](docs/architecture/SESSION-OWNER.md) and
@@ -72,10 +82,16 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md#claude-code-started-by-an-agent).
 - Shared Codex turn recovery and its exact identity boundary follow
   [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#codex-provider-turn-reconciliation).
+- Runner account admission failures keep unsent turns retryable; the runtime error
+  that briefly masked this behavior is recorded in the
+  [dispatch failure record](docs/incidents/2026-11-06-provider-dispatch-error-unbound.md).
 - Agent session command paths use each machine's installed wrapper, never a release's
   helper directory; see [runners](docs/architecture/RUNNERS.md#agent-session-commands).
+- Runner-owned Codex account switches prove the new login through the bridge inside the sealed
+  release; see [runner App Server](docs/architecture/RUNNERS.md#codex-app-server-on-a-runner-built-off-until-concierge_codex_runner-is-set).
 - Agent-started top-model choices and helper defaults follow [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#delegation-and-escalation);
   model and helper call shares are in [usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
+- External Codex resets on a saved account clear that account's older refusal on a fresh direct reading before automatic account switching; see [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md#what-the-allowance-evidence-means).
 
 ## Session and Inbox obligations
 
@@ -92,6 +108,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - Held final returns retry delivery to their asker while completed Inbox answer
   upkeep is retained once per exact event; the yielding open-thread sweep is
   described in [native Inbox](docs/contracts/native-inbox.md#owner-upkeep-under-held-returns).
+- Thread upkeep admitted as no-reply service work can settle quietly after reconciliation;
+  the [native Inbox thread contract](docs/contracts/native-inbox.md) keeps agent answers
+  and ordinary service returns subject to their thread reply obligation.
 - ChatGPT questions carry an exact task and remain open through failed attempts,
   return receipt, and explicit answer handling. See [ChatGPT answer obligations](docs/architecture/CHATGPT-ANSWER-OBLIGATIONS.md).
 - Preserve exact accepted input, run, action, source-message and target identity.
@@ -106,6 +125,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   the agent explains the failed route. Returned `needs_you` questions can be withdrawn
   by exact event identity when they become stale. See [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md)
   and the [session owner contract](docs/contracts/session-owner-v1.md).
+- Provider sign-in repair requests to the Mac may come from a batch of owner repair
+  notices; the private Mac admission rule and replay case are in the
+  [batched renewal failure record](docs/incidents/2026-11-06-batched-signin-repair-refused-by-mac.md).
 - The canonical owner, not agent memory, enforces Inbox placement, attention and
   delivery. Unfiled human inputs prevent the Inbox router from ending its turn.
   Direct human thread replies join the same topic request ledger on admission;
@@ -136,16 +158,17 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 | Work | Current authority |
 | --- | --- |
 | Sessions, queues, steering, Stop, peer handoff and recovery | [Session owner](docs/architecture/SESSION-OWNER.md), [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md), [wire contract](docs/contracts/session-owner-v1.md) |
+| Outside agent asks and exact unstarted withdrawal | [Session owner wire contract](docs/contracts/session-owner-v1.md), [router actions](docs/runbooks/ROUTER-ACTIONS.md#outside-agents) |
 | Inbox topics, routing, areas, thread replies, attention and prepared-worker catch-up | [Native Inbox](docs/contracts/native-inbox.md), [areas](docs/architecture/AREAS-OF-INTEREST.md), [prompt answers](docs/architecture/PROMPT-THREAD-ANSWERS.md), [prepared topics](docs/architecture/PREPARED-TOPICS.md) |
 | Provider binding, accounts, usage, fresh Claude commands from agent shells, history and external workers | [Provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md), [provider sessions](docs/architecture/PROVIDER-SESSIONS.md), [usage](docs/architecture/PROVIDER-USAGE.md), [history index](docs/architecture/PROVIDER-HISTORY-INDEX.md), [execution host](docs/architecture/EXECUTION-HOST.md) |
 | Provider sign-in renewal through the Mac's saved browser account | [Sign-in approval](docs/runbooks/CLAUDE-SIGNIN-APPROVAL.md), [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md) |
-| Exact thnkr.ing Mac web-app Computer Use and human authorization | [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md), [peer instances](docs/runbooks/PEER-INSTANCES.md) |
+| Exact thnkr.ing Mac web-app inspection, native AX update recovery, human authorization and direct Codex update proof | [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md), [peer instances](docs/runbooks/PEER-INSTANCES.md) |
 | Shared Codex App Server lifecycle, post-turn process audit and session observation | [Execution host](docs/architecture/EXECUTION-HOST.md), [Codex App Server](docs/runbooks/CODEX-APP-SERVER.md), [external Codex turns](docs/architecture/SESSION-OWNER.md#externally-submitted-codex-turns) |
 | Owner on its own app server, agents' network entrance and tokens, runner lease protocol | [Runners](docs/architecture/RUNNERS.md), [execution host](docs/architecture/EXECUTION-HOST.md) |
 | Runner reads of report source chains and bounded report windows | [Runners](docs/architecture/RUNNERS.md) |
-| Runner-resolved project folders and bounded project file, TODO, worktree, Google and outside-run operations | [Runners](docs/architecture/RUNNERS.md#runner-machine-calls) |
+| Runner-resolved project folders, standing-agent schedule targets and bounded project file, TODO, worktree, Google and outside-run operations | [Runners](docs/architecture/RUNNERS.md#runner-machine-calls), [router actions](docs/runbooks/ROUTER-ACTIONS.md#standing-agents) |
 | Provider accounts, sign-in custody and account homes on runners | [Runners](docs/architecture/RUNNERS.md#provider-accounts-on-runners), [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md) |
-| Bounded reads, SQLite ledger durability and diagnostic snapshots | [Storage observation](docs/architecture/STORAGE-OBSERVATION.md), [ledger durability](docs/architecture/LEDGER-DURABILITY.md), [native read execution](docs/architecture/NATIVE-READ-EXECUTION.md), [diagnostic snapshot](docs/runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md) |
+| Bounded reads, owner-block I/O evidence, SQLite ledger durability and diagnostic snapshots | [Storage observation](docs/architecture/STORAGE-OBSERVATION.md), [ledger durability](docs/architecture/LEDGER-DURABILITY.md), [native read execution](docs/architecture/NATIVE-READ-EXECUTION.md), [diagnostic snapshot](docs/runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md) |
 | Releases, autonomous repair, host alerts and Mac installation | [Deployment](docs/runbooks/DEPLOYMENT.md), [repair architecture](docs/architecture/DEPLOYMENT-REPAIR.md), [repair agent](docs/runbooks/REPAIR-AGENT.md), [Grafana alerts](docs/runbooks/GRAFANA-ALERTS.md), [peer instances](docs/runbooks/PEER-INSTANCES.md) |
 | Project, session, Inbox and saved-work commands | [Router actions](docs/runbooks/ROUTER-ACTIONS.md), [saved work](docs/plans/2026-09-23-saved-work-scheduled-and-banked.md) |
 | Canvas project binding and current board title beside stable project folders | [Router actions](docs/runbooks/ROUTER-ACTIONS.md), [wire contract](docs/contracts/session-owner-v1.md#peer-instances) |

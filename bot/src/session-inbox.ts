@@ -16,6 +16,7 @@ import {answeredByPostResultSql,postedResultMarkerId} from './inbox-posted-resul
 import {unrequestedProgressPostSql} from './inbox-progress-post';
 import type {InboxProducerKind} from './inbox-producer-sources';
 import {answerClosingLine} from './answer-closing-line';
+import {inboxAttribution} from './inbox-attribution-read';
 
 export type InboxCapture = {
   source:{kind:InboxProducerKind;id:string;recordedAt:string;title?:string;metadata?:Record<string,unknown>};
@@ -141,9 +142,10 @@ export function inboxMessage(row:any) {
     const original=source?JSON.parse(source.payload_json):{};
     const originalPayload=original.firstInput??original;
     const attachments=(originalPayload.attachments??[]).map((id:string)=>db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
-    return {id:row.event_id,sourceSessionId:row.session_id,role:source?.origin==='agent'?'assistant':'user',content:originalPayload.text??'',tool:null,phase:null,
+    const author=source?inboxAttribution(db)({sourceSessionId:source.session_id,id:source.id,role:'user',content:originalPayload.text??''}).author:{kind:'unknown'};
+    return {id:row.event_id,sourceSessionId:row.session_id,role:author.kind==='agent'?'assistant':'user',content:originalPayload.text??'',tool:null,phase:null,
       inputId:row.event_id,submissionId:route.sourceMessageId,attachments,
-      ...(source?.origin==='agent'?{author:{kind:'agent',outsideAgent:{name:'agent test',label:'Agent test'}}}:{}),
+      author,
       routedFrom:{sessionId:source?`concierge:${source.session_id}`:undefined,topicId:route.sourceTopicId,root:route.sourceRoot,messageId:route.sourceMessageId,
         title:routeTitle(db,route.sourceTopicId,null)},
       createdAt:source?.created_at?(source.created_at.includes('T')?source.created_at:source.created_at.replace(' ','T')+'Z')
@@ -357,7 +359,13 @@ export function threadOwedByTurn(session:SessionRow,openingInputId:string|null):
   if(!openingInputId||!sessionMetadata(session).inbox)return null;
   const opening=getAcceptedSessionInput(openingInputId);
   if(!opening||opening.origin==='human')return null;
-  if(opening.origin==='service'&&JSON.parse(opening.payload_json).alreadyPostedInThread===true)return null;
+  if(opening.origin==='service'){
+    const payload=JSON.parse(opening.payload_json);
+    // Older upkeep inputs were admitted before the explicit mark existed. Their
+    // service identity and owner-generated prefix still prove the no-reply contract.
+    if(payload.alreadyPostedInThread===true||payload.threadReplyNotRequired===true
+      ||opening.id.startsWith('thread-upkeep:'))return null;
+  }
   return inboxThreadRoot(session.id,openingInputId);
 }
 export function turnPostedInto(sessionId:number,turnId:number,root:string):boolean {

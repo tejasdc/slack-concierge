@@ -100,13 +100,34 @@ try {
       mkdirSync(control, { recursive: true });
       const build = await Bun.build({entrypoints:[join(import.meta.dir,'release-manager.ts')],target:'bun',outdir:control});
       assert(build.success, build.logs.map(String).join('\n'));
-      const compiled = Bun.spawnSync(['/usr/bin/bwrap','--die-with-parent','--bind','/','/','--dev','/dev',
-        '--bind',root,join(homedir(),'.local/state/concierge'),'--unshare-user','--uid','0','--gid','0','--cap-drop','ALL',
-        '--',process.execPath,join(control,'release-manager.js'),'lkg'],
-        {env,stdout:'pipe',stderr:'pipe',timeout:3_000});
-      assert.equal(compiled.exitCode,1,compiled.stderr.toString());
-      assert(compiled.stdout.length,compiled.stderr.toString());
-      assert.equal(JSON.parse(compiled.stdout.toString()).status,'missing');
+      // The canonical mount selects the live release path, whose read belongs to the
+      // serving owner. Give that path a scratch owner socket; the held writer still proves
+      // the packaged controller does not open SQLite or run schema setup itself.
+      const ownerRead = join(root, 'owner-read.txt');
+      const fixtureOwner = Bun.spawn([process.execPath, '-e', `
+        import {appendFileSync} from 'node:fs';
+        const server=Bun.serve({unix:process.env.CONCIERGE_STATE_DIR+'/request-owner.sock',fetch:request=>{
+          const path=new URL(request.url).pathname;
+          if(request.method!=='GET'||path!=='/internal/deployment-last-known-good')
+            return Response.json({error:'unexpected fixture request'},{status:404});
+          appendFileSync(process.env.OWNER_READ_PATH,request.method+' '+path+'\\n');
+          return Response.json(null);
+        }});
+        process.stdout.write('ready\\n');
+      `], {env:{...env,OWNER_READ_PATH:ownerRead},stdout:'pipe',stderr:'pipe'});
+      try {
+        const ready = await fixtureOwner.stdout.getReader().read();
+        assert.equal(new TextDecoder().decode(ready.value),'ready\n',
+          ready.done ? await new Response(fixtureOwner.stderr).text() : 'Fixture owner did not start');
+        const compiled = Bun.spawnSync(['/usr/bin/bwrap','--die-with-parent','--bind','/','/','--dev','/dev',
+          '--bind',root,join(homedir(),'.local/state/concierge'),'--unshare-user','--uid','0','--gid','0','--cap-drop','ALL',
+          '--',process.execPath,join(control,'release-manager.js'),'lkg'],
+          {env,stdout:'pipe',stderr:'pipe',timeout:3_000});
+        assert.equal(compiled.exitCode,1,compiled.stderr.toString());
+        assert(compiled.stdout.length,compiled.stderr.toString());
+        assert.equal(JSON.parse(compiled.stdout.toString()).status,'missing');
+        assert.equal(readFileSync(ownerRead,'utf8'),'GET /internal/deployment-last-known-good\n');
+      } finally { fixtureOwner.kill(); await fixtureOwner.exited; }
       // A writing helper also has to open an existing database without CREATE. An unknown
       // command opens the connection but makes no mutation while our writer is held.
       const writing = Bun.spawnSync(['/usr/bin/bwrap','--die-with-parent','--bind','/','/','--dev','/dev',
@@ -123,7 +144,8 @@ try {
         '--bind',root,join(homedir(),'.local/state/concierge'),'--unshare-user','--uid','0','--gid','0','--cap-drop','ALL',
         '--',process.execPath,repair],{env,stdout:'pipe',stderr:'pipe',timeout:3_000});
       assert.equal(repairPolicy.exitCode,0,repairPolicy.stderr.toString());
-      assert.deepEqual(JSON.parse(repairPolicy.stdout.toString()),{live:true,schema:false,readonly:false});
+      assert.deepEqual(JSON.parse(repairPolicy.stdout.toString()),{live:true,schema:false,readonly:false,
+        ownerServedReleaseCommand:false,ownerServedDeploymentCommand:false,forbidControllerLedgerOpen:false});
     }
   } finally { owner.exec('ROLLBACK'); owner.close(); }
   if (process.platform === 'linux') {

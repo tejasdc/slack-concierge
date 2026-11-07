@@ -21,12 +21,16 @@ export function maybeStartInboxProviderFailover(session:SessionRow|null=inboxSes
       status:string;dispatch_failure_class:string|null;accepted_input_id:string|null;
       provider_admission_intended_at:string|null;provider_started_at:string|null;
       provider_turn_id:string|null;provider_input_acknowledged_at:string|null}|null;
+  const usageHeld=db.query(`SELECT accepted_input_id FROM turns
+    WHERE session_id=? AND status='queued' AND dispatch_hold='usage' ORDER BY id LIMIT 1`)
+    .get(session.id) as {accepted_input_id:string|null}|null;
   const failedBeforeAdmission=!!last&&
     last.status==='queued'&&['auth_wait','backoff','usage_wait'].includes(last.dispatch_failure_class??'')
     &&last.provider_admission_intended_at===null&&last.provider_started_at===null
     &&last.provider_turn_id===null&&last.provider_input_acknowledged_at===null;
   const exhausted=!!current&&current.used>=100&&!current.paidCredits;
-  if((!exhausted&&!failedBeforeAdmission)||!alternative||!capacityCanStart(alternative))return;
+  const confirmedUsageWall=!!usageHeld&&(!current||!capacityCanStart(current));
+  if((!exhausted&&!failedBeforeAdmission&&!confirmedUsageWall)||!alternative||!capacityCanStart(alternative))return;
   if(db.query("SELECT 1 FROM session_handoffs WHERE predecessor_session_id=? AND state IN ('proposed','accepted') LIMIT 1").get(session.id))return;
   const source=db.query(`SELECT input.id,turn.id AS turn_id,turn.native_run_id
     FROM session_inputs input JOIN turns turn ON turn.id=input.turn_id
@@ -35,7 +39,7 @@ export function maybeStartInboxProviderFailover(session:SessionRow|null=inboxSes
   if(!source)return;
   preparing.add(session.id);
   void proposeHandoff({actorSession:session.id,inputId:source.id,runId:source.native_run_id??nativeRunId(source.turn_id),
-    predecessorId:session.id,provider:targetProvider==='codex'?'codex':'cc-opus-1m',reason:exhausted
+    predecessorId:session.id,provider:targetProvider==='codex'?'codex':'cc-opus-1m',reason:exhausted||confirmedUsageWall
       ?`${sourceProvider} has exhausted its usable allowance; continue the Inbox through its exact handoff inventory.`
       :`${sourceProvider} could not start the Inbox input ${last?.accepted_input_id??'unknown'} before provider admission. Inspect and recover that exact accepted input without replaying any acknowledged effect.`,
     sessionName:'Inbox',actionId:`automatic-inbox-failover:${session.id}`})

@@ -22,13 +22,18 @@ try {
   writeFileSync(join(project,'AGENTS.md'),'Project guide\n');
   writeFileSync(join(project,'docs','guide.md'),'Readable guide\n');
   writeFileSync(join(project,'notes','TODOS.md'),'# Tasks\n');
+  const agents=join(workspace,'agents');
+  const standingProject=join(agents,'concierge-repair');
+  mkdirSync(standingProject,{recursive:true});
+  execFileSync('git',['init','--quiet',standingProject]);
+  writeFileSync(join(standingProject,'AGENTS.md'),'Repair agent guide\n');
   const outside=mkdtempSync(join(tmpdir(),'runner-projects-outside-'));
   writeFileSync(join(outside,'secret.md'),'secret\n');
   symlinkSync(outside,join(project,'escape'));
   process.env.CONCIERGE_WORKSPACE_ROOT=workspace;
 
   const listed=await serveProjectCall('projects.list',{}) as any;
-  assert.deepEqual(listed.projects.map((entry:any)=>entry.name),['example-project']);
+  assert.deepEqual(listed.projects.map((entry:any)=>entry.name),['concierge-repair','example-project']);
   assert.equal(listed.workspaceRoot,workspace);
   assert.deepEqual(await serveProjectCall('projects.exists',{project:'example-project'}),{exists:true});
   assert.deepEqual(await serveProjectCall('projects.exists',{project:'missing-project'}),{exists:false});
@@ -43,6 +48,9 @@ try {
   assert.equal((await serveProjectCall('projects.resolve',{project:'example-project',path:'docs'} ) as any).cwd,join(project,'docs'));
   assert.deepEqual(await serveProjectCall('projects.locate',{location:join(workspace,'legacy-copy','example-project','docs')}),
     {project:'example-project',path:'docs',cwd:join(project,'docs')});
+  assert.deepEqual(await serveProjectCall('projects.locate',{location:'agents/concierge-repair'}),
+    {project:'concierge-repair',path:'',cwd:standingProject});
+  await assert.rejects(()=>serveProjectCall('projects.locate',{location:'agents/missing-repair'}),/not registered/);
   assert.equal((await serveProjectCall('projects.instructions',{project:'example-project'}) as any).content,'Project guide\n');
   assert.equal((await serveProjectCall('projects.file',{project:'example-project',path:'docs/guide.md'}) as any).file.content,'Readable guide\n');
   assert.equal((await serveProjectCall('projects.fileAt',{path:join(project,'docs','guide.md')}) as any).file.content,'Readable guide\n');

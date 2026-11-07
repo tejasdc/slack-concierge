@@ -39,9 +39,10 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
     const source=JSON.parse(original.payload_json),sourcePayload=source.firstInput??source;
     const ids=Array.isArray(sourcePayload.attachments)?sourcePayload.attachments.filter((id:unknown):id is string=>typeof id==='string'):[];
     const attachments=ids.map(id=>database.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
-    const full={id:row.event_id,sourceSessionId:sessionId,role:original.origin==='agent'?'assistant':'user',content:String(sourcePayload.text??''),tool:null,phase:null,
+    const author=inboxAttribution(database)({sourceSessionId:original.session_id,id:event.sourceMessageId,role:'user',content:String(sourcePayload.text??'')}).author;
+    const full={id:row.event_id,sourceSessionId:sessionId,role:author.kind==='agent'?'assistant':'user',content:String(sourcePayload.text??''),tool:null,phase:null,
       inputId:row.event_id,submissionId:event.sourceMessageId,attachments,
-      ...(original.origin==='agent'?{author:{kind:'agent',outsideAgent:{name:'agent test',label:'Agent test'}}}:{}),
+      author,
       routedFrom:{sessionId:`concierge:${original.session_id}`,topicId:event.sourceTopicId,root:event.sourceRoot,messageId:event.sourceMessageId,
         title:routeTitle(database,event.sourceTopicId,null)},
       createdAt:stamp(original.created_at),timestampSource:'submitted'};

@@ -3,6 +3,7 @@ import {strict as assert} from 'node:assert';
 import {Database} from 'bun:sqlite';
 import {initializeRunnerSchema,RunnerLeases,LEASE_MS} from '../src/runner-leases';
 import {acknowledgedProviderRunner} from '../src/provider-machine-binding';
+import {lastLaunchedConversationHome} from '../src/session-runner-home';
 
 const db=new Database(':memory:');
 initializeRunnerSchema(db);initializeRunnerSchema(db);
@@ -118,3 +119,23 @@ assert.throws(()=>acknowledgedProviderRunner(db,session),/exact runner lease is 
 db.query('DELETE FROM turns WHERE provider_input_acknowledged_at IS NOT NULL').run();
 assert.deepEqual(acknowledgedProviderRunner(db,session),{status:'missing'});
 console.log('provider machine binding: acknowledged custody survives trailing unsent attempts');
+
+// An unstarted execution intent cannot replace the last host of a bound conversation.
+const launchedDb=new Database(':memory:');
+initializeRunnerSchema(launchedDb);
+launchedDb.exec('CREATE TABLE executions (execution_id TEXT PRIMARY KEY, session_id INTEGER, provider TEXT, supervisor TEXT, unit TEXT, created_at_ms INTEGER)');
+const homeLeases=new RunnerLeases(launchedDb,()=>now);
+homeLeases.enqueue({jobId:'turn:launched',kind:'turn',payload:{}});
+homeLeases.claim('ax41',['turn']);
+launchedDb.query('INSERT INTO executions VALUES (?,?,?,?,?,?)').run('launched',42,'claude-code','runner','concierge-exec-launched',1);
+launchedDb.query('INSERT INTO executions VALUES (?,?,?,?,?,?)').run('unclaimed',42,'claude-code','runner',null,2);
+assert.deepEqual(lastLaunchedConversationHome(launchedDb,42,'claude-code'),{supervisor:'runner',runner:'ax41'});
+launchedDb.query('INSERT INTO executions VALUES (?,?,?,?,?,?)').run('local',42,'claude-code','systemd','concierge-exec-local',3);
+launchedDb.query('INSERT INTO executions VALUES (?,?,?,?,?,?)').run('unstarted-runner',42,'claude-code','runner',null,4);
+assert.deepEqual(lastLaunchedConversationHome(launchedDb,42,'claude-code'),{supervisor:'systemd',runner:null},
+  'An unstarted runner intent cannot move a conversation that last ran locally.');
+launchedDb.query('INSERT INTO executions VALUES (?,?,?,?,?,?)').run('unproven-runner',42,'claude-code','runner','concierge-exec-unproven',5);
+assert.deepEqual(lastLaunchedConversationHome(launchedDb,42,'claude-code'),{supervisor:'runner',runner:null},
+  'A launched runner execution with a missing lease must remain unknown, not fall back to an older host.');
+
+console.log('runner leases: claim, contiguous events, commands, epoch fencing, computed expiry, idempotent finish, bounded restart extension and launched conversation home hold');

@@ -9,6 +9,7 @@ import {SessionCapabilityClient} from '../src/session-capability-client';
 import {ActiveTurnDispatchRegistry} from '../src/turn-dispatch-seams';
 import {currentProcessIdentity} from '../src/runtime-identity';
 import {acquireDatabaseTestLock} from './db-lock';
+import {fixtureThesaurusContext} from './fixture-thesaurus';
 import type {AgentProvider} from '../src/providers';
 
 let unlock:()=>void,host:SessionExecutionHost,provider:AgentProvider;
@@ -26,14 +27,14 @@ beforeEach(async()=>{
     history:async()=>({messages:[{id:'message-before',role:'assistant',content:'native history',tool:null,phase:null,turnId:'cutoff'}],nextCursor:null}),
     fork:async input=>{forks.push(input);return {text:'native child',sessionUUID:'distinct-child',toolsUsed:[]};},
     run:async input=>{runs.push(input);input.onProviderThreadStarted?.(input.sessionUUID??'native-thread');input.onProviderTurnStarted?.('native-turn');input.onInputAcknowledged?.();input.onProviderTerminal?.();return {text:'',sessionUUID:input.sessionUUID??'native-thread',providerTurnId:'native-turn',toolsUsed:[]};}};
-  host=new SessionExecutionHost({instanceId:'owner',registry:registry(),providers:{codex:provider},defaultCwd:'/tmp',wake:()=>{}});
+  host=new SessionExecutionHost({instanceId:'owner',registry:registry(),providers:{codex:provider},defaultCwd:'/tmp',wake:()=>{},thesaurusContext:fixtureThesaurusContext});
 });
 afterEach(()=>{clear();unlock();});
 async function request(owner:SessionOwner,path:string,body?:unknown){const response=await owner.handle(new Request(`http://owner/sessions/v1/${path}`,body===undefined?{}:{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}));expect(response).not.toBeNull();return {status:response!.status,body:await response!.json()};}
 function bound(){const session=createNativeSession('codex',{title:'Original',cwd:'/tmp',project:'original-project'});bindSessionProvider(session.id,'codex','original-thread');return getSessionById(session.id)!;}
 async function execute(){const claim=claimNextQueuedTurn('owner')!;expect(claim).not.toBeNull();await host.run(claim);return claim;}
 function uncertainChat(client:SessionCapabilityClient){
-  host=new SessionExecutionHost({instanceId:'owner',registry:registry(),providers:{},capabilityClient:client,defaultCwd:'/tmp',wake:()=>{}});
+  host=new SessionExecutionHost({instanceId:'owner',registry:registry(),providers:{},capabilityClient:client,defaultCwd:'/tmp',wake:()=>{},thesaurusContext:fixtureThesaurusContext});
   const created=host.owner.create({clientActionId:randomUUID(),provider:'chatgpt',purpose:'chat',firstInput:{text:'only once'}});
   registerProcessInstance('dead',4321,'previous-boot','5678');
   const claim=claimNextQueuedTurn('dead')!,operation=getAcceptedSessionInput(claim.accepted_input_id!)!;
@@ -56,6 +57,7 @@ test('real HTTP wrappers preserve first acceptance, duplicate receipt identity a
   expect((await request(host.owner,'sessions',{...body,clientActionId:randomUUID(),firstInput:{text:'bad',evidence:[evidence]}})).status).toBe(400);
   expect(getSessionById(Number(id.slice(10)))?.agent_session_uuid).toBeNull();
   const claim=await execute();
+  expect(runs[0]!.prompt).toContain('Fixture thesaurus context.');
   expect((await request(host.owner,`operations/${first.body.operation.operationId}`)).body).toMatchObject({state:'completed',text:'human text',result:''});
   expect((await request(host.owner,`runs/${first.body.operation.runId}`)).body.run).toMatchObject({id:first.body.operation.runId,state:'completed',turnId:'native-turn'});
   expect(db.query('SELECT slack_user_msg_ts,slack_reply_thread_ts FROM turns WHERE id=?').get(claim.turn_id)).toEqual({slack_user_msg_ts:null,slack_reply_thread_ts:null});
@@ -286,7 +288,7 @@ test('ChatGPT admission pins the shared executor final prompt including interrup
     actual.onProviderThreadStarted?.('original-browser');actual.onProviderTurnStarted?.('browser-turn');actual.onInputAcknowledged?.();actual.onProviderTerminal?.();
     return {text:'pinned answer',sessionUUID:'original-browser',providerTurnId:'browser-turn',toolsUsed:[]};
   }});
-  host=new SessionExecutionHost({instanceId:'owner',registry:registry(),providers:{},capabilityClient:client,defaultCwd:'/tmp',wake:()=>{}});
+  host=new SessionExecutionHost({instanceId:'owner',registry:registry(),providers:{},capabilityClient:client,defaultCwd:'/tmp',wake:()=>{},thesaurusContext:fixtureThesaurusContext});
   const accepted=host.owner.submit(`concierge:${session.id}`,{clientActionId:randomUUID(),text:'current request'});await execute();
   expect(effects).toBe(1);expect(host.owner.receipt(getAcceptedSessionInput(accepted.operation.operationId)!)).toMatchObject({state:'completed',result:'pinned answer'});
 });
@@ -358,7 +360,7 @@ test.each(['failed','canceled'] as const)('reconcile settles explicit native %s 
 
 test('Claude fork uses the exact native message boundary rather than a turn alias',async()=>{
   provider.id='claude-code';provider.capabilities!.forkBoundary='message';
-  host=new SessionExecutionHost({instanceId:'owner',registry:registry(),providers:{'claude-code':provider},defaultCwd:'/tmp',wake:()=>{}});
+  host=new SessionExecutionHost({instanceId:'owner',registry:registry(),providers:{'claude-code':provider},defaultCwd:'/tmp',wake:()=>{},thesaurusContext:fixtureThesaurusContext});
   const session=createNativeSession('claude-code',{cwd:'/tmp',summary:'Claude fork boundary fixture'});bindSessionProvider(session.id,'claude-code','original-claude');
   const rejected=host.owner.fork(`concierge:${session.id}`,{clientActionId:randomUUID(),boundary:'cutoff'});await execute();
   expect(host.owner.receipt(getAcceptedSessionInput(rejected.operation.operationId)!).state).toBe('failed');expect(forks).toHaveLength(0);

@@ -11,6 +11,7 @@ router-actions.sh external work-flow-supervisor capture -- "A message for the In
 router-actions.sh external work-flow-supervisor capture --id incident-42 --file /path/to/evidence.txt -- "Please route this"
 router-actions.sh external work-flow-supervisor ask '<exact-discovered-session-address>' --action-id incident-42 --requested-effect work -- "Check this incident"
 router-actions.sh external work-flow-supervisor get '<request-id>'
+router-actions.sh external work-flow-supervisor withdraw '<request-id>' --ask-action-id incident-42 --action-id withdraw-incident-42
 ```
 
 Names match `^[a-z][a-z0-9-]{2,40}$`. `ask` also accepts `--text-file` in place of
@@ -22,6 +23,12 @@ Capture enters the normal Inbox intake and starts its router turn. Direct asks u
 and reply command. The outside caller polls `get`; no return input is delivered to
 an imaginary session. The owner socket is root only. The old `test-capture` command
 remains a path check by an agent already inside Concierge and starts no Inbox turn.
+`withdraw` works only for that outside agent's exact unstarted request, using its
+original ask action ID and a stable withdrawal action ID. It returns a retained
+`canceled` receipt; a started or uncertain request is refused. The human obligation
+remains open for reassignment. Repeat the same withdrawal command to read the same
+receipt after a lost response; never submit a second ask to another provider before
+the cancellation is confirmed.
 
 The same root-only owner socket answers `GET /supervisor/ping` with process identity,
 start time and installed release, which the outside work-flow supervisor uses to tell a
@@ -175,7 +182,9 @@ the Inbox's sessions.
 `sessions topics message <messageId>` returns one Inbox message's words, author, time,
 attachments, thread root and topic: a capture, his reply, an agent's post, result or routed request,
 or a request input that a topic request names as its source or dispatch. Topic reads carry ids and
-short excerpts; this is the read for judging the message itself.
+short excerpts; this is the read for judging the message itself. Its `from` and full `author`
+resolve the current author, including a later correction to an originally human-origin input;
+an unproved user-role message reports unknown rather than Tejas.
 `sessions context` and the session view expose only a session's explicit role binding.
 
 `sessions schedule --role <role> --at <future ISO-8601 time> [--every-ms <interval>] --summary "<one line>" <source-flags> --action-id A -- <text>`
@@ -185,6 +194,10 @@ schedule is refused with its exact turn ID; change its time in Thinkering Saved 
 with `sessions saved cancel <turn-id>` before replacing it. `sessions schedule --project` remains available for
 registered projects. The read caps repeating schedules at 32, watches per role at 20, and host
 timers at 128; its coverage field says when a cap was reached.
+On a runner, the role's declared workspace-relative folder (such as `agents/concierge-repair`)
+must resolve to that runner's registered project at that exact folder before a wake is saved.
+The returned project identity belongs to the existing bound session; a nested agent folder does
+not cause a new session or a fallback to a similarly named root project.
 
 To stop any repeating schedule, run `sessions cancel <request-id>` on the request that created it, or
 `sessions saved cancel <turn-id>` on its queued firing. Either one withdraws every queued firing and

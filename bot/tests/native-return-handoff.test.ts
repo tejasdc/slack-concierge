@@ -7,6 +7,7 @@ import {SessionTurnQueueCoordinator} from '../src/session-turn-queue';
 import {ActiveTurnDispatchRegistry} from '../src/turn-dispatch-seams';
 import {installSessionProjection} from '../src/session-projection';
 import {acquireDatabaseTestLock} from './db-lock';
+import {fixtureThesaurusContext} from './fixture-thesaurus';
 import type {AgentProvider} from '../src/providers';
 
 let unlock:()=>void;
@@ -25,7 +26,7 @@ for(const origin of ['human','service'] as const)test(`${origin} FIFO successors
     try{return {text:`answer-${id}`,sessionUUID:'same-provider-session',toolsUsed:[]};}
     finally{active.delete(id);input.onProviderTerminal?.();}
   }};
-  const host=new SessionExecutionHost({instanceId:'native-owner',registry,providers:{codex:provider},defaultCwd:'/tmp',wake:()=>queue.wake()});
+  const host=new SessionExecutionHost({instanceId:'native-owner',registry,providers:{codex:provider},defaultCwd:'/tmp',wake:()=>queue.wake(),thesaurusContext:fixtureThesaurusContext});
   queue=new SessionTurnQueueCoordinator({claim:()=>claimNextQueuedTurn('native-owner',Date.now(),registry.activeSessions),shouldStop:()=>false,
     run:async claim=>{try{return await host.run(claim);}finally{if(++completed===2)finish();}},
     onError:(claim,error)=>{errors.push(error);host.settleSetupFailure(claim,error);}});
@@ -74,7 +75,7 @@ test('registry cleanup keeps same-session FIFO and Slack admission queued while 
 
 for(const admission of [false,true])test(`native setup failure settles only its owned attempt; admission intended=${admission}`,()=>{
   const registry=new ActiveTurnDispatchRegistry({onStarted:()=>{},onSettled:()=>{}});
-  const host=new SessionExecutionHost({instanceId:'owner',registry,providers:{},defaultCwd:'/tmp',wake:()=>{}});
+  const host=new SessionExecutionHost({instanceId:'owner',registry,providers:{},defaultCwd:'/tmp',wake:()=>{},thesaurusContext:fixtureThesaurusContext});
   const session=createNativeSession('codex',{});
   const accepted=enqueueSessionInput(retainSessionInput({sessionId:session.id,scope:'failure',actionId:randomUUID(),kind:'input',origin:'service',payload:{text:'Retained final return'}}).input.id);
   const claim=claimNextQueuedTurn('owner')!;

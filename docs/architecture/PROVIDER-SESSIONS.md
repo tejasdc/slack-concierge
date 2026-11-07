@@ -670,6 +670,8 @@ the message, sound-alikes included ("Kodiak" for CoDIAK), and how to look up or 
 Matching and wording belong to Thinkering (`docs/architecture/thesaurus.md` there); Concierge
 only carries the text. A lookup that fails or outlasts its bound (1.5 s here, 6 s from the Mac)
 never holds the turn; it starts with a line saying the thesaurus could not be read.
+Native-turn focused tests supply fixed thesaurus context to the execution host, so their
+stub providers never read the live Thinkering capability entrance while prompts are built.
 
 ### Resuming with a selected provider
 

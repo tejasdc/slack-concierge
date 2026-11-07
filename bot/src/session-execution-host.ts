@@ -98,7 +98,7 @@ import {INBOX_INSTRUCTIONS,markResultAnsweredByPost,minutesText,pebbleArrivalWai
 import {readClaudeCachedMessage,readCodexHistoryMessage,readClaudeHistory,readCodexHistory} from './provider-history';
 import {ProviderHistoryPageClient} from './provider-history-page-client';
 import {ATTENTION_INSTRUCTION,releaseFocusForPost,settleExitedProcessReport,topicPromptContext} from './session-topics';
-import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,clearPendingSignIn,pendingRunnerSignIn} from './state';
+import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,reservePendingRunnerSignIn,clearPendingSignIn,pendingRunnerSignIn} from './state';
 import {log,errorFields} from './log';
 import {attachedRecordingWords,transcriptionPrompt} from './transcription';
 import {ProviderLoginManager} from './auth-login';
@@ -125,7 +125,7 @@ import {noticeTime,publishProviderFreeNotice} from './provider-free-notice';
 import {accountHome,setRunnerAccountInUse} from './provider-accounts';
 import {providerRunnerTarget} from './provider-runner-target';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
-import {claudeAccountCachedReset,clearCodexAccountUsage,releaseCodexOrdinaryUsageHeldWork,releaseUsageHeldWork,releaseProvenUsageHolds,usageAttempt,cachedUsageLimit} from './provider-usage';
+import {claudeAccountCachedReset,clearCodexAccountUsage,releaseCodexUnboundUsageHeldWork,releaseUsageHeldWork,releaseProvenUsageHolds,usageAttempt,cachedUsageLimit} from './provider-usage';
 import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
 import {readFileSync,realpathSync,writeFileSync} from 'node:fs';
 import {providerOwnerEnvironment} from './provider-owner-environment';
@@ -218,7 +218,7 @@ export class SessionExecutionHost {
   // How the last sign-in that finished on its own ended, for the screen that waited on it.
   private readonly lastSignIn=new Map<ProviderKey,{ok:boolean;detail:string|null}>();
   private readonly runnerSignIns=new Map<ProviderKey,RunnerSignInState>();
-  constructor(readonly options:{instanceId:string;registry:ActiveTurnDispatchRegistry;providers:Partial<Record<ProviderId,AgentProvider>>;defaultCwd:string;wake():void;history?:SessionOwnerRuntime['history'];sources?:SessionOwnerRuntime['sources'];capabilitySocket?:string;capabilityClient?:SessionCapabilityClient;findForks?(pin:NativeForkPin):Promise<string[]>;providerSessionBound?(providerThreadUuid:string):Promise<void>;claudeAuthRefreshCommand?:string}) {
+  constructor(readonly options:{instanceId:string;registry:ActiveTurnDispatchRegistry;providers:Partial<Record<ProviderId,AgentProvider>>;defaultCwd:string;wake():void;history?:SessionOwnerRuntime['history'];sources?:SessionOwnerRuntime['sources'];capabilitySocket?:string;capabilityClient?:SessionCapabilityClient;thesaurusContext?:(text:string)=>Promise<string>;findForks?(pin:NativeForkPin):Promise<string[]>;providerSessionBound?(providerThreadUuid:string):Promise<void>;claudeAuthRefreshCommand?:string}) {
     for(const provider of ['codex','claude-code'] as const)if(providerRunnerTarget(provider))setRunnerAccountInUse(provider,null);
     for(const provider of ['codex','claude-code'] as const){
       const pending=pendingRunnerSignIn(provider);
@@ -337,8 +337,9 @@ export class SessionExecutionHost {
     if(this.restoreRunnerSignIn(provider))return {status:'failed',detail:'A sign-in is already waiting on the runner. Refresh the Accounts page to continue it.'};
     const operationId=`signin:${randomUUID()}`;
     const operation:RunnerSignInState={runner,operationId,profileId:profileId??null,status:'starting'};
+    if(!reservePendingRunnerSignIn(provider,this.options.instanceId,Date.now()+10*60_000,{runner,operationId,profileId}))
+      return {status:'failed',detail:'This machine is installing an update. No sign-in started; try again after the update finishes.'};
     this.runnerSignIns.set(provider,operation);
-    recordPendingSignIn(provider,this.options.instanceId,Date.now()+10*60_000,{runner,operationId,profileId});
     try{
       const answer=await runnerMachineCall<any>(runner,'accounts.signin.start',{operationId,provider});
       if(!answer||typeof answer.status!=='string')throw new Error('The runner returned no sign-in outcome.');
@@ -543,7 +544,7 @@ export class SessionExecutionHost {
       try {
         const cleared=clearCodexAccountUsage(outcome.accountId,outcome.verifiedReadStartedAtMs);
         if(cleared){
-          if(currentAccount('codex')?.id===outcome.accountId){releaseCodexOrdinaryUsageHeldWork(outcome.accountId);this.options.wake();}
+          if(currentAccount('codex')?.id===outcome.accountId){releaseCodexUnboundUsageHeldWork(outcome.accountId);this.options.wake();}
         } else outcome={...outcome,status:'redeemed',detail:'The reset was redeemed, but a newer refusal prevents confirming launch availability. Work remains held.'};
       } catch(error) {
         log('error','codex_reset_cache_clear_failed',errorFields(error));
@@ -582,7 +583,7 @@ export class SessionExecutionHost {
       const waiting=db.query(`SELECT COALESCE(turns.provider_model,
           (SELECT earlier.provider_model FROM turns earlier WHERE earlier.session_id=turns.session_id
             AND earlier.id<turns.id AND earlier.provider_model IS NOT NULL ORDER BY earlier.id DESC LIMIT 1)) AS model,
-          sessions.metadata_json
+          sessions.native_metadata_json AS metadata_json
         FROM turns JOIN sessions ON sessions.id=turns.session_id
         WHERE turns.status='queued' AND turns.dispatch_hold='usage'
           AND turns.dispatch_failure_class IN ('backoff','usage_wait')
@@ -1092,7 +1093,9 @@ export class SessionExecutionHost {
         // of showing it queued until their next periodic check.
         const deliveryChanged=(state:'sent'|'ambiguous'|'failed')=>recordSessionEvent({eventId:steeringAttemptEventId(`delivery:${input.id}:${state}`,input.id,steeringId),
           sessionId:input.session_id,inputId:input.id,turnId:target.turnId,kind:'delivery',payload:{state}});
-        const accepted=target.controller.enqueue({clientMessageId:input.id,text:this.prompt(attached),
+        // prepareText always supplies the actual provider words. Preparing them here would
+        // synchronously finish the Inbox history index before the message even enters its queue.
+        const accepted=target.controller.enqueue({clientMessageId:input.id,text:'',
           prepareText:async root=>{
             const attachments=this.owner.attachments(body.attachments);
             let text=this.prompt(attached);
@@ -1477,7 +1480,7 @@ export class SessionExecutionHost {
       if(nativeContext&&!adoption) {
         const runId=nativeRunId(claim.turn_id);
         // His meanings for his own terms in these words, so no agent guesses at one (thesaurus-context.ts).
-        const thesaurus=await thesaurusTurnContext(prompt);
+        const thesaurus=await (this.options.thesaurusContext??thesaurusTurnContext)(prompt);
         canvasApplicationContext=canvasSpeechApplicationContext(input,runId,session.id);
         if(canvasApplicationContext)canvasApplicationContext=`${canvasApplicationContext}\n\n${thesaurus}`;
         else {
@@ -1716,7 +1719,8 @@ export class SessionExecutionHost {
   private adoptedOutsideRun(prepared:Parameters<AgentProvider['run']>[0],adoption:Adoption):Parameters<AgentProvider['run']>[0] {
     const stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!);
     return {...prepared,...adoption.processor.run,adopted:true,
-      transport:this.hostedTransport(adoption.mode,adoption.execution.execution_id,stateDir,'/bin/sh',{inactivityMs:null})} as any;
+      transport:this.hostedTransport(adoption.mode,adoption.execution.execution_id,stateDir,'/bin/sh',{inactivityMs:null},
+        adoption.execution.supervisor===RUNNER_SUPERVISOR?[]:undefined)} as any;
   }
   /** Follow the daemon's turn by its exact thread and turn; never start one (design §4.2). */
   private adoptedCodexRun(prepared:Parameters<AgentProvider['run']>[0],adoption:Adoption,session:SessionRow):Parameters<AgentProvider['run']>[0] {

@@ -195,6 +195,16 @@ notice promised the work would move to that account, and his 7:28 PM message mov
 session instead while he was signing in. Record:
 `docs/incidents/2026-11-02-mac-signin-wait-read-as-usage.md`.
 
+The Inbox router keeps one canonical role across providers. When its current provider has no
+launchable allowance and another provider has a launchable account with room, a confirmed
+usage-held Inbox turn can propose the existing session handoff even if a later input is queued
+or the refused attempt recorded admission intent. The successor accepts an exact inventory;
+only then does the role move and safe queued inputs retain their original source and request
+identity. An ambiguous or acknowledged input blocks acceptance. A fresh reading showing room
+on the current provider instead releases its held work there; a provider reset does not switch
+an already running conversation in place. The generic Claude recovery excludes Inbox because
+it cannot own this canonical role transfer.
+
 The first held input of an episode records one internal `provider_hold_observed` event with an
 `auth` payload: account, machine and number of held inputs. It does not itself push a
 notification. The sign-in renewal path asks Tejas only when the Mac browser agent cannot
@@ -546,6 +556,15 @@ For Claude, the account is decided **fresh at every dispatch**:
 For Codex, every turn uses the shared App Server. A banked turn can select only its currently
 signed-in account; other Codex accounts still have usage readings and can be selected through
 Accounts, which moves the login after running turns finish. There is no per-turn Codex home.
+Ordinary turns and scheduled firings without a saved account binding use that current login at
+their next dispatch. A fresh reading with room, a completed account switch, or a confirmed reset
+therefore releases their queued usage holds; the queue still enforces each scheduled firing's
+original fire time. Banked turns remain bound to the account and allowance window they saved.
+On 2026-11-06 the hourly overnight checkpoint's 14:00 firing waited for a spent account's
+November 12 reset even after the shared App Server moved to a personal account with room:
+the release path excluded every saved turn, including an unbound schedule. The Accounts
+tool-free retry had a separate stale session-column name and could not recover that hold either.
+See [the failure record](../incidents/2026-11-06-unbound-schedule-stayed-usage-held.md).
 
 Running out mid-turn needs no new machinery: the turn fails with the provider's usage refusal
 carrying its reset instant and returns to its own queue. The next Claude attempt re-runs its
@@ -983,10 +1002,12 @@ and accepted agent-shell Astra command starts from the owner's escalation log
 by model. This measures model calls, not price or task quality, and the transcript
 scanner's `computedAt` bounds freshness.
 Today starts at midnight in the owner's saved-work time zone; week means the last
-seven days. A separate worker reads provider transcripts incrementally and keeps its
-cursor and deduplicated usage records in `usage-breakdown.db` beside, never inside,
-the ledger. The ledger is read only for session titles, projects, and account choices.
-The worker does not copy or modify transcripts and does not hold the owner event loop.
+seven days. Each runner reads its provider transcripts incrementally and keeps its
+cursor and deduplicated usage records in its own usage cache, never in the owner ledger.
+The owner sends only the relevant one-week session, turn, account and prompt-cache facts to
+the runner for attribution. The runner computes the account/session report and cache diagnostics
+beside its cache; the owner combines runner reports. Raw provider records do not cross the relay
+on each refresh. Neither scanner modifies transcripts or holds the owner event loop.
 It runs in the background: every usage reading starts a scan when the last one is over five
 minutes old, and a read answers from the latest result with its `computedAt` (only the first
 read ever waits for a scan). Until 2026-10-08 it was scanned per read; while the owner
