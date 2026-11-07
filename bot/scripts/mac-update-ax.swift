@@ -240,9 +240,11 @@ private func observe() throws {
         let role = try stringAttribute(element, kAXRoleAttribute)
         if role == "AXWebArea" { webAreas.append(element) }
         if role == "AXButton" || role == "AXLink" || role == "AXMenuItem" {
+            var names: [String] = []
             for name in [kAXTitleAttribute, kAXDescriptionAttribute, kAXHelpAttribute] {
-                if let label = try stringAttribute(element, name) { controls.append(label.lowercased()) }
+                if let label = try stringAttribute(element, name) { names.append(label.lowercased()) }
             }
+            controls.append(names.joined(separator: " "))
         }
         pending.append(contentsOf: try children(element, role: role))
     }
