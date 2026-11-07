@@ -326,7 +326,7 @@ export async function startRoutedRequestApi(stateDir: string, coordinator: Route
     fetch: async request=>{
       try {
         const response=await handle(request);
-        if(request.method!=='GET')await ledgerDurable();
+        if(request.method!=='GET')await ledgerDurable({kind:'owner_receipt',id:request.headers.get('x-concierge-admission-id')??undefined});
         return response;
       } catch(error) {return requestFailure(request,error);}
     },
