@@ -436,6 +436,11 @@ Server (`drainAndStop`) waits only for turns that end with the process (`turnsTh
 and exits; the Mac composition does not cancel hosted turns. Until the update gate is removed (design
 step 7) the deployment still waits for idle, so this matters for restarts outside deployments now and
 for every update after step 7.
+The runner's queued-turn lookup begins with the existing queued-job index and uses the job's
+encoded execution ID for a primary-key lookup. Its exact `turn:` identity check remains after
+the lookup. A drain with no queued runner turns therefore does not scan all retained execution
+records on the accepting owner's event loop. This bounds rows examined by queued jobs, not the
+elapsed time of a cold SQLite page read or a required ledger write.
 
 ## Compatibility and releases
 
