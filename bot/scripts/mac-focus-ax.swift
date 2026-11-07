@@ -40,6 +40,13 @@ private func string(_ element: AXUIElement, _ name: String) throws -> String? {
     if CFGetTypeID(value) == CFURLGetTypeID() { return (value as? URL)?.absoluteString }
     throw Refusal.reason("Unexpected AX value for \(name)")
 }
+private func enabled(_ element: AXUIElement) throws -> Bool {
+    guard let value = try attribute(element,kAXEnabledAttribute),
+          CFGetTypeID(value) == CFBooleanGetTypeID() else {
+        throw Refusal.reason("Target enabled state unavailable")
+    }
+    return CFBooleanGetValue(value as! CFBoolean)
+}
 private func children(_ element: AXUIElement, _ role: String?) throws -> [AXUIElement] {
     guard let value = try attribute(element, kAXChildrenAttribute) else {
         if let role, ["AXButton","AXStaticText","AXTextField","AXTextArea","AXImage","AXLink"].contains(role) { return [] }
@@ -147,7 +154,8 @@ private func run(_ action: Action) throws {
     let (app,window) = try appAndWindow()
     guard app.processIdentifier == target.pid, CFEqual(window,target.window),
           try string(target.webArea,kAXURLAttribute) == target.url,
-          try string(target.button,kAXRoleAttribute) == "AXButton" else {
+          try string(target.button,kAXRoleAttribute) == "AXButton",
+          try enabled(target.button) else {
         throw Refusal.reason("Target changed before press")
     }
     guard try matches(target.button,action == .start ? "Start Deep work (" : "End Deep work (") else {
