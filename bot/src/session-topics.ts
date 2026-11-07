@@ -341,6 +341,7 @@ function entryKind(row:any):EntryKind {
 function entryIndex():EntryIndex {
   refreshRootMemo();
   const index=entryIndexState??={watermark:0,messages:new Map(),byRoot:new Map(),finals:new Map(),posts:new Map()};
+  entryIndexState=index;
   extendEntryIndex(index,-1);
   return index;
 }
@@ -357,6 +358,7 @@ export async function warmEntryIndex(options:{stopped?:()=>boolean;batch?:number
     if(options.stopped?.())return {rows,steps,ms:Math.round(performance.now()-started),complete:false};
     refreshRootMemo();
     const index=entryIndexState??={watermark:0,messages:new Map(),byRoot:new Map(),finals:new Map(),posts:new Map()};
+    entryIndexState=index;
     const read=extendEntryIndex(index,batch,performance.now()+ENTRY_INDEX_WARM_STEP_MS);
     rows+=read.rows;steps+=1;
     if(read.exhausted)return {rows,steps,ms:Math.round(performance.now()-started),complete:true};
