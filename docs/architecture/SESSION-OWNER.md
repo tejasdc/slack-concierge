@@ -162,6 +162,9 @@ same transaction, even if admission uncertainty makes the reminder unsafe to rep
 closed request's final receipt is authoritative; the reminder is not sent to the successor.
 If the request reopens before acceptance, the inventory changes and the handoff must be
 acknowledged again.
+A queued turn continuation on the predecessor is likewise retired in that same transaction.
+The handoff itself supersedes continuation on the predecessor, and the successor continues
+the conversation with its own brief and open obligations.
 The predecessor is then superseded: owner writes from its run and new requests to it
 are refused with the successor's address. Its live run receives a notice and can finish,
 but cannot write through the owner; its own outcome and reads remain allowed. Suspension
