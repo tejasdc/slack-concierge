@@ -42,7 +42,12 @@ therefore leaves the turn unconfirmed instead of reporting completion.
 Antigravity currently supports sequential native turns and Stop. Its CLI has a
 streaming input protocol, but live steering is disabled until its pickup and
 recovery semantics are proven. Native human replies during a run queue as the
-next turn. Historical pages, forks, and information-only consultation are also
+next turn. Earlier releases advertised steering despite that limit: they attached
+accepted follow-ups to the running answer even when the CLI never wrote them to
+Google. After a restart, the owner recovers only failed, never-written attempts
+whose exact request remains open, preserving each accepted input's identity and
+order in the durable turn queue. Sent or ambiguous attempts and settled requests
+are not replayed. Historical pages, forks, and information-only consultation are also
 disabled because their provider contracts are not yet established. The CLI must
 be installed on the machine running the provider and must have that machine's
 own Google sign-in. Credentials are never copied into a Concierge session.

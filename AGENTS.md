@@ -82,6 +82,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md#claude-code-started-by-an-agent).
 - Shared Codex turn recovery and its exact identity boundary follow
   [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#codex-provider-turn-reconciliation).
+- Antigravity follow-ups wait as durable separate turns; recovery of proven never-written
+  legacy follow-ups follows [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#antigravity-sessions).
 - Runner account admission failures keep unsent turns retryable; the runtime error
   that briefly masked this behavior is recorded in the
   [dispatch failure record](docs/incidents/2026-11-06-provider-dispatch-error-unbound.md).
@@ -90,7 +92,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - Runner-owned Codex account switches prove the new login through the bridge inside the sealed
   release; see [runner App Server](docs/architecture/RUNNERS.md#codex-app-server-on-a-runner-built-off-until-concierge_codex_runner-is-set).
 - Agent-started top-model choices and helper defaults follow [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#delegation-and-escalation);
-  model and helper call shares are in [usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
+  measured model, project, session and helper tokens for Accounts follow [usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
 - External Codex resets on a saved account clear that account's older refusal on a fresh direct reading before automatic account switching; see [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md#what-the-allowance-evidence-means).
 
 ## Session and Inbox obligations
