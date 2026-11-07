@@ -8,7 +8,7 @@
  * completed read is recorded (bot/src/messages-read-log.ts).
  *
  *   router-actions.sh messages [--with <number, address or chat name>] [--q <words>] [--days <n>] [--limit <n>]
- *   router-actions.sh messages --chat-guid <exact group GUID> --from YYYY-MM-DD --before YYYY-MM-DD [--q <words>] [--limit <n>]
+ *   router-actions.sh messages --chat-guid <exact conversation GUID> --from YYYY-MM-DD --before YYYY-MM-DD [--q <words>] [--limit <n>]
  *
  * It runs only on the Mac, where the texts are; the server answers that it has none.
  */
@@ -18,7 +18,7 @@ import { join } from 'node:path';
 import { textWithholding } from '../src/text-code-withholding';
 import { recordMessagesRead } from '../src/messages-read-log';
 
-const usage = 'usage: router-actions.sh messages [--with <number, address or chat name>] [--q <words>] [--days <n, default 7, max 365>] [--limit <n, default 50, max 500>] | --chat-guid <exact group GUID> --from YYYY-MM-DD --before YYYY-MM-DD [--q <words>] [--limit <n, max 500>]. Historical windows are at most 45 days; before is exclusive.';
+const usage = 'usage: router-actions.sh messages [--with <number, address or chat name>] [--q <words>] [--days <n, default 7, max 365>] [--limit <n, default 50, max 500>] | --chat-guid <exact conversation GUID> --from YYYY-MM-DD --before YYYY-MM-DD [--q <words>] [--limit <n, max 500>]. Historical windows are at most 45 days; before is exclusive.';
 
 function option(args: string[], name: string): string | undefined {
   const at = args.indexOf(name);
@@ -60,10 +60,10 @@ const days = bounded(option(args, '--days'), 7, 365);
 const limit = bounded(option(args, '--limit'), 50, 500);
 const withWhom = option(args, '--with')?.toLowerCase().trim() || null;
 const query = option(args, '--q')?.toLowerCase().trim() || null;
-const groupGuid = option(args, '--chat-guid')?.trim() || null;
+const selectedChatGuid = option(args, '--chat-guid')?.trim() || null;
 const from = option(args, '--from');
 const before = option(args, '--before');
-const historical = groupGuid !== null || from !== undefined || before !== undefined;
+const historical = selectedChatGuid !== null || from !== undefined || before !== undefined;
 function dateStart(value: string | undefined): number | null {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
   const time = Date.parse(`${value}T00:00:00Z`);
@@ -71,7 +71,7 @@ function dateStart(value: string | undefined): number | null {
 }
 const fromTime = dateStart(from);
 const beforeTime = dateStart(before);
-if (historical && (!groupGuid || fromTime === null || beforeTime === null
+if (historical && (!selectedChatGuid || fromTime === null || beforeTime === null
     || beforeTime <= fromTime || beforeTime - fromTime > 45 * 86_400
     || withWhom || args.includes('--days'))) {
   console.error(JSON.stringify({ error: 'INVALID_HISTORICAL_MESSAGES_WINDOW', usage }));
@@ -83,13 +83,13 @@ const APPLE_EPOCH = 978_307_200;
 const since = (historical ? fromTime! : Date.now() / 1000 - days * 86_400) - APPLE_EPOCH;
 const until = (historical ? beforeTime! : Date.now() / 1000) - APPLE_EPOCH;
 const database = new Database(join(homedir(), 'Library', 'Messages', 'chat.db'), { readonly: true });
-const group = historical ? database.query(`
+const selectedChat = historical ? database.query(`
   SELECT c.ROWID AS id FROM chat c
-  WHERE c.guid = ? AND (SELECT COUNT(*) FROM chat_handle_join WHERE chat_id = c.ROWID) > 1
-`).get(groupGuid) as { id: number } | null : null;
-if (historical && !group) {
+  WHERE c.guid = ?
+`).get(selectedChatGuid) as { id: number } | null : null;
+if (historical && !selectedChat) {
   database.close();
-  console.error(JSON.stringify({ error: 'GROUP_CHAT_NOT_FOUND', message: 'Use the exact chatGuid from a recent approved Messages read of this group.' }));
+  console.error(JSON.stringify({ error: 'CHAT_NOT_FOUND', message: 'Use the exact chatGuid from an approved Messages read of this conversation.' }));
   process.exit(2);
 }
 const rows = database.query(`
@@ -105,7 +105,7 @@ const rows = database.query(`
      OR (m.date <= 1000000000000 AND m.date >= ? AND m.date < ?))
     AND m.associated_message_type = 0
     AND (? IS NULL OR c.ROWID = ?)
-  ORDER BY m.date DESC, m.ROWID DESC`).all(since * 1e9, until * 1e9, since, until, group?.id ?? null, group?.id ?? null) as {
+  ORDER BY m.date DESC, m.ROWID DESC`).all(since * 1e9, until * 1e9, since, until, selectedChat?.id ?? null, selectedChat?.id ?? null) as {
     id: number; messageGuid: string | null; mine: number; handle: string | null; chatRowId: number | null;
     chatGuid: string | null; chat: string | null; chatId: string | null; at: number; text: string | null; body: Uint8Array | null
   }[];
@@ -189,7 +189,7 @@ database.close();
 {
   // Record even a no-match historical read. The log contains the scope and counts, never text.
   try { recordMessagesRead({ event: withheldTotal || Object.keys(codesShown).length ? 'messages_withheld' : 'messages_read',
-    cwd: process.cwd(), with: withWhom, chatGuid: groupGuid, q: query,
+    cwd: process.cwd(), with: withWhom, chatGuid: selectedChatGuid, q: query,
     from: historical ? from : null, before: historical ? before : null, days: historical ? null : days,
     limit, shown: shown.length, withheld: counts, codesShown, codeRuleUnavailable: !!codeRuleUnavailable }); }
   catch (error) { console.error(JSON.stringify({ event: 'messages_read_log_failed', error: String(error) })); }

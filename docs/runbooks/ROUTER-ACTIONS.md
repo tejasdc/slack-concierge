@@ -118,12 +118,12 @@ because such a loop can match itself and hold a run open indefinitely.
 
 `router-actions.sh messages [--with <number, address or chat name>] [--q <words>] [--days <n>]
 [--limit <n>]` answers JSON with his texts, received and sent, newest first (default 7 days,
-50 shown messages; at most 365 and 500). For older group
-conversations, first use a recent named read to obtain the exact `chatGuid`, then use
+50 shown messages; at most 365 and 500). For older group or direct
+conversations, first use a named read to obtain the exact `chatGuid`, then use
 `router-actions.sh messages --chat-guid <guid> --from YYYY-MM-DD --before YYYY-MM-DD
 [--q <words>] [--limit <n>]`. The dates are UTC; `from` is inclusive, `before` exclusive,
-and one request spans at most 45 days. The exact GUID must identify a group with at least two
-other handles. Divide a longer history into dated requests; `window.truncated` and
+and one request spans at most 45 days. The exact GUID selects only that conversation.
+Divide a longer history into dated requests; `window.truncated` and
 `olderThanThisNotRead` identify a window that needs narrowing. Shown messages carry their
 Messages GUID as `id` and their `chatGuid`; `chats` gives shown conversations' exact identifier
 and participant addresses when Messages has them. Withheld messages have no ID or text in the
