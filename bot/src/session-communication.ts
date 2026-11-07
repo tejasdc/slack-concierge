@@ -1324,7 +1324,8 @@ export class SessionCommunicationCoordinator {
         if(!input.action_id||!Number.isSafeInteger(input.turn_id)||input.turn_id!<1)throw new Error('Name a stable action and exact saved turn.');
         action(input.action_id);
         return this.dependencies.owner.savedWorkControl(input.turn_id!,input.verb==='start'?'start':'drop',
-            {clientActionId:input.action_id,cancelingSessionId:actor.session});
+            {clientActionId:input.action_id,cancelingSessionId:actor.session,
+                cancelingInputId:actor.inputId,cancelingRunId:nativeRunId(actor.turn)});
     }
     async pause(input:{source:CommunicationSource;verb:'status'|'all'|'resume';action_id?:string;session_ids?:string[]}) {
         this.actor(input.source);
@@ -2710,8 +2711,24 @@ export class SessionCommunicationCoordinator {
             if(this.holdFailedChatGptRequest(request,'The original provider turn was canceled without an answer.'))return;
             // His own Stop is his choice, not news; any other cancellation is work someone must follow up.
             const stop = stoppedByTejas(ended.id);
-            this.settle(request, 'canceled', stop ? stoppedByTejasText(stop.atMs) : cancelledWithoutHisStopText(),
-                { ...output, ...(stop ? { stoppedBy: 'tejas', stoppedAtMs: stop.atMs, stopInputId: stop.inputId } : { stoppedBy: 'not-tejas' }) });
+            const cancellation=db.query(`SELECT input.receipt_json FROM turns turn
+                LEFT JOIN session_inputs input ON input.id=turn.accepted_input_id WHERE turn.id=?`).get(ended.id) as
+                {receipt_json:string|null}|null;
+            const retained=cancellation?.receipt_json?JSON.parse(cancellation.receipt_json):{};
+            const reason=typeof retained.reason==='string'?retained.reason:null;
+            const explanation=reason==='saved_work_drop'
+                ?`The exact scheduled turn ${ended.id} was canceled through Saved work by ${retained.cancelingSessionId?`agent session concierge:${retained.cancelingSessionId}`:'Tejas'}. It did not reach a provider; follow up on any open work.`
+                :reason==='request_withdrawn'
+                ?`The requesting session withdrew the exact queued turn ${ended.id} before provider admission. ${retained.cancellationDetail??''}`
+                :reason==='schedule_overlap'
+                ?`Scheduled turn ${ended.id} was skipped because its previous firing was still in progress.`
+                :cancelledWithoutHisStopText();
+            this.settle(request, 'canceled', stop ? stoppedByTejasText(stop.atMs) : explanation,
+                { ...output, ...(stop ? { stoppedBy: 'tejas', stoppedAtMs: stop.atMs, stopInputId: stop.inputId }
+                    : { stoppedBy: 'not-tejas',...(reason?{cancellationReason:reason}:{}),
+                        ...(retained.cancelingSessionId?{cancelingSessionId:retained.cancelingSessionId}:{}),
+                        ...(retained.cancelingInputId?{cancelingInputId:retained.cancelingInputId}:{}),
+                        ...(retained.cancelingRunId?{cancelingRunId:retained.cancelingRunId}:{}) }) });
             return;
         }
         // Plain words say why, so the requester can tell a refused account from an interrupted run
