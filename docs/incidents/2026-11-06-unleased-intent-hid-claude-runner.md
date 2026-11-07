@@ -28,12 +28,18 @@ and no later turn for this session does. The 23814 runner job was created at
 The owner then recorded the unsent turn as requeued at 06:43:11.242. Thus the
 repaired lookup selects the AX41 execution from turn 23697.
 
-The narrower launched-host repair from PR #652 was installed at 19:21 UTC, but
-turn 24802 failed with the same exact-runner-lease error at 19:27:39. It again
-had no execution, runner job, claim, provider start or input acknowledgment.
-The Grafana request still had no final reply. The installed repair therefore
-did not resolve this session; the particular launched record selected at
-19:27 remains under read-only investigation.
+The narrower launched-host repair from PR #652 was selected for installation at
+19:21 UTC. Turn 24802 failed with the same exact-runner-lease error at 19:27:39,
+with no execution, runner job, claim, provider start or input acknowledgment.
+The journal stack identifies the still-running old service process and its
+pre-repair release (`df0bfd8d`), which began draining at 19:27:42. The later
+installed-release manifest is not evidence that the old process had adopted the
+new code. The last launched execution available to the repaired lookup was
+turn 23697 on AX41; the newer turn 23814 execution had no unit or runner attempt.
+The Grafana request still had no final reply. This recurrence is evidence of a
+release-transition overlap, not a demonstrated failure of the launched-host
+query. A continuation that actually runs in the repaired process remains to be
+observed.
 
 ## Cause
 
