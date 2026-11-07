@@ -44,7 +44,7 @@ import {standingAgent,standingAgentSession,bindStandingAgentSession,STANDING_WOR
 import {parseMachineNeed} from './machine-need';
 import {signInWorkerActionId} from './signin-renewal';
 import {MAC_UPDATE_SOURCE_INPUT,MAC_UPDATE_SOURCE_RUN,macUpdateSourceProven} from './mac-update-source';
-import {AUTHORIZED_UPDATE_BOARD} from './mac-surface-policy';
+import {AUTHORIZED_UPDATE_SESSION_URL} from './mac-surface-policy';
 import { backfillRequestTopics, consultPointer, forTopic, handBackText, newTopicNote, sessionWorkload, topicOf, topicRootFor } from './session-fit';
 export type CommunicationSource = {
     channel_id?: string;
@@ -729,7 +729,7 @@ export class SessionCommunicationCoordinator {
                     &&typeof provenance.requestId==='string'
                     &&!!updateDelivery
                     &&typeof need.why==='string'
-                    &&(need.why.includes('0d90186f')||need.why.includes(AUTHORIZED_UPDATE_BOARD))
+                    &&need.why.includes(AUTHORIZED_UPDATE_SESSION_URL)
                     &&macUpdateSourceProven();
                 return {kind,why:typeof need.why==='string'?need.why:'',
                     humanInputId:provenance?.originatingHuman?.inputId,
