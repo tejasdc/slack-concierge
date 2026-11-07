@@ -180,8 +180,8 @@ function revokeQueuedTurn(inputId: string, turnId: number, sessionId: number, re
     const session = getSessionById(sessionId);
     if (session && ['codex', 'claude-code', 'antigravity'].includes(session.provider_id))
         resolveUsageHoldNoticesForSettledTurn(session.provider_id as UsageProvider, turnId, 'request_withdrawn');
-    db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled'),updated_at=CURRENT_TIMESTAMP WHERE id=?")
-        .run(inputId);
+    db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled','$.reason','request_withdrawn','$.cancellationDetail',?,'$.turnId',?),updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id=?")
+        .run(reason,turnId,inputId,turnId);
 }
 
 /**
