@@ -1,3 +1,5 @@
+import { parseShell } from './history-rewrite-policy';
+
 const CHROME_CONTROL=/claude[-_]in[-_]chrome/i;
 const COMPUTER_CONTROL=/cua[_-]?repl|computer[._-]?use|skycomputeruse/i;
 export const AUTHORIZED_WEB_APP='com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792';
@@ -123,6 +125,15 @@ export function macComputerUseCall(toolName:string,toolInput:unknown):boolean {
   return COMPUTER_CONTROL.test(toolName)||namedToolCall(COMPUTER_CONTROL,code);
 }
 
+function plainSessionReply(command:string):boolean {
+  const commands=parseShell(command);
+  if(commands.length!==1||commands[0]!.substitutions.length>0||commands[0]!.bodies.length>0)return false;
+  const words=commands[0]!.words.map(word=>word.text);
+  const router=process.env.CONCIERGE_ROUTER_ACTIONS;
+  return (words[0]==='$CONCIERGE_ROUTER_ACTIONS'||Boolean(router&&words[0]===router))
+    &&words[1]==='sessions'&&words[2]==='reply'&&words.length>=4;
+}
+
 /** Refuse common agent tool paths that would take over Tejas's Mac desktop. */
 export function macSurfaceRefusal(input:{command:string|null;toolName:string;toolInput:unknown;need:RecordedNeed;platform:string}):string|null {
   const {command,toolName,toolInput,need,platform}=input;
@@ -182,9 +193,18 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
   if(platform==='darwin'&&nestedCommands.length&&(literalCommands.length!==nestedCommands.length
       ||literalCommands.some(match=>match[1]==='`'&&match[2]?.includes('${'))))
     return 'Dynamic shell commands on Tejas’s Mac need a direct tool call so the foreground and browser guard can inspect the exact action.';
-  const source=code?literalCommands.map(match=>match[2]).join('\n'):raw;
+  const source=code?literalCommands.map(match=>{
+    if(match[1]==='"') {
+      try { return JSON.parse('"'+match[2]+'"') as string; } catch { return match[2]!; }
+    }
+    return match[2]!.replace(/\\(['"\\])/g,'$1');
+  }).join('\n'):raw;
   if(/^(?:rg|grep|sed|cat|ls|head|tail|find|ps|stat|git\s+diff)\b/i.test(source.trim())
       && !/[;&|`\n]|\$\(/.test(source))return null;
+  // A reply's quoted diagnostic is data for Concierge. Only the single parsed
+  // router command receives this exception; chained or substituted actions still
+  // go through the Mac browser and desktop checks below.
+  if(platform==='darwin'&&plainSessionReply(source))return null;
   const remote=/\bssh\b[^\n]{0,400}\btejasdc@(?:100\.90\.183\.122|[\w.-]+)\b/i.test(source);
   if(platform!=='darwin'&&!remote)return null;
   if(remote&&/\bagent-browser\s+(?!skills\b)(?:--[^\s]+\s+)*(?:open|click|fill|type|connect|tab|eval|snapshot|screenshot)\b|\bplaywright\s+(?:open|codegen|test)\b/i.test(source))
