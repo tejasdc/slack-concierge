@@ -52,6 +52,16 @@ assert.ok(nativeCall(UPDATE_FIRST_TAP_COMMAND,currentUpdateNeed));
 assert.ok(nativeCall(UPDATE_WORKSPACE_COMMAND,currentTapNeed));
 assert.ok(nativeCall(`${UPDATE_WORKSPACE_COMMAND}; /usr/bin/open -a Safari`,currentUpdateNeed));
 assert.ok(nativeCall(UPDATE_WORKSPACE_COMMAND.replace('open-workspace','update-now'),currentUpdateNeed));
+const helperPath='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-update-ax.swift"';
+for(const command of [
+  `shasum -a 256 ${helperPath}`,
+  `stat -f %Sp ${helperPath}`,
+  `swiftc -typecheck ${helperPath}`,
+]) {
+  assert.equal(check(command,'mac-file'),null);
+  assert.ok(check(`${command}; ${UPDATE_WORKSPACE_COMMAND}`,'mac-file'));
+}
+assert.ok(check(`swift ${helperPath} update-now`,'mac-file'));
 assert.equal(macSurfaceRefusal({command:null,need:currentUpdateNeed,platform:'darwin',toolName:'functions.exec',
   toolInput:{code:`const r=await tools.exec_command({cmd:'${UPDATE_WORKSPACE_COMMAND}'});text(r.output);`}}),null);
 const updateCall='var thnkrUpdateInspectionApp = await cua.getApp("com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792"); await thnkrUpdateInspectionApp.getAXStateAndScreenshot()';

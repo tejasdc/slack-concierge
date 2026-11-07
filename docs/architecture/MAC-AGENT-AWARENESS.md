@@ -153,6 +153,12 @@ as a click grant. A separate direct Mac work request from the attested server
 source names the exact WebApp bundle, the current board ID, and either Workspace
 menu or Update now. While that exact delivery remains open, the Mac hook admits
 only the matching fixed invocation of `bot/scripts/mac-update-ax.swift`. The
+same hook admits exact `shasum -a 256`, `stat -f %Sp`, and `swiftc -typecheck`
+commands against the pinned source path under an ordinary Mac file request.
+Those checks read or compile the source without performing an AX action;
+mentions of the helper in other commands still refuse without the attested
+action grant. This lets the Mac worker prove the installed bytes, mode and
+compiler compatibility before a one-shot app request.
 one-shot Swift source checks the already-running bundle path and PID, one window,
 one current-board WebArea URL, and one matching button under that WebArea. It
 traverses the tree twice, retains the button from the second traversal, re-reads

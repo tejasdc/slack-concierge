@@ -5,6 +5,12 @@ export const AUTHORIZED_PAGE='faf63877-6536-4ac6-86e9-5d63e03d3369';
 export const AUTHORIZED_UPDATE_BOARD='94504c60-2b34-4fda-ba23-c20a6a71d7df';
 export const UPDATE_WORKSPACE_COMMAND='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-update-ax.swift" open-workspace';
 export const UPDATE_FIRST_TAP_COMMAND='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-update-ax.swift" update-now';
+const UPDATE_HELPER_PATH='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-update-ax.swift"';
+const UPDATE_HELPER_READ_COMMANDS=new Set([
+  `shasum -a 256 ${UPDATE_HELPER_PATH}`,
+  `stat -f %Sp ${UPDATE_HELPER_PATH}`,
+  `swiftc -typecheck ${UPDATE_HELPER_PATH}`,
+]);
 export const AUTHORIZING_HUMAN_INPUT='f66f15dd-e251-4537-a9cd-347d0548434b';
 export const CANVAS_AUTHORIZING_HUMAN_INPUT='capture:7bad480ccf4350922acb3ac750cc0ba0b7a990f596acd92b5fe98403f6f0e7a0';
 export const RETIREMENT_AUTHORIZING_HUMAN_INPUT='capture:2a296c24ca627e68981feab3c3e56a32b3e43cf317d0eb545ee4cab23801270b';
@@ -198,7 +204,7 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
     return 'Dynamic shell commands on Tejas’s Mac need a direct tool call so the foreground and browser guard can inspect the exact action.';
   const source=code?literalCommands.map(match=>match[2]).join('\n'):raw;
   if(platform==='darwin'&&source.includes('mac-update-ax.swift'))
-    return authorizedNativeUpdateCommand(need,source)?null
+    return UPDATE_HELPER_READ_COMMANDS.has(source)||authorizedNativeUpdateCommand(need,source)?null
       :'The current Thinkering update helper requires the exact attested work request and its fixed single-action command.';
   if(/^(?:rg|grep|sed|cat|ls|head|tail|find|ps|stat|git\s+diff)\b/i.test(source.trim())
       && !/[;&|`\n]|\$\(/.test(source))return null;
