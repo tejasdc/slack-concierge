@@ -168,14 +168,24 @@ the page before any further action. A generic Safari selector remains refused.
 When a website genuinely fails in the server browser, the requesting server agent records
 `--machine-need browser-fallback:<specific reason> --server-attempt-url <URL>
 --server-attempt-failure "<observed failure>"`. The accepting Mac retains the failed origin
-and observation with that exact request. Its agent can run
+and observation with that exact request. For a newly created Mac session, the recorded need
+lives in its first input; for a request to an existing Mac session, it lives in that input
+directly. The owner checks the corresponding accepted shape and active run in both cases.
+Its agent can run
 `$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-browser-fallback.sh <agent-browser action>` without
 asking Tejas: the launcher checks the active accepted request with the local Mac owner, then
 uses a headless, request-specific profile and session. Environment variables name the request;
 they do not grant access by themselves. The launcher uses the Mac owner's fixed local socket and
-an empty browser configuration, so an agent's environment or browser preferences cannot replace
-the owner check or attach it to Tejas's Chrome. The recorded website bounds the first open; later
-navigation may include a site's authentication providers and remains the agent's responsibility. Direct
+its own private browser configuration, so an agent's environment or browser preferences cannot replace
+the owner check or attach it to Tejas's Chrome. The recorded website bounds the first open.
+For `https://thnkr.ing`, each open asks the server's private capability socket over `ssh remote-box`
+for a ticket verified against the exact accepted input and run. The Mac has no thnkr.ing capability
+socket or agent token of its own. The launcher gives agent-browser the ticket in a website-scoped
+header through its mode-0600 configuration, then clears that file after the open. The browser
+keeps the header in memory for its session; the ticket expires after 15 minutes. Its product
+authority is read-only, so Settings Refresh and other writes remain refused. Reopening the page
+requests a fresh verified ticket if a longer read is needed. Other websites retain an empty
+configuration and may navigate through their own authentication providers. Direct
 agent-browser, Playwright and Chrome DevTools tools remain refused on the Mac, as do foreground
 Chrome and app activation. Claude in Chrome is also refused for agent work because it
 attaches to his personal Chrome, even when a Mac browser fallback is recorded. Codex
