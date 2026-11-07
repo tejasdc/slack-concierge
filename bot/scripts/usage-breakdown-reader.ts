@@ -284,6 +284,8 @@ function report(period:'today'|'week',since:number,zone:string){
   const previousByPath=new Map<string,{row:RecordRow;turn:Turn|null}>();
   for(const r of rows){
     const owningConversation=r.provider==='codex'?rootConversation(r.conversation):r.conversation;
+    const isHelper=!!r.helper||owningConversation!==r.conversation;
+    const helperId=isHelper?(r.provider==='codex'?r.conversation:basename(r.path,'.jsonl')):null;
     const s=sessions.get(`${r.provider}:${owningConversation}`),meta=s?JSON.parse(s.native_metadata_json):{};
     const candidates=s?turnsBySession.get(s.id)??[]:[];
     const exact=r.provider_turn_id?candidates.filter(t=>t.provider_turn_id===r.provider_turn_id):[];
@@ -295,7 +297,7 @@ function report(period:'today'|'week',since:number,zone:string){
     // Codex homes have separate transcript trees; Claude's shared history gives no account for an unrelated process.
     if(r.provider==='codex'&&account==='unknown')account=r.source_account??'unknown Codex account';
     const project=meta.project?basename(meta.project):meta.cwd?basename(meta.cwd):null;
-    const kind=!s?'outside Concierge':r.helper?'helper sub-agents':project==='slack-inbox'?'Inbox router':project??'ordinary sessions';
+    const kind=!s?'outside Concierge':isHelper?'helper sub-agents':project==='slack-inbox'?'Inbox router':project??'ordinary sessions';
     const weights=price(r.provider,r.model);
     const previous=previousByPath.get(r.path);
     const rewritten=r.input+r.cache_write+r.cache_write_1h;
@@ -338,7 +340,7 @@ function report(period:'today'|'week',since:number,zone:string){
       instructions:previous?.turn?.systemInstructionsSha256&&turn?.systemInstructionsSha256
         ?previous.turn.systemInstructionsSha256===turn.systemInstructionsSha256?'same':'changed':'unavailable',
       accountKnown:account!=='unknown'});
-    const call={provider:r.provider,account,sessionId:s?.id??null,turnId:turn?.id??null,helper:!!r.helper,
+    const call={provider:r.provider,account,sessionId:s?.id??null,turnId:turn?.id??null,helper:isHelper,
       providerConversationId:r.conversation,callId:r.record_id,at:new Date(r.at_ms).toISOString(),model:r.model,
       clientVersion:r.client_version,raw:{input:r.input,cacheWrite:r.cache_write,cacheWrite1h:r.cache_write_1h,
         cacheRead:r.cache_read,output:r.output},cachedInputTokens:r.cache_read,rewrittenInputTokens:rewritten,
@@ -347,7 +349,7 @@ function report(period:'today'|'week',since:number,zone:string){
     previousByPath.set(r.path,{row:r,turn});
     if(r.at_ms<since)continue;
     calls.push(call);
-    addCall(overallMix,r.model,!!r.helper);
+    addCall(overallMix,r.model,isHelper);
     if(turn){
       let entry=callsByTurn.get(turn.id);
       if(!entry){entry={turnId:turn.id,sessionId:turn.session_id,provider:r.provider,account,status:turn.status,
@@ -368,19 +370,33 @@ function report(period:'today'|'week',since:number,zone:string){
     const key=`${r.provider}:${account}`;
     let g=groups.get(key);
     if(!g){g={provider:r.provider,account,total:0,raw:empty(),cache:{callCount:0,flaggedCallCount:0,unknownCauseCount:0},
-      bySession:new Map(),byKind:new Map(),mix:newCallMix()};groups.set(key,g);}
-    addCall(g.mix,r.model,!!r.helper);
+      bySession:new Map(),byKind:new Map(),byModel:new Map(),mix:newCallMix()};groups.set(key,g);}
+    addCall(g.mix,r.model,isHelper);
     g.total+=weighted;g.raw.input+=r.input;g.raw.cacheWrite+=r.cache_write;g.raw.cacheWrite1h+=r.cache_write_1h;g.raw.cacheRead+=r.cache_read;g.raw.output+=r.output;
     g.cache.callCount++;g.cache.flaggedCallCount+=Number(largeUnexpected);g.cache.unknownCauseCount+=Number(cause.status==='unknown');
     const sessionKey=s?String(s.id):`outside:${r.conversation}`;
     let entry=g.bySession.get(sessionKey);
     if(!entry){entry={sessionId:s?.id??null,address:s?`concierge:${s.id}`:null,providerConversationId:r.conversation,
       title:meta.title??(s?null:`Outside Concierge · ${r.conversation}`),project,kind:s?project==='slack-inbox'?'Inbox router':'ordinary session':'outside Concierge',weighted:0,helperWeighted:0,raw:empty(),
-      cache:{callCount:0,flaggedCallCount:0,unknownCauseCount:0},mix:newCallMix()};g.bySession.set(sessionKey,entry);}
-    addCall(entry.mix,r.model,!!r.helper);
+      cache:{callCount:0,flaggedCallCount:0,unknownCauseCount:0},byModel:new Map(),byHelper:new Map(),mix:newCallMix()};g.bySession.set(sessionKey,entry);}
+    addCall(entry.mix,r.model,isHelper);
     entry.weighted+=weighted;entry.raw.input+=r.input;entry.raw.cacheWrite+=r.cache_write;entry.raw.cacheWrite1h+=r.cache_write_1h;entry.raw.cacheRead+=r.cache_read;entry.raw.output+=r.output;
     entry.cache.callCount++;entry.cache.flaggedCallCount+=Number(largeUnexpected);entry.cache.unknownCauseCount+=Number(cause.status==='unknown');
-    if(r.helper)entry.helperWeighted+=weighted;
+    if(isHelper)entry.helperWeighted+=weighted;
+    const addMeasured=(map:Map<string,any>,key:string,details:Record<string,unknown>)=>{
+      let item=map.get(key);
+      if(!item){item={...details,weighted:0,raw:empty(),calls:0,helperWeighted:0,helperRaw:empty(),helperCalls:0};map.set(key,item);}
+      item.weighted+=weighted;item.calls++;
+      item.raw.input+=r.input;item.raw.cacheWrite+=r.cache_write;item.raw.cacheWrite1h+=r.cache_write_1h;
+      item.raw.cacheRead+=r.cache_read;item.raw.output+=r.output;
+      if(isHelper){item.helperWeighted+=weighted;item.helperCalls++;
+        item.helperRaw.input+=r.input;item.helperRaw.cacheWrite+=r.cache_write;
+        item.helperRaw.cacheWrite1h+=r.cache_write_1h;item.helperRaw.cacheRead+=r.cache_read;item.helperRaw.output+=r.output;}
+    };
+    const model=r.model??'unreported';
+    addMeasured(g.byModel,model,{model});
+    addMeasured(entry.byModel,model,{model});
+    if(helperId)addMeasured(entry.byHelper,`${helperId}:${model}`,{id:helperId,model});
     let category=g.byKind.get(kind);
     if(!category){category={weighted:0,raw:empty()};g.byKind.set(kind,category);}
     category.weighted+=weighted;category.raw.input+=r.input;category.raw.cacheWrite+=r.cache_write;
@@ -449,8 +465,11 @@ function report(period:'today'|'week',since:number,zone:string){
       apiPriceEquivalentUsd:t.usageRecords?t.weighted:null,rawTokens:t.usageRecords?t.raw:null})),
     weighting:pricing,pricingSources:['https://platform.claude.com/docs/en/about-claude/pricing','https://platform.openai.com/pricing'],
     accounts:[...groups.values()].map(g=>({provider:g.provider,account:g.account,totalWeighted:g.total,raw:g.raw,cache:g.cache,callMix:callMixView(g.mix),
+      byModel:[...g.byModel.values()].sort((a:any,b:any)=>b.weighted-a.weighted),
       cachedInputTokens:g.raw.cacheRead,rewrittenInputTokens:g.raw.input+g.raw.cacheWrite+g.raw.cacheWrite1h,
       bySession:[...g.bySession.values()].map((x:any)=>({...x,mix:undefined,callMix:callMixView(x.mix),share:g.total?x.weighted/g.total:0,
+        byModel:[...x.byModel.values()].sort((a:any,b:any)=>b.weighted-a.weighted),
+        byHelper:[...x.byHelper.values()].sort((a:any,b:any)=>b.weighted-a.weighted),
         cachedInputTokens:x.raw.cacheRead,rewrittenInputTokens:x.raw.input+x.raw.cacheWrite+x.raw.cacheWrite1h}))
         .sort((a:any,b:any)=>b.weighted-a.weighted),
       byKind:[...g.byKind].map(([kind,value])=>({kind,...value,share:g.total?value.weighted/g.total:0})).sort((a:any,b:any)=>b.weighted-a.weighted)}))};

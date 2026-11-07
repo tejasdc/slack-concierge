@@ -996,6 +996,15 @@ The owner serves `GET /sessions/v1/usage/breakdown?period=today|week`; agents ge
 same read through `router-actions.sh sessions usage --by-session --period today|week`.
 The read now includes `callMix` for all calls, each account, and each session:
 total calls, helper and main calls, helper share, and each model's call share.
+For the Accounts dashboard, each account and session also carries `byModel` with
+the exact transcript token classes, a published-price weighted total, and the
+helper subset of both. Each session carries `byHelper`, keyed by the source
+subagent transcript identity and model. Codex child threads are followed to
+their root session; Claude Code nested subagent files retain their own helper
+identity. These measurements are additive across accounts and projects. The
+dashboard groups the existing session project labels across providers, keeps
+unknown attribution visible, and shows raw token totals beside the weighted
+comparison bars. A call count must never be presented as a token share.
 Codex helper transcripts identify their parent thread; nested helpers follow that
 chain back to the session. It also counts accepted Fable/Astra escalation events
 and accepted agent-shell Astra command starts from the owner's escalation log
