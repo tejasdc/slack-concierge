@@ -7,18 +7,19 @@ const THINKERING_INSTALLED = '/srv/thinkering';
 const INSTALLED_ENTRANCE = `${THINKERING_INSTALLED}/current/scripts/deploy.sh`;
 const POLICY_FILE = `${THINKERING_INSTALLED}/retention-policy.json`;
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh']);
+const RETENTION_ACTIONS = new Set(['prune', 'activate', 'rollback', 'policy-upgrade']);
 
 function inside(path: string, root: string): boolean {
   return path === root || path.startsWith(`${root}/`);
 }
 
 function refusalForScript(script: string, action: string, cwd: string): string | null {
-  if (action !== 'prune') return null;
+  if (!RETENTION_ACTIONS.has(action)) return null;
   const candidate = resolve(cwd, script);
   if (!inside(candidate, THINKERING_SOURCE) && !inside(candidate, THINKERING_INSTALLED)) return null;
   const name = basename(candidate);
   if (name !== 'deploy.sh' && name !== 'deployment.mjs') return null;
-  const route = 'Use /srv/thinkering/current/scripts/deploy.sh retention-status to inspect the pinned policy, then /srv/thinkering/current/scripts/deploy.sh prune only when the installed release matches that policy.';
+  const route = `Use /srv/thinkering/current/scripts/deploy.sh retention-status to inspect the pinned policy, then /srv/thinkering/current/scripts/deploy.sh ${action} only when the installed release matches that policy. Normal activation uses npm run ship.`;
   if (name === 'deployment.mjs' || candidate !== INSTALLED_ENTRANCE)
     return `Refused: direct Thinkering cleanup from this source can run an obsolete retention policy. ${route}`;
   try {
@@ -33,7 +34,7 @@ function refusalForScript(script: string, action: string, cwd: string): string |
   return null;
 }
 
-/** A managed agent command may prune only through the installed, pinned Thinkering entrance. */
+/** Managed release commands that can prune must use the installed, pinned Thinkering entrance. */
 export function thinkeringRetentionCommandRefusal(source: string, cwd: string, depth = 0): string | null {
   if (depth > 4) return null;
   let dir = cwd;

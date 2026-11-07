@@ -26,8 +26,9 @@ from the current app release, preserving it across rollback.
 ## Fix
 
 Concierge's managed command preflight adds a second boundary before a shell command starts: direct
-checkout cleanup is refused, and the installed entrance must match the policy
-pin. It also refuses direct deployment-module prune, which bypasses the wrapper's
+checkout prune, activation, rollback and policy upgrade are refused, because each
+can invoke retention. The installed entrance must match the policy pin. Direct
+deployment-module calls are also refused because they bypass the wrapper's
 release lock. Normal `npm run ship` continues to call Thinkering's own controller.
 
 The preflight applies to managed agent tool calls. An already-running root script,
@@ -39,9 +40,10 @@ handles its updated controller; the root bypass remains an explicit limit.
 
 - **Seed:** Current installed Thinkering release has a verified policy pin; an
   agent's working directory is an older checkout.
-- **Action:** The agent requests direct checkout cleanup, direct deployment
-  module cleanup, and the installed cleanup entrance as separate shell calls.
-- **Expected:** The first two are refused before execution. The installed
+- **Action:** The agent requests direct checkout prune, activation, rollback
+  and policy upgrade, direct deployment-module calls for those actions, and
+  the installed entrance as separate shell calls.
+- **Expected:** The stale and direct-module calls are refused before execution. The installed
   entrance passes preflight only while current resolves to the pinned release.
   `npm run ship` remains available. No proof runs cleanup itself.
 - **Replayable offline:** yes for command parsing; pin matching requires a

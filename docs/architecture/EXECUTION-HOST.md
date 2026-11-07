@@ -314,10 +314,10 @@ A running turn holds an update only if it would end with the coordinator. One ru
   updates keep waiting for agents as before. A rebuilt agent-host app moves the previous one to
   `$STATE/app-retired/`.
 - The installed machine command preflight runs before each run's pinned semantic hook.
-  It refuses an agent's direct Thinkering release prune from a checkout or a
-  direct deployment module, and permits the installed cleanup entrance only when
+  It refuses an agent's direct Thinkering release prune, activation, rollback or
+  policy upgrade from a checkout or a direct deployment module, and permits the installed release entrance only when
   `/srv/thinkering/current` resolves to the separately pinned retention policy
-  release. It leaves `npm run ship` to Thinkering's release controller, which owns
+  release. Each of these actions can invoke retention. It leaves `npm run ship` to Thinkering's release controller, which owns
   activation-triggered retention and rollback behavior. This catches managed
   Claude and Codex shell calls, including runs started before the guard release;
   it cannot intercept arbitrary root code or an old script's internal calls.
