@@ -10,6 +10,7 @@ import {humanChoseTopModel} from './model-escalation-custody';
 import {AWAITING_INSPECTION,PROMPT_ANSWER_REMINDER_MS,PROMPT_ANSWER_OVERDUE_MS,REMINDERS_SINCE_MS,STILL_WAITING_AFTER_MS,STILL_WAITING_MINUTES,updateDraining,replyCommand,stalledNotice,strandedStep,tellWorkerCanceled,cancelQueuedWithdrawnRequest,waitingOnDependency,type OwedRequest} from './request-liveness';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {OWNER_READ_RESPONSE_MS} from './owner-transport-policy';
+import {awaitingOutside} from './storage-observation';
 import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
 import {meaningIndex} from './meaning-index';
 import {acceptedInputForTurn,carryingTurn,enqueueSessionInput,getAcceptedSessionInput,handedToARun, withdrawUnstartedServiceInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
@@ -167,7 +168,10 @@ export class PeerClient {
     // A request to the peer carries ledger facts (its request, its answer); they reach the disk first.
     if(method==='POST')await ledgerDurable();
     try {
-      response=await fetch(this.url+path,{method,signal:signal?AbortSignal.any([signal,AbortSignal.timeout(timeoutMs)]):AbortSignal.timeout(timeoutMs),headers:{authorization:`Bearer ${this.token}`,accept:'application/json',...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})});
+      // The peer's answer is a wait on another machine, never owner time: on 2026-11-07 the Mac
+      // stopped answering and six reply reads of 20 s each, inside its notify requests, were
+      // counted as owner slowness (work-flow supervisor incident 474d66cd, reopened 15 times).
+      response=await awaitingOutside(()=>fetch(this.url+path,{method,signal:signal?AbortSignal.any([signal,AbortSignal.timeout(timeoutMs)]):AbortSignal.timeout(timeoutMs),headers:{authorization:`Bearer ${this.token}`,accept:'application/json',...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})}));
     } catch(error) {
       if(signal?.aborted)throw error;
       // A peer that sleeps is normal, so its unreachability is never a notice to Tejas: it
@@ -193,7 +197,7 @@ export class PeerClient {
     }
     this.refusedSince=null;
     let value:any=null;
-    try {value=await response.json();} catch {value=null;}
+    try {value=await awaitingOutside(()=>response.json());} catch {value=null;}
     if(response.status===401||response.status===403)throw new PeerError(`Peer ${this.name} refused this instance's token.`,'unauthorized',response.status,'PEER_UNAUTHORIZED');
     if(!response.ok){
       const message=typeof value?.error==='string'?value.error:value?.error?.message??`Peer ${this.name} answered ${response.status}.`;

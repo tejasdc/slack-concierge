@@ -54,6 +54,11 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   bounded Linux wait samples through [storage observation](docs/architecture/STORAGE-OBSERVATION.md#owner-loop-pause-evidence).
 - A repair-owned deployment run ends its old transient runner without reclaiming the repair;
   see [automatic failure behavior](docs/runbooks/DEPLOYMENT.md#automatic-failure-behavior).
+- The release build refuses a bundle that uses a name nothing defines or imports
+  (`bot/scripts/undefined-name-check.ts`); `bun build` alone ships such a name as a runtime
+  reference error. Peer answers are awaited time, never owner time. See the
+  [missing-import record](docs/incidents/2026-11-07-routed-message-projection-missing-import.md)
+  and [peer reply wait record](docs/incidents/2026-11-07-peer-reply-read-counted-as-owner-time.md).
 - Every commit carries an `Update-note:` sentence in product language and a
   `Failure-record:` trailer naming its replayable failure record or `none`.
   The [update-note rule](docs/runbooks/DEPLOYMENT.md#update-notes-for-every-commit) and
