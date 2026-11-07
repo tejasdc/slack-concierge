@@ -92,11 +92,12 @@ console.log('runner leases: claim, contiguous events, commands, epoch fencing, c
 // A legacy conversation's machine comes from acknowledged work, never a newer launch intent.
 db.exec(`CREATE TABLE turns(id INTEGER PRIMARY KEY,provider_input_acknowledged_at TEXT);
   CREATE TABLE executions(execution_id TEXT PRIMARY KEY,turn_id INTEGER,session_id INTEGER,
-    provider TEXT,supervisor TEXT,state TEXT,created_at_ms INTEGER);`);
+    provider TEXT,supervisor TEXT,state TEXT,unit TEXT,created_at_ms INTEGER);`);
 const session={id:8945,provider_id:'claude-code'};
 const addTurn=(id:number,acknowledged:boolean)=>db.query('INSERT INTO turns VALUES (?,?)').run(id,acknowledged?'received':null);
 const addExecution=(id:string,turnId:number,supervisor:string,state:string,created:number)=>
-  db.query('INSERT INTO executions VALUES (?,?,?,?,?,?,?)').run(id,turnId,session.id,session.provider_id,supervisor,state,created);
+  db.query('INSERT INTO executions(execution_id,turn_id,session_id,provider,supervisor,state,created_at_ms) VALUES (?,?,?,?,?,?,?)')
+    .run(id,turnId,session.id,session.provider_id,supervisor,state,created);
 addTurn(1,true);addExecution('original',1,'runner','released',100);
 leases.enqueue({jobId:'turn:original',kind:'turn',payload:{}});
 db.query("INSERT INTO runner_attempts(attempt_id,job_id,runner,epoch,state,lease_expires_at_ms,started_at_ms) VALUES (?,?,?,?,?,?,?)")
@@ -121,21 +122,21 @@ assert.deepEqual(acknowledgedProviderRunner(db,session),{status:'missing'});
 console.log('provider machine binding: acknowledged custody survives trailing unsent attempts');
 
 // An unstarted execution intent cannot replace the last host of a bound conversation.
-const launchedDb=new Database(':memory:');
-initializeRunnerSchema(launchedDb);
-launchedDb.exec('CREATE TABLE executions (execution_id TEXT PRIMARY KEY, session_id INTEGER, provider TEXT, supervisor TEXT, unit TEXT, created_at_ms INTEGER)');
-const homeLeases=new RunnerLeases(launchedDb,()=>now);
+const homeLeases=new RunnerLeases(db,()=>now);
 homeLeases.enqueue({jobId:'turn:launched',kind:'turn',payload:{}});
 homeLeases.claim('ax41',['turn']);
-launchedDb.query('INSERT INTO executions VALUES (?,?,?,?,?,?)').run('launched',42,'claude-code','runner','concierge-exec-launched',1);
-launchedDb.query('INSERT INTO executions VALUES (?,?,?,?,?,?)').run('unclaimed',42,'claude-code','runner',null,2);
-assert.deepEqual(lastLaunchedConversationHome(launchedDb,42,'claude-code'),{supervisor:'runner',runner:'ax41'});
-launchedDb.query('INSERT INTO executions VALUES (?,?,?,?,?,?)').run('local',42,'claude-code','systemd','concierge-exec-local',3);
-launchedDb.query('INSERT INTO executions VALUES (?,?,?,?,?,?)').run('unstarted-runner',42,'claude-code','runner',null,4);
-assert.deepEqual(lastLaunchedConversationHome(launchedDb,42,'claude-code'),{supervisor:'systemd',runner:null},
+const addLaunched=(id:string,supervisor:string,unit:string|null,created:number)=>
+  db.query('INSERT INTO executions(execution_id,session_id,provider,supervisor,unit,created_at_ms) VALUES (?,?,?,?,?,?)')
+    .run(id,42,'claude-code',supervisor,unit,created);
+addLaunched('launched','runner','concierge-exec-launched',1);
+addLaunched('unclaimed','runner',null,2);
+assert.deepEqual(lastLaunchedConversationHome(db,42,'claude-code'),{supervisor:'runner',runner:'ax41'});
+addLaunched('local','systemd','concierge-exec-local',3);
+addLaunched('unstarted-runner','runner',null,4);
+assert.deepEqual(lastLaunchedConversationHome(db,42,'claude-code'),{supervisor:'systemd',runner:null},
   'An unstarted runner intent cannot move a conversation that last ran locally.');
-launchedDb.query('INSERT INTO executions VALUES (?,?,?,?,?,?)').run('unproven-runner',42,'claude-code','runner','concierge-exec-unproven',5);
-assert.deepEqual(lastLaunchedConversationHome(launchedDb,42,'claude-code'),{supervisor:'runner',runner:null},
+addLaunched('unproven-runner','runner','concierge-exec-unproven',5);
+assert.deepEqual(lastLaunchedConversationHome(db,42,'claude-code'),{supervisor:'runner',runner:null},
   'A launched runner execution with a missing lease must remain unknown, not fall back to an older host.');
 
 console.log('runner leases: claim, contiguous events, commands, epoch fencing, computed expiry, idempotent finish, bounded restart extension and launched conversation home hold');
