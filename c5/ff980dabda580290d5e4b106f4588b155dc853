@@ -1,0 +1,1 @@
+When your Inbox’s prepared view stops updating, its worker now records where it stopped so the repair can target the failing operation.
