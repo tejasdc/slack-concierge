@@ -4,6 +4,7 @@ export const AUTHORIZED_WEB_APP='com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961
 export const AUTHORIZED_PAGE='faf63877-6536-4ac6-86e9-5d63e03d3369';
 export const UPDATE_WORKSPACE_COMMAND='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-update-ax.swift" open-workspace';
 export const UPDATE_FIRST_TAP_COMMAND='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-update-ax.swift" update-now';
+export const UPDATE_OBSERVE_COMMAND='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-update-ax.swift" observe';
 const UPDATE_HELPER_PATH='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-update-ax.swift"';
 const UPDATE_HELPER_READ_COMMANDS=new Set([
   `shasum -a 256 ${UPDATE_HELPER_PATH}`,
@@ -59,6 +60,7 @@ function authorizedNativeUpdateCommand(need:RecordedNeed,command:string):boolean
       ||!need.why.includes(AUTHORIZED_WEB_APP))return false;
   if(command===UPDATE_WORKSPACE_COMMAND)return need.why.includes('Open Workspace')||need.why.includes('Workspace menu');
   if(command===UPDATE_FIRST_TAP_COMMAND)return need.why.includes('Update now');
+  if(command===UPDATE_OBSERVE_COMMAND)return need.why.includes('passive observation');
   return false;
 }
 

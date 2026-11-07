@@ -14,6 +14,7 @@ private let receiptDirectory = "/Users/tejasdc/Library/Application Support/conci
 private enum Action: String {
     case openWorkspace = "open-workspace"
     case updateNow = "update-now"
+    case observe = "observe"
 }
 
 private struct Target {
@@ -175,6 +176,10 @@ private func snapshot(for action: Action, requireTarget: Bool = true) throws -> 
 }
 
 private func run(_ action: Action) throws {
+    if action == .observe {
+        try observe()
+        return
+    }
     // The second fresh traversal supplies the retained AX object used by the single Press.
     let first = try snapshot(for: action)
     let current = try snapshot(for: action)
@@ -218,6 +223,51 @@ private func run(_ action: Action) throws {
             print("observation=failed reason=\(error)")
         }
     }
+}
+
+private func observe() throws {
+    let (app, window) = try currentApplication()
+    guard try stringAttribute(window, kAXRoleAttribute) == "AXWindow" else {
+        throw Refusal.reason("Unexpected AX window role")
+    }
+    var pending = [window]
+    var webAreas: [AXUIElement] = []
+    var controls: [String] = []
+    var visited = 0
+    while let element = pending.popLast() {
+        visited += 1
+        if visited > maxElements { throw Refusal.reason("AX tree exceeded fixed bound") }
+        let role = try stringAttribute(element, kAXRoleAttribute)
+        if role == "AXWebArea" { webAreas.append(element) }
+        if role == "AXButton" || role == "AXLink" || role == "AXMenuItem" {
+            for name in [kAXTitleAttribute, kAXDescriptionAttribute, kAXHelpAttribute] {
+                if let label = try stringAttribute(element, name) { controls.append(label.lowercased()) }
+            }
+        }
+        pending.append(contentsOf: try children(element, role: role))
+    }
+    guard webAreas.count == 1, let webArea = webAreas.first,
+          let url = try stringAttribute(webArea, kAXURLAttribute), isThinkeringDocument(url) else {
+        throw Refusal.reason("Current Thinkering document is not uniquely present")
+    }
+    let (currentApp, currentWindow) = try currentApplication()
+    guard currentApp.processIdentifier == app.processIdentifier,
+          CFEqual(currentWindow, window),
+          try stringAttribute(webArea, kAXURLAttribute) == url else {
+        throw Refusal.reason("Thinkering document changed during observation")
+    }
+    let result: [String: Any] = [
+        "url": url,
+        "canvasControls": controls.filter { $0.contains("canvas") }.count,
+        "journalControls": controls.filter { $0.contains("journal") }.count,
+        "deepWorkControls": controls.filter { $0.contains("deep work") }.count,
+        "pressAttempted": false
+    ]
+    let output = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
+    guard let line = String(data: output, encoding: .utf8) else {
+        throw Refusal.reason("Observation could not be encoded")
+    }
+    print(line)
 }
 
 do {

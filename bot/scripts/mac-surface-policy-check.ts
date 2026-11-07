@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {macSurfaceRefusal,RETIREMENT_FILE_MENU_PROGRAM,RETIREMENT_NEW_WINDOW_PROGRAM,UPDATE_BOUNDED_AX_PROGRAM,UPDATE_WORKSPACE_COMMAND,UPDATE_FIRST_TAP_COMMAND} from '../src/mac-surface-policy';
+import {macSurfaceRefusal,RETIREMENT_FILE_MENU_PROGRAM,RETIREMENT_NEW_WINDOW_PROGRAM,UPDATE_BOUNDED_AX_PROGRAM,UPDATE_WORKSPACE_COMMAND,UPDATE_FIRST_TAP_COMMAND,UPDATE_OBSERVE_COMMAND} from '../src/mac-surface-policy';
 import {parseMachineNeed} from '../src/machine-need';
 import {deviceQuestionNamesPhysicalPrerequisite} from '../src/agent-reachable-app-question';
 
@@ -45,6 +45,13 @@ const nativeCall=(command:string,need:typeof currentUpdateNeed)=>
 assert.equal(nativeCall(UPDATE_WORKSPACE_COMMAND,currentUpdateNeed),null);
 assert.equal(nativeCall(UPDATE_WORKSPACE_COMMAND,acceptedWorkspaceNeed),null);
 assert.equal(nativeCall(UPDATE_FIRST_TAP_COMMAND,currentTapNeed),null);
+const observationNeed={...currentUpdateNeed,why:'One passive observation of com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 after update'};
+assert.equal(nativeCall(UPDATE_OBSERVE_COMMAND,observationNeed),null);
+for(const need of [currentUpdateNeed,{...observationNeed,effectScope:'informational'},
+  {...observationNeed,updateAuthorization:false},
+  {...observationNeed,why:observationNeed.why.replace('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792','another app')}])
+  assert.ok(nativeCall(UPDATE_OBSERVE_COMMAND,need));
+assert.ok(nativeCall(`${UPDATE_OBSERVE_COMMAND}; /usr/bin/open -a Safari`,observationNeed));
 for(const need of [{...currentUpdateNeed,effectScope:'informational'},
   {...currentUpdateNeed,updateAuthorization:false},
   {...currentUpdateNeed,why:currentUpdateNeed.why.replace('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792','com.apple.Safari.WebApp.other')},

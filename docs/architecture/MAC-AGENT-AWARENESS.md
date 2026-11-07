@@ -186,6 +186,13 @@ A second invocation refuses even when the first AX result was ambiguous. The
 Workspace action can only open the menu and report the new control counts. A
 later, separately named Update now request can only press
 that unique first-tap control; any visible Update anyway control refuses it.
+After the update, a separately named passive observation request can invoke the
+same pinned helper with `observe`. That mode checks the exact running WebApp path,
+one window, one HTTPS thnkr.ing WebArea and a stable URL. It reports that URL and
+counts of Canvas, Journal and Deep work accessibility controls, without returning
+private text, pressing a control, reserving a marker, or reusing a press grant.
+The Mac owner still must attest the original update source and current peer delivery;
+the request must explicitly say `passive observation` and name the exact bundle.
 The loaded page's own first-tap guard still decides whether unsaved work or voice
 activity holds installation, and the agent never presses Update anyway. The
 script is a one-off recovery action under the already-trusted Apple Swift process,
