@@ -960,6 +960,8 @@ addColumn("turns", "saved_alerted_at_ms", "saved_alerted_at_ms INTEGER");
 addColumn("turns", "saved_manual_start", "saved_manual_start INTEGER NOT NULL DEFAULT 0");
 addColumn("turns", "saved_quiet_only", "saved_quiet_only INTEGER NOT NULL DEFAULT 0 CHECK(saved_quiet_only IN (0,1))");
 addColumn("turns", "saved_repeat_ms", "saved_repeat_ms INTEGER");
+addColumn("turns", "saved_daily_time", "saved_daily_time TEXT");
+addColumn("turns", "saved_time_zone", "saved_time_zone TEXT");
 addColumn("turns", "saved_root_id", "saved_root_id INTEGER");
 addColumn("turns", "saved_sequence", "saved_sequence INTEGER");
 // A firing's own scheduled instant. The claim clears dispatch_next_attempt_ms, so without this a

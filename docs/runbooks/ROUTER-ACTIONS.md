@@ -194,6 +194,8 @@ schedule is refused with its exact turn ID; change its time in Thinkering Saved 
 with `sessions saved cancel <turn-id>` before replacing it. `sessions schedule --project` remains available for
 registered projects. The read caps repeating schedules at 32, watches per role at 20, and host
 timers at 128; its coverage field says when a cap was reached.
+
+For a daily wall-clock delivery, use `sessions schedule --daily-at HH:MM --time-zone America/New_York` with the same project or role, provider, title, summary, source and action fields. Concierge computes the next local date and retains the IANA zone on the repeat; it recomputes each later firing from that date, so daylight saving changes do not move the displayed local hour. `--daily-at` is exclusive with `--at` and `--every-ms`. A spring gap fires at the first valid minute after the requested time; a fall repeated hour fires at its first occurrence, once for that local date. `sessions saved list` and the agent view expose `dailyLocal` and the next UTC instant; the interval field is null for a local daily repeat. To migrate a queued repeat in place, use `sessions saved daily <exact queued turn ID> --time HH:MM --time-zone <IANA zone> <source-flags> --action-id A`. This changes its root recurrence and one queued firing atomically without creating or replaying a session input. It refuses a historical firing, a manually started firing or an ended repeat. The same action ID returns the same result.
 On a runner, the role's declared workspace-relative folder (such as `agents/concierge-repair`)
 must resolve to that runner's registered project at that exact folder before a wake is saved.
 The returned project identity belongs to the existing bound session; a nested agent folder does

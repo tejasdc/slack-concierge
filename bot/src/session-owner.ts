@@ -1174,7 +1174,8 @@ export class SessionOwner {
       savedWork:(()=>{const saved=savedSessionTurn(session.id);return saved?{kind:saved.saved_kind,quietOnly:saved.saved_quiet_only===1,
         startsAt:savedStartAt(saved),
         expiresAt:saved.saved_expires_at_ms?new Date(saved.saved_expires_at_ms).toISOString():null,
-        account:saved.saved_account,window:saved.saved_window,repeatEveryMs:saved.saved_repeat_ms,
+        account:saved.saved_account,window:saved.saved_window,repeatEveryMs:saved.saved_daily_time?null:saved.saved_repeat_ms,
+        dailyLocal:saved.saved_daily_time?{time:saved.saved_daily_time,timeZone:saved.saved_time_zone}:null,
         sequence:saved.saved_sequence,status:saved.status}:null;})(),
       lineage:session.parent_session_id?{parentId:`concierge:${session.parent_session_id}`,kind:meta.recovery?'continued_on_codex':origin==='reconstructed'?'reconstructed_from':'forked_from',boundary:(meta as any).lineage?.boundary??(session.parent_message_idx===null?null:String(session.parent_message_idx)),sourceVersion:(meta as any).lineage?.sourceVersion??null}:null,
       resurrection:meta.resurrection??null,
@@ -1368,7 +1369,7 @@ export class SessionOwner {
   }
   /** Called only inside the communication owner's source-validated request transaction. */
   /** A peer instance's request has no local source input; its scope names the peer and the remote input instead. */
-  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;escalationReason?:string;attestedHumanModel?:string;project?:string;projectLocation?:{name:string;path:string;cwd:string;runner:string|null};title?:string;summary?:string;smallTask?:boolean;outside?:boolean;onRunner?:boolean;standingRole?:StandingAgentRole;firstInput:{text:string;machineNeed?:import('./machine-need').MachineNeed;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean}}) {
+  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;escalationReason?:string;attestedHumanModel?:string;project?:string;projectLocation?:{name:string;path:string;cwd:string;runner:string|null};title?:string;summary?:string;smallTask?:boolean;outside?:boolean;onRunner?:boolean;standingRole?:StandingAgentRole;firstInput:{text:string;machineNeed?:import('./machine-need').MachineNeed;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;daily?:{time:string;timeZone:string};quietOnly?:boolean}}) {
     const title=normalizeSessionTitle(input.title);
     const source=input.sourceInputId?getAcceptedSessionInput(input.sourceInputId):null;
     const fromClaude=!!source&&getSessionById(source.session_id)?.provider_id==='claude-code';
@@ -1398,7 +1399,7 @@ export class SessionOwner {
     if(input.saved) {
       const queued=enqueueSessionInput(operation.id);
       if(queued.turn_id===null)throw new SessionOwnerError('Saved input could not be queued.',409);
-      saveQueuedTurn(queued.turn_id,input.saved.kind,input.saved.atMs,input.saved.expiresAtMs,input.saved.repeatEveryMs,undefined,input.standingRole,input.saved.quietOnly);
+      saveQueuedTurn(queued.turn_id,input.saved.kind,input.saved.atMs,input.saved.expiresAtMs,input.saved.repeatEveryMs,undefined,input.standingRole,input.saved.quietOnly,input.saved.daily);
     }
     return getAcceptedSessionInput(operation.id)!;
   }
@@ -2281,7 +2282,7 @@ export class SessionOwner {
   async create(body:unknown,projectLocationOverride?:{name:string;path:string;cwd:string;runner:string|null}) {
     const input=object(body);only(input,['clientActionId','provider','purpose','title','workflowId','project','model','reasoningEffort','firstInput','door','savedWork']);
     const savedWork=input.savedWork===undefined?null:object(input.savedWork);
-    if(savedWork){only(savedWork,['kind','atMs','expiresAtMs','repeatEveryMs','quietOnly']);if(!input.firstInput||!input.title||input.provider==='chatgpt'||!['scheduled','banked'].includes(savedWork.kind))
+    if(savedWork){only(savedWork,['kind','atMs','expiresAtMs','repeatEveryMs','daily','quietOnly']);if(!input.firstInput||!input.title||input.provider==='chatgpt'||!['scheduled','banked'].includes(savedWork.kind))
       throw new SessionOwnerError('Saved work needs a named new coding session and its first input.');}
     if(savedWork?.quietOnly!==undefined&&(savedWork.kind!=='banked'||savedWork.quietOnly!==true))
       throw new SessionOwnerError('Quiet-only is an explicit banked-work choice.');
@@ -2334,7 +2335,7 @@ export class SessionOwner {
       if(savedWork) {
         const queued=enqueueSessionInput(recorded.id);
         if(queued.turn_id===null)throw new SessionOwnerError('Saved input could not be queued.',409);
-        saveQueuedTurn(queued.turn_id,savedWork.kind as 'scheduled'|'banked',savedWork.atMs as number|undefined,savedWork.expiresAtMs as number|undefined,savedWork.repeatEveryMs as number|undefined,undefined,undefined,savedWork.quietOnly as boolean|undefined);
+        saveQueuedTurn(queued.turn_id,savedWork.kind as 'scheduled'|'banked',savedWork.atMs as number|undefined,savedWork.expiresAtMs as number|undefined,savedWork.repeatEveryMs as number|undefined,undefined,undefined,savedWork.quietOnly as boolean|undefined,savedWork.daily as {time:string;timeZone:string}|undefined);
       } else if(input.firstInput&&!recorded.receipt_json) enqueueSessionInput(recorded.id);
       return getAcceptedSessionInput(recorded.id)!;
     })();
