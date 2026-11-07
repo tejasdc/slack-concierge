@@ -224,9 +224,12 @@ a later turn cannot silently resume against the owner's home. Distinct or missin
 copies refuse continuation. Local-only peer conversations keep their existing local restore path.
 For side questions, the runner keeps one saved native fork in the source provider home per source
 conversation. Its manifest records the last completed final-answer boundary and fork identity.
-Every question turn resumes that fork without saving its own turn. A running main turn leaves the
+Every question reads that fork without saving its own turn. A running main turn leaves the
 boundary unchanged. A newer completed final answer makes a new fork and removes the old one;
 Codex forks pin `lastTurnId` to the owner's completed provider turn before any question starts.
+Codex's App Server holds the saved fork's writer; each question therefore uses an ephemeral fork
+from the saved copy in a read-only sandbox, leaving the reusable copy untouched. The observed
+[writer conflict](../incidents/2026-11-07-codex-side-copy-writer-conflict.md) records why.
 Codex's source transcript filename includes a timestamp before the UUID. The runner resolves that
 exact UUID at the filename's end in its credential-verified homes, then requires one physical match;
 the marked side-question failure and repair are recorded in

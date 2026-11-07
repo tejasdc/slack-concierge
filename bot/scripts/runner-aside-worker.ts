@@ -61,7 +61,7 @@ async function answer(input:Input){
   const directory=mkdtempSync(join(tmpdir(),'concierge-aside-')),out=join(directory,'answer.txt');
   try{
     const result=await run(MANAGED_CODEX,['exec','--ephemeral','-s','read-only','--skip-git-repo-check','-o',out,
-      'resume',fork,input.prompt],input.cwd);
+      'fork',fork,input.prompt],input.cwd);
     let text='';try{text=readFileSync(out,'utf8').trim();}catch{}
     if(!text)throw new Error(`Codex could not answer the side question (${result.code??'unknown'}).`);
     return {answer:text,model:null,durationMs:Date.now()-started};
