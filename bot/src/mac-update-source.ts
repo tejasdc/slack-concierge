@@ -10,6 +10,7 @@ const HUMAN_MESSAGE='msg_01a1aeea-8d60-7543-a30c-f7c5801a3ccc';
 const HUMAN_TEXT_SHA256='dce3b4179d38edd3f1e679adcd41ca5e550c01b4c61600471b335231181515b1';
 const REQUEST_COMMAND_SHA256='96e12a3d6905ba4d3ef189837ed00859fd15b4657ff0b87bdd4d5af97cfab791';
 const REQUEST_OUTPUT_SHA256='11487385d770b967bce842aa9f7261b47be33a1634937271851b623c22af5dd0';
+const REQUEST_ITEM='exec-f6cc3457-04c7-4f72-9d69-7beb36eee572';
 const TRANSCRIPT=join(homedir(),'.codex','sessions','2026','11','05',`rollout-2026-11-05T13-55-20-${PARENT_THREAD}.jsonl`);
 
 /** The Mac's own Codex transcript joins Tejas's direct instruction to this exact outside request. */
@@ -20,7 +21,7 @@ export function transcriptProvesMacUpdate(text:string):boolean {
   let requestCount=0;
   let parentCount=0;
   for(const line of text.split('\n')) {
-    if(!line.includes(HUMAN_MESSAGE)&&!line.includes(MAC_UPDATE_SOURCE_INPUT)&&!line.includes('"type":"session_meta"'))continue;
+    if(!line.includes(HUMAN_MESSAGE)&&!line.includes(REQUEST_ITEM)&&!line.includes('"type":"session_meta"'))continue;
     let row:any;
     try {row=JSON.parse(line);} catch {return false;}
     if(row.type==='session_meta') {
@@ -38,7 +39,7 @@ export function transcriptProvesMacUpdate(text:string):boolean {
       &&row.payload.thread_id===PARENT_THREAD) {
       const item=row.payload.item;
       const command=Array.isArray(item?.command)?JSON.stringify(item.command):'';
-      if(item.id==='exec-f6cc3457-04c7-4f72-9d69-7beb36eee572'
+      if(item.id===REQUEST_ITEM
         &&createHash('sha256').update(command).digest('hex')===REQUEST_COMMAND_SHA256
         &&typeof item.aggregated_output==='string'
         &&createHash('sha256').update(item.aggregated_output).digest('hex')===REQUEST_OUTPUT_SHA256
