@@ -117,15 +117,18 @@ try {
   const nativeUpdate=process.platform==='darwin'&&((command??'')+' '+String(input.code??'')).includes('mac-update-ax.swift');
   const liftable=reason&&!refusedMessages&&process.platform==='darwin'&&typeof hook.session_id==='string'&&hook.session_id
     &&(nativeUpdate||macSurfaceRefusal({...surface,need:'ios-native'})!==reason);
-  if((liftable||computerUse)&&typeof hook.session_id==='string'&&hook.session_id){
+  if((liftable||computerUse||nativeUpdate)&&typeof hook.session_id==='string'&&hook.session_id){
     const recorded=await fetch('http://localhost/session-communication/mac-need',{method:'POST',headers:{'content-type':'application/json'},
       body:JSON.stringify({provider_session_id:hook.session_id}),
       unix:join(userInfo().homedir,'Library','Application Support','concierge','requests.sock'),signal:AbortSignal.timeout(3000),
     } as RequestInit & {unix:string}).then(response=>response.ok?response.json():null).then((answer:any)=>typeof answer?.kind==='string'?{kind:answer.kind,why:typeof answer.why==='string'?answer.why:'',humanInputId:typeof answer.humanInputId==='string'?answer.humanInputId:'',effectScope:typeof answer.effectScope==='string'?answer.effectScope:'',updateAuthorization:answer.updateAuthorization===true}:null,()=>null);
-    if(computerUse)reason=macSurfaceRefusal({...surface,need:recorded??''});
+    // The environment carries only a need category. A native app action must
+    // use the owner's current source-bound grant even when that category matches.
+    if(computerUse||nativeUpdate)reason=macSurfaceRefusal({...surface,need:recorded??''});
     else if(recorded&&recorded.kind!==(process.env.CONCIERGE_MAC_NEED??''))reason=macSurfaceRefusal({...surface,need:recorded});
   }
   if(computerUse&&(!hook.session_id||typeof hook.session_id!=='string'))reason=macSurfaceRefusal({...surface,need:''});
+  if(nativeUpdate&&(!hook.session_id||typeof hook.session_id!=='string'))reason=macSurfaceRefusal({...surface,need:''});
   // Codex names a command's own working directory in its input; Claude's is the hook's cwd.
   const start = [input.workdir, hook.cwd].find(dir => typeof dir === 'string' && dir) ?? process.cwd();
   // The machine wrapper's current-release pass already checked whole-machine crawls.
