@@ -283,6 +283,7 @@ The summary is required (Tejas, 2026-10-01: "you should not dump my whole transc
 `--add-to <earlier captureId>` makes a follow-up capture a new section of the note that earlier
 capture already has, keeping the follow-up as that section's Source, so a thread's follow-ups land
 in the one note he reads on his Timeline (`addTo` on `/captures/note`).
+`--journal entry --add-to <earlier captureId>` omits `--summary-file` and forwards `{captureId,text,title,capturedAt,addTo,journal:"entry"}` so the capture's exact words, original recorded time and human source append to the earlier Journal entry; independent `--journal entry|checkin` notes still require `--summary-file`.
 `--person <name>` instead files the capture under that person's one note (`person` on
 `/captures/note`): thnkr.ing makes the note the first time anyone names the person, keyed by the
 name, and adds each capture as a section with the capture as its Source. A capture naming several
