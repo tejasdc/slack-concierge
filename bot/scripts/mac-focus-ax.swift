@@ -151,6 +151,9 @@ private func run(_ action: Action) throws {
         guard try recentMatchingReceipt(marker(.start,"press-accepted"),first.target) else {
             throw Refusal.reason("No recent matching accepted Start press")
         }
+        guard try enabled(first.target.button) else {
+            throw Refusal.reason("Running Deep work control is not enabled")
+        }
         let second = try snapshot(action)
         guard first.target.pid == second.target.pid,
               CFEqual(first.target.window,second.target.window),
@@ -158,6 +161,9 @@ private func run(_ action: Action) throws {
               CFEqual(first.target.button,second.target.button),
               first.target.url == second.target.url else {
             throw Refusal.reason("Running Deep work control changed during readback")
+        }
+        guard try enabled(second.target.button) else {
+            throw Refusal.reason("Running Deep work control is not enabled on readback")
         }
         try persistExclusive(marker(.start,"ui-verified"),"\(second.target.pid)\n\(second.target.url)\n")
         print("start_ui_readback=verified backend_readback=required")

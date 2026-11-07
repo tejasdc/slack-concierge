@@ -217,7 +217,7 @@ current thnkr.ing web area and one exact Deep work control. It reads twice,
 retains the accessibility object and URL, verifies them again immediately
 before a single Press, and persists an attempt marker first. The Start command
 records only that accessibility accepted the Press. A separate verify-start
-command must freshly read the running Deep work control before End is allowed;
+command must freshly read the enabled running Deep work control twice before End is allowed;
 End requires that verified state from the same process and URL within ten minutes.
 An uncertain Press is never repeated. A separate positive Focus backend readback
 is required before the worker calls either action successful;
