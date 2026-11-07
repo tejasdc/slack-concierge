@@ -227,6 +227,10 @@ conversation. Its manifest records the last completed final-answer boundary and 
 Every question turn resumes that fork without saving its own turn. A running main turn leaves the
 boundary unchanged. A newer completed final answer makes a new fork and removes the old one;
 Codex forks pin `lastTurnId` to the owner's completed provider turn before any question starts.
+Codex's source transcript filename includes a timestamp before the UUID. The runner resolves that
+exact UUID at the filename's end in its credential-verified homes, then requires one physical match;
+the marked side-question failure and repair are recorded in
+[the November 7 case](../incidents/2026-11-07-codex-side-question-runner-could-not-find-source.md).
 Native forks use the same saved runner, account and project binding. The owner sends the native
 conversation ID, exact turn boundary, stable fork source and project identities; the runner resolves
 its own account home and project folders before asking Claude Code or its local Codex App Server to
