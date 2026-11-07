@@ -12,7 +12,7 @@ import { claudeEveryAccountClearsAt, claudeHeldWorkCanRun, proveClaudeHomesAhead
 import { needSignInRenewal } from "./signin-renewal";
 import { accountUsageTable } from "./provider-usage-tables";
 import { antigravityExecutable } from "./antigravity";
-import { claudeAccountFacts, claudeCredentialVersion, claudeWindowsFromOwnLogin, renewClaudeOwnLoginForUsage, type ApiCreditsFacts, type UsageCreditsFacts } from "./claude-account-facts";
+import { claudeAccountFacts, claudeCredentialVersion, claudeWindowsFromOwnLogin, macClaudeSignIn, renewClaudeOwnLoginForUsage, type ApiCreditsFacts, type UsageCreditsFacts } from "./claude-account-facts";
 import type { ResetAdvice } from "./provider-reset-facts";
 import { noticeTime } from "./notice-time";
 import { resolveProviderAlias } from "./aliases";
@@ -360,6 +360,18 @@ async function readClaude(force = false): Promise<ProviderUsage> {
     const accounts: AccountUsage[] = [];
     for (const profile of profiles) {
       if (accounts.some(account => account.label === profile.label)) continue;
+      const signIn = await macClaudeSignIn(profile.label);
+      if (signIn !== "signed-in") {
+        const kept = signIn === "unverified" ? previous.get(profile.label) : null;
+        accounts.push({ label: profile.label, plan: null, current: profile.label === current,
+          windows: kept && !kept.viaPeer ? kept.windows : [],
+          problem: signIn === "signed-out" ? "This sign-in stopped working. It needs signing in again."
+            : "Claude sign-in could not be confirmed on this machine.",
+          ...(signIn === "signed-out" ? { signedOut: true } : {}),
+          readAt: kept && !kept.viaPeer ? kept.readAt ?? null : null,
+          usageCredits: null, apiCredits: null });
+        continue;
+      }
       const own = await pacedOwnLoginWindows(profile.label, previous.get(profile.label), force);
       const facts = await claudeAccountFacts(profile.label, ms => noticeTime(db, ms));
       accounts.push({ label: profile.label, plan: facts?.plan ?? null, current: profile.label === current,

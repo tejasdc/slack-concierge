@@ -29,13 +29,16 @@ server readings. It never asked the Mac's own Keychain logins for their usage.
 
 ## Fix
 
-Read each Mac account's saved Keychain login in place and ask Anthropic for its usage when
-the login is usable. A signed-out home must not acquire an invented fresh reading.
+Ask Claude Code to confirm the signed-in email in each exact Mac saved home before reading
+that home's Keychain login in place and asking Anthropic for usage. A signed-out home is
+marked as needing sign-in; it is not renewed and has no usage bars. A home whose identity
+cannot be confirmed remains unverified and cannot authorize work.
 When an access token has expired or Anthropic rejects it with 401, let Claude Code renew
 that same home's login. A pressed Refresh waits for the renewal, then retries the usage
 read once rather than ending with the old value while renewal runs in the background.
-The existing source-time, backoff and peer merge rules remain. A pressed Refresh asks for a
-new local read even when the next scheduled read is not due.
+The existing source-time and backoff rules remain. The Mac no longer borrows a server bar
+when its local read is absent. A pressed Refresh asks for a new local read even when the
+next scheduled read is not due.
 
 ## Acceptance scenario
 
@@ -44,6 +47,7 @@ new local read even when the next scheduled read is not due.
   Claude usage rows, one stale.
 - **Action:** open Accounts and press Refresh.
 - **Expected:** the two confirmed Mac logins get Mac-local source times from the current
-  pass; the page shows checking until the pass finishes. The signed-out or refused home
-  keeps its original source time and a visible problem instead of claiming a fresh number.
+  pass; the page shows checking until the pass finishes. The signed-out home says it needs
+  sign-in and has no usage bars. A temporarily unverified home can show only its last Mac
+  reading with the original source time and a visible problem.
 - **Replayable offline:** no (requires the Mac GUI Keychain and live provider usage endpoint).

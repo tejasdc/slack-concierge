@@ -35,7 +35,7 @@
  * facts are refreshed every thirty minutes, not with every three-minute bar reading.
  */
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { log } from "./log";
@@ -203,11 +203,46 @@ function claudeCredentialFor(account: string): string | null {
   return null;
 }
 
+function macClaudeHome(account: string): string | null {
+  const profile = listProfiles("claude-code").find(entry => entry.label === account && entry.signedIn);
+  return profile ? accountHome("claude-code", profile.id)
+    : currentAccount("claude-code")?.label === account ? join(homedir(), ".claude") : null;
+}
+
+function claudeHomeEnvironment(home: string): Record<string, string | undefined> {
+  const env = { ...process.env };
+  // Claude's default macOS login selects the unsuffixed Keychain item only when unset.
+  if (process.platform === "darwin" && home === join(homedir(), ".claude")) delete env.CLAUDE_CONFIG_DIR;
+  else env.CLAUDE_CONFIG_DIR = home;
+  return env;
+}
+
+/** Keychain presence is not sign-in proof; ask Claude in the exact saved home. */
+export async function macClaudeSignIn(account: string): Promise<"signed-in" | "signed-out" | "unverified"> {
+  if (process.platform !== "darwin") return "unverified";
+  const home = macClaudeHome(account);
+  if (!home) return "signed-out";
+  try {
+    const child = Bun.spawn([CLAUDE_EXECUTABLE, "auth", "status"], {
+      env: claudeHomeEnvironment(home), stdin: "ignore", stdout: "pipe", stderr: "ignore",
+    });
+    const deadline = setTimeout(() => child.kill(), 15_000);
+    try {
+      const [code, output] = await Promise.all([child.exited, new Response(child.stdout).text()]);
+      const status = JSON.parse(output);
+      if (status?.loggedIn === false) return "signed-out";
+      if (code !== 0) return "unverified";
+      if (status?.loggedIn !== true || status?.authMethod !== "claude.ai" || status?.apiProvider !== "firstParty"
+        || status?.email !== account || typeof status?.configDirectory !== "string"
+        || realpathSync(status.configDirectory) !== realpathSync(home)) return "unverified";
+      return "signed-in";
+    } finally { clearTimeout(deadline); }
+  } catch { return "unverified"; }
+}
+
 function claudeLogin(account: string): { oauth: any; version: string | null; home: string } | null {
   if (process.platform === "darwin") {
-    const profile = listProfiles("claude-code").find(entry => entry.label === account && entry.signedIn);
-    const home = profile ? accountHome("claude-code", profile.id)
-      : currentAccount("claude-code")?.label === account ? join(homedir(), ".claude") : null;
+    const home = macClaudeHome(account);
     if (!home) return null;
     const credential = claudeKeychainOauth(home);
     return credential ? { ...credential, home } : null;
@@ -244,11 +279,8 @@ export function renewClaudeOwnLoginForUsage(account: string, rejected = false): 
   const renewal = (async () => {
     // Claude Code's default macOS login uses the unsuffixed Keychain service only when
     // CLAUDE_CONFIG_DIR is absent. Supplying ~/.claude selects another Keychain item.
-    const env = { ...process.env };
-    if (process.platform === "darwin" && login.home === join(homedir(), ".claude")) delete env.CLAUDE_CONFIG_DIR;
-    else env.CLAUDE_CONFIG_DIR = login.home;
     const child = Bun.spawn([CLAUDE_EXECUTABLE, "-p", "/usage", "--no-session-persistence", "--output-format", "json"], {
-      env, stdin: "ignore", stdout: "ignore", stderr: "ignore",
+      env: claudeHomeEnvironment(login.home), stdin: "ignore", stdout: "ignore", stderr: "ignore",
     });
     const deadline = setTimeout(() => child.kill(), 120_000);
     try {
