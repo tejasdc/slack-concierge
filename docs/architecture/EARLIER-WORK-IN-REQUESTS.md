@@ -59,8 +59,8 @@ Inbox thread, read it. Peer-delivered requests are not gated on the replying mac
   forwarded to the successor, following the chain; the request records `forwardedFrom`.
 - **Archived or paused** Claude or Codex session Concierge started: work asks are refused (its
   work stays as it was left); a question is answered synchronously by a side copy of its
-  conversation, the same throwaway copy thnkr.ing's side questions use (no tools, never saved,
-  the session is not woken). No request is opened; the answer is the command's result, and an
+  conversation, the same reusable final-answer copy thnkr.ing's side questions use (no tools,
+  the question turn is never saved, and the session is not woken). No request is opened; the answer is the command's result, and an
   answer that takes over 90 s is collected by repeating the same command and action ID. Such an
   ask cannot name a thread, a return or prerequisites, since nothing is delivered later.
 - **Conversations from outside Concierge** (imported Claude/Codex transcripts): already

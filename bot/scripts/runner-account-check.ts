@@ -136,7 +136,7 @@ try {
   assert.equal(samePhysicalFile(claudeTranscript,freshTranscript),false,
     "a missing destination must still be copied rather than treated as the source file");
   await assert.rejects(serveRunnerAside({operationId:"aside-null-home",provider:"claude-code",account:null,
-    spendAccount:"writer@example.com",sessionUuid:claudeTranscriptId,project:null,path:"",model:null,running:false,prompt:"question"},
+    spendAccount:"writer@example.com",sessionUuid:claudeTranscriptId,project:null,path:"",model:null,boundary:null,prompt:"question"},
   {botDir:root,bunPath:process.execPath,resolveCwd:async()=>root,
     findHome:()=>({account:null,home:null,transcript:claudeTranscript}),
     accountHome:()=>claude}),/not bound/,
