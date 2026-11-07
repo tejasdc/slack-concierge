@@ -7,8 +7,7 @@ import Foundation
 // This one-shot action is deliberately limited to the observed Sessions document.
 private let appBundle = "com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792"
 private let appPath = "/Users/tejasdc/Applications/Thinkering.app"
-private let sessionID = "mac:75"
-private let notificationKey = "0e420ea53ac99f7ee4bb8531389b531d"
+private let sessionURL = "https://thnkr.ing/agents?conversation=concierge%3A9213&sessionView=sessions"
 private let maxElements = 20_000
 private let receiptDirectory = "/Users/tejasdc/Library/Application Support/concierge"
 
@@ -90,24 +89,13 @@ private func currentApplication() throws -> (NSRunningApplication, AXUIElement) 
 }
 
 private func isCurrentSession(_ urlText: String?) -> Bool {
-    guard let urlText, let url = URL(string: urlText),
-          url.scheme == "https", url.host == "thnkr.ing", url.path == "/agents",
-          let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-          components.user == nil, components.password == nil, components.port == nil,
-          components.fragment == nil, let items = components.queryItems,
-          items.count == 5, Set(items.map(\.name)).count == 5 else { return false }
-    let expected = ["notificationKey": notificationKey, "sessionView": "sessions",
-                    "conversation": sessionID, "browserProject": "blogs", "browserMachine": "mac"]
-    return items.allSatisfy { item in
-        guard let required = expected[item.name] else { return false }
-        return item.value == required
-    }
+    return urlText == sessionURL
 }
 
 private func reserveOnePress(_ action: Action) throws {
     try FileManager.default.createDirectory(atPath: receiptDirectory,
                                             withIntermediateDirectories: true)
-    let marker = "\(receiptDirectory)/mac-update-request-79fe4481-3587-40e3-aa66-58fc26be5e0b-mac-75-\(action.rawValue).attempted"
+    let marker = "\(receiptDirectory)/mac-update-request-79fe4481-3587-40e3-aa66-58fc26be5e0b-concierge-9213-\(action.rawValue).attempted"
     let descriptor = open(marker, O_WRONLY | O_CREAT | O_EXCL, 0o600)
     guard descriptor >= 0 else {
         throw Refusal.reason("This fixed action was already attempted or its marker cannot be created")

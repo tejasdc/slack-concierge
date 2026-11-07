@@ -154,8 +154,8 @@ overnight instruction and the renewed outside request for the next ready web
 release, in that order. Only the new server source input/run and its still-open
 Mac peer delivery can grant an action; the earlier source is retired. A separate
 direct Mac work request names the exact WebApp bundle, the observed Sessions
-conversation URL (including its notification key, view, conversation, project,
-and machine), and either opening Workspace or pressing Update now. The menu-open
+conversation URL (`https://thnkr.ing/agents?conversation=concierge%3A9213&sessionView=sessions`),
+and either opening Workspace or pressing Update now. The menu-open
 intent accepts the observed request wording, “Open Workspace once”; it does not
 depend on the literal word “menu.” While that exact delivery remains open,
 the Mac hook reads that current grant from the Mac owner on every native update
@@ -169,8 +169,10 @@ mentions of the helper in other commands still refuse without the attested
 action grant. This lets the Mac worker prove the installed bytes, mode and
 compiler compatibility before a one-shot app request.
 The one-shot Swift source checks the already-running bundle path and PID, one window,
-one exact Sessions-document WebArea URL, and one matching button under that WebArea. It
-traverses the tree twice, retains the button from the second traversal, re-reads
+one exact Sessions-document WebArea URL, and one matching button under that WebArea. The
+earlier Blogs/mac:75 page, including its notification key and project parameters,
+cannot authorize this current-page action. The helper traverses the tree twice,
+retains the button from the second traversal, re-reads
 the WebArea and button immediately before one native AX Press, and never retries
 an ambiguous result. Immediately before Press, it atomically reserves a durable
 one-shot marker for that exact renewed request, Sessions conversation and action. The earlier

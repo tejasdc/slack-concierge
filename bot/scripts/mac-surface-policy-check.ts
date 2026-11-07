@@ -47,7 +47,7 @@ assert.equal(nativeCall(UPDATE_WORKSPACE_COMMAND,acceptedWorkspaceNeed),null);
 assert.equal(nativeCall(UPDATE_FIRST_TAP_COMMAND,currentTapNeed),null);
 for(const need of [{...currentUpdateNeed,effectScope:'informational'},
   {...currentUpdateNeed,updateAuthorization:false},
-  {...currentUpdateNeed,why:currentUpdateNeed.why.replace('mac%3A75','mac%3A76')},
+  {...currentUpdateNeed,why:currentUpdateNeed.why.replace('concierge%3A9213','mac%3A75')},
   {...currentUpdateNeed,why:currentUpdateNeed.why.replace('Workspace menu','other menu')}])
   assert.ok(nativeCall(UPDATE_WORKSPACE_COMMAND,need));
 assert.ok(nativeCall(UPDATE_FIRST_TAP_COMMAND,currentUpdateNeed));
@@ -69,7 +69,7 @@ assert.equal(macSurfaceRefusal({command:null,need:currentUpdateNeed,platform:'da
 const updateCall='var thnkrUpdateInspectionApp = await cua.getApp("com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792"); await thnkrUpdateInspectionApp.getAXStateAndScreenshot()';
 assert.equal(macSurfaceRefusal({command:null,need:updateNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:updateCall}}),null);
 assert.equal(macSurfaceRefusal({command:null,need:updateNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:UPDATE_BOUNDED_AX_PROGRAM}}),null);
-for(const need of [{...updateNeed,updateAuthorization:false},{...updateNeed,effectScope:'informational'},{...updateNeed,why:updateNeed.why.replace('mac%3A75','mac%3A76')},webAppNeed])
+for(const need of [{...updateNeed,updateAuthorization:false},{...updateNeed,effectScope:'informational'},{...updateNeed,why:updateNeed.why.replace('concierge%3A9213','mac%3A75')},webAppNeed])
   assert.ok(macSurfaceRefusal({command:null,need,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:UPDATE_BOUNDED_AX_PROGRAM}}));
 for(const code of [UPDATE_BOUNDED_AX_PROGRAM.replace('getAXState({emit:false,disableDiffing:true})','getAXState()'),
   UPDATE_BOUNDED_AX_PROGRAM.replace('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792','Safari'),
@@ -99,7 +99,7 @@ for(const code of [UPDATE_BOUNDED_AX_PROGRAM.replace('getAXState({emit:false,dis
 }
 const formerUpdateProgram='var thnkrUpdateApp = await cua.getApp("com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792"); var state = await thnkrUpdateApp.getAXState({disableDiffing:true}); await thnkrUpdateApp.click(3);';
 assert.match(macSurfaceRefusal({command:null,need:updateNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:formerUpdateProgram}})??'',/Update now remains refused/);
-for(const need of [{...updateNeed,updateAuthorization:false},{...updateNeed,effectScope:'informational'},{...updateNeed,why:updateNeed.why.replace('mac%3A75','mac%3A76')},webAppNeed])
+for(const need of [{...updateNeed,updateAuthorization:false},{...updateNeed,effectScope:'informational'},{...updateNeed,why:updateNeed.why.replace('concierge%3A9213','mac%3A75')},webAppNeed])
   assert.ok(macSurfaceRefusal({command:null,need,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:formerUpdateProgram}}));
 assert.ok(macSurfaceRefusal({command:null,need:updateNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Safari")'}}));
 const canvasNeed={...webAppNeed,humanInputId:'capture:7bad480ccf4350922acb3ac750cc0ba0b7a990f596acd92b5fe98403f6f0e7a0'};
