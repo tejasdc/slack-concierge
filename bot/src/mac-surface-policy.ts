@@ -5,6 +5,7 @@ export const AUTHORIZED_PAGE='faf63877-6536-4ac6-86e9-5d63e03d3369';
 export const UPDATE_WORKSPACE_COMMAND='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-update-ax.swift" open-workspace';
 export const UPDATE_FIRST_TAP_COMMAND='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-update-ax.swift" update-now';
 export const FOCUS_START_COMMAND='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-focus-ax.swift" start';
+export const FOCUS_VERIFY_START_COMMAND='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-focus-ax.swift" verify-start';
 export const FOCUS_END_COMMAND='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-focus-ax.swift" end';
 const UPDATE_HELPER_PATH='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-update-ax.swift"';
 const UPDATE_HELPER_READ_COMMANDS=new Set([
@@ -61,7 +62,7 @@ function authorizedNativeFocusCommand(need:RecordedNeed,command:string):boolean 
       ||need.effectScope!=='work'||typeof need.why!=='string'
       ||!need.why.includes(AUTHORIZED_WEB_APP)
       ||!need.why.includes('bounded Focus Start/End acceptance'))return false;
-  return command===FOCUS_START_COMMAND||command===FOCUS_END_COMMAND;
+  return command===FOCUS_START_COMMAND||command===FOCUS_VERIFY_START_COMMAND||command===FOCUS_END_COMMAND;
 }
 
 function authorizedUpdateNeed(need:RecordedNeed,toolName:string):need is Exclude<RecordedNeed,string> {
@@ -234,7 +235,7 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
       :'The current Thinkering update helper requires the exact attested work request and its fixed single-action command.';
   if(platform==='darwin'&&source.includes('mac-focus-ax.swift'))
     return authorizedNativeFocusCommand(need,source)?null
-      :'The Focus helper requires the exact attested work request and its fixed Start or End command.';
+      :'The Focus helper requires the exact attested work request and its fixed Start, verify-start, or End command.';
   if(/^(?:rg|grep|sed|cat|ls|head|tail|find|ps|stat|git\s+diff)\b/i.test(source.trim())
       && !/[;&|`\n]|\$\(/.test(source))return null;
   const remote=/\bssh\b[^\n]{0,400}\btejasdc@(?:100\.90\.183\.122|[\w.-]+)\b/i.test(source);

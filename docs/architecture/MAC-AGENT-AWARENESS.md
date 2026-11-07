@@ -209,21 +209,24 @@ the current Focus worker and source input/run `request:775cda97-8177-4202-8545-b
 `e41da8b5-2d17-4483-add1-57e2b8d21203` must have a live work-effect peer
 delivery and name the exact Thinkering bundle plus `bounded Focus Start/End
 acceptance`. Only then does the Mac guard admit same-program passive reads
-and fixed native Start and End commands. This is a single test route, not a
+and fixed native Start, verify-start and End commands. This is a single test route, not a
 general app or page control grant.
 
 The native action finds the one installed WebApp process, one window, one
 current thnkr.ing web area and one exact Deep work control. It reads twice,
 retains the accessibility object and URL, verifies them again immediately
-before a single Press, and persists an attempt marker first. End also requires
-a successful Start marker from the same process and URL within ten minutes.
-An uncertain Press is never repeated. A separate positive browser and Focus
-owner readback is required before the worker calls either action successful;
+before a single Press, and persists an attempt marker first. The Start command
+records only that accessibility accepted the Press. A separate verify-start
+command must freshly read the running Deep work control before End is allowed;
+End requires that verified state from the same process and URL within ten minutes.
+An uncertain Press is never repeated. A separate positive Focus backend readback
+is required before the worker calls either action successful;
 if the real account already has a Focus session, the worker must preserve it
 and skip Start and End. The helper never reloads, closes or navigates the app.
 The native helper executes under the Mac's existing Accessibility identity;
 if that identity lacks access, the route refuses rather than requesting a
-different permission grant.
+new permission. The Mac release packages the helper in its immutable pinned
+control directory, so the guarded command resolves to the installed bytes.
 
 The question gate accepts a device-only claim when its question names one action on a
 physical device. The agent first uses its available device route. If that route reaches

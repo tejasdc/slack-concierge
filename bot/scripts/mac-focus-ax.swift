@@ -10,7 +10,7 @@ private let receiptDirectory = "/Users/tejasdc/Library/Application Support/conci
 private let receiptPrefix = "mac-focus-775cda97-8177-4202-8545-b451f74ef3bd-"
 private let maxElements = 20_000
 
-private enum Action: String { case start, end }
+private enum Action: String { case start, end, verifyStart = "verify-start" }
 private struct Target {
     let pid: pid_t
     let window: AXUIElement
@@ -110,12 +110,20 @@ private func snapshot(_ action: Action) throws -> Snapshot {
         throw Refusal.reason("Expected one matching Deep work control in current document")
     }
     if action == .start && !ends.isEmpty { throw Refusal.reason("A Deep work session may already be open") }
-    if action == .end && !starts.isEmpty { throw Refusal.reason("Deep work control state is ambiguous") }
+    if action != .start && !starts.isEmpty { throw Refusal.reason("Deep work control state is ambiguous") }
     return Snapshot(target:Target(pid:app.processIdentifier,window:window,webArea:area,button:candidates[0].0,url:url),
                     startCount:starts.count,endCount:ends.count)
 }
 private func marker(_ action: Action, _ suffix: String) -> String {
     receiptDirectory + "/" + receiptPrefix + action.rawValue + "." + suffix
+}
+private func recentMatchingReceipt(_ path: String, _ target: Target) throws -> Bool {
+    guard let data = FileManager.default.contents(atPath:path),
+          let recorded = String(data:data,encoding:.utf8),
+          let modified = try FileManager.default.attributesOfItem(atPath:path)[.modificationDate] as? Date,
+          Date().timeIntervalSince(modified) >= 0,
+          Date().timeIntervalSince(modified) < 600 else { return false }
+    return recorded == "\(target.pid)\n\(target.url)\n"
 }
 private func persistExclusive(_ path: String, _ value: String) throws {
     try FileManager.default.createDirectory(atPath:receiptDirectory,withIntermediateDirectories:true)
@@ -134,15 +142,25 @@ private func persistExclusive(_ path: String, _ value: String) throws {
 }
 private func run(_ action: Action) throws {
     let first = try snapshot(action)
+    if action == .verifyStart {
+        guard try recentMatchingReceipt(marker(.start,"press-accepted"),first.target) else {
+            throw Refusal.reason("No recent matching accepted Start press")
+        }
+        let second = try snapshot(action)
+        guard first.target.pid == second.target.pid,
+              CFEqual(first.target.window,second.target.window),
+              CFEqual(first.target.webArea,second.target.webArea),
+              CFEqual(first.target.button,second.target.button),
+              first.target.url == second.target.url else {
+            throw Refusal.reason("Running Deep work control changed during readback")
+        }
+        try persistExclusive(marker(.start,"ui-verified"),"\(second.target.pid)\n\(second.target.url)\n")
+        print("start_ui_readback=verified backend_readback=required")
+        return
+    }
     if action == .end {
-        let path = marker(.start,"succeeded")
-        guard let data = FileManager.default.contents(atPath:path),
-              let recorded = String(data:data,encoding:.utf8),
-              let modified = try FileManager.default.attributesOfItem(atPath:path)[.modificationDate] as? Date,
-              Date().timeIntervalSince(modified) >= 0,
-              Date().timeIntervalSince(modified) < 600,
-              recorded == "\(first.target.pid)\n\(first.target.url)\n" else {
-            throw Refusal.reason("No recent matching test Start receipt; existing Focus session is preserved")
+        guard try recentMatchingReceipt(marker(.start,"ui-verified"),first.target) else {
+            throw Refusal.reason("No recent matching verified Start UI state; existing Focus session is preserved")
         }
     }
     let second = try snapshot(action)
@@ -166,9 +184,9 @@ private func run(_ action: Action) throws {
     print("action=\(action.rawValue) press_status=\(result.rawValue) press_attempted=true")
     fflush(stdout)
     if result != .success { throw Refusal.reason("Press result ambiguous; do not retry") }
-    try persistExclusive(marker(action,"succeeded"),"\(target.pid)\n\(target.url)\n")
-    // A separate browser and owner read must confirm the resulting Focus session.
-    print("positive_readback=required")
+    try persistExclusive(marker(action,"press-accepted"),"\(target.pid)\n\(target.url)\n")
+    // AX accepted a Press. It has not established the backend Focus transition.
+    print("ax_press_accepted=true positive_ui_and_backend_readback=required")
 }
 do {
     guard CommandLine.arguments.count == 2, let action = Action(rawValue:CommandLine.arguments[1]) else {
