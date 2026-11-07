@@ -28,6 +28,13 @@ and no later turn for this session does. The 23814 runner job was created at
 The owner then recorded the unsent turn as requeued at 06:43:11.242. Thus the
 repaired lookup selects the AX41 execution from turn 23697.
 
+The narrower launched-host repair from PR #652 was installed at 19:21 UTC, but
+turn 24802 failed with the same exact-runner-lease error at 19:27:39. It again
+had no execution, runner job, claim, provider start or input acknowledgment.
+The Grafana request still had no final reply. The installed repair therefore
+did not resolve this session; the particular launched record selected at
+19:27 remains under read-only investigation.
+
 ## Cause
 
 The legacy machine lookup selected the newest execution intent whether or not a runner had
