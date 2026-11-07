@@ -21,6 +21,12 @@ growing source rate without making the accepting owner loop do diagnostic work.
 
 Interactive reads use indexed keysets, at most twenty rows, and explicit source coverage.
 Lists retain exact counts and expose a detail reference when their value needs a preview.
+An Inbox list request captures the source change head when the request enters. If the prepared
+list is behind, the owner yields while the existing presentation worker catches up to that
+head, for at most two seconds; changes accepted later belong to subsequent reads. A worker
+that cannot catch up still returns incomplete coverage so the client keeps its visible copy
+and retries. A stale or invalid cursor returns its reset response immediately. Initial
+rebuilds continue to use the ledger list until the prepared list is ready.
 Large individual values are retained as SHA-256-addressed, sixteen-KiB UTF-8 chunks.
 Clients must verify the concatenated digest before displaying a complete value. A newer
 generation invalidates old list cursors; source lag is indexing, never an empty complete list.

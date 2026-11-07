@@ -21,9 +21,24 @@ const indexing=()=>({complete:false,code:'presentation_indexing',appliedSequence
 export function preparedTopicEventDisplays(sequences:readonly number[]){
  const reader=prepared();return reader?readPreparedTopicEvents(reader,sequences):sequences.map(()=>null);
 }
-export function preparedTopics(options:Omit<Parameters<typeof readPreparedTopics>[1],'canonicalHead'>){
- const reader=prepared();return reader?readPreparedTopics(reader,{...options,canonicalHead:presentationHead(db)}):
+export function preparedTopics(options:Omit<Parameters<typeof readPreparedTopics>[1],'canonicalHead'>,requiredHead=presentationHead(db)){
+ const reader=prepared();return reader?readPreparedTopics(reader,{...options,canonicalHead:requiredHead}):
   {topics:[],nextCursor:null,asOf:'',sorting:{count:0,captures:[]},coverage:indexing()};
+}
+/** A list read is current through the ledger head seen when it entered. The presentation
+ * worker may finish that head while the request yields; later writes belong to later reads.
+ * A sustained worker failure still returns incomplete coverage for the client's retry path. */
+export async function preparedTopicsAfterCatchUp(options:Omit<Parameters<typeof readPreparedTopics>[1],'canonicalHead'>,signal?:AbortSignal){
+ const requiredHead=presentationHead(db),deadline=performance.now()+2000;
+ const reader=prepared();
+ if(reader){
+  let state=reader.query('SELECT ready,source_head FROM presentation_topics_meta WHERE singleton=1').get() as {ready:number;source_head:number}|null;
+  while(state?.ready&&state.source_head<requiredHead&&!signal?.aborted&&performance.now()<deadline){
+   await Bun.sleep(100);
+   state=reader.query('SELECT ready,source_head FROM presentation_topics_meta WHERE singleton=1').get() as typeof state;
+  }
+ }
+ return preparedTopics(options,requiredHead);
 }
 export function preparedAreas(query:string|null,cursor:string|null,limit:number){
  const reader=prepared();return reader&&reader.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='presentation_areas'").get()?readPreparedAreas(reader,presentationHead(db),query,cursor,limit):
