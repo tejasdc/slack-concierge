@@ -62,7 +62,7 @@ router-actions.sh sessions saved list <source-flags> [--cursor <nextCursor>]
 router-actions.sh sessions saved start|cancel <turn-id> <source-flags> --action-id A
 Stopping a repeating schedule (sessions schedule --every-ms): sessions cancel <its request-id> withdraws every queued firing and books no more (a firing already running finishes); sessions saved cancel <turn-id> of its queued firing does the same. sessions saved list shows each armed schedule's next firing, turn ID and interval.
 router-actions.sh sessions pause status|all|resume <source-flags> [--action-id A] [--session <concierge:N|mac:N> ...]  # --session is for resume only
-router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> [--renew] <source-flags> --action-id A
+router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> [--renew] [--required-commit <full-sha>] <source-flags> --action-id A
 router-actions.sh sessions watch command --cwd <dir> --until <ISO time | duration> <source-flags> --action-id A -- <argv...>
 router-actions.sh sessions watch list <source-flags>
 router-actions.sh sessions watch cancel <watch-id> <source-flags> --action-id A
@@ -82,7 +82,7 @@ router-actions.sh sessions board cards --design <design handle> --inbox-session 
 router-actions.sh sessions board status   # says where the board lives now
 A design (--product design, --text-file with ## sections separated by blank lines, --from the open thread whose sessions answer him; --inbox-session/--inbox-message name the Inbox thread the work belongs to, where one line about the publication is filed) is reviewed section by section in thnkr.ing's Lab. Answer his section post with board post --reply-to <his entry> --target <the section address> --intent answer; register your own challenge to an exact passage with --target <passage> --intent challenge. To propose or select a disposition, use --intent disposition --target <current design passage> --disposition-file <JSON object with challenge, version, scope, kind, evidence, nextActor, nextAction, replaces, selected>; the Lab enforces author and decider authority. Place words he said in an Inbox thread at a section with --speaker tejas --his-input <that input id> --intent ask|comment (you stay the author of record); add --inbox-session/--inbox-message so a later answer to that placed post is also filed into his Inbox thread. board verdict records his per-version verdict on a design (approve is refused while a section is contested or has an unanswered ask; the refusal lists them). board cards files the author's section cards (claim, consequence, recommendation, alternative, question) under their sections and one line each into the Inbox thread. board read --address lab:<design> prints the review: each section's state (missing|open|asked|answered|accepted|contested), his entries and the replies, and owed, the sections still waiting on an agent. The board defaults to "lab". Ends: question answered|unanswerable; proposal decided|withdrawn (sealed positions stay hidden from other members until every member posted or the owner or decider reveals); report accepted|retracted; task done|failed (one exclusive claim; the claimer closes); meeting closed. A mention wakes that session once with a notice that owes no reply; nothing else interrupts anyone. It is stored in thnkr.ing's lab journal, so board commands run from a session on the server.
 
-A watch wakes this conversation once, with no model awake meanwhile: when the file or directory changes (a deletion counts), when the command finishes (with its exit code), or at --until, whichever comes first (at most 30 days). One service input watch:<id>:<fired|expired|failed|cancelled> then reaches this session and says what was observed and any gap in observation (a Concierge restart or a sleeping Mac is a recorded gap). It is on this agent's own machine (its runner, when it runs on one); the same --action-id registers nothing twice. A progress reply that says it is waiting for a release names the active watch with --waiting-on-watch <watch-id>; Concierge checks the link between the open request and the watch, then wakes the agent when it changes.
+A watch wakes this conversation once, with no model awake meanwhile: when the file or directory changes (a deletion counts), when the command finishes (with its exit code), or at --until, whichever comes first (at most 30 days). One service input watch:<id>:<fired|expired|failed|cancelled> then reaches this session and says what was observed and any gap in observation (a Concierge restart or a sleeping Mac is a recorded gap). It is on this agent's own machine (its runner, when it runs on one); the same --action-id registers nothing twice. A progress reply that says it is waiting for a release names the active watch with --waiting-on-watch <watch-id>. For a specific Concierge repair, --renew --required-commit <full-sha> on /var/lib/slack-concierge-deployment/current wakes only after a successful installed release includes that commit. An unscoped file watch still wakes on any change.
 
 Topics — the Inbox's recognizable conversations. Every mutation takes <source-flags> and --action-id A; --expected-revision N refuses a stale decision.
 router-actions.sh sessions topics list <source-flags> [--state open|background|closed|all] [--query q] [--limit N] [--cursor C]
@@ -178,7 +178,7 @@ export type SessionCommunicationRequest =
   | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string; reason?: string } }
   | { operation: "handoff"; body: { source: Source; verb: 'propose'|'accept'|'withdraw'; address?: string; provider?: string; model?: string; effort?: string; reason?: string; session_name?: string; action_id: string; handoff_id?: string; digest?: string } }
   | { operation: "obligations"; body: { source: Source; address?: string } }
-  | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'; action_id?: string; until?: string; renew?: boolean; path?: string; argv?: string[]; cwd?: string; watch_id?: string; runner?: string } }
+  | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'; action_id?: string; until?: string; renew?: boolean; requiredCommit?: string; path?: string; argv?: string[]; cwd?: string; watch_id?: string; runner?: string } }
   | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'; turn_id?:number; action_id?:string;cursor?:string } }
   | { operation: "pause"; body: { source: Source; verb:'status'|'all'|'resume'; action_id?:string; session_ids?:string[] } }
   | { operation: "board"; body: { source?: Source; verb: string; [key: string]: unknown } };
@@ -560,7 +560,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     while(options.length){const flag=options.shift()!;
       if(flag==='--renew') {if(renew)invalid('Repeated --renew.');renew=true;continue;}
       const value=options.shift();
-      if(!['--source-input','--source-run','--source-channel','--source-ts','--action-id','--until','--cwd'].includes(flag)||!value?.trim()||flags.has(flag))invalid(`Invalid watch option ${flag}.`);
+      if(!['--source-input','--source-run','--source-channel','--source-ts','--action-id','--until','--cwd','--required-commit'].includes(flag)||!value?.trim()||flags.has(flag))invalid(`Invalid watch option ${flag}.`);
       flags.set(flag,value);
     }
     const source=sourceFrom(flags),actionId=flags.get('--action-id'),until=flags.get('--until'),cwd=flags.get('--cwd');
@@ -572,9 +572,11 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     } else if(separatorAt>=0||cwd)invalid(`watch ${sub} takes no command or --cwd.`);
     if(sub!=='file'&&sub!=='command'&&until)invalid(`watch ${sub} takes no --until.`);
     if(renew&&sub!=='file')invalid('--renew is only for a file watch.');
+    if(flags.has('--required-commit')&&(sub!=='file'||!renew))invalid('--required-commit needs a renewing file watch.');
     // A bare command name becomes the path the agent's own shell would run.
     const resolved=sub==='command'&&!argv[0]!.includes('/')?(Bun.which(argv[0]!)??argv[0]!):argv[0];
     return {operation:'watch',body:{source,verb:sub,...(actionId?{action_id:actionId}:{}),...(until?{until}:{}),...(renew?{renew:true}:{}),
+      ...(flags.has('--required-commit')?{requiredCommit:flags.get('--required-commit')!}:{}),
       ...(sub==='file'?{path:target!}:{}),...(sub==='cancel'?{watch_id:target!}:{}),
       ...(sub==='command'?{argv:[resolved!,...argv.slice(1)],cwd:cwd!}:{}),
       // An agent on a runner watches its own machine's files and runs its command there (RUNNERS.md).
