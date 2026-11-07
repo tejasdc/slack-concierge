@@ -222,6 +222,11 @@ shares the same physical project history, the runner uses the fork in place and 
 file onto itself. Resurrection records the chosen runner and account with the new conversation so
 a later turn cannot silently resume against the owner's home. Distinct or missing provider history
 copies refuse continuation. Local-only peer conversations keep their existing local restore path.
+For side questions, the runner keeps one saved native fork in the source provider home per source
+conversation. Its manifest records the last completed final-answer boundary and fork identity.
+Every question turn resumes that fork without saving its own turn. A running main turn leaves the
+boundary unchanged. A newer completed final answer makes a new fork and removes the old one;
+Codex forks pin `lastTurnId` to the owner's completed provider turn before any question starts.
 Native forks use the same saved runner, account and project binding. The owner sends the native
 conversation ID, exact turn boundary, stable fork source and project identities; the runner resolves
 its own account home and project folders before asking Claude Code or its local Codex App Server to

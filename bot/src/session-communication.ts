@@ -372,8 +372,8 @@ export class SessionCommunicationCoordinator {
         return `cannot be asked (${view.capabilities.reason ?? 'no provider can reopen it'}); read it with sessions context ${address}`;
     }
     /**
-     * A question to an archived or paused session, answered from a throwaway copy of its
-     * conversation (the same copy a side question in thnkr.ing uses): no tools, never saved, and
+     * A question to an archived or paused session, answered from its reusable final-answer copy
+     * (the same copy a side question in thnkr.ing uses): no tools, question turn never saved, and
      * the session itself is not woken or changed. The answer is this command's result; one that
      * takes longer than the command may wait is collected by repeating the same command.
      */
@@ -383,7 +383,10 @@ export class SessionCommunicationCoordinator {
         const question = input.text.trim().slice(0, 8000);
         const id = `${session.id}:request-side:${hash(`${actor.inputId ?? ''}:${input.action_id}:${question}`)}`;
         const asked = await awaitingOutside(() => askAsideOnce(id, () => ({provider: session.provider_id, sessionUuid: session.agent_session_uuid!,
-            cwd: meta.cwd ?? this.dependencies.owner.defaultCwd, model: meta.model ?? null, running: false, passage: '', question, earlier: [],
+            cwd: meta.cwd ?? this.dependencies.owner.defaultCwd, model: meta.model ?? null,
+            boundary:(db.query(`SELECT provider_turn_id FROM turns WHERE session_id=? AND status='done'
+              AND provider_turn_id IS NOT NULL ORDER BY id DESC LIMIT 1`).get(session.id) as {provider_turn_id:string}|null)?.provider_turn_id??null,
+            passage: '', question, earlier: [],
             agentAsker: `concierge:${actor.session}`}), 90_000));
         const address = sessionAddress(session);
         if (asked.state === 'asking')
@@ -391,7 +394,7 @@ export class SessionCommunicationCoordinator {
                 notice: `This session is ${frozen.state}, so a side copy of its conversation is answering. It has not finished yet: repeat the same command with the same --action-id to collect the answer.`};
         log('info', 'request_side_copy_answered', {session_id: session.id, duration_ms: asked.durationMs});
         return {state: 'answered', address, answeredBy: 'side copy', answer: asked.answer, model: asked.model,
-            notice: `This session is ${frozen.state}, so a side copy of its conversation answered (no tools, nothing saved; the session itself was not woken). No request was opened.`};
+            notice: `This session is ${frozen.state}, so a saved side copy of its conversation answered (no tools; this question was not saved and the session itself was not woken). No request was opened.`};
     }
     private peerActor(actor: Actor): PeerActor {
         return {session:actor.session,turn:actor.turn,inputId:actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id};
