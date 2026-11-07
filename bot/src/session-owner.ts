@@ -50,7 +50,7 @@ import {providerOwnerEnvironment} from './provider-owner-environment';
 import {escalationReason,topModel} from './model-escalation';
 import {humanChoseTopModel} from './model-escalation-custody';
 import {STILL_WAITING_MINUTES} from './request-liveness';
-import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,discardQueuedTurnContinuations,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordHeldInputReceiptEvent,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
+import {HOLDING_OUTCOMES,acceptedInputForTurn,acknowledgedProviderRunner,bindSessionProvider,createNativeSession,discardQueuedTurnContinuations,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordHeldInputReceiptEvent,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
 import {INBOX_PURPOSE,REPAIR_AGENT_PURPOSE,purposeFromFirstWords} from './session-purpose';
 import {getRouterThreadContext} from './router-search';
@@ -1473,15 +1473,21 @@ export class SessionOwner {
   private persistedProjectRunner(metadata:NativeSessionMetadata,session?:SessionRow):string|null {
     if(Object.hasOwn(metadata,'providerRunner'))return metadata.providerRunner??null;
     if(session?.agent_session_uuid){
-      const last=db.query(`SELECT execution.supervisor,attempt.runner FROM executions execution
-        LEFT JOIN runner_attempts attempt ON attempt.job_id='turn:'||execution.execution_id
-        WHERE execution.session_id=? ORDER BY execution.created_at_ms DESC,attempt.started_at_ms DESC LIMIT 1`)
-        .get(session.id) as {supervisor:string;runner:string|null}|null;
-      if(last?.supervisor==='runner'){
-        if(!last.runner)throw new SessionOwnerError('This conversation ran on a runner, but its exact runner is unavailable.',424,'PROVIDER_RUNNER_UNKNOWN');
+      try {
+        const last=acknowledgedProviderRunner(session);
+        if(last.status==='missing'){
+          if(metadata.lineage&&session.parent_session_id){
+            const parent=getSessionById(session.parent_session_id);
+            if(parent?.provider_id===session.provider_id)return this.persistedProjectRunner(sessionMetadata(parent),parent);
+          }
+          if(metadata.resurrection)return null;
+          throw new SessionOwnerError('This conversation has no acknowledged machine binding.',424,'PROVIDER_RUNNER_UNKNOWN');
+        }
         return last.runner;
+      } catch(error) {
+        if(error instanceof SessionOwnerError)throw error;
+        throw new SessionOwnerError(String((error as Error).message??error),424,'PROVIDER_RUNNER_UNKNOWN');
       }
-      return null;
     }
     return this.configuredProjectRunner();
   }

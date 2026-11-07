@@ -10,8 +10,7 @@ import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {basename,join} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
 import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,requeueProvenUnsentNativeChatGptTurn,requeueOrphanedPreAdmissionTurn,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
-import {acceptedInputForTurn,adoptProviderConversationTitle,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,providerRunnerForSession,recordRecoveredResultAttention,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
-import {lastLaunchedConversationHome} from './session-runner-home';
+import {acceptedInputForTurn,acknowledgedProviderRunner,adoptProviderConversationTitle,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,providerRunnerForSession,recordRecoveredResultAttention,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
 import {flushPendingProviderProgressEvents} from './session-projection';
 import {recordResultTurnOutcome,recordUnsaidTurnOutcome} from './session-turn-outcome';
@@ -1451,7 +1450,7 @@ export class SessionExecutionHost {
     // A runner-bound conversation resolves its stable project identity on that machine. Owner
     // absolute cwd paths are retained for presentation only and never go into a remote manifest.
     const onRunner=!adoption&&!!runnerTarget&&(session.provider_id==='claude-code'||session.provider_id==='antigravity'||outsideCodex);
-    if(onRunner&&providerRunnerForSession(session).status==='legacy'&&session.agent_session_uuid===null)
+    if(providerRunnerForSession(session).status==='legacy'&&(session.agent_session_uuid!==null||onRunner))
       updateSessionMetadata(session.id,{providerRunner:runnerTarget});
     let cwd=onRunner?'':this.cwd(session);
     if(onRunner) {
@@ -1636,6 +1635,8 @@ export class SessionExecutionHost {
         }}:{}),
       services:{bindProviderSession:(sessionId,provider,uuid)=>{
         bindSessionProvider(sessionId,provider,uuid);
+        if((provider==='claude-code'||provider==='antigravity')&&providerRunnerForSession(getSessionById(sessionId)!).status==='legacy')
+          updateSessionMetadata(sessionId,{providerRunner:runnerTarget});
         // An outside run's thread lives in its own CLI process; the shared App Server must not load it.
         if(provider==='codex'&&!metadata.outside)void this.options.providerSessionBound?.(uuid).catch(error=>log('warn','codex_session_subscription_failed',{provider_thread_uuid:uuid,...errorFields(error)}));
       },deliverResult:result=>this.deliverResult(result)},
@@ -2064,8 +2065,8 @@ export function chooseTurnRunner(session:SessionRow,metadata=sessionMetadata(ses
     // A bound native conversation keeps the machine that last ran it. Current deployment
     // settings cannot recover that fact: use the durable execution and lease that actually
     // launched its latest turn, and refuse if that evidence is incomplete or ambiguous.
-    const prior=lastLaunchedConversationHome(db,session.id,session.provider_id);
-    if(!prior){
+    const prior=acknowledgedProviderRunner(session);
+    if(prior.status==='missing'){
       // Older local copies predate the explicit local binding. A fork inherited its parent's
       // machine; a local resurrection copied the transcript into this machine's provider home.
       if(metadata.lineage&&session.parent_session_id){
@@ -2075,11 +2076,7 @@ export function chooseTurnRunner(session:SessionRow,metadata=sessionMetadata(ses
       if(metadata.resurrection)return null;
       throw new Error(`This ${session.provider_id} conversation has no saved machine binding and no exact execution record; refusing to guess its home.`);
     }
-    if(prior.supervisor===RUNNER_SUPERVISOR){
-      if(!prior.runner)throw new Error(`This ${session.provider_id} conversation ran on a runner, but its exact runner lease is unavailable.`);
-      return prior.runner;
-    }
-    return null;
+    return prior.runner;
   }
   if(session.provider_id==='claude-code'&&!turnRunsOnRunner(metadata))return null;
   if(session.provider_id==='antigravity'&&(process.env.CONCIERGE_TURN_RUNNERS?.trim()||'marked')==='off')return null;
