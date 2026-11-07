@@ -6,6 +6,7 @@ import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {db,executionChanged,finishTurn,getSessionById,settleTurnDependencies} from './state';
 import {createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,retainSessionInput,sessionInputProvenance,sessionMetadata,stablePayload,updateSessionMetadata} from './session-inputs';
+import {lastLaunchedConversationHome} from './session-runner-home';
 import {safeTurn,type WaitingTurn} from './provider-exhaustion-recovery';
 import {parseProviderSelector,resolveProviderSelector,normalizeReasoningEffort} from './aliases';
 import {escalationReason,topModel} from './model-escalation';
@@ -111,11 +112,7 @@ async function worktrees(sessionId:number):Promise<{items:Item[];omissions:strin
   let runner=typeof meta.providerRunner==='string'?meta.providerRunner:null;
   if(meta.providerRunner===undefined&&session.provider_id==='codex')runner=process.env.CONCIERGE_CODEX_RUNNER?.trim()||null;
   if(meta.providerRunner===undefined&&session.provider_id==='claude-code'&&session.agent_session_uuid){
-    const prior=db.query(`SELECT execution.supervisor,attempt.runner FROM executions execution
-      LEFT JOIN runner_attempts attempt ON attempt.job_id='turn:'||execution.execution_id
-      WHERE execution.session_id=? AND execution.provider='claude-code'
-      ORDER BY execution.created_at_ms DESC,attempt.started_at_ms DESC LIMIT 1`).get(sessionId) as
-      {supervisor:string;runner:string|null}|null;
+    const prior=lastLaunchedConversationHome(db,sessionId,'claude-code');
     if(prior?.supervisor==='runner'){
       if(!prior.runner)return {items:[],omissions:['The exact runner lease for this conversation is unavailable; worktrees were not inspected.']};
       runner=prior.runner;

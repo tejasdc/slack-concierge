@@ -182,7 +182,9 @@ the Inbox's sessions.
 `sessions topics message <messageId>` returns one Inbox message's words, author, time,
 attachments, thread root and topic: a capture, his reply, an agent's post, result or routed request,
 or a request input that a topic request names as its source or dispatch. Topic reads carry ids and
-short excerpts; this is the read for judging the message itself.
+short excerpts; this is the read for judging the message itself. Its `from` and full `author`
+resolve the current author, including a later correction to an originally human-origin input;
+an unproved user-role message reports unknown rather than Tejas.
 `sessions context` and the session view expose only a session's explicit role binding.
 
 `sessions schedule --role <role> --at <future ISO-8601 time> [--every-ms <interval>] --summary "<one line>" <source-flags> --action-id A -- <text>`
@@ -192,6 +194,10 @@ schedule is refused with its exact turn ID; change its time in Thinkering Saved 
 with `sessions saved cancel <turn-id>` before replacing it. `sessions schedule --project` remains available for
 registered projects. The read caps repeating schedules at 32, watches per role at 20, and host
 timers at 128; its coverage field says when a cap was reached.
+On a runner, the role's declared workspace-relative folder (such as `agents/concierge-repair`)
+must resolve to that runner's registered project at that exact folder before a wake is saved.
+The returned project identity belongs to the existing bound session; a nested agent folder does
+not cause a new session or a fallback to a similarly named root project.
 
 To stop any repeating schedule, run `sessions cancel <request-id>` on the request that created it, or
 `sessions saved cancel <turn-id>` on its queued firing. Either one withdraws every queued firing and

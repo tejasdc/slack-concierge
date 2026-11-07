@@ -44,6 +44,13 @@ Linux only) changes where the disk is waited for, not what is written or when it
 - `ledgerDurable()` (`ledger-durability-barrier.ts`) resolves once every commit made before the
   call is synced. Waiters resolve in call order. It samples the connection's `total_changes()` in a
   microtask, after any enclosing synchronous transaction has committed.
+- A slow-sync record joins up to 16 labelled released waiters to that successful sync. It keeps
+  the committed change target sampled by the barrier, sample time, the sync already in flight
+  when a later target arrived, the selected sync ID, worker notification time and owner delivery
+  time. The owner socket supplies its gateway admission ID; provider launch supplies its exact
+  accepted input ID. Other callers remain unlabelled. IDs are bounded, and no request body or
+  dialogue is logged. The record gives a caller-to-barrier timeline, not the filesystem work
+  responsible for a slow `fdatasync`; the host recorder owns that separate attribution.
 - **Nothing leaves the process before the rows it rests on are durable.** The barrier sits on the
   owner socket's non-GET answers (command receipts, for the gateway, Thinkering and router
   commands alike), on a provider run's start (Claude, Codex, ChatGPT), on every command to a Claude

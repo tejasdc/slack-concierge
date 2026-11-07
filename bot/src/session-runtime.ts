@@ -172,6 +172,7 @@ export async function startSessionRuntime() {
   parkedRecovery.unref?.();
   recoverUnsettledSteeringMessages(isProcessIdentityAlive);
   host.recoverOutsideWaitingInputs();
+  host.recoverAntigravityUnsentInputs();
   recoverTurnArtifactDeliveryClaims(isProcessIdentityAlive);
   const activeTurnIds=()=>[...new Set([...registry.activeTurns,...queue.activeTurns,...active])];
   await reconcileRecoverableTurns({client:null,instanceId,activeTurnIds:activeTurnIds(),isOwnerAlive:isProcessIdentityAlive,nativeOnly:true,

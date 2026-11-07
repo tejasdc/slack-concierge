@@ -403,6 +403,11 @@ remains fully open to new turns and queued user work continues normally. A turn
 completion wakes the runner only after Concierge has synchronously promoted any
 queued successor. A long fallback wake protects liveness if a nonstandard owner
 completion emits no signal; it is not an active two-second provider poll.
+Runner sign-in start reserves its pending operation against that same drain gate
+before launching the provider CLI. If the release has claimed the gate, the
+sign-in does not start; if the sign-in reserved first, drain waits for it. The
+[sign-in interruption record](../incidents/2026-11-06-signin-started-inside-deployment-drain.md)
+captures the race this excludes.
 Further accepted pushes advance the same durable desired record and are included
 by the active pull or the next run after the current run reaches a terminal state.
 
@@ -942,6 +947,10 @@ with the exact request ID and source pair; it reads through the owner API.
 The raw-copy check recognizes copy tools in command position, so words such as
 `install` in a quoted reply are ordinary message text. A standalone session helper
 call is handled as an owner API call; a chained shell copy is still checked.
+The agent-ecology committee's direct `open --help` and `twin --help` commands are
+recognized as argparse help, matching their already-allowed Python module form. The
+guard still checks the command text and inspects that script for other actions; see
+[the committee help failure record](../incidents/2026-11-06-committee-help-copy-guard.md).
 The machine wrapper makes this current check authoritative before invoking an
 older running agent's pinned semantic hook. At installation it derives a compatibility
 copy from each retained, recognized bundled hook, removing exactly its duplicate

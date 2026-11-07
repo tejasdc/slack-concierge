@@ -35,10 +35,12 @@
  * facts are refreshed every thirty minutes, not with every three-minute bar reading.
  */
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { log } from "./log";
 import { CLAUDE_EXECUTABLE, accountHome, credentialPath, currentAccount, listProfiles } from "./provider-accounts";
+import { claudeKeychainOauth } from "./claude-keychain";
 
 export type UsageCreditsFacts = Readonly<{
   line: string;
@@ -201,56 +203,104 @@ function claudeCredentialFor(account: string): string | null {
   return null;
 }
 
-/** A renewed login can be retried immediately without reading or logging its secret. */
-export function claudeCredentialVersion(account: string): string | null {
+function macClaudeHome(account: string): string | null {
+  const profile = listProfiles("claude-code").find(entry => entry.label === account && entry.signedIn);
+  return profile ? accountHome("claude-code", profile.id)
+    : currentAccount("claude-code")?.label === account ? join(homedir(), ".claude") : null;
+}
+
+function claudeHomeEnvironment(home: string): Record<string, string | undefined> {
+  const env = { ...process.env };
+  // Claude's default macOS login selects the unsuffixed Keychain item only when unset.
+  if (process.platform === "darwin" && home === join(homedir(), ".claude")) delete env.CLAUDE_CONFIG_DIR;
+  else env.CLAUDE_CONFIG_DIR = home;
+  return env;
+}
+
+/** Keychain presence is not sign-in proof; ask Claude in the exact saved home. */
+export async function macClaudeSignIn(account: string): Promise<"signed-in" | "signed-out" | "unverified"> {
+  if (process.platform !== "darwin") return "unverified";
+  const home = macClaudeHome(account);
+  if (!home) return "signed-out";
+  try {
+    const child = Bun.spawn([CLAUDE_EXECUTABLE, "auth", "status"], {
+      env: claudeHomeEnvironment(home), stdin: "ignore", stdout: "pipe", stderr: "ignore",
+    });
+    const deadline = setTimeout(() => child.kill(), 15_000);
+    try {
+      const [code, output] = await Promise.all([child.exited, new Response(child.stdout).text()]);
+      const status = JSON.parse(output);
+      if (status?.loggedIn === false) return "signed-out";
+      if (code !== 0) return "unverified";
+      if (status?.loggedIn !== true || status?.authMethod !== "claude.ai" || status?.apiProvider !== "firstParty"
+        || status?.email !== account || typeof status?.configDirectory !== "string"
+        || realpathSync(status.configDirectory) !== realpathSync(home)) return "unverified";
+      return "signed-in";
+    } finally { clearTimeout(deadline); }
+  } catch { return "unverified"; }
+}
+
+function claudeLogin(account: string): { oauth: any; version: string | null; home: string } | null {
+  if (process.platform === "darwin") {
+    const home = macClaudeHome(account);
+    if (!home) return null;
+    const credential = claudeKeychainOauth(home);
+    return credential ? { ...credential, home } : null;
+  }
   const path = claudeCredentialFor(account);
   if (!path) return null;
   try {
+    const oauth = JSON.parse(readFileSync(path, "utf8"))?.claudeAiOauth;
     const stat = statSync(path, { bigint: true });
-    return `${stat.ino}:${stat.mtimeNs}:${stat.size}`;
+    return { oauth, version: `${stat.ino}:${stat.mtimeNs}:${stat.size}`, home: dirname(path) };
   } catch { return null; }
 }
 
-const renewingOwnLogins = new Set<string>();
+/** A renewed login can be retried immediately without reading or logging its secret. */
+export function claudeCredentialVersion(account: string): string | null {
+  return claudeLogin(account)?.version ?? null;
+}
+
+const renewingOwnLogins = new Map<string, Promise<void>>();
 const ownLoginRenewalRetry = new Map<string, { version: string | null; failures: number; nextAt: number }>();
-/** Ask Claude Code to renew its own expired login; /usage is local and uses no model tokens. */
-export function renewClaudeOwnLoginForUsage(account: string): void {
-  const path = claudeCredentialFor(account);
-  if (!path || liveAccessToken(path) || renewingOwnLogins.has(account)) return;
-  let canRenew = false;
-  try { canRenew = !!JSON.parse(readFileSync(path, "utf8"))?.claudeAiOauth?.refreshToken; }
-  catch { return; }
-  if (!canRenew) return;
+/** Ask Claude Code to renew its own expired or provider-rejected login; /usage uses no model tokens. */
+export function renewClaudeOwnLoginForUsage(account: string, rejected = false): Promise<void> {
+  const login = claudeLogin(account);
+  if (!login || !rejected && liveAccessToken(login.oauth)) return Promise.resolve();
+  const inFlight = renewingOwnLogins.get(account);
+  if (inFlight) return inFlight;
+  if (typeof login.oauth?.refreshToken !== "string" || !login.oauth.refreshToken) return Promise.resolve();
   const version = claudeCredentialVersion(account);
   const retry = ownLoginRenewalRetry.get(account);
-  if (retry?.version === version && Date.now() < retry.nextAt) return;
+  if (retry?.version === version && Date.now() < retry.nextAt) return Promise.resolve();
   const failures = retry?.version === version ? retry.failures + 1 : 1;
   ownLoginRenewalRetry.set(account, { version, failures,
     nextAt: Date.now() + Math.min(5 * 60_000 * 2 ** (failures - 1), 30 * 60_000) });
-  renewingOwnLogins.add(account);
-  void (async () => {
+  const renewal = (async () => {
+    // Claude Code's default macOS login uses the unsuffixed Keychain service only when
+    // CLAUDE_CONFIG_DIR is absent. Supplying ~/.claude selects another Keychain item.
     const child = Bun.spawn([CLAUDE_EXECUTABLE, "-p", "/usage", "--no-session-persistence", "--output-format", "json"], {
-      env: { ...process.env, CLAUDE_CONFIG_DIR: dirname(path) }, stdin: "ignore", stdout: "ignore", stderr: "ignore",
+      env: claudeHomeEnvironment(login.home), stdin: "ignore", stdout: "ignore", stderr: "ignore",
     });
     const deadline = setTimeout(() => child.kill(), 120_000);
     try {
       const code = await child.exited;
-      const renewed = !!liveAccessToken(path);
+      const after = claudeLogin(account);
+      const renewed = after?.version !== version && !!liveAccessToken(after?.oauth);
       if (renewed) ownLoginRenewalRetry.delete(account);
       log("info", "claude_own_login_renewal", { account, renewed, exit_code: code });
     } finally {
       clearTimeout(deadline);
-      renewingOwnLogins.delete(account);
     }
   })().catch(error => {
-    renewingOwnLogins.delete(account);
     log("warn", "claude_own_login_renewal_failed", { account, error_name: error instanceof Error ? error.name : "Error" });
-  });
+  }).finally(() => { renewingOwnLogins.delete(account); });
+  renewingOwnLogins.set(account, renewal);
+  return renewal;
 }
 
-function liveAccessToken(path: string): string | null {
+function liveAccessToken(oauth: any): string | null {
   try {
-    const oauth = JSON.parse(readFileSync(path, "utf8"))?.claudeAiOauth;
     const token = oauth?.accessToken, expiresAt = Number(oauth?.expiresAt);
     if (typeof token !== "string" || !token) return null;
     // The reader never refreshes a token directly; Claude Code handles renewal through /usage.
@@ -278,11 +328,10 @@ export type OwnLoginWindow = Readonly<{ name: string; usedPercent: number; reset
  * never copied; this reads it where it lives after Claude Code renews it when needed.
  */
 export async function claudeWindowsFromOwnLogin(account: string): Promise<OwnLoginWindow[] | null> {
-  const path = claudeCredentialFor(account);
-  const token = path ? liveAccessToken(path) : null;
+  const token = liveAccessToken(claudeLogin(account)?.oauth);
   if (!token) return null;
-  try {
-    const usage = await oauthGet(token, "/api/oauth/usage");
+  const read = async (accessToken: string): Promise<OwnLoginWindow[] | null> => {
+    const usage = await oauthGet(accessToken, "/api/oauth/usage");
     const windows: OwnLoginWindow[] = [];
     const add = (name: string, used: unknown, resetsAt: unknown) => {
       if (typeof used !== "number" || !Number.isFinite(used)) return;
@@ -297,7 +346,18 @@ export async function claudeWindowsFromOwnLogin(account: string): Promise<OwnLog
         add(`Weekly · ${model} only`, limit.percent, limit.resets_at);
     }
     return windows.some(window => window.name === "Weekly") ? windows : null;
+  };
+  try {
+    return await read(token);
   } catch (error) {
+    if (error instanceof Error && error.message === "HTTP 401") {
+      await renewClaudeOwnLoginForUsage(account, true);
+      const renewedToken = liveAccessToken(claudeLogin(account)?.oauth);
+      if (renewedToken) {
+        try { return await read(renewedToken); }
+        catch (retried) { log("info", "claude_own_login_usage_unavailable", { error: retried instanceof Error ? retried.message : String(retried) }); return null; }
+      }
+    }
     log("info", "claude_own_login_usage_unavailable", { error: error instanceof Error ? error.message : String(error) });
     return null;
   }
@@ -309,11 +369,11 @@ const cache = new Map<string, ClaudeAccountFacts>();
 export async function claudeAccountFacts(account: string, when: (ms: number) => string, nowMs = Date.now()): Promise<ClaudeAccountFacts | null> {
   const kept = cache.get(account) ?? null;
   if (kept && nowMs - Date.parse(kept.readAt) < FACTS_REFRESH_MS) return kept;
-  const path = claudeCredentialFor(account);
-  const token = path ? liveAccessToken(path) : null;
+  const login = claudeLogin(account);
+  const token = liveAccessToken(login?.oauth);
   if (!token) {
     // Said in the log, never silently: a row with no plan or credit lines is otherwise undiagnosable.
-    log("info", "claude_account_facts_no_live_login", { credential_found: path !== null, kept: kept !== null });
+    log("info", "claude_account_facts_no_live_login", { credential_found: login !== null, kept: kept !== null });
     return kept;
   }
   try {

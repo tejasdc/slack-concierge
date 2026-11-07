@@ -222,6 +222,18 @@ shares the same physical project history, the runner uses the fork in place and 
 file onto itself. Resurrection records the chosen runner and account with the new conversation so
 a later turn cannot silently resume against the owner's home. Distinct or missing provider history
 copies refuse continuation. Local-only peer conversations keep their existing local restore path.
+For side questions, the runner keeps one saved native fork in the source provider home per source
+conversation. Its manifest records the last completed final-answer boundary and fork identity.
+Every question reads that fork without saving its own turn. A running main turn leaves the
+boundary unchanged. A newer completed final answer makes a new fork and removes the old one;
+Codex forks pin `lastTurnId` to the owner's completed provider turn before any question starts.
+Codex's App Server holds the saved fork's writer; each question therefore uses an ephemeral fork
+from the saved copy in a read-only sandbox, leaving the reusable copy untouched. The observed
+[writer conflict](../incidents/2026-11-07-codex-side-copy-writer-conflict.md) records why.
+Codex's source transcript filename includes a timestamp before the UUID. The runner resolves that
+exact UUID at the filename's end in its credential-verified homes, then requires one physical match;
+the marked side-question failure and repair are recorded in
+[the November 7 case](../incidents/2026-11-07-codex-side-question-runner-could-not-find-source.md).
 Native forks use the same saved runner, account and project binding. The owner sends the native
 conversation ID, exact turn boundary, stable fork source and project identities; the runner resolves
 its own account home and project folders before asking Claude Code or its local Codex App Server to
@@ -253,6 +265,11 @@ turn by its thread and turn id), so moving it only changes where the bridge's We
 2. With `CONCIERGE_CODEX_RUNNER=<runner>` on the owner, every App Server client (turns, the session
    observer, history workers, device sign-in) starts the same bridge against the owner's
    `requests.sock` at `/runner/v1/relay/connect?runner=<runner>&target=codex-app-server`.
+   Runner-owned account activation also opens this bridge to prove the new App Server login. Its
+   executable is deeper in the sealed release than the owner's application bundle; the bridge
+   lookup walks to that release's manifest, and candidate validation checks the runner entry
+   before activation. The [November 6 failure record](../incidents/2026-11-06-runner-account-switch-lost-bridge.md)
+   records the queue impact when that lookup used the owner's fixed depth.
 3. The gateway (`runner-relay.ts`, inside the front-door process, no ledger) asks the runner over its
    channel to open `/runner/v1/relay/accept?id=…`; the runner opens a fresh connection to its own
    App Server socket and the gateway pairs the two. Messages pass unchanged and in order, including
@@ -413,6 +430,10 @@ never treats the runner's default `.claude` folder as the selected account. A ne
 sign-in links the machine-shared settings, instructions, hooks, skills and project history into
 that account home while keeping credentials and other per-login files separate. Conflicting
 private shared files are retained under `.unlinked-*` before the shared link is installed.
+When claude-swap's separate saved copy reports a sign-in problem, the runner reads allowance
+from the exact home it launches. A successful provider read from that home clears the stale
+claude-swap warning for the Accounts view and dispatch. The read is cached for five minutes per
+credential version; a newly filed login bypasses that cache.
 The runner resolves a provider account label to its own verified home before launching Claude Code.
 Home paths stay on that machine. `accounts.transcript` reports `unique`, `shared`, `missing` or
 `ambiguous` for an exact provider session UUID. `shared` means Claude account homes expose the same
@@ -543,10 +564,12 @@ runner-local; updates compare the observed SHA-256 before replacing the canonica
 atomic rename. Task appends carry an owner-generated idempotency marker, so a retry after an uncertain
 reply finds the existing item instead of duplicating it.
 
-A handoff first recovers the conversation's exact runner from its saved binding
-or most recent execution lease, resolves its project there, and reads the worktrees there. If a
-runner lease or project identity is unavailable, the handoff reports that omission instead of
-examining the owner's checkout.
+A bound conversation without a saved runner recovers its machine from the most recent
+execution whose host actually launched (`executions.unit` is present). A later unclaimed
+or withdrawn execution intent cannot move the conversation or hide its earlier runner.
+If that launched execution was on a runner but its exact lease is missing, resume refuses
+to guess the machine; a handoff reports the omission instead of examining the owner's
+checkout. Handoffs resolve the recovered runner's project and read worktrees there.
 
 The Google paid-credit check and CLI lookup is `google.executable` (`runner-providers.ts`). It runs
 against the runner's Google settings and returns only the executable path. A missing or unreachable
@@ -630,12 +653,15 @@ state so a retry returns the first result. Neither owner paths nor arbitrary fil
 accepted by these methods. Check with `bun bot/scripts/runner-provider-history-check.ts`.
 
 Usage breakdown follows the same boundary. The runner scans its registered account homes into its
-own incremental cache and returns path-free, ordered pages of provider usage records. Each cursor
-pins the report's time window, a stable row high-water mark and the provider/home set, so the owner can fetch every page
-without double counting. The owner joins those records to its local session, turn and account
-events, keeping the existing page classifications and cache diagnostics. It replaces cached runner
-rows only after every configured runner answers; a missing runner leaves the previously published
-report and its timestamp intact. Relay pages are capped at 100 records and 192 KiB.
+own incremental cache. For a report, the owner sends a compressed, one-week snapshot of the
+session, turn, account and prompt-cache facts needed for attribution. The runner joins those facts
+to its local usage cache and returns a compressed report, including the account/session breakdown
+and bounded cache diagnostics. The owner combines reports from its configured runners and publishes
+the new result only after all answer. A missing runner leaves the previous result and its timestamp
+intact. The owner no longer retransfers every raw usage record on each five-minute refresh. The
+older path-free record pages remain for focused diagnostics, not the recurring report. The report
+call caps its compressed request and response independently of the number of usage records; a
+one-person fixture with 100,004 calls returned in two runner calls.
 
 ## Heavy work out of the owner's request loop
 
