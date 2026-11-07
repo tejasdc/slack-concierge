@@ -47,9 +47,14 @@ private func enabled(_ element: AXUIElement) throws -> Bool {
     }
     return CFBooleanGetValue(value as! CFBoolean)
 }
+private let leafRoles: Set<String> = [
+    "AXButton", "AXStaticText", "AXTextField", "AXTextArea", "AXImage", "AXLink",
+    "AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXSlider", "AXProgressIndicator",
+    "AXValueIndicator", "AXMenuItem", "AXSeparator"
+]
 private func children(_ element: AXUIElement, _ role: String?) throws -> [AXUIElement] {
     guard let value = try attribute(element, kAXChildrenAttribute) else {
-        if let role, ["AXButton","AXStaticText","AXTextField","AXTextArea","AXImage","AXLink"].contains(role) { return [] }
+        if let role, leafRoles.contains(role) { return [] }
         throw Refusal.reason("AX children unavailable")
     }
     guard let result = value as? [AXUIElement] else { throw Refusal.reason("Unexpected AX children") }
