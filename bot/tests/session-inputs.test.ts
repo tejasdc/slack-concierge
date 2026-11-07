@@ -1,10 +1,10 @@
 import {afterEach,beforeEach,expect,test} from 'bun:test';
 import {Database} from 'bun:sqlite';
 import {randomUUID} from 'node:crypto';
-import {db,claimNextQueuedTurn,getSessionById,createOrGetSession,upsertChannel,listInterruptedInputContext,finishTurn} from '../src/state';
+import {db,claimNextQueuedTurn,getSessionById,createOrGetSession,upsertChannel,listInterruptedInputContext,finishTurn,markTurnSteeringMessageFailed} from '../src/state';
 import {interruptedInputNotice} from '../src/input-continuity';
 import {initializeSessionOwnerSchema} from '../src/session-schema';
-import {attachSessionSteering,bindSessionProvider,createNativeSession,enqueueSessionInput,nativeRunId,retainSessionInput} from '../src/session-inputs';
+import {attachSessionSteering,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recoverUnsentAntigravityInputs,retainSessionInput} from '../src/session-inputs';
 import {acquireDatabaseTestLock} from './db-lock';
 
 let release:()=>void;
@@ -39,6 +39,28 @@ test('native inputs use existing FIFO without Slack claims and immutable actions
   expect(db.query('SELECT 1 FROM slack_user_input_claims WHERE turn_id IN (?,?)').get(a.turn_id,b.turn_id)).toBeNull();
   expect(nativeRunId(a.turn_id!)).toBe(nativeRunId(a.turn_id!));
   expect(db.query('SELECT 1 FROM turn_reaction_cleanups WHERE turn_id=?').get(a.turn_id)).toBeNull();
+});
+test('a never-written Antigravity follow-up returns to FIFO once after restart',()=>{
+  const target=createNativeSession('antigravity',{cwd:'/tmp',purpose:'chat',summary:'Sequential provider fixture'});
+  owned.push(target.id);
+  const first=enqueueSessionInput(input(target.id).input.id);
+  expect(claimNextQueuedTurn('native-owner')?.turn_id).toBe(first.turn_id);
+  const unsent=attachSessionSteering(input(target.id,randomUUID(),'still owed').input.id,first.turn_id!);
+  const settled=attachSessionSteering(input(target.id,randomUUID(),'already settled').input.id,first.turn_id!);
+  markTurnSteeringMessageFailed(unsent.steering_id!,'Never written to the provider.');
+  markTurnSteeringMessageFailed(settled.steering_id!,'Never written to the provider.');
+  db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed'}),settled.id);
+  expect(recoverUnsentAntigravityInputs()).toBe(1);
+  const recovered=getAcceptedSessionInput(unsent.id)!;
+  expect(recovered.steering_id).toBeNull();
+  expect(recovered.turn_id).not.toBe(first.turn_id);
+  expect(db.query('SELECT status,accepted_input_id FROM turns WHERE id=?').get(recovered.turn_id))
+    .toEqual({status:'queued',accepted_input_id:unsent.id});
+  expect(getAcceptedSessionInput(settled.id)!.steering_id).toBe(settled.steering_id);
+  expect(recoverUnsentAntigravityInputs()).toBe(0);
+  expect(claimNextQueuedTurn('native-owner')).toBeNull();
+  finishTurn(first.turn_id!,'done');
+  expect(claimNextQueuedTurn('native-owner')?.accepted_input_id).toBe(unsent.id);
 });
 test('a native input resumes an existing Slack branch without changing its session or native identity',()=>{
   const channel=`C${randomUUID()}`;

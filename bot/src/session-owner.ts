@@ -2971,7 +2971,7 @@ export class SessionOwner {
     recordSessionEvent({eventId:`control:${operation.id}`,sessionId:session.id,inputId:operation.id,kind:'stop',payload:{runId:input.runId}});
     return {session:this.view(getSessionById(session.id)!),operation:this.receipt(this.input(operation.id))};
   }
-  /** A side question answered from a throwaway copy of the session; nothing is retained here and the session is untouched. */
+  /** A side question answered through a saved final-response copy; the question turn is unsaved. */
   async aside(id:string,body:unknown) {
     const session=this.session(id),input=object(body);only(input,['asideId','question','passage','earlier']);
     if(typeof input.asideId!=='string'||!/^[A-Za-z0-9:_-]{8,120}$/.test(input.asideId))throw new SessionOwnerError('A side question needs its id.');
@@ -2999,7 +2999,10 @@ export class SessionOwner {
       // Under the gateway's 120 s command deadline; a longer answer is collected by asking again with the same id.
       // The wait is for the throwaway copy, not the owner: it is recorded as awaited, never as owner slowness.
       return await awaitingOutside(()=>askAsideOnce(`${session.id}:${input.asideId}`,()=>({provider:session.provider_id,
-        sessionUuid:session.agent_session_uuid!,cwd,model:meta.model??null,running:this.view(session).execution==='running',passage,question,earlier,
+        sessionUuid:session.agent_session_uuid!,cwd,model:meta.model??null,
+        boundary:(db.query(`SELECT provider_turn_id FROM turns WHERE session_id=? AND status='done'
+          AND provider_turn_id IS NOT NULL ORDER BY id DESC LIMIT 1`).get(session.id) as {provider_turn_id:string}|null)?.provider_turn_id??null,
+        passage,question,earlier,
         ...(runner?{runner,account:meta.providerAccount??meta.claudeAccount??null,project:location?.project??null,projectPath:location?.path??''}:{})}),90_000));
     } catch(error) {
       throw new SessionOwnerError(error instanceof Error?error.message:String(error),502,'ASIDE_FAILED');

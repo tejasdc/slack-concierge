@@ -10,7 +10,7 @@ import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {basename,join} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
 import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,requeueProvenUnsentNativeChatGptTurn,requeueOrphanedPreAdmissionTurn,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
-import {acceptedInputForTurn,adoptProviderConversationTitle,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,providerRunnerForSession,recordRecoveredResultAttention,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {acceptedInputForTurn,adoptProviderConversationTitle,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,providerRunnerForSession,recordRecoveredResultAttention,recordSessionEvent,recordSessionInputAttention,recoverUnsentAntigravityInputs,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {lastLaunchedConversationHome} from './session-runner-home';
 import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
 import {flushPendingProviderProgressEvents} from './session-projection';
@@ -1074,6 +1074,11 @@ export class SessionExecutionHost {
     for(const row of sessions)this.pullWaitingInputs(row.session_id);
     if(sessions.length)log('info','outside_unsent_human_sessions_scanned',{sessions:sessions.length});
   }
+  recoverAntigravityUnsentInputs() {
+    const queued=recoverUnsentAntigravityInputs();
+    if(queued)this.options.wake();
+    return queued;
+  }
   private steer(input:AcceptedSessionInput):boolean {
     const body=JSON.parse(input.payload_json);
     const session=getSessionById(input.session_id);
@@ -1215,7 +1220,10 @@ export class SessionExecutionHost {
       return await this.options.registry.run({turnId:claim.turn_id,sessionId:session.id},async(steeringController,closeSteering,cancellationController)=>{
         if(input.kind==='fork'){closeSteering(new Error('A native fork control has no model input channel.'));return this.runFork(claim,input,session);}
         if(sessionMetadata(session).outside)steeringController.close(new Error('An independent Codex command has no live input channel.'));
-        if(adoption)await this.settleUnsentSteering(claim.turn_id,adoption.execution);
+        if(adoption){
+          await this.settleUnsentSteering(claim.turn_id,adoption.execution);
+          if(session.provider_id==='antigravity')this.recoverAntigravityUnsentInputs();
+        }
         const outcome=await this.runModel(claim,input,session,steeringController,closeSteering,cancellationController,adoption);
         // Only here is the run's outcome durably settled; a crash before this leaves the host's
         // record for the next coordinator to settle from.
