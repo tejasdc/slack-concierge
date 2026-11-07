@@ -313,7 +313,7 @@ so the surface can name the state instead of leaving a gap. One pass runs at a t
 timer, a credential change and his Refresh press all share it.
 
 **Refresh reads.** A `fresh` read of `/auth/providers` starts
-`scheduleProviderAccountUsageRefresh()` alongside the identity reads (`claude auth status`,
+`scheduleProviderAccountUsageRefresh(true)` alongside the identity reads (`claude auth status`,
 the Codex sign-in state) and answers at once from the last known state with `checking` set;
 the Accounts page reads again every few seconds while any row or machine says `checking`
 or `refreshing` (a peer machine says `checking` only while a read of it is outstanding), so the numbers fetched for that press arrive on screen without a read waiting
@@ -322,7 +322,9 @@ half-hourly pass had last written, so pressing Refresh changed no percentage on 
 and read as a dead control: "I just pressed refresh and it doesn't seem to be working at
 all." From then until 2026-11-03 a fresh read waited for the whole check, 11 to 20 seconds
 around a sign-in, which held the account row's confirmation spinner that long. A press
-while a pass is already running joins that pass instead of starting a second.
+while an ordinary pass is already running queues one forced pass after it. The owner keeps
+`checking` true until the forced pass settles; the Accounts Refresh mark stays active while
+the page watches that state. A press during a forced pass joins that same pass.
 
 - **Codex**: the agents' home `~/.codex` plus one home per extra account under
   `~/.codex-accounts/<name>/`, each read by CodexBar (`/root/tools/codexbar-cli/codexbar`)
@@ -355,8 +357,28 @@ while a pass is already running joins that pass instead of starting a second.
   `cswap status --json` checks only the terminal-active account and is not used here:
   a Concierge turn may run on another saved home without changing terminal selection.
   When claude-swap returns `lastGoodUsage` instead of decision-grade `usage`, Concierge
-  pairs it with `lastGoodFetchedAt`, never the outer scan time. The Mac currently borrows
-  server readings with their source times; local sign-in and selection need local evidence.
+  pairs it with `lastGoodFetchedAt`, never the outer scan time. A Mac Refresh asks its
+  local Keychain logins for a new reading even inside the ordinary five-minute read gap;
+  it joins a running pass, then takes a fresh pass if that pass was periodic.
+  On the Mac, Claude Code keeps each account's only login in its GUI Keychain. Concierge
+  asks Claude Code to confirm each saved home's signed-in email and configuration directory,
+  then reads that home's local Keychain item and asks Anthropic's usage endpoint with its
+  access token. Keychain item presence alone does not prove that Claude still accepts the
+  login: a signed-out home is shown as needing sign-in and its usage is not requested or
+  renewed. An unanswered or mismatched identity check is shown as unverified and cannot
+  authorize work. Concierge never copies or writes the login; if a confirmed home's token
+  expires or Anthropic rejects it with 401, Claude Code's local `/usage` renews that same
+  home's Keychain item. A pressed Refresh waits for renewal, and a rejected-token read
+  retries once after renewal before it settles.
+  The same five-minute per-account read plan and failure backoff apply. A failed read keeps
+  the last good Mac value with its original source time. A signed-out home has no usage bars.
+  The Mac no longer substitutes a server reading for a missing local one; such a peer value
+  cannot prove that the Mac can run the account.
+  This replaces the Mac's former peer-only display, which omitted Mac-only accounts and
+  could show days-old server numbers after a Mac Refresh. On November 6 a Mac-local probe
+  found two saved homes whose initial usage requests returned 401; Claude Code renewed
+  each without a model turn, and subsequent usage and profile requests returned 200 with
+  matching account emails. A third saved home still reported signed out and was not renewed.
   The Mac's two-home continuation and concurrent use were proven on 2026-09-23;
   see [the shared-history design](../plans/2026-09-23-accounts-share-one-history.md).
 
@@ -448,10 +470,10 @@ Accounts no longer lists the main folder's login as an account and says nothing 
 sign-in is not his work, and the line naming it was removed on 2026-10-08 as news about nothing.
 The account line above the list is empty while the chosen account is in use; it speaks only when
 that account is at its limit, signed out, or none is selected.
-The Mac keeps logins in the Keychain, has no such homes, and is unchanged. A usage reading that
-fails or is missing for the selected account never stops its work: the usage reader (claude-swap)
-reads with its own copies of each login, so its failure says nothing about the login in the
-account's home, and a real limit still comes back from Claude as an ordinary usage hold. The last account is
+The Mac also keeps separate saved homes, with each login in the Keychain. A usage reading that
+fails or is missing for the selected account does not alone prove its login is unusable;
+the local reader confirms sign-in separately, and a real limit still comes back from Claude
+as an ordinary usage hold. The last account is
 recorded only when Claude reports that the process started. Each main-conversation response with
 usage also retains its account, conversation ID, response ID and receipt time in that session's
 metadata. The next ordinary turn stays on that account when its last response is within the
@@ -518,8 +540,8 @@ provider granted early could never be noticed: on 2026-10-10 the Mac held every 
 11, 11 PM" for a chann.app refusal his 2:05 AM reset had already ended. Each reading now forgets an
 account's refusals when that account shows every window below 100% and some window lower than its last
 reading before the refusal (`usageFellSince`); usage only falls on a reset, so a reading that merely lags
-a refusal never clears it. Accounts read for this machine by its peer count like any other: the Mac's
-usage is read by the server. After a switch the owner re-reads usage at once, and the switch result says
+a refusal never clears it. Each machine's own Claude usage readings determine its room;
+the Mac reads its saved Keychain homes locally. After a switch the owner re-reads usage at once, and the switch result says
 whether the account answered its test request or refused it as out of usage; the app shows that sentence.
 
 **A conversation moves between accounts, because its history is shared.** It could not until
