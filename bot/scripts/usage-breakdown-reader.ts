@@ -69,6 +69,18 @@ function configuredRoots():ProviderRoot[]{
     throw new Error('INVALID_USAGE_BREAKDOWN_ROOTS');
   return parsed;
 }
+/** The Mac peer still owns local provider turns, without a runner or account-home registry. */
+function macPeerRoots():ProviderRoot[]{
+  const roots:ProviderRoot[]=[
+    {provider:'claude-code',account:'unknown',home:join(home,'.claude')},
+    {provider:'codex',account:'unknown Codex account',home:join(home,'.codex')},
+  ];
+  const saved=join(home,'.codex-accounts');
+  if(existsSync(saved))for(const entry of readdirSync(saved,{withFileTypes:true})){
+    if(entry.isDirectory())roots.push({provider:'codex',account:'unknown Codex account',home:join(saved,entry.name)});
+  }
+  return roots.filter(root=>existsSync(join(root.home,root.provider==='claude-code'?'projects':'sessions')));
+}
 function countsClaude(u:any):Counts{return {input:number(u.input_tokens),cacheWrite:number(u.cache_creation_input_tokens)-number(u.cache_creation?.ephemeral_1h_input_tokens),cacheWrite1h:number(u.cache_creation?.ephemeral_1h_input_tokens),cacheRead:number(u.cache_read_input_tokens),output:number(u.output_tokens)};}
 function countsCodex(u:any):Counts{return {input:Math.max(0,number(u.input_tokens)-number(u.cached_input_tokens)-number(u.cache_write_input_tokens)),cacheWrite:number(u.cache_write_input_tokens),cacheWrite1h:0,cacheRead:number(u.cached_input_tokens),output:number(u.output_tokens)};}
 function insert(path:string,id:string,provider:string,conversation:string,helper:boolean,at:number,model:string|null,c:Counts,providerTurnId:string|null,clientVersion:string|null,sourceAccount:string|null=null,parentThreadId:string|null=null,firstUsage=false){
@@ -481,8 +493,8 @@ function decodeRunnerCursor(value:string):{snapshotMaxRowid:number;afterRowid:nu
   return parsed;
 }
 function encodeRunnerCursor(value:{snapshotMaxRowid:number;afterRowid:number;providers:string;roots:string;sinceMs:number}){return Buffer.from(JSON.stringify(value)).toString('base64url');}
-async function scanRunnerProviderRoots(providers:string[],sinceMs:number,buildSequence:boolean){
-  const roots=configuredRoots().filter(root=>providers.includes(root.provider));if(!roots.length)throw new Error('NO_PROVIDER_USAGE_HOMES');
+async function scanRunnerProviderRoots(providers:string[],sinceMs:number,buildSequence:boolean,availableRoots=configuredRoots()){
+  const roots=availableRoots.filter(root=>providers.includes(root.provider));if(!roots.length)throw new Error('NO_PROVIDER_USAGE_HOMES');
   activeUsageWindowStartMs=sinceMs;
   cache.exec('BEGIN IMMEDIATE');
   try{
@@ -554,6 +566,17 @@ async function runnerProviderReport(){
   today.cacheDiagnostics.last48Hours=week.cacheDiagnostics.last48Hours;
   console.log(JSON.stringify({today,week}));
 }
+async function macPeerReport(){
+  const owner=ownerLedger();
+  const snapshot=captureUsageLedgerSnapshot(owner,oneWeekAgo);
+  owner.close();
+  oneWeekAgo=snapshot.sinceMs;
+  ledger=ledgerFromUsageSnapshot(snapshot);
+  await scanRunnerProviderRoots(['claude-code','codex'],oneWeekAgo,false,macPeerRoots());
+  const week=report('week',oneWeekAgo,snapshot.timeZone),today=report('today',midnight(snapshot.timeZone),snapshot.timeZone);
+  today.cacheDiagnostics.last48Hours=week.cacheDiagnostics.last48Hours;
+  return {today,week};
+}
 
 function configuredRunnerProviders(){
   const result=new Map<string,Set<'claude-code'|'codex'>>();
@@ -581,9 +604,10 @@ async function main(){
   }
   const started=performance.now();
   const runners=configuredRunnerProviders();
-  if(!runners.size)throw new Error('NO_PROVIDER_USAGE_RUNNERS_CONFIGURED');
-  const snapshot=encodeUsageSnapshot(captureUsageLedgerSnapshot(ownerLedger(),oneWeekAgo));
-  const {today,week}=await collectRunnerUsageReports(runners,snapshot);
+  if(!runners.size&&process.env.CONCIERGE_PEER_NAME!=='mac')throw new Error('NO_PROVIDER_USAGE_RUNNERS_CONFIGURED');
+  const {today,week}=runners.size
+    ?await collectRunnerUsageReports(runners,encodeUsageSnapshot(captureUsageLedgerSnapshot(ownerLedger(),oneWeekAgo)))
+    :await macPeerReport();
   console.log(JSON.stringify({today,week,scanMs:Math.round(performance.now()-started)}));
 }
 main().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>closeRunnerMachineCalls());
