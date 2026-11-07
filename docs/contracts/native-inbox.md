@@ -355,6 +355,9 @@ remaining index synchronously. On 2026-11-06, a prompt arriving during restart w
 forced 115,370 ledger calls and an 18.5-second owner-loop block; the installed statement
 observer measured about two million read calls in its longest sampled statement. This
 change removes that synchronous prompt-path join, not the cost of the index build itself.
+The index state, including its row watermark, is stored before each extension so later
+yielding steps resume from the last processed row. A missing state assignment previously
+restarted every step at the first row, leaving prompt dispatch waiting indefinitely.
 Before the original warm-up (2026-10-12) the whole build ran inside
 whichever read came first after each restart, which was his first tap on a thread: about
 3 s and 157 MB inside that action's own write transaction, with every other read behind
