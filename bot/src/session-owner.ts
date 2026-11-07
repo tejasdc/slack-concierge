@@ -2227,9 +2227,23 @@ export class SessionOwner {
     return {noteId:`inbox-message-${messageId}`,...link(messageId,inbox),text:entry.content as string,title:`${from} in an Inbox thread`,capturedAt:typeof entry.createdAt==='string'?at(entry.createdAt):new Date().toISOString()};
   }
   /** A follow-up joins the note an earlier capture or message made, under the same key. */
-  private noteKey(id:string) {return /^[0-9a-f]{64}$/.test(id)||id.startsWith('inbox-message-')?id:`inbox-message-${id}`;}
+  private noteKey(id:string) {
+    const raw=id.startsWith('capture:')?id.slice('capture:'.length):id;
+    return /^[0-9a-f]{64}$/.test(raw)||raw.startsWith('inbox-message-')?raw:`inbox-message-${id}`;
+  }
   async saveInboxNote(input:{sourceInputId:string;sourceRunId:string;sourceSessionId:number;actionId:string;captureId?:string;messageId?:string;summary?:string;addTo?:string;person?:string;journal?:'entry'|'checkin'}) {
     if(!this.runtime.saveCaptureNote)throw new SessionOwnerError('Thinkering note capability unavailable.',409,'CAPABILITY_UNAVAILABLE');
+    const journalContinuation=input.journal==='entry'&&Boolean(input.addTo?.trim());
+    if(input.journal!==undefined&&input.journal!=='entry'&&input.journal!=='checkin')
+      throw new SessionOwnerError('--journal takes entry or checkin.',400,'NOTE_JOURNAL_INVALID');
+    if(input.person!==undefined&&input.addTo!==undefined)
+      throw new SessionOwnerError('A note goes to one place: --person or --add-to, not both.',400,'NOTE_TARGET_CONFLICT');
+    if(input.journal!==undefined&&(input.person!==undefined||(input.addTo!==undefined&&input.journal!=='entry')))
+      throw new SessionOwnerError('A journal entry is its own note: --journal goes without --person, and only --journal entry accepts --add-to.',400,'NOTE_JOURNAL_TARGET_CONFLICT');
+    if(journalContinuation&&input.summary!==undefined)
+      throw new SessionOwnerError('--journal entry --add-to moves the capture\'s exact words into the earlier entry and does not take --summary-file.',400,'NOTE_SUMMARY_FORBIDDEN');
+    if(!journalContinuation&&!input.summary?.trim())
+      throw new SessionOwnerError('note needs --summary-file: a Markdown file with a title line and "- " bullets summarizing what he said, without the spoken command.',400,'NOTE_SUMMARY_REQUIRED');
     const from=this.noteSource(input);
     const operation=retainSessionInput({sessionId:input.sourceSessionId,scope:`communication:${input.sourceInputId}`,actionId:input.actionId,kind:'capture-note',origin:'agent',
       sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,payload:{...(input.captureId===undefined?{messageId:input.messageId}:{captureId:input.captureId}),...(input.summary===undefined?{}:{summary:input.summary}),...(input.addTo===undefined?{}:{addTo:input.addTo}),...(input.person===undefined?{}:{person:input.person}),...(input.journal===undefined?{}:{journal:input.journal})}}).input;

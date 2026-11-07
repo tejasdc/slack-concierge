@@ -283,6 +283,7 @@ The summary is required (Tejas, 2026-10-01: "you should not dump my whole transc
 `--add-to <earlier captureId>` makes a follow-up capture a new section of the note that earlier
 capture already has, keeping the follow-up as that section's Source, so a thread's follow-ups land
 in the one note he reads on his Timeline (`addTo` on `/captures/note`).
+`--journal entry --add-to <earlier captureId>` omits `--summary-file` and forwards `{captureId,text,title,capturedAt,addTo,journal:"entry"}` so the capture's exact words, original recorded time and human source append to the earlier Journal entry; independent `--journal entry|checkin` notes still require `--summary-file`.
 `--person <name>` instead files the capture under that person's one note (`person` on
 `/captures/note`): thnkr.ing makes the note the first time anyone names the person, keyed by the
 name, and adds each capture as a section with the capture as its Source. A capture naming several
@@ -547,6 +548,15 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   Linked attempts are evaluated in admission order, including when an older failed
   attempt is discovered and linked after its checked successor. The old failure remains
   visible without becoming current merely because it was linked last.
+  A later shared check can fail for one sibling request after another request's repair
+  was answered. The router may close only the individually checked request by naming
+  two exact unsuperseded final events: an earlier answered final that completed its
+  work, and the later shared failed final whose retained words show this request's
+  check passed. The owner verifies each event belongs to its linked dispatch and
+  records both as closure evidence. The failed final alone cannot close a request,
+  and a sibling without its own completed answer stays open. This avoids redoing a
+  completed check or treating one aggregate failure as every request's result; the
+  router still judges the check's scope and states any untested device behavior.
   A failed,
   cancelled, handed-back or otherwise unfinished attempt leaves his request open. The owner
   gives the Inbox router a retained recovery input with the exact request and latest attempt.
