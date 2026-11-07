@@ -148,14 +148,14 @@ not a promise that the app will install that exact build. thnkr.ing's page-local
 update contract can carry one tap to a newer server release within its two-minute
 attempt, while the old page alone decides when saved work permits reload. The Mac
 worker must observe the actual running build after the page opens.
-The current Sessions-page update recovery no longer uses the historical page or
+The current update recovery no longer uses a historical page or
 Lekondo Canvas board ID as a click grant. The Mac-local Codex transcript proves Tejas's direct
 overnight instruction and the renewed outside request for the next ready web
 release, in that order. Only the new server source input/run and its still-open
 Mac peer delivery can grant an action; the earlier source is retired. A separate
-direct Mac work request names the exact WebApp bundle, the observed Sessions
-conversation URL (including its notification key, view, conversation, project,
-and machine), and either opening Workspace or pressing Update now. The menu-open
+direct Mac work request names the exact WebApp bundle and either opening
+Workspace or pressing Update now. Content navigation does not require a new
+controller release or grant. The menu-open
 intent accepts the observed request wording, “Open Workspace once”; it does not
 depend on the literal word “menu.” While that exact delivery remains open,
 the Mac hook reads that current grant from the Mac owner on every native update
@@ -169,22 +169,24 @@ mentions of the helper in other commands still refuse without the attested
 action grant. This lets the Mac worker prove the installed bytes, mode and
 compiler compatibility before a one-shot app request.
 The one-shot Swift source checks the already-running bundle path and PID, one window,
-one exact Sessions-document WebArea URL, and one matching button under that WebArea. It
-traverses the tree twice, retains the button from the second traversal, re-reads
-the WebArea and button immediately before one native AX Press, and never retries
-an ambiguous result. Immediately before Press, it atomically reserves a durable
-one-shot marker for that exact renewed request, Sessions conversation and action. The earlier
-request's spent markers cannot authorize or block this new pair; a second
-invocation of this pair refuses even
-when the first AX result was ambiguous. The Workspace action can only open the menu and report the
-new control counts. A later, separately named Update now request can only press
+one WebArea at the HTTPS thnkr.ing origin, and one matching button under that
+WebArea. Its two traversals must retain the same process, window, WebArea,
+control and full URL; the helper re-reads that URL and control immediately before
+one native AX Press. A route or window change, ambiguous control or unknown
+origin refuses the action without a press. Immediately before Press, it atomically
+reserves a durable one-shot marker for the original request and action, regardless
+of the content route. It also refuses if either older page-specific marker was
+already spent, so a new helper release cannot replay an uncertain earlier press.
+A second invocation refuses even when the first AX result was ambiguous. The
+Workspace action can only open the menu and report the new control counts. A
+later, separately named Update now request can only press
 that unique first-tap control; any visible Update anyway control refuses it.
-The old page's own first-tap guard still decides whether unsaved work or voice
+The loaded page's own first-tap guard still decides whether unsaved work or voice
 activity holds installation, and the agent never presses Update anyway. The
 script is a one-off recovery action under the already-trusted Apple Swift process,
 not a standing helper identity or a new macOS permission grant. The hook is a
-cooperative agent boundary; the exact app and source checks inside the fixed
-script are what fail closed if the app changed between requests.
+cooperative agent boundary; the owner verifies source custody while the fixed
+script checks the live app and page immediately before the action.
 The app's ordinary Update now action checks unsaved drafts before beginning an
 install and shows a separate Update anyway choice when they exist. Its reload
 guard also waits for recordings and unsaved work. Those app checks do not turn
