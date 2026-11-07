@@ -3,6 +3,7 @@ import {spawn} from 'node:child_process';
 import {mkdtemp,mkdir,readFile,rm,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
+import {ledgerWriteResults} from '../src/ledger-write-results';
 
 const root=await mkdtemp(join(tmpdir(),'mac-peer-usage-check-'));
 try{
@@ -14,7 +15,7 @@ try{
   await writeFile(join(projects,`${nativeId}.jsonl`),JSON.stringify({type:'assistant',timestamp:now.toISOString(),
     message:{id:'mac-local-call',model:'claude-opus-5-5',usage:{input_tokens:17,cache_creation_input_tokens:0,
       cache_read_input_tokens:5,output_tokens:7}}})+'\n');
-  const db=new Database(join(state,'state.db'));
+  const db=ledgerWriteResults(new Database(join(state,'state.db')));
   db.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,agent_session_uuid TEXT,provider_id TEXT,native_metadata_json TEXT,last_turn_at TEXT);
     CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,status TEXT,provider_turn_id TEXT,provider_started_at TEXT,ended_at TEXT,
       saved_kind TEXT,saved_repeat_ms INTEGER,saved_root_id INTEGER,saved_sequence INTEGER,saved_fire_at_ms INTEGER,provider_duration_ms INTEGER);
