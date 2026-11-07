@@ -71,8 +71,11 @@ Google's `/usage` reply keeps Gemini 4 Argon in its own allowance group (bucket 
 selected model's own buckets as extra windows, so an Argon limit makes Google ineligible for
 new work and gives a refused turn its real reset. Until 2026-11-01 only the shared group was
 read: Argon's weekly limit was spent for days while the reading showed 0.75% used, and small
-tasks kept being sent to Google and refused. A quota refusal while the reading shows room
-files one `usage_reading_disagrees` repair notice per day.
+tasks kept being sent to Google and refused. After a zero-turn quota refusal, Concierge
+finishes any in-progress allowance check and takes a new one before selecting the reset
+time; the earlier check may predate the refusal. A post-refusal reading that still shows
+room files one `usage_reading_disagrees` repair notice per day. A small reported balance
+does not prove enough room for the next turn.
 The earlier Gemini
 3.1 Pro choice was removed from that live list, so its headless start returned a
 structured zero-turn model refusal before `init`; the provider now carries that

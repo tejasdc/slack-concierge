@@ -573,6 +573,14 @@ export function scheduleProviderAccountUsageRefresh(force = false): Promise<void
   return inFlight;
 }
 
+// A quota refusal must be followed by a reading that began after the refusal.
+// Joining a check already in progress can return capacity observed before that turn failed.
+export function scheduleProviderAccountUsageRefreshAfterCurrent(): Promise<void> {
+  const current = inFlight;
+  if (!current) return scheduleProviderAccountUsageRefresh(true);
+  return current.catch(() => {}).then(() => scheduleProviderAccountUsageRefresh(true));
+}
+
 /**
  * Keeps reading, on its own clock, and says what it saw before anyone hits a wall.
  *
