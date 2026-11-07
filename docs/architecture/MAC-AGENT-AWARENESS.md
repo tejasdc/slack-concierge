@@ -161,9 +161,14 @@ depend on the literal word “menu.” While that exact delivery remains open,
 the Mac hook reads that current grant from the Mac owner on every native update
 action, even when the launch environment already names a Mac app. A missing owner
 answer refuses the action. It admits only the matching fixed invocation of
-`bot/scripts/mac-update-ax.swift`. The
-same hook admits exact `shasum -a 256`, `stat -f %Sp`, and `swiftc -typecheck`
-commands against the pinned source path under an ordinary Mac file request.
+`bot/scripts/mac-update-ax.swift`. The same hook admits exact `shasum -a 256`,
+`stat -f %Sp`, and `swiftc -typecheck` commands against either the launch
+environment's helper path or a quoted absolute path in Concierge's
+revision-named pinned helper directory under an ordinary Mac file request.
+Persistent provider sessions can retain an older launch environment after the
+coordinator updates, and a new session may have no helper-directory environment
+variable; the absolute form lets it verify current installed bytes without
+granting an app action.
 Those checks read or compile the source without performing an AX action;
 mentions of the helper in other commands still refuse without the attested
 action grant. This lets the Mac worker prove the installed bytes, mode and
