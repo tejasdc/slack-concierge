@@ -1,5 +1,5 @@
 ---
-failure: The Mac showed Claude usage borrowed from the server while one signed-in Mac account had no usage row at all.
+failure: The Mac showed Claude usage borrowed from the server while a Mac account with a valid local login had no usage row at all.
 date: 2026-11-06
 fix_commits: []
 cause_status: confirmed
@@ -9,7 +9,10 @@ cause_status: confirmed
 
 ## What was seen
 
-On November 6, the installed Mac owner listed three signed-in Claude accounts in Accounts.
+On November 6, the installed Mac owner listed three Claude homes as signed in because each
+had a Keychain item. A read-only local auth check on November 6 confirmed chann.app and
+hey@tejas.nyc as signed in, but Claude reported the Gmail home signed out despite its
+Keychain item. Keychain item presence does not prove a usable Claude login.
 Its Claude usage payload had only two account rows, both marked as borrowed from the cloud
 and matched by label. The chann.app row retained a November 5 source time and said the
 latest reading could not be taken. The hey@tejas.nyc account had no usage row.
@@ -22,16 +25,18 @@ server readings. It never asked the Mac's own Keychain logins for their usage.
 
 ## Fix
 
-Read each signed-in Mac account's Keychain login in place and ask Anthropic for its usage.
+Read each Mac account's saved Keychain login in place and ask Anthropic for its usage when
+the login is usable. A signed-out home must not acquire an invented fresh reading.
 The existing source-time, backoff and peer merge rules remain. A pressed Refresh asks for a
 new local read even when the next scheduled read is not due.
 
 ## Acceptance scenario
 
-- **Seed:** Mac Concierge in Tejas's GUI session with three signed-in Claude account homes;
-  the server has only two Claude usage rows, one stale.
+- **Seed:** Mac Concierge in Tejas's GUI session with three saved Claude account homes;
+  two confirmed signed in by Claude, one reported signed out; the server has only two
+  Claude usage rows, one stale.
 - **Action:** open Accounts and press Refresh.
-- **Expected:** all three Mac Claude rows get Mac-local source times from the current pass;
-  the page shows checking until the pass finishes. A refused account keeps its original
-  source time and a visible problem instead of claiming a fresh number.
+- **Expected:** the two confirmed Mac logins get Mac-local source times from the current
+  pass; the page shows checking until the pass finishes. The signed-out or refused home
+  keeps its original source time and a visible problem instead of claiming a fresh number.
 - **Replayable offline:** no (requires the Mac GUI Keychain and live provider usage endpoint).
