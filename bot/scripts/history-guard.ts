@@ -114,8 +114,9 @@ try {
   // hook gets no Concierge environment, so the socket is the Mac owner's fixed one. One attempt takes at
   // most three seconds; a missing answer keeps Computer Use refused.
   const computerUse=!refusedMessages&&macComputerUseAttempt;
+  const nativeUpdate=process.platform==='darwin'&&((command??'')+' '+String(input.code??'')).includes('mac-update-ax.swift');
   const liftable=reason&&!refusedMessages&&process.platform==='darwin'&&typeof hook.session_id==='string'&&hook.session_id
-    &&macSurfaceRefusal({...surface,need:'ios-native'})!==reason;
+    &&(nativeUpdate||macSurfaceRefusal({...surface,need:'ios-native'})!==reason);
   if((liftable||computerUse)&&typeof hook.session_id==='string'&&hook.session_id){
     const recorded=await fetch('http://localhost/session-communication/mac-need',{method:'POST',headers:{'content-type':'application/json'},
       body:JSON.stringify({provider_session_id:hook.session_id}),

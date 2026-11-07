@@ -146,6 +146,26 @@ not a promise that the app will install that exact build. thnkr.ing's page-local
 update contract can carry one tap to a newer server release within its two-minute
 attempt, while the old page alone decides when saved work permits reload. The Mac
 worker must observe the actual running build after the page opens.
+The current Lekondo Canvas update recovery no longer uses the historical page ID
+as a click grant. A separate direct Mac work request from the attested server
+source names the exact WebApp bundle, the current board ID, and either Workspace
+menu or Update now. While that exact delivery remains open, the Mac hook admits
+only the matching fixed invocation of `bot/scripts/mac-update-ax.swift`. The
+one-shot Swift source checks the already-running bundle path and PID, one window,
+one current-board WebArea URL, and one matching button under that WebArea. It
+traverses the tree twice, retains the button from the second traversal, re-reads
+the WebArea and button immediately before one native AX Press, and never retries
+an ambiguous result. Immediately before Press, it atomically reserves a durable
+one-shot marker for that exact recovery action; a second invocation refuses even
+when the first AX result was ambiguous. The Workspace action can only open the menu and report the
+new control counts. A later, separately named Update now request can only press
+that unique first-tap control; any visible Update anyway control refuses it.
+The old page's own first-tap guard still decides whether unsaved work or voice
+activity holds installation, and the agent never presses Update anyway. The
+script is a one-off recovery action under the already-trusted Apple Swift process,
+not a standing helper identity or a new macOS permission grant. The hook is a
+cooperative agent boundary; the exact app and source checks inside the fixed
+script are what fail closed if the app changed between requests.
 The app's ordinary Update now action checks unsaved drafts before beginning an
 install and shows a separate Update anyway choice when they exist. Its reload
 guard also waits for recordings and unsaved work. Those app checks do not turn
