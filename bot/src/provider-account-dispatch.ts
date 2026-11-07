@@ -228,9 +228,12 @@ export function selectedClaudeHome(runnerTarget:string|null|undefined=undefined)
 
 /** The home a Claude account launches from: the selected account's complete home, or another proven one. */
 function launchableClaudeHome(account:string,selected:string|null,prepare:boolean,home?:string,runnerTarget:string|null|undefined=undefined):string|null {
+  // A peer can supply this account's allowance, but only this machine can establish
+  // whether its own home is signed in. The selected-home exception honors that verdict.
+  const reading=providerAccountUsage('claude-code')?.accounts.find(item=>item.label===account);
+  if(reading?.signedOut===true)return null;
   if(runnerTarget===undefined?providerRunnerTarget('claude-code'):!!runnerTarget){
-    const reading=providerAccountUsage('claude-code')?.accounts.find(item=>item.label===account);
-    return reading?.signedOut?null:providerAccountHomeForPlacement(runnerTarget===undefined?providerRunnerTarget('claude-code'):runnerTarget,account,home??'');
+    return providerAccountHomeForPlacement(runnerTarget===undefined?providerRunnerTarget('claude-code'):runnerTarget,account,home??'');
   }
   const complete=sharedClaudeHome(account,home,prepare,false);
   // The selected account was proven when he chose it and stays his choice across restarts; a
