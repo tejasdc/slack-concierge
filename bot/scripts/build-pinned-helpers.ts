@@ -17,6 +17,12 @@ const repository = resolve(import.meta.dir, "../..");
 const commit = spawnSync("git", ["-C", repository, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
 const dirty = spawnSync("git", ["-C", repository, "status", "--porcelain", "--untracked-files=no"], { encoding: "utf8" }).stdout.trim();
 if (!/^[0-9a-f]{40}$/.test(commit) || dirty) { console.error("refusing: helpers are pinned only from a clean checkout at a commit"); process.exit(2); }
+for (const source of new Set([...Object.values(declaration.controlBundles), ...Object.values(declaration.controlFiles)])) {
+  if (spawnSync("git", ["-C", repository, "ls-files", "--error-unmatch", "--", source], { encoding: "utf8" }).status !== 0) {
+    console.error(`refusing: declared helper source is not tracked at ${commit}: ${source}`);
+    process.exit(2);
+  }
+}
 
 const final = join(root, commit);
 if (!existsSync(join(final, "bot/scripts/router-sessions.js"))) {
