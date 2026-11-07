@@ -37,6 +37,15 @@ const DIRECT_SCRIPT = /(?:^|[;&|]\s*)["']?((?:\/|\.\/|\.\.\/)[^\s"';|&()]+\.(?:p
 const SCRIPT_COPY = /\.backup\s*\(|\b(?:copyfile|copy2|copyFileSync|copyFile|copytree)\s*\(|\bVACUUM\s+INTO\b/i;
 const REHEARSAL = /\b(?:migrate-deployment-repair|rehears\w*|.*fixture)\.[cm]?[jt]s\b|\b(?:BEGIN\s+(?:IMMEDIATE|EXCLUSIVE)|CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+TABLE)\b/i;
 
+/** The installed migrator owns this one retirement action and checks the finished off-box
+ * backup before removing anything. Match the whole command so another operation cannot ride
+ * along with the exception. The current-release link selects the reviewed installed artifact. */
+export function sanctionedCapturedRetirement(command: string): boolean {
+  return command === 'CONCIERGE_STATE_DIR=/root/.local/state/concierge '
+    + '/usr/local/lib/slack-concierge-deployment/bun run '
+    + '/var/lib/slack-concierge-deployment/current/control/migrate-deployment-repair.js --retire-captured';
+}
+
 /** A router call sends its quoted text to the owner; it does not execute that text. */
 function standaloneRouterCall(command: string): boolean {
   if (!/^\s*(?:(?:[^\s]*\/)?(?:bash|zsh|sh)\s+)?(?:[^\s]*\/)?router-actions\.sh\s+sessions\s+/.test(command)
@@ -130,6 +139,7 @@ export function liveStoreCopyRefusal(command: string | null, cwd = '', stores = 
   { inspectScripts = true }: { inspectScripts?: boolean } = {}): string | null {
   if (!command) return null;
   if (standaloneRouterCall(command)) return null;
+  if (sanctionedCapturedRetirement(command)) return null;
   const inspected = inspectScripts && !committeeHelp(command, cwd)
     ? command + mentionedScripts(command, cwd) : command;
   let canonicalCwd = cwd;

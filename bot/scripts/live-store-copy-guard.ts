@@ -1,7 +1,7 @@
 /** Current-install pre-effect check. Running agents keep their pinned semantic hooks,
  * while the machine wrapper reads this release's raw-live-copy policy on every command. */
 import {toolCommand} from '../src/history-rewrite-policy';
-import {liveStoreCopyRefusal} from '../src/live-store-copy-policy';
+import {liveStoreCopyRefusal,sanctionedCapturedRetirement} from '../src/live-store-copy-policy';
 import {wholeMachineCrawlRefusal} from '../src/whole-machine-crawl-policy';
 import {thinkeringRetentionCommandRefusal} from '../src/thinkering-retention-command-policy';
 import {homedir} from 'node:os';
@@ -69,7 +69,7 @@ const sealed=!!command&&privateEntrance(command);
 const reason=liveStoreCopyRefusal(command,cwd,undefined,{inspectScripts:!sealed})??crawl
   ??(command?thinkeringRetentionCommandRefusal(command,cwd):null);
 if(reason)process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}})+'\n');
-else if(command&&inheritedLiveState()&&codeLaunch(command)&&!sealed){
+else if(command&&inheritedLiveState()&&codeLaunch(command)&&!sealed&&!sanctionedCapturedRetirement(command)){
   const privatePath=process.env.CONCIERGE_PRIVATE_CODE_PATH;
   const bun=process.env.CONCIERGE_PRIVATE_CODE_BUN;
   const instruction=privatePath&&bun?`Run the check through: ${bun} run ${privatePath} -- <command> [args...]`:'Reinstall the Concierge machine hooks to get the private check command.';
