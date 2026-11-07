@@ -38,10 +38,12 @@ assert.equal(macSurfaceRefusal({command:null,need:'mac-app',platform:'darwin',to
 const webAppNeed={kind:'mac-app',why:'Inspect the already-open thnkr.ing web app com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 page faf63877-6536-4ac6-86e9-5d63e03d3369, directly authorized by Tejas.',humanInputId:'f66f15dd-e251-4537-a9cd-347d0548434b',effectScope:'work'};
 const updateNeed={kind:'mac-app',why:`Inspect exact bundle com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 at ${AUTHORIZED_UPDATE_SESSION_URL} and install ready update safely`,effectScope:'work',updateAuthorization:true};
 const currentUpdateNeed={kind:'mac-app',why:`Open Workspace menu in com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 at ${AUTHORIZED_UPDATE_SESSION_URL}`,effectScope:'work',updateAuthorization:true};
+const acceptedWorkspaceNeed={...currentUpdateNeed,why:`Open Workspace once in bundle com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 URL ${AUTHORIZED_UPDATE_SESSION_URL} for ready update`};
 const currentTapNeed={...currentUpdateNeed,why:currentUpdateNeed.why.replace('Open Workspace menu','Press Update now once')};
 const nativeCall=(command:string,need:typeof currentUpdateNeed)=>
   macSurfaceRefusal({command,need,platform:'darwin',toolName:'exec_command',toolInput:{cmd:command}});
 assert.equal(nativeCall(UPDATE_WORKSPACE_COMMAND,currentUpdateNeed),null);
+assert.equal(nativeCall(UPDATE_WORKSPACE_COMMAND,acceptedWorkspaceNeed),null);
 assert.equal(nativeCall(UPDATE_FIRST_TAP_COMMAND,currentTapNeed),null);
 for(const need of [{...currentUpdateNeed,effectScope:'informational'},
   {...currentUpdateNeed,updateAuthorization:false},
