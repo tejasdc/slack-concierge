@@ -69,19 +69,25 @@ function spentUntil(provider: RenewableProvider, account: string): number | null
  * any other failure, including a provider browser-verification rejection, holds for hours.
  * needs_decision asks him to fix Chrome's own sign-in, after which a renewal should follow at once.
  */
-type RenewalFailure = { kind: "preauth_browser_unavailable" | "other"; seenAtMs: number; preauthAttempts: number };
+type RenewalFailureKind = "preauth_browser_unavailable" | "preauth_entrance_blocked" | "other";
+type RenewalFailure = { kind: RenewalFailureKind; seenAtMs: number; sameKindAttempts: number };
 
-function preauthBrowserFailure(resultJson: string | null): boolean {
-  if (!resultJson) return false;
+function renewalFailureKind(resultJson: string | null): RenewalFailureKind {
+  if (!resultJson) return "other";
   try {
     const result = JSON.parse(resultJson) as { replyBody?: unknown };
     const body = typeof result.replyBody === "string" ? result.replyBody : "";
-    return body.startsWith("PREAUTH_BROWSER_UNAVAILABLE:")
+    if (body.startsWith("PREAUTH_BROWSER_UNAVAILABLE:")
       // The first live failure predates the typed worker instruction. Its complete no-effect
       // attestation is retained under the same request result, so it may receive this one retry.
       || (body.includes("No task tab was created") && body.includes("no account was switched")
-        && body.includes("no sign-in link or code was accessed"));
-  } catch { return false; }
+        && body.includes("no sign-in link or code was accessed"))) return "preauth_browser_unavailable";
+    if (body.startsWith("PREAUTH_ENTRANCE_BLOCKED:")
+      || (body.includes("Journal to open today") && body.includes("Accounts was not accessible")
+        && body.includes("no provider sign-in was started") && body.includes("no link or code was obtained")))
+      return "preauth_entrance_blocked";
+    return "other";
+  } catch { return "other"; }
 }
 
 function recentFailure(sent: string): RenewalFailure | null {
@@ -96,10 +102,10 @@ function recentFailure(sent: string): RenewalFailure | null {
     .all(sent, now - AFTER_UNFINISHED_MS) as { action_id: string; seen_at_ms: number }[];
   const recent = recentRows[0] ?? null;
   if (!recent) return null;
-  const preauthAttempts = recentRows.filter(row => preauthBrowserFailure(failed.find(item => item.action_id === row.action_id)?.result_json ?? null)).length;
   const result = failed.find(row => row.action_id === recent.action_id);
-  return { kind: preauthBrowserFailure(result?.result_json ?? null) ? "preauth_browser_unavailable" : "other",
-    seenAtMs: recent.seen_at_ms, preauthAttempts };
+  const kind = renewalFailureKind(result?.result_json ?? null);
+  return { kind, seenAtMs: recent.seen_at_ms,
+    sameKindAttempts: recentRows.filter(row => renewalFailureKind(failed.find(item => item.action_id === row.action_id)?.result_json ?? null) === kind).length };
 }
 
 export function signInRenewalOf(notice: { key: string; kind: string }): { provider: RenewableProvider; account: string } | null {
@@ -130,7 +136,7 @@ export function needSignInRenewal(provider: RenewableProvider, account: string |
     const failure = recentFailure(sent);
     const retriedAfterFailure = failure && !!db.query(`SELECT 1 FROM repair_notices WHERE key LIKE ? AND created_at_ms>? LIMIT 1`)
       .get(like, failure.seenAtMs);
-    const retryPreauth = failure?.kind === "preauth_browser_unavailable" && failure.preauthAttempts === 1
+    const retryPreauth = failure?.kind !== "other" && failure?.sameKindAttempts === 1
       && !retriedAfterFailure && Date.now() - failure.seenAtMs >= PREAUTH_RETRY_MS;
     const recent = db.query(`SELECT 1 FROM repair_notices WHERE key LIKE ? AND (delivered_input_id IS NULL OR created_at_ms>?) LIMIT 1`)
       .get(like, retryPreauth ? Date.now() - PREAUTH_RETRY_MS : Date.now() - SAME_EPISODE_MS);
@@ -184,5 +190,8 @@ export function signInWorkerText(provider: RenewableProvider, account: string, l
       + `sessions outcome needs_you --summary "<one line>" --only-he-can sign-in telling him to sign in to ${site} as ${account} in Chrome on his Mac` : ``)
     + `. Do not start a second sign-in while one is waiting. If browser control fails before any task tab, link, code, `
     + `or account switch, reply failed and begin the body with PREAUTH_BROWSER_UNAVAILABLE: followed by what failed. `
-    + `Use that prefix only when no sign-in action occurred; Concierge permits one short retry, then waits hours if it fails again.`;
+    + `If Chrome opens thnkr.ing but Journal to open today covers Settings, open the command palette with Command-Shift-K and choose Provider Accounts. `
+    + `The Accounts window opens above the journal hold; do not use his emergency opening, alter the journal, or unlock his workspace. `
+    + `If Accounts remains inaccessible before any provider sign-in action, link, code or account switch, reply failed beginning PREAUTH_ENTRANCE_BLOCKED: and describe the obstruction. `
+    + `Use either pre-auth prefix only when no sign-in action occurred; Concierge permits one short retry per distinct pre-auth obstruction, then waits hours if it fails again.`;
 }
