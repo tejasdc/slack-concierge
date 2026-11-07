@@ -577,8 +577,8 @@ export function scheduleProviderAccountUsageRefresh(force = false): Promise<void
 // Joining a check already in progress can return capacity observed before that turn failed.
 export function scheduleProviderAccountUsageRefreshAfterCurrent(): Promise<void> {
   const current = inFlight;
-  if (!current) return scheduleProviderAccountUsageRefresh(true);
-  return current.catch(() => {}).then(() => scheduleProviderAccountUsageRefresh(true));
+  if (!current) return scheduleProviderAccountUsageRefresh();
+  return current.catch(() => {}).then(() => scheduleProviderAccountUsageRefresh());
 }
 
 /**
