@@ -206,7 +206,7 @@ test('separate identical answers remain visible unless one command explicitly gr
   expect(db.query("SELECT count(*) AS n FROM session_owner_events WHERE kind='post'").get()).toEqual({n:3});
 });
 
-test('separate final replies from one run share a post while retaining each request closure',async()=>{
+test('separate final replies from one run remain visible under their own requests',async()=>{
   const inbox=session(),inboxId=Number(inbox.session.id.slice(10));
   const root=(db.query('SELECT id FROM session_inputs WHERE session_id=? ORDER BY rowid LIMIT 1').get(inboxId) as {id:string}).id;
   const base={inboxSessionId:inboxId,root,inboxInputId:root,respondingSessionId:'concierge:worker',
@@ -214,8 +214,8 @@ test('separate final replies from one run share a post while retaining each requ
     closingLine:'Completed · Checked on the real system: four requests settled.',
     answerSource:{inputId:'request:fixture-control',runId:'one-worker-run'}};
   const posts=['one','two','three','four'].map(id=>postForwardedThreadAnswer({...base,eventId:`final-${id}`,requestId:`request-${id}`}));
-  expect(new Set(posts).size).toBe(1);
-  expect(db.query("SELECT count(*) AS n FROM session_owner_events WHERE kind='post'").get()).toEqual({n:1});
+  expect(new Set(posts).size).toBe(4);
+  expect(db.query("SELECT count(*) AS n FROM session_owner_events WHERE kind='post'").get()).toEqual({n:4});
   expect(db.query("SELECT count(*) AS n FROM session_owner_events WHERE kind='answer_closure'").get()).toEqual({n:4});
   const firstSequence=(db.query('SELECT sequence FROM session_owner_events WHERE event_id=?').get(posts[0]!) as {sequence:number}).sequence;
   expect(preparedInboxDisplay(db,inboxId,firstSequence,posts[0]!)?.preview.closingLine)
@@ -225,6 +225,24 @@ test('separate final replies from one run share a post while retaining each requ
   const different=postForwardedThreadAnswer({...base,eventId:'final-different',requestId:'request-five',
     closingLine:'Failed · Checked on the real system: the fifth request failed.'});
   expect(different).not.toBe(posts[0]);
+});
+
+test('historical copy-matched collapses do not hide accepted replies',()=>{
+  const inbox=session(),inboxId=Number(inbox.session.id.slice(10));
+  updateSessionMetadata(inboxId,{inbox:true});
+  const root=(db.query('SELECT id FROM session_inputs WHERE session_id=? ORDER BY rowid LIMIT 1').get(inboxId) as {id:string}).id;
+  const base={inboxSessionId:inboxId,root,inboxInputId:root,respondingSessionId:'concierge:worker',
+    text:'Repeated failure.',attachments:[],stalled:false,final:true,workDisposition:'completed'};
+  const first=postForwardedThreadAnswer({...base,eventId:'historical-first',requestId:'request-one'})!;
+  const second=postForwardedThreadAnswer({...base,eventId:'historical-second',requestId:'request-two'})!;
+  recordSessionEvent({eventId:`post:collapse:${second}`,sessionId:inboxId,inputId:root,kind:'post_collapse',
+    payload:{postId:second,keptPostId:first,reason:'One identical final answer closed several requests.'}});
+  const direct=inboxHistory(getSessionById(inboxId)!,null,20)!.messages;
+  expect(direct.some(message=>message.id===first)).toBeTrue();
+  expect(direct.some(message=>message.id===second)).toBeTrue();
+  const head=(db.query('SELECT max(sequence) AS n FROM session_owner_events').get() as {n:number}).n;
+  const prepared=sourceMessagePage(db,0,head,100,inboxRootResolver(db)).messages;
+  expect(prepared.some(message=>message.messageId===second)).toBeTrue();
 });
 
 test('one explicit multi-request reply produces one return without comparing answer text',async()=>{

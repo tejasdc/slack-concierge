@@ -353,7 +353,7 @@ import { startMachineWatchWorker,wakeWatchWorker } from './watches';
 import {recordSessionEvent as recordOwnerEvent,recoverProviderRefusalContinuations} from './session-inputs';
 import {refreshClaudeAccount} from './provider-accounts';
 import {installSessionProjection} from './session-projection';
-import {expireUnreadableReadingItems,fileServiceNotices,keepThreadsCurrent,migrateInboxAttention,migrateInboxTopics,reconcileCarriedClosures,reconcileForwardedFinalAnswers,repairOctober21RepeatedAnswer,repairNovember4RepeatedThreadNotices,retireRecoveredBookkeepingRequests,retireTimedRequestPosts,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
+import {expireUnreadableReadingItems,fileServiceNotices,keepThreadsCurrent,migrateInboxAttention,migrateInboxTopics,reconcileCarriedClosures,reconcileForwardedFinalAnswers,retireRecoveredBookkeepingRequests,retireTimedRequestPosts,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
 import {resolveRetryNotices} from './retry-breaker-notice';
 import {ownerEventMaxSequence,runStartupCatchUp,runStartupSweep,scheduleSessionPurposeRepair,startDeferredStartupRepairs} from './startup-repairs';
 import {CodexSessionObserver} from './codex-session-observer';
@@ -557,11 +557,6 @@ catch(error) {log('error','inbox_request_answer_reconciliation_failed',errorFiel
 try {log('info','timed_request_posts_retired',{result:runStartupStep('timed_request_posts',()=>runStartupCatchUp('timed-request-posts',ownerEventMaxSequence,
   (afterSequence,throughSequence)=>retireTimedRequestPosts({afterSequence,throughSequence}),20_000))});}
 catch(error) {log('error','timed_request_post_retirement_failed',errorFields(error));}
-// These two look up fixed event ids; they are cheap and need no catch-up.
-try {log('info','repeated_answer_posts_collapsed',{count:runStartupStep('october21_repeated_answer',repairOctober21RepeatedAnswer)});}
-catch(error) {log('error','repeated_answer_repair_failed',errorFields(error));}
-try {log('info','repeated_thread_notices_collapsed',{count:runStartupStep('november4_repeated_thread_notices',repairNovember4RepeatedThreadNotices)});}
-catch(error) {log('error','repeated_thread_notice_repair_failed',errorFields(error));}
 try {runStartupStep('inbox_attention_migration',()=>migrateInboxAttention());} catch(error) {log('error','inbox_attention_migration_failed',errorFields(error));}
 // A reading item with nothing to read is ended with its reason; new ones are refused at the door.
 try {runStartupStep('unreadable_reading_items',()=>expireUnreadableReadingItems());} catch(error) {log('error','inbox_unreadable_reading_items_failed',errorFields(error));}
