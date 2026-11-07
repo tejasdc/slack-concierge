@@ -2801,7 +2801,7 @@ export class SessionOwner {
     if(saved.state||current.turn&&(current.turn.status!=='queued'||current.turn.provider_admission_intended_at||current.turn.provider_started_at||current.turn.provider_turn_id||current.turn.provider_input_acknowledged_at))throw new SessionOwnerError('Input is no longer cancelable; Stop an admitted exact run.',409,'OPERATION_NOT_CANCELABLE');
     if(target.steering_id)throw new SessionOwnerError('Input is attached to a live run; Stop its exact run.',409,'OPERATION_NOT_CANCELABLE');
     if(target.turn_id){finishTurn(target.turn_id,'cancelled','Tejas canceled this queued message.');settleTurnDependencies(target.turn_id);}
-    db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({...saved,state:'canceled'}),target.id);
+    db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({...saved,state:'canceled',reason:'human_queued_input_cancel',turnId:target.turn_id}),target.id);
   }
   /** Stop settles his waiting words, while agent returns and saved work keep their own custody. */
   private clearWaitingHumanInputs(sessionId:number,reason:'stop'|'clear-queue',stoppedTurnId?:number) {

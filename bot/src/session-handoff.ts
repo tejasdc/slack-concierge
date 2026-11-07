@@ -79,11 +79,17 @@ function ledgerItems(sessionId:number):Item[] {
     // execution and is shown here so the successor can see whether it is safe to move.
     const accepted=getAcceptedSessionInput(input.input_id)!;
     items.push({id:`queued:${input.input_id}`,kind:'queued',ref:input.input_id,holder,turnId:input.turn_id,
-      movable:safeTurn(input as WaitingTurn,accepted),obsolete:closedThreadUpkeep(accepted)});
+      movable:movableQueuedTurn(input as WaitingTurn,accepted),obsolete:closedThreadUpkeep(accepted)});
   }
   for(const watch of db.query("SELECT watch_id,state FROM watches WHERE session_id=? AND (state IN ('accepted','observing') OR delivery_state='pending') ORDER BY created_at_ms,watch_id").all(sessionId) as any[])
     items.push({id:`watch:${watch.watch_id}`,kind:'watch',ref:watch.watch_id,holder,state:watch.state});
   return items;
+}
+
+function movableQueuedTurn(turn:WaitingTurn,input:NonNullable<ReturnType<typeof getAcceptedSessionInput>>):boolean {
+  // An unfired schedule has no provider effects. Keep its turn and firing identity when
+  // ownership moves: repeating schedules use that identity to book exactly one successor.
+  return safeTurn(turn.saved_kind==='scheduled'?{...turn,saved_kind:null}:turn,input);
 }
 
 function closedThreadUpkeep(input:ReturnType<typeof getAcceptedSessionInput>):boolean {
@@ -305,7 +311,20 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
         const original=getAcceptedSessionInput(item.ref)!;
         const turn=db.query(`SELECT id,session_id,accepted_input_id,status,dispatch_attempt,dispatch_hold,provider_admission_intended_at,
           provider_started_at,provider_turn_id,provider_input_acknowledged_at,saved_kind FROM turns WHERE id=?`).get(original.turn_id) as WaitingTurn|null;
-        if(!turn||!safeTurn(turn,original))throw new Error(`Queued input ${item.ref} is no longer safe to move.`);
+        if(!turn||!movableQueuedTurn(turn,original))throw new Error(`Queued input ${item.ref} is no longer safe to move.`);
+        if(turn.saved_kind==='scheduled'){
+          const successor=sessionMetadata(getSessionById(to)!);
+          const movedTurn=db.query(`UPDATE turns SET session_id=?,provider_model=?,reasoning_effort=?
+            WHERE id=? AND session_id=? AND status='queued' AND saved_kind='scheduled' AND accepted_input_id=?`)
+            .run(to,successor.model??null,successor.reasoningEffort??null,turn.id,from,original.id);
+          const movedInput=db.query(`UPDATE session_inputs SET session_id=?,updated_at=CURRENT_TIMESTAMP
+            WHERE id=? AND session_id=? AND turn_id=?`).run(to,original.id,from,turn.id);
+          if(movedTurn.changes!==1||movedInput.changes!==1)throw new Error(`Scheduled input ${item.ref} changed during handoff.`);
+          db.query(`UPDATE session_communication_requests SET target_turn_id=?
+            WHERE target_input_id=? AND target_session_id=? AND outcome IS NULL`).run(turn.id,original.id,to);
+          record(item.kind,item.ref);
+          continue;
+        }
         finishTurn(turn.id,'cancelled','Continued in another agent session before provider admission.');
         settleTurnDependencies(turn.id);
         const originalPayload=JSON.parse(original.payload_json);

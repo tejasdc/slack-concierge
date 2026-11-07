@@ -220,15 +220,24 @@ export function updateSavedTurn(turnId:number,action:string,body:Record<string,u
       const cancelingSessionId=body.cancelingSessionId;
       const reason=typeof cancelingSessionId==='number'&&Number.isSafeInteger(cancelingSessionId)
         ?`Agent session concierge:${cancelingSessionId} canceled this saved work.`:'Tejas dropped this saved work.';
-      db.query(`UPDATE turns SET status='cancelled',agent_text=?,ended_at=CURRENT_TIMESTAMP
-        WHERE session_id=? AND status='queued'`).run(reason,row.session_id);
-      db.query(`UPDATE session_inputs SET receipt_json=json_set(COALESCE(receipt_json,'{}'),'$.state','canceled')
-        WHERE session_id=? AND turn_id IN (SELECT id FROM turns WHERE session_id=? AND status='cancelled')`).run(row.session_id,row.session_id);
+      const canceled=db.query(`UPDATE turns SET status='cancelled',agent_text=?,ended_at=CURRENT_TIMESTAMP
+        WHERE id=? AND session_id=? AND status='queued' AND saved_kind IS NOT NULL`).run(reason,turnId,row.session_id);
+      if(canceled.changes!==1)throw new Error('The exact saved turn changed before cancellation.');
+      if(row.accepted_input_id){
+        const prior=db.query('SELECT receipt_json FROM session_inputs WHERE id=? AND turn_id=?').get(row.accepted_input_id,turnId) as {receipt_json:string|null}|null;
+        if(!prior)throw new Error('The exact scheduled input changed before cancellation.');
+        db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id=?')
+          .run(JSON.stringify({...(prior.receipt_json?JSON.parse(prior.receipt_json):{}),state:'canceled',reason:'saved_work_drop',turnId,
+            cancelingSessionId:typeof cancelingSessionId==='number'?cancelingSessionId:null,
+            cancelingInputId:body.cancelingInputId??null,cancelingRunId:body.cancelingRunId??null}),row.accepted_input_id,turnId);
+      }
     }
     const session=getSessionById(row.session_id);
     if(session){const meta=sessionMetadata(session);const needs=(meta.needs??[]).filter(need=>need.eventId!==`saved-work-alert:${turnId}`);
       if(needs.length!==(meta.needs??[]).length)updateSessionMetadata(session.id,{needs});}
-    recordSessionEvent({eventId,sessionId:row.session_id,inputId:row.accepted_input_id,turnId,kind:'saved_control',payload:{action,fromKind:row.saved_kind,toKind:savedTurn(turnId)?.saved_kind,atMs:body.atMs??null}});
+    recordSessionEvent({eventId,sessionId:row.session_id,inputId:row.accepted_input_id,turnId,kind:'saved_control',payload:{action,fromKind:row.saved_kind,toKind:savedTurn(turnId)?.saved_kind,atMs:body.atMs??null,
+      ...(action==='drop'?{reason:'saved_work_drop',cancelingSessionId:body.cancelingSessionId??null,
+        cancelingInputId:body.cancelingInputId??null,cancelingRunId:body.cancelingRunId??null}:{})}});
     return {turn:savedTurn(turnId)};
   })();
   executionChanged();
@@ -347,7 +356,8 @@ export function advanceRepeatingSchedules(now=Date.now()):number {
         db.query(`UPDATE turns SET status='cancelled',agent_text='Skipped because the previous firing was still in progress.',ended_at=CURRENT_TIMESTAMP
           WHERE id=? AND status='queued'`).run(current.id);
         if(current.accepted_input_id)db.query(`UPDATE session_inputs SET receipt_json=json_set(COALESCE(receipt_json,'{}'),
-          '$.state','canceled','$.error','Skipped because the previous firing was still in progress.') WHERE id=?`).run(current.accepted_input_id);
+          '$.state','canceled','$.reason','schedule_overlap','$.turnId',?,
+          '$.error','Skipped because the previous firing was still in progress.') WHERE id=?`).run(current.id,current.accepted_input_id);
         recordSessionEvent({eventId:`saved-repeat-skip:${root}:${current.saved_sequence}`,sessionId:current.session_id,
           inputId:current.accepted_input_id,turnId:current.id,kind:'saved_control',payload:{action:'skipped_overlap',sequence:current.saved_sequence}});
       }

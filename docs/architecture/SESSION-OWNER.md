@@ -43,6 +43,7 @@ neither owns replay, queue promotion, Stop or recovery.
 `SessionExecutionHost` dispatches native inputs through the same `SessionTurnQueueCoordinator`, durable claims, `ActiveTurnDispatchRegistry`, `executeAgentTurn` and provider adapters as Slack. Explicit human queue/steer controls validate the observed run; agent requests leave that choice to the coordinator. Native fork controls serialize in their parent's existing FIFO, preserve the parent binding and create the child only from exact native evidence. There is no provider writer in the Thinkering consumer.
 
 Scheduled saved work keeps its fire time as a separate admission condition at the queue's atomic claim. A retry or recovery may move its next attempt time, but cannot start it before the fire time. The queue wakes at that fire time even when the retry time was cleared. An explicit manual start overrides the schedule. See the [early scheduled Inbox incident](../incidents/2026-11-04-scheduled-inbox-work-fired-early.md).
+Dropping Saved work names one queued turn. Its receipt retains the cancellation cause and the agent's exact source input and run when an agent did it; other queued turns in the same session retain their place. A request withdrawal revokes only its target and linked continuations, with the withdrawal cause on each revoked input. A scheduled turn that is still waiting at handoff acceptance moves to the successor with the same turn, input, due time, and repeating-firing identity, while its model and effort change to the successor's binding. This keeps the scheduler's one-firing-per-sequence constraint intact and prevents the successor from running a predecessor-only model. A proposed handoff leaves it on the predecessor. A queued scheduled turn with provider admission evidence or unresolved dependencies still blocks acceptance rather than being replayed.
 
 Banked work may opt into **quiet only** at creation. The choice is stored on its turn and inherited when any continuation is queued, including a provider refusal, background release, interruption, startup recovery, or planned boundary. Generic banked work can still start near an allowance reset outside quiet hours. Quiet-only work requires the saved-work time zone's quiet band at forecast selection and the queue's atomic claim, including manual start. Admission closes five minutes before the quiet band's end, and the running-turn controller requests cancellation at that cutoff so unfinished work stops before morning. A continuation retains work without replaying its first input. A requester's cancellation revokes an ordinary or saved queued turn and follows its exact continuation lineage; each canceled input receipt and turn remain as history, and the saved-work list omits them. A withdrawn request cannot create a later continuation. The choice is explicit, never inferred from the project name.
 
@@ -146,9 +147,10 @@ entries stay where they were and keep their original authors.
 Only a live successor run can accept with the inventory digest. The owner recomputes the
 inventory; a changed digest or an unsafe queued input refuses acceptance and returns the current inventory for
 acknowledgement. Acceptance transfers the open request return and reply ownership,
-safe never-started queued inputs, and watches in one ledger transaction, recording each
-moved item. A queued input's original acceptance and history stay with the predecessor;
-the successor receives a linked copy, and the request keeps its own ID. Sent request IDs
+safe never-started queued inputs, scheduled firings, and watches in one ledger transaction, recording each
+moved item. An ordinary queued input's original acceptance and history stay with the predecessor;
+the successor receives a linked copy. A scheduled input instead changes session custody in place,
+so its accepted input and firing IDs remain stable. The request keeps its own ID. Sent request IDs
 and their targets do not change. An owed request's reply ownership moves to the
 successor. An outside request retains its unique accepted input as the custody key
 until that exact queued input is safely copied; several outside requests never collapse
