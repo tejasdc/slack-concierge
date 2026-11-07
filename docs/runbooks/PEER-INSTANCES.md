@@ -175,8 +175,11 @@ uses a headless, request-specific profile and session. Environment variables nam
 they do not grant access by themselves. The launcher uses the Mac owner's fixed local socket and
 an empty browser configuration, so an agent's environment or browser preferences cannot replace
 the owner check or attach it to Tejas's Chrome. The recorded website bounds the first open; later
-navigation may include a site's authentication providers and remains the agent's responsibility. Direct
-agent-browser, Playwright and Chrome DevTools tools remain refused on the Mac, as do foreground
+navigation may include a site's authentication providers and remains the agent's responsibility.
+For a newly created Mac session, the owner verifies the recorded need in its retained first input;
+for a request to an existing session, it verifies the request input itself. Both require that exact
+accepted input's run to be active and the server failure to be recorded before the browser opens.
+Direct agent-browser, Playwright and Chrome DevTools tools remain refused on the Mac, as do foreground
 Chrome and app activation. Claude in Chrome is also refused for agent work because it
 attaches to his personal Chrome, even when a Mac browser fallback is recorded. Codex
 Computer Use requires an accepted Mac app, screen, native iOS, or explicit Mac need;

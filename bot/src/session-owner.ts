@@ -2669,7 +2669,8 @@ export class SessionOwner {
     const accepted=getAcceptedSessionInput(request.sourceInputId);
     const turn=db.query(`SELECT status,stop_requested_at FROM turns
       WHERE accepted_input_id=? AND native_run_id=? LIMIT 1`).get(request.sourceInputId,request.sourceRunId) as {status:string;stop_requested_at:number|null}|null;
-    const need=accepted?JSON.parse(accepted.payload_json)?.machineNeed:null;
+    const body=accepted?JSON.parse(accepted.payload_json):null;
+    const need=accepted?.kind==='create'?body?.firstInput?.machineNeed:body?.machineNeed;
     if(!turn||turn.status!=='running'||turn.stop_requested_at!==null||need?.kind!=='browser-fallback')
       throw new SessionOwnerError('No active recorded server failure permits this Mac browser.',403,'MAC_BROWSER_FALLBACK_REFUSED');
     const verified=parseMachineNeed(`${need.kind}:${need.why}`,need.serverAttempt);
