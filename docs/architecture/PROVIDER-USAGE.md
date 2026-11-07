@@ -284,6 +284,11 @@ sign-in repair for a held turn, but they do not prove a runnable local credentia
 Signing in through Accounts files a home but never adds it to claude-swap (adding copies the login,
 which dies the first time the original renews), so before 2026-11-03 such an account was missing from
 every reading: hey@tejas.nyc read as absent, and nothing that waits for room could see it.
+When a peer supplies newer usage for an account on both machines, the receiving machine keeps its
+own sign-in verdict. A server reading can fill the Mac's bars for a signed-out home, but cannot turn
+that Mac home into a signed-in profile. Dispatch rejects the local signed-out verdict before
+the selected account's usual attempt is allowed. The peer source and original read time remain
+visible on the usage reading.
 Record: `docs/incidents/2026-11-03-usage-reader-missed-new-account.md`. Each account read from its own login (also the fallback when claude-swap's copy has died) is asked at most every five minutes, inside the six minutes a reading counts as fresh, doubling the gap after a failure up to thirty minutes. If an idle home's access token has expired, the reader asks Claude Code's local `/usage` command to renew that home's own login without a model turn; the reader does not copy or refresh credentials itself. One renewal per account runs at a time, and an unsuccessful unchanged login backs off from five to thirty minutes. A changed credential file bypasses the earlier failed-read wait so the next usage pass can use it. Between reads or after a failure the reader keeps its last good windows with the time they were taken, so a 429 never blanks it.
 
 The cache above records refusals. Separately, `bot/src/provider-account-usage.ts` reads the

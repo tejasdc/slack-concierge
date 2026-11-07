@@ -73,18 +73,13 @@ async function scanAuditRows<T>(table:string,sql:string,args:unknown[],visit:(ro
 export async function auditUndeliveredReturns(now = Date.now(),stopped:()=>boolean=()=>false) {
     if (now - auditedAt < AUDIT_EVERY_MS) return;
     auditedAt = now;
-    for(const [events,requests,extra,peer] of [
-        ['session_communication_events','session_communication_requests','AND r.source_input_id IS NOT NULL',false],
-        ['session_peer_events','session_peer_requests','',true],
-    ] as const) {
-      const complete=await scanAuditRows<UndeliveredReturnRow>(events,
-        `${UNDELIVERED(events,requests,extra,true)} AND e.rowid<=? AND e.rowid>? ORDER BY e.rowid LIMIT 1`,[now-GRACE_MS],row=>{
-        if (reported.has(row.event_id)) return;
-        reported.add(row.event_id);
-        log('error', 'session_return_undelivered', { event_id: row.event_id, request_id: row.request_id, status: row.status,
-            source_session_id: `concierge:${row.source_session_id}`, peer_request: peer, undelivered_ms: now - row.created_at_ms });
-      },stopped);
-      if(!complete){auditedAt=-Infinity;return;}
+    if (stopped()) { auditedAt = -Infinity; return; }
+    for (const row of undeliveredReturnRows(now)) {
+      if (stopped()) { auditedAt = -Infinity; return; }
+      if (reported.has(row.event_id)) continue;
+      reported.add(row.event_id);
+      log('error', 'session_return_undelivered', { event_id: row.event_id, request_id: row.request_id, status: row.status,
+          source_session_id: `concierge:${row.source_session_id}`, peer_request: row.peer, undelivered_ms: now - row.created_at_ms });
     }
     // One return can carry several requests' answers; it is one thing for him to look at.
     const seenInputs = new Set<string>();
