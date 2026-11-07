@@ -54,6 +54,20 @@ fi
 [[ $(cat "$fixture/feature/own.txt") == 'my change' ]]
 ! git -C "$fixture/feature" rev-parse --verify --quiet refs/worktree/concierge-rebase-saved >/dev/null
 
+# A previously pushed branch must not be rebased or have local work cleared.
+git -C "$repo" worktree add -b pushed "$fixture/pushed" >/dev/null
+printf 'published\n' > "$fixture/pushed/own.txt"
+git -C "$fixture/pushed" add own.txt
+git -C "$fixture/pushed" commit -m published >/dev/null
+git -C "$fixture/pushed" push -u origin pushed >/dev/null 2>&1
+printf 'local after push\n' > "$fixture/pushed/other.txt"
+if (cd "$fixture/pushed" && "$script") >/dev/null 2>&1; then
+  echo 'Expected pushed-branch refusal.' >&2
+  exit 1
+fi
+[[ $(cat "$fixture/pushed/other.txt") == 'local after push' ]]
+! git -C "$fixture/pushed" rev-parse --verify --quiet refs/worktree/concierge-rebase-saved >/dev/null
+
 # A failed rebase must leave the saved object reachable until the user aborts
 # or resolves the conflict, then --restore must use that same object.
 git -C "$repo" worktree add -b conflict "$fixture/conflict" "$(git -C "$repo" rev-list --max-parents=0 HEAD)" >/dev/null

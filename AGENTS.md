@@ -27,6 +27,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   is for capture paths; use a feature's own socket or route when appropriate.
 - Rebase dirty task worktrees with `scripts/rebase-worktree.sh`, which saves tracked
   changes under a ref private to that worktree and restores the exact saved object.
+  It refuses branches already pushed to origin, preserving published history.
   It refuses untracked files until staged or committed; after a stopped rebase,
   resolve or abort it and run `scripts/rebase-worktree.sh --restore` from a clean tree.
   A conflicted restore must be resolved and finished with its exact saved object ID,

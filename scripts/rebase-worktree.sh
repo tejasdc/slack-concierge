@@ -98,6 +98,19 @@ if [[ ${1:-} == --finish ]]; then
   exit 0
 fi
 
+# Rebasing a published topic branch would rewrite pushed history. Refuse before
+# saving or clearing local changes, even if the remote branch was merged later.
+remote_status=0
+git ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null || remote_status=$?
+if [[ $remote_status == 0 ]]; then
+  echo "Refusing: $branch already exists on origin. Start a new task worktree instead of rebasing pushed history." >&2
+  exit 2
+fi
+if [[ $remote_status != 2 ]]; then
+  echo "Refusing: could not verify whether $branch was pushed; worktree untouched." >&2
+  exit 2
+fi
+
 if git rev-parse --verify --quiet "$saved_ref" >/dev/null; then
   echo "Refusing: this worktree already has saved rebase changes. Resolve the rebase, then run scripts/rebase-worktree.sh --restore." >&2
   exit 2

@@ -1167,6 +1167,8 @@ ID for tracked and staged changes, pins that object under `refs/worktree/` for t
 worktree, then restores from that ID after the rebase. It never reads, pops or drops
 the repository-wide stash stack, so another worktree's stash activity cannot change
 which object is applied here. A clean worktree rebases without saving anything.
+It refuses a branch already on the remote before touching local changes: pushed
+history is never rebased. Use a new task worktree for follow-up work.
 
 Untracked files make the command stop before changing the worktree because `stash
 create` does not include them; stage or commit them first. If the rebase stops, the
