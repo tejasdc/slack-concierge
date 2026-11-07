@@ -377,7 +377,7 @@ You do not need to reply to this.`;
 // ---- the worker --------------------------------------------------------------------------------
 
 export type WatchAdmission = {
-  sessionId: number; inputId: string; origin: "service"; sourceInputId: string; sourceRunId: string; requestId: string; text: string;
+  sessionId: number; inputId: string; origin: "service"; sourceInputId: string; sourceRunId: string; requestId: string; text: string; threadReplyNotRequired: true;
 };
 export type WatchWorkerDeps = {
   admit: (input: WatchAdmission) => unknown;
@@ -545,7 +545,7 @@ function deliverPending(deps: WatchWorkerDeps, now: number) {
       // after a lost answer reaches the same input. A paused or archived session holds it.
       const admissionStarted = performance.now();
       deps.admit({ sessionId: row.session_id, inputId: row.delivery_input_id!, origin: "service", sourceInputId: row.origin_input_id,
-        sourceRunId: row.origin_run_id, requestId: row.delivery_input_id!, text: row.message_text! });
+        sourceRunId: row.origin_run_id, requestId: row.delivery_input_id!, text: row.message_text!, threadReplyNotRequired: true });
       const admissionMs = performance.now() - admissionStarted;
       update(row.watch_id, "delivery_state='accepted', delivery_next_ms=NULL");
       log("info", "watch_delivered", { watch_id: row.watch_id, event: row.terminal_event, admission_ms: Math.round(admissionMs) });
