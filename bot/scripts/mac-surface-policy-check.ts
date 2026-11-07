@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {macSurfaceRefusal,RETIREMENT_FILE_MENU_PROGRAM,RETIREMENT_NEW_WINDOW_PROGRAM,UPDATE_BOUNDED_AX_PROGRAM,UPDATE_WORKSPACE_COMMAND,UPDATE_FIRST_TAP_COMMAND,AUTHORIZED_UPDATE_SESSION_URL} from '../src/mac-surface-policy';
+import {macSurfaceRefusal,RETIREMENT_FILE_MENU_PROGRAM,RETIREMENT_NEW_WINDOW_PROGRAM,UPDATE_BOUNDED_AX_PROGRAM,UPDATE_WORKSPACE_COMMAND,UPDATE_FIRST_TAP_COMMAND} from '../src/mac-surface-policy';
 import {parseMachineNeed} from '../src/machine-need';
 import {deviceQuestionNamesPhysicalPrerequisite} from '../src/agent-reachable-app-question';
 
@@ -36,9 +36,9 @@ assert.match(macSurfaceRefusal({command:null,need:'',platform:'darwin',toolName:
 assert.match(macSurfaceRefusal({command:null,need:'mac-file',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Voice Memos")'}})??'',/accepted Mac/);
 assert.equal(macSurfaceRefusal({command:null,need:'mac-app',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Voice Memos")'}}),null);
 const webAppNeed={kind:'mac-app',why:'Inspect the already-open thnkr.ing web app com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 page faf63877-6536-4ac6-86e9-5d63e03d3369, directly authorized by Tejas.',humanInputId:'f66f15dd-e251-4537-a9cd-347d0548434b',effectScope:'work'};
-const updateNeed={kind:'mac-app',why:`Inspect exact bundle com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 at ${AUTHORIZED_UPDATE_SESSION_URL} and install ready update safely`,effectScope:'work',updateAuthorization:true};
-const currentUpdateNeed={kind:'mac-app',why:`Open Workspace menu in com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 at ${AUTHORIZED_UPDATE_SESSION_URL}`,effectScope:'work',updateAuthorization:true};
-const acceptedWorkspaceNeed={...currentUpdateNeed,why:`Open Workspace once in bundle com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 URL ${AUTHORIZED_UPDATE_SESSION_URL} for ready update`};
+const updateNeed={kind:'mac-app',why:'Inspect exact bundle com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 and install ready update safely',effectScope:'work',updateAuthorization:true};
+const currentUpdateNeed={kind:'mac-app',why:'Open Workspace menu in com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792',effectScope:'work',updateAuthorization:true};
+const acceptedWorkspaceNeed={...currentUpdateNeed,why:'Open Workspace once in bundle com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 for ready update'};
 const currentTapNeed={...currentUpdateNeed,why:currentUpdateNeed.why.replace('Open Workspace menu','Press Update now once')};
 const nativeCall=(command:string,need:typeof currentUpdateNeed)=>
   macSurfaceRefusal({command,need,platform:'darwin',toolName:'exec_command',toolInput:{cmd:command}});
@@ -47,7 +47,7 @@ assert.equal(nativeCall(UPDATE_WORKSPACE_COMMAND,acceptedWorkspaceNeed),null);
 assert.equal(nativeCall(UPDATE_FIRST_TAP_COMMAND,currentTapNeed),null);
 for(const need of [{...currentUpdateNeed,effectScope:'informational'},
   {...currentUpdateNeed,updateAuthorization:false},
-  {...currentUpdateNeed,why:currentUpdateNeed.why.replace('mac%3A75','mac%3A76')},
+  {...currentUpdateNeed,why:currentUpdateNeed.why.replace('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792','com.apple.Safari.WebApp.other')},
   {...currentUpdateNeed,why:currentUpdateNeed.why.replace('Workspace menu','other menu')}])
   assert.ok(nativeCall(UPDATE_WORKSPACE_COMMAND,need));
 assert.ok(nativeCall(UPDATE_FIRST_TAP_COMMAND,currentUpdateNeed));
@@ -69,7 +69,7 @@ assert.equal(macSurfaceRefusal({command:null,need:currentUpdateNeed,platform:'da
 const updateCall='var thnkrUpdateInspectionApp = await cua.getApp("com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792"); await thnkrUpdateInspectionApp.getAXStateAndScreenshot()';
 assert.equal(macSurfaceRefusal({command:null,need:updateNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:updateCall}}),null);
 assert.equal(macSurfaceRefusal({command:null,need:updateNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:UPDATE_BOUNDED_AX_PROGRAM}}),null);
-for(const need of [{...updateNeed,updateAuthorization:false},{...updateNeed,effectScope:'informational'},{...updateNeed,why:updateNeed.why.replace('mac%3A75','mac%3A76')},webAppNeed])
+for(const need of [{...updateNeed,updateAuthorization:false},{...updateNeed,effectScope:'informational'},{...updateNeed,why:updateNeed.why.replace('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792','com.apple.Safari.WebApp.other')},webAppNeed])
   assert.ok(macSurfaceRefusal({command:null,need,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:UPDATE_BOUNDED_AX_PROGRAM}}));
 for(const code of [UPDATE_BOUNDED_AX_PROGRAM.replace('getAXState({emit:false,disableDiffing:true})','getAXState()'),
   UPDATE_BOUNDED_AX_PROGRAM.replace('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792','Safari'),
@@ -99,7 +99,7 @@ for(const code of [UPDATE_BOUNDED_AX_PROGRAM.replace('getAXState({emit:false,dis
 }
 const formerUpdateProgram='var thnkrUpdateApp = await cua.getApp("com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792"); var state = await thnkrUpdateApp.getAXState({disableDiffing:true}); await thnkrUpdateApp.click(3);';
 assert.match(macSurfaceRefusal({command:null,need:updateNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:formerUpdateProgram}})??'',/Update now remains refused/);
-for(const need of [{...updateNeed,updateAuthorization:false},{...updateNeed,effectScope:'informational'},{...updateNeed,why:updateNeed.why.replace('mac%3A75','mac%3A76')},webAppNeed])
+for(const need of [{...updateNeed,updateAuthorization:false},{...updateNeed,effectScope:'informational'},{...updateNeed,why:updateNeed.why.replace('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792','com.apple.Safari.WebApp.other')},webAppNeed])
   assert.ok(macSurfaceRefusal({command:null,need,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:formerUpdateProgram}}));
 assert.ok(macSurfaceRefusal({command:null,need:updateNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Safari")'}}));
 const canvasNeed={...webAppNeed,humanInputId:'capture:7bad480ccf4350922acb3ac750cc0ba0b7a990f596acd92b5fe98403f6f0e7a0'};
