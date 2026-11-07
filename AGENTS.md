@@ -132,6 +132,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [human command custody](docs/architecture/HUMAN-COMMAND-INTAKE.md), and
   [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md) own those boundaries.
 - Banked phone work that Tejas permits only overnight uses the explicit quiet-only saved-work choice; request cancellation also revokes a queued saved turn. See [session ownership](docs/architecture/SESSION-OWNER.md#one-execution-owner) and [router actions](docs/runbooks/ROUTER-ACTIONS.md#current-native-routing).
+- Saved-work cancellation names one turn and retains its cause; accepted handoff preserves an unfired scheduled turn's due time and firing identity. See [session ownership](docs/architecture/SESSION-OWNER.md#identity-and-admission) and [provider-change handoff](docs/architecture/SESSION-OWNER.md#provider-change-handoff).
 - A device question can name a physical instrument or controller in a USB connection
   request, or an app startup when the device has no agent route; the agent explains
   the failed route. Returned `needs_you` questions can be withdrawn

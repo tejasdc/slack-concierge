@@ -199,6 +199,35 @@ an accessibility label into proof of the current page or ready release. A future
 update route needs a fresh, action-bound page and release identity, a positive
 safe-state signal and a stable target before Concierge can admit its click.
 
+The November 6 Mac Codex instruction also names the broken Deep work Stop and
+authorizes using and testing Tejas's Mac. The same original provider thread
+issued exact outside Focus recovery requests `5caf7de1-0937-46fe-9fc3-e72b48f119fc`
+and `775cda97-8177-4202-8545-b451f74ef3bd`. The Mac owner checks the
+original human message, both exact commands and their receipts in its local
+transcript. It does not invent a Concierge human input. A Mac-app request from
+the current Focus worker and source input/run `request:775cda97-8177-4202-8545-b451f74ef3bd` /
+`e41da8b5-2d17-4483-add1-57e2b8d21203` must have a live work-effect peer
+delivery and name the exact Thinkering bundle plus `bounded Focus Start/End
+acceptance`. Only then does the Mac guard admit same-program passive reads
+and fixed native Start, verify-start and End commands. This is a single test route, not a
+general app or page control grant.
+
+The native action finds the one installed WebApp process, one window, one
+current thnkr.ing web area and one exact Deep work control. It reads twice,
+retains the accessibility object and URL, verifies them again immediately
+before a single Press, and persists an attempt marker first. The Start command
+records only that accessibility accepted the Press. A separate verify-start
+command must freshly read the enabled running Deep work control twice before End is allowed;
+End requires that verified state from the same process and URL within ten minutes.
+An uncertain Press is never repeated. A separate positive Focus backend readback
+is required before the worker calls either action successful;
+if the real account already has a Focus session, the worker must preserve it
+and skip Start and End. The helper never reloads, closes or navigates the app.
+The native helper executes under the Mac's existing Accessibility identity;
+if that identity lacks access, the route refuses rather than requesting a
+new permission. The Mac release packages the helper in its immutable pinned
+control directory, so the guarded command resolves to the installed bytes.
+
 The question gate accepts a device-only claim when its question names one action on a
 physical device. The agent first uses its available device route. If that route reaches
 a physical prerequisite such as unlocking his Mac, the question names that prerequisite.
