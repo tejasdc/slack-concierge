@@ -550,7 +550,7 @@ export function usageRefreshing(): boolean { return inFlight !== null; }
  */
 export function scheduleProviderAccountUsageRefresh(force = false): Promise<void> {
   if (inFlight && force && !inFlightForced)
-    return inFlight.then(() => scheduleProviderAccountUsageRefresh(true));
+    return inFlight.then(() => scheduleProviderAccountUsageRefresh(true), () => scheduleProviderAccountUsageRefresh(true));
   if (!inFlight) {
     inFlightForced = force;
     inFlight = refreshProviderAccountUsage(force).finally(() => { inFlight = null; inFlightForced = false; });

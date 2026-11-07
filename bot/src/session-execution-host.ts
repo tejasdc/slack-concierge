@@ -503,11 +503,28 @@ export class SessionExecutionHost {
   }
   private checkProviderAuth(fresh=false):void{
     const recent=Date.now()-this.providerAuthCheckedAt<30_000;
-    this.providerAuthCheck??=!fresh&&recent?null:Promise.all([
+    if(this.providerAuthCheck){
+      if(fresh){
+        const current=this.providerAuthCheck;
+        const forced=scheduleProviderAccountUsageRefresh(true).catch(()=>{});
+        this.trackProviderAuthCheck(Promise.all([current,forced]));
+      }
+      return;
+    }
+    if(!fresh&&recent)return;
+    this.trackProviderAuthCheck(Promise.all([
       providerRunnerTarget('claude-code')?Promise.resolve():refreshClaudeAccount(),
       providerRunnerTarget('codex')?Promise.resolve():codexSignInState().then(answer=>{this.codexSignIn=answer.state;if(answer.state==='signed-in')setCodexAccountInUse(answer);}).catch(()=>{}),
-      scheduleProviderAccountUsageRefresh(fresh).catch(()=>{})]).then(()=>undefined,()=>undefined)
-      .finally(()=>{this.providerAuthCheck=null;this.providerAuthCheckedAt=Date.now();});
+      scheduleProviderAccountUsageRefresh(fresh).catch(()=>{})]));
+  }
+  private trackProviderAuthCheck(work:Promise<unknown>):void{
+    const check=work.then(()=>undefined,()=>undefined);
+    this.providerAuthCheck=check;
+    void check.then(()=>{
+      if(this.providerAuthCheck!==check)return;
+      this.providerAuthCheck=null;
+      this.providerAuthCheckedAt=Date.now();
+    });
   }
   private async providerAuthStatus(fresh=false):Promise<readonly ProviderAuthView[]>{
     this.checkProviderAuth(fresh);

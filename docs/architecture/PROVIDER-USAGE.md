@@ -313,7 +313,7 @@ so the surface can name the state instead of leaving a gap. One pass runs at a t
 timer, a credential change and his Refresh press all share it.
 
 **Refresh reads.** A `fresh` read of `/auth/providers` starts
-`scheduleProviderAccountUsageRefresh()` alongside the identity reads (`claude auth status`,
+`scheduleProviderAccountUsageRefresh(true)` alongside the identity reads (`claude auth status`,
 the Codex sign-in state) and answers at once from the last known state with `checking` set;
 the Accounts page reads again every few seconds while any row or machine says `checking`
 or `refreshing` (a peer machine says `checking` only while a read of it is outstanding), so the numbers fetched for that press arrive on screen without a read waiting
@@ -322,7 +322,9 @@ half-hourly pass had last written, so pressing Refresh changed no percentage on 
 and read as a dead control: "I just pressed refresh and it doesn't seem to be working at
 all." From then until 2026-11-03 a fresh read waited for the whole check, 11 to 20 seconds
 around a sign-in, which held the account row's confirmation spinner that long. A press
-while a pass is already running joins that pass instead of starting a second.
+while an ordinary pass is already running queues one forced pass after it. The owner keeps
+`checking` true until the forced pass settles; the Accounts Refresh mark stays active while
+the page watches that state. A press during a forced pass joins that same pass.
 
 - **Codex**: the agents' home `~/.codex` plus one home per extra account under
   `~/.codex-accounts/<name>/`, each read by CodexBar (`/root/tools/codexbar-cli/codexbar`)
