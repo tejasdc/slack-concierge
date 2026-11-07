@@ -738,8 +738,7 @@ export class SessionCommunicationCoordinator {
                 const focusDelivery=typeof provenance?.requestId==='string'&&provenance.requestId
                   ?db.query(`SELECT 1 FROM session_peer_deliveries
                     WHERE target_input_id=? AND target_session_id=? AND request_id=?
-                      AND peer='cloud' AND origin_session_id='cloud:9118'
-                      AND origin_input_id=? AND origin_run_id=?
+                      AND peer='cloud' AND origin_input_id=? AND origin_run_id=?
                       AND requested_effect='work' AND closed_at_ms IS NULL`).get(
                     row.id,running.session_id,provenance.requestId,MAC_FOCUS_SOURCE_INPUT,MAC_FOCUS_SOURCE_RUN)
                   :null;
