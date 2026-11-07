@@ -1509,7 +1509,7 @@ export class SessionExecutionHost {
         run:async prepared=>{
           // The claimed turn, its execution record and its input are on disk before any provider
           // (Claude, Codex or ChatGPT) is started or told anything.
-          await ledgerDurable();
+          await ledgerDurable({kind:'provider_input',id:input.id});
           // A run taken back after a restart takes messages again only once its history is rebuilt;
           // what the restart returned to the queue meanwhile goes into it then.
           if(adoption&&prepared.onSteeringReady){
