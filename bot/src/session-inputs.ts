@@ -849,6 +849,33 @@ export function recoverUnsentSteeredInput(inputId:string) {
     return enqueueSessionInput(input.id);
   })();
 }
+/**
+ * Antigravity once advertised live steering even though its serial CLI could leave accepted
+ * messages behind the current answer. A restart proved which attempts were never written. Move
+ * only those inputs to the durable FIFO, keeping their original identity and accepted order.
+ */
+export function recoverUnsentAntigravityInputs() {
+  const rows=db.query(`SELECT input.id,input.request_id FROM session_inputs input
+    JOIN sessions session ON session.id=input.session_id
+    JOIN turn_steering_messages steering ON steering.accepted_input_id=input.id
+      AND steering.id=(SELECT MAX(latest.id) FROM turn_steering_messages latest WHERE latest.accepted_input_id=input.id)
+    WHERE session.provider_id='antigravity'
+      AND steering.status='failed' AND steering.provider_sent_at IS NULL
+      AND json_extract(input.receipt_json,'$.state') IS NULL
+      AND (input.steering_id=steering.id OR input.steering_id IS NULL AND input.turn_id IS NULL)
+    ORDER BY input.rowid`).all() as {id:string;request_id:string|null}[];
+  let queued=0;
+  for(const row of rows) {
+    // A later answer or cancellation already settled this exact obligation. A closed Inbox
+    // request has no thread upkeep left to perform; neither should consume another model turn.
+    if(row.request_id&&db.query('SELECT 1 FROM session_communication_requests WHERE request_id=? AND outcome IS NOT NULL').get(row.request_id))continue;
+    if(row.id.startsWith('thread-upkeep:')&&row.request_id
+      &&db.query("SELECT 1 FROM inbox_requests WHERE request_id=? AND state='closed'").get(row.request_id))continue;
+    const recovered=recoverUnsentSteeredInput(row.id);
+    if(recovered?.turn_id!==null&&recovered?.steering_id===null)queued++;
+  }
+  return queued;
+}
 export function retainSlackInput(channel:string,messageTs:string) {
   return db.transaction(() => {
     const claim=db.query(`SELECT claim.*,turn.session_id,turn.turn_kind,turn.user_text AS turn_user_text,turn.slack_reply_thread_ts FROM slack_user_input_claims claim JOIN turns turn ON turn.id=claim.turn_id
