@@ -1,4 +1,4 @@
-import {db,claimNextQueuedTurn,executionChanged,getClaudePreferredModel,getSessionById,globalPauseHoldsSession,type QueuedTurnClaimRow} from './state';
+import {db,claimNextQueuedTurn,executionChanged,getClaudePreferredModel,getSessionById,globalPauseHoldsSession,settleTurnDependencies,type QueuedTurnClaimRow} from './state';
 import {enqueueSessionInput,getAcceptedSessionInput,nativeRunId,queueTurnContinuation,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {providerAccountUsage} from './provider-account-usage';
 import {usageForecasts} from './provider-usage-forecast';
@@ -223,6 +223,7 @@ export function updateSavedTurn(turnId:number,action:string,body:Record<string,u
       const canceled=db.query(`UPDATE turns SET status='cancelled',agent_text=?,ended_at=CURRENT_TIMESTAMP
         WHERE id=? AND session_id=? AND status='queued' AND saved_kind IS NOT NULL`).run(reason,turnId,row.session_id);
       if(canceled.changes!==1)throw new Error('The exact saved turn changed before cancellation.');
+      settleTurnDependencies(turnId);
       if(row.accepted_input_id){
         const prior=db.query('SELECT receipt_json FROM session_inputs WHERE id=? AND turn_id=?').get(row.accepted_input_id,turnId) as {receipt_json:string|null}|null;
         if(!prior)throw new Error('The exact scheduled input changed before cancellation.');
