@@ -45,8 +45,9 @@ if (process.env.CONCIERGE_READ_WORKER !== "1") db.exec(`CREATE TABLE IF NOT EXIS
   PRIMARY KEY (provider, account, window_name, observed_at_ms)
 )`);
 
-/** Samples kept per window: a day of five-minute readings, far more than a line needs. */
-const KEEP_SAMPLES = 300;
+/** Weekly attribution needs the observed meter history across a rolling seven-day report. */
+const KEEP_WEEKLY_SAMPLES = 2200;
+const KEEP_OTHER_SAMPLES = 300;
 /** Below this the readings are noise rather than a rate. */
 const MIN_SPAN_MS = 8 * 60_000;
 const MIN_RATE_PER_HOUR = 0.5;
@@ -122,7 +123,8 @@ export function recordUsageReading(provider: AccountIdentityProvider, usage: Pro
           WHERE provider=? AND account=? AND window_name=? AND observed_at_ms NOT IN (
             SELECT observed_at_ms FROM provider_usage_readings
             WHERE provider=? AND account=? AND window_name=? ORDER BY observed_at_ms DESC LIMIT ?)`)
-          .run(provider, account.label, window.name, provider, account.label, window.name, KEEP_SAMPLES);
+          .run(provider, account.label, window.name, provider, account.label, window.name,
+            window.name==='Weekly'||window.name==='Weekly · Fable only'?KEEP_WEEKLY_SAMPLES:KEEP_OTHER_SAMPLES);
       }
     }
   })();

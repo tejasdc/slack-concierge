@@ -18,13 +18,15 @@ try{
   const db=ledgerWriteResults(new Database(join(state,'state.db')));
   db.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,agent_session_uuid TEXT,provider_id TEXT,native_metadata_json TEXT,last_turn_at TEXT);
     CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,status TEXT,provider_turn_id TEXT,provider_started_at TEXT,ended_at TEXT,
-      saved_kind TEXT,saved_repeat_ms INTEGER,saved_root_id INTEGER,saved_sequence INTEGER,saved_fire_at_ms INTEGER,provider_duration_ms INTEGER);
-    CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,session_id INTEGER,turn_id INTEGER,kind TEXT,payload_json TEXT,created_at TEXT);
+      saved_kind TEXT,saved_repeat_ms INTEGER,saved_root_id INTEGER,saved_sequence INTEGER,saved_fire_at_ms INTEGER,provider_duration_ms INTEGER,accepted_input_id TEXT);
+    CREATE TABLE session_communication_requests(target_input_id TEXT,topic_root_input_id TEXT,thread_root_input_id TEXT,created_at_ms INTEGER);
+    CREATE TABLE inbox_topic_roots(root_input_id TEXT PRIMARY KEY,topic_id TEXT);
+    CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,session_id INTEGER,turn_id INTEGER,kind TEXT,payload_json TEXT,created_at TEXT,input_id TEXT);
     CREATE TABLE saved_work_settings(singleton INTEGER PRIMARY KEY,time_zone TEXT);`);
   db.query('INSERT INTO sessions(id,agent_session_uuid,provider_id,native_metadata_json,last_turn_at) VALUES(1,?,?,?,?)')
     .run(nativeId,'claude-code',JSON.stringify({title:'Mac usage fixture',project:'/workspace/usage-fixture'}),started);
   db.query('INSERT INTO turns(id,session_id,status,provider_started_at) VALUES(1,1,?,?)').run('running',started);
-  db.query('INSERT INTO session_owner_events VALUES(1,1,1,?,?,?)').run('account',JSON.stringify({account:'fixture@example.test'}),started);
+  db.query('INSERT INTO session_owner_events(sequence,session_id,turn_id,kind,payload_json,created_at) VALUES(1,1,1,?,?,?)').run('account',JSON.stringify({account:'fixture@example.test'}),started);
   db.query('INSERT INTO saved_work_settings VALUES(1,?)').run('America/New_York');
   db.close();
 
@@ -56,7 +58,7 @@ try{
   process.env.HOME=home;process.env.CONCIERGE_STATE_DIR=state;process.env.CONCIERGE_PEER_NAME='mac';
   process.env.USAGE_BREAKDOWN_LEDGER=join(state,'state.db');process.env.USAGE_BREAKDOWN_CACHE=join(state,'mac-usage.db');
   delete process.env.CONCIERGE_TURN_RUNNER;delete process.env.CONCIERGE_CODEX_RUNNER;
-  const {usageBreakdown}=await import('../src/usage-breakdown');
+  const {usageBreakdown,usageAllowanceLookup}=await import('../src/usage-breakdown');
   const old=await usageBreakdown('today') as {computedAt:string;stale:boolean};
   if(!old.stale||old.computedAt!==staleAt)throw new Error('Old usage result was presented as current');
   let fresh=false;
@@ -68,5 +70,9 @@ try{
   const current=await usageBreakdown('today') as {stale:boolean;callMix:{totalCalls:number}};
   if(!fresh||current.stale||current.callMix.totalCalls!==1)
     throw new Error('Mac local usage did not replace the stale published report');
+  const compact=await usageAllowanceLookup(['concierge:1'],['missing-topic']) as any;
+  if(compact.period!=='week'||compact.sessions['concierge:1']?.basis!=='unavailable'
+    ||compact.threads['missing-topic']!==null||Object.keys(compact.sessions).length!==1)
+    throw new Error('Compact allowance lookup did not preserve unknown or bounded keys');
   console.log('Mac peer local usage refreshed its session and marked old data stale; unconfigured cloud owner still refuses the scan');
 }finally{await rm(root,{recursive:true,force:true});}
