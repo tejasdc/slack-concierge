@@ -98,7 +98,7 @@ private func isCurrentBoard(_ urlText: String?) -> Bool {
 private func reserveOnePress(_ action: Action) throws {
     try FileManager.default.createDirectory(atPath: receiptDirectory,
                                             withIntermediateDirectories: true)
-    let marker = "\(receiptDirectory)/mac-update-2026-11-06-\(boardID)-\(action.rawValue).attempted"
+    let marker = "\(receiptDirectory)/mac-update-request-79fe4481-3587-40e3-aa66-58fc26be5e0b-\(boardID)-\(action.rawValue).attempted"
     let descriptor = open(marker, O_WRONLY | O_CREAT | O_EXCL, 0o600)
     guard descriptor >= 0 else {
         throw Refusal.reason("This fixed action was already attempted or its marker cannot be created")

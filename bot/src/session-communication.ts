@@ -729,7 +729,7 @@ export class SessionCommunicationCoordinator {
                     &&typeof provenance.requestId==='string'
                     &&!!updateDelivery
                     &&typeof need.why==='string'
-                    &&(need.why.includes('535c73c7')||need.why.includes(AUTHORIZED_UPDATE_BOARD))
+                    &&(need.why.includes('0d90186f')||need.why.includes(AUTHORIZED_UPDATE_BOARD))
                     &&macUpdateSourceProven();
                 return {kind,why:typeof need.why==='string'?need.why:'',
                     humanInputId:provenance?.originatingHuman?.inputId,
