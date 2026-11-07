@@ -168,7 +168,10 @@ the page before any further action. A generic Safari selector remains refused.
 When a website genuinely fails in the server browser, the requesting server agent records
 `--machine-need browser-fallback:<specific reason> --server-attempt-url <URL>
 --server-attempt-failure "<observed failure>"`. The accepting Mac retains the failed origin
-and observation with that exact request. Its agent can run
+and observation with that exact request. For a newly created Mac session, the recorded need
+lives in its first input; for a request to an existing Mac session, it lives in that input
+directly. The owner checks the corresponding accepted shape and active run in both cases.
+Its agent can run
 `$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-browser-fallback.sh <agent-browser action>` without
 asking Tejas: the launcher checks the active accepted request with the local Mac owner, then
 uses a headless, request-specific profile and session. Environment variables name the request;
