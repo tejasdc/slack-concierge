@@ -53,7 +53,7 @@ function authorizedNativeUpdateCommand(need:RecordedNeed,command:string):boolean
   if(typeof need==='string'||need.kind!=='mac-app'||need.updateAuthorization!==true
       ||need.effectScope!=='work'||typeof need.why!=='string'
       ||!need.why.includes(AUTHORIZED_WEB_APP)||!need.why.includes(AUTHORIZED_UPDATE_SESSION_URL))return false;
-  if(command===UPDATE_WORKSPACE_COMMAND)return need.why.includes('Workspace menu');
+  if(command===UPDATE_WORKSPACE_COMMAND)return need.why.includes('Open Workspace')||need.why.includes('Workspace menu');
   if(command===UPDATE_FIRST_TAP_COMMAND)return need.why.includes('Update now');
   return false;
 }

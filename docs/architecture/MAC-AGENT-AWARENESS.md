@@ -155,8 +155,12 @@ release, in that order. Only the new server source input/run and its still-open
 Mac peer delivery can grant an action; the earlier source is retired. A separate
 direct Mac work request names the exact WebApp bundle, the observed Sessions
 conversation URL (including its notification key, view, conversation, project,
-and machine), and either Workspace menu or Update now. While that exact delivery remains open,
-the Mac hook admits only the matching fixed invocation of
+and machine), and either opening Workspace or pressing Update now. The menu-open
+intent accepts the observed request wording, “Open Workspace once”; it does not
+depend on the literal word “menu.” While that exact delivery remains open,
+the Mac hook reads that current grant from the Mac owner on every native update
+action, even when the launch environment already names a Mac app. A missing owner
+answer refuses the action. It admits only the matching fixed invocation of
 `bot/scripts/mac-update-ax.swift`. The
 same hook admits exact `shasum -a 256`, `stat -f %Sp`, and `swiftc -typecheck`
 commands against the pinned source path under an ordinary Mac file request.
