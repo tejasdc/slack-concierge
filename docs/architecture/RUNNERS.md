@@ -418,6 +418,10 @@ never treats the runner's default `.claude` folder as the selected account. A ne
 sign-in links the machine-shared settings, instructions, hooks, skills and project history into
 that account home while keeping credentials and other per-login files separate. Conflicting
 private shared files are retained under `.unlinked-*` before the shared link is installed.
+When claude-swap's separate saved copy reports a sign-in problem, the runner reads allowance
+from the exact home it launches. A successful provider read from that home clears the stale
+claude-swap warning for the Accounts view and dispatch. The read is cached for five minutes per
+credential version; a newly filed login bypasses that cache.
 The runner resolves a provider account label to its own verified home before launching Claude Code.
 Home paths stay on that machine. `accounts.transcript` reports `unique`, `shared`, `missing` or
 `ambiguous` for an exact provider session UUID. `shared` means Claude account homes expose the same
