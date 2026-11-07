@@ -70,9 +70,11 @@ test('a never-written Google follow-up follows an accepted handoff with its exac
   owned.push(source.id,successor.id);
   const first=enqueueSessionInput(input(source.id).input.id);
   expect(claimNextQueuedTurn('native-owner')?.turn_id).toBe(first.turn_id);
-  const owed=attachSessionSteering(input(source.id).input.id,first.turn_id!);
-  markTurnSteeringMessageFailed(owed.steering_id!,'Never written to Google.');
   const handoff=randomUUID(),request=randomUUID();
+  const accepted=retainSessionInput({sessionId:source.id,scope:'agent-request',actionId:request,
+    kind:'input',origin:'agent',payload:{text:'still owed'},requestId:request}).input;
+  const owed=attachSessionSteering(accepted.id,first.turn_id!);
+  markTurnSteeringMessageFailed(owed.steering_id!,'Never written to Google.');
   db.query(`INSERT INTO session_handoffs(id,predecessor_session_id,successor_session_id,state,action_id,caller_session_id,
     reason,requesting_input_id,requesting_run_id,inventory_json,inventory_digest,accepted_at)
     VALUES(?,?,?,'accepted',?,?,?,?,?,'{}','digest',CURRENT_TIMESTAMP)`).run(handoff,source.id,successor.id,handoff,source.id,
@@ -80,7 +82,7 @@ test('a never-written Google follow-up follows an accepted handoff with its exac
   updateSessionMetadata(source.id,{suspended:true});
   db.query(`INSERT INTO session_external_requests(request_id,agent_name,action_id,target_session_id,target_input_id,
     requested_effect,text,payload_hash,created_at_ms) VALUES(?,?,?,?,?,'work','follow-up','hash',?)`)
-    .run(request,'test-agent',request,successor.id,owed.id,Date.now());
+    .run(request,'test-agent',request,successor.id,`handoff:${handoff}`,Date.now());
   expect(recoverUnsentAntigravityInputs()).toBe(1);
   const continued=getAcceptedSessionInput(`handoff-unsent:${owed.id}`)!;
   expect(continued.session_id).toBe(successor.id);

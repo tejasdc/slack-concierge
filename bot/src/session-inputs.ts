@@ -809,12 +809,12 @@ function continueUnsentAfterHandoff(input:AcceptedSessionInput):AcceptedSessionI
     sourceInputId:input.id,sourceRunId:input.source_run_id??undefined,requestId:input.request_id??undefined}).input;
   const queued=enqueueSessionInput(continued.id);
   if(queued.turn_id===null)return null;
-  db.query('UPDATE session_communication_requests SET target_input_id=?,target_turn_id=? WHERE target_input_id=? AND target_session_id=? AND outcome IS NULL')
-    .run(continued.id,queued.turn_id,input.id,destination);
-  db.query('UPDATE session_external_requests SET target_input_id=? WHERE target_input_id=? AND target_session_id=? AND outcome IS NULL')
-    .run(continued.id,input.id,destination);
-  db.query('UPDATE session_peer_deliveries SET target_input_id=? WHERE target_input_id=? AND target_session_id=? AND closed_at_ms IS NULL')
-    .run(continued.id,input.id,destination);
+  db.query('UPDATE session_communication_requests SET target_input_id=?,target_turn_id=? WHERE target_session_id=? AND outcome IS NULL AND (target_input_id=? OR request_id=?)')
+    .run(continued.id,queued.turn_id,destination,input.id,input.request_id??'');
+  db.query('UPDATE session_external_requests SET target_input_id=? WHERE target_session_id=? AND outcome IS NULL AND (target_input_id=? OR request_id=?)')
+    .run(continued.id,destination,input.id,input.request_id??'');
+  db.query('UPDATE session_peer_deliveries SET target_input_id=? WHERE target_session_id=? AND closed_at_ms IS NULL AND (target_input_id=? OR request_id=?)')
+    .run(continued.id,destination,input.id,input.request_id??'');
   db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND receipt_json IS NULL')
     .run(JSON.stringify({state:'canceled',movedTo:`concierge:${destination}`,continuedAs:continued.id}),input.id);
   return getAcceptedSessionInput(continued.id)!;
@@ -878,6 +878,8 @@ export function recoverUnsentAntigravityInputs() {
     // A later answer or cancellation already settled this exact obligation. A closed Inbox
     // request has no thread upkeep left to perform; neither should consume another model turn.
     if(row.request_id&&db.query('SELECT 1 FROM session_communication_requests WHERE request_id=? AND outcome IS NOT NULL').get(row.request_id))continue;
+    if(row.request_id&&db.query('SELECT 1 FROM session_external_requests WHERE request_id=? AND outcome IS NOT NULL').get(row.request_id))continue;
+    if(row.request_id&&db.query('SELECT 1 FROM session_peer_deliveries WHERE request_id=? AND closed_at_ms IS NOT NULL').get(row.request_id))continue;
     if(row.id.startsWith('thread-upkeep:')&&row.request_id
       &&db.query("SELECT 1 FROM inbox_requests WHERE request_id=? AND state='closed'").get(row.request_id))continue;
     const recovered=recoverUnsentSteeredInput(row.id);
