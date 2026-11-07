@@ -880,7 +880,7 @@ async function catchUp() {
     topic_context_build_ms:Math.round(topicContextBuildMs)}));
 }
 
-let checkedDisplay=false,lastTopicCollection=0,touchBackfilled=false;
+let checkedDisplay=false,lastTopicCollection=0,touchBackfilled=false,lastFailureDetailAt=0;
 while(true){
   try {if(claimLease()){
     observation.emit();
@@ -901,7 +901,15 @@ while(true){
         return cards.backfillTouch(current.generation,head());})();
     }
   }}
-  catch(error){observation.failed();writeLogLine('error',JSON.stringify({event:'presentation_message_worker_failed',error:String(error)}));}
+  catch(error){
+    observation.failed();
+    const failure=error instanceof Error?error:new Error(String(error));
+    const now=Date.now(),includeDetail=now-lastFailureDetailAt>60_000;
+    if(includeDetail)lastFailureDetailAt=now;
+    writeLogLine('error',JSON.stringify({event:'presentation_message_worker_failed',error:String(error),
+      ...(includeDetail?{code:typeof (error as {code?:unknown})?.code==='string'?(error as {code:string}).code:null,
+        stack:failure.stack?.split('\n').slice(0,8).join('\n')??null}:{})}));
+  }
   // A retained message should appear in a warm thread inside the interactive read budget;
   // the idle check is one indexed change-journal seek in this child, outside the owner loop.
   await Bun.sleep(100);
