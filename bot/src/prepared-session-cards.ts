@@ -19,7 +19,8 @@ export type SessionCard=Readonly<{id:string;title:string;titleTruncated:boolean;
   canvasObservation:{boardId:string}|null;
   timing:SessionTiming|null;cancellation:{by:string;reason:string}|null;agentName:string|null;presenceRevision:number;
   savedWork:{turnId:number;kind:'scheduled'|'banked';status:string;quietOnly:boolean;startsAt:string|null;savedAt:string|null;
-    expiresAt:string|null;account:string|null;window:string|null;repeatEveryMs:number|null;sequence:number|null}|null;
+    expiresAt:string|null;account:string|null;window:string|null;repeatEveryMs:number|null;
+    dailyLocal:{time:string;timeZone:string|null}|null;sequence:number|null}|null;
   turnOutcome:{outcome:string;question:string|null;questionTruncated:boolean;inputId:string|null;at:string}|null;
   touch:SessionTouch;revision?:number}>;
 /**
@@ -142,10 +143,11 @@ export class PreparedSessionCards {
     // who the agent is and what it is doing, so the sidebar and the session page cannot disagree.
     const {presence,facts:{queued}}=sessionPresence(this.source,session,meta);
     const saved=this.source.query(`SELECT id,saved_kind,status,saved_quiet_only,dispatch_failure_class,dispatch_next_attempt_ms,
-      saved_at_ms,saved_expires_at_ms,saved_account,saved_window,saved_repeat_ms,saved_sequence FROM turns
+      saved_at_ms,saved_expires_at_ms,saved_account,saved_window,saved_repeat_ms,saved_sequence,saved_daily_time,saved_time_zone FROM turns
       WHERE session_id=? AND saved_kind IS NOT NULL AND status='queued' ORDER BY id DESC LIMIT 1`).get(sessionId) as
       {id:number;saved_kind:'scheduled'|'banked';status:string;saved_quiet_only:number;dispatch_failure_class:string|null;dispatch_next_attempt_ms:number|null;
-       saved_at_ms:number|null;saved_expires_at_ms:number|null;saved_account:string|null;saved_window:string|null;saved_repeat_ms:number|null;saved_sequence:number|null}|null;
+       saved_at_ms:number|null;saved_expires_at_ms:number|null;saved_account:string|null;saved_window:string|null;saved_repeat_ms:number|null;saved_sequence:number|null;
+       saved_daily_time:string|null;saved_time_zone:string|null}|null;
     const inboxAttention=meta.inbox?this.inboxAttention?.(session)??null:null;
     const needsAttention=meta.inbox?inboxAttention:Array.isArray(meta.needs)
       ?meta.needs.some((need:{generation?:number})=>(need.generation??0)>(meta.dismissedGeneration??0)):false;
@@ -174,7 +176,8 @@ export class PreparedSessionCards {
       savedWork:saved?{turnId:saved.id,kind:saved.saved_kind,status:saved.status,quietOnly:saved.saved_quiet_only===1,startsAt:savedStartAt(saved),
         savedAt:saved.saved_at_ms?new Date(saved.saved_at_ms).toISOString():null,
         expiresAt:saved.saved_expires_at_ms?new Date(saved.saved_expires_at_ms).toISOString():null,
-        account:saved.saved_account,window:saved.saved_window,repeatEveryMs:saved.saved_repeat_ms,sequence:saved.saved_sequence}:null,
+        account:saved.saved_account,window:saved.saved_window,repeatEveryMs:saved.saved_daily_time?null:saved.saved_repeat_ms,
+        dailyLocal:saved.saved_daily_time?{time:saved.saved_daily_time,timeZone:saved.saved_time_zone}:null,sequence:saved.saved_sequence}:null,
       model:presence.model?preview(presence.model,120).text:null,
       reasoningEffort:presence.reasoningEffort?preview(presence.reasoningEffort,80).text:null,
       turnOutcome:meta.turnOutcome&&typeof meta.turnOutcome.at==='string'
