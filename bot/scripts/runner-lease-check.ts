@@ -124,7 +124,8 @@ console.log('provider machine binding: acknowledged custody survives trailing un
 // An unstarted execution intent cannot replace the last host of a bound conversation.
 const homeLeases=new RunnerLeases(db,()=>now);
 homeLeases.enqueue({jobId:'turn:home-launched',kind:'turn',payload:{}});
-homeLeases.claim('ax41',['turn']);
+db.query("INSERT INTO runner_attempts(attempt_id,job_id,runner,epoch,state,lease_expires_at_ms,started_at_ms) VALUES (?,?,?,?,?,?,?)")
+  .run('binding-home-launched','turn:home-launched','ax41',1,'finished',now+1,now);
 const addLaunched=(id:string,supervisor:string,unit:string|null,created:number)=>
   db.query('INSERT INTO executions(execution_id,session_id,provider,supervisor,unit,created_at_ms) VALUES (?,?,?,?,?,?)')
     .run(`home-${id}`,42,'claude-code',supervisor,unit,created);
