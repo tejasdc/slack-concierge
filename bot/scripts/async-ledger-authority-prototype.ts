@@ -128,7 +128,8 @@ if (isMainThread) {
     }
     ping() { return { alive: !this.terminal, generation: this.generation }; }
     async accept(input: Input, options: { crash?: WriterRequest['crash']; holdWrite?: SharedArrayBuffer;
-      holdSync?: SharedArrayBuffer; onWriterHeld?: () => void; onSyncWaiting?: () => void } = {}) {
+      holdSync?: SharedArrayBuffer; onWriterHeld?: () => void; onCommitted?: () => void;
+      onSyncWaiting?: () => void } = {}) {
       if (this.terminal) throw new Error('AUTHORITY_TERMINAL');
       const id = ++nextId;
       const writerResult = new Promise<WriterReply>((resolve, reject) => {
@@ -147,6 +148,7 @@ if (isMainThread) {
       const reply = await writerResult;
       if (reply.kind !== 'result' || reply.generation !== this.generation || reply.target == null || !reply.result)
         throw new Error(reply.error ?? 'INVALID_WRITER_RESULT');
+      options.onCommitted?.();
       const synced = new Promise<SyncReply>((resolve, reject) => {
         const message = (value: SyncReply) => {
           if (value.id !== id) return;
@@ -208,6 +210,22 @@ if (isMainThread) {
     const second = await pending;
     assert.equal(second.actionId, 'sync-held');
     assert.ok(second.target >= first.target);
+    const predecessorGate = gate();
+    let predecessorWaiting!: () => void;
+    const predecessorStarted = new Promise<void>(resolve => { predecessorWaiting = resolve; });
+    const predecessor = authority.accept({ actionId: 'predecessor', body: 'old' },
+      { holdSync: predecessorGate, onSyncWaiting: predecessorWaiting });
+    await predecessorStarted;
+    let successorCommitted!: () => void;
+    const committedLater = new Promise<void>(resolve => { successorCommitted = resolve; });
+    let laterEscaped = false;
+    const later = authority.accept({ actionId: 'later-target', body: 'new' },
+      { onCommitted: successorCommitted }).then(result => { laterEscaped = true; return result; });
+    await committedLater;
+    assert.equal(laterEscaped, false);
+    release(predecessorGate);
+    const [predecessorResult, laterResult] = await Promise.all([predecessor, later]);
+    assert.ok(laterResult.target > predecessorResult.target);
     const [orderedA, orderedB] = await Promise.all([
       authority.accept({ actionId: 'ordered-a', body: 'a' }),
       authority.accept({ actionId: 'ordered-b', body: 'b' }),
@@ -245,7 +263,7 @@ if (isMainThread) {
     await assert.rejects(noReceipt, /SYNC_WORKER_EXIT/);
     assert.equal(authority.terminal, true);
     await authority.close();
-    process.stdout.write('private command/commit/sync prototype: PASS (precommit death, held sync, independent liveness, ordered targets, conflicts, lost reply, exact retry, sync-worker death)\n');
+    process.stdout.write('private command/commit/sync prototype: PASS (precommit death, held sync, later target behind predecessor, independent liveness, ordered targets, conflicts, lost reply, exact retry, sync-worker death)\n');
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
