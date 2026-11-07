@@ -118,7 +118,18 @@ because such a loop can match itself and hold a run open indefinitely.
 
 `router-actions.sh messages [--with <number, address or chat name>] [--q <words>] [--days <n>]
 [--limit <n>]` answers JSON with his texts, received and sent, newest first (default 7 days,
-50 shown messages; at most 365 and 500). A text that looks like a one-time code, a reset or a
+50 shown messages; at most 365 and 500). For older group
+conversations, first use a recent named read to obtain the exact `chatGuid`, then use
+`router-actions.sh messages --chat-guid <guid> --from YYYY-MM-DD --before YYYY-MM-DD
+[--q <words>] [--limit <n>]`. The dates are UTC; `from` is inclusive, `before` exclusive,
+and one request spans at most 45 days. The exact GUID must identify a group with at least two
+other handles. Divide a longer history into dated requests; `window.truncated` and
+`olderThanThisNotRead` identify a window that needs narrowing. Shown messages carry their
+Messages GUID as `id` and their `chatGuid`; `chats` gives shown conversations' exact identifier
+and participant addresses when Messages has them. Withheld messages have no ID or text in the
+answer. These identities describe this Mac's Messages database.
+
+A text that looks like a one-time code, a reset or a
 sign-in link is shown only when thnkr.ing's rule allows it
 [decision: codes-hidden-only-for-money-and-identity]: the reader sends those texts (never others)
 over `ssh remote-box` to thnkr.ing's `POST /codes/decide`, which applies his allow and hide lists
@@ -127,7 +138,7 @@ and the protected accounts (see thnkr.ing's AGENTS.md), and hides every one it g
 Hidden ones are counted in `withheldCount` and `withheldByKind` over the same stretch of time,
 `withheld` lists the newest 200 by sender, time and kind, and a search never matches against
 their words (that would let a search spell a code out). `window.truncated` says when the limit
-stopped the read before the requested days. A read that hid or showed a code is logged to
+stopped the read before the requested days. Every completed read is logged to
 `diagnostics/messages-reads.jsonl` under the state directory, without message words, and
 thnkr.ing logs each decision too. It runs only on the Mac; the server answers
 `MESSAGES_NOT_ON_THIS_MACHINE`. Checked 2026-10-07 on his real texts: an Amazon sign-in code was

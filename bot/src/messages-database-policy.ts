@@ -30,7 +30,8 @@ const PROTECTED_PLACES: readonly RegExp[] = [
 export const MESSAGES_DATABASE_REFUSAL = 'Refused: agents do not read the Messages or Notification Center databases '
   + 'or photograph the Messages app, because they hold the login codes texted to Tejas (his 2026-10-07 security '
   + 'request). Read texts with `router-actions.sh messages [--with <number, address or chat name>] [--q <words>] '
-  + '[--days <n>] [--limit <n>]` on the Mac: it shows everything except one-time codes, reset texts and sign-in links, '
+  + '[--days <n>] [--limit <n>]` or its exact-group `--chat-guid <guid> --from YYYY-MM-DD --before YYYY-MM-DD` '
+  + 'form on the Mac: it shows everything except one-time codes, reset texts and sign-in links, '
   + 'and lists those as withheld. A command that only writes about these paths (a commit message, a message to a '
   + 'session) is refused too: put that text in a file and pass it with `git commit -F` or `--text-file`. To read code '
   + 'that mentions them, use your Read tool on that file rather than a shell search.';
