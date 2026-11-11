@@ -79,7 +79,7 @@ function sourceProvenance(source:Database,input:SourceInput):unknown|null{
       const details=json((request??remote)!.payload_json);
       const requested=details.requestedEffect??'informational';
       effect=effect==='informational'||requested!=='work'?'informational':'work';
-      if(requested==='work'&&typeof details.authorityInputId==='string'){
+      if(effect==='work'&&typeof details.authorityInputId==='string'){
         const grant=source.query('SELECT * FROM session_inputs WHERE id=?').get(details.authorityInputId) as SourceInput|null;
         if(grant?.session_id===parent.session_id&&grant.id!==parent.id){
           const granted=sourceProvenance(source,grant) as {effectScope?:string;originatingHuman?:unknown}|null;

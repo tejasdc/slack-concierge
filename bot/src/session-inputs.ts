@@ -273,8 +273,9 @@ export function sessionInputProvenance(input:AcceptedSessionInput) {
       effectScope=effectScope==='informational'||effect!=='work'?'informational':'work';
       // The owner may retain an earlier, still-open work input as the authority for an ask
       // made from a later informational wake. Preserve the ask's actual source identity, but
-      // derive its delegated scope and human lineage from that exact work input.
-      if(effect==='work'&&typeof details.authorityInputId==='string'){
+      // derive its delegated scope and human lineage from that exact work input. An
+      // informational hop nearer the receiver stays informational; only an all-work chain follows a grant.
+      if(effectScope==='work'&&typeof details.authorityInputId==='string'){
         const grant=getAcceptedSessionInput(details.authorityInputId);
         if(grant?.session_id===parent.session_id&&grant.id!==parent.id){
           const granted=sessionInputProvenance(grant);
