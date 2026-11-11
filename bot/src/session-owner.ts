@@ -1,6 +1,6 @@
 import {threadOnlyReturnInputSql} from "./inbox-request-root";
 import {ownerRequestLabel} from './owner-request-label';
-import {parseMachineNeed} from './machine-need';
+import {acceptedMachineNeed,parseMachineNeed} from './machine-need';
 import {askAsideOnce} from './session-asides';
 import {resolveRunnerProjectLocation} from './runner-project-location';
 import {restoreRunnerProviderTranscript} from './runner-provider-history-client';
@@ -2687,7 +2687,7 @@ export class SessionOwner {
     const accepted=getAcceptedSessionInput(request.sourceInputId);
     const turn=db.query(`SELECT status,stop_requested_at FROM turns
       WHERE accepted_input_id=? AND native_run_id=? LIMIT 1`).get(request.sourceInputId,request.sourceRunId) as {status:string;stop_requested_at:number|null}|null;
-    const need=accepted?JSON.parse(accepted.payload_json)?.machineNeed:null;
+    const need=accepted?acceptedMachineNeed(accepted.kind,JSON.parse(accepted.payload_json)):null;
     if(!turn||turn.status!=='running'||turn.stop_requested_at!==null||need?.kind!=='browser-fallback')
       throw new SessionOwnerError('No active recorded server failure permits this Mac browser.',403,'MAC_BROWSER_FALLBACK_REFUSED');
     const verified=parseMachineNeed(`${need.kind}:${need.why}`,need.serverAttempt);

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {macSurfaceRefusal,RETIREMENT_FILE_MENU_PROGRAM,RETIREMENT_NEW_WINDOW_PROGRAM,UPDATE_BOUNDED_AX_PROGRAM,UPDATE_WORKSPACE_COMMAND,UPDATE_FIRST_TAP_COMMAND,FOCUS_START_COMMAND,FOCUS_VERIFY_START_COMMAND,FOCUS_END_COMMAND} from '../src/mac-surface-policy';
-import {parseMachineNeed} from '../src/machine-need';
+import {acceptedMachineNeed,parseMachineNeed} from '../src/machine-need';
 import {deviceQuestionNamesPhysicalPrerequisite} from '../src/agent-reachable-app-question';
 
 const check=(command:string,need='',platform='darwin',toolName='Bash')=>
@@ -14,6 +14,14 @@ assert.equal(parseMachineNeed('browser-fallback:Server portal blocked after logi
   url:'https://bosse.managebuilding.com/Resident/portal/login',
   failure:'Observed a location-specific access refusal after the server sign-in completed.'
 }).serverAttempt?.url,'https://bosse.managebuilding.com');
+const fallbackNeed=parseMachineNeed('browser-fallback:Server portal blocked after login',{
+  url:'https://bosse.managebuilding.com',failure:'The server browser received an access refusal after sign-in.'
+});
+assert.deepEqual(acceptedMachineNeed('create',{firstInput:{machineNeed:fallbackNeed}}),fallbackNeed);
+assert.deepEqual(acceptedMachineNeed('input',{machineNeed:fallbackNeed}),fallbackNeed);
+assert.equal(acceptedMachineNeed('create',{machineNeed:fallbackNeed}),null);
+assert.equal(acceptedMachineNeed('input',{firstInput:{machineNeed:fallbackNeed}}),null);
+assert.equal(acceptedMachineNeed('service',{machineNeed:fallbackNeed}),null);
 assert.throws(()=>parseMachineNeed('browser-fallback:Server portal blocked after login',{
   url:'https://bosse.managebuilding.com',failure:'it failed'
 }));
