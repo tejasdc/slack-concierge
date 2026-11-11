@@ -876,14 +876,28 @@ root, so replying inside an existing topic does not require another placement.
 
 Each unplaced input carries the existing `<topic-placement>` reminder when delivered.
 The router can inspect the sorting pile with `sessions topics list`; that display includes
-queued messages too and previews only five. There is no periodic “pile nonempty” agent
-notification. The shared owed-reply Stop hook now asks the owner on every normal Stop
+queued messages too and previews only five. The overdue wake below is the only periodic
+notification, and only for captures unfiled for 10 minutes. The shared owed-reply Stop hook now asks the owner on every normal Stop
 attempt for all unfiled human message inputs that this Inbox session received, including
 earlier turns. Initial delivery is evidenced by provider acknowledgment (or the exact
 currently stopping turn); steering requires its sent receipt. Merely queued, imported,
 corrected agent authorship, service returns, worker requests and topic actions do not block.
 Outside-agent captures delivered into router turns follow the same filing check, providing
 the live agent-marked acceptance path without claiming human authorship.
+
+The current router (the session holding the `inbox` role) answers for the whole Inbox, not only
+what it received itself. Its Stop check also lists every root another Inbox session received
+that no topic holds, in any delivery state, marked with `received_by`; and every input it
+receives carries an `<unfiled-from-earlier-routers>` block listing them oldest first. Both read
+the same entry index as the sorting pile thnkr.ing shows as "Not in a thread yet", so a capture
+left behind by a failover or stand-in bind cannot drop out of view (failure record
+`docs/incidents/2026-11-11-captures-stranded-on-former-inbox-router.md`).
+
+Because the Stop check only runs when the router ends a turn, the owner's thread-upkeep pass
+(the provider-usage reading cadence, about every three minutes) wakes an idle router with one
+`unfiled-wake:` service input per set of captures unfiled for 10 minutes, the age thnkr.ing
+labels "Never filed". A capture still unfiled at 30 minutes records a `stuck_work` repair notice
+(`inbox-unfiled:<root>`) for the repair agent, since the router is then evidently unable to file.
 
 `/session-communication/owed` returns `unfiled` beside its existing reply obligations.
 The hook names every input, a short data-only preview, its resolved root and ready-to-fill
