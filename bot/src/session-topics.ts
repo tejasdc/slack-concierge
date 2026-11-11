@@ -2022,7 +2022,8 @@ function recordAnswer(session:SessionRow,input:AcceptedSessionInput,body:any,by:
  * One entry point for every `sessions topics …` command. The coordinator has already proved
  * the caller is an admitted live run; this decides what that run is allowed to do.
  */
-export function topicsCommand(actor:TopicActor,body:any) {
+/** `listHead` is the change a list read must cover, from `listReadHead` at the request entrance. */
+export function topicsCommand(actor:TopicActor,body:any,listHead?:number) {
   if(typeof body?.verb==='string'&&body.verb.startsWith('area.'))return areasCommand(actor,{...body,verb:body.verb.slice(5)});
   const own=getSessionById(actor.sessionId);
   if(!own)throw new TopicError('Unknown session.',404);
@@ -2046,7 +2047,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
     throw new TopicError('Only the Inbox session owns topics; a worker may declare questions against a topic it holds a dispatch for.',403,'TOPIC_FORBIDDEN');
   };
   switch(verb) {
-    case 'list':return preparedTopicsReady()?preparedTopics({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor}):directTopicList({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor});
+    case 'list':return preparedTopicsReady()?preparedTopics({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor},listHead):directTopicList({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor});
     case 'obligations':return openInboxObligations();
     case 'read':return preparedTopicOverview(text(body?.topic_id,'topic id',200),body?.state??'open');
     case 'resolve':guard();return preparedTopicResolution(text(body?.message_id,'message id',500));
