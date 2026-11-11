@@ -55,8 +55,8 @@ export default {
       if (path === "/v1/embed") {
         const body = (await request.json().catch(() => null)) as { texts?: unknown } | null;
         const texts = body?.texts;
-        if (!Array.isArray(texts) || !texts.length || texts.length > MAX_TEXTS || !texts.every((text) => typeof text === "string" && text.length <= MAX_TEXT_CHARS))
-          return answer(400, { error: `texts must be 1-${MAX_TEXTS} strings of at most ${MAX_TEXT_CHARS} characters` });
+        if (!Array.isArray(texts) || !texts.length || texts.length > MAX_TEXTS || !texts.every((text) => typeof text === "string" && text.length > 0 && text.length <= MAX_TEXT_CHARS))
+          return answer(400, { error: `texts must be 1-${MAX_TEXTS} non-empty strings of at most ${MAX_TEXT_CHARS} characters` });
         const result = (await env.AI.run(WORKERS_AI_EMBEDDING_MODEL, { text: texts as string[] })) as { data: number[][]; shape: number[] };
         const dimensions = result.shape?.[1] ?? result.data?.[0]?.length ?? 0;
         if (dimensions !== WORKERS_AI_EMBEDDING_DIMENSIONS || !Array.isArray(result.data) || result.data.length !== texts.length ||

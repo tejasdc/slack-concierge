@@ -67,13 +67,15 @@ interface EmbeddingEngine {
 
 /** The Cloudflare embedding model; its vectors are kept in a model-named index. */
 class WorkersAiEngine implements EmbeddingEngine {
-  readonly model=WORKERS_AI_EMBEDDING_MODEL;
+  /** The prompt format is part of the index identity: a prefix change starts a fresh index file, as a model change does. */
+  readonly model=`${WORKERS_AI_EMBEDDING_MODEL}+prompt-${hash(`${WORKERS_AI_EMBEDDING_QUERY_PREFIX}\0${WORKERS_AI_EMBEDDING_DOCUMENT_PREFIX}`).slice(0,8)}`;
   readonly batch=WORKERS_AI_EMBEDDING_MAX_TEXTS;
   readonly queryPrefix=WORKERS_AI_EMBEDDING_QUERY_PREFIX;
   readonly documentPrefix=WORKERS_AI_EMBEDDING_DOCUMENT_PREFIX;
   installed(){return workersAiEmbeddingsEnabled();}
   servable(){return workersAiEmbeddingsServe();}
-  async embed(texts:string[],timeoutMs=60_000){return (await embedWithWorkersAi(texts,timeoutMs)).map(vector=>normalized(vector.slice(0,DIMENSIONS)));}
+  // Cloudflare refuses an empty text, and Qwen documents carry no prefix to fill one.
+  async embed(texts:string[],timeoutMs=60_000){return (await embedWithWorkersAi(texts.map(text=>text||" "),timeoutMs)).map(vector=>normalized(vector.slice(0,DIMENSIONS)));}
   stop(){}
 }
 

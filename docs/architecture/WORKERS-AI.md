@@ -37,7 +37,7 @@ passages), not at 96,000.
   recording is recorded as silent, because Whisper's voice-activity filter can drop quiet speech.
   Recordings longer than ten minutes go in ten-minute pieces; a word cut at a boundary can be garbled.
 - **Embeddings:** each model's index lives in its own file, named for the model
-  (`meaning-index.cf-qwen-qwen3-embedding-0-6b.db` for the new Cloudflare model), and records its model (`watermarks.model`); a
+  (`meaning-index.cf-qwen-qwen3-embedding-0-6b-prompt-725ebf45.db` for the new Cloudflare model; the suffix is a hash of its prompt format), and records its model (`watermarks.model`); a
   file written by another model is cleared, never searched with this model's vectors. While the new
   index is built the local index keeps answering. Every caller takes one index per search, so a
   question and its candidates always share a model. If Workers AI is unreachable after the
@@ -85,7 +85,7 @@ The local index and its scores remain in service. Cloudflare model responses are
 the exact model, dimensions, vector count and finite values before they can enter the new index.
 Each engine carries its own model's documented prompt format: Qwen gets an instruction on queries
 and nothing on documents, EmbeddingGemma keeps its `task:`/`title:` prefixes. Changing a model's
-prefixes changes what its vectors mean and requires a fresh index file, as changing the model does.
+prefixes changes what its vectors mean: the Cloudflare index file and recorded model include a hash of the prefixes, so a change starts a fresh index. The local engine's prefixes are fixed with its retiring model.
 Qwen on Workers AI accepts at most 32 texts per call; the Worker and the server's batches share that limit.
 The first Qwen build and routing comparison are pending; do not create the embedding switch or
 write `serve` merely because the Worker deployed. The old Cloudflare index, if present on another
