@@ -14,11 +14,11 @@ interface Env {
   CONCIERGE_KEY: string;
 }
 
-import { WORKERS_AI_EMBEDDING_MODEL, WORKERS_AI_EMBEDDING_DIMENSIONS } from "../../../shared/workers-ai-embedding";
+import { WORKERS_AI_EMBEDDING_MODEL, WORKERS_AI_EMBEDDING_DIMENSIONS, WORKERS_AI_EMBEDDING_MAX_TEXTS } from "../../../shared/workers-ai-embedding";
 
 const SPEECH_MODEL = "@cf/openai/whisper-large-v3-turbo";
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
-const MAX_TEXTS = 100;
+const MAX_TEXTS = WORKERS_AI_EMBEDDING_MAX_TEXTS;
 const MAX_TEXT_CHARS = 4_000;
 
 function base64(bytes: ArrayBuffer): string {

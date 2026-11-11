@@ -10,7 +10,7 @@ process had used about 1.5 cores; moving it remains the goal, not an installed c
 
 | Part | Runs on | Does |
 | --- | --- | --- |
-| `concierge-workers-ai` Worker (`cloudflare/workers-ai`) | Cloudflare, `https://concierge-workers-ai.thnkring.workers.dev` | `POST /v1/transcribe` (16 kHz mono MP3, ≤10 min) → Whisper large-v3-turbo; optional `POST /v1/embed` (≤100 texts) → Qwen3-Embedding-0.6B. Every answer names its model. |
+| `concierge-workers-ai` Worker (`cloudflare/workers-ai`) | Cloudflare, `https://concierge-workers-ai.thnkring.workers.dev` | `POST /v1/transcribe` (16 kHz mono MP3, ≤10 min) → Whisper large-v3-turbo; optional `POST /v1/embed` (≤32 texts, the model's limit) → Qwen3-Embedding-0.6B. Every answer names its model. |
 | Shared key | Worker secret `CONCIERGE_KEY`; root-only `/etc/concierge/workers-ai.token` on each Concierge machine that uses it | Bearer key for both calls. A machine without the file (the Mac) keeps its own engines. |
 | Speech worker (`concierge-speech-worker.service`) | server | Converts a recording to MP3 pieces with ffmpeg, sends them to the Worker, joins the words. Engine name `workers-ai-whisper`. |
 | Meaning index (session search, earlier work, Inbox areas) | Concierge owner, server | Currently embeds locally. When explicitly enabled, builds a Worker-backed file named for its model beside the local index on the ledger disk. The in-memory int8 scan stays local. |
@@ -83,6 +83,10 @@ vectors; the index uses its first 512 dimensions and normalizes them. Qwen docum
 dimension support, but this is a different vector space from the local EmbeddingGemma model.
 The local index and its scores remain in service. Cloudflare model responses are checked for
 the exact model, dimensions, vector count and finite values before they can enter the new index.
+Each engine carries its own model's documented prompt format: Qwen gets an instruction on queries
+and nothing on documents, EmbeddingGemma keeps its `task:`/`title:` prefixes. Changing a model's
+prefixes changes what its vectors mean and requires a fresh index file, as changing the model does.
+Qwen on Workers AI accepts at most 32 texts per call; the Worker and the server's batches share that limit.
 The first Qwen build and routing comparison are pending; do not create the embedding switch or
 write `serve` merely because the Worker deployed. The old Cloudflare index, if present on another
 machine, remains a separate, unused derived file and is never read as Qwen vectors.

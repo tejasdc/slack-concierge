@@ -8,6 +8,7 @@ import {log} from './log';
 import type {CapabilitySource} from './session-capability-client';
 import {indexedArchiveSource} from './archive-search-source';
 import {embedWithWorkersAi,workersAiEmbeddingsEnabled,workersAiEmbeddingsServe,WORKERS_AI_EMBEDDING_MODEL} from './workers-ai';
+import {WORKERS_AI_EMBEDDING_MAX_TEXTS,WORKERS_AI_EMBEDDING_QUERY_PREFIX,WORKERS_AI_EMBEDDING_DOCUMENT_PREFIX} from '../../shared/workers-ai-embedding';
 import {dirname,join} from 'node:path';
 
 /**
@@ -35,7 +36,8 @@ const ARCHIVE_INDEX=process.env.CONCIERGE_ARCHIVE_SEARCH_INDEX||'/var/lib/thinke
 /** EmbeddingGemma is Matryoshka-trained; 512 of 768 dimensions keep nearly all quality at two thirds the memory. */
 const DIMENSIONS=512;
 const INDEX_BATCH=4,PASSAGE_CHARS=800,SNIPPET_CHARS=400,PAGE=24,IDLE_POLL_MS=60_000;
-const QUERY_PREFIX='task: search result | query: ',DOCUMENT_PREFIX='title: none | text: ';
+/** EmbeddingGemma's documented prompt format; each engine carries its own model's prefixes. */
+const GEMMA_QUERY_PREFIX='task: search result | query: ',GEMMA_DOCUMENT_PREFIX='title: none | text: ';
 const IDENTITY_HEADER='{"type":"concierge-session-input"';
 /** Bumped when what a ledger passage is keyed or credited by changes; the ledger part is then rebuilt. */
 const LEDGER_FORMAT='2';
@@ -53,6 +55,9 @@ interface EmbeddingEngine {
   readonly model:string;
   /** Texts per request: small for the local engine so a waiting search is never stuck behind a long batch. */
   readonly batch:number;
+  /** Prompt prefixes are part of what a model's vectors mean, so they belong to the engine, never to callers. */
+  readonly queryPrefix:string;
+  readonly documentPrefix:string;
   installed():boolean;
   embed(texts:string[],timeoutMs?:number):Promise<Float32Array[]>;
   stop():void;
@@ -63,7 +68,9 @@ interface EmbeddingEngine {
 /** The Cloudflare embedding model; its vectors are kept in a model-named index. */
 class WorkersAiEngine implements EmbeddingEngine {
   readonly model=WORKERS_AI_EMBEDDING_MODEL;
-  readonly batch=50;
+  readonly batch=WORKERS_AI_EMBEDDING_MAX_TEXTS;
+  readonly queryPrefix=WORKERS_AI_EMBEDDING_QUERY_PREFIX;
+  readonly documentPrefix=WORKERS_AI_EMBEDDING_DOCUMENT_PREFIX;
   installed(){return workersAiEmbeddingsEnabled();}
   servable(){return workersAiEmbeddingsServe();}
   async embed(texts:string[],timeoutMs=60_000){return (await embedWithWorkersAi(texts,timeoutMs)).map(vector=>normalized(vector.slice(0,DIMENSIONS)));}
@@ -95,6 +102,8 @@ const QUERY_SEAT=(stateDir:string):EngineSeat=>{const inState=join(stateDir,'mea
 class LocalEngine implements EmbeddingEngine {
   readonly model=`llama.cpp:${MODEL.split('/').pop()}`;
   readonly batch=INDEX_BATCH;
+  readonly queryPrefix=GEMMA_QUERY_PREFIX;
+  readonly documentPrefix=GEMMA_DOCUMENT_PREFIX;
   private child:ChildProcess|null=null;
   private ready:Promise<void>|null=null;
   constructor(private readonly seat:EngineSeat=SHARED_SEAT){}
@@ -236,7 +245,7 @@ export class MeaningIndex {
     const out:Float32Array[]=[];
     for(let start=0;start<texts.length;start+=this.engine.batch){
       while(this.searching>0)await Bun.sleep(50);
-      out.push(...await this.questions.embed(texts.slice(start,start+this.engine.batch).map(text=>QUERY_PREFIX+text.slice(0,PASSAGE_CHARS))));
+      out.push(...await this.questions.embed(texts.slice(start,start+this.engine.batch).map(text=>this.questions.queryPrefix+text.slice(0,PASSAGE_CHARS))));
     }
     return out;
   }
@@ -252,7 +261,7 @@ export class MeaningIndex {
     for(let start=0;start<missing.length;start+=this.engine.batch){
       while(this.searching>0)await Bun.sleep(50);
       const batch=missing.slice(start,start+this.engine.batch);
-      const vectors=await this.engine.embed(batch.map(item=>DOCUMENT_PREFIX+item.text.slice(0,PASSAGE_CHARS)));
+      const vectors=await this.engine.embed(batch.map(item=>this.engine.documentPrefix+item.text.slice(0,PASSAGE_CHARS)));
       this.store.transaction(()=>{for(const [index,item] of batch.entries()){write.run(item.key,item.digest,new Uint8Array(vectors[index]!.buffer));out.set(item.key,vectors[index]!);}})();
     }
     return out;
@@ -273,7 +282,7 @@ export class MeaningIndex {
     const vectors:Float32Array[]=[];
     for(let start=0;start<fresh.length;start+=this.engine.batch){
       while(this.searching>0)await Bun.sleep(50);
-      vectors.push(...await this.engine.embed(fresh.slice(start,start+this.engine.batch).map(row=>DOCUMENT_PREFIX+row.text.slice(0,PASSAGE_CHARS))));
+      vectors.push(...await this.engine.embed(fresh.slice(start,start+this.engine.batch).map(row=>this.engine.documentPrefix+row.text.slice(0,PASSAGE_CHARS))));
     }
     const insert=this.store.query('INSERT OR REPLACE INTO passages(key,target_json,text,at,scale,vector) VALUES(?,?,?,?,?,?)');
     this.store.transaction(()=>{for(const [index,row] of fresh.entries()){const {values,scale}=quantize(vectors[index]!);insert.run(row.key,JSON.stringify(row.target),row.text.slice(0,SNIPPET_CHARS),row.at,scale,values);}})();
@@ -397,7 +406,7 @@ export class MeaningIndex {
     // shared engine is started too, because thnkr.ing's Reader expects it on port 8796 even when
     // the index has nothing new to embed.
     for(const engine of new Set([this.engine,this.questions]))if(engine instanceof LocalEngine)
-      engine.embed([QUERY_PREFIX+'warm up'],60_000).catch(error=>log('warn','meaning_engine_warmup_failed',{error:error instanceof Error?error.message:String(error)}));
+      engine.embed([engine.queryPrefix+'warm up'],60_000).catch(error=>log('warn','meaning_engine_warmup_failed',{error:error instanceof Error?error.message:String(error)}));
   }
   stop(){this.stopped=true;if(this.timer)clearTimeout(this.timer);this.engine.stop();if(this.questions!==this.engine)this.questions.stop();this.held?.db.close();this.held=null;this.store.close();}
   /** Archive hits resolve to the exact source, version and event the archive holds now, so a stale vector never names a changed file. */
@@ -419,7 +428,7 @@ export class MeaningIndex {
     if(!indexed)return {available:false,hits:[],reason:'The meaning index is still being built.',indexed,pending:true};
     let vector:Float32Array;
     this.searching++;
-    try{[vector]=(await this.questions.embed([QUERY_PREFIX+query.slice(0,PASSAGE_CHARS)],6_000)) as [Float32Array];}
+    try{[vector]=(await this.questions.embed([this.questions.queryPrefix+query.slice(0,PASSAGE_CHARS)],6_000)) as [Float32Array];}
     catch(error){return {available:false,hits:[],reason:`Meaning search unavailable: ${error instanceof Error?error.message:String(error)}`,indexed,pending:!this.caughtUp};}
     finally{this.searching--;}
     return this.ranked(vector,limit,indexed);
@@ -431,7 +440,7 @@ export class MeaningIndex {
   /** A question embedded at search priority: indexing steps aside for it as it does for a search, where queryVectors waits behind searches. */
   async questionVector(query:string):Promise<Float32Array> {
     this.searching++;
-    try{const [vector]=await this.questions.embed([QUERY_PREFIX+query.slice(0,PASSAGE_CHARS)],6_000) as [Float32Array];return vector;}
+    try{const [vector]=await this.questions.embed([this.questions.queryPrefix+query.slice(0,PASSAGE_CHARS)],6_000) as [Float32Array];return vector;}
     finally{this.searching--;}
   }
   searchVector(vector:Float32Array,limit:number):MeaningSearch {
