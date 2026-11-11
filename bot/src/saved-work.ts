@@ -211,6 +211,9 @@ export function updateSavedTurn(turnId:number,action:string,body:Record<string,u
     if(expires!==undefined&&(typeof expires!=='number'||!Number.isFinite(expires)||expires<=at))throw new Error('Expiry must follow the scheduled time.');
     db.query(`UPDATE turns SET saved_kind='scheduled',dispatch_next_attempt_ms=?,saved_fire_at_ms=?,saved_expires_at_ms=?,saved_account=NULL,
       saved_window=NULL,saved_boundary_ms=NULL,saved_alerted_at_ms=NULL,saved_manual_start=0 WHERE id=? AND status='queued'`).run(at,at,expires??null,turnId);
+    // A repeating schedule's end lives on its first firing; changing it here changes the whole schedule's end.
+    if(row.saved_root_id!==null&&row.saved_root_id!==turnId)
+      db.query('UPDATE turns SET saved_expires_at_ms=? WHERE id=?').run(expires??null,row.saved_root_id);
     } else if(action==='start') {
     if(row.saved_quiet_only&&!quietOnlyAdmits(Date.now(),savedWorkSettings()))
       throw new Error('Quiet-only work can start only during its quiet window, before the morning cutoff.');
