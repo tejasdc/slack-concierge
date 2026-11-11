@@ -108,6 +108,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   measured model, project, session and helper tokens for Accounts follow [usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
 - External Codex resets on a saved account clear that account's older refusal on a fresh direct reading before automatic account switching; see [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md#what-the-allowance-evidence-means).
 - The Mac peer's per-session usage breakdown reads its local transcript history when it has no provider runners; stale results are marked rather than silently presented as current. See [provider usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
+- Weekly subscription allowance attribution, its coverage, and the compact Threads/Sessions lookup follow [provider usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
 
 ## Session and Inbox obligations
 
