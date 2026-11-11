@@ -37,6 +37,9 @@ A second review (November 11) found that the renewed successor rechecked the sam
 release at registration and fired again every poll; a scoped watch now ends its series when it
 fires. A target commit missing from the deployment clone is classified as absent, so a draft that
 was never fetched no longer retries Git and logs a warning every five seconds.
+The first live check after installation (November 11) found registration refused every agent:
+server agents run on the AX41 runner, and the scoped rule refused any runner. The owner now
+evaluates a scoped watch on its own machine regardless of the registering agent's runner.
 
 Evidence: the exact issue report in topic `topic:511b909c-6800-4522-82bf-781dc6e6c8be`,
 the Echo acceptance session `concierge:9096` and its November 7 partial naming watch

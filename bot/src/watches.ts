@@ -192,7 +192,7 @@ function recoveryLineage(sessionId: number): number[] {
 export async function registerWatch(input: WatchRegistration, now = Date.now()): Promise<{ watch: ReturnType<typeof watchView>; duplicate: boolean; takenOverFrom?: string }> {
   if (!input.actionId || input.actionId.length > 200) throw new Error("A stable action id is required.");
   if (input.kind === "file" && input.requiredCommit !== undefined) {
-    if (input.path !== RELEASE_LINK || !input.renew || input.runner || process.env.CONCIERGE_PEER_NAME === "mac")
+    if (input.path !== RELEASE_LINK || !input.renew || process.env.CONCIERGE_PEER_NAME === "mac")
       throw new Error("--required-commit needs a renewing watch on this server's Concierge current-release link.");
     if (!/^[0-9a-f]{40}$/.test(input.requiredCommit)) throw new Error("--required-commit needs a full lowercase Git commit SHA.");
   }
@@ -226,7 +226,9 @@ export async function registerWatch(input: WatchRegistration, now = Date.now()):
     }
     if (active) return { watch: watchView(active), duplicate: true };
   }
-  const runner = input.runner?.trim() || null;
+  // The scoped condition reads this owner's installed release and receipts, never the agent's
+  // machine: every server agent runs on a runner, and refusing runners refused every agent.
+  const runner = input.kind === "file" && input.requiredCommit !== undefined ? null : input.runner?.trim() || null;
   if (runner && !/^[A-Za-z0-9._-]{1,64}$/.test(runner)) throw new Error("That runner name is not valid.");
   const machine = machineFor({ runner });
   let baseline: unknown, mode: string;
