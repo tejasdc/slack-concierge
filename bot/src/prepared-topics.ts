@@ -405,6 +405,10 @@ export class PreparedTopics {
   if(['router_working','router_queued'].includes(value.summary.work.kind))depend('inbox-work',String(value.sessionId));
   for(const target of value.detail.replyTargets.choices)depend('session',target.sessionId);
   if('sessionId' in value.summary.work&&value.summary.work.sessionId)depend('session',value.summary.work.sessionId);
+  // A worker waiting on another agent stays working until someone down that chain stops, so the
+  // thread is rebuilt when any of them starts or ends a turn, not only its direct worker.
+  for(const dispatch of context.dispatches)if(dispatch.root&&value.summary.roots.includes(dispatch.root))
+   for(const session of dispatch.through??[])depend('session',session);
   const row=[generation,topicId,context.sessionId,value.summary.state,
    value.summary.state==='open'&&!value.summary.needsYou.count&&value.summary.work.kind!=='idle'?1:0,
    value.band,value.summary.lastEntryAt,value.summary.closedAt??value.summary.lastEntryAt,json(summary),ref.hash,value.search,listKey(value.band,value.summary.pinnedAt,value.summary.lastEntryAt,topicId),

@@ -660,7 +660,13 @@ is refused when that thread belongs to another one). Focus belongs to the run th
 it, so a run that ended, errored or was stopped stops claiming a topic without any timer.
 A topic's `work` is `router_working` (its focus), else `router_queued` with its 1-based
 position among queued Inbox inputs, else `worker_working` naming the target session of an
-unsettled dispatch from this topic, else `idle`.
+unsettled dispatch from this topic whose work is live, else `idle`. A dispatch's work is live
+while its target has a running or queued turn, or while the target holds an unsettled request
+to another session whose work is live by the same rule (bounded depth, cycle-safe; an open
+peer request counts as live). An agent that ends its turn to wait for a ChatGPT answer or
+another agent's build is still working on the thread (bug report ce2b8b10, 2026-11-11:
+threads showed green while agents still worked). The prepared topic depends on every session
+in that chain, so a turn starting or ending anywhere down it rebuilds the thread's work.
 
 **In the Inbox, the only thing that can wait on him is a question record in its topic**
 (design: `docs/plans/2026-09-23-attention-that-ends.md`). A question has a `kind`:
