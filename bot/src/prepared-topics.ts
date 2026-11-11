@@ -110,6 +110,12 @@ export class PreparedTopics {
    prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN newest_speaker_reply INTEGER NOT NULL DEFAULT 1');
    prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
   })();
+  // A worker waiting on another agent counts as working since 2026-11-11; threads prepared under the
+  // older rule stay idle until they change, so recompute each once.
+  if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='work_through_waits'))prepared.transaction(()=>{
+   prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN work_through_waits INTEGER NOT NULL DEFAULT 1');
+   prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
+  })();
   // Each choice is named as its newest message in the thread is signed since 2026-11-05; recompute once.
   if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='choice_named_as_signed'))prepared.transaction(()=>{
    prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN choice_named_as_signed INTEGER NOT NULL DEFAULT 1');
@@ -405,6 +411,10 @@ export class PreparedTopics {
   if(['router_working','router_queued'].includes(value.summary.work.kind))depend('inbox-work',String(value.sessionId));
   for(const target of value.detail.replyTargets.choices)depend('session',target.sessionId);
   if('sessionId' in value.summary.work&&value.summary.work.sessionId)depend('session',value.summary.work.sessionId);
+  // A worker waiting on another agent stays working until someone down that chain stops, so the
+  // thread is rebuilt when any of them starts or ends a turn, not only its direct worker.
+  for(const dispatch of context.dispatches)if(dispatch.root&&value.summary.roots.includes(dispatch.root))
+   for(const session of dispatch.through??[])depend('session',session);
   const row=[generation,topicId,context.sessionId,value.summary.state,
    value.summary.state==='open'&&!value.summary.needsYou.count&&value.summary.work.kind!=='idle'?1:0,
    value.band,value.summary.lastEntryAt,value.summary.closedAt??value.summary.lastEntryAt,json(summary),ref.hash,value.search,listKey(value.band,value.summary.pinnedAt,value.summary.lastEntryAt,topicId),

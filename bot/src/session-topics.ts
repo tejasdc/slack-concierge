@@ -17,7 +17,7 @@ import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 import {errorFields,log} from './log';
 import {ensureTable as ensureRepairNotices,recordRepairNotice,resolveRepairNotice} from './repair-notices';
 import {readTodos,STEP_ASKS,type TodoState} from './question-todos';
-import {topicCurrentWorkers} from './topic-current-workers';
+import {topicCurrentWorkers,workingThrough} from './topic-current-workers';
 import {approvalDecision} from './decision-approval';
 import {hisWordsLine,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
 import {deviceQuestionNamesPhysicalPrerequisite} from './agent-reachable-app-question';
@@ -724,8 +724,7 @@ function workIndex(sessionId:number):WorkIndex {
   // A dispatch belongs to the thread its request named, else to the input its turn started from.
   for(const row of db.query(`SELECT request_id,COALESCE(thread_root_input_id,source_input_id) AS source_input_id,target_session_id FROM session_communication_requests
       WHERE source_session_id=? AND outcome IS NULL AND source_input_id IS NOT NULL`).all(sessionId) as any[]) {
-    const running=db.query("SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering','queued')").get(row.target_session_id);
-    if(!running)continue;
+    if(!workingThrough(db,row.target_session_id))continue;
     const target=getSessionById(row.target_session_id);
     dispatches.push({root:rootOf(sessionId,row.source_input_id),sessionId:`concierge:${row.target_session_id}`,
       title:(target&&sessionMetadata(target).title)||'Agent session',requestId:row.request_id});
