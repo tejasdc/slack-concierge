@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, settleTurnDependencies, SETTLED_EXECUTION_SQL, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
-import { carryingTurn, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, HOLDING_OUTCOMES, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
+import { carryingTurn, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
@@ -19,6 +19,7 @@ import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-r
 import { usageSignal } from './provider-usage-forecast';
 import {ProviderCapabilityUnavailableError} from './provider-policy';
 import { log } from './log';
+import { heldPrerequisite } from './request-prerequisite-hold';
 import { STEP_ASKS, finishedTodoRefusal, type TodoState } from './question-todos';
 import {boundSearchResponse} from './search-response-boundary';
 import {saveQueuedTurn,savedWorkSettings} from './saved-work';
@@ -2528,35 +2529,9 @@ export class SessionCommunicationCoordinator {
         const claim = routed.message_ts ? getSlackUserInputClaim(request.target_channel, routed.message_ts) : null;
         return { ...routed, turn_id: claim?.turn_id ?? routed.turn_id, input_kind: claim?.kind ?? null };
     }
-    /**
-     * The prerequisite holding this request for its requester's decision, if any. An
-     * outcome without confirmed success waits for that decision, but a request the
-     * requester asked after the outcome had reached it is the decision: holding it would
-     * wait for a choice already made, with nothing left that could release it.
-     */
-    private heldPrerequisite(request: RequestRow, dependencies = ((JSON.parse(request.payload_json).after ?? []) as string[]).map(id => this.row(id))) {
-        const ask=db.query("SELECT sequence FROM session_owner_events WHERE event_id=?").get(`request:${request.request_id}`) as {sequence:number}|null;
-        return dependencies.find(dependency => {
-            if(!HOLDING_OUTCOMES.includes(dependency.outcome ?? ''))return false;
-            const resultEventId=JSON.parse(dependency.result_json??'{}').event_id;
-            const directPost=resultEventId?db.query("SELECT sequence FROM session_owner_events WHERE event_id=?").get(`post:forward:${resultEventId}`) as {sequence:number}|null:null;
-            const declared=resultEventId?db.query("SELECT payload_json FROM session_communication_events WHERE event_id=?").get(resultEventId) as {payload_json:string}|null:null;
-            const group=declared?JSON.parse(declared.payload_json).answerGroup:null;
-            const root=inboxRequestRoot(db,dependency.request_id,dependency.thread_root_input_id);
-            const groupedPost=!directPost&&typeof group==='string'&&root
-                ?db.query(`SELECT sequence FROM session_owner_events WHERE session_id=? AND coalesce(json_extract(payload_json,'$.threadRoot'),input_id)=? AND kind='post'
-                    AND json_extract(payload_json,'$.answerGroup')=? ORDER BY sequence LIMIT 1`)
-                    .get(dependency.source_session_id,root,group) as {sequence:number}|null:null;
-            const answerPost=!directPost&&!groupedPost&&root
-                ?db.query(`SELECT sequence FROM session_owner_events WHERE session_id=? AND coalesce(json_extract(payload_json,'$.threadRoot'),input_id)=? AND kind='post'
-                    AND json_extract(payload_json,'$.requestId')=? ORDER BY sequence DESC LIMIT 1`)
-                    .get(dependency.source_session_id,root,dependency.request_id) as {sequence:number}|null:null;
-            const postSequence=(directPost??groupedPost??answerPost)?.sequence;
-            if(ask&&postSequence!==undefined&&postSequence<=ask.sequence)return false;
-            return !db.query(`SELECT 1 FROM session_inputs outcome JOIN session_inputs ask ON ask.id=?
-                WHERE outcome.id=? AND outcome.session_id=ask.session_id AND outcome.rowid<=ask.rowid`)
-                .get(request.source_input_id, `return:${resultEventId}`);
-        })??null;
+    /** The prerequisite holding this request for its requester's decision; shared with the obligations inventory. */
+    private heldPrerequisite(request: RequestRow, dependencies?: RequestRow[]) {
+        return heldPrerequisite(request, dependencies);
     }
     private holdFailedChatGptRequest(request:RequestRow,reason:string):boolean {
         const obligation=chatGptObligationForAttempt(request.request_id);
@@ -3035,8 +3010,13 @@ export class SessionCommunicationCoordinator {
             db.transaction(() => {
                 if (this.row(request.request_id).outcome || this.row(request.request_id).overdue_at_ms !== null)
                     return;
+                // A held request never reached its recipient, so only this requester can move it.
+                // The generic "no confirmed answer" reminder read as the worker's job and left
+                // request 5d979d7f undecided for 52 days.
                 if (!reported)
-                    this.event(request, 'overdue', { text: unresolvedRequestReminder(request.payload_json, STILL_WAITING_MINUTES,
+                    this.event(request, 'overdue', { text: held
+                        ? `${requestLabel(request.payload_json).replace(/^y/, "Y")} (${request.request_id}) was never delivered: it is held for your decision because your earlier request ${held.request_id} ended ${held.outcome} without a confirmed result. The recipient cannot see or answer it. Decide now: cancel it with sessions cancel ${request.request_id}, or ask again without that prerequisite.`
+                        : unresolvedRequestReminder(request.payload_json, STILL_WAITING_MINUTES,
                         'Inspect the recipient’s status and follow up or cancel if the work can no longer wait.'), health, agentReminder:true });
                 db.query('UPDATE session_communication_requests SET overdue_at_ms=? WHERE request_id=?').run(now, request.request_id);
             })();
