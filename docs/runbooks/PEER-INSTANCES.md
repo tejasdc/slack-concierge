@@ -184,7 +184,13 @@ socket or agent token of its own. The launcher gives agent-browser the ticket in
 header through its mode-0600 configuration, then clears that file after the open. The browser
 keeps the header in memory for its session; the ticket expires after 15 minutes. Its product
 authority is read-only, so Settings Refresh and other writes remain refused. Reopening the page
-requests a fresh verified ticket if a longer read is needed. Other websites retain an empty
+requests a fresh verified ticket if a longer read is needed. `goto` and `navigate` get the same
+website check and ticket as `open`; `tab new` with a URL and a leading option before the action
+are refused so no navigation skips the check. A stop signal during a slow open still clears the
+ticket from disk. For thnkr.ing, `trace` and `network request`/`network har` are refused because
+they would copy the ticket's header into the transcript or a file. Each launch removes request
+profiles untouched for a day (their browsers idled out after 20 minutes), so cached workspace
+reads do not accumulate. Other websites retain an empty
 configuration and may navigate through their own authentication providers. Direct
 agent-browser, Playwright and Chrome DevTools tools remain refused on the Mac, as do foreground
 Chrome and app activation. Claude in Chrome is also refused for agent work because it

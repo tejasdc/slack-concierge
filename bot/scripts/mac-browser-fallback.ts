@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 /** Give an admitted server failure its own headless Mac browser, never a personal profile. */
-import {spawnSync} from 'node:child_process';
+import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {chmodSync,existsSync,mkdirSync,writeFileSync} from 'node:fs';
+import {chmodSync,existsSync,mkdirSync,readdirSync,rmSync,statSync,writeFileSync} from 'node:fs';
 import {userInfo} from 'node:os';
 import {join} from 'node:path';
 import {requestMacBrowserTicket} from '../src/mac-browser-ticket';
@@ -33,11 +33,19 @@ if(!['http:','https:'].includes(site.protocol)||site.origin!==origin)
 const args=process.argv.slice(2);
 if(!args.length)refuse('Choose an agent-browser action.');
 const disallowed=/^(?:--(?:auto-connect|cdp|config|engine|executable-path|headed|profile|provider|session|session-name|state|args|extension|extensions|init-script|allowed-domains|headers)(?:=.*)?|-p)$/i;
+if(args[0]!.startsWith('-'))refuse('Name the agent-browser action first, then its options.');
 if(args.some(arg=>disallowed.test(arg))||['connect','inspect','profiles'].includes(args[0]!)
     ||args[0]==='set'&&args[1]==='headers'
     ||args[0]==='close'&&args.includes('--all'))
   refuse('The Mac fallback browser cannot attach to another browser or change its private profile.');
-if(args[0]==='open'){
+// Every navigation goes through the recorded website check (and, for thnkr.ing, its ticket).
+const navigates=['open','goto','navigate'].includes(args[0]!);
+if(args[0]==='tab'&&args[1]==='new'&&args.slice(2).some(arg=>!arg.startsWith('-')))
+  refuse('Open a website with open, which checks the recorded website.');
+// Recorded headers and traces would copy the thnkr.ing ticket into transcripts or files.
+if(site.origin==='https://thnkr.ing'&&(args[0]==='trace'||args[0]==='network'&&['request','har'].includes(args[1]!)))
+  refuse('Request headers and traces are not recorded for the thnkr.ing fallback; read the page or the request list instead.');
+if(navigates){
   let requested:URL;
   try {requested=new URL(args[1]??'');} catch {refuse('Open an absolute website URL.');}
   if(requested.origin!==site.origin)
@@ -45,7 +53,19 @@ if(args[0]==='open'){
 }
 
 const key=createHash('sha256').update(`${inputId}\0${runId}\0${origin}`).digest('hex').slice(0,24);
-const profile=join(userHome,'Library','Application Support','concierge','browser-fallback',key);
+const profiles=join(userHome,'Library','Application Support','concierge','browser-fallback');
+const profile=join(profiles,key);
+// Each request's profile holds a copy of what it read; one untouched for a day has no live browser
+// (its daemon idles out after 20 minutes), so it is removed rather than accumulating workspace data.
+const STALE_PROFILE_MS=24*60*60_000;
+for(const entry of existsSync(profiles)?readdirSync(profiles):[]){
+  if(entry===key||!/^[0-9a-f]{24}$/.test(entry))continue;
+  const marker=join(profiles,entry,'agent-browser.json');
+  try {
+    if(Date.now()-statSync(existsSync(marker)?marker:join(profiles,entry)).mtimeMs>STALE_PROFILE_MS)
+      rmSync(join(profiles,entry),{recursive:true,force:true});
+  } catch {}
+}
 mkdirSync(profile,{recursive:true,mode:0o700});
 chmodSync(profile,0o700);
 const config=join(profile,'agent-browser.json');
@@ -59,19 +79,30 @@ Object.assign(env,{AGENT_BROWSER_AUTO_CONNECT:'false',AGENT_BROWSER_HEADED:'fals
 const installed=join(userHome,'.local','share','fnm','aliases','default','bin','agent-browser');
 if(!existsSync(installed))refuse('The Mac browser worker needs its managed agent-browser installation.');
 let ticket:string|undefined;
-if(site.origin==='https://thnkr.ing'&&args[0]==='open'){
+if(site.origin==='https://thnkr.ing'&&navigates){
   try {ticket=requestMacBrowserTicket(inputId,runId);}
   catch(error) {refuse(error instanceof Error?error.message:'The thnkr.ing browser ticket was unavailable.');}
 }
-let result:ReturnType<typeof spawnSync>;
+// The running browser retains its origin header; the bearer need not remain on disk.
+function clearConfig() {writeFileSync(config,'{}\n',{mode:0o600});chmodSync(config,0o600);}
+let child:ReturnType<typeof spawn>|undefined;
+for(const signal of ['SIGINT','SIGTERM','SIGHUP'] as const)process.on(signal,()=>{
+  clearConfig();
+  child?.kill(signal);
+  process.exit(128+(signal==='SIGINT'?2:signal==='SIGTERM'?15:1));
+});
+let status:number;
 try {
   if(ticket)writeFileSync(config,JSON.stringify({headers:JSON.stringify({'X-Thinkering-Agent-Browser':ticket})})+'\n',{mode:0o600});
-  result=spawnSync(installed,['--auto-connect','false','--headed','false',
-    '--config',config,'--session',`mac-fallback-${key}`,'--profile',profile,...args],{env,stdio:'inherit'});
-} finally {
-  // The running browser retains its origin header; the bearer need not remain on disk.
-  writeFileSync(config,'{}\n',{mode:0o600});
-  chmodSync(config,0o600);
-}
-if(result.error)refuse(`The isolated Mac browser could not start: ${result.error.message}`);
-process.exit(result.status??1);
+  // Asynchronous, so a stop signal during a slow open still clears the ticket from disk.
+  status=await new Promise<number>((resolve,reject)=>{
+    child=spawn(installed,['--auto-connect','false','--headed','false',
+      '--config',config,'--session',`mac-fallback-${key}`,'--profile',profile,...args],{env,stdio:'inherit'});
+    child.once('error',reject);
+    child.once('exit',(code,signal)=>resolve(code??(signal?1:0)));
+  });
+} catch(error) {
+  clearConfig();
+  refuse(`The isolated Mac browser could not start: ${error instanceof Error?error.message:String(error)}`);
+} finally {clearConfig();}
+process.exit(status);
