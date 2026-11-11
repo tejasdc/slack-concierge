@@ -281,13 +281,18 @@ for(const question of ['Can you click the button in the app?','Can you open Safa
   'Can you unlock your Mac so I can inspect the app? Then can you click Save?',
   'Can you unlock the Mac so the agent can continue? Can you copy the eight notes?',
   'Can you open Safari on your Mac?', 'Can you open Gmail on your phone?',
-  'Can you launch Chrome on my laptop?', 'Can you start the deploy on the server?'])
+  'Can you launch Chrome on my laptop?', 'Can you start the deploy on the server?',
+  'Can you say Alexa, open thinkering box to your phone?',
+  'Can you say Alexa, open thinkering box to your Echo and open the app?',
+  'Can you say Alexa, end Alexa+ to your Echo?'])
   assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),false,question);
 for(const question of ['Can you unlock your Mac so the agent can continue?',
   'Can you unlock the Mac so the agent can read the app?',
   'Can you unlock your physical Mac?','Can you take a photo of the paper?',
   'Can you open KOReader once on your Kindle Oasis?',
   'Can you open KOReader on Kindle?',
+  'Please say “Alexa, open thinkering box” to your Echo.',
+  'Can you say Alexa, open thinkering box to your Echo?',
   'Could you start the companion app on the watch?',
   'Can you unlock your iPhone?','Please unlock your iPhone.',
   'Please unlock your iPhone. The device check reached it and reported that it is locked. I will handle the app inspection; the other repair work continues.'])

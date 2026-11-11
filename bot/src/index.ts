@@ -16,7 +16,7 @@ import toml from "@iarna/toml";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeSync } from "node:fs";
 import { isHintCommand, renderCommandHints } from "./command-hints";
 import {
   addDir,
@@ -444,6 +444,20 @@ function detectedRuntimeGitSha() {
 
 const runtimeGitSha = detectedRuntimeGitSha();
 let draining = false;
+// An error nothing caught ends the owner, as it always has; first it records what it was.
+// On 2026-11-11 at 05:33:45 UTC the owner exited with status 1 and Bun printed no error at all,
+// so the crash could not be named (a rejection with no value, as the old Slack socket gives,
+// prints nothing). The drain installs its own ignoring handlers, so these stand aside then.
+for (const kind of ["unhandledRejection", "uncaughtException"] as const) {
+  process.on(kind, (reason: unknown) => {
+    if (draining) return;
+    const fields = reason instanceof Error ? errorFields(reason)
+      : { reason_type: reason === null ? "null" : typeof reason, reason: String(reason).slice(0, 500) };
+    // Written synchronously too: the log stream may not flush before the exit below.
+    try { writeSync(2, `${JSON.stringify({ ts: new Date().toISOString(), level: "error", event: "owner_crashed_unhandled", kind, ...fields })}\n`); } catch { /* exit regardless */ }
+    process.exit(1);
+  });
+}
 let serviceOnline = false;
 let activeTurnCount = 0;
 let activeInputHandlerCount = 0;

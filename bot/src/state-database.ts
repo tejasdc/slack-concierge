@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { observedDatabase } from './storage-observation';
 import { ledgerWriteResults } from './ledger-write-results';
 import { ledgerAccess } from './ledger-access-policy';
@@ -66,12 +66,14 @@ if (access.forbidControllerLedgerOpen) {
 export const initializeLedgerSchema = access.schema;
 export const ownerServedReleaseCommand = access.ownerServedReleaseCommand;
 export const ownerServedDeploymentCommand = access.ownerServedDeploymentCommand;
-export const db = observedDatabase(ledgerWriteResults(new Database(`${canonicalDir}/state.db`, access.readonly ? { readonly: true } : { readwrite: true, create: !access.live || access.schema })));
+// The lock wait is set by the opener before its first statement (journal_mode and even the
+// first prepare need SQLite's locks). During an update restart the retiring coordinator can
+// still hold the writer for a moment; after a crash the dying owner's helpers held it for
+// more than five seconds (2026-11-11). The service's pre-start recovery runs while nothing
+// is serving, so it waits longer rather than failing the start and costing a restart cycle.
+const ledgerLockWaitMs = basename(Bun.main).replace(/\.[cm]?[jt]s$/, '') === 'recover-deployment' ? 30_000 : 5_000;
+export const db = observedDatabase(ledgerWriteResults(new Database(`${canonicalDir}/state.db`, access.readonly ? { readonly: true } : { readwrite: true, create: !access.live || access.schema }), ledgerLockWaitMs));
 if (access.readonly) db.exec("PRAGMA query_only = ON");
-// Set the wait before journal_mode: that pragma itself needs SQLite's writer lock. During an
-// update restart, the retiring coordinator can still hold that lock for a moment; configuring
-// the timeout afterwards made the recovery preflight fail immediately instead of waiting.
-db.exec("PRAGMA busy_timeout = 5000");
 // On Linux the owner's checkpoint thread is the ledger's only checkpointer. With SQLite's default,
 // the first commit by any short-lived writer (the update runner's state commands, release
 // promotion) copied the whole log into the database and synced it, holding the owner's commits
