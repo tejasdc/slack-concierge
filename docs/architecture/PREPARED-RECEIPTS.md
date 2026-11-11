@@ -57,8 +57,14 @@ new digest only in the same transaction that activates the complete replacement.
 rebuilding discards the abandoned receipt shadow and starts from the prior complete view, so it can
 never present a partially migrated receipt set as current or duplicate unrelated projections.
 
+A receipt's provenance comes from the same walk as the owner's full record
+(`input-provenance.ts`, called with the worker's read-only handle), so the list
+and the record always name the same originating human. The list never names a
+run; it reads the one the owner already recorded.
+
 The scratch `receipt-projection-fixture.ts` exercises retry set, restart
-invalidation, clear, queued hold, provenance and oversized retained text.
+invalidation, clear, queued hold, provenance (including a routed human message)
+and oversized retained text.
 `presentation-growth-fixtures.ts` drives the actual window and change readers
 through the runtime storage budget against small and large unrelated histories.
 Neither fixture opens production state. Activation still requires an installed
