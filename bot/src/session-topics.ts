@@ -722,17 +722,17 @@ function workIndex(sessionId:number):WorkIndex {
   const queued=queuedInboxInputs(sessionId).map((inputId,index)=>({inputId,root:rootOf(sessionId,inputId),position:index+1}));
   const dispatches:WorkIndex['dispatches']=[];
   // A dispatch belongs to the thread its request named, else to the input its turn started from.
-  for(const row of db.query(`SELECT request_id,COALESCE(thread_root_input_id,source_input_id) AS source_input_id,target_session_id FROM session_communication_requests
-      WHERE source_session_id=? AND outcome IS NULL AND source_input_id IS NOT NULL`).all(sessionId) as any[]) {
+  for(const row of db.query(`SELECT request_id,source_session_id,COALESCE(thread_root_input_id,source_input_id) AS source_input_id,target_session_id FROM session_communication_requests
+      WHERE source_session_id IN (${inboxLineageSql}) AND outcome IS NULL AND source_input_id IS NOT NULL`).all(sessionId) as any[]) {
     if(!workingThrough(db,row.target_session_id))continue;
     const target=getSessionById(row.target_session_id);
-    dispatches.push({root:rootOf(sessionId,row.source_input_id),sessionId:`concierge:${row.target_session_id}`,
+    dispatches.push({root:rootOf(row.source_session_id,row.source_input_id),sessionId:`concierge:${row.target_session_id}`,
       title:(target&&sessionMetadata(target).title)||'Agent session',requestId:row.request_id});
   }
-  for(const row of db.query(`SELECT request_id,COALESCE(thread_root_input_id,source_input_id) AS source_input_id,peer,remote_session_id FROM session_peer_requests
-      WHERE source_session_id=? AND outcome IS NULL`).all(sessionId) as any[]) {
+  for(const row of db.query(`SELECT request_id,source_session_id,COALESCE(thread_root_input_id,source_input_id) AS source_input_id,peer,remote_session_id FROM session_peer_requests
+      WHERE source_session_id IN (${inboxLineageSql}) AND outcome IS NULL`).all(sessionId) as any[]) {
     const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
-    dispatches.push({root:rootOf(sessionId,row.source_input_id),sessionId:receiveSessionFromPeer(row.remote_session_id,row.peer),
+    dispatches.push({root:rootOf(row.source_session_id,row.source_input_id),sessionId:receiveSessionFromPeer(row.remote_session_id,row.peer),
       title:(catalogue?JSON.parse(catalogue.view_json)?.title:null)||`${row.peer} session`,requestId:row.request_id});
   }
   return {sessionId,focus,focusTitle,queued,dispatches};

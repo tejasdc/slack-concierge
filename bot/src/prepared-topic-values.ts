@@ -51,17 +51,17 @@ export function topicContext(source:Database,prepared:Database,generation:number
    AND json_extract(COALESCE(receipt_json,'{}'),'$.state') IS NULL AND kind IN ('input','create','inbox-capture') ORDER BY rowid`)
    .all(sessionId) as {id:string}[]).map((row,index)=>({inputId:row.id,root:root(sessionId,row.id),position:index+1}));
  const dispatches:TopicContext['dispatches']=[];
- for(const row of source.query(`SELECT request_id,COALESCE(thread_root_input_id,source_input_id) AS input_id,target_session_id
-    FROM session_communication_requests WHERE source_session_id=? AND outcome IS NULL AND source_input_id IS NOT NULL`).all(sessionId) as any[]){
+ for(const row of source.query(`SELECT request_id,source_session_id,COALESCE(thread_root_input_id,source_input_id) AS input_id,target_session_id
+    FROM session_communication_requests WHERE source_session_id IN (${INBOX_LINEAGE_SQL}) AND outcome IS NULL AND source_input_id IS NOT NULL`).all(sessionId) as any[]){
   const chain=workingThrough(source,row.target_session_id);
   if(!chain)continue;
-  dispatches.push({root:root(sessionId,row.input_id),sessionId:`concierge:${row.target_session_id}`,
+  dispatches.push({root:root(row.source_session_id,row.input_id),sessionId:`concierge:${row.target_session_id}`,
    title:sessionTitle(source,row.target_session_id)||'Agent session',requestId:row.request_id,through:chain.map(id=>`concierge:${id}`)});
  }
- for(const row of source.query(`SELECT request_id,COALESCE(thread_root_input_id,source_input_id) AS input_id,peer,remote_session_id
-   FROM session_peer_requests WHERE source_session_id=? AND outcome IS NULL`).all(sessionId) as any[]){
+ for(const row of source.query(`SELECT request_id,source_session_id,COALESCE(thread_root_input_id,source_input_id) AS input_id,peer,remote_session_id
+   FROM session_peer_requests WHERE source_session_id IN (${INBOX_LINEAGE_SQL}) AND outcome IS NULL`).all(sessionId) as any[]){
   const peer=source.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
-  dispatches.push({root:row.input_id?root(sessionId,row.input_id):null,sessionId:peerAddress(row.peer,row.remote_session_id),
+  dispatches.push({root:row.input_id?root(row.source_session_id,row.input_id):null,sessionId:peerAddress(row.peer,row.remote_session_id),
    title:parse(peer?.view_json,{})?.title||`${row.peer} session`,requestId:row.request_id});
  }
  return {source,prepared,generation,sessionId,sessionIds,root,humanReplies,queued,dispatches,focus:focused,focusTitle};
