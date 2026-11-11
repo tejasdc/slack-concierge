@@ -576,7 +576,10 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   refused (`QUESTION_NOT_ANSWERABLE`) instead of being parked out of his sight. If the router's input ends without a replacement dispatch or checked completion, upkeep
   sends another attempt after a bounded delay, starting at fifteen minutes and capped at one
   day. Upkeep admits at most five recovery inputs on one reading pass, leaving the rest
-  eligible on the next pass. The input and flag have stable identities across restart. After
+  eligible on the next pass. Stuck requests whose latest attempt is the same dispatch share one
+  recovery input that lists all of them and asks for one combined request to the owning agent,
+  linked to each; on 2026-11-09 one shared attempt came back once per request and its agent got
+  about a dozen copies ([record](../incidents/2026-11-09-shared-attempt-recovery-fanned-out.md)). The input and flag have stable identities across restart. After
   two recovery turns without a linked next attempt, the thread gets one notice that the task
   is still open and Concierge is continuing to try. A request with no certain linked human
   source still reaches the router for provenance investigation without inheriting authority
@@ -657,7 +660,15 @@ is refused when that thread belongs to another one). Focus belongs to the run th
 it, so a run that ended, errored or was stopped stops claiming a topic without any timer.
 A topic's `work` is `router_working` (its focus), else `router_queued` with its 1-based
 position among queued Inbox inputs, else `worker_working` naming the target session of an
-unsettled dispatch from this topic, else `idle`.
+unsettled dispatch from this topic whose work is live, else `idle`. A dispatch from this topic
+is one sent by any session in the Inbox lineage, so a thread routed before an Inbox handoff
+keeps its working agent. A dispatch's work is live
+while its target has a running or queued turn, or while the target holds an unsettled request
+to another session whose work is live by the same rule (bounded depth, cycle-safe; an open
+peer request counts as live). An agent that ends its turn to wait for a ChatGPT answer or
+another agent's build is still working on the thread (bug report ce2b8b10, 2026-11-11:
+threads showed green while agents still worked). The prepared topic depends on every session
+in that chain, so a turn starting or ending anywhere down it rebuilds the thread's work.
 
 **In the Inbox, the only thing that can wait on him is a question record in its topic**
 (design: `docs/plans/2026-09-23-attention-that-ends.md`). A question has a `kind`:
@@ -873,14 +884,29 @@ root, so replying inside an existing topic does not require another placement.
 
 Each unplaced input carries the existing `<topic-placement>` reminder when delivered.
 The router can inspect the sorting pile with `sessions topics list`; that display includes
-queued messages too and previews only five. There is no periodic “pile nonempty” agent
-notification. The shared owed-reply Stop hook now asks the owner on every normal Stop
+queued messages too and previews only five. The overdue wake below is the only periodic
+notification, and only for captures unfiled for 10 minutes. The shared owed-reply Stop hook now asks the owner on every normal Stop
 attempt for all unfiled human message inputs that this Inbox session received, including
 earlier turns. Initial delivery is evidenced by provider acknowledgment (or the exact
 currently stopping turn); steering requires its sent receipt. Merely queued, imported,
 corrected agent authorship, service returns, worker requests and topic actions do not block.
 Outside-agent captures delivered into router turns follow the same filing check, providing
 the live agent-marked acceptance path without claiming human authorship.
+
+The current router (the session holding the `inbox` role) answers for the whole Inbox, not only
+what it received itself. Its Stop check also lists every root another Inbox session received
+that no topic holds, in any delivery state, marked with `received_by`; and every input it
+receives carries an `<unfiled-from-earlier-routers>` block listing them oldest first. Both read
+the same entry index as the sorting pile thnkr.ing shows as "Not in a thread yet", so a capture
+left behind by a failover or stand-in bind cannot drop out of view (failure record
+`docs/incidents/2026-11-11-captures-stranded-on-former-inbox-router.md`).
+
+Because the Stop check only runs when the router ends a turn, the owner's thread-upkeep pass
+(the provider-usage reading cadence, about every three minutes) wakes an idle router with one
+`unfiled-wake:` service input per set of captures unfiled for 10 minutes, the age thnkr.ing
+labels "Never filed". A capture still unfiled at 30 minutes while the router is not running a
+turn records a `stuck_work` repair notice (`inbox-unfiled:<root>`) for the repair agent, since
+the router is then evidently unable to file; filing it resolves the notice.
 
 `/session-communication/owed` returns `unfiled` beside its existing reply obligations.
 The hook names every input, a short data-only preview, its resolved root and ready-to-fill

@@ -7,10 +7,19 @@ export type UsageLedgerSnapshot={sinceMs:number;sessions:Row[];turns:Row[];event
 /** Only the owner-held facts needed to attribute one week of runner usage. */
 export function captureUsageLedgerSnapshot(ledger:Database,sinceMs:number):UsageLedgerSnapshot{
   const since=new Date(sinceMs).toISOString().slice(0,19).replace('T',' ');
-  const turns=ledger.query(`SELECT id,session_id,status,provider_turn_id,provider_started_at,ended_at,
+  const turns=ledger.query(`SELECT turn.id,turn.session_id,turn.status,turn.provider_turn_id,turn.provider_started_at,turn.ended_at,
     saved_kind,saved_repeat_ms,saved_root_id,saved_sequence,saved_fire_at_ms,provider_duration_ms
-    FROM turns WHERE (provider_started_at IS NOT NULL AND (provider_started_at>=? OR ended_at>=? OR ended_at IS NULL))
-      OR (saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL AND saved_fire_at_ms>=?)`).all(since,since,sinceMs) as Row[];
+    ,topic.topic_id FROM turns turn
+    LEFT JOIN inbox_topic_roots topic ON topic.root_input_id=coalesce(
+      (SELECT coalesce(nullif(request.topic_root_input_id,''),request.thread_root_input_id)
+       FROM session_communication_requests request WHERE request.target_input_id=turn.accepted_input_id
+       ORDER BY request.created_at_ms DESC LIMIT 1),
+      (SELECT CASE WHEN coalesce(json_extract(link.payload_json,'$.attached'),1)<>0
+        THEN json_extract(link.payload_json,'$.root') END FROM session_owner_events link
+       WHERE link.kind='thread_link' AND link.input_id=turn.accepted_input_id ORDER BY link.sequence DESC LIMIT 1),
+      turn.accepted_input_id)
+    WHERE (turn.provider_started_at IS NOT NULL AND (turn.provider_started_at>=? OR turn.ended_at>=? OR turn.ended_at IS NULL))
+      OR (turn.saved_kind='scheduled' AND turn.saved_repeat_ms IS NOT NULL AND turn.saved_fire_at_ms>=?)`).all(since,since,sinceMs) as Row[];
   const sessionIds=new Set(turns.map(row=>row.session_id as number));
   const sessions=(ledger.query('SELECT id,agent_session_uuid,provider_id,native_metadata_json,last_turn_at FROM sessions WHERE agent_session_uuid IS NOT NULL').all() as Row[])
     .filter(row=>{if(typeof row.last_turn_at==='string'&&Date.parse(row.last_turn_at)>=sinceMs)sessionIds.add(row.id as number);
@@ -64,7 +73,7 @@ export function ledgerFromUsageSnapshot(snapshot:UsageLedgerSnapshot):Database{
   const db=new Database(':memory:');
   db.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,agent_session_uuid TEXT,provider_id TEXT,native_metadata_json TEXT);
     CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,status TEXT,provider_turn_id TEXT,provider_started_at TEXT,ended_at TEXT,
-      saved_kind TEXT,saved_repeat_ms INTEGER,saved_root_id INTEGER,saved_sequence INTEGER,saved_fire_at_ms INTEGER,provider_duration_ms INTEGER);
+      saved_kind TEXT,saved_repeat_ms INTEGER,saved_root_id INTEGER,saved_sequence INTEGER,saved_fire_at_ms INTEGER,provider_duration_ms INTEGER,topic_id TEXT);
     CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,session_id INTEGER,turn_id INTEGER,kind TEXT,payload_json TEXT,created_at TEXT);
     CREATE TABLE saved_work_settings(singleton INTEGER PRIMARY KEY,time_zone TEXT);`);
   const insert=(table:string,keys:string[],rows:Row[])=>{
@@ -74,7 +83,7 @@ export function ledgerFromUsageSnapshot(snapshot:UsageLedgerSnapshot):Database{
   db.exec('BEGIN');
   try{
     insert('sessions',['id','agent_session_uuid','provider_id','native_metadata_json'],snapshot.sessions);
-    insert('turns',['id','session_id','status','provider_turn_id','provider_started_at','ended_at','saved_kind','saved_repeat_ms','saved_root_id','saved_sequence','saved_fire_at_ms','provider_duration_ms'],snapshot.turns);
+    insert('turns',['id','session_id','status','provider_turn_id','provider_started_at','ended_at','saved_kind','saved_repeat_ms','saved_root_id','saved_sequence','saved_fire_at_ms','provider_duration_ms','topic_id'],snapshot.turns);
     insert('session_owner_events',['sequence','session_id','turn_id','kind','payload_json','created_at'],snapshot.events);
     db.query('INSERT INTO saved_work_settings VALUES(1,?)').run(snapshot.timeZone);
     db.exec('COMMIT');

@@ -88,6 +88,44 @@ export async function usageBreakdown(period:UsagePeriod):Promise<unknown>{
   let known=current();
   if(!known){await scan();known=latest;}
   else if(Date.now()-Date.parse(known.computedAt)>=RESULT_STALE_MS)void scan().catch(()=>{});
-  const result=known!.both[period] as Record<string,unknown>;
+  const {sessionAllowanceById:_sessions,threadAllowanceById:_threads,...result}=known!.both[period] as Record<string,unknown>;
   return {...result,computedAt:known!.computedAt,stale:Date.now()-Date.parse(known!.computedAt)>=RESULT_STALE_MS};
+}
+
+/** A lookup the owner refuses as the caller's mistake, never as an outage. A session on another machine (mac:<n>) is accepted and answered with no figure: this server's weekly attribution covers only its own runners. */
+export function validUsageAllowanceLookup(sessionIds:string[],topicIds:string[]):boolean{
+  return sessionIds.length+topicIds.length<=100&&sessionIds.every(id=>/^[a-z][a-z0-9-]{0,31}:\d+$/.test(id))
+    &&topicIds.every(id=>!!id&&id.length<=160);
+}
+
+/** One cached lookup for the rows actually visible on a page; never runs the scanner per row. */
+/** Threads beyond this many, ranked by estimated share, are counted in the overview but not listed. */
+const OVERVIEW_THREADS=50;
+
+/**
+ * The weekly allowance overview Accounts shows: each account's measured reading and estimated use,
+ * the leading threads, every routine with its days, and each day. It is a few tens of kilobytes;
+ * the full week breakdown carries every session's token detail and is far past the read limit.
+ */
+function allowanceOverview(report:Record<string,any>){
+  const largest=(projection:any)=>Math.max(-1,...(projection?.components??[]).map((component:any)=>component.usedPercent??-1));
+  const threads=[...(report.byThread??[])].sort((a:any,b:any)=>largest(b.weeklyAllowance)-largest(a.weeklyAllowance));
+  return {accounts:(report.accounts??[]).map((account:any)=>({provider:account.provider,account:account.account,
+      weeklyAllowance:account.weeklyAllowance??null})),
+    byThread:threads.slice(0,OVERVIEW_THREADS),threadCount:threads.length,
+    unassignedThread:report.unassignedThread??null,byRoutine:report.byRoutine??[],byDay:report.byDay??[]};
+}
+
+export async function usageAllowanceLookup(sessionIds:string[],topicIds:string[],overview=false):Promise<unknown>{
+  if(!validUsageAllowanceLookup(sessionIds,topicIds))throw new Error('INVALID_USAGE_ALLOWANCE_LOOKUP');
+  let known=current();
+  if(!known){await scan();known=latest;}
+  else if(Date.now()-Date.parse(known.computedAt)>=RESULT_STALE_MS)void scan().catch(()=>{});
+  const report={...known!.both.week as Record<string,any>,computedAt:known!.computedAt,
+    stale:Date.now()-Date.parse(known!.computedAt)>=RESULT_STALE_MS};
+  const select=(ids:string[],source:Record<string,unknown>|undefined)=>Object.fromEntries(
+    ids.map(id=>[id,source?.[id]??null]));
+  return {period:'week',computedAt:report.computedAt,stale:report.stale,
+    sessions:select(sessionIds,report.sessionAllowanceById),threads:select(topicIds,report.threadAllowanceById),
+    method:report.allowanceMethod,...(overview?{overview:allowanceOverview(report)}:{})};
 }

@@ -452,24 +452,42 @@ async function refreshAreaProjection(generation:number){
   prepared.transaction(()=>{keepLease();areas.activate(generation);})();
 }
 
-/** Receipt policy changes rebuild only receipts. Every other prepared view keeps its own generation. */
-async function refreshReceiptProjection(){
-  const generation=receipts.nextGeneration(),startHead=head();
-  prepared.transaction(()=>{keepLease();receipts.beginRebuild(generation);})();
-  let after=0;
-  while(true){
-    const page=prepared.transaction(()=>{keepLease();return receipts.rebuildPage(generation,after,20);})();
-    after=page.lastRowid;
-    if(!page.hasMore)break;
+/** Receipt policy changes rebuild only receipts, beside live catch-up. The projection revision is
+ * this bundle's digest, so every release rebuilds receipts; running that rebuild before catch-up
+ * applied no change for two to five minutes after each restart, and every Inbox list answered
+ * not-ready meanwhile (Nov 11, 2026). Now each catch-up pass fills one bounded slice of the next
+ * generation, every applied change goes to both generations, and the old generation stays readable
+ * and current until the new one activates at the change position both have reached. */
+let receiptRebuild:{generation:number;after:number}|null=null;
+const RECEIPT_REBUILD_SLICE_MS=200;
+async function advanceReceiptRebuild(appliedHead:number){
+  if(receipts.isCurrent(receiptProjectionRevision)){receiptRebuild=null;return;}
+  if(!receiptRebuild){
+    const generation=receipts.nextGeneration();
+    prepared.transaction(()=>{keepLease();receipts.beginRebuild(generation);})();
+    receiptRebuild={generation,after:0};
+  }
+  const rebuild=receiptRebuild,until=performance.now()+RECEIPT_REBUILD_SLICE_MS;
+  while(performance.now()<until){
+    const page=prepared.transaction(()=>{keepLease();return receipts.rebuildPage(rebuild.generation,rebuild.after,20);})();
+    rebuild.after=page.lastRowid;
+    if(!page.hasMore){
+      // Rows rebuilt read the current source and every applied change reached this generation too,
+      // so it covers at least the position the shared views have applied.
+      prepared.transaction(()=>{keepLease();receipts.activate(rebuild.generation,appliedHead,receiptProjectionRevision);})();
+      receiptRebuild=null;
+      return;
+    }
     await yieldProgress(5);
   }
-  prepared.transaction(()=>{keepLease();receipts.activate(generation,startHead,receiptProjectionRevision);})();
 }
 
 /** Full re-rooting occurs off the interactive owner. The old generation stays readable until commit. */
 async function rebuild() {
   if(rebuilding)return;
   rebuilding=true;
+  // A full rebuild replaces every receipt generation, including one being filled beside catch-up.
+  receiptRebuild=null;
   try {
     const previous=meta(),generation=previous.generation+1,receiptGeneration=receipts.nextGeneration(),startHead=head();
     const eventHead=(source.query('SELECT COALESCE(MAX(sequence),0) AS n FROM session_owner_events').get() as {n:number}).n;
@@ -632,7 +650,7 @@ async function upgradeRoutingResultVisibility(generation:number){
 async function catchUp() {
   const current=meta();
   if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)){await rebuild();return;}
-  if(!receipts.isCurrent(receiptProjectionRevision)){await refreshReceiptProjection();return;}
+  await advanceReceiptRebuild(current.source_head);
   const receiptGeneration=receipts.activeGeneration();
   if(!current.agent_request_visibility_version){await upgradeAgentRequestVisibility(current.generation);return;}
   if(current.routing_result_visibility_version<2){await upgradeRoutingResultVisibility(current.generation);return;}
@@ -834,6 +852,7 @@ async function catchUp() {
       change.session_id&&(change.source_table==='slack_agent_session_title_projections'||change.source_table==='slack_agent_session_status_projections')
         ?{...change,source_table:'sessions',row_key:String(change.session_id)}:change));
     receipts.apply(receiptGeneration,changes);
+    if(receiptRebuild)receipts.apply(receiptRebuild.generation,changes);
     receipts.refreshDue(receiptGeneration);
     topics.apply(current.generation,changes,changedRoots);
     areas.apply(current.generation,changes);
@@ -900,8 +919,10 @@ while(true){
       if(current.ready)touchBackfilled=!prepared.transaction(()=>{keepLease();
         return cards.backfillTouch(current.generation,head());})();
     }
-  }}
+  }else receiptRebuild=null;}
   catch(error){
+    // Another worker may have refilled or abandoned the receipt shadow meanwhile; start it afresh.
+    receiptRebuild=null;
     observation.failed();
     const failure=error instanceof Error?error:new Error(String(error));
     const now=Date.now(),includeDetail=now-lastFailureDetailAt>60_000;

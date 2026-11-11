@@ -24,9 +24,9 @@ const executable=process.env.CONCIERGE_CODEX_EXECUTABLE||join(homedir(),'.codex/
 if(!existsSync(executable)){console.error('The Codex command line is unavailable.');process.exit(127);}
 if(model==='gpt-6-astra'){
   const state=process.env.CONCIERGE_STATE_DIR;
-  if(!state){console.error('Astra starts need Concierge escalation recording. Choose gpt-6-sol.');process.exit(64);}
+  if(!state){console.error('Astra starts need Concierge escalation recording. Choose gpt-6.1-sol.');process.exit(64);}
   try{appendFileSync(join(state,'model-escalations.jsonl'),JSON.stringify({at:new Date().toISOString(),model,reason,source:'codex-command-line'})+'\n',{mode:0o600});}
-  catch{console.error('Astra escalation recording failed. Choose gpt-6-sol.');process.exit(64);}
+  catch{console.error('Astra escalation recording failed. Choose gpt-6.1-sol.');process.exit(64);}
 }
 const child=spawn(executable,args,{stdio:'inherit',env:process.env});
 child.on('error',error=>{console.error(error.message);process.exitCode=127;});

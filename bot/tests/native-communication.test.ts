@@ -243,6 +243,26 @@ test('one explicit multi-request reply produces one return without comparing ans
   expect(db.query("SELECT count(*) AS n FROM session_inputs WHERE id LIKE 'return:%'").get()).toEqual({n:1});
 });
 
+// A steered request is attached to the running turn before its words are prepared and sent. On
+// 2026-11-09 concierge:3425's Stop hook demanded a verdict in that gap, twice, and the request's
+// text arrived seconds after the verdict. It is owed only once its text reached the provider.
+test('a steered request is owed only once its text was sent to the running turn',async()=>{
+  session();const requester=run(),target=session(),worker=run();
+  const targetId=Number(target.session.id.slice(10));
+  db.query("UPDATE sessions SET agent_session_uuid='owed-after-delivery' WHERE id=?").run(targetId);
+  steeringMode='pending';
+  const request=await ask(requester.source,target,'steered-unsent');
+  await communication.idle();
+  const steered=getAcceptedSessionInput('request:'+request.request_id)!;
+  expect(steered.turn_id).toBe(worker.claim.turn_id);
+  const owed=()=>communication.owed({provider:'codex',provider_session_id:'owed-after-delivery'}).owed.map(one=>one.request_id);
+  expect(owed()).not.toContain(request.request_id);
+  markTurnSteeringMessageSending(steered.steering_id!);
+  expect(owed()).not.toContain(request.request_id);
+  markTurnSteeringMessageSent(steered.steering_id!);
+  expect(owed()).toContain(request.request_id);
+});
+
 // The Inbox sends one request per thread and they routinely steer into one recipient turn, so
 // sharing a turn is not evidence of a shared answer. A September rule copied one request's reply
 // onto every other request that turn held and closed two unrelated threads on the wrong words
@@ -730,6 +750,32 @@ test('delegation retains originating human provenance across agent hops without 
   expect(db.query('SELECT count(*) AS n FROM session_inputs').get()).toEqual(count);
   const reply=await ask(researcher.source,target,'clarify');await communication.idle();
   expect(sessionInputProvenance(getAcceptedSessionInput(reply.target_input_id!)!)).toMatchObject({effectScope:'informational',originatingHuman:{inputId:human.source.input_id}});
+  expect(errors).toEqual([]);
+});
+
+test('an informational wake preserves an earlier open work request without replaying it',async()=>{
+  const requester=session(),human=run();
+  const worker=owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'develop'});
+  const assigned=await ask(human.source,worker,'assigned-work',{requestedEffect:'work'});await communication.idle();
+  const first=run();
+  expect(first.claim.accepted_input_id).toBe(assigned.target_input_id);
+  finishTurn(first.claim.turn_id,'completed','Waiting for a release.');
+
+  const notifier=session(),notifierRun=run();
+  const note=await ask(notifierRun.source,worker,'release-note',{requestedEffect:'informational'});await communication.idle();
+  const wake=run();
+  expect(wake.claim.accepted_input_id).toBe(note.target_input_id);
+  const delegate=owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'develop'});
+  const asked=await ask(wake.source,delegate,'continue-assigned-work',{requestedEffect:'work'});await communication.idle();
+  expect(communication.inspect(assigned.request_id).outcome).toBeNull();
+  expect(sessionInputProvenance(getAcceptedSessionInput(asked.target_input_id!)!)).toMatchObject({
+    source:{inputId:wake.source.input_id,runId:wake.source.run_id},effectScope:'work',
+    originatingHuman:{inputId:human.source.input_id,sessionId:requester.session.id},
+  });
+  communication.reply({source:wake.source,action_id:'finish-assigned-work',request_id:assigned.request_id,
+    text:'Work completed.',final:true,workDisposition:'completed',all_done:true,checked:'The assigned work was checked.'});
+  expect(communication.inspect(assigned.request_id).outcome).toBe('answered');
+  await expect(ask(wake.source,delegate,'unrelated-work',{requestedEffect:'work'})).rejects.toThrow('informational request');
   expect(errors).toEqual([]);
 });
 
