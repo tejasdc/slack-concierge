@@ -2106,8 +2106,9 @@ export function chooseTurnRunner(session:SessionRow,metadata=sessionMetadata(ses
     }
     return null;
   }
-  if(session.provider_id==='claude-code'&&!turnRunsOnRunner(metadata))return null;
-  if(session.provider_id==='antigravity'&&(process.env.CONCIERGE_TURN_RUNNERS?.trim()||'marked')==='off')return null;
+  // Claude and Google share one placement setting: a machine without runners (the Mac peer's
+  // default `marked`) runs unmarked work itself instead of refusing for a missing target.
+  if(!turnRunsOnRunner(metadata))return null;
   const selected=process.env.CONCIERGE_TURN_RUNNER?.trim()||codexRelayRunner();
   if(!selected)throw new Error(`${session.provider_id} runner placement is enabled, but no runner target is configured.`);
   return selected;
