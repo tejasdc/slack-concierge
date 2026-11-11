@@ -32,7 +32,12 @@ immediately; the caller checks the installed revision again after registering to
 its partial reply. The exact target commit is part of the watch condition and idempotency identity.
 This scoped condition is available only on the server's Concierge link; other file watches retain
 their normal change and deadline behavior. A request-bound scoped watch ends quietly when every
-request naming its series has closed.
+request naming its series has closed. A scoped watch fires once: when the target is installed the
+series ends instead of renewing, because the next check would find the same installed release and
+wake the agent again. A target commit the deployment's full clone does not have (an unmerged or
+unfetched draft) counts as absent, not as an error. Name the commit that main will contain: this
+repository merges pull requests with merge commits, which keep the branch commits; a squash or
+rebase merge gives the repair a new commit, and a watch on the old one never fires.
 
 **Which machine.** A watch is on the machine of the agent that registered it. An agent on a runner
 (its helper carries `CONCIERGE_RUNNER_NAME`) sends that name; the watch row records it (`runner`),

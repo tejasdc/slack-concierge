@@ -33,6 +33,10 @@ scoped one after this behavior is installed.
 Git's definite non-ancestor result is the only reason to advance the baseline; an ancestry
 error retains it and is retried. This rule was added after review found that an unreadable
 repository during the target release could otherwise silence the watch indefinitely.
+A second review (November 11) found that the renewed successor rechecked the same installed
+release at registration and fired again every poll; a scoped watch now ends its series when it
+fires. A target commit missing from the deployment clone is classified as absent, so a draft that
+was never fetched no longer retries Git and logs a warning every five seconds.
 
 Evidence: the exact issue report in topic `topic:511b909c-6800-4522-82bf-781dc6e6c8be`,
 the Echo acceptance session `concierge:9096` and its November 7 partial naming watch

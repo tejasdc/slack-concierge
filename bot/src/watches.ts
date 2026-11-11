@@ -383,7 +383,9 @@ You do not need to reply to this.`;
         text, JSON.stringify(gaps), settlement.observedAt ?? last, requestsOver ? null : "pending", requestsOver ? null : `watch:${watchId}:${event}`, watchId);
     if (result.changes !== 1) return false;
     if (requestsOver) log("info", "watch_series_ended_with_requests", { watch_id: watchId, series_id: row.series_id ?? row.watch_id, session_id: row.session_id });
-    if (event !== "cancelled" && row.renew_ms !== null) {
+    // A scoped release dependency is met once: renewing after it fires would re-check the same
+    // installed release and wake the session again on every poll.
+    if (event !== "cancelled" && row.renew_ms !== null && !(event === "fired" && condition.requiredCommit)) {
       const nextId = randomBytes(6).toString("hex");
       const baseline = settlement.observed && typeof settlement.observed === "object" && "version" in settlement.observed
         ? (settlement.observed as { version: PathVersion }).version : JSON.parse(row.baseline_json) as PathVersion;
