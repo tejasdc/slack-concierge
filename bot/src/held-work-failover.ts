@@ -29,6 +29,8 @@ const ACTION_PREFIX='automatic-held-failover:';
 
 const automatic=Object.keys(AUTOMATIC_PROVIDER_ALIASES) as AutomaticProvider[];
 let passing=false;
+/** Proposals whose inventory read is still running, before their handoff row exists. */
+let preparing=0;
 
 type Candidate={id:number;oldest_turn_id:number;owes_inbox:number};
 
@@ -60,11 +62,12 @@ function eligible(session:SessionRow|null):session is SessionRow {
   return skipped<=Date.now();
 }
 
-/** Withdraw automatic proposals the successor did not accept and is no longer working on. */
+/** Withdraw automatic proposals the successor did not accept in time and is not working on now. A brief
+ * still queued (its own provider held, say) counts as not working, so a proposal never pins the pace. */
 function settleUnacceptedProposals():void {
   const stale=db.query(`SELECT handoff.id,handoff.predecessor_session_id,handoff.successor_session_id FROM session_handoffs handoff
     WHERE handoff.state='proposed' AND handoff.action_id LIKE ? AND handoff.created_at<=datetime('now',?)
-      AND NOT EXISTS (SELECT 1 FROM turns WHERE session_id=handoff.successor_session_id AND status IN ('queued','running','delivering'))`)
+      AND NOT EXISTS (SELECT 1 FROM turns WHERE session_id=handoff.successor_session_id AND status IN ('running','delivering'))`)
     .all(`${ACTION_PREFIX}%`,`-${Math.round(UNACCEPTED_PROPOSAL_MS/1000)} seconds`) as {id:string;predecessor_session_id:number;successor_session_id:number}[];
   for(const row of stale){
     try{
@@ -78,7 +81,7 @@ function settleUnacceptedProposals():void {
 /** Moved sessions still working: a proposal not yet settled, or a successor with work it can run. A
  * successor whose own provider later ran out holds its queue and no longer counts against the pace. */
 function inFlight():number {
-  return (db.query(`SELECT count(*) AS count FROM session_handoffs handoff WHERE handoff.action_id LIKE ?
+  return preparing+(db.query(`SELECT count(*) AS count FROM session_handoffs handoff WHERE handoff.action_id LIKE ?
     AND (handoff.state='proposed' OR (handoff.state='accepted' AND EXISTS (SELECT 1 FROM turns
       WHERE session_id=handoff.successor_session_id AND (status IN ('running','delivering')
         OR (status='queued' AND COALESCE(dispatch_hold,'')<>'usage')))))`)
@@ -98,8 +101,13 @@ function candidates():Candidate[] {
         WHERE request.target_session_id=turn.session_id AND request.outcome IS NULL) AS owes_inbox
     FROM turns turn JOIN sessions session ON session.id=turn.session_id
     WHERE turn.status='queued' AND session.status<>'archived' AND session.provider_id IN ('claude-code','codex','antigravity')
+      AND json_extract(session.native_metadata_json,'$.automaticProviderChoice')=1
+      AND COALESCE(json_extract(session.native_metadata_json,'$.suspended'),0)=0
+      AND COALESCE(json_extract(session.native_metadata_json,'$.heldFailoverSkipUntil'),0)<=?
+      AND NOT EXISTS (SELECT 1 FROM turns busy WHERE busy.session_id=turn.session_id
+        AND busy.status IN ('running','delivering','parked','interrupted','delivery_parked'))
       AND NOT EXISTS (SELECT 1 FROM session_handoffs WHERE predecessor_session_id=turn.session_id AND state IN ('proposed','accepted'))
-    GROUP BY turn.session_id ORDER BY owes_inbox DESC,oldest_turn_id LIMIT 40`).all() as Candidate[];
+    GROUP BY turn.session_id ORDER BY owes_inbox DESC,oldest_turn_id LIMIT 40`).all(Date.now()) as Candidate[];
 }
 
 /** One paced pass. Runs on the owner after each provider usage reading. */
@@ -112,42 +120,57 @@ export function moveHeldWork():number {
     let proposed=0;
     for(const candidate of room>0?candidates():[]){
       if(room<=0)break;
-      const session=getSessionById(candidate.id);
-      if(!eligible(session)||!sourceCannotStart(session))continue;
-      if(db.query(`SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering','parked','interrupted','delivery_parked') LIMIT 1`).get(session.id))continue;
-      const target=receiver(session);
-      if(!target)continue; // Nothing has room above the stop line for this session; it keeps waiting.
-      const {movable}=queuedWorkMovable(session.id);
-      if(!movable){
-        // An input that may have reached its provider settles where it is; try again later.
-        updateSessionMetadata(session.id,{heldFailoverSkipUntil:Date.now()+RETRY_AFTER_MS});
-        log('info','held_work_failover_unmovable',{session_id:session.id});
-        continue;
+      try{if(considerCandidate(candidate)){room--;proposed++;}}
+      catch(error){
+        // One session's bad record must not stop the pass or sit first in every later one.
+        try{updateSessionMetadata(candidate.id,{heldFailoverSkipUntil:Date.now()+RETRY_AFTER_MS});}catch{}
+        log('error','held_work_failover_candidate_failed',{session_id:candidate.id,error:String(error)});
       }
-      const source=db.query(`SELECT input.id,turn.id AS turn_id,turn.native_run_id FROM session_inputs input
-        JOIN turns turn ON turn.id=input.turn_id WHERE input.session_id=? AND input.kind IN ('input','create','inbox-capture')
-        ORDER BY turn.id DESC LIMIT 1`).get(session.id) as {id:string;turn_id:number;native_run_id:string|null}|null;
-      if(!source)continue;
-      const sourceProvider=session.provider_id;
-      room--;proposed++;
-      // Mark first so the next pass does not propose twice while this one awaits its inventory.
-      updateSessionMetadata(session.id,{heldFailoverSkipUntil:Date.now()+UNACCEPTED_PROPOSAL_MS});
-      void proposeHandoff({actorSession:session.id,inputId:source.id,runId:source.native_run_id??nativeRunId(source.turn_id),
-        predecessorId:session.id,provider:AUTOMATIC_PROVIDER_ALIASES[target.provider],
-        reason:`${sourceProvider} has no allowance to start this session's queued work and ${target.provider} has room. Continue it through the exact handoff inventory; only inputs that never reached ${sourceProvider} move.`,
-        actionId:`${ACTION_PREFIX}${session.id}:${source.id}`})
-        .then(result=>{
-          // The successor's provider was also the owner's choice, so it can move again later.
-          const successor=Number(String(result.successor).slice('concierge:'.length));
-          if(successor)updateSessionMetadata(successor,{automaticProviderChoice:true});
-          log('warn','held_work_failover_proposed',{predecessor:session.id,successor:result.successor,handoff_id:result.handoffId,
-            from:sourceProvider,to:target.provider,receiver_used:target.used,owes_inbox:!!candidate.owes_inbox});
-        })
-        .catch(error=>log('error','held_work_failover_failed',{predecessor:session.id,error:String(error)}));
     }
     return proposed;
   }catch(error){
     // A failed pass must not stop the other work that follows a usage reading.
     log('error','held_work_failover_pass_failed',{error:String(error)});return 0;
   }finally{passing=false;}
+}
+
+function considerCandidate(candidate:Candidate):boolean {
+    const session=getSessionById(candidate.id);
+    if(!eligible(session)||!sourceCannotStart(session))return false;
+    if(db.query(`SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering','parked','interrupted','delivery_parked') LIMIT 1`).get(session.id))return false;
+    const target=receiver(session);
+    if(!target)return false; // Nothing has room above the stop line for this session; it keeps waiting.
+    const {movable}=queuedWorkMovable(session.id);
+    if(!movable){
+      // An input that may have reached its provider settles where it is; try again later.
+      updateSessionMetadata(session.id,{heldFailoverSkipUntil:Date.now()+RETRY_AFTER_MS});
+      log('info','held_work_failover_unmovable',{session_id:session.id});
+      return false;
+    }
+    const source=db.query(`SELECT input.id,turn.id AS turn_id,turn.native_run_id FROM session_inputs input
+      JOIN turns turn ON turn.id=input.turn_id WHERE input.session_id=? AND input.kind IN ('input','create','inbox-capture')
+      ORDER BY turn.id DESC LIMIT 1`).get(session.id) as {id:string;turn_id:number;native_run_id:string|null}|null;
+    if(!source)return false;
+    const sourceProvider=session.provider_id;
+    // Mark first so the next pass does not propose twice while this one awaits its inventory.
+    updateSessionMetadata(session.id,{heldFailoverSkipUntil:Date.now()+UNACCEPTED_PROPOSAL_MS});
+    // Each attempt has its own action: a withdrawn proposal's identity would otherwise return the
+    // withdrawn row as a duplicate and the session would never move again.
+    const attempt=(db.query(`SELECT count(*) AS count FROM session_handoffs WHERE predecessor_session_id=? AND action_id LIKE ?`)
+      .get(session.id,`${ACTION_PREFIX}%`) as {count:number}).count+1;
+    preparing++;
+    void proposeHandoff({actorSession:session.id,inputId:source.id,runId:source.native_run_id??nativeRunId(source.turn_id),
+      predecessorId:session.id,provider:AUTOMATIC_PROVIDER_ALIASES[target.provider],
+      reason:`${sourceProvider} has no allowance to start this session's queued work and ${target.provider} has room. Continue it through the exact handoff inventory; only inputs that never reached ${sourceProvider} move.`,
+      actionId:`${ACTION_PREFIX}${session.id}:${attempt}`})
+      .then(result=>{
+        // The successor's provider was also the owner's choice, so it can move again later.
+        const successor=Number(String(result.successor).slice('concierge:'.length));
+        if(successor)updateSessionMetadata(successor,{automaticProviderChoice:true});
+        log('warn','held_work_failover_proposed',{predecessor:session.id,successor:result.successor,handoff_id:result.handoffId,
+          from:sourceProvider,to:target.provider,receiver_used:target.used,owes_inbox:!!candidate.owes_inbox});
+      })
+      .catch(error=>log('error','held_work_failover_failed',{predecessor:session.id,error:String(error)}))
+      .finally(()=>{preparing--;});
+    return true;
 }
