@@ -107,7 +107,7 @@ import type {PeerLinks} from './peer-links';
 import {appendTodoFile,captureMarker} from './todo-file';
 import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn} from './saved-work';
 import {usageBreakdown,usageAllowanceLookup,validUsageAllowanceLookup} from './usage-breakdown';
-import {chooseProviderForNewWork,type AutomaticProvider} from './provider-start-choice';
+import {chooseProviderForNewWork,newWorkCapacity,type AutomaticProvider} from './provider-start-choice';
 import {claudeAllowanceHeld,CLAUDE_ALLOWANCE_HOLD_MESSAGE} from './claude-allowance-hold';
 import {scheduleProviderAccountUsageRefresh} from './provider-account-usage';
 import {currentAccount} from './provider-accounts';
@@ -120,7 +120,18 @@ export class SessionOwnerError extends Error {
 }
 function automaticProvider(canStart: (provider: AutomaticProvider) => boolean, choiceKey:string,
   delegatedFrom: 'claude-code' | 'codex' | null = null, smallTask = false): AutomaticProvider {
-  try { return chooseProviderForNewWork(canStart, choiceKey, Date.now(), delegatedFrom, smallTask); }
+  try {
+    const chosen = chooseProviderForNewWork(canStart, choiceKey, Date.now(), delegatedFrom, smallTask);
+    // What each provider looked like when this choice was made. On 2026-11-11 06:15 UTC an
+    // automatic ask started concierge:9368 on Codex while every Codex account read 100% used,
+    // and nothing recorded why; a fresh probe minutes later chose Claude.
+    const rooms = (["claude-code","codex","antigravity"] as AutomaticProvider[]).map(provider => {
+      const room = newWorkCapacity(provider);
+      return { provider, can_start: canStart(provider), account: room?.account ?? null, used: room?.used ?? null };
+    });
+    log("info", "automatic_provider_chosen", { chosen, delegated_from: delegatedFrom, small_task: smallTask, rooms });
+    return chosen;
+  }
   catch (error) {
     // The choice is synchronous because it runs in the session creation transaction.
     // Ask the existing reader for a new observation, then report unknown for this request.
