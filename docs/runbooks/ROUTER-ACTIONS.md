@@ -208,6 +208,11 @@ saved-work step that books each next firing checks whether the schedule was drop
 cancelled. Until 2026-11-06 a cancelled request left later firings running. `sessions saved list`
 shows each armed schedule's next firing, turn ID and interval.
 
+A repeating schedule created with `--expires` ends at that instant: the last firing due before it
+runs, no firing is booked at or after it, and every firing carries that same expiry. Until
+2026-11-11 each firing moved the expiry one interval later, so a schedule with an expiry never ended;
+a firing still queued from that time is withdrawn when it comes due past the original end.
+
 New repeating schedules and renewing file watches require both the requesting session and
 the scheduled session, where applicable, to belong to a registered project. Placement under
 `agents/`, `canvases/` or the workspace root does not change eligibility. A continuing role
