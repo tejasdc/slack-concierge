@@ -76,8 +76,20 @@ function sourceProvenance(source:Database,input:SourceInput):unknown|null{
         WHERE request_id=? AND source_session_id=? AND source_input_id=? AND source_turn_id=?`)
         .get(current.request_id,current.session_id,parent.id,parent.turn_id) as {payload_json:string}|null:null;
       if(!request&&!remote)break;
-      const requested=json((request??remote)!.payload_json).requestedEffect??'informational';
+      const details=json((request??remote)!.payload_json);
+      const requested=details.requestedEffect??'informational';
       effect=effect==='informational'||requested!=='work'?'informational':'work';
+      if(requested==='work'&&typeof details.authorityInputId==='string'){
+        const grant=source.query('SELECT * FROM session_inputs WHERE id=?').get(details.authorityInputId) as SourceInput|null;
+        if(grant?.session_id===parent.session_id&&grant.id!==parent.id){
+          const granted=sourceProvenance(source,grant) as {effectScope?:string;originatingHuman?:unknown}|null;
+          if(granted?.effectScope!=='informational'){
+            effect='work';human=granted?.originatingHuman??(grant.origin==='human'
+              ?{inputId:grant.id,runId:grant.turn_id?(source.query('SELECT native_run_id FROM turns WHERE id=?').get(grant.turn_id) as {native_run_id:string|null}|null)?.native_run_id??'':'',sessionId:`concierge:${grant.session_id}`}:null);
+            break;
+          }
+        }
+      }
     }
     const corrected=source.query('SELECT 1 FROM session_input_author_corrections WHERE input_id=?').get(parent.id);
     if(parent.origin==='human'&&!corrected){
