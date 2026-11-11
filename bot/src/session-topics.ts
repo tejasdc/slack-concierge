@@ -15,7 +15,7 @@ import {inboxRequestRoot} from './inbox-request-root';
 import type {OpenNeed} from './session-turn-outcome';
 import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 import {errorFields,log} from './log';
-import {recordRepairNotice} from './repair-notices';
+import {ensureTable as ensureRepairNotices,recordRepairNotice,resolveRepairNotice} from './repair-notices';
 import {readTodos,STEP_ASKS,type TodoState} from './question-todos';
 import {topicCurrentWorkers} from './topic-current-workers';
 import {approvalDecision} from './decision-approval';
@@ -1050,10 +1050,11 @@ export function unfiledReceivedInputs(sessionId:number,turnId:number) {
     ...(isBugReportInput(item.root)?{bug_report:true}:{})}));
   return [...own,...elsewhere];
 }
+type FilingFacts={id:string;session_id:number;kind:string;origin:string;scope:string;created_at:string;corrected:number};
 /** Whether a root input must be filed: his own message, or an agent-marked capture exercising his entrance. */
-function owesFiling(input:AcceptedSessionInput) {
+function owesFiling(input:FilingFacts) {
   if(!['input','create','inbox-capture'].includes(input.kind))return false;
-  if(input.origin==='human')return !db.query('SELECT 1 FROM session_input_author_corrections WHERE input_id=?').get(input.id);
+  if(input.origin==='human')return !input.corrected;
   return input.origin==='agent'&&['capture:outside-agent','capture:agent-report'].includes(input.scope);
 }
 /**
@@ -1061,15 +1062,21 @@ function owesFiling(input:AcceptedSessionInput) {
  * received it: his own messages and agent-marked captures. It reads the same entry index as the
  * sorting pile thnkr.ing shows as "Not in a thread yet", so what he sees and what the router is
  * held to cannot disagree. Queued inputs are included; the caller decides what custody it needs.
+ * It runs on every router Stop, router input and upkeep pass, so the per-root read leaves out
+ * the payload; only roots that owe filing read their words.
  */
 export function unfiledInboxRoots():{root:string;sessionId:number;at:string;text:string}[] {
   const index=entryIndex();
+  const facts=db.query(`SELECT id,session_id,kind,origin,scope,created_at,
+    EXISTS (SELECT 1 FROM session_input_author_corrections correction WHERE correction.input_id=session_inputs.id) AS corrected
+    FROM session_inputs WHERE id=?`);
   const roots:{root:string;sessionId:number;at:string;text:string}[]=[];
   for(const root of index.byRoot.keys()) {
     if(topicOfRoot(root))continue;
-    const input=getAcceptedSessionInput(root);
+    const input=facts.get(root) as FilingFacts|null;
     if(!input||!owesFiling(input))continue;
-    roots.push({root,sessionId:input.session_id,at:input.created_at,text:readableText(input).trim()});
+    const full=getAcceptedSessionInput(root);
+    roots.push({root,sessionId:input.session_id,at:input.created_at,text:full?readableText(full).trim():''});
   }
   return roots.sort((first,second)=>first.at<second.at?-1:first.at>second.at?1:first.root<second.root?-1:1);
 }
@@ -3990,13 +3997,21 @@ export const UNFILED_ALARM_MS=30*60_000;
 export function wakeRouterForUnfiled(session:SessionRow,admit:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string;threadReplyNotRequired:true})=>unknown,now=Date.now()) {
   const ageOf=(item:{at:string})=>now-Date.parse(iso(item.at)!);
   const overdue=unfiledInboxRoots().filter(item=>ageOf(item)>=UNFILED_WAKE_MS);
-  if(!overdue.length)return {woken:false,alarmed:0};
+  ensureRepairNotices(db);
+  // A filed capture withdraws its alarm, so the repair agent is never sent one already settled.
+  const unfiled=new Set(overdue.map(item=>`inbox-unfiled:${item.root}`));
+  for(const notice of db.query("SELECT key FROM repair_notices WHERE key>='inbox-unfiled:' AND key<'inbox-unfiled;' AND resolved_at_ms IS NULL").all() as {key:string}[])
+    if(!unfiled.has(notice.key))resolveRepairNotice(db,{key:notice.key,recoveryKey:`${notice.key}:filed`,kind:'stuck_work',text:`${notice.key.slice('inbox-unfiled:'.length)} is now filed in a thread; no action is needed for it.`});
+  // A running router turn is filing or about to be held by its Stop check; only a router that is
+  // idle or held in its queue past the alarm age is evidently unable to file.
+  const running=!!db.query("SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering') LIMIT 1").get(session.id);
   let alarmed=0;
-  for(const item of overdue.filter(item=>ageOf(item)>=UNFILED_ALARM_MS))
+  if(!running)for(const item of overdue.filter(item=>ageOf(item)>=UNFILED_ALARM_MS))
     if(recordRepairNotice(db,{key:`inbox-unfiled:${item.root}`,kind:'stuck_work',
       text:`Inbox capture ${item.root} (received ${iso(item.at)} by concierge:${item.sessionId}) is still in no thread after ${Math.round(ageOf(item)/60_000)} minutes, though the Inbox router (concierge:${session.id}) was woken to file it. Find why the router is not filing (its queue, provider, or Stop hook) and get it filed; see docs/contracts/native-inbox.md#filing-before-stopping.`}))alarmed++;
   // A running or queued router turn already carries them: its prompt lists them and its Stop hook refuses to end.
-  if(db.query("SELECT 1 FROM turns WHERE session_id=? AND status IN ('queued','running','delivering') LIMIT 1").get(session.id))return {woken:false,alarmed};
+  if(running||db.query("SELECT 1 FROM turns WHERE session_id=? AND status='queued' LIMIT 1").get(session.id))return {woken:false,alarmed};
+  if(!overdue.length)return {woken:false,alarmed};
   const inputId=`unfiled-wake:${createHash('sha256').update(overdue.map(item=>item.root).join('\n')).digest('hex')}`;
   if(db.query('SELECT 1 FROM session_inputs WHERE id=?').get(inputId))return {woken:false,alarmed};
   const lines=overdue.map(item=>`- ${item.root} (received ${iso(item.at)} by concierge:${item.sessionId}): ${JSON.stringify(item.text.slice(0,160))}`);

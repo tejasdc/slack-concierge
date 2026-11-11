@@ -896,8 +896,9 @@ left behind by a failover or stand-in bind cannot drop out of view (failure reco
 Because the Stop check only runs when the router ends a turn, the owner's thread-upkeep pass
 (the provider-usage reading cadence, about every three minutes) wakes an idle router with one
 `unfiled-wake:` service input per set of captures unfiled for 10 minutes, the age thnkr.ing
-labels "Never filed". A capture still unfiled at 30 minutes records a `stuck_work` repair notice
-(`inbox-unfiled:<root>`) for the repair agent, since the router is then evidently unable to file.
+labels "Never filed". A capture still unfiled at 30 minutes while the router is not running a
+turn records a `stuck_work` repair notice (`inbox-unfiled:<root>`) for the repair agent, since
+the router is then evidently unable to file; filing it resolves the notice.
 
 `/session-communication/owed` returns `unfiled` beside its existing reply obligations.
 The hook names every input, a short data-only preview, its resolved root and ready-to-fill
