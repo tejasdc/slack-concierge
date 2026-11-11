@@ -12,7 +12,7 @@ import { watchClaudeTranscript, type ClaudeTranscriptPickup } from "./claude-tra
 import { recordClaudeWorkload } from "./session-fit";
 import { webActivityDetails } from "./agent-progress";
 import { macSurfaceActivity } from "./mac-surface-activity";
-import { claudeUsageFallbackModels } from "./aliases";
+import { claudeUsageFallbackModels, DEFAULT_CLAUDE_SUBAGENT_MODEL } from "./aliases";
 import { assertUsageAvailable, cachedUsageLimit, recordUsageExhaustion, recordUsageSuccess,
   resetEpochMilliseconds, usageAttempt, usageLimitMessage, type UsageAttempt } from "./provider-usage";
 import { assertProviderForkPolicy, assertProviderInteractionPolicy, claudeConsultationArgs,
@@ -1386,7 +1386,7 @@ export async function runClaudeCodeTurn(input: {
     args,
     cwd: input.cwd,
     environment: { ...(input.interactionPolicy === "consultation-only" ? claudeConsultationEnvironment(input.environment) : providerOwnerEnvironment(input.environment)),
-      CLAUDE_CODE_SUBAGENT_MODEL: input.environment?.CLAUDE_CODE_SUBAGENT_MODEL || "claude-sonnet-5" },
+      CLAUDE_CODE_SUBAGENT_MODEL: input.environment?.CLAUDE_CODE_SUBAGENT_MODEL || DEFAULT_CLAUDE_SUBAGENT_MODEL },
     ...(input.interactionPolicy === "consultation-only" ? { inheritEnvironment: false } : {}),
     stdin: `${claudeCodeUserMessage(input.prompt)}\n`,
     onStdinReady: (write, close) => {

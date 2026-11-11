@@ -37,7 +37,12 @@ export const RETRY_POLICIES = Object.freeze({
   noticeDelivery: policy({ name: "notice-delivery", maxAttempts: 5, baseDelayMs: 5_000, capDelayMs: 15 * 60_000, jitterFraction: 0.25, maxAgeMs: 30 * 60_000 }),
   // Handing a finished watch's one service input to its session; a restart starts the budget again.
   watchDelivery: policy({ name: "watch-delivery", maxAttempts: 10, baseDelayMs: 5_000, capDelayMs: 5 * 60_000, jitterFraction: 0.25, maxAgeMs: 60 * 60_000 }),
-  observer: policy({ name: "observer", maxAttempts: 5, baseDelayMs: 100, capDelayMs: 60_000, jitterFraction: 0.25, maxAgeMs: 5 * 60_000 }),
+  // The Codex observers reconnect quickly, so their breaker trips on time unreachable, never on a
+  // count: every release drops the runner's relay channel for a few seconds (owner restart, runner
+  // restart), and five 100 ms retries used to call that a Codex outage within two seconds
+  // (Nov 6, 9 and 11, 2026). Two minutes is past the longest planned gap seen (~10 s from new owner
+  // to Codex ready) and the 90 s restart budget below; the attempt bound only backs up the deadline.
+  observer: policy({ name: "observer", maxAttempts: 50, baseDelayMs: 100, capDelayMs: 60_000, jitterFraction: 0.25, maxAgeMs: 2 * 60_000 }),
   ledgerWrite: policy({ name: "ledger-write", maxAttempts: 8, baseDelayMs: 50, capDelayMs: 1_000, jitterFraction: 0.25, maxAgeMs: 5_000 }),
   // An agent's helper call waiting out a Concierge restart (deploy stop to online took ~25 s on
   // 2026-10-07); the Stop hook's own 20-second limit gets the shorter one.

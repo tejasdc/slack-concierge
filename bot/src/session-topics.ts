@@ -21,7 +21,7 @@ import {approvalDecision} from './decision-approval';
 import {hisWordsLine,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
 import {deviceQuestionNamesPhysicalPrerequisite} from './agent-reachable-app-question';
 import {preparedInboxDisplays,preparedTopicEntries} from './presentation-message-reader';
-import {preparedTopicEventDisplays,preparedTopics,preparedTopicOverview,preparedTopicItems,
+import {preparedTopicEventDisplays,preparedTopics,unpreparedTopics,preparedTopicOverview,preparedTopicItems,
   preparedTopicResolution,preparedQuestions,preparedTopicDetail,preparedTopicsReady} from './presentation-topic-reader';
 import {areasCommand,checkedAreaIds,applyAreaChange,ensureAgentReportArea,ensureSystemNoticeArea,threadChanges} from './session-areas';
 import {OPEN_QUESTION_STATES,briefMissing,missingFor,questionReadiness,awaitingHim,
@@ -341,6 +341,7 @@ function entryKind(row:any):EntryKind {
 function entryIndex():EntryIndex {
   refreshRootMemo();
   const index=entryIndexState??={watermark:0,messages:new Map(),byRoot:new Map(),finals:new Map(),posts:new Map()};
+  entryIndexState=index;
   extendEntryIndex(index,-1);
   return index;
 }
@@ -357,6 +358,7 @@ export async function warmEntryIndex(options:{stopped?:()=>boolean;batch?:number
     if(options.stopped?.())return {rows,steps,ms:Math.round(performance.now()-started),complete:false};
     refreshRootMemo();
     const index=entryIndexState??={watermark:0,messages:new Map(),byRoot:new Map(),finals:new Map(),posts:new Map()};
+    entryIndexState=index;
     const read=extendEntryIndex(index,batch,performance.now()+ENTRY_INDEX_WARM_STEP_MS);
     rows+=read.rows;steps+=1;
     if(read.exhausted)return {rows,steps,ms:Math.round(performance.now()-started),complete:true};
@@ -788,6 +790,50 @@ function unrelayedFinal(roots:string[],entries:EntryIndex) {
   return found;
 }
 
+/** A provider prompt needs only this topic's returns. It must not wait for the unrelated
+ * Inbox entry index to rebuild after a restart. Topic dispatches and root-addressed
+ * upkeep requests are both durable request identities; a retained return is eligible
+ * only once it appears in Inbox history. */
+function promptUnrelayedFinal(sessionId:number,topicId:string,roots:string[]) {
+  if(!roots.length)return null;
+  const rootSet=new Set(roots);
+  const finals=new Map<string,EntryRecord&{inputId:string}>();
+  const requestIds=new Set(topicRequests(topicId).flatMap(request=>request.dispatches.map(dispatch=>String(dispatch.requestId??''))).filter(Boolean));
+  const placeholders=roots.map(()=>'?').join(',');
+  for(const table of ['session_communication_requests','session_peer_requests']) {
+    const addressed=db.query(`SELECT request_id FROM ${table} WHERE source_session_id IN (${inboxLineageSql})
+      AND thread_root_input_id IN (${placeholders})`).all(sessionId,...roots) as {request_id:string}[];
+    for(const row of addressed)requestIds.add(row.request_id);
+  }
+  for(const requestId of requestIds)for(const table of ['session_communication_events','session_peer_events']) {
+    const events=db.query(`SELECT event_id FROM ${table} WHERE request_id=? AND kind='final'`).all(requestId) as {event_id:string}[];
+    for(const event of events) {
+      const inputId=`return:${event.event_id}`;
+      const row=inboxRowByMessageId(null,inputId) as {session_id:number;kind:string;origin:string;sequence:number;created_at:string}|null;
+      if(row?.kind!=='accepted'||row.origin!=='service')continue;
+      const root=rootOf(row.session_id,inputId);
+      if(!root||!rootSet.has(root))continue;
+      const record={sequence:row.sequence,at:iso(row.created_at)!,sessionId:row.session_id,inputId};
+      if((finals.get(root)?.sequence??-1)<record.sequence)finals.set(root,record);
+    }
+  }
+  let found:(EntryRecord&{inputId:string})|null=null;
+  for(const [root,final] of finals) {
+    if(final.at<RELAY_RULE_SINCE)continue;
+    // Current posts name their root directly. Historical posts can carry an explicit
+    // threadRoot while naming a different input; both forms count as a relay.
+    const direct=db.query(`${inboxRows} AND event.input_id=? AND event.kind='post'
+      AND event.sequence>? LIMIT 1`).get(root,final.sequence);
+    if(direct)continue;
+    const explicit=db.query(`${inboxRows} AND event.kind='post'
+      AND json_extract(event.payload_json,'$.threadRoot')=? AND event.sequence>? LIMIT 1`)
+      .get(root,final.sequence);
+    if(explicit)continue;
+    if(!found||final.sequence>found.sequence)found=final;
+  }
+  return found;
+}
+
 /**
  * Attention the Inbox holds outside its question records: a turn's end-of-turn marker that no
  * declared question covered. It is not filed anywhere — filing by the thread that happened to
@@ -1146,8 +1192,17 @@ export function inboxDismiss(session:SessionRow,generation:number) {
   if(needs.length!==(sessionMetadata(session).needs??[]).length)updateSessionMetadata(session.id,{needs});
 }
 
-/** The thread list computed from the ledger, for while the prepared list is being rebuilt. Complete by construction. */
-export function directTopicList(options:{state?:string|null;order?:string|null;query?:string|null;cursor?:string|null;limit?:number|null}){
+/** Both list entrances use this source-readiness decision; each chooses how it reads the prepared
+ * list (the device's HTTP read waits for the worker to catch up, the agent command reads directly). */
+export function inboxTopicList<Prepared>(options:Parameters<typeof preparedTopics>[0],
+  readPrepared:(options:Parameters<typeof preparedTopics>[0])=>Prepared){
+  if(preparedTopicsReady())return readPrepared(options);
+  // The ledger list needs the Inbox; before it exists the list is still indexing, not an error.
+  return inboxSession()?directTopicList(options):unpreparedTopics();
+}
+
+/** The thread list computed from the ledger while the prepared list is being rebuilt. */
+function directTopicList(options:{state?:string|null;order?:string|null;query?:string|null;cursor?:string|null;limit?:number|null}){
   const offset=/^\d+$/.test(options.cursor??'')?options.cursor:null;
   return {...listTopics({...options,cursor:offset,limit:Math.min(20,Number(options.limit)||20)}),coverage:{complete:true,code:null,source:'ledger'}};
 }
@@ -1496,13 +1551,14 @@ type CompletionRow={outcome:string|null;result_json:string|null;requested_effect
  * a typed final must already say completed without a not-checked reason. The router still
  * judges whether the retained answer actually covers this human request.
  */
-function verifiedFinalEvidence(dispatchId:string,row:CompletionRow|null,evidence:readonly string[]):boolean {
-  if(row?.outcome!=='answered'||!row.result_json)return false;
+function verifiedFinalEvidence(dispatchId:string,row:CompletionRow|null,evidence:readonly string[],allowFailedCheck=false):boolean {
+  if((row?.outcome!=='answered'&&!(allowFailedCheck&&row?.outcome==='failed'))||!row.result_json)return false;
   let result:any;
   try{result=JSON.parse(row.result_json);}catch{return false;}
   if(typeof result.event_id!=='string'||!evidence.includes(result.event_id)
     ||result.workDisposition!==undefined
-      &&(result.workDisposition!=='completed'||notSeenWorking(result.closingLine)))return false;
+      &&(allowFailedCheck?result.workDisposition!=='failed':result.workDisposition!=='completed'||notSeenWorking(result.closingLine)))return false;
+  if(allowFailedCheck&&result.workDisposition!=='failed')return false;
   const local=db.query(`SELECT payload_json FROM session_communication_events
     WHERE event_id=? AND request_id=? AND kind='final' AND superseded_by_event_id IS NULL`).get(result.event_id,dispatchId) as {payload_json:string}|null;
   const peer=local?null:db.query(`SELECT payload_json FROM session_peer_events
@@ -1539,6 +1595,14 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evid
   const dispatches=(request.dispatches??[]).map((dispatch:any)=>({id:String(dispatch?.requestId??''),row:settled(String(dispatch?.requestId??''))}))
     .sort((left,right)=>(left.row?.created_at_ms??0)-(right.row?.created_at_ms??0)||left.id.localeCompare(right.id));
   const latest=dispatches.at(-1);
+  // A shared check can fail for another request after this request's own repair finished.
+  // Require both the earlier exact completed final and the later exact failed-check final;
+  // the router then judges the check's request-specific result in its closure reason.
+  const latestShared=latest?db.query(`SELECT count(*) AS count FROM inbox_requests request,json_each(request.dispatches_json) dispatch
+    WHERE json_extract(dispatch.value,'$.requestId')=?`).get(latest.id) as {count:number}:null;
+  const completedBeforeSharedFailure=!!latest&&!!latestShared&&latestShared.count>1
+    &&verifiedFinalEvidence(latest.id,latest.row,evidence,true)
+    &&dispatches.slice(0,-1).some(dispatch=>verifiedFinalEvidence(dispatch.id,dispatch.row,evidence));
   if(!latest){
     if(humanRequest(topic,request)&&!evidence.some(id=>{
       const message=inboxMessageById(topic.sessionId,id) as {role?:string;createdAt?:string}|null;
@@ -1548,7 +1612,7 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evid
     }))throw new TopicError('This human request has no linked work. To close it completed, name the later answer in this thread as evidence of the work you checked.',409,'REQUEST_COMPLETION_EVIDENCE_REQUIRED');
   }
   const unfinished=dispatches.filter(dispatch=>(!dispatch.row?.outcome&&!(dispatch!==latest&&dispatch.row?.stalled_at_ms!=null))
-      ||(dispatch===latest&&dispatch.row!==null&&!done(dispatch.row)
+      ||(dispatch===latest&&dispatch.row!==null&&!completedBeforeSharedFailure&&!done(dispatch.row)
         &&!verifiedFinalEvidence(dispatch.id,dispatch.row,evidence))).map(dispatch=>({requestId:dispatch.id}));
   if(unfinished.length)throw new TopicError(`This request's work has not finished (${unfinished.map((d:any)=>d.requestId).join(', ')}): close it completed only when that work answered as done. If part of what he asked is not done, do it or have it built, then close.`,409,'REQUEST_WORK_UNFINISHED');
   if(request.reopenedAt&&((request.completionFloor??0)>=dispatches.length
@@ -1562,7 +1626,7 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evid
   if(latest&&humanRequest(topic,request)) {
     const shared=db.query(`SELECT count(*) AS count FROM inbox_requests request,json_each(request.dispatches_json) dispatch
       WHERE json_extract(dispatch.value,'$.requestId')=?`).get(latest.id) as {count:number};
-    if(shared.count>1&&!verifiedFinalEvidence(latest.id,latest.row,evidence)&&!evidence.some(id=>{
+    if(shared.count>1&&!completedBeforeSharedFailure&&!verifiedFinalEvidence(latest.id,latest.row,evidence)&&!evidence.some(id=>{
       const post=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=? AND kind=?').get(id,'post') as {payload_json:string}|null;
       return post&&JSON.parse(post.payload_json).requestId===latest.id;
     }))throw new TopicError('This agent answer is linked to several human requests. Check this request separately and name the agent answer as evidence before closing it.',409,'REQUEST_SHARED_COMPLETION_EVIDENCE_REQUIRED');
@@ -1967,7 +2031,8 @@ function recordAnswer(session:SessionRow,input:AcceptedSessionInput,body:any,by:
  * One entry point for every `sessions topics …` command. The coordinator has already proved
  * the caller is an admitted live run; this decides what that run is allowed to do.
  */
-export function topicsCommand(actor:TopicActor,body:any) {
+/** `listHead` is the change a list read must cover, from `listReadHead` at the request entrance. */
+export function topicsCommand(actor:TopicActor,body:any,listHead?:number) {
   if(typeof body?.verb==='string'&&body.verb.startsWith('area.'))return areasCommand(actor,{...body,verb:body.verb.slice(5)});
   const own=getSessionById(actor.sessionId);
   if(!own)throw new TopicError('Unknown session.',404);
@@ -1991,7 +2056,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
     throw new TopicError('Only the Inbox session owns topics; a worker may declare questions against a topic it holds a dispatch for.',403,'TOPIC_FORBIDDEN');
   };
   switch(verb) {
-    case 'list':return preparedTopicsReady()?preparedTopics({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor}):directTopicList({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor});
+    case 'list':return inboxTopicList({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor},options=>preparedTopics(options,listHead));
     case 'obligations':return openInboxObligations();
     case 'read':return preparedTopicOverview(text(body?.topic_id,'topic id',200),body?.state??'open');
     case 'resolve':guard();return preparedTopicResolution(text(body?.message_id,'message id',500));
@@ -3584,6 +3649,36 @@ function nextRecoveryAttempt(item:Stuck):number|null {
   // Repeated router refusals remain due, but do not turn one stuck task into a hot loop.
   return due?attempt:null;
 }
+/**
+ * Stuck requests whose latest attempt is the same dispatch come back to the router together.
+ * One attempt shared by many requests used to come back as one recovery input each, one router
+ * turn each, and the router sent the same agent a fresh request each time: on 2026-11-09 one
+ * stalled attempt (1eb6fec9) linked across several threads became about a dozen requests to
+ * concierge:3425 and spent the router's allowance. Requests with no attempt stay separate.
+ */
+export function recoveryGroups<T extends Pick<Stuck,'work'|'requestId'>>(items:T[]):T[][] {
+  const groups=new Map<string,T[]>();
+  for(const item of items) {
+    const key=item.work==='unassigned'?`request:${item.requestId}`:`work:${item.work}`;
+    const group=groups.get(key);
+    if(group)group.push(item);else groups.set(key,[item]);
+  }
+  return [...groups.values()];
+}
+function recoveryInstruction(item:Stuck):string {
+  return item.stoppedByTejas?'Tejas stopped that run. Do not restart it or its effects on your own; reconcile any effects already in flight and keep the human task open. If his intent for the remaining task is genuinely ambiguous, ask one focused only-he-can question.'
+    :item.sharedAnswerPostId!==null?`The same answer was linked to several requests. Do not dispatch again merely to obtain a separate receipt. Read the answer ${item.sharedAnswerPostId||'on the shared dispatch'} and this request's scope; if it is fully checked, close this request citing that answer post as evidence, otherwise send only the missing work.`
+    :'Inspect the exact prior attempt and its effects, then send the remaining work to its owning agent (sessions ask … --thread, then topics request link).';
+}
+const RECOVERY_TAIL='Never replay an ambiguous or acknowledged effect. Close only after the work is completed and checked, or keep an only-he-can question open for Tejas. A failure, hand-back, cancellation or provider error cannot close his request. You do not need to reply to this.';
+const UNCERTAIN_SOURCE='The exact source of this request is not linked; establish original authorship and task scope from the retained thread before dispatching. ';
+function recoveryText(item:Stuck):string {
+  return `The request "${item.title}" (${item.requestId}) in "${item.topicTitle}" (${item.topicId}) is still open. Its latest attempt (${item.work}) ${item.how}. ${item.sourceUncertain?UNCERTAIN_SOURCE:''}${recoveryInstruction(item)} ${RECOVERY_TAIL}`;
+}
+export function groupedRecoveryText(items:Stuck[]):string {
+  const lines=items.map(item=>`- "${item.title}" (${item.requestId}) in "${item.topicTitle}" (${item.topicId}): the attempt ${item.how}. ${item.sourceUncertain?UNCERTAIN_SOURCE:''}${recoveryInstruction(item)}`);
+  return `${items.length} open requests share one latest attempt (${items[0].work}), so they come to you together:\n${lines.join('\n')}\n\nInspect that attempt and its effects once. Remaining work for these requests goes to its owning agent as ONE request (one sessions ask … --thread naming one of these threads, its text covering every request that still needs work), then link that one dispatch to each request it covers (topics request link). Do not send that agent one request per thread. ${RECOVERY_TAIL}`;
+}
 /** The agent sessions a question's work is held by: its declaring agent, else where its linked work went. */
 function questionAgents(question:StoredQuestion,routerAddress:string):string[] {
   const owner=question.owner??{};
@@ -3795,23 +3890,32 @@ async function keepThreadsCurrentPass(admit?:(input:{sessionId:number;inputId:st
   }
   let flagged=0;
   if(fresh.length&&admit) {
-    for(const snapshot of fresh)try {
+    for(const group of recoveryGroups(fresh))try {
       if(flagged>=5)break;
       if(Date.now()>=nextYield){await yieldThreadUpkeep();nextYield=Date.now()+40;}
       // Another owner action can run while the sweep yields. Recheck exact work and human
       // answers before admitting recovery from an earlier view of this thread.
-      const current=keepThreadCurrent(snapshot.topicId,forwards,false,readIndex(session.id,true))
-        .find(candidate=>candidate.requestId===snapshot.requestId);
-      if(!current||nextRecoveryAttempt(current)!==snapshot.attempt)continue;
-      const item={...current,attempt:snapshot.attempt};
+      const members:(Stuck&{attempt:number})[]=[];
+      for(const snapshot of group) {
+        const current=keepThreadCurrent(snapshot.topicId,forwards,false,readIndex(session.id,true))
+          .find(candidate=>candidate.requestId===snapshot.requestId);
+        if(!current||current.work!==snapshot.work||nextRecoveryAttempt(current)!==snapshot.attempt)continue;
+        members.push({...current,attempt:snapshot.attempt});
+      }
+      if(!members.length)continue;
+      // The input carries the first member with a linked source; a lone request keeps its
+      // original identity and words, so inputs retained before grouping are recognized.
+      const lead=members.find(member=>!member.sourceUncertain&&member.sourceInputId)??members[0];
       // Keep historical recovery from flooding one router turn. A refused admission does not
       // consume capacity, so an inaccessible first request cannot starve every later one.
-      const inputId=`thread-upkeep:${createHash('sha256').update(`${item.key}:${item.attempt}`).digest('hex')}`;
+      const identity=members.length===1?`${lead.key}:${lead.attempt}`:members.map(member=>`${member.key}:${member.attempt}`).sort().join('\n');
+      const inputId=`thread-upkeep:${createHash('sha256').update(identity).digest('hex')}`;
       // An input already retained under this id was admitted by an earlier pass; only its flags are missing.
       if(!db.query('SELECT 1 FROM session_inputs WHERE id=?').get(inputId))
-        admit({sessionId:session.id,inputId,origin:'service',threadReplyNotRequired:true,sourceInputId:!item.sourceUncertain&&item.sourceInputId?item.sourceInputId:inputId,
-          sourceRunId:!item.sourceUncertain&&item.sourceRunId?item.sourceRunId:inputId,requestId:item.requestId,
-          text:`The request "${item.title}" (${item.requestId}) in "${item.topicTitle}" (${item.topicId}) is still open. Its latest attempt (${item.work}) ${item.how}. ${item.sourceUncertain?'The exact source of this request is not linked; establish original authorship and task scope from the retained thread before dispatching. ':''}${item.stoppedByTejas?'Tejas stopped that run. Do not restart it or its effects on your own; reconcile any effects already in flight and keep the human task open. If his intent for the remaining task is genuinely ambiguous, ask one focused only-he-can question.':item.sharedAnswerPostId!==null?`The same answer was linked to several requests. Do not dispatch again merely to obtain a separate receipt. Read the answer ${item.sharedAnswerPostId||'on the shared dispatch'} and this request's scope; if it is fully checked, close this request citing that answer post as evidence, otherwise send only the missing work.`:'Inspect the exact prior attempt and its effects, then send the remaining work to its owning agent (sessions ask … --thread, then topics request link).'} Never replay an ambiguous or acknowledged effect. Close only after the work is completed and checked, or keep an only-he-can question open for Tejas. A failure, hand-back, cancellation or provider error cannot close his request. You do not need to reply to this.`});
+        admit({sessionId:session.id,inputId,origin:'service',threadReplyNotRequired:true,sourceInputId:!lead.sourceUncertain&&lead.sourceInputId?lead.sourceInputId:inputId,
+          sourceRunId:!lead.sourceUncertain&&lead.sourceRunId?lead.sourceRunId:inputId,requestId:lead.requestId,
+          text:members.length===1?recoveryText(lead):groupedRecoveryText(members)});
+      for(const item of members) {
       recordSessionEvent({eventId:`topic-recovery:${item.key}:${item.attempt}`,sessionId:session.id,kind:'topic_request',
         payload:{change:'flagged',topicId:item.topicId,requestId:item.requestId,work:item.work,by:OWNER_BY,recoveryInputId:inputId,reason:`Its work ${item.how}.`}});
       // Said in his thread, never rung: Concierge retrying its own recovery gives him nothing to
@@ -3828,8 +3932,9 @@ async function keepThreadsCurrentPass(admit?:(input:{sessionId:number;inputId:st
                 :'Your request is still open. Concierge has tried twice to restart its work, but no new agent attempt is linked yet. It will keep trying; you do not need to repeat it.',
             attachments:[],stalled:false,final:false,notify:false,workDisposition:null});
       }
+      }
       flagged++;
-    } catch(error) {log('error','inbox_thread_upkeep_flag_failed',{request_id:snapshot.requestId,message:error instanceof Error?error.message:String(error)});}
+    } catch(error) {log('error','inbox_thread_upkeep_flag_failed',{request_id:group[0].requestId,requests:group.length,message:error instanceof Error?error.message:String(error)});}
   }
   const closed=(db.query(`SELECT count(*) AS count FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) AND state='closed'`).get(session.id) as {count:number}).count-closedBefore;
   const settled=openRequestsBefore-(db.query("SELECT count(*) AS count FROM inbox_requests WHERE state='open'").get() as {count:number}).count;
@@ -3934,10 +4039,9 @@ export function topicPromptContext(sessionId:number,inputId:string,payload:any):
     if(answers.length)context.agentAnswers=answers.map(row=>({post:row.event_id,at:iso(row.created_at),from:row.from_session,request:row.request_id,
       kind:row.reply_kind??'answer',...(row.disposition?{disposition:row.disposition}:{}),text:String(row.text??'').slice(0,160)}));
   }
-  const entries=entryIndex();
   const drift=titleDrift(topicId);
   if(drift)context.titleDrift={...drift,instruction:titleDriftInstruction(drift)};
-  const unrelayed=unrelayedFinal(topicRoots(topicId),entries);
+  const unrelayed=promptUnrelayedFinal(sessionId,topicId,roots);
   if(unrelayed)context.unrelayedResult={inputId:unrelayed.inputId,at:unrelayed.at,instruction:'A worker\'s final answer came back into this thread and you have not posted here since; relay it with sessions post --thread, or the thread keeps showing it as not relayed.'};
   return `\n\n<topic>\n${JSON.stringify(context)}\n</topic>`;
 }

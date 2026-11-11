@@ -35,6 +35,7 @@ router-actions.sh sessions schedule --role <standing-agent-role> --at <ISO-8601-
 router-actions.sh sessions bank [--quiet-only] --provider <alias> --project <registered-project> --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
 router-actions.sh sessions ask <peer-address|imported-address> <source-flags> --action-id A --resurrect -- <text>
 router-actions.sh sessions note <captureId | any message ID> <source-flags> --action-id A --summary-file <markdown-path> [--add-to <earlier captureId or message ID> | --person <name> | --journal entry|checkin]
+router-actions.sh sessions note <captureId | any message ID> <source-flags> --action-id A --journal entry --add-to <earlier captureId or message ID>
 Any message the owner retained can become a note: a capture, a thread reply, a post, a routed message or an agent's answer.
 router-actions.sh sessions title [--session <session-address>] <source-flags> --action-id A -- <title>
 router-actions.sh sessions move <session-address> --project <project or project/folder, e.g. agent-ecology/expertise/alan-kay> <source-flags> --action-id A
@@ -162,7 +163,7 @@ export type SessionCommunicationRequest =
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string; thread?: string } }
   | { operation: "context"; body: { source: Source; address: string; thread?: string } }
   | { operation: "ask"; body: { source: Source; action_id: string; address?: string; role?:string; provider?: string; smallTask?:boolean; effort?:string; escalationReason?:string; project?:string; title?: string; text: string; after?: string[]; pace?: string[]; summary?: string; answer_view?: 'summary'|'full'; return_to_requester?:boolean; for_task?:string; recovery_of?:string; correction_of?:string; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean} } }
-  | { operation: "note"; body: { source: Source; action_id:string; captureId?:string; messageId?:string; summary:string; addTo?:string; person?:string; journal?:"entry"|"checkin" } }
+  | { operation: "note"; body: { source: Source; action_id:string; captureId?:string; messageId?:string; summary?:string; addTo?:string; person?:string; journal?:"entry"|"checkin" } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string; address?:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; promise_request?:string; keep_working?:boolean; notify?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
   | { operation: "outcome"; body: { source: Source; action_id:string; outcome:'done'|'response'|'needs_you'|'failed'; text?:string; quiet_because?:string; summary?:string; his_words?:string; why_not_answered?:string; only_he_can?:string; todo?:string; decision_id?:string; approval_action?:string } }
@@ -843,16 +844,10 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if(separator>=0)invalid('note accepts a capture ID or a message ID, not replacement source text.');
     // Any other ID names a retained message; the owner reads its words.
     const message=!/^[0-9a-f]{64}$/.test(identity??'');
-    // The note is a summary of the capture; his own words stay its source (Tejas, 2026-10-01:
-    // "you should not dump my whole transcript here ... create like a nice bulleted list").
-    const summaryFile=flags.get('--summary-file');
-    if(!summaryFile)invalid('note needs --summary-file: a Markdown file with a title line and "- " bullets summarizing what he said, without the spoken command. His words stay the note\'s Source.');
-    const summary=readFileSync(summaryFile!,'utf8');
-    if(!summary.trim())invalid('The summary file is empty.');
     // A follow-up to a thread whose note already exists joins that note as a new section
     // (Tejas, 2026-10-01: "if my platform is built on threads ... where can I find the idea").
-    const addTo=flags.get('--add-to');
-    if(addTo!==undefined&&!addTo.trim())invalid('--add-to takes the earlier capture or message ID whose note this one follows up.');
+    const addTo=flags.get('--add-to')?.trim();
+    if(flags.has('--add-to')&&!addTo)invalid('--add-to takes the earlier capture or message ID whose note this one follows up.');
     // A fact about a person goes into that person's one note in thnkr.ing (Tejas, 2026-10-07:
     // "start a thread for each person and keep adding to a central note").
     const person=flags.get('--person')?.trim();
@@ -860,10 +855,20 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if(person&&addTo)invalid('A note goes to one place: --person or --add-to, not both.');
     // His journal in thnkr.ing (Tejas, 2026-10-08: "another section for journals"): the capture's
     // journal part becomes an entry (or a check-in) on the Journal page, its words still the Source.
+    // A continuation piece (--journal entry --add-to <earlier capture>) moves its exact words,
+    // original recorded time and source into the earlier entry without a separate summary.
     const journal=flags.get('--journal');
     if(flags.has('--journal')&&journal!=='entry'&&journal!=='checkin')invalid('--journal takes entry or checkin.');
-    if(journal&&(person||addTo))invalid('A journal entry is its own note: --journal goes without --person or --add-to.');
-    return {operation,body:{source,action_id:actionId,...(message?{messageId:identity!}:{captureId:identity!}),summary,...(addTo?{addTo}:{}),...(person?{person}:{}),...(journal?{journal:journal as 'entry'|'checkin'}:{})}};
+    if(journal&&(person||(addTo&&journal!=='entry')))invalid('A journal entry is its own note: --journal goes without --person, and only --journal entry accepts --add-to.');
+    const journalContinuation=journal==='entry'&&Boolean(addTo);
+    // The note is a summary of the capture; his own words stay its source (Tejas, 2026-10-01:
+    // "you should not dump my whole transcript here ... create like a nice bulleted list").
+    const summaryFile=flags.get('--summary-file');
+    if(journalContinuation&&summaryFile!==undefined)invalid('--journal entry --add-to moves the capture\'s exact words into the earlier entry and does not take --summary-file.');
+    if(!journalContinuation&&!summaryFile)invalid('note needs --summary-file: a Markdown file with a title line and "- " bullets summarizing what he said, without the spoken command. His words stay the note\'s Source.');
+    const summary=summaryFile?readFileSync(summaryFile,'utf8'):undefined;
+    if(summary!==undefined&&!summary.trim())invalid('The summary file is empty.');
+    return {operation,body:{source,action_id:actionId,...(message?{messageId:identity!}:{captureId:identity!}),...(summary!==undefined?{summary}:{}),...(addTo?{addTo}:{}),...(person?{person}:{}),...(journal?{journal:journal as 'entry'|'checkin'}:{})}};
   }
   if(operation==='answer') {
     if(separator>=0||content.length)invalid('answer records a handling disposition; it takes no free-form message.');

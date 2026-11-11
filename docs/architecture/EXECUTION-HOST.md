@@ -313,6 +313,16 @@ A running turn holds an update only if it would end with the coordinator. One ru
   are installed the Mac starts no hosts (`CONCIERGE_AGENT_HOST_LAUNCHER` is left empty), so its
   updates keep waiting for agents as before. A rebuilt agent-host app moves the previous one to
   `$STATE/app-retired/`.
+- The installed machine command preflight runs before each run's pinned semantic hook.
+  It refuses an agent's direct Thinkering release prune, activation, rollback or
+  policy upgrade from a checkout or a direct deployment module, and permits the installed release entrance only when
+  `/srv/thinkering/current` resolves to the separately pinned retention policy
+  release. Each of these actions can invoke retention. It leaves `npm run ship` to Thinkering's release controller, which owns
+  activation-triggered retention and rollback behavior. This catches managed
+  Claude and Codex shell calls, including runs started before the guard release;
+  it cannot intercept arbitrary root code or an old script's internal calls.
+  Thinkering's [deployment runbook](/root/workspace/thinkering/docs/runbooks/deployment.md#release-and-verification-run-retention)
+  owns the installed retention policy and the manual cleanup route.
 - Restarting the Mac's Concierge belongs to the gated update. `update-mac.sh` (automatic or
   requested) checks running work, holds the gate, checks compatibility for one fetched revision and
   installs exactly it; `install-mac.sh` restarts a running Concierge only with that gate's proof
@@ -426,6 +436,11 @@ Server (`drainAndStop`) waits only for turns that end with the process (`turnsTh
 and exits; the Mac composition does not cancel hosted turns. Until the update gate is removed (design
 step 7) the deployment still waits for idle, so this matters for restarts outside deployments now and
 for every update after step 7.
+The runner's queued-turn lookup begins with the existing queued-job index and uses the job's
+encoded execution ID for a primary-key lookup. Its exact `turn:` identity check remains after
+the lookup. A drain with no queued runner turns therefore does not scan all retained execution
+records on the accepting owner's event loop. This bounds rows examined by queued jobs, not the
+elapsed time of a cold SQLite page read or a required ledger write.
 
 ## Compatibility and releases
 
