@@ -193,10 +193,16 @@ export function getAcceptedSessionInput(id:string) {
  * A request still waiting in the queue, including a scheduled one before its time, belongs to the
  * turn that will carry it. On 2026-11-04 the Inbox router's Stop hook listed a request scheduled
  * for 14:00 as owed during an unrelated 09:53 run, and the router answered it four hours early.
+ * A steered request is handed over only once its words reached the provider (or may have: an
+ * ambiguous send is treated as reaching it). Attaching it to the running turn happens first and
+ * preparing its text takes seconds; on 2026-11-09 concierge:3425's Stop hook demanded a verdict on
+ * a request in that gap, twice, and the request's text arrived just after the verdict.
  */
 export function handedToARun(id:string) {
   return !!db.query(`SELECT 1 FROM session_inputs input JOIN turns turn ON turn.id=input.turn_id
-    WHERE input.id=? AND turn.status<>'queued'`).get(id);
+    LEFT JOIN turn_steering_messages steering ON steering.id=input.steering_id
+    WHERE input.id=? AND turn.status<>'queued'
+      AND (input.steering_id IS NULL OR steering.status IN ('sent','ambiguous'))`).get(id);
 }
 /** The owner's full record of who stands behind an input; the receipt list calls the same walk. */
 export function sessionInputProvenance(input:AcceptedSessionInput) {

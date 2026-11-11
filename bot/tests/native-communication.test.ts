@@ -243,6 +243,26 @@ test('one explicit multi-request reply produces one return without comparing ans
   expect(db.query("SELECT count(*) AS n FROM session_inputs WHERE id LIKE 'return:%'").get()).toEqual({n:1});
 });
 
+// A steered request is attached to the running turn before its words are prepared and sent. On
+// 2026-11-09 concierge:3425's Stop hook demanded a verdict in that gap, twice, and the request's
+// text arrived seconds after the verdict. It is owed only once its text reached the provider.
+test('a steered request is owed only once its text was sent to the running turn',async()=>{
+  session();const requester=run(),target=session(),worker=run();
+  const targetId=Number(target.session.id.slice(10));
+  db.query("UPDATE sessions SET agent_session_uuid='owed-after-delivery' WHERE id=?").run(targetId);
+  steeringMode='pending';
+  const request=await ask(requester.source,target,'steered-unsent');
+  await communication.idle();
+  const steered=getAcceptedSessionInput('request:'+request.request_id)!;
+  expect(steered.turn_id).toBe(worker.claim.turn_id);
+  const owed=()=>communication.owed({provider:'codex',provider_session_id:'owed-after-delivery'}).owed.map(one=>one.request_id);
+  expect(owed()).not.toContain(request.request_id);
+  markTurnSteeringMessageSending(steered.steering_id!);
+  expect(owed()).not.toContain(request.request_id);
+  markTurnSteeringMessageSent(steered.steering_id!);
+  expect(owed()).toContain(request.request_id);
+});
+
 // The Inbox sends one request per thread and they routinely steer into one recipient turn, so
 // sharing a turn is not evidence of a shared answer. A September rule copied one request's reply
 // onto every other request that turn held and closed two unrelated threads on the wrong words
