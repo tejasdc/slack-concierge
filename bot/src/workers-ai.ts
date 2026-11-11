@@ -1,9 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
+import { WORKERS_AI_EMBEDDING_MODEL, WORKERS_AI_EMBEDDING_DIMENSIONS } from "../../shared/workers-ai-embedding";
+export { WORKERS_AI_EMBEDDING_MODEL } from "../../shared/workers-ai-embedding";
 
 /**
  * Concierge's speech-to-text and embedding models on Cloudflare Workers AI, reached through the
  * concierge-workers-ai Worker (cloudflare/workers-ai). Moving them there takes Parakeet's and
- * EmbeddingGemma's processor time off the agent server (step 4 of
+ * the embedding processor time off the agent server (step 4 of
  * remote-box docs/plans/2026-11-04-off-one-server-architecture.md); the comparison on his own recordings and
  * routing requests that justified the switch is in docs/architecture/WORKERS-AI.md.
  *
@@ -12,7 +14,6 @@ import { existsSync, readFileSync } from "node:fs";
  */
 const KEY_FILE = process.env.CONCIERGE_WORKERS_AI_KEY_FILE || "/etc/concierge/workers-ai.token";
 const BASE_URL = (process.env.CONCIERGE_WORKERS_AI_URL || "https://concierge-workers-ai.thnkring.workers.dev").replace(/\/$/, "");
-export const WORKERS_AI_EMBEDDING_MODEL = "@cf/google/embeddinggemma-300m";
 export const WORKERS_AI_SPEECH_MODEL = "@cf/openai/whisper-large-v3-turbo";
 
 let cachedKey: string | null | undefined;
@@ -81,6 +82,8 @@ export async function embedWithWorkersAi(texts: string[], timeoutMs: number): Pr
   const answer = await call("/v1/embed", JSON.stringify({ texts }), "application/json", timeoutMs);
   // Vectors from another model would silently corrupt an index built from this one.
   if (answer?.model !== WORKERS_AI_EMBEDDING_MODEL) throw new WorkersAiError(`Workers AI answered with model ${String(answer?.model)}`);
-  if (!Array.isArray(answer.vectors) || answer.vectors.length !== texts.length) throw new WorkersAiError("Workers AI embedding answer was malformed");
+  if (answer.dimensions !== WORKERS_AI_EMBEDDING_DIMENSIONS || !Array.isArray(answer.vectors) || answer.vectors.length !== texts.length ||
+      !answer.vectors.every((vector: unknown) => Array.isArray(vector) && vector.length === WORKERS_AI_EMBEDDING_DIMENSIONS && vector.every((value: unknown) => typeof value === "number" && Number.isFinite(value))))
+    throw new WorkersAiError("Workers AI embedding answer was malformed");
   return answer.vectors;
 }
