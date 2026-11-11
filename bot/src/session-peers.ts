@@ -35,6 +35,7 @@ import {RETRY_POLICIES,PEER_REPLY_SCHEMA_MISMATCH_ATTEMPTS,PEER_REQUEST_ORPHAN_G
 import {ledgerDurable} from './ledger-durability-barrier';
 import {parseMachineNeed,type MachineNeed} from './machine-need';
 import {AUTHORIZED_PAGE,AUTHORIZED_WEB_APP,AUTHORIZING_HUMAN_INPUT,CANVAS_AUTHORIZING_HUMAN_INPUT} from './mac-surface-policy';
+import {MAC_FOCUS_PHRASE,MAC_FOCUS_REQUEST} from './mac-focus-source';
 import {endedWorkInPlainWords} from './provider-failures';
 
 /** Follow owner-recorded continuations back to the work request that forwarded a human reply. */
@@ -72,6 +73,22 @@ export function forwardedHumanWorkInput(actor:PeerActor,sourceInput:ReturnType<t
 }
 
 /** The original human grant survives a physical-device reply only within its recorded task. */
+/**
+ * Attest that the asking session currently holds the open outside Focus request, after any
+ * handoffs. Only a Mac-app work ask naming the exact app and the bounded acceptance phrase
+ * carries it; the Mac admits the Focus route only with this attestation on its delivery.
+ */
+function focusCustodyClaim(actor:PeerActor,input:{peer:string;machineNeed?:MachineNeed;requestedEffect?:string}) {
+  const need=input.machineNeed;
+  if(input.peer!=='mac'||input.requestedEffect!=='work'||need?.kind!=='mac-app'
+    ||!need.why.includes(AUTHORIZED_WEB_APP)||!need.why.includes(MAC_FOCUS_PHRASE))return null;
+  const held=db.query(`SELECT 1 FROM session_communication_requests WHERE request_id=? AND target_session_id=? AND outcome IS NULL
+      UNION ALL SELECT 1 FROM session_external_requests WHERE request_id=? AND target_session_id=? AND outcome IS NULL
+      UNION ALL SELECT 1 FROM session_peer_deliveries WHERE request_id=? AND target_session_id=? AND closed_at_ms IS NULL LIMIT 1`)
+    .get(MAC_FOCUS_REQUEST,actor.session,MAC_FOCUS_REQUEST,actor.session,MAC_FOCUS_REQUEST,actor.session);
+  return held?{requestId:MAC_FOCUS_REQUEST}:null;
+}
+
 function continuedWebAppAuthorization(actor:PeerActor,sourceInput:ReturnType<typeof getAcceptedSessionInput>,provenance:ReturnType<typeof sessionInputProvenance>,input:{peer:string;address?:string;machineNeed?:MachineNeed}) {
   const need=input.machineNeed;
   if(input.peer!=='mac'||!input.address||need?.kind!=='mac-app'||!need.why.includes(AUTHORIZED_WEB_APP)||!need.why.includes(AUTHORIZED_PAGE)
@@ -668,6 +685,7 @@ export class SessionPeers {
     const provenance=sessionInputProvenance(authorityInput);
     const runId=nativeRunId(actor.turn);
     const continuedGrant=continuedWebAppAuthorization(actor,sourceInput,provenance,input);
+    const focusCustody=focusCustodyClaim(actor,input);
     // A human message asking directly is its own originating human; a local walk would find it as the parent.
     const routedOriginal=input.routedFrom?.authorKind==='human'?getAcceptedSessionInput(input.routedFrom.messageId):null;
     const known=routedOriginal&&humanAuthored(routedOriginal)
@@ -686,7 +704,7 @@ export class SessionPeers {
     const text=input.framing?input.framing(id):`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. ${input.routedFrom?`This carries the exact Inbox message ${input.routedFrom.messageId} into this session. Reply to this request; the answer appears under that message in its original thread.`:'This is agent-authored input within the originating human task, not a new human message.'} Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`;
     const delivery={requestId:id,answerGuaranteeVersion:1,
       ...(task?{answerObligation:{id:input.correctionOf??input.recoveryOf??id,task,attemptId:id}}:{}),
-      origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,originatingHuman,effectScope:input.authorityInputId?'work':provenance?.effectScope??null},
+      origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,originatingHuman,effectScope:input.authorityInputId?'work':provenance?.effectScope??null,...(focusCustody?{focusCustody}:{})},
       ...(humanModelChoices.length?{humanModelChoices}:{}),
       ...(input.provider?{provider:input.provider,...(input.effort===undefined?{}:{effort:input.effort}),...(input.escalationReason===undefined?{}:{escalationReason:input.escalationReason}),...(humanModelChoice?{humanModelChoice:selectedModel}:{}),...(input.project===undefined?{}:{project:input.project}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary})}:{address:input.address}),
       text,message:input.text,requestedEffect:effect,...(input.machineNeed?{machineNeed:input.machineNeed}:{}),...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{}),
@@ -1555,7 +1573,10 @@ export class SessionPeers {
     }
     // The sender's own words stay beside the delivery text its preamble wraps for the provider.
     const humanModelChoices=origin.originatingHuman?Array.from(new Set([...(input.humanModelChoices??[]),input.humanModelChoice].filter((model:unknown)=>typeof model==='string'&&!!topModel(model)))):[];
+    // Only the exact Focus request's custody attestation is retained; anything else is not a grant.
+    const focusCustody=origin.focusCustody?.requestId===MAC_FOCUS_REQUEST&&input.requestedEffect==='work'?{requestId:MAC_FOCUS_REQUEST}:null;
     const provenance={origin:{peer:origin.peer,sessionId:origin.sessionId,inputId:origin.inputId,runId:origin.runId},originatingHuman:origin.originatingHuman??null,effectScope:origin.effectScope??null,
+      ...(focusCustody?{focusCustody}:{}),
       ...(humanModelChoices.length?{humanModelChoices}:{}),
       ...(input.answerGuaranteeVersion===1?{answerGuaranteeVersion:1}:{}),...(input.answerObligation?{answerObligation:input.answerObligation}:{}),
       ...(correctionProof?{correctionOf:input.correctionOf,correctionPayloadHash:hash(JSON.stringify(input)),

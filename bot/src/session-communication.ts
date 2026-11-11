@@ -45,7 +45,7 @@ import {standingAgent,standingAgentSession,bindStandingAgentSession,STANDING_WOR
 import {parseMachineNeed} from './machine-need';
 import {signInWorkerActionId} from './signin-renewal';
 import {MAC_UPDATE_SOURCE_INPUT,MAC_UPDATE_SOURCE_RUN,macUpdateSourceProven} from './mac-update-source';
-import {MAC_FOCUS_SOURCE_INPUT,MAC_FOCUS_SOURCE_RUN,macFocusSourceProven} from './mac-focus-source';
+import {MAC_FOCUS_PHRASE,MAC_FOCUS_REQUEST,MAC_FOCUS_SOURCE_INPUT,MAC_FOCUS_SOURCE_RUN,macFocusSourceProven} from './mac-focus-source';
 import {AUTHORIZED_WEB_APP} from './mac-surface-policy';
 import { backfillRequestTopics, consultPointer, forTopic, handBackText, newTopicNote, sessionWorkload, topicOf, topicRootFor } from './session-fit';
 export type CommunicationSource = {
@@ -762,20 +762,22 @@ export class SessionCommunicationCoordinator {
                     &&typeof need.why==='string'
                     &&need.why.includes(AUTHORIZED_WEB_APP)
                     &&macUpdateSourceProven();
+                // The Focus grant follows custody of the outside Focus request, not one run: the
+                // server attests on the delivery that the sender holds that open request now.
+                // The original run binding stays accepted for its retained delivery.
                 const focusDelivery=typeof provenance?.requestId==='string'&&provenance.requestId
                   ?db.query(`SELECT 1 FROM session_peer_deliveries
                     WHERE target_input_id=? AND target_session_id=? AND request_id=?
-                      AND peer='cloud' AND origin_input_id=? AND origin_run_id=?
-                      AND requested_effect='work' AND closed_at_ms IS NULL`).get(
-                    row.id,running.session_id,provenance.requestId,MAC_FOCUS_SOURCE_INPUT,MAC_FOCUS_SOURCE_RUN)
+                      AND peer='cloud' AND requested_effect='work' AND closed_at_ms IS NULL
+                      AND ((origin_session_id='concierge:9118' AND origin_input_id=? AND origin_run_id=?)
+                        OR json_extract(origin_provenance_json,'$.focusCustody.requestId')=?)`).get(
+                    row.id,running.session_id,provenance.requestId,MAC_FOCUS_SOURCE_INPUT,MAC_FOCUS_SOURCE_RUN,MAC_FOCUS_REQUEST)
                   :null;
                 const focusAuthorization=process.platform==='darwin'&&kind==='mac-app'
-                    &&provenance?.peer==='cloud'&&provenance.source?.sessionId==='cloud:9118'
-                    &&provenance.source.inputId===MAC_FOCUS_SOURCE_INPUT
-                    &&provenance.source.runId===MAC_FOCUS_SOURCE_RUN
+                    &&provenance?.peer==='cloud'
                     &&!!focusDelivery&&typeof need.why==='string'
                     &&need.why.includes(AUTHORIZED_WEB_APP)
-                    &&need.why.includes('bounded Focus Start/End acceptance')
+                    &&need.why.includes(MAC_FOCUS_PHRASE)
                     &&macFocusSourceProven();
                 return {kind,why:typeof need.why==='string'?need.why:'',
                     humanInputId:provenance?.originatingHuman?.inputId,
