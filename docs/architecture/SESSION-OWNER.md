@@ -529,7 +529,10 @@ The owner clamps a read or dismiss generation to the session's own attention cou
   tries to end a turn owing a reply: Claude gets it with `--settings` on every run, Codex as a
   managed hook from `/etc/codex/requirements.toml` (`scripts/install-codex-stop-hook.sh`, run by
   remote-box's deploy on the box and by `install-mac.sh` from a terminal on the Mac), because Codex
-  runs unreviewed hooks only from managed policy. There is no reminder turn and no weaker path for
+  runs unreviewed hooks only from managed policy. A request counts as owed only once its words
+  reached that run: a request steered into a running turn is owed from the provider's send
+  acknowledgement (or an ambiguous send), not from its attachment to the turn, because preparing
+  its text takes seconds and the hook once demanded verdicts in that gap. There is no reminder turn and no weaker path for
   either provider; a request still stranded after the hook is reported stalled. Never put standing instructions into each input: the Inbox's 3,802-character preamble
   was prefixed to every input (1,019 copies, ~3.9 million characters, in one conversation) and now live in its per-run
   instructions; an input carries only its identity header and its own facts. The mechanism, its grounding (FIPA Request,

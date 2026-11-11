@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { db, executionChanged, finishTurn, settleTurnDependencies, getSessionById, type ProviderId, type SessionRow } from './state';
 import {DEFAULT_CHATGPT_THINKING,DEFAULT_HIS_CHATGPT_THINKING,HIS_CHATGPT_PREFIX,isHisChatGpt,resolveProviderAlias,resolveProviderDefault} from './aliases';
+import {topModel} from './model-escalation';
 import {purposeLine} from './session-purpose';
 import {receiveSessionFromPeer} from './peer-identity';
 import {notificationRequest} from './session-notification-request';
@@ -193,10 +194,16 @@ export function getAcceptedSessionInput(id:string) {
  * A request still waiting in the queue, including a scheduled one before its time, belongs to the
  * turn that will carry it. On 2026-11-04 the Inbox router's Stop hook listed a request scheduled
  * for 14:00 as owed during an unrelated 09:53 run, and the router answered it four hours early.
+ * A steered request is handed over only once its words reached the provider (or may have: an
+ * ambiguous send is treated as reaching it). Attaching it to the running turn happens first and
+ * preparing its text takes seconds; on 2026-11-09 concierge:3425's Stop hook demanded a verdict on
+ * a request in that gap, twice, and the request's text arrived just after the verdict.
  */
 export function handedToARun(id:string) {
   return !!db.query(`SELECT 1 FROM session_inputs input JOIN turns turn ON turn.id=input.turn_id
-    WHERE input.id=? AND turn.status<>'queued'`).get(id);
+    LEFT JOIN turn_steering_messages steering ON steering.id=input.steering_id
+    WHERE input.id=? AND turn.status<>'queued'
+      AND (input.steering_id IS NULL OR steering.status IN ('sent','ambiguous'))`).get(id);
 }
 /** Resolve retained delegation links, never actor/provenance claims inside message text. */
 /** A request a peer instance delivered here: its source lives in the peer's ledger, retained on the delivery row. */
@@ -210,7 +217,7 @@ function peerDeliveryProvenance(input:AcceptedSessionInput) {
   const human=retained.originatingHuman&&typeof retained.originatingHuman.sessionId==='string'
     ?{...retained.originatingHuman,sessionId:receiveSessionFromPeer(retained.originatingHuman.sessionId,delivery.peer)}:null;
   const humanModelChoices=human&&Array.isArray(retained.humanModelChoices)
-    ?retained.humanModelChoices.filter((model:unknown):model is string=>model==='claude-fable-5-1'||model==='gpt-6-astra'):[];
+    ?retained.humanModelChoices.filter((model:unknown):model is string=>typeof model==='string'&&!!topModel(model)):[];
   return {source:{inputId:delivery.origin_input_id,runId:delivery.origin_run_id,sessionId:receiveSessionFromPeer(delivery.origin_session_id,delivery.peer),peer:delivery.peer},
     requestId:input.request_id,effectScope,originatingHuman:human as {inputId:string;runId:string;sessionId:string;captureId?:string}|null,peer:delivery.peer,humanModelChoices};
 }
