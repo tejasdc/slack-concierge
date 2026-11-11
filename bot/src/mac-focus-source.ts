@@ -5,6 +5,14 @@ import {join} from 'node:path';
 
 export const MAC_FOCUS_SOURCE_INPUT='request:775cda97-8177-4202-8545-b451f74ef3bd';
 export const MAC_FOCUS_SOURCE_RUN='e41da8b5-2d17-4483-add1-57e2b8d21203';
+/**
+ * The outside Focus request whose custody carries the grant. Its first holder's run ended and
+ * the session was handed off, so a run-bound grant could never be presented again: any session
+ * that currently holds this open request may send the one bounded Mac acceptance. The sending
+ * server attests custody at ask time; the Mac retains that attestation on the delivery.
+ */
+export const MAC_FOCUS_REQUEST='775cda97-8177-4202-8545-b451f74ef3bd';
+export const MAC_FOCUS_PHRASE='bounded Focus Start/End acceptance';
 const PARENT_THREAD='01a1ad10-c8b0-7571-97f6-e2fdfffba3c5';
 const HUMAN_MESSAGE='msg_01a1aeea-8d60-7543-a30c-f7c5801a3ccc';
 const HUMAN_TEXT_SHA256='dce3b4179d38edd3f1e679adcd41ca5e550c01b4c61600471b335231181515b1';

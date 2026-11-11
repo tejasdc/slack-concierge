@@ -204,11 +204,18 @@ authorizes using and testing Tejas's Mac. The same original provider thread
 issued exact outside Focus recovery requests `5caf7de1-0937-46fe-9fc3-e72b48f119fc`
 and `775cda97-8177-4202-8545-b451f74ef3bd`. The Mac owner checks the
 original human message, both exact commands and their receipts in its local
-transcript. It does not invent a Concierge human input. A Mac-app request from
-the current Focus worker and source input/run `request:775cda97-8177-4202-8545-b451f74ef3bd` /
-`e41da8b5-2d17-4483-add1-57e2b8d21203` must have a live work-effect peer
-delivery and name the exact Thinkering bundle plus `bounded Focus Start/End
-acceptance`. Only then does the Mac guard admit same-program passive reads
+transcript. It does not invent a Concierge human input. The grant follows
+custody of request `775cda97-8177-4202-8545-b451f74ef3bd`, not one run: its
+first holder's run ended and that session was handed off, so a run-bound grant
+could never be presented again. When a server session sends a Mac-app work ask
+naming the exact Thinkering bundle and `bounded Focus Start/End acceptance`,
+the server attaches a custody attestation only if that session currently holds
+the open request (as a local, outside or peer-delivered request, after any
+handoffs). The Mac retains the attestation on the delivery; it reads no server
+handoff state. A Mac-app request must have a live work-effect peer delivery
+carrying that attestation (or the original source input/run
+`request:775cda97-…` / `e41da8b5-…`) and name the exact bundle plus the
+phrase. Only then does the Mac guard admit same-program passive reads
 and fixed native Start, verify-start and End commands. This is a single test route, not a
 general app or page control grant.
 
