@@ -141,8 +141,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - Banked phone work that Tejas permits only overnight uses the explicit quiet-only saved-work choice; request cancellation also revokes a queued saved turn. See [session ownership](docs/architecture/SESSION-OWNER.md#one-execution-owner) and [router actions](docs/runbooks/ROUTER-ACTIONS.md#current-native-routing).
 - Saved-work cancellation names one turn and retains its cause; accepted handoff preserves an unfired scheduled turn's due time and firing identity. See [session ownership](docs/architecture/SESSION-OWNER.md#identity-and-admission) and [provider-change handoff](docs/architecture/SESSION-OWNER.md#provider-change-handoff).
 - A device question can name a physical instrument or controller in a USB connection
-  request, or an app startup when the device has no agent route; the agent explains
-  the failed route. Returned `needs_you` questions can be withdrawn
+  request, an app startup when the device has no agent route, or one spoken launch on
+  a physical Echo; the agent explains the failed route. See
+  [router actions](docs/runbooks/ROUTER-ACTIONS.md). Returned `needs_you` questions can be withdrawn
   by exact event identity when they become stale. See [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md)
   and the [session owner contract](docs/contracts/session-owner-v1.md).
 - Provider sign-in repair requests to the Mac may come from a batch of owner repair
