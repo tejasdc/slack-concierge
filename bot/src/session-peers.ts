@@ -5,7 +5,8 @@ import {basename,join} from 'node:path';
 import {PeerCatalogueSync} from './peer-catalogue-sync';
 import {peerCatalogueView} from './peer-catalogue-view';
 import {sessionProject} from './session-projects';
-import {parseProviderSelector,resolveProviderSelector} from './aliases';
+import {parseProviderSelector,resolveProviderSelector,TOP_MODEL_CHOICES,type TopModelChoice} from './aliases';
+import {topModel} from './model-escalation';
 import {humanChoseTopModel} from './model-escalation-custody';
 import {AWAITING_INSPECTION,PROMPT_ANSWER_REMINDER_MS,PROMPT_ANSWER_OVERDUE_MS,REMINDERS_SINCE_MS,STILL_WAITING_AFTER_MS,STILL_WAITING_MINUTES,updateDraining,replyCommand,stalledNotice,strandedStep,tellWorkerCanceled,cancelQueuedWithdrawnRequest,waitingOnDependency,type OwedRequest} from './request-liveness';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
@@ -676,12 +677,12 @@ export class SessionPeers {
       ?{inputId:authorityInput.id,runId:authorityInput.turn_id?nativeRunId(authorityInput.turn_id):runId,sessionId:`concierge:${actor.session}`,...(JSON.parse(authorityInput.payload_json).capture?.id?{captureId:JSON.parse(authorityInput.payload_json).capture.id}:{})}:null);
     // Every identity leaving this instance is named by it (peer-identity.ts).
     const originatingHuman=known?{...known,sessionId:presentSessionForPeer(known.sessionId,this.self)}:null;
-    const humanModelChoices=known?(['claude-fable-5-1','gpt-6-astra'] as const).filter(model=>
+    const humanModelChoices=known?TOP_MODEL_CHOICES.filter(model=>
       humanChoseTopModel(known.inputId,model)
       ||(provenance?.originatingHuman?.inputId===known.inputId&&humanChoseTopModel(actor.inputId,model))):[];
     const providerSelector=parseProviderSelector(input.provider);
     const selectedModel=providerSelector?resolveProviderSelector(providerSelector).model:undefined;
-    const humanModelChoice=!!selectedModel&&humanModelChoices.includes(selectedModel as 'claude-fable-5-1'|'gpt-6-astra');
+    const humanModelChoice=!!selectedModel&&humanModelChoices.includes(selectedModel as TopModelChoice);
     const text=input.framing?input.framing(id):`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. ${input.routedFrom?`This carries the exact Inbox message ${input.routedFrom.messageId} into this session. Reply to this request; the answer appears under that message in its original thread.`:'This is agent-authored input within the originating human task, not a new human message.'} Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`;
     const delivery={requestId:id,answerGuaranteeVersion:1,
       ...(task?{answerObligation:{id:input.correctionOf??input.recoveryOf??id,task,attemptId:id}}:{}),
@@ -1464,7 +1465,7 @@ export class SessionPeers {
       &&(typeof origin.originatingHuman?.inputId!=='string'||typeof origin.originatingHuman?.runId!=='string'||typeof origin.originatingHuman?.sessionId!=='string'))
       throw new SessionOwnerError('A peer human source needs its exact session, input and run.',400,'PEER_HUMAN_SOURCE_INVALID');
     if(input.humanModelChoices!==undefined&&(!Array.isArray(input.humanModelChoices)||input.humanModelChoices.length>2
-      ||input.humanModelChoices.some((model:unknown)=>model!=='claude-fable-5-1'&&model!=='gpt-6-astra')))
+      ||input.humanModelChoices.some((model:unknown)=>typeof model!=='string'||!topModel(model))))
       throw new SessionOwnerError('A peer model choice must name a supported top model.',400,'PEER_MODEL_CHOICE_INVALID');
     if(input.humanModelChoice!==undefined&&typeof input.humanModelChoice!=='string')
       throw new SessionOwnerError('A peer model choice must name its selected model.',400,'PEER_MODEL_CHOICE_INVALID');
@@ -1553,7 +1554,7 @@ export class SessionPeers {
         throw new SessionOwnerError('The corrected peer attachment must have changed bytes.',409,'PEER_CORRECTION_UNCHANGED');
     }
     // The sender's own words stay beside the delivery text its preamble wraps for the provider.
-    const humanModelChoices=origin.originatingHuman?Array.from(new Set([...(input.humanModelChoices??[]),input.humanModelChoice].filter((model:unknown)=>model==='claude-fable-5-1'||model==='gpt-6-astra'))):[];
+    const humanModelChoices=origin.originatingHuman?Array.from(new Set([...(input.humanModelChoices??[]),input.humanModelChoice].filter((model:unknown)=>typeof model==='string'&&!!topModel(model)))):[];
     const provenance={origin:{peer:origin.peer,sessionId:origin.sessionId,inputId:origin.inputId,runId:origin.runId},originatingHuman:origin.originatingHuman??null,effectScope:origin.effectScope??null,
       ...(humanModelChoices.length?{humanModelChoices}:{}),
       ...(input.answerGuaranteeVersion===1?{answerGuaranteeVersion:1}:{}),...(input.answerObligation?{answerObligation:input.answerObligation}:{}),
