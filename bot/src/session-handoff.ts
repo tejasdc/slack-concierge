@@ -69,15 +69,17 @@ function ledgerItems(sessionId:number):Item[] {
   // A worker can settle a request before its final return reaches the asker. That return is
   // still owed to whoever holds the asking work, so it moves with the handoff (Inbox 8785 →
   // 8876, 2026-11-06: two returns reached the suspended predecessor after acceptance).
-  for(const request of db.query(`SELECT DISTINCT request.request_id,request.target_session_id FROM session_communication_requests request
-    JOIN session_communication_events event ON event.request_id=request.request_id
-    WHERE request.source_session_id=? AND request.outcome IS NOT NULL AND event.kind='final' AND event.superseded_by_event_id IS NULL
-      AND event.status NOT IN ('received','retained') ORDER BY request.created_at_ms,request.request_id`).all(sessionId) as any[]){
-    const returns=pendingReturnInputs(request.request_id);
-    if(returns.some(input=>input.state==='delivered'))continue;
-    items.push({id:`sent:${request.request_id}`,kind:'sent',ref:request.request_id,holder,target:canonical(request.target_session_id),status:'settled',
-      pendingReturn:true,doNotRedispatch:true});
-  }
+  for(const [requests,events,target] of [
+    ['session_communication_requests','session_communication_events',"'concierge:'||request.target_session_id"],
+    ['session_peer_requests','session_peer_events',"request.peer||':'||request.remote_session_id"]] as const)
+    for(const request of db.query(`SELECT request.request_id,${target} AS target FROM ${requests} request
+      WHERE request.source_session_id=? AND request.outcome IS NOT NULL AND EXISTS (SELECT 1 FROM ${events} event
+        WHERE event.request_id=request.request_id AND event.kind='final' AND event.superseded_by_event_id IS NULL AND event.status NOT IN ('received','retained'))
+      ORDER BY request.created_at_ms,request.request_id`).all(sessionId) as {request_id:string;target:string}[]){
+      if(pendingReturnInputs(request.request_id).some(input=>input.state==='delivered'))continue;
+      items.push({id:`sent:${request.request_id}`,kind:'sent',ref:request.request_id,holder,target:request.target,status:'settled',
+        pendingReturn:true,doNotRedispatch:true});
+    }
   for(const request of db.query('SELECT request_id,peer,remote_session_id,status FROM session_peer_requests WHERE source_session_id=? AND outcome IS NULL ORDER BY created_at_ms,request_id').all(sessionId) as any[])
     items.push({id:`sent:${request.request_id}`,kind:'sent',ref:request.request_id,holder,target:`${request.peer}:${request.remote_session_id}`,status:request.status,doNotRedispatch:true});
   for(const [table,kind] of [['session_communication_requests','local'],['session_peer_deliveries','peer'],['session_external_requests','outside']] as const){
@@ -106,7 +108,9 @@ function ledgerItems(sessionId:number):Item[] {
  */
 function pendingReturnInputs(requestId:string):{inputId:string|null;state:'unadmitted'|'unstarted'|'queued'|'delivered'}[] {
   return (db.query(`SELECT accepted_input_id FROM session_communication_events WHERE request_id=? AND kind='final'
-    AND superseded_by_event_id IS NULL AND status NOT IN ('received','retained')`).all(requestId) as {accepted_input_id:string|null}[]).map(event=>{
+    AND superseded_by_event_id IS NULL AND status NOT IN ('received','retained')
+    UNION ALL SELECT accepted_input_id FROM session_peer_events WHERE request_id=? AND kind='final'
+    AND superseded_by_event_id IS NULL AND status NOT IN ('received','retained')`).all(requestId,requestId) as {accepted_input_id:string|null}[]).map(event=>{
     if(!event.accepted_input_id)return {inputId:null,state:'unadmitted' as const};
     const input=getAcceptedSessionInput(event.accepted_input_id);
     if(!input||input.steering_id!==null||(input.receipt_json&&JSON.parse(input.receipt_json).state))return {inputId:event.accepted_input_id,state:'delivered' as const};
@@ -319,10 +323,12 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
         if(changed.changes!==1)throw new Error(`Sent request ${item.ref} changed during handoff.`);
         // An unstarted return input carries its exact ID to the successor; delivery then dispatches it there.
         // A queued one moves with its queued item below.
+        // One answer can carry several requests through a single return input; it moves once.
         if(item.pendingReturn)for(const pendingReturn of pendingReturnInputs(item.ref)){
           if(pendingReturn.state==='delivered')throw new Error(`The return for ${item.ref} reached the predecessor during handoff.`);
           if(pendingReturn.state==='unstarted'&&db.query(`UPDATE session_inputs SET session_id=?,updated_at=CURRENT_TIMESTAMP
-            WHERE id=? AND session_id=? AND turn_id IS NULL AND steering_id IS NULL`).run(to,pendingReturn.inputId,from).changes!==1)
+            WHERE id=? AND session_id<>? AND turn_id IS NULL AND steering_id IS NULL`).run(to,pendingReturn.inputId,to).changes!==1
+            &&getAcceptedSessionInput(pendingReturn.inputId!)?.session_id!==to)
             throw new Error(`The return input for ${item.ref} changed during handoff.`);
         }
         record(item.kind,item.ref);
@@ -388,8 +394,9 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
         db.query('UPDATE session_external_requests SET target_input_id=? WHERE target_input_id=? AND target_session_id=? AND outcome IS NULL')
           .run(cloned.id,item.ref,to);
         // A queued return now travels as the clone; its delivery state follows that exact input.
-        db.query("UPDATE session_communication_events SET accepted_input_id=? WHERE accepted_input_id=? AND status NOT IN ('received','retained')")
-          .run(cloned.id,item.ref);
+        for(const events of ['session_communication_events','session_peer_events'])
+          db.query(`UPDATE ${events} SET accepted_input_id=? WHERE accepted_input_id=? AND status NOT IN ('received','retained')`)
+            .run(cloned.id,item.ref);
         record(item.kind,item.ref);
       }else if(item.kind==='watch'){
         const changed=db.query("UPDATE watches SET session_id=? WHERE watch_id=? AND session_id=? AND (state IN ('accepted','observing') OR delivery_state='pending')").run(to,item.ref,from);
