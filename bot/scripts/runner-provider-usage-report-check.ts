@@ -23,16 +23,21 @@ try{
   const db=new Database(':memory:');
   db.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,agent_session_uuid TEXT,provider_id TEXT,native_metadata_json TEXT,last_turn_at TEXT);
     CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,status TEXT,provider_turn_id TEXT,provider_started_at TEXT,ended_at TEXT,
-      saved_kind TEXT,saved_repeat_ms INTEGER,saved_root_id INTEGER,saved_sequence INTEGER,saved_fire_at_ms INTEGER,provider_duration_ms INTEGER);
-    CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,session_id INTEGER,turn_id INTEGER,kind TEXT,payload_json TEXT,created_at TEXT);
+      saved_kind TEXT,saved_repeat_ms INTEGER,saved_root_id INTEGER,saved_sequence INTEGER,saved_fire_at_ms INTEGER,provider_duration_ms INTEGER,accepted_input_id TEXT);
+    CREATE TABLE session_communication_requests(target_input_id TEXT,topic_root_input_id TEXT,thread_root_input_id TEXT,created_at_ms INTEGER);
+    CREATE TABLE inbox_topic_roots(root_input_id TEXT PRIMARY KEY,topic_id TEXT);
+    CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,session_id INTEGER,turn_id INTEGER,kind TEXT,payload_json TEXT,created_at TEXT,input_id TEXT);
     CREATE TABLE saved_work_settings(singleton INTEGER PRIMARY KEY,time_zone TEXT);`);
   const started=new Date(Date.now()-60_000).toISOString().slice(0,19).replace('T',' ');
   db.query('INSERT INTO sessions(id,agent_session_uuid,provider_id,native_metadata_json) VALUES(1,?,?,?)').run(nativeId,'claude-code',JSON.stringify({title:'Usage fixture',project:'/workspace/usage-fixture'}));
-  db.query('INSERT INTO turns(id,session_id,status,provider_started_at) VALUES(1,1,?,?)').run('running',started);
-  db.query('INSERT INTO session_owner_events VALUES(1,1,1,?,?,?)').run('account',JSON.stringify({account:'fixture@example.test'}),started);
+  db.query('INSERT INTO turns(id,session_id,status,provider_started_at,accepted_input_id) VALUES(1,1,?,?,?)').run('running',started,'request:one');
+  db.query('INSERT INTO session_owner_events(sequence,session_id,turn_id,kind,payload_json,created_at) VALUES(1,1,1,?,?,?)').run('account',JSON.stringify({account:'fixture@example.test'}),started);
   db.query('INSERT INTO sessions(id,agent_session_uuid,provider_id,native_metadata_json) VALUES(2,?,?,?)').run(secondNativeId,'claude-code',JSON.stringify({title:'Second fixture',project:'/workspace/usage-fixture'}));
-  db.query('INSERT INTO turns(id,session_id,status,provider_started_at) VALUES(2,2,?,?)').run('running',started);
-  db.query('INSERT INTO session_owner_events VALUES(2,2,2,?,?,?)').run('account',JSON.stringify({account:'second@example.test'}),started);
+  db.query('INSERT INTO turns(id,session_id,status,provider_started_at,accepted_input_id) VALUES(2,2,?,?,?)').run('running',started,'request:two');
+  db.query('INSERT INTO inbox_topic_roots VALUES(?,?)').run('capture:shared','topic:shared');
+  db.query('INSERT INTO session_communication_requests VALUES(?,?,?,?)').run('request:one','capture:shared',null,Date.now());
+  db.query('INSERT INTO session_communication_requests VALUES(?,?,?,?)').run('request:two','capture:shared',null,Date.now());
+  db.query('INSERT INTO session_owner_events(sequence,session_id,turn_id,kind,payload_json,created_at) VALUES(2,2,2,?,?,?)').run('account',JSON.stringify({account:'second@example.test'}),started);
   db.query('INSERT INTO saved_work_settings VALUES(1,?)').run('America/New_York');
   const snapshot=encodeUsageSnapshot(captureUsageLedgerSnapshot(db,Date.now()-7*86400_000));db.close();
   let calls=0;
@@ -48,7 +53,9 @@ try{
   if(calls!==2||result.week.callMix.totalCalls!==count+3||account?.bySession?.[0]?.sessionId!==1
     ||account?.callMix.totalCalls!==count||result.week.cacheDiagnostics.callCount!==count+3
     ||other?.bySession?.[0]?.sessionId!==2||other?.callMix.totalCalls!==3
-    ||result.week.cacheDiagnostics.calls.length>100||result.week.cacheDiagnostics.turns[0]?.turnId!==1)
+    ||result.week.cacheDiagnostics.calls.length>100||result.week.cacheDiagnostics.turns[0]?.turnId!==1
+    ||result.week.attributionBuckets.length!==2
+    ||result.week.attributionBuckets.some((bucket:any)=>bucket.topicId!=='topic:shared'))
     throw new Error('bounded report lost account, session, call mix or cache diagnostics');
   console.log(`two runner report calls returned ${count+3} attributed calls with bounded diagnostics`);
 }finally{await rm(root,{recursive:true,force:true});}
