@@ -712,8 +712,11 @@ design; Tejas, 2026-09-22). Exposure is never an answer.
 Every end is an explicit signal, recorded with its reason, and nothing ends on a clock:
 `answered` (his mapped reply), `read` (his Read on a reading item — the human `question`
 action with `state:'read'`, `acknowledge --item <questionId>` on a reading item, or his
-"mark seen" `dismiss` on the Inbox session up to a generation; opening the thread is a
-reading position, never an end), `superseded` (a replacement), `withdrawn`/`declined`
+"mark seen" `dismiss` or session `read` mark on the Inbox up to a generation, reason `Marked
+seen` or `Read`; opening a single thread is a reading position, never an end), `superseded`
+(a replacement; a thread's newer answer or decision also supersedes its earlier open reading
+items for the same capture, so one capture shows one item, and a startup pass applies both
+rules to what was filed before 2026-11-11), `withdrawn`/`declined`
 (whoever asked, or him), `deferred` (him), and `expired`: `topics close` and his Close end
 every open question in the thread with "Thread closed: <reason>"; his Close also withdraws
 the open requests named on its confirmation. `request close` ends only
