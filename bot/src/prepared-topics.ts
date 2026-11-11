@@ -110,6 +110,12 @@ export class PreparedTopics {
    prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN newest_speaker_reply INTEGER NOT NULL DEFAULT 1');
    prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
   })();
+  // A worker waiting on another agent counts as working since 2026-11-11; threads prepared under the
+  // older rule stay idle until they change, so recompute each once.
+  if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='work_through_waits'))prepared.transaction(()=>{
+   prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN work_through_waits INTEGER NOT NULL DEFAULT 1');
+   prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
+  })();
   // Each choice is named as its newest message in the thread is signed since 2026-11-05; recompute once.
   if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='choice_named_as_signed'))prepared.transaction(()=>{
    prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN choice_named_as_signed INTEGER NOT NULL DEFAULT 1');
