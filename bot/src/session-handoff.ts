@@ -86,6 +86,13 @@ function ledgerItems(sessionId:number):Item[] {
   return items;
 }
 
+/** Whether acceptance could move every queued input: the same rule `acceptHandoff` enforces, read
+ * before a proposal so an automatic move never proposes a handoff its successor must refuse. */
+export function queuedWorkMovable(sessionId:number):{queued:number;movable:boolean} {
+  const queued=ledgerItems(sessionId).filter(item=>item.kind==='queued');
+  return {queued:queued.length,movable:queued.every(item=>item.movable||item.obsolete)};
+}
+
 function movableQueuedTurn(turn:WaitingTurn,input:NonNullable<ReturnType<typeof getAcceptedSessionInput>>):boolean {
   // An unfired or replay-safe held schedule has no provider effects. Keep its turn and firing identity when
   // ownership moves: repeating schedules use that identity to book exactly one successor.

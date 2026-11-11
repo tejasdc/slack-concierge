@@ -47,9 +47,13 @@ export type NativeSessionMetadata = {
   providerAccount?:string; providerRunner?:string|null;
   claudeCacheCall?:{account:string;conversation:string|null;callId:string;atMs:number;cacheable:boolean};
   claudeSelectionRevision?:number;
-  /** Only a zero-work refused first turn may change the provider selected by Automatic. */
+  /** Automatic picked this provider, not him: a zero-work refused first turn, and queued work its provider
+   * cannot start (held-work-failover.ts), may move to another provider. His model choice clears it. */
   automaticProviderChoice?:boolean;
   automaticSmallTask?:boolean;
+  /** Automatic provider failover tried this held session and found an input it could not move, or its
+   * successor did not accept; it is not proposed again before this instant (held-work-failover.ts). */
+  heldFailoverSkipUntil?:number;
   /** Retired 2026-09-29: nothing is said to him about accounts. Written null so old ones clear. */
   claudeAccountNotice?:null;
   /** Every turn runs as the Codex command line in its own unit, started and watched, never driven (outside-codex.ts). */
