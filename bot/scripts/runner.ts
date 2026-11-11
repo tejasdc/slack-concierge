@@ -631,7 +631,7 @@ function answerMachineCalls(id:string) {
         return result.cwd;
       },
     });
-    if(method==='provider-usage-breakdown.page')return serveProviderUsageBreakdownCall(method,params,stateDir,runnerAccountHomes);
+    if(method==='provider-usage-breakdown.page'||method==='provider-usage-breakdown.report')return serveProviderUsageBreakdownCall(method,params,stateDir,runnerAccountHomes);
     if(method.startsWith('projects.'))return serveProjectCall(method,params,{findProviderSessionHome:findRunnerProviderSessionHome});
     if(method==='google.executable')return serveRunnerProviderCall(method,params);
     if(method==='asides.ask')return serveRunnerAside(params,{botDir,bunPath:process.execPath,

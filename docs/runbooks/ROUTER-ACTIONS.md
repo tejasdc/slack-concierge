@@ -182,16 +182,24 @@ the Inbox's sessions.
 `sessions topics message <messageId>` returns one Inbox message's words, author, time,
 attachments, thread root and topic: a capture, his reply, an agent's post, result or routed request,
 or a request input that a topic request names as its source or dispatch. Topic reads carry ids and
-short excerpts; this is the read for judging the message itself.
+short excerpts; this is the read for judging the message itself. Its `from` and full `author`
+resolve the current author, including a later correction to an originally human-origin input;
+an unproved user-role message reports unknown rather than Tejas.
 `sessions context` and the session view expose only a session's explicit role binding.
 
 `sessions schedule --role <role> --at <future ISO-8601 time> [--every-ms <interval>] --summary "<one line>" <source-flags> --action-id A -- <text>`
 queues one firing in that bound session, or creates and binds the role's session first. The bound session may run it for its own role: its firing is then a plain scheduled input in itself, with no request to itself and nothing returned. A repeating
 schedule keeps firing there. While one repeating firing for the role is queued, another repeating
 schedule is refused with its exact turn ID; change its time in Thinkering Saved work or cancel it
-with `sessions saved cancel <turn-id>` before replacing it. `sessions schedule --project` remains available for
+with `sessions saved cancel <turn-id>` before replacing it. That control cancels only the named
+queued turn; on a repeating schedule it also prevents another firing from being booked. Other
+scheduled turns in the same session remain queued. `sessions schedule --project` remains available for
 registered projects. The read caps repeating schedules at 32, watches per role at 20, and host
 timers at 128; its coverage field says when a cap was reached.
+On a runner, the role's declared workspace-relative folder (such as `agents/concierge-repair`)
+must resolve to that runner's registered project at that exact folder before a wake is saved.
+The returned project identity belongs to the existing bound session; a nested agent folder does
+not cause a new session or a fallback to a similarly named root project.
 
 To stop any repeating schedule, run `sessions cancel <request-id>` on the request that created it, or
 `sessions saved cancel <turn-id>` on its queued firing. Either one withdraws every queued firing and
@@ -199,6 +207,11 @@ books no more; a firing already running finishes. The request names only the fir
 saved-work step that books each next firing checks whether the schedule was dropped or its request
 cancelled. Until 2026-11-06 a cancelled request left later firings running. `sessions saved list`
 shows each armed schedule's next firing, turn ID and interval.
+
+A repeating schedule created with `--expires` ends at that instant: the last firing due before it
+runs, no firing is booked at or after it, and every firing carries that same expiry. Until
+2026-11-11 each firing moved the expiry one interval later, so a schedule with an expiry never ended;
+a firing still queued from that time is withdrawn when it comes due past the original end.
 
 New repeating schedules and renewing file watches require both the requesting session and
 the scheduled session, where applicable, to belong to a registered project. Placement under

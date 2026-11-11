@@ -144,7 +144,8 @@ try {
         '--bind',root,join(homedir(),'.local/state/concierge'),'--unshare-user','--uid','0','--gid','0','--cap-drop','ALL',
         '--',process.execPath,repair],{env,stdout:'pipe',stderr:'pipe',timeout:3_000});
       assert.equal(repairPolicy.exitCode,0,repairPolicy.stderr.toString());
-      assert.deepEqual(JSON.parse(repairPolicy.stdout.toString()),{live:true,schema:false,readonly:false});
+      assert.deepEqual(JSON.parse(repairPolicy.stdout.toString()),{live:true,schema:false,readonly:false,
+        ownerServedReleaseCommand:false,ownerServedDeploymentCommand:false,forbidControllerLedgerOpen:false});
     }
   } finally { owner.exec('ROLLBACK'); owner.close(); }
   if (process.platform === 'linux') {

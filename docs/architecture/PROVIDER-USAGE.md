@@ -195,6 +195,16 @@ notice promised the work would move to that account, and his 7:28 PM message mov
 session instead while he was signing in. Record:
 `docs/incidents/2026-11-02-mac-signin-wait-read-as-usage.md`.
 
+The Inbox router keeps one canonical role across providers. When its current provider has no
+launchable allowance and another provider has a launchable account with room, a confirmed
+usage-held Inbox turn can propose the existing session handoff even if a later input is queued
+or the refused attempt recorded admission intent. The successor accepts an exact inventory;
+only then does the role move and safe queued inputs retain their original source and request
+identity. An ambiguous or acknowledged input blocks acceptance. A fresh reading showing room
+on the current provider instead releases its held work there; a provider reset does not switch
+an already running conversation in place. The generic Claude recovery excludes Inbox because
+it cannot own this canonical role transfer.
+
 The first held input of an episode records one internal `provider_hold_observed` event with an
 `auth` payload: account, machine and number of held inputs. It does not itself push a
 notification. The sign-in renewal path asks Tejas only when the Mac browser agent cannot
@@ -274,6 +284,11 @@ sign-in repair for a held turn, but they do not prove a runnable local credentia
 Signing in through Accounts files a home but never adds it to claude-swap (adding copies the login,
 which dies the first time the original renews), so before 2026-11-03 such an account was missing from
 every reading: hey@tejas.nyc read as absent, and nothing that waits for room could see it.
+When a peer supplies newer usage for an account on both machines, the receiving machine keeps its
+own sign-in verdict. A server reading can fill the Mac's bars for a signed-out home, but cannot turn
+that Mac home into a signed-in profile. Dispatch rejects the local signed-out verdict before
+the selected account's usual attempt is allowed. The peer source and original read time remain
+visible on the usage reading.
 Record: `docs/incidents/2026-11-03-usage-reader-missed-new-account.md`. Each account read from its own login (also the fallback when claude-swap's copy has died) is asked at most every five minutes, inside the six minutes a reading counts as fresh, doubling the gap after a failure up to thirty minutes. If an idle home's access token has expired, the reader asks Claude Code's local `/usage` command to renew that home's own login without a model turn; the reader does not copy or refresh credentials itself. One renewal per account runs at a time, and an unsuccessful unchanged login backs off from five to thirty minutes. A changed credential file bypasses the earlier failed-read wait so the next usage pass can use it. Between reads or after a failure the reader keeps its last good windows with the time they were taken, so a 429 never blanks it.
 
 The cache above records refusals. Separately, `bot/src/provider-account-usage.ts` reads the
@@ -303,7 +318,7 @@ so the surface can name the state instead of leaving a gap. One pass runs at a t
 timer, a credential change and his Refresh press all share it.
 
 **Refresh reads.** A `fresh` read of `/auth/providers` starts
-`scheduleProviderAccountUsageRefresh()` alongside the identity reads (`claude auth status`,
+`scheduleProviderAccountUsageRefresh(true)` alongside the identity reads (`claude auth status`,
 the Codex sign-in state) and answers at once from the last known state with `checking` set;
 the Accounts page reads again every few seconds while any row or machine says `checking`
 or `refreshing` (a peer machine says `checking` only while a read of it is outstanding), so the numbers fetched for that press arrive on screen without a read waiting
@@ -312,7 +327,9 @@ half-hourly pass had last written, so pressing Refresh changed no percentage on 
 and read as a dead control: "I just pressed refresh and it doesn't seem to be working at
 all." From then until 2026-11-03 a fresh read waited for the whole check, 11 to 20 seconds
 around a sign-in, which held the account row's confirmation spinner that long. A press
-while a pass is already running joins that pass instead of starting a second.
+while an ordinary pass is already running queues one forced pass after it. The owner keeps
+`checking` true until the forced pass settles; the Accounts Refresh mark stays active while
+the page watches that state. A press during a forced pass joins that same pass.
 
 - **Codex**: the agents' home `~/.codex` plus one home per extra account under
   `~/.codex-accounts/<name>/`, each read by CodexBar (`/root/tools/codexbar-cli/codexbar`)
@@ -345,8 +362,28 @@ while a pass is already running joins that pass instead of starting a second.
   `cswap status --json` checks only the terminal-active account and is not used here:
   a Concierge turn may run on another saved home without changing terminal selection.
   When claude-swap returns `lastGoodUsage` instead of decision-grade `usage`, Concierge
-  pairs it with `lastGoodFetchedAt`, never the outer scan time. The Mac currently borrows
-  server readings with their source times; local sign-in and selection need local evidence.
+  pairs it with `lastGoodFetchedAt`, never the outer scan time. A Mac Refresh asks its
+  local Keychain logins for a new reading even inside the ordinary five-minute read gap;
+  it joins a running pass, then takes a fresh pass if that pass was periodic.
+  On the Mac, Claude Code keeps each account's only login in its GUI Keychain. Concierge
+  asks Claude Code to confirm each saved home's signed-in email and configuration directory,
+  then reads that home's local Keychain item and asks Anthropic's usage endpoint with its
+  access token. Keychain item presence alone does not prove that Claude still accepts the
+  login: a signed-out home is shown as needing sign-in and its usage is not requested or
+  renewed. An unanswered or mismatched identity check is shown as unverified and cannot
+  authorize work. Concierge never copies or writes the login; if a confirmed home's token
+  expires or Anthropic rejects it with 401, Claude Code's local `/usage` renews that same
+  home's Keychain item. A pressed Refresh waits for renewal, and a rejected-token read
+  retries once after renewal before it settles.
+  The same five-minute per-account read plan and failure backoff apply. A failed read keeps
+  the last good Mac value with its original source time. A signed-out home has no usage bars.
+  The Mac no longer substitutes a server reading for a missing local one; such a peer value
+  cannot prove that the Mac can run the account.
+  This replaces the Mac's former peer-only display, which omitted Mac-only accounts and
+  could show days-old server numbers after a Mac Refresh. On November 6 a Mac-local probe
+  found two saved homes whose initial usage requests returned 401; Claude Code renewed
+  each without a model turn, and subsequent usage and profile requests returned 200 with
+  matching account emails. A third saved home still reported signed out and was not renewed.
   The Mac's two-home continuation and concurrent use were proven on 2026-09-23;
   see [the shared-history design](../plans/2026-09-23-accounts-share-one-history.md).
 
@@ -438,10 +475,10 @@ Accounts no longer lists the main folder's login as an account and says nothing 
 sign-in is not his work, and the line naming it was removed on 2026-10-08 as news about nothing.
 The account line above the list is empty while the chosen account is in use; it speaks only when
 that account is at its limit, signed out, or none is selected.
-The Mac keeps logins in the Keychain, has no such homes, and is unchanged. A usage reading that
-fails or is missing for the selected account never stops its work: the usage reader (claude-swap)
-reads with its own copies of each login, so its failure says nothing about the login in the
-account's home, and a real limit still comes back from Claude as an ordinary usage hold. The last account is
+The Mac also keeps separate saved homes, with each login in the Keychain. A usage reading that
+fails or is missing for the selected account does not alone prove its login is unusable;
+the local reader confirms sign-in separately, and a real limit still comes back from Claude
+as an ordinary usage hold. The last account is
 recorded only when Claude reports that the process started. Each main-conversation response with
 usage also retains its account, conversation ID, response ID and receipt time in that session's
 metadata. The next ordinary turn stays on that account when its last response is within the
@@ -508,8 +545,8 @@ provider granted early could never be noticed: on 2026-10-10 the Mac held every 
 11, 11 PM" for a chann.app refusal his 2:05 AM reset had already ended. Each reading now forgets an
 account's refusals when that account shows every window below 100% and some window lower than its last
 reading before the refusal (`usageFellSince`); usage only falls on a reset, so a reading that merely lags
-a refusal never clears it. Accounts read for this machine by its peer count like any other: the Mac's
-usage is read by the server. After a switch the owner re-reads usage at once, and the switch result says
+a refusal never clears it. Each machine's own Claude usage readings determine its room;
+the Mac reads its saved Keychain homes locally. After a switch the owner re-reads usage at once, and the switch result says
 whether the account answered its test request or refused it as out of usage; the app shows that sentence.
 
 **A conversation moves between accounts, because its history is shared.** It could not until
@@ -546,6 +583,15 @@ For Claude, the account is decided **fresh at every dispatch**:
 For Codex, every turn uses the shared App Server. A banked turn can select only its currently
 signed-in account; other Codex accounts still have usage readings and can be selected through
 Accounts, which moves the login after running turns finish. There is no per-turn Codex home.
+Ordinary turns and scheduled firings without a saved account binding use that current login at
+their next dispatch. A fresh reading with room, a completed account switch, or a confirmed reset
+therefore releases their queued usage holds; the queue still enforces each scheduled firing's
+original fire time. Banked turns remain bound to the account and allowance window they saved.
+On 2026-11-06 the hourly overnight checkpoint's 14:00 firing waited for a spent account's
+November 12 reset even after the shared App Server moved to a personal account with room:
+the release path excluded every saved turn, including an unbound schedule. The Accounts
+tool-free retry had a separate stale session-column name and could not recover that hold either.
+See [the failure record](../incidents/2026-11-06-unbound-schedule-stayed-usage-held.md).
 
 Running out mid-turn needs no new machinery: the turn fails with the provider's usage refusal
 carrying its reset instant and returns to its own queue. The next Claude attempt re-runs its
@@ -625,8 +671,12 @@ where Claude keeps logins in the Keychain rather than a file, this sign-in repor
 could not finish rather than filing anything.
 
 The Mac proof established both continuation across homes and simultaneous spending on two
-Claude accounts. This source change has not been activated or tested by an agent under the
-current delivery policy; Tejas owns live acceptance.
+Claude accounts. The sign-in itself has since run for real on the server: the runner's
+sign-in record carries a completed Claude sign-in at 2026-11-07T01:45:36Z, and
+`~/.claude-accounts/tejastej-dc-gmail-com/.credentials.json` was rewritten at that second
+with the previous login set aside as `.credentials.json.superseded-1794015936337`. So the
+independent-login design is observed, not only designed. Codex's equivalent is dated
+2026-11-06T18:09:41Z, the first credential filed into a newly created home.
 
 
 ## Seeing it coming
@@ -977,16 +1027,33 @@ The owner serves `GET /sessions/v1/usage/breakdown?period=today|week`; agents ge
 same read through `router-actions.sh sessions usage --by-session --period today|week`.
 The read now includes `callMix` for all calls, each account, and each session:
 total calls, helper and main calls, helper share, and each model's call share.
+For the Accounts dashboard, each account and session also carries `byModel` with
+the exact transcript token classes, a published-price weighted total, and the
+helper subset of both. Each session carries `byHelper`, keyed by the source
+subagent transcript identity and model. Codex child threads are followed to
+their root session; Claude Code nested subagent files retain their own helper
+identity. These measurements are additive across accounts and projects. The
+dashboard groups the existing session project labels across providers, keeps
+unknown attribution visible, and shows raw token totals beside the weighted
+comparison bars. A call count must never be presented as a token share.
 Codex helper transcripts identify their parent thread; nested helpers follow that
 chain back to the session. It also counts accepted Fable/Astra escalation events
 and accepted agent-shell Astra command starts from the owner's escalation log
 by model. This measures model calls, not price or task quality, and the transcript
 scanner's `computedAt` bounds freshness.
 Today starts at midnight in the owner's saved-work time zone; week means the last
-seven days. A separate worker reads provider transcripts incrementally and keeps its
-cursor and deduplicated usage records in `usage-breakdown.db` beside, never inside,
-the ledger. The ledger is read only for session titles, projects, and account choices.
-The worker does not copy or modify transcripts and does not hold the owner event loop.
+seven days. Each runner reads its provider transcripts incrementally and keeps its
+cursor and deduplicated usage records in its own usage cache, never in the owner ledger.
+The owner sends only the relevant one-week session, turn, account and prompt-cache facts to
+the runner for attribution. The runner computes the account/session report and cache diagnostics
+beside its cache; the owner combines runner reports. Raw provider records do not cross the relay
+on each refresh. Neither scanner modifies transcripts or holds the owner event loop.
+The Mac peer still runs its own native sessions without a configured provider runner. Its
+breakdown reader scans the existing local Claude and Codex transcript trees and joins those
+calls to a bounded snapshot of its own session ledger. Unknown local account homes remain
+unknown in the report; the account allowance reading and dispatch path are separate. Owners
+with configured runners continue to use the runner reports, and a non-Mac owner with no
+runner refuses the scan instead of silently reading the wrong machine's transcripts.
 It runs in the background: every usage reading starts a scan when the last one is over five
 minutes old, and a read answers from the latest result with its `computedAt` (only the first
 read ever waits for a scan). Until 2026-10-08 it was scanned per read; while the owner
@@ -996,7 +1063,9 @@ separate process, so the latest result is published to `usage-breakdown-latest.j
 the ledger and every process serves that file; until 2026-10-30 each worker kept its own empty
 copy and its reads each waited about 2 s for a scan. A reader scans itself only when no result
 exists or the file is more than fifteen minutes old. `usage_breakdown_refreshed` / `_refresh_failed` log
-each scan's duration.
+each scan's duration. Every response includes `computedAt` and `stale`; a result older than
+fifteen minutes is marked stale while a new scan is attempted, including when that attempt
+fails. The old report remains available for context without claiming it is current.
 
 Shares use published API token prices as an **allowance proxy**, not a claim that a
 subscription's five-hour meter is denominated in dollars. The response includes the

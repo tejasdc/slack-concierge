@@ -10,7 +10,8 @@ import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {basename,join} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
 import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,requeueProvenUnsentNativeChatGptTurn,requeueOrphanedPreAdmissionTurn,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
-import {acceptedInputForTurn,adoptProviderConversationTitle,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,providerRunnerForSession,recordRecoveredResultAttention,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {acceptedInputForTurn,adoptProviderConversationTitle,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,providerRunnerForSession,recordRecoveredResultAttention,recordSessionEvent,recordSessionInputAttention,recoverUnsentAntigravityInputs,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {lastLaunchedConversationHome} from './session-runner-home';
 import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
 import {flushPendingProviderProgressEvents} from './session-projection';
 import {recordResultTurnOutcome,recordUnsaidTurnOutcome} from './session-turn-outcome';
@@ -98,7 +99,7 @@ import {INBOX_INSTRUCTIONS,markResultAnsweredByPost,minutesText,pebbleArrivalWai
 import {readClaudeCachedMessage,readCodexHistoryMessage,readClaudeHistory,readCodexHistory} from './provider-history';
 import {ProviderHistoryPageClient} from './provider-history-page-client';
 import {ATTENTION_INSTRUCTION,releaseFocusForPost,settleExitedProcessReport,topicPromptContext} from './session-topics';
-import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,clearPendingSignIn,pendingRunnerSignIn} from './state';
+import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,reservePendingRunnerSignIn,clearPendingSignIn,pendingRunnerSignIn} from './state';
 import {log,errorFields} from './log';
 import {attachedRecordingWords,transcriptionPrompt} from './transcription';
 import {ProviderLoginManager} from './auth-login';
@@ -125,7 +126,7 @@ import {noticeTime,publishProviderFreeNotice} from './provider-free-notice';
 import {accountHome,setRunnerAccountInUse} from './provider-accounts';
 import {providerRunnerTarget} from './provider-runner-target';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
-import {claudeAccountCachedReset,clearCodexAccountUsage,releaseCodexOrdinaryUsageHeldWork,releaseUsageHeldWork,releaseProvenUsageHolds,usageAttempt,cachedUsageLimit} from './provider-usage';
+import {claudeAccountCachedReset,clearCodexAccountUsage,releaseCodexUnboundUsageHeldWork,releaseUsageHeldWork,releaseProvenUsageHolds,usageAttempt,cachedUsageLimit} from './provider-usage';
 import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
 import {readFileSync,realpathSync,writeFileSync} from 'node:fs';
 import {providerOwnerEnvironment} from './provider-owner-environment';
@@ -337,8 +338,9 @@ export class SessionExecutionHost {
     if(this.restoreRunnerSignIn(provider))return {status:'failed',detail:'A sign-in is already waiting on the runner. Refresh the Accounts page to continue it.'};
     const operationId=`signin:${randomUUID()}`;
     const operation:RunnerSignInState={runner,operationId,profileId:profileId??null,status:'starting'};
+    if(!reservePendingRunnerSignIn(provider,this.options.instanceId,Date.now()+10*60_000,{runner,operationId,profileId}))
+      return {status:'failed',detail:'This machine is installing an update. No sign-in started; try again after the update finishes.'};
     this.runnerSignIns.set(provider,operation);
-    recordPendingSignIn(provider,this.options.instanceId,Date.now()+10*60_000,{runner,operationId,profileId});
     try{
       const answer=await runnerMachineCall<any>(runner,'accounts.signin.start',{operationId,provider});
       if(!answer||typeof answer.status!=='string')throw new Error('The runner returned no sign-in outcome.');
@@ -501,11 +503,28 @@ export class SessionExecutionHost {
   }
   private checkProviderAuth(fresh=false):void{
     const recent=Date.now()-this.providerAuthCheckedAt<30_000;
-    this.providerAuthCheck??=!fresh&&recent?null:Promise.all([
+    if(this.providerAuthCheck){
+      if(fresh){
+        const current=this.providerAuthCheck;
+        const forced=scheduleProviderAccountUsageRefresh(true).catch(()=>{});
+        this.trackProviderAuthCheck(Promise.all([current,forced]));
+      }
+      return;
+    }
+    if(!fresh&&recent)return;
+    this.trackProviderAuthCheck(Promise.all([
       providerRunnerTarget('claude-code')?Promise.resolve():refreshClaudeAccount(),
       providerRunnerTarget('codex')?Promise.resolve():codexSignInState().then(answer=>{this.codexSignIn=answer.state;if(answer.state==='signed-in')setCodexAccountInUse(answer);}).catch(()=>{}),
-      scheduleProviderAccountUsageRefresh().catch(()=>{})]).then(()=>undefined,()=>undefined)
-      .finally(()=>{this.providerAuthCheck=null;this.providerAuthCheckedAt=Date.now();});
+      scheduleProviderAccountUsageRefresh(fresh).catch(()=>{})]));
+  }
+  private trackProviderAuthCheck(work:Promise<unknown>):void{
+    const check=work.then(()=>undefined,()=>undefined);
+    this.providerAuthCheck=check;
+    void check.then(()=>{
+      if(this.providerAuthCheck!==check)return;
+      this.providerAuthCheck=null;
+      this.providerAuthCheckedAt=Date.now();
+    });
   }
   private async providerAuthStatus(fresh=false):Promise<readonly ProviderAuthView[]>{
     this.checkProviderAuth(fresh);
@@ -543,7 +562,7 @@ export class SessionExecutionHost {
       try {
         const cleared=clearCodexAccountUsage(outcome.accountId,outcome.verifiedReadStartedAtMs);
         if(cleared){
-          if(currentAccount('codex')?.id===outcome.accountId){releaseCodexOrdinaryUsageHeldWork(outcome.accountId);this.options.wake();}
+          if(currentAccount('codex')?.id===outcome.accountId){releaseCodexUnboundUsageHeldWork(outcome.accountId);this.options.wake();}
         } else outcome={...outcome,status:'redeemed',detail:'The reset was redeemed, but a newer refusal prevents confirming launch availability. Work remains held.'};
       } catch(error) {
         log('error','codex_reset_cache_clear_failed',errorFields(error));
@@ -582,7 +601,7 @@ export class SessionExecutionHost {
       const waiting=db.query(`SELECT COALESCE(turns.provider_model,
           (SELECT earlier.provider_model FROM turns earlier WHERE earlier.session_id=turns.session_id
             AND earlier.id<turns.id AND earlier.provider_model IS NOT NULL ORDER BY earlier.id DESC LIMIT 1)) AS model,
-          sessions.metadata_json
+          sessions.native_metadata_json AS metadata_json
         FROM turns JOIN sessions ON sessions.id=turns.session_id
         WHERE turns.status='queued' AND turns.dispatch_hold='usage'
           AND turns.dispatch_failure_class IN ('backoff','usage_wait')
@@ -1055,6 +1074,11 @@ export class SessionExecutionHost {
     for(const row of sessions)this.pullWaitingInputs(row.session_id);
     if(sessions.length)log('info','outside_unsent_human_sessions_scanned',{sessions:sessions.length});
   }
+  recoverAntigravityUnsentInputs() {
+    const queued=recoverUnsentAntigravityInputs();
+    if(queued)this.options.wake();
+    return queued;
+  }
   private steer(input:AcceptedSessionInput):boolean {
     const body=JSON.parse(input.payload_json);
     const session=getSessionById(input.session_id);
@@ -1092,7 +1116,9 @@ export class SessionExecutionHost {
         // of showing it queued until their next periodic check.
         const deliveryChanged=(state:'sent'|'ambiguous'|'failed')=>recordSessionEvent({eventId:steeringAttemptEventId(`delivery:${input.id}:${state}`,input.id,steeringId),
           sessionId:input.session_id,inputId:input.id,turnId:target.turnId,kind:'delivery',payload:{state}});
-        const accepted=target.controller.enqueue({clientMessageId:input.id,text:this.prompt(attached),
+        // prepareText always supplies the actual provider words. Preparing them here would
+        // synchronously finish the Inbox history index before the message even enters its queue.
+        const accepted=target.controller.enqueue({clientMessageId:input.id,text:'',
           prepareText:async root=>{
             const attachments=this.owner.attachments(body.attachments);
             let text=this.prompt(attached);
@@ -1194,7 +1220,10 @@ export class SessionExecutionHost {
       return await this.options.registry.run({turnId:claim.turn_id,sessionId:session.id},async(steeringController,closeSteering,cancellationController)=>{
         if(input.kind==='fork'){closeSteering(new Error('A native fork control has no model input channel.'));return this.runFork(claim,input,session);}
         if(sessionMetadata(session).outside)steeringController.close(new Error('An independent Codex command has no live input channel.'));
-        if(adoption)await this.settleUnsentSteering(claim.turn_id,adoption.execution);
+        if(adoption){
+          await this.settleUnsentSteering(claim.turn_id,adoption.execution);
+          if(session.provider_id==='antigravity')this.recoverAntigravityUnsentInputs();
+        }
         const outcome=await this.runModel(claim,input,session,steeringController,closeSteering,cancellationController,adoption);
         // Only here is the run's outcome durably settled; a crash before this leaves the host's
         // record for the next coordinator to settle from.
@@ -1505,7 +1534,7 @@ export class SessionExecutionHost {
         run:async prepared=>{
           // The claimed turn, its execution record and its input are on disk before any provider
           // (Claude, Codex or ChatGPT) is started or told anything.
-          await ledgerDurable();
+          await ledgerDurable({kind:'provider_input',id:input.id});
           // A run taken back after a restart takes messages again only once its history is rebuilt;
           // what the restart returned to the queue meanwhile goes into it then.
           if(adoption&&prepared.onSteeringReady){
@@ -2060,11 +2089,7 @@ export function chooseTurnRunner(session:SessionRow,metadata=sessionMetadata(ses
     // A bound native conversation keeps the machine that last ran it. Current deployment
     // settings cannot recover that fact: use the durable execution and lease that actually
     // launched its latest turn, and refuse if that evidence is incomplete or ambiguous.
-    const prior=db.query(`SELECT execution.supervisor,attempt.runner FROM executions execution
-      LEFT JOIN runner_attempts attempt ON attempt.job_id='turn:'||execution.execution_id
-      WHERE execution.session_id=? AND execution.provider=?
-      ORDER BY execution.created_at_ms DESC,attempt.started_at_ms DESC LIMIT 1`).get(session.id,session.provider_id) as
-      {supervisor:string;runner:string|null}|null;
+    const prior=lastLaunchedConversationHome(db,session.id,session.provider_id);
     if(!prior){
       // Older local copies predate the explicit local binding. A fork inherited its parent's
       // machine; a local resurrection copied the transcript into this machine's provider home.

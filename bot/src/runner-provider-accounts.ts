@@ -586,7 +586,7 @@ function exactProviderTranscripts(key: AccountProvider, home: string, nativeId: 
       try { names = readdirSync(directory); } catch { return; }
       for (const name of names) {
         const path = join(directory, name);
-        if (name === `-${nativeId}.jsonl` || name === `${nativeId}.jsonl`) {
+        if (name === `${nativeId}.jsonl` || key === "codex" && name.endsWith(`-${nativeId}.jsonl`)) {
           if (existsSync(path)) matches.push(path);
         } else if (!name.startsWith(".") && !name.endsWith(".jsonl")) visit(path, depth + 1);
       }

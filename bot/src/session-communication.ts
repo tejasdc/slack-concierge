@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, settleTurnDependencies, SETTLED_EXECUTION_SQL, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
-import { carryingTurn, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, HOLDING_OUTCOMES, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
+import { carryingTurn, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
@@ -14,11 +14,12 @@ import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWit
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordRequesterDecisionReturn, recordTurnOutcome, turnDeclaredByAction, withdrawOpenNeed, type DeclaredTurnOutcome } from './session-turn-outcome';
 import {turnRoutedInput} from './inbox-routing-result';
-import {sessionAuthor} from './session-message-author';
+import {acceptedInputAuthor,sessionAuthor} from './session-message-author';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
 import {ProviderCapabilityUnavailableError} from './provider-policy';
 import { log } from './log';
+import { heldPrerequisite } from './request-prerequisite-hold';
 import { STEP_ASKS, finishedTodoRefusal, type TodoState } from './question-todos';
 import {boundSearchResponse} from './search-response-boundary';
 import {saveQueuedTurn,savedWorkSettings} from './saved-work';
@@ -43,6 +44,9 @@ import { isWritingSession, takesManySubjects, WRITING_SESSION_REFUSAL } from './
 import {standingAgent,standingAgentSession,bindStandingAgentSession,STANDING_WORK_REFUSAL} from './standing-agents';
 import {parseMachineNeed} from './machine-need';
 import {signInWorkerActionId} from './signin-renewal';
+import {MAC_UPDATE_SOURCE_INPUT,MAC_UPDATE_SOURCE_RUN,macUpdateSourceProven} from './mac-update-source';
+import {MAC_FOCUS_SOURCE_INPUT,MAC_FOCUS_SOURCE_RUN,macFocusSourceProven} from './mac-focus-source';
+import {AUTHORIZED_WEB_APP} from './mac-surface-policy';
 import { backfillRequestTopics, consultPointer, forTopic, handBackText, newTopicNote, sessionWorkload, topicOf, topicRootFor } from './session-fit';
 export type CommunicationSource = {
     channel_id?: string;
@@ -209,6 +213,8 @@ export class SessionCommunicationCoordinator {
     private stopped = true;
     private disarm: (() => void) | null = null;
     private detach: (() => void) | null = null;
+    private readonly healthyRechecks = new Map<string, { storedDue: number; nextCheck: number }>();
+    private nextRequestInspectionAt = 0;
     private readonly now: () => number;
     constructor(private readonly dependencies: Dependencies) { this.now = dependencies.now ?? Date.now; }
     /**
@@ -218,13 +224,39 @@ export class SessionCommunicationCoordinator {
      * work request). A run holding only questions stays information-only, which is what keeps a
      * question from being turned into a work order further down the chain.
      */
-    private authority(actor: Actor): {actor: Actor; scope: 'informational' | 'work'} {
+    private authority(actor: Actor): {actor: Actor; scope: 'informational' | 'work'; authorityInputId?: string} {
         if (!actor.inputId) return {actor, scope: 'work'};
         const scope = (input: AcceptedSessionInput) => sessionInputProvenance(input)?.effectScope === 'informational' ? 'informational' : 'work';
         if (scope(getAcceptedSessionInput(actor.inputId)!) === 'work') return {actor, scope: 'work'};
+        const openWorkInput=(input:AcceptedSessionInput)=>!!db.query(`SELECT 1 FROM session_communication_requests
+            WHERE target_input_id=? AND target_session_id=? AND outcome IS NULL
+              AND json_extract(payload_json,'$.requestedEffect')='work'
+            UNION ALL SELECT 1 FROM session_peer_deliveries
+            WHERE target_input_id=? AND target_session_id=? AND closed_at_ms IS NULL AND requested_effect='work' LIMIT 1`)
+            .get(input.id,actor.session,input.id,actor.session);
         const holder = (db.query("SELECT * FROM session_inputs WHERE turn_id=? AND session_id=? AND origin IN ('human','agent') ORDER BY rowid").all(actor.turn, actor.session) as AcceptedSessionInput[])
-            .find(input => input.id !== actor.inputId && scope(input) === 'work');
-        return holder ? {actor: {...actor, inputId: holder.id, source: {...actor.source, input_id: holder.id}}, scope: 'work'} : {actor, scope: 'informational'};
+            .find(input => input.id !== actor.inputId && scope(input) === 'work' && (humanAuthored(input)||openWorkInput(input)));
+        if (holder) return {actor, scope:'work', authorityInputId:holder.id};
+        // A later informational wake can start a new run while an earlier assigned request is
+        // still open. The grant is the exact retained work request, not the wake's ancestry.
+        const grants = db.query(`SELECT target_input_id,thread_root_input_id FROM session_communication_requests
+            WHERE target_session_id=? AND outcome IS NULL AND target_input_id IS NOT NULL
+              AND json_extract(payload_json,'$.requestedEffect')='work'
+            ORDER BY created_at_ms DESC`).all(actor.session) as {target_input_id:string;thread_root_input_id:string|null}[];
+        const peerGrants=db.query(`SELECT target_input_id FROM session_peer_deliveries
+            WHERE target_session_id=? AND closed_at_ms IS NULL AND requested_effect='work'
+            ORDER BY created_at_ms DESC`).all(actor.session) as {target_input_id:string}[];
+        const eligible=[...grants,...peerGrants.map(row=>({...row,thread_root_input_id:null}))]
+            .filter(row=>{const input=getAcceptedSessionInput(row.target_input_id);return !!input&&handedToARun(input.id)&&scope(input)==='work';});
+        const wake=getAcceptedSessionInput(actor.inputId);
+        const wakeRoot=wake?.request_id?(db.query(`SELECT thread_root_input_id FROM session_communication_requests
+            WHERE request_id=? AND target_session_id=?`).get(wake.request_id,actor.session) as {thread_root_input_id:string|null}|null)?.thread_root_input_id:null;
+        const matching=wakeRoot?eligible.filter(row=>row.thread_root_input_id===wakeRoot):[];
+        // A session can hold several unrelated tasks. An informational wake cannot choose an
+        // unrelated task's human lineage merely because it was the most recently assigned.
+        const selected=matching.length===1?matching[0]:eligible.length===1?eligible[0]:null;
+        const grant=selected?getAcceptedSessionInput(selected.target_input_id):null;
+        return grant ? {actor, scope:'work', authorityInputId:grant.id} : {actor, scope:'informational'};
     }
     /** Whether the addressed or new session can be given work at all (not ChatGPT, consultation-only or archive history). */
     private receivesWork(input: {address?: string; provider?: string; peer?: string}) {
@@ -368,8 +400,8 @@ export class SessionCommunicationCoordinator {
         return `cannot be asked (${view.capabilities.reason ?? 'no provider can reopen it'}); read it with sessions context ${address}`;
     }
     /**
-     * A question to an archived or paused session, answered from a throwaway copy of its
-     * conversation (the same copy a side question in thnkr.ing uses): no tools, never saved, and
+     * A question to an archived or paused session, answered from its reusable final-answer copy
+     * (the same copy a side question in thnkr.ing uses): no tools, question turn never saved, and
      * the session itself is not woken or changed. The answer is this command's result; one that
      * takes longer than the command may wait is collected by repeating the same command.
      */
@@ -379,7 +411,10 @@ export class SessionCommunicationCoordinator {
         const question = input.text.trim().slice(0, 8000);
         const id = `${session.id}:request-side:${hash(`${actor.inputId ?? ''}:${input.action_id}:${question}`)}`;
         const asked = await awaitingOutside(() => askAsideOnce(id, () => ({provider: session.provider_id, sessionUuid: session.agent_session_uuid!,
-            cwd: meta.cwd ?? this.dependencies.owner.defaultCwd, model: meta.model ?? null, running: false, passage: '', question, earlier: [],
+            cwd: meta.cwd ?? this.dependencies.owner.defaultCwd, model: meta.model ?? null,
+            boundary:(db.query(`SELECT provider_turn_id FROM turns WHERE session_id=? AND status='done'
+              AND provider_turn_id IS NOT NULL ORDER BY id DESC LIMIT 1`).get(session.id) as {provider_turn_id:string}|null)?.provider_turn_id??null,
+            passage: '', question, earlier: [],
             agentAsker: `concierge:${actor.session}`}), 90_000));
         const address = sessionAddress(session);
         if (asked.state === 'asking')
@@ -387,7 +422,7 @@ export class SessionCommunicationCoordinator {
                 notice: `This session is ${frozen.state}, so a side copy of its conversation is answering. It has not finished yet: repeat the same command with the same --action-id to collect the answer.`};
         log('info', 'request_side_copy_answered', {session_id: session.id, duration_ms: asked.durationMs});
         return {state: 'answered', address, answeredBy: 'side copy', answer: asked.answer, model: asked.model,
-            notice: `This session is ${frozen.state}, so a side copy of its conversation answered (no tools, nothing saved; the session itself was not woken). No request was opened.`};
+            notice: `This session is ${frozen.state}, so a saved side copy of its conversation answered (no tools; this question was not saved and the session itself was not woken). No request was opened.`};
     }
     private peerActor(actor: Actor): PeerActor {
         return {session:actor.session,turn:actor.turn,inputId:actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id};
@@ -708,8 +743,44 @@ export class SessionCommunicationCoordinator {
             if(typeof kind==='string'&&kind&&kind!=='provider-renewal'){
                 const accepted=getAcceptedSessionInput(row.id);
                 const provenance=accepted?sessionInputProvenance(accepted):null;
+                // Peer provenance presents the sender's session after normalization; the
+                // delivery row still stores its raw local identity.
+                const updateDelivery=typeof provenance?.requestId==='string'&&provenance.requestId
+                  ?db.query(`SELECT 1 FROM session_peer_deliveries
+                    WHERE target_input_id=? AND target_session_id=? AND request_id=?
+                      AND peer='cloud'
+                      AND origin_input_id=? AND origin_run_id=?
+                      AND requested_effect='work' AND closed_at_ms IS NULL`).get(
+                    row.id,running.session_id,provenance.requestId,MAC_UPDATE_SOURCE_INPUT,MAC_UPDATE_SOURCE_RUN)
+                  :null;
+                const updateAuthorization=process.platform==='darwin'&&kind==='mac-app'
+                    &&provenance?.peer==='cloud'&&provenance.source?.sessionId==='cloud:9118'
+                    &&provenance.source.inputId===MAC_UPDATE_SOURCE_INPUT
+                    &&provenance.source.runId===MAC_UPDATE_SOURCE_RUN
+                    &&typeof provenance.requestId==='string'
+                    &&!!updateDelivery
+                    &&typeof need.why==='string'
+                    &&need.why.includes(AUTHORIZED_WEB_APP)
+                    &&macUpdateSourceProven();
+                const focusDelivery=typeof provenance?.requestId==='string'&&provenance.requestId
+                  ?db.query(`SELECT 1 FROM session_peer_deliveries
+                    WHERE target_input_id=? AND target_session_id=? AND request_id=?
+                      AND peer='cloud' AND origin_input_id=? AND origin_run_id=?
+                      AND requested_effect='work' AND closed_at_ms IS NULL`).get(
+                    row.id,running.session_id,provenance.requestId,MAC_FOCUS_SOURCE_INPUT,MAC_FOCUS_SOURCE_RUN)
+                  :null;
+                const focusAuthorization=process.platform==='darwin'&&kind==='mac-app'
+                    &&provenance?.peer==='cloud'&&provenance.source?.sessionId==='cloud:9118'
+                    &&provenance.source.inputId===MAC_FOCUS_SOURCE_INPUT
+                    &&provenance.source.runId===MAC_FOCUS_SOURCE_RUN
+                    &&!!focusDelivery&&typeof need.why==='string'
+                    &&need.why.includes(AUTHORIZED_WEB_APP)
+                    &&need.why.includes('bounded Focus Start/End acceptance')
+                    &&macFocusSourceProven();
                 return {kind,why:typeof need.why==='string'?need.why:'',
-                    humanInputId:provenance?.originatingHuman?.inputId,effectScope:provenance?.effectScope};
+                    humanInputId:provenance?.originatingHuman?.inputId,
+                    effectScope:updateAuthorization||focusAuthorization?'work':provenance?.effectScope,
+                    updateAuthorization,focusAuthorization};
             }
             // A renewal remains current while its exact accepted request is open in this
             // turn. A later budget or progress input cannot erase that request's custody.
@@ -1268,6 +1339,9 @@ export class SessionCommunicationCoordinator {
         return this.receipt(this.row(row.request_id));
     }
     private receipt(row: RequestRow, withTarget = true) {
+        const recheck = this.healthyRechecks.get(row.request_id);
+        const due = !row.outcome && row.overdue_at_ms === null && recheck?.storedDue === row.due_at_ms && recheck.nextCheck > this.now()
+            ? recheck.nextCheck : row.due_at_ms;
         const binding = this.binding(row);
         const execution = binding?.turn_id ? db.query('SELECT status,provider_turn_id,provider_input_acknowledged_at FROM turns WHERE id=?').get(binding.turn_id) as any : null;
         const steering = binding?.input_kind === 'steering' ? binding.steering_id
@@ -1281,7 +1355,7 @@ export class SessionCommunicationCoordinator {
             target_session_id: `concierge:${row.target_session_id}`, target_input_id:row.target_input_id,
             operation_id:(db.query("SELECT id FROM session_inputs WHERE request_id=? AND kind='request' ORDER BY rowid LIMIT 1").get(row.request_id) as {id:string}|null)?.id??null,
             routed_request_id: row.routed_request_id, target_turn_id: row.target_turn_id,
-            due_at_ms: row.due_at_ms, overdue_at_ms: row.overdue_at_ms, result: row.result_json ? JSON.parse(row.result_json) : null,
+            due_at_ms: due, overdue_at_ms: row.overdue_at_ms, result: row.result_json ? JSON.parse(row.result_json) : null,
             execution: execution ? { turn_id: binding.turn_id, input_kind: binding.input_kind, input_status: steering?.status ?? execution.status, acknowledged_at: steering?.provider_sent_at ?? (binding.input_kind==='turn'?execution.provider_input_acknowledged_at:null) ?? null, provider_turn_id: execution.provider_turn_id } : null,
             events: (db.query('SELECT * FROM session_communication_events WHERE request_id=? ORDER BY rowid').all(row.request_id) as EventRow[])
                 .map(event => ({ event_id: event.event_id, kind: event.kind, status: event.status, error: event.error, payload: JSON.parse(event.payload_json), routed_request_id: event.routed_request_id })) };
@@ -1293,7 +1367,8 @@ export class SessionCommunicationCoordinator {
         if(!input.action_id||!Number.isSafeInteger(input.turn_id)||input.turn_id!<1)throw new Error('Name a stable action and exact saved turn.');
         action(input.action_id);
         return this.dependencies.owner.savedWorkControl(input.turn_id!,input.verb==='start'?'start':'drop',
-            {clientActionId:input.action_id,cancelingSessionId:actor.session});
+            {clientActionId:input.action_id,cancelingSessionId:actor.session,
+                cancelingInputId:actor.inputId,cancelingRunId:nativeRunId(actor.turn)});
     }
     async pause(input:{source:CommunicationSource;verb:'status'|'all'|'resume';action_id?:string;session_ids?:string[]}) {
         this.actor(input.source);
@@ -1470,7 +1545,7 @@ export class SessionCommunicationCoordinator {
             input=session?{...input,role:undefined,address:sessionAddress(session)}
                 :{...input,role:undefined,provider:'auto',project:standingLocation.cwd,title:input.title??agent.description};
         }
-        let routedFrom:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'}|null=null;
+        let routedFrom:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'|'service'|'unknown';author:import('./provider-history').MessageAuthor}|null=null;
         if(input.routeMessageId!==undefined){
             if(input.provider||!input.address||input.saved||input.after?.length||input.consult||input.thread||input.return_to_requester)
                 throw new Error('Routing one message to a session needs one exact existing address, without a second thread or request destination.');
@@ -1486,8 +1561,9 @@ export class SessionCommunicationCoordinator {
             const attachments=Array.isArray(body.attachments)?body.attachments.filter((id:unknown):id is string=>typeof id==='string'):[];
             if(!originalText.trim()&&!attachments.length)throw new Error('The routed message has no words or attachments.');
             const title=(db.query('SELECT title FROM inbox_topics WHERE topic_id=?').get(topicId) as {title:string}|null)?.title??topicId;
+            const author=acceptedInputAuthor(source).author;
             routedFrom={sessionId:`concierge:${source.session_id}`,messageId:source.id,topicId,root,title,originalText,
-                originalCreatedAt:source.created_at.replace(' ','T')+'Z',authorKind:source.origin==='human'?'human':'agent'};
+                originalCreatedAt:source.created_at.replace(' ','T')+'Z',authorKind:author.kind,author};
             input={...input,text:originalText.trim()?originalText:'Attachment message from the Inbox.',attachments};
         }
         text(input.text);
@@ -1603,7 +1679,7 @@ export class SessionCommunicationCoordinator {
             if(input.after?.length||input.pace?.length)throw new Error('A peer request cannot wait on this instance\'s requests.');
             if(input.provider===undefined&&(typeof input.address!=='string'||!input.address))throw new Error('A peer request needs the peer\'s exact discovered address or --provider for a new session there.');
             if(input.requestedEffect!==undefined&&!['informational','work'].includes(input.requestedEffect))throw new Error('Requested effect must be informational or work within existing authority.');
-            if(input.requestedEffect==='work'&&sessionInputProvenance(getAcceptedSessionInput(actor.inputId!)!)?.effectScope==='informational')
+            if(input.requestedEffect==='work'&&sender.scope==='informational')
                 throw new Error('An informational request cannot delegate work; preserve its originating scope.');
             if(input.attachments!==undefined)this.dependencies.owner?.attachments(input.attachments);
             if(input.files!==undefined&&!Array.isArray(input.files))throw new Error('Files must contain named attachment bytes.');
@@ -1615,9 +1691,14 @@ export class SessionCommunicationCoordinator {
                 const history=await this.earlierWork(actor,input,routedFrom?.root??topicRootFor(threadRoot,actor.inputId),null);
                 if(history?.text)input={...input,text:`${history.text}\n\n${input.text}`};
             }
+            if(input.requestedEffect==='work'){
+                const current=this.authority(actor);
+                if(current.scope!=='work'||current.authorityInputId!==sender.authorityInputId)
+                    throw new Error('The work request that authorized this ask is no longer open.');
+            }
             return this.peers().ask(this.peerActor(actor),{peer:input.peer,action_id:input.action_id,address:input.address,provider:input.provider,effort:input.effort,escalationReason:input.escalationReason,project:input.project,title,summary:input.summary,text:input.text,
                 forTask:input.for_task,recoveryOf:input.recovery_of,correctionOf:input.correction_of,
-                requestedEffect:input.requestedEffect,files:input.files,attachments:input.attachments,captureId:input.captureId,evidence:input.evidence,threadRoot,threadSourceMessageId,returnToRequester:input.return_to_requester,
+                requestedEffect:input.requestedEffect,authorityInputId:input.requestedEffect==='work'?sender.authorityInputId:undefined,files:input.files,attachments:input.attachments,captureId:input.captureId,evidence:input.evidence,threadRoot,threadSourceMessageId,returnToRequester:input.return_to_requester,
                 ...(machineNeed?{machineNeed}:{}),
                 ...(routedFrom?{routedFrom}:{})});
         }
@@ -1639,14 +1720,14 @@ export class SessionCommunicationCoordinator {
             throw new Error('pace must contain exact existing request IDs.');
         const pace = [...new Set(input.pace ?? [])].sort();
         if(input.requestedEffect!==undefined&&!['informational','work'].includes(input.requestedEffect))throw new Error('Requested effect must be informational or work within existing authority.');
-        if(input.requestedEffect==='work'&&sessionInputProvenance(getAcceptedSessionInput(actor.inputId!)!)?.effectScope==='informational')
+        if(input.requestedEffect==='work'&&sender.scope==='informational')
             throw new Error('An informational request cannot delegate work; preserve its originating scope.');
         if(input.evidence!==undefined&&!Array.isArray(input.evidence))throw new Error('Evidence must be exact references.');
         if(input.attachments!==undefined)this.dependencies.owner?.attachments(input.attachments);
         if(input.files!==undefined&&!Array.isArray(input.files))throw new Error('Files must contain named attachment bytes.');
         if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
         if(input.answer_view!==undefined&&!['summary','full'].includes(input.answer_view))throw new Error('--answer-view is summary or full.');
-        const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{}),...(localMachineNeed?{machineNeed:localMachineNeed}:{}),...(routedFrom?{routedMessage:{sourceInputId:routedFrom.messageId},routedFrom}:{})};
+        const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{}),...(input.requestedEffect==='work'&&sender.authorityInputId?{authorityInputId:sender.authorityInputId}:{}),...(localMachineNeed?{machineNeed:localMachineNeed}:{}),...(routedFrom?{routedMessage:{sourceInputId:routedFrom.messageId},routedFrom}:{})};
         const encoded = JSON.stringify({ ...(requestedRole?{role:requestedRole}:input.provider?{provider:input.provider}:{address:input.address}),
             ...((requestedRole?requestedTitle:title)===undefined?{}:{title:requestedRole?requestedTitle:title}), text: input.text, after,...(pace.length?{pace}:{}),...extra,...(threadRoot?{thread:threadRoot}:{}),
             ...(input.for_task?{forTask:input.for_task}:{}),
@@ -1730,6 +1811,11 @@ export class SessionCommunicationCoordinator {
         const id = randomUUID();
         const now = this.now();
         db.transaction(() => {
+            if(input.requestedEffect==='work'){
+                const current=this.authority(actor);
+                if(current.scope!=='work'||current.authorityInputId!==sender.authorityInputId)
+                    throw new Error('The work request that authorized this ask is no longer open.');
+            }
             const sourceInput = actor.inputId!;
             if(input.provider||consultation)this.actor({input_id:sourceInput!,run_id:nativeRunId(actor.turn)});
             if(input.files?.length||input.captureId) {
@@ -2247,9 +2333,11 @@ export class SessionCommunicationCoordinator {
             if (input.final && inferred)
                 db.query('UPDATE session_communication_events SET superseded_by_event_id=? WHERE event_id=?').run(eventId, inferred.event_id);
             const id = this.event(request, input.final ? 'final' : 'progress', payload, key, eventId);
-            if(requestPayload.promptAnswer&&(input.final||input.answers_question))
+            if(requestPayload.promptAnswer&&(input.final||input.answers_question)) {
+                this.healthyRechecks.delete(request.request_id);
                 db.query('UPDATE session_communication_requests SET prompt_answered_at_ms=?,due_at_ms=? WHERE request_id=? AND prompt_answered_at_ms IS NULL')
                     .run(this.now(),this.now()+STILL_WAITING_AFTER_MS,request.request_id);
+            }
             if(actor.inputId) {
                 const operation=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,kind:'reply',origin:'agent',
                     payload:{text:input.text,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),kind:input.final?'final':'partial',workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{})},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId:request.request_id}).input;
@@ -2477,35 +2565,9 @@ export class SessionCommunicationCoordinator {
         const claim = routed.message_ts ? getSlackUserInputClaim(request.target_channel, routed.message_ts) : null;
         return { ...routed, turn_id: claim?.turn_id ?? routed.turn_id, input_kind: claim?.kind ?? null };
     }
-    /**
-     * The prerequisite holding this request for its requester's decision, if any. An
-     * outcome without confirmed success waits for that decision, but a request the
-     * requester asked after the outcome had reached it is the decision: holding it would
-     * wait for a choice already made, with nothing left that could release it.
-     */
-    private heldPrerequisite(request: RequestRow, dependencies = ((JSON.parse(request.payload_json).after ?? []) as string[]).map(id => this.row(id))) {
-        const ask=db.query("SELECT sequence FROM session_owner_events WHERE event_id=?").get(`request:${request.request_id}`) as {sequence:number}|null;
-        return dependencies.find(dependency => {
-            if(!HOLDING_OUTCOMES.includes(dependency.outcome ?? ''))return false;
-            const resultEventId=JSON.parse(dependency.result_json??'{}').event_id;
-            const directPost=resultEventId?db.query("SELECT sequence FROM session_owner_events WHERE event_id=?").get(`post:forward:${resultEventId}`) as {sequence:number}|null:null;
-            const declared=resultEventId?db.query("SELECT payload_json FROM session_communication_events WHERE event_id=?").get(resultEventId) as {payload_json:string}|null:null;
-            const group=declared?JSON.parse(declared.payload_json).answerGroup:null;
-            const root=inboxRequestRoot(db,dependency.request_id,dependency.thread_root_input_id);
-            const groupedPost=!directPost&&typeof group==='string'&&root
-                ?db.query(`SELECT sequence FROM session_owner_events WHERE session_id=? AND coalesce(json_extract(payload_json,'$.threadRoot'),input_id)=? AND kind='post'
-                    AND json_extract(payload_json,'$.answerGroup')=? ORDER BY sequence LIMIT 1`)
-                    .get(dependency.source_session_id,root,group) as {sequence:number}|null:null;
-            const answerPost=!directPost&&!groupedPost&&root
-                ?db.query(`SELECT sequence FROM session_owner_events WHERE session_id=? AND coalesce(json_extract(payload_json,'$.threadRoot'),input_id)=? AND kind='post'
-                    AND json_extract(payload_json,'$.requestId')=? ORDER BY sequence DESC LIMIT 1`)
-                    .get(dependency.source_session_id,root,dependency.request_id) as {sequence:number}|null:null;
-            const postSequence=(directPost??groupedPost??answerPost)?.sequence;
-            if(ask&&postSequence!==undefined&&postSequence<=ask.sequence)return false;
-            return !db.query(`SELECT 1 FROM session_inputs outcome JOIN session_inputs ask ON ask.id=?
-                WHERE outcome.id=? AND outcome.session_id=ask.session_id AND outcome.rowid<=ask.rowid`)
-                .get(request.source_input_id, `return:${resultEventId}`);
-        })??null;
+    /** The prerequisite holding this request for its requester's decision; shared with the obligations inventory. */
+    private heldPrerequisite(request: RequestRow, dependencies?: RequestRow[]) {
+        return heldPrerequisite(request, dependencies);
     }
     private holdFailedChatGptRequest(request:RequestRow,reason:string):boolean {
         const obligation=chatGptObligationForAttempt(request.request_id);
@@ -2553,9 +2615,11 @@ export class SessionCommunicationCoordinator {
         let routed = this.binding(request);
         // A request that waited behind others starts its reminder clock when it is handed over,
         // not when it was asked, so its agent gets the same time as any other request.
-        if(!routed&&(payload.after.length||payload.pace?.length))
+        if(!routed&&(payload.after.length||payload.pace?.length)) {
+            this.healthyRechecks.delete(request.request_id);
             db.query('UPDATE session_communication_requests SET due_at_ms=max(due_at_ms,?) WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
                 .run(this.now()+STILL_WAITING_AFTER_MS, request.request_id);
+        }
         if(routed?.status==='failed') {
             if(this.holdFailedChatGptRequest(request,routed.error??'The target could not receive this request.'))return;
             this.settle(request,'failed',routed.error??'The target could not receive this request.');
@@ -2674,8 +2738,24 @@ export class SessionCommunicationCoordinator {
             if(this.holdFailedChatGptRequest(request,'The original provider turn was canceled without an answer.'))return;
             // His own Stop is his choice, not news; any other cancellation is work someone must follow up.
             const stop = stoppedByTejas(ended.id);
-            this.settle(request, 'canceled', stop ? stoppedByTejasText(stop.atMs) : cancelledWithoutHisStopText(),
-                { ...output, ...(stop ? { stoppedBy: 'tejas', stoppedAtMs: stop.atMs, stopInputId: stop.inputId } : { stoppedBy: 'not-tejas' }) });
+            const cancellation=db.query(`SELECT input.receipt_json FROM turns turn
+                LEFT JOIN session_inputs input ON input.id=turn.accepted_input_id WHERE turn.id=?`).get(ended.id) as
+                {receipt_json:string|null}|null;
+            const retained=cancellation?.receipt_json?JSON.parse(cancellation.receipt_json):{};
+            const reason=typeof retained.reason==='string'?retained.reason:null;
+            const explanation=reason==='saved_work_drop'
+                ?`The exact scheduled turn ${ended.id} was canceled through Saved work by ${retained.cancelingSessionId?`agent session concierge:${retained.cancelingSessionId}`:'Tejas'}. It did not reach a provider; follow up on any open work.`
+                :reason==='request_withdrawn'
+                ?`The requesting session withdrew the exact queued turn ${ended.id} before provider admission. ${retained.cancellationDetail??''}`
+                :reason==='schedule_overlap'
+                ?`Scheduled turn ${ended.id} was skipped because its previous firing was still in progress.`
+                :cancelledWithoutHisStopText();
+            this.settle(request, 'canceled', stop ? stoppedByTejasText(stop.atMs) : explanation,
+                { ...output, ...(stop ? { stoppedBy: 'tejas', stoppedAtMs: stop.atMs, stopInputId: stop.inputId }
+                    : { stoppedBy: 'not-tejas',...(reason?{cancellationReason:reason}:{}),
+                        ...(retained.cancelingSessionId?{cancelingSessionId:retained.cancelingSessionId}:{}),
+                        ...(retained.cancelingInputId?{cancelingInputId:retained.cancelingInputId}:{}),
+                        ...(retained.cancelingRunId?{cancelingRunId:retained.cancelingRunId}:{}) }) });
             return;
         }
         // Plain words say why, so the requester can tell a refused account from an interrupted run
@@ -2880,6 +2960,7 @@ export class SessionCommunicationCoordinator {
             // 2026-11-02.
             const queuedBehind=JSON.parse(request.payload_json) as {after?:string[];pace?:string[]};
             if((queuedBehind.after??[]).some(id=>!this.row(id).outcome)||(queuedBehind.pace??[]).some(id=>this.pacingWaitsOn(id))) {
+                this.healthyRechecks.delete(request.request_id);
                 db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
                     .run(now + STILL_WAITING_AFTER_MS, request.request_id);
                 return;
@@ -2890,6 +2971,7 @@ export class SessionCommunicationCoordinator {
                     const current=this.row(request.request_id);
                     if(current.outcome||current.prompt_answered_at_ms!==null||current.overdue_at_ms!==null)return;
                     if(current.prompt_reminded_at_ms===null) {
+                        this.healthyRechecks.delete(current.request_id);
                         // One reminder joins the recipient's current run. The retained input ID
                         // makes a restart or reconciliation harmless.
                         this.dependencies.owner!.admit({sessionId:current.target_session_id,inputId:`question-reminder:${current.request_id}`,
@@ -2912,6 +2994,7 @@ export class SessionCommunicationCoordinator {
             // scheduled for 18:42:30 was reported as 15 minutes overdue at 18:42:31 (2026-11-04).
             if (turn?.status === 'queued' && turn.saved_kind === 'scheduled' && turn.saved_fire_at_ms !== null
                 && turn.saved_fire_at_ms + STILL_WAITING_AFTER_MS > now) {
+                this.healthyRechecks.delete(request.request_id);
                 db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
                     .run(turn.saved_fire_at_ms + STILL_WAITING_AFTER_MS, request.request_id);
                 return;
@@ -2943,8 +3026,10 @@ export class SessionCommunicationCoordinator {
                 return;
             }
             if (healthy || updateDraining() || (turn?.status === 'done' && waitingOnDependency(request.target_session_id, request.request_id, request.created_at_ms, false))) {
-                db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
-                    .run(now + STILL_WAITING_AFTER_MS, request.request_id);
+                // This is only a recheck of already accepted work. Keeping its next inspection
+                // in memory avoids an optional SQLite write blocking a receipt on the owner loop.
+                // A restart inspects the still-due row again; durable overdue events remain unchanged.
+                this.healthyRechecks.set(request.request_id, { storedDue: request.due_at_ms, nextCheck: now + STILL_WAITING_AFTER_MS });
                 return;
             }
             const held = turn ? null : this.heldPrerequisite(request);
@@ -2961,8 +3046,13 @@ export class SessionCommunicationCoordinator {
             db.transaction(() => {
                 if (this.row(request.request_id).outcome || this.row(request.request_id).overdue_at_ms !== null)
                     return;
+                // A held request never reached its recipient, so only this requester can move it.
+                // The generic "no confirmed answer" reminder read as the worker's job and left
+                // request 5d979d7f undecided for 52 days.
                 if (!reported)
-                    this.event(request, 'overdue', { text: unresolvedRequestReminder(request.payload_json, STILL_WAITING_MINUTES,
+                    this.event(request, 'overdue', { text: held
+                        ? `${requestLabel(request.payload_json).replace(/^y/, "Y")} (${request.request_id}) was never delivered: it is held for your decision because your earlier request ${held.request_id} ended ${held.outcome} without a confirmed result. The recipient cannot see or answer it. Decide now: cancel it with sessions cancel ${request.request_id}, or ask again without that prerequisite.`
+                        : unresolvedRequestReminder(request.payload_json, STILL_WAITING_MINUTES,
                         'Inspect the recipient’s status and follow up or cancel if the work can no longer wait.'), health, agentReminder:true });
                 db.query('UPDATE session_communication_requests SET overdue_at_ms=? WHERE request_id=?').run(now, request.request_id);
             })();
@@ -2982,6 +3072,11 @@ export class SessionCommunicationCoordinator {
             visit(row);
             await new Promise<void>(resolve => setImmediate(resolve));
         }
+    }
+    private deferredRequestIds(now: number) {
+        for (const [id, recheck] of this.healthyRechecks)
+            if (recheck.nextCheck <= now) this.healthyRechecks.delete(id);
+        return JSON.stringify([...this.healthyRechecks.keys()]);
     }
     private async scanExternalRequests() {
         if (this.incidentScanTraceRemaining-- > 0)
@@ -3146,9 +3241,14 @@ export class SessionCommunicationCoordinator {
                 JOIN session_inputs i ON i.id=r.target_input_id JOIN turns t ON t.id=i.turn_id
                 WHERE r.outcome IS NULL AND r.overdue_at_ms IS NULL AND t.status='queued' AND r.rowid<=? AND r.rowid>?
                 ORDER BY r.rowid LIMIT 1`, request => this.inspectProviderHold(request));
-            await this.scanRows<RequestRow>('session_communication_requests', `SELECT rowid AS reconciliation_rowid,* FROM session_communication_requests
-                WHERE ${AWAITING_INSPECTION} AND due_at_ms<=? AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
-                request => this.inspectOverdueRequest(request), this.now());
+            if (this.now() >= this.nextRequestInspectionAt)
+                await this.scanRows<RequestRow>('session_communication_requests', `SELECT rowid AS reconciliation_rowid,* FROM session_communication_requests
+                    WHERE ${AWAITING_INSPECTION} AND request_id NOT IN (SELECT value FROM json_each(?))
+                      AND due_at_ms<=? AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
+                    request => {
+                        this.healthyRechecks.delete(request.request_id);
+                        this.inspectOverdueRequest(request);
+                    }, this.deferredRequestIds(this.now()), this.now());
             if (this.stopped) break;
             await auditUndeliveredReturns(this.now(), () => this.stopped);
             await this.scanExternalRequests();
@@ -3197,15 +3297,20 @@ export class SessionCommunicationCoordinator {
         this.disarm = null;
         if (this.stopped)
             return;
-        const next = db.query(`SELECT min(due_at_ms) AS due FROM session_communication_requests WHERE ${AWAITING_INSPECTION} AND source_input_id IS NOT NULL AND target_input_id IS NOT NULL`).get() as {
-            due: number | null;
-        };
+        const now = this.now();
+        const excluded = this.deferredRequestIds(now);
+        const storedDue = db.query(`SELECT min(due_at_ms) AS due FROM session_communication_requests INDEXED BY session_communication_due
+            WHERE ${AWAITING_INSPECTION} AND source_input_id IS NOT NULL AND target_input_id IS NOT NULL
+              AND request_id NOT IN (SELECT value FROM json_each(?))`).get(excluded) as {due:number|null};
+        let requestDue = storedDue.due ?? Infinity;
+        for (const recheck of this.healthyRechecks.values()) requestDue = Math.min(requestDue, recheck.nextCheck);
+        this.nextRequestInspectionAt = requestDue;
         const chatGptNext=db.query(`SELECT min(due_at_ms) AS due FROM session_chatgpt_obligations INDEXED BY chatgpt_obligations_due
             WHERE state NOT IN ('resolved','withdrawn_by_tejas') AND due_at_ms IS NOT NULL`).get() as {due:number|null};
-        if (next.due === null && chatGptNext.due===null && !this.pendingAcceptedRecovery)
+        if (requestDue === Infinity && chatGptNext.due===null && !this.pendingAcceptedRecovery)
             return;
         const delay = Math.min(this.pendingAcceptedRecovery?60_000:Infinity,24 * 60 * 60_000,
-            Math.max(0,(next.due??Infinity)-this.now()),Math.max(0,(chatGptNext.due??Infinity)-this.now()));
+            Math.max(0,requestDue-now),Math.max(0,(chatGptNext.due??Infinity)-now));
         if (this.dependencies.arm)
             this.disarm = this.dependencies.arm(() => this.wake(), delay);
         else {
@@ -3223,5 +3328,5 @@ export class SessionCommunicationCoordinator {
         await this.reconciliation;
         await Promise.all([...this.tasks.values()]);
     } while (this.tasks.size || this.reconciliation || this.reconciliationDirty); }
-    async stop() { this.stopped = true; this.reconciliationDirty = false; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; const peerStop=this.dependencies.peers?.stop(); await this.reconciliation; await Promise.allSettled([...this.tasks.values()]); await peerStop; }
+    async stop() { this.stopped = true; this.reconciliationDirty = false; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; const peerStop=this.dependencies.peers?.stop(); await this.reconciliation; await Promise.allSettled([...this.tasks.values()]); await peerStop; this.healthyRechecks.clear(); this.nextRequestInspectionAt = 0; }
 }

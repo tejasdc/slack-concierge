@@ -3,6 +3,7 @@
 import {toolCommand} from '../src/history-rewrite-policy';
 import {liveStoreCopyRefusal} from '../src/live-store-copy-policy';
 import {wholeMachineCrawlRefusal} from '../src/whole-machine-crawl-policy';
+import {thinkeringRetentionCommandRefusal} from '../src/thinkering-retention-command-policy';
 import {homedir} from 'node:os';
 import {realpathSync} from 'node:fs';
 import {resolve} from 'node:path';
@@ -65,7 +66,8 @@ try{crawl=wholeMachineCrawlRefusal(command,String(hook.tool_name??''),input,cwd)
 // The sealed private entrance runs its code behind hidden live mounts, so only its typed
 // command is text-checked; its scripts' contents are not (they name live paths as test data).
 const sealed=!!command&&privateEntrance(command);
-const reason=liveStoreCopyRefusal(command,cwd,undefined,{inspectScripts:!sealed})??crawl;
+const reason=liveStoreCopyRefusal(command,cwd,undefined,{inspectScripts:!sealed})??crawl
+  ??(command?thinkeringRetentionCommandRefusal(command,cwd):null);
 if(reason)process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}})+'\n');
 else if(command&&inheritedLiveState()&&codeLaunch(command)&&!sealed){
   const privatePath=process.env.CONCIERGE_PRIVATE_CODE_PATH;

@@ -35,6 +35,7 @@ try {
  assert.equal(existsSync(worker),true);
  assert.equal(releaseCodexBridgePath(worker),bridge);
  assert.equal(releaseCodexBridgePath(join(prepared.artifactPath,'bot/src/index.js')),bridge);
+ assert.equal(releaseCodexBridgePath(join(prepared.artifactPath,'control/bot/scripts/runner.js')),bridge);
  assert.equal(existsSync(bridge),true);
  assert.match(readFileSync(worker,'utf8'),/releaseCodexBridgePath/);
  const state=join(scratch,'state');mkdirSync(state);

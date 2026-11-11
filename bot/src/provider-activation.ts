@@ -8,6 +8,7 @@ import { execFileSync } from "node:child_process";
 import { authHeldInputCount, codexAdmissionRecoveryHolds, db, holdCodexAdmission, observeExecutionChanges, releaseAuthHeldWork } from "./state";
 import { log } from "./log";
 import { recordSessionEvent } from "./session-inputs";
+import { SMALLEST_CLAUDE_MODEL } from "./aliases";
 import { releaseUsageHeldWork } from "./provider-usage";
 import { releaseUsageContinuationHolds } from "./state";
 import { credentialPath, currentAccount, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
@@ -351,7 +352,7 @@ export async function claudeAccountWorks(home:string|null=null,expectedAccount:s
   mkdirSync(folder,{recursive:true,mode:0o700});
   const cwd=process.env.CONCIERGE_WORKSPACE_ROOT||join(homedir(),'workspace');
   const probe=await run(process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE||'claude',
-    ['-p','--verbose','--output-format','stream-json','--model','claude-haiku-4-5-20251001','--no-session-persistence',
+    ['-p','--verbose','--output-format','stream-json','--model',SMALLEST_CLAUDE_MODEL,'--no-session-persistence',
       '--settings',CLAUDE_AGENT_HOOK_SETTINGS,
       ...(process.env.CONCIERGE_CLAUDE_CODE_SKIP_PERMISSIONS==='1'?['--dangerously-skip-permissions']:[]),
       `Do exactly two things with your tools, then reply DONE.\n1. Use the Write tool to create ${written} containing exactly: ${secret}\n2. Use the Bash tool to run: printf %s ${secret} > ${commanded}`],
