@@ -195,9 +195,13 @@ function acceptedInputAuthorWithoutProvenance(input:AcceptedSessionInput):{autho
     // His reply in a thread, carried to the agent working on it, is his words: the Inbox only
     // delivered it. With no sending session it read "Unknown agent · Request" (2026-11-02).
     const own=payload.forwardedReply&&request.source_input_id?getAcceptedSessionInput(request.source_input_id):null;
-    if(own?.origin==='human'){
-      const door=doorOf(own);
-      return {author:{kind:'human',via:door?`${door}, reply in a thread`:'reply in a thread',requestId:request.request_id},text:payload.text};
+    if(own){
+      const original=acceptedInputAuthor(own).author;
+      if(original.kind==='human'){
+        const door=doorOf(own);
+        return {author:{kind:'human',via:door?`${door}, reply in a thread`:'reply in a thread',requestId:request.request_id},text:payload.text};
+      }
+      return {author:{...original,requestId:request.request_id,communication:'request'},text:payload.text};
     }
     author.communication='request';return {author,text:payload.text};
   }

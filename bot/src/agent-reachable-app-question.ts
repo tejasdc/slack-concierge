@@ -15,10 +15,19 @@ export function deviceQuestionNamesPhysicalPrerequisite(question:string):boolean
   const request=/^(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|please\s+)(.+?)\s*[?.!]?$/i.exec(askedOfTejas);
   if(!request)return false;
   const action=request[1]!.replace(/[?.!]$/,'').trim();
+  // A spoken launch on an Echo is a physical check of Alexa's routing. The agent can
+  // exercise the server and simulator, but neither proves what that Echo heard.
+  const echoLaunch=/^(?:say|speak)\s+[“"']?Alexa,?\s+open\s+([\p{L}\p{N}][\p{L}\p{N} -]*?)[”"']?\s+to\s+(?:(?:your|the|my)\s+)?Echo(?:\s+(?:speaker|device))?$/iu.exec(action);
+  if(echoLaunch&&!/\b(?:and|then)\b/i.test(echoLaunch[1]!))return true;
   if(/[,;]|\b(?:and|then|after that)\b/i.test(action))return false;
   const device='(?:Mac|iPhone|iPad|phone|screen|laptop|device)';
   const physicalAction=new RegExp(`^(?:unlock\\s+(?:(?:the|your|my)\\s+)?(?:physical\\s+)?${device}|take\\s+(?:a\\s+)?photo(?:\\s+of\\s+[^?.!]+)?|photograph\\s+[^?.!]+|plug\\s+in\\s+(?:(?:the|a|your)\\s+)?(?:cable|device|phone|iPhone|iPad)|connect\\s+(?:(?:the|a|your)\\s+)?(?:cable|device|phone|iPhone|iPad)|press\\s+(?:(?:the|a)\\s+)?(?:physical|hardware)\\s+button|(?:bring|move|hold|hand\\s+over)\\s+(?:(?:the|your|my)\\s+)?${device})$`,'i');
   if(physicalAction.test(action))return true;
+  // A named instrument or controller is physical when the requested connection
+  // names both the host device and the cable transport. The noun itself need not
+  // belong to a product allowlist.
+  const connection=/^(?:connect|plug(?: in)?)\s+(?:(?:the|a|your|my)\s+)?([\p{L}\p{N}][\p{L}\p{N} +'’.-]*?)\s+(?:to|into)\s+(?:(?:the|your|my)\s+)?(?:Mac|laptop|computer|iPhone|iPad|phone|device)\s+(?:(?:over|via)\s+USB(?:-C)?|with\s+(?:(?:a|the|your)\s+)?USB(?:-C)?\s+cable)$/iu.exec(action);
+  if(connection&&!/\b(?:account|website|app|service|network)\b/i.test(connection[1]!))return true;
   // Starting an app on an e-reader, watch or TV can be the physical prerequisite
   // that exposes its agent connection. Ordinary computers and phones have agent routes.
   return /^(?:open|start|launch)\s+[^?.!,;]+?\s+(?:once\s+)?on\s+(?:(?:your|the|my)\s+)?(?:Kindle|Kobo|e-?reader|smartwatch|watch|TV|television)(?:\s+[\p{L}\p{N}.'-]+)*$/iu.test(action);

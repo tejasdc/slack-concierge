@@ -180,8 +180,8 @@ function revokeQueuedTurn(inputId: string, turnId: number, sessionId: number, re
     const session = getSessionById(sessionId);
     if (session && ['codex', 'claude-code', 'antigravity'].includes(session.provider_id))
         resolveUsageHoldNoticesForSettledTurn(session.provider_id as UsageProvider, turnId, 'request_withdrawn');
-    db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled'),updated_at=CURRENT_TIMESTAMP WHERE id=?")
-        .run(inputId);
+    db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled','$.reason','request_withdrawn','$.cancellationDetail',?,'$.turnId',?),updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id=?")
+        .run(reason,turnId,inputId,turnId);
 }
 
 /**
@@ -189,12 +189,12 @@ function revokeQueuedTurn(inputId: string, turnId: number, sessionId: number, re
  * request turn, and the schedule is marked ended. A firing already running finishes. Returns how many
  * firings were withdrawn, or null when the input starts no repeating schedule.
  */
-export function endRepeatingScheduleForInput(inputId: string): number | null {
+export function endRepeatingScheduleForInput(inputId: string, reason = 'The requesting session cancelled this repeating schedule.'): number | null {
     const schedule = repeatingScheduleOf(inputId);
     if (!schedule) return null;
     for (const firing of schedule.queued)
-        revokeQueuedTurn(firing.accepted_input_id, firing.id, firing.session_id, 'The requesting session cancelled this repeating schedule.');
-    markRepeatingScheduleEnded(schedule.root, 'The requesting session cancelled this repeating schedule.', schedule.queued.length);
+        revokeQueuedTurn(firing.accepted_input_id, firing.id, firing.session_id, reason);
+    markRepeatingScheduleEnded(schedule.root, reason, schedule.queued.length);
     return schedule.queued.length;
 }
 
