@@ -92,9 +92,9 @@ export async function usageBreakdown(period:UsagePeriod):Promise<unknown>{
   return {...result,computedAt:known!.computedAt,stale:Date.now()-Date.parse(known!.computedAt)>=RESULT_STALE_MS};
 }
 
-/** A lookup the owner refuses as the caller's mistake, never as an outage. */
+/** A lookup the owner refuses as the caller's mistake, never as an outage. A session on another machine (mac:<n>) is accepted and answered with no figure: this server's weekly attribution covers only its own runners. */
 export function validUsageAllowanceLookup(sessionIds:string[],topicIds:string[]):boolean{
-  return sessionIds.length+topicIds.length<=100&&sessionIds.every(id=>/^concierge:\d+$/.test(id))
+  return sessionIds.length+topicIds.length<=100&&sessionIds.every(id=>/^[a-z][a-z0-9-]{0,31}:\d+$/.test(id))
     &&topicIds.every(id=>!!id&&id.length<=160);
 }
 

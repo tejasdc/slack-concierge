@@ -4269,7 +4269,7 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='usage'&&parts[1]==='allowance'&&parts.length===2){
         const sessions=url.searchParams.getAll('session'),topics=url.searchParams.getAll('topic');
         if(!validUsageAllowanceLookup(sessions,topics))
-          throw new SessionOwnerError('Ask for at most 100 rows: sessions as concierge:<number>, threads by their id.');
+          throw new SessionOwnerError('Ask for at most 100 rows: sessions as <machine>:<number>, threads by their id.');
         result=await usageAllowanceLookup(sessions,topics,url.searchParams.get('overview')==='1');
       }
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts[1]==='settings'&&parts.length===2) result={settings:changeSavedWorkSettings(object(body))};
