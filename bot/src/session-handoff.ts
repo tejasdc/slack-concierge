@@ -108,6 +108,13 @@ function ledgerItems(sessionId:number):Item[] {
   return items;
 }
 
+/** Whether acceptance could move every queued input: the same rule `acceptHandoff` enforces, read
+ * before a proposal so an automatic move never proposes a handoff its successor must refuse. */
+export function queuedWorkMovable(sessionId:number):{queued:number;movable:boolean} {
+  const queued=ledgerItems(sessionId).filter(item=>item.kind==='queued');
+  return {queued:queued.length,movable:queued.every(item=>item.movable||item.obsolete)};
+}
+
 /**
  * Where each undelivered final return of a settled request stands on its asker's side.
  * unadmitted: nothing was written to the asker yet; unstarted: an accepted input with no turn

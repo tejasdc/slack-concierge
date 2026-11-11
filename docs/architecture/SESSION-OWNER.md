@@ -185,6 +185,28 @@ shared with request delivery, and a held request's overdue notice goes to the re
 as an explicit cancel-or-ask-again decision.
 `sessions cancel --reason provider-change` refuses with the handoff command. See
 [the router procedure](../runbooks/ROUTER-ACTIONS.md#provider-change-handoff).
+
+A queued input is safe to move when nothing reached its provider: no provider start, turn or
+acknowledgement, and either no admission intent or a replay-safe usage hold (the owner's own
+cached-usage refusal records one). A receipt's admission must name the session's own provider;
+a capture's `admissionIntent: live` marker is not a provider fact. Until 2026-11-11 the rule
+demanded a Claude admission, so no claimed Codex input could ever move
+([failure record](../incidents/2026-11-11-codex-held-work-could-not-move.md)).
+
+#### Automatic failover of held work
+
+After each provider usage reading the owner runs one paced pass (`held-work-failover.ts`). It
+proposes this same handoff for a session whose queued work its provider cannot start (spent
+allowance, or a usage hold with no room) when another automatic provider has room. Only a session
+whose provider the owner chose (`automaticProviderChoice`) moves; his own provider or model choice,
+the Inbox and standing roles (each with their own failover), paused and consultation-only sessions
+stay. It proposes only when every queued input is already movable, so a proposal cannot strand on an
+unsafe input; a session that is not movable is skipped for six hours. Sessions the Inbox dispatched
+his open requests to go first, then the longest waiting. At most two moved sessions work at once
+(the 37-session burst of 2026-11-06 froze the owner for 51 s), and no new move starts once the
+receiving provider's measured use reaches 75%, so the last account with room is not spent dry; the
+rest keeps waiting for its own reset. A proposal not accepted within 30 minutes, with nothing left
+running on its successor, is withdrawn and the predecessor resumes its wait.
 The authenticated Thinkering owner API also accepts proposal, acknowledgement and withdrawal
 at `/sessions/v1/handoffs` and `/sessions/v1/handoffs/<id>/<accept|withdraw>`, using the
 same exact live source input, run identity and stable action identity as request actions.
