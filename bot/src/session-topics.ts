@@ -3639,6 +3639,36 @@ function nextRecoveryAttempt(item:Stuck):number|null {
   // Repeated router refusals remain due, but do not turn one stuck task into a hot loop.
   return due?attempt:null;
 }
+/**
+ * Stuck requests whose latest attempt is the same dispatch come back to the router together.
+ * One attempt shared by many requests used to come back as one recovery input each, one router
+ * turn each, and the router sent the same agent a fresh request each time: on 2026-11-09 one
+ * stalled attempt (1eb6fec9) linked across several threads became about a dozen requests to
+ * concierge:3425 and spent the router's allowance. Requests with no attempt stay separate.
+ */
+export function recoveryGroups<T extends Pick<Stuck,'work'|'requestId'>>(items:T[]):T[][] {
+  const groups=new Map<string,T[]>();
+  for(const item of items) {
+    const key=item.work==='unassigned'?`request:${item.requestId}`:`work:${item.work}`;
+    const group=groups.get(key);
+    if(group)group.push(item);else groups.set(key,[item]);
+  }
+  return [...groups.values()];
+}
+function recoveryInstruction(item:Stuck):string {
+  return item.stoppedByTejas?'Tejas stopped that run. Do not restart it or its effects on your own; reconcile any effects already in flight and keep the human task open. If his intent for the remaining task is genuinely ambiguous, ask one focused only-he-can question.'
+    :item.sharedAnswerPostId!==null?`The same answer was linked to several requests. Do not dispatch again merely to obtain a separate receipt. Read the answer ${item.sharedAnswerPostId||'on the shared dispatch'} and this request's scope; if it is fully checked, close this request citing that answer post as evidence, otherwise send only the missing work.`
+    :'Inspect the exact prior attempt and its effects, then send the remaining work to its owning agent (sessions ask … --thread, then topics request link).';
+}
+const RECOVERY_TAIL='Never replay an ambiguous or acknowledged effect. Close only after the work is completed and checked, or keep an only-he-can question open for Tejas. A failure, hand-back, cancellation or provider error cannot close his request. You do not need to reply to this.';
+const UNCERTAIN_SOURCE='The exact source of this request is not linked; establish original authorship and task scope from the retained thread before dispatching. ';
+function recoveryText(item:Stuck):string {
+  return `The request "${item.title}" (${item.requestId}) in "${item.topicTitle}" (${item.topicId}) is still open. Its latest attempt (${item.work}) ${item.how}. ${item.sourceUncertain?UNCERTAIN_SOURCE:''}${recoveryInstruction(item)} ${RECOVERY_TAIL}`;
+}
+export function groupedRecoveryText(items:Stuck[]):string {
+  const lines=items.map(item=>`- "${item.title}" (${item.requestId}) in "${item.topicTitle}" (${item.topicId}): the attempt ${item.how}. ${item.sourceUncertain?UNCERTAIN_SOURCE:''}${recoveryInstruction(item)}`);
+  return `${items.length} open requests share one latest attempt (${items[0].work}), so they come to you together:\n${lines.join('\n')}\n\nInspect that attempt and its effects once. Remaining work for these requests goes to its owning agent as ONE request (one sessions ask … --thread naming one of these threads, its text covering every request that still needs work), then link that one dispatch to each request it covers (topics request link). Do not send that agent one request per thread. ${RECOVERY_TAIL}`;
+}
 /** The agent sessions a question's work is held by: its declaring agent, else where its linked work went. */
 function questionAgents(question:StoredQuestion,routerAddress:string):string[] {
   const owner=question.owner??{};
@@ -3850,23 +3880,32 @@ async function keepThreadsCurrentPass(admit?:(input:{sessionId:number;inputId:st
   }
   let flagged=0;
   if(fresh.length&&admit) {
-    for(const snapshot of fresh)try {
+    for(const group of recoveryGroups(fresh))try {
       if(flagged>=5)break;
       if(Date.now()>=nextYield){await yieldThreadUpkeep();nextYield=Date.now()+40;}
       // Another owner action can run while the sweep yields. Recheck exact work and human
       // answers before admitting recovery from an earlier view of this thread.
-      const current=keepThreadCurrent(snapshot.topicId,forwards,false,readIndex(session.id,true))
-        .find(candidate=>candidate.requestId===snapshot.requestId);
-      if(!current||nextRecoveryAttempt(current)!==snapshot.attempt)continue;
-      const item={...current,attempt:snapshot.attempt};
+      const members:(Stuck&{attempt:number})[]=[];
+      for(const snapshot of group) {
+        const current=keepThreadCurrent(snapshot.topicId,forwards,false,readIndex(session.id,true))
+          .find(candidate=>candidate.requestId===snapshot.requestId);
+        if(!current||current.work!==snapshot.work||nextRecoveryAttempt(current)!==snapshot.attempt)continue;
+        members.push({...current,attempt:snapshot.attempt});
+      }
+      if(!members.length)continue;
+      // The input carries the first member with a linked source; a lone request keeps its
+      // original identity and words, so inputs retained before grouping are recognized.
+      const lead=members.find(member=>!member.sourceUncertain&&member.sourceInputId)??members[0];
       // Keep historical recovery from flooding one router turn. A refused admission does not
       // consume capacity, so an inaccessible first request cannot starve every later one.
-      const inputId=`thread-upkeep:${createHash('sha256').update(`${item.key}:${item.attempt}`).digest('hex')}`;
+      const identity=members.length===1?`${lead.key}:${lead.attempt}`:members.map(member=>`${member.key}:${member.attempt}`).sort().join('\n');
+      const inputId=`thread-upkeep:${createHash('sha256').update(identity).digest('hex')}`;
       // An input already retained under this id was admitted by an earlier pass; only its flags are missing.
       if(!db.query('SELECT 1 FROM session_inputs WHERE id=?').get(inputId))
-        admit({sessionId:session.id,inputId,origin:'service',threadReplyNotRequired:true,sourceInputId:!item.sourceUncertain&&item.sourceInputId?item.sourceInputId:inputId,
-          sourceRunId:!item.sourceUncertain&&item.sourceRunId?item.sourceRunId:inputId,requestId:item.requestId,
-          text:`The request "${item.title}" (${item.requestId}) in "${item.topicTitle}" (${item.topicId}) is still open. Its latest attempt (${item.work}) ${item.how}. ${item.sourceUncertain?'The exact source of this request is not linked; establish original authorship and task scope from the retained thread before dispatching. ':''}${item.stoppedByTejas?'Tejas stopped that run. Do not restart it or its effects on your own; reconcile any effects already in flight and keep the human task open. If his intent for the remaining task is genuinely ambiguous, ask one focused only-he-can question.':item.sharedAnswerPostId!==null?`The same answer was linked to several requests. Do not dispatch again merely to obtain a separate receipt. Read the answer ${item.sharedAnswerPostId||'on the shared dispatch'} and this request's scope; if it is fully checked, close this request citing that answer post as evidence, otherwise send only the missing work.`:'Inspect the exact prior attempt and its effects, then send the remaining work to its owning agent (sessions ask … --thread, then topics request link).'} Never replay an ambiguous or acknowledged effect. Close only after the work is completed and checked, or keep an only-he-can question open for Tejas. A failure, hand-back, cancellation or provider error cannot close his request. You do not need to reply to this.`});
+        admit({sessionId:session.id,inputId,origin:'service',threadReplyNotRequired:true,sourceInputId:!lead.sourceUncertain&&lead.sourceInputId?lead.sourceInputId:inputId,
+          sourceRunId:!lead.sourceUncertain&&lead.sourceRunId?lead.sourceRunId:inputId,requestId:lead.requestId,
+          text:members.length===1?recoveryText(lead):groupedRecoveryText(members)});
+      for(const item of members) {
       recordSessionEvent({eventId:`topic-recovery:${item.key}:${item.attempt}`,sessionId:session.id,kind:'topic_request',
         payload:{change:'flagged',topicId:item.topicId,requestId:item.requestId,work:item.work,by:OWNER_BY,recoveryInputId:inputId,reason:`Its work ${item.how}.`}});
       // Said in his thread, never rung: Concierge retrying its own recovery gives him nothing to
@@ -3883,8 +3922,9 @@ async function keepThreadsCurrentPass(admit?:(input:{sessionId:number;inputId:st
                 :'Your request is still open. Concierge has tried twice to restart its work, but no new agent attempt is linked yet. It will keep trying; you do not need to repeat it.',
             attachments:[],stalled:false,final:false,notify:false,workDisposition:null});
       }
+      }
       flagged++;
-    } catch(error) {log('error','inbox_thread_upkeep_flag_failed',{request_id:snapshot.requestId,message:error instanceof Error?error.message:String(error)});}
+    } catch(error) {log('error','inbox_thread_upkeep_flag_failed',{request_id:group[0].requestId,requests:group.length,message:error instanceof Error?error.message:String(error)});}
   }
   const closed=(db.query(`SELECT count(*) AS count FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) AND state='closed'`).get(session.id) as {count:number}).count-closedBefore;
   const settled=openRequestsBefore-(db.query("SELECT count(*) AS count FROM inbox_requests WHERE state='open'").get() as {count:number}).count;
