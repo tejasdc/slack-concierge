@@ -1199,7 +1199,7 @@ export class SessionCommunicationCoordinator {
      * the same as every other agent command — one admitted live run of the calling session
      * — and session-topics.ts decides what that session is allowed to do with it.
      */
-    topics(input:{source:CommunicationSource;verb:string;action_id?:string;[key:string]:any}) {
+    topics(input:{source:CommunicationSource;verb:string;action_id?:string;[key:string]:any},listHead?:number) {
         const started=performance.now();
         let actorMs=0,sourceMs=0,commandMs=0,completed=false;
         let phaseStart=started,phaseName:'actor'|'source'|'command'|'done'='actor';
@@ -1212,7 +1212,7 @@ export class SessionCommunicationCoordinator {
             this.actor({input_id:sourceInputId,run_id:nativeRunId(actor.turn)});
             sourceMs=performance.now()-phaseStart;
             phaseStart=performance.now();phaseName='command';
-            const result=topicsCommand({sessionId:actor.session,turnId:actor.turn,inputId:sourceInputId,runId:nativeRunId(actor.turn)},input);
+            const result=topicsCommand({sessionId:actor.session,turnId:actor.turn,inputId:sourceInputId,runId:nativeRunId(actor.turn)},input,listHead);
             commandMs=performance.now()-phaseStart;
             phaseName='done';
             completed=true;
