@@ -320,13 +320,14 @@ function topicWorkValue(context:TopicContext,topic:any,roots:string[]){
 function requestView(context:TopicContext,request:any){
  const {source}=context;
  const dispatches=request.dispatches.map((dispatch:any)=>{
-  const local=source.query('SELECT source_input_id,outcome,status,created_at_ms,payload_json FROM session_communication_requests WHERE request_id=?')
+  const local=source.query('SELECT source_input_id,outcome,status,created_at_ms,payload_json,target_session_id FROM session_communication_requests WHERE request_id=?')
    .get(String(dispatch.requestId)) as any;
   const peer=local?null:source.query('SELECT source_input_id,outcome,status,created_at_ms,payload_json,peer,remote_session_id FROM session_peer_requests WHERE request_id=?')
    .get(String(dispatch.requestId)) as any;
   const row=local??peer;if(!row)return dispatch;
   const words=String(parse(row.payload_json,{})?.text??'').replace(/\s+/g,' ').trim();
-  return {...dispatch,...(peer?{targetSessionId:peerAddress(peer.peer,peer.remote_session_id)}:{}),outcome:row.outcome??null,
+  // The request's current holder after any accepted handoff; the thread depends on its turns.
+  return {...dispatch,...(peer?{targetSessionId:peerAddress(peer.peer,peer.remote_session_id)}:local?.target_session_id?{targetSessionId:`concierge:${local.target_session_id}`}:{}),outcome:row.outcome??null,
    state:row.status??dispatch.state,...(row.source_input_id?{sourceInputId:row.source_input_id}:{}),
    ...(typeof row.created_at_ms==='number'?{at:new Date(row.created_at_ms).toISOString()}:{}),
    ...(words?{text:words.slice(0,240)}:{})};
