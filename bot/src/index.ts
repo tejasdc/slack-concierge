@@ -354,7 +354,7 @@ import { startMachineWatchWorker,wakeWatchWorker } from './watches';
 import {recordSessionEvent as recordOwnerEvent,recoverProviderRefusalContinuations} from './session-inputs';
 import {refreshClaudeAccount} from './provider-accounts';
 import {installSessionProjection} from './session-projection';
-import {expireUnreadableReadingItems,fileServiceNotices,keepThreadsCurrent,migrateInboxAttention,migrateInboxTopics,reconcileCarriedClosures,reconcileForwardedFinalAnswers,repairOctober21RepeatedAnswer,repairNovember4RepeatedThreadNotices,retireRecoveredBookkeepingRequests,retireTimedRequestPosts,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
+import {expireUnreadableReadingItems,fileServiceNotices,settleReadInboxAttention,keepThreadsCurrent,migrateInboxAttention,migrateInboxTopics,reconcileCarriedClosures,reconcileForwardedFinalAnswers,repairOctober21RepeatedAnswer,repairNovember4RepeatedThreadNotices,retireRecoveredBookkeepingRequests,retireTimedRequestPosts,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
 import {resolveRetryNotices} from './retry-breaker-notice';
 import {ownerEventMaxSequence,runStartupCatchUp,runStartupSweep,scheduleSessionPurposeRepair,startDeferredStartupRepairs} from './startup-repairs';
 import {CodexSessionObserver} from './codex-session-observer';
@@ -580,6 +580,8 @@ catch(error) {log('error','repeated_thread_notice_repair_failed',errorFields(err
 try {runStartupStep('inbox_attention_migration',()=>migrateInboxAttention());} catch(error) {log('error','inbox_attention_migration_failed',errorFields(error));}
 // A reading item with nothing to read is ended with its reason; new ones are refused at the door.
 try {runStartupStep('unreadable_reading_items',()=>expireUnreadableReadingItems());} catch(error) {log('error','inbox_unreadable_reading_items_failed',errorFields(error));}
+// Reading items his read or seen mark already passed, and repeats of one capture's answer, end here.
+try {runStartupStep('read_inbox_attention',()=>settleReadInboxAttention());} catch(error) {log('error','inbox_read_attention_settle_failed',errorFields(error));}
 // A service notice has a thread from the moment it exists; those published while this process
 // was down, or by another process, get theirs here.
 try {runStartupStep('service_notices',()=>fileServiceNotices());} catch(error) {log('error','inbox_service_notices_failed',errorFields(error));}

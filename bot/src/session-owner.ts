@@ -90,7 +90,7 @@ import {inboxTopicList,openInboxObligationCount,openInboxObligations} from './se
 import {workThread} from './session-fit';
 import {sessionMutuals,mutualLift} from './session-mutuals';
 import {commitWork,originInput} from './commit-work';
-import {appendAgentReportObservation,closeQuestionsAnsweredByTodos,createTopicByHuman,inboxAttention,inboxDismiss,invalidateTopicRoots,openAgentReport,replyTargets,topicEntries,topicHumanAction,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
+import {appendAgentReportObservation,closeQuestionsAnsweredByTodos,createTopicByHuman,inboxAttention,inboxMarkThrough,invalidateTopicRoots,openAgentReport,replyTargets,topicEntries,topicHumanAction,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,projectCoordinates,sessionProject,sessionProjects} from './session-projects';
 import {expandHome,isSensitiveWorkspacePath,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
@@ -2737,9 +2737,9 @@ export class SessionOwner {
         const ceiling=action.generation<=(meta.generation??0)
           ?meta.generation??0:attentionCeiling(meta,openAttention(session));
         updateSessionMetadata(session.id,{[key]:Math.max(meta[key]??0,Math.min(action.generation,ceiling))});
-        // Marking the Inbox seen ends the reading items up to that point, and only those: a
-        // decision stays until it is answered or settled (the panel says so when nothing cleared).
-        if(action.kind==='dismiss'&&meta.inbox)inboxDismiss(session,Math.min(action.generation,ceiling));
+        // Reading or marking the Inbox seen ends the reading items up to that point, and only those:
+        // a decision stays until it is answered or settled (the panel says so when nothing cleared).
+        if(meta.inbox)inboxMarkThrough(session,Math.min(action.generation,ceiling),action.kind);
       } else if(action.kind==='archive'||action.kind==='restore') {
         db.query("UPDATE sessions SET status=CASE WHEN ?='archive' THEN 'archived' WHEN EXISTS(SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering')) THEN 'running' ELSE 'idle' END WHERE id=?").run(action.kind,session.id,session.id);
         if(action.kind==='archive')discardQueuedTurnContinuations(session.id,'archive');

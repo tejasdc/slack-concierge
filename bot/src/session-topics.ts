@@ -1216,11 +1216,14 @@ export function inboxAttention(session:SessionRow):OpenNeed[] {
 }
 
 /**
- * His "mark seen" on the Inbox up to a generation: it ends reading items raised at or before it
- * (his own explicit signal that he read them) and retires unfiled reading entries the same way.
- * A decision is never ended by being seen; it stays until answered or settled.
+ * His read or seen mark on the Inbox up to a generation ends the reading items raised at or
+ * before it and retires unfiled reading entries the same way. Before 2026-11-11 only "mark
+ * seen" did this, so opening the Inbox (which moves the read mark) left every answer he had
+ * read sitting in Needs attention: 1,470 items, all below his read mark (his complaint of
+ * 2026-09-21: "I am pretty sure some of these like are already addressed … So why are we still
+ * seeing this?"). A decision is never ended by a mark; it stays until answered or settled.
  */
-export function inboxDismiss(session:SessionRow,generation:number) {
+export function inboxMarkThrough(session:SessionRow,generation:number,mark:'read'|'dismiss') {
   const at=nowIso();
   const reading=(db.query(`SELECT * FROM inbox_questions WHERE kind='reading' AND state IN ('open','partial') AND generation IS NOT NULL AND generation<=?`).all(generation) as any[]).map(toStoredQuestion);
   const byTopic=new Map<string,StoredQuestion[]>();
@@ -1229,12 +1232,68 @@ export function inboxDismiss(session:SessionRow,generation:number) {
     const topic=topicRow(topicId);
     const next=bumped(topic);
     const payload={change:'settled',topicId,topic:next,questions:questions.map(question=>({...question,state:'read' as QuestionState,updatedAt:at})),
-      by:{kind:'human' as const},reason:'Marked seen',revision:next.revision};
-    recordSessionEvent({eventId:`topic-read:dismiss:${generation}:${topicId}`,sessionId:session.id,kind:'topic_question',payload});
+      by:{kind:'human' as const},reason:mark==='read'?'Read':'Marked seen',revision:next.revision};
+    // A recovered item can be filed below a mark already given, so the same mark can end a
+    // different set later; the identity names the exact items it ends.
+    const ended=createHash('sha256').update(questions.map(question=>question.questionId).join(',')).digest('hex').slice(0,16);
+    recordSessionEvent({eventId:`topic-read:${mark}:${generation}:${topicId}:${ended}`,sessionId:session.id,kind:'topic_question',payload});
     applyTopicChange('topic_question',payload);
   }
   const needs=(sessionMetadata(session).needs??[]).filter(need=>!(need.outcome==='response'&&need.generation<=generation));
   if(needs.length!==(sessionMetadata(session).needs??[]).length)updateSessionMetadata(session.id,{needs});
+  return reading.length;
+}
+
+/**
+ * One capture, one item: a thread's newer answer replaces its earlier unread answers, so the
+ * agent answering the same capture five times shows him one item, the newest. Returns the
+ * earlier reading items for `root`, superseded by `questionId`, for the caller's own event.
+ */
+function readingsReplacedBy(topicId:string,root:string,questionId:string,at:string):StoredQuestion[] {
+  return (db.query(`SELECT * FROM inbox_questions WHERE topic_id=? AND kind='reading' AND state IN ('open','partial')`).all(topicId) as any[])
+    .map(toStoredQuestion).filter(question=>question.sources[0]===root&&question.questionId!==questionId)
+    .map(question=>({...question,state:'superseded' as QuestionState,replacedBy:questionId,updatedAt:at}));
+}
+
+/**
+ * The pile his marks and the one-item rule already cover, ended with their reasons: reading
+ * items at or below his read or seen mark, and every reading item but the newest for each
+ * capture (none when that capture has an open decision). Runs at every start; once clean it
+ * changes nothing. Decisions are untouched.
+ */
+export function settleReadInboxAttention() {
+  const session=inboxSession();
+  if(!session)return {read:0,superseded:0};
+  return db.transaction(()=>{
+  const meta=sessionMetadata(session);
+  const read=inboxMarkThrough(session,Math.max(meta.readGeneration??0,meta.dismissedGeneration??0),'read');
+  const open=(db.query(`SELECT * FROM inbox_questions WHERE state IN ('open','partial') ORDER BY generation DESC,created_at DESC`).all() as any[]).map(toStoredQuestion);
+  const keep=new Map<string,string>();
+  for(const question of open) {
+    const key=`${question.topicId}\u0000${question.sources[0]??question.topicId}`;
+    if(question.kind==='decision'){keep.set(key,question.questionId);continue;}
+    if(!keep.has(key))keep.set(key,question.questionId);
+  }
+  const at=nowIso(),byTopic=new Map<string,StoredQuestion[]>();
+  for(const question of open) {
+    if(question.kind!=='reading')continue;
+    const keeper=keep.get(`${question.topicId}\u0000${question.sources[0]??question.topicId}`)!;
+    if(keeper===question.questionId)continue;
+    byTopic.set(question.topicId,[...(byTopic.get(question.topicId)??[]),{...question,state:'superseded',replacedBy:keeper,updatedAt:at}]);
+  }
+  let superseded=0;
+    for(const [topicId,questions] of byTopic) {
+      const next=bumped(topicRow(topicId));
+      const payload={change:'settled',topicId,topic:next,questions,by:{kind:'owner' as const,sessionId:`concierge:${session.id}`},
+        reason:'A newer item for the same capture replaced it',revision:next.revision};
+      const ended=createHash('sha256').update(questions.map(question=>question.questionId).join(',')).digest('hex').slice(0,16);
+      recordSessionEvent({eventId:`topic-one-item-per-capture:${topicId}:${ended}`,sessionId:session.id,kind:'topic_question',payload});
+      applyTopicChange('topic_question',payload);
+      superseded+=questions.length;
+    }
+  if(read||superseded)log('info','inbox_read_attention_settled',{session_id:session.id,read,superseded});
+  return {read,superseded};
+  })();
 }
 
 /** Both list entrances use this source-readiness decision; each chooses how it reads the prepared
@@ -3385,7 +3444,8 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
       sources:[answer.root,answer.postId],replaces:null,replacedBy:null,answer:null,recovered:false,legacyNeedEventId:null,
       kind:decision?'decision':'reading',origin:'declared',generation,createdAt:at,updatedAt:at};
     const topic=topicRow(topicId),topicNext=bumped(topic);
-    const payload={change:'reconciled',topicId,topic:topicNext,questions:[question],by,reason:`${agent} answered in this thread`,revision:topicNext.revision};
+    const payload={change:'reconciled',topicId,topic:topicNext,
+      questions:[...readingsReplacedBy(topicId,answer.root,question.questionId,at),question],by,reason:`${agent} answered in this thread`,revision:topicNext.revision};
     recordSessionEvent({eventId:filedId,sessionId:session.id,kind:'topic_question',payload});
     applyTopicChange('topic_question',payload);
     // The thread's one notification slot: the Inbox session, the thread's root as its input, shaped like a new question's.
