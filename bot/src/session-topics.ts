@@ -199,7 +199,11 @@ export function readsFor(question:{topicId:string;kind?:QuestionKind;legacyNeedE
     return found;
   }
   const turnId=turnOfQuestion(question);
-  const fromTurn=turnId===null?[]:readsForTurn(topic.session_id,turnId,roots);
+  // The turn's posts are recorded under the session that ran it. After a router takeover that is
+  // a newer Inbox session than the one that opened this topic (Nov 11: a posted answer read as
+  // "nothing to read" because only the topic's older Inbox session was searched).
+  const turnSession=turnId===null?null:(db.query('SELECT session_id FROM turns WHERE id=?').get(turnId) as {session_id:number}|null)?.session_id??topic.session_id;
+  const fromTurn=turnId===null?[]:readsForTurn(turnSession!,turnId,roots);
   return fromTurn.length?fromTurn:serviceNoticeReads(topic.session_id,question.sources??[],roots);
 }
 /** An input the service published as a notice: no turn wrote it and no agent will answer it. */
@@ -1984,7 +1988,10 @@ function reconcileQuestions(session:SessionRow,topic:StoredTopic,declarations:un
     if(twin)throw new TopicError(`That decision is already open here as ${twin.questionId}; revise it with questionId, or replace it with replaces.`,409,'QUESTION_DUPLICATE');
     const context=declaredContext??(missing.length?'agent_checking':'ready');
     // `from` files an unfiled attention entry with this full brief instead of a bare one.
-    const filed=typeof item.from==='string'?fileNeed(inboxSessionRow,topic,item.from,by,brief):null;
+    // The entry lives on the Inbox session whose turn raised it, which after a router takeover is
+    // the declaring router, not the older Inbox session that opened this topic.
+    const needHolder=typeof item.from==='string'&&sessionMetadata(session).inbox&&unfiledNeeds(session).some(need=>need.eventId===item.from)?session:inboxSessionRow;
+    const filed=typeof item.from==='string'?fileNeed(needHolder,topic,item.from,by,brief):null;
     const kind:QuestionKind=item.kind==='reading'?'reading':item.kind==='asked'?'asked':filed?.kind??'decision';
     let askedAt:string|null=null;
     if(kind==='asked'){
