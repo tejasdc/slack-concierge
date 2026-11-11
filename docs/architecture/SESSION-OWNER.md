@@ -140,7 +140,12 @@ Only one proposal may be open per predecessor; the caller or predecessor can wit
 The inventory names open requests sent by and owed by the predecessor, queued inputs,
 active watches, open Lab roles where available, and referenced worktrees. Each item has
 a stable kind and reference. Sent requests retain whether their target has acknowledged
-or started work; those and ChatGPT requests must not be dispatched again. A missing Lab
+or started work; those and ChatGPT requests must not be dispatched again. A sent request (local or to a peer)
+that has already settled is still listed while its final return has not reached the
+predecessor: not yet written, written but never started, or waiting in a queued turn.
+Acceptance moves its return destination to the successor; an unstarted return input
+moves in place with its ID, and a queued one moves with its queued item. A return
+already handed to a predecessor run stays there and is never replayed. A missing Lab
 read is stated as an omission. Worktrees, provider transcripts, past answers and Lab
 entries stay where they were and keep their original authors.
 
