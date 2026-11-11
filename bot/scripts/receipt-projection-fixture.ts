@@ -144,4 +144,14 @@ const routed=readCompactReceipt(db,'routed-request')!.provenance as any;
 expect(routed?.originatingHuman?.inputId==='ring-input'&&routed.originatingHuman.captureId==='capture:ring'
   &&routed.originatingHuman.runId==='run-ring'&&routed.effectScope==='work',
   'the receipt list names the human a routed request came from, as the full record does');
-console.log('receipt-projection: retry set, restart, clear, hold, readable ChatGPT failure, bounded preview and routed human passed');
+// An ask made from a later informational wake names the earlier open work input as its authority.
+db.query(`INSERT INTO turns(id,session_id,status,native_run_id,dispatch_attempt,turn_kind) VALUES(9,1,'completed','run-wake',1,'native')`).run();
+addInput.run('wake-input','input','service',null,null,null,9,JSON.stringify({text:'Answer arrived'}));
+addInput.run('granted-request','input','agent','wake-input','run-wake','granted-rq',null,JSON.stringify({text:'Continue'}));
+db.query(`INSERT INTO session_communication_requests(request_id,target_input_id,target_session_id,source_input_id,source_session_id,
+  source_turn_id,payload_json) VALUES('granted-rq','granted-request',1,'wake-input',1,9,?)`)
+  .run(JSON.stringify({requestedEffect:'work',authorityInputId:'ring-input'}));
+const granted=readCompactReceipt(db,'granted-request')!.provenance as any;
+expect(granted?.source?.inputId==='wake-input'&&granted.originatingHuman?.inputId==='ring-input'&&granted.effectScope==='work',
+  'an ask carrying an earlier work grant lists the human behind that grant');
+console.log('receipt-projection: retry set, restart, clear, hold, readable ChatGPT failure, bounded preview, routed human and granted authority passed');

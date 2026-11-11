@@ -753,6 +753,32 @@ test('delegation retains originating human provenance across agent hops without 
   expect(errors).toEqual([]);
 });
 
+test('an informational wake preserves an earlier open work request without replaying it',async()=>{
+  const requester=session(),human=run();
+  const worker=owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'develop'});
+  const assigned=await ask(human.source,worker,'assigned-work',{requestedEffect:'work'});await communication.idle();
+  const first=run();
+  expect(first.claim.accepted_input_id).toBe(assigned.target_input_id);
+  finishTurn(first.claim.turn_id,'completed','Waiting for a release.');
+
+  const notifier=session(),notifierRun=run();
+  const note=await ask(notifierRun.source,worker,'release-note',{requestedEffect:'informational'});await communication.idle();
+  const wake=run();
+  expect(wake.claim.accepted_input_id).toBe(note.target_input_id);
+  const delegate=owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'develop'});
+  const asked=await ask(wake.source,delegate,'continue-assigned-work',{requestedEffect:'work'});await communication.idle();
+  expect(communication.inspect(assigned.request_id).outcome).toBeNull();
+  expect(sessionInputProvenance(getAcceptedSessionInput(asked.target_input_id!)!)).toMatchObject({
+    source:{inputId:wake.source.input_id,runId:wake.source.run_id},effectScope:'work',
+    originatingHuman:{inputId:human.source.input_id,sessionId:requester.session.id},
+  });
+  communication.reply({source:wake.source,action_id:'finish-assigned-work',request_id:assigned.request_id,
+    text:'Work completed.',final:true,workDisposition:'completed',all_done:true,checked:'The assigned work was checked.'});
+  expect(communication.inspect(assigned.request_id).outcome).toBe('answered');
+  await expect(ask(wake.source,delegate,'unrelated-work',{requestedEffect:'work'})).rejects.toThrow('informational request');
+  expect(errors).toEqual([]);
+});
+
 test('unresolved legacy requests and returns stay visibly uncertain without settlement, replay or deadline wake',async()=>{
   const source=session(),a=run(),target=session(),b=run(),requestId=randomUUID(),eventId=randomUUID();
   db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
