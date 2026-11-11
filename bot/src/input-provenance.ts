@@ -1,5 +1,6 @@
 import type {Database} from 'bun:sqlite';
 import {receiveSessionFromPeer} from './peer-identity';
+import {topModel} from './model-escalation';
 
 /**
  * The one walk from an accepted input to the human behind it. The owner's full record and the
@@ -34,7 +35,7 @@ export function inputProvenance(database:Database,input:ProvenanceInput,runIdFor
     const human=retained.originatingHuman&&typeof retained.originatingHuman.sessionId==='string'
       ?{...retained.originatingHuman,sessionId:receiveSessionFromPeer(retained.originatingHuman.sessionId,delivery.peer)}:null;
     const humanModelChoices:string[]=human&&Array.isArray(retained.humanModelChoices)
-      ?retained.humanModelChoices.filter((model:unknown):model is string=>model==='claude-fable-5-1'||model==='gpt-6-astra'):[];
+      ?retained.humanModelChoices.filter((model:unknown):model is string=>typeof model==='string'&&!!topModel(model)):[];
     return {source:{inputId:delivery.origin_input_id,runId:delivery.origin_run_id,sessionId:receiveSessionFromPeer(delivery.origin_session_id,delivery.peer),peer:delivery.peer},
       requestId:candidate.request_id,effectScope,originatingHuman:human as HumanIdentity|null,peer:delivery.peer,humanModelChoices};
   };
