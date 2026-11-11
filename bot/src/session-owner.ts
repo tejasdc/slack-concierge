@@ -4259,7 +4259,7 @@ export class SessionOwner {
         const sessions=url.searchParams.getAll('session'),topics=url.searchParams.getAll('topic');
         if(!validUsageAllowanceLookup(sessions,topics))
           throw new SessionOwnerError('Ask for at most 100 rows: sessions as concierge:<number>, threads by their id.');
-        result=await usageAllowanceLookup(sessions,topics);
+        result=await usageAllowanceLookup(sessions,topics,url.searchParams.get('overview')==='1');
       }
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts[1]==='settings'&&parts.length===2) result={settings:changeSavedWorkSettings(object(body))};
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts.length===3) result=this.savedWorkControl(Number(parts[1]),parts[2]!,object(body));
