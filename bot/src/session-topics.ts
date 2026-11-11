@@ -1195,9 +1195,10 @@ export function inboxDismiss(session:SessionRow,generation:number) {
 /** Both list entrances use this source-readiness decision; each chooses how it reads the prepared
  * list (the device's HTTP read waits for the worker to catch up, the agent command reads directly). */
 export function inboxTopicList<Prepared>(options:Parameters<typeof preparedTopics>[0],
-  readPrepared:(options:Parameters<typeof preparedTopics>[0])=>Prepared=preparedTopics as any){
-  if(!inboxSession())return unpreparedTopics();
-  return preparedTopicsReady()?readPrepared(options):directTopicList(options);
+  readPrepared:(options:Parameters<typeof preparedTopics>[0])=>Prepared){
+  if(preparedTopicsReady())return readPrepared(options);
+  // The ledger list needs the Inbox; before it exists the list is still indexing, not an error.
+  return inboxSession()?directTopicList(options):unpreparedTopics();
 }
 
 /** The thread list computed from the ledger while the prepared list is being rebuilt. */
@@ -2054,7 +2055,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
     throw new TopicError('Only the Inbox session owns topics; a worker may declare questions against a topic it holds a dispatch for.',403,'TOPIC_FORBIDDEN');
   };
   switch(verb) {
-    case 'list':return inboxTopicList({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor});
+    case 'list':return inboxTopicList({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor},preparedTopics);
     case 'obligations':return openInboxObligations();
     case 'read':return preparedTopicOverview(text(body?.topic_id,'topic id',200),body?.state??'open');
     case 'resolve':guard();return preparedTopicResolution(text(body?.message_id,'message id',500));

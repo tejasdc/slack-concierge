@@ -34,7 +34,7 @@ Initial rebuilds continue to use the ledger list until the prepared list is read
 Large individual values are retained as SHA-256-addressed, sixteen-KiB UTF-8 chunks.
 Clients must verify the concatenated digest before displaying a complete value. A newer
 generation invalidates old list cursors; source lag is indexing, never an empty complete list.
-Before an Inbox session exists, both list entrances return an empty page with incomplete
+While the prepared list is not ready and no Inbox session exists, both list entrances return an empty page with incomplete
 `presentation_indexing` coverage. Once the Inbox exists, an initial prepared-list rebuild
 uses the ledger list until the prepared generation is ready, so existing threads stay visible.
 The change feed carries both sides of each update and a null after-value for deletion.
