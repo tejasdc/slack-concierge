@@ -684,6 +684,9 @@ only carries the text. A lookup that fails or outlasts its bound (1.5 s here, 6 
 never holds the turn; it starts with a line saying the thesaurus could not be read.
 Native-turn focused tests supply fixed thesaurus context to the execution host, so their
 stub providers never read the live Thinkering capability entrance while prompts are built.
+Behind that, the test preload (`bot/tests/preload.ts`) points every Thinkering capability
+lookup at a scratch socket nothing listens on and removes the network entrance variables, so a
+test that forgets the fixed context gets the "could not be read" line, never his live entries.
 
 ### Resuming with a selected provider
 
