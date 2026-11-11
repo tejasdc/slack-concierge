@@ -76,6 +76,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   through an Inbox agent report.
   See [execution host](docs/architecture/EXECUTION-HOST.md#agent-browser-process-ownership)
   and [durable watches](docs/architecture/WATCHES.md).
+- A request awaiting a specific Concierge repair uses a commit-scoped renewing release watch;
+  unrelated releases and lease renewals stay quiet. See [durable watches](docs/architecture/WATCHES.md).
 - Project creation validates organizer placement in the owner ledger and performs scaffold and
   GitHub work as a replay-safe job on the configured project runner. See [runners](docs/architecture/RUNNERS.md).
 - Hosted run adoption and parked-run recovery follow the

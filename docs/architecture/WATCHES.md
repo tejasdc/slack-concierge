@@ -11,7 +11,7 @@ finishes, or at a deadline" and then ends its turn. No model stays awake while i
 scheduler: "check every N minutes" stays a repeating saved schedule.
 
 ```
-router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> [--renew] <source-flags> --action-id A
+router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> [--renew] [--required-commit <full-sha>] <source-flags> --action-id A
 router-actions.sh sessions watch command --cwd <dir> --until <...> <source-flags> --action-id A -- <argv...>
 router-actions.sh sessions watch list <source-flags>
 router-actions.sh sessions watch cancel <watch-id> <source-flags> --action-id A
@@ -19,6 +19,25 @@ router-actions.sh sessions watch cancel <watch-id> <source-flags> --action-id A
 
 `--until` is at most 30 days away. Registration is idempotent by (source input, action id); the same
 id with a different condition is refused.
+
+For a request awaiting a particular Concierge repair, use the server's
+`/var/lib/slack-concierge-deployment/current` link with `--renew --required-commit <full-sha>`.
+The owner reads the linked release manifest and Git ancestry, then requires a successful deployment
+receipt for that installed commit. A release without the target commit advances the watch baseline
+without waking an agent. The duration renews the storage lease silently while the target is absent;
+it is not a recurring agent check. An unconfirmed activation keeps its previous baseline and is
+checked again. A Git ancestry error also keeps the previous baseline and is retried; only Git's
+definite non-ancestor result can advance it. Registration also checks the installed revision, so a target already live can fire
+immediately; the caller checks the installed revision again after registering to cover the race with
+its partial reply. The exact target commit is part of the watch condition and idempotency identity.
+This scoped condition is available only on the server's Concierge link; other file watches retain
+their normal change and deadline behavior. A request-bound scoped watch ends quietly when every
+request naming its series has closed. A scoped watch fires once: when the target is installed the
+series ends instead of renewing, because the next check would find the same installed release and
+wake the agent again. A target commit the deployment's full clone does not have (an unmerged or
+unfetched draft) counts as absent, not as an error. Name the commit that main will contain: this
+repository merges pull requests with merge commits, which keep the branch commits; a squash or
+rebase merge gives the repair a new commit, and a watch on the old one never fires.
 
 **Which machine.** A watch is on the machine of the agent that registered it. An agent on a runner
 (its helper carries `CONCIERGE_RUNNER_NAME`) sends that name; the watch row records it (`runner`),

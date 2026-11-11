@@ -1452,7 +1452,7 @@ export class SessionCommunicationCoordinator {
         return links.open({source:{session:actor.session,input:actor.inputId!,run:nativeRunId(actor.turn)},actionId:input.action_id,url:input.url,
             ...(input.on===undefined?{}:{peer:input.on}),...(input.browser===undefined?{}:{browser:input.browser})});
     }
-    async watch(input:{source:CommunicationSource;verb:'file'|'command'|'list'|'cancel';action_id?:string;until?:string;renew?:boolean;path?:string;argv?:string[];cwd?:string;watch_id?:string;runner?:string}) {
+    async watch(input:{source:CommunicationSource;verb:'file'|'command'|'list'|'cancel';action_id?:string;until?:string;renew?:boolean;requiredCommit?:string;path?:string;argv?:string[];cwd?:string;watch_id?:string;runner?:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         if(!input.source?.input_id)throw new Error('A watch is registered from an admitted native run: use --source-input and --source-run.');
         const actor=this.actor(input.source),origin={originInputId:actor.inputId!,originRunId:nativeRunId(actor.turn)};
@@ -1469,8 +1469,9 @@ export class SessionCommunicationCoordinator {
             if(typeof input.path!=='string')throw new Error('Name the file or directory to watch.');
             if(input.renew&&(!this.dependencies.owner||!await this.dependencies.owner.hasRegisteredProject(getSessionById(actor.session)!)))
                 throw new Error(STANDING_WORK_REFUSAL);
-            return registerWatch({kind:'file',sessionId:actor.session,...origin,actionId:input.action_id,until:input.until,path:input.path,renew:input.renew,runner:input.runner??null});
+            return registerWatch({kind:'file',sessionId:actor.session,...origin,actionId:input.action_id,until:input.until,path:input.path,renew:input.renew,requiredCommit:input.requiredCommit,runner:input.runner??null});
         }
+        if(input.requiredCommit!==undefined)throw new Error('--required-commit is only for a file watch.');
         if(!Array.isArray(input.argv)||typeof input.cwd!=='string')throw new Error('A command watch needs --cwd and the command after --.');
         return registerWatch({kind:'command',sessionId:actor.session,...origin,actionId:input.action_id,until:input.until,argv:input.argv,cwd:input.cwd,runner:input.runner??null});
     }

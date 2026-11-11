@@ -602,6 +602,9 @@ The owner clamps a read or dismiss generation to the session's own attention cou
   reply for other requests without a wake. A renewing watch keeps that binding across watch IDs
   in its series, provided the active watch still belongs to the worker. An existing renewing
   watch can serve a later request too: the partial reply binds that request to the watch.
+  For a specific Concierge repair, the agent supplies the full target commit when registering
+  the server release watch. The owner checks the installed manifest, Git ancestry and successful
+  deployment receipt; other releases and lease renewals do not wake the agent.
   The stranded check requires that exact request-to-watch
   binding, so an unrelated watch cannot conceal a silent stop. While the watch is active,
   the check sees a live dependency; when the link points to another release, it sends one service input to the
