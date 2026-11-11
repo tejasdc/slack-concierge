@@ -125,4 +125,23 @@ projection.checkpoint(generation,101);
 const changes=readPreparedReceiptChanges(prepared,1,101,window.asOf,40),changed=changes.operations.find(item=>item.operationId==='held-input');
 expect(changed?.attachments[0]?.name==='held-note.txt'&&changed.attachments[0]?.contentType==='text/plain',
   'prepared receipt change page carries the same retained attachment reference');
-console.log('receipt-projection: retry set, restart, clear, hold, readable ChatGPT failure and bounded preview passed');
+// A request the Inbox routed from his own words names him only through routedFrom. On 2026-11-10 the
+// list ran an older copy of the provenance walk and listed no human while the full record named his capture.
+db.exec(`ALTER TABLE session_inputs ADD COLUMN source_run_id TEXT;
+  ALTER TABLE session_communication_requests ADD COLUMN source_session_id INTEGER;
+  ALTER TABLE session_communication_requests ADD COLUMN source_turn_id INTEGER;`);
+db.query(`INSERT INTO turns(id,session_id,status,native_run_id,dispatch_attempt,turn_kind) VALUES(7,1,'completed','run-ring',1,'native'),
+  (8,1,'completed','run-router',1,'native')`).run();
+const addInput=db.query(`INSERT INTO session_inputs(id,session_id,kind,origin,source_input_id,source_run_id,request_id,turn_id,
+  created_at,updated_at,payload_json) VALUES(?,1,?,?,?,?,?,?,'2026-11-10T00:00:00Z','2026-11-10T00:00:00Z',?)`);
+addInput.run('ring-input','input','human',null,null,null,7,JSON.stringify({text:'Ring her',capture:{id:'capture:ring'}}));
+addInput.run('router-input','input','agent',null,null,null,8,JSON.stringify({text:'File it'}));
+addInput.run('routed-request','input','agent','router-input','run-router','routed-rq',null,
+  JSON.stringify({text:'Ring her',routedFrom:{authorKind:'human',messageId:'ring-input'}}));
+db.query(`INSERT INTO session_communication_requests(request_id,target_input_id,target_session_id,source_input_id,source_session_id,
+  source_turn_id,payload_json) VALUES('routed-rq','routed-request',1,'router-input',1,8,?)`).run(JSON.stringify({requestedEffect:'work'}));
+const routed=readCompactReceipt(db,'routed-request')!.provenance as any;
+expect(routed?.originatingHuman?.inputId==='ring-input'&&routed.originatingHuman.captureId==='capture:ring'
+  &&routed.originatingHuman.runId==='run-ring'&&routed.effectScope==='work',
+  'the receipt list names the human a routed request came from, as the full record does');
+console.log('receipt-projection: retry set, restart, clear, hold, readable ChatGPT failure, bounded preview and routed human passed');
