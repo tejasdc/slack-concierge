@@ -35,15 +35,20 @@ export function preparedTopics(options:Omit<Parameters<typeof readPreparedTopics
  * freshness; it needs the same generation (the cursor checks that) and the device's revision
  * check, never a newer head, or every busy minute tears a twenty-page walk. */
 const LIST_CATCH_UP_MS=4000;
-export async function preparedTopicsAfterCatchUp(options:Omit<Parameters<typeof readPreparedTopics>[1],'canonicalHead'>,signal?:AbortSignal){
- if(options.cursor)return preparedTopics(options,0);
+/** The change a list read must cover, after yielding while the worker reaches it. Both list
+ * entrances use it: the device's HTTP read and the agents' `sessions topics list` command. */
+export async function listReadHead(cursor:string|null|undefined,signal?:AbortSignal){
+ if(cursor)return 0;
  const requiredHead=presentationHead(db),deadline=performance.now()+LIST_CATCH_UP_MS;
  const reader=prepared();
  const applied=()=>reader?.query('SELECT ready,source_head FROM presentation_topics_meta WHERE singleton=1').get() as {ready:number;source_head:number}|null|undefined;
  for(let state=applied();state?.ready&&state.source_head<requiredHead&&!signal?.aborted&&performance.now()<deadline;state=applied())
   // The worker is its own process: this is waiting outside the owner, not owner slowness.
   await awaitingOutside(()=>Bun.sleep(100));
- return preparedTopics(options,requiredHead);
+ return requiredHead;
+}
+export async function preparedTopicsAfterCatchUp(options:Omit<Parameters<typeof readPreparedTopics>[1],'canonicalHead'>,signal?:AbortSignal){
+ return preparedTopics(options,await listReadHead(options.cursor,signal));
 }
 export function preparedAreas(query:string|null,cursor:string|null,limit:number){
  const reader=prepared();return reader&&reader.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='presentation_areas'").get()?readPreparedAreas(reader,presentationHead(db),query,cursor,limit):
