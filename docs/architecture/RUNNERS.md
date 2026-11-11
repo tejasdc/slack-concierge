@@ -485,7 +485,7 @@ keeps admission held for inspection. The dispatcher also exposes
 `accounts.codex.resetCredit`; the runner validates a unique account home and runs the provider's
 own redemption protocol there.
 
-Google/Antigravity turns can target the configured turn runner. The owner stores the selected
+Google/Antigravity turns follow the same placement setting as Claude: with `CONCIERGE_TURN_RUNNERS=all` (the server) they target the configured turn runner; with the default `marked` (the Mac peer, which has no runner) an unmarked Google turn runs on the owner's own machine, still behind the local paid-credit check. The owner stores the selected
 runner and account label; the runner starts its own `agy` executable and checks its own
 `~/.gemini/antigravity-cli/settings.json` before launch. If the setting is unreadable or
 `useG1Credits` is true, dispatch refuses before starting the provider, so a runner cannot silently
