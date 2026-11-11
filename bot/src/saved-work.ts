@@ -211,6 +211,9 @@ export function updateSavedTurn(turnId:number,action:string,body:Record<string,u
     if(expires!==undefined&&(typeof expires!=='number'||!Number.isFinite(expires)||expires<=at))throw new Error('Expiry must follow the scheduled time.');
     db.query(`UPDATE turns SET saved_kind='scheduled',dispatch_next_attempt_ms=?,saved_fire_at_ms=?,saved_expires_at_ms=?,saved_account=NULL,
       saved_window=NULL,saved_boundary_ms=NULL,saved_alerted_at_ms=NULL,saved_manual_start=0 WHERE id=? AND status='queued'`).run(at,at,expires??null,turnId);
+    // A repeating schedule's end lives on its first firing; changing it here changes the whole schedule's end.
+    if(row.saved_root_id!==null&&row.saved_root_id!==turnId)
+      db.query('UPDATE turns SET saved_expires_at_ms=? WHERE id=?').run(expires??null,row.saved_root_id);
     } else if(action==='start') {
     if(row.saved_quiet_only&&!quietOnlyAdmits(Date.now(),savedWorkSettings()))
       throw new Error('Quiet-only work can start only during its quiet window, before the morning cutoff.');
@@ -350,6 +353,18 @@ export function advanceRepeatingSchedules(now=Date.now()):number {
       const firedAt=current.saved_fire_at_ms??current.dispatch_next_attempt_ms!;
       const nextSequence=current.saved_sequence+Math.max(1,Math.floor((now-firedAt)/interval)+1);
       const nextAt=firedAt+(nextSequence-current.saved_sequence)*interval;
+      // A repeating schedule's expiry is when the whole schedule ends, kept on its first firing.
+      // Firings booked before 2026-11-11 carried a copy pushed one interval later each time, so the
+      // end never arrived (Lenny's refund watch fired for days past it); a queued one of those is
+      // withdrawn here when it comes due.
+      const end=(db.query('SELECT saved_expires_at_ms FROM turns WHERE id=?').get(root) as {saved_expires_at_ms:number|null}|null)?.saved_expires_at_ms??null;
+      if(end!==null&&(firedAt>=end||nextAt>=end)) {
+        // The last firing before the end still runs; the schedule ends once it has left the queue.
+        if(!left&&firedAt<end)return;
+        const rootInput=(db.query('SELECT accepted_input_id FROM turns WHERE id=?').get(root) as {accepted_input_id:string|null}|null)?.accepted_input_id;
+        if(rootInput)endRepeatingScheduleForInput(rootInput,'This repeating schedule reached its expiry.');
+        return;
+      }
       const skippedBetween=nextSequence-current.saved_sequence-1;
       const prior=!left&&db.query(`SELECT 1 FROM turns WHERE saved_root_id=? AND id<? AND status IN ('queued','running','delivering') LIMIT 1`)
         .get(root,current.id);
@@ -378,10 +393,9 @@ export function advanceRepeatingSchedules(now=Date.now()):number {
         payload:{text,...(payload.attachments?{attachments:payload.attachments}:{})}}).input;
       const queued=enqueueSessionInput(input.id);
       if(queued.turn_id===null)throw new Error('Repeating firing could not enter its session queue.');
-      const expiry=current.saved_expires_at_ms===null?null:nextAt+(current.saved_expires_at_ms-firedAt);
       db.query(`UPDATE turns SET saved_kind='scheduled',saved_at_ms=?,saved_expires_at_ms=?,dispatch_next_attempt_ms=?,saved_fire_at_ms=?,
         saved_repeat_ms=?,saved_root_id=?,saved_sequence=? WHERE id=? AND status='queued'`)
-        .run(now,expiry,nextAt,nextAt,interval,root,nextSequence,queued.turn_id);
+        .run(now,end,nextAt,nextAt,interval,root,nextSequence,queued.turn_id);
       advanced++;
     })();} catch(error) {log('error','saved_repeat_advance_failed',{turn_id:row.id,...errorFields(error)});}
   }
