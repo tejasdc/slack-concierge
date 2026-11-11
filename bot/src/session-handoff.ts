@@ -16,6 +16,7 @@ import {takeInboxRouterRole} from './standing-agents';
 import {claudeConfigDir,locateClaudeTranscript} from './claude-transcript-watch';
 import {runnerMachineCall} from './runner-machine-calls';
 import {resolveRunnerProjectLocation} from './runner-project-location';
+import {undeliveredRequestState} from './request-prerequisite-hold';
 
 const run=promisify(execFile);
 type Item={id:string;kind:'sent'|'owed'|'queued'|'watch'|'lab'|'worktree';ref:string;holder:string;[key:string]:unknown};
@@ -24,6 +25,8 @@ type HandoffRow={id:string;predecessor_session_id:number;successor_session_id:nu
 const digest=(value:Inventory)=>createHash('sha256').update(stablePayload(value)).digest('hex');
 const canonical=(id:number)=>`concierge:${id}`;
 const row=(id:string)=>db.query('SELECT * FROM session_handoffs WHERE id=?').get(id) as HandoffRow|null;
+const requestRow=(id:string)=>db.query('SELECT request_id,source_session_id,source_input_id,target_input_id,payload_json FROM session_communication_requests WHERE request_id=?')
+  .get(id) as {request_id:string;source_session_id:number;source_input_id:string|null;target_input_id:string|null;payload_json:string};
 const pending=(id:number)=>db.query("SELECT * FROM session_handoffs WHERE predecessor_session_id=? AND state='proposed'").get(id) as HandoffRow|null;
 
 export function supersededBy(sessionId:number):string|null {
@@ -64,14 +67,33 @@ function ledgerItems(sessionId:number):Item[] {
     const turn=request.target_input_id?db.query('SELECT t.provider_input_acknowledged_at,t.provider_turn_id,t.status FROM session_inputs i LEFT JOIN turns t ON t.id=i.turn_id WHERE i.id=?').get(request.target_input_id) as any:null;
     const target=getSessionById(request.target_session_id);
     items.push({id:`sent:${request.request_id}`,kind:'sent',ref:request.request_id,holder,target:canonical(request.target_session_id),status:request.status,
-      doNotRedispatch:!!turn?.provider_input_acknowledged_at||!!turn?.provider_turn_id||target?.provider_id==='chatgpt'});
+      doNotRedispatch:!!turn?.provider_input_acknowledged_at||!!turn?.provider_turn_id||target?.provider_id==='chatgpt',
+      ...(undeliveredRequestState(requestRow(request.request_id))??{})});
   }
+  // A worker can settle a request before its final return reaches the asker. That return is
+  // still owed to whoever holds the asking work, so it moves with the handoff (Inbox 8785 →
+  // 8876, 2026-11-06: two returns reached the suspended predecessor after acceptance).
+  for(const [requests,events,target] of [
+    ['session_communication_requests','session_communication_events',"'concierge:'||request.target_session_id"],
+    ['session_peer_requests','session_peer_events',"request.peer||':'||request.remote_session_id"]] as const)
+    for(const request of db.query(`SELECT request.request_id,${target} AS target FROM ${requests} request
+      WHERE request.source_session_id=? AND request.outcome IS NOT NULL AND EXISTS (SELECT 1 FROM ${events} event
+        WHERE event.request_id=request.request_id AND event.kind='final' AND event.superseded_by_event_id IS NULL AND event.status NOT IN ('received','retained'))
+      ORDER BY request.created_at_ms,request.request_id`).all(sessionId) as {request_id:string;target:string}[]){
+      if(pendingReturnInputs(request.request_id).some(input=>input.state==='delivered'))continue;
+      items.push({id:`sent:${request.request_id}`,kind:'sent',ref:request.request_id,holder,target:request.target,status:'settled',
+        pendingReturn:true,doNotRedispatch:true});
+    }
   for(const request of db.query('SELECT request_id,peer,remote_session_id,status FROM session_peer_requests WHERE source_session_id=? AND outcome IS NULL ORDER BY created_at_ms,request_id').all(sessionId) as any[])
     items.push({id:`sent:${request.request_id}`,kind:'sent',ref:request.request_id,holder,target:`${request.peer}:${request.remote_session_id}`,status:request.status,doNotRedispatch:true});
   for(const [table,kind] of [['session_communication_requests','local'],['session_peer_deliveries','peer'],['session_external_requests','outside']] as const){
     const where=table==='session_peer_deliveries'?'closed_at_ms IS NULL':'outcome IS NULL';
     for(const request of db.query(`SELECT request_id,target_input_id FROM ${table} WHERE target_session_id=? AND ${where} ORDER BY rowid`).all(sessionId) as any[])
-      items.push({id:`owed:${request.request_id}`,kind:'owed',ref:request.request_id,holder,source:kind,targetInputId:request.target_input_id});
+      // A local request that never reached a run is not work this session can do: reply refuses it,
+      // and a held one waits on its requester's decision. Say so on the row instead of hiding it,
+      // because a handoff must still move it.
+      items.push({id:`owed:${request.request_id}`,kind:'owed',ref:request.request_id,holder,source:kind,targetInputId:request.target_input_id,
+        ...(kind==='local'?undeliveredRequestState(requestRow(request.request_id))??{}:{})});
   }
   for(const input of db.query(`SELECT i.id AS input_id,i.turn_id,t.* FROM session_inputs i JOIN turns t ON t.id=i.turn_id
     WHERE i.session_id=? AND t.session_id=? AND t.status='queued' AND t.accepted_input_id=i.id ORDER BY t.id`).all(sessionId,sessionId) as any[]){
@@ -79,11 +101,38 @@ function ledgerItems(sessionId:number):Item[] {
     // execution and is shown here so the successor can see whether it is safe to move.
     const accepted=getAcceptedSessionInput(input.input_id)!;
     items.push({id:`queued:${input.input_id}`,kind:'queued',ref:input.input_id,holder,turnId:input.turn_id,
-      movable:movableQueuedTurn(input as WaitingTurn,accepted),obsolete:closedThreadUpkeep(accepted)});
+      movable:movableQueuedTurn(input as WaitingTurn,accepted),obsolete:obsoleteQueuedTurn(accepted)});
   }
   for(const watch of db.query("SELECT watch_id,state FROM watches WHERE session_id=? AND (state IN ('accepted','observing') OR delivery_state='pending') ORDER BY created_at_ms,watch_id").all(sessionId) as any[])
     items.push({id:`watch:${watch.watch_id}`,kind:'watch',ref:watch.watch_id,holder,state:watch.state});
   return items;
+}
+
+/** Whether acceptance could move every queued input: the same rule `acceptHandoff` enforces, read
+ * before a proposal so an automatic move never proposes a handoff its successor must refuse. */
+export function queuedWorkMovable(sessionId:number):{queued:number;movable:boolean} {
+  const queued=ledgerItems(sessionId).filter(item=>item.kind==='queued');
+  return {queued:queued.length,movable:queued.every(item=>item.movable||item.obsolete)};
+}
+
+/**
+ * Where each undelivered final return of a settled request stands on its asker's side.
+ * unadmitted: nothing was written to the asker yet; unstarted: an accepted input with no turn
+ * or steering; queued: waiting in a queued turn (moved by the queued item when safe);
+ * delivered: already handed to a run, so the predecessor has it and it is never taken back.
+ */
+function pendingReturnInputs(requestId:string):{inputId:string|null;state:'unadmitted'|'unstarted'|'queued'|'delivered'}[] {
+  return (db.query(`SELECT accepted_input_id FROM session_communication_events WHERE request_id=? AND kind='final'
+    AND superseded_by_event_id IS NULL AND status NOT IN ('received','retained')
+    UNION ALL SELECT accepted_input_id FROM session_peer_events WHERE request_id=? AND kind='final'
+    AND superseded_by_event_id IS NULL AND status NOT IN ('received','retained')`).all(requestId,requestId) as {accepted_input_id:string|null}[]).map(event=>{
+    if(!event.accepted_input_id)return {inputId:null,state:'unadmitted' as const};
+    const input=getAcceptedSessionInput(event.accepted_input_id);
+    if(!input||input.steering_id!==null||(input.receipt_json&&JSON.parse(input.receipt_json).state))return {inputId:event.accepted_input_id,state:'delivered' as const};
+    if(input.turn_id===null)return {inputId:input.id,state:'unstarted' as const};
+    const turn=db.query('SELECT status FROM turns WHERE id=?').get(input.turn_id) as {status:string}|null;
+    return {inputId:input.id,state:turn?.status==='queued'?'queued' as const:'delivered' as const};
+  });
 }
 
 function movableQueuedTurn(turn:WaitingTurn,input:NonNullable<ReturnType<typeof getAcceptedSessionInput>>):boolean {
@@ -92,9 +141,15 @@ function movableQueuedTurn(turn:WaitingTurn,input:NonNullable<ReturnType<typeof 
   return safeTurn(turn.saved_kind==='scheduled'?{...turn,saved_kind:null}:turn,input);
 }
 
-function closedThreadUpkeep(input:ReturnType<typeof getAcceptedSessionInput>):boolean {
-  if(!input||input.origin!=='service'||!input.id.startsWith('thread-upkeep:')||!input.request_id)return false;
-  return !!db.query("SELECT 1 FROM inbox_requests WHERE request_id=? AND state='closed'").get(input.request_id);
+function obsoleteQueuedTurn(input:ReturnType<typeof getAcceptedSessionInput>):boolean {
+  if(!input)return false;
+  if(input.origin==='service'&&input.id.startsWith('thread-upkeep:')&&input.request_id){
+    return !!db.query("SELECT 1 FROM inbox_requests WHERE request_id=? AND state='closed'").get(input.request_id);
+  }
+  if(input.scope==='turn-continuation'||input.id.startsWith('turn-continuation:')){
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -279,8 +334,19 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
     for(const item of verified.items){
       if(item.kind==='sent'){
         const table=db.query('SELECT 1 FROM session_communication_requests WHERE request_id=?').get(item.ref)?'session_communication_requests':'session_peer_requests';
-        const changed=db.query(`UPDATE ${table} SET source_session_id=? WHERE request_id=? AND source_session_id=? AND outcome IS NULL`).run(to,item.ref,from);
-        if(changed.changes!==1)throw new Error(`Sent request ${item.ref} changed during handoff.`);record(item.kind,item.ref);
+        const changed=db.query(`UPDATE ${table} SET source_session_id=? WHERE request_id=? AND source_session_id=? AND ${item.pendingReturn?'outcome IS NOT NULL':'outcome IS NULL'}`).run(to,item.ref,from);
+        if(changed.changes!==1)throw new Error(`Sent request ${item.ref} changed during handoff.`);
+        // An unstarted return input carries its exact ID to the successor; delivery then dispatches it there.
+        // A queued one moves with its queued item below.
+        // One answer can carry several requests through a single return input; it moves once.
+        if(item.pendingReturn)for(const pendingReturn of pendingReturnInputs(item.ref)){
+          if(pendingReturn.state==='delivered')throw new Error(`The return for ${item.ref} reached the predecessor during handoff.`);
+          if(pendingReturn.state==='unstarted'&&db.query(`UPDATE session_inputs SET session_id=?,updated_at=CURRENT_TIMESTAMP
+            WHERE id=? AND session_id<>? AND turn_id IS NULL AND steering_id IS NULL`).run(to,pendingReturn.inputId,to).changes!==1
+            &&getAcceptedSessionInput(pendingReturn.inputId!)?.session_id!==to)
+            throw new Error(`The return input for ${item.ref} changed during handoff.`);
+        }
+        record(item.kind,item.ref);
       }else if(item.kind==='owed'){
         const table=item.source==='peer'?'session_peer_deliveries':item.source==='outside'?'session_external_requests':'session_communication_requests';
         const open=table==='session_peer_deliveries'?'closed_at_ms IS NULL':'outcome IS NULL';
@@ -299,14 +365,15 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
       }else if(item.kind==='queued'&&item.obsolete){
         const original=getAcceptedSessionInput(item.ref);
         const turn=original?.turn_id?db.query('SELECT status,accepted_input_id FROM turns WHERE id=?').get(original.turn_id) as {status:string;accepted_input_id:string}|null:null;
-        if(!original||!turn||turn.status!=='queued'||turn.accepted_input_id!==original.id||!closedThreadUpkeep(original))
-          throw new Error(`Closed-request upkeep ${item.ref} changed during handoff.`);
+        if(!original||!turn||turn.status!=='queued'||turn.accepted_input_id!==original.id||!obsoleteQueuedTurn(original))
+          throw new Error(`Obsolete queued item ${item.ref} changed during handoff.`);
         // The request has its own final receipt. This reminder has no remaining work to transfer.
         // Retire its exact queued turn; never submit its words to another provider.
-        finishTurn(original.turn_id!,'cancelled','The exact Inbox request closed before this reminder ran.');
+        const isContinuation=original.scope==='turn-continuation'||original.id.startsWith('turn-continuation:');
+        finishTurn(original.turn_id!,'cancelled',isContinuation?'Continuation superseded by handoff.':'The exact Inbox request closed before this reminder ran.');
         settleTurnDependencies(original.turn_id!);
         db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
-          .run(JSON.stringify({state:'canceled',reason:'inbox_request_closed'}),original.id);
+          .run(JSON.stringify({state:'canceled',reason:isContinuation?'continuation_superseded':'inbox_request_closed'}),original.id);
       }else if(item.kind==='queued'&&item.movable){
         const original=getAcceptedSessionInput(item.ref)!;
         const turn=db.query(`SELECT id,session_id,accepted_input_id,status,dispatch_attempt,dispatch_hold,provider_admission_intended_at,
@@ -341,6 +408,10 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
           .run(cloned.id,moved.turn_id,item.ref,to);
         db.query('UPDATE session_external_requests SET target_input_id=? WHERE target_input_id=? AND target_session_id=? AND outcome IS NULL')
           .run(cloned.id,item.ref,to);
+        // A queued return now travels as the clone; its delivery state follows that exact input.
+        for(const events of ['session_communication_events','session_peer_events'])
+          db.query(`UPDATE ${events} SET accepted_input_id=? WHERE accepted_input_id=? AND status NOT IN ('received','retained')`)
+            .run(cloned.id,item.ref);
         record(item.kind,item.ref);
       }else if(item.kind==='watch'){
         const changed=db.query("UPDATE watches SET session_id=? WHERE watch_id=? AND session_id=? AND (state IN ('accepted','observing') OR delivery_state='pending')").run(to,item.ref,from);

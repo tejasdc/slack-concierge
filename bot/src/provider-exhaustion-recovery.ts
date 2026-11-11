@@ -25,8 +25,15 @@ export function safeTurn(turn:WaitingTurn,input:AcceptedSessionInput):boolean {
     ||!['input','create','inbox-capture'].includes(input.kind)||input.steering_id!==null
     ||turn.provider_input_acknowledged_at!==null)return false;
   const receipt=input.receipt_json?JSON.parse(input.receipt_json):{};
-  if(Object.keys(receipt).some(key=>key!=='admission')
-    ||(receipt.admission&&(receipt.admission.provider!=='claude-code'||receipt.admission.inputId!==input.id)))return false;
+  // The admission a receipt records is the owner preparing a send on the session's own provider; the
+  // hold and turn columns below say whether anything reached it. Until 2026-11-11 this demanded a
+  // Claude admission, written when only Claude work moved, so every Codex input the owner had ever
+  // claimed was unmovable: the Diwali session's handoff to Claude (concierge:7992 → 9328) was refused
+  // for an input Codex never received. A capture's `admissionIntent: 'live'` only says it was not held
+  // for review; it is not a provider fact.
+  const provider=getSessionById(turn.session_id)?.provider_id;
+  if(Object.keys(receipt).some(key=>key!=='admission'&&!(key==='admissionIntent'&&receipt.admissionIntent==='live'))
+    ||(receipt.admission&&(receipt.admission.provider!==provider||receipt.admission.inputId!==input.id)))return false;
   // A usage hold is written only after the provider's refusal was classified replay safe.
   // Admission intent alone is not proof of execution; a fresh untouched queued turn has none.
   // A held refusal is replay safe by its classification. Other retries are movable

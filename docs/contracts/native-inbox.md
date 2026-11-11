@@ -576,7 +576,10 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   refused (`QUESTION_NOT_ANSWERABLE`) instead of being parked out of his sight. If the router's input ends without a replacement dispatch or checked completion, upkeep
   sends another attempt after a bounded delay, starting at fifteen minutes and capped at one
   day. Upkeep admits at most five recovery inputs on one reading pass, leaving the rest
-  eligible on the next pass. The input and flag have stable identities across restart. After
+  eligible on the next pass. Stuck requests whose latest attempt is the same dispatch share one
+  recovery input that lists all of them and asks for one combined request to the owning agent,
+  linked to each; on 2026-11-09 one shared attempt came back once per request and its agent got
+  about a dozen copies ([record](../incidents/2026-11-09-shared-attempt-recovery-fanned-out.md)). The input and flag have stable identities across restart. After
   two recovery turns without a linked next attempt, the thread gets one notice that the task
   is still open and Concierge is continuing to try. A request with no certain linked human
   source still reaches the router for provenance investigation without inheriting authority

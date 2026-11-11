@@ -16,7 +16,7 @@ import toml from "@iarna/toml";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeSync } from "node:fs";
 import { isHintCommand, renderCommandHints } from "./command-hints";
 import {
   addDir,
@@ -250,6 +250,7 @@ import { beginRunnerTurnDrain } from "./runner-host-access";
 import { interruptOrphanedTurn, observeExecutionChanges } from "./state";
 import {recoverExhaustedClaudeWork} from './provider-exhaustion-recovery';
 import {maybeStartInboxProviderFailover} from './inbox-provider-failover';
+import {moveHeldWork} from './held-work-failover';
 import {reconcileCoveredTasteRequest,recoverOctoberBudgetPauses} from './incident-budget-pause-recovery';
 import {
   ensureChannelList,
@@ -443,6 +444,20 @@ function detectedRuntimeGitSha() {
 
 const runtimeGitSha = detectedRuntimeGitSha();
 let draining = false;
+// An error nothing caught ends the owner, as it always has; first it records what it was.
+// On 2026-11-11 at 05:33:45 UTC the owner exited with status 1 and Bun printed no error at all,
+// so the crash could not be named (a rejection with no value, as the old Slack socket gives,
+// prints nothing). The drain installs its own ignoring handlers, so these stand aside then.
+for (const kind of ["unhandledRejection", "uncaughtException"] as const) {
+  process.on(kind, (reason: unknown) => {
+    if (draining) return;
+    const fields = reason instanceof Error ? errorFields(reason)
+      : { reason_type: reason === null ? "null" : typeof reason, reason: String(reason).slice(0, 500) };
+    // Written synchronously too: the log stream may not flush before the exit below.
+    try { writeSync(2, `${JSON.stringify({ ts: new Date().toISOString(), level: "error", event: "owner_crashed_unhandled", kind, ...fields })}\n`); } catch { /* exit regardless */ }
+    process.exit(1);
+  });
+}
 let serviceOnline = false;
 let activeTurnCount = 0;
 let activeInputHandlerCount = 0;
@@ -4013,7 +4028,7 @@ async function reconcilePriorInstanceTurns() {
 // One in-flight pass is owned by the reader itself, so a credential change and this
 // watch cannot start competing reads of the same accounts. Each reading is followed by the
 // forecast check, which is what turns a number on a screen into a warning before the wall.
-startProviderUsageWatch({ stopped: () => draining, onReading: () => { void keepThreadsCurrent((admission) => sessionExecutionHost.owner.admit(admission)).catch(error => log('error','inbox_recovery_pass_failed',errorFields(error))); reconcileCoveredTasteRequest(); recoverOctoberBudgetPauses(); recoverExhaustedClaudeWork(); maybeStartInboxProviderFailover(); wakeDeferredQuestions(Date.now(), (admission) => sessionExecutionHost.owner.admit(admission)); void closeQuestionsAnsweredByTodos((admission) => sessionExecutionHost.owner.admit(admission)).catch(() => {}); publishUsageForecastNotices(recordOwnerEvent); publishExpiringResetNotices(recordOwnerEvent); refreshUsageBreakdownIfStale(); briefRunningSessions(admission => sessionExecutionHost.owner.admit(admission)); } });
+startProviderUsageWatch({ stopped: () => draining, onReading: () => { void keepThreadsCurrent((admission) => sessionExecutionHost.owner.admit(admission)).catch(error => log('error','inbox_recovery_pass_failed',errorFields(error))); reconcileCoveredTasteRequest(); recoverOctoberBudgetPauses(); recoverExhaustedClaudeWork(); maybeStartInboxProviderFailover(); moveHeldWork(); wakeDeferredQuestions(Date.now(), (admission) => sessionExecutionHost.owner.admit(admission)); void closeQuestionsAnsweredByTodos((admission) => sessionExecutionHost.owner.admit(admission)).catch(() => {}); publishUsageForecastNotices(recordOwnerEvent); publishExpiringResetNotices(recordOwnerEvent); refreshUsageBreakdownIfStale(); briefRunningSessions(admission => sessionExecutionHost.owner.admit(admission)); } });
 const stopBackgroundJobWatch = startBackgroundJobWatch(admission => sessionExecutionHost.owner.admit(admission));
 const stopUpdateWaitWatch = startUpdateWaitWatch({admit: admission => sessionExecutionHost.owner.admit(admission), stateDir: process.env.CONCIERGE_STATE_DIR!});
 const stopWatchWorker = startMachineWatchWorker(admission => sessionExecutionHost.owner.admit(admission), () => draining);
