@@ -895,7 +895,7 @@ function questionView(question:StoredQuestion,replies:HumanReply[]) {
  * the words it was sent with. A row the owner no longer has leaves the snapshot as it was.
  */
 function liveDispatch(dispatch:any) {
-  const local=db.query('SELECT source_input_id,outcome,status,created_at_ms,payload_json FROM session_communication_requests WHERE request_id=?').get(String(dispatch.requestId)) as any;
+  const local=db.query('SELECT source_input_id,outcome,status,created_at_ms,payload_json,target_session_id FROM session_communication_requests WHERE request_id=?').get(String(dispatch.requestId)) as any;
   const peer=local?null:db.query('SELECT source_input_id,outcome,status,created_at_ms,payload_json,peer,remote_session_id FROM session_peer_requests WHERE request_id=?').get(String(dispatch.requestId)) as any;
   const row=local??peer;
   if(!row)return dispatch;
@@ -903,7 +903,9 @@ function liveDispatch(dispatch:any) {
   try{const words=String(JSON.parse(row.payload_json)?.text??'').replace(/\s+/g,' ').trim();text=words?words.slice(0,240):null;}catch{text=null;}
   // A peer session is named as the catalogue and the reply chooser name it (`mac:84`); records linked
   // before 2026-10-07 spelt it `mac:concierge:84`, which opened nothing.
-  return {...dispatch,...(peer?{targetSessionId:receiveSessionFromPeer(peer.remote_session_id,peer.peer)}:{}),outcome:row.outcome??null,state:row.status??dispatch.state,
+  // An accepted handoff moves an open request to the successor; the request's current holder is
+  // the one working, and the thread must follow that session's turns (bug report ce2b8b10).
+  return {...dispatch,...(peer?{targetSessionId:receiveSessionFromPeer(peer.remote_session_id,peer.peer)}:local?.target_session_id?{targetSessionId:`concierge:${local.target_session_id}`}:{}),outcome:row.outcome??null,state:row.status??dispatch.state,
     ...(row.source_input_id?{sourceInputId:row.source_input_id}:{}),
     ...(typeof row.created_at_ms==='number'?{at:new Date(row.created_at_ms).toISOString()}:{}),
     ...(text?{text}:{})};
