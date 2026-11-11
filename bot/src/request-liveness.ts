@@ -189,12 +189,12 @@ function revokeQueuedTurn(inputId: string, turnId: number, sessionId: number, re
  * request turn, and the schedule is marked ended. A firing already running finishes. Returns how many
  * firings were withdrawn, or null when the input starts no repeating schedule.
  */
-export function endRepeatingScheduleForInput(inputId: string): number | null {
+export function endRepeatingScheduleForInput(inputId: string, reason = 'The requesting session cancelled this repeating schedule.'): number | null {
     const schedule = repeatingScheduleOf(inputId);
     if (!schedule) return null;
     for (const firing of schedule.queued)
-        revokeQueuedTurn(firing.accepted_input_id, firing.id, firing.session_id, 'The requesting session cancelled this repeating schedule.');
-    markRepeatingScheduleEnded(schedule.root, 'The requesting session cancelled this repeating schedule.', schedule.queued.length);
+        revokeQueuedTurn(firing.accepted_input_id, firing.id, firing.session_id, reason);
+    markRepeatingScheduleEnded(schedule.root, reason, schedule.queued.length);
     return schedule.queued.length;
 }
 
