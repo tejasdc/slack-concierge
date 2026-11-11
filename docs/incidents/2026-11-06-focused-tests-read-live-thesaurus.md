@@ -26,6 +26,12 @@ Native-turn focused tests pass a fixed context source to the execution host. The
 production host retains the existing Thinkering lookup. The tests' scratch ledger
 continues to isolate stored Concierge state.
 
+That fix depended on each test remembering the fixed context. On 2026-11-10 the shared
+test preload also took Thinkering away from every test process: the capability socket
+variable points at a scratch path nothing listens on, and the network entrance variables
+are removed. A test that omits the fixed context now fails closed to the "could not be
+read" line instead of reading his live thesaurus, to-dos or captures.
+
 ## Acceptance scenario
 
 - **Seed:** Run the native session controls suite with a scratch ledger and a real
