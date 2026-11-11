@@ -56,6 +56,12 @@ receipts in bounded pages while readers keep the last complete receipt generatio
 new digest only in the same transaction that activates the complete replacement. A restart during
 rebuilding discards the abandoned receipt shadow and starts from the prior complete view, so it can
 never present a partially migrated receipt set as current or duplicate unrelated projections.
+The rebuild runs beside ordinary catch-up, one slice of about 200 ms per catch-up pass, never
+before it: every applied change updates both the readable and the filling generation, and the
+replacement activates at the change position both have reached. Before Nov 11, 2026 the whole
+rebuild ran first, so after every release the worker applied no change for two to five minutes
+and every Inbox list answered not-ready meanwhile
+([record](../incidents/2026-11-11-inbox-list-frozen-after-worker-restart.md)).
 
 A receipt's provenance comes from the same walk as the owner's full record
 (`input-provenance.ts`, called with the worker's read-only handle), so the list
