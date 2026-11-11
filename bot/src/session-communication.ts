@@ -803,10 +803,19 @@ export class SessionCommunicationCoordinator {
         }
         return {kind:null};
     }
-    owed(input:{provider:string;provider_session_id:string;offer?:string[];remind?:boolean}) {
-        const running=db.query(`SELECT session.id AS session_id,turn.id AS turn_id,turn.accepted_input_id FROM sessions session
+    owed(input:{provider:string;provider_session_id:string;run_id?:string;offer?:string[];remind?:boolean}) {
+        type Running={session_id:number;turn_id:number;accepted_input_id:string|null};
+        // A new session's conversation id reaches the owner from the provider's output stream, which
+        // can arrive after a fast first turn already stopped: on 2026-11-11 a one-second first turn
+        // ended without a reply and its Stop hook found no session. Claude's hook also names the run
+        // it was launched for, which the owner assigned before launch, so it is found either way.
+        const running=(db.query(`SELECT session.id AS session_id,turn.id AS turn_id,turn.accepted_input_id FROM sessions session
             JOIN turns turn ON turn.session_id=session.id WHERE session.provider_id=? AND session.agent_session_uuid=?
-            AND turn.status IN ('running','delivering') ORDER BY turn.id DESC LIMIT 1`).get(input.provider,input.provider_session_id) as {session_id:number;turn_id:number;accepted_input_id:string|null}|null;
+            AND turn.status IN ('running','delivering') ORDER BY turn.id DESC LIMIT 1`).get(input.provider,input.provider_session_id) as Running|null)
+            ?? (input.run_id ? db.query(`SELECT session.id AS session_id,turn.id AS turn_id,turn.accepted_input_id FROM turns turn
+                JOIN sessions session ON session.id=turn.session_id WHERE turn.native_run_id=? AND session.provider_id=?
+                AND (session.agent_session_uuid IS NULL OR session.agent_session_uuid='')
+                AND turn.status IN ('running','delivering') LIMIT 1`).get(input.run_id,input.provider) as Running|null : null);
         if(!running?.accepted_input_id)return {owed:[] as OwedRequest[],unfiled:[],waiting:false,source:null};
         const runId=nativeRunId(running.turn_id);
         const source={input_id:running.accepted_input_id,run_id:runId};

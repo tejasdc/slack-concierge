@@ -558,7 +558,10 @@ The owner clamps a read or dismiss generation to the session's own attention cou
   tries to end a turn owing a reply: Claude gets it with `--settings` on every run, Codex as a
   managed hook from `/etc/codex/requirements.toml` (`scripts/install-codex-stop-hook.sh`, run by
   remote-box's deploy on the box and by `install-mac.sh` from a terminal on the Mac), because Codex
-  runs unreviewed hooks only from managed policy. A request counts as owed only once its words
+  runs unreviewed hooks only from managed policy. The hook finds its turn by the provider's
+  conversation id; Claude's hook also names the Concierge run it was launched for, so a new
+  session's first turn is checked even before the owner has recorded its conversation id
+  (`docs/incidents/2026-11-11-first-turn-stop-check-found-no-session.md`). A request counts as owed only once its words
   reached that run: a request steered into a running turn is owed from the provider's send
   acknowledgement (or an ambiguous send), not from its attachment to the turn, because preparing
   its text takes seconds and the hook once demanded verdicts in that gap. There is no reminder turn and no weaker path for
