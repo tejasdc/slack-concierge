@@ -1,7 +1,7 @@
 ---
 failure: Unrelated Concierge releases repeatedly woke the Echo acceptance agent.
 date: 2026-11-07
-fix_commits: []
+fix_commits: [ae8caad4e09f51d1293ac31879daf238865762af, 6a3c55734aab4657a12a6c1bbb0b47adbafc02fd, 1e8f7711d16e699d73a3398d6a21a42f0d796e68]
 cause_status: confirmed
 ---
 
