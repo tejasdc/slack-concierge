@@ -325,7 +325,7 @@ function moveAutomaticFirstTurnOffRefusingModel(input:TurnExecutionInput,dispatc
     input.providerId==='chatgpt')return false;
   let other: keyof typeof AUTOMATIC_PROVIDER_ALIASES;
   try {
-    other=chooseProviderForNewWork(provider=>provider!==input.providerId,input.inputId,Date.now(),false,
+    other=chooseProviderForNewWork(provider=>provider!==input.providerId,input.inputId,Date.now(),null,
       !!sessionMetadata(input.session).automaticSmallTask);
   } catch { return false; }
   const capacity=newWorkCapacity(other);

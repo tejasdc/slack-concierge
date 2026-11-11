@@ -26,21 +26,25 @@ export type ProviderAliasKey =
   | "google-high"
   | "google-flash";
 
+// Fable 5.2, Sonnet 5.5 and Haiku 5.5 each answered a live turn through the server's Claude
+// Code before moving here (2026-11-11). Fable 5.2 needs Claude Code 2.1.320 or newer.
 const CLAUDE_MODELS = {
-  fable: "claude-fable-5-1",
+  fable: "claude-fable-5-2",
   opus: "claude-opus-5-5",
   // Claude Code's own alias for the latest Opus with the extended window. It belongs in
   // this table rather than inline in an alias, so the union below is the whole set.
   opus1m: "opus[1m]",
-  sonnet: "claude-sonnet-5",
-  haiku: "claude-haiku-4-5-20251001",
+  sonnet: "claude-sonnet-5-5",
+  haiku: "claude-haiku-5-5",
 } as const;
 
-// Sol and Luna are on GPT-6, Terra is not, because GPT-6 Terra does not exist —
-// OpenAI shipped only Sol and Luna in that generation and GPT-5.6 Terra remains
-// current. Both GPT-6 tiers cost half their 5.6 counterparts.
+// Sol and Terra are on GPT-6.1 (released 2026-10-26; Terra needs Codex CLI 0.159 or
+// newer), which Codex now recommends in place of GPT-6 Sol and GPT-5.6 Terra. Astra and
+// Luna stay on GPT-6. Both 6.1 names are in the model catalogue Codex downloads for
+// Tejas's accounts; a live turn could not be run when they moved here because both
+// accounts' weekly allowance was spent (2026-11-11).
 //
-// Reaching them needs Codex CLI 0.156 or newer. On 0.153.4 the server refused
+// The GPT-6 generation first needed Codex CLI 0.156 or newer. On 0.153.4 the server refused
 // every gpt-6-* name except Astra with "not supported when using Codex with a
 // ChatGPT account" — which reads like an entitlement problem and is not one: the
 // same account on the Mac's 0.156.0 accepted gpt-6-sol, and after upgrading the
@@ -50,10 +54,18 @@ const CLAUDE_MODELS = {
 // version accepts.
 const CODEX_MODELS = {
   astra: "gpt-6-astra",
-  sol: "gpt-6-sol",
-  terra: "gpt-5.6-terra",
+  sol: "gpt-6.1-sol",
+  terra: "gpt-6.1-terra",
   luna: "gpt-6-luna",
 } as const;
+
+/** The models a start must justify with an escalation reason unless Tejas chose them. */
+export const TOP_MODEL_CHOICES = [CLAUDE_MODELS.fable, CODEX_MODELS.astra] as const;
+export type TopModelChoice = typeof TOP_MODEL_CHOICES[number];
+/** Current helper defaults, read here so no launcher names a model of its own. */
+export const DEFAULT_CLAUDE_SUBAGENT_MODEL = CLAUDE_MODELS.sonnet;
+export const SMALLEST_CLAUDE_MODEL = CLAUDE_MODELS.haiku;
+export const CODEX_INVESTIGATOR_MODEL = CODEX_MODELS.sol;
 
 // Google's current paid AI Pro CLI offers Argon High as its strongest Gemini mode.
 // Keep Flash selectable only by an explicit model choice. A withdrawn choice
@@ -91,14 +103,14 @@ export type SelectableModel =
   | typeof GOOGLE_MODELS[keyof typeof GOOGLE_MODELS];
 
 const MODEL_LABELS: Record<SelectableModel, string> = {
-  "claude-fable-5-1": "Claude Fable 5.1",
+  "claude-fable-5-2": "Claude Fable 5.2",
   "claude-opus-5-5": "Claude Opus 5.5",
   "opus[1m]": "Claude Opus 5.5 1M",
-  "claude-sonnet-5": "Claude Sonnet 5",
-  "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
-  "gpt-6-sol": "GPT-6 Sol",
+  "claude-sonnet-5-5": "Claude Sonnet 5.5",
+  "claude-haiku-5-5": "Claude Haiku 5.5",
+  "gpt-6.1-sol": "GPT-6.1 Sol",
   "gpt-6-luna": "GPT-6 Luna",
-  "gpt-5.6-terra": "GPT-5.6 Terra",
+  "gpt-6.1-terra": "GPT-6.1 Terra",
   "gpt-6-astra": "GPT-6 Astra",
   "gemini-3.8-flash-high": "Gemini 3.8 Flash (High)",
   "gemini-4-argon-high": "Gemini 4 Argon (High)",
@@ -116,6 +128,11 @@ const RETIRED_MODEL_LABELS: Record<string, string> = {
   "gpt-5.6-sol": "GPT-5.6 Sol",
   "gpt-5.6-luna": "GPT-5.6 Luna",
   "claude-fable-5": "Claude Fable 5.1",
+  "claude-fable-5-1": "Claude Fable 5.1",
+  "claude-sonnet-5": "Claude Sonnet 5",
+  "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
+  "gpt-6-sol": "GPT-6 Sol",
+  "gpt-5.6-terra": "GPT-5.6 Terra",
 };
 
 /** What he reads for a model id, including one no longer offered. Unknown ids keep their id. */
@@ -371,6 +388,10 @@ const SUPERSEDED_CLAUDE_MODELS: Record<string, string> = {
   "claude-fable-5": CLAUDE_MODELS.fable,
   // Legacy since Opus 5.5 (2026-09-22); sessions started before it keep running on it.
   "claude-opus-5": CLAUDE_MODELS.opus,
+  // Legacy since 2026-11-11; Fable 5.1 and 5.2 share the one "Fable only" weekly cap.
+  "claude-fable-5-1": CLAUDE_MODELS.fable,
+  "claude-sonnet-5": CLAUDE_MODELS.sonnet,
+  "claude-haiku-4-5-20251001": CLAUDE_MODELS.haiku,
 };
 
 export function canonicalClaudeUsageModel(model: string): string {

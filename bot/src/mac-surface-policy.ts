@@ -2,15 +2,23 @@ const CHROME_CONTROL=/claude[-_]in[-_]chrome/i;
 const COMPUTER_CONTROL=/cua[_-]?repl|computer[._-]?use|skycomputeruse/i;
 export const AUTHORIZED_WEB_APP='com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792';
 export const AUTHORIZED_PAGE='faf63877-6536-4ac6-86e9-5d63e03d3369';
-export const AUTHORIZED_UPDATE_BOARD='94504c60-2b34-4fda-ba23-c20a6a71d7df';
 export const UPDATE_WORKSPACE_COMMAND='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-update-ax.swift" open-workspace';
 export const UPDATE_FIRST_TAP_COMMAND='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-update-ax.swift" update-now';
+export const FOCUS_START_COMMAND='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-focus-ax.swift" start';
+export const FOCUS_VERIFY_START_COMMAND='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-focus-ax.swift" verify-start';
+export const FOCUS_END_COMMAND='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-focus-ax.swift" end';
 const UPDATE_HELPER_PATH='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-update-ax.swift"';
 const UPDATE_HELPER_READ_COMMANDS=new Set([
   `shasum -a 256 ${UPDATE_HELPER_PATH}`,
   `stat -f %Sp ${UPDATE_HELPER_PATH}`,
   `swiftc -typecheck ${UPDATE_HELPER_PATH}`,
 ]);
+const PINNED_UPDATE_HELPER_PATH=/^"\/Users\/tejasdc\/Library\/Application Support\/concierge\/helpers\/[0-9a-f]{40}\/bot\/scripts\/mac-update-ax\.swift"$/;
+function readOnlyUpdateHelperCommand(command:string):boolean {
+  if(UPDATE_HELPER_READ_COMMANDS.has(command))return true;
+  const matched=command.match(/^(shasum -a 256|stat -f %Sp|swiftc -typecheck) (.+)$/);
+  return matched!==null&&PINNED_UPDATE_HELPER_PATH.test(matched[2]);
+}
 export const AUTHORIZING_HUMAN_INPUT='f66f15dd-e251-4537-a9cd-347d0548434b';
 export const CANVAS_AUTHORIZING_HUMAN_INPUT='capture:7bad480ccf4350922acb3ac750cc0ba0b7a990f596acd92b5fe98403f6f0e7a0';
 export const RETIREMENT_AUTHORIZING_HUMAN_INPUT='capture:2a296c24ca627e68981feab3c3e56a32b3e43cf317d0eb545ee4cab23801270b';
@@ -39,22 +47,36 @@ if (!thnkrRetirementOpenFileState.startsWith('Window: "thnkr.ing", App: Thinkeri
 await thnkrRetirementNewWindowApp.click(Number(thnkrRetirementFileMenuMatches[0][1]));
 await thnkrRetirementNewWindowApp.getAXStateAndScreenshot({disableDiffing:true});`;
 
-type RecordedNeed=string|{kind:string;why?:string;humanInputId?:string;effectScope?:string;updateAuthorization?:boolean};
+type RecordedNeed=string|{kind:string;why?:string;humanInputId?:string;effectScope?:string;updateAuthorization?:boolean;focusAuthorization?:boolean};
+
+function authorizedFocusNeed(need:RecordedNeed,toolName:string):need is Exclude<RecordedNeed,string> {
+  return typeof need!=='string'&&need.kind==='mac-app'&&need.focusAuthorization===true
+    &&need.effectScope==='work'&&typeof need.why==='string'
+    &&need.why.includes(AUTHORIZED_WEB_APP)
+    &&need.why.includes('bounded Focus Start/End acceptance')
+    &&COMPUTER_CONTROL.test(toolName);
+}
+
+function authorizedNativeFocusCommand(need:RecordedNeed,command:string):boolean {
+  if(typeof need==='string'||need.kind!=='mac-app'||need.focusAuthorization!==true
+      ||need.effectScope!=='work'||typeof need.why!=='string'
+      ||!need.why.includes(AUTHORIZED_WEB_APP)
+      ||!need.why.includes('bounded Focus Start/End acceptance'))return false;
+  return command===FOCUS_START_COMMAND||command===FOCUS_VERIFY_START_COMMAND||command===FOCUS_END_COMMAND;
+}
 
 function authorizedUpdateNeed(need:RecordedNeed,toolName:string):need is Exclude<RecordedNeed,string> {
   return typeof need!=='string'&&need.kind==='mac-app'&&need.updateAuthorization===true
     &&need.effectScope==='work'&&typeof need.why==='string'
     &&need.why.includes(AUTHORIZED_WEB_APP)
-    &&((need.why.includes(AUTHORIZED_PAGE)&&need.why.includes('0d90186f'))
-      ||need.why.includes(AUTHORIZED_UPDATE_BOARD))
     &&COMPUTER_CONTROL.test(toolName);
 }
 
 function authorizedNativeUpdateCommand(need:RecordedNeed,command:string):boolean {
   if(typeof need==='string'||need.kind!=='mac-app'||need.updateAuthorization!==true
       ||need.effectScope!=='work'||typeof need.why!=='string'
-      ||!need.why.includes(AUTHORIZED_WEB_APP)||!need.why.includes(AUTHORIZED_UPDATE_BOARD))return false;
-  if(command===UPDATE_WORKSPACE_COMMAND)return need.why.includes('Workspace menu');
+      ||!need.why.includes(AUTHORIZED_WEB_APP))return false;
+  if(command===UPDATE_WORKSPACE_COMMAND)return need.why.includes('Open Workspace')||need.why.includes('Workspace menu');
   if(command===UPDATE_FIRST_TAP_COMMAND)return need.why.includes('Update now');
   return false;
 }
@@ -81,7 +103,8 @@ function authorizedRetirementInspectionNeed(need:RecordedNeed,toolName:string):n
 }
 
 function authorizedCurrentWebAppNeed(need:RecordedNeed,toolName:string):boolean {
-  return authorizedWebAppNeed(need,toolName)||authorizedRetirementInspectionNeed(need,toolName)||authorizedUpdateNeed(need,toolName);
+  return authorizedWebAppNeed(need,toolName)||authorizedRetirementInspectionNeed(need,toolName)
+    ||authorizedUpdateNeed(need,toolName)||authorizedFocusNeed(need,toolName);
 }
 
 function authorizedRetirementFileMenuOpen(need:RecordedNeed,toolName:string,code:string):boolean {
@@ -99,7 +122,8 @@ function restrictedWebAppTask(need:RecordedNeed,toolName:string,toolInput:unknow
     &&((typeof need.why==='string'&&need.why.includes(AUTHORIZED_WEB_APP))
       ||need.humanInputId===AUTHORIZING_HUMAN_INPUT
       ||need.humanInputId===CANVAS_AUTHORIZING_HUMAN_INPUT
-      ||retirementHumanInput(need.humanInputId)||need.updateAuthorization===true);
+      ||retirementHumanInput(need.humanInputId)||need.updateAuthorization===true
+      ||need.focusAuthorization===true);
 }
 
 function exactWebAppSelector():string {
@@ -120,7 +144,8 @@ function authorizedWebAppRead(need:RecordedNeed,toolName:string,code:string):boo
 function authorizedScopedRead(need:RecordedNeed,toolName:string,code:string):boolean {
   if(!authorizedCurrentWebAppNeed(need,toolName))return false;
   const handle=authorizedRetirementInspectionNeed(need,toolName)?'thnkrRetirementInspectionApp'
-    :authorizedUpdateNeed(need,toolName)?'thnkrUpdateInspectionApp':'thnkrCanvasInspectionApp';
+    :authorizedUpdateNeed(need,toolName)?'thnkrUpdateInspectionApp'
+    :authorizedFocusNeed(need,toolName)?'thnkrFocusInspectionApp':'thnkrCanvasInspectionApp';
   return new RegExp(`^\\s*var\\s+${handle}\\s*=\\s*await\\s+${exactWebAppSelector()}\\s*;\\s*await\\s+${handle}\\.(?:getAXState|getAXStateAndScreenshot|getScreenshot)\\(\\s*\\)\\s*;?\\s*$`).test(code);
 }
 
@@ -171,6 +196,8 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
       : 'This Safari web app needs an active Mac-app request naming its exact bundle and page IDs, followed by a direct Computer Use getApp call for that bundle. Reissue the request with Tejas’s authorization; do not ask him to copy the app’s contents.';
     return authorizedUpdateNeed(need,toolName)
       ? 'This work request covers passive inspection of the exact thnkr.ing app. Update now remains refused because Computer Use cannot prove the current page and ready release or bind the click to a stable control; other clicks and reloads remain refused.'
+      : authorizedFocusNeed(need,toolName)
+      ? 'This Focus test grants passive exact-app reads and the fixed source-bound native Start and End commands only. Computer Use clicks, navigation, reload and other apps remain refused.'
       : authorizedRetirementInspectionNeed(need,toolName)
       ? 'This human work authorization covers exact thnkr.ing app reads, guarded File-menu inspection, and guarded New Window selection when the recorded need names it. Other apps, page input, reload and whole-screen calls remain refused.'
       : typeof need!=='string'&&need.humanInputId!==AUTHORIZING_HUMAN_INPUT
@@ -204,8 +231,11 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
     return 'Dynamic shell commands on Tejas’s Mac need a direct tool call so the foreground and browser guard can inspect the exact action.';
   const source=code?literalCommands.map(match=>match[2]).join('\n'):raw;
   if(platform==='darwin'&&source.includes('mac-update-ax.swift'))
-    return UPDATE_HELPER_READ_COMMANDS.has(source)||authorizedNativeUpdateCommand(need,source)?null
+    return readOnlyUpdateHelperCommand(source)||authorizedNativeUpdateCommand(need,source)?null
       :'The current Thinkering update helper requires the exact attested work request and its fixed single-action command.';
+  if(platform==='darwin'&&source.includes('mac-focus-ax.swift'))
+    return authorizedNativeFocusCommand(need,source)?null
+      :'The Focus helper requires the exact attested work request and its fixed Start, verify-start, or End command.';
   if(/^(?:rg|grep|sed|cat|ls|head|tail|find|ps|stat|git\s+diff)\b/i.test(source.trim())
       && !/[;&|`\n]|\$\(/.test(source))return null;
   const remote=/\bssh\b[^\n]{0,400}\btejasdc@(?:100\.90\.183\.122|[\w.-]+)\b/i.test(source);

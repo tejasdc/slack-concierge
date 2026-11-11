@@ -4,10 +4,10 @@ import ApplicationServices
 import Darwin
 import Foundation
 
-// This one-shot action is deliberately limited to the currently open Thinkering board.
+// The source-bound action follows the currently open Thinkering document only.
 private let appBundle = "com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792"
 private let appPath = "/Users/tejasdc/Applications/Thinkering.app"
-private let boardID = "94504c60-2b34-4fda-ba23-c20a6a71d7df"
+private let requestID = "79fe4481-3587-40e3-aa66-58fc26be5e0b"
 private let maxElements = 20_000
 private let receiptDirectory = "/Users/tejasdc/Library/Application Support/concierge"
 
@@ -17,9 +17,11 @@ private enum Action: String {
 }
 
 private struct Target {
+    let window: AXUIElement
     let webArea: AXUIElement
     let button: AXUIElement
     let pid: pid_t
+    let url: String
 }
 
 private struct Snapshot {
@@ -87,18 +89,22 @@ private func currentApplication() throws -> (NSRunningApplication, AXUIElement) 
     return (app, windows[0])
 }
 
-private func isCurrentBoard(_ urlText: String?) -> Bool {
-    guard let urlText, let url = URL(string: urlText),
-          url.scheme == "https", url.host == "thnkr.ing", url.path == "/boards",
-          let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
-    let boardItems = components.queryItems?.filter { $0.name == "board" } ?? []
-    return boardItems.count == 1 && boardItems[0].value == boardID
+private func isThinkeringDocument(_ urlText: String?) -> Bool {
+    guard let urlText, let url = URLComponents(string: urlText) else { return false }
+    return url.scheme == "https" && url.host == "thnkr.ing"
+        && url.user == nil && url.password == nil && url.port == nil
 }
 
 private func reserveOnePress(_ action: Action) throws {
     try FileManager.default.createDirectory(atPath: receiptDirectory,
                                             withIntermediateDirectories: true)
-    let marker = "\(receiptDirectory)/mac-update-request-79fe4481-3587-40e3-aa66-58fc26be5e0b-\(boardID)-\(action.rawValue).attempted"
+    let prefix = "mac-update-request-\(requestID)-"
+    let suffix = "-\(action.rawValue).attempted"
+    let existing = try FileManager.default.contentsOfDirectory(atPath: receiptDirectory)
+    guard !existing.contains(where: { $0.hasPrefix(prefix) && $0.hasSuffix(suffix) }) else {
+        throw Refusal.reason("This source-bound action was already attempted")
+    }
+    let marker = "\(receiptDirectory)/\(prefix)\(action.rawValue).attempted"
     let descriptor = open(marker, O_WRONLY | O_CREAT | O_EXCL, 0o600)
     guard descriptor >= 0 else {
         throw Refusal.reason("This fixed action was already attempted or its marker cannot be created")
@@ -151,30 +157,41 @@ private func snapshot(for action: Action, requireTarget: Bool = true) throws -> 
         pending.append(contentsOf: try children(element, role: role).map { ($0, webArea) })
     }
     guard webAreas.count == 1, let currentWebArea = webAreas.first,
-          isCurrentBoard(try stringAttribute(currentWebArea, kAXURLAttribute)) else {
-        throw Refusal.reason("Current Thinkering board is not uniquely present")
+          let currentURL = try stringAttribute(currentWebArea, kAXURLAttribute),
+          isThinkeringDocument(currentURL) else {
+        throw Refusal.reason("Current Thinkering document is not uniquely present")
     }
     let candidates = action == .openWorkspace ? menuButtons : updateButtons
     if requireTarget && (candidates.count != 1 || !CFEqual(candidates[0].1, currentWebArea)) {
-        throw Refusal.reason("Expected exactly one action button under current board")
+        throw Refusal.reason("Expected exactly one action button under current Thinkering document")
     }
     if requireTarget && action == .updateNow && updateAnywayCount != 0 {
         throw Refusal.reason("Update anyway is present; first-tap route refused")
     }
-    let target = requireTarget ? Target(webArea: currentWebArea, button: candidates[0].0,
-                                        pid: app.processIdentifier) : nil
+    let target = requireTarget ? Target(window: window, webArea: currentWebArea, button: candidates[0].0,
+                                        pid: app.processIdentifier, url: currentURL) : nil
     return Snapshot(target: target,
                     updateNowCount: updateButtons.count, updateAnywayCount: updateAnywayCount)
 }
 
 private func run(_ action: Action) throws {
     // The second fresh traversal supplies the retained AX object used by the single Press.
-    _ = try snapshot(for: action)
+    let first = try snapshot(for: action)
     let current = try snapshot(for: action)
-    guard let target = current.target else { throw Refusal.reason("No action target") }
-    let (onlyApp, _) = try currentApplication()
+    guard let earlier = first.target, let target = current.target,
+          earlier.pid == target.pid,
+          CFEqual(earlier.window, target.window),
+          CFEqual(earlier.webArea, target.webArea),
+          CFEqual(earlier.button, target.button),
+          earlier.url == target.url else {
+        throw Refusal.reason("Thinkering document or control changed between reads")
+    }
+    let (onlyApp, onlyWindow) = try currentApplication()
     guard onlyApp.processIdentifier == target.pid,
-          isCurrentBoard(try stringAttribute(target.webArea, kAXURLAttribute)),
+          CFEqual(onlyWindow, target.window),
+          try stringAttribute(target.webArea, kAXRoleAttribute) == "AXWebArea",
+          try stringAttribute(target.webArea, kAXURLAttribute) == target.url,
+          isThinkeringDocument(target.url),
           try stringAttribute(target.button, kAXRoleAttribute) == "AXButton" else {
         throw Refusal.reason("Current target changed before Press")
     }

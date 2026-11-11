@@ -67,18 +67,19 @@ export function newWorkCapacity(provider: AutomaticProvider, now = Date.now(),in
     .sort((a,b) => a.used - b.used || (a.windowResetAt ?? Infinity) - (b.windowResetAt ?? Infinity))[0] ?? null;
 }
 
-/** A running Claude agent's independent helper can use Codex while its own allowance is under pressure. */
-export function codexRoomForClaudeDelegation(now = Date.now(), accountLabel?: string): { claudeUsed: number; codexUsed: number } | null {
-  const usage = storedUsage('claude-code');
+/** Whether independent work can use the other provider while this run's allowance is low. */
+export function otherProviderRoomForDelegation(provider: 'claude-code' | 'codex', now = Date.now(), accountLabel?: string): 'claude-code' | 'codex' | null {
+  const usage = storedUsage(provider);
   const selected = usage?.accounts.find(account => account.current)?.label;
   // Automatic dispatch compares the selected launchable account. A run on another
-  // account must not be promised Codex delegation from that comparison.
+  // account must not be promised another provider from that comparison.
   if (accountLabel && selected !== accountLabel) return null;
-  if (!measuredBudgetPressure('claude-code', accountLabel, now)) return null;
-  const claude = newWorkCapacity('claude-code', now);
-  const codex = newWorkCapacity('codex', now);
-  if (!claude || !codex || codex.used >= 100 || codex.used >= claude.used) return null;
-  return { claudeUsed: claude.used, codexUsed: codex.used };
+  if (!measuredBudgetPressure(provider, accountLabel, now)) return null;
+  const other = provider === 'claude-code' ? 'codex' : 'claude-code';
+  const current = newWorkCapacity(provider, now);
+  const alternative = newWorkCapacity(other, now);
+  if (!current || !alternative || alternative.used >= 100 || alternative.used >= current.used) return null;
+  return other;
 }
 
 /** A threshold notice is an Accounts reading, never a dispatch estimate or cached refusal. */
@@ -103,9 +104,9 @@ export function budgetBriefWithProviderRoom(provider: 'claude-code' | 'codex', n
   const pressure = measuredBudgetPressure(provider, accountLabel, now);
   if (!pressure) return null;
   const name = (key: 'claude-code' | 'codex') => providerDisplayName(key) ?? key;
-  const codex = provider === 'claude-code' ? codexRoomForClaudeDelegation(now, pressure.account) : null;
-  const action = codex
-    ? 'Continue the accepted work. Provider-native subagents inherit this session\'s provider. If other work is its own job, a new session without --provider lets the owner use current Codex room, whether or not Tejas follows it. Review its result before you finish; this running session keeps its provider.'
+  const other = otherProviderRoomForDelegation(provider, now, pressure.account);
+  const action = other
+    ? `Continue the accepted work. Provider-native subagents inherit this session's provider. If other work is its own job, a new session without --provider lets the owner use current ${name(other)} room, whether or not Tejas follows it. Review its result before you finish; this running session keeps its provider.`
     : 'Continue the accepted work. Provider-native subagents inherit this session\'s provider; no other provider has been established as the roomier choice for separate work.';
   const machine = process.platform === 'darwin' ? 'your Mac' : 'the server';
   return [`Budget: Accounts on ${machine} measured ${name(provider)} account ${pressure.account}, ${pressure.window}: ${pressure.usedPercent}% used at ${pressure.observedAt}.`,
@@ -116,7 +117,7 @@ export function budgetBriefWithProviderRoom(provider: 'claude-code' | 'codex', n
 /** A stable request ID spreads starts in proportion to verified remaining allowance.
  * The 90% warning is already the reserve boundary: use accounts below it first. */
 export function chooseProviderForNewWork(canStart: (provider: AutomaticProvider) => boolean,
-  choiceKey: string, now = Date.now(), delegatedFromClaude = false, smallTask = false): AutomaticProvider {
+  choiceKey: string, now = Date.now(), delegatedFrom: 'claude-code' | 'codex' | null = null, smallTask = false): AutomaticProvider {
   if (!choiceKey) throw new Error('Automatic provider choice needs the accepted action identity.');
   const eligible = (smallTask ? ['claude-code','codex','antigravity'] : ['claude-code','codex']) as AutomaticProvider[];
   const rooms = candidatesForNewWork(now);
@@ -125,7 +126,8 @@ export function chooseProviderForNewWork(canStart: (provider: AutomaticProvider)
       .sort((a,b) => a.used - b.used || (a.windowResetAt ?? Infinity) - (b.windowResetAt ?? Infinity))[0];
     return candidate && canStart(provider) ? [candidate] : [];
   });
-  if (!smallTask && delegatedFromClaude && canStart('codex') && codexRoomForClaudeDelegation(now)) return 'codex';
+  const delegationRoom = !smallTask && delegatedFrom ? otherProviderRoomForDelegation(delegatedFrom, now) : null;
+  if (delegationRoom && canStart(delegationRoom)) return delegationRoom;
   const available = candidates.filter(candidate => candidate.used < 100);
   if (available.length) {
     const belowReserve = available.filter(candidate => candidate.used < NOTICE_AT_PERCENT);

@@ -1,5 +1,5 @@
 import {questionDisplay} from './topic-display-rules';
-import {topicCurrentWorkers} from './topic-current-workers';
+import {topicCurrentWorkers,workingThrough} from './topic-current-workers';
 import {topicReplyTargets} from './reply-target-rules';
 import type {Database} from 'bun:sqlite';
 import {INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
@@ -15,7 +15,7 @@ export type TopicContext={source:Database;prepared:Database;generation:number;se
   sessionIds:number[];
   root:ReturnType<typeof inboxRootResolver>;humanReplies:Map<string,{inputId:string;at:string;reviews:string[];replyTo:string|null}[]>;
   queued:{inputId:string;root:string|null;position:number}[];
-  dispatches:{root:string|null;sessionId:string|null;title:string;requestId:string}[];
+  dispatches:{root:string|null;sessionId:string|null;title:string;requestId:string;through?:string[]}[];
   focus:any;focusTitle:string|null};
 
 function sessionTitle(source:Database,id:number):string|null{
@@ -51,16 +51,17 @@ export function topicContext(source:Database,prepared:Database,generation:number
    AND json_extract(COALESCE(receipt_json,'{}'),'$.state') IS NULL AND kind IN ('input','create','inbox-capture') ORDER BY rowid`)
    .all(sessionId) as {id:string}[]).map((row,index)=>({inputId:row.id,root:root(sessionId,row.id),position:index+1}));
  const dispatches:TopicContext['dispatches']=[];
- for(const row of source.query(`SELECT request_id,COALESCE(thread_root_input_id,source_input_id) AS input_id,target_session_id
-    FROM session_communication_requests WHERE source_session_id=? AND outcome IS NULL AND source_input_id IS NOT NULL`).all(sessionId) as any[]){
-  if(!source.query("SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering','queued')").get(row.target_session_id))continue;
-  dispatches.push({root:root(sessionId,row.input_id),sessionId:`concierge:${row.target_session_id}`,
-   title:sessionTitle(source,row.target_session_id)||'Agent session',requestId:row.request_id});
+ for(const row of source.query(`SELECT request_id,source_session_id,COALESCE(thread_root_input_id,source_input_id) AS input_id,target_session_id
+    FROM session_communication_requests WHERE source_session_id IN (${INBOX_LINEAGE_SQL}) AND outcome IS NULL AND source_input_id IS NOT NULL`).all(sessionId) as any[]){
+  const chain=workingThrough(source,row.target_session_id);
+  if(!chain)continue;
+  dispatches.push({root:root(row.source_session_id,row.input_id),sessionId:`concierge:${row.target_session_id}`,
+   title:sessionTitle(source,row.target_session_id)||'Agent session',requestId:row.request_id,through:chain.map(id=>`concierge:${id}`)});
  }
- for(const row of source.query(`SELECT request_id,COALESCE(thread_root_input_id,source_input_id) AS input_id,peer,remote_session_id
-   FROM session_peer_requests WHERE source_session_id=? AND outcome IS NULL`).all(sessionId) as any[]){
+ for(const row of source.query(`SELECT request_id,source_session_id,COALESCE(thread_root_input_id,source_input_id) AS input_id,peer,remote_session_id
+   FROM session_peer_requests WHERE source_session_id IN (${INBOX_LINEAGE_SQL}) AND outcome IS NULL`).all(sessionId) as any[]){
   const peer=source.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
-  dispatches.push({root:row.input_id?root(sessionId,row.input_id):null,sessionId:peerAddress(row.peer,row.remote_session_id),
+  dispatches.push({root:row.input_id?root(row.source_session_id,row.input_id):null,sessionId:peerAddress(row.peer,row.remote_session_id),
    title:parse(peer?.view_json,{})?.title||`${row.peer} session`,requestId:row.request_id});
  }
  return {source,prepared,generation,sessionId,sessionIds,root,humanReplies,queued,dispatches,focus:focused,focusTitle};
@@ -319,13 +320,14 @@ function topicWorkValue(context:TopicContext,topic:any,roots:string[]){
 function requestView(context:TopicContext,request:any){
  const {source}=context;
  const dispatches=request.dispatches.map((dispatch:any)=>{
-  const local=source.query('SELECT source_input_id,outcome,status,created_at_ms,payload_json FROM session_communication_requests WHERE request_id=?')
+  const local=source.query('SELECT source_input_id,outcome,status,created_at_ms,payload_json,target_session_id FROM session_communication_requests WHERE request_id=?')
    .get(String(dispatch.requestId)) as any;
   const peer=local?null:source.query('SELECT source_input_id,outcome,status,created_at_ms,payload_json,peer,remote_session_id FROM session_peer_requests WHERE request_id=?')
    .get(String(dispatch.requestId)) as any;
   const row=local??peer;if(!row)return dispatch;
   const words=String(parse(row.payload_json,{})?.text??'').replace(/\s+/g,' ').trim();
-  return {...dispatch,...(peer?{targetSessionId:peerAddress(peer.peer,peer.remote_session_id)}:{}),outcome:row.outcome??null,
+  // The request's current holder after any accepted handoff; the thread depends on its turns.
+  return {...dispatch,...(peer?{targetSessionId:peerAddress(peer.peer,peer.remote_session_id)}:local?.target_session_id?{targetSessionId:`concierge:${local.target_session_id}`}:{}),outcome:row.outcome??null,
    state:row.status??dispatch.state,...(row.source_input_id?{sourceInputId:row.source_input_id}:{}),
    ...(typeof row.created_at_ms==='number'?{at:new Date(row.created_at_ms).toISOString()}:{}),
    ...(words?{text:words.slice(0,240)}:{})};

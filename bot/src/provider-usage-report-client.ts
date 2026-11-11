@@ -72,6 +72,7 @@ function mergePeriod(parts:any[]){
     .map(value=>({...value,bug:bug(value.flaggedCallCount,value.callCount,value.provider)}));
   return {...first,through:new Date().toISOString(),callMix:mix(parts.map(part=>part.callMix)),
     fallbackModels:[...new Set(parts.flatMap(part=>part.fallbackModels))].sort(),accounts,scheduledFirings,
+    attributionBuckets:parts.flatMap(part=>part.attributionBuckets??[]),
     cacheDiagnostics:{...first.cacheDiagnostics,ordinaryMissRate,ordinaryCallCount:ordinaryCalls,providerRates:rates,
       callCount:sum(diagnostics.map(value=>value.callCount)),turnCount:sum(diagnostics.map(value=>value.turnCount)),
       last48Hours:summary(diagnostics.map(value=>value.last48Hours)),last15Minutes:summary(diagnostics.map(value=>value.last15Minutes)),calls,turns}};

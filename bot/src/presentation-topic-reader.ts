@@ -3,7 +3,7 @@ import {existsSync,realpathSync} from 'node:fs';
 import {join} from 'node:path';
 import {db} from './state';
 import {presentationHead} from './presentation-changes';
-import {observedDatabase} from './storage-observation';
+import {awaitingOutside,observedDatabase} from './storage-observation';
 import {readPreparedTopics,readPreparedIncoming,readPreparedTopicOverview,readPreparedTopicItems,readPreparedQuestions,
  readPreparedTopicChanges,readPreparedTopicResolution,readPreparedTopicChunk,readPreparedTopicEvents} from './prepared-topics';
 import {readPreparedAreas,readPreparedArea,readPreparedThreadAreas} from './prepared-areas';
@@ -18,12 +18,37 @@ function prepared(){
  return connection.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='presentation_topics' LIMIT 1").get()?connection:null;
 }
 const indexing=()=>({complete:false,code:'presentation_indexing',appliedSequence:0,retryAfterMs:1000});
+export const unpreparedTopics=()=>({topics:[],nextCursor:null,asOf:'',sorting:{count:0,captures:[]},coverage:indexing()});
 export function preparedTopicEventDisplays(sequences:readonly number[]){
  const reader=prepared();return reader?readPreparedTopicEvents(reader,sequences):sequences.map(()=>null);
 }
-export function preparedTopics(options:Omit<Parameters<typeof readPreparedTopics>[1],'canonicalHead'>){
- const reader=prepared();return reader?readPreparedTopics(reader,{...options,canonicalHead:presentationHead(db)}):
-  {topics:[],nextCursor:null,asOf:'',sorting:{count:0,captures:[]},coverage:indexing()};
+export function preparedTopics(options:Omit<Parameters<typeof readPreparedTopics>[1],'canonicalHead'>,requiredHead=presentationHead(db)){
+ const reader=prepared();return reader?readPreparedTopics(reader,{...options,canonicalHead:requiredHead}):
+  unpreparedTopics();
+}
+/** Live events make the device re-read its list while the presentation worker is still applying
+ * the very change that caused them, and the worker's ordinary batches take 0.7 to 3.6 seconds
+ * (Nov 10, 2026). So a first-page read is current through the ledger head seen when it entered:
+ * it yields while the worker reaches that head, and later writes belong to later reads. Four
+ * seconds covers those batches; a worker stalled longer still answers incomplete, and the device
+ * keeps its rows and retries. A cursor page continues a walk whose first page already established
+ * freshness; it needs the same generation (the cursor checks that) and the device's revision
+ * check, never a newer head, or every busy minute tears a twenty-page walk. */
+const LIST_CATCH_UP_MS=4000;
+/** The change a list read must cover, after yielding while the worker reaches it. Both list
+ * entrances use it: the device's HTTP read and the agents' `sessions topics list` command. */
+export async function listReadHead(cursor:string|null|undefined,signal?:AbortSignal){
+ if(cursor)return 0;
+ const requiredHead=presentationHead(db),deadline=performance.now()+LIST_CATCH_UP_MS;
+ const reader=prepared();
+ const applied=()=>reader?.query('SELECT ready,source_head FROM presentation_topics_meta WHERE singleton=1').get() as {ready:number;source_head:number}|null|undefined;
+ for(let state=applied();state?.ready&&state.source_head<requiredHead&&!signal?.aborted&&performance.now()<deadline;state=applied())
+  // The worker is its own process: this is waiting outside the owner, not owner slowness.
+  await awaitingOutside(()=>Bun.sleep(100));
+ return requiredHead;
+}
+export async function preparedTopicsAfterCatchUp(options:Omit<Parameters<typeof readPreparedTopics>[1],'canonicalHead'>,signal?:AbortSignal){
+ return preparedTopics(options,await listReadHead(options.cursor,signal));
 }
 export function preparedAreas(query:string|null,cursor:string|null,limit:number){
  const reader=prepared();return reader&&reader.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='presentation_areas'").get()?readPreparedAreas(reader,presentationHead(db),query,cursor,limit):

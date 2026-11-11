@@ -21,9 +21,22 @@ growing source rate without making the accepting owner loop do diagnostic work.
 
 Interactive reads use indexed keysets, at most twenty rows, and explicit source coverage.
 Lists retain exact counts and expose a detail reference when their value needs a preview.
+An Inbox list's first page, read by the device over HTTP or by an agent through `sessions topics list`, captures the source change head when the request enters. If the
+prepared list is behind, the owner yields while the existing presentation worker catches up to
+that head, for at most four seconds (ordinary worker batches took 0.7 to 3.6 seconds on
+Nov 10, 2026); changes accepted later belong to subsequent reads. A worker that cannot catch
+up still returns incomplete coverage so the client keeps its visible copy and retries. A
+cursor page continues a walk whose first page established freshness: it answers at once and is
+complete whenever its generation is still ready, because requiring a newer head would tear a
+many-page walk on every busy minute; the client's own revision check still restarts a walk the
+topics changed under. A stale or invalid cursor returns its reset response immediately.
+Initial rebuilds continue to use the ledger list until the prepared list is ready.
 Large individual values are retained as SHA-256-addressed, sixteen-KiB UTF-8 chunks.
 Clients must verify the concatenated digest before displaying a complete value. A newer
 generation invalidates old list cursors; source lag is indexing, never an empty complete list.
+While the prepared list is not ready and no Inbox session exists, both list entrances return an empty page with incomplete
+`presentation_indexing` coverage. Once the Inbox exists, an initial prepared-list rebuild
+uses the ledger list until the prepared generation is ready, so existing threads stay visible.
 The change feed carries both sides of each update and a null after-value for deletion.
 It retains seven days of revisions and explicitly resets an older cursor. Garbage collection
 walks finite batches, removes superseded generations and unreferenced chunks, and never

@@ -15,6 +15,11 @@ closes that observer connection without restarting the daemon; Codex can then un
 the idle threads after its grace period. Verify the loaded-thread count and daemon
 memory after release, and do not manually restart a daemon with running turns.
 
+Both observers reconnect on their own and file a "stopped after repeated failures" repair
+notice only after two minutes of continuous failure. Every release closes the runner relay for
+a few seconds (503 `RUNNER_NOT_LISTENING`); that gap is not an outage
+([failure record](../incidents/2026-11-11-codex-observer-false-outage-on-release.md)).
+
 ## Lifecycle Invariants
 
 - `/root/.codex/packages/standalone/` is the canonical install channel because `concierge-bot.service` invokes that path directly. Package releases, `current`, sockets, PID files, and logs are machine-owned runtime state and must never sync from another OS.

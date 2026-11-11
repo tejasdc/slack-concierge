@@ -222,6 +222,18 @@ shares the same physical project history, the runner uses the fork in place and 
 file onto itself. Resurrection records the chosen runner and account with the new conversation so
 a later turn cannot silently resume against the owner's home. Distinct or missing provider history
 copies refuse continuation. Local-only peer conversations keep their existing local restore path.
+For side questions, the runner keeps one saved native fork in the source provider home per source
+conversation. Its manifest records the last completed final-answer boundary and fork identity.
+Every question reads that fork without saving its own turn. A running main turn leaves the
+boundary unchanged. A newer completed final answer makes a new fork and removes the old one;
+Codex forks pin `lastTurnId` to the owner's completed provider turn before any question starts.
+Codex's App Server holds the saved fork's writer; each question therefore uses an ephemeral fork
+from the saved copy in a read-only sandbox, leaving the reusable copy untouched. The observed
+[writer conflict](../incidents/2026-11-07-codex-side-copy-writer-conflict.md) records why.
+Codex's source transcript filename includes a timestamp before the UUID. The runner resolves that
+exact UUID at the filename's end in its credential-verified homes, then requires one physical match;
+the marked side-question failure and repair are recorded in
+[the November 7 case](../incidents/2026-11-07-codex-side-question-runner-could-not-find-source.md).
 Native forks use the same saved runner, account and project binding. The owner sends the native
 conversation ID, exact turn boundary, stable fork source and project identities; the runner resolves
 its own account home and project folders before asking Claude Code or its local Codex App Server to
@@ -558,6 +570,8 @@ or withdrawn execution intent cannot move the conversation or hide its earlier r
 If that launched execution was on a runner but its exact lease is missing, resume refuses
 to guess the machine; a handoff reports the omission instead of examining the owner's
 checkout. Handoffs resolve the recovered runner's project and read worktrees there.
+Turn dispatch, handoffs and the owner's project-location reads (registered-project checks,
+task creation, outage reruns) share this one rule in `session-runner-home.ts`.
 
 The Google paid-credit check and CLI lookup is `google.executable` (`runner-providers.ts`). It runs
 against the runner's Google settings and returns only the executable path. A missing or unreachable

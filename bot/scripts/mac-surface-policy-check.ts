@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import {macSurfaceRefusal,RETIREMENT_FILE_MENU_PROGRAM,RETIREMENT_NEW_WINDOW_PROGRAM,UPDATE_BOUNDED_AX_PROGRAM,UPDATE_WORKSPACE_COMMAND,UPDATE_FIRST_TAP_COMMAND} from '../src/mac-surface-policy';
-import {parseMachineNeed} from '../src/machine-need';
+import {macSurfaceRefusal,RETIREMENT_FILE_MENU_PROGRAM,RETIREMENT_NEW_WINDOW_PROGRAM,UPDATE_BOUNDED_AX_PROGRAM,UPDATE_WORKSPACE_COMMAND,UPDATE_FIRST_TAP_COMMAND,FOCUS_START_COMMAND,FOCUS_VERIFY_START_COMMAND,FOCUS_END_COMMAND} from '../src/mac-surface-policy';
+import {acceptedMachineNeed,parseMachineNeed} from '../src/machine-need';
 import {deviceQuestionNamesPhysicalPrerequisite} from '../src/agent-reachable-app-question';
 
 const check=(command:string,need='',platform='darwin',toolName='Bash')=>
@@ -14,6 +14,14 @@ assert.equal(parseMachineNeed('browser-fallback:Server portal blocked after logi
   url:'https://bosse.managebuilding.com/Resident/portal/login',
   failure:'Observed a location-specific access refusal after the server sign-in completed.'
 }).serverAttempt?.url,'https://bosse.managebuilding.com');
+const fallbackNeed=parseMachineNeed('browser-fallback:Server portal blocked after login',{
+  url:'https://bosse.managebuilding.com',failure:'The server browser received an access refusal after sign-in.'
+});
+assert.deepEqual(acceptedMachineNeed('create',{firstInput:{machineNeed:fallbackNeed}}),fallbackNeed);
+assert.deepEqual(acceptedMachineNeed('input',{machineNeed:fallbackNeed}),fallbackNeed);
+assert.equal(acceptedMachineNeed('create',{machineNeed:fallbackNeed}),null);
+assert.equal(acceptedMachineNeed('input',{firstInput:{machineNeed:fallbackNeed}}),null);
+assert.equal(acceptedMachineNeed('service',{machineNeed:fallbackNeed}),null);
 assert.throws(()=>parseMachineNeed('browser-fallback:Server portal blocked after login',{
   url:'https://bosse.managebuilding.com',failure:'it failed'
 }));
@@ -36,16 +44,30 @@ assert.match(macSurfaceRefusal({command:null,need:'',platform:'darwin',toolName:
 assert.match(macSurfaceRefusal({command:null,need:'mac-file',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Voice Memos")'}})??'',/accepted Mac/);
 assert.equal(macSurfaceRefusal({command:null,need:'mac-app',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Voice Memos")'}}),null);
 const webAppNeed={kind:'mac-app',why:'Inspect the already-open thnkr.ing web app com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 page faf63877-6536-4ac6-86e9-5d63e03d3369, directly authorized by Tejas.',humanInputId:'f66f15dd-e251-4537-a9cd-347d0548434b',effectScope:'work'};
-const updateNeed={kind:'mac-app',why:'Inspect exact bundle com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 page faf63877-6536-4ac6-86e9-5d63e03d3369 and install ready 0d90186f update safely',effectScope:'work',updateAuthorization:true};
-const currentUpdateNeed={kind:'mac-app',why:'Open Workspace menu in com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 current board 94504c60-2b34-4fda-ba23-c20a6a71d7df',effectScope:'work',updateAuthorization:true};
+const updateNeed={kind:'mac-app',why:'Inspect exact bundle com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 and install ready update safely',effectScope:'work',updateAuthorization:true};
+const focusNeed={kind:'mac-app',why:'Inspect com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 for bounded Focus Start/End acceptance',effectScope:'work',focusAuthorization:true};
+for(const command of [FOCUS_START_COMMAND,FOCUS_VERIFY_START_COMMAND,FOCUS_END_COMMAND]) {
+  assert.equal(macSurfaceRefusal({command,need:focusNeed,platform:'darwin',toolName:'exec_command',toolInput:{cmd:command}}),null);
+  for(const need of [{...focusNeed,focusAuthorization:false},{...focusNeed,effectScope:'informational'},
+    {...focusNeed,why:focusNeed.why.replace('bounded Focus Start/End acceptance','other task')}])
+    assert.ok(macSurfaceRefusal({command,need,platform:'darwin',toolName:'exec_command',toolInput:{cmd:command}}));
+  assert.ok(macSurfaceRefusal({command:command+'; /usr/bin/open -a Safari',need:focusNeed,platform:'darwin',toolName:'exec_command',toolInput:{cmd:command+'; /usr/bin/open -a Safari'}}));
+}
+const focusRead='var thnkrFocusInspectionApp = await cua.getApp("com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792"); await thnkrFocusInspectionApp.getAXStateAndScreenshot()';
+assert.equal(macSurfaceRefusal({command:null,need:focusNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:focusRead}}),null);
+assert.ok(macSurfaceRefusal({command:null,need:focusNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Safari")'}}));
+assert.ok(macSurfaceRefusal({command:null,need:focusNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await thnkrFocusInspectionApp.click(1)'}}));
+const currentUpdateNeed={kind:'mac-app',why:'Open Workspace menu in com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792',effectScope:'work',updateAuthorization:true};
+const acceptedWorkspaceNeed={...currentUpdateNeed,why:'Open Workspace once in bundle com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 for ready update'};
 const currentTapNeed={...currentUpdateNeed,why:currentUpdateNeed.why.replace('Open Workspace menu','Press Update now once')};
 const nativeCall=(command:string,need:typeof currentUpdateNeed)=>
   macSurfaceRefusal({command,need,platform:'darwin',toolName:'exec_command',toolInput:{cmd:command}});
 assert.equal(nativeCall(UPDATE_WORKSPACE_COMMAND,currentUpdateNeed),null);
+assert.equal(nativeCall(UPDATE_WORKSPACE_COMMAND,acceptedWorkspaceNeed),null);
 assert.equal(nativeCall(UPDATE_FIRST_TAP_COMMAND,currentTapNeed),null);
 for(const need of [{...currentUpdateNeed,effectScope:'informational'},
   {...currentUpdateNeed,updateAuthorization:false},
-  {...currentUpdateNeed,why:currentUpdateNeed.why.replace('94504c60-2b34-4fda-ba23-c20a6a71d7df','other board')},
+  {...currentUpdateNeed,why:currentUpdateNeed.why.replace('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792','com.apple.Safari.WebApp.other')},
   {...currentUpdateNeed,why:currentUpdateNeed.why.replace('Workspace menu','other menu')}])
   assert.ok(nativeCall(UPDATE_WORKSPACE_COMMAND,need));
 assert.ok(nativeCall(UPDATE_FIRST_TAP_COMMAND,currentUpdateNeed));
@@ -61,13 +83,25 @@ for(const command of [
   assert.equal(check(command,'mac-file'),null);
   assert.ok(check(`${command}; ${UPDATE_WORKSPACE_COMMAND}`,'mac-file'));
 }
+const pinnedHelper='"/Users/tejasdc/Library/Application Support/concierge/helpers/7b9f5a8cb1e6ccd8ed16ed01d89d17e014aa069c/bot/scripts/mac-update-ax.swift"';
+for(const command of [
+  `shasum -a 256 ${pinnedHelper}`,
+  `stat -f %Sp ${pinnedHelper}`,
+  `swiftc -typecheck ${pinnedHelper}`,
+]) {
+  assert.equal(check(command,'mac-file'),null);
+  assert.ok(check(`${command}; ${UPDATE_WORKSPACE_COMMAND}`,'mac-file'));
+}
+assert.ok(check(`swift ${pinnedHelper} update-now`,'mac-file'));
+assert.ok(check(`shasum -a 256 ${pinnedHelper} extra`,'mac-file'));
+assert.ok(check(`swiftc -typecheck "/tmp/mac-update-ax.swift"`,'mac-file'));
 assert.ok(check(`swift ${helperPath} update-now`,'mac-file'));
 assert.equal(macSurfaceRefusal({command:null,need:currentUpdateNeed,platform:'darwin',toolName:'functions.exec',
   toolInput:{code:`const r=await tools.exec_command({cmd:'${UPDATE_WORKSPACE_COMMAND}'});text(r.output);`}}),null);
 const updateCall='var thnkrUpdateInspectionApp = await cua.getApp("com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792"); await thnkrUpdateInspectionApp.getAXStateAndScreenshot()';
 assert.equal(macSurfaceRefusal({command:null,need:updateNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:updateCall}}),null);
 assert.equal(macSurfaceRefusal({command:null,need:updateNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:UPDATE_BOUNDED_AX_PROGRAM}}),null);
-for(const need of [{...updateNeed,updateAuthorization:false},{...updateNeed,effectScope:'informational'},{...updateNeed,why:updateNeed.why.replace('0d90186f','other build')},webAppNeed])
+for(const need of [{...updateNeed,updateAuthorization:false},{...updateNeed,effectScope:'informational'},{...updateNeed,why:updateNeed.why.replace('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792','com.apple.Safari.WebApp.other')},webAppNeed])
   assert.ok(macSurfaceRefusal({command:null,need,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:UPDATE_BOUNDED_AX_PROGRAM}}));
 for(const code of [UPDATE_BOUNDED_AX_PROGRAM.replace('getAXState({emit:false,disableDiffing:true})','getAXState()'),
   UPDATE_BOUNDED_AX_PROGRAM.replace('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792','Safari'),
@@ -97,7 +131,7 @@ for(const code of [UPDATE_BOUNDED_AX_PROGRAM.replace('getAXState({emit:false,dis
 }
 const formerUpdateProgram='var thnkrUpdateApp = await cua.getApp("com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792"); var state = await thnkrUpdateApp.getAXState({disableDiffing:true}); await thnkrUpdateApp.click(3);';
 assert.match(macSurfaceRefusal({command:null,need:updateNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:formerUpdateProgram}})??'',/Update now remains refused/);
-for(const need of [{...updateNeed,updateAuthorization:false},{...updateNeed,effectScope:'informational'},{...updateNeed,why:updateNeed.why.replace('0d90186f','other build')},webAppNeed])
+for(const need of [{...updateNeed,updateAuthorization:false},{...updateNeed,effectScope:'informational'},{...updateNeed,why:updateNeed.why.replace('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792','com.apple.Safari.WebApp.other')},webAppNeed])
   assert.ok(macSurfaceRefusal({command:null,need,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:formerUpdateProgram}}));
 assert.ok(macSurfaceRefusal({command:null,need:updateNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Safari")'}}));
 const canvasNeed={...webAppNeed,humanInputId:'capture:7bad480ccf4350922acb3ac750cc0ba0b7a990f596acd92b5fe98403f6f0e7a0'};
@@ -255,17 +289,37 @@ for(const question of ['Can you click the button in the app?','Can you open Safa
   'Can you unlock your Mac so I can inspect the app? Then can you click Save?',
   'Can you unlock the Mac so the agent can continue? Can you copy the eight notes?',
   'Can you open Safari on your Mac?', 'Can you open Gmail on your phone?',
-  'Can you launch Chrome on my laptop?', 'Can you start the deploy on the server?'])
+  'Can you launch Chrome on my laptop?', 'Can you start the deploy on the server?',
+  'Can you say Alexa, open thinkering box to your phone?',
+  'Can you say Alexa, open thinkering box to your Echo and open the app?',
+  'Can you say Alexa, end Alexa+ to your Echo?'])
   assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),false,question);
 for(const question of ['Can you unlock your Mac so the agent can continue?',
   'Can you unlock the Mac so the agent can read the app?',
   'Can you unlock your physical Mac?','Can you take a photo of the paper?',
   'Can you open KOReader once on your Kindle Oasis?',
   'Can you open KOReader on Kindle?',
+  'Please say “Alexa, open thinkering box” to your Echo.',
+  'Can you say Alexa, open thinkering box to your Echo?',
   'Could you start the companion app on the watch?',
   'Can you unlock your iPhone?','Please unlock your iPhone.',
   'Please unlock your iPhone. The device check reached it and reported that it is locked. I will handle the app inspection; the other repair work continues.'])
   assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),true,question);
+for(const question of ['Please connect the Maschine+ to your Mac over USB.',
+  'Can you plug your MIDI keyboard into the Mac with a USB cable?',
+  'Please connect the Akai MPK mini to your laptop via USB. I will inspect it after it appears.',
+  'Please connect the Maschine+ to your Mac over USB. The capture script is installed on the Mac. The Maschine+ was absent from USB. I will inspect it when it appears.'])
+  assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),true,question);
+for(const question of ['Please connect the Maschine+ to your Mac over USB and open Live.',
+  'Connect the Maschine+ to your Mac over USB with its 15 V adapter and tell me what mode its screen shows.',
+  'Please connect the Maschine+ to your Mac over USB. Then open Live.',
+  'Please connect the Maschine+ to your Mac over USB. Can you select its audio input?',
+  'Please connect the Maschine+ to your Mac over USB. Ableton Live 12 Suite was closed.',
+  'Please connect your Google account to your Mac.',
+  'Please connect your Google account to your Mac over USB.',
+  'Please connect to the website over USB.',
+  'Please connect the Maschine+ to your Mac and send me a photo.'])
+  assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),false,question);
 for(const question of ['Please unlock your iPhone. Then open the app.',
   'Please unlock your iPhone. Open Settings and tap Save.',
   'Please unlock your iPhone. Can you copy the notes?',
