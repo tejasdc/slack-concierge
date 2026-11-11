@@ -16,6 +16,7 @@ import {takeInboxRouterRole} from './standing-agents';
 import {claudeConfigDir,locateClaudeTranscript} from './claude-transcript-watch';
 import {runnerMachineCall} from './runner-machine-calls';
 import {resolveRunnerProjectLocation} from './runner-project-location';
+import {undeliveredRequestState} from './request-prerequisite-hold';
 
 const run=promisify(execFile);
 type Item={id:string;kind:'sent'|'owed'|'queued'|'watch'|'lab'|'worktree';ref:string;holder:string;[key:string]:unknown};
@@ -24,6 +25,8 @@ type HandoffRow={id:string;predecessor_session_id:number;successor_session_id:nu
 const digest=(value:Inventory)=>createHash('sha256').update(stablePayload(value)).digest('hex');
 const canonical=(id:number)=>`concierge:${id}`;
 const row=(id:string)=>db.query('SELECT * FROM session_handoffs WHERE id=?').get(id) as HandoffRow|null;
+const requestRow=(id:string)=>db.query('SELECT request_id,source_session_id,source_input_id,target_input_id,payload_json FROM session_communication_requests WHERE request_id=?')
+  .get(id) as {request_id:string;source_session_id:number;source_input_id:string|null;target_input_id:string|null;payload_json:string};
 const pending=(id:number)=>db.query("SELECT * FROM session_handoffs WHERE predecessor_session_id=? AND state='proposed'").get(id) as HandoffRow|null;
 
 export function supersededBy(sessionId:number):string|null {
@@ -64,7 +67,8 @@ function ledgerItems(sessionId:number):Item[] {
     const turn=request.target_input_id?db.query('SELECT t.provider_input_acknowledged_at,t.provider_turn_id,t.status FROM session_inputs i LEFT JOIN turns t ON t.id=i.turn_id WHERE i.id=?').get(request.target_input_id) as any:null;
     const target=getSessionById(request.target_session_id);
     items.push({id:`sent:${request.request_id}`,kind:'sent',ref:request.request_id,holder,target:canonical(request.target_session_id),status:request.status,
-      doNotRedispatch:!!turn?.provider_input_acknowledged_at||!!turn?.provider_turn_id||target?.provider_id==='chatgpt'});
+      doNotRedispatch:!!turn?.provider_input_acknowledged_at||!!turn?.provider_turn_id||target?.provider_id==='chatgpt',
+      ...(undeliveredRequestState(requestRow(request.request_id))??{})});
   }
   // A worker can settle a request before its final return reaches the asker. That return is
   // still owed to whoever holds the asking work, so it moves with the handoff (Inbox 8785 →
@@ -85,7 +89,11 @@ function ledgerItems(sessionId:number):Item[] {
   for(const [table,kind] of [['session_communication_requests','local'],['session_peer_deliveries','peer'],['session_external_requests','outside']] as const){
     const where=table==='session_peer_deliveries'?'closed_at_ms IS NULL':'outcome IS NULL';
     for(const request of db.query(`SELECT request_id,target_input_id FROM ${table} WHERE target_session_id=? AND ${where} ORDER BY rowid`).all(sessionId) as any[])
-      items.push({id:`owed:${request.request_id}`,kind:'owed',ref:request.request_id,holder,source:kind,targetInputId:request.target_input_id});
+      // A local request that never reached a run is not work this session can do: reply refuses it,
+      // and a held one waits on its requester's decision. Say so on the row instead of hiding it,
+      // because a handoff must still move it.
+      items.push({id:`owed:${request.request_id}`,kind:'owed',ref:request.request_id,holder,source:kind,targetInputId:request.target_input_id,
+        ...(kind==='local'?undeliveredRequestState(requestRow(request.request_id))??{}:{})});
   }
   for(const input of db.query(`SELECT i.id AS input_id,i.turn_id,t.* FROM session_inputs i JOIN turns t ON t.id=i.turn_id
     WHERE i.session_id=? AND t.session_id=? AND t.status='queued' AND t.accepted_input_id=i.id ORDER BY t.id`).all(sessionId,sessionId) as any[]){
