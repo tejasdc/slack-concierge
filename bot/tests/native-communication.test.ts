@@ -263,6 +263,24 @@ test('a steered request is owed only once its text was sent to the running turn'
   expect(owed()).toContain(request.request_id);
 });
 
+// A new session learns its provider conversation id from the output stream. On 2026-11-11 a
+// one-second first turn stopped before that arrived, so its Stop hook found no session and let it
+// end without its reply. The hook also names the run it was launched for, which is known at launch.
+test('a first turn whose conversation id is not yet recorded is still held to its reply',async()=>{
+  session();const requester=run(),target=session(),worker=run();
+  const targetId=Number(target.session.id.slice(10));
+  const request=await ask(requester.source,target,'first-turn-owed');
+  await communication.idle();
+  expect(db.query('SELECT agent_session_uuid AS uuid FROM sessions WHERE id=?').get(targetId)).toEqual({uuid:null});
+  const owed=(extra:object)=>communication.owed({provider:'codex',provider_session_id:'not-yet-recorded',...extra}).owed.map(one=>one.request_id);
+  expect(owed({})).toEqual([]);
+  expect(owed({run_id:worker.source.run_id})).toContain(request.request_id);
+  // Once the session has its own conversation, a run id alone no longer speaks for it.
+  db.query("UPDATE sessions SET agent_session_uuid='the-real-conversation' WHERE id=?").run(targetId);
+  expect(owed({run_id:worker.source.run_id})).toEqual([]);
+  expect(communication.owed({provider:'codex',provider_session_id:'the-real-conversation'}).owed.map(one=>one.request_id)).toContain(request.request_id);
+});
+
 // The Inbox sends one request per thread and they routinely steer into one recipient turn, so
 // sharing a turn is not evidence of a shared answer. A September rule copied one request's reply
 // onto every other request that turn held and closed two unrelated threads on the wrong words
