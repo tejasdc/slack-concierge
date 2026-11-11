@@ -21,7 +21,7 @@ import {approvalDecision} from './decision-approval';
 import {hisWordsLine,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
 import {deviceQuestionNamesPhysicalPrerequisite} from './agent-reachable-app-question';
 import {preparedInboxDisplays,preparedTopicEntries} from './presentation-message-reader';
-import {preparedTopicEventDisplays,preparedTopics,preparedTopicOverview,preparedTopicItems,
+import {preparedTopicEventDisplays,preparedTopics,unpreparedTopics,preparedTopicOverview,preparedTopicItems,
   preparedTopicResolution,preparedQuestions,preparedTopicDetail,preparedTopicsReady} from './presentation-topic-reader';
 import {areasCommand,checkedAreaIds,applyAreaChange,ensureAgentReportArea,ensureSystemNoticeArea,threadChanges} from './session-areas';
 import {OPEN_QUESTION_STATES,briefMissing,missingFor,questionReadiness,awaitingHim,
@@ -1192,8 +1192,17 @@ export function inboxDismiss(session:SessionRow,generation:number) {
   if(needs.length!==(sessionMetadata(session).needs??[]).length)updateSessionMetadata(session.id,{needs});
 }
 
-/** The thread list computed from the ledger, for while the prepared list is being rebuilt. Complete by construction. */
-export function directTopicList(options:{state?:string|null;order?:string|null;query?:string|null;cursor?:string|null;limit?:number|null}){
+/** Both list entrances use this source-readiness decision; each chooses how it reads the prepared
+ * list (the device's HTTP read waits for the worker to catch up, the agent command reads directly). */
+export function inboxTopicList<Prepared>(options:Parameters<typeof preparedTopics>[0],
+  readPrepared:(options:Parameters<typeof preparedTopics>[0])=>Prepared){
+  if(preparedTopicsReady())return readPrepared(options);
+  // The ledger list needs the Inbox; before it exists the list is still indexing, not an error.
+  return inboxSession()?directTopicList(options):unpreparedTopics();
+}
+
+/** The thread list computed from the ledger while the prepared list is being rebuilt. */
+function directTopicList(options:{state?:string|null;order?:string|null;query?:string|null;cursor?:string|null;limit?:number|null}){
   const offset=/^\d+$/.test(options.cursor??'')?options.cursor:null;
   return {...listTopics({...options,cursor:offset,limit:Math.min(20,Number(options.limit)||20)}),coverage:{complete:true,code:null,source:'ledger'}};
 }
@@ -2047,7 +2056,7 @@ export function topicsCommand(actor:TopicActor,body:any,listHead?:number) {
     throw new TopicError('Only the Inbox session owns topics; a worker may declare questions against a topic it holds a dispatch for.',403,'TOPIC_FORBIDDEN');
   };
   switch(verb) {
-    case 'list':return preparedTopicsReady()?preparedTopics({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor},listHead):directTopicList({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor});
+    case 'list':return inboxTopicList({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor},options=>preparedTopics(options,listHead));
     case 'obligations':return openInboxObligations();
     case 'read':return preparedTopicOverview(text(body?.topic_id,'topic id',200),body?.state??'open');
     case 'resolve':guard();return preparedTopicResolution(text(body?.message_id,'message id',500));
