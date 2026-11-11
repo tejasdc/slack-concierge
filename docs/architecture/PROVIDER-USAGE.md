@@ -1064,7 +1064,13 @@ The main Threads and Sessions views read
 `GET /sessions/v1/usage/allowance?session=concierge:<id>&topic=<topic-id>` with
 repeated keys for up to 100 visible rows total; a larger or malformed request is refused with 400. It selects from the same cached
 weekly report and returns only those rows plus `computedAt` and `stale`, never a
-transcript scan per row. The Accounts screen can use the complete breakdown.
+transcript scan per row. Accounts reads the same route with `overview=1`,
+which adds each account's measured reading and estimated use, the 50 threads
+with the largest estimated share (plus `threadCount`), the unassigned row,
+every routine with its days, and each day: about 130 KB on the live week. The
+complete week breakdown carries every session's token detail and is several
+megabytes, past the route's 1 MiB limit, so Accounts does not use it for the
+weekly allowance.
 
 The owner serves `GET /sessions/v1/usage/breakdown?period=today|week`; agents get the
 same read through `router-actions.sh sessions usage --by-session --period today|week`.
