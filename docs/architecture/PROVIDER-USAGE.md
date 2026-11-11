@@ -1027,31 +1027,42 @@ Weekly subscription percentages have two meanings. The account's
 `weeklyAllowance.usedPercent` is the provider's latest weekly reading, with its
 reset and observation time, or `unavailable` when the reading is old or absent.
 The per-session, per-topic and repeating-routine `weeklyAllowance.usedPercent`
-is an **estimate**. The scanner compares the provider's percentage change
-between readings of the same weekly reset with transcript usage in that same
-span, then allocates the change in proportion to published API-price weighted
-tokens. Fifteen-minute buckets keep raw provider calls on their runner until
-all runner reports have been merged; a provider percentage is allocated only
-once. A full weekly bar stops allocating at the first observed saturation,
-because later calls may spend credits. The stored weekly-reading history now
-covers up to 2,200 samples per account and window; older history cannot be
-reconstructed on installation. Estimate coverage reports its actual from and
-through instants, observed percentage change, transcript weight, and the fact
-that other provider use is unknown. A missing reading, reset identity, matching
-transcript work, or fresh observation produces `unavailable`, never zero.
-Different account or model-specific meters remain separate components; their
-percentages are not added. The report exposes `sessionAllowanceById` keyed by
-`concierge:<id>`, `threadAllowanceById` keyed by stable topic ID, `byRoutine`
-keyed by repeating schedule root with daily rows, `byDay`, and an explicit
-`unassignedThread`. A call is assigned to a topic only when its exact turn input
+is an **estimate**. The scanner splits each meter's readings at every weekly
+reset, because a seven-day report almost always spans one, and shares each reset
+period's percentage rise among the transcript usage inside that period, in
+proportion to published API-price weighted tokens. Fifteen-minute buckets keep
+raw provider calls on their runner until all runner reports have been merged; a
+provider percentage is allocated only once. Claude Fable calls are weighted into
+both the all-models weekly meter and the Fable-only meter, because Fable draws
+on both; their tokens are still counted once. A conversation outside Concierge
+keeps its own bucket key, so each such row on Accounts carries its own share. A
+full weekly bar stops allocating at the first observed saturation, because later
+calls may spend credits. Weekly readings are kept for eight days by age rather
+than by sample count, so the rolling week is covered at any reading cadence;
+history from before installation cannot be reconstructed. Each estimate's
+coverage reports its from and through instants, the observed percentage change,
+covered transcript weight, `uncoveredTranscriptWeighted` with `complete:false`
+when part of the work fell outside every measured period (thnkr.ing then shows
+the estimate as a lower bound), and the fact that other use of the same account
+(the Mac, claude.ai, the phone) is unknown. A missing reading, reset identity,
+matching transcript work, or fresh observation produces `unavailable`, never
+zero. Different account or model-specific meters remain separate components;
+their percentages are not added. A routine row counts only its own scheduled
+turns: work it hands to other sessions (the nightly review's fix requests) is
+counted under those sessions and threads. The full breakdown carries `byThread`,
+`byRoutine` with daily rows, `byDay` and an explicit `unassignedThread`; the
+per-id maps `sessionAllowanceById` (keyed by `concierge:<id>`) and
+`threadAllowanceById` (keyed by stable topic ID) stay in the cached report for
+the visible-row lookup and are left off the breakdown response to keep it under
+its size limit. A call is assigned to a topic only when its exact turn input
 has a recorded request topic, attached thread link, or topic root; work without
 that evidence stays unassigned. Topic and routine rows carry optional display
-titles read from the existing owner ledger after runner merge. Existing token totals and price-proxy `share`
-fields remain for older clients.
+titles read from the existing owner ledger after runner merge. Existing token
+totals and price-proxy `share` fields remain for older clients.
 
 The main Threads and Sessions views read
 `GET /sessions/v1/usage/allowance?session=concierge:<id>&topic=<topic-id>` with
-repeated keys for up to 100 visible rows total. It selects from the same cached
+repeated keys for up to 100 visible rows total; a larger or malformed request is refused with 400. It selects from the same cached
 weekly report and returns only those rows plus `computedAt` and `stale`, never a
 transcript scan per row. The Accounts screen can use the complete breakdown.
 

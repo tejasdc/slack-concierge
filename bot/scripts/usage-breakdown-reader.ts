@@ -280,7 +280,7 @@ function report(period:'today'|'week',since:number,zone:string){
   },{}));
   const groups=new Map<string,any>();
   const attributionBuckets=new Map<string,{provider:string;account:string;window:string;atMs:number;sessionId:string|null;topicId:string|null;
-    routineRootId:number|null;weighted:number;raw:Counts;calls:number}>();
+    routineRootId:number|null;weighted:number;raw:Counts;calls:number;conversation:string|null}>();
   const scheduled=(ledger.query(`SELECT id,session_id,status,saved_root_id,saved_sequence,saved_fire_at_ms,
     provider_started_at,provider_duration_ms,ended_at FROM turns
     WHERE saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL AND saved_root_id IS NOT NULL
@@ -387,14 +387,18 @@ function report(period:'today'|'week',since:number,zone:string){
     // Fifteen-minute points let the owner compare transcript work with the same observed
     // provider-meter span after it has merged all runners. They are never served to clients.
     const atMs=Math.floor(r.at_ms/900_000)*900_000,sessionId=s?`concierge:${s.id}`:null;
-    const window=r.provider==='claude-code'&&r.model?.includes('fable')?'Weekly · Fable only':'Weekly';
+    // Fable draws on Claude's all-models weekly meter as well as its own; it is weighted into both.
+    const windows=r.provider==='claude-code'&&r.model?.includes('fable')?['Weekly','Weekly · Fable only']:['Weekly'];
     const topicId=turn?.topic_id??null,routineRootId=firing?.saved_root_id??null;
-    const bucketKey=JSON.stringify([key,window,atMs,sessionId,topicId,routineRootId]);
-    let bucket=attributionBuckets.get(bucketKey);
-    if(!bucket){bucket={provider:r.provider,account,window,atMs,sessionId,topicId,routineRootId,weighted:0,raw:empty(),calls:0};attributionBuckets.set(bucketKey,bucket);}
-    bucket.weighted+=weighted;bucket.calls++;
-    bucket.raw.input+=r.input;bucket.raw.cacheWrite+=r.cache_write;bucket.raw.cacheWrite1h+=r.cache_write_1h;
-    bucket.raw.cacheRead+=r.cache_read;bucket.raw.output+=r.output;
+    const conversation=s?null:`outside:${r.conversation}`;
+    for(const window of windows){
+      const bucketKey=JSON.stringify([key,window,atMs,sessionId,conversation,topicId,routineRootId]);
+      let bucket=attributionBuckets.get(bucketKey);
+      if(!bucket){bucket={provider:r.provider,account,window,atMs,sessionId,topicId,routineRootId,weighted:0,raw:empty(),calls:0,conversation};attributionBuckets.set(bucketKey,bucket);}
+      bucket.weighted+=weighted;bucket.calls++;
+      bucket.raw.input+=r.input;bucket.raw.cacheWrite+=r.cache_write;bucket.raw.cacheWrite1h+=r.cache_write_1h;
+      bucket.raw.cacheRead+=r.cache_read;bucket.raw.output+=r.output;
+    }
     let g=groups.get(key);
     if(!g){g={provider:r.provider,account,total:0,raw:empty(),cache:{callCount:0,flaggedCallCount:0,unknownCauseCount:0},
       bySession:new Map(),byKind:new Map(),byModel:new Map(),mix:newCallMix()};groups.set(key,g);}

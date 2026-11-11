@@ -46,7 +46,7 @@ if (process.env.CONCIERGE_READ_WORKER !== "1") db.exec(`CREATE TABLE IF NOT EXIS
 )`);
 
 /** Weekly attribution needs the observed meter history across a rolling seven-day report. */
-const KEEP_WEEKLY_SAMPLES = 2200;
+const KEEP_WEEKLY_MS = 8 * 86_400_000;
 const KEEP_OTHER_SAMPLES = 300;
 /** Below this the readings are noise rather than a rate. */
 const MIN_SPAN_MS = 8 * 60_000;
@@ -119,12 +119,16 @@ export function recordUsageReading(provider: AccountIdentityProvider, usage: Pro
         db.query(`INSERT OR REPLACE INTO provider_usage_readings
           (provider, account, window_name, observed_at_ms, used_percent, resets_at_ms) VALUES (?,?,?,?,?,?)`)
           .run(provider, account.label, window.name, observedAt, window.usedPercent, at(window.resetsAt));
-        db.query(`DELETE FROM provider_usage_readings
+        // Weekly readings are kept by age, so a rolling seven-day report covers every day whatever
+        // the reading cadence; other windows keep a fixed number of samples.
+        if(window.name==='Weekly'||window.name==='Weekly · Fable only')
+          db.query(`DELETE FROM provider_usage_readings WHERE provider=? AND account=? AND window_name=? AND observed_at_ms<?`)
+            .run(provider, account.label, window.name, observedAt-KEEP_WEEKLY_MS);
+        else db.query(`DELETE FROM provider_usage_readings
           WHERE provider=? AND account=? AND window_name=? AND observed_at_ms NOT IN (
             SELECT observed_at_ms FROM provider_usage_readings
             WHERE provider=? AND account=? AND window_name=? ORDER BY observed_at_ms DESC LIMIT ?)`)
-          .run(provider, account.label, window.name, provider, account.label, window.name,
-            window.name==='Weekly'||window.name==='Weekly · Fable only'?KEEP_WEEKLY_SAMPLES:KEEP_OTHER_SAMPLES);
+          .run(provider, account.label, window.name, provider, account.label, window.name, KEEP_OTHER_SAMPLES);
       }
     }
   })();

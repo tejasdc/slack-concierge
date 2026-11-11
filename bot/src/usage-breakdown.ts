@@ -88,15 +88,24 @@ export async function usageBreakdown(period:UsagePeriod):Promise<unknown>{
   let known=current();
   if(!known){await scan();known=latest;}
   else if(Date.now()-Date.parse(known.computedAt)>=RESULT_STALE_MS)void scan().catch(()=>{});
-  const result=known!.both[period] as Record<string,unknown>;
+  const {sessionAllowanceById:_sessions,threadAllowanceById:_threads,...result}=known!.both[period] as Record<string,unknown>;
   return {...result,computedAt:known!.computedAt,stale:Date.now()-Date.parse(known!.computedAt)>=RESULT_STALE_MS};
+}
+
+/** A lookup the owner refuses as the caller's mistake, never as an outage. */
+export function validUsageAllowanceLookup(sessionIds:string[],topicIds:string[]):boolean{
+  return sessionIds.length+topicIds.length<=100&&sessionIds.every(id=>/^concierge:\d+$/.test(id))
+    &&topicIds.every(id=>!!id&&id.length<=160);
 }
 
 /** One cached lookup for the rows actually visible on a page; never runs the scanner per row. */
 export async function usageAllowanceLookup(sessionIds:string[],topicIds:string[]):Promise<unknown>{
-  if(sessionIds.length+topicIds.length>100||sessionIds.some(id=>!/^concierge:\d+$/.test(id))
-    ||topicIds.some(id=>!id||id.length>160))throw new Error('INVALID_USAGE_ALLOWANCE_LOOKUP');
-  const report=await usageBreakdown('week') as Record<string,any>;
+  if(!validUsageAllowanceLookup(sessionIds,topicIds))throw new Error('INVALID_USAGE_ALLOWANCE_LOOKUP');
+  let known=current();
+  if(!known){await scan();known=latest;}
+  else if(Date.now()-Date.parse(known.computedAt)>=RESULT_STALE_MS)void scan().catch(()=>{});
+  const report={...known!.both.week as Record<string,any>,computedAt:known!.computedAt,
+    stale:Date.now()-Date.parse(known!.computedAt)>=RESULT_STALE_MS};
   const select=(ids:string[],source:Record<string,unknown>|undefined)=>Object.fromEntries(
     ids.map(id=>[id,source?.[id]??null]));
   return {period:'week',computedAt:report.computedAt,stale:report.stale,

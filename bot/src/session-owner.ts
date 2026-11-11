@@ -106,7 +106,7 @@ import {PROJECT_FOLDERS_OPERATION,PROJECT_NESTED_EXPERTISE_OPERATION,type Projec
 import type {PeerLinks} from './peer-links';
 import {appendTodoFile,captureMarker} from './todo-file';
 import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn} from './saved-work';
-import {usageBreakdown,usageAllowanceLookup} from './usage-breakdown';
+import {usageBreakdown,usageAllowanceLookup,validUsageAllowanceLookup} from './usage-breakdown';
 import {chooseProviderForNewWork,type AutomaticProvider} from './provider-start-choice';
 import {claudeAllowanceHeld,CLAUDE_ALLOWANCE_HOLD_MESSAGE} from './claude-allowance-hold';
 import {scheduleProviderAccountUsageRefresh} from './provider-account-usage';
@@ -4255,7 +4255,10 @@ export class SessionOwner {
         result=await usageBreakdown(period);
       }
       else if(request.method==='GET'&&parts[0]==='usage'&&parts[1]==='allowance'&&parts.length===2){
-        result=await usageAllowanceLookup(url.searchParams.getAll('session'),url.searchParams.getAll('topic'));
+        const sessions=url.searchParams.getAll('session'),topics=url.searchParams.getAll('topic');
+        if(!validUsageAllowanceLookup(sessions,topics))
+          throw new SessionOwnerError('Ask for at most 100 rows: sessions as concierge:<number>, threads by their id.');
+        result=await usageAllowanceLookup(sessions,topics);
       }
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts[1]==='settings'&&parts.length===2) result={settings:changeSavedWorkSettings(object(body))};
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts.length===3) result=this.savedWorkControl(Number(parts[1]),parts[2]!,object(body));
