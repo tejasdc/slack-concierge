@@ -660,7 +660,9 @@ is refused when that thread belongs to another one). Focus belongs to the run th
 it, so a run that ended, errored or was stopped stops claiming a topic without any timer.
 A topic's `work` is `router_working` (its focus), else `router_queued` with its 1-based
 position among queued Inbox inputs, else `worker_working` naming the target session of an
-unsettled dispatch from this topic whose work is live, else `idle`. A dispatch's work is live
+unsettled dispatch from this topic whose work is live, else `idle`. A dispatch from this topic
+is one sent by any session in the Inbox lineage, so a thread routed before an Inbox handoff
+keeps its working agent. A dispatch's work is live
 while its target has a running or queued turn, or while the target holds an unsettled request
 to another session whose work is live by the same rule (bounded depth, cycle-safe; an open
 peer request counts as live). An agent that ends its turn to wait for a ChatGPT answer or
