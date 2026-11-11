@@ -2,6 +2,7 @@ import {db,getSessionById,type SessionRow} from './state';
 import {inboxSession} from './session-inbox';
 import {newWorkCapacity,capacityCanStart,type AutomaticProvider} from './provider-start-choice';
 import {AUTOMATIC_PROVIDER_ALIASES} from './aliases';
+import {anyModelRefused} from './provider-model-capacity';
 import {nativeRunId,sessionMetadata} from './session-inputs';
 import {proposeHandoff} from './session-handoff';
 import {log} from './log';
@@ -38,7 +39,12 @@ export function maybeStartInboxProviderFailover(session:SessionRow|null=inboxSes
     last.status==='queued'&&['auth_wait','backoff','usage_wait'].includes(last.dispatch_failure_class??'')
     &&last.provider_admission_intended_at===null&&last.provider_started_at===null
     &&last.provider_turn_id===null&&last.provider_input_acknowledged_at===null;
-  const exhausted=!!current&&current.used>=100&&!current.paidCredits;
+  // Gemini answers a spent quota with "Individual quota reached", which is remembered as a model at
+  // capacity and drops Gemini from the usage readings, so neither the reading nor a usage hold showed
+  // it and the Inbox concierge:9305 stayed stuck (2026-11-11). Only Gemini uses that record for a spent
+  // quota; a Claude or Codex capacity refusal is a short busy spell and must not move the Inbox.
+  const exhausted=(!!current&&current.used>=100&&!current.paidCredits)
+    ||(sourceProvider==='antigravity'&&anyModelRefused(sourceProvider));
   const confirmedUsageWall=!!usageHeld&&(!current||!capacityCanStart(current));
   if((!exhausted&&!failedBeforeAdmission&&!confirmedUsageWall)||!alternative||!capacityCanStart(alternative))return;
   if(db.query("SELECT 1 FROM session_handoffs WHERE predecessor_session_id=? AND state IN ('proposed','accepted') LIMIT 1").get(session.id))return;
