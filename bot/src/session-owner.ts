@@ -28,8 +28,8 @@ import {savedMessagePage,savedWorkListPage} from './owner-collection-pages';
 import {boundedChangedMessageIds,HISTORY_CHANGE_LIMIT} from './bounded-history-changes';
 import {historyContent,previewHistoryMessage} from './history-message-preview';
 import {HistoryDetailCache} from './history-detail-cache';
-import {preparedTopics,preparedIncoming,preparedTopicOverview,preparedTopicItems,preparedQuestions,preparedTopicChanges,
-  preparedTopicResolution,preparedTopicDetail,preparedTopicsReady,preparedAreas,preparedArea,preparedThreadAreas} from './presentation-topic-reader';
+import {preparedIncoming,preparedTopicOverview,preparedTopicItems,preparedQuestions,preparedTopicChanges,
+  preparedTopicResolution,preparedTopicDetail,preparedTopicsAfterCatchUp,preparedAreas,preparedArea,preparedThreadAreas} from './presentation-topic-reader';
 import {createAreaByHuman,areaHumanAction,AreaError} from './session-areas';
 import {presentationChangesForSession,presentationEpoch,presentationHead} from './presentation-changes';
 import {noteOwnerStall,noteSlowOwnerRequest,startOwnerResponsivenessWatch} from './owner-responsiveness';
@@ -50,6 +50,7 @@ import {providerOwnerEnvironment} from './provider-owner-environment';
 import {escalationReason,topModel} from './model-escalation';
 import {humanChoseTopModel} from './model-escalation-custody';
 import {STILL_WAITING_MINUTES} from './request-liveness';
+import {lastLaunchedConversationHome} from './session-runner-home';
 import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,discardQueuedTurnContinuations,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordHeldInputReceiptEvent,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
 import {INBOX_PURPOSE,REPAIR_AGENT_PURPOSE,purposeFromFirstWords} from './session-purpose';
@@ -85,7 +86,7 @@ import {sessionAddress} from './session-address';
 import {handoffView,supersededBy,supersededAddress,withdrawnSuccessor} from './session-handoff';
 import {sessionExecution,sessionPresence} from './session-presence';
 import {inboxAttribution} from './inbox-attribution-read';
-import {directTopicList,openInboxObligationCount,openInboxObligations} from './session-topics';
+import {inboxTopicList,openInboxObligationCount,openInboxObligations} from './session-topics';
 import {workThread} from './session-fit';
 import {sessionMutuals,mutualLift} from './session-mutuals';
 import {commitWork,originInput} from './commit-work';
@@ -1473,10 +1474,13 @@ export class SessionOwner {
   private persistedProjectRunner(metadata:NativeSessionMetadata,session?:SessionRow):string|null {
     if(Object.hasOwn(metadata,'providerRunner'))return metadata.providerRunner??null;
     if(session?.agent_session_uuid){
-      const last=db.query(`SELECT execution.supervisor,attempt.runner FROM executions execution
-        LEFT JOIN runner_attempts attempt ON attempt.job_id='turn:'||execution.execution_id
-        WHERE execution.session_id=? ORDER BY execution.created_at_ms DESC,attempt.started_at_ms DESC LIMIT 1`)
-        .get(session.id) as {supervisor:string;runner:string|null}|null;
+      // Same rule as turn dispatch: a withdrawn, never-launched intent is not where the conversation lives.
+      const last=lastLaunchedConversationHome(db,session.id,session.provider_id);
+      if(!last&&metadata.lineage&&session.parent_session_id){
+        // A fork that has not run yet lives where its parent did, as dispatch resolves it.
+        const parent=getSessionById(session.parent_session_id);
+        if(parent?.provider_id===session.provider_id)return this.persistedProjectRunner(sessionMetadata(parent),parent);
+      }
       if(last?.supervisor==='runner'){
         if(!last.runner)throw new SessionOwnerError('This conversation ran on a runner, but its exact runner is unavailable.',424,'PROVIDER_RUNNER_UNKNOWN');
         return last.runner;
@@ -2815,7 +2819,7 @@ export class SessionOwner {
     if(saved.state||current.turn&&(current.turn.status!=='queued'||current.turn.provider_admission_intended_at||current.turn.provider_started_at||current.turn.provider_turn_id||current.turn.provider_input_acknowledged_at))throw new SessionOwnerError('Input is no longer cancelable; Stop an admitted exact run.',409,'OPERATION_NOT_CANCELABLE');
     if(target.steering_id)throw new SessionOwnerError('Input is attached to a live run; Stop its exact run.',409,'OPERATION_NOT_CANCELABLE');
     if(target.turn_id){finishTurn(target.turn_id,'cancelled','Tejas canceled this queued message.');settleTurnDependencies(target.turn_id);}
-    db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({...saved,state:'canceled'}),target.id);
+    db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({...saved,state:'canceled',reason:'human_queued_input_cancel',turnId:target.turn_id}),target.id);
   }
   /** Stop settles his waiting words, while agent returns and saved work keep their own custody. */
   private clearWaitingHumanInputs(sessionId:number,reason:'stop'|'clear-queue',stoppedTurnId?:number) {
@@ -4296,7 +4300,7 @@ export class SessionOwner {
         const order=url.searchParams.get('order')??'updated';
         if(!['updated','started'].includes(order))throw new SessionOwnerError('Unknown thread order.');
         const options={state:state as 'open'|'closed'|'background'|'all',order:order as 'updated'|'started',query,cursor:url.searchParams.get('cursor'),limit:boundedLimit(url.searchParams.get('limit'),20)??20};
-        result=preparedTopicsReady()?preparedTopics(options):directTopicList(options);
+        result=await inboxTopicList(options,prepared=>preparedTopicsAfterCatchUp(prepared,request.signal));
       }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='areas'&&parts.length===2){
         const query=url.searchParams.get('query');if(query&&query.length>200)throw new SessionOwnerError('Area search is too long.');

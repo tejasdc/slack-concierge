@@ -202,6 +202,7 @@ function midnight(zone:string,now=Date.now()){
 const pricing:Record<string,{input:number;cacheWrite:number;cacheWrite1h:number;cacheRead:number;output:number}>={
   'claude-opus-5-5':{input:4,cacheWrite:5,cacheWrite1h:8,cacheRead:.2,output:20},
   'claude-opus-5':{input:5,cacheWrite:6.25,cacheWrite1h:10,cacheRead:.5,output:25},
+  'claude-fable-5-2':{input:8,cacheWrite:10,cacheWrite1h:16,cacheRead:.2,output:40},
   'claude-fable-5-1':{input:10,cacheWrite:12.5,cacheWrite1h:20,cacheRead:.25,output:50},
   'claude-sonnet-5':{input:2,cacheWrite:2.5,cacheWrite1h:4,cacheRead:.2,output:10},
   'claude-sonnet-5-5':{input:2,cacheWrite:2.5,cacheWrite1h:4,cacheRead:.2,output:10},

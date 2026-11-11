@@ -22,7 +22,7 @@ describe("provider aliases", () => {
     expect(selectProviderForComparison({ sourceProvider: "codex" })).toEqual({
       alias: "cc",
       provider: "claude-code",
-      model: "claude-fable-5-1",
+      model: "claude-fable-5-2",
       source: "comparison_counterpart",
     });
     expect(selectProviderForComparison({ sourceProvider: "claude-code" })).toEqual({
@@ -42,7 +42,7 @@ describe("provider aliases", () => {
     expect(selectProviderForComparison({ sourceProvider: "codex", targetAlias: "cx-sol", targetEffort: "xhigh" })).toEqual({
       alias: "cx-sol",
       provider: "codex",
-      model: "gpt-5.6-sol",
+      model: "gpt-6.1-sol",
       reasoning_effort: "xhigh",
       source: "comparison_explicit_alias",
     });
@@ -51,22 +51,22 @@ describe("provider aliases", () => {
     expect(providerAliasFromText("@cc do it", { topLevel: true })).toMatchObject({
       alias: "cc",
       provider: "claude-code",
-      model: "claude-fable-5-1",
+      model: "claude-fable-5-2",
     });
     expect(providerAliasFromText("@cc-fast do it", { topLevel: true })).toMatchObject({
       alias: "cc-fast",
       provider: "claude-code",
-      model: "claude-haiku-4-5-20251001",
+      model: "claude-haiku-5-5",
     });
     expect(providerAliasFromText("@cc-medium do it", { topLevel: true })).toMatchObject({
       alias: "cc-medium",
       provider: "claude-code",
-      model: "claude-sonnet-5",
+      model: "claude-sonnet-5-5",
     });
     expect(providerAliasFromText("@cc-fable do it", { topLevel: true })).toMatchObject({
       alias: "cc-fable",
       provider: "claude-code",
-      model: "claude-fable-5-1",
+      model: "claude-fable-5-2",
     });
     expect(providerAliasFromText("@cx do it", { topLevel: true })).toMatchObject({
       alias: "cx",
@@ -82,12 +82,12 @@ describe("provider aliases", () => {
     expect(providerAliasFromText("@cx-medium do it", { topLevel: true })).toMatchObject({
       alias: "cx-medium",
       provider: "codex",
-      model: "gpt-5.6-terra",
+      model: "gpt-6.1-terra",
     });
     expect(providerAliasFromText("@cx-sol do it", { topLevel: true })).toMatchObject({
       alias: "cx-sol",
       provider: "codex",
-      model: "gpt-5.6-sol",
+      model: "gpt-6.1-sol",
     });
   });
 
@@ -126,16 +126,16 @@ describe("provider aliases", () => {
     expect(parseProviderSelector("cx-sol-bogus")).toBeNull();
 
     expect(resolveProviderAlias("cx-sol", "xhigh")).toMatchObject({
-      provider: "codex", model: "gpt-5.6-sol", reasoning_effort: "xhigh",
+      provider: "codex", model: "gpt-6.1-sol", reasoning_effort: "xhigh",
     });
     // Claude keeps no configured default, so its own CLI default applies.
     expect(resolveProviderAlias("cc").reasoning_effort).toBeUndefined();
     expect(resolveProviderAlias("cc", "high")).toMatchObject({
-      provider: "claude-code", model: "claude-fable-5-1", reasoning_effort: "high",
+      provider: "claude-code", model: "claude-fable-5-2", reasoning_effort: "high",
     });
 
     expect(providerAliasFromText("@cx-sol-extra-high do it", { topLevel: true })).toMatchObject({
-      alias: "cx-sol", model: "gpt-5.6-sol", reasoning_effort: "xhigh", token: "@cx-sol-extra-high",
+      alias: "cx-sol", model: "gpt-6.1-sol", reasoning_effort: "xhigh", token: "@cx-sol-extra-high",
     });
     expect(stripProviderAliases("@cx-sol-xhigh run it")).toBe("run it");
     expect(resolveProviderDefault("cx-high")).toMatchObject({
@@ -160,13 +160,13 @@ describe("provider aliases", () => {
     expect(resolveProviderAlias("cx-sol")).toEqual({
       alias: "cx-sol",
       provider: "codex",
-      model: "gpt-5.6-sol",
+      model: "gpt-6.1-sol",
       reasoning_effort: "medium",
     });
     expect(selectProviderForComparison({ sourceProvider: "claude-code", targetAlias: "cx-sol" })).toEqual({
       alias: "cx-sol",
       provider: "codex",
-      model: "gpt-5.6-sol",
+      model: "gpt-6.1-sol",
       source: "comparison_explicit_alias",
     });
     expect(stripProviderAliases("@cx-sol run the suite")).toBe("run the suite");
@@ -203,12 +203,12 @@ describe("provider aliases", () => {
     expect(providerAliasFromText("Use @CC-MEDIUM", { topLevel: true })).toMatchObject({
       alias: "cc-medium",
       provider: "claude-code",
-      model: "claude-sonnet-5",
+      model: "claude-sonnet-5-5",
     });
     expect(providerAliasFromText("@CC-FABLE fix", { topLevel: true })).toMatchObject({
       alias: "cc-fable",
       provider: "claude-code",
-      model: "claude-fable-5-1",
+      model: "claude-fable-5-2",
     });
     expect(providerAliasFromText("@cc-fst typo", { topLevel: true })).toBeNull();
     expect(providerAliasFromText("@cx-fable mismatch", { topLevel: true })).toBeNull();
@@ -232,7 +232,7 @@ describe("provider aliases", () => {
       alias: "cc",
       provider: "claude-code",
       source: "bot_mention",
-      model: "claude-fable-5-1",
+      model: "claude-fable-5-2",
     });
   });
 
@@ -248,7 +248,7 @@ describe("provider aliases", () => {
   test("channel defaults resolve through the alias table with provider-id compatibility", () => {
     expect(resolveProviderDefault("cc-fable")).toMatchObject({
       provider: "claude-code",
-      model: "claude-fable-5-1",
+      model: "claude-fable-5-2",
     });
     expect(resolveProviderDefault("codex")).toMatchObject({
       alias: "cx",
@@ -270,11 +270,11 @@ describe("selectProviderForTurn", () => {
       text, channelDefault, providerOverride, topLevel: true, claudeCodeBotUserId: "UCLAUDE",
     });
     expect(selection.selectedProvider).toBe("claude-code");
-    expect(selection.selectedModel).toBe("claude-fable-5-1");
+    expect(selection.selectedModel).toBe("claude-fable-5-2");
     const args = claudeCodeArgs({
       prompt: "start", additionalDirs: [], sessionUUID: null, model: selection.selectedModel,
     });
-    expect(args[args.indexOf("--model") + 1]).toBe("claude-fable-5-1");
+    expect(args[args.indexOf("--model") + 1]).toBe("claude-fable-5-2");
     expect(args).not.toContain("--effort");
   });
 
@@ -313,7 +313,7 @@ describe("selectProviderForTurn", () => {
       topLevel: true,
     })).toMatchObject({
       selectedProvider: "claude-code",
-      selectedModel: "claude-haiku-4-5-20251001",
+      selectedModel: "claude-haiku-5-5",
       ignoredSelection: null,
     });
   });
@@ -330,7 +330,7 @@ describe("selectProviderForTurn", () => {
       ignoredSelection: {
         alias: "cc-medium",
         provider: "claude-code",
-        model: "claude-sonnet-5",
+        model: "claude-sonnet-5-5",
       },
     });
   });
@@ -347,7 +347,7 @@ describe("selectProviderForTurn", () => {
       ignoredSelection: {
         alias: "cx-medium",
         provider: "codex",
-        model: "gpt-5.6-terra",
+        model: "gpt-6.1-terra",
       },
     });
   });
@@ -363,7 +363,7 @@ describe("selectProviderForTurn", () => {
     expect(selection.selectedProvider).toBe("codex");
     // The Claude channel default must not leak across the override; the
     // overridden provider supplies its own alias-table default instead.
-    expect(selection.selectedModel).not.toBe("claude-haiku-4-5-20251001");
+    expect(selection.selectedModel).not.toBe("claude-haiku-5-5");
     expect(selection.selectedModel).toBe("gpt-6-astra");
     expect(selection.selectedReasoningEffort).toBe("medium");
   });

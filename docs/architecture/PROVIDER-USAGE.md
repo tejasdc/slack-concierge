@@ -671,8 +671,12 @@ where Claude keeps logins in the Keychain rather than a file, this sign-in repor
 could not finish rather than filing anything.
 
 The Mac proof established both continuation across homes and simultaneous spending on two
-Claude accounts. This source change has not been activated or tested by an agent under the
-current delivery policy; Tejas owns live acceptance.
+Claude accounts. The sign-in itself has since run for real on the server: the runner's
+sign-in record carries a completed Claude sign-in at 2026-11-07T01:45:36Z, and
+`~/.claude-accounts/tejastej-dc-gmail-com/.credentials.json` was rewritten at that second
+with the previous login set aside as `.credentials.json.superseded-1794015936337`. So the
+independent-login design is observed, not only designed. Codex's equivalent is dated
+2026-11-06T18:09:41Z, the first credential filed into a newly created home.
 
 
 ## Seeing it coming

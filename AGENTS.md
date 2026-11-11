@@ -25,6 +25,14 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [decision: agents-check-real-end-to-end-behavior]. The
   [agent test delivery](docs/runbooks/THINKERING-CAPTURE.md#agent-test-deliveries)
   is for capture paths; use a feature's own socket or route when appropriate.
+- Rebase dirty task worktrees with `scripts/rebase-worktree.sh`, which saves tracked
+  changes under a ref private to that worktree and restores the exact saved object.
+  It refuses branches already pushed to origin, preserving published history.
+  It refuses untracked files until staged or committed; after a stopped rebase,
+  resolve or abort it and run `scripts/rebase-worktree.sh --restore` from a clean tree.
+  A conflicted restore must be resolved and finished with its exact saved object ID,
+  never applied a second time.
+  See [worktree rebases](docs/runbooks/DEPLOYMENT.md#worktree-rebases).
 - Concierge service stops during a release go through the deployment controller's
   [attributed systemd stop path](docs/runbooks/DEPLOYMENT.md#runtime-dependencies-and-service-shutdown).
 - Planned drain stops Codex lifecycle observation before awaited shutdown work;
@@ -46,6 +54,11 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   bounded Linux wait samples through [storage observation](docs/architecture/STORAGE-OBSERVATION.md#owner-loop-pause-evidence).
 - A repair-owned deployment run ends its old transient runner without reclaiming the repair;
   see [automatic failure behavior](docs/runbooks/DEPLOYMENT.md#automatic-failure-behavior).
+- The release build refuses a bundle that uses a name nothing defines or imports
+  (`bot/scripts/undefined-name-check.ts`); `bun build` alone ships such a name as a runtime
+  reference error. Peer answers are awaited time, never owner time. See the
+  [missing-import record](docs/incidents/2026-11-07-routed-message-projection-missing-import.md)
+  and [peer reply wait record](docs/incidents/2026-11-07-peer-reply-read-counted-as-owner-time.md).
 - Every commit carries an `Update-note:` sentence in product language and a
   `Failure-record:` trailer naming its replayable failure record or `none`.
   The [update-note rule](docs/runbooks/DEPLOYMENT.md#update-notes-for-every-commit) and
@@ -118,6 +131,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - ChatGPT questions carry an exact task and remain open through failed attempts,
   return receipt, and explicit answer handling. See [ChatGPT answer obligations](docs/architecture/CHATGPT-ANSWER-OBLIGATIONS.md).
 - Preserve exact accepted input, run, action, source-message and target identity.
+  An informational wake does not retire a delivered open work request; delegated
+  work keeps its exact authority input and source run. See the [session owner wire contract](docs/contracts/session-owner-v1.md#forwarded-input-provenance).
   Continuation ancestry visits each source input once because valid service inputs
   can point to themselves; see the [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md).
   Do not replay ambiguous or acknowledged effects. Keep human authorship distinct
@@ -125,6 +140,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [human command custody](docs/architecture/HUMAN-COMMAND-INTAKE.md), and
   [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md) own those boundaries.
 - Banked phone work that Tejas permits only overnight uses the explicit quiet-only saved-work choice; request cancellation also revokes a queued saved turn. See [session ownership](docs/architecture/SESSION-OWNER.md#one-execution-owner) and [router actions](docs/runbooks/ROUTER-ACTIONS.md#current-native-routing).
+- Saved-work cancellation names one turn and retains its cause; accepted handoff preserves an unfired scheduled turn's due time and firing identity. See [session ownership](docs/architecture/SESSION-OWNER.md#identity-and-admission) and [provider-change handoff](docs/architecture/SESSION-OWNER.md#provider-change-handoff).
 - A device question can name a physical instrument or controller in a USB connection
   request, or an app startup when the device has no agent route; the agent explains
   the failed route. Returned `needs_you` questions can be withdrawn
