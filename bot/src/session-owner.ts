@@ -1476,6 +1476,11 @@ export class SessionOwner {
     if(session?.agent_session_uuid){
       // Same rule as turn dispatch: a withdrawn, never-launched intent is not where the conversation lives.
       const last=lastLaunchedConversationHome(db,session.id,session.provider_id);
+      if(!last&&metadata.lineage&&session.parent_session_id){
+        // A fork that has not run yet lives where its parent did, as dispatch resolves it.
+        const parent=getSessionById(session.parent_session_id);
+        if(parent?.provider_id===session.provider_id)return this.persistedProjectRunner(sessionMetadata(parent),parent);
+      }
       if(last?.supervisor==='runner'){
         if(!last.runner)throw new SessionOwnerError('This conversation ran on a runner, but its exact runner is unavailable.',424,'PROVIDER_RUNNER_UNKNOWN');
         return last.runner;
