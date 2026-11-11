@@ -50,6 +50,7 @@ import {providerOwnerEnvironment} from './provider-owner-environment';
 import {escalationReason,topModel} from './model-escalation';
 import {humanChoseTopModel} from './model-escalation-custody';
 import {STILL_WAITING_MINUTES} from './request-liveness';
+import {lastLaunchedConversationHome} from './session-runner-home';
 import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,discardQueuedTurnContinuations,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordHeldInputReceiptEvent,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
 import {INBOX_PURPOSE,REPAIR_AGENT_PURPOSE,purposeFromFirstWords} from './session-purpose';
@@ -1473,10 +1474,13 @@ export class SessionOwner {
   private persistedProjectRunner(metadata:NativeSessionMetadata,session?:SessionRow):string|null {
     if(Object.hasOwn(metadata,'providerRunner'))return metadata.providerRunner??null;
     if(session?.agent_session_uuid){
-      const last=db.query(`SELECT execution.supervisor,attempt.runner FROM executions execution
-        LEFT JOIN runner_attempts attempt ON attempt.job_id='turn:'||execution.execution_id
-        WHERE execution.session_id=? ORDER BY execution.created_at_ms DESC,attempt.started_at_ms DESC LIMIT 1`)
-        .get(session.id) as {supervisor:string;runner:string|null}|null;
+      // Same rule as turn dispatch: a withdrawn, never-launched intent is not where the conversation lives.
+      const last=lastLaunchedConversationHome(db,session.id,session.provider_id);
+      if(!last&&metadata.lineage&&session.parent_session_id){
+        // A fork that has not run yet lives where its parent did, as dispatch resolves it.
+        const parent=getSessionById(session.parent_session_id);
+        if(parent?.provider_id===session.provider_id)return this.persistedProjectRunner(sessionMetadata(parent),parent);
+      }
       if(last?.supervisor==='runner'){
         if(!last.runner)throw new SessionOwnerError('This conversation ran on a runner, but its exact runner is unavailable.',424,'PROVIDER_RUNNER_UNKNOWN');
         return last.runner;
