@@ -1,5 +1,6 @@
 export function topModel(model:string|null|undefined):'fable'|'astra'|null {
-  if(model==='claude-fable-5-1'||model==='claude-fable-5')return 'fable';
+  // Every Fable shares one "Fable only" weekly cap, so any Fable version is the top tier.
+  if(model?.startsWith('claude-fable-'))return 'fable';
   if(model==='gpt-6-astra')return 'astra';
   return null;
 }

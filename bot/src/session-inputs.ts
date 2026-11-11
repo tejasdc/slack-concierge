@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { db, executionChanged, finishTurn, settleTurnDependencies, getSessionById, type ProviderId, type SessionRow } from './state';
 import {DEFAULT_CHATGPT_THINKING,DEFAULT_HIS_CHATGPT_THINKING,HIS_CHATGPT_PREFIX,isHisChatGpt,resolveProviderAlias,resolveProviderDefault} from './aliases';
+import {topModel} from './model-escalation';
 import {purposeLine} from './session-purpose';
 import {receiveSessionFromPeer} from './peer-identity';
 import {notificationRequest} from './session-notification-request';
@@ -210,7 +211,7 @@ function peerDeliveryProvenance(input:AcceptedSessionInput) {
   const human=retained.originatingHuman&&typeof retained.originatingHuman.sessionId==='string'
     ?{...retained.originatingHuman,sessionId:receiveSessionFromPeer(retained.originatingHuman.sessionId,delivery.peer)}:null;
   const humanModelChoices=human&&Array.isArray(retained.humanModelChoices)
-    ?retained.humanModelChoices.filter((model:unknown):model is string=>model==='claude-fable-5-1'||model==='gpt-6-astra'):[];
+    ?retained.humanModelChoices.filter((model:unknown):model is string=>typeof model==='string'&&!!topModel(model)):[];
   return {source:{inputId:delivery.origin_input_id,runId:delivery.origin_run_id,sessionId:receiveSessionFromPeer(delivery.origin_session_id,delivery.peer),peer:delivery.peer},
     requestId:input.request_id,effectScope,originatingHuman:human as {inputId:string;runId:string;sessionId:string;captureId?:string}|null,peer:delivery.peer,humanModelChoices};
 }
