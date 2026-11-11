@@ -176,6 +176,13 @@ but cannot write through the owner; its own outcome and reads remain allowed. Su
 prevents another turn. The session detail read exposes the canonical continuation chain,
 successor ID and handoff ID to Thinkering. `sessions obligations` reports the
 outstanding inventory, lineage and current holder on either side of the transfer.
+A request that has not reached a run of its recipient carries `delivered:false` and
+`canReply:false` on both its sent and owed rows, with `waitingOn` and a plain `nextMove`:
+behind earlier requests, waiting for admission, or held for the requester's decision
+(`heldBy` names the prerequisite). The recipient cannot reply to such a request, so it is
+never presented as work the recipient can do; a handoff still moves it. The held test is
+shared with request delivery, and a held request's overdue notice goes to the requester
+as an explicit cancel-or-ask-again decision.
 `sessions cancel --reason provider-change` refuses with the handoff command. See
 [the router procedure](../runbooks/ROUTER-ACTIONS.md#provider-change-handoff).
 The authenticated Thinkering owner API also accepts proposal, acknowledgement and withdrawal
