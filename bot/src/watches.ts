@@ -192,9 +192,14 @@ function recoveryLineage(sessionId: number): number[] {
 export async function registerWatch(input: WatchRegistration, now = Date.now()): Promise<{ watch: ReturnType<typeof watchView>; duplicate: boolean; takenOverFrom?: string }> {
   if (!input.actionId || input.actionId.length > 200) throw new Error("A stable action id is required.");
   if (input.kind === "file" && input.requiredCommit !== undefined) {
-    if (input.path !== RELEASE_LINK || !input.renew || input.runner || process.env.CONCIERGE_PEER_NAME === "mac")
+    if (input.path !== RELEASE_LINK || !input.renew || process.env.CONCIERGE_PEER_NAME === "mac")
       throw new Error("--required-commit needs a renewing watch on this server's Concierge current-release link.");
     if (!/^[0-9a-f]{40}$/.test(input.requiredCommit)) throw new Error("--required-commit needs a full lowercase Git commit SHA.");
+    // The condition is this owner's own installed release, read from its manifest, Git clone and
+    // deployment receipts, so it is observed here whichever machine the waiting agent runs on.
+    // A runner session's helper still names its runner; refusing that left runner sessions with
+    // only an unscoped watch that woke on every release (2026-11-11).
+    input = { ...input, runner: null };
   }
   const condition = input.kind === "file" ? { path: input.path, ...(input.requiredCommit !== undefined ? { requiredCommit: input.requiredCommit } : {}) }
     : { argv: input.argv, cwd: input.cwd };

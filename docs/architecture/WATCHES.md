@@ -30,7 +30,9 @@ checked again. A Git ancestry error also keeps the previous baseline and is retr
 definite non-ancestor result can advance it. Registration also checks the installed revision, so a target already live can fire
 immediately; the caller checks the installed revision again after registering to cover the race with
 its partial reply. The exact target commit is part of the watch condition and idempotency identity.
-This scoped condition is available only on the server's Concierge link; other file watches retain
+This scoped condition is available only on the server's Concierge link. It is a fact about the
+owner's own installed release, so the owner observes it locally even when the registering agent
+runs on a runner and its helper names that runner. Other file watches retain
 their normal change and deadline behavior. A request-bound scoped watch ends quietly when every
 request naming its series has closed. A scoped watch fires once: when the target is installed the
 series ends instead of renewing, because the next check would find the same installed release and
