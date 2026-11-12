@@ -139,6 +139,12 @@ function sessionReplyShape(command:string):'safe'|'unsafe'|null {
   return 'safe';
 }
 
+function exactCommandLiteral(quote:string,body:string):boolean {
+  if(/\\(?!['"\\])/.test(body))return false;
+  if(quote!=='"')return true;
+  try { JSON.parse('"'+body+'"'); return true; } catch { return false; }
+}
+
 /** Refuse common agent tool paths that would take over Tejas's Mac desktop. */
 export function macSurfaceRefusal(input:{command:string|null;toolName:string;toolInput:unknown;need:RecordedNeed;platform:string}):string|null {
   const {command,toolName,toolInput,need,platform}=input;
@@ -198,6 +204,8 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
   if(platform==='darwin'&&nestedCommands.length&&(literalCommands.length!==nestedCommands.length
       ||literalCommands.some(match=>match[1]==='`'&&match[2]?.includes('${'))))
     return 'Dynamic shell commands on Tejas’s Mac need a direct tool call so the foreground and browser guard can inspect the exact action.';
+  if(platform==='darwin'&&literalCommands.some(match=>!exactCommandLiteral(match[1]!,match[2]!)))
+    return 'Escaped Mac shell commands are refused when the guard cannot read their exact text. Use a direct command or literal reply text.';
   const source=code?literalCommands.map(match=>{
     if(match[1]==='"') {
       try { return JSON.parse('"'+match[2]+'"') as string; } catch { return match[2]!; }
