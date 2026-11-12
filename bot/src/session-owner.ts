@@ -4222,8 +4222,10 @@ export class SessionOwner {
           target=`/sessions/${encodeURIComponent(sessionId)}/history/messages/${encodeURIComponent(tail[2]!)}/detail`;
         else if(tail.length===2&&tail[0]==='operations'){
           const operation=getAcceptedSessionInput(child!);
+          const ownAction=operation?.source_input_id&&db.query('SELECT 1 FROM session_inputs WHERE id=? AND session_id=?')
+            .get(operation.source_input_id,operation.session_id);
           if(!operation||operation.session_id!==Number(sessionId.slice('concierge:'.length))||operation.origin!=='agent'
-            ||operation.source_input_id!==source.inputId||operation.source_run_id!==source.runId)
+            ||!(operation.source_input_id===source.inputId&&operation.source_run_id===source.runId||ownAction))
             throw new SessionOwnerError('This operation is outside the test session.',403,'AGENT_TEST_CHILD_REFUSED');
           return ownerJson(this.receipt(operation));
         } else if(tail.length===2&&tail[0]==='attachments'){
