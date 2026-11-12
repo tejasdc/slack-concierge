@@ -225,7 +225,7 @@ running on its successor, is withdrawn and the predecessor resumes its wait.
 #### Paced release of held work
 
 Every bulk release of held turns (an account switch, a reading that finds an account with room,
-a cleared usage cache, a proven model check, a continuation hold or a sign-in hold ending) marks
+a cleared usage cache, a proven model check, a continuation hold, a sign-in hold ending, or a usage hold simply reaching its reset time before the next claim pass) marks
 the released turns with their own `release_pace` hold and gives each session a start time: two
 sessions every 15 seconds, sessions owing one of his open Inbox requests first, then the longest
 waiting (`paceReleasedWork` in `state.ts`). Each release re-ranks every still-waiting released

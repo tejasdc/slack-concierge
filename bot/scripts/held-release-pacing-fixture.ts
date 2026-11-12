@@ -16,7 +16,7 @@ process.env.CONCIERGE_CAPTURE_STATE_DIR=join(scratch,'capture');
 process.env.CONCIERGE_TEST_MODE='1';
 process.env.CONCIERGE_TEST_AUTHORIZATION=HELD_RELEASE_PACING_TEST_AUTHORIZATION;
 
-const [{db,claimNextQueuedTurn,retryRunningTurnAfterProviderFailure,releaseScheduledProviderRetries,
+const [{db,claimNextQueuedTurn,retryRunningTurnAfterProviderFailure,releaseScheduledProviderRetries,paceLapsedUsageHolds,
   RELEASE_PACE_HOLD,RELEASE_PACE_SESSIONS,RELEASE_PACE_INTERVAL_MS},
   {SessionOwner},{createNativeSession,retainSessionInput,enqueueSessionInput,getAcceptedSessionInput},
   {deliverRequestReminder}]=await Promise.all([
@@ -53,6 +53,17 @@ try{
   // A later reading's release does not collapse the pace.
   assert.equal(releaseScheduledProviderRetries('codex'),0);
   assert.ok(turn(held[4]!.turnId).dispatch_next_attempt_ms>=before+RELEASE_PACE_INTERVAL_MS);
+
+  // A usage hold that simply runs out at its reset instant joins the same pace.
+  const lapsing=Array.from({length:3},(_,i)=>usageHeldCodexSession(`lapsing-${i}`));
+  const resetAt=Date.now()-1_000;
+  for(const h of lapsing)db.query('UPDATE turns SET dispatch_next_attempt_ms=? WHERE id=?').run(resetAt,h.turnId);
+  assert.equal(paceLapsedUsageHolds(),3);
+  assert.ok(lapsing.every(h=>turn(h.turnId).dispatch_hold===RELEASE_PACE_HOLD));
+  const dueNow=db.query(`SELECT count(DISTINCT session_id) AS n FROM turns WHERE status='queued' AND dispatch_hold=? AND dispatch_next_attempt_ms<=?`)
+    .get(RELEASE_PACE_HOLD,Date.now()) as {n:number};
+  assert.ok(dueNow.n<=RELEASE_PACE_SESSIONS,'lapsed holds do not all become claimable at once');
+  assert.equal(paceLapsedUsageHolds(),0,'nothing lapsed twice');
 
   // 2. A reminder that followed a handoff.
   const predecessor=createNativeSession('codex',{title:'asker',summary:undefined,purpose:'develop',origin:'native'});

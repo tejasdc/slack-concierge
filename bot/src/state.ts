@@ -5455,6 +5455,24 @@ export function releaseScheduledProviderRetries(providerId: ProviderId, unboundO
  * still-queued released session of the provider from now, so overlapping releases share one pace.
  */
 export const RELEASE_PACE_HOLD = 'release_pace';
+/**
+ * A usage hold that simply runs out is a bulk release too: every turn held for one account's
+ * reset shares that instant. Before each claim pass, due usage holds join the pace instead of
+ * becoming claimable together. The read is a cheap check; nothing is written unless one is due.
+ */
+export function paceLapsedUsageHolds(nowMs = Date.now()): number {
+  const due = `turn.status='queued' AND turn.dispatch_failure_class='backoff' AND turn.dispatch_hold='usage'
+    AND turn.dispatch_next_attempt_ms>0 AND turn.dispatch_next_attempt_ms<=?`;
+  const providers = db.query(`SELECT DISTINCT session.provider_id AS provider FROM turns turn
+    JOIN sessions session ON session.id=turn.session_id WHERE ${due}`).all(nowMs) as {provider:ProviderId}[];
+  if (!providers.length) return 0;
+  return db.transaction(() => providers.reduce((count, {provider}) => {
+    const lapsed = db.query(`UPDATE turns SET dispatch_hold='${RELEASE_PACE_HOLD}' WHERE id IN (SELECT turn.id FROM turns turn
+      JOIN sessions session ON session.id=turn.session_id WHERE ${due} AND session.provider_id=?)`).run(nowMs, provider).changes;
+    if (lapsed) paceReleasedWork(provider, nowMs);
+    return count + lapsed;
+  }, 0))();
+}
 export const RELEASE_PACE_SESSIONS = 2;
 export const RELEASE_PACE_INTERVAL_MS = 15_000;
 export function paceReleasedWork(providerId: ProviderId, nowMs = Date.now()): number {

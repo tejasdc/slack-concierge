@@ -49,7 +49,7 @@ export function deliverRequestReminder(o: { eventId: string; acceptedInputId: st
   const current = observed(carrier);
   if (current.status === 'received') return current;
   // Withdrawn on purpose (its request closed, or Stop): retire it rather than resend withdrawn words.
-  if (receipt.state && !receipt.continuedAs)
+  if ((receipt.state === 'canceled' || receipt.state === 'cancelled') && !receipt.continuedAs)
     return { inputId: carrier.id, status: 'received', error: `Reminder withdrawn before delivery${receipt.reason ? ` (${receipt.reason})` : ''}; not resent.` };
   if (carrier.session_id === o.sourceSessionId) return observed(o.owner.dispatch(carrier));
   // The asking session was handed off and its successor holds no copy: give the successor its own,

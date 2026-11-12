@@ -31,7 +31,7 @@ providers, not releases on the same provider.
 ## Fix
 
 Every bulk release (account switch, reading with room, cleared cache, proven model check,
-continuation and sign-in holds) marks released turns `release_pace` and gives each session a start
+continuation and sign-in holds, and a usage hold reaching its own reset time) marks released turns `release_pace` and gives each session a start
 time: two sessions every 15 s, sessions owing his open Inbox requests first, then the longest
 waiting. Each release re-ranks the provider's still-waiting released sessions from now, so
 overlapping releases share one pace and a later release cannot collapse it. The status line says
