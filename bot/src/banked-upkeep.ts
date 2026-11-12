@@ -24,8 +24,11 @@ export function createBankedUpkeep(input:{registry:()=>ActiveTurnDispatchRegistr
     if(yielding.has(turnId))return;
     const row=savedTurn(turnId);
     if(!row||row.saved_kind!=='banked'||row.saved_manual_start&&!row.saved_quiet_only)return;
+    // Durable before the cancellation lands, so the request this run serves reads the cancellation
+    // as a planned pause carried on by its continuation, not as the work being stopped.
+    db.query("UPDATE turns SET saved_yield_reason=? WHERE id=? AND status IN ('running','delivering')").run(reason,turnId);
     const requested=input.registry().requestSessionCancellation(row.session_id,turnId);
-    if(!requested.matched)return;
+    if(!requested.matched){db.query("UPDATE turns SET saved_yield_reason=NULL WHERE id=? AND status IN ('running','delivering')").run(turnId);return;}
     yielding.set(turnId,reason);
     void requested.completion.catch(error=>log('warn','banked_yield_failed',{turn_id:turnId,...errorFields(error)}));
   };
@@ -64,6 +67,16 @@ export function createBankedUpkeep(input:{registry:()=>ActiveTurnDispatchRegistr
   const step=(name:string,work:()=>unknown)=>{
     try {work();} catch(error) {log('error','saved_work_upkeep_failed',{step:name,...errorFields(error)});}
   };
+  /**
+   * A planned pause whose continuation was never queued: the owner restarted between the
+   * cancellation and settled(). Queue it now (or release the request if it cannot continue).
+   */
+  const recoverYields=()=>{
+    const rows=db.query(`SELECT t.id,t.saved_yield_reason AS reason FROM turns t INDEXED BY banked_yields_awaiting
+      WHERE t.saved_yield_reason IS NOT NULL AND t.status='cancelled'
+        AND NOT EXISTS (SELECT 1 FROM session_inputs i WHERE i.id='turn-continuation:'||t.id)`).all() as {id:number;reason:BankedYieldReason}[];
+    for(const row of rows)if(!yielding.has(row.id)&&!active.has(row.id))step('recover_yield',()=>resumeBankedAfterYield(row.id,row.reason));
+  };
   return {
     inspectActive,
     stop(){if(quietBoundaryTimer){clearTimeout(quietBoundaryTimer);quietBoundaryTimer=null;}},
@@ -76,8 +89,10 @@ export function createBankedUpkeep(input:{registry:()=>ActiveTurnDispatchRegistr
       yielding.delete(turnId);
       if(reason)step('resume_after_yield',()=>resumeBankedAfterYield(turnId,reason));
     },
+    recoverYields,
     /** After each usage reading. */
     onReading(){
+      step('recover_yields',recoverYields);
       step('reconsider',()=>reconsiderBankedWork());
       step('inspect_saved',()=>inspectSavedWork());
       step('missed_quiet_windows',()=>noticeMissedQuietWindows());
