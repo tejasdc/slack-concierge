@@ -2341,18 +2341,62 @@ export function topicsCommand(actor:TopicActor,body:any,listHead?:number) {
         return {change:{kind:'topic',payload:{change:verb==='pin'?'pinned':'unpinned',topicId:topic.topicId,topic:next,by,reason:reason(),revision:next.revision}},result:{topic:next}};
       },inboxOrThrow().id);
     }
+    case 'request.merge':{
+      assertInbox(session);
+      const why=text(body?.reason,'why these are the same request',4000);
+      const intoId=text(body?.into,'--into',200);
+      return agentMutation(actor,actionId(),{kind:'topic-request-merge',requestId:body?.request_id,into:intoId,reason:why},()=>{
+        const duplicate=requestRow(text(body?.request_id,'request id',200)),keeper=requestRow(intoId);
+        if(duplicate.requestId===keeper.requestId)throw new TopicError('A request cannot merge into itself.',400,'REQUEST_MERGE_SELF');
+        if(duplicate.state!=='open'||keeper.state!=='open')throw new TopicError('Both requests must be open to merge.',409,'REQUEST_MERGE_CLOSED');
+        if(duplicate.topicId===keeper.topicId)throw new TopicError('Requests in one thread may be separate asks from one message; merge only the same message\'s requests across threads.',409,'REQUEST_MERGE_SAME_THREAD');
+        const keeperSources=new Set(keeper.sources.map(source=>source.inputId));
+        if(!duplicate.sources.some(source=>keeperSources.has(source.inputId)))
+          throw new TopicError('These requests share no source message, so they are not proven duplicates.',409,'REQUEST_MERGE_NO_SHARED_SOURCE');
+        const waiting=questionsOfRequest(duplicate.topicId,duplicate).filter(question=>OPEN_QUESTION_STATES.includes(question.state));
+        if(waiting.length)throw new TopicError(`Move the open question ${waiting.map(question=>question.questionId).join(', ')} to ${keeper.requestId} (topics questions with owner.requestId) before merging.`,409,'REQUEST_MERGE_QUESTION_OPEN');
+        const at=nowIso();
+        const dispatches=[...keeper.dispatches,...duplicate.dispatches.filter((item:any)=>!keeper.dispatches.some((kept:any)=>kept.requestId===item.requestId))
+          .map((item:any)=>({...item,sharedAcrossTopic:true}))]
+          .sort((left:any,right:any)=>(workRow(left.requestId)?.createdAtMs??0)-(workRow(right.requestId)?.createdAtMs??0)||String(left.requestId).localeCompare(String(right.requestId)));
+        const brief=duplicate.brief&&duplicate.brief!==keeper.brief
+          ?Array.from(`${keeper.brief}\n\nMerged from "${duplicate.title}" (${duplicate.requestId}): ${duplicate.brief}`).slice(0,8000).join(''):keeper.brief;
+        const keeperNext={...keeper,brief,sources:[...keeper.sources,...duplicate.sources.filter(source=>!keeperSources.has(source.inputId))],
+          dispatches,revision:keeper.revision+1,updatedAt:at};
+        const duplicateNext={...duplicate,state:'closed' as const,disposition:'superseded',
+          closure:{by,at,reason:`Merged into ${keeper.requestId}: ${why}`,evidence:[keeper.requestId],mergedInto:keeper.requestId},
+          revision:duplicate.revision+1,updatedAt:at};
+        const keeperTopic=bumped(topicFor(keeper.topicId)),duplicateTopic=bumped(topicFor(duplicate.topicId));
+        // One event moves both: the duplicate's thread is the change's thread, so it closes itself
+        // if nothing else is left there; the keeper keeps every source and attempt it took over.
+        return {change:{kind:'topic_request',payload:{change:'request_merged',topicId:duplicate.topicId,topic:duplicateTopic,topics:[keeperTopic],
+          requests:[keeperNext,duplicateNext],into:keeper.requestId,from:duplicate.requestId,by,reason:why,revision:duplicateTopic.revision,questions:[]}},
+          result:{request:keeperNext,merged:duplicateNext}};
+      });
+    }
     case 'request.add':{
       assertInbox(session);
       const title=text(body?.title,'--title',200),brief=text(body?.brief,'brief',8000),sources=parseSources(body?.sources);
       const added=agentMutation(actor,actionId(),{kind:'topic-request-add',topicId:body?.topic_id,title,brief,sources},()=>{
         const topic=topicFor(body?.topic_id);
         const at=nowIso();
-        const request:StoredRequest={requestId:`req:${randomUUID()}`,topicId:topic.topicId,title,brief,state:'open',disposition:null,
-          revision:1,sources,dispatches:[],closure:null,createdAt:at,updatedAt:at};
+        const requestId=`req:${randomUUID()}`;
+        // The automatic "Follow-up in …" copy of the same message in another thread is absorbed:
+        // its attempts move here and it closes, so one message never stays open twice.
+        const copy=automaticCopyElsewhere(sources.map(source=>source.inputId),topic.topicId);
+        const request:StoredRequest={requestId,topicId:topic.topicId,title,brief,state:'open',disposition:null,
+          revision:1,sources,dispatches:copy?copy.dispatches.map((item:any)=>({...item,sharedAcrossTopic:true})):[],closure:null,createdAt:at,updatedAt:at};
         const next=bumped(topic);
-        return {change:{kind:'topic_request',payload:{change:'added',topicId:topic.topicId,topic:next,request,by,revision:next.revision}},result:{request}};
+        if(!copy)return {change:{kind:'topic_request',payload:{change:'added',topicId:topic.topicId,topic:next,request,by,revision:next.revision}},result:{request}};
+        const closed={...copy,state:'closed' as const,disposition:'superseded',revision:copy.revision+1,updatedAt:at,
+          closure:{by,at,reason:`Its message is now the request ${requestId} in thread ${topic.topicId}.`,evidence:[requestId],mergedInto:requestId}};
+        return {change:{kind:'topic_request',payload:{change:'added',topicId:topic.topicId,topic:next,topics:[bumped(topicFor(copy.topicId))],
+          request,requests:[closed],absorbed:copy.requestId,by,revision:next.revision}},result:{request,absorbed:copy.requestId}};
       });
       // Drift is noticed the moment it happens: the request that made the title stop fitting.
+      // The absorbed copy's thread may now hold nothing open: it closes itself like any ending.
+      const absorbedTopic=!added.duplicate&&(added as any).absorbed?requestRow((added as any).absorbed).topicId:null;
+      if(absorbedTopic)try{closeThreadIfFinished(absorbedTopic,'settled');}catch(error){log('error','inbox_absorbed_copy_close_failed',{topic_id:absorbedTopic,message:String(error)});}
       const drift=added.duplicate?null:titleDrift(added.request.topicId);
       return drift?{...added,titleDrift:{...drift,instruction:titleDriftInstruction(drift)}}:added;
     }
@@ -3452,6 +3496,31 @@ function recordOwnerTopicChange(sessionId:number,eventId:string,kind:string,payl
   return true;
 }
 
+/**
+ * The open request in another thread that already carries one of these messages. One retained
+ * message is one obligation wherever it is shown: on 2026-11-12 his Kindle replies existed both
+ * as "Follow-up in …" requests in the Kindle thread and as requests of their own threads, and
+ * each copy was recovered and re-sent separately. His forwarded reply joins this request instead
+ * of opening an automatic copy; a deliberate split of one message's asks across threads stays.
+ */
+function openRequestElsewhereWithSource(inputIds:string[],topicId:string):StoredRequest|null {
+  if(!inputIds.length)return null;
+  const row=db.query(`SELECT request.* FROM inbox_requests request WHERE request.state='open' AND request.topic_id<>?
+    AND EXISTS (SELECT 1 FROM json_each(request.sources_json) source WHERE json_extract(source.value,'$.inputId') IN (SELECT value FROM json_each(?)))
+    ORDER BY request.created_at,request.request_id LIMIT 1`).get(topicId,JSON.stringify(inputIds)) as any|null;
+  return row?toStoredRequest(row):null;
+}
+/** The open automatic forward copy (req:forward:…) of one of these messages in another thread. */
+function automaticCopyElsewhere(inputIds:string[],topicId:string):StoredRequest|null {
+  if(!inputIds.length)return null;
+  const row=db.query(`SELECT request.* FROM inbox_requests request WHERE request.state='open' AND request.topic_id<>?
+    AND request.request_id LIKE 'req:forward:%' AND json_array_length(request.sources_json)=1
+    AND json_extract(request.sources_json,'$[0].inputId') IN (SELECT value FROM json_each(?))
+    ORDER BY request.created_at,request.request_id LIMIT 1`).get(topicId,JSON.stringify(inputIds)) as any|null;
+  const copy=row?toStoredRequest(row):null;
+  // A copy with a question still open for him is left for the router to merge by hand.
+  return copy&&!questionsOfRequest(copy.topicId,copy).some(question=>OPEN_QUESTION_STATES.includes(question.state))?copy:null;
+}
 /** Exact-message routing creates durable work without guessing from a shared thread. */
 export function linkInboxDispatchWork(input:{topicId:string;sourceMessageId:string;dispatchId:string;targetSessionId:string;summary:string;brief:string}) {
   const topic=topicRow(input.topicId);
@@ -3469,13 +3538,20 @@ export function linkInboxDispatchWork(input:{topicId:string;sourceMessageId:stri
     recordOwnerTopicChange(topic.sessionId,`topic-link:routed:${input.dispatchId}`,'topic_request',change.payload);
     return existing.requestId;
   }
-  const request:StoredRequest={requestId:`req:${randomUUID()}`,topicId:topic.topicId,title:input.summary.slice(0,200)||topic.title,
+  // An automatic "Follow-up in …" copy of this message in another thread is absorbed here.
+  const copy=exact.length?null:automaticCopyElsewhere([input.sourceMessageId],input.topicId);
+  const requestId=`req:${randomUUID()}`;
+  const request:StoredRequest={requestId,topicId:topic.topicId,title:input.summary.slice(0,200)||topic.title,
     brief:input.brief.trim()?input.brief.slice(0,8000):`The message and its attachments are retained at ${input.sourceMessageId}.`,
     state:'open',disposition:null,revision:1,sources:[{inputId:input.sourceMessageId}],
-    dispatches:[dispatch],closure:null,createdAt:at,updatedAt:at};
-  const change=reopenedForNewWork({kind:'topic_request',payload:{change:'added',topicId:topic.topicId,topic:bumped(topic),request,by:OWNER_BY,
+    dispatches:[...(copy?copy.dispatches.map((item:any)=>({...item,sharedAcrossTopic:true})):[]),dispatch],closure:null,createdAt:at,updatedAt:at};
+  const absorbed=copy?{requests:[{...copy,state:'closed' as const,disposition:'superseded',revision:copy.revision+1,updatedAt:at,
+    closure:{by:OWNER_BY,at,reason:`Its message is now the request ${requestId} in thread ${topic.topicId}.`,evidence:[requestId],mergedInto:requestId}}],
+    topics:[bumped(topicRow(copy.topicId))],absorbed:copy.requestId}:{};
+  const change=reopenedForNewWork({kind:'topic_request',payload:{change:'added',topicId:topic.topicId,topic:bumped(topic),request,by:OWNER_BY,...absorbed,
     reason:'Work sent from this Inbox thread must have a durable request.',revision:topic.revision+1}});
   recordOwnerTopicChange(topic.sessionId,`topic-request:routed:${input.dispatchId}`,'topic_request',change.payload);
+  if(copy)closeThreadIfFinished(copy.topicId,'settled');
   return request.requestId;
 }
 
@@ -3492,7 +3568,7 @@ function reopenedForNewWork(change:Change):Change {
 const QUESTION_ENDING_CHANGES=new Set(['settled','reconciled','recorded','acknowledged','followup']);
 function endedSomething(payload:any):boolean {
   if(typeof payload?.topicId!=='string')return false;
-  if(payload.change==='request_closed')return true;
+  if(payload.change==='request_closed'||payload.change==='request_merged')return true;
   return QUESTION_ENDING_CHANGES.has(payload.change)
     &&(payload.questions??[]).some((question:StoredQuestion)=>!OPEN_QUESTION_STATES.includes(question.state as any)&&question.state!=='deferred');
 }
@@ -3572,6 +3648,19 @@ function linkForwardedReplies(topicId:string,forwards:Forward[],admittingNow=fal
     const unresolved=forward.outcome!=='answered'||forward.disposition!=='completed'||!!forward.notCheckedReason;
     if(!targets.length&&(admittingNow||forward.createdAtMs>=recoveryStart||unresolved)&&forward.inboxInputId
       &&!requests.some(request=>request.dispatches.some((dispatch:any)=>dispatch.requestId===forward.id))) {
+      const elsewhere=openRequestElsewhereWithSource([source.id],topicId);
+      if(elsewhere?.dispatches.some((dispatch:any)=>dispatch.requestId===forward.id))continue;
+      if(elsewhere) {
+        // His reply is already an open request in another thread: this forward is more work on
+        // that one obligation, never a second request for the same words.
+        const home=topicRow(elsewhere.topicId);
+        const next={...elsewhere,dispatches:[...elsewhere.dispatches,{requestId:forward.id,targetSessionId:forward.target,targetTitle:null,
+          outcome:forward.outcome,state:null,forwardedReply:true,sharedAcrossTopic:true}],revision:elsewhere.revision+1,updatedAt:nowIso()};
+        if(recordOwnerTopicChange(home.sessionId,`topic-link:forward-elsewhere:${forward.id}`,'topic_request',
+          reopenedForNewWork({kind:'topic_request',payload:{change:'linked',topicId:home.topicId,topic:bumped(home),request:next,by:OWNER_BY,
+            reason:'His reply is already an open request in this thread; its forward joins that request.',revision:home.revision+1}}).payload))linked++;
+        continue;
+      }
       if(source.origin==='human') {
         const topic=topicRow(topicId);
         const words=JSON.parse(source.payload_json)?.text;
@@ -3733,10 +3822,69 @@ function agentWaitingOnHim(latest:Work,read:ReadIndex,routerAddress:string):stri
   return null;
 }
 /**
+ * How long an attempt may wait behind its agent's held turn before the router hears about it.
+ * Before 2026-11-12 a request whose agent was held for allowance counted as live work for as long
+ * as the hold lasted: the stall check sees a queued turn and assumes the agent will wake. That day
+ * a Codex account switch released 37 turns held since Nov 5-7 and about thirty week-old requests
+ * reached the router together. One hour is shorter than one five-hour allowance window, so the
+ * router can decide while the hold is young (wait for a near reset, or send the work elsewhere),
+ * and longer than the automatic held-work failover's pace (held-work-failover.ts), which gets the
+ * first chance to move a session it may move.
+ */
+export const HELD_ATTEMPT_RECOVERY_MS=60*60_000;
+/**
+ * When the agent holding this unanswered attempt can do nothing until a provider hold lifts:
+ * nothing of its own is running and its earliest queued turn waits on allowance or sign-in.
+ * Saved (banked or scheduled) waits are his choice, not a hold. Null when the attempt can move.
+ */
+function heldAttemptSince(work:Work):{sinceMs:number;hold:string}|null {
+  const match=/^concierge:(\d+)$/.exec(work.target??'');
+  if(!match||work.outcome!==null||work.stalled)return null;
+  const sessionId=Number(match[1]);
+  if(db.query(`SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering') LIMIT 1`).get(sessionId))return null;
+  // Only an allowance hold: a paced release (RELEASE_PACE_HOLD) is work already coming back.
+  const held=db.query(`SELECT 1 FROM turns WHERE session_id=? AND status='queued'
+    AND dispatch_hold='usage' AND saved_kind IS NULL LIMIT 1`).get(sessionId);
+  if(!held)return null;
+  // Measured from when this agent last ran anything (or the attempt arrived, if later), not from
+  // when a turn was queued: a turn queued long ago that ran recently is not a long hold.
+  const lastRan=db.query(`SELECT max(ended_at) AS at FROM turns WHERE session_id=? AND ended_at IS NOT NULL`).get(sessionId) as {at:string|null};
+  return {sinceMs:Math.max(lastRan.at?new Date(iso(lastRan.at)!).getTime():0,work.createdAtMs),hold:'usage'};
+}
+const heldTooLong=(held:{sinceMs:number}|null,now=Date.now())=>!!held&&now-held.sinceMs>=HELD_ATTEMPT_RECOVERY_MS;
+/**
+ * Earlier attempts of a request that a newer linked attempt replaced while they were still
+ * waiting behind their agent's provider hold. Only an
+ * attempt every open request it serves has replaced is returned: a shared attempt still
+ * carrying another request's work stays.
+ */
+function supersededWaitingAttempts(request:StoredRequest,works:Work[]):{requestId:string;replacedBy:string}[] {
+  const latest=works.at(-1);
+  // The replacement must be real work elsewhere: live or answered, at another agent. His forwarded
+  // reply to the same held agent, or a failed or stalled newer attempt, replaces nothing.
+  if(!latest||latest.stalled||!(latest.outcome===null||latest.outcome==='answered'))return [];
+  const out:{requestId:string;replacedBy:string}[]=[];
+  for(const work of works.slice(0,-1)) {
+    if(work.outcome!==null||work.createdAtMs>=latest.createdAtMs||work.id===latest.id||work.target===latest.target)continue;
+    // Only an attempt held long enough that the router was told to replace it: a stalled one has
+    // no queued turn to revoke, and a young hold may be a deliberate wait or a parallel attempt.
+    if(!heldTooLong(heldAttemptSince(work)))continue;
+    const sharers=(db.query(`SELECT * FROM inbox_requests WHERE state='open' AND request_id<>?
+      AND EXISTS (SELECT 1 FROM json_each(dispatches_json) WHERE json_extract(value,'$.requestId')=?)`).all(request.requestId,work.id) as any[]).map(toStoredRequest);
+    const stillCarries=sharers.some(other=>{
+      const newest=other.dispatches.map((dispatch:any)=>workRow(String(dispatch?.requestId??''))).filter((item):item is Work=>!!item)
+        .sort((left,right)=>left.createdAtMs-right.createdAtMs||left.id.localeCompare(right.id)).at(-1);
+      return newest?.id===work.id;
+    });
+    if(!stillCarries)out.push({requestId:work.id,replacedBy:latest.id});
+  }
+  return out;
+}
+/**
  * Settles open requests with checked completion or an explicit human Stop. Returns all other
  * obligations with no live attempt or ready question to the router for recovery.
  */
-function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settled:number} {
+function settleEndedRequests(topicId:string,read:ReadIndex,superseded:{requestId:string;replacedBy:string}[]=[]):{stuck:Stuck[];settled:number} {
   const stuck:Stuck[]=[];
   let settled=0;
   const replies=latestHumanReply(read,topicRoots(topicId));
@@ -3756,9 +3904,14 @@ function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settl
     }
     const works=request.dispatches.map((dispatch:any)=>workRow(String(dispatch?.requestId??''))).filter((work):work is Work=>!!work)
       .sort((left,right)=>left.createdAtMs-right.createdAtMs||left.id.localeCompare(right.id));
-    if(works.some(work=>work.outcome===null&&!work.stalled))continue;
+    superseded.push(...supersededWaitingAttempts(request,works));
+    // An unanswered attempt is live unless its agent has been held for allowance or sign-in
+    // longer than HELD_ATTEMPT_RECOVERY_MS; then it comes back to the router like a stall.
+    const unanswered=works.filter(work=>work.outcome===null&&!work.stalled);
+    if(unanswered.some(work=>!heldTooLong(heldAttemptSince(work))))continue;
     if(!works.length&&Date.now()-new Date(iso(request.createdAt)!).getTime()<15*60*1000)continue;
     const latest=works.at(-1);
+    const latestHeld=latest?heldAttemptSince(latest):null;
     const dispatchIds=new Set(request.dispatches.map((dispatch:any)=>String(dispatch?.requestId??'')));
     const decisionViews=questionsOfRequest(topicId,request).filter(question=>question.kind==='decision')
       .map(question=>questionView(question,replies));
@@ -3793,6 +3946,7 @@ function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settl
         ?sharedAnswerPostId(latest.id):null;
       let how=latest&&works.length<=(request.completionFloor??0)?'was reopened after its last linked completion; inspect the remaining obligation and record a new checked answer'
         :!latest?'has had no agent assigned'
+        :latestHeld?`is still waiting to run: its agent (${latest.target}) has been held for ${latestHeld.hold==='usage'?'provider allowance':latestHeld.hold} since ${new Date(latestHeld.sinceMs).toISOString()} and nothing has started on it. Wait only if that hold lifts soon; otherwise send the work to an agent that can run now and link it, and Concierge withdraws this waiting attempt so the work is not done twice`
         :sharedPost!==null?`answered as done in a dispatch shared by several requests; verify this request against ${sharedPost||'its retained answer post'} separately`
         :latest.outcome==='answered'&&latest.disposition==='completed'&&latest.notCheckedReason?`reported completion without a live check (${latest.notCheckedReason}); verify the result without repeating an acknowledged effect`
         :latest.outcome==='answered'&&latest.disposition==='completed'?'claimed completion without a verified result'
@@ -3834,10 +3988,11 @@ function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settl
  * Links his replies, settles ended requests and closes the thread when that left nothing in it.
  * `answered` marks an agent's final answer having just arrived here, itself an ending.
  */
-function keepThreadCurrent(topicId:string,forwards=forwardedReplies(),answered=false,read=readIndex(inboxOrThrow().id)):Stuck[] {
+function keepThreadCurrent(topicId:string,forwards=forwardedReplies(),answered=false,read=readIndex(inboxOrThrow().id),
+  superseded:{requestId:string;replacedBy:string}[]=[]):Stuck[] {
   return db.transaction(()=>{
     linkForwardedReplies(topicId,forwards);
-    const {stuck,settled}=settleEndedRequests(topicId,read);
+    const {stuck,settled}=settleEndedRequests(topicId,read,superseded);
     if(settled||answered)closeThreadIfFinished(topicId,answered?'answer':'settled');
     return stuck;
   })();
@@ -3871,14 +4026,18 @@ export function reopenThreadForHisMessage(sessionId:number,inputId:string,replyT
 type ThreadUpkeepResult={threads:number;closed:number;settled:number;flagged:number};
 let threadUpkeepPass:Promise<ThreadUpkeepResult>|null=null;
 const yieldThreadUpkeep=()=>new Promise<void>(resolve=>setImmediate(resolve));
-export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string;threadReplyNotRequired:true})=>unknown):Promise<ThreadUpkeepResult> {
+/** Withdraws an attempt a newer linked attempt replaced while it waited (SessionCommunicationCoordinator.withdrawSupersededAttempt). */
+export type WithdrawSuperseded=(requestId:string,replacedBy:string)=>boolean;
+export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string;threadReplyNotRequired:true})=>unknown,
+  withdraw?:WithdrawSuperseded):Promise<ThreadUpkeepResult> {
   if(threadUpkeepPass)return threadUpkeepPass;
-  const pass=keepThreadsCurrentPass(admit);
+  const pass=keepThreadsCurrentPass(admit,withdraw);
   threadUpkeepPass=pass;
   void pass.then(()=>{if(threadUpkeepPass===pass)threadUpkeepPass=null;},()=>{if(threadUpkeepPass===pass)threadUpkeepPass=null;});
   return pass;
 }
-async function keepThreadsCurrentPass(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string;threadReplyNotRequired:true})=>unknown):Promise<ThreadUpkeepResult> {
+async function keepThreadsCurrentPass(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string;threadReplyNotRequired:true})=>unknown,
+  withdraw?:WithdrawSuperseded):Promise<ThreadUpkeepResult> {
   const session=inboxSession();
   if(!session)return {threads:0,closed:0,settled:0,flagged:0};
   refreshRootMemo();
@@ -3897,10 +4056,23 @@ async function keepThreadsCurrentPass(admit?:(input:{sessionId:number;inputId:st
   const closedBefore=(db.query(`SELECT count(*) AS count FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) AND state='closed'`).get(session.id) as {count:number}).count;
   const openRequestsBefore=(db.query("SELECT count(*) AS count FROM inbox_requests WHERE state='open'").get() as {count:number}).count;
   const stuck:Stuck[]=[];
+  const superseded:{requestId:string;replacedBy:string}[]=[];
   let nextYield=Date.now()+40;
   for(const topicId of new Set([...open,...running,...closedWithOpenRequests])) {
-    try{stuck.push(...keepThreadCurrent(topicId,forwards,false,read));}
+    try{stuck.push(...keepThreadCurrent(topicId,forwards,false,read,superseded));}
     catch(error){log('error','inbox_thread_upkeep_failed',{topic_id:topicId,message:error instanceof Error?error.message:String(error)});}
+    if(Date.now()>=nextYield){await yieldThreadUpkeep();nextYield=Date.now()+40;}
+  }
+  // A replaced attempt that was still waiting is withdrawn, so its agent does not redo the work
+  // when its hold lifts. One attempt can be superseded in several threads; it is withdrawn once.
+  let withdrawn=0;
+  if(withdraw)for(const item of new Map(superseded.map(entry=>[entry.requestId,entry])).values()) {
+    if(withdrawn>=5)break;
+    // Rechecked at the moment of withdrawal: the pass yields, and a hold can lift meanwhile.
+    const work=workRow(item.requestId);
+    if(!work||!heldTooLong(heldAttemptSince(work)))continue;
+    try{if(withdraw(item.requestId,item.replacedBy))withdrawn++;}
+    catch(error){log('error','inbox_superseded_withdraw_failed',{request_id:item.requestId,message:error instanceof Error?error.message:String(error)});}
     if(Date.now()>=nextYield){await yieldThreadUpkeep();nextYield=Date.now()+40;}
   }
   const fresh:(Stuck&{attempt:number})[]=[];
