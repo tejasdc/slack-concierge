@@ -306,6 +306,7 @@ sessions started from elsewhere on the Mac keep the plugin. The same environment
 30 s; see [turn lifecycle](../architecture/TURN-LIFECYCLE.md#paced-starts)). On macOS the freeze records
 (`owner_unresponsive`, `owner_task_blocked`, `owner_task_still_blocked`) carry `mem_pressure_level`, `swap_used_mb`,
 `owner_compressed_mb` and `pageins_since_previous` from a sampler off the blocked path (`bot/src/mac-memory-evidence.ts`).
+The same environment sets the crowding thresholds for the agents' snooze offer (`CONCIERGE_CROWD_SESSIONS=10`, load factor 2).
 Plan: [2026-11-12](../plans/2026-11-12-mac-held-work-pacing.md).
 
 ## Durable project setup

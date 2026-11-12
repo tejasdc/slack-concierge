@@ -61,6 +61,7 @@ router-actions.sh sessions handoff accept <handoff-id> --digest <sha256> <source
 router-actions.sh sessions handoff withdraw <handoff-id> <source-flags> --action-id A
 router-actions.sh sessions obligations [<address>] <source-flags>
 Provider changes use handoff between sessions on the same machine. Choose a coding provider alias: ChatGPT cannot acknowledge a handoff. The successor reads the predecessor's context and acknowledges the exact inventory digest before the owner moves obligations. A proposed handoff can be withdrawn while the predecessor keeps working. cancel --reason provider-change is refused with the handoff command.
+router-actions.sh sessions snooze --until <ISO time, at most 6 hours ahead> --reason "<why this can wait>" <source-flags> --action-id A
 router-actions.sh sessions saved list <source-flags> [--cursor <nextCursor>]
 router-actions.sh sessions saved start|cancel <turn-id> <source-flags> --action-id A
 router-actions.sh sessions saved daily <turn-id> --time HH:MM --time-zone <IANA zone> <source-flags> --action-id A
@@ -186,6 +187,7 @@ export type SessionCommunicationRequest =
   | { operation: "handoff"; body: { source: Source; verb: 'propose'|'accept'|'withdraw'; address?: string; provider?: string; model?: string; effort?: string; reason?: string; session_name?: string; action_id: string; handoff_id?: string; digest?: string } }
   | { operation: "obligations"; body: { source: Source; address?: string } }
   | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'; action_id?: string; until?: string; renew?: boolean; requiredCommit?: string; path?: string; argv?: string[]; cwd?: string; watch_id?: string; runner?: string } }
+  | { operation: "snooze"; body: { source: Source; action_id: string; until_ms: number; reason: string } }
   | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'|'daily'; turn_id?:number; action_id?:string;cursor?:string;time?:string;timeZone?:string } }
   | { operation: "pause"; body: { source: Source; verb:'status'|'all'|'resume'; action_id?:string; session_ids?:string[] } }
   | { operation: "control"; body: { source: Source; verb:'pause'|'continue'; address:string; action_id:string } }
@@ -525,6 +527,19 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       return {operation:'handoff',body:{source,verb,handoff_id:identity!,digest,action_id:actionId}};
     }
     return {operation:'handoff',body:{source,verb,handoff_id:identity!,action_id:actionId}};
+  }
+  if(first==='snooze') {
+    // sessions snooze --until <ISO time> --reason "<why it can wait>" <source-flags> --action-id A
+    const flags=new Map<string,string>();
+    while(args.length){const flag=args.shift()!,value=args.shift();
+      if(!['--source-channel','--source-ts','--source-input','--source-run','--action-id','--until','--reason'].includes(flag)||!value?.trim()||flags.has(flag))invalid('Invalid snooze option.');
+      flags.set(flag,value);
+    }
+    const source=sourceFrom(flags),actionId=flags.get('--action-id'),untilMs=Date.parse(flags.get('--until')??'');
+    if(!actionId)invalid('Snooze needs --action-id.');
+    if(!Number.isFinite(untilMs))invalid('Snooze needs --until as an ISO time.');
+    if(!flags.get('--reason'))invalid('Snooze needs --reason: why this work can wait.');
+    return {operation:'snooze',body:{source,action_id:actionId!,until_ms:untilMs,reason:flags.get('--reason')!}};
   }
   if(first==='saved') {
     const sub=args.shift();

@@ -50,16 +50,26 @@ changing any agent's processor or memory priority (nice, QoS, taskpolicy); nothi
    process). Memory gate: macOS's own pressure level (1 normal, 2 warning, 4 critical); warning holds paced
    starts one slot and re-checks, critical holds every start. Swap fullness is not a signal (the Mac sits at
    ~92 % with no agents).
-3. **Agent-set order.** When more than one group waits, a Haiku one-shot with no tools (the consultation-only
-   restriction) orders them from title, summary, project, how the input arrived, age and request summary,
-   returning an order and a one-line reason each. Late (30 s) or malformed answers leave the fallback:
-   Tejas-originated, then Inbox-thread-waiting, then oldest. Asked again only when new starts join.
+3. **Fixed order (changed the same day: no ordering agent).** The line's order is fixed: input from Tejas first,
+   then agent requests whose Inbox thread is waiting, then oldest. Tejas's redesign, 2026-11-12: "instead of
+   having another agent prioritizing the queue, maybe the agents themselves can coordinate": see section 6.
 4. **What he sees.** A held start's status line says its place and time ("Waiting its turn: 7th, starts about
    3:12 PM") or that memory is under pressure, through the existing queued-input status. No phone notification
    and no Inbox thread per burst: being queued needs nothing from him.
 5. **Freeze evidence.** `owner_unresponsive`, `owner_task_blocked` and `owner_task_still_blocked` on macOS carry the
    owner's compressed memory, page-ins since the previous record, the memory-pressure level and swap use,
    copied from a sampler that runs off the owner's blocked path.
+
+6. **Agents snooze themselves.** On a machine configured for it (the Mac: `CONCIERGE_CROWD_SESSIONS=10`, load factor 2),
+   crowded means more than 10 provider sessions running, macOS memory pressure at warning or above, or a one-minute
+   load above 2x the processors. While crowded, every provider turn that starts gets a notice in its context with
+   the numbers and the offer to snooze; turns that answer his direct message (and the Inbox router) get none and
+   are refused if they try. `router-actions.sh sessions snooze --until <ISO> --reason "..."` (at most six hours;
+   refused when not crowded) queues a continuation turn of the same session as scheduled saved work (the existing
+   clock wakes it), sets the session's status to "Snoozed until <time>: <reason>", and moves the due time of every open
+   request the session holds past the wake, so the request-liveness rules see a known wake time
+   (`workerWillWake` already counts a queued turn). No running turn is steered. Why this, not an ordering agent:
+   the agent knows whether its own work can wait, and it needs no external scheduler.
 
 ## Acceptance
 

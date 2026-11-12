@@ -31,7 +31,6 @@ export function startPaceConfig(env: Record<string, string | undefined> = proces
     budget,
     windowMs: Number.isFinite(windowMs) && windowMs >= 1_000 ? windowMs : 120_000,
     jitterMs: Number.isFinite(jitterMs) && jitterMs >= 0 ? jitterMs : 30_000,
-    agentOrderTimeoutMs: 30_000,
   };
 }
 
@@ -64,11 +63,6 @@ export function readMacMemoryPressure(): number | null {
   return result.status === 0 && Number.isInteger(level) ? level : null;
 }
 
-let orderer: (() => void) | null = null;
-/** The execution host registers how to ask the agent; claims only say that more starts are waiting. */
-export function setStartPaceOrderer(fn: (() => void) | null) { orderer = fn; }
-export function requestStartPaceOrder() { if (orderer) setTimeout(orderer, 0); }
-
 export type StartCandidate = { turnId: number; exempt: boolean };
 export type StartDecision = { admit: true } | { admit: false; hold: string; nextMs: number };
 
@@ -76,10 +70,7 @@ export function ensureStartPaceTables(db: Database) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS start_pace_starts (turn_id INTEGER PRIMARY KEY, started_ms INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS start_pace_starts_at ON start_pace_starts(started_ms);
-    -- The agent's order for waiting starts. A row without a rank is a question that was asked and
-    -- not answered in time, so the same turn is not asked about again.
-    CREATE TABLE IF NOT EXISTS start_pace_orders (
-      turn_id INTEGER PRIMARY KEY, asked_ms INTEGER NOT NULL, rank INTEGER, reason TEXT);`);
+    `);
 }
 
 /** A direct human message (he is waiting) and the Inbox router are never held for the budget; a chat window is no new process. */
@@ -134,21 +125,23 @@ export function deferStart(db: Database, turnId: number, decision: Extract<Start
 
 /** Tejas-originated work first, then work some open Inbox request waits on, then the rest. */
 const FALLBACK_TIER_SQL = `CASE
-  WHEN input.origin='human' THEN 0
+  WHEN (SELECT origin FROM session_inputs WHERE id=turn.accepted_input_id)='human' THEN 0
   WHEN EXISTS (SELECT 1 FROM session_communication_requests request
       JOIN inbox_requests inbox ON inbox.state='open'
       JOIN json_each(inbox.dispatches_json) dispatch ON json_extract(dispatch.value,'$.requestId')=request.request_id
       WHERE request.target_session_id=turn.session_id AND request.outcome IS NULL) THEN 1
   ELSE 2 END`;
 
-export type WaitingStart = { turnId: number; sessionId: number; rank: number | null; tier: number };
+/** The fixed order of the line, also the order the claim picks among starts due at once. */
+export const START_ORDER_SQL = `${FALLBACK_TIER_SQL}, turn.id`;
+
+export type WaitingStart = { turnId: number; sessionId: number; tier: number };
 
 export function waitingStarts(db: Database): WaitingStart[] {
-  return (db.query(`SELECT turn.id AS turnId, turn.session_id AS sessionId, ord.rank AS rank, ${FALLBACK_TIER_SQL} AS tier
-    FROM turns turn LEFT JOIN session_inputs input ON input.id=turn.accepted_input_id
-    LEFT JOIN start_pace_orders ord ON ord.turn_id=turn.id
+  return (db.query(`SELECT turn.id AS turnId, turn.session_id AS sessionId, ${FALLBACK_TIER_SQL} AS tier
+    FROM turns turn
     WHERE turn.status='queued' AND (turn.dispatch_hold='${START_PACE_HOLD_PREFIX}' OR turn.dispatch_hold LIKE '${START_PACE_HOLD_PREFIX}:%')
-    ORDER BY COALESCE(ord.rank, 1000000), tier, turn.id`).all() as WaitingStart[]);
+    ORDER BY ${START_ORDER_SQL}`).all() as WaitingStart[]);
 }
 
 /**
@@ -176,79 +169,6 @@ export function renumberWaitingStarts(db: Database): number {
   const waiting = waitingStarts(db);
   waiting.forEach((turn, index) => update.run(`${START_PACE_HOLD_PREFIX}:${index + 1}`, turn.turnId));
   return waiting.length;
-}
-
-/** Turns still without any answer from the agent, only worth asking about when more than a group waits. */
-export function startsToOrder(db: Database, config: StartPaceConfig): number[] {
-  const waiting = waitingStarts(db);
-  if (waiting.length <= config.budget) return [];
-  const asked = new Set((db.query("SELECT turn_id FROM start_pace_orders").all() as { turn_id: number }[]).map(row => row.turn_id));
-  return waiting.some(turn => !asked.has(turn.turnId)) ? waiting.map(turn => turn.turnId) : [];
-}
-
-export type OrderEntry = { turnId: number; title: string; summary: string | null; project: string | null; arrival: string; ageMinutes: number; request: string | null };
-
-export function describeWaitingStarts(db: Database, turnIds: readonly number[], nowMs: number): OrderEntry[] {
-  return turnIds.flatMap(turnId => {
-    const row = db.query(`SELECT turn.id AS turnId, COALESCE(json_extract(session.native_metadata_json,'$.title'),'') AS title,
-        json_extract(session.native_metadata_json,'$.summary') AS summary,
-        json_extract(session.native_metadata_json,'$.cwd') AS project, input.origin AS origin, input.kind AS kind, turn.saved_kind AS saved,
-        unixepoch(turn.started_at)*1000 AS queuedMs,
-        (SELECT json_extract(request.payload_json,'$.summary') FROM session_communication_requests request WHERE request.target_turn_id=turn.id LIMIT 1) AS requestSummary,
-        EXISTS (SELECT 1 FROM session_communication_requests request
-          JOIN inbox_requests inbox ON inbox.state='open'
-          JOIN json_each(inbox.dispatches_json) dispatch ON json_extract(dispatch.value,'$.requestId')=request.request_id
-          WHERE request.target_session_id=turn.session_id AND request.outcome IS NULL) AS threadWaiting
-      FROM turns turn JOIN sessions session ON session.id=turn.session_id
-      LEFT JOIN session_inputs input ON input.id=turn.accepted_input_id WHERE turn.id=?`).get(turnId) as any;
-    if (!row) return [];
-    const arrival = row.saved === "scheduled" ? "scheduled work" : row.saved === "banked" ? "banked work"
-      : row.origin === "human" ? "message from Tejas"
-      : row.origin === "agent" ? (row.threadWaiting ? "agent request; an Inbox thread is waiting for it" : "agent request") : "automatic work";
-    return [{ turnId, title: String(row.title).slice(0, 120), summary: row.summary ? String(row.summary).slice(0, 200) : null,
-      project: row.project ?? null, arrival, ageMinutes: Math.max(0, Math.round((nowMs - Number(row.queuedMs ?? nowMs)) / 60_000)),
-      request: row.requestSummary ? String(row.requestSummary).slice(0, 200) : null }];
-  });
-}
-
-export const ORDER_PROMPT_HEADER = `You order work waiting to start on a busy computer. Put the work Tejas is most likely waiting on first:
-his own messages, agent requests with an Inbox thread waiting, work that blocks other work; routine, scheduled or banked work last.
-Answer with ONLY a JSON array, no other text, of objects {"id": <id>, "reason": "<one short line>"} listing every id exactly once, first to start first.
-
-Waiting work:
-`;
-
-export function orderPrompt(entries: readonly OrderEntry[]): string {
-  return ORDER_PROMPT_HEADER + entries.map(entry => JSON.stringify({ id: entry.turnId, title: entry.title, summary: entry.summary,
-    project: entry.project, arrival: entry.arrival, waited_minutes: entry.ageMinutes, request: entry.request })).join("\n");
-}
-
-/** Only an answer naming each waiting turn exactly once counts; anything else leaves the fallback order. */
-export function parseOrder(text: string, turnIds: readonly number[]): { turnId: number; reason: string }[] | null {
-  const start = text.indexOf("["), end = text.lastIndexOf("]");
-  if (start < 0 || end < start) return null;
-  let parsed: unknown;
-  try { parsed = JSON.parse(text.slice(start, end + 1)); } catch { return null; }
-  if (!Array.isArray(parsed)) return null;
-  const seen = new Set<number>(), result: { turnId: number; reason: string }[] = [];
-  for (const item of parsed as any[]) {
-    const id = Number(item?.id);
-    if (!turnIds.includes(id) || seen.has(id)) return null;
-    seen.add(id);
-    result.push({ turnId: id, reason: typeof item?.reason === "string" ? item.reason.slice(0, 200) : "" });
-  }
-  return seen.size === turnIds.length ? result : null;
-}
-
-/** Record the agent's order, or — when it failed or was late — that the question was asked. */
-export function storeOrder(db: Database, turnIds: readonly number[], order: { turnId: number; reason: string }[] | null, nowMs: number) {
-  const insert = db.query("INSERT OR REPLACE INTO start_pace_orders(turn_id,asked_ms,rank,reason) VALUES(?,?,?,?)");
-  if (!order) { for (const id of turnIds) insert.run(id, nowMs, null, null); return; }
-  order.forEach((entry, index) => insert.run(entry.turnId, nowMs, index + 1, entry.reason));
-}
-
-export function releaseStartRecords(db: Database, turnId: number) {
-  db.query("DELETE FROM start_pace_orders WHERE turn_id=?").run(turnId);
 }
 
 export function ordinal(place: number): string {

@@ -21,7 +21,7 @@ Playwright copy) add demand but are not required.
 
 ## Fix
 
-Paced starts with a memory-pressure gate, one shared Playwright server, and page-in/pressure/swap evidence on
+Paced starts with a memory-pressure gate and agents that snooze themselves when told the machine is crowded, one shared Playwright server, and page-in/pressure/swap evidence on
 every freeze record (docs/plans/2026-11-12-mac-held-work-pacing.md). The cause stays "best explanation" until a
 freeze record shows the page-ins.
 
