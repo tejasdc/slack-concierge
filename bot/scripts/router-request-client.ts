@@ -111,10 +111,25 @@ export async function requestApiResponse(path: string, body?: unknown, policy: R
   }
 }
 
+/**
+ * The owner refuses as `{error:{code,message}}` while this client's own failures use
+ * `{error:"code",detail}`; passing the object form to `Error` printed "[object Object]"
+ * and lost the refusal (2026-11-12, a session event read).
+ */
+export function refusalText(result: any, status: number) {
+  const error = result?.error;
+  const text = typeof result?.detail === 'string' && result.detail ? result.detail
+    : typeof error === 'string' && error ? error
+    : error && typeof error === 'object' ? [error.code, error.message].filter(part => typeof part === 'string' && part).join(': ')
+      || JSON.stringify(error)
+    : '';
+  return text || `Concierge rejected the request${status ? ` with HTTP ${status}` : ''}.`;
+}
+
 export async function requestApi(path: string, body?: unknown) {
   const response = await requestApiResponse(path, body);
   const result = response.result;
-  if (!response.ok) throw new Error(result.detail || result.error || 'Concierge request API rejected the request.');
+  if (!response.ok) throw new Error(refusalText(result, response.status));
   return result;
 }
 
