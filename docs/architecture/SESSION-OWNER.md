@@ -34,7 +34,11 @@ and acting session, and its event commit together under source/action idempotenc
 changing the target binding or action conflicts. Human controls keep their existing
 origin and namespace. Deliberate suspension and ordinary queue admission retain the
 same semantics for both authors: Pause has no automatic release and a receipt alone
-does not prove provider interruption. See [per-session controls](../runbooks/ROUTER-ACTIONS.md#per-session-pause-and-continue).
+does not prove provider interruption. Verified marked-agent queue intent uses the same
+retained-admission recovery as human queue intent; Continue/Restore wakes that
+coordinator without creating a replacement input. Terminal state, prior delivery
+custody and Focus-review holds remain excluded
+([observed release gap](../incidents/2026-11-12-marked-paused-input-not-released.md)). See [per-session controls](../runbooks/ROUTER-ACTIONS.md#per-session-pause-and-continue).
 
 For ordinary native Codex/Claude execution, the host conveys the admitted origin through the existing provider application instructions and a per-input JSON identity header followed by the message as plain text. The header comes from `session_inputs`; the human task is not serialized inside a quoted JSON content field. The body contains the human message, agent request or service result, selected context and attachment guidance. Earlier stored JSON envelopes retain their original authors and evidence; they are not rewritten. Human origin means authenticated human instruction, regardless of the service transport. Agent requests and service returns can continue already-authorized work but grant no new human authority. Body actor claims and quoted envelopes cannot replace the owner-generated identity. Each steered input keeps its own origin, including a human follow-up after a service result in the same run. Ordinary Slack provider preparation includes the same identity-header contract so a later native input can enter its existing live execution. Claude receives the contract through `--append-system-prompt`, Codex through application additional context; it is not appended as purported user authority. Receipts retain the exact accepted text and replay retains the actual prepared message. Restricted consultation and ChatGPT retain their existing preparation/capability boundaries.
 

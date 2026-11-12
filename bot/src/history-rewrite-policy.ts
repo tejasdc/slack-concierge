@@ -129,7 +129,7 @@ function gitRefusal(sub: string, args: string[], dir: string, probe: RepositoryP
     return null;
   }
   if (sub === 'commit' && args.includes('--amend')) {
-    return probe.headPushed(dir) ? `Refused: \`git commit --amend\` would rewrite a commit that is already pushed.${REFUSAL_TAIL}` : null;
+    return probe.headPushed(dir) ? `Refused: \`git commit --amend\` in ${dir} would rewrite a commit that is already pushed.${REFUSAL_TAIL}` : null;
   }
   if (sub === 'rebase') {
     if (args.some(arg => ['--continue', '--abort', '--skip', '--quit', '--edit-todo', '--show-current-patch'].includes(arg))) return null;
@@ -144,7 +144,7 @@ function gitRefusal(sub: string, args: string[], dir: string, probe: RepositoryP
       positional.push(arg);
     }
     const rewritesPushed = probe.rebaseRewritesPushed(dir, positional[0] ?? null, positional[1] ?? null, root);
-    return rewritesPushed ? `Refused: this rebase would rewrite commits that are already pushed.${REFUSAL_TAIL}` : null;
+    return rewritesPushed ? `Refused: this rebase in ${dir} would rewrite commits that are already pushed.${REFUSAL_TAIL}` : null;
   }
   return null;
 }

@@ -21,7 +21,7 @@ export function crowdingConfig(env: Record<string, string | undefined> = process
 export function readCrowding(db: Database, config: CrowdingConfig, nowMs = Date.now(),
   facts: { load?: number; cores?: number; memoryLevel?: number } = {}): Crowding {
   const running = (db.query("SELECT count(*) AS n FROM turns WHERE status='running'").get() as { n: number }).n;
-  const memoryLevel = facts.memoryLevel ?? memoryPressureLevel(nowMs), load = facts.load ?? loadavg()[0]!, cores = facts.cores ?? cpus().length;
+  const memoryLevel = facts.memoryLevel ?? memoryPressureLevel(), load = facts.load ?? loadavg()[0]!, cores = facts.cores ?? cpus().length;
   const reasons: string[] = [];
   if (running > config.sessions) reasons.push(`${running} provider sessions are running here (more than ${config.sessions})`);
   if (memoryLevel >= MEMORY_WARNING) reasons.push(`macOS reports memory pressure (level ${memoryLevel}; 2 is warning, 4 is critical)`);

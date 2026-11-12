@@ -3,6 +3,7 @@ import {Database} from 'bun:sqlite';
 import {PreparedTopics,readPreparedTopics,readPreparedTopic,readPreparedTopicChanges,readPreparedTopicOverview,readPreparedTopicItems,readPreparedQuestions,readPreparedTopicResolution,readPreparedTopicChunk,readPreparedInboxAttention,readPreparedTopicEvents,readPreparedIncoming} from '../src/prepared-topics';
 import {PreparedAreas,readPreparedAreas,readPreparedArea,readPreparedThreadAreas} from '../src/prepared-areas';
 import {observedDatabase,withStorageReadBudget,observeStorageOperation} from '../src/storage-observation';
+import {installThreadText,writeThreadText} from '../src/prepared-thread-text';
 import {readPreparedThreadCoordinationKeys} from '../src/presentation-message-reader';
 import {readCanceledSourceOrigins,readCoordinationActivity,readPrivateCoordinationRows,readPublicRequestRows} from '../src/thread-coordination-read';
 
@@ -86,7 +87,7 @@ async function coordinationGrowth(){
  }
 }
 
-async function readerGrowth(reader:'incoming'|'window'|'overview'|'items'|'questions'|'resolution'|'detail'|'changes'|'attention'|'events'){
+async function readerGrowth(reader:'incoming'|'window'|'search'|'overview'|'items'|'questions'|'resolution'|'detail'|'changes'|'attention'|'events'){
  for(const count of [100,1000,10000]){
   const source=new Database(':memory:'),raw=new Database(':memory:');
   new PreparedTopics(source,raw);
@@ -106,10 +107,23 @@ async function readerGrowth(reader:'incoming'|'window'|'overview'|'items'|'quest
    raw.query('INSERT INTO presentation_inbox_attention VALUES(?,?,?,?,?,?,?)').run(1,'questions',`need-${id}`,id,i,key,JSON.stringify({eventId:`need-${id}`,question:'x'.repeat(3900)}));
    raw.query('INSERT INTO presentation_topic_event_display VALUES(?,?,?)').run(1,i+1,JSON.stringify({id:`event-${id}`,content:'x'.repeat(3900)}));
   }})();
+  if(reader==='search'){
+   // Every thread's name and one message hold the searched word, so the search must rank and page
+   // inside the database: the reader refuses any list read without a LIMIT or over its row budget
+   // (the first full-text search, 2026-11-12, collected whole per-word thread lists and was refused).
+   raw.exec(`CREATE TABLE presentation_message_display(generation INTEGER NOT NULL,event_sequence INTEGER NOT NULL,display_json TEXT NOT NULL,PRIMARY KEY(generation,event_sequence));
+    CREATE TABLE presentation_message_meta(singleton INTEGER PRIMARY KEY,generation INTEGER NOT NULL);
+    INSERT INTO presentation_message_meta VALUES(1,1);
+    CREATE UNIQUE INDEX fixture_message_sequence ON presentation_messages(generation,event_sequence);`);
+   installThreadText(raw);
+   raw.transaction(()=>{for(const row of raw.query('SELECT rowid AS id,search_text AS text FROM presentation_topics').all() as {id:number;text:string}[])
+    raw.query('INSERT INTO presentation_topic_search(rowid,text) VALUES(?,?)').run(row.id,row.text);
+    for(let i=0;i<count;i++)writeThreadText(raw,1,i+1,i===count-1?'the trailer for anil, and the topic':'the topic of this conversation');})();
+  }
   const db=observedDatabase(raw);
   raw.query('INSERT INTO presentation_topic_chunks VALUES(?,?,?,?)').run('a'.repeat(64),0,'x'.repeat(16384),1);
-  const budget={maxCalls:128,maxRows:reader==='overview'?260:reader==='window'?240:100,maxResultBytes:1024*1024};
-  const selected=()=>reader==='incoming'?readPreparedIncoming(db,{canonicalHead:7}):reader==='window'?readPreparedTopics(db,{canonicalHead:7}):reader==='overview'?readPreparedTopicOverview(db,'00000000',7)
+  const budget={maxCalls:128,maxRows:reader==='overview'?260:reader==='window'||reader==='search'?240:100,maxResultBytes:1024*1024};
+  const selected=()=>reader==='incoming'?readPreparedIncoming(db,{canonicalHead:7}):reader==='window'?readPreparedTopics(db,{canonicalHead:7}):reader==='search'?readPreparedTopics(db,{canonicalHead:7,state:'all',query:'topic'}):reader==='overview'?readPreparedTopicOverview(db,'00000000',7)
    :reader==='items'?readPreparedTopicItems(db,{topicId:'00000000',kind:'questions',filter:'open',canonicalHead:7})
    :reader==='questions'?readPreparedQuestions(db,{state:'open',canonicalHead:7})
    :reader==='resolution'?readPreparedTopicResolution(db,'message-00000000',7)
@@ -120,6 +134,12 @@ async function readerGrowth(reader:'incoming'|'window'|'overview'|'items'|'quest
   let calls=0;
   const result=observeStorageOperation(`fixture-${reader}`,()=>withStorageReadBudget(budget,selected),work=>{calls=work.db_calls;});
   assert.ok(calls>0,'the fixture must actually instrument its database calls');
+  if(reader==='search'){
+   const page=result as {topics:unknown[];nextCursor:string|null};
+   assert.equal(page.topics.length,Math.min(20,count));assert.equal(!!page.nextCursor,count>20);
+   const body=withStorageReadBudget(budget,()=>readPreparedTopics(db,{canonicalHead:7,state:'all',query:'anil trailer'}));
+   assert.deepEqual(body.topics.map((topic:{id:string})=>topic.id),[String(count-1).padStart(8,'0')],'a word only in a message finds its thread');
+  }
   assert.ok(Buffer.byteLength(JSON.stringify(result))<=(reader==='overview'?524288:reader==='detail'||reader==='items'?131072:262144));
   const incoming=readPreparedIncoming(db,{canonicalHead:7,limit:20});
   assert.equal(incoming.items.length,Math.min(20,count/2));assert.ok(incoming.items.every(item=>item.topic?.id));
@@ -215,7 +235,7 @@ export const READ_GROWTH_FIXTURES={
  'thread-coordination-growth':coordinationGrowth,
  'areas-window-growth':()=>areaGrowth('window'),'areas-detail-growth':()=>areaGrowth('detail'),
  'thread-areas-growth':threadAreasGrowth,
- 'topics-window-growth':()=>readerGrowth('window'),'topics-detail-growth':()=>readerGrowth('detail'),'topics-changes-growth':()=>readerGrowth('changes'),
+ 'topics-window-growth':()=>readerGrowth('window'),'topics-search-growth':()=>readerGrowth('search'),'topics-detail-growth':()=>readerGrowth('detail'),'topics-changes-growth':()=>readerGrowth('changes'),
  'topics-overview-growth':()=>readerGrowth('overview'),'topics-items-growth':()=>readerGrowth('items'),'topics-questions-growth':()=>readerGrowth('questions'),
  'topics-resolution-growth':()=>readerGrowth('resolution'),'inbox-attention-growth':()=>readerGrowth('attention'),
  'topic-events-growth':()=>readerGrowth('events'),'topics-incoming-growth':()=>readerGrowth('incoming')};

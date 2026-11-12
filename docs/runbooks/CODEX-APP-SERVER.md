@@ -31,6 +31,7 @@ a few seconds (503 `RUNNER_NOT_LISTENING`); that gap is not an outage
 ## Current Update Policy
 
 - **Install channel:** standalone only. The redundant global npm package was removed on 2026-08-24. Do not add npm, Homebrew, or another parallel Codex installation on this host.
+- **Minimum version 0.166.0:** the history guard needs Codex to report each command's own folder to its pre-command hook, which Codex does from 0.166.0 (openai/codex #57198). Earlier versions report the session's folder, so a local-only amend in another repository was refused on 2026-11-12. The server staged 0.166.0 that day; the App Server picks it up at its next restart.
 - **Discovery:** the interactive standalone CLI may check for and offer a new version. No repository-owned systemd timer checks for Codex releases.
 - **Staging:** accepting the standalone CLI prompt or manually running the official installer updates the versioned package tree and `current`. It does not activate the new App Server binary.
 - **Activation:** explicit maintenance only. There is no automated Concierge activation command yet. Close provider admission, prove turns idle, restart the App Server, probe it, reconnect, and reopen admission.
