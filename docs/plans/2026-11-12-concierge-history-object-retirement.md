@@ -47,10 +47,20 @@ never inferred from a pathname alone. Its catalogue and proof must name the
 digest and retained version explicitly. No object is garbage collected while a
 snapshot refers to it.
 
+The runner relay deliberately does not disclose provider-home paths. Concierge
+therefore identifies a candidate host object by hashing the complete, exact
+runner bytes it received. It must not derive a catalogue key from its private
+mirror pathname or guess the original provider path. The digest-named host object
+is usable only after its bytes, length, and separate offsite proof agree with
+that digest. The host's path catalogue can establish version provenance for an
+operator, but it cannot substitute for content verification at the reader.
+
 An older row may be absent from the current provider file after a rewrite or
-compaction. The migration considers every proven version catalogued for that exact
-source path, newest first, and accepts a span only after exact row comparison.
-Versions are never chosen by UUID alone. Unmatched rows keep their full payload.
+compaction. The migration considers only exact retained versions whose original
+runner and account identity is independently established; the private mirror
+pathname cannot establish that identity for host catalogue lookup. Until such a
+mapping exists, historical rows that cannot match the current verified object
+keep their full payload. Versions are never chosen by UUID alone.
 
 ## Runner mirror and Codex boundary
 
@@ -110,8 +120,11 @@ choosing whether reference retirement is worth its ongoing maintenance.
 
 ## Missing host interface
 
-Concierge needs a machine-readable lookup from complete source SHA-256 to the
-exact immutable object and a proof receipt for that digest and named Restic
-snapshot, plus an exact restore-by-digest operation after local loss. The host
-owner is finishing the object/proof contract; no source inspection of a draft
+The host's preliminary layout names each object by the complete raw SHA-256 at
+`/root/transcript-objects/sha256/<first two hex digits>/<digest>`, with a
+per-path version catalogue under `/root/transcript-objects/catalog/by-path/`.
+The catalogue is a finder and does not prove bytes. Concierge needs the final,
+installed proof receipt for the digest and named Restic snapshot, plus an exact
+restore-by-digest operation after local loss. The host owner has not yet
+installed the store or fixed the proof schema; no source inspection of a draft
 plan is installation evidence.
