@@ -335,6 +335,11 @@ or scan other threads while the owner holds its write transaction.
 Routing one accepted message to a second thread checks earlier routes through the retained
 source-message index before it writes another destination; the query uses the index's
 two-kind predicate and then selects topic routes, preserving the independent-route rule.
+The routed destination address is an event in the Inbox session that created the route, while
+its retained input is the foreign-key anchor for posts. When a later Inbox session files an
+answer into that historical routed thread, anchor lookup follows the shared Inbox lineage;
+ordinary sessions can resolve only routes in their own accepted-handoff lineage. This keeps
+the route address out of input columns while preserving the same thread across Inbox handoffs.
 Every route projects the source message's current author, including an authorship correction,
 service origin and named agent session. The routed copy and any request that carries it must not
 derive authorship from the source's historical origin alone or default a missing author to Tejas.
