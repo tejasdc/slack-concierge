@@ -136,7 +136,11 @@ Taking back:
    process, so adoption records none (on 2026-11-05 re-recording it logged an identity conflict
    for every adopted turn).
    While Concierge stays online, it rechecks parked host custody each minute without touching
-   already running executions. A superseded parked host is signalled to stop; after its provider
+   already running executions. The same sweep takes back a Codex turn followed through the shared
+   daemon that parked as uncertain within the last day, though its record was released when it
+   parked: two per minute, oldest first, at most three times each. It is followed from its exact
+   thread history, and a turn that history never shows is retried as never sent
+   ([failure record](../incidents/2026-11-12-codex-connection-loss-parked-unsent-turns.md)). A superseded parked host is signalled to stop; after its provider
    exits, the older turn is marked interrupted and the later turn stays in place.
    A recovered closing answer advances attention again even if the parking notice was already
    read; the answer is a new arrival in his thread.
