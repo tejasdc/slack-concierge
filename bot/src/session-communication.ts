@@ -19,6 +19,7 @@ import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-r
 import { usageSignal } from './provider-usage-forecast';
 import {ProviderCapabilityUnavailableError} from './provider-policy';
 import { log } from './log';
+import { deliverRequestReminder } from './request-reminder-carrier';
 import { heldPrerequisite } from './request-prerequisite-hold';
 import { STEP_ASKS, finishedTodoRefusal, type TodoState } from './question-todos';
 import {boundSearchResponse} from './search-response-boundary';
@@ -2805,16 +2806,13 @@ export class SessionCommunicationCoordinator {
                 db.query("UPDATE session_communication_events SET status='held',error='Asking agent is unavailable; reminder retained.' WHERE event_id=? AND (status IS NOT 'held' OR error IS NOT 'Asking agent is unavailable; reminder retained.')").run(event.event_id);
                 return;
             }
-            const inputId = `request-reminder:${event.event_id}`;
             const text=legacyAgentReminder?unresolvedRequestReminder(request.payload_json,STILL_WAITING_MINUTES,
                 'Inspect the recipient’s status and follow up or cancel if the work can no longer wait.')
                 :declared.held&&!declared.agentReminder?`${requestLabel(request.payload_json)} is waiting: ${String(declared.text)}`:String(declared.text);
-            const accepted=this.dependencies.owner!.admit({sessionId:source.id,inputId,origin:'service',sourceInputId:request.source_input_id!,sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,text});
-            const observed=readInputExecution(accepted);
-            const received=observed.acknowledgedAt||observed.turn?.input_context_received_by_turn_id;
-            const status=received?'received':accepted.turn_id?'admitted':'held';
-            db.query('UPDATE session_communication_events SET accepted_input_id=?,status=?,error=NULL WHERE event_id=? AND (accepted_input_id IS NOT ? OR status IS NOT ? OR error IS NOT NULL)')
-                .run(inputId,status,event.event_id,inputId,status);
+            const delivered=deliverRequestReminder({eventId:event.event_id,acceptedInputId:event.accepted_input_id??null,sourceSessionId:source.id,
+                sourceInputId:request.source_input_id!,sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,text,owner:this.dependencies.owner!});
+            db.query('UPDATE session_communication_events SET accepted_input_id=?,status=?,error=? WHERE event_id=? AND (accepted_input_id IS NOT ? OR status IS NOT ? OR error IS NOT ?)')
+                .run(delivered.inputId,delivered.status,delivered.error,event.event_id,delivered.inputId,delivered.status,delivered.error);
             return;
         }
         const returnToRequester=returnsToRequester(request,event);
