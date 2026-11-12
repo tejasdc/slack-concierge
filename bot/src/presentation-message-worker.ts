@@ -5,7 +5,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {readFileSync,realpathSync} from 'node:fs';
 import {join} from 'node:path';
 import {canceledRequestNotice,inboxRootResolver,sourceMessagePage} from './presentation-message-source';
-import {PreparedSearchIndex,indexedRole} from './prepared-search';
+import {PreparedSearchIndex} from './prepared-search';
 import {PreparedSearchUpkeep} from './prepared-search-upkeep';
 import {sessionCatalogueLabels} from './session-labels';
 import {preparedInboxDisplay} from './presentation-inbox-display';
@@ -334,9 +334,11 @@ function writeOwnerVersion(generation:number,row:{sessionId:number;messageId:str
 function indexOwnerMessage(sessionId:number,messageId:string,sequence:number) {
   const event=source.query('SELECT payload_json,created_at FROM session_owner_events WHERE sequence=?').get(sequence) as
     {payload_json:string;created_at:string}|null;
+  // Ledger bytes read count toward a backfill's pace even when nothing is indexed.
+  if(event)search.indexedBytes+=event.payload_json.length;
   const message=event?JSON.parse(event.payload_json)?.message:null;
   if(!message||typeof message.content!=='string'||!['user','assistant','tool'].includes(message.role))return;
-  if(!indexedRole(message.role))return;
+  // A tool version still reaches upsert, which removes an older dialogue version of the message.
   const text=withoutHeader(message.content);
   search.upsert({key:`message:${sessionId}:${messageId}`,sessionId,kind:'message',eventId:messageId,
     sourceId:`native:${sessionId}`,sourceVersion:hash(stable(message)),textHash:hash(message.content),role:message.role,

@@ -45,7 +45,8 @@ Expected size ≈ 3.5 × the indexed dialogue text (one copy, a trigram index ab
 text, the short index and metadata). Growth follows dialogue volume only. The worker logs
 `presentation_search_size` hourly (document count, file bytes, free bytes, bytes the
 filesystem actually holds). Freed pages above 256 MiB are returned to the filesystem by punching
-holes in free-list pages (`bot/src/sqlite-free-pages.ts`): metadata-only I/O, never a
+holes in free-list pages (`bot/src/sqlite-free-pages.ts`), 2,048 holes at a time with a short pause:
+metadata-only I/O, never a
 `VACUUM`, because a multi-gigabyte rewrite on this host stalls the ledger's fsyncs
 ([2026-10-23 record](../incidents/2026-10-23-ledger-snapshot-copy-stalled-the-owner.md)).
 
@@ -53,14 +54,22 @@ holes in free-list pages (`bot/src/sqlite-free-pages.ts`): metadata-only I/O, ne
 
 `bot/src/prepared-search-upkeep.ts` runs between the worker's catch-up batches:
 
+0. **Retire the old tables by name** in one schema-only transaction (FTS5 renames its storage
+   tables with it). An earlier release, after a rollback, finds no table by the old name,
+   creates an empty one and runs normally; it never meets a half-deleted index. When this
+   release returns it retires that table again and re-runs the backfill while search keeps
+   answering, because the earlier release indexed new messages under the old name.
 1. **Release the old tables** at 32 MiB/s of rows: the old documents table in process, the old
    FTS5 storage tables through the system `sqlite3` shell with defensive mode off for that one
    connection (Bun's SQLite refuses writes to FTS5 storage tables). Small committed steps mean
-   no long read of every page and no dirty-data backlog. Without the shell the old index is
-   dropped whole.
+   no long read of every page and no dirty-data backlog. Without the shell, or if
+   the worker's connection cannot see the shell's delete, the old index is dropped whole. Row
+   sizes come from stored lengths, so a step reads only what it deletes.
 2. **Backfill** the new tables at 4 MiB/s of text: every owner message's latest version, then
    every input, then every session. Catch-up keeps indexing new changes meanwhile; a backfilled
    version never replaces a newer one (`ordinal`).
+   Messages are walked by row number, not the primary-key index, which would sort the whole
+   generation on every step. A step that fails waits a minute before retrying.
 3. **Ready**: search answers again. Until then it says “Search is being prepared.” and the
    archive search still answers.
 4. **Return** the free pages left by step 1 to the filesystem.
@@ -68,3 +77,9 @@ holes in free-list pages (`bot/src/sqlite-free-pages.ts`): metadata-only I/O, ne
 The old tables are emptied first so the new index reuses their pages and the file never grows
 during the move. Checks: `bot/scripts/prepared-search-check.ts`,
 `bot/scripts/prepared-search-upkeep-check.ts` (both in the release build).
+
+The release keeps its own descriptor of the database file open for the life of the worker.
+POSIX record locks belong to the process and all drop when any descriptor of the file closes;
+closing a second descriptor would drop SQLite's locks, and another process could then believe it
+was the last connection and reset the write-ahead log under the worker. The trigger compares
+the blocks the filesystem holds with the live pages, so pages already punched never count again.

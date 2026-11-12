@@ -1,5 +1,5 @@
 import type {Database} from 'bun:sqlite';
-import {closeSync,openSync,readSync,statSync} from 'node:fs';
+import {openSync,readSync,statSync} from 'node:fs';
 
 /**
  * Returns the disk blocks behind a WAL database's free pages to the filesystem without
@@ -13,6 +13,7 @@ import {closeSync,openSync,readSync,statSync} from 'node:fs';
  * exactly the committed free list and cannot change while holes are punched.
  */
 const PUNCH_HOLE_KEEP_SIZE=0x02|0x01;
+const PUNCHES_PER_PAUSE=2048,PUNCH_PAUSE_MS=20;
 type Fallocate=(fd:number,mode:number,offset:number,length:number)=>number;
 let fallocate:Fallocate|null|undefined;
 function loadFallocate():Fallocate|null {
@@ -45,6 +46,19 @@ export function readFreeLeafPages(fd:number):{pageSize:number;leaves:number[];to
  return {pageSize,leaves,total,trunks};
 }
 
+/**
+ * POSIX record locks belong to the process and are all dropped when ANY descriptor of the file
+ * closes. Closing a second descriptor of the database would silently drop SQLite's own locks, so
+ * another process could believe it is the last connection and reset the WAL under this one. The
+ * descriptor is therefore opened once per file and kept for the life of the process.
+ */
+const descriptors=new Map<string,number>();
+function descriptor(path:string){
+ let fd=descriptors.get(path);
+ if(fd===undefined){fd=openSync(path,'r+');descriptors.set(path,fd);}
+ return fd;
+}
+
 export function releaseFreePages(db:Database,path:string):FreePageRelease {
  const punch=loadFallocate();
  if(!punch)return {released:false,reason:'unsupported'};
@@ -54,8 +68,8 @@ export function releaseFreePages(db:Database,path:string):FreePageRelease {
   // Taking the write lock without writing keeps the WAL exactly as the checkpoint left it.
   let walSize=0;try{walSize=statSync(`${path}-wal`).size;}catch{}
   if(walSize!==0)return {released:false,reason:'wal_not_empty'};
-  const fd=openSync(path,'r+');
-  try {
+  const fd=descriptor(path);
+  {
    const {pageSize,leaves,total,trunks}=readFreeLeafPages(fd);
    if(leaves.length+trunks!==total)return {released:false,reason:'free_list_mismatch'};
    leaves.sort((a,b)=>a-b);
@@ -65,9 +79,11 @@ export function releaseFreePages(db:Database,path:string):FreePageRelease {
     const first=leaves[index]!,count=end-index+1;
     if(punch(fd,PUNCH_HOLE_KEEP_SIZE,(first-1)*pageSize,count*pageSize)!==0)return {released:false,reason:'punch_failed'};
     ranges++;index=end+1;
+    // Each hole is a journaled extent change on the ledger's filesystem; spread them out.
+    if(ranges%PUNCHES_PER_PAUSE===0)Bun.sleepSync(PUNCH_PAUSE_MS);
    }
    return {released:true,pages:leaves.length,ranges,bytes:leaves.length*pageSize};
-  } finally {closeSync(fd);}
+  }
  }).immediate();
 }
 

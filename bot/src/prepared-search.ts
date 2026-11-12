@@ -66,7 +66,7 @@ export class PreparedSearchIndex {
   this.db.query('DELETE FROM search_short WHERE rowid=?').run(id);
  }
  upsert(document:PreparedSearchDocument){
-  if(!indexedRole(document.role)){this.remove(document.key);return;}
+  if(!indexedRole(document.role)){this.remove(document.key,document.ordinal);return;}
   const {text,...metadata}=document,encoded=JSON.stringify(metadata);
   let indexed=false;
   this.db.transaction(()=>{
@@ -92,11 +92,12 @@ export class PreparedSearchIndex {
   })();
   if(indexed){this.indexedChangesSinceMerge++;this.indexedBytes+=Buffer.byteLength(text);}
  }
- remove(key:string){
+ /** Removes a document unless a newer version (higher ordinal) is already indexed. */
+ remove(key:string,ordinal=Number.MAX_SAFE_INTEGER){
   let removed=false;
   this.db.transaction(()=>{
-   const row=this.db.query('SELECT id,text FROM search_documents WHERE document_key=?').get(key) as {id:number;text:string}|null;
-   if(!row)return;
+   const row=this.db.query('SELECT id,ordinal,text FROM search_documents WHERE document_key=?').get(key) as {id:number;ordinal:number;text:string}|null;
+   if(!row||row.ordinal>ordinal)return;
    this.unindex(row.id,row.text);
    this.db.query('DELETE FROM search_documents WHERE id=?').run(row.id);
    removed=true;
@@ -133,7 +134,9 @@ export class PreparedSearchIndex {
    const meta=JSON.parse(row.metadata) as Omit<PreparedSearchDocument,'text'>;
    if(!indexedRole(meta.role)||selected.has(meta.sessionId))continue;
    const {key:_key,...reference}=meta;
-   selected.set(meta.sessionId,{...reference,text:row.text,snippet:snippet(row.excerpt,terms),truncated:!!row.truncated});
+   // SQLite's lower() folds ASCII only; when the excerpt missed a non-ASCII match, use the opening text.
+   const excerptHit=terms.some(term=>row.excerpt.toLocaleLowerCase().includes(term));
+   selected.set(meta.sessionId,{...reference,text:row.text,snippet:snippet(excerptHit?row.excerpt:row.text,terms),truncated:!!row.truncated});
    if(selected.size>=limit)break;
   }
   const hasMore=examined<ids.length;

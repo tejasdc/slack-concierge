@@ -55,7 +55,7 @@ try {
 
  let now=0;
  for(let step=0;step<10_000&&!logs.some(entry=>entry.event==='presentation_search_size');step++){upkeep.step(now);now+=60_000;}
- const legacy=db.query("SELECT name FROM sqlite_master WHERE name LIKE 'prepared_search%'").all();
+ const legacy=db.query("SELECT name FROM sqlite_master WHERE name LIKE 'prepared_search%' OR name LIKE 'retired_search%'").all();
  assert.deepEqual(legacy,[],'the old search tables are gone');
  const released=logs.find(entry=>entry.event==='presentation_search_legacy_released')!;
  assert.ok((released.fields.documents_by_role as any).tool.documents===400,JSON.stringify(released.fields));
@@ -82,6 +82,27 @@ try {
  db.query('PRAGMA wal_checkpoint(TRUNCATE)').get();
  assert.equal((db.query('PRAGMA integrity_check').get() as {integrity_check:string}).integrity_check,'ok');
  assert.equal(reader.search('late reuse',100).hits.length,100);
+ // A rollback: the earlier release recreates the old tables by name and indexes into them.
+ db.exec(`CREATE TABLE prepared_search_documents(id INTEGER PRIMARY KEY,document_key TEXT NOT NULL UNIQUE,session_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,role TEXT NOT NULL,text TEXT NOT NULL,folded TEXT NOT NULL,metadata TEXT NOT NULL);
+  CREATE VIRTUAL TABLE prepared_search_text USING fts5(folded,tokenize='trigram');
+  CREATE VIRTUAL TABLE prepared_search_short USING fts5(tokens,detail=none);
+  INSERT INTO prepared_search_text(rowid,folded) VALUES(1,'written during rollback');`);
+ messages.set('9999:m9999',{role:'assistant',text:'Written during the rollback window'});
+ db.query('INSERT INTO presentation_owner_messages VALUES(1,9999,?,99999,99999)').run('m9999');
+ logs.length=0;
+ upkeep.step(now);now+=60_000;
+ assert.equal((db.query('SELECT ready FROM search_meta').get() as {ready:number}).ready,1,'search stays answerable while it catches up');
+ for(let step=0;step<10_000&&!logs.some(entry=>entry.event==='presentation_search_ready');step++){upkeep.step(now);now+=60_000;}
+ assert.deepEqual(db.query("SELECT name FROM sqlite_master WHERE name LIKE 'prepared_search%' OR name LIKE 'retired_search%'").all(),[],
+  JSON.stringify(logs.map(entry=>entry.event)));
+ assert.deepEqual(reader.search('rollback window',5).hits.map(hit=>hit.sessionId),[9999]);
+ assert.ok(!logs.some(entry=>entry.event==='presentation_search_upkeep_failed'),JSON.stringify(logs));
+ // Last: Bun leaves an EXPLAIN statement holding its read snapshot. The backfill walks by rowid instead of sorting the whole generation each step.
+ const plan=db.query(`EXPLAIN QUERY PLAN SELECT rowid FROM presentation_owner_messages NOT INDEXED WHERE rowid>? AND generation=? ORDER BY rowid LIMIT 250`)
+  .all(0,1) as {detail:string}[];
+ assert.ok(plan.some(row=>/INTEGER PRIMARY KEY|rowid>/.test(row.detail))&&!plan.some(row=>/TEMP B-TREE/.test(row.detail)),JSON.stringify(plan));
+
  db.close();
  console.log(JSON.stringify({check:'prepared-search-upkeep',status:'passed',allocated_before:before,allocated_after:after,
   released:released.fields.released_bytes}));
