@@ -40,6 +40,14 @@ offsite proof have passed. A proof of a past restore alone is not a live recover
 path. Before those conditions, format changes may be published with full rows but
 no payload retirement.
 
+Recovery must stage an exact object privately, check its raw digest and byte
+length, and exclusively publish a missing object; it must refuse to overwrite
+an existing corrupt inode. Because the snapshot named in an old proof may age
+out under backup retention, recovery also needs a verified later snapshot
+containing the same immutable object path, or it must refuse and preserve the
+full-row fallback. The host is adding this as a command in its object-store
+delivery, not as a new service; it has not been installed or exercised yet.
+
 The host object is the one home for raw bytes; Concierge keeps only the SDK delta
 that the raw version cannot represent. The owner-event overlay remains the home
 for post-import accepted messages and their latest versions. A host object is
