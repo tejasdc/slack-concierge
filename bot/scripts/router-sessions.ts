@@ -5,6 +5,7 @@ import {basename} from 'node:path';
 import {createHash} from 'node:crypto';
 import {parseProviderSelector,normalizeReasoningEffort,chatgptThinkingLevel,chatgptGpt,CHATGPT_GPT_PREFIX,CHATGPT_THINKING_LEVELS} from '../src/aliases';
 import {REQUEST_PROTOCOL} from '../src/request-protocol';
+import {nextDailyWallClock,validDailyWallClock} from '../src/daily-wall-clock';
 import {IMPLEMENTATION_ALIASES} from '../src/implementation-models';
 
 const usage = `router-actions.sh sessions projects <source-flags> [--peer <instance>]
@@ -32,8 +33,8 @@ router-actions.sh sessions ask <original-chatgpt-address> --for-task <kind>:<exa
 router-actions.sh sessions ask --peer mac --machine-need "<ios-native|mac-app|mac-file|mac-screen|messages|human-mac|browser-fallback>:<specific reason>" [--server-attempt-url <URL> --server-attempt-failure "<observed server failure>" (browser-fallback only)] --provider <alias> --project <peer-project> [--effort <level>] --session-name <title> <source-flags> --action-id A -- <text>
 router-actions.sh sessions open <http(s)-link> [--on mac] [--browser chrome|safari|default] <source-flags> --action-id A
 Only a current direct request from Tejas can open a link in his browser on the Mac; agent browser checks use the server. Chrome is the default unless --browser says otherwise. The opener starts no agent session, and a sleeping Mac queues the link for at most a day. It only opens the page; it never clicks, types or reads it.
-router-actions.sh sessions schedule --at <ISO-8601-time> [--expires <ISO-8601-time>] [--every-ms <interval>] --provider <alias> --project <registered-project> --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
-router-actions.sh sessions schedule --role <standing-agent-role> --at <ISO-8601-time> [--every-ms <interval>] --summary "<one line>" <source-flags> --action-id A -- <text>
+router-actions.sh sessions schedule (--at <ISO-8601-time> [--every-ms <interval>] | --daily-at HH:MM --time-zone <IANA zone>) [--expires <ISO-8601-time>] --provider <alias> --project <registered-project> --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
+router-actions.sh sessions schedule --role <standing-agent-role> (--at <ISO-8601-time> [--every-ms <interval>] | --daily-at HH:MM --time-zone <IANA zone>) --summary "<one line>" <source-flags> --action-id A -- <text>
 router-actions.sh sessions bank [--quiet-only] --provider <alias> --project <registered-project> --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
 router-actions.sh sessions ask <peer-address|imported-address> <source-flags> --action-id A --resurrect -- <text>
 router-actions.sh sessions note <captureId | any message ID> <source-flags> --action-id A --summary-file <markdown-path> [--add-to <earlier captureId or message ID> | --person <name> | --journal entry|checkin]
@@ -62,6 +63,7 @@ router-actions.sh sessions obligations [<address>] <source-flags>
 Provider changes use handoff between sessions on the same machine. Choose a coding provider alias: ChatGPT cannot acknowledge a handoff. The successor reads the predecessor's context and acknowledges the exact inventory digest before the owner moves obligations. A proposed handoff can be withdrawn while the predecessor keeps working. cancel --reason provider-change is refused with the handoff command.
 router-actions.sh sessions saved list <source-flags> [--cursor <nextCursor>]
 router-actions.sh sessions saved start|cancel <turn-id> <source-flags> --action-id A
+router-actions.sh sessions saved daily <turn-id> --time HH:MM --time-zone <IANA zone> <source-flags> --action-id A
 Stopping a repeating schedule (sessions schedule --every-ms): sessions cancel <its request-id> withdraws every queued firing and books no more (a firing already running finishes); sessions saved cancel <turn-id> of its queued firing does the same. sessions saved list shows each armed schedule's next firing, turn ID and interval.
 router-actions.sh sessions pause status|all|resume <source-flags> [--action-id A] [--session <concierge:N|mac:N> ...]  # --session is for resume only
 router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> [--renew] [--required-commit <full-sha>] <source-flags> --action-id A
@@ -165,7 +167,7 @@ export type SessionCommunicationRequest =
   | { operation: "auth-switch"; body: { source: Source; action_id:string; profile_id:string; machine?:'mac' } }
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string; thread?: string } }
   | { operation: "context"; body: { source: Source; address: string; thread?: string } }
-  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; role?:string; provider?: string; implementation?:boolean; smallTask?:boolean; effort?:string; escalationReason?:string; project?:string; title?: string; text: string; after?: string[]; pace?: string[]; summary?: string; answer_view?: 'summary'|'full'; return_to_requester?:boolean; for_task?:string; recovery_of?:string; correction_of?:string; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean} } }
+  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; role?:string; provider?: string; implementation?:boolean; smallTask?:boolean; effort?:string; escalationReason?:string; project?:string; title?: string; text: string; after?: string[]; pace?: string[]; summary?: string; answer_view?: 'summary'|'full'; return_to_requester?:boolean; for_task?:string; recovery_of?:string; correction_of?:string; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;daily?:{time:string;timeZone:string};quietOnly?:boolean} } }
   | { operation: "note"; body: { source: Source; action_id:string; captureId?:string; messageId?:string; summary?:string; addTo?:string; person?:string; journal?:"entry"|"checkin" } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string; address?:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; promise_request?:string; keep_working?:boolean; notify?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
@@ -182,7 +184,7 @@ export type SessionCommunicationRequest =
   | { operation: "handoff"; body: { source: Source; verb: 'propose'|'accept'|'withdraw'; address?: string; provider?: string; model?: string; effort?: string; reason?: string; session_name?: string; action_id: string; handoff_id?: string; digest?: string } }
   | { operation: "obligations"; body: { source: Source; address?: string } }
   | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'; action_id?: string; until?: string; renew?: boolean; requiredCommit?: string; path?: string; argv?: string[]; cwd?: string; watch_id?: string; runner?: string } }
-  | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'; turn_id?:number; action_id?:string;cursor?:string } }
+  | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'|'daily'; turn_id?:number; action_id?:string;cursor?:string;time?:string;timeZone?:string } }
   | { operation: "pause"; body: { source: Source; verb:'status'|'all'|'resume'; action_id?:string; session_ids?:string[] } }
   | { operation: "board"; body: { source?: Source; verb: string; [key: string]: unknown } };
 
@@ -511,19 +513,23 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   }
   if(first==='saved') {
     const sub=args.shift();
-    if(sub!=='list'&&sub!=='start'&&sub!=='cancel')invalid('saved takes list, start or cancel.');
+    if(sub!=='list'&&sub!=='start'&&sub!=='cancel'&&sub!=='daily')invalid('saved takes list, start, cancel or daily.');
     const turnId=sub==='list'?undefined:args.shift();
     if(sub!=='list'&&(!turnId||!/^[1-9]\d*$/.test(turnId)||!Number.isSafeInteger(Number(turnId))))invalid('Name the exact saved turn ID.');
     const flags=new Map<string,string>();
     while(args.length){const flag=args.shift()!,value=args.shift();
-      if(!['--source-channel','--source-ts','--source-input','--source-run','--action-id','--cursor'].includes(flag)||!value?.trim()||flags.has(flag))invalid('Invalid saved work option.');
+      if(!['--source-channel','--source-ts','--source-input','--source-run','--action-id','--cursor','--time','--time-zone'].includes(flag)||!value?.trim()||flags.has(flag))invalid('Invalid saved work option.');
       flags.set(flag,value);
     }
     const source=sourceFrom(flags),actionId=flags.get('--action-id');
     if(sub==='list'&&actionId)invalid('Listing saved work takes no action ID.');
     if(sub!=='list'&&flags.has('--cursor'))invalid('Only a saved work list can continue at a cursor.');
+    if(sub==='daily'&&!validDailyWallClock({time:flags.get('--time')??'',timeZone:flags.get('--time-zone')??''}))
+      invalid('daily needs --time HH:MM and --time-zone with an IANA time zone.');
+    if(sub!=='daily'&&(flags.has('--time')||flags.has('--time-zone')))invalid('The local time belongs to saved daily.');
     if(sub!=='list'&&!actionId)invalid('Saved work control needs --action-id.');
-    return {operation:'saved',body:{source,verb:sub, ...(turnId?{turn_id:Number(turnId)}:{}),...(actionId?{action_id:actionId}:{}),...(flags.has('--cursor')?{cursor:flags.get('--cursor')!}:{})}};
+    return {operation:'saved',body:{source,verb:sub, ...(turnId?{turn_id:Number(turnId)}:{}),...(actionId?{action_id:actionId}:{}),...(flags.has('--cursor')?{cursor:flags.get('--cursor')!}:{}),
+      ...(sub==='daily'?{time:flags.get('--time')!,timeZone:flags.get('--time-zone')!}:{})}};
   }
   if(first==='board')return parseBoardArgs(args);
   if(first==='open') {
@@ -748,6 +754,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === "--at" && savedKind==='scheduled')
       || (flag === "--expires" && savedKind==='scheduled')
       || (flag === "--every-ms" && savedKind==='scheduled')
+      || (['--daily-at','--time-zone'].includes(flag) && savedKind==='scheduled')
       || (flag === "--session-name" && operation === "ask")
       || (["--effort","--escalation-reason","--gpt","--project","--capture-id","--requested-effect","--after-request","--after-settled","--for-task","--recovery-of","--correction-of"].includes(flag) && operation === "ask")
       // A reply or post carries files the same way an ask does: own bytes, or already
@@ -1004,18 +1011,23 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(gpt&&provider!=='chatgpt')invalid('--gpt is for --provider chatgpt.');
   if(gpt&&effort)invalid('A GPT runs on the model its maker chose; --gpt takes no --effort.');
   const chatgptChoice=gpt?`${CHATGPT_GPT_PREFIX}${gpt}`:effort;
+  const daily=flags.has('--daily-at')?{time:flags.get('--daily-at')!,timeZone:flags.get('--time-zone')??''}:null;
+  if(daily&&(!validDailyWallClock(daily)||flags.has('--at')||flags.has('--every-ms')))
+    invalid('Daily local time needs --daily-at HH:MM and --time-zone; do not combine it with --at or --every-ms.');
+  if(flags.has('--time-zone')&&!daily)invalid('--time-zone needs --daily-at.');
+  const scheduledAt=daily?nextDailyWallClock(Date.now(),daily):Date.parse(flags.get('--at')??'');
   if(savedKind) {
     if((!role&&(!provider||provider==='chatgpt'||!title))||identity||peer||after.length)
       invalid('Saved work needs a standing role or a named new local coding session.');
-    if(savedKind==='scheduled'&&(!flags.get('--at')||!Number.isFinite(Date.parse(flags.get('--at')!))||Date.parse(flags.get('--at')!)<=Date.now()))
-      invalid('schedule requires --at with a future ISO-8601 time.');
-    if(flags.has('--expires')&&(!Number.isFinite(Date.parse(flags.get('--expires')!))||Date.parse(flags.get('--expires')!)<=Date.parse(flags.get('--at')!)))
+    if(savedKind==='scheduled'&&(!Number.isFinite(scheduledAt)||scheduledAt<=Date.now()))
+      invalid('schedule requires --at with a future ISO-8601 time or --daily-at with a local time.');
+    if(flags.has('--expires')&&(!Number.isFinite(Date.parse(flags.get('--expires')!))||Date.parse(flags.get('--expires')!)<=scheduledAt))
       invalid('--expires must follow --at.');
     if(flags.has('--every-ms')&&(!/^\d+$/.test(flags.get('--every-ms')!)||Number(flags.get('--every-ms'))<60_000))
       invalid('--every-ms requires an interval of at least one minute.');
   }
   return operation === "ask"
-    ? { operation, body: { source, action_id: actionId, ...(role?{role}:provider?{provider}:{address:identity!}), ...(implementation?{implementation:true}:{}), ...(smallTask?{smallTask:true}:{}), ...(outside?{outside:true}:{}), ...(onRunner?{onRunner:true}:{}), ...(title===undefined?{}:{title}), text: content[0]??'', ...(after.length ? { after } : {}),...(pace.length ? { pace } : {}),...(identity?(hisChat?{hisChat:true}:{}):(hisChat?{effort:`tejas:${chatgptChoice??''}`}:chatgptChoice?{effort:chatgptChoice}:{})),...(flags.has("--escalation-reason")?{escalationReason:flags.get("--escalation-reason")!}:{}),...(project?{project}:{}),...attached,...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(flags.has('--route-message')?{routeMessageId:flags.get('--route-message')!}:{}),...(implementation||returnToRequester?{return_to_requester:true}:{}),...(flags.has('--for-task')?{for_task:flags.get('--for-task')!}:{}),...(flags.has('--recovery-of')?{recovery_of:flags.get('--recovery-of')!}:{}),...(flags.has('--correction-of')?{correction_of:flags.get('--correction-of')!}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(implementation?{requestedEffect:"work"}:requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(summary?{summary}:{}),...(answerView?{answer_view:answerView as 'summary'|'full'}:{}),...(flags.has('--machine-need')?{machine_need:flags.get('--machine-need')!}:{}),...(flags.has('--server-attempt-url')||flags.has('--server-attempt-failure')?{server_attempt:{url:flags.get('--server-attempt-url'),failure:flags.get('--server-attempt-failure')}}:{}),...(flags.has('--consult')?{consult:flags.get('--consult')!}:{}),...(resurrect?{resurrect:true}:{}),...(savedKind?{saved:{kind:savedKind,...(savedKind==='scheduled'?{atMs:Date.parse(flags.get('--at')!)}:{}),...(flags.has('--expires')?{expiresAtMs:Date.parse(flags.get('--expires')!)}:{}),...(flags.has('--every-ms')?{repeatEveryMs:Number(flags.get('--every-ms'))}:{}),...(quietOnly?{quietOnly:true}:{})}}:{}) } }
+    ? { operation, body: { source, action_id: actionId, ...(role?{role}:provider?{provider}:{address:identity!}), ...(implementation?{implementation:true}:{}), ...(smallTask?{smallTask:true}:{}), ...(outside?{outside:true}:{}), ...(onRunner?{onRunner:true}:{}), ...(title===undefined?{}:{title}), text: content[0]??'', ...(after.length ? { after } : {}),...(pace.length ? { pace } : {}),...(identity?(hisChat?{hisChat:true}:{}):(hisChat?{effort:`tejas:${chatgptChoice??''}`}:chatgptChoice?{effort:chatgptChoice}:{})),...(flags.has("--escalation-reason")?{escalationReason:flags.get("--escalation-reason")!}:{}),...(project?{project}:{}),...attached,...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(flags.has('--route-message')?{routeMessageId:flags.get('--route-message')!}:{}),...(implementation||returnToRequester?{return_to_requester:true}:{}),...(flags.has('--for-task')?{for_task:flags.get('--for-task')!}:{}),...(flags.has('--recovery-of')?{recovery_of:flags.get('--recovery-of')!}:{}),...(flags.has('--correction-of')?{correction_of:flags.get('--correction-of')!}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(implementation?{requestedEffect:"work"}:requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(summary?{summary}:{}),...(answerView?{answer_view:answerView as 'summary'|'full'}:{}),...(flags.has('--machine-need')?{machine_need:flags.get('--machine-need')!}:{}),...(flags.has('--server-attempt-url')||flags.has('--server-attempt-failure')?{server_attempt:{url:flags.get('--server-attempt-url'),failure:flags.get('--server-attempt-failure')}}:{}),...(flags.has('--consult')?{consult:flags.get('--consult')!}:{}),...(resurrect?{resurrect:true}:{}),...(savedKind?{saved:{kind:savedKind,...(savedKind==='scheduled'?{atMs:scheduledAt}:{}),...(flags.has('--expires')?{expiresAtMs:Date.parse(flags.get('--expires')!)}:{}),...(flags.has('--every-ms')?{repeatEveryMs:Number(flags.get('--every-ms'))}:{}),...(daily?{repeatEveryMs:86_400_000,daily}:{}),...(quietOnly?{quietOnly:true}:{})}}:{}) } }
     : { operation, body: { source, action_id: actionId, request_id: identity!, text: message, final: !partial, ...(summary?{summary}:{}),...(notify?{notify:true}:{}),...(alsoMainThread?{also_main_thread:true}:{}),
         ...(answersQuestion?{answers_question:true}:{}),
         ...(flags.has('--waiting-on-watch')?{waiting_on_watch:flags.get('--waiting-on-watch')!}:{}),
