@@ -1,5 +1,5 @@
 import {questionDisplay} from './topic-display-rules';
-import {closedRequestDispatches,topicCurrentWorkers,workingThrough} from './topic-current-workers';
+import {closedRequestDispatches,openRequestDeliveries,topicCurrentWorkers,workingThrough} from './topic-current-workers';
 import {topicReplyTargets} from './reply-target-rules';
 import type {Database} from 'bun:sqlite';
 import {INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
@@ -257,7 +257,7 @@ export function preparedTopicValue(context:TopicContext,topicId:string,sink?:Top
   lastSequence=Math.max(lastSequence,latest.sequence);
   const at=iso(latest.at)!;if(!foundEntry||at>lastAt)lastAt=at;foundEntry=true;
  }
- const work=topicWorkValue(context,topic,roots,closedRequestDispatches(requestStates));
+ const work=topicWorkValue(context,topic,roots,requestStates);
  const summary={id:topic.topicId,title:topic.title,aliases:topic.aliases,summary:topic.summary,state:topic.state,setAside:topic.setAside,
   revision:topic.revision,recovered:topic.recovered,createdAt:topic.createdAt,updatedAt:topic.updatedAt,lastEntryAt:lastAt,
   lastEntrySequence:lastSequence,unread:lastSequence>topic.readSequence,roots,pinnedAt:topic.pinnedAt,
@@ -298,7 +298,8 @@ function latestReturnAndPost(context:TopicContext,roots:string[]){
  return found;
 }
 
-function topicWorkValue(context:TopicContext,topic:any,roots:string[],closed:ReadonlySet<string>=new Set()){
+function topicWorkValue(context:TopicContext,topic:any,roots:string[],requests:readonly {state:string;dispatches:any[]}[]){
+ const closed=closedRequestDispatches(requests);
  if(context.focus?.topicId===topic.topicId)return {kind:'router_working' as const,text:context.focus.summary??'',
   runId:context.focus.runId,sessionId:`concierge:${context.sessionId}`};
  const queued=context.queued.find(item=>item.root&&roots.includes(item.root));
@@ -314,6 +315,11 @@ function topicWorkValue(context:TopicContext,topic:any,roots:string[],closed:Rea
  if(unrelayed)return {kind:'result_waiting' as const,text:"An agent's answer came back and has not been relayed to you",
   returnInputId:unrelayed.inputId,since:unrelayed.at};
  const working=context.dispatches.filter(item=>item.root&&roots.includes(item.root)&&!closed.has(item.requestId));
+ // The thread's own open requests name their deliveries directly, whoever sent them.
+ for(const live of openRequestDeliveries(context.source,requests))if(!working.some(item=>item.requestId===live.requestId))
+  working.push(live.targetSessionId!==null
+   ?{root:null,sessionId:`concierge:${live.targetSessionId}`,title:sessionTitle(context.source,live.targetSessionId)||'Agent session',requestId:live.requestId,through:live.through.map(id=>`concierge:${id}`)}
+   :{root:null,sessionId:peerAddress(live.peer!,live.remoteSessionId!),title:`${live.peer} session`,requestId:live.requestId});
  if(working.length){const workers=topicCurrentWorkers(context.source,working);
   return {kind:'worker_working' as const,text:workers.length===1?`With ${workers[0]!.title}`:`With ${workers.length} agents`,
    sessionId:workers[0]!.sessionId,workers};}

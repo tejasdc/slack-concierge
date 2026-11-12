@@ -17,7 +17,7 @@ import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 import {errorFields,log} from './log';
 import {ensureTable as ensureRepairNotices,recordRepairNotice,resolveRepairNotice} from './repair-notices';
 import {readTodos,STEP_ASKS,type TodoState} from './question-todos';
-import {closedRequestDispatches,topicCurrentWorkers,workingThrough} from './topic-current-workers';
+import {closedRequestDispatches,openRequestDeliveries,topicCurrentWorkers,workingThrough} from './topic-current-workers';
 import {approvalDecision} from './decision-approval';
 import {hisWordsLine,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
 import {deviceQuestionNamesPhysicalPrerequisite} from './agent-reachable-app-question';
@@ -752,7 +752,8 @@ function workIndex(sessionId:number):WorkIndex {
  * session, an id or a model: "Threads: his messages and unreadable headers is working" told
  * him nothing and read as if written about someone else (Tejas, 2026-09-22).
  */
-function topicWork(topic:StoredTopic,roots:string[],index:WorkIndex,entries:EntryIndex,closed:ReadonlySet<string>=new Set()) {
+function topicWork(topic:StoredTopic,roots:string[],index:WorkIndex,entries:EntryIndex,requests:readonly StoredRequest[]=[]) {
+  const closed=closedRequestDispatches(requests);
   if(index.focus?.topicId===topic.topicId)
     return {kind:'router_working' as const,text:index.focus.summary??'',runId:index.focus.runId,sessionId:`concierge:${index.sessionId}`};
   const queued=index.queued.find(item=>item.root&&roots.includes(item.root));
@@ -773,6 +774,13 @@ function topicWork(topic:StoredTopic,roots:string[],index:WorkIndex,entries:Entr
   // but one working agent in the Brief; accepted session handoffs move open requests to the
   // successor session, so the current target ID remains the stable grouping key.
   const working=index.dispatches.filter(item=>item.root&&roots.includes(item.root)&&!closed.has(item.requestId));
+  // The thread's own open requests name their deliveries directly, whoever sent them.
+  for(const live of openRequestDeliveries(db,requests))if(!working.some(item=>item.requestId===live.requestId)){
+    const target=live.targetSessionId!==null?getSessionById(live.targetSessionId):null;
+    working.push(live.targetSessionId!==null
+      ?{root:null,sessionId:`concierge:${live.targetSessionId}`,title:(target&&sessionMetadata(target).title)||'Agent session',requestId:live.requestId}
+      :{root:null,sessionId:receiveSessionFromPeer(live.remoteSessionId!,live.peer!),title:`${live.peer} session`,requestId:live.requestId});
+  }
   if(working.length){
     const current=topicCurrentWorkers(db,working);
     return {kind:'worker_working' as const,text:current.length===1?`With ${current[0]!.title}`:`With ${current.length} agents`,
@@ -968,7 +976,7 @@ function topicSummary(topic:StoredTopic,session:SessionRow,index:EntryIndex,work
       checking:views.filter(preparingForHim).length,
       deferred:views.filter(question=>question.state==='deferred').length},
     requests:{open:requests.filter(request=>request.state==='open').length,closed:requests.filter(request=>request.state==='closed').length},
-    work:topicWork(topic,roots,work,index,closedRequestDispatches(requests))};
+    work:topicWork(topic,roots,work,index,requests)};
 }
 
 /**

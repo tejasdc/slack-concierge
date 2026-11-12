@@ -664,7 +664,9 @@ unsettled dispatch from this topic whose work is live, else `idle`. A dispatch f
 is one sent by any session in the Inbox lineage, so a thread routed before an Inbox handoff
 keeps its working agent. A dispatch listed only under the topic's closed requests is not its work:
 closing a request settles the thread's work on it even when the agent never settled that delivery,
-so the agent being busy on other threads does not make this one look worked on. A dispatch's work is live
+so the agent being busy on other threads does not make this one look worked on. Conversely, a
+live delivery listed under one of the topic's open requests is always its work, whoever sent it
+and whatever message started it. A dispatch's work is live
 while its target has a running or queued turn, or while the target holds an unsettled request
 to another session whose work is live by the same rule (bounded depth, cycle-safe; an open
 peer request counts as live). An agent that ends its turn to wait for a ChatGPT answer or

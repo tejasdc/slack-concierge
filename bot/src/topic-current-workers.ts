@@ -52,3 +52,25 @@ export function closedRequestDispatches(requests:readonly {state:string;dispatch
  for(const id of open)closed.delete(id);
  return closed;
 }
+
+/**
+ * The live deliveries listed under the thread's own open requests. The thread's request ledger
+ * names its work directly, so a delivery counts here even when its sender or starting message
+ * cannot be traced back to this thread through the Inbox lineage ("Notification takes ten
+ * seconds to open", Nov 12: open request, three open deliveries to a running agent, shown idle).
+ */
+export function openRequestDeliveries(source:Database,requests:readonly {state:string;dispatches?:readonly any[]}[]){
+ const found:{requestId:string;targetSessionId:number|null;peer:string|null;remoteSessionId:string|null;through:number[]}[]=[];
+ const seen=new Set<string>();
+ for(const request of requests){if(request.state!=='open')continue;
+  for(const dispatch of request.dispatches??[]){
+   const id=String(dispatch?.requestId??'');if(!id||seen.has(id))continue;seen.add(id);
+   const local=source.query('SELECT target_session_id AS target FROM session_communication_requests WHERE request_id=? AND outcome IS NULL').get(id) as {target:number}|null;
+   if(local){const chain=workingThrough(source,local.target);if(chain)found.push({requestId:id,targetSessionId:local.target,peer:null,remoteSessionId:null,through:chain});continue;}
+   const peer=source.query('SELECT peer,remote_session_id AS remote FROM session_peer_requests WHERE request_id=? AND outcome IS NULL').get(id) as {peer:string;remote:string}|null;
+   if(peer)found.push({requestId:id,targetSessionId:null,peer:peer.peer,remoteSessionId:String(peer.remote),through:[]});
+  }
+ }
+ return found;
+}
+
