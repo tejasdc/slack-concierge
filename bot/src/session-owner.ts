@@ -1131,13 +1131,15 @@ export class SessionOwner {
     const attachments=this.attachments(ids),supported=this.runtime.capabilities?.(session)?.attachments;
     if(attachments.length&&(sessionMetadata(session).interactionPolicy==='consultation-only'||supported&&attachments.some(file=>!supported.includes('*/*')&&!supported.includes(file.contentType))))throw new SessionOwnerError('This provider policy does not support the selected attachment type.',409,'CAPABILITY_UNAVAILABLE');
   }
-  private saveControl(session:SessionRow,kind:string,body:Record<string,any>,effect:()=>unknown) {
+  private saveControl(session:SessionRow,kind:string,body:Record<string,any>,effect:()=>unknown,actor?:{sessionId:number;inputId:string;runId:string;targetAddress:string;authorityInputId?:string}) {
     return db.transaction(()=>{
-      const saved=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:actionId(body),kind,origin:'human',payload:body});
+      const payload=actor?{...body,actor}:body;
+      const saved=retainSessionInput({sessionId:session.id,scope:actor?`communication:${actor.inputId}`:'surface:thinkering',actionId:actionId(body),kind,
+        origin:actor?'agent':'human',payload,...(actor?{sourceInputId:actor.inputId,sourceRunId:actor.runId}:{})});
       if(!saved.duplicate) {
         const result=effect();
         db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',result}),saved.input.id);
-        recordSessionEvent({eventId:`control:${saved.input.id}`,sessionId:session.id,inputId:saved.input.id,kind,payload:body});
+        recordSessionEvent({eventId:`control:${saved.input.id}`,sessionId:session.id,inputId:saved.input.id,kind,payload});
       }
       return getAcceptedSessionInput(saved.input.id)!;
     })();
@@ -2743,11 +2745,12 @@ export class SessionOwner {
     const verified=parseMachineNeed(`${need.kind}:${need.why}`,need.serverAttempt);
     return {origin:verified.serverAttempt!.url};
   }
-  action(id:string,body:unknown) {
+  action(id:string,body:unknown,actor?:{sessionId:number;inputId:string;runId:string;targetAddress:string;authorityInputId?:string}) {
     const session=this.session(id),input=object(body);only(input,['clientActionId','action']);
     const action=object(input.action);only(action,['kind','value','generation']);
     const allowed=['title','summary','outcome','read','dismiss','archive','restore','pause','continue','pin','save','model','clear-queue'];
     if(!allowed.includes(action.kind))throw new SessionOwnerError('Unknown session action.');
+    if(actor&&!['pause','continue'].includes(action.kind))throw new SessionOwnerError('Agent session control takes only Pause or Continue.');
     // A usage decision belongs to the provider hold, which has an account-specific release.
     // The October 10 outside steering action used a generic Pause and stranded thirteen
     // conversations after their allowance returned. Do not accept that shape again.
@@ -2786,7 +2789,7 @@ export class SessionOwner {
       }
       else if(action.kind==='clear-queue')this.clearWaitingHumanInputs(session.id,'clear-queue');
       else if(action.kind==='pin'||action.kind==='save') {if(typeof action.value!=='boolean')throw new SessionOwnerError('Boolean saved value required.');updateSessionMetadata(session.id,{[action.kind==='pin'?'pinned':'saved']:action.value});}
-    });
+    },actor);
     if(action.kind==='continue'||action.kind==='restore') {
       for(const input of db.query("SELECT * FROM session_inputs WHERE session_id=? AND turn_id IS NULL AND kind='input' AND receipt_json IS NULL ORDER BY rowid").all(session.id) as AcceptedSessionInput[])this.dispatch(input);
       this.runtime.wake();
