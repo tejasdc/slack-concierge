@@ -4661,8 +4661,11 @@ export class SessionOwner {
       return ownerJson(result,{headers:answerHeaders,status:request.method==='POST'&&((parts[0]==='attachments'&&parts[2]==='transcription'&&parts[3]==='start')||(!readOnly&&!prior))?202:200});
     } catch(error) {
       if(error instanceof StorageReadBudgetError){
+        // The statement and caller name the cause; parameter names (never values, which can be his
+        // search words) tell which list variant asked.
         log('warn','owner_read_budget_refused',{admission_id:request.headers.get('x-concierge-admission-id'),
-          route:ownerRequestLabel(request.method,url.pathname),reason:error.reason});
+          route:ownerRequestLabel(request.method,url.pathname),reason:error.reason,statement:error.statement,
+          parameters:[...new Set(url.searchParams.keys())],stack:(error.stack??'').split('\n').slice(1,9).map(line=>line.trim())});
         return ownerJson({error:{code:error.code,message:error.message}},{status:503});
       }
       if(error instanceof TopicError||error instanceof AreaError)return ownerJson({error:{code:error.code,message:error.message}},{status:error.status});
