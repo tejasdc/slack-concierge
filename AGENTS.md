@@ -201,8 +201,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   a shared thread, later message or shared source alone cannot withdraw or
   supersede it. See [native Inbox](docs/contracts/native-inbox.md) and the
   [closure failure record](docs/incidents/2026-11-04-unrelated-evidence-could-close-human-work.md).
-- A question linked to an exact to-do is rechecked before Inbox attention and
-  question reads; a Done or Dropped to-do settles that question. Its attention
+- A question linked to an exact to-do is rechecked in the background when Inbox attention,
+  question and thread views are opened (never awaited by the read); a Done or Dropped to-do settles that question. Its attention
   event carries the to-do ID for thnkr.ing's final notification check. See
   [requested phone notifications](docs/contracts/requested-phone-notifications.md).
 
