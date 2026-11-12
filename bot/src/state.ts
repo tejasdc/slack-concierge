@@ -1,4 +1,4 @@
-import {renumberWaitingStarts,requestStartPaceOrder,decideStart,deferStart,ensureStartPaceTables,recordStart,releaseStartRecords,slotWaitingStarts,startIsExempt,startPaceConfig,type StartPaceConfig} from './start-pace';
+import {renumberWaitingStarts,START_ORDER_SQL,decideStart,deferStart,ensureStartPaceTables,recordStart,slotWaitingStarts,startIsExempt,startPaceConfig,type StartPaceConfig} from './start-pace';
 import { initializeSessionOwnerSchema } from "./session-schema";
 import {threadOnlyReturnInputSql} from './inbox-request-root';
 import { randomUUID } from "node:crypto";
@@ -5686,7 +5686,7 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
     // A paced machine (the Mac) admits new provider-process starts at a bounded rate, whatever
     // released them; unpaced machines run exactly the query and claim below.
     const pace = startPaceConfig();
-    const orderBy = pace ? `ORDER BY COALESCE((SELECT rank FROM start_pace_orders ord WHERE ord.turn_id=turn.id),1000000), turn.id` : 'ORDER BY turn.id';
+    const orderBy = pace ? `ORDER BY ${START_ORDER_SQL}` : 'ORDER BY turn.id';
     let paceDeferred = false;
     const settlePace = () => { if (pace && paceDeferred) { slotWaitingStarts(db, nowMs, pace); paceWaiting = true; } };
     while (true) {
@@ -5773,7 +5773,7 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
       `).run(ownerInstanceId, candidate.turn_id);
       mutationMs += performance.now() - phase;
       if (claimed.changes !== 1) { settlePace(); outcome='declined'; return null; }
-      if (pace) { recordStart(db, candidate.turn_id, nowMs); releaseStartRecords(db, candidate.turn_id); settlePace(); if (renumberWaitingStarts(db)) paceWaiting = true; }
+      if (pace) { recordStart(db, candidate.turn_id, nowMs); settlePace(); if (renumberWaitingStarts(db)) paceWaiting = true; }
       phase = performance.now();
       restoreRetriedTurnProgressMessage(candidate.turn_id, ownerInstanceId);
       requestTurnWaitingReaction(candidate.turn_id, false);
@@ -5787,7 +5787,7 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
   })(); }
   finally {
     // Held starts change what his sessions say about them, and the agent orders them off the claim path.
-    if (paceWaiting) { executionChanged(); requestStartPaceOrder(); }
+    if (paceWaiting) executionChanged();
     const totalMs = performance.now() - started;
     if (totalMs >= 100) log('warn','session_turn_claim_slow',{
       duration_ms:Math.round(totalMs),outcome,

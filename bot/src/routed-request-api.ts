@@ -121,6 +121,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         }
         if (operation === 'auth-switch') return Response.json(await sessions.switchCodexAccount(input));
         if (operation === 'saved') return Response.json(sessions.saved(input));
+        if (operation === 'snooze') return Response.json(sessions.snooze(input));
         if (operation === 'pause') return Response.json(await sessions.pause(input));
         if (operation === 'control') return Response.json(sessions.control(input));
         if (operation === 'watch') {

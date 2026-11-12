@@ -24,7 +24,9 @@ import { deliverRequestReminder } from './request-reminder-carrier';
 import { heldPrerequisite } from './request-prerequisite-hold';
 import { STEP_ASKS, finishedTodoRefusal, type TodoState } from './question-todos';
 import {boundSearchResponse} from './search-response-boundary';
-import {saveQueuedTurn,savedWorkSettings} from './saved-work';
+import {saveQueuedTurn,savedTurn,savedWorkSettings} from './saved-work';
+import {crowdingConfig} from './crowding';
+import {checkSnooze,continuationText,recordSnooze} from './snooze';
 import {cancelWatch,listWatches,registerWatch} from './watches';
 import {boardCommand,type BoardActor,type BoardInput} from './commons-board-service';
 import {notifyAgentPost} from './thread-notifications';
@@ -1409,6 +1411,27 @@ export class SessionCommunicationCoordinator {
         return this.dependencies.owner.savedWorkControl(input.turn_id!,input.verb==='start'?'start':input.verb==='daily'?'daily':'drop',
             {clientActionId:input.action_id,cancelingSessionId:actor.session,time:input.time,timeZone:input.timeZone,
                 cancelingInputId:actor.inputId,cancelingRunId:nativeRunId(actor.turn)});
+    }
+    /**
+     * An agent on a crowded machine sets its own later start (docs/plans/2026-11-12-mac-held-work-pacing.md).
+     * The continuation is a scheduled turn of the same session; refusals live in snooze.ts.
+     */
+    snooze(input:{source:CommunicationSource;action_id:string;until_ms:number;reason:string}) {
+        const actor=this.actor(input.source);
+        action(input.action_id);
+        const nowMs=Date.now(),reason=String(input.reason??'');
+        checkSnooze(db,{turnId:actor.turn,untilMs:input.until_ms,reason,nowMs},crowdingConfig());
+        return db.transaction(()=>{
+            const retained=retainSessionInput({id:`snooze:${actor.session}:${input.action_id}`,sessionId:actor.session,scope:`snooze:${actor.session}`,
+                actionId:input.action_id,kind:'input',origin:'service',payload:{text:continuationText(reason,input.until_ms),delivery:'queue'},
+                sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn)}).input;
+            const queued=enqueueSessionInput(retained.id);
+            if(queued.turn_id===null)throw new Error('The snooze could not be queued.');
+            if(!savedTurn(queued.turn_id))saveQueuedTurn(queued.turn_id,'scheduled',input.until_ms,undefined,undefined,undefined,'snooze');
+            recordSnooze(db,{continuationTurnId:queued.turn_id,sessionId:actor.session,untilMs:input.until_ms,reason});
+            return {status:'snoozed',turn_id:queued.turn_id,until:new Date(input.until_ms).toISOString(),reason:reason.trim(),
+                message:'Snoozed. End your turn now; you wake then with your open requests still open.'};
+        })();
     }
     control(input:{source:CommunicationSource;action_id:string;address:string;verb:'pause'|'continue'}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');

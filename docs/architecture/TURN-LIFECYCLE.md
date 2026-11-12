@@ -115,8 +115,13 @@ provider-process starts at a bounded rate, whatever released the work, because t
   (`nextQueuedTurnAttemptMs`) drives it. Starts are recorded in `start_pace_starts`.
 - Exempt: a direct human input, the Inbox router, ChatGPT. At macOS memory-pressure warning a paced start is
   held one slot (hold `start_memory`); at critical every start is.
-- When more than one group waits, the execution host asks Claude Haiku (no tools, 30 s) for an order, stored in
-  `start_pace_orders`; late or malformed answers leave the fallback order (his work, Inbox-thread-waiting, oldest).
+- The order is fixed: input from Tejas, then agent requests an open Inbox thread waits on, then oldest. There is no
+  ordering agent; agents decide for themselves (next bullet).
+- Where `CONCIERGE_CROWD_SESSIONS` is set, a start while the machine is crowded (over that many running sessions, macOS
+  memory pressure, load over 2x the processors) carries a notice offering `sessions snooze` (`bot/src/crowding.ts`,
+  `bot/src/snooze.ts`). A snooze is a scheduled continuation turn of the same session with hold `snooze:<reason>`, refused
+  for his direct messages and when not crowded, capped at six hours; open requests stay open with their due time moved past
+  the wake.
 - The status line reads the hold: place and expected time, or the memory reason. No notification.
 
 ## Responses and status projections
