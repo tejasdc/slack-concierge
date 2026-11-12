@@ -121,14 +121,14 @@ function recentFailures(prefix: string, windowMs: number): RenewalFailure[] {
 const WORKER_NOTICE_PATTERNS = Object.values(PREFIX).map(prefix => `${prefix}%`);
 const WORKER_ACTION_PREFIXES = Object.values(PREFIX).map(prefix => signInWorkerActionId(prefix));
 
-/** Whether a renewal was answered after `sinceMs` by the provider or the worker, not by a pre-sign-in failure. */
+/** Whether a renewal was answered after `sinceMs` as completed or as needing him: the worker got past the Mac. Undelivered or cancelled outcomes prove nothing. */
 function answeredPastObstacleAfter(sinceMs: number, failures: RenewalFailure[]): boolean {
   if (failures.some(failure => failure.kind === "other" && failure.seenAtMs > sinceMs)) return true;
   return WORKER_ACTION_PREFIXES.some(prefix => {
     const [from, to] = actionRange(prefix);
-    return !!db.query(`SELECT 1 FROM session_peer_requests r WHERE r.action_id>=? AND r.action_id<? AND r.outcome IS NOT NULL AND r.outcome NOT IN ('failed','canceled')
+    return !!db.query(`SELECT 1 FROM session_peer_requests r WHERE r.action_id>=? AND r.action_id<? AND r.outcome IN ('answered','decision_needed')
         AND EXISTS(SELECT 1 FROM session_peer_events e WHERE e.request_id=r.request_id AND e.kind='final' AND e.created_at_ms>?)
-      UNION ALL SELECT 1 FROM session_external_requests r WHERE r.agent_name='signin-renewal' AND r.action_id>=? AND r.action_id<? AND r.outcome IS NOT NULL AND r.outcome NOT IN ('failed','canceled')
+      UNION ALL SELECT 1 FROM session_external_requests r WHERE r.agent_name='signin-renewal' AND r.action_id>=? AND r.action_id<? AND r.outcome IN ('answered','decision_needed')
         AND EXISTS(SELECT 1 FROM session_external_replies x WHERE x.request_id=r.request_id AND x.final=1 AND x.created_at_ms>?) LIMIT 1`)
       .get(from, to, sinceMs, from, to, sinceMs);
   });
