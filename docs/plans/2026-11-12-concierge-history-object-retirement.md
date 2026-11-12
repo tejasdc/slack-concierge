@@ -82,6 +82,11 @@ It measures actual allocated bytes before and after, including the mirror, and
 reports the row counts in reference and fallback forms. A comparison or proof
 failure leaves the old snapshot and mirror intact.
 
+Object matching scans raw lines once with bounded memory and looks up candidate
+SDK rows through the snapshot's UUID index. It never loads a whole large
+conversation's parsed rows into the migration process. Duplicate UUIDs, oversized
+or incomplete lines, and any SDK/raw message mismatch keep full rows.
+
 After host install, one guarded migration can publish only verified reference
 rows atomically and retire only the superseded full-row payloads. A rollback
 reads the retained object and reconstructs the old snapshot before downgrading
@@ -89,6 +94,19 @@ the application; object GC remains disabled. Concierge's ordinary deployment
 path, independent runtime review, and installed page/detail reads are required
 before reporting a user-visible or space result. The installed release and raw
 object restore proof are distinct evidence.
+
+## Decision case
+
+The objective is allocated-byte reduction with unchanged Sessions behavior and
+recovery. Keeping full rows wins on immediate availability and rollback and saves
+no cache bytes. Compressing full rows could save bytes without a new custody
+dependency, but still stores another complete copy of their content and adds
+decompression to every page/detail read; its benefit is unmeasured here. Selective
+references can remove payload bytes already held by the host object while keeping
+SDK metadata, but depend on proof, restore, and a new reader. No option is ranked
+by an unmeasured estimate. The migration report must show actual referenced and
+fallback rows, baseline and final allocated bytes, and page/detail latency before
+choosing whether reference retirement is worth its ongoing maintenance.
 
 ## Missing host interface
 

@@ -12,6 +12,48 @@ export type RawMessageSpanIndex = {
   spansByOrdinal: Map<number, RawMessageSpan>;
 };
 
+export type RawLineScan = { sourceSha256: string; sourceBytes: number; oversizedLine: boolean };
+
+/** A bounded byte scan; callers may index rows in SQLite instead of retaining them in memory. */
+export async function scanRawMessageLines(
+  path: string, onLine: (line: Buffer, span: RawMessageSpan) => void,
+): Promise<RawLineScan> {
+  const digest = createHash("sha256");
+  let position = 0;
+  let lineStart = 0;
+  let lineBytes = 0;
+  let lineParts: Buffer[] = [];
+  let oversized = false;
+  let hadOversizedLine = false;
+  const append = (part: Buffer) => {
+    lineBytes += part.length;
+    if (lineBytes > MAX_REFERENCED_LINE_BYTES) { oversized = true; hadOversizedLine = true; lineParts = []; }
+    else if (!oversized && part.length) lineParts.push(part);
+  };
+  for await (const chunk of createReadStream(path, { highWaterMark: 1024 * 1024 })) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    digest.update(bytes);
+    const chunkStart = position;
+    position += bytes.length;
+    let start = 0;
+    for (let end = bytes.indexOf(10); end >= 0; start = end + 1, end = bytes.indexOf(10, start)) {
+      append(bytes.subarray(start, end));
+      if (lineBytes && !oversized) {
+        const line = Buffer.concat(lineParts, lineBytes);
+        onLine(line, { offset: lineStart, length: line.length,
+          sha256: createHash("sha256").update(line).digest("hex") });
+      }
+      lineStart = chunkStart + end + 1;
+      lineBytes = 0;
+      lineParts = [];
+      oversized = false;
+    }
+    append(bytes.subarray(start));
+  }
+  // Incomplete trailing bytes contribute to the source digest, but are never rows.
+  return { sourceSha256: digest.digest("hex"), sourceBytes: position, oversizedLine: hadOversizedLine };
+}
+
 export function readSdkMessageFromRawSpan(
   objectPath: string, metadata: Omit<SessionMessage, "message">, span: RawMessageSpan,
 ): SessionMessage {
@@ -57,59 +99,20 @@ export async function matchingRawMessageSpans(
   }
   const seen = new Set<string>();
   const matches = new Map<number, RawMessageSpan>();
-  const digest = createHash("sha256");
-  let position = 0;
-  let lineStart = 0;
-  let lineBytes = 0;
-  let lineParts: Buffer[] = [];
-  let oversized = false;
-  let hadOversizedLine = false;
-  const append = (part: Buffer) => {
-    lineBytes += part.length;
-    if (lineBytes > MAX_REFERENCED_LINE_BYTES) { oversized = true; hadOversizedLine = true; lineParts = []; }
-    else if (!oversized && part.length) lineParts.push(part);
-  };
-  for await (const chunk of createReadStream(path, { highWaterMark: 1024 * 1024 })) {
-    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    digest.update(bytes);
-    const chunkStart = position;
-    position += bytes.length;
-    let start = 0;
-    for (let end = bytes.indexOf(10); end >= 0; start = end + 1, end = bytes.indexOf(10, start)) {
-      append(bytes.subarray(start, end));
-      if (lineBytes && !oversized) {
-        const line = Buffer.concat(lineParts, lineBytes);
-        let raw: any;
-        try { raw = JSON.parse(line.toString("utf8")); } catch { raw = null; }
-        const uuid = raw?.uuid;
-        const ordinal = typeof uuid === "string" ? requested.get(uuid) : undefined;
-        if (ordinal !== undefined && !ambiguous.has(uuid)) {
-          if (seen.has(uuid)) { ambiguous.add(uuid); matches.delete(ordinal); }
-          else {
-            seen.add(uuid);
-            const sdk = rows[ordinal]!;
-            if (raw.type === sdk.type && raw.sessionId === sdk.session_id
-              && isDeepStrictEqual(raw.message, sdk.message)) {
-              matches.set(ordinal, {
-                offset: lineStart,
-                length: line.length,
-                sha256: createHash("sha256").update(line).digest("hex"),
-              });
-            }
-          }
-        }
-      }
-      lineStart = chunkStart + end + 1;
-      lineBytes = 0;
-      lineParts = [];
-      oversized = false;
-    }
-    append(bytes.subarray(start));
-  }
-  // A trailing partial line is not a stable transcript row, even though it is
-  // included in the complete-file digest used for custody comparison.
+  const scan = await scanRawMessageLines(path, (line, span) => {
+    let raw: any;
+    try { raw = JSON.parse(line.toString("utf8")); } catch { raw = null; }
+    const uuid = raw?.uuid;
+    const ordinal = typeof uuid === "string" ? requested.get(uuid) : undefined;
+    if (ordinal === undefined || ambiguous.has(uuid)) return;
+    if (seen.has(uuid)) { ambiguous.add(uuid); matches.delete(ordinal); return; }
+    seen.add(uuid);
+    const sdk = rows[ordinal]!;
+    if (raw.type === sdk.type && raw.sessionId === sdk.session_id
+      && isDeepStrictEqual(raw.message, sdk.message)) matches.set(ordinal, span);
+  });
   // An unparsed oversized line might repeat a matched UUID. Keep all rows in
   // their full form rather than claiming a unique source line without proof.
-  return { sourceSha256: digest.digest("hex"), sourceBytes: position,
-    spansByOrdinal: hadOversizedLine ? new Map() : matches };
+  return { sourceSha256: scan.sourceSha256, sourceBytes: scan.sourceBytes,
+    spansByOrdinal: scan.oversizedLine ? new Map() : matches };
 }
