@@ -2,7 +2,7 @@
 failure: A job banked to run only in the quiet overnight hours sat queued through seven nights and past its expiry without starting, and nobody was told why.
 date: 2026-11-12
 fix_commits: []
-cause_status: best-explanation
+cause_status: confirmed
 ---
 
 # A quiet-only banked job never started
@@ -36,8 +36,24 @@ named the condition that held it. That gap is why the cause is labelled best-exp
 The 5 Nov repair (PR #512) was checked by a fixture that wrote the eligible account fields by hand
 in a one-session ledger, so it never exercised the forecast pass or a busy fleet.
 
+## Second, deeper cause (found during the live check)
+
+After the first fix was installed, a freshly banked quiet-only job stayed queued with no wait
+reason and no log line. The server runs the Slack-enabled owner composition (`index.ts`; its
+startup logs never include `concierge_session_owner_online`, which only the Slack-disabled
+composition writes). Saved-work upkeep (the pass that gives a banked turn its account, the expiry
+alert, and the quiet-only morning cutoff) was wired only into the Slack-disabled composition
+(`session-runtime.ts`). On the server no banked turn was ever given an account, so the claim,
+which requires one, never took any banked work: generic or quiet-only, busy fleet or idle. The
+same gap explains the silence: the expiry alert never ran (two generic banked jobs had expired on
+28 October unannounced), and a quiet-only job started by hand was never stopped at the cutoff.
+Manual start bypasses the account requirement, which is why it worked at once.
+
 ## Fix
 
+- Saved-work upkeep now lives in one module (`bot/src/banked-upkeep.ts`) that both owner
+  compositions call on every usage reading, execution change, run start and run end. Each step
+  logs `saved_work_upkeep_failed` instead of being swallowed by the usage watch.
 - Quiet-only work no longer waits for an idle fleet, in the forecast pass or the claim. It needs
   only the quiet window (before the five-minute morning cutoff) and an account with room above the
   saved-work reserve. Its run is bounded by the quiet cutoff, not by the allowance window's reset.
