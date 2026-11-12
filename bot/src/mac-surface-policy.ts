@@ -1,3 +1,5 @@
+import { parseShell } from './history-rewrite-policy';
+
 const CHROME_CONTROL=/claude[-_]in[-_]chrome/i;
 const COMPUTER_CONTROL=/cua[_-]?repl|computer[._-]?use|skycomputeruse/i;
 export const AUTHORIZED_WEB_APP='com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792';
@@ -196,6 +198,26 @@ export function macComputerUseCall(toolName:string,toolInput:unknown):boolean {
   return COMPUTER_CONTROL.test(toolName)||namedToolCall(COMPUTER_CONTROL,code);
 }
 
+function sessionReplyShape(command:string):'safe'|'unsafe'|null {
+  const commands=parseShell(command);
+  if(commands.length===0)return null;
+  const words=commands[0]!.words.map(word=>word.text);
+  const router=process.env.CONCIERGE_ROUTER_ACTIONS;
+  if(!(words[0]==='$CONCIERGE_ROUTER_ACTIONS'||Boolean(router&&words[0]===router))
+    ||words[1]!=='sessions'||words[2]!=='reply'||words.length<4)return null;
+  // The shared shell parser is broader than the syntax this exception needs.
+  // Refuse executable expansions and quoting forms it cannot prove inert.
+  if(commands[0]!.substitutions.length>0||/[`\r\n]|\$\(|[<>]\(|\$['"]/.test(command))return 'unsafe';
+  if(commands.length!==1||commands[0]!.bodies.length>0)return null;
+  return 'safe';
+}
+
+function exactCommandLiteral(quote:string,body:string):boolean {
+  if(/\\(?!['"\\])/.test(body))return false;
+  if(quote!=='"')return true;
+  try { JSON.parse('"'+body+'"'); return true; } catch { return false; }
+}
+
 /** Refuse common agent tool paths that would take over Tejas's Mac desktop. */
 export function macSurfaceRefusal(input:{command:string|null;toolName:string;toolInput:unknown;need:RecordedNeed;platform:string}):string|null {
   const {command,toolName,toolInput,need,platform}=input;
@@ -265,6 +287,18 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
     return readOnlyFocusHelperCommand(source)||authorizedNativeFocusCommand(need,source)?null:focusHelperRefusal(need);
   if(/^(?:rg|grep|sed|cat|ls|head|tail|find|ps|stat|git\s+diff)\b/i.test(source.trim())
       && !/[;&|`\n]|\$\(/.test(source))return null;
+  // A reply's quoted diagnostic is data for Concierge. Only the single parsed
+  // router command receives this exception; chained or substituted actions still
+  // go through the Mac browser and desktop checks below.
+  if(platform==='darwin') {
+    if(literalCommands.some(match=>!exactCommandLiteral(match[1]!,match[2]!)))
+      return 'Escaped Mac shell commands are refused when the guard cannot read their exact text. Use a direct command or literal reply text.';
+    const replySource=code?literalCommands.map(match=>match[1]==='"'
+      ?JSON.parse('"'+match[2]+'"') as string:match[2]!.replace(/\\(['"\\])/g,'$1')).join('\n'):source;
+    const reply=sessionReplyShape(replySource);
+    if(reply==='safe')return null;
+    if(reply==='unsafe')return 'Shell expansions in a Concierge reply are refused on Tejas’s Mac. Send the diagnostic as literal text.';
+  }
   const remote=/\bssh\b[^\n]{0,400}\btejasdc@(?:100\.90\.183\.122|[\w.-]+)\b/i.test(source);
   if(platform!=='darwin'&&!remote)return null;
   if(remote&&/\bagent-browser\s+(?!skills\b)(?:--[^\s]+\s+)*(?:open|click|fill|type|connect|tab|eval|snapshot|screenshot)\b|\bplaywright\s+(?:open|codegen|test)\b/i.test(source))
