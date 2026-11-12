@@ -9,8 +9,8 @@ process.env.CONCIERGE_STATE_DIR=scratch;
 process.env.CONCIERGE_CAPTURE_STATE_DIR=join(scratch,'capture');
 process.env.CONCIERGE_TEST_MODE='1';
 process.env.CONCIERGE_TEST_AUTHORIZATION=IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION;
-const [{db,claimNextQueuedTurn},{createNativeSession,retainSessionInput,enqueueSessionInput},{implementationEditDecision}]=await Promise.all([
-  import('../src/state'),import('../src/session-inputs'),import('../src/implementation-edit-gate')]);
+const [{db,claimNextQueuedTurn},{createNativeSession,retainSessionInput,enqueueSessionInput,sessionMetadata},{implementationEditDecision},{SessionOwner},{SessionCommunicationCoordinator}]=await Promise.all([
+  import('../src/state'),import('../src/session-inputs'),import('../src/implementation-edit-gate'),import('../src/session-owner'),import('../src/session-communication')]);
 try{
   const parent=createNativeSession('codex',{title:'parent',summary:undefined,purpose:'develop',origin:'native',model:'gpt-6.1-sol'});
   db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run('parent-thread',parent.id);
@@ -70,5 +70,20 @@ try{
   assert.equal(claudeEdit('parent-fifth').hold,true,'Claude helper edits do not consume or release the parent gate');
   assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_helper_edit'").get(claudeTurn) as any).count,5);
   assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit'").get(claudeTurn) as any).count,4);
-  console.log('implementation edit gate: exact handoff releases retry; helper execution and model stay separate');
+  const owner=new SessionOwner({available:()=>true,wake:()=>{},stop:async()=>false,steer:()=>false,
+    capabilities:()=>({models:['gpt-6-astra','gpt-6-sol']})} as any,scratch);
+  const human=await owner.create({clientActionId:'human-astra',provider:'codex',purpose:'chat',model:'gpt-6-astra'});
+  const humanId=Number(human.session.id.replace('concierge:',''));
+  db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run('human-astra-thread',humanId);
+  const communication=new SessionCommunicationCoordinator({owner,isOwnerAlive:()=>true,onError:()=>{}});
+  assert.equal(sessionMetadata((db.query('SELECT * FROM sessions WHERE id=?').get(humanId) as any)).explicitThinkingModelChoice,'gpt-6-astra');
+  assert.equal((db.query("SELECT json_extract(payload_json,'$.reason') AS reason FROM session_owner_events WHERE session_id=? AND kind='model_escalation'").get(humanId) as any).reason,'explicit human model choice');
+  assert.equal(communication.modelStartGate({providerSessionId:'human-astra-thread',model:'gpt-6-astra'}).allowed,true);
+  owner.action(human.session.id,{clientActionId:'human-sol',action:{kind:'model',value:'gpt-6-sol'}});
+  assert.equal(sessionMetadata((db.query('SELECT * FROM sessions WHERE id=?').get(humanId) as any)).explicitThinkingModelChoice,'gpt-6-sol');
+  assert.equal(communication.modelStartGate({providerSessionId:'human-astra-thread',model:'gpt-6-astra'}).allowed,false);
+  owner.action(human.session.id,{clientActionId:'human-astra-again',action:{kind:'model',value:'gpt-6-astra'}});
+  assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE session_id=? AND kind='model_escalation'").get(humanId) as any).count,2);
+  assert.equal(communication.modelStartGate({providerSessionId:'human-astra-thread',model:'gpt-6-astra'}).allowed,true);
+  console.log('implementation edit gate: exact handoff, helper separation and human model-picker custody passed');
 }finally{db.close();rmSync(scratch,{recursive:true,force:true});}

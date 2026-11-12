@@ -819,6 +819,8 @@ export class SessionCommunicationCoordinator {
         const session=db.query("SELECT id FROM sessions WHERE provider_id='codex' AND agent_session_uuid=? LIMIT 1")
             .get(input.providerSessionId) as {id:number}|null;
         if(!session)return {known:false};
+        if(sessionMetadata(getSessionById(session.id)!).model!==input.model)
+            return {known:true,allowed:false,message:'This Codex session is not currently set to GPT-6 Astra. Choose its current model or select Astra explicitly.'};
         const event=db.query(`SELECT payload_json FROM session_owner_events WHERE session_id=? AND kind='model_escalation'
             AND json_extract(payload_json,'$.model')='gpt-6-astra' ORDER BY sequence DESC LIMIT 1`)
             .get(session.id) as {payload_json:string}|null;

@@ -691,6 +691,12 @@ Astra reason; a direct native run uses its stated `CODEX_ESCALATION_REASON`.
 An environment string cannot establish Tejas's choice: direct starts must give
 the qualifying escalation reason even if the string claims he chose Astra.
 An owner-verified human choice remains exempt on the Concierge path.
+The human-facing model picker retains an explicit thinking-model choice when it
+creates or changes a session, and records an explicit Astra/Fable choice before
+the next provider start. A later model change replaces that exemption; the
+native Astra prompt check compares the current session model with its recorded
+authorization so an older selection cannot authorize a new prompt after a
+change away from Astra.
 It rejects an unexplained Astra prompt; the wrapper still checks command-line
 starts. The usage report flags transcript Fable/Astra calls that lack a matching
 record, including a newly discovered bypass.
