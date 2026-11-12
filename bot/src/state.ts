@@ -780,6 +780,8 @@ CREATE INDEX IF NOT EXISTS executions_open ON executions(turn_id) WHERE state IN
 -- Joins from a turn to its execution attempt; without it SQLite built a temporary index over every
 -- execution on each ghost-turn sweep (2026-11-04).
 CREATE INDEX IF NOT EXISTS executions_turn ON executions(turn_id,dispatch_attempt);`);
+// The parked-run sweep's way to a Codex turn released when it parked (executions.ts, 2026-11-12).
+db.exec("CREATE INDEX IF NOT EXISTS executions_released_codex ON executions(updated_at_ms) WHERE supervisor='codex-daemon' AND state='released'");
 addColumn('executions','adopted_live','adopted_live INTEGER NOT NULL DEFAULT 0');
 addColumn('executions','host_digest','host_digest TEXT');
 addColumn('pending_sign_ins','runner_name','runner_name TEXT');
