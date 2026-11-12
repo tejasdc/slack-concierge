@@ -45,6 +45,17 @@ export function captureUsageLedgerSnapshot(ledger:Database,sinceMs:number):Usage
   for(const event of priorAccounts){const id=event.session_id as number;
     if(sessionIds.has(id)&&!seenAccounts.has(id)){events.push(event);seenAccounts.add(id);}}
   events.push(...byIds('account','session_id',recentSessionIds,'AND created_at>=?',[since]));
+  // One earliest authorization per session/model is sufficient to explain any later
+  // call; retain it without turning it into a new event in the reporting window.
+  for(let start=0;start<recentSessionIds.length;start+=1000){
+    const chunk=recentSessionIds.slice(start,start+1000);
+    events.push(...ledger.query(`SELECT sequence,session_id,turn_id,kind,payload_json,created_at FROM (
+      SELECT sequence,session_id,turn_id,kind,payload_json,created_at,
+        row_number() OVER (PARTITION BY session_id,json_extract(payload_json,'$.model') ORDER BY created_at,sequence) AS rank
+      FROM session_owner_events WHERE kind='model_escalation' AND created_at<?
+        AND session_id IN (${chunk.map(()=>'?').join(',')})
+    ) WHERE rank=1`).all(since,...chunk) as Row[]);
+  }
   events.push(...ledger.query(`SELECT sequence,session_id,turn_id,kind,payload_json,created_at FROM session_owner_events
     WHERE kind='model_escalation' AND created_at>=?`).all(since) as Row[]);
   events.push(...ledger.query(`SELECT sequence,session_id,turn_id,kind,payload_json,created_at FROM session_owner_events
