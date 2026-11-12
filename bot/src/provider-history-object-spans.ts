@@ -1,9 +1,13 @@
 import { createHash } from "node:crypto";
-import { createReadStream, closeSync, openSync, readSync } from "node:fs";
+import { createReadStream, closeSync, lstatSync, openSync, readFileSync, readSync } from "node:fs";
+import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 
 const MAX_REFERENCED_LINE_BYTES = 64 * 1024 * 1024;
+const HOST_OBJECT_ROOT = "/root/transcript-objects";
+const HEX_SHA256 = /^[a-f0-9]{64}$/;
+const PLAN_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 
 export type RawMessageSpan = { offset: number; length: number; sha256: string };
 export type RawMessageSpanIndex = {
@@ -13,6 +17,55 @@ export type RawMessageSpanIndex = {
 };
 
 export type RawLineScan = { sourceSha256: string; sourceBytes: number; oversizedLine: boolean };
+
+type HostObjectProof = {
+  schema: number; sha256: string; bytes: number; snapshot: string;
+  verifiedAt: string; plan: string; planDigest: string;
+};
+
+/** An absent or invalid proof leaves the row in its existing full SDK form. */
+export async function provenHostTranscriptObject(
+  sha256: string, bytes: number, root = HOST_OBJECT_ROOT,
+): Promise<string | null> {
+  if (!HEX_SHA256.test(sha256) || !Number.isSafeInteger(bytes) || bytes < 0) return null;
+  const readJson = (path: string): any => {
+    const info = lstatSync(path);
+    if (!info.isFile() || info.isSymbolicLink()) throw new Error("INVALID_HISTORY_OBJECT_PROOF");
+    return JSON.parse(readFileSync(path, "utf8"));
+  };
+  try {
+    const finder = readJson(join(root, "proofs", "by-object", `${sha256}.json`)) as HostObjectProof;
+    if (finder?.schema !== 1 || finder.sha256 !== sha256 || finder.bytes !== bytes
+      || !HEX_SHA256.test(finder.planDigest) || !HEX_SHA256.test(finder.snapshot)
+      || !PLAN_ID.test(finder.plan) || typeof finder.verifiedAt !== "string") return null;
+    const planPath = join(root, "plans", `${finder.plan}.json`);
+    const planInfo = lstatSync(planPath);
+    if (!planInfo.isFile() || planInfo.isSymbolicLink()) return null;
+    const planBytes = readFileSync(planPath);
+    if (createHash("sha256").update(planBytes).digest("hex") !== finder.planDigest) return null;
+    const plan = JSON.parse(planBytes.toString("utf8"));
+    const proof = readJson(join(root, "proofs", `${finder.plan}.json`));
+    const backup = readJson(join(root, "backups", `${finder.plan}.json`));
+    if (plan?.schema !== 1 || plan.id !== finder.plan || !Array.isArray(plan.files)
+      || !plan.files.some((file: any) => file?.digest === sha256 && file?.size === bytes)
+      || proof?.schema !== 1 || proof.plan !== finder.plan || proof.planDigest !== finder.planDigest
+      || proof.snapshot !== finder.snapshot || !Array.isArray(proof.objects)
+      || !proof.objects.includes(sha256) || backup?.schema !== 1
+      || backup.planDigest !== finder.planDigest || backup.snapshot !== finder.snapshot) return null;
+    const objectPath = join(root, "sha256", sha256.slice(0, 2), sha256);
+    const info = lstatSync(objectPath);
+    if (!info.isFile() || info.isSymbolicLink() || (info.mode & 0o777) !== 0o444
+      || info.size !== bytes) return null;
+    const hash = createHash("sha256");
+    for await (const chunk of createReadStream(objectPath, { highWaterMark: 1024 * 1024 })) hash.update(chunk);
+    if (hash.digest("hex") !== sha256) return null;
+    const after = lstatSync(objectPath);
+    if (!after.isFile() || after.isSymbolicLink() || after.dev !== info.dev || after.ino !== info.ino
+      || after.size !== info.size || after.mtimeMs !== info.mtimeMs || after.ctimeMs !== info.ctimeMs
+      || (after.mode & 0o777) !== 0o444) return null;
+    return objectPath;
+  } catch { return null; }
+}
 
 /** A bounded byte scan; callers may index rows in SQLite instead of retaining them in memory. */
 export async function scanRawMessageLines(
