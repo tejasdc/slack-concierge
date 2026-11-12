@@ -45,8 +45,9 @@ length, and exclusively publish a missing object; it must refuse to overwrite
 an existing corrupt inode. Because the snapshot named in an old proof may age
 out under backup retention, recovery also needs a verified later snapshot
 containing the same immutable object path, or it must refuse and preserve the
-full-row fallback. The host is adding this as a command in its object-store
-delivery, not as a new service; it has not been installed or exercised yet.
+full-row fallback. The host installed this as an operator command in its
+object-store delivery and exercised a disposable 63-byte offsite restore and
+healthy no-op. That probe does not prove custody for any production transcript.
 
 The host object is the one home for raw bytes; Concierge keeps only the SDK delta
 that the raw version cannot represent. The owner-event overlay remains the home
@@ -69,6 +70,25 @@ runner and account identity is independently established; the private mirror
 pathname cannot establish that identity for host catalogue lookup. Until such a
 mapping exists, historical rows that cannot match the current verified object
 keep their full payload. Versions are never chosen by UUID alone.
+
+## Exact mapping from runner bytes to a retained object
+
+The current runner relay returns an account-scoped source fingerprint from file
+identity and timestamps, plus size and mtime; it does not return a byte digest or
+provider-home path. Concierge keeps that fingerprint with its stable mirror key
+(`runner`, `account`, session UUID and cwd). After a complete pinned relay transfer,
+it hashes the mirror's exact bytes and records the complete digest and byte count
+with that runner version. The host object can be selected only by this content
+digest and only after its plan-bound proof and bytes validate. A matching digest
+does not replace the runner/account/native identity: those remain in the cache
+metadata and determine which snapshot is served.
+
+If the archive has not yet captured that exact version, or the provider changes
+during transfer, the importer writes full SDK rows and leaves the mirror intact.
+A later proven version can be considered by a guarded migration; it never
+substitutes a newer provider file for an older snapshot row. For rows created by
+compaction-prefix SDK reads or by queued-message synthesis, the exact raw line
+and SDK message still have to match; otherwise the full row is the only form.
 
 ## Runner mirror and Codex boundary
 
@@ -145,11 +165,14 @@ choosing whether reference retirement is worth its ongoing maintenance.
 
 ## Missing host interface
 
-The host's preliminary layout names each object by the complete raw SHA-256 at
+The installed host layout names each object by the complete raw SHA-256 at
 `/root/transcript-objects/sha256/<first two hex digits>/<digest>`, with a
 per-path version catalogue under `/root/transcript-objects/catalog/by-path/`.
-The catalogue is a finder and does not prove bytes. Concierge needs the final,
-installed proof receipt for the digest and named Restic snapshot, plus an exact
-restore-by-digest operation after local loss. The host owner has not yet
-installed the store or fixed the proof schema; no source inspection of a draft
-plan is installation evidence.
+The catalogue is a finder and does not prove bytes. The installed per-object
+finder is `proofs/by-object/<digest>.json` with schema, digest, byte length,
+full Restic snapshot ID, verification time, plan UUID, and exact canonical
+plan digest. A consumer must bind this finder to the plan proof and backup
+receipt and independently hash the object; parsing the finder is insufficient.
+The installed host recovery command restores a missing digest from its named
+snapshot or an operator-selected verified later one. Production by-object proof
+and product-owned acceptance remain absent, so no Concierge row qualifies yet.

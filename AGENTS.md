@@ -112,6 +112,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   measured model calls, code edits, project, session and helper tokens follow [usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
 - External Codex resets on a saved account clear that account's older refusal on a fresh direct reading before automatic account switching; see [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md#what-the-allowance-evidence-means).
 - The Mac peer's per-session usage breakdown reads its local transcript history when it has no provider runners; stale results are marked rather than silently presented as current. See [provider usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
+- Claude history payload retirement is still a proposed cutover; preserve full SDK rows and the runner mirror until the [object-backed history plan](docs/plans/2026-11-12-concierge-history-object-retirement.md) proves exact production custody, recovery and page/detail behavior.
 - The prepared word search keeps one copy of dialogue only (tool evidence comes from the archive index) and returns freed pages without VACUUM; its size budget and the paced move from the old layout are in [prepared search](docs/architecture/PREPARED-SEARCH.md).
 - Weekly subscription allowance attribution, its coverage, and the compact Threads/Sessions lookup follow [provider usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
 
