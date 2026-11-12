@@ -13,6 +13,15 @@ failure without substituting a different provider.
 
 ## Selection and binding
 
+Claude information-only consultations retain the selected account through their restricted
+environment. Local launches carry `CLAUDE_CONFIG_DIR`; runner launches carry only
+`CONCIERGE_PROVIDER_ID` and `CONCIERGE_PROVIDER_ACCOUNT`, which the runner resolves to its
+credential-verified local home before applying the no-inheritance policy. These two identity
+fields come only from the selected turn environment, never the owner's ambient account.
+Run capability tokens and competing API credentials remain excluded, and consultation tools
+remain disabled. The release's runner-account check guards this identity boundary. See the
+[consultation login failure](../incidents/2026-11-12-consultation-used-default-login.md).
+
 ### Antigravity sessions
 
 Each Concierge instance can run Google's Antigravity CLI as a third native agent provider. A new
