@@ -413,7 +413,8 @@ export type TurnContinuationReason =
   /** The run was cut off from outside it: the Codex app server restarted itself (its own
    * updater, 2026-10-01 00:01 UTC) or the run went silent for the no-activity limit (a Mac whose
    * lid closed mid-run, 01:15 UTC). One continuation; a continuation that is cut off again is not
-   * continued, so a run that keeps dying cannot loop. */
+   * continued, so a run that keeps dying cannot loop. Claude's confirmed process exit
+   * without a terminal result uses the same budget. */
   | {kind:'interrupted'; detail:string; waitUntilMs?:number|null};
 
 /**
@@ -462,6 +463,11 @@ export function queueTurnContinuation(sourceTurnId:number,reason:TurnContinuatio
     // work at a boundary it chose ends as cancelled too, and that work is owed a continuation.
     if(!source || source.stop_requested_at || !source.ended_at
       || (reason.kind==='provider_refused'?source.status!=='error':!['done','error','cancelled'].includes(source.status)))return null;
+    // A crash after the agent declared its result is not unfinished work. Preserve that
+    // declaration, including a question waiting for him, rather than restarting it.
+    if(reason.kind==='interrupted'&&db.query(`SELECT 1 FROM session_owner_events
+      WHERE turn_id=? AND kind='turn_outcome' AND json_extract(payload_json,'$.outcome')
+        IN ('done','response','needs_you','failed') LIMIT 1`).get(sourceTurnId))return null;
     // A request may be withdrawn after its first turn ended but before a boundary creates
     // another one. Service inputs can name themselves as their source, so visit each
     // ancestry row once; UNION ALL would recurse forever on those valid inputs.
@@ -471,8 +477,9 @@ export function queueTurnContinuation(sourceTurnId:number,reason:TurnContinuatio
         SELECT parent.id,parent.source_input_id FROM session_inputs parent
           JOIN ancestry child ON parent.id=child.source_input_id
       ) SELECT 1 FROM ancestry JOIN session_communication_requests request
-        ON request.target_input_id=ancestry.id WHERE request.outcome='canceled' LIMIT 1`)
-      .get(source.accepted_input_id))return null;
+        ON request.target_input_id=ancestry.id WHERE request.outcome='canceled'
+          OR (?='interrupted' AND request.target_input_id=? AND request.outcome IS NOT NULL) LIMIT 1`)
+      .get(source.accepted_input_id,reason.kind,source.accepted_input_id))return null;
     const session=getSessionById(source.session_id);
     if(!session || session.status==='archived' || sessionMetadata(session).suspended)return null;
     // A provider refusal stopped one account, not the work: the request that turn served is still

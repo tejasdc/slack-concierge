@@ -16,9 +16,16 @@ try{
   await mkdir(secondProjects,{recursive:true});
   const count=Number(process.env.USAGE_REPORT_FIXTURE_ROWS??2001),at=new Date().toISOString();
   const lines=Array.from({length:count},(_,index)=>JSON.stringify({type:'assistant',timestamp:at,
-    message:{id:`record-${index}`,model:'claude-opus-5-5',usage:{input_tokens:17,cache_creation_input_tokens:0,
+    message:{id:`record-${index}`,model:'claude-opus-5-5',content:index===0
+      ?[{type:'tool_use',id:'edit-main',name:'Edit',input:{file_path:'example.ts'}},
+        {type:'tool_use',id:'read-main',name:'Read',input:{file_path:'example.ts'}}]:[],
+      usage:{input_tokens:17,cache_creation_input_tokens:0,
       cache_read_input_tokens:5,output_tokens:7}}})).join('\n')+'\n';
   await writeFile(join(projects,`${nativeId}.jsonl`),lines);
+  const helpers=join(projects,nativeId,'subagents');await mkdir(helpers,{recursive:true});
+  await writeFile(join(helpers,'agent-fixture.jsonl'),JSON.stringify({type:'assistant',timestamp:at,
+    message:{id:'helper-record',model:'claude-sonnet-5-5',content:[{type:'tool_use',id:'edit-helper',name:'Write',input:{file_path:'helper.ts'}}],
+      usage:{input_tokens:3,cache_creation_input_tokens:0,cache_read_input_tokens:0,output_tokens:2}}})+'\n');
   await writeFile(join(secondProjects,`${secondNativeId}.jsonl`),lines.split('\n').slice(0,3).join('\n')+'\n');
   const db=new Database(':memory:');
   db.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,agent_session_uuid TEXT,provider_id TEXT,native_metadata_json TEXT,last_turn_at TEXT);
@@ -50,12 +57,16 @@ try{
     });
   const account=result.week.accounts.find((value:any)=>value.account==='fixture@example.test');
   const other=result.week.accounts.find((value:any)=>value.account==='second@example.test');
-  if(calls!==2||result.week.callMix.totalCalls!==count+3||account?.bySession?.[0]?.sessionId!==1
-    ||account?.callMix.totalCalls!==count||result.week.cacheDiagnostics.callCount!==count+3
+  if(calls!==2||result.week.callMix.totalCalls!==count+4||account?.bySession?.[0]?.sessionId!==1
+    ||account?.callMix.totalCalls!==count+1||result.week.cacheDiagnostics.callCount!==count+4
     ||other?.bySession?.[0]?.sessionId!==2||other?.callMix.totalCalls!==3
+    ||result.week.editMix.totalEdits!==3||result.week.editMix.helperEdits!==1
+    ||account?.bySession?.[0]?.editMix?.totalEdits!==2
+    ||account?.bySession?.[0]?.editMix?.byModel?.find((model:any)=>model.model==='claude-sonnet-5-5')?.helperEdits!==1
+    ||other?.bySession?.[0]?.editMix?.mainEdits!==1
     ||result.week.cacheDiagnostics.calls.length>100||result.week.cacheDiagnostics.turns[0]?.turnId!==1
     ||result.week.attributionBuckets.length!==2
     ||result.week.attributionBuckets.some((bucket:any)=>bucket.topicId!=='topic:shared'))
     throw new Error('bounded report lost account, session, call mix or cache diagnostics');
-  console.log(`two runner report calls returned ${count+3} attributed calls with bounded diagnostics`);
+  console.log(`two runner report calls returned ${count+4} attributed calls and split edit counts with bounded diagnostics`);
 }finally{await rm(root,{recursive:true,force:true});}

@@ -42,6 +42,8 @@ export class OwnerDrainBeforeProviderAdmissionError extends Error {
 export class ProviderDispatchError extends Error {
   readonly failureClass: ProviderDispatchFailureClass;
   readonly terminalConfirmed: boolean;
+  /** The transport observed the provider process exit without a result, not a lost connection. */
+  readonly processExit: { code: number | null; signal: string | null } | null;
   readonly toolsUsed: string[];
   /** Whether the provider produced assistant content, even if its turn later failed. */
   readonly assistantOutput: boolean;
@@ -76,6 +78,7 @@ export class ProviderDispatchError extends Error {
     message: string;
     failureClass?: ProviderDispatchFailureClass;
     terminalConfirmed: boolean;
+    processExit?: { code: number | null; signal: string | null };
     toolsUsed?: string[];
     assistantOutput?: boolean;
     providerSessionId?: string | null;
@@ -92,6 +95,7 @@ export class ProviderDispatchError extends Error {
     this.name = "ProviderDispatchError";
     this.failureClass = input.failureClass || classifyProviderDispatchFailure(input.message);
     this.terminalConfirmed = input.terminalConfirmed;
+    this.processExit = input.processExit ?? null;
     this.toolsUsed = input.toolsUsed || [];
     this.assistantOutput = input.assistantOutput === true;
     this.providerSessionId = input.providerSessionId || null;

@@ -52,6 +52,7 @@ import { slackCall } from "./rate-limit";
 import { CONCIERGE_SESSION_RESPONSE_CONTRACT } from "./response-contract";
 import { agentRunEnvironment } from "./agent-run-tokens";
 import { SESSION_INPUT_INSTRUCTIONS } from "./session-input-context";
+import {isThinkingModel} from './implementation-models';
 import {
   abandonTurnArtifactBatch,
   db,
@@ -385,6 +386,13 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   let artifactBatchCreated = false;
   let providerStarted = false;
   let observedToolCount = 0;
+  const selectedRemindingModel=input.providerId==='claude-code'
+    ?input.model||getClaudePreferredModel(input.session.id,input.turnId)||sessionMetadata(input.session).model
+    :input.model??sessionMetadata(input.session).model;
+  const remindingModel=input.presentation==='native'&&!sessionMetadata(input.session).implementationFor
+    &&isThinkingModel(selectedRemindingModel);
+  const editedTools=new Set<string>();
+  let editCalls=0,reminderQueued=false;
   let observedAssistantOutput = false;
   let preserveWorkingReaction = false;
   const useAgentExperience = input.projectionMode === "agent";
@@ -760,6 +768,24 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         catch(error){log('warn','claude_cache_call_record_failed',{turn_id:input.turnId,...errorFields(error)});}
       },
       onProgress: (event) => {
+        if(remindingModel&&event.type==='tool_use'&&event.codeEdit){
+          if(!event.itemId||!editedTools.has(event.itemId)){
+            if(event.itemId)editedTools.add(event.itemId);
+            editCalls++;
+          }
+          if(editCalls>=5&&!reminderQueued){
+            reminderQueued=true;
+            const reminderId=`implementation-reminder:${input.turnId}`;
+            const prior=db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(reminderId);
+            if(!prior)input.steeringController.enqueue({clientMessageId:reminderId,
+              text:'You have made five code edits in this turn. If the design is fixed, hand the remaining implementation to a cheaper coding session with router-actions.sh sessions implement --project <registered-project> --session-name "<task>" --summary "<acceptance criterion>" <source-flags> --action-id <stable-id> -- <design and acceptance criteria>. Review its result yourself before answering Tejas. This is a reminder; continue in this session when the work still needs your judgment.',
+              onSent:()=>recordSessionEvent({eventId:reminderId,sessionId:input.session.id,
+                inputId:input.presentation==='native'?input.inputId:null,turnId:input.turnId,
+                kind:'implementation_reminder',payload:{model:selectedRemindingModel,editCalls}}),
+              onError:error=>log('warn','implementation_reminder_not_sent',{turn_id:input.turnId,error:String(error)}),
+              onAmbiguous:error=>log('warn','implementation_reminder_delivery_uncertain',{turn_id:input.turnId,error:String(error)})});
+          }
+        }
         if (event.type === 'mac_surface_activity' && input.presentation === 'native'
           && (process.platform === 'darwin' || event.activity.remoteMac)) {
           try {
@@ -1579,7 +1605,12 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         &&claudeAccountWithRoomBesides(runningClaudeAccount,runningClaudeModel)?{...refused,elsewhere:true}:refused;
       const workedOn=observedAssistantOutput || observedToolCount>0 || !!structuredFailure?.assistantOutput
         || (structuredFailure?.toolsUsed.length??0)>0 || artifactActivity;
-      const interruption=!refusal && input.providerId==='codex' && workedOn ? providerInterruptionDetail(String(error)) : null;
+      const claudeExit=input.providerId==='claude-code' && providerIdentityCompatible
+        ? structuredFailure?.processExit : null;
+      const interruption=!refusal && workedOn
+        ? claudeExit ? `Claude Code exited without a terminal result (code ${claudeExit.code ?? 'none'}, signal ${claudeExit.signal ?? 'none'})`
+          : input.providerId==='codex' ? providerInterruptionDetail(String(error)) : null
+        : null;
       let continuationTurnId:number|null=null;
       if (!failRunningTurnAndReleaseSession(input.turnId, input.ownerInstanceId, String(error),undefined,
         refusal?()=>{continuationTurnId=queueTurnContinuation(input.turnId,refusal)?.turn_id??null;}

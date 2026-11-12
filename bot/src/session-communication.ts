@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
+import {implementationAlias} from './implementation-models';
 import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, settleTurnDependencies, SETTLED_EXECUTION_SQL, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
@@ -1496,6 +1497,7 @@ export class SessionCommunicationCoordinator {
         address?: string;
         role?: string;
         provider?: string;
+        implementation?: boolean;
         smallTask?: boolean;
         hisChat?: boolean;
         /** Run the new Codex session's turns outside Concierge (outside-codex.ts); otherwise an ordinary request. */
@@ -1560,6 +1562,17 @@ export class SessionCommunicationCoordinator {
             if(!session)standingRole=agent.role;
             input=session?{...input,role:undefined,address:sessionAddress(session)}
                 :{...input,role:undefined,provider:'auto',project:standingLocation.cwd,title:input.title??agent.description};
+        }
+        if(input.implementation){
+            const sourceSession=getSessionById(actor.session)!;
+            if(sender.scope!=='work'||!actor.inputId||!input.project||!input.title||!input.summary||!input.text.trim()
+                ||input.peer||input.address||input.role||input.saved||input.outside||input.onRunner||input.thread||input.routeMessageId
+                ||input.after?.length||input.pace?.length||input.consult||input.escalationReason)
+                throw new Error('Implementation handoff needs a fixed task, local project and live work authority.');
+            if(sourceSession.provider_id!=='claude-code'&&sourceSession.provider_id!=='codex')
+                throw new Error('Implementation handoff starts from a Claude or Codex design session.');
+            input={...input,provider:implementationAlias(sourceSession.provider_id,input.provider),
+                requestedEffect:'work',return_to_requester:true};
         }
         let routedFrom:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'|'service'|'unknown';author:import('./provider-history').MessageAuthor}|null=null;
         if(input.routeMessageId!==undefined){
@@ -1641,7 +1654,7 @@ export class SessionCommunicationCoordinator {
         }
         // The thread this request works for, decided here and recorded on the request, so its
         // returns are filed there whatever input started the turn that sent it.
-        const threadRoot=routedFrom?.root??inboxRequestThread(getSessionById(actor.session)!,input.thread);
+        const threadRoot=input.implementation?null:routedFrom?.root??inboxRequestThread(getSessionById(actor.session)!,input.thread);
         if(threadRoot&&(typeof input.summary!=='string'||!input.summary.trim()||/[\r\n]/.test(input.summary)))
             throw new Error('A thread request needs a one-line summary for its visible handoff.');
         const currentInput=actor.inputId?getAcceptedSessionInput(actor.inputId):null;
@@ -1651,7 +1664,11 @@ export class SessionCommunicationCoordinator {
             throw new Error('Requester returns must be explicitly enabled.');
         const title=normalizeSessionTitle(input.title);
         let projectLocation=standingLocation;
-        if(input.provider&&input.provider!=='chatgpt'&&input.project&&!projectLocation)
+        if(input.implementation){
+            projectLocation=await this.dependencies.owner!.prepareImplementationWorktree(input.project!,actor.inputId!,input.action_id);
+            input={...input,project:`${projectLocation.name}/${projectLocation.path}`,
+                text:`Implement the fixed design below in the worktree already selected for this session. Check your changes and reply to the designing session with what changed and what you verified. The designer reviews the result before answering Tejas.\n\n${input.text}`};
+        }else if(input.provider&&input.provider!=='chatgpt'&&input.project&&!projectLocation)
             projectLocation=await this.dependencies.owner!.prepareProjectLocation(input.project);
         if(input.saved) {
             if((!input.provider&&!requestedRole)||input.peer||(!requestedRole&&!title)||input.after?.length)
@@ -1751,7 +1768,7 @@ export class SessionCommunicationCoordinator {
             ...(input.correction_of?{correctionOf:input.correction_of}:{}),
             ...(input.consult===undefined?{}:{consult:input.consult}),
             ...(input.summary?{summary:input.summary}:{}),...(input.answer_view?{answerView:input.answer_view}:{}),
-            ...(input.return_to_requester?{returnToRequester:true}:{}),
+            ...(input.return_to_requester?{returnToRequester:true}:{}),...(input.implementation?{implementation:true}:{}),
             ...(input.saved?{saved:input.saved}:{}),
             ...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),
             ...(input.outside?{outside:true}:{}),...(input.onRunner?{onRunner:true}:{}),
@@ -1860,7 +1877,7 @@ export class SessionCommunicationCoordinator {
             const firstInput={text:toChatgpt?chatgptText:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${history?.text?`${history.text}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(routedFrom)firstInput.text=`This request carries Tejas’s exact Inbox message ${routedFrom.messageId} into this session. Reply to this request; the answer appears under that message in its original thread.\n\n${firstInput.text}`;
             if(input.provider) {
-                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,escalationReason:input.escalationReason,project:input.project,projectLocation,title,summary:input.summary,smallTask:input.smallTask,outside:input.outside,onRunner:input.onRunner,standingRole,firstInput,saved:input.saved});
+                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,escalationReason:input.escalationReason,project:input.project,projectLocation,title,summary:input.summary,smallTask:input.smallTask,outside:input.outside,onRunner:input.onRunner,standingRole,implementation:input.implementation,firstInput,saved:input.saved});
                 target={session:created.session_id,channel:null,root:null,native:true};
             }
             if(input.saved&&requestedRole&&!input.provider){
