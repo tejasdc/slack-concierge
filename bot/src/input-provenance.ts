@@ -1,6 +1,6 @@
 import type {Database} from 'bun:sqlite';
 import {receiveSessionFromPeer} from './peer-identity';
-import {topModel} from './model-escalation';
+import {CHATGPT_THINKING_LEVELS,THINKING_MODEL_CHOICES} from './aliases';
 
 /**
  * The one walk from an accepted input to the human behind it. The owner's full record and the
@@ -14,7 +14,7 @@ export type ProvenanceInput={id:string;session_id:number;kind:string;origin:stri
   source_input_id:string|null;source_run_id:string|null;request_id:string|null;turn_id:number|null;payload_json:string};
 export type HumanIdentity={inputId:string;runId:string;sessionId:string;captureId?:string};
 export type InputProvenance={source:{inputId:string;runId:string;sessionId:string;peer?:string};requestId:string|null;
-  effectScope:'informational'|'work'|null;originatingHuman:HumanIdentity|null;peer?:string;humanModelChoices?:string[]};
+  effectScope:'informational'|'work'|null;originatingHuman:HumanIdentity|null;peer?:string;humanModelChoices?:string[];humanProviderChoices?:string[];humanChatGptEfforts?:string[]};
 /** The owner names a turn's run on first use; a read-only projection only reads it. */
 export type RunIdForTurn=(turnId:number)=>string;
 
@@ -35,9 +35,13 @@ export function inputProvenance(database:Database,input:ProvenanceInput,runIdFor
     const human=retained.originatingHuman&&typeof retained.originatingHuman.sessionId==='string'
       ?{...retained.originatingHuman,sessionId:receiveSessionFromPeer(retained.originatingHuman.sessionId,delivery.peer)}:null;
     const humanModelChoices:string[]=human&&Array.isArray(retained.humanModelChoices)
-      ?retained.humanModelChoices.filter((model:unknown):model is string=>typeof model==='string'&&!!topModel(model)):[];
+      ?retained.humanModelChoices.filter((model:unknown):model is string=>typeof model==='string'&&THINKING_MODEL_CHOICES.includes(model as any)):[];
+    const humanProviderChoices:string[]=human&&Array.isArray(retained.humanProviderChoices)
+      ?retained.humanProviderChoices.filter((provider:unknown):provider is string=>typeof provider==='string'&&['claude-code','codex','antigravity','chatgpt'].includes(provider)):[];
+    const humanChatGptEfforts:string[]=human&&Array.isArray(retained.humanChatGptEfforts)
+      ?retained.humanChatGptEfforts.filter((effort:unknown):effort is string=>typeof effort==='string'&&CHATGPT_THINKING_LEVELS.includes(effort as any)):[];
     return {source:{inputId:delivery.origin_input_id,runId:delivery.origin_run_id,sessionId:receiveSessionFromPeer(delivery.origin_session_id,delivery.peer),peer:delivery.peer},
-      requestId:candidate.request_id,effectScope,originatingHuman:human as HumanIdentity|null,peer:delivery.peer,humanModelChoices};
+      requestId:candidate.request_id,effectScope,originatingHuman:human as HumanIdentity|null,peer:delivery.peer,humanModelChoices,humanProviderChoices,humanChatGptEfforts};
   };
   const routedHuman=(candidate:ProvenanceInput):HumanIdentity|null=>{
     const routedFrom=parse(candidate.payload_json)?.routedFrom;
@@ -122,7 +126,7 @@ export function inputProvenance(database:Database,input:ProvenanceInput,runIdFor
   if(!human&&current)human=forwardedHuman(current);
   const delivered=!human&&current?peerDelivered(current):null;
   if(delivered){human=delivered.originatingHuman;effectScope=effectScope==='informational'||delivered.effectScope!=='work'?'informational':'work';}
-  return source?{source,requestId:input.request_id,effectScope,originatingHuman:human,...(delivered?{peer:delivered.peer,humanModelChoices:delivered.humanModelChoices}:{})}:null;
+  return source?{source,requestId:input.request_id,effectScope,originatingHuman:human,...(delivered?{peer:delivered.peer,humanModelChoices:delivered.humanModelChoices,humanProviderChoices:delivered.humanProviderChoices,humanChatGptEfforts:delivered.humanChatGptEfforts}:{})}:null;
 }
 
 /** The list reads the run a turn already has; it never names one. */

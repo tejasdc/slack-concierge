@@ -1,0 +1,71 @@
+import {createHash} from 'node:crypto';
+import {db,getClaudePreferredModel,getSessionById} from './state';
+import {isCodeEditTool,isThinkingModel} from './implementation-models';
+import {nativeRunId,recordSessionEvent,sessionMetadata} from './session-inputs';
+import {humanChoseThinkingModel} from './model-escalation-custody';
+
+type GateInput={providerSessionId:string;sourceRunId?:string;providerTurnId?:string;ownerTurnId?:number;toolId:string;toolName:string;toolInput?:unknown};
+type Running={id:number;session_id:number;accepted_input_id:string|null;provider_turn_id:string|null};
+const name=(value:unknown)=>typeof value==='string'&&value.length>0&&value.length<=256?value:null;
+const editEvent=(turnId:number,toolId:string)=>`implementation-edit:${turnId}:${createHash('sha256').update(toolId).digest('hex')}`;
+
+/** The owner is the sole counter writer; retries of one provider tool ID return the same decision. */
+export function implementationEditDecision(input:GateInput):{hold:boolean;message?:string;edits?:number;exempt?:string}{
+  if((!name(input.providerSessionId)&&!name(input.sourceRunId))||!name(input.toolId)||!name(input.toolName))return {hold:false};
+  if(!isCodeEditTool(input.toolName,input.toolInput))return {hold:false};
+  const session=(input.providerSessionId?db.query('SELECT id FROM sessions WHERE agent_session_uuid=? AND provider_id IN (\'claude-code\',\'codex\')')
+    .get(input.providerSessionId) as {id:number}|null:null)
+    ??(input.providerTurnId?db.query(`SELECT session.id FROM turns turn JOIN sessions session ON session.id=turn.session_id
+      WHERE turn.provider_turn_id=? AND session.provider_id='codex' AND turn.status IN ('running','delivering') LIMIT 1`)
+      .get(input.providerTurnId) as {id:number}|null:null)
+    ??(input.sourceRunId?db.query(`SELECT session.id FROM turns turn JOIN sessions session ON session.id=turn.session_id
+      WHERE turn.native_run_id=? AND session.provider_id='claude-code' AND turn.status IN ('running','delivering') LIMIT 1`)
+      .get(input.sourceRunId) as {id:number}|null:null);
+  if(!session)return {hold:false};
+  const running=db.query(`SELECT id,session_id,accepted_input_id,provider_turn_id FROM turns
+    WHERE session_id=? AND status IN ('running','delivering') ORDER BY id DESC LIMIT 2`).all(session.id) as Running[];
+  const turn=running.find(row=>input.ownerTurnId===row.id||input.providerTurnId&&input.providerTurnId===row.provider_turn_id)
+    ??(running.length===1?running[0]:null);
+  if(!turn)return {hold:true,message:'Concierge cannot identify the active turn for this code edit. Retry when its owner is available.'};
+  const bound=getSessionById(session.id)!;
+  const meta=sessionMetadata(bound);
+  const model=bound.provider_id==='claude-code'
+    ?getClaudePreferredModel(session.id,turn.id)??meta.model:meta.model;
+  if(!isThinkingModel(model))return {hold:false,exempt:'lower-tier'};
+  if(meta.implementationFor)return {hold:false,exempt:'implementation-worker'};
+  const creation=db.query("SELECT source_input_id FROM session_inputs WHERE session_id=? AND kind='create' ORDER BY rowid LIMIT 1")
+    .get(session.id) as {source_input_id:string|null}|null;
+  if(meta.explicitThinkingModelChoice===model||humanChoseThinkingModel(creation?.source_input_id??undefined,model!)
+    ||humanChoseThinkingModel(turn.accepted_input_id??undefined,model!))
+    return {hold:false,exempt:'human-model-choice'};
+  return db.transaction(()=>{
+    const key=editEvent(turn.id,input.toolId);
+    if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(key))return {hold:false,exempt:'already-counted'};
+    const edits=(db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit'").get(turn.id) as {count:number}).count;
+    const reason=db.query("SELECT json_extract(payload_json,'$.reason') AS reason FROM session_owner_events WHERE turn_id=? AND kind='implementation_top_model_reason' LIMIT 1")
+      .get(turn.id) as {reason:string}|null;
+    if(edits>=4&&!reason){
+      const source=turn.accepted_input_id;
+      const sourceFlags=source?`--source-input ${source} --source-run ${nativeRunId(turn.id)}`:'--source-input <this input> --source-run <this run>';
+      recordSessionEvent({eventId:`implementation-edit-hold:${turn.id}`,sessionId:session.id,inputId:source,turnId:turn.id,
+        kind:'implementation_edit_hold',payload:{model,afterEdits:edits}});
+      return {hold:true,edits,message:`The fifth code edit is held. If the design is fixed, hand implementation to a cheaper session: router-actions.sh sessions implement --project <registered-project> --session-name "<task>" --summary "<acceptance criterion>" ${sourceFlags} --action-id <stable-id> -- <fixed design>. To continue here, state why this turn still needs ${model}: router-actions.sh sessions edit-reason --reason "<specific reason>" ${sourceFlags} --action-id top-edit-${turn.id}. Retry the edit after that command. The designer reviews the implementer's result.`};
+    }
+    recordSessionEvent({eventId:key,sessionId:session.id,inputId:turn.accepted_input_id,turnId:turn.id,
+      kind:'implementation_edit',payload:{toolId:input.toolId,model}});
+    return {hold:false,edits:edits+1};
+  })();
+}
+
+export function recordImplementationEditReason(turnId:number,sessionId:number,inputId:string,reason:string,actionId:string){
+  const text=reason.trim();
+  if(text.length<8||text.length>1000)throw new Error('State a specific reason this turn still needs its thinking model (8–1000 characters).');
+  const prior=db.query("SELECT payload_json FROM session_owner_events WHERE turn_id=? AND kind='implementation_top_model_reason' LIMIT 1")
+    .get(turnId) as {payload_json:string}|null;
+  if(prior){const saved=JSON.parse(prior.payload_json);
+    if(saved.reason!==text)throw new Error('This turn already recorded a different reason; use the one you gave.');
+    return {turnId,reason:text,recorded:true};}
+  recordSessionEvent({eventId:`implementation-top-model-reason:${turnId}`,sessionId,inputId,turnId,
+    kind:'implementation_top_model_reason',payload:{reason:text,actionId}});
+  return {turnId,reason:text,recorded:true};
+}

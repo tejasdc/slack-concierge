@@ -477,13 +477,16 @@ const HOOK_SUFFIX = process.env.CONCIERGE_RELEASE_MANIFEST || process.env.CONCIE
 // Hook settings are created by the owner but executed by the runner. Resolve machine-owned paths
 // from that process's environment so a Claude turn never carries the owner's Bun or system paths.
 const MANAGED_HISTORY_HOOK = '"${CONCIERGE_CODEX_SYSTEM_DIR:-/etc/codex}/hooks/concierge-history-guard"';
+const MANAGED_EDIT_HOOK = '"${CONCIERGE_CODEX_SYSTEM_DIR:-/etc/codex}/hooks/concierge-implementation-edit"';
 /** Shell commands and monitors, file reads (so the Messages database refusal sees a direct read), plus browser navigation through MCP so the guard can name a website's runbook. */
 const BROWSER_AND_SHELL_MATCHER = "Bash|Monitor|Read|Grep|Glob|NotebookRead|mcp__.*|Computer|computer.*";
 export const CLAUDE_AGENT_HOOK_SETTINGS = JSON.stringify({ hooks: {
   Stop: [{ hooks: [{ type: "command",
     command: `"$CONCIERGE_BUN_BIN" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/owed-reply-stop-hook.${HOOK_SUFFIX}" claude-code`, timeout: 20 }] }],
   PreToolUse: [{ matcher: BROWSER_AND_SHELL_MATCHER, hooks: [{ type: "command",
-    command: `if [ -x ${MANAGED_HISTORY_HOOK} ]; then ${MANAGED_HISTORY_HOOK}; else "$CONCIERGE_BUN_BIN" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/history-guard.${HOOK_SUFFIX}"; fi`, timeout: 20 }] }],
+    command: `if [ -x ${MANAGED_HISTORY_HOOK} ]; then ${MANAGED_HISTORY_HOOK}; else "$CONCIERGE_BUN_BIN" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/history-guard.${HOOK_SUFFIX}"; fi`, timeout: 20 }] },
+    {matcher:'Bash|Edit|MultiEdit|Write|NotebookEdit|mcp__.*',hooks:[{type:'command',
+      command:`if [ -x ${MANAGED_EDIT_HOOK} ]; then ${MANAGED_EDIT_HOOK}; else "$CONCIERGE_BUN_BIN" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/implementation-edit-hook.${HOOK_SUFFIX}"; fi`,timeout:20}]}],
 } });
 
 export async function runClaudeCodeTurn(input: {

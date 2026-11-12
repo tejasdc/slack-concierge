@@ -81,6 +81,18 @@ function mergePeriod(parts:any[]){
   const turns=diagnostics.flatMap(value=>value.turns).sort((a,b)=>b.rewrittenInputTokens-a.rewrittenInputTokens).slice(0,100)
     .map(value=>({...value,bug:bug(value.flaggedCallCount,value.callCount,value.provider)}));
   return {...first,through:new Date().toISOString(),callMix:mix(parts.map(part=>part.callMix)),editMix:edits(parts.map(part=>part.editMix)),
+    // Every runner receives the same owner snapshot; policy requests and turn reasons count once.
+    implementation:first.implementation,
+    directTopModelWeb:{total:sum(parts.map(part=>part.directTopModelWeb?.total)),
+      byModel:countMap(parts.map(part=>part.directTopModelWeb?.byModel)),
+      bySession:parts.flatMap(part=>part.directTopModelWeb?.bySession??[])},
+    researchRoutes:first.researchRoutes,
+    escalations:{count:new Map(parts.flatMap(part=>part.escalations?.records??[]).map((row:any)=>[row.key,row])).size,
+      byModel:Object.fromEntries([...new Set(parts.flatMap(part=>part.escalations?.records??[]).map((row:any)=>row.model))]
+        .map(model=>[model,new Map(parts.flatMap(part=>part.escalations?.records??[]).filter((row:any)=>row.model===model).map((row:any)=>[row.key,row])).size])),
+      records:[...new Map(parts.flatMap(part=>part.escalations?.records??[]).map((row:any)=>[row.key,row])).values()],
+      unexplainedCalls:sum(parts.map(part=>part.escalations?.unexplainedCalls)),
+      unexplainedByModel:countMap(parts.map(part=>part.escalations?.unexplainedByModel))},
     fallbackModels:[...new Set(parts.flatMap(part=>part.fallbackModels))].sort(),accounts,scheduledFirings,
     attributionBuckets:parts.flatMap(part=>part.attributionBuckets??[]),
     cacheDiagnostics:{...first.cacheDiagnostics,ordinaryMissRate,ordinaryCallCount:ordinaryCalls,providerRates:rates,
