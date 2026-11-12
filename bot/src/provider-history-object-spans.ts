@@ -40,8 +40,9 @@ export function readSdkMessageFromRawSpan(
 
 /**
  * Find SDK rows whose message payload is exactly recoverable from one raw line.
- * The caller still has to prove custody of this complete source version before
- * replacing any stored payload. Duplicate UUIDs and incomplete lines stay full rows.
+ * Call only on a host-published immutable object, then compare sourceSha256 and
+ * sourceBytes with that object's verified receipt before replacing any payload.
+ * Duplicate UUIDs and incomplete lines stay full rows.
  */
 export async function matchingRawMessageSpans(
   path: string, rows: readonly SessionMessage[],

@@ -27,17 +27,18 @@ For every row, exactly one of these can serve its complete SDK value:
 1. A full stored row (the existing format). This is mandatory for synthetic,
    unmatched, ambiguous, or not-yet-proven rows.
 2. SDK metadata plus a span of one immutable host object, only when the raw line's
-   `type`, `uuid`, and `message` match the SDK row exactly at import, the complete
-   object digest and length match, and that exact object has successful offsite
+   `type`, `uuid`, `sessionId`, and `message` match the SDK row exactly at import,
+   the complete object digest and length match, and that exact object has successful offsite
    restore/readback proof. The span holds byte offset, length, and line digest.
 
 The decoder checks the span and digest, reads the raw `message`, and combines it
 with stored SDK metadata. If the referenced object is unavailable or changed, it
-returns incomplete coverage and invokes the host restore path; it never substitutes
-the current provider file or a same-UUID row from another version. The existing
-full row remains until the complete reference path has passed installed page and
-detail comparison and the host proof is confirmed. Before that, format changes
-may be published with full rows but no payload retirement.
+never substitutes the current provider file or a same-UUID row from another
+version. Full rows remain until an exact host restore-by-digest path can recover
+the object when local bytes vanish, and installed page/detail comparison and
+offsite proof have passed. A proof of a past restore alone is not a live recovery
+path. Before those conditions, format changes may be published with full rows but
+no payload retirement.
 
 The host object is the one home for raw bytes; Concierge keeps only the SDK delta
 that the raw version cannot represent. The owner-event overlay remains the home
@@ -45,6 +46,11 @@ for post-import accepted messages and their latest versions. A host object is
 never inferred from a pathname alone. Its catalogue and proof must name the
 digest and retained version explicitly. No object is garbage collected while a
 snapshot refers to it.
+
+An older row may be absent from the current provider file after a rewrite or
+compaction. The migration considers every proven version catalogued for that exact
+source path, newest first, and accepts a span only after exact row comparison.
+Versions are never chosen by UUID alone. Unmatched rows keep their full payload.
 
 ## Runner mirror and Codex boundary
 
@@ -88,5 +94,6 @@ object restore proof are distinct evidence.
 
 Concierge needs a machine-readable lookup from complete source SHA-256 to the
 exact immutable object and a proof receipt for that digest and named Restic
-snapshot, plus an exact restore/readback operation. The host owner is finishing
-this contract; no source inspection of a draft plan is installation evidence.
+snapshot, plus an exact restore-by-digest operation after local loss. The host
+owner is finishing the object/proof contract; no source inspection of a draft
+plan is installation evidence.
