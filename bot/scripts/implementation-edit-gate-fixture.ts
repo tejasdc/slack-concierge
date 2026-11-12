@@ -47,5 +47,28 @@ try{
   db.query("UPDATE session_communication_requests SET source_turn_id=? WHERE request_id='handoff'").run(turn);
   assert.equal(edit('fifth').hold,false,'accepted handoff releases the same held tool');
   assert.equal(edit('fifth').exempt,'already-counted');
+  db.query("UPDATE session_communication_requests SET status='failed' WHERE request_id='handoff'").run();
+  assert.equal(edit('sixth').hold,true,'a failed worker causes a new hold after the released edit');
+  assert.equal(edit('sixth').hold,true,'the new hold is idempotent');
+  db.query("UPDATE session_communication_requests SET status='admitted' WHERE request_id='handoff'").run();
+  assert.equal(edit('sixth').hold,false,'a valid handoff releases the new held edit');
+  db.query("UPDATE session_communication_requests SET status='canceled' WHERE request_id='handoff'").run();
+  assert.equal(edit('seventh').hold,true,'cancellation after release also returns a hold');
+  db.query("UPDATE turns SET status='cancelled' WHERE id=(SELECT turn_id FROM session_inputs WHERE id='request:fixture')").run();
+
+  const claude=createNativeSession('claude-code',{title:'claude parent',summary:undefined,purpose:'develop',origin:'native',model:'claude-opus-5-5'});
+  db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run('claude-parent',claude.id);
+  const claudeSource=retainSessionInput({id:'claude-source',sessionId:claude.id,scope:'fixture',actionId:'claude-source',kind:'input',origin:'agent',payload:{text:'design'}}).input;
+  enqueueSessionInput(claudeSource.id);
+  const claudeTurn=claimNextQueuedTurn('fixture')!.turn_id;
+  const claudeEdit=(toolId:string,providerAgentId?:string,ownerTurnId=claudeTurn)=>implementationEditDecision({providerSessionId:'claude-parent',ownerTurnId,providerAgentId,toolId,toolName:'Edit',toolInput:{file_path:'example.ts'}});
+  for(let i=0;i<4;i++)assert.equal(claudeEdit(`parent-${i}`).hold,false);
+  assert.equal(claudeEdit('parent-fifth').hold,true);
+  for(let i=0;i<5;i++)assert.equal(claudeEdit(`child-${i}`,'helper-one').exempt,'claude-helper');
+  assert.equal(claudeEdit('child-0','helper-one').exempt,'claude-helper');
+  assert.equal(claudeEdit('other','helper-one',999999).hold,true);
+  assert.equal(claudeEdit('parent-fifth').hold,true,'Claude helper edits do not consume or release the parent gate');
+  assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_helper_edit'").get(claudeTurn) as any).count,5);
+  assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit'").get(claudeTurn) as any).count,4);
   console.log('implementation edit gate: exact handoff releases retry; helper execution and model stay separate');
 }finally{db.close();rmSync(scratch,{recursive:true,force:true});}

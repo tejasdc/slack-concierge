@@ -314,7 +314,7 @@ function report(period:'today'|'week',since:number,zone:string){
     WHERE kind='implementation_top_model_reason' AND created_at>=?`).all(new Date(since).toISOString().slice(0,19).replace('T',' ')) as
     {session_id:number;turn_id:number;payload_json:string;created_at:string}[]).map(row=>({sessionId:row.session_id,turnId:row.turn_id,
       reason:String(JSON.parse(row.payload_json).reason??''),at:`${row.created_at}Z`}));
-  const implementationHolds=ledger.query(`SELECT session_id,turn_id FROM session_owner_events
+  const implementationHolds=ledger.query(`SELECT DISTINCT session_id,turn_id FROM session_owner_events
     WHERE kind='implementation_edit_hold' AND created_at>=?`).all(new Date(since).toISOString().slice(0,19).replace('T',' ')) as {session_id:number;turn_id:number}[];
   const sessions=new Map((ledger.query("SELECT id,agent_session_uuid,native_metadata_json,provider_id FROM sessions WHERE agent_session_uuid IS NOT NULL").all() as Session[])
     .map(s=>[`${s.provider_id}:${s.agent_session_uuid}`,s]));
