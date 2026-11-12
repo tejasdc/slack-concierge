@@ -109,6 +109,7 @@ router-actions.sh sessions topics pin|unpin <topicId> <source-flags> --action-id
 router-actions.sh sessions topics request add <topicId> <source-flags> --action-id A --title T [--source <inputId>[:passage] ...] -- <brief>
 router-actions.sh sessions topics request amend <requestId> <source-flags> --action-id A [--title T] [--source ...] -- <what changed and why>
 router-actions.sh sessions topics request link <requestId> <source-flags> --action-id A --dispatch <communicationRequestId>
+router-actions.sh sessions topics request merge <duplicateRequestId> <source-flags> --action-id A --into <keeperRequestId> -- <why they are the same request (they share a source message in two threads)>
 router-actions.sh sessions topics request close <requestId> <source-flags> --action-id A --disposition completed|declined|withdrawn|superseded|failed [--evidence <id> ...] [--human-quote "<his exact withdrawal words>"] -- <reason>
 router-actions.sh sessions topics request reopen <requestId> <source-flags> --action-id A -- <reason>
 router-actions.sh sessions topics questions <topicId> <source-flags> --action-id A --json-file <file>
@@ -221,7 +222,7 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   let verb = head!;
   if (head === "request") {
     const sub = options.shift();
-    if (!sub || !["add","amend","link","close","reopen"].includes(sub)) invalid("topics request takes add, amend, link, close or reopen.");
+    if (!sub || !["add","amend","link","merge","close","reopen"].includes(sub)) invalid("topics request takes add, amend, link, merge, close or reopen.");
     verb = `request.${sub}`;
   }
   if (head === "question") {
@@ -258,7 +259,7 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   const mutating = !["list","obligations","read","items","detail","resolve","message","questions-read","area.list","area.suggest"].includes(verb);
   const actionId = flags.get("--action-id");
   if (mutating && !actionId) invalid(`topics ${verb.replace(".", " ")} requires an explicit stable --action-id.`);
-  const takesText = ["rename","summary","close","reopen","request.add","request.amend","request.close","request.reopen","question.settle","focus"].includes(verb);
+  const takesText = ["rename","summary","close","reopen","request.add","request.amend","request.merge","request.close","request.reopen","question.settle","focus"].includes(verb);
   if (takesText && (separator < 0 || content.length !== 1 || !content[0]!.trim())) invalid(`topics ${verb.replace(".", " ")} requires exactly one nonempty text argument after --.`);
   if (!takesText && separator >= 0) invalid(`topics ${verb.replace(".", " ")} does not accept text after --.`);
   const body: Record<string, unknown> = { source, verb, ...(actionId ? { action_id: actionId } : {}) };
