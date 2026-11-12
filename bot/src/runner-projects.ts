@@ -52,7 +52,7 @@ function exactFolder(projectPath:string,path:string) {
  * Answer only the project vocabulary used by the owner. Each operation has a fixed filesystem
  * action and an authority rooted in this runner's own registered checkout.
  */
-export type RunnerProjectServices={findProviderSessionHome?:(provider:'codex'|'claude-code',account:string|null,nativeId:string)=>{account:string|null;home:string|null;transcript:string}|null;git?:(cwd:string,args:string[])=>Promise<string>};
+export type RunnerProjectServices={findProviderSessionHome?:(provider:'codex'|'claude-code',account:string|null,nativeId:string)=>{account:string|null;home:string|null;transcript:string}|null;git?:(cwd:string,args:string[])=>Promise<string>;createImplementationWorktree?:(project:string,name:string)=>Promise<void>};
 export async function serveProjectCall(method:string,params:Record<string,unknown>,services:RunnerProjectServices={}):Promise<unknown> {
   if(method==='projects.default') {
     const root=realpathSync(workspaceRoot());
@@ -125,7 +125,8 @@ export async function serveProjectCall(method:string,params:Record<string,unknow
         throw new Error('The implementation worktree path belongs to another Git checkout.');
     };
     if(!existsSync(cwd)){
-      await execFile(join(homedir(),'.local','bin','wt'),[name],{cwd:project.cwd,timeout:240000,maxBuffer:1024*1024});
+      if(services.createImplementationWorktree)await services.createImplementationWorktree(project.cwd,name);
+      else await execFile(join(homedir(),'.local','bin','wt'),[name],{cwd:project.cwd,timeout:240000,maxBuffer:1024*1024});
       await verify();
       mkdirSync(join(gitCommonDir.trim(),'concierge-implementation'),{recursive:true});
       writeFileSync(marker,`${cwd}\n`,{flag:'wx',mode:0o600});
