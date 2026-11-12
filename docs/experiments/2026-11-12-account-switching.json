@@ -272,5 +272,15 @@
     "session": "mac:314",
     "status": "admitted; exact peer request observed running at 2026-11-12T20:00:48.906Z",
     "scope": "native automatic Claude crash recovery and cancelled-before-crash control"
+  },
+  "native_pause_continuation": {
+    "request": "d6f63731-ef12-4579-a4c8-a46f87ff586e",
+    "session": "concierge:9501",
+    "address": "session:WzIsOTUwMSwxXQ",
+    "model": "gpt-6.1-sol",
+    "project": "/root/workspace/slack-concierge",
+    "machine": "server",
+    "status": "accepted; no test result claimed",
+    "scope": "remaining native Claude Pause/Continue and account movement on server and Mac; coordinates rather than repeats Mac native crash request"
   }
 }
