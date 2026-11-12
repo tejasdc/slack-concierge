@@ -499,7 +499,6 @@ async function sourceVersion(sessionUuid: string, cwd: string,machine?:HistoryMa
 
 function historyWorkerPath(){return releaseWorkerPath("provider-history-worker");}
 function historyVerifyWorkerPath(){return releaseWorkerPath("provider-history-sync-worker");}
-function historyObjectWorkerPath(){return releaseWorkerPath("provider-history-object-worker");}
 
 function queueHistoryVerification(sessionUuid:string,ownerSessionId:number) {
   if(queuedVerifications.has(sessionUuid))return queuedVerifications.get(sessionUuid);
@@ -527,7 +526,6 @@ function queueHistoryVerification(sessionUuid:string,ownerSessionId:number) {
 
 function queueCanonicalImport(sessionUuid: string, cwd: string, sourcePath: string, ownerSessionId?: number,sourceConfigDir?:string) {
   if (queuedImports.has(sessionUuid) || Date.now() < (retryImportAt.get(sessionUuid) || 0)) return;
-  let succeeded = false;
   const work = importLane.then(async () => {
     const cutoff = ownerSessionId ? (ownerDb.query("SELECT MAX(sequence) AS n FROM session_owner_events WHERE session_id=?")
       .get(ownerSessionId) as { n: number | null }).n || 0 : 0;
@@ -542,32 +540,9 @@ function queueCanonicalImport(sessionUuid: string, cwd: string, sourcePath: stri
     const timeout = setTimeout(() => child.kill(), 120_000);
     try {
       const code = await child.exited;
-      succeeded = code === 0;
       log(code === 0 ? "info" : "warn", code === 0 ? "provider_history_imported" : "provider_history_import_failed",
         { session_uuid: sessionUuid, exit_code: code });
     } finally { clearTimeout(timeout); activeImportChildren.delete(child); }
-    if (succeeded && process.env.CONCIERGE_HISTORY_OBJECT_REFERENCES === "1") {
-      let conversion: ReturnType<typeof Bun.spawn> | null = null;
-      try {
-        conversion = Bun.spawn(process.platform === "linux"
-          ? ["setpriv", "--pdeathsig", "TERM", process.execPath, "run", historyObjectWorkerPath(), sessionUuid]
-          : [process.execPath, "run", historyObjectWorkerPath(), sessionUuid], {
-            stdout: "pipe", stderr: "ignore",
-            env: { HOME: process.env.HOME || homedir(), PATH: process.env.PATH || "/usr/bin:/bin",
-              CONCIERGE_STATE_DIR: process.env.CONCIERGE_STATE_DIR! },
-          });
-        activeImportChildren.add(conversion);
-        const output = new Response(conversion.stdout).text();
-        const code = await conversion.exited;
-        if (code !== 0) throw new Error(`CONVERSION_EXIT_${code}`);
-        const converted = JSON.parse(await output) as {changed:boolean;referenced?:number;full?:number;allocatedSavedBytes?:number};
-        log("info", "provider_history_object_conversion", { session_uuid: sessionUuid, ...converted });
-      } catch (error) {
-        log("warn", "provider_history_object_conversion_skipped", {
-          session_uuid: sessionUuid, reason: error instanceof Error ? error.message : "unknown",
-        });
-      } finally { if (conversion) activeImportChildren.delete(conversion); }
-    }
   }).catch(error => log("warn", "provider_history_import_failed", {
     session_uuid: sessionUuid, reason: error instanceof Error ? error.name : "unknown" }));
   queuedImports.set(sessionUuid, work);

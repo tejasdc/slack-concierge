@@ -40,9 +40,8 @@ function syncParent(path: string) {
   try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
 }
 
-function requireQuiescentHost(allowActiveOwner = false) {
+function requireQuiescentHost() {
   for (const unit of ["concierge-bot.service", "remote-box-backup.service"]) {
-    if (allowActiveOwner && unit === "concierge-bot.service") continue;
     const check = Bun.spawnSync(["systemctl", "is-active", "--quiet", unit], { stdout: "ignore", stderr: "ignore" });
     if (check.exitCode === 0) throw new Error(`HISTORY_MIGRATION_REQUIRES_STOPPED_${unit.toUpperCase().replace(/[^A-Z]/g, "_")}`);
     if (check.exitCode !== 3) throw new Error("HISTORY_MIGRATION_HOST_STATE_UNKNOWN");
@@ -50,7 +49,7 @@ function requireQuiescentHost(allowActiveOwner = false) {
 }
 
 function withSnapshotCopy<T extends {changed: boolean}>(
-  path: string, run: (db: Database) => Promise<T>, allowActiveOwner = false,
+  path: string, run: (db: Database) => Promise<T>,
 ): Promise<T> {
   const before = fingerprint(path);
   const space = statfsSync(dirname(path));
@@ -70,7 +69,7 @@ function withSnapshotCopy<T extends {changed: boolean}>(
     const check = db.query("PRAGMA quick_check").get() as { quick_check: string } | null;
     if (check?.quick_check !== "ok") throw new Error("INVALID_HISTORY_SNAPSHOT_COPY");
     db.close();
-    requireQuiescentHost(allowActiveOwner);
+    requireQuiescentHost();
     if (!sameFingerprint(before, fingerprint(path))) throw new Error("HISTORY_SNAPSHOT_CHANGED");
     const descriptor = openSync(temporary, "r");
     try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
@@ -84,8 +83,8 @@ function withSnapshotCopy<T extends {changed: boolean}>(
   });
 }
 
-export async function migrateHistorySnapshot(sessionUuid: string, allowActiveOwner = false) {
-  requireQuiescentHost(allowActiveOwner);
+export async function migrateHistorySnapshot(sessionUuid: string) {
+  requireQuiescentHost();
   const path = snapshotPath(sessionUuid);
   const beforeAllocatedBytes = fingerprint(path).blocks * 512;
   const original = new Database(path, { readonly: true, strict: true });
@@ -164,7 +163,7 @@ export async function migrateHistorySnapshot(sessionUuid: string, allowActiveOwn
         referenced: existing.count + referenced,
         full: meta.row_count - existing.count - referenced,
         object: scan.sourceSha256 };
-    }, allowActiveOwner);
+    });
     const afterAllocatedBytes = fingerprint(path).blocks * 512;
     return { ...result, allocatedBeforeBytes: beforeAllocatedBytes,
       allocatedAfterBytes: afterAllocatedBytes,

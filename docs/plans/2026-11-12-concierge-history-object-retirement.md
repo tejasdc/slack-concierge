@@ -1,9 +1,11 @@
 # Concierge history payload retirement against retained transcript objects
 
-Status: reader and guarded converter committed; new-import conversion is
-implemented behind an inactive deployment setting. No live cache row or runner
-mirror has been retired. The host object store and restore command are installed,
-but Concierge's private state and page/detail acceptance remain separate gates.
+Status: reader, read-only allocation inventory, and stopped-service operator
+converter are committed. Automatic new-import conversion has been removed: it
+could replace a cache before a separately verified product backup existed. No
+live cache row or runner mirror has been retired. The host object store and
+restore command are installed, but Concierge's private cache backup, owner-side
+measurement, and page/detail acceptance remain separate gates.
 
 ## Requirement and current owners
 
@@ -166,21 +168,23 @@ SDK rows through the snapshot's UUID index. It never loads a whole large
 conversation's parsed rows into the migration process. Duplicate UUIDs, oversized
 or incomplete lines, and any SDK/raw message mismatch keep full rows.
 
-After host install, one guarded migration can publish only verified reference
-rows atomically and retire only the superseded full-row payloads. The importer
-first writes full rows. With the deployment setting enabled, a separate
-conversion child runs after the import child exits, while the owner holds the
-serial import lane and keeps its event loop responsive. The conversion has its
-own lifetime outside the import child's 120-second deadline. A failed or
-unproven conversion leaves full rows in service. Existing snapshots still need
-the stopped-service operator command, packaged with the sealed release so it
-can materialize full rows before an older binary is installed. A rollback
-reads the retained object and reconstructs the old snapshot before downgrading
-the application; object GC remains disabled. A repeated conversion can add
-newly proven rows while preserving earlier references. Concierge's ordinary
-deployment path, owner self-review, and installed page/detail reads are required
-before reporting a user-visible or space result. The installed release and raw
-object restore proof are distinct evidence.
+After host install, a conversion may publish only verified reference rows
+atomically and retire only the superseded full-row payloads. The importer always
+writes full rows. The stopped-service operator command is packaged with the
+sealed release; it can materialize full rows before an older binary is
+installed. The command is not yet an activation path: a product-owned, consistent
+backup of the exact cache generation and its retained object dependencies must
+be captured and restored or read back before replacement. The deployment
+controller's existing ledger backup does not include these cache files, and a
+whole-machine snapshot of a running owner does not establish a consistent cache
+cut. This backup must be bounded, tied to the cache generation, and recoverable
+without reading the live provider file. A rollback reads the retained object
+and reconstructs the old snapshot before downgrading the application; object GC
+remains disabled. A repeated conversion can add newly proven rows while
+preserving earlier references. Concierge's ordinary deployment path, owner
+self-review, and installed page/detail reads are required before reporting a
+user-visible or space result. The installed release and raw object restore
+proof are distinct evidence.
 
 ## Decision case
 
