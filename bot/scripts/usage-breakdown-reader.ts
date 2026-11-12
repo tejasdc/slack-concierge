@@ -354,7 +354,19 @@ function report(period:'today'|'week',since:number,zone:string){
     try{const event=JSON.parse(line);return typeof event.model==='string'?[{key:typeof event.attemptId==='string'?`command:${event.attemptId}`:`command:${createHash('sha256').update(line).digest('hex')}`,at:Date.parse(event.at),model:event.model,sessionId:null,
       providerSessionId:typeof event.providerSessionId==='string'?event.providerSessionId:null}]:[];}catch{return [];}
   });
-  const allEscalations=[...new Map([...sessionEscalations,...commandEscalations].map(event=>[event.key,event])).values()];
+  // The launcher and later native prompts share an attempt ID. Keep the first
+  // authorization time while retaining the provider session learned by the hook.
+  const attempts=new Map<string,typeof commandEscalations[number]>();
+  for(const event of commandEscalations){
+    const key=JSON.stringify([event.key,event.model]);
+    const prior=attempts.get(key);
+    if(!prior)attempts.set(key,{...event});
+    else if(!prior.providerSessionId||!event.providerSessionId||prior.providerSessionId===event.providerSessionId){
+      prior.at=Math.min(prior.at,event.at);
+      prior.providerSessionId??=event.providerSessionId;
+    }else attempts.set(JSON.stringify([event.key,event.model,event.providerSessionId]),{...event});
+  }
+  const allEscalations=[...sessionEscalations,...attempts.values()];
   const escalations=allEscalations.filter(event=>event.at>=since);
   const explainedTopCall=(model:string|null,sessionId:number|null,conversation:string,at:number)=>
     !topModel(model)||allEscalations.some(event=>event.model===model&&event.at<=at

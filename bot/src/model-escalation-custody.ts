@@ -12,7 +12,7 @@ export function containsHumanChoice(words:string,directive:RegExp):boolean {
     const match=directive.exec(statement);
     if(!match)return false;
     const before=statement.slice(0,match.index);
-    return !/\b(?:not|never|avoid|don't|do not|stop|without|instead of|rather than|if|unless|maybe|perhaps|can|may|shall|will|could|would|should|might|whether)\b/i.test(before)
+    return !/\b(?:not|never|avoid|don't|do not|stop|without|instead of|rather than|if|unless|when|provided|assuming|maybe|perhaps|can|may|shall|will|could|would|should|might|whether)\b/i.test(before)
       && !/\b(?:if|unless|when|provided|assuming|maybe|perhaps|might|could|would)\b/i.test(statement.slice(match.index+match[0].length));
   });
 }

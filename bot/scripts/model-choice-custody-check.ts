@@ -18,7 +18,8 @@ const cases:[string,(id:string)=>boolean][]=[
 for(const [name,chosen] of cases){
   text=`Use ${name}.`;assert.equal(chosen('human'),true,text);
   for(const phrase of [`Should I use ${name}?`,`Use ${name}?`,`Use ${name} if needed.`,
-    `If needed, use ${name}.`,`Maybe use ${name}.`,`Could we use ${name}.`]){
+    `If needed, use ${name}.`,`When needed, use ${name}.`,`Provided it is needed, use ${name}.`,
+    `Assuming it is needed, use ${name}.`,`Maybe use ${name}.`,`Could we use ${name}.`]){
     text=phrase;assert.equal(chosen('human'),false,text);
   }
   text=`Can we discuss this? Use ${name}.`;assert.equal(chosen('human'),true,text);
