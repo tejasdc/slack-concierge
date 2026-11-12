@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
+import { claudeConsultationEnvironment } from "./claude-consultation-environment";
 import { splitTurnOutcomeMarker, type TurnOutcomeMark } from "./turn-outcome-marker";
 import { claudeHistoryMessages, claudeToolNames, providerMessageObserver, type ProviderMessageCallback } from "./provider-history";
 import { log } from "./log";
@@ -400,16 +401,6 @@ function acknowledgedUserText(event: JsonValue): string | null {
     .map((block: any) => block.text)
     .join("\n");
   return text || null;
-}
-
-function claudeConsultationEnvironment(selected?: Record<string,string>): Record<string, string> {
-  const environment: Record<string, string> = { CLAUDE_CODE_SAFE_MODE: "1" };
-  for (const name of ["HOME", "PATH", "LANG", "USER", "LOGNAME", "SHELL", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR"]) {
-    const value = process.env[name];
-    if (value) environment[name] = value;
-  }
-  if(selected?.CLAUDE_CONFIG_DIR)environment.CLAUDE_CONFIG_DIR=selected.CLAUDE_CONFIG_DIR;
-  return environment;
 }
 
 export function claudeCodeArgs(input: {
