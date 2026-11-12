@@ -1,7 +1,7 @@
 ---
 failure: A banked job that paused at a planned point and then continued had its request closed as cancelled, so the asker was told the work stopped while the continuation went on to finish it.
 date: 2026-11-12
-fix_commits: []
+fix_commits: [5dc56cfb]
 cause_status: confirmed
 ---
 
