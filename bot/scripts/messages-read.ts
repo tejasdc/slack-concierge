@@ -8,6 +8,9 @@
  * read that hid or showed a code is recorded (bot/src/messages-read-log.ts).
  *
  *   router-actions.sh messages [--with <number, address or chat name>] [--q <words>] [--days <n>] [--limit <n>]
+ *   router-actions.sh messages --attachment <attachment id from a read> --to <folder>
+ *
+ * Shown texts list their attachments; the second form copies one out (bot/src/messages-attachments.ts).
  *
  * It runs only on the Mac, where the texts are; the server answers that it has none.
  */
@@ -16,33 +19,14 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { textWithholding } from '../src/text-code-withholding';
 import { recordMessagesRead } from '../src/messages-read-log';
+import { attachmentRefusal, exportAttachment, listAttachments, messageWords } from '../src/messages-attachments';
 
-const usage = 'usage: router-actions.sh messages [--with <number, address or chat name>] [--q <words>] [--days <n, default 7, max 365>] [--limit <n, default 50, max 500>]';
+const usage = 'usage: router-actions.sh messages [--with <number, address or chat name>] [--q <words>] [--days <n, default 7, max 365>] [--limit <n, default 50, max 500>]'
+  + ' | --attachment <attachment id from a read> --to <folder>';
 
 function option(args: string[], name: string): string | undefined {
   const at = args.indexOf(name);
   return at >= 0 ? args[at + 1] : undefined;
-}
-
-/**
- * The words of a message. Newer macOS leaves `text` empty and keeps them in `attributedBody`, an
- * archived NSAttributedString whose string follows "NSString" as a length-prefixed run (the same
- * reading as the Mac's sent-texts sync).
- */
-function bodyText(text: string | null, body: Uint8Array | null): string | null {
-  if (text && text.trim()) return text;
-  if (!body) return null;
-  const bytes = Buffer.from(body);
-  const start = bytes.indexOf('NSString');
-  if (start < 0) return null;
-  const plus = bytes.indexOf('+', start + 8);
-  if (plus < 0 || plus > start + 20) return null;
-  let at = plus + 1;
-  let length = bytes[at]!;
-  at += 1;
-  if (length === 0x81) { length = bytes.readUInt16LE(at); at += 2; }
-  else if (length === 0x82) { length = bytes.readUInt32LE(at); at += 4; }
-  return bytes.subarray(at, at + length).toString('utf8');
 }
 
 const args = process.argv.slice(2);
@@ -50,6 +34,17 @@ if (args.includes('--help') || args.includes('-h')) { console.log(usage); proces
 if (process.platform !== 'darwin') {
   console.log(JSON.stringify({ error: 'MESSAGES_NOT_ON_THIS_MACHINE', message: 'His texts live only on the Mac. Ask a Mac session, or read his own sent texts through thnkr.ing.' }));
   process.exit(2);
+}
+const attachmentToExport = option(args, '--attachment');
+if (args.includes('--attachment')) {
+  const folder = option(args, '--to');
+  if (!attachmentToExport || !folder) { console.error(JSON.stringify({ error: 'INVALID_ATTACHMENT_EXPORT', usage })); process.exit(2); }
+  const result = exportAttachment(attachmentToExport, folder);
+  try { recordMessagesRead({ event: 'error' in result ? 'messages_attachment_refused' : 'messages_attachment_exported', cwd: process.cwd(),
+    attachment: attachmentToExport, to: 'exported' in result ? result.exported.path : folder, error: 'error' in result ? result.error : undefined }); }
+  catch (error) { console.error(JSON.stringify({ event: 'messages_attachment_log_failed', error: String(error) })); }
+  console.log(JSON.stringify(result, null, 1));
+  process.exit('error' in result ? 2 : 0);
 }
 function bounded(raw: string | undefined, fallback: number, max: number): number {
   const value = raw === undefined ? fallback : Number(raw);
@@ -85,6 +80,7 @@ const counts: Record<string, number> = {};
 const codesShown: Record<string, number> = {};
 let withheldTotal = 0;
 let truncatedAt: string | null = null;
+const withAttachments = new Map<number, Record<string, unknown>>();
 
 // Which of the code-looking texts an agent may see is not decided here: thnkr.ing holds the one
 // rule and his allow and hide lists (its code-policy.ts), so this asks it over the same SSH every
@@ -92,7 +88,7 @@ let truncatedAt: string | null = null;
 type CodeDecision = { key: boolean; withhold: boolean; category: string | null; rule: string | null; service: string | null };
 const candidates = new Map<number, { from: string | null; text: string }>();
 const scanned = rows.filter(row => !withWhom || [row.handle, row.chat, row.chatId].filter(Boolean).join(' ').toLowerCase().includes(withWhom)).map(row => {
-  const words = bodyText(row.text, row.body);
+  const words = messageWords(row.text, row.body);
   const sender = row.mine ? null : row.handle;
   const kind = textWithholding(words, sender ?? row.chatId);
   if (kind && words && candidates.size < 1000) candidates.set(row.id, { from: sender ?? row.chatId, text: words.slice(0, 20_000) });
@@ -140,7 +136,11 @@ for (const { row, words, kind } of scanned) {
   }
   if (query && !(words ?? '').toLowerCase().includes(query)) continue;
   shown.push({ at: when, from: row.mine ? 'Tejas' : row.handle, chat: row.chat || null, text: words });
+  if (!attachmentRefusal({ mine: !!row.mine, handle: row.handle, chatId: row.chatId, words })) withAttachments.set(row.id, shown.at(-1) as Record<string, unknown>);
 }
+// Only ordinary texts carry attachments; code texts, even shown ones, and automated senders never do.
+const attachments = listAttachments([...withAttachments.keys()]);
+for (const [id, entry] of withAttachments) if (attachments.has(id)) entry.attachments = attachments.get(id);
 
 if (withheldTotal || Object.keys(codesShown).length) {
   // The answer matters more than its log line; a log that cannot be written is said on stderr.
