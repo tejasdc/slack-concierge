@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, settleTurnDependencies, SETTLED_EXECUTION_SQL, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
-import { carryingTurn, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
+import { awaitingBankedContinuation, carryingTurn, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
@@ -1265,8 +1265,9 @@ export class SessionCommunicationCoordinator {
         if (!input?.turn_id) return true;
         let turn = db.query('SELECT id,status FROM turns WHERE id=?').get(input.turn_id) as { id: number; status: string } | null;
         if (!turn) return true;
-        if (turn.status === 'error') turn = carryingTurn(turn.id) ?? turn;
-        return !['done', 'error', 'cancelled'].includes(turn.status);
+        if (awaitingBankedContinuation(turn.id)) return true;
+        if (turn.status === 'error' || turn.status === 'cancelled') turn = carryingTurn(turn.id) ?? turn;
+        return !['done', 'error', 'cancelled'].includes(turn.status) || awaitingBankedContinuation(turn.id);
     }
     private row(id: string): RequestRow {
         const row = db.query('SELECT * FROM session_communication_requests WHERE request_id=?').get(id) as RequestRow | null;
@@ -2741,9 +2742,13 @@ export class SessionCommunicationCoordinator {
         // here closed requests at 2:54 AM on 2026-10-08 whose work then resumed on the account with
         // room, and the eventual answer was refused as already settled.
         let ended: { id: number; status: string } = { id: turn.id, status: turn.status };
-        if (turn.status === 'error') {
-            // Follow the whole chain of refusals; each continuation either carries on or ends.
+        // A planned banked pause is carried on the same way; until its continuation is queued the
+        // request waits for it rather than settling as an unexplained cancellation.
+        if (awaitingBankedContinuation(turn.id)) return;
+        if (turn.status === 'error' || turn.status === 'cancelled') {
+            // Follow the whole chain of refusals and planned pauses; each continuation either carries on or ends.
             const next = carryingTurn(turn.id) ?? ended;
+            if (next.id !== turn.id && next.status === 'cancelled' && awaitingBankedContinuation(next.id)) return;
             if (!['done', 'error', 'cancelled'].includes(next.status)) return;
             if (next.status === 'done') { this.chaseStranded(request, next.id, effect); return; }
             ended = next;

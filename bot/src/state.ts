@@ -961,6 +961,10 @@ addColumn("turns", "saved_manual_start", "saved_manual_start INTEGER NOT NULL DE
 addColumn("turns", "saved_quiet_only", "saved_quiet_only INTEGER NOT NULL DEFAULT 0 CHECK(saved_quiet_only IN (0,1))");
 // Why a queued banked turn is not starting (saved-work.ts BankedWait), so a long wait names its cause.
 addColumn("turns", "saved_wait_reason", "saved_wait_reason TEXT");
+// Set before a planned banked yield cancels its run (banked-upkeep.ts): the cancellation is carried
+// on by a continuation, so the request it serves stays open (session-inputs.ts carryingTurn).
+addColumn("turns", "saved_yield_reason", "saved_yield_reason TEXT");
+db.exec("CREATE INDEX IF NOT EXISTS banked_yields_awaiting ON turns(id) WHERE saved_yield_reason IS NOT NULL AND status='cancelled'");
 addColumn("turns", "saved_repeat_ms", "saved_repeat_ms INTEGER");
 addColumn("turns", "saved_root_id", "saved_root_id INTEGER");
 addColumn("turns", "saved_sequence", "saved_sequence INTEGER");

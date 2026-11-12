@@ -424,19 +424,28 @@ export type TurnContinuationReason =
  * closed as failed on 2026-11-02.
  */
 export function carryingTurn(turnId:number):{id:number;status:string}|null {
-  const turn=db.query('SELECT id,status FROM turns WHERE id=?').get(turnId) as {id:number;status:string}|null;
+  // A turn is carried on by its continuation when the provider refused it (error) or when it was
+  // stopped at a planned banked boundary (saved_yield_reason), the 2026-11-12 case where a
+  // paused quiet-only job's request was closed as cancelled while its continuation finished it.
+  const turn=db.query('SELECT id,status,saved_yield_reason FROM turns WHERE id=?').get(turnId) as {id:number;status:string;saved_yield_reason:string|null}|null;
   if(!turn)return null;
-  const continuationOf=(id:number)=>db.query("SELECT t.id,t.status FROM session_inputs i JOIN turns t ON t.id=i.turn_id WHERE i.id=?")
-    .get(`turn-continuation:${id}`) as {id:number;status:string}|null;
+  const continuationOf=(id:number)=>db.query("SELECT t.id,t.status,t.saved_yield_reason FROM session_inputs i JOIN turns t ON t.id=i.turn_id WHERE i.id=?")
+    .get(`turn-continuation:${id}`) as {id:number;status:string;saved_yield_reason:string|null}|null;
   let current=turn;
   const seen=new Set<number>([turn.id]);
-  while(current.status==='error'){
+  while(current.status==='error'||current.status==='cancelled'&&current.saved_yield_reason!==null){
     const next=continuationOf(current.id);
     if(!next||seen.has(next.id))break;
     seen.add(next.id);
     current=next;
   }
-  return current;
+  return {id:current.id,status:current.status};
+}
+
+/** A cancelled turn whose planned banked continuation has not been queued yet. */
+export function awaitingBankedContinuation(turnId:number):boolean {
+  return !!db.query(`SELECT 1 FROM turns t WHERE t.id=? AND t.status='cancelled' AND t.saved_yield_reason IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM session_inputs i WHERE i.id='turn-continuation:'||t.id)`).get(turnId);
 }
 
 /**

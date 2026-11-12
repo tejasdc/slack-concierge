@@ -1,0 +1,48 @@
+---
+failure: A banked job that paused at a planned point and then continued had its request closed as cancelled, so the asker was told the work stopped while the continuation went on to finish it.
+date: 2026-11-12
+fix_commits: []
+cause_status: confirmed
+---
+
+# A paused banked job reported as stopped
+
+## What was seen
+
+Quiet-only banked turn 28657 (request 09226108-d761-4a30-ba7e-f737fd3f4336) was claimed at
+07:13:18 UTC on 12 November, right after a Concierge update. The saved-work upkeep asked it to
+yield at the deployment boundary (`banked_yield_failed` at 07:13:18.853: "The turn ended before
+provider cancellation was available"), and the run ended cancelled at 07:13:25.283. At 07:13:25.901
+the continuation, turn 28672, was queued as quiet-only banked work. It ran from 07:13:31 to
+07:14:05. The request had already settled as `canceled`, with "The recipient execution was
+cancelled without Tejas pressing Stop … follow it up". The asker was woken with that.
+
+## Cause
+
+When a request's turn ends, the request inspector follows a continuation only for a turn the
+provider refused (`status='error'`). A cancelled turn settled at once. A planned banked pause is a
+cancellation that the upkeep continues afterwards, in `resumeBankedAfterYield`, called once the run
+has finished. So the inspector saw the cancellation before the continuation existed, and nothing
+on the turn said a continuation was coming.
+
+## Fix
+
+- The upkeep records the planned pause on the turn (`saved_yield_reason`) before it asks the run
+  to stop.
+- `carryingTurn` follows a paused turn to its continuation, as it already did for refused turns.
+  Every caller now treats a planned pause as carried on: the request inspector, the peer request
+  view and Inbox recovery.
+- While a paused turn's continuation is not yet queued, its request waits instead of settling.
+- If the pause cannot be continued (his Stop, a withdrawn request, a session that moved on), the
+  mark is cleared and the request settles as the cancellation it is.
+- After an owner restart between the pause and its continuation, the upkeep queues the missing
+  continuation on its next pass.
+
+## Acceptance scenario
+
+- **Seed:** a quiet-only banked turn claimed at night.
+- **Action:** record a planned pause, cancel the run, then resume it.
+- **Expected:** before the resume the request is waiting; after it, the request follows the queued
+  continuation. An ordinary cancellation and a pause that cannot continue still settle at the
+  cancelled turn.
+- **Replayable offline:** yes (`bot/scripts/banked-yield-request-fixture.ts`).

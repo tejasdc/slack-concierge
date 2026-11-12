@@ -250,7 +250,10 @@ export function resumeBankedAfterYield(turnId:number,reason:'allowance_boundary'
   // turn has ended, and a source without an end is refused, leaving the run held.
   const changed=db.transaction(()=>{
     const row=savedTurn(turnId);
-    if(!row||row.status!=='cancelled'||!row.accepted_input_id)return false;
+    if(!row||row.status!=='cancelled'||!row.accepted_input_id){
+      if(row?.status!=='running'&&row?.status!=='delivering')db.query('UPDATE turns SET saved_yield_reason=NULL WHERE id=?').run(turnId);
+      return false;
+    }
     const question=reason==='quiet_boundary'
       ?'Quiet-only banked work stopped before morning. Check what the agent completed before deciding how to continue.'
       :reason==='deployment_boundary'
@@ -273,8 +276,12 @@ export function resumeBankedAfterYield(turnId:number,reason:'allowance_boundary'
     // A continuation of banked work is still banked work: without this it would be ordinary
     // work that simply runs at its time, unbound to an account and outside the reserve.
     if(continued?.turn_id&&!savedTurn(continued.turn_id))saveQueuedTurn(continued.turn_id,'banked',undefined,undefined,undefined,turnId);
+    // No continuation (a human Stop, a withdrawn request, a session that moved on): the pause is
+    // not carried on after all, so its request settles as the cancellation it is.
+    if(!continued?.turn_id)db.query('UPDATE turns SET saved_yield_reason=NULL WHERE id=?').run(turnId);
     return true;
   })();
+  executionChanged();
   return changed;
 }
 
