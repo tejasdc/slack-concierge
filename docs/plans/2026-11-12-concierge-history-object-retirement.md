@@ -186,28 +186,33 @@ self-review, and installed page/detail reads are required before reporting a
 user-visible or space result. The installed release and raw object restore
 proof are distinct evidence.
 
-The bounded backup boundary is one stopped-owner snapshot at a time. Since the
-importer writes a new SQLite file and renames it over the prior snapshot, the
-stopped snapshot inode is closed and stable. A private hard link can pin that
-exact generation without allocating another local payload copy. A targeted
-offsite snapshot must include that pinned file, identify its full snapshot ID,
-and read back its complete bytes and SQLite integrity from the named snapshot.
-Only then may conversion replace the live pathname. Keep the pin until the
-replacement has been read back through the same page/detail decoder; a crash
-leaves the previous generation available for recovery. Once it is safely
-retired, count the old inode's allocated blocks as released only if that pin
-was its last local link. The offsite receipt must name the exact pre-conversion
-generation, digest, byte count, and immutable object digests used by the new
-generation. A failed or ambiguous backup cannot authorize conversion.
+The bounded backup boundary is one completed cache snapshot at a time. The
+importer writes a new SQLite file and renames it over the prior snapshot; the
+page and verifier readers open snapshots read-only. The deployment controller
+can therefore make a private hard link to one closed snapshot inode while the
+owner runs, verify its generation and integrity, and prove that exact inode in
+the existing offsite Restic repository without allocating another local payload
+copy. The targeted snapshot must include the pinned file, identify its full
+snapshot ID, and read back its complete bytes and SQLite integrity. A later
+import may replace the live pathname while this happens; that is harmless
+because the pin preserves the exact old inode. After admission drain and owner
+stop, conversion is allowed only if the live pathname still names the pinned
+inode and generation. Otherwise skip it and prepare a new bounded batch.
 
-This uses the existing Restic repository and the deployment controller's
-stopped-owner interval; it adds no timer, credential, or long-lived service.
+Keep the pin until the replacement has been read back through the same
+page/detail decoder; a crash leaves the previous generation available for
+recovery. Once it is safely retired, count the old inode's allocated blocks as
+released only if that pin was its last local link. The offsite receipt must
+name the exact pre-conversion generation, digest, byte count, and immutable
+object digests used by the new generation. A failed or ambiguous backup cannot
+authorize conversion. This uses the existing Restic repository and the
+deployment controller's stopped-owner interval only for final identity check,
+conversion and readback; it adds no timer, credential, or long-lived service.
 An in-place SQLite backup would allocate another local payload copy and risk
 reading a live owner; an ordinary nightly whole-machine snapshot gives neither
 an exact application cut nor complete readback. The hard link plus targeted
-readback is therefore the candidate for this product, subject to measured
-runtime and disk impact before activation. It is a design, not an installed
-backup command or a completed product proof.
+readback is the candidate, subject to measured runtime and disk impact before
+activation. It is a design, not an installed backup command or product proof.
 
 ## Decision case
 
