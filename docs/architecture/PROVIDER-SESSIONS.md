@@ -670,11 +670,16 @@ recent Opus/Fable turns with editing calls, the median was two, the 75th
 percentile four, and 35 turns (18.5%) had five or more. Five catches extended
 implementation while leaving short design edits alone. Claude Code and Codex
 use their managed `PreToolUse` hooks to ask the owner before a recognized edit;
-Codex documents specialized tool paths that may bypass hooks, so its gate is a
-guardrail rather than a complete edit boundary. The report counts transcript
-edits and gate decisions separately; it does not yet reconcile every executed
-edit with a hook decision. When a hook runs and the owner cannot answer, it
-returns a refusal before the edit.
+Codex sends a shell write as one `Bash` hook call for the command, including an
+`apply_patch` invoked inside that shell; it does not send one hook per file.
+The guard inspects executable shell words, not mentions in arguments or quoted
+text. [Codex's hook contract](https://learn.chatgpt.com/docs/hooks) documents
+specialized tool paths that may bypass hooks, so its gate is a guardrail rather
+than a complete edit boundary. A completed hook that
+cannot reach the owner returns a valid denial, but Codex can proceed if the
+hook crashes, times out or returns malformed output. The report counts
+transcript edits and gate decisions separately as a coarse coverage signal; it
+does not yet reconcile every executed edit with a hook decision.
 
 A new ask declaring `--purpose research|design-critique|design-review` resolves
 to ChatGPT Pro on the asking machine before peer forwarding. An explicit other
