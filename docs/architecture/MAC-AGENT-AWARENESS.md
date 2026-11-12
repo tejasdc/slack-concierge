@@ -9,7 +9,10 @@ turn. Codex Computer Use also requires a recorded desktop-capable need, and Clau
 Chrome remains refused because it controls his personal browser. A Concierge
 session reply command may carry browser or Computer Use diagnostics as quoted report
 text: the hook parses one standalone reply command before applying Mac action rules to
-its arguments. Chained commands and command substitutions still face the action guard.
+its arguments. The exception requires exact shell text; escaped JavaScript wrappers,
+shell substitutions, and chained actions that cannot be proven inert are refused.
+The shell scanner treats only ASCII space, tab, and newline as separators, so other
+whitespace remains literal text and cannot stall the hook or hide a later action.
 This lets an agent faithfully close a request after a browser refusal without granting
 browser or desktop access.
 Concierge's own

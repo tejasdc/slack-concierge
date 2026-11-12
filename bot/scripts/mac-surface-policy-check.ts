@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {macSurfaceRefusal,RETIREMENT_FILE_MENU_PROGRAM,RETIREMENT_NEW_WINDOW_PROGRAM,UPDATE_BOUNDED_AX_PROGRAM} from '../src/mac-surface-policy';
+import {parseShell} from '../src/history-rewrite-policy';
 import {parseMachineNeed} from '../src/machine-need';
 import {deviceQuestionNamesPhysicalPrerequisite} from '../src/agent-reachable-app-question';
 
@@ -41,6 +42,11 @@ assert.match(check('"$CONCIERGE_ROUTER_ACTIONS" sessions reply request-id -- "$(
 assert.match(check('"$CONCIERGE_ROUTER_ACTIONS" sessions reply request-id -- "'+'`open -a "Google Chrome"`'+'"')??'',/refused/);
 assert.match(check(String.raw`"$CONCIERGE_ROUTER_ACTIONS" sessions reply request-id -- $'\'' ; open -a Safari ; echo $''`)??'',/refused/);
 assert.match(check('"$CONCIERGE_ROUTER_ACTIONS" sessions reply request-id -- <(open -a Safari)')??'',/refused/);
+for(const character of ['\u00a0','\f','\v','\u2028']) {
+  const command='"$CONCIERGE_ROUTER_ACTIONS" sessions reply rid -- x'+character+'# ; open -a Safari';
+  assert.equal(parseShell(command).length,2);
+  assert.match(check(command)??'',/refused|foreground/);
+}
 const wrappedReply=(literal:string)=>macSurfaceRefusal({command:null,need:'provider-renewal',platform:'darwin',toolName:'functions.exec',toolInput:{code:`text(await tools.exec_command({cmd:${literal}}));`}});
 for(const literal of [
   String.raw`'"$CONCIERGE_ROUTER_ACTIONS" sessions reply rid --summary s -- x\nopen -a Safari'`,
