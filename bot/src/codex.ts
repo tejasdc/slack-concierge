@@ -1488,6 +1488,19 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         } while (turnCursor);
         if (!turn) {
           if (--adoptedSearchesLeft <= 0) {
+            // Codex records a turn's user message when it accepts turn/start. A turn that never got
+            // a provider turn id and that the thread's whole history still lacks after every search
+            // never reached Codex, so sending it again repeats nothing: it is retried, not parked.
+            if (!input.adoptTurn?.turnId && !activeTurnId) {
+              turnSettled = true;
+              stopInactivityTimeout();
+              log("warn", "codex_adopted_turn_never_landed", { provider_thread_uuid: activeThreadId,
+                client_user_message_id: submissionClientId });
+              rejectTurn(new ProviderDispatchError({ failureClass: "retryable", terminalConfirmed: true,
+                message: "The Codex turn never reached Codex: its thread's history has no message from it.",
+                toolsUsed, providerSessionId: activeThreadId, threadScoped: true }));
+              return;
+            }
             parkUnconfirmedTurn(new Error("The Codex turn an earlier Concierge started is not in its thread's history."));
             return;
           }
@@ -1598,10 +1611,8 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       void ensureRecovered(error);
       return;
     }
-    if (!turnStartSettled) {
-      turnStartSettled = true;
-      rejectTurnStarted(error);
-    }
+    // Before turn/start nothing has been sent: the request or connect that was waiting rejects on
+    // its own and is waited out below, so the turn's start is not failed here (2026-11-12).
   });
   try {
     input.onCancellationReady?.(async () => {
@@ -1621,10 +1632,34 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         throw parkUnconfirmedTurn(error);
       }
     });
-    // The shared App Server may still be unreachable after a restart; the turn waits for it
-    // (Stop still ends the wait) rather than failing or being parked unsent.
-    if (!input.appServerClient) await Promise.race([codexAppServerReady(), stoppedBeforeSubmission]);
-    connectionGeneration = await client.connect();
+    // Nothing reaches Codex before turn/start, so a connection lost before it is waited out on this
+    // same attempt: no retry budget spent, nothing parked. On 2026-11-12 the App Server restarted
+    // for an account switch while 36 released turns were connecting; the lost connection escaped
+    // as an unknown send and all 36 were parked as possibly sent, 10 of them for 50 minutes.
+    let reconnectWaitMs = 1_000;
+    const waitOutLostConnection = async (error: unknown) => {
+      if (interruptionReason) throw interruptionReason;
+      if (!(error instanceof CodexAppServerClientError) || error.outcome !== "ambiguous"
+        || error instanceof CodexAppServerUnansweredError) throw error;
+      log("warn", "codex_connection_lost_before_submission", { ...errorFields(error),
+        wait_ms: reconnectWaitMs, client_user_message_id: submissionClientId });
+      await Promise.race([new Promise<void>((resolve) => setTimeout(resolve, reconnectWaitMs)), stoppedBeforeSubmission]);
+      reconnectWaitMs = Math.min(reconnectWaitMs * 2, 30_000);
+    };
+    const connectBeforeSubmission = async (): Promise<number> => {
+      for (;;) {
+        try {
+          // The shared App Server may still be unreachable after a restart; the turn waits for it
+          // (Stop still ends the wait) rather than failing or being parked unsent.
+          if (!input.appServerClient) await Promise.race([codexAppServerReady(), stoppedBeforeSubmission]);
+          if (interruptionReason) throw interruptionReason;
+          return await Promise.race([client.connect(), stoppedBeforeSubmission]);
+        } catch (error) {
+          await waitOutLostConnection(error);
+        }
+      }
+    };
+    connectionGeneration = await connectBeforeSubmission();
     let threadId: string;
     if (input.adoptTurn) {
       // Taken back after a Concierge restart: the daemon kept the turn. Its exact history settles it
@@ -1636,23 +1671,32 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       if (input.adoptTurn.turnId) acceptActiveTurnId(input.adoptTurn.turnId);
       await Promise.race([ensureRecovered(), turnCompletion]);
     } else {
+    let threadResponse: any;
+    for (;;) try {
     if (interruptionReason) throw interruptionReason;
     const threadParams = await codexThreadParameters(input, request, threadEnvironment);
     if (interruptionReason) throw interruptionReason;
-    let threadResponse: any;
-    try {
       // A turn reads only the thread's id, model and policy from this answer, so it never asks
       // for history. A cold resume still loads the whole rollout before answering, which on
       // 2026-11-04 took minutes for a 218 MB conversation on a swapping host. Giving up at a
       // deadline and asking again only stacked more loads and ended in a refused turn, so the
-      // turn waits for this answer while the connection lives; Stop and a disconnect end it.
+      // turn waits for this answer while the connection lives; Stop ends it, and a lost
+      // connection is waited out and the answer asked for again.
       threadResponse = sessionUUID
         ? await resumeUntilAnswered(sessionUUID, { threadId: sessionUUID, ...threadParams, excludeTurns: true })
         : await request("thread/start", threadParams);
+      break;
     } catch (error) {
       // Neither operation sends the user's input. Even if the App Server created or
-      // resumed a thread before the response was lost, a new dispatch cannot repeat
-      // the requested work because turn/start has not been called yet.
+      // resumed a thread before the response was lost, asking again cannot repeat
+      // the requested work because turn/start has not been called yet. A lost
+      // connection is the daemon's: wait it out and ask again on this attempt.
+      if (error instanceof CodexAppServerClientError && error.outcome === "ambiguous"
+        && !(error instanceof CodexAppServerUnansweredError)) {
+        await waitOutLostConnection(error);
+        connectionGeneration = await connectBeforeSubmission();
+        continue;
+      }
       if (error instanceof CodexAppServerClientError && error.outcome === "ambiguous") {
         throw new ProviderDispatchError({ message: error.message, terminalConfirmed: true,
           failureClass: "retryable", toolsUsed,
