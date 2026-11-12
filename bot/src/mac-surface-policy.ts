@@ -8,6 +8,7 @@ export const FOCUS_START_COMMAND='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-focus-a
 export const FOCUS_VERIFY_START_COMMAND='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-focus-ax.swift" verify-start';
 export const FOCUS_END_COMMAND='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-focus-ax.swift" end';
 const UPDATE_HELPER_PATH='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-update-ax.swift"';
+const FOCUS_HELPER_PATH='"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-focus-ax.swift"';
 const UPDATE_HELPER_READ_COMMANDS=new Set([
   `shasum -a 256 ${UPDATE_HELPER_PATH}`,
   `stat -f %Sp ${UPDATE_HELPER_PATH}`,
@@ -18,6 +19,16 @@ function readOnlyUpdateHelperCommand(command:string):boolean {
   if(UPDATE_HELPER_READ_COMMANDS.has(command))return true;
   const matched=command.match(/^(shasum -a 256|stat -f %Sp|swiftc -typecheck) (.+)$/);
   return matched!==null&&PINNED_UPDATE_HELPER_PATH.test(matched[2]);
+}
+const FOCUS_HELPER_READ_COMMANDS=new Set([
+  `shasum -a 256 ${FOCUS_HELPER_PATH}`,
+  `stat -f %Sp ${FOCUS_HELPER_PATH}`,
+]);
+const PINNED_FOCUS_HELPER_PATH=/^"\/Users\/tejasdc\/Library\/Application Support\/concierge\/helpers\/[0-9a-f]{40}\/bot\/scripts\/mac-focus-ax\.swift"$/;
+function readOnlyFocusHelperCommand(command:string):boolean {
+  if(FOCUS_HELPER_READ_COMMANDS.has(command))return true;
+  const matched=command.match(/^(shasum -a 256|stat -f %Sp) (.+)$/);
+  return matched!==null&&PINNED_FOCUS_HELPER_PATH.test(matched[2]);
 }
 export const AUTHORIZING_HUMAN_INPUT='f66f15dd-e251-4537-a9cd-347d0548434b';
 export const CANVAS_AUTHORIZING_HUMAN_INPUT='capture:7bad480ccf4350922acb3ac750cc0ba0b7a990f596acd92b5fe98403f6f0e7a0';
@@ -234,7 +245,7 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
     return readOnlyUpdateHelperCommand(source)||authorizedNativeUpdateCommand(need,source)?null
       :'The current Thinkering update helper requires the exact attested work request and its fixed single-action command.';
   if(platform==='darwin'&&source.includes('mac-focus-ax.swift'))
-    return authorizedNativeFocusCommand(need,source)?null
+    return readOnlyFocusHelperCommand(source)||authorizedNativeFocusCommand(need,source)?null
       :'The Focus helper requires the exact attested work request and its fixed Start, verify-start, or End command.';
   if(/^(?:rg|grep|sed|cat|ls|head|tail|find|ps|stat|git\s+diff)\b/i.test(source.trim())
       && !/[;&|`\n]|\$\(/.test(source))return null;

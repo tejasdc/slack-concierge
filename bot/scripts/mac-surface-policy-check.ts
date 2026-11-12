@@ -53,6 +53,17 @@ for(const command of [FOCUS_START_COMMAND,FOCUS_VERIFY_START_COMMAND,FOCUS_END_C
     assert.ok(macSurfaceRefusal({command,need,platform:'darwin',toolName:'exec_command',toolInput:{cmd:command}}));
   assert.ok(macSurfaceRefusal({command:command+'; /usr/bin/open -a Safari',need:focusNeed,platform:'darwin',toolName:'exec_command',toolInput:{cmd:command+'; /usr/bin/open -a Safari'}}));
 }
+const pinnedFocusHelper='"/Users/tejasdc/Library/Application Support/concierge/helpers/519ae34a143988ade441e4d9d4f84267ae165bda/bot/scripts/mac-focus-ax.swift"';
+for(const helper of ['"$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-focus-ax.swift"',pinnedFocusHelper]) {
+  for(const command of [`shasum -a 256 ${helper}`,`stat -f %Sp ${helper}`]) {
+    assert.equal(check(command,'mac-file'),null);
+    assert.ok(check(`${command}; ${FOCUS_START_COMMAND}`,'mac-file'));
+  }
+  assert.ok(check(`swift ${helper} start`,'mac-file'));
+  assert.ok(check(`swiftc -typecheck ${helper}`,'mac-file'));
+  assert.ok(check(`shasum -a 256 ${helper} extra`,'mac-file'));
+}
+assert.ok(check('shasum -a 256 "/tmp/mac-focus-ax.swift"','mac-file'));
 const focusRead='var thnkrFocusInspectionApp = await cua.getApp("com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792"); await thnkrFocusInspectionApp.getAXStateAndScreenshot()';
 assert.equal(macSurfaceRefusal({command:null,need:focusNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:focusRead}}),null);
 assert.ok(macSurfaceRefusal({command:null,need:focusNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Safari")'}}));
