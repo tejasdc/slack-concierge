@@ -2857,6 +2857,23 @@ const conciergeSessionNumber=(address:unknown):number|null=>{
  * reading cadence (every three minutes), so a reminder lands within that of its time.
  */
 /**
+ * The same check, started by a screen he opens but never awaited by it. Awaiting it made every
+ * Threads, Questions, sessions-list and session-view read wait on thnkr.ing's to-do list; when that
+ * read hit its three-second socket timeout, each list page took 3.02 s (Nov 12, 20:19 UTC). The read
+ * answers from what is already stored; a question this settles leaves through the ordinary question
+ * change path, whose live event refreshes his screen. One check runs at a time per scope.
+ */
+const todoChecksInFlight=new Map<string,Promise<number>>();
+export function closeQuestionsAnsweredByTodosSoon(admit:Parameters<typeof closeQuestionsAnsweredByTodos>[0],
+  scope:'all'|'inbox'|number='all'):void {
+  const key=String(scope);
+  if(todoChecksInFlight.has(key))return;
+  const check=closeQuestionsAnsweredByTodos(admit,scope).catch(error=>{
+    log('warn','question_todo_check_failed',{scope:key,reason:error instanceof Error?error.message.slice(0,80):'failed'});return 0;})
+    .finally(()=>todoChecksInFlight.delete(key));
+  todoChecksInFlight.set(key,check);
+}
+/**
  * A question that names the to-do it asks him to do ends when he ticks that to-do off (or drops it):
  * his tick is his answer, so the question leaves Needs you and the agent that asked is told to carry
  * on. Runs on the owner's reading cadence; one read of his to-dos covers every linked question.

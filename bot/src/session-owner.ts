@@ -91,7 +91,7 @@ import {inboxTopicList,openInboxObligationCount,openInboxObligations} from './se
 import {workThread} from './session-fit';
 import {sessionMutuals,mutualLift} from './session-mutuals';
 import {commitWork,originInput} from './commit-work';
-import {appendAgentReportObservation,closeQuestionsAnsweredByTodos,createTopicByHuman,inboxAttention,inboxMarkThrough,openAgentReport,refreshRootMemo,replyTargets,topicEntries,topicHumanAction,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
+import {appendAgentReportObservation,closeQuestionsAnsweredByTodosSoon,createTopicByHuman,inboxAttention,inboxMarkThrough,openAgentReport,refreshRootMemo,replyTargets,topicEntries,topicHumanAction,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,projectCoordinates,sessionProject,sessionProjects} from './session-projects';
 import {expandHome,isSensitiveWorkspacePath,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
@@ -4281,7 +4281,7 @@ export class SessionOwner {
         return this.stream(request,url);
       }
       if(request.method==='GET'&&parts[0]==='presentation'&&['topics','questions'].includes(parts[1]??''))
-        await closeQuestionsAnsweredByTodos(admission=>this.admit(admission),'inbox');
+        closeQuestionsAnsweredByTodosSoon(admission=>this.admit(admission),'inbox');
       if(request.method==='GET'&&parts[0]==='reports'&&parts[1]==='chain'&&parts.length===3)
         result=reportSourceChain(db,parts[2]!);
       else if(request.method==='GET'&&parts[0]==='reports'&&parts[1]==='window'&&parts.length===2)
@@ -4333,7 +4333,7 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='sessions'&&parts[2]==='window'&&parts.length===3){
         const space=sessionSpaceParam(url.searchParams.get('space'));
         if(!space)throw new SessionOwnerError('space is required: lab or everyday.');
-        await closeQuestionsAnsweredByTodos(admission=>this.admit(admission));
+        closeQuestionsAnsweredByTodosSoon(admission=>this.admit(admission));
         const attention=url.searchParams.get('needsAttention');
         if(attention!==null&&attention!=='true'&&attention!=='false')throw new SessionOwnerError('needsAttention is true or false.');
         const workflowId=url.searchParams.get('workflowId');
@@ -4488,13 +4488,13 @@ export class SessionOwner {
       }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='view'&&parts.length===3){
         const session=this.session(parts[1]!);
-        await closeQuestionsAnsweredByTodos(admission=>this.admit(admission),sessionMetadata(session).inbox?'inbox':session.id);
+        closeQuestionsAnsweredByTodosSoon(admission=>this.admit(admission),sessionMetadata(session).inbox?'inbox':session.id);
         result={session:this.view(this.session(parts[1]!))};
       }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='sessions'&&parts[3]==='attention'&&parts.length===4){
         const session=this.session(parts[2]!);
         if(!sessionMetadata(session).inbox)throw new SessionOwnerError('Paged attention belongs to the Inbox.');
-        await closeQuestionsAnsweredByTodos(admission=>this.admit(admission),'inbox');
+        closeQuestionsAnsweredByTodosSoon(admission=>this.admit(admission),'inbox');
         result=preparedInboxAttention(session.id,url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),20)??20);
       }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===2)
