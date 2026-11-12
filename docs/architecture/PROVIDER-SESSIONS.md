@@ -655,7 +655,10 @@ implementation worker and a session using Tejas's explicit model choice are
 exempt. A handoff releases the retry only when its accepted target execution
 belongs to a request from that exact turn and has not failed or been canceled.
 Codex supplies the parent session ID, active model and execution turn to its
-edit hook: a different execution is recorded separately with its actual model,
+edit hook. An outside Codex CLI turn has no turn ID in its JSON event stream;
+its prompt hook binds the provider turn ID to the one owner turn named by its
+run-scoped environment before tool calls. A mismatched or unidentified outside
+execution is still refused. A different execution is recorded separately with its actual model,
 and cannot consume the parent turn's allowance. If the parent execution or
 helper model cannot be identified, the edit is held rather than attributed by
 guess. Claude Code identifies a helper by its hook's agent ID; the owner records
@@ -667,11 +670,16 @@ recent Opus/Fable turns with editing calls, the median was two, the 75th
 percentile four, and 35 turns (18.5%) had five or more. Five catches extended
 implementation while leaving short design edits alone. Claude Code and Codex
 use their managed `PreToolUse` hooks to ask the owner before a recognized edit;
-Codex documents specialized tool paths that may bypass hooks, so its gate is a
-guardrail rather than a complete edit boundary. The report counts transcript
-edits and gate decisions separately; it does not yet reconcile every executed
-edit with a hook decision. When a hook runs and the owner cannot answer, it
-returns a refusal before the edit.
+Codex sends a shell write as one `Bash` hook call for the command, including an
+`apply_patch` invoked inside that shell; it does not send one hook per file.
+The guard inspects executable shell words, not mentions in arguments or quoted
+text. [Codex's hook contract](https://learn.chatgpt.com/docs/hooks) documents
+specialized tool paths that may bypass hooks, so its gate is a guardrail rather
+than a complete edit boundary. A completed hook that
+cannot reach the owner returns a valid denial, but Codex can proceed if the
+hook crashes, times out or returns malformed output. The report counts
+transcript edits and gate decisions separately as a coarse coverage signal; it
+does not yet reconcile every executed edit with a hook decision.
 
 A new ask declaring `--purpose research|design-critique|design-review` resolves
 to ChatGPT Pro on the asking machine before peer forwarding. An explicit other
@@ -685,9 +693,15 @@ retain their own routes. The usage report counts declared routes and reasons,
 and direct web research in top-model main conversations. Purpose is a declared
 request field; free-text inference would misclassify ordinary work.
 
-The server installs a managed Codex prompt hook from the release. Before the
-first model request, it asks the owner whether a Concierge thread has a recorded
-Astra reason; a direct native run uses its stated `CODEX_ESCALATION_REASON`.
+The server installs a managed Codex prompt hook from the release. Before an
+outside turn's first model request, it binds that turn's provider identity to
+the accepted Concierge run. For Astra, the hook asks the owner to authorize
+this exact accepted turn. Tejas's own input into a session already bound to
+Astra is recorded as his choice to continue there. An agent or automatic input
+does not inherit a prior human choice: it needs a qualifying escalation reason
+on its request, including an addressed `sessions ask --escalation-reason`.
+Refusal names Sol; neither case switches the session's model. A direct native
+run uses its stated `CODEX_ESCALATION_REASON`.
 An environment string cannot establish Tejas's choice: direct starts must give
 the qualifying escalation reason even if the string claims he chose Astra.
 An owner-verified human choice remains exempt on the Concierge path.
@@ -700,6 +714,10 @@ change away from Astra.
 It rejects an unexplained Astra prompt; the wrapper still checks command-line
 starts. The usage report flags transcript Fable/Astra calls that lack a matching
 record, including a newly discovered bypass.
+The edit classifier inspects executable shell command words; quoted tool names
+inside a report, note or other argument do not count as edits. Named edit tools
+remain the primary enforcement path, while arbitrary scripted writes remain
+outside the recognized-tool boundary.
 
 The rule lives in the catalog `model-selection` skill, which the global AGENTS.md
 points to; project AGENTS.md files point to it rather than restating it. In short:

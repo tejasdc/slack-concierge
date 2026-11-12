@@ -814,19 +814,62 @@ export class SessionCommunicationCoordinator {
     editGate(input:{providerSessionId:string;sourceRunId?:string;providerTurnId?:string;providerModel?:string;providerAgentId?:string;ownerTurnId?:number;toolId:string;toolName:string;toolInput?:unknown}) {
         return implementationEditDecision(input);
     }
-    modelStartGate(input:{providerSessionId:string;model:string}) {
-        if(input.model!=='gpt-6-astra'||typeof input.providerSessionId!=='string'||input.providerSessionId.length>256)return {known:false};
-        const session=db.query("SELECT id FROM sessions WHERE provider_id='codex' AND agent_session_uuid=? LIMIT 1")
+    modelStartGate(input:{providerSessionId:string;model:string;providerTurnId?:string;ownerTurnId?:number;sourceRunId?:string;providerAgentId?:string}) {
+        if(typeof input.providerSessionId!=='string'||!input.providerSessionId||input.providerSessionId.length>256)return {known:false};
+        let session=db.query("SELECT id FROM sessions WHERE provider_id='codex' AND agent_session_uuid=? LIMIT 1")
             .get(input.providerSessionId) as {id:number}|null;
+        if(!session&&input.ownerTurnId&&input.providerTurnId&&!input.providerAgentId){
+            const candidate=db.query(`SELECT session.id,session.agent_session_uuid FROM turns turn JOIN sessions session ON session.id=turn.session_id
+                WHERE turn.id=? AND turn.status IN ('running','delivering') AND session.provider_id='codex'`)
+                .get(input.ownerTurnId) as {id:number;agent_session_uuid:string|null}|null;
+            if(candidate&&input.sourceRunId===nativeRunId(input.ownerTurnId)
+                &&(!candidate.agent_session_uuid||candidate.agent_session_uuid===input.providerSessionId)
+                &&sessionMetadata(getSessionById(candidate.id)!).outside){
+                if(!candidate.agent_session_uuid)db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=? AND agent_session_uuid IS NULL')
+                    .run(input.providerSessionId,candidate.id);
+                session={id:candidate.id};
+            }
+        }
         if(!session)return {known:false};
-        if(sessionMetadata(getSessionById(session.id)!).model!==input.model)
-            return {known:true,allowed:false,message:'This Codex session is not currently set to GPT-6 Astra. Choose its current model or select Astra explicitly.'};
-        const event=db.query(`SELECT payload_json FROM session_owner_events WHERE session_id=? AND kind='model_escalation'
-            AND json_extract(payload_json,'$.model')='gpt-6-astra' ORDER BY sequence DESC LIMIT 1`)
-            .get(session.id) as {payload_json:string}|null;
-        const reason=event?String(JSON.parse(event.payload_json).reason??''):'';
-        const refusal=escalationReason('gpt-6-astra',reason,reason==='explicit human model choice');
-        return {known:true,allowed:!refusal,message:refusal??undefined};
+        const metadata=sessionMetadata(getSessionById(session.id)!);
+        if(input.providerAgentId&&input.model!=='gpt-6-astra')return {known:true,allowed:true};
+        if(metadata.model!==input.model)
+            return {known:true,allowed:false,message:'This Codex session is bound to another model. Choose its current model; GPT-6.1 Sol is the ordinary path.'};
+        const running=db.query(`SELECT id,accepted_input_id,provider_turn_id FROM turns WHERE session_id=?
+            AND status IN ('running','delivering') ORDER BY id DESC LIMIT 2`).all(session.id) as {id:number;accepted_input_id:string|null;provider_turn_id:string|null}[];
+        if(running.length!==1||!running[0]?.accepted_input_id)
+            return {known:true,allowed:false,message:'Concierge cannot identify this prompt’s accepted turn. Choose GPT-6.1 Sol or retry when its identity is available.'};
+        const turn=running[0];
+        // The outside CLI's JSON stream does not publish its turn ID. Its prompt hook does,
+        // together with the run-scoped owner turn and source run installed by Concierge.
+        if(metadata.outside){
+            if(!input.providerTurnId||input.ownerTurnId!==turn.id||input.sourceRunId!==nativeRunId(turn.id)
+                ||input.providerAgentId&&!turn.provider_turn_id
+                ||!input.providerAgentId&&turn.provider_turn_id&&turn.provider_turn_id!==input.providerTurnId)
+                return {known:true,allowed:false,message:'Concierge cannot identify this outside Codex execution. Retry with its run identity; choose GPT-6.1 Sol for an ordinary start.'};
+            if(!input.providerAgentId&&!turn.provider_turn_id)db.query('UPDATE turns SET provider_turn_id=? WHERE id=? AND provider_turn_id IS NULL')
+                .run(input.providerTurnId,turn.id);
+        }else if(!input.providerAgentId&&input.providerTurnId&&turn.provider_turn_id&&turn.provider_turn_id!==input.providerTurnId)
+            return {known:true,allowed:false,message:'This prompt belongs to another Codex execution. Choose GPT-6.1 Sol or retry with its own turn.'};
+        if(input.model!=='gpt-6-astra')return {known:true,allowed:true};
+        const accepted=getAcceptedSessionInput(turn.accepted_input_id);
+        if(accepted&&humanAuthored(accepted)){
+            recordSessionEvent({eventId:`model-continuation:${turn.id}`,sessionId:session.id,inputId:accepted.id,turnId:turn.id,
+                kind:'model_escalation',payload:{model:input.model,reason:'explicit human model choice',sourceInputId:accepted.id,continuation:true}});
+            return {known:true,allowed:true};
+        }
+        const creation=db.query(`SELECT payload_json FROM session_owner_events WHERE session_id=? AND input_id=?
+            AND kind='model_escalation' AND json_extract(payload_json,'$.model')=? ORDER BY sequence DESC LIMIT 1`)
+            .get(session.id,turn.accepted_input_id,input.model) as {payload_json:string}|null;
+        const request=db.query('SELECT payload_json FROM session_communication_requests WHERE target_input_id=? LIMIT 1')
+            .get(turn.accepted_input_id) as {payload_json:string}|null;
+        const reason=(creation?JSON.parse(creation.payload_json).reason:undefined)
+            ??(request?JSON.parse(request.payload_json).escalationReason:undefined)
+            ??(accepted?JSON.parse(accepted.payload_json).escalationReason:undefined);
+        const refusal=escalationReason(input.model,typeof reason==='string'?reason:undefined,reason==='explicit human model choice'&&!!creation);
+        if(!refusal&&!creation&&accepted)recordSessionEvent({eventId:`model-continuation:${turn.id}`,sessionId:session.id,
+            inputId:accepted.id,turnId:turn.id,kind:'model_escalation',payload:{model:input.model,reason,sourceInputId:accepted.id,continuation:true}});
+        return {known:true,allowed:!refusal,message:refusal?.replaceAll('cx-sol','gpt-6.1-sol')??undefined};
     }
     editReason(input:{source:CommunicationSource;action_id:string;reason:string}) {
         const actor=this.fenced(this.actor(input.source));
@@ -1895,7 +1938,7 @@ export class SessionCommunicationCoordinator {
             ...(input.summary?{summary:input.summary}:{}),...(input.answer_view?{answerView:input.answer_view}:{}),
             ...(input.return_to_requester?{returnToRequester:true}:{}),...(input.implementation?{implementation:true}:{}),
             ...(input.saved?{saved:input.saved}:{}),
-            ...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),
+            ...(input.effort===undefined?{}:{effort:input.effort}),...(input.escalationReason===undefined?{}:{escalationReason:input.escalationReason}),...(input.project===undefined?{}:{project:input.project}),
             ...(input.outside?{outside:true}:{}),...(input.onRunner?{onRunner:true}:{}),
             ...(input.files===undefined?{}:{files:input.files}),...(input.captureId===undefined?{}:{captureId:input.captureId}) });
         const digest = hash(encoded);
@@ -1999,7 +2042,7 @@ export class SessionCommunicationCoordinator {
                 hisChat: input.hisChat,
             });
             const chatgptText = isHisChat ? input.text : `${input.text}\n\n${chatgptRequestLine()}`;
-            const firstInput={text:toChatgpt?chatgptText:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${history?.text?`${history.text}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
+            const firstInput={text:toChatgpt?chatgptText:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${history?.text?`${history.text}\n\n`:''}${input.text}`,...extra,...(input.escalationReason?{escalationReason:input.escalationReason}:{}),...(serviceReply?{delivery:'queue'}:{})};
             if(routedFrom)firstInput.text=`This request carries Tejas’s exact Inbox message ${routedFrom.messageId} into this session. Reply to this request; the answer appears under that message in its original thread.\n\n${firstInput.text}`;
             if(input.provider) {
                 const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,escalationReason:input.escalationReason,project:input.project,projectLocation,title,summary:input.summary,smallTask:input.smallTask,outside:input.outside,onRunner:input.onRunner,standingRole,implementation:input.implementation,firstInput,saved:input.saved});

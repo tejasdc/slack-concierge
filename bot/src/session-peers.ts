@@ -1672,7 +1672,7 @@ export class SessionPeers {
         if(!owner.canSend(target))throw new SessionOwnerError('The exact session is not currently messageable.',409,'CAPABILITY_UNAVAILABLE');
         owner.attachments(attachments);
         retainSessionInput({id:`request:${requestId}`,sessionId:target.id,scope,actionId:`request:${requestId}`,kind:'input',origin:'agent',
-          payload:{text:input.text,...(machineNeed?{machineNeed}:{}),...(attachments.length?{attachments}:{}),...(routedFrom?{routedFrom}:{}),
+          payload:{text:input.text,...(typeof input.escalationReason==='string'?{escalationReason:input.escalationReason}:{}),...(machineNeed?{machineNeed}:{}),...(attachments.length?{attachments}:{}),...(routedFrom?{routedFrom}:{}),
             ...(target.provider_id==='chatgpt'||sessionMetadata(target).interactionPolicy==='consultation-only'?{delivery:'queue'}:{})},requestId});
         sessionId=target.id;
       }
