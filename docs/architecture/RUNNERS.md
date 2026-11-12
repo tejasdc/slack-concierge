@@ -398,6 +398,9 @@ Current Codex migration limits:
 - The post-turn leftover-process audit uses `codex.leftoverProcesses` and `codex.processAlive`
   on the runner that hosts the App Server. The owner retains the audit intent, sightings, grace
   period and Inbox report; a lost runner call leaves the intent or sighting open for retry.
+  An intent whose session has since moved to another provider (a capacity or allowance reroute
+  of a first turn clears its Codex thread after a refusal with no tool use) settles once with the cause `session-left-codex` instead of
+  retrying ([failure record](../incidents/2026-11-12-codex-audit-retried-after-session-left-codex.md)).
   The Codex Remote observer remains separate from this native-turn audit.
 - One relayed message is limited to 64 MB, the same as the backpressure limit.
 - Threads started before 2026-11-05 keep the owner's folders in their shell settings for life; they

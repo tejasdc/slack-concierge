@@ -12,6 +12,8 @@ const NON_LEDGER_WRITERS: Readonly<Record<string, readonly string[]>> = {
   'src/ledger-durability-worker.ts': ['new Database(setup.databasePath)'],
   'src/presentation-message-worker.ts': ["new Database(join(stateDir,'presentation.db'),{create:true})"],
   'src/provider-history-worker.ts': ['new Database(temporary, { create: true, strict: true })'],
+  // Converts a copied derived history snapshot; it never opens the owner ledger.
+  'src/provider-history-object-migrate.ts': ['new Database(temporary, { strict: true })'],
   'scripts/capture-drain-status.ts': ['new Database(`${stateDir}/state.db`, { create: true, strict: true })'],
   'scripts/usage-breakdown-reader.ts': ['new Database(cachePath)'],
   // The runner rebuilds only a transient copy of the owner's read-only attribution facts.

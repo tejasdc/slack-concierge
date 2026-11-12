@@ -43,6 +43,10 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [agent security](docs/security/2026-10-07-agent-security-review.md).
 - Agent session commands use each machine's installed wrapper, which selects
   the current release; see [runner command paths](docs/architecture/RUNNERS.md#agent-session-commands).
+- Claude history payload retirement preserves full SDK rows and the runner
+  mirror until the [object-backed history plan](docs/plans/2026-11-12-concierge-history-object-retirement.md)
+  proves production custody, recovery, and page/detail behavior. Read cache
+  allocation through [router actions](docs/runbooks/ROUTER-ACTIONS.md#agent-session-communication).
 - Marked messages held by per-session Pause retain their original admission identity;
   see [session recovery](docs/architecture/SESSION-OWNER.md#identity-and-admission).
 
