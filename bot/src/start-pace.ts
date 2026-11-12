@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 
 /**
  * Paced starts on a machine (docs/plans/2026-11-12-mac-held-work-pacing.md).
@@ -43,24 +43,29 @@ export function startPacePlace(hold: string | null | undefined): number | null {
   return match ? Number(match[1]) : null;
 }
 
-let memoryReading: { atMs: number; level: number } | null = null;
+let memoryLevel = 1;
+let memoryTimer: ReturnType<typeof setInterval> | null = null;
+function refreshMemoryPressure() {
+  execFile("/usr/sbin/sysctl", ["-n", "kern.memorystatus_vm_pressure_level"], { encoding: "utf8", timeout: 5_000 }, (error, stdout) => {
+    const level = Number(String(stdout ?? "").trim());
+    if (!error && Number.isInteger(level) && level >= 1) memoryLevel = level;
+  });
+}
 /**
  * macOS's own memory-pressure level: 1 normal, 2 warning, 4 critical. Swap fullness is not the
  * signal: this Mac sits near 92 % swap with no agent running, so a swap threshold would hold
- * everything forever. Read at most every five seconds; anything that cannot be read is normal.
+ * everything forever. The level is kept fresh by an asynchronous reading every five seconds and
+ * this only returns the last one (normal until the first arrives), never forking on the owner's
+ * event loop: the Mac's freezes are that loop starved under exactly this pressure, and a synchronous
+ * fork there would add to the freeze the gate exists to prevent.
  */
-export function memoryPressureLevel(nowMs = Date.now(), read: () => number | null = readMacMemoryPressure): number {
-  if (memoryReading && nowMs - memoryReading.atMs < 5_000) return memoryReading.level;
-  const level = read() ?? 1;
-  memoryReading = { atMs: nowMs, level };
-  return level;
-}
-export function resetMemoryPressureCacheForTests() { memoryReading = null; }
-export function readMacMemoryPressure(): number | null {
-  if (process.platform !== "darwin") return null;
-  const result = spawnSync("/usr/sbin/sysctl", ["-n", "kern.memorystatus_vm_pressure_level"], { encoding: "utf8", timeout: 2_000 });
-  const level = Number(String(result.stdout ?? "").trim());
-  return result.status === 0 && Number.isInteger(level) ? level : null;
+export function memoryPressureLevel(): number {
+  if (process.platform === "darwin" && !memoryTimer) {
+    refreshMemoryPressure();
+    memoryTimer = setInterval(refreshMemoryPressure, 5_000);
+    memoryTimer.unref?.();
+  }
+  return memoryLevel;
 }
 
 export type StartCandidate = { turnId: number; exempt: boolean };
@@ -105,7 +110,7 @@ export function jitter(config: StartPaceConfig, random: () => number = Math.rand
  * budget) and the next claim re-checks. Otherwise the start is admitted while the window has room.
  */
 export function decideStart(db: Database, candidate: StartCandidate, nowMs: number, config: StartPaceConfig,
-  level: number = memoryPressureLevel(nowMs), random: () => number = Math.random): StartDecision {
+  level: number = memoryPressureLevel(), random: () => number = Math.random): StartDecision {
   const slotMs = Math.ceil(config.windowMs / config.budget);
   if (level >= MEMORY_CRITICAL || (level >= MEMORY_WARNING && !candidate.exempt))
     return { admit: false, hold: START_MEMORY_HOLD, nextMs: nowMs + slotMs + jitter(config, random) };
