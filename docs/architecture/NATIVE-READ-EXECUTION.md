@@ -92,7 +92,8 @@ The route classification is the executable manifest. Its `source` identifies pre
 canonical, provider, filesystem, account, archive, or control reads. Archive attribution may
 occupy only one reader and cannot consume the interactive queue; `domain` identifies the read
 executor, live owner, or stream owner. `assertNativeReadRouteCoverage` fails when a registered
-GET exception or prepared route lacks a classification. The budget for a cold direct Inbox
-topic-list fallback is unchanged: its full-ledger scan can exceed the prepared read contract
-and then returns `READ_BUDGET_EXCEEDED`. Making that fallback independently bounded requires a
-new declared projection and growth fixture, rather than lifting the existing budget.
+GET exception or prepared route lacks a classification. His device's Inbox topic list never takes
+the direct ledger fallback: under this budget that full-ledger scan could only return
+`READ_BUDGET_EXCEEDED` (162 refused Threads reads on Nov 12, 21:15-21:17 UTC), so the route
+answers `presentation_indexing` with a one-second retry until the prepared list is ready, and the
+device keeps its rows meanwhile. Agents' `sessions topics list` keeps the ledger fallback.

@@ -59,7 +59,7 @@ misbound agent source, and historical turn, steering or local/peer request custo
   execution under the unchanged native UUID, recall its earlier synthetic fact,
   and report actual inherited account. Do not resend for a fresh receipt.
 
-The correction is source-checked only until its installation and that live check.
+Source checks alone do not establish acceptance; the installed check is recorded below.
 Server and Mac acceptance, cross-account recall and exhaustion remain separate.
 
 ## Acceptance scenario
@@ -68,3 +68,20 @@ Server and Mac acceptance, cross-account recall and exhaustion remain separate.
 - **Action:** Complete work in a second disposable conversation, then explicitly Continue the first.
 - **Expected:** The exact accepted message stays unsubmitted while paused and gains one execution after Continue under the same native conversation, retaining its earlier fact; the comparison and controller remain active. Reconciliation does not create a replacement input or duplicate execution.
 - **Replayable offline:** no (real native provider continuation and installed custody are acceptance boundaries; source and isolated database checks alone do not establish them).
+
+
+## Installed acceptance observed
+
+Release `a0cad8cd` included repair `0a5d63e7`; scoped watch `b1b890ea2253`
+fired at 21:45:43 UTC with no observation gaps. The same previously accepted
+input was queued as turn29300 at 21:45:37 and completed at 21:46:02, without
+resending it or issuing another Continue. Its native UUID remained
+`b4de3d93-02eb-428b-895b-80d8bf94788c`, and its complete 1622-byte admitted
+input omitted the original synthetic fact while exactly matching the retained
+admission hash. It returned that fact and a direct inherited Chann auth result.
+One native admission, auth command and terminal answer were observed; the
+account event records dispatch attempt2, so no single-attempt claim is made.
+Independent read-only GPT-6 Luna audit passed this narrow native lifecycle
+and comparison-conversation isolation check. Mac, exhaustion, cross-account
+memory, all-process survival and external-effect exactly-once guarantees remain
+outside that result. [Completion evidence](../experiments/2026-11-12-claude-pause-installed-completion.json).

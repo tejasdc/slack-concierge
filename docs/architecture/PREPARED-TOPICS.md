@@ -34,7 +34,7 @@ cursor page continues a walk whose first page established freshness: it answers 
 complete whenever its generation is still ready, because requiring a newer head would tear a
 many-page walk on every busy minute; the client's own revision check still restarts a walk the
 topics changed under. A stale or invalid cursor returns its reset response immediately.
-Initial rebuilds continue to use the ledger list until the prepared list is ready.
+Until the prepared list is ready, his device's list answers `presentation_indexing` (it keeps its rows and retries); only agents' `sessions topics list` reads the ledger list meanwhile.
 Large individual values are retained as SHA-256-addressed, sixteen-KiB UTF-8 chunks.
 Clients must verify the concatenated digest before displaying a complete value. A newer
 generation invalidates old list cursors; source lag is indexing, never an empty complete list.

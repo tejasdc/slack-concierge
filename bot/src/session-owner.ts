@@ -30,7 +30,7 @@ import {boundedChangedMessageIds,HISTORY_CHANGE_LIMIT} from './bounded-history-c
 import {historyContent,previewHistoryMessage} from './history-message-preview';
 import {HistoryDetailCache} from './history-detail-cache';
 import {preparedIncoming,preparedTopicOverview,preparedTopicItems,preparedQuestions,preparedTopicChanges,
-  preparedTopicResolution,preparedTopicDetail,preparedTopicsNow,preparedAreas,preparedArea,preparedThreadAreas} from './presentation-topic-reader';
+  preparedTopicResolution,preparedTopicDetail,preparedTopicsNow,preparedTopicsReady,unpreparedTopics,preparedAreas,preparedArea,preparedThreadAreas} from './presentation-topic-reader';
 import {createAreaByHuman,areaHumanAction,AreaError} from './session-areas';
 import {presentationChangesForSession,presentationEpoch,presentationHead} from './presentation-changes';
 import {noteOwnerStall,noteSlowOwnerRequest,startOwnerResponsivenessWatch} from './owner-responsiveness';
@@ -87,7 +87,7 @@ import {sessionAddress} from './session-address';
 import {handoffView,supersededBy,supersededAddress,withdrawnSuccessor} from './session-handoff';
 import {sessionExecution,sessionPresence} from './session-presence';
 import {inboxAttribution} from './inbox-attribution-read';
-import {inboxTopicList,openInboxObligationCount,openInboxObligations} from './session-topics';
+import {openInboxObligationCount,openInboxObligations} from './session-topics';
 import {workThread} from './session-fit';
 import {sessionMutuals,mutualLift} from './session-mutuals';
 import {commitWork,originInput} from './commit-work';
@@ -4420,7 +4420,10 @@ export class SessionOwner {
         const order=url.searchParams.get('order')??'updated';
         if(!['updated','started'].includes(order))throw new SessionOwnerError('Unknown thread order.');
         const options={state:state as 'open'|'closed'|'background'|'all',order:order as 'updated'|'started',query,cursor:url.searchParams.get('cursor'),limit:boundedLimit(url.searchParams.get('limit'),20)??20};
-        result=await inboxTopicList(options,prepared=>preparedTopicsNow(prepared));
+        // His device never takes the ledger fallback: under the interactive read budget that full-ledger
+        // scan can only answer 503 (NATIVE-READ-EXECUTION.md), and the device keeps its rows on an
+        // incomplete answer and asks again. Agents' `sessions topics list` keeps the fallback.
+        result=preparedTopicsReady()?preparedTopicsNow(options):unpreparedTopics();
       }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='areas'&&parts.length===2){
         const query=url.searchParams.get('query');if(query&&query.length>200)throw new SessionOwnerError('Area search is too long.');
@@ -4661,8 +4664,11 @@ export class SessionOwner {
       return ownerJson(result,{headers:answerHeaders,status:request.method==='POST'&&((parts[0]==='attachments'&&parts[2]==='transcription'&&parts[3]==='start')||(!readOnly&&!prior))?202:200});
     } catch(error) {
       if(error instanceof StorageReadBudgetError){
+        // The statement and caller name the cause; parameter names (never values, which can be his
+        // search words) tell which list variant asked.
         log('warn','owner_read_budget_refused',{admission_id:request.headers.get('x-concierge-admission-id'),
-          route:ownerRequestLabel(request.method,url.pathname),reason:error.reason});
+          route:ownerRequestLabel(request.method,url.pathname),reason:error.reason,statement:error.statement,
+          parameters:[...new Set(url.searchParams.keys())],stack:(error.stack??'').split('\n').slice(1,9).map(line=>line.trim())});
         return ownerJson({error:{code:error.code,message:error.message}},{status:503});
       }
       if(error instanceof TopicError||error instanceof AreaError)return ownerJson({error:{code:error.code,message:error.message}},{status:error.status});
