@@ -176,8 +176,9 @@ unproven conversion leaves full rows in service. Existing snapshots still need
 the stopped-service operator command, packaged with the sealed release so it
 can materialize full rows before an older binary is installed. A rollback
 reads the retained object and reconstructs the old snapshot before downgrading
-the application; object GC remains disabled. Concierge's ordinary deployment
-path, owner self-review, and installed page/detail reads are required
+the application; object GC remains disabled. A repeated conversion can add
+newly proven rows while preserving earlier references. Concierge's ordinary
+deployment path, owner self-review, and installed page/detail reads are required
 before reporting a user-visible or space result. The installed release and raw
 object restore proof are distinct evidence.
 

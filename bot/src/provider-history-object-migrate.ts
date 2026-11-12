@@ -92,14 +92,16 @@ export async function migrateHistorySnapshot(sessionUuid: string, allowActiveOwn
   try {
     const meta = original.query("SELECT * FROM meta").get() as CacheMeta | null;
     if (!meta || meta.session_uuid !== sessionUuid) throw new Error("INVALID_HISTORY_CACHE");
+    const rowCount = (original.query("SELECT count(*) AS count FROM rows").get() as {count:number}).count;
+    if (rowCount !== meta.row_count) throw new Error("INVALID_HISTORY_CACHE_ROW_COUNT");
     const source = fingerprint(meta.source_path);
     if (source.size !== meta.source_size || source.mtimeMs !== meta.source_mtime_ms)
       throw new Error("HISTORY_SOURCE_CHANGED");
     const result = await withSnapshotCopy(path, async db => {
       const existing = db.query("SELECT count(*) AS count FROM rows WHERE json LIKE '{\"conciergeRawReference\":1,%'")
         .get() as {count:number};
-      if (existing.count) return {changed:false,referenced:existing.count,
-        full:meta.row_count-existing.count,reason:"already_referenced"};
+      if (existing.count === meta.row_count) return {changed:false,referenced:existing.count,
+        full:0,reason:"already_referenced"};
       db.exec("CREATE TEMP TABLE seen_raw_uuid(uuid TEXT PRIMARY KEY, count INTEGER NOT NULL);"
         + "CREATE TEMP TABLE candidate(ordinal INTEGER PRIMARY KEY, metadata_json TEXT NOT NULL,"
         + "span_offset INTEGER NOT NULL,span_length INTEGER NOT NULL,span_sha256 TEXT NOT NULL);");
@@ -133,9 +135,11 @@ export async function migrateHistorySnapshot(sessionUuid: string, allowActiveOwn
         db.exec("COMMIT");
       } catch (error) { db.exec("ROLLBACK"); throw error; }
       if (!sameFingerprint(source, fingerprint(meta.source_path))) throw new Error("HISTORY_SOURCE_CHANGED");
-      if (scan.oversizedLine) return { changed: false, referenced: 0, full: meta.row_count, reason: "oversized_line" };
+      if (scan.oversizedLine) return { changed: false, referenced: existing.count,
+        full: meta.row_count - existing.count, reason: "oversized_line" };
       if (!await provenHostTranscriptObject(scan.sourceSha256, scan.sourceBytes))
-        return { changed: false, referenced: 0, full: meta.row_count, reason: "unproven_object" };
+        return { changed: false, referenced: existing.count,
+          full: meta.row_count - existing.count, reason: "unproven_object" };
       const update = db.query("UPDATE rows SET json=? WHERE ordinal=?");
       const candidates = db.query("SELECT * FROM candidate ORDER BY ordinal");
       let referenced = 0;
@@ -155,8 +159,9 @@ export async function migrateHistorySnapshot(sessionUuid: string, allowActiveOwn
         db.exec("COMMIT");
       } catch (error) { db.exec("ROLLBACK"); throw error; }
       if (referenced) db.exec("VACUUM");
-      return { changed: referenced > 0, referenced,
-        full: (db.query("SELECT count(*) AS count FROM rows").get() as {count:number}).count - referenced,
+      return { changed: referenced > 0, newlyReferenced: referenced,
+        referenced: existing.count + referenced,
+        full: meta.row_count - existing.count - referenced,
         object: scan.sourceSha256 };
     }, allowActiveOwner);
     const afterAllocatedBytes = fingerprint(path).blocks * 512;
