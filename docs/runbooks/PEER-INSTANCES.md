@@ -52,8 +52,11 @@ WebContent children of the installed thnkr.ing Safari Web App. Each reading uses
 `proc_pid_rusage(RUSAGE_INFO_V0)` for cumulative CPU time, current physical footprint and
 process birth time. A 20-sample, 15-second pre-event ring stays in memory. A natural speech
 `begin` starts two-second samples for at most 120 seconds, then 30 seconds after finish/cancel;
-at most four events coexist. The latest four bounded event records live in the private
-`~/Library/Application Support/concierge/speech/voice-process-events.json`. They hold no
+at most four events coexist. Completed event records from the last 14 days live in the private
+`~/Library/Application Support/concierge/speech/voice-process-events.json`. Writes are serialized
+so overlapping finishes cannot overwrite each other; a failed write remains visible through
+`lastPersistError` in observer status, and the Mac updater waits for pending writes before restarting
+the listener. The file holds no
 audio or words. CPU use for an interval is the delta of cumulative user plus system nanoseconds
 for the same PID and birth identity divided by the sample interval; never join different births.
 Older `begin` callers remain valid and have unknown mode and page session ID.
