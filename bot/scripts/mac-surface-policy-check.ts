@@ -327,6 +327,18 @@ for(const question of ['Please unlock your iPhone. Then open the app.',
   'Please unlock your iPhone. The app needs you to tap Save.',
   'Please open Gmail on your iPhone.'])
   assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),false,question);
+for(const question of ['Please drag the screenshot thumbnail in the corner of your Mac’s screen onto the Desktop.',
+  'Can you drag the new screenshot thumbnail into the open Finder window on your Mac? I will check the saved file after it lands.',
+  'Please tap Allow on your iPhone.','Can you press the side button on your Apple Watch?',
+  'Please plug in the charger to your Kindle.','Can you click the menu bar clock on your Mac?',
+  'Please swipe down from the top of your iPhone screen so I can read the banner.'])
+  assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),true,question);
+for(const question of ['Please drag the screenshot thumbnail onto the Desktop.',
+  'Can you tap Save in the app?','Please drag the screenshot on your Mac and then send it to me.',
+  'Please drag the screenshot onto the Desktop on your Mac. Can you rename it?',
+  'Please drag the screenshot onto the Desktop on your Mac, then open it.',
+  'Can you sign in to the website on your Mac?','Can you copy the notes on your Mac?'])
+  assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),false,question);
 for(const question of ['Can you open KOReader and copy a book on your Kindle Oasis?',
   'Can you open KOReader on your Kindle Oasis? Then send me a screenshot?'])
   assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),false,question);

@@ -245,7 +245,12 @@ and the host device (for example, "Please connect the Maschine+ to your Mac over
 USB."). This keeps the hardware name visible on the phone; a digital account or
 website connection is not a device prerequisite.
 The required explanation says which route was tried and why the agent cannot do that
-step itself. A generic request to open an app or website remains refused.
+step itself. One hand gesture on a device the question names as his is also physical:
+a tap, press, click, drag, swipe or plug-in such as "Please drag the screenshot thumbnail
+onto the Desktop on your Mac." Mac agents may not take Accessibility control of his apps,
+so a drag the agent's route cannot make is his to do. A gesture that names no device
+("Can you tap Save in the app?") and a generic request to open an app or website remain
+refused, because those stay with the agent.
 The ask is the question's first sentence, phrased "Can you unlock your iPhone?" or
 "Please unlock your iPhone."; sentences after it may only state what the agent saw or
 will do ("The device check reported it locked. I will handle the app inspection."). A
