@@ -9,11 +9,12 @@ export function historyStorageStatus(stateDir: string, kind: HistoryStorageKind,
     || !Number.isSafeInteger(limit) || limit < 1 || limit > 2000)
     throw new Error("INVALID_HISTORY_STORAGE_REQUEST");
   const folder = join(stateDir, kind === "claude" ? "provider-history-cache" : "codex-history-window");
+  const observedAt = new Date().toISOString();
   let names: string[];
   try { names = readdirSync(folder).sort(); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT")
-      return { kind, exists: false, scanned: 0, logicalBytes: 0, allocatedBytes: 0,
+      return { kind, observedAt, exists: false, scanned: 0, logicalBytes: 0, allocatedBytes: 0,
         complete: true, next: null, largest: [] };
     throw error;
   }
@@ -35,7 +36,7 @@ export function historyStorageStatus(stateDir: string, kind: HistoryStorageKind,
     largest.sort((a, b) => b.allocatedBytes - a.allocatedBytes || a.name.localeCompare(b.name));
     if (largest.length > 8) largest.pop();
   }
-  return { kind, exists: true, scanned: page.length, logicalBytes, allocatedBytes,
+  return { kind, observedAt, exists: true, scanned: page.length, logicalBytes, allocatedBytes,
     complete: candidates.length <= page.length, next: candidates.length > page.length ? page.at(-1) : null,
     largest };
 }
