@@ -5,7 +5,7 @@ import { basename, resolve } from "node:path";
 import { observedDatabase } from './storage-observation';
 import { ledgerWriteResults } from './ledger-write-results';
 import { ledgerAccess } from './ledger-access-policy';
-import {PARKED_CODEX_FOLLOW_TEST_AUTHORIZATION,HELD_RELEASE_PACING_TEST_AUTHORIZATION,HELD_WORK_MOVABILITY_TEST_AUTHORIZATION,INBOX_UNFILED_ACROSS_ROUTERS_TEST_AUTHORIZATION,INBOX_BOOKKEEPING_RECOVERY_TEST_AUTHORIZATION,LEGACY_TOPIC_COMPLETION_TEST_AUTHORIZATION} from './test-authorizations';
+import {PARKED_CODEX_FOLLOW_TEST_AUTHORIZATION,INBOX_HELD_DUPLICATE_TEST_AUTHORIZATION,HELD_RELEASE_PACING_TEST_AUTHORIZATION,HELD_WORK_MOVABILITY_TEST_AUTHORIZATION,INBOX_UNFILED_ACROSS_ROUTERS_TEST_AUTHORIZATION,INBOX_BOOKKEEPING_RECOVERY_TEST_AUTHORIZATION,LEGACY_TOPIC_COMPLETION_TEST_AUTHORIZATION} from './test-authorizations';
 
 // Opening the ledger is separate from initializing application schema so the
 // deployment migrator can reserve SQLite's writer before either schema owner runs.
@@ -17,7 +17,7 @@ const testInvocation = process.env.CONCIERGE_TEST_MODE === "1"
 // Tejas's phone-work repair (input e943db22) requires an isolated admission and cancellation check.
 const authorizedTest = ["native-attribution-5eaa0768", "responsive-system-b1eed622", "foreground-isolation-5804d389", "quiet-bank-e943db22", "drain-withdraw-unclaimed-2026-11-05",
   "agent-attachment-attribution-ebced96a", LEGACY_TOPIC_COMPLETION_TEST_AUTHORIZATION,
-  INBOX_BOOKKEEPING_RECOVERY_TEST_AUTHORIZATION, HELD_WORK_MOVABILITY_TEST_AUTHORIZATION, HELD_RELEASE_PACING_TEST_AUTHORIZATION, INBOX_UNFILED_ACROSS_ROUTERS_TEST_AUTHORIZATION,
+  INBOX_BOOKKEEPING_RECOVERY_TEST_AUTHORIZATION, HELD_WORK_MOVABILITY_TEST_AUTHORIZATION, HELD_RELEASE_PACING_TEST_AUTHORIZATION, INBOX_HELD_DUPLICATE_TEST_AUTHORIZATION, INBOX_UNFILED_ACROSS_ROUTERS_TEST_AUTHORIZATION,
   PARKED_CODEX_FOLLOW_TEST_AUTHORIZATION].includes(process.env.CONCIERGE_TEST_AUTHORIZATION ?? "");
 if (testInvocation && !authorizedTest) {
   throw new Error("Agent-run tests are disabled by Tejas (1789490492.818709). Refusing to open the Concierge ledger from a test process.");

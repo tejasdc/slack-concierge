@@ -248,15 +248,17 @@ async function upgradeAnswerClosures(generation:number){
   prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET answer_closures_version=2 WHERE singleton=1').run();})();
 }
 /** Thread time stopped counting agent upkeep (inbox-thread-time.ts); every prepared thread was
- * dated by its newest message of any kind, so each one is recomputed once, in bounded pages. */
+ * dated by its newest message of any kind, so each one is recomputed once, in bounded pages.
+ * Version 2 also stops counting owner recovery notices filed as a thread's opening message. */
+const THREAD_TIME_VERSION=2;
 async function upgradeThreadTime(generation:number){
   const version=(prepared.query('SELECT thread_time_version AS version FROM presentation_message_meta WHERE singleton=1')
     .get() as {version:number}).version;
-  if(version>=1)return;
+  if(version>=THREAD_TIME_VERSION)return;
   prepared.transaction(()=>{keepLease();prepared.query(`INSERT OR IGNORE INTO presentation_topic_dirty
     SELECT generation,topic_id FROM presentation_topics WHERE generation=?`).run(generation);})();
   while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
-  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET thread_time_version=1 WHERE singleton=1').run();})();
+  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET thread_time_version=? WHERE singleton=1').run(THREAD_TIME_VERSION);})();
 }
 /** Reproject handoffs and attributed answers after their display changes. */
 async function upgradeRequestRoots(generation:number){
