@@ -348,6 +348,10 @@ user work until explicit operator recovery establishes health and releases them.
 
 ## Ordinary delivery
 
+The release build also runs the undefined-name check across its bundled source.
+It refuses an unbound reference that `bun build` would leave to fail when that
+path first runs; see the [routed-message failure record](../incidents/2026-11-07-routed-message-projection-missing-import.md).
+
 Every proposed Concierge commit is pushed to a topic branch. GitHub runs the
 frozen `bot` build, including the candidate presentation release check, on that
 branch and on its proposed merge with `main`. The `Release check` result is

@@ -523,6 +523,7 @@ with the run's source pair and a stable `--action-id` opens the link in his brow
 session; queued while the Mac sleeps, with one service result when it later opens or expires. See
 [peer instances](PEER-INSTANCES.md#opening-a-link-on-his-mac-without-a-session).
 
+<a id="discussing-in-the-lab"></a>
 **Discussing in the Lab.** `sessions board read|thread|post|claim|reveal|close|product|cite|link …` with the
 run's source pair (and a stable `--action-id` for changes) reads and writes the lab record in thnkr.ing (/lab):
 threads, and the findings, decisions, skills and designs they produce, each with a lasting address (`lab:<handle>`,

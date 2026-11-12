@@ -18,6 +18,10 @@ browser or desktop access.
 Concierge's own
 provider sign-in repair request is the only Computer Use exception for the saved
 Chrome account; the Mac owner checks the retained repair request before admitting it.
+An authenticated peer repair may carry several owner-generated notices in one input.
+The private provider-renewal need is valid for that batch when the fixed sign-in
+worker is its target; an ordinary agent request cannot claim it. See the
+[batched renewal failure record](../incidents/2026-11-06-batched-signin-repair-refused-by-mac.md).
 That admission remains available while the exact renewal request is open in the
 worker's running turn, even if a later budget or progress input joins the turn.
 The guard checks request custody again for each Computer Use call; an ordinary
