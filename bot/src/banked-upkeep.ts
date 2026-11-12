@@ -34,7 +34,11 @@ export function createBankedUpkeep(input:{registry:()=>ActiveTurnDispatchRegistr
   };
   const inspectActive=()=>{
     if(quietBoundaryTimer){clearTimeout(quietBoundaryTimer);quietBoundaryTimer=null;}
-    const draining=!!db.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get();
+    // Only this owner's own drain pauses its runs. The previous owner's gate is still in the
+    // ledger for a moment after a restart, and reading it paused freshly adopted banked runs
+    // (turns 28657 and 28743 on 2026-11-12).
+    const gate=db.query('SELECT owner_pid FROM deployment_drain WHERE singleton=1').get() as {owner_pid:number}|null;
+    const draining=gate?.owner_pid===process.pid;
     const settings=savedWorkSettings(),reserve=settings.reserve_percent,now=Date.now();
     let nextQuietBoundary=Infinity;
     for(const turnId of active){
