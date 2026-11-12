@@ -61,11 +61,13 @@ function spentUntil(provider: RenewableProvider, account: string): number | null
 }
 
 /**
- * Classifies a renewal answered failed within `AFTER_UNFINISHED_MS`. Neither request
- * table records when an answer arrived, and a sleeping Mac can answer hours after the request was sent,
- * so the first time a failed answer is seen here is stamped and the hold runs from that. The check
- * that calls this runs every few minutes for a signed-out account, so the stamp is that close to the
- * answer. A worker-attested failure before any browser sign-in action permits one short retry;
+ * Classifies a renewal answered failed within `AFTER_UNFINISHED_MS`. A sleeping Mac can answer days
+ * after the request was sent, so a failure is dated from its final answer's own record, never from
+ * when the request was created; that date is stamped once and the hold runs from it. Every failed
+ * renewal for the account is found by its action name, with no creation cutoff: on 2026-11-12 a
+ * request created November 9 failed after three days queued, a two-day creation filter hid it, and
+ * two more renewals reached his Mac within ten minutes (docs/incidents/2026-11-12-queued-renewal-failure-hidden-from-hold.md).
+ * A worker-attested failure before any browser sign-in action permits one short retry;
  * any other failure, including a provider browser-verification rejection, holds for hours.
  * needs_decision asks him to fix Chrome's own sign-in, after which a renewal should follow at once.
  */
@@ -90,16 +92,26 @@ function renewalFailureKind(resultJson: string | null): RenewalFailureKind {
   } catch { return "other"; }
 }
 
-function recentFailure(sent: string): RenewalFailure | null {
+/** Action names after this prefix sort below it plus "~", the highest character an action name can hold. */
+const actionRange = (prefix: string): [string, string] => [prefix, `${prefix}~`];
+
+function recentFailure(prefix: string): RenewalFailure | null {
   db.run(`CREATE TABLE IF NOT EXISTS signin_renewal_failures (action_id TEXT PRIMARY KEY, seen_at_ms INTEGER NOT NULL)`);
   const now = Date.now();
-  const failed = db.query(`SELECT action_id,result_json FROM session_peer_requests WHERE action_id LIKE ? AND outcome='failed' AND created_at_ms>?
-    UNION ALL SELECT action_id,result_json FROM session_external_requests WHERE action_id LIKE ? AND outcome='failed' AND created_at_ms>?`)
-    .all(sent, now - 2 * 86_400_000, sent, now - 2 * 86_400_000) as { action_id: string; result_json: string | null }[];
-  for (const { action_id } of failed)
-    db.run(`INSERT OR IGNORE INTO signin_renewal_failures (action_id, seen_at_ms) VALUES (?, ?)`, [action_id, now]);
-  const recentRows = db.query(`SELECT action_id,seen_at_ms FROM signin_renewal_failures WHERE action_id LIKE ? AND seen_at_ms>? ORDER BY seen_at_ms DESC`)
-    .all(sent, now - AFTER_UNFINISHED_MS) as { action_id: string; seen_at_ms: number }[];
+  const [from, to] = actionRange(prefix);
+  // Range comparisons, not LIKE, so the failed-by-action index (and the external requests'
+  // unique key) bound the read to this account's renewals instead of every request ever made.
+  const failed = db.query(`SELECT r.action_id,r.result_json,
+      (SELECT max(e.created_at_ms) FROM session_peer_events e WHERE e.request_id=r.request_id AND e.kind='final') AS answered_at_ms
+    FROM session_peer_requests r WHERE r.outcome='failed' AND r.action_id>=? AND r.action_id<?
+    UNION ALL SELECT r.action_id,r.result_json,
+      (SELECT max(x.created_at_ms) FROM session_external_replies x WHERE x.request_id=r.request_id AND x.final=1)
+    FROM session_external_requests r WHERE r.agent_name='signin-renewal' AND r.outcome='failed' AND r.action_id>=? AND r.action_id<?`)
+    .all(from, to, from, to) as { action_id: string; result_json: string | null; answered_at_ms: number | null }[];
+  for (const { action_id, answered_at_ms } of failed)
+    db.run(`INSERT OR IGNORE INTO signin_renewal_failures (action_id, seen_at_ms) VALUES (?, ?)`, [action_id, Math.min(answered_at_ms ?? now, now)]);
+  const recentRows = db.query(`SELECT action_id,seen_at_ms FROM signin_renewal_failures WHERE action_id>=? AND action_id<? AND seen_at_ms>? ORDER BY seen_at_ms DESC`)
+    .all(from, to, now - AFTER_UNFINISHED_MS) as { action_id: string; seen_at_ms: number }[];
   const recent = recentRows[0] ?? null;
   if (!recent) return null;
   const result = failed.find(row => row.action_id === recent.action_id);
@@ -132,8 +144,9 @@ export function needSignInRenewal(provider: RenewableProvider, account: string |
   try {
     ensureTable(db);
     const like = `${PREFIX[provider]}${account}:%`;
-    const sent = `${signInWorkerActionId(`${PREFIX[provider]}${account}:`)}%`;
-    const failure = recentFailure(sent);
+    const sentPrefix = signInWorkerActionId(`${PREFIX[provider]}${account}:`);
+    const [sentFrom, sentTo] = actionRange(sentPrefix);
+    const failure = recentFailure(sentPrefix);
     const retriedAfterFailure = failure && !!db.query(`SELECT 1 FROM repair_notices WHERE key LIKE ? AND created_at_ms>? LIMIT 1`)
       .get(like, failure.seenAtMs);
     const retryPreauth = failure?.kind !== "other" && failure?.sameKindAttempts === 1
@@ -141,8 +154,9 @@ export function needSignInRenewal(provider: RenewableProvider, account: string |
     const recent = db.query(`SELECT 1 FROM repair_notices WHERE key LIKE ? AND (delivered_input_id IS NULL OR created_at_ms>?) LIMIT 1`)
       .get(like, retryPreauth ? Date.now() - PREAUTH_RETRY_MS : Date.now() - SAME_EPISODE_MS);
     if (recent) return false;
-    const open = db.query(`SELECT 1 FROM session_peer_requests WHERE action_id LIKE ? AND outcome IS NULL
-      UNION ALL SELECT 1 FROM session_external_requests WHERE action_id LIKE ? AND outcome IS NULL LIMIT 1`).get(sent, sent);
+    const open = db.query(`SELECT 1 FROM session_peer_requests WHERE outcome IS NULL AND action_id>=? AND action_id<?
+      UNION ALL SELECT 1 FROM session_external_requests WHERE agent_name='signin-renewal' AND outcome IS NULL AND action_id>=? AND action_id<? LIMIT 1`)
+      .get(sentFrom, sentTo, sentFrom, sentTo);
     if (open) return false;
     if (failure && !retryPreauth) return false;
     if (spentUntil(provider, account) !== null) return false;
