@@ -66,7 +66,7 @@ export const PROVIDER_CONTRACT: Readonly<Record<ProviderId, ProviderContract>> =
     namesItself: { met: true, how: "The same self-title command as Claude, from the same per-run instructions." },
   } },
   antigravity: { runsIn: "execution-host", machineSetup: ["install-antigravity-account-hook.sh"], guarantees: {
-    steer: { met: true, how: "Written into the running CLI's streaming input; Google's headless CLI answers it as soon as the current answer ends, in the same run (verified with agy 1.3.4 on 2026-10-13: it cannot add it mid-answer)." },
+    steer: { met: false, notBuilt: "The streaming CLI has no verified durable pickup for messages accepted during another answer.", instead: "New messages wait in the session's durable queue and run as separate turns." },
     stop: { met: true, how: "Interrupts the CLI process." },
     carriesOnThroughUpdate: { met: true, how: "Runs in the same execution host as Claude and replays its record when taken back." },
     bothMachines: { met: true, how: "The agy CLI in the execution host on each machine, signed in per machine." },

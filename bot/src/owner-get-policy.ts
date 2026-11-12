@@ -6,6 +6,17 @@ const MiB=1024*1024;
  * Legacy interactive routes are named debt, response-capped while callers move to prepared pages.
  * They are not a basis for adding another page: new interactive reads belong in PRESENTATION_READERS. */
 export const OWNER_GET_EXCEPTIONS:readonly Route[]=[
+ {path:'/agent-test/sessions/:id/view',purpose:'one source-bound disposable session view',maxResponseBytes:2*MiB,kind:'control'},
+ {path:'/agent-test/sessions/:id/capabilities',purpose:'one source-bound provider capability view',maxResponseBytes:MiB,kind:'control'},
+ {path:'/agent-test/sessions/:id/receipts',purpose:'one source-bound session receipt page',maxResponseBytes:8*MiB,kind:'control'},
+ {path:'/agent-test/sessions/:id/receipts/changes',purpose:'one source-bound session receipt change page',maxResponseBytes:8*MiB,kind:'control'},
+ {path:'/agent-test/sessions/:id/history',purpose:'one source-bound provider history page',maxResponseBytes:8*MiB,kind:'control'},
+ {path:'/agent-test/sessions/:id/history/messages/:id/detail',purpose:'one source-bound history detail',maxResponseBytes:0,kind:'control'},
+ {path:'/agent-test/sessions/:id/events',purpose:'one source-bound event page',maxResponseBytes:2*MiB,kind:'control'},
+ {path:'/agent-test/sessions/:id/events/stream',purpose:'one source-bound event stream',maxResponseBytes:0,kind:'control'},
+ {path:'/agent-test/sessions/:id/operations/:id',purpose:'one source-bound operation receipt',maxResponseBytes:2*MiB,kind:'control'},
+ {path:'/agent-test/sessions/:id/attachments/:id',purpose:'one source-bound retained attachment',maxResponseBytes:64*MiB,kind:'control'},
+ {path:'/agent-test/sessions/:id/runs/:id',purpose:'one source-bound provider run',maxResponseBytes:MiB,kind:'control'},
  {path:'/events/stream',purpose:'event stream; no materialized response body',maxResponseBytes:0,kind:'control'},
  {path:'/events',purpose:'cursor-paged owner event transport',maxResponseBytes:2*MiB,kind:'control'},
  {path:'/status',purpose:'exact service health',maxResponseBytes:MiB,kind:'control'},
@@ -17,6 +28,7 @@ export const OWNER_GET_EXCEPTIONS:readonly Route[]=[
  {path:'/auth/claude-launch-choice',purpose:'account binding for one new agent-started Claude process',maxResponseBytes:MiB,kind:'control'},
  {path:'/models',purpose:'provider model choices',maxResponseBytes:MiB,kind:'control'},
  {path:'/usage/breakdown',purpose:'two bounded accounting periods',maxResponseBytes:MiB,kind:'control'},
+ {path:'/usage/allowance',purpose:'cached weekly allowance for up to 100 visible session and topic rows',maxResponseBytes:MiB,kind:'control'},
  {path:'/projects',purpose:'registered project choices; finite owner catalogue',maxResponseBytes:2*MiB,kind:'control'},
  {path:'/projects/:id/status',purpose:'one project setup status',maxResponseBytes:MiB,kind:'control'},
  {path:'/canvas-projects/:id',purpose:'one Canvas project provisioning status',maxResponseBytes:MiB,kind:'control'},

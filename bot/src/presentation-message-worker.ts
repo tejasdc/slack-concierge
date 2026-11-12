@@ -6,6 +6,7 @@ import {readFileSync,realpathSync} from 'node:fs';
 import {join} from 'node:path';
 import {canceledRequestNotice,inboxRootResolver,sourceMessagePage} from './presentation-message-source';
 import {PreparedSearchIndex} from './prepared-search';
+import {PreparedSearchUpkeep} from './prepared-search-upkeep';
 import {sessionCatalogueLabels} from './session-labels';
 import {preparedInboxDisplay} from './presentation-inbox-display';
 import {routedTurnResultSql} from './inbox-routing-result';
@@ -24,6 +25,7 @@ const stateDir=realpathSync(directory);
 const source=new Database(join(stateDir,'state.db'),{readonly:true});
 source.exec('PRAGMA query_only=ON; PRAGMA busy_timeout=1000');
 const prepared=new Database(join(stateDir,'presentation.db'),{create:true});
+const preparedPath=join(stateDir,'presentation.db');
 prepared.exec('PRAGMA busy_timeout=1000; PRAGMA journal_mode=WAL');
 const schemaStarted=performance.now();
 writeLogLine('info',JSON.stringify({event:'presentation_worker_schema',phase:'starting',worker_pid:process.pid}));
@@ -112,6 +114,10 @@ const {search,cards,receipts,topics,areas,labRequests}=prepared.transaction(()=>
     .some(column=>column.name==='routing_result_visibility_version');
   if(!hadRoutingResultVisibility)
     prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN routing_result_visibility_version INTEGER NOT NULL DEFAULT 0');
+  const hadThreadTime=(prepared.query('PRAGMA table_info(presentation_message_meta)').all() as {name:string}[])
+    .some(column=>column.name==='thread_time_version');
+  if(!hadThreadTime)
+    prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN thread_time_version INTEGER NOT NULL DEFAULT 0');
   // A lineage upgrade builds into the next generation. Keep the complete active generation readable
   // until that shadow generation is atomically activated, including after an interrupted upgrade.
   const markedReplyState=prepared.query(`SELECT generation,ready,marked_reply_roots_version AS version
@@ -241,6 +247,19 @@ async function upgradeAnswerClosures(generation:number){
   while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
   prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET answer_closures_version=2 WHERE singleton=1').run();})();
 }
+/** Thread time stopped counting agent upkeep (inbox-thread-time.ts); every prepared thread was
+ * dated by its newest message of any kind, so each one is recomputed once, in bounded pages.
+ * Version 2 also stops counting owner recovery notices filed as a thread's opening message. */
+const THREAD_TIME_VERSION=2;
+async function upgradeThreadTime(generation:number){
+  const version=(prepared.query('SELECT thread_time_version AS version FROM presentation_message_meta WHERE singleton=1')
+    .get() as {version:number}).version;
+  if(version>=THREAD_TIME_VERSION)return;
+  prepared.transaction(()=>{keepLease();prepared.query(`INSERT OR IGNORE INTO presentation_topic_dirty
+    SELECT generation,topic_id FROM presentation_topics WHERE generation=?`).run(generation);})();
+  while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
+  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET thread_time_version=? WHERE singleton=1').run(THREAD_TIME_VERSION);})();
+}
 /** Reproject handoffs and attributed answers after their display changes. */
 async function upgradeRequestRoots(generation:number){
   const version=(prepared.query('SELECT request_roots_version AS version FROM presentation_message_meta WHERE singleton=1').get() as {version:number}).version;
@@ -312,14 +331,20 @@ const upsertOwnerMessage=prepared.query(`INSERT INTO presentation_owner_messages
 function writeOwnerVersion(generation:number,row:{sessionId:number;messageId:string;sequence:number;eventId:string}) {
   insertOwnerVersion.run(generation,row.sessionId,row.messageId,row.sequence,row.eventId);
   upsertOwnerMessage.run(generation,row.sessionId,row.messageId,row.sequence,row.sequence);
-  const event=source.query('SELECT payload_json,created_at FROM session_owner_events WHERE sequence=?').get(row.sequence) as
+  indexOwnerMessage(row.sessionId,row.messageId,row.sequence);
+}
+function indexOwnerMessage(sessionId:number,messageId:string,sequence:number) {
+  const event=source.query('SELECT payload_json,created_at FROM session_owner_events WHERE sequence=?').get(sequence) as
     {payload_json:string;created_at:string}|null;
+  // Ledger bytes read count toward a backfill's pace even when nothing is indexed.
+  if(event)search.indexedBytes+=event.payload_json.length;
   const message=event?JSON.parse(event.payload_json)?.message:null;
   if(!message||typeof message.content!=='string'||!['user','assistant','tool'].includes(message.role))return;
+  // A tool version still reaches upsert, which removes an older dialogue version of the message.
   const text=withoutHeader(message.content);
-  search.upsert({key:`message:${row.sessionId}:${row.messageId}`,sessionId:row.sessionId,kind:'message',eventId:row.messageId,
-    sourceId:`native:${row.sessionId}`,sourceVersion:hash(stable(message)),textHash:hash(message.content),role:message.role,
-    text,at:event?.created_at??null,ordinal:row.sequence,...(typeof message.detailKey==='string'?{detailKey:message.detailKey}:{})});
+  search.upsert({key:`message:${sessionId}:${messageId}`,sessionId,kind:'message',eventId:messageId,
+    sourceId:`native:${sessionId}`,sourceVersion:hash(stable(message)),textHash:hash(message.content),role:message.role,
+    text,at:event?.created_at??null,ordinal:sequence,...(typeof message.detailKey==='string'?{detailKey:message.detailKey}:{})});
 }
 function writeInput(inputId:string) {
   const row=source.query('SELECT id,session_id,kind,payload_json,created_at FROM session_inputs WHERE id=?')
@@ -452,24 +477,42 @@ async function refreshAreaProjection(generation:number){
   prepared.transaction(()=>{keepLease();areas.activate(generation);})();
 }
 
-/** Receipt policy changes rebuild only receipts. Every other prepared view keeps its own generation. */
-async function refreshReceiptProjection(){
-  const generation=receipts.nextGeneration(),startHead=head();
-  prepared.transaction(()=>{keepLease();receipts.beginRebuild(generation);})();
-  let after=0;
-  while(true){
-    const page=prepared.transaction(()=>{keepLease();return receipts.rebuildPage(generation,after,20);})();
-    after=page.lastRowid;
-    if(!page.hasMore)break;
+/** Receipt policy changes rebuild only receipts, beside live catch-up. The projection revision is
+ * this bundle's digest, so every release rebuilds receipts; running that rebuild before catch-up
+ * applied no change for two to five minutes after each restart, and every Inbox list answered
+ * not-ready meanwhile (Nov 11, 2026). Now each catch-up pass fills one bounded slice of the next
+ * generation, every applied change goes to both generations, and the old generation stays readable
+ * and current until the new one activates at the change position both have reached. */
+let receiptRebuild:{generation:number;after:number}|null=null;
+const RECEIPT_REBUILD_SLICE_MS=200;
+async function advanceReceiptRebuild(appliedHead:number){
+  if(receipts.isCurrent(receiptProjectionRevision)){receiptRebuild=null;return;}
+  if(!receiptRebuild){
+    const generation=receipts.nextGeneration();
+    prepared.transaction(()=>{keepLease();receipts.beginRebuild(generation);})();
+    receiptRebuild={generation,after:0};
+  }
+  const rebuild=receiptRebuild,until=performance.now()+RECEIPT_REBUILD_SLICE_MS;
+  while(performance.now()<until){
+    const page=prepared.transaction(()=>{keepLease();return receipts.rebuildPage(rebuild.generation,rebuild.after,20);})();
+    rebuild.after=page.lastRowid;
+    if(!page.hasMore){
+      // Rows rebuilt read the current source and every applied change reached this generation too,
+      // so it covers at least the position the shared views have applied.
+      prepared.transaction(()=>{keepLease();receipts.activate(rebuild.generation,appliedHead,receiptProjectionRevision);})();
+      receiptRebuild=null;
+      return;
+    }
     await yieldProgress(5);
   }
-  prepared.transaction(()=>{keepLease();receipts.activate(generation,startHead,receiptProjectionRevision);})();
 }
 
 /** Full re-rooting occurs off the interactive owner. The old generation stays readable until commit. */
 async function rebuild() {
   if(rebuilding)return;
   rebuilding=true;
+  // A full rebuild replaces every receipt generation, including one being filled beside catch-up.
+  receiptRebuild=null;
   try {
     const previous=meta(),generation=previous.generation+1,receiptGeneration=receipts.nextGeneration(),startHead=head();
     const eventHead=(source.query('SELECT COALESCE(MAX(sequence),0) AS n FROM session_owner_events').get() as {n:number}).n;
@@ -632,7 +675,7 @@ async function upgradeRoutingResultVisibility(generation:number){
 async function catchUp() {
   const current=meta();
   if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)){await rebuild();return;}
-  if(!receipts.isCurrent(receiptProjectionRevision)){await refreshReceiptProjection();return;}
+  await advanceReceiptRebuild(current.source_head);
   const receiptGeneration=receipts.activeGeneration();
   if(!current.agent_request_visibility_version){await upgradeAgentRequestVisibility(current.generation);return;}
   if(current.routing_result_visibility_version<2){await upgradeRoutingResultVisibility(current.generation);return;}
@@ -640,6 +683,7 @@ async function catchUp() {
   if(!areas.isReady(current.generation))await refreshAreaProjection(current.generation);
   await upgradeRequestRoots(current.generation);
   await upgradeAnswerClosures(current.generation);
+  await upgradeThreadTime(current.generation);
   const changes=source.query(`SELECT sequence,source_table,row_key,session_id,input_id,turn_id,request_id,topic_id,target_session_id,target_input_id FROM presentation_change_log
     WHERE sequence>? ORDER BY sequence LIMIT 500`).all(current.source_head) as
       {sequence:number;source_table:string;row_key:string;session_id:number|null;input_id:string|null;
@@ -834,6 +878,7 @@ async function catchUp() {
       change.session_id&&(change.source_table==='slack_agent_session_title_projections'||change.source_table==='slack_agent_session_status_projections')
         ?{...change,source_table:'sessions',row_key:String(change.session_id)}:change));
     receipts.apply(receiptGeneration,changes);
+    if(receiptRebuild)receipts.apply(receiptRebuild.generation,changes);
     receipts.refreshDue(receiptGeneration);
     topics.apply(current.generation,changes,changedRoots);
     areas.apply(current.generation,changes);
@@ -880,7 +925,15 @@ async function catchUp() {
     topic_context_build_ms:Math.round(topicContextBuildMs)}));
 }
 
-let checkedDisplay=false,lastTopicCollection=0,touchBackfilled=false;
+const searchUpkeep=new PreparedSearchUpkeep(prepared,preparedPath,search,{
+  generation:()=>meta().generation,
+  indexMessage:indexOwnerMessage,
+  inputsAfter:(after,limit)=>source.query('SELECT rowid,id FROM session_inputs WHERE rowid>? ORDER BY rowid LIMIT ?').all(after,limit) as {rowid:number;id:string}[],
+  indexInput:writeInput,
+  sessionsAfter:(after,limit)=>(source.query('SELECT id FROM sessions WHERE id>? ORDER BY id LIMIT ?').all(after,limit) as {id:number}[]).map(row=>row.id),
+  indexSession:writeSession,
+},keepLease,(event,fields)=>writeLogLine('info',JSON.stringify({event,...fields})));
+let checkedDisplay=false,lastTopicCollection=0,touchBackfilled=false,lastFailureDetailAt=0;
 while(true){
   try {if(claimLease()){
     observation.emit();
@@ -895,13 +948,24 @@ while(true){
     }
     await catchUp();observation.succeeded();
     maintainSearchIfDue();
+    searchUpkeep.step();
     if(!touchBackfilled){
       const current=meta();
       if(current.ready)touchBackfilled=!prepared.transaction(()=>{keepLease();
         return cards.backfillTouch(current.generation,head());})();
     }
-  }}
-  catch(error){observation.failed();writeLogLine('error',JSON.stringify({event:'presentation_message_worker_failed',error:String(error)}));}
+  }else receiptRebuild=null;}
+  catch(error){
+    // Another worker may have refilled or abandoned the receipt shadow meanwhile; start it afresh.
+    receiptRebuild=null;
+    observation.failed();
+    const failure=error instanceof Error?error:new Error(String(error));
+    const now=Date.now(),includeDetail=now-lastFailureDetailAt>60_000;
+    if(includeDetail)lastFailureDetailAt=now;
+    writeLogLine('error',JSON.stringify({event:'presentation_message_worker_failed',error:String(error),
+      ...(includeDetail?{code:typeof (error as {code?:unknown})?.code==='string'?(error as {code:string}).code:null,
+        stack:failure.stack?.split('\n').slice(0,8).join('\n')??null}:{})}));
+  }
   // A retained message should appear in a warm thread inside the interactive read budget;
   // the idle check is one indexed change-journal seek in this child, outside the owner loop.
   await Bun.sleep(100);

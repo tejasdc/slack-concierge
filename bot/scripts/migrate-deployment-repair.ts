@@ -1,12 +1,12 @@
 #!/usr/bin/env bun
 
 import { Database } from "bun:sqlite";
-import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readdirSync, rmSync, realpathSync, statSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readdirSync, rmSync, realpathSync, statSync, statfsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from 'node:child_process';
 import { canonicalSql } from '../src/canonical-sql';
-import { checkSqliteBackup as checks, publishSqliteBackup, pruneVerifiedBackups, verifyMigrationBackup } from '../src/verified-sqlite-backup';
+import { checkSqliteBackup as checks, isVerifiedBackup, publishSqliteBackup, pruneVerifiedBackups, verifyMigrationBackup } from '../src/verified-sqlite-backup';
 
 /**
  * The schema this release's code builds, read from a database it creates from nothing. Run in a
@@ -217,7 +217,63 @@ if (!backupOnly && !backupIfNeeded && !process.argv.includes('--plan')) {
     throw new Error(`Schema migration requires ${service} fully stopped; observed ${JSON.stringify(values)}.`);
 }
 
+// The copy is the ledger's full size (12.9 GB on 2026-11-12) and is written before older copies are
+// pruned. That night's copy took the root disk from about 21 GB to 7 GB free in minutes; a copy
+// started with less room would fill it and stop every writer. Refuse instead, leaving the deploy
+// failed and the ledger untouched, unless the copy fits with a margin left over.
+const COPY_MARGIN_BYTES = 10 * 1024 ** 3;
+/**
+ * Older automatic copies the retention cap will drop as soon as the new copy is published. With the
+ * ledger at 12.9 GB and a 12 GiB cap, the cap keeps only the newest copy, so the previous one is
+ * removed seconds after the new one lands; requiring room for both at once refused the update on
+ * 2026-11-12 (14.8 GiB free, 22.2 GiB needed). Removing them first changes nothing that survives:
+ * the ledger is untouched until its own new copy is verified, and the evicted copy only rolled back
+ * the previous release, which this update replaces.
+ */
+function copiesTheNewCopyEvicts(newCopyBytes: number): string[] {
+  if (process.env.CONCIERGE_DEPLOYMENT_MIGRATION_BACKUP) return [];
+  const folder = dirname(backupPath);
+  const stamp = (name: string) => Number(name.split('.')[2]);
+  const verified = readdirSync(folder).filter(name => /^state\.pre-deployment-repair\.\d+\.db$/.test(name))
+    .filter(name => isVerifiedBackup(join(folder, name))).sort((a, b) => stamp(b) - stamp(a));
+  let kept = 1, bytes = newCopyBytes, full = false;
+  const evicted: string[] = [];
+  for (const name of verified) {
+    const size = statSync(join(folder, name)).size;
+    if (!full && kept < AUTOMATIC_COPIES_KEPT && bytes + size <= AUTOMATIC_COPY_BYTES) { kept++; bytes += size; continue; }
+    full = true;
+    evicted.push(name);
+  }
+  return evicted;
+}
+
+function requireRoomForCopy() {
+  const wal = existsSync(statePath + '-wal') ? statSync(statePath + '-wal').size : 0;
+  const copyBytes = statSync(statePath).size + wal;
+  const needed = copyBytes + COPY_MARGIN_BYTES;
+  const disk = statfsSync(dirname(backupPath));
+  let free = Number(disk.bavail) * Number(disk.bsize);
+  if (free < needed) {
+    const folder = dirname(backupPath);
+    const evicted = copiesTheNewCopyEvicts(copyBytes);
+    const reclaimable = evicted.reduce((sum, name) => sum + statSync(join(folder, name)).size, 0);
+    if (free + reclaimable >= needed) {
+      for (const name of evicted) {
+        // Qualification first, as the prune does: an interrupted removal cannot count a missing file.
+        rmSync(join(folder, `${name}.verified.json`), { force: true });
+        rmSync(join(folder, name), { force: true });
+      }
+      console.error(JSON.stringify({ event: 'deployment_migration_copy_preevicted', evicted, reclaimed_bytes: reclaimable }));
+      const after = statfsSync(folder);
+      free = Number(after.bavail) * Number(after.bsize);
+    }
+  }
+  if (free < needed)
+    throw new Error(`Not enough disk for the pre-migration ledger copy: ${(free / 1024 ** 3).toFixed(1)} GiB free, ${(needed / 1024 ** 3).toFixed(1)} GiB needed (ledger plus a 10 GiB margin). Free space, then deploy again.`);
+}
+
 function backUp() {
+  requireRoomForCopy();
   publishSqliteBackup(statePath, backupPath);
   pruneAutomaticCopies();
 }

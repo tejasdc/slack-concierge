@@ -47,7 +47,9 @@ try {
       candidate.close();continue;
     }
     const meta=candidate.query('SELECT generation,ready FROM presentation_message_meta WHERE singleton=1').get() as {generation:number;ready:number}|null;
-    if(meta?.ready){result=candidate;break;}
+    const searchReady=candidate.query("SELECT 1 FROM sqlite_master WHERE name='search_meta'").get()
+      &&(candidate.query('SELECT ready FROM search_meta WHERE singleton=1').get() as {ready:number}|null)?.ready;
+    if(meta?.ready&&searchReady){result=candidate;break;}
     candidate.close();
   }
   if(!result)throw new Error('Presentation worker did not publish an indexed generation.');
@@ -60,7 +62,7 @@ try {
     throw new Error(`Prepared author/text disagrees with accepted input: ${JSON.stringify(attributed)}`);
   const version=result.query('SELECT message_id FROM presentation_owner_message_versions WHERE event_sequence=2').get() as {message_id:string}|null;
   if(version?.message_id!=='m1')throw new Error('Owner message version was not indexed.');
-  const search=result.query("SELECT COUNT(*) AS n FROM prepared_search_documents WHERE kind='input'").get() as {n:number};
+  const search=result.query("SELECT COUNT(*) AS n FROM search_documents WHERE document_key LIKE 'input:%'").get() as {n:number};
   if(search.n!==1)throw new Error('Accepted input was not indexed for search.');
   const reader=Bun.spawn([process.execPath,join(import.meta.dir,'../src/presentation-search-read.ts')],
     {env:{...process.env,CONCIERGE_STATE_DIR:dir},stdin:'pipe',stdout:'pipe',stderr:'pipe'});

@@ -1,5 +1,5 @@
 /** Read-only provider usage collection for runner-owned homes; deliberately imports no owner state. */
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { runnerAccountHomes } from "./runner-provider-accounts";
@@ -93,29 +93,88 @@ function claudeWindows(usage: any): UsageWindow[] {
     add(`Weekly · ${typeof window?.name === "string" && window.name ? `${window.name} only` : "one model"}`, window);
   return windows;
 }
+const ownClaudeReads = new Map<string, { version: string; nextAt: number; windows: UsageWindow[] | null; readAt: string | null }>();
+
+/** The runner launches from this home. claude-swap's separate copy can report an old refusal after
+ * Accounts has filed a working login here, so a fresh own-home answer takes precedence. */
+async function ownClaudeWindows(home: string): Promise<{ windows: UsageWindow[]; readAt: string } | null> {
+  const path = join(home, ".credentials.json");
+  let version: string;
+  try { const stat = statSync(path); version = `${stat.mtimeMs}:${stat.size}`; }
+  catch { return null; }
+  const prior = ownClaudeReads.get(home);
+  if (prior?.version === version && Date.now() < prior.nextAt)
+    return prior.windows && prior.readAt ? { windows: prior.windows, readAt: prior.readAt } : null;
+  let windows: UsageWindow[] | null = null;
+  let readAt: string | null = null;
+  try {
+    const token = JSON.parse(readFileSync(path, "utf8"))?.claudeAiOauth?.accessToken;
+    if (typeof token === "string" && token) {
+      const response = await fetch("https://api.anthropic.com/api/oauth/usage", {
+        headers: { authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20",
+          "user-agent": "Concierge/1.0 (https://thnkr.ing)" },
+        signal: AbortSignal.timeout(12_000),
+      });
+      if (response.ok) {
+        const usage: any = await response.json();
+        windows = [];
+        const add = (name: string, block: any) => {
+          const usedPercent = percent(block?.utilization);
+          if (usedPercent === null) return;
+          windows!.push({ name, usedPercent, resetsAt: iso(block?.resets_at), willLastToReset: null, runsOutAt: null });
+        };
+        add("5-hour", usage?.five_hour);
+        add("Weekly", usage?.seven_day);
+        for (const limit of Array.isArray(usage?.limits) ? usage.limits : [])
+          if (limit?.kind === "weekly_scoped" && typeof limit?.scope?.model?.display_name === "string")
+            add(`Weekly · ${limit.scope.model.display_name} only`, { utilization: limit.percent, resets_at: limit.resets_at });
+        readAt = new Date().toISOString();
+      }
+    }
+  } catch { /* A failed read cannot invalidate the sign-in or the last provider reading. */ }
+  ownClaudeReads.set(home, { version, nextAt: Date.now() + 5 * 60_000, windows, readAt });
+  return windows && readAt ? { windows, readAt } : null;
+}
 async function readClaude(): Promise<ProviderUsage> {
   const observedAt = new Date().toISOString();
-  if (!existsSync(claudeSwap)) return { observedAt, accounts: [], problem: "claude-swap is not installed on this runner." };
+  const homes = new Map(runnerAccountHomes("claude-code").map(account => [account.account, account.home]));
+  const listed = await readClaudeSwapAccounts(homes);
+  const accounts = listed.accounts;
+  // claude-swap knows only the accounts added to it; an account signed in through Accounts has its own
+  // runner home and is never added there (adding copies the login, which dies when the original renews).
+  // Every signed-in home it does not list is read from that home's own login, as the owner's reader has
+  // done since 2026-11-03: hey@tejas.nyc was missing from the runner's reading after usage moved here.
+  for (const [label, home] of homes) {
+    if (accounts.some(account => account.label === label)) continue;
+    const own = await ownClaudeWindows(home);
+    accounts.push({ label, plan: null, current: home === join(homedir(), ".claude"), windows: own?.windows ?? [],
+      problem: own ? null : "Usage could not be read.", readAt: own?.readAt ?? null });
+  }
+  return { observedAt, accounts, problem: accounts.length ? null : listed.problem };
+}
+async function readClaudeSwapAccounts(homes: Map<string, string>): Promise<{ accounts: AccountUsage[]; problem: string | null }> {
+  if (!existsSync(claudeSwap)) return { accounts: [], problem: "claude-swap is not installed on this runner." };
   try {
     const list = JSON.parse(await read(claudeSwap, ["list", "--json"]));
     if (!Array.isArray(list?.accounts)) throw new Error("account list absent");
-    const homes = new Map(runnerAccountHomes("claude-code").map(account => [account.account, account.home]));
     const accounts: AccountUsage[] = [];
     for (const account of list.accounts) {
       const label = String(account?.email || account?.alias || `Account ${account?.number ?? "?"}`);
       const hasUsage = account?.usage != null;
       const usage = hasUsage ? account.usage : account?.lastGoodUsage ?? null;
       const status = String(account?.usageStatus ?? "");
-      const signedOut = status === "relogin_required" || status === "token_expired";
       // Do not report another machine's saved login as a runner-owned account.
-      if (!homes.has(label)) continue;
+      const home = homes.get(label);
+      if (!home) continue;
+      const own = status === "ok" ? null : await ownClaudeWindows(home);
+      const signedOut = !own && (status === "relogin_required" || status === "token_expired");
       accounts.push({ label, plan: null, current: homes.get(label) === join(homedir(), ".claude"),
-        windows: claudeWindows(usage), problem: status === "ok" ? null : signedOut
+        windows: own?.windows ?? claudeWindows(usage), problem: own || status === "ok" ? null : signedOut
           ? "This account needs signing in again." : usage ? "Showing the last reading; the latest could not be taken." : "Usage could not be read.",
-        ...(signedOut ? { signedOut: true } : {}), readAt: iso(hasUsage ? account?.usageFetchedAt : account?.lastGoodFetchedAt) });
+        ...(signedOut ? { signedOut: true } : {}), readAt: own?.readAt ?? iso(hasUsage ? account?.usageFetchedAt : account?.lastGoodFetchedAt) });
     }
-    return { observedAt, accounts, problem: null };
-  } catch { return { observedAt, accounts: [], problem: "Claude usage could not be read." }; }
+    return { accounts, problem: null };
+  } catch { return { accounts: [], problem: "Claude usage could not be read." }; }
 }
 
 /** Reads are snapshots only: no owner allowance decision or request state is imported or changed. */

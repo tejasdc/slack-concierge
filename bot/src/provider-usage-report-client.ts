@@ -16,6 +16,16 @@ function mix(values:any[]){
     byModel:[...models].map(([model,value])=>({model,...value,mainCalls:value.calls-value.helperCalls,share:totalCalls?value.calls/totalCalls:0}))
       .sort((a,b)=>b.calls-a.calls)};
 }
+function edits(values:any[]){
+  const totalEdits=sum(values.map(value=>value?.totalEdits)),helperEdits=sum(values.map(value=>value?.helperEdits));
+  const models=new Map<string,{edits:number;helperEdits:number}>();
+  for(const value of values)for(const row of value?.byModel??[]){
+    const prior=models.get(row.model)??{edits:0,helperEdits:0};prior.edits+=row.edits;prior.helperEdits+=row.helperEdits;models.set(row.model,prior);
+  }
+  return {totalEdits,helperEdits,mainEdits:totalEdits-helperEdits,helperShare:totalEdits?helperEdits/totalEdits:0,
+    byModel:[...models].map(([model,value])=>({model,...value,mainEdits:value.edits-value.helperEdits,
+      share:totalEdits?value.edits/totalEdits:0})).sort((a,b)=>b.edits-a.edits)};
+}
 function countMap(values:any[]){
   const out:Record<string,number>={};for(const value of values)for(const [key,count] of Object.entries(value??{}))out[key]=(out[key]??0)+(Number(count)||0);
   return out;
@@ -54,7 +64,7 @@ function mergePeriod(parts:any[]){
     const totalWeighted=sum(list.map(value=>value.totalWeighted));
     return {...one,totalWeighted,raw:raw(list.map(value=>value.raw)),cache:{...combinedCache,
       bug:bug(combinedCache.flaggedCallCount,combinedCache.callCount,one.provider)},
-      callMix:mix(list.map(value=>value.callMix)),cachedInputTokens:sum(list.map(value=>value.cachedInputTokens)),
+      callMix:mix(list.map(value=>value.callMix)),editMix:edits(list.map(value=>value.editMix)),cachedInputTokens:sum(list.map(value=>value.cachedInputTokens)),
       rewrittenInputTokens:sum(list.map(value=>value.rewrittenInputTokens)),
       bySession:sessions.map(value=>({...value,share:totalWeighted?value.weighted/totalWeighted:0,
         cache:{...value.cache,bug:bug(value.cache.flaggedCallCount,value.cache.callCount,one.provider)}}))
@@ -70,8 +80,9 @@ function mergePeriod(parts:any[]){
   const calls=diagnostics.flatMap(value=>value.calls).sort((a,b)=>b.rewrittenInputTokens-a.rewrittenInputTokens).slice(0,100);
   const turns=diagnostics.flatMap(value=>value.turns).sort((a,b)=>b.rewrittenInputTokens-a.rewrittenInputTokens).slice(0,100)
     .map(value=>({...value,bug:bug(value.flaggedCallCount,value.callCount,value.provider)}));
-  return {...first,through:new Date().toISOString(),callMix:mix(parts.map(part=>part.callMix)),
+  return {...first,through:new Date().toISOString(),callMix:mix(parts.map(part=>part.callMix)),editMix:edits(parts.map(part=>part.editMix)),
     fallbackModels:[...new Set(parts.flatMap(part=>part.fallbackModels))].sort(),accounts,scheduledFirings,
+    attributionBuckets:parts.flatMap(part=>part.attributionBuckets??[]),
     cacheDiagnostics:{...first.cacheDiagnostics,ordinaryMissRate,ordinaryCallCount:ordinaryCalls,providerRates:rates,
       callCount:sum(diagnostics.map(value=>value.callCount)),turnCount:sum(diagnostics.map(value=>value.turnCount)),
       last48Hours:summary(diagnostics.map(value=>value.last48Hours)),last15Minutes:summary(diagnostics.map(value=>value.last15Minutes)),calls,turns}};

@@ -27,6 +27,7 @@ import {resolveDeploymentReactionTargets} from './deployment-reaction-provenance
 import {releaseFilesInUse} from './executions';
 import {enrollNativePipelineContinuation,tickNativePipelineContinuation} from './native-pipeline-continuation-owner';
 import {runnerRoutes} from './runner-routes';
+import {listReadHead} from './presentation-topic-reader';
 import {activeGrafanaAlerts,type GrafanaFiringEvidence,type GrafanaRecoveryEvidence} from './grafana-alerts';
 
 function requestFailure(request:Request,error:unknown):Response {
@@ -145,7 +146,11 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'chatgpt-recover') return Response.json(await sessions.recoverChatGptNeverSent(input));
         if (operation === 'attention-withdraw') return Response.json(sessions.withdrawAttention(input));
         if (operation === 'thread') return Response.json(sessions.thread(input));
-        if (operation === 'topics') { await refuseFinishedTodoQuestions(input); return Response.json(sessions.topics(input)); }
+        if (operation === 'topics') {
+            await refuseFinishedTodoQuestions(input);
+            const listHead=input.verb==='list'?await listReadHead(typeof input.cursor==='string'?input.cursor:null,request.signal):undefined;
+            return Response.json(sessions.topics(input,listHead));
+        }
         if (operation === 'context') return Response.json(await sessions.context(input));
         if (operation === 'ask') return Response.json(await sessions.ask(input), {status:202});
         if (operation === 'reply') return Response.json(await withLinkCheck(await sessions.reply(await withTodoState(input)),input,owner));
@@ -326,7 +331,7 @@ export async function startRoutedRequestApi(stateDir: string, coordinator: Route
     fetch: async request=>{
       try {
         const response=await handle(request);
-        if(request.method!=='GET')await ledgerDurable();
+        if(request.method!=='GET')await ledgerDurable({kind:'owner_receipt',id:request.headers.get('x-concierge-admission-id')??undefined});
         return response;
       } catch(error) {return requestFailure(request,error);}
     },

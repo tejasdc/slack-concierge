@@ -10,7 +10,7 @@ import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {basename,join} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
 import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,requeueProvenUnsentNativeChatGptTurn,requeueOrphanedPreAdmissionTurn,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
-import {acceptedInputForTurn,adoptProviderConversationTitle,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,providerRunnerForSession,recordRecoveredResultAttention,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {acceptedInputForTurn,adoptProviderConversationTitle,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,providerRunnerForSession,recordRecoveredResultAttention,recordSessionEvent,recordSessionInputAttention,recoverUnsentAntigravityInputs,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {lastLaunchedConversationHome} from './session-runner-home';
 import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
 import {flushPendingProviderProgressEvents} from './session-projection';
@@ -98,7 +98,7 @@ import {thinkAloudInstructions} from './think-aloud-instructions';
 import {INBOX_INSTRUCTIONS,markResultAnsweredByPost,minutesText,pebbleArrivalWaitMs,relayUnpostedAnswer} from './session-inbox';
 import {readClaudeCachedMessage,readCodexHistoryMessage,readClaudeHistory,readCodexHistory} from './provider-history';
 import {ProviderHistoryPageClient} from './provider-history-page-client';
-import {ATTENTION_INSTRUCTION,releaseFocusForPost,settleExitedProcessReport,topicPromptContext,warmEntryIndex} from './session-topics';
+import {ATTENTION_INSTRUCTION,releaseFocusForPost,settleExitedProcessReport,topicPromptContext} from './session-topics';
 import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,reservePendingRunnerSignIn,clearPendingSignIn,pendingRunnerSignIn} from './state';
 import {log,errorFields} from './log';
 import {attachedRecordingWords,transcriptionPrompt} from './transcription';
@@ -135,6 +135,7 @@ import {pinCodexThreadHooks} from './hook-pins';
 import {HostedClaudeCodeTransport,HostUnavailableError,claudeExecutable,executionDirectory,executionHostsEnabled,newExecutionId,streamJournal} from './execution-host-client';
 import {RUNNER_SUPERVISOR,RunnerHostAccess} from './runner-host-access';
 import {agentRunEnvironment} from './agent-run-tokens';
+import {commitSessionIdentity} from './peer-identity';
 import {recordExecutionExited,recordExecutionLaunched,recordLiveAdoption,releaseExecution,retainExecutionIntent,type Adoption,type ExecutionRow} from './executions';
 
 export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex'|'antigravity';mode:'interactive'|'device'|'host-managed';pending:boolean;signInKeepsCurrent:true;pendingFor:string|null;pendingUrl:string|null;lastSignIn:{ok:boolean;detail:string|null}|null;message:string;signedIn?:boolean;checking?:boolean;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
@@ -503,11 +504,28 @@ export class SessionExecutionHost {
   }
   private checkProviderAuth(fresh=false):void{
     const recent=Date.now()-this.providerAuthCheckedAt<30_000;
-    this.providerAuthCheck??=!fresh&&recent?null:Promise.all([
+    if(this.providerAuthCheck){
+      if(fresh){
+        const current=this.providerAuthCheck;
+        const forced=scheduleProviderAccountUsageRefresh(true).catch(()=>{});
+        this.trackProviderAuthCheck(Promise.all([current,forced]));
+      }
+      return;
+    }
+    if(!fresh&&recent)return;
+    this.trackProviderAuthCheck(Promise.all([
       providerRunnerTarget('claude-code')?Promise.resolve():refreshClaudeAccount(),
       providerRunnerTarget('codex')?Promise.resolve():codexSignInState().then(answer=>{this.codexSignIn=answer.state;if(answer.state==='signed-in')setCodexAccountInUse(answer);}).catch(()=>{}),
-      scheduleProviderAccountUsageRefresh().catch(()=>{})]).then(()=>undefined,()=>undefined)
-      .finally(()=>{this.providerAuthCheck=null;this.providerAuthCheckedAt=Date.now();});
+      scheduleProviderAccountUsageRefresh(fresh).catch(()=>{})]));
+  }
+  private trackProviderAuthCheck(work:Promise<unknown>):void{
+    const check=work.then(()=>undefined,()=>undefined);
+    this.providerAuthCheck=check;
+    void check.then(()=>{
+      if(this.providerAuthCheck!==check)return;
+      this.providerAuthCheck=null;
+      this.providerAuthCheckedAt=Date.now();
+    });
   }
   private async providerAuthStatus(fresh=false):Promise<readonly ProviderAuthView[]>{
     this.checkProviderAuth(fresh);
@@ -1057,6 +1075,11 @@ export class SessionExecutionHost {
     for(const row of sessions)this.pullWaitingInputs(row.session_id);
     if(sessions.length)log('info','outside_unsent_human_sessions_scanned',{sessions:sessions.length});
   }
+  recoverAntigravityUnsentInputs() {
+    const queued=recoverUnsentAntigravityInputs();
+    if(queued)this.options.wake();
+    return queued;
+  }
   private steer(input:AcceptedSessionInput):boolean {
     const body=JSON.parse(input.payload_json);
     const session=getSessionById(input.session_id);
@@ -1099,7 +1122,6 @@ export class SessionExecutionHost {
         const accepted=target.controller.enqueue({clientMessageId:input.id,text:'',
           prepareText:async root=>{
             const attachments=this.owner.attachments(body.attachments);
-            if(sessionMetadata(session).inbox)await warmEntryIndex();
             let text=this.prompt(attached);
             if(attachments.length) {
               if(!root)throw new Error('The active turn has no owned attachment root.');
@@ -1199,7 +1221,10 @@ export class SessionExecutionHost {
       return await this.options.registry.run({turnId:claim.turn_id,sessionId:session.id},async(steeringController,closeSteering,cancellationController)=>{
         if(input.kind==='fork'){closeSteering(new Error('A native fork control has no model input channel.'));return this.runFork(claim,input,session);}
         if(sessionMetadata(session).outside)steeringController.close(new Error('An independent Codex command has no live input channel.'));
-        if(adoption)await this.settleUnsentSteering(claim.turn_id,adoption.execution);
+        if(adoption){
+          await this.settleUnsentSteering(claim.turn_id,adoption.execution);
+          if(session.provider_id==='antigravity')this.recoverAntigravityUnsentInputs();
+        }
         const outcome=await this.runModel(claim,input,session,steeringController,closeSteering,cancellationController,adoption);
         // Only here is the run's outcome durably settled; a crash before this leaves the host's
         // record for the next coordinator to settle from.
@@ -1465,7 +1490,6 @@ export class SessionExecutionHost {
     const attachments=this.owner.attachments(payload.attachments);
     // An adopted run continues exactly what was started: the same words, files and folders, never
     // a re-preparation that could differ from what the agent already read.
-    if(!adoption&&metadata.inbox)await warmEntryIndex();
     let prompt=adoption?String(adoption.processor.replayPrompt):this.prompt(input),staging:string|null=adoption?.processor.staging??null;
     const additionalDirs=adoption?[...adoption.processor.runAdditionalDirs as string[]]:[...(metadata.additionalDirs??parseAdditionalPaths(channel))];
     // A new Claude turn may run on a runner machine (RUNNERS.md, "Turns on a runner"): it then
@@ -1511,7 +1535,7 @@ export class SessionExecutionHost {
         run:async prepared=>{
           // The claimed turn, its execution record and its input are on disk before any provider
           // (Claude, Codex or ChatGPT) is started or told anything.
-          await ledgerDurable();
+          await ledgerDurable({kind:'provider_input',id:input.id});
           // A run taken back after a restart takes messages again only once its history is rebuilt;
           // what the restart returned to the queue meanwhile goes into it then.
           if(adoption&&prepared.onSteeringReady){
@@ -1606,6 +1630,9 @@ export class SessionExecutionHost {
       interactionPolicy:metadata.interactionPolicy??'standard',
       ownerInstanceId:this.options.instanceId,dispatchAttempt:claim.dispatch_attempt,steeringController,closeSteering,cancellationController,
       providerEnvironment:{CONCIERGE_SOURCE_INPUT_ID:input.id,CONCIERGE_SOURCE_RUN_ID:nativeRunId(claim.turn_id),
+        // Commit provenance under names nothing else reads, so the Mac's SSH to the server
+        // can carry them and a commit made there still names its real session.
+        CONCIERGE_COMMIT_SESSION:commitSessionIdentity(session.id),CONCIERGE_COMMIT_INPUT:input.id,
         ...(onRunner?{CONCIERGE_PROVIDER_RUNNER:runnerTarget!}:{
           CONCIERGE_ROUTER_ACTIONS:installedRouterActionsPath(),
           CONCIERGE_CODEX_CLI:Bun.which('codex')||join(homedir(),'.local','bin','codex')}),
@@ -2083,8 +2110,9 @@ export function chooseTurnRunner(session:SessionRow,metadata=sessionMetadata(ses
     }
     return null;
   }
-  if(session.provider_id==='claude-code'&&!turnRunsOnRunner(metadata))return null;
-  if(session.provider_id==='antigravity'&&(process.env.CONCIERGE_TURN_RUNNERS?.trim()||'marked')==='off')return null;
+  // Claude and Google share one placement setting: a machine without runners (the Mac peer's
+  // default `marked`) runs unmarked work itself instead of refusing for a missing target.
+  if(!turnRunsOnRunner(metadata))return null;
   const selected=process.env.CONCIERGE_TURN_RUNNER?.trim()||codexRelayRunner();
   if(!selected)throw new Error(`${session.provider_id} runner placement is enabled, but no runner target is configured.`);
   return selected;

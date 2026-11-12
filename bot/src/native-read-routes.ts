@@ -16,8 +16,10 @@ const liveOwner=new Set([
   '/auth/claude-launch-choice',
 ]);
 const provider=new Set(['/sessions/:id/history','/sessions/:id/history/messages/:id/detail',
+  '/agent-test/sessions/:id/history','/agent-test/sessions/:id/history/messages/:id/detail',
   '/sessions/:id/details/:id','/sessions/:id/artifacts/:id']);
 const filesystem=new Set(['/files','/projects/:id/instructions','/projects/:id/todos','/projects/:id/files',
+  '/agent-test/sessions/:id/attachments/:id',
   '/attachments/:id','/attachments/:id/transcription','/inbox/:id']);
 const account=new Set(['/auth/providers']);
 
@@ -36,7 +38,7 @@ export function classifyNativeReadRoute(method:string,pathname:string):NativeRea
     pattern:policy.contract.route.slice(4),maxResponseBytes:policy.maxResponseBytes};
   const suffix=path.slice('/sessions/v1'.length);
   const pattern=policy.path;
-  if(pattern==='/events/stream')return {domain:'stream-owner',source:'control',path,pattern,maxResponseBytes:0};
+  if(pattern==='/events/stream'||pattern==='/agent-test/sessions/:id/events/stream')return {domain:'stream-owner',source:'control',path,pattern,maxResponseBytes:0};
   if(liveOwner.has(pattern))return {domain:'live-owner',source:'control',
     path,pattern,maxResponseBytes:policy.maxResponseBytes};
   if(account.has(pattern))return {domain:'read-worker',source:'account',path,pattern,maxResponseBytes:policy.maxResponseBytes};
@@ -50,14 +52,16 @@ export function classifyNativeReadRoute(method:string,pathname:string):NativeRea
 }
 
 const independentCanonical=new Set([
-  '/events','/releases','/models','/usage/breakdown','/projects','/saved-work/settings','/pause-all',
+  '/agent-test/sessions/:id/view','/agent-test/sessions/:id/capabilities','/agent-test/sessions/:id/receipts','/agent-test/sessions/:id/receipts/changes',
+  '/agent-test/sessions/:id/events','/agent-test/sessions/:id/operations/:id','/agent-test/sessions/:id/runs/:id',
+  '/events','/releases','/models','/usage/breakdown','/usage/allowance','/projects','/saved-work/settings','/pause-all',
   '/operations/:id','/runs/:id','/work-thread','/inbox','/inbox/obligations','/sessions','/sessions/:id',
   '/sessions/:id/view','/sessions/:id/capabilities','/reports/chain/:id','/reports/window',
 ]);
 
 /** Fails the candidate if a new GET exception has no execution owner. */
 export function assertNativeReadRouteCoverage():void {
-  const classified=new Set([...liveOwner,...provider,...filesystem,...account,...independentCanonical,'/events/stream']);
+  const classified=new Set([...liveOwner,...provider,...filesystem,...account,...independentCanonical,'/events/stream','/agent-test/sessions/:id/events/stream']);
   for(const route of OWNER_GET_EXCEPTIONS)if(!classified.has(route.path))throw new Error(`Unclassified native read route ${route.path}`);
   for(const route of classified)if(!OWNER_GET_EXCEPTIONS.some(entry=>entry.path===route))throw new Error(`Stale native read route ${route}`);
   for(const contract of Object.values(PRESENTATION_READERS)){
