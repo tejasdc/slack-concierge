@@ -5,7 +5,8 @@ import {createHash,randomUUID} from 'node:crypto';
 import {readFileSync,realpathSync} from 'node:fs';
 import {join} from 'node:path';
 import {canceledRequestNotice,inboxRootResolver,sourceMessagePage} from './presentation-message-source';
-import {PreparedSearchIndex} from './prepared-search';
+import {PreparedSearchIndex,indexedRole} from './prepared-search';
+import {PreparedSearchUpkeep} from './prepared-search-upkeep';
 import {sessionCatalogueLabels} from './session-labels';
 import {preparedInboxDisplay} from './presentation-inbox-display';
 import {routedTurnResultSql} from './inbox-routing-result';
@@ -24,6 +25,7 @@ const stateDir=realpathSync(directory);
 const source=new Database(join(stateDir,'state.db'),{readonly:true});
 source.exec('PRAGMA query_only=ON; PRAGMA busy_timeout=1000');
 const prepared=new Database(join(stateDir,'presentation.db'),{create:true});
+const preparedPath=join(stateDir,'presentation.db');
 prepared.exec('PRAGMA busy_timeout=1000; PRAGMA journal_mode=WAL');
 const schemaStarted=performance.now();
 writeLogLine('info',JSON.stringify({event:'presentation_worker_schema',phase:'starting',worker_pid:process.pid}));
@@ -327,14 +329,18 @@ const upsertOwnerMessage=prepared.query(`INSERT INTO presentation_owner_messages
 function writeOwnerVersion(generation:number,row:{sessionId:number;messageId:string;sequence:number;eventId:string}) {
   insertOwnerVersion.run(generation,row.sessionId,row.messageId,row.sequence,row.eventId);
   upsertOwnerMessage.run(generation,row.sessionId,row.messageId,row.sequence,row.sequence);
-  const event=source.query('SELECT payload_json,created_at FROM session_owner_events WHERE sequence=?').get(row.sequence) as
+  indexOwnerMessage(row.sessionId,row.messageId,row.sequence);
+}
+function indexOwnerMessage(sessionId:number,messageId:string,sequence:number) {
+  const event=source.query('SELECT payload_json,created_at FROM session_owner_events WHERE sequence=?').get(sequence) as
     {payload_json:string;created_at:string}|null;
   const message=event?JSON.parse(event.payload_json)?.message:null;
   if(!message||typeof message.content!=='string'||!['user','assistant','tool'].includes(message.role))return;
+  if(!indexedRole(message.role))return;
   const text=withoutHeader(message.content);
-  search.upsert({key:`message:${row.sessionId}:${row.messageId}`,sessionId:row.sessionId,kind:'message',eventId:row.messageId,
-    sourceId:`native:${row.sessionId}`,sourceVersion:hash(stable(message)),textHash:hash(message.content),role:message.role,
-    text,at:event?.created_at??null,ordinal:row.sequence,...(typeof message.detailKey==='string'?{detailKey:message.detailKey}:{})});
+  search.upsert({key:`message:${sessionId}:${messageId}`,sessionId,kind:'message',eventId:messageId,
+    sourceId:`native:${sessionId}`,sourceVersion:hash(stable(message)),textHash:hash(message.content),role:message.role,
+    text,at:event?.created_at??null,ordinal:sequence,...(typeof message.detailKey==='string'?{detailKey:message.detailKey}:{})});
 }
 function writeInput(inputId:string) {
   const row=source.query('SELECT id,session_id,kind,payload_json,created_at FROM session_inputs WHERE id=?')
@@ -915,6 +921,14 @@ async function catchUp() {
     topic_context_build_ms:Math.round(topicContextBuildMs)}));
 }
 
+const searchUpkeep=new PreparedSearchUpkeep(prepared,preparedPath,search,{
+  generation:()=>meta().generation,
+  indexMessage:indexOwnerMessage,
+  inputsAfter:(after,limit)=>source.query('SELECT rowid,id FROM session_inputs WHERE rowid>? ORDER BY rowid LIMIT ?').all(after,limit) as {rowid:number;id:string}[],
+  indexInput:writeInput,
+  sessionsAfter:(after,limit)=>(source.query('SELECT id FROM sessions WHERE id>? ORDER BY id LIMIT ?').all(after,limit) as {id:number}[]).map(row=>row.id),
+  indexSession:writeSession,
+},keepLease,(event,fields)=>writeLogLine('info',JSON.stringify({event,...fields})));
 let checkedDisplay=false,lastTopicCollection=0,touchBackfilled=false,lastFailureDetailAt=0;
 while(true){
   try {if(claimLease()){
@@ -930,6 +944,7 @@ while(true){
     }
     await catchUp();observation.succeeded();
     maintainSearchIfDue();
+    searchUpkeep.step();
     if(!touchBackfilled){
       const current=meta();
       if(current.ready)touchBackfilled=!prepared.transaction(()=>{keepLease();
