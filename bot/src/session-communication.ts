@@ -1035,7 +1035,7 @@ export class SessionCommunicationCoordinator {
                 throw new Error('This post promises an answer without a matching open Inbox request. Route the exact human message as work, or name an open topic request with --promise-request. Nothing was posted.');
             recordSessionEvent({eventId:messageId,sessionId:session.id,inputId:rootInputId,...(router?{turnId:actor.turn}:{}),kind:'post',
                 payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${session.id}`,messageId:input.thread},postedBy:saved.input.id,...(router?{}:{postedBySession:`concierge:${own.id}`}),...(attachments.length?{attachments}:{})}});
-            if(input.notify)notifyAgentPost(session.id,rootInputId,messageId,text);
+            if(input.notify)notifyAgentPost(session.id,rootInputId,messageId,text,true,nativeRunId(actor.turn));
             // Post and release: a deliberate reply ends the router's declared work on the
             // inputs it covers, unless it said it keeps working.
             const topic=input.keep_working||!router?null:releaseFocusForPost(session,rootInputId,input.topic??null);
@@ -1409,6 +1409,22 @@ export class SessionCommunicationCoordinator {
         return this.dependencies.owner.savedWorkControl(input.turn_id!,input.verb==='start'?'start':input.verb==='daily'?'daily':'drop',
             {clientActionId:input.action_id,cancelingSessionId:actor.session,time:input.time,timeZone:input.timeZone,
                 cancelingInputId:actor.inputId,cancelingRunId:nativeRunId(actor.turn)});
+    }
+    control(input:{source:CommunicationSource;action_id:string;address:string;verb:'pause'|'continue'}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const authority=this.authority(this.fenced(this.actor(input.source))),actor=authority.actor;
+        action(input.action_id);
+        if(authority.scope!=='work'||!actor.inputId)throw new Error('Session control needs an exact live native work request.');
+        if(input.verb!=='pause'&&input.verb!=='continue')throw new Error('Session control takes only pause or continue.');
+        if(typeof input.address!=='string'||!input.address.startsWith('session:'))
+            throw new Error('Use an exact discovered local session address; peer session control must run on its own machine.');
+        const target=resolveSessionAddress(input.address),meta=sessionMetadata(target);
+        if((meta.origin??'native')!=='native'||meta.canvasObservation)
+            throw new Error('Session control requires a native session.');
+        if(supersededBy(target.id)||withdrawnSuccessor(target.id))throw new Error('That session no longer holds its work.');
+        return this.dependencies.owner.action(`concierge:${target.id}`,{clientActionId:input.action_id,action:{kind:input.verb}},
+            {sessionId:actor.session,inputId:actor.inputId,runId:nativeRunId(actor.turn),targetAddress:input.address,
+                ...(authority.authorityInputId?{authorityInputId:authority.authorityInputId}:{})});
     }
     async pause(input:{source:CommunicationSource;verb:'status'|'all'|'resume';action_id?:string;session_ids?:string[]}) {
         this.actor(input.source);

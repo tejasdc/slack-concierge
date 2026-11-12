@@ -2,7 +2,7 @@ import {acceptedInputAuthor,sessionAuthor,withCurrentAuthors} from './session-me
 import {questionDisplay} from './topic-display-rules';
 import {topicReplyTargets,type ReplyTargets} from './reply-target-rules';
 import {answerLine,fragmentReason} from './answer-line';
-import {consumeThreadNotification,hasPendingThreadNotification,messageAlreadyNotified,notifyAgentPost} from './thread-notifications';
+import {consumeThreadNotification,hasPendingThreadNotification,messageAlreadyNotified,notifyAgentPost,threadRangThisRun} from './thread-notifications';
 import {createHash,randomUUID} from 'node:crypto';
 import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
 import {db,getSessionById,type SessionRow} from './state';
@@ -571,6 +571,8 @@ function record(sessionId:number,inputId:string,turnId:number|null,change:Change
       if(!root)continue;
       const postId=question.sources.find(id=>db.query("SELECT 1 FROM session_owner_events WHERE event_id=? AND session_id=? AND kind IN ('post','result')").get(id,session.id))??null;
       if(postId&&messageAlreadyNotified(session.id,postId))continue;
+      // The same turn already rang him in this thread (its post with --notify, or another question).
+      if(threadRangThisRun(session.id,root,change.payload.by?.runId))continue;
       const author=typeof question.owner?.sessionId==='string'?sessionAuthor(question.owner.sessionId):null;
       const notificationInputId=postId?consumeThreadNotification(session.id,root,postId):null;
       const generation=session.id===sessionId?question.generation:raiseGeneration(session);
