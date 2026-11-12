@@ -125,13 +125,18 @@ export function macComputerUseCall(toolName:string,toolInput:unknown):boolean {
   return COMPUTER_CONTROL.test(toolName)||namedToolCall(COMPUTER_CONTROL,code);
 }
 
-function plainSessionReply(command:string):boolean {
+function sessionReplyShape(command:string):'safe'|'unsafe'|null {
   const commands=parseShell(command);
-  if(commands.length!==1||commands[0]!.substitutions.length>0||commands[0]!.bodies.length>0)return false;
+  if(commands.length===0)return null;
   const words=commands[0]!.words.map(word=>word.text);
   const router=process.env.CONCIERGE_ROUTER_ACTIONS;
-  return (words[0]==='$CONCIERGE_ROUTER_ACTIONS'||Boolean(router&&words[0]===router))
-    &&words[1]==='sessions'&&words[2]==='reply'&&words.length>=4;
+  if(!(words[0]==='$CONCIERGE_ROUTER_ACTIONS'||Boolean(router&&words[0]===router))
+    ||words[1]!=='sessions'||words[2]!=='reply'||words.length<4)return null;
+  // The shared shell parser is broader than the syntax this exception needs.
+  // Refuse executable expansions and quoting forms it cannot prove inert.
+  if(commands[0]!.substitutions.length>0||/[`\r\n]|\$\(|[<>]\(|\$['"]/.test(command))return 'unsafe';
+  if(commands.length!==1||commands[0]!.bodies.length>0)return null;
+  return 'safe';
 }
 
 /** Refuse common agent tool paths that would take over Tejas's Mac desktop. */
@@ -204,7 +209,11 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
   // A reply's quoted diagnostic is data for Concierge. Only the single parsed
   // router command receives this exception; chained or substituted actions still
   // go through the Mac browser and desktop checks below.
-  if(platform==='darwin'&&plainSessionReply(source))return null;
+  if(platform==='darwin') {
+    const reply=sessionReplyShape(source);
+    if(reply==='safe')return null;
+    if(reply==='unsafe')return 'Shell expansions in a Concierge reply are refused on Tejas’s Mac. Send the diagnostic as literal text.';
+  }
   const remote=/\bssh\b[^\n]{0,400}\btejasdc@(?:100\.90\.183\.122|[\w.-]+)\b/i.test(source);
   if(platform!=='darwin'&&!remote)return null;
   if(remote&&/\bagent-browser\s+(?!skills\b)(?:--[^\s]+\s+)*(?:open|click|fill|type|connect|tab|eval|snapshot|screenshot)\b|\bplaywright\s+(?:open|codegen|test)\b/i.test(source))
