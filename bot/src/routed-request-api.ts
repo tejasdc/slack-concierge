@@ -94,7 +94,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         const sourceInput=typeof input?.source?.input_id==='string'?getAcceptedSessionInput(input.source.input_id):null;
         const successor=sourceInput?supersededBy(sourceInput.session_id):null;
         const withdrawn=sourceInput?withdrawnSuccessor(sourceInput.session_id):false;
-        const readOnly=operation==='search'||operation==='projects'||operation==='agents'||operation==='peers'||operation==='usage'
+        const readOnly=operation==='search'||operation==='projects'||operation==='agents'||operation==='peers'||operation==='usage'||operation==='history-storage'
           ||operation==='pause'&&input.verb==='status'
           ||operation==='get'||operation==='context'||operation==='obligations'
           ||operation==='board'&&input.verb==='read'||operation==='watch'&&input.verb==='list'
@@ -119,6 +119,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
           return Response.json(input.by_session
             ? await usageBreakdown(input.period==='week'?'week':'today') : current);
         }
+        if (operation === 'history-storage') return Response.json(sessions.historyStorage(input));
         if (operation === 'auth-switch') return Response.json(await sessions.switchCodexAccount(input));
         if (operation === 'saved') return Response.json(sessions.saved(input));
         if (operation === 'snooze') return Response.json(sessions.snooze(input));
