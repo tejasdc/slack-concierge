@@ -968,6 +968,8 @@ addColumn("turns", "saved_wait_reason", "saved_wait_reason TEXT");
 addColumn("turns", "saved_yield_reason", "saved_yield_reason TEXT");
 db.exec("CREATE INDEX IF NOT EXISTS banked_yields_awaiting ON turns(id) WHERE saved_yield_reason IS NOT NULL AND status='cancelled'");
 addColumn("turns", "saved_repeat_ms", "saved_repeat_ms INTEGER");
+addColumn("turns", "saved_daily_time", "saved_daily_time TEXT");
+addColumn("turns", "saved_time_zone", "saved_time_zone TEXT");
 addColumn("turns", "saved_root_id", "saved_root_id INTEGER");
 addColumn("turns", "saved_sequence", "saved_sequence INTEGER");
 // A firing's own scheduled instant. The claim clears dispatch_next_attempt_ms, so without this a

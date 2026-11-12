@@ -16,7 +16,7 @@ function fixture(count:number){
       provider_input_acknowledged_at TEXT,provider_duration_ms INTEGER,
       saved_kind TEXT,saved_quiet_only INTEGER NOT NULL DEFAULT 0,dispatch_failure_class TEXT,dispatch_next_attempt_ms INTEGER,
       saved_at_ms INTEGER,saved_expires_at_ms INTEGER,saved_account TEXT,saved_window TEXT,
-      saved_repeat_ms INTEGER,saved_sequence INTEGER);
+      saved_repeat_ms INTEGER,saved_sequence INTEGER,saved_daily_time TEXT,saved_time_zone TEXT);
     CREATE TABLE session_inputs(id TEXT PRIMARY KEY,session_id INTEGER,kind TEXT,origin TEXT,created_at TEXT,
       payload_json TEXT,receipt_json TEXT);
     CREATE TABLE global_pause_targets(turn_id INTEGER);
