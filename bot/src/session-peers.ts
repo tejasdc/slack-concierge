@@ -1126,6 +1126,16 @@ export class SessionPeers {
         }
         // A rejected or interrupted HTTP exchange is not proof that the receiver did not
         // retain this request. Keep its original ID and body for idempotent reconciliation.
+        // A definite refusal (the peer validated this exact body and said no, before retaining it)
+        // gets the same answer on every resend. Seven Mac requests to server sessions that were
+        // no longer messageable were re-sent about five times a second for days (2026-11-11),
+        // flooding the owner log until the outside monitor went blind. End such a request and
+        // tell its sender, who can ask again or pick another session.
+        else if(error instanceof PeerError&&error.kind==='refused'&&[400,409,422].includes(error.status??0)&&!queuedDelivery.correctionOf){
+          this.settle(row,'failed',`${row.peer} refused this request and did not keep it: ${error.message} It was not sent again; ask again or choose another session.`);
+          log('warn','session_peer_request_refused_terminal',{request_id:row.request_id,peer:row.peer,status:error.status,code:error.code});
+          return;
+        }
         else if(error instanceof PeerError&&error.kind!=='unreachable'){
           const eventId=`peer-admission-uncertain:${row.request_id}`;
           if(!db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(eventId))
