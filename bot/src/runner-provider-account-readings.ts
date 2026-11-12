@@ -137,11 +137,26 @@ async function ownClaudeWindows(home: string): Promise<{ windows: UsageWindow[];
 }
 async function readClaude(): Promise<ProviderUsage> {
   const observedAt = new Date().toISOString();
-  if (!existsSync(claudeSwap)) return { observedAt, accounts: [], problem: "claude-swap is not installed on this runner." };
+  const homes = new Map(runnerAccountHomes("claude-code").map(account => [account.account, account.home]));
+  const listed = await readClaudeSwapAccounts(homes);
+  const accounts = listed.accounts;
+  // claude-swap knows only the accounts added to it; an account signed in through Accounts has its own
+  // runner home and is never added there (adding copies the login, which dies when the original renews).
+  // Every signed-in home it does not list is read from that home's own login, as the owner's reader has
+  // done since 2026-11-03: hey@tejas.nyc was missing from the runner's reading after usage moved here.
+  for (const [label, home] of homes) {
+    if (accounts.some(account => account.label === label)) continue;
+    const own = await ownClaudeWindows(home);
+    accounts.push({ label, plan: null, current: home === join(homedir(), ".claude"), windows: own?.windows ?? [],
+      problem: own ? null : "Usage could not be read.", readAt: own?.readAt ?? null });
+  }
+  return { observedAt, accounts, problem: accounts.length ? null : listed.problem };
+}
+async function readClaudeSwapAccounts(homes: Map<string, string>): Promise<{ accounts: AccountUsage[]; problem: string | null }> {
+  if (!existsSync(claudeSwap)) return { accounts: [], problem: "claude-swap is not installed on this runner." };
   try {
     const list = JSON.parse(await read(claudeSwap, ["list", "--json"]));
     if (!Array.isArray(list?.accounts)) throw new Error("account list absent");
-    const homes = new Map(runnerAccountHomes("claude-code").map(account => [account.account, account.home]));
     const accounts: AccountUsage[] = [];
     for (const account of list.accounts) {
       const label = String(account?.email || account?.alias || `Account ${account?.number ?? "?"}`);
@@ -158,8 +173,8 @@ async function readClaude(): Promise<ProviderUsage> {
           ? "This account needs signing in again." : usage ? "Showing the last reading; the latest could not be taken." : "Usage could not be read.",
         ...(signedOut ? { signedOut: true } : {}), readAt: own?.readAt ?? iso(hasUsage ? account?.usageFetchedAt : account?.lastGoodFetchedAt) });
     }
-    return { observedAt, accounts, problem: null };
-  } catch { return { observedAt, accounts: [], problem: "Claude usage could not be read." }; }
+    return { accounts, problem: null };
+  } catch { return { accounts: [], problem: "Claude usage could not be read." }; }
 }
 
 /** Reads are snapshots only: no owner allowance decision or request state is imported or changed. */
