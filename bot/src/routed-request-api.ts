@@ -122,6 +122,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'auth-switch') return Response.json(await sessions.switchCodexAccount(input));
         if (operation === 'saved') return Response.json(sessions.saved(input));
         if (operation === 'pause') return Response.json(await sessions.pause(input));
+        if (operation === 'control') return Response.json(sessions.control(input));
         if (operation === 'watch') {
           // A runner's own token names its machine for certain: that wins over what the helper sent.
           // A run token or the local socket carries no machine, so the helper's runner name stands

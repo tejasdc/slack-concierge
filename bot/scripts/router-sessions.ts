@@ -66,6 +66,8 @@ router-actions.sh sessions saved start|cancel <turn-id> <source-flags> --action-
 router-actions.sh sessions saved daily <turn-id> --time HH:MM --time-zone <IANA zone> <source-flags> --action-id A
 Stopping a repeating schedule (sessions schedule --every-ms): sessions cancel <its request-id> withdraws every queued firing and books no more (a firing already running finishes); sessions saved cancel <turn-id> of its queued firing does the same. sessions saved list shows each armed schedule's next firing, turn ID and interval.
 router-actions.sh sessions pause status|all|resume <source-flags> [--action-id A] [--session <concierge:N|mac:N> ...]  # --session is for resume only
+router-actions.sh sessions control pause|continue <discovered-local-session-address> <source-flags> --action-id A
+Controls one native session on this machine using the same Pause/Continue behavior as Thinkering. Pause persists until explicit Continue; an accepted receipt proves the saved choice, not a stopped provider process. Run peer controls on that peer machine.
 router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> [--renew] [--required-commit <full-sha>] <source-flags> --action-id A
 router-actions.sh sessions watch command --cwd <dir> --until <ISO time | duration> <source-flags> --action-id A -- <argv...>
 router-actions.sh sessions watch list <source-flags>
@@ -186,6 +188,7 @@ export type SessionCommunicationRequest =
   | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'; action_id?: string; until?: string; renew?: boolean; requiredCommit?: string; path?: string; argv?: string[]; cwd?: string; watch_id?: string; runner?: string } }
   | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'|'daily'; turn_id?:number; action_id?:string;cursor?:string;time?:string;timeZone?:string } }
   | { operation: "pause"; body: { source: Source; verb:'status'|'all'|'resume'; action_id?:string; session_ids?:string[] } }
+  | { operation: "control"; body: { source: Source; verb:'pause'|'continue'; address:string; action_id:string } }
   | { operation: "board"; body: { source?: Source; verb: string; [key: string]: unknown } };
 
 class SessionUsageError extends Error {}
@@ -450,6 +453,18 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     const actionId=flags.get('--action-id'),needEventId=flags.get('--need'),reason=flags.get('--reason');
     if(!actionId||!needEventId||!reason)invalid('attention withdraw needs --action-id, --need and --reason.');
     return {operation:'attention-withdraw',body:{source:sourceFrom(flags),action_id:actionId,address,need_event_id:needEventId,reason}};
+  }
+  if(first==='control'){
+    const verb=args.shift(),address=args.shift();
+    if((verb!=='pause'&&verb!=='continue')||!address?.startsWith('session:'))invalid('control needs pause or continue and an exact discovered local session address.');
+    const flags=new Map<string,string>();
+    while(args.length){
+      const flag=args.shift()!,value=args.shift();
+      if(!['--source-input','--source-run','--action-id'].includes(flag)||!value?.trim()||value.startsWith('--')||flags.has(flag))invalid(`Invalid or repeated control option ${flag}.`);
+      flags.set(flag,value);
+    }
+    if(!flags.has('--action-id'))invalid('Session control needs --action-id.');
+    return {operation:'control',body:{source:sourceFrom(flags),verb,address,action_id:flags.get('--action-id')!}};
   }
   if(first==='pause'){
     const verb=args.shift();

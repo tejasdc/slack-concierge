@@ -1,5 +1,36 @@
 # Router action helper
 
+## Per-session Pause and Continue
+
+An admitted native agent run with work authority can control one exact native session
+on its own Concierge instance:
+
+```bash
+router-actions.sh sessions control pause '<discovered-session-address>' --source-input '<input-id>' --source-run '<run-id>' --action-id '<stable-action-id>'
+router-actions.sh sessions control continue '<discovered-session-address>' --source-input '<input-id>' --source-run '<run-id>' --action-id '<different-stable-action-id>'
+```
+
+Copy the address from discovery; catalogue IDs and peer addresses are refused. A Mac
+controller uses the installed command on the Mac with its own admitted source pair.
+This does not forward remote controls or change global Pause. Informational-only and
+consultation-only callers cannot use it; the existing work-authority check applies.
+Imported evidence, Canvas observation records, superseded bindings and withdrawn
+handoff successors are refused.
+
+The command uses the same owner action as Thinkering's Pause/Continue, with agent
+origin, exact source input/run, acting session and target binding retained. The source
+and action ID identify a retry; changing its target or action conflicts. The retained
+control and event commit together. The original human route still records human origin
+and continues to reject agent-injected author fields.
+
+Pause saves deliberate suspension and discards queued automatic continuations using
+the existing policy. It does not promise to interrupt a provider already running, nor
+does it acquire an automatic release time. Continue clears that suspension, admits
+held ordinary inputs through the existing queue and wakes normal execution. A receipt
+proves the choice was saved; observe the exact provider run separately. A delayed retry
+of an earlier control does not reverse a later saved choice. Usage holds remain separate
+from deliberate Pause; this entrance adds no recovery policy.
+
 ## Outside agents
 
 An agent launched outside Concierge has no accepted Concierge input/run pair. On the

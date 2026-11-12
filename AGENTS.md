@@ -129,6 +129,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 
 ## Session and Inbox obligations
 
+- Source-checked per-session agent Pause/Continue shares the ordinary owner action,
+  preserves agent authorship and deliberate suspension, and runs on the target's own
+  machine; see [per-session controls](docs/runbooks/ROUTER-ACTIONS.md#per-session-pause-and-continue).
 - Route agent issue reports through `router-actions.sh report`, which opens the
   Inbox thread and request before routing. See
   [agent issue reports](docs/contracts/native-inbox.md#agent-issue-reports).
