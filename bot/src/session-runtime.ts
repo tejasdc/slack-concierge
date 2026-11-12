@@ -24,7 +24,7 @@ import {log,errorFields} from './log';
 import {startStuckWorkWatch} from './stuck-work-watch';
 import {startRepairNoticeDelivery} from './repair-notices';
 import {CodexSessionObserver} from './codex-session-observer';
-import {prepareSavedWorkForClaims,reconsiderBankedWork,inspectSavedWork,resumeBankedAfterYield,savedTurn,savedWorkSettings,quietOnlyCutoff} from './saved-work';
+import {prepareSavedWorkForClaims,reconsiderBankedWork,inspectSavedWork,noticeMissedQuietWindows,resumeBankedAfterYield,savedTurn,savedWorkSettings,quietOnlyCutoff} from './saved-work';
 import {quietOnlyAdmits} from './quiet-hours';
 import {providerAccountUsage} from './provider-account-usage';
 import {savedWorkAccountRooms} from './provider-account-dispatch';
@@ -193,7 +193,7 @@ export async function startSessionRuntime() {
   // composition, so this runtime spent the same accounts while never watching them.
   const stopUsageWatch=startProviderUsageWatch({stopped:()=>draining,urgent:()=>[...active].some(id=>{const saved=savedTurn(id);return saved?.saved_kind==='banked'&&!saved.saved_manual_start;}),
     onReading:()=>{void keepThreadsCurrent(admission=>host.owner.admit(admission)).catch(error=>log('error','inbox_recovery_pass_failed',errorFields(error)));
-      reconsiderBankedWork();inspectSavedWork();inspectActiveBanked();reconcileCoveredTasteRequest();recoverOctoberBudgetPauses();recoverExhaustedClaudeWork();maybeStartInboxProviderFailover();moveHeldWork();wakeDeferredQuestions(Date.now(),admission=>host.owner.admit(admission));void closeQuestionsAnsweredByTodos(admission=>host.owner.admit(admission)).catch(()=>{});queue.wake();publishUsageForecastNotices(recordSessionEvent);publishExpiringResetNotices(recordSessionEvent);refreshUsageBreakdownIfStale();briefRunningSessions(admission=>host.owner.admit(admission));}});
+      reconsiderBankedWork();inspectSavedWork();noticeMissedQuietWindows();inspectActiveBanked();reconcileCoveredTasteRequest();recoverOctoberBudgetPauses();recoverExhaustedClaudeWork();maybeStartInboxProviderFailover();moveHeldWork();wakeDeferredQuestions(Date.now(),admission=>host.owner.admit(admission));void closeQuestionsAnsweredByTodos(admission=>host.owner.admit(admission)).catch(()=>{});queue.wake();publishUsageForecastNotices(recordSessionEvent);publishExpiringResetNotices(recordSessionEvent);refreshUsageBreakdownIfStale();briefRunningSessions(admission=>host.owner.admit(admission));}});
   const stopBackgroundJobWatch=startBackgroundJobWatch(admission=>host.owner.admit(admission));
   const stopUpdateWaitWatch=startUpdateWaitWatch({admit:admission=>host.owner.admit(admission),stateDir:process.env.CONCIERGE_STATE_DIR!});
   const stopWatchWorker=startMachineWatchWorker(admission=>host.owner.admit(admission),()=>draining);

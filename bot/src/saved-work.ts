@@ -17,7 +17,7 @@ export type SavedTurn={id:number;session_id:number;status:string;saved_kind:Save
   saved_quiet_only:number;
   saved_repeat_ms:number|null;saved_root_id:number|null;saved_sequence:number|null;saved_fire_at_ms:number|null;
   saved_account:string|null;saved_window:string|null;saved_boundary_ms:number|null;dispatch_next_attempt_ms:number|null;dispatch_failure_class:string|null;
-  saved_alerted_at_ms:number|null;accepted_input_id:string|null};
+  saved_alerted_at_ms:number|null;accepted_input_id:string|null;saved_wait_reason?:string|null};
 
 const DAY=24*60*60_000, HOUR=60*60_000;
 export type SavedWorkSettings={quiet_start_hour:number;quiet_end_hour:number;reserve_percent:number;wait_days:number;time_zone:string};
@@ -97,6 +97,21 @@ const fleetBusy=(savedSessionId:number)=>!!db.query(`SELECT 1 FROM turns WHERE s
   AND (status IN ('running','delivering') OR (status='queued' AND saved_kind IS NULL)) LIMIT 1`).get(savedSessionId);
 const savedRows=()=>db.query("SELECT * FROM turns WHERE saved_kind IS NOT NULL AND status='queued' ORDER BY id").all() as SavedTurn[];
 
+/**
+ * Why a queued banked turn is not starting, in words the asking agent can act on. Stored on the
+ * turn and logged when it changes, because on 2026-11-12 a quiet-only job had waited seven nights
+ * and nothing recorded which of its conditions had held it.
+ */
+export type BankedWait='eligible_not_claimed'|'no_usage_reading'|'no_allowance_room'|'other_work_running'|'outside_quiet_hours'|'waiting_for_reset';
+export const BANKED_WAIT_WORDS:Record<BankedWait,string>={
+  eligible_not_claimed:'it was eligible to start but the queue did not take it (another unattended banked job was running, or a pause or Concierge update held the queue)',
+  no_usage_reading:'Concierge had no current allowance reading for its provider',
+  no_allowance_room:'no account had allowance left above the saved-work reserve',
+  other_work_running:'other agent work was running or queued, and generic banked work waits for an idle fleet',
+  outside_quiet_hours:'it was outside the quiet hours',
+  waiting_for_reset:'it is waiting until its allowance window is close to resetting',
+};
+
 /** Forecast and reachability are read outside the claim. Only changed instants are written. */
 export function reconsiderBankedWork(now=Date.now()):number {
   const settings=savedWorkSettings();let changed=0;
@@ -110,25 +125,41 @@ export function reconsiderBankedWork(now=Date.now()):number {
     const model=provider==='claude-code'
       ?getClaudePreferredModel(row.session_id,row.id)??sessionMetadata(session).model??null:undefined;
     const rooms=usage?savedWorkAccountRooms(provider,usage,now,model):[];
+    const quietOnly=row.saved_quiet_only===1;
+    // Generic banked work exists to spend allowance that would otherwise lapse, so it needs the
+    // forecast to say the window reaches its reset unspent and a floor of time before that reset.
+    // Quiet-only work was banked by him to run while he sleeps: it needs only room above the
+    // reserve. Its run is bounded by the quiet cutoff, not by the window's reset.
     const candidate=usage?usageForecasts(provider).filter(window=>window.resetsAt
       &&usage.accounts.some(account=>account.label===window.account
         &&includedAllowanceWindows(provider,account,model).some(item=>item.name===window.window))
       && chooseAccountForTurn({accounts:rooms,bound:{account:window.account,reason:'spending-this-window'},prefer:null}).account===window.account
-      && (usage.accounts.find(item=>item.label===window.account)?.windows.find(item=>item.name===window.window)?.willLastToReset===true
-        ||window.source!=='unknown'&&!window.runsOutBeforeReset)
-      && !window.runsOutBeforeReset&&window.usedPercent<100-settings.reserve_percent
+      && (quietOnly||(usage.accounts.find(item=>item.label===window.account)?.windows.find(item=>item.name===window.window)?.willLastToReset===true
+        ||window.source!=='unknown'&&!window.runsOutBeforeReset))
+      && (quietOnly||!window.runsOutBeforeReset)&&window.usedPercent<100-settings.reserve_percent
       && (rooms.find(room=>room.account===window.account)?.tightestUsedPercent??100)<100-settings.reserve_percent
-      && Date.parse(window.resetsAt)>=now+HOUR)
+      && (quietOnly||Date.parse(window.resetsAt)>=now+HOUR))
       .sort((a,b)=>Date.parse(a.resetsAt!)-Date.parse(b.resetsAt!))[0]:null;
     const account=candidate?.account??null;
     const reset=candidate?Date.parse(candidate.resetsAt!):null;
-    const quietOnly=row.saved_quiet_only===1;
-    const eligible=!!candidate&&!fleetBusy(row.session_id)&&(quietOnly
-      ?quietOnlyAdmits(now,settings)
-      :quiet(now,settings)||reset!-now<=2*HOUR);
+    // Only generic banking reads an idle fleet as evidence that nobody wants the allowance.
+    // Requiring it of quiet-only work kept a job banked for 2026-11-05 from ever starting: some
+    // standing agent is always running overnight. The reserve is what protects his own work.
+    const busy=!quietOnly&&fleetBusy(row.session_id);
+    const timely=quietOnly?quietOnlyAdmits(now,settings):quiet(now,settings)||(reset!==null&&reset-now<=2*HOUR);
+    const eligible=!!candidate&&!busy&&timely;
+    const wait:BankedWait=eligible?'eligible_not_claimed':!usage?'no_usage_reading':!candidate?'no_allowance_room'
+      :!timely?(quietOnly?'outside_quiet_hours':'waiting_for_reset'):'other_work_running';
     const next=eligible?0:quietOnly?nextQuietStart(now,settings):reset!==null?Math.min(nextQuietStart(now,settings),Math.max(now+60_000,reset-2*HOUR))
       :row.dispatch_next_attempt_ms!==null&&row.dispatch_next_attempt_ms>now+3*60_000?row.dispatch_next_attempt_ms:null;
-    const boundary=eligible?(quietOnly?Math.min(reset!,quietOnlyCutoff(now,settings)):reset):null;
+    const boundary=eligible?(quietOnly?quietOnlyCutoff(now,settings):reset):null;
+    // After the quiet window closes, keep the reason that held it during the window: that is what
+    // the missed-window notice reports, and "it was outside the quiet hours" would explain nothing.
+    if(row.saved_wait_reason!==wait&&!(quietOnly&&wait==='outside_quiet_hours'&&row.saved_wait_reason)){
+      db.query("UPDATE turns SET saved_wait_reason=? WHERE id=? AND status='queued' AND saved_kind='banked'").run(wait,row.id);
+      log('info','banked_work_wait',{turn_id:row.id,session_id:`concierge:${row.session_id}`,quiet_only:quietOnly,
+        reason:wait,previous:row.saved_wait_reason,account:candidate?.account??null,window:candidate?.window??null});
+    }
     if(row.dispatch_next_attempt_ms===next&&row.saved_account===(eligible?account:null)
       &&row.saved_window===(eligible?candidate!.window:null)&&row.saved_boundary_ms===boundary)continue;
     const result=db.query(`UPDATE turns SET dispatch_next_attempt_ms=?,saved_account=?,saved_window=?,saved_boundary_ms=?
@@ -137,6 +168,62 @@ export function reconsiderBankedWork(now=Date.now()):number {
   }
   if(changed)executionChanged();
   return changed;
+}
+
+/**
+ * The asking agent hears, once per quiet window, that its quiet-only job did not start and why,
+ * so a job never reaches its expiry silently. The notice is an overdue event on the request that
+ * banked the job; the request delivery wakes the asker with it and withdraws it if the request
+ * settles first.
+ */
+export function noticeMissedQuietWindows(now=Date.now()):number {
+  const settings=savedWorkSettings();let noticed=0;
+  const inWindow=quietOnlyAdmits(now,settings);
+  // The most recent morning cutoff at or before now.
+  const cutoff=nextQuietEnd(now-DAY,settings)-QUIET_STOP_MARGIN_MS;
+  const windowJustEnded=!inWindow&&cutoff<=now&&now-cutoff<DAY;
+  const rows=db.query(`SELECT * FROM turns WHERE saved_kind='banked' AND saved_quiet_only=1 AND status='queued'
+    AND saved_manual_start=0`).all() as SavedTurn[];
+  for(const row of rows){
+    const expired=row.saved_expires_at_ms!==null&&row.saved_expires_at_ms<=now;
+    // A window counts only when the job was waiting for most of it and had not expired by its end.
+    const missedWindow=windowJustEnded&&row.saved_at_ms<cutoff-60*60_000
+      &&(row.saved_expires_at_ms===null||row.saved_expires_at_ms>cutoff);
+    if(!expired&&!missedWindow)continue;
+    const reason=(row.saved_wait_reason??'eligible_not_claimed') as BankedWait;
+    const why=BANKED_WAIT_WORDS[reason]??reason;
+    const nextOpen=nextQuietStart(now,settings);
+    const gone=row.saved_expires_at_ms!==null&&row.saved_expires_at_ms<=nextOpen;
+    const last=gone||row.saved_expires_at_ms!==null&&row.saved_expires_at_ms<=quietOnlyCutoff(nextOpen+1,settings);
+    const text=expired
+      ?`Its quiet-only banked job (turn ${row.id}) expired at ${new Date(row.saved_expires_at_ms!).toISOString()} without starting; the last recorded reason was that ${why}. Start it with sessions saved start ${row.id} during quiet hours, or bank it again.`
+      :`Its quiet-only banked job (turn ${row.id}) did not start in the quiet window that ended ${new Date(cutoff).toISOString()}, because ${why}.`
+      +(gone?` It expires ${new Date(row.saved_expires_at_ms!).toISOString()}, before the next quiet window opens: start it with sessions saved start ${row.id} during quiet hours, or bank it again.`
+        :` It will try again from ${new Date(nextOpen).toISOString()}${row.saved_expires_at_ms!==null?` until it expires ${new Date(row.saved_expires_at_ms).toISOString()}`:''}.`
+          +(last?' That next quiet window is its last chance; if the reason above will not clear by then, start it yourself during quiet hours or bank it again.':''));
+    const key=expired?`quiet-expired:${row.id}`:`quiet-window-missed:${row.id}:${cutoff}`;
+    // A continuation turn carries a service input whose ancestry leads to the banking request.
+    const request=row.accepted_input_id?db.query(`WITH RECURSIVE ancestry(id,source_input_id) AS (
+        SELECT id,source_input_id FROM session_inputs WHERE id=?
+        UNION
+        SELECT parent.id,parent.source_input_id FROM session_inputs parent JOIN ancestry child ON parent.id=child.source_input_id
+      ) SELECT request.request_id FROM ancestry JOIN session_communication_requests request ON request.target_input_id=ancestry.id
+      WHERE request.outcome IS NULL ORDER BY request.rowid DESC LIMIT 1`).get(row.accepted_input_id) as {request_id:string}|null:null;
+    if(!request){
+      // Nobody asked through a request (a job banked by hand); the expiry alert in
+      // inspectSavedWork still reaches Tejas.
+      log('warn','quiet_window_missed_without_request',{turn_id:row.id,session_id:`concierge:${row.session_id}`,reason,expired});
+      continue;
+    }
+    const inserted=db.query(`INSERT OR IGNORE INTO session_communication_events(event_id,request_id,kind,action_key,payload_json,created_at_ms)
+      VALUES(?,?,'overdue',?,?,?)`).run(key,request.request_id,key,JSON.stringify({text,held:true,savedWorkWait:{turnId:row.id,reason,expired}}),now);
+    if(inserted.changes){
+      noticed++;
+      log('warn','quiet_window_missed',{turn_id:row.id,request_id:request.request_id,reason,last_window:last,expired});
+    }
+  }
+  if(noticed)executionChanged();
+  return noticed;
 }
 
 /** A declined or boundary-yielded banked run remains saved without a retry failure. */

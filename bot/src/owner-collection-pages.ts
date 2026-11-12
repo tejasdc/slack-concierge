@@ -37,7 +37,7 @@ export function savedWorkPage(source:Database,cursor:string|null=null,limit=COLL
  const rows=source.query(`SELECT * FROM turns WHERE saved_kind IS NOT NULL AND status='queued'
   ${before?'AND id<?':''} ORDER BY id DESC LIMIT ?`).all(...(before?[before]:[]),size+1) as
    {id:number;session_id:number;saved_kind:'scheduled'|'banked';status:string;dispatch_failure_class:string|null;dispatch_next_attempt_ms:number|null;
-    saved_at_ms:number;saved_expires_at_ms:number|null;saved_account:string|null;saved_window:string|null;saved_repeat_ms:number|null;saved_sequence:number|null;saved_quiet_only:number}[];
+    saved_at_ms:number;saved_expires_at_ms:number|null;saved_account:string|null;saved_window:string|null;saved_repeat_ms:number|null;saved_sequence:number|null;saved_quiet_only:number;saved_wait_reason?:string|null}[];
  const items=rows.slice(0,size),last=items.at(-1);
  return {items,nextCursor:rows.length>size&&last?encode(last.id):null};
 }
@@ -60,6 +60,7 @@ export function savedWorkListPage(source:Database,cursor:string|null=null){
     savedWork:{kind:turn.saved_kind,status:turn.status,quietOnly:turn.saved_quiet_only===1,startsAt:savedStartAt(turn),
       savedAt:new Date(turn.saved_at_ms).toISOString(),
       expiresAt:turn.saved_expires_at_ms?new Date(turn.saved_expires_at_ms).toISOString():null,
-      account:turn.saved_account,window:turn.saved_window,repeatEveryMs:turn.saved_repeat_ms,sequence:turn.saved_sequence}};
+      account:turn.saved_account,window:turn.saved_window,repeatEveryMs:turn.saved_repeat_ms,sequence:turn.saved_sequence,
+      ...(turn.saved_kind==='banked'?{waitingBecause:turn.saved_wait_reason??null}:{})}};
   }),nextCursor:page.nextCursor,coverage:{complete:true}};
 }
