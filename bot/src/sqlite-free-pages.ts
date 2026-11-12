@@ -61,7 +61,15 @@ function descriptor(path:string){
  return fd;
 }
 
-export function releaseFreePages(db:Database,path:string):FreePageRelease {
+/**
+ * Where a partial release stopped, per file. The next call continues after it, so a bounded
+ * call never re-walks holes it already punched; a complete pass starts over at page 1, which
+ * also covers pages freed below the position meanwhile. Safety never depends on it: only pages
+ * on the current free list are punched.
+ */
+const resumeAfter=new Map<string,number>();
+
+export function releaseFreePages(db:Database,path:string,maxRanges=MAX_RANGES_PER_CALL):FreePageRelease {
  const punch=loadFallocate();
  if(!punch)return {released:false,reason:'unsupported'};
  const checkpoint=db.query('PRAGMA wal_checkpoint(TRUNCATE)').get() as {busy:number;log:number};
@@ -76,8 +84,10 @@ export function releaseFreePages(db:Database,path:string):FreePageRelease {
    if(leaves.length+trunks!==total)return {released:false,reason:'free_list_mismatch'};
    leaves.sort((a,b)=>a-b);
    let ranges=0,pages=0;
+   const after=resumeAfter.get(path)??0;
    for(let index=0;index<leaves.length;){
-    if(ranges>=MAX_RANGES_PER_CALL)return {released:true,pages,ranges,bytes:pages*pageSize,more:true};
+    if(leaves[index]!<=after){index++;continue;}
+    if(ranges>=maxRanges){resumeAfter.set(path,leaves[index-1]!);return {released:true,pages,ranges,bytes:pages*pageSize,more:true};}
     let end=index;while(end+1<leaves.length&&leaves[end+1]===leaves[end]!+1)end++;
     const first=leaves[index]!,count=end-index+1;
     if(punch(fd,PUNCH_HOLE_KEEP_SIZE,(first-1)*pageSize,count*pageSize)!==0)return {released:false,reason:'punch_failed'};
@@ -85,6 +95,7 @@ export function releaseFreePages(db:Database,path:string):FreePageRelease {
     // Each hole is a journaled extent change on the ledger's filesystem; spread them out.
     if(ranges%PUNCHES_PER_PAUSE===0)Bun.sleepSync(PUNCH_PAUSE_MS);
    }
+   resumeAfter.delete(path);
    return {released:true,pages,ranges,bytes:pages*pageSize,more:false};
   }
  }).immediate();
