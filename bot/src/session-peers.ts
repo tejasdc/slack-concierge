@@ -1399,10 +1399,11 @@ export class SessionPeers {
       &&!!inbox&&!!sessionMetadata(inbox).inbox&&!!topicOfRoot(answerRoot);
     const threadReply=(forwarded&&typeof forwarded.inboxInputId==='string')||routed;
     const directPost=threadReply&&declared.output?.stoppedBy!=='tejas';
+    let postId:string|null=null;
     if(directPost){
       const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
       const root=answerRoot??row.source_input_id;
-      postAgentAnswer({inboxSessionId:row.source_session_id,eventId:event.event_id,requestId:row.request_id,root,
+      postId=postAgentAnswer({inboxSessionId:row.source_session_id,eventId:event.event_id,requestId:row.request_id,root,
         inboxInputId:routed?requestPayload.routedFrom?.messageId??root:forwarded.inboxInputId,respondingSessionId:this.presentedSession(row.peer,row.remote_session_id),
         respondingTitle:catalogue?JSON.parse(catalogue.view_json)?.title??null:null,text:String(declared.replyBody??declared.text??''),todoId:typeof declared.todoId==='string'?declared.todoId:null,
         attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],
@@ -1423,18 +1424,19 @@ export class SessionPeers {
       if(root&&inbox&&sessionMetadata(inbox).inbox&&topicOfRoot(root)){
         const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
         const title=catalogue?JSON.parse(catalogue.view_json)?.title??null:null;
-        postAgentAnswer({inboxSessionId:row.source_session_id,eventId:event.event_id,requestId:row.request_id,root,inboxInputId:forwarded?.inboxInputId??requestPayload.routedFrom?.messageId??root,
+        const stopPostId=postAgentAnswer({inboxSessionId:row.source_session_id,eventId:event.event_id,requestId:row.request_id,root,inboxInputId:forwarded?.inboxInputId??requestPayload.routedFrom?.messageId??root,
           respondingSessionId:this.presentedSession(row.peer,row.remote_session_id),respondingTitle:title,
           text:`You stopped ${title?`“${title}”`:'this agent'} on ${row.peer} at ${noticeTime(db,declared.output.stoppedAtMs)}; its work on this ended there.`,
           attachments:[],stalled:true,final:true,workDisposition:null,hisInputId:null,quiet:'Stopped by Tejas',
           messageThreadRootId:typeof forwarded?.messageThreadRootId==='string'?forwarded.messageThreadRootId:null});
+        if(!stopPostId)return false;
         if(forwarded?.inboxInputId)db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
           .run(JSON.stringify({state:'canceled',stoppedBy:'tejas'}),forwarded.inboxInputId);
         log('info','his_stop_posted_to_thread',{request_id:row.request_id,thread:root,peer:row.peer});
         stoppedPost=true;
       }
     }
-    return !!directPost||stoppedPost;
+    return !!postId||stoppedPost;
   }
   private explicitAnswerGroup(event:PeerEventRow,requesterSessionId:number):{carriedBy:string|null;joining:PeerEventRow[]} {
     if(event.kind!=='final')return {carriedBy:null,joining:[]};

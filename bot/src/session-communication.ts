@@ -2088,21 +2088,22 @@ export class SessionCommunicationCoordinator {
         if(!root||!inbox||!sessionMetadata(inbox).inbox||!topicOfRoot(root))return false;
         const responder=getSessionById(request.target_session_id);
         const title=responder?sessionMetadata(responder).title??null:null;
-        postAgentAnswer({inboxSessionId:request.source_session_id,eventId:event.event_id,requestId:request.request_id,root,
+        const postId=postAgentAnswer({inboxSessionId:request.source_session_id,eventId:event.event_id,requestId:request.request_id,root,
             inboxInputId:forwarded?.inboxInputId??routedFrom?.messageId??root,respondingSessionId:`concierge:${request.target_session_id}`,respondingTitle:title,
             text:`You stopped ${title?`“${title}”`:'this agent'} at ${noticeTime(db,declared.output.stoppedAtMs)}; its work on this ended there.`,
             attachments:[],stalled:true,final:true,workDisposition:null,hisInputId:null,quiet:'Stopped by Tejas',
             messageThreadRootId:typeof forwarded?.messageThreadRootId==='string'?forwarded.messageThreadRootId:null});
+        if(!postId)return false;
         if(forwarded?.inboxInputId)db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
             .run(JSON.stringify({state:'canceled',forwardedTo:{sessionId:`concierge:${request.target_session_id}`,requestId:request.request_id},stoppedBy:'tejas'}),forwarded.inboxInputId);
         log('info','his_stop_posted_to_thread',{request_id:request.request_id,thread:root});
         return true;
     }
-    private postThreadAnswer(request:RequestRow,event:EventRow,declared:any,thread:{root:string;forwarded:{inboxInputId:string}|null}) {
+    private postThreadAnswer(request:RequestRow,event:EventRow,declared:any,thread:{root:string;forwarded:{inboxInputId:string}|null}):string|null {
         const responder=getSessionById(request.target_session_id);
         const requestPayload=JSON.parse(request.payload_json);
         const forwarded=requestPayload.forwardedReply;
-        postAgentAnswer({inboxSessionId:request.source_session_id,eventId:event.event_id,requestId:request.request_id,root:thread.root,
+        return postAgentAnswer({inboxSessionId:request.source_session_id,eventId:event.event_id,requestId:request.request_id,root:thread.root,
             inboxInputId:thread.forwarded?.inboxInputId??requestPayload.routedFrom?.messageId??thread.root,respondingSessionId:`concierge:${request.target_session_id}`,
             respondingTitle:responder?sessionMetadata(responder).title??null:null,text:String(declared.replyBody??declared.text??''),todoId:typeof declared.todoId==='string'?declared.todoId:null,
             attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],
@@ -2962,8 +2963,8 @@ export class SessionCommunicationCoordinator {
         if(event.kind==='overdue')return false;
         const thread=this.threadAnswer(request,event,declared);
         const stoppedPost=declared.output?.stoppedBy==='tejas'&&this.postHisStop(request,event,declared);
-        if(thread&&!stoppedPost)this.postThreadAnswer(request,event,declared,thread);
-        return !!thread||!!stoppedPost;
+        const postId=thread&&!stoppedPost?this.postThreadAnswer(request,event,declared,thread):null;
+        return !!postId||!!stoppedPost;
     }
     private explicitAnswerGroup(event:EventRow,requesterSessionId:number):{carriedBy:string|null;joining:EventRow[]} {
         if(event.kind!=='final')return {carriedBy:null,joining:[]};
