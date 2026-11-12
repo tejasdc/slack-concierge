@@ -47,7 +47,15 @@ when it first becomes ready; a later turn outcome for that same run and thread
 does not emit another. A reply already produces the thread's single attention
 event. When the same posted message has already used `--notify` or consumed a
 human notification arm, the blocking question remains visible without another
-push. The notifier still suppresses a push while Tejas is viewing that exact
+push. One agent turn rings at most once per Inbox thread: once a question or a
+`--notify` post from a run has produced a push event for a thread, a later
+question, `--notify` post or `needs_you` turn outcome from the same run in that
+thread is recorded and shown without one (`threadRangThisRun`). A skipped post
+leaves his own "notify me" request unconsumed for a later answer. On 2026-11-12 the Inbox agent filed an
+approval question and then posted the same choice in plain words with
+`--notify`, and Tejas's devices rang twice eight seconds apart for one decision
+("I literally got 2 different notifications"). Agent issue reports never create
+a push event; their thread rings only through such a question or post. The notifier still suppresses a push while Tejas is viewing that exact
 thread and keeps its normal per-thread slot and device delivery record.
 Routine progress and completed work do not acquire this default.
 
