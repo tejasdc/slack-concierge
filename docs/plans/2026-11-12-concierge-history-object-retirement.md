@@ -119,6 +119,16 @@ exactly, since the accepted-message overlay joins against those IDs and detail
 reads resolve through the stored row. A reference expansion must return the
 same complete SDK value before the existing page/detail translators run.
 
+The candidate storage format keeps the existing SQLite row and indexes and
+places either the full SDK JSON or a tagged object reference in its `json`
+column. The tag carries the object digest and length, bounded raw-line span and
+line digest, and all SDK metadata except the exact raw `message`. One decoder
+expands both forms before page, selected-message or tool-detail translation.
+This avoids a second index but means an older Concierge binary cannot read a
+tagged row. The cutover must supply and exercise an exact materialization path
+that restores full SDK JSON before downgrade; until then no tagged row may be
+written to live state.
+
 The Codex window is App Server output with provider timestamps and continuation
 markers. Its rows cannot use Claude's raw-line matcher. Keep that window until a
 separate Codex identity, page, timestamp, and detail equivalence proof establishes

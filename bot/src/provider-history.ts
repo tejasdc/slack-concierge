@@ -18,6 +18,7 @@ import { assertProviderForkPolicy, type ProviderInteractionPolicy } from "./prov
 import { codexTranscriptTimestamps, codexTranscriptTimestampsAfter, type CodexTranscriptMark } from './provider-transcript-metadata';
 import { LEGACY_STRUCTURED_OUTPUT_TOOL, legacyStructuredOutputMessage, splitTurnOutcomeMarker } from './turn-outcome-marker';
 import {readRunnerClaudeTranscriptChunk,readRunnerCodexTimestamps,statRunnerClaudeTranscript} from './runner-provider-history-client';
+import {decodeStoredSdkRow} from './provider-history-object-spans';
 
 /**
  * The session a message came from, and who that agent is by the one presence rule
@@ -679,7 +680,7 @@ async function claudeCachedPage(input: ProviderHistoryInput): Promise<ProviderHi
     if(!Number.isSafeInteger(end) || end<0 || end>meta.row_count)throw new Error("STALE_HISTORY_CURSOR");
     const offset=Math.max(0,end-remaining);
     const rows=remaining>0 ? (db.query("SELECT json FROM rows WHERE ordinal>=? AND ordinal<? ORDER BY ordinal")
-      .all(offset,end) as {json:string}[]).map(row=>JSON.parse(row.json)) as SessionMessage[] : [];
+      .all(offset,end) as {json:string}[]).map(row=>decodeStoredSdkRow(row.json)) as SessionMessage[] : [];
     const needed = new Set<string>();
     for (const row of rows) for (const part of Array.isArray((row as any).message?.content) ? (row as any).message.content : [])
       if (part?.type === "tool_result" && typeof part.tool_use_id === "string") needed.add(part.tool_use_id);
@@ -739,7 +740,7 @@ export function readClaudeCachedMessage(sessionUuid:string,messageId:string):Pro
       JOIN rows ON rows.ordinal=message_ids.ordinal WHERE message_ids.id=?`)
       .get(messageId) as {json:string}|null;
     if(!row)return null;
-    return claudeHistoryMessages(JSON.parse(row.json),sessionUuid).find(message=>message.id===messageId)??null;
+    return claudeHistoryMessages(decodeStoredSdkRow(row.json),sessionUuid).find(message=>message.id===messageId)??null;
   } finally {cache.db.close();}
 }
 
@@ -767,7 +768,7 @@ async function claudeCachedDetail(input: ProviderDetailInput): Promise<{ content
       ? cache.db.query("SELECT json FROM rows WHERE uuid=?").all(location.uuid) as { json: string }[]
       : cache.db.query("SELECT json FROM rows WHERE ordinal=? AND uuid=?").all(location.offset, location.uuid) as { json: string }[];
     if (row.length !== 1) throw new Error("STALE_HISTORY_CURSOR");
-    const message = JSON.parse(row[0]!.json);
+    const message = decodeStoredSdkRow(row[0]!.json);
     const parts = message.message?.content;
     if (location.toolId !== undefined) {
       if (typeof location.toolId !== "string" || !location.toolId

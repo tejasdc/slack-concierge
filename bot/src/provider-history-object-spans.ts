@@ -10,6 +10,13 @@ const HEX_SHA256 = /^[a-f0-9]{64}$/;
 const PLAN_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 
 export type RawMessageSpan = { offset: number; length: number; sha256: string };
+export type StoredSdkRowReference = {
+  conciergeRawReference: 1;
+  objectSha256: string;
+  objectBytes: number;
+  span: RawMessageSpan;
+  metadata: Omit<SessionMessage, "message">;
+};
 export type RawMessageSpanIndex = {
   sourceSha256: string;
   sourceBytes: number;
@@ -131,6 +138,23 @@ export function readSdkMessageFromRawSpan(
     || raw?.sessionId !== metadata.session_id || !("message" in raw))
     throw new Error("HISTORY_OBJECT_SPAN_IDENTITY_CHANGED");
   return { ...metadata, message: raw.message };
+}
+
+/** Both the legacy full row and a proven reference decode to the same SDK value. */
+export function decodeStoredSdkRow(json: string): SessionMessage {
+  const row = JSON.parse(json);
+  if (row?.conciergeRawReference !== 1) return row as SessionMessage;
+  const ref = row as StoredSdkRowReference;
+  if (!HEX_SHA256.test(ref.objectSha256) || !Number.isSafeInteger(ref.objectBytes)
+    || ref.objectBytes < 0 || !ref.span || typeof ref.span.sha256 !== "string"
+    || !HEX_SHA256.test(ref.span.sha256) || !ref.metadata
+    || typeof ref.metadata !== "object" || "message" in ref.metadata)
+    throw new Error("INVALID_HISTORY_OBJECT_REFERENCE");
+  const objectPath = join(HOST_OBJECT_ROOT, "sha256", ref.objectSha256.slice(0, 2), ref.objectSha256);
+  const info = lstatSync(objectPath);
+  if (!info.isFile() || info.isSymbolicLink() || info.size !== ref.objectBytes
+    || (info.mode & 0o777) !== 0o444) throw new Error("HISTORY_OBJECT_UNAVAILABLE");
+  return readSdkMessageFromRawSpan(objectPath, ref.metadata, ref.span);
 }
 
 /**
