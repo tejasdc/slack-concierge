@@ -51,6 +51,8 @@ export type NativeSessionMetadata = {
    * cannot start (held-work-failover.ts), may move to another provider. His model choice clears it. */
   automaticProviderChoice?:boolean;
   automaticSmallTask?:boolean;
+  /** The selected thinking model was verified against Tejas's own words or peer-retained choice. */
+  explicitThinkingModelChoice?:string;
   /** Automatic provider failover tried this held session and found an input it could not move, or its
    * successor did not accept; it is not proposed again before this instant (held-work-failover.ts). */
   heldFailoverSkipUntil?:number;

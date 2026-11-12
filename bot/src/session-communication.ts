@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { historyStorageStatus, type HistoryStorageKind } from './history-storage-status';
 import { createHash, randomUUID } from 'node:crypto';
 import {implementationAlias} from './implementation-models';
+import {implementationEditDecision,recordImplementationEditReason} from './implementation-edit-gate';
 import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, settleTurnDependencies, SETTLED_EXECUTION_SQL, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
@@ -36,7 +37,9 @@ import {askAsideOnce} from './session-asides';
 import {awaitingOutside} from './storage-observation';
 import {earlierWorkFor,type EarlierWork} from './request-history';
 import {withBefore} from './reply-before';
-import { isHisChatGpt } from './aliases';
+import { isHisChatGpt,parseProviderSelector,resolveProviderSelector } from './aliases';
+import {humanChoseChatGptEffort,humanChoseProvider,humanChoseThinkingModel} from './model-escalation-custody';
+import {escalationReason} from './model-escalation';
 import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindDirectChatGptTaskSource,chatGptAnswerCommand,chatGptObligationForAttempt,classifyLegacyChatGptAsk,holdUnmessageableChatGptAsker,migrateOpenLegacyChatGptAsks,openChatGptObligations,recordChatGptAttemptResult,recordChatGptOriginalRequeued,recordChatGptReturnReceipt,reconcileCanceledChatGptObligations,reconcileHandoffChatGptObligations,requireChatGptTaskDisposition,requireChatGptTaskResolved,resolveChatGptAnswer,resolveChatGptTask,resumeMessageableChatGptAsker,withdrawCanceledChatGptAttempt,type ChatGptObligationRow} from './chatgpt-obligations';
 import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, reportBackNotice, strandedStep, stalledNotice, tellWorkerCanceled, cancelQueuedWithdrawnRequest, endRepeatingScheduleForInput, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
@@ -808,6 +811,33 @@ export class SessionCommunicationCoordinator {
         }
         return {kind:null};
     }
+    editGate(input:{providerSessionId:string;sourceRunId?:string;providerTurnId?:string;providerModel?:string;providerAgentId?:string;ownerTurnId?:number;toolId:string;toolName:string;toolInput?:unknown}) {
+        return implementationEditDecision(input);
+    }
+    modelStartGate(input:{providerSessionId:string;model:string}) {
+        if(input.model!=='gpt-6-astra'||typeof input.providerSessionId!=='string'||input.providerSessionId.length>256)return {known:false};
+        const session=db.query("SELECT id FROM sessions WHERE provider_id='codex' AND agent_session_uuid=? LIMIT 1")
+            .get(input.providerSessionId) as {id:number}|null;
+        if(!session)return {known:false};
+        if(sessionMetadata(getSessionById(session.id)!).model!==input.model)
+            return {known:true,allowed:false,message:'This Codex session is not currently set to GPT-6 Astra. Choose its current model or select Astra explicitly.'};
+        const event=db.query(`SELECT payload_json FROM session_owner_events WHERE session_id=? AND kind='model_escalation'
+            AND json_extract(payload_json,'$.model')='gpt-6-astra' ORDER BY sequence DESC LIMIT 1`)
+            .get(session.id) as {payload_json:string}|null;
+        const reason=event?String(JSON.parse(event.payload_json).reason??''):'';
+        const refusal=escalationReason('gpt-6-astra',reason,reason==='explicit human model choice');
+        return {known:true,allowed:!refusal,message:refusal??undefined};
+    }
+    editReason(input:{source:CommunicationSource;action_id:string;reason:string}) {
+        const actor=this.fenced(this.actor(input.source));
+        action(input.action_id);
+        if(!actor.inputId||typeof input.reason!=='string')throw new Error('A top-model edit reason needs this run and its specific reason.');
+        const status=db.query('SELECT status FROM turns WHERE id=?').get(actor.turn) as {status:string}|null;
+        if(status?.status!=='running')throw new Error('The reason belongs to a running turn.');
+        if(!db.query("SELECT 1 FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit_hold' LIMIT 1").get(actor.turn))
+            throw new Error('This turn has no held fifth edit; continue normally or use sessions implement for fixed work.');
+        return recordImplementationEditReason(actor.turn,actor.session,actor.inputId,input.reason,input.action_id);
+    }
     owed(input:{provider:string;provider_session_id:string;run_id?:string;offer?:string[];remind?:boolean}) {
         type Running={session_id:number;turn_id:number;accepted_input_id:string|null};
         // A new session's conversation id reaches the owner from the provider's output stream, which
@@ -1567,6 +1597,8 @@ export class SessionCommunicationCoordinator {
         address?: string;
         role?: string;
         provider?: string;
+        purpose?:'research'|'design-critique'|'design-review';
+        providerReason?:string;
         implementation?: boolean;
         smallTask?: boolean;
         hisChat?: boolean;
@@ -1616,6 +1648,29 @@ export class SessionCommunicationCoordinator {
         const sender = this.authority(this.fenced(this.actor(input.source)));
         const actor = sender.actor;
         action(input.action_id);
+        if(input.purpose!==undefined){
+            if(!['research','design-critique','design-review'].includes(input.purpose)||input.address||input.role||input.implementation||input.saved||input.outside||input.resurrect)
+                throw new Error('A declared research or design-review purpose starts a new ordinary session.');
+            if(!input.provider||input.provider==='auto'){
+                const humanEffort=input.effort&&input.effort!=='pro'&&humanChoseChatGptEffort(actor.inputId,input.effort);
+                if(input.effort&&input.effort!=='pro'&&!humanEffort)
+                    throw new Error('Declared research and design review use ChatGPT Pro unless Tejas explicitly chose another ChatGPT thinking level.');
+                input={...input,provider:'chatgpt',effort:humanEffort?input.effort:'pro',
+                    ...(humanEffort?{providerReason:'explicit human ChatGPT thinking level choice'}:{})};
+            }
+            else if(input.provider==='chatgpt'){
+                if(input.effort&&input.effort!=='pro'&&!humanChoseChatGptEffort(actor.inputId,input.effort))
+                    throw new Error('Declared research and design review use ChatGPT Pro unless Tejas explicitly chose another ChatGPT thinking level.');
+                input={...input,effort:input.effort??'pro',
+                    ...(input.effort&&input.effort!=='pro'?{providerReason:'explicit human ChatGPT thinking level choice'}:{})};
+            }else if(typeof input.providerReason!=='string'||!input.providerReason.trim()){
+                const selector=parseProviderSelector(input.provider);
+                const selected=selector?resolveProviderSelector(selector):null;
+                if(selected&&(humanChoseProvider(actor.inputId,selected.provider)||humanChoseThinkingModel(actor.inputId,selected.model)))
+                    input={...input,providerReason:'explicit human provider or model choice'};
+                else throw new Error('Research and design review default to ChatGPT Pro; another provider needs a stated reason.');
+            }
+        }else if(input.providerReason!==undefined)throw new Error('A provider reason needs a declared research or design-review purpose.');
         if(input.saved?.quietOnly!==undefined&&(input.saved.kind!=='banked'||input.saved.quietOnly!==true))
             throw new Error('Quiet-only is an explicit banked-work choice.');
         const requestedRole=input.role;
@@ -1799,7 +1854,7 @@ export class SessionCommunicationCoordinator {
                 if(current.scope!=='work'||current.authorityInputId!==sender.authorityInputId)
                     throw new Error('The work request that authorized this ask is no longer open.');
             }
-            return this.peers().ask(this.peerActor(actor),{peer:input.peer,action_id:input.action_id,address:input.address,provider:input.provider,effort:input.effort,escalationReason:input.escalationReason,project:input.project,title,summary:input.summary,text:input.text,
+            return this.peers().ask(this.peerActor(actor),{peer:input.peer,action_id:input.action_id,address:input.address,provider:input.provider,effort:input.effort,escalationReason:input.escalationReason,purpose:input.purpose,providerReason:input.providerReason,project:input.project,title,summary:input.summary,text:input.text,
                 forTask:input.for_task,recoveryOf:input.recovery_of,correctionOf:input.correction_of,
                 requestedEffect:input.requestedEffect,authorityInputId:input.requestedEffect==='work'?sender.authorityInputId:undefined,files:input.files,attachments:input.attachments,captureId:input.captureId,evidence:input.evidence,threadRoot,threadSourceMessageId,returnToRequester:input.return_to_requester,
                 ...(machineNeed?{machineNeed}:{}),
@@ -1830,7 +1885,7 @@ export class SessionCommunicationCoordinator {
         if(input.files!==undefined&&!Array.isArray(input.files))throw new Error('Files must contain named attachment bytes.');
         if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
         if(input.answer_view!==undefined&&!['summary','full'].includes(input.answer_view))throw new Error('--answer-view is summary or full.');
-        const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{}),...(input.requestedEffect==='work'&&sender.authorityInputId?{authorityInputId:sender.authorityInputId}:{}),...(localMachineNeed?{machineNeed:localMachineNeed}:{}),...(routedFrom?{routedMessage:{sourceInputId:routedFrom.messageId},routedFrom}:{})};
+        const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{}),...(input.purpose?{purpose:input.purpose}:{}),...(input.providerReason?{providerReason:input.providerReason}:{}),...(input.requestedEffect==='work'&&sender.authorityInputId?{authorityInputId:sender.authorityInputId}:{}),...(localMachineNeed?{machineNeed:localMachineNeed}:{}),...(routedFrom?{routedMessage:{sourceInputId:routedFrom.messageId},routedFrom}:{})};
         const encoded = JSON.stringify({ ...(requestedRole?{role:requestedRole}:input.provider?{provider:input.provider}:{address:input.address}),
             ...((requestedRole?requestedTitle:title)===undefined?{}:{title:requestedRole?requestedTitle:title}), text: input.text, after,...(pace.length?{pace}:{}),...extra,...(threadRoot?{thread:threadRoot}:{}),
             ...(input.for_task?{forTask:input.for_task}:{}),

@@ -5,9 +5,8 @@ import {basename,join} from 'node:path';
 import {PeerCatalogueSync} from './peer-catalogue-sync';
 import {peerCatalogueView} from './peer-catalogue-view';
 import {sessionProject} from './session-projects';
-import {parseProviderSelector,resolveProviderSelector,TOP_MODEL_CHOICES,type TopModelChoice} from './aliases';
-import {topModel} from './model-escalation';
-import {humanChoseTopModel} from './model-escalation-custody';
+import {parseProviderSelector,resolveProviderSelector,CHATGPT_THINKING_LEVELS,THINKING_MODEL_CHOICES} from './aliases';
+import {humanChoseChatGptEffort,humanChoseProvider,humanChoseThinkingModel} from './model-escalation-custody';
 import {AWAITING_INSPECTION,PROMPT_ANSWER_REMINDER_MS,PROMPT_ANSWER_OVERDUE_MS,REMINDERS_SINCE_MS,STILL_WAITING_AFTER_MS,STILL_WAITING_MINUTES,updateDraining,replyCommand,stalledNotice,strandedStep,tellWorkerCanceled,cancelQueuedWithdrawnRequest,waitingOnDependency,type OwedRequest} from './request-liveness';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {OWNER_READ_RESPONSE_MS} from './owner-transport-policy';
@@ -605,7 +604,7 @@ export class SessionPeers {
   hasDelivery(requestId:string){return !!db.query('SELECT 1 FROM session_peer_deliveries WHERE request_id=?').get(requestId);}
   private presentedSession(peer:string,remote:string){return receiveSessionFromPeer(remote,peer,this.self);}
   private presentedAddress(peer:string,address:string){return address.startsWith('session:')?`${peer}/${address}`:address;}
-  async ask(actor:PeerActor,input:{peer:string;action_id:string;address?:string;provider?:string;effort?:string;escalationReason?:string;project?:string;title?:string;summary?:string;text:string;
+  async ask(actor:PeerActor,input:{peer:string;action_id:string;address?:string;provider?:string;effort?:string;escalationReason?:string;purpose?:'research'|'design-critique'|'design-review';providerReason?:string;project?:string;title?:string;summary?:string;text:string;
     forTask?:string;recoveryOf?:string;correctionOf?:string;
     machineNeed?:MachineNeed;
     requestedEffect?:'informational'|'work';authorityInputId?:string;files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null;threadSourceMessageId?:string;returnToRequester?:boolean;
@@ -617,7 +616,7 @@ export class SessionPeers {
     const effect=input.requestedEffect??'informational';
     const prior=()=>db.query('SELECT * FROM session_peer_requests WHERE source_input_id=? AND action_id=?').get(actor.inputId,input.action_id) as PeerRequestRow|null;
     const encode=(taskRef:ChatGptTask|null)=>JSON.stringify({peer:input.peer,answerGuaranteeVersion:1,...(input.provider?{provider:input.provider}:{address:input.address}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary}),text:input.text,
-      ...(input.effort===undefined?{}:{effort:input.effort}),...(input.escalationReason===undefined?{}:{escalationReason:input.escalationReason}),...(input.project===undefined?{}:{project:input.project}),...(input.files===undefined?{}:{files:input.files}),
+      ...(input.effort===undefined?{}:{effort:input.effort}),...(input.escalationReason===undefined?{}:{escalationReason:input.escalationReason}),...(input.purpose===undefined?{}:{purpose:input.purpose}),...(input.providerReason===undefined?{}:{providerReason:input.providerReason}),...(input.project===undefined?{}:{project:input.project}),...(input.files===undefined?{}:{files:input.files}),
       ...(input.captureId===undefined?{}:{captureId:input.captureId}),...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.machineNeed?{machineNeed:input.machineNeed}:{}),requestedEffect:effect,...(input.authorityInputId?{authorityInputId:input.authorityInputId}:{}),...(input.threadRoot?{thread:input.threadRoot}:{}),...(input.returnToRequester?{returnToRequester:true}:{}),
       ...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{}),...(input.routedFrom?{routedMessage:{sourceInputId:input.routedFrom.messageId},routedFrom:input.routedFrom}:{}),
       ...(taskRef?{taskRef}:{}),...(input.recoveryOf?{recoveryOf:input.recoveryOf}:{}),...(input.correctionOf?{correctionOf:input.correctionOf}:{})});
@@ -696,19 +695,27 @@ export class SessionPeers {
       ?{inputId:authorityInput.id,runId:authorityInput.turn_id?nativeRunId(authorityInput.turn_id):runId,sessionId:`concierge:${actor.session}`,...(JSON.parse(authorityInput.payload_json).capture?.id?{captureId:JSON.parse(authorityInput.payload_json).capture.id}:{})}:null);
     // Every identity leaving this instance is named by it (peer-identity.ts).
     const originatingHuman=known?{...known,sessionId:presentSessionForPeer(known.sessionId,this.self)}:null;
-    const humanModelChoices=known?TOP_MODEL_CHOICES.filter(model=>
-      humanChoseTopModel(known.inputId,model)
-      ||(provenance?.originatingHuman?.inputId===known.inputId&&humanChoseTopModel(actor.inputId,model))):[];
+    const humanModelChoices=known?THINKING_MODEL_CHOICES.filter(model=>
+      humanChoseThinkingModel(known.inputId,model)
+      ||(provenance?.originatingHuman?.inputId===known.inputId&&humanChoseThinkingModel(actor.inputId,model))):[];
+    const humanProviderChoices=known?['claude-code','codex','antigravity','chatgpt'].filter(provider=>
+      humanChoseProvider(known.inputId,provider)
+      ||(provenance?.originatingHuman?.inputId===known.inputId&&humanChoseProvider(actor.inputId,provider))):[];
+    const humanChatGptEfforts=known?CHATGPT_THINKING_LEVELS.filter(effort=>
+      humanChoseChatGptEffort(known.inputId,effort)
+      ||(provenance?.originatingHuman?.inputId===known.inputId&&humanChoseChatGptEffort(actor.inputId,effort))):[];
     const providerSelector=parseProviderSelector(input.provider);
     const selectedModel=providerSelector?resolveProviderSelector(providerSelector).model:undefined;
-    const humanModelChoice=!!selectedModel&&humanModelChoices.includes(selectedModel as TopModelChoice);
+    const humanModelChoice=!!selectedModel&&humanModelChoices.includes(selectedModel as any);
     const text=input.framing?input.framing(id):`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. ${input.routedFrom?`This carries the exact Inbox message ${input.routedFrom.messageId} into this session. Reply to this request; the answer appears under that message in its original thread.`:'This is agent-authored input within the originating human task, not a new human message.'} Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`;
     const delivery={requestId:id,answerGuaranteeVersion:1,
       ...(task?{answerObligation:{id:input.correctionOf??input.recoveryOf??id,task,attemptId:id}}:{}),
       origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,originatingHuman,effectScope:input.authorityInputId?'work':provenance?.effectScope??null,...(focusCustody?{focusCustody}:{})},
       ...(humanModelChoices.length?{humanModelChoices}:{}),
+      ...(humanProviderChoices.length?{humanProviderChoices}:{}),
+      ...(humanChatGptEfforts.length?{humanChatGptEfforts}:{}),
       ...(input.provider?{provider:input.provider,...(input.effort===undefined?{}:{effort:input.effort}),...(input.escalationReason===undefined?{}:{escalationReason:input.escalationReason}),...(humanModelChoice?{humanModelChoice:selectedModel}:{}),...(input.project===undefined?{}:{project:input.project}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary})}:{address:input.address}),
-      text,message:input.text,requestedEffect:effect,...(input.machineNeed?{machineNeed:input.machineNeed}:{}),...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{}),
+      text,message:input.text,requestedEffect:effect,...(input.purpose?{purpose:input.purpose}:{}),...(input.providerReason?{providerReason:input.providerReason}:{}),...(input.machineNeed?{machineNeed:input.machineNeed}:{}),...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{}),
       ...(input.routedFrom?{routedFrom:input.routedFrom}:{}) ,...(input.correctionOf?{correctionOf:input.correctionOf}:{}),...(files.length?{files}:{})};
     const retain=(accepted:{sessionId:string;address:string;operationId:string},queued:boolean)=>db.transaction(()=>{
       const raced=prior();
@@ -1529,9 +1536,15 @@ export class SessionPeers {
     if(origin.originatingHuman!==undefined&&origin.originatingHuman!==null
       &&(typeof origin.originatingHuman?.inputId!=='string'||typeof origin.originatingHuman?.runId!=='string'||typeof origin.originatingHuman?.sessionId!=='string'))
       throw new SessionOwnerError('A peer human source needs its exact session, input and run.',400,'PEER_HUMAN_SOURCE_INVALID');
-    if(input.humanModelChoices!==undefined&&(!Array.isArray(input.humanModelChoices)||input.humanModelChoices.length>2
-      ||input.humanModelChoices.some((model:unknown)=>typeof model!=='string'||!topModel(model))))
+    if(input.humanModelChoices!==undefined&&(!Array.isArray(input.humanModelChoices)||input.humanModelChoices.length>THINKING_MODEL_CHOICES.length
+      ||input.humanModelChoices.some((model:unknown)=>typeof model!=='string'||!THINKING_MODEL_CHOICES.includes(model as any))))
       throw new SessionOwnerError('A peer model choice must name a supported top model.',400,'PEER_MODEL_CHOICE_INVALID');
+    if(input.humanProviderChoices!==undefined&&(!Array.isArray(input.humanProviderChoices)||input.humanProviderChoices.length>4
+      ||input.humanProviderChoices.some((provider:unknown)=>typeof provider!=='string'||!['claude-code','codex','antigravity','chatgpt'].includes(provider))))
+      throw new SessionOwnerError('A peer provider choice must name a supported provider.',400,'PEER_PROVIDER_CHOICE_INVALID');
+    if(input.humanChatGptEfforts!==undefined&&(!Array.isArray(input.humanChatGptEfforts)||input.humanChatGptEfforts.length>CHATGPT_THINKING_LEVELS.length
+      ||input.humanChatGptEfforts.some((effort:unknown)=>typeof effort!=='string'||!CHATGPT_THINKING_LEVELS.includes(effort as any))))
+      throw new SessionOwnerError('A peer ChatGPT effort choice must name a supported level.',400,'PEER_EFFORT_CHOICE_INVALID');
     if(input.humanModelChoice!==undefined&&typeof input.humanModelChoice!=='string')
       throw new SessionOwnerError('A peer model choice must name its selected model.',400,'PEER_MODEL_CHOICE_INVALID');
     if(typeof input.text!=='string'||!input.text.trim())throw new SessionOwnerError('Nonempty request text required.');
@@ -1539,6 +1552,14 @@ export class SessionPeers {
       throw new SessionOwnerError('Attachment corrections use only the dedicated peer correction route.',409,'PEER_CORRECTION_ROUTE');
     const targetProvider=typeof input.provider==='string'?input.provider
       :typeof input.address==='string'?resolveSessionAddress(input.address).provider_id:null;
+    if(input.purpose!==undefined){
+      if(!['research','design-critique','design-review'].includes(input.purpose)||typeof input.provider!=='string')
+        throw new SessionOwnerError('A declared research or design-review purpose needs a new provider session.',400);
+      if(input.provider==='chatgpt'&&input.effort!=='pro'&&!(origin.originatingHuman&&input.humanChatGptEfforts?.includes(input.effort)))
+        throw new SessionOwnerError('Declared research and design review use ChatGPT Pro.',400);
+      if(input.provider!=='chatgpt'&&(typeof input.providerReason!=='string'||!input.providerReason.trim()))
+        throw new SessionOwnerError('Another research provider needs a stated reason.',400);
+    }
     if(input.answerGuaranteeVersion!==undefined&&input.answerGuaranteeVersion!==1)
       throw new SessionOwnerError('Unsupported peer answer-obligation version.',409,'ANSWER_GUARANTEE_VERSION');
     if(targetProvider==='chatgpt'){
@@ -1619,12 +1640,16 @@ export class SessionPeers {
         throw new SessionOwnerError('The corrected peer attachment must have changed bytes.',409,'PEER_CORRECTION_UNCHANGED');
     }
     // The sender's own words stay beside the delivery text its preamble wraps for the provider.
-    const humanModelChoices=origin.originatingHuman?Array.from(new Set([...(input.humanModelChoices??[]),input.humanModelChoice].filter((model:unknown)=>typeof model==='string'&&!!topModel(model)))):[];
+    const humanModelChoices=origin.originatingHuman?Array.from(new Set([...(input.humanModelChoices??[]),input.humanModelChoice].filter((model:unknown)=>typeof model==='string'&&THINKING_MODEL_CHOICES.includes(model as any)))):[];
+    const humanProviderChoices=origin.originatingHuman?Array.from(new Set((input.humanProviderChoices??[]).filter((provider:unknown)=>typeof provider==='string'&&['claude-code','codex','antigravity','chatgpt'].includes(provider)))):[];
+    const humanChatGptEfforts=origin.originatingHuman?Array.from(new Set((input.humanChatGptEfforts??[]).filter((effort:unknown)=>typeof effort==='string'&&CHATGPT_THINKING_LEVELS.includes(effort as any)))):[];
     // Only the exact Focus request's custody attestation is retained; anything else is not a grant.
     const focusCustody=origin.focusCustody?.requestId===MAC_FOCUS_REQUEST&&input.requestedEffect==='work'?{requestId:MAC_FOCUS_REQUEST}:null;
     const provenance={origin:{peer:origin.peer,sessionId:origin.sessionId,inputId:origin.inputId,runId:origin.runId},originatingHuman:origin.originatingHuman??null,effectScope:origin.effectScope??null,
       ...(focusCustody?{focusCustody}:{}),
       ...(humanModelChoices.length?{humanModelChoices}:{}),
+      ...(humanProviderChoices.length?{humanProviderChoices}:{}),
+      ...(humanChatGptEfforts.length?{humanChatGptEfforts}:{}),
       ...(input.answerGuaranteeVersion===1?{answerGuaranteeVersion:1}:{}),...(input.answerObligation?{answerObligation:input.answerObligation}:{}),
       ...(correctionProof?{correctionOf:input.correctionOf,correctionPayloadHash:hash(JSON.stringify(input)),
         correctionProof:{runId:correctionProof.runId,reason:correctionProof.reason}}:{}),

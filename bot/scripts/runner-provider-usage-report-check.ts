@@ -16,7 +16,7 @@ try{
   await mkdir(secondProjects,{recursive:true});
   const count=Number(process.env.USAGE_REPORT_FIXTURE_ROWS??2001),at=new Date().toISOString();
   const lines=Array.from({length:count},(_,index)=>JSON.stringify({type:'assistant',timestamp:at,
-    message:{id:`record-${index}`,model:'claude-opus-5-5',content:index===0
+    message:{id:`record-${index}`,model:'claude-fable-5-2',content:index===0
       ?[{type:'tool_use',id:'edit-main',name:'Edit',input:{file_path:'example.ts'}},
         {type:'tool_use',id:'read-main',name:'Read',input:{file_path:'example.ts'}}]:[],
       usage:{input_tokens:17,cache_creation_input_tokens:0,
@@ -31,6 +31,12 @@ try{
     message:{id:'helper-record',model:'claude-sonnet-5-5',content:[{type:'tool_use',id:'edit-helper',name:'Write',input:{file_path:'helper.ts'}}],
       usage:{input_tokens:3,cache_creation_input_tokens:0,cache_read_input_tokens:0,output_tokens:2}}})+'\n');
   await writeFile(join(secondProjects,`${secondNativeId}.jsonl`),lines.split('\n').slice(0,3).join('\n')+'\n');
+  const web=(id:string)=>JSON.stringify({type:'assistant',timestamp:at,message:{id,model:'claude-opus-5-5',
+    content:[{type:'tool_use',id,name:'WebSearch',input:{}}]}})+'\n';
+  await writeFile(join(projects,`${nativeId}.jsonl`),lines+web('web-first'));
+  await writeFile(join(secondProjects,`${nativeId}.jsonl`),web('web-second'));
+  await writeFile(join(secondProjects,`${secondNativeId}.jsonl`),lines.split('\n').slice(0,3).join('\n')+'\n'+web('web-other'));
+  await writeFile(join(secondProjects,'0192a345-6789-7abc-8def-0123456789ad.jsonl'),web('web-unattributed'));
   // Server account homes link their transcript folder to one shared folder.
   const linkedHome=join(root,'linked-home');await mkdir(linkedHome,{recursive:true});
   await symlink(join(home,'projects'),join(linkedHome,'projects'));
@@ -55,8 +61,15 @@ try{
   db.query('INSERT INTO session_communication_requests VALUES(?,?,?,?)').run('request:one','capture:shared',null,Date.now());
   db.query('INSERT INTO session_communication_requests VALUES(?,?,?,?)').run('request:two','capture:shared',null,Date.now());
   db.query('INSERT INTO session_owner_events(sequence,session_id,turn_id,kind,payload_json,created_at) VALUES(2,2,2,?,?,?)').run('account',JSON.stringify({account:'second@example.test'}),started);
+  const old=new Date(Date.now()-9*86400_000).toISOString().slice(0,19).replace('T',' ');
+  const escalation=db.query('INSERT INTO session_owner_events(sequence,session_id,turn_id,kind,payload_json,created_at) VALUES(?,?,NULL,?,?,?)');
+  escalation.run(3,1,'model_escalation',JSON.stringify({model:'claude-fable-5-2'}),old);
+  escalation.run(4,2,'model_escalation',JSON.stringify({model:'gpt-6-astra'}),old);
+  escalation.run(5,2,'model_escalation',JSON.stringify({model:'gpt-6-astra'}),started);
   db.query('INSERT INTO saved_work_settings VALUES(1,?)').run('America/New_York');
-  const snapshot=encodeUsageSnapshot(captureUsageLedgerSnapshot(db,Date.now()-7*86400_000));db.close();
+  const captured=captureUsageLedgerSnapshot(db,Date.now()-7*86400_000);
+  if(!captured.events.some(row=>row.sequence===3))throw new Error('snapshot lost prior session authorization');
+  const snapshot=encodeUsageSnapshot(captured);db.close();
   let calls=0;
   const result=await collectRunnerUsageReports(new Map([['fixture',new Set(['claude-code' as const])],['second',new Set(['claude-code' as const])]]),snapshot,
     async(runner,method,params)=>{
@@ -68,6 +81,10 @@ try{
     });
   const account=result.week.accounts.find((value:any)=>value.account==='fixture@example.test');
   const other=result.week.accounts.find((value:any)=>value.account==='second@example.test');
+  if(result.week.escalations.count!==1||result.week.escalations.byModel['gpt-6-astra']!==1
+    ||result.week.escalations.unexplainedCalls!==3||account?.bySession?.[0]?.unexplainedTopModelCalls!==0
+    ||other?.bySession?.[0]?.unexplainedTopModelCalls!==3)
+    throw new Error('prior session/model authorization did not explain only its own calls without a new escalation');
   if(calls!==2||result.week.callMix.totalCalls!==count+4||account?.bySession?.[0]?.sessionId!==1
     ||account?.callMix.totalCalls!==count+1||result.week.cacheDiagnostics.callCount!==count+4
     ||other?.bySession?.[0]?.sessionId!==2||other?.callMix.totalCalls!==3
@@ -75,9 +92,31 @@ try{
     ||account?.bySession?.[0]?.editMix?.totalEdits!==2
     ||account?.bySession?.[0]?.editMix?.byModel?.find((model:any)=>model.model==='claude-sonnet-5-5')?.helperEdits!==1
     ||other?.bySession?.[0]?.editMix?.mainEdits!==1
+    ||result.week.directTopModelWeb.total!==4
+    ||result.week.directTopModelWeb.bySession.length!==2
+    ||result.week.directTopModelWeb.bySession.find((row:any)=>row.sessionId===1)?.calls!==2
+    ||result.week.directTopModelWeb.bySession.find((row:any)=>row.sessionId===2)?.calls!==1
     ||result.week.cacheDiagnostics.calls.length>100||result.week.cacheDiagnostics.turns[0]?.turnId!==1
-    ||result.week.attributionBuckets.length!==2
+    ||result.week.attributionBuckets.length!==4
     ||result.week.attributionBuckets.some((bucket:any)=>bucket.topicId!=='topic:shared'))
     throw new Error('bounded report lost account, session, call mix or cache diagnostics');
+  const codexHome=join(root,'codex-home'),codexSessions=join(codexHome,'sessions','2026','11','12');
+  const codexState=join(root,'codex-runner'),nativeCodex='0192a345-6789-7abc-8def-0123456789ae';
+  const otherCodex='0192a345-6789-7abc-8def-0123456789af';
+  await mkdir(codexSessions,{recursive:true});await mkdir(codexState,{recursive:true});
+  const time=(seconds:number)=>new Date(Date.now()+seconds*1000).toISOString();
+  const context=(model:string)=>JSON.stringify({type:'turn_context',timestamp:time(-60),payload:{model}});
+  const usage=(id:string,seconds:number)=>JSON.stringify({type:'token_usage_record',timestamp:time(seconds),payload:{response_id:id,usage:{input_tokens:5,output_tokens:1}}});
+  await writeFile(join(codexSessions,`${nativeCodex}.jsonl`),[context('gpt-6-astra'),usage('before',-50),usage('between',-30),usage('after',-5)].join('\n')+'\n');
+  await writeFile(join(codexSessions,`${otherCodex}.jsonl`),[context('gpt-6-astra'),usage('other',-5)].join('\n')+'\n');
+  await writeFile(join(codexState,'model-escalations.jsonl'),[
+    {at:time(-40),model:'gpt-6-astra',attemptId:'one'},
+    {at:time(-35),model:'gpt-6-astra',attemptId:'one',providerSessionId:nativeCodex},
+    {at:time(-10),model:'gpt-6-astra',attemptId:'one',providerSessionId:nativeCodex},
+  ].map(row=>JSON.stringify(row)).join('\n')+'\n');
+  const native=await collectRunnerUsageReports(new Map([['native',new Set(['codex' as const])]]),snapshot,
+    async(_runner,method,params)=>serveProviderUsageBreakdownCall(method,params,codexState,()=>[{account:'native@example.test',home:codexHome}]));
+  if(native.week.escalations.count!==2||native.week.escalations.unexplainedCalls!==2)
+    throw new Error(`native attempt must retain first authorization and exact session: ${JSON.stringify(native.week.escalations)}`);
   console.log(`two runner report calls returned ${count+4} attributed calls and split edit counts with bounded diagnostics`);
 }finally{await rm(root,{recursive:true,force:true});}

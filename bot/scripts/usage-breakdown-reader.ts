@@ -10,7 +10,8 @@ import {closeRunnerMachineCalls} from '../src/runner-machine-calls';
 import {decodeUsageSnapshot,ledgerFromUsageSnapshot,captureUsageLedgerSnapshot,encodeUsageSnapshot} from '../src/usage-breakdown-ledger-snapshot';
 import {collectRunnerUsageReports} from '../src/provider-usage-report-client';
 import {attributeWeeklyAllowance,nameAllowanceRows,weeklyReadings} from '../src/weekly-allowance-attribution';
-import {isCodeEditTool} from '../src/implementation-models';
+import {isCodeEditTool,isThinkingModel} from '../src/implementation-models';
+import {topModel} from '../src/model-escalation';
 
 type Counts={input:number;cacheWrite:number;cacheWrite1h:number;cacheRead:number;output:number};
 type FileRow={offset:number;size:number;mtime:number;total_json:string};
@@ -38,6 +39,9 @@ cache.exec(`PRAGMA journal_mode=WAL;
    helper INTEGER NOT NULL,at_ms INTEGER NOT NULL,model TEXT,provider_turn_id TEXT,tool_name TEXT NOT NULL,
    PRIMARY KEY(path,record_id));
  CREATE INDEX IF NOT EXISTS edit_events_recent ON edit_events(at_ms);
+ CREATE TABLE IF NOT EXISTS web_events(path TEXT NOT NULL,record_id TEXT NOT NULL,provider TEXT NOT NULL,conversation TEXT NOT NULL,
+   helper INTEGER NOT NULL,at_ms INTEGER NOT NULL,model TEXT,tool_name TEXT NOT NULL,PRIMARY KEY(path,record_id));
+ CREATE INDEX IF NOT EXISTS web_events_recent ON web_events(at_ms);
  CREATE TABLE IF NOT EXISTS provider_record_sequence(id INTEGER PRIMARY KEY AUTOINCREMENT,path TEXT NOT NULL,record_id TEXT NOT NULL,at_ms INTEGER NOT NULL,UNIQUE(path,record_id));
  CREATE INDEX IF NOT EXISTS provider_record_sequence_time ON provider_record_sequence(at_ms);
  CREATE TABLE IF NOT EXISTS cache_boundaries(path TEXT NOT NULL,at_ms INTEGER NOT NULL,kind TEXT NOT NULL,
@@ -100,31 +104,38 @@ function insertEdit(path:string,id:string,provider:string,conversation:string,he
   cache.query(`INSERT OR IGNORE INTO edit_events(path,record_id,provider,conversation,helper,at_ms,model,provider_turn_id,tool_name)
     VALUES(?,?,?,?,?,?,?,?,?)`).run(path,id,provider,conversation,helper?1:0,at,model,providerTurnId,toolName);
 }
+function insertWeb(path:string,id:string,provider:string,conversation:string,helper:boolean,at:number,model:string|null,toolName:string){
+  if(at<activeUsageWindowStartMs||at>Date.now()+60000)return;
+  cache.query(`INSERT OR IGNORE INTO web_events(path,record_id,provider,conversation,helper,at_ms,model,tool_name)
+    VALUES(?,?,?,?,?,?,?,?)`).run(path,id,provider,conversation,helper?1:0,at,model,toolName);
+}
 async function scan(path:string,provider:'claude-code'|'codex'){
   const stat=statSync(path), prior=cache.query('SELECT * FROM files WHERE path=?').get(path) as FileRow|null;
   if(prior&&prior.size===stat.size&&prior.mtime===stat.mtimeMs
-    &&(JSON.parse(prior.total_json) as {schemaVersion?:number}).schemaVersion===5)return;
+    &&(JSON.parse(prior.total_json) as {schemaVersion?:number}).schemaVersion===6)return;
   // An old file cannot add a row to the one-week report. Retire its old cursor
   // without rereading archived transcript bytes during the format upgrade.
   if(stat.mtimeMs<activeUsageWindowStartMs){
     if(prior){
       cache.query('DELETE FROM records WHERE path=?').run(path);
       cache.query('DELETE FROM edit_events WHERE path=?').run(path);
+      cache.query('DELETE FROM web_events WHERE path=?').run(path);
       cache.query('DELETE FROM cache_boundaries WHERE path=?').run(path);
       cache.query('UPDATE files SET offset=?,size=?,mtime=?,total_json=? WHERE path=?')
         .run(prior.offset,stat.size,stat.mtimeMs,
-          JSON.stringify({...JSON.parse(prior.total_json),schemaVersion:5}),path);
+          JSON.stringify({...JSON.parse(prior.total_json),schemaVersion:6}),path);
     }
     return;
   }
   let offset=prior&&prior.size<=stat.size?prior.offset:0;
-  if(prior&&prior.size>stat.size){cache.query('DELETE FROM records WHERE path=?').run(path);cache.query('DELETE FROM edit_events WHERE path=?').run(path);cache.query('DELETE FROM cache_boundaries WHERE path=?').run(path);offset=0;}
+  if(prior&&prior.size>stat.size){cache.query('DELETE FROM records WHERE path=?').run(path);cache.query('DELETE FROM edit_events WHERE path=?').run(path);cache.query('DELETE FROM web_events WHERE path=?').run(path);cache.query('DELETE FROM cache_boundaries WHERE path=?').run(path);offset=0;}
   let previous:any=prior&&offset?JSON.parse(prior.total_json):null;
   // Rebuild older cursors once: Claude needs the first response and compaction markers,
   // while Codex needs native per-response usage rather than cumulative event deltas.
-  if(previous?.schemaVersion!==5){
+  if(previous?.schemaVersion!==6){
     cache.query('DELETE FROM records WHERE path=?').run(path);
     cache.query('DELETE FROM edit_events WHERE path=?').run(path);
+    cache.query('DELETE FROM web_events WHERE path=?').run(path);
     cache.query('DELETE FROM cache_boundaries WHERE path=?').run(path);
     offset=0;previous=null;
   }
@@ -149,7 +160,7 @@ async function scan(path:string,provider:'claude-code'|'codex'){
       if(provider==='claude-code'&&!line.includes('"usage"')&&!line.includes('"compact_boundary"')&&!line.includes('"tool_use"')){atByte+=bytes;continue;}
       if(provider==='codex'&&!line.includes('"token_count"')&&!line.includes('"token_usage_record"')
         &&!line.includes('"turn_context"')&&!line.includes('"compacted"')&&!line.includes('"session_meta"')
-        &&!line.includes('"item_completed"')){atByte+=bytes;continue;}
+        &&!line.includes('"item_completed"')&&!line.includes('"custom_tool_call"')){atByte+=bytes;continue;}
       const row=JSON.parse(line),at=stamp(row.timestamp);
       if(provider==='codex'&&row.type==='session_meta'){
         if(typeof row.payload?.cli_version==='string')codexClientVersion=row.payload.cli_version;
@@ -160,9 +171,14 @@ async function scan(path:string,provider:'claude-code'|'codex'){
         if(typeof row.payload?.turn_id==='string')providerTurnId=row.payload.turn_id;
       }
       if(provider==='claude-code'&&row.type==='assistant'&&Array.isArray(row.message?.content))
-        for(const part of row.message.content)if(part?.type==='tool_use'&&typeof part.id==='string'
-          &&isCodeEditTool(part.name,part.input))
-          insertEdit(path,part.id,provider,conversation,helper,at,row.message.model??null,null,String(part.name));
+        for(const part of row.message.content)if(part?.type==='tool_use'&&typeof part.id==='string'){
+          if(isCodeEditTool(part.name,part.input))insertEdit(path,part.id,provider,conversation,helper,at,row.message.model??null,null,String(part.name));
+          if(/^(WebSearch|WebFetch|web_search|web_fetch)$/.test(String(part.name)))
+            insertWeb(path,part.id,provider,conversation,helper,at,row.message.model??null,String(part.name));
+        }
+      if(provider==='codex'&&row.type==='response_item'&&row.payload?.type==='custom_tool_call'
+        &&typeof row.payload.input==='string'&&/\btools\.web__run\s*\(/.test(row.payload.input))
+        insertWeb(path,String(row.payload.call_id??row.ordinal??atByte),provider,conversation,!!codexParentThreadId,at,model,'web__run');
       if(provider==='codex'&&row.type==='event_msg'&&row.payload?.type==='item_completed'){
         const item=row.payload.item;
         if(item&&isCodeEditTool(item.type,item.command))
@@ -207,7 +223,7 @@ async function scan(path:string,provider:'claude-code'|'codex'){
     atByte+=bytes;
   }
   cache.query('INSERT INTO files VALUES(?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET offset=excluded.offset,size=excluded.size,mtime=excluded.mtime,total_json=excluded.total_json')
-    .run(path,Math.min(atByte,stat.size),stat.size,stat.mtimeMs,JSON.stringify({schemaVersion:5,counts:total,model,
+    .run(path,Math.min(atByte,stat.size),stat.size,stat.mtimeMs,JSON.stringify({schemaVersion:6,counts:total,model,
       providerTurnId,firstUsageId,nativeCodexUsageSeen,clientVersion:codexClientVersion,parentThreadId:codexParentThreadId}));
 }
 function midnight(zone:string,now=Date.now()){
@@ -271,6 +287,35 @@ function callMixView(mix:CallMix){return {totalCalls:mix.totalCalls,helperCalls:
     share:mix.totalCalls?value.calls/mix.totalCalls:0})).sort((a,b)=>b.calls-a.calls)};}
 function report(period:'today'|'week',since:number,zone:string){
   const ledger=ownerLedger();
+  const routeTables=(ledger.query("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('session_communication_requests','session_peer_requests','usage_policy_requests')").all() as {name:string}[]).map(row=>row.name);
+  const routeRows=routeTables.flatMap(table=>ledger.query(`SELECT request_id,source_session_id,payload_json,created_at_ms FROM ${table}
+    WHERE created_at_ms>=? AND (json_extract(payload_json,'$.purpose') IN ('research','design-critique','design-review')
+      OR json_extract(payload_json,'$.implementation')=1)`).all(since) as
+    {request_id:string;source_session_id:number;payload_json:string;created_at_ms:number}[]);
+  const seenRoutes=new Set<string>();
+  const policyRequests=routeRows.flatMap(row=>{
+    if(seenRoutes.has(row.request_id))return [];seenRoutes.add(row.request_id);
+    const payload=JSON.parse(row.payload_json);
+    return [{requestId:row.request_id,sessionId:row.source_session_id,purpose:payload.purpose as string|null,
+      implementation:payload.implementation===true,
+      route:payload.provider==='chatgpt'&&payload.effort==='pro'?'chatgpt-pro':String(payload.provider??'unknown'),
+      reason:typeof payload.providerReason==='string'?payload.providerReason:null}];
+  });
+  const researchRequests=policyRequests.filter(row=>!!row.purpose);
+  const implementationHandoffs=policyRequests.filter(row=>row.implementation);
+  const researchView=(rows:typeof researchRequests)=>({total:rows.length,chatgptPro:rows.filter(row=>row.route==='chatgpt-pro').length,
+    other:rows.filter(row=>row.route!=='chatgpt-pro').length,
+    byRoute:Object.entries(rows.reduce((counts:Record<string,number>,row)=>{
+      counts[row.route]=(counts[row.route]??0)+1;return counts;},{})).map(([route,count])=>({route,count})),
+    alternateRoutes:rows.filter(row=>row.route!=='chatgpt-pro')});
+  const researchBySession=new Map<number,typeof researchRequests>();
+  for(const row of researchRequests){const list=researchBySession.get(row.sessionId)??[];list.push(row);researchBySession.set(row.sessionId,list);}
+  const implementationReasons=(ledger.query(`SELECT session_id,turn_id,payload_json,created_at FROM session_owner_events
+    WHERE kind='implementation_top_model_reason' AND created_at>=?`).all(new Date(since).toISOString().slice(0,19).replace('T',' ')) as
+    {session_id:number;turn_id:number;payload_json:string;created_at:string}[]).map(row=>({sessionId:row.session_id,turnId:row.turn_id,
+      reason:String(JSON.parse(row.payload_json).reason??''),at:`${row.created_at}Z`}));
+  const implementationHolds=ledger.query(`SELECT DISTINCT session_id,turn_id FROM session_owner_events
+    WHERE kind='implementation_edit_hold' AND created_at>=?`).all(new Date(since).toISOString().slice(0,19).replace('T',' ')) as {session_id:number;turn_id:number}[];
   const sessions=new Map((ledger.query("SELECT id,agent_session_uuid,native_metadata_json,provider_id FROM sessions WHERE agent_session_uuid IS NOT NULL").all() as Session[])
     .map(s=>[`${s.provider_id}:${s.agent_session_uuid}`,s]));
   const events=ledger.query("SELECT event.session_id,event.turn_id,event.created_at,json_extract(event.payload_json,'$.account') AS account FROM session_owner_events event WHERE event.kind='account' ORDER BY event.session_id,event.created_at").all() as {session_id:number;turn_id:number|null;created_at:string;account:string}[];
@@ -301,14 +346,31 @@ function report(period:'today'|'week',since:number,zone:string){
   }
   const rootConversation=(id:string)=>{let current=id;const seen=new Set<string>();
     while(codexParents.has(current)&&!seen.has(current)){seen.add(current);current=codexParents.get(current)!;}return current;};
-  const sessionEscalations=(ledger.query("SELECT created_at,json_extract(payload_json,'$.model') AS model FROM session_owner_events WHERE kind='model_escalation'").all() as {created_at:string;model:string}[])
-    .map(event=>({at:Date.parse(`${event.created_at}Z`),model:event.model}));
-  let commandEscalations:{at:number;model:string}[]=[];
+  const sessionEscalations=(ledger.query("SELECT sequence,session_id,created_at,json_extract(payload_json,'$.model') AS model FROM session_owner_events WHERE kind='model_escalation'").all() as {sequence:number;session_id:number;created_at:string;model:string}[])
+    .map(event=>({key:`owner:${event.sequence}`,at:Date.parse(`${event.created_at}Z`),model:event.model,sessionId:event.session_id,providerSessionId:null as string|null}));
+  let commandEscalations:{key:string;at:number;model:string;sessionId:null;providerSessionId:string|null}[]=[];
   const escalationLog=join(state,'model-escalations.jsonl');
   if(existsSync(escalationLog))commandEscalations=readFileSync(escalationLog,'utf8').split('\n').flatMap(line=>{
-    try{const event=JSON.parse(line);return typeof event.model==='string'?[{at:Date.parse(event.at),model:event.model}]:[];}catch{return [];}
+    try{const event=JSON.parse(line);return typeof event.model==='string'?[{key:typeof event.attemptId==='string'?`command:${event.attemptId}`:`command:${createHash('sha256').update(line).digest('hex')}`,at:Date.parse(event.at),model:event.model,sessionId:null,
+      providerSessionId:typeof event.providerSessionId==='string'?event.providerSessionId:null}]:[];}catch{return [];}
   });
-  const escalations=[...sessionEscalations,...commandEscalations].filter(event=>event.at>=since);
+  // The launcher and later native prompts share an attempt ID. Keep the first
+  // authorization time while retaining the provider session learned by the hook.
+  const attempts=new Map<string,typeof commandEscalations[number]>();
+  for(const event of commandEscalations){
+    const key=JSON.stringify([event.key,event.model]);
+    const prior=attempts.get(key);
+    if(!prior)attempts.set(key,{...event});
+    else if(!prior.providerSessionId||!event.providerSessionId||prior.providerSessionId===event.providerSessionId){
+      prior.at=Math.min(prior.at,event.at);
+      prior.providerSessionId??=event.providerSessionId;
+    }else attempts.set(JSON.stringify([event.key,event.model,event.providerSessionId]),{...event});
+  }
+  const allEscalations=[...sessionEscalations,...attempts.values()];
+  const escalations=allEscalations.filter(event=>event.at>=since);
+  const explainedTopCall=(model:string|null,sessionId:number|null,conversation:string,at:number)=>
+    !topModel(model)||allEscalations.some(event=>event.model===model&&event.at<=at
+      &&((sessionId!==null&&event.sessionId===sessionId)||event.providerSessionId===conversation));
   const escalationModels=Object.entries(escalations.reduce((counts:Record<string,number>,event)=>{
     const model=event.model??'unreported';counts[model]=(counts[model]??0)+1;return counts;
   },{}));
@@ -399,7 +461,8 @@ function report(period:'today'|'week',since:number,zone:string){
       instructions:previous?.turn?.systemInstructionsSha256&&turn?.systemInstructionsSha256
         ?previous.turn.systemInstructionsSha256===turn.systemInstructionsSha256?'same':'changed':'unavailable',
       accountKnown:account!=='unknown'});
-    const call={provider:r.provider,account,sessionId:s?.id??null,turnId:turn?.id??null,helper:isHelper,
+    const unexplainedTopModel=!!topModel(r.model)&&!explainedTopCall(r.model,s?.id??null,r.conversation,r.at_ms);
+    const call={provider:r.provider,account,sessionId:s?.id??null,turnId:turn?.id??null,helper:isHelper,unexplainedTopModel,
       providerConversationId:r.conversation,callId:r.record_id,at:new Date(r.at_ms).toISOString(),model:r.model,
       clientVersion:r.client_version,raw:{input:r.input,cacheWrite:r.cache_write,cacheWrite1h:r.cache_write_1h,
         cacheRead:r.cache_read,output:r.output},cachedInputTokens:r.cache_read,rewrittenInputTokens:rewritten,
@@ -443,17 +506,19 @@ function report(period:'today'|'week',since:number,zone:string){
       bucket.raw.cacheRead+=r.cache_read;bucket.raw.output+=r.output;
     }
     let g=groups.get(key);
-    if(!g){g={provider:r.provider,account,total:0,raw:empty(),cache:{callCount:0,flaggedCallCount:0,unknownCauseCount:0},
+    if(!g){g={provider:r.provider,account,total:0,raw:empty(),cache:{callCount:0,flaggedCallCount:0,unknownCauseCount:0},unexplainedTopModelCalls:0,
       bySession:new Map(),byKind:new Map(),byModel:new Map(),mix:newCallMix()};groups.set(key,g);}
     addCall(g.mix,r.model,isHelper);
+    g.unexplainedTopModelCalls+=Number(unexplainedTopModel);
     g.total+=weighted;g.raw.input+=r.input;g.raw.cacheWrite+=r.cache_write;g.raw.cacheWrite1h+=r.cache_write_1h;g.raw.cacheRead+=r.cache_read;g.raw.output+=r.output;
     g.cache.callCount++;g.cache.flaggedCallCount+=Number(largeUnexpected);g.cache.unknownCauseCount+=Number(cause.status==='unknown');
     const sessionKey=s?String(s.id):`outside:${r.conversation}`;
     let entry=g.bySession.get(sessionKey);
     if(!entry){entry={sessionId:s?.id??null,address:s?`concierge:${s.id}`:null,providerConversationId:r.conversation,
       title:meta.title??(s?null:`Outside Concierge · ${r.conversation}`),project,kind:s?project==='slack-inbox'?'Inbox router':'ordinary session':'outside Concierge',weighted:0,helperWeighted:0,raw:empty(),
-      cache:{callCount:0,flaggedCallCount:0,unknownCauseCount:0},byModel:new Map(),byHelper:new Map(),mix:newCallMix()};g.bySession.set(sessionKey,entry);}
+      cache:{callCount:0,flaggedCallCount:0,unknownCauseCount:0},unexplainedTopModelCalls:0,byModel:new Map(),byHelper:new Map(),mix:newCallMix()};g.bySession.set(sessionKey,entry);}
     addCall(entry.mix,r.model,isHelper);
+    entry.unexplainedTopModelCalls+=Number(unexplainedTopModel);
     entry.weighted+=weighted;entry.raw.input+=r.input;entry.raw.cacheWrite+=r.cache_write;entry.raw.cacheWrite1h+=r.cache_write_1h;entry.raw.cacheRead+=r.cache_read;entry.raw.output+=r.output;
     entry.cache.callCount++;entry.cache.flaggedCallCount+=Number(largeUnexpected);entry.cache.unknownCauseCount+=Number(cause.status==='unknown');
     if(isHelper)entry.helperWeighted+=weighted;
@@ -505,6 +570,19 @@ function report(period:'today'|'week',since:number,zone:string){
     const key=`${accountKey}\0${sessionKey}`;
     mix=sessionEdits.get(key);if(!mix){mix=newEditMix();sessionEdits.set(key,mix);}addEdit(mix,edit.model,helper);
   }
+  const webRows=cache.query(`SELECT record_id,provider,conversation,helper,model FROM web_events
+    WHERE at_ms>=? ORDER BY at_ms,record_id`).all(since) as
+    {record_id:string;provider:string;conversation:string;helper:number;model:string|null}[];
+  const seenWeb=new Set<string>();
+  const directWebByModel=new Map<string,number>(),directWebBySession=new Map<number,number>();
+  for(const web of webRows){
+    const id=`${web.provider}:${web.conversation}:${web.record_id}`;
+    if(seenWeb.has(id))continue;seenWeb.add(id);
+    if(web.helper||rootConversation(web.conversation)!==web.conversation||!isThinkingModel(web.model))continue;
+    const model=web.model??'unreported';directWebByModel.set(model,(directWebByModel.get(model)??0)+1);
+    const session=sessions.get(`${web.provider}:${web.conversation}`);
+    if(session)directWebBySession.set(session.id,(directWebBySession.get(session.id)??0)+1);
+  }
   const ordinaryCallCount=calls.filter(call=>!call.cause.reasons.includes('first_call')).length;
   const ordinaryMissRate=calls.filter(call=>call.flags.length>0).length/Math.max(1,ordinaryCallCount);
   const providerRates=new Map<string,{calls:number;misses:number}>();
@@ -546,7 +624,21 @@ function report(period:'today'|'week',since:number,zone:string){
   };
   return {period,since:new Date(since).toISOString(),through:new Date().toISOString(),timeZone:zone,
     attributionBuckets:[...attributionBuckets.values()],
-    callMix:callMixView(overallMix),editMix:editMixView(overallEditMix),escalations:{count:escalations.length,byModel:Object.fromEntries(escalationModels)},
+    callMix:callMixView(overallMix),editMix:editMixView(overallEditMix),implementation:{handoffs:implementationHandoffs.length,
+      heldTurns:implementationHolds.length,reasons:implementationReasons,
+      bySession:[...new Set([...implementationHandoffs.map(row=>row.sessionId),...implementationReasons.map(row=>row.sessionId),...implementationHolds.map(row=>row.session_id)])]
+        .map(sessionId=>({sessionId,handoffs:implementationHandoffs.filter(row=>row.sessionId===sessionId).length,
+          heldTurns:implementationHolds.filter(row=>row.session_id===sessionId).length,
+          reasons:implementationReasons.filter(row=>row.sessionId===sessionId)}))},
+    directTopModelWeb:{total:[...directWebByModel.values()].reduce((a,b)=>a+b,0),
+      byModel:Object.fromEntries(directWebByModel),bySession:[...directWebBySession].map(([sessionId,calls])=>({sessionId,calls}))},
+    researchRoutes:{...researchView(researchRequests),
+      bySession:[...researchBySession].map(([sessionId,rows])=>({sessionId,...researchView(rows)}))},
+    escalations:{count:escalations.length,byModel:Object.fromEntries(escalationModels),
+      records:escalations.map(event=>({key:event.key,model:event.model})),
+      unexplainedCalls:calls.filter(call=>call.unexplainedTopModel).length,
+      unexplainedByModel:Object.fromEntries([...new Set(calls.filter(call=>call.unexplainedTopModel).map(call=>call.model))].map(model=>
+        [model,calls.filter(call=>call.unexplainedTopModel&&call.model===model).length]))},
     measure:'Published API price equivalent in USD; a proxy for allowance share, not the provider subscription meter.',
     fallbackModels:[...fallbackModels].sort(),
     cacheDiagnostics:{meaning:'Cached input was read from the provider cache; rewritten input was sent as uncached input or cache creation. Cause reasons are coincident observed changes, not proof that a specific change invalidated the cache prefix. Possible reasons include submitted Claude instructions that its recorded prompt may have ignored.',
@@ -573,6 +665,11 @@ function report(period:'today'|'week',since:number,zone:string){
       byModel:[...g.byModel.values()].sort((a:any,b:any)=>b.weighted-a.weighted),
       cachedInputTokens:g.raw.cacheRead,rewrittenInputTokens:g.raw.input+g.raw.cacheWrite+g.raw.cacheWrite1h,
       bySession:[...g.bySession.values()].map((x:any)=>({...x,mix:undefined,callMix:callMixView(x.mix),
+        implementation:{handoffs:implementationHandoffs.filter(row=>row.sessionId===x.sessionId).length,
+          heldTurns:implementationHolds.filter(row=>row.session_id===x.sessionId).length,
+          reasons:implementationReasons.filter(row=>row.sessionId===x.sessionId)},
+        directTopModelWebCalls:x.sessionId===null?0:directWebBySession.get(x.sessionId)??0,
+        researchRoutes:x.sessionId===null?researchView([]):researchView(researchBySession.get(x.sessionId)??[]),
         editMix:editMixView(sessionEdits.get(`${g.provider}:${g.account}\0${x.sessionId===null?`outside:${x.providerConversationId}`:String(x.sessionId)}`)??newEditMix()),share:g.total?x.weighted/g.total:0,
         byModel:[...x.byModel.values()].sort((a:any,b:any)=>b.weighted-a.weighted),
         byHelper:[...x.byHelper.values()].sort((a:any,b:any)=>b.weighted-a.weighted),
@@ -612,10 +709,12 @@ async function scanRunnerProviderRoots(providers:string[],sinceMs:number,buildSe
       const known=[...new Map(([
         ...cache.query('SELECT DISTINCT path FROM records WHERE provider=?').all(provider),
         ...cache.query('SELECT DISTINCT path FROM edit_events WHERE provider=?').all(provider),
+        ...cache.query('SELECT DISTINCT path FROM web_events WHERE provider=?').all(provider),
       ] as {path:string}[]).map(row=>[row.path,row])).values()];
       for(const row of known)if(!allowed.some(root=>row.path===root||row.path.startsWith(`${root}/`))){
         cache.query('DELETE FROM records WHERE path=?').run(row.path);
         cache.query('DELETE FROM edit_events WHERE path=?').run(row.path);
+        cache.query('DELETE FROM web_events WHERE path=?').run(row.path);
         cache.query('DELETE FROM cache_boundaries WHERE path=?').run(row.path);
         cache.query('DELETE FROM files WHERE path=?').run(row.path);
         cache.query('DELETE FROM provider_record_sequence WHERE path=?').run(row.path);
@@ -623,6 +722,7 @@ async function scanRunnerProviderRoots(providers:string[],sinceMs:number,buildSe
     }
     cache.query('DELETE FROM records WHERE at_ms<?').run(activeUsageWindowStartMs);
     cache.query('DELETE FROM edit_events WHERE at_ms<?').run(activeUsageWindowStartMs);
+    cache.query('DELETE FROM web_events WHERE at_ms<?').run(activeUsageWindowStartMs);
     cache.query('DELETE FROM cache_boundaries WHERE at_ms<?').run(activeUsageWindowStartMs);
     cache.query('DELETE FROM provider_record_sequence WHERE at_ms<?').run(activeUsageWindowStartMs);
     if(buildSequence)cache.query('INSERT OR IGNORE INTO provider_record_sequence(path,record_id,at_ms) SELECT path,record_id,at_ms FROM records WHERE at_ms>=?').run(activeUsageWindowStartMs);

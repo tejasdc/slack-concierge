@@ -49,7 +49,8 @@ import {provenRunKinds,turnContinuesThroughRestart,whyTurnHoldsUpdate} from './e
 import {hostScriptDigest,hostScriptPath} from './execution-host-client';
 import {providerOwnerEnvironment} from './provider-owner-environment';
 import {escalationReason,topModel} from './model-escalation';
-import {humanChoseTopModel} from './model-escalation-custody';
+import {isThinkingModel} from './implementation-models';
+import {humanChoseThinkingModel} from './model-escalation-custody';
 import {STILL_WAITING_MINUTES,supersedeWaitingJournalObservations} from './request-liveness';
 import {lastLaunchedConversationHome} from './session-runner-home';
 import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,discardQueuedTurnContinuations,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordHeldInputReceiptEvent,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
@@ -1412,14 +1413,15 @@ export class SessionOwner {
     const sourceProvider=source&&getSessionById(source.session_id)?.provider_id;
     const delegatedFrom=sourceProvider==='claude-code'||sourceProvider==='codex'?sourceProvider:null;
     const selected=this.requestTarget({...input,choiceKey:input.requestId},delegatedFrom);
-    const humanChoice=selected.model&&topModel(selected.model)?input.attestedHumanModel===selected.model||humanChoseTopModel(input.sourceInputId,selected.model):false;
+    const humanThinkingChoice=!!selected.model&&(input.attestedHumanModel===selected.model||humanChoseThinkingModel(input.sourceInputId,selected.model));
+    const humanChoice=!!selected.model&&!!topModel(selected.model)&&humanThinkingChoice;
     const refused=escalationReason(selected.model,input.escalationReason,humanChoice);
     if(refused)throw new SessionOwnerError(refused,409,'MODEL_ESCALATION_REASON_REQUIRED');
     // An outside session's turns run as the Codex command line in their own unit (outside-codex.ts).
     if(input.outside&&(selected.provider!=='codex'||input.saved))throw new SessionOwnerError('An outside request runs a new Codex session; choose a Codex alias.',400);
     // Only Claude Code turns run on runners today; another provider would silently stay on this machine.
     if(input.onRunner&&selected.provider!=='claude-code')throw new SessionOwnerError('--on-runner runs a Claude Code session; choose a Claude alias (Automatic chose '+selected.provider+').',400);
-    const {provider,...metadata}={...selected,...(input.outside?{outside:true}:{}),...(input.onRunner?{onRunner:true}:{}),
+    const {provider,...metadata}={...selected,...(humanThinkingChoice&&selected.model?{explicitThinkingModelChoice:selected.model}:{}),...(input.outside?{outside:true}:{}),...(input.onRunner?{onRunner:true}:{}),
       ...(input.implementation?{implementationFor:{requestId:input.requestId,sourceInputId:input.sourceInputId}}:{})};
     if(input.standingRole){
       assertStandingAgentPlacement(this.defaultCwd,input.standingRole,metadata as NativeSessionMetadata);
@@ -2396,10 +2398,13 @@ export class SessionOwner {
       if(savedWork&&!this.runtime.available(provider))throw new SessionOwnerError(`${provider} start unavailable; saved work was not created.`,409);
       const session=createNativeSession(provider,{title,summary:purposeFromFirstWords(input.firstInput?.text)??(title?undefined:'A conversation you started that has no message yet.'),purpose:input.purpose,workflowId:input.workflowId,cwd:project?.cwd??this.defaultCwd,
         ...(input.provider==='auto'?{automaticProviderChoice:true}:{}),
-        ...(providerDefault?{model:providerDefault.model,reasoningEffort:providerDefault.reasoning_effort}:{}),...(project?{project:project.cwd,projectName:project.name,projectPath:project.path,...(project.runner?{providerRunner:project.runner}:{})}:{}),...defaults,...(input.model?{model:input.model}:{}),...(input.reasoningEffort?{reasoningEffort:input.reasoningEffort}:{})});
+        ...(providerDefault?{model:providerDefault.model,reasoningEffort:providerDefault.reasoning_effort}:{}),...(project?{project:project.cwd,projectName:project.name,projectPath:project.path,...(project.runner?{providerRunner:project.runner}:{})}:{}),...defaults,...(input.model?{model:input.model}:{}),...(input.reasoningEffort?{reasoningEffort:input.reasoningEffort}:{}),
+        ...(input.model&&isThinkingModel(input.model)?{explicitThinkingModelChoice:input.model}:{})});
       this.validateAttachments(session,input.firstInput?.attachments);
       const operation=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:action,kind:'create',origin:'human',payload:input}).input;
       const recorded=this.recordCreation(session,operation,!!input.firstInput);
+      if(input.model&&topModel(input.model))recordSessionEvent({eventId:`model-escalation:${recorded.id}`,sessionId:session.id,inputId:recorded.id,
+        kind:'model_escalation',payload:{model:input.model,reason:'explicit human model choice',sourceInputId:recorded.id}});
       if(savedWork) {
         const queued=enqueueSessionInput(recorded.id);
         if(queued.turn_id===null)throw new SessionOwnerError('Saved input could not be queued.',409);
@@ -2763,7 +2768,14 @@ export class SessionOwner {
         if(typeof action.value!=='string'||(action.kind!=='summary'&&!action.value.trim()))throw new SessionOwnerError('Action value must be text.');
         if(action.kind==='model'&&!this.view(session).capabilities.models.includes(action.value.trim()))throw new SessionOwnerError('This provider does not advertise the selected model.',409,'CAPABILITY_UNAVAILABLE');
         updateSessionMetadata(session.id,{[action.kind]:action.value.trim(),
-          ...(action.kind==='model'?{automaticProviderChoice:false}:{})});
+          ...(action.kind==='model'?{automaticProviderChoice:false,
+            explicitThinkingModelChoice:isThinkingModel(action.value.trim())?action.value.trim():undefined}:{})});
+        if(action.kind==='model'&&topModel(action.value.trim())){
+          const control=db.query("SELECT id FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?")
+            .get(actionId(input)) as {id:string};
+          recordSessionEvent({eventId:`model-escalation:${control.id}`,sessionId:session.id,inputId:control.id,
+            kind:'model_escalation',payload:{model:action.value.trim(),reason:'explicit human model choice',sourceInputId:control.id}});
+        }
       } else if(action.kind==='outcome') {
         if(!['open','done','shipped'].includes(action.value))throw new SessionOwnerError('Invalid outcome.');
         updateSessionMetadata(session.id,{outcome:action.value,...(action.value==='open'?{}:{dismissedGeneration:attentionCeiling(meta)})});
