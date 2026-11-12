@@ -1,5 +1,5 @@
 import {questionDisplay} from './topic-display-rules';
-import {topicCurrentWorkers,workingThrough} from './topic-current-workers';
+import {closedRequestDispatches,topicCurrentWorkers,workingThrough} from './topic-current-workers';
 import {topicReplyTargets} from './reply-target-rules';
 import type {Database} from 'bun:sqlite';
 import {INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
@@ -235,11 +235,13 @@ export function preparedTopicValue(context:TopicContext,topicId:string,sink?:Top
   else if(open(question.state)||question.state==='deferred')questions.push({id:question.id,state:question.state,owner:question.owner,
    brief:{decision:question.brief?.decision},sources:question.sources});
  }
+ const requestStates:{state:string;dispatches:any[]}[]=[];
  for(const request of topicRows(source,'inbox_requests',topicId)){
   const value={requestId:request.request_id,topicId:request.topic_id,title:request.title,brief:request.brief,
   state:request.state,disposition:request.disposition,revision:request.revision,sources:parse(request.sources_json,[]),
   dispatches:parse(request.dispatches_json,[]),closure:parse(request.closure_json),createdAt:iso(request.created_at)!,updatedAt:iso(request.updated_at)!};
   sink?.request(requestView(context,value));
+  requestStates.push({state:value.state,dispatches:value.dispatches});
   if(value.state==='open')requestCounts.open++;else if(value.state==='closed')requestCounts.closed++;
   if(!sink)requests.push(value);
   else if(value.state==='open')requests.push({requestId:value.requestId,title:value.title,state:value.state,sources:value.sources,dispatches:value.dispatches});
@@ -254,7 +256,7 @@ export function preparedTopicValue(context:TopicContext,topicId:string,sink?:Top
   lastSequence=Math.max(lastSequence,latest.sequence);
   const at=iso(latest.at)!;if(!foundEntry||at>lastAt)lastAt=at;foundEntry=true;
  }
- const work=topicWorkValue(context,topic,roots);
+ const work=topicWorkValue(context,topic,roots,closedRequestDispatches(requestStates));
  const summary={id:topic.topicId,title:topic.title,aliases:topic.aliases,summary:topic.summary,state:topic.state,setAside:topic.setAside,
   revision:topic.revision,recovered:topic.recovered,createdAt:topic.createdAt,updatedAt:topic.updatedAt,lastEntryAt:lastAt,
   lastEntrySequence:lastSequence,unread:lastSequence>topic.readSequence,roots,pinnedAt:topic.pinnedAt,
@@ -295,7 +297,7 @@ function latestReturnAndPost(context:TopicContext,roots:string[]){
  return found;
 }
 
-function topicWorkValue(context:TopicContext,topic:any,roots:string[]){
+function topicWorkValue(context:TopicContext,topic:any,roots:string[],closed:ReadonlySet<string>=new Set()){
  if(context.focus?.topicId===topic.topicId)return {kind:'router_working' as const,text:context.focus.summary??'',
   runId:context.focus.runId,sessionId:`concierge:${context.sessionId}`};
  const queued=context.queued.find(item=>item.root&&roots.includes(item.root));
@@ -310,7 +312,7 @@ function topicWorkValue(context:TopicContext,topic:any,roots:string[]){
  const unrelayed=latestReturnAndPost(context,roots);
  if(unrelayed)return {kind:'result_waiting' as const,text:"An agent's answer came back and has not been relayed to you",
   returnInputId:unrelayed.inputId,since:unrelayed.at};
- const working=context.dispatches.filter(item=>item.root&&roots.includes(item.root));
+ const working=context.dispatches.filter(item=>item.root&&roots.includes(item.root)&&!closed.has(item.requestId));
  if(working.length){const workers=topicCurrentWorkers(context.source,working);
   return {kind:'worker_working' as const,text:workers.length===1?`With ${workers[0]!.title}`:`With ${workers.length} agents`,
    sessionId:workers[0]!.sessionId,workers};}

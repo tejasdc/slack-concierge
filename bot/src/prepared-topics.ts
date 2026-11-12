@@ -128,6 +128,12 @@ export class PreparedTopics {
    prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN dispatch_current_holder INTEGER NOT NULL DEFAULT 1');
    prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
   })();
+  // A dispatch that belongs only to the thread's closed requests no longer counts as its work since
+  // 2026-11-11 (closed threads pulsed while their agent worked elsewhere); recompute once.
+  if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='work_ignores_closed_requests'))prepared.transaction(()=>{
+   prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN work_ignores_closed_requests INTEGER NOT NULL DEFAULT 1');
+   prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
+  })();
   // Each choice is named as its newest message in the thread is signed since 2026-11-05; recompute once.
   if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='choice_named_as_signed'))prepared.transaction(()=>{
    prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN choice_named_as_signed INTEGER NOT NULL DEFAULT 1');
