@@ -124,8 +124,9 @@ export async function migrateHistorySnapshot(sessionUuid: string, allowActiveOwn
           insertSeen.run(raw.uuid);
           const stored = JSON.parse(rows[0]!.json);
           if (!stored || typeof stored !== "object" || stored.conciergeRawReference === 1
+            || stored.uuid !== raw.uuid || stored.session_id !== sessionUuid
+            || raw.sessionId !== sessionUuid || typeof raw.type !== "string"
             || raw.type !== stored.type
-            || raw.sessionId !== stored.session_id
             || !Object.prototype.hasOwnProperty.call(raw, "message")
             || !Object.prototype.hasOwnProperty.call(stored, "message")
             || !isDeepStrictEqual(raw.message, stored.message)) return;
