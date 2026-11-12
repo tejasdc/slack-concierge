@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { Database } from "bun:sqlite";
-import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readdirSync, rmSync, realpathSync, statSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readdirSync, rmSync, realpathSync, statSync, statfsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from 'node:child_process';
@@ -217,7 +217,22 @@ if (!backupOnly && !backupIfNeeded && !process.argv.includes('--plan')) {
     throw new Error(`Schema migration requires ${service} fully stopped; observed ${JSON.stringify(values)}.`);
 }
 
+// The copy is the ledger's full size (12.9 GB on 2026-11-12) and is written before older copies are
+// pruned. That night's copy took the root disk from about 21 GB to 7 GB free in minutes; a copy
+// started with less room would fill it and stop every writer. Refuse instead, leaving the deploy
+// failed and the ledger untouched, unless the copy fits with a margin left over.
+const COPY_MARGIN_BYTES = 10 * 1024 ** 3;
+function requireRoomForCopy() {
+  const wal = existsSync(statePath + '-wal') ? statSync(statePath + '-wal').size : 0;
+  const needed = statSync(statePath).size + wal + COPY_MARGIN_BYTES;
+  const disk = statfsSync(dirname(backupPath));
+  const free = Number(disk.bavail) * Number(disk.bsize);
+  if (free < needed)
+    throw new Error(`Not enough disk for the pre-migration ledger copy: ${(free / 1024 ** 3).toFixed(1)} GiB free, ${(needed / 1024 ** 3).toFixed(1)} GiB needed (ledger plus a 10 GiB margin). Free space, then deploy again.`);
+}
+
 function backUp() {
+  requireRoomForCopy();
   publishSqliteBackup(statePath, backupPath);
   pruneAutomaticCopies();
 }
