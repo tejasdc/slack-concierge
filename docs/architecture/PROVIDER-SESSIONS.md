@@ -652,7 +652,13 @@ tool calls before they run. It holds the fifth edit until the agent hands the
 fixed design to `sessions implement` or records one specific reason for staying
 on the thinking model with `sessions edit-reason`, then retries the edit. An
 implementation worker and a session using Tejas's explicit model choice are
-exempt. The owner records held turns and reasons for the usage report. In a sample of 189
+exempt. A handoff releases the retry only when its accepted target execution
+belongs to a request from that exact turn and has not failed or been canceled.
+Codex supplies the parent session ID, active model and execution turn to its
+edit hook: a different execution is recorded separately with its actual model,
+and cannot consume the parent turn's allowance. If the parent execution or
+helper model cannot be identified, the edit is held rather than attributed by
+guess. The owner records held turns and reasons for the usage report. In a sample of 189
 recent Opus/Fable turns with editing calls, the median was two, the 75th
 percentile four, and 35 turns (18.5%) had five or more. Five catches extended
 implementation while leaving short design edits alone. Claude Code and Codex
