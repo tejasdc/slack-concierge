@@ -12,6 +12,7 @@ import { RETRY_POLICIES } from './retry-policies';
 import { SessionCommunicationCoordinator } from './session-communication';
 import { db, getTurnDependencies, recoverRoutedInputClaim } from "./state";
 import { prepareSavedWorkForClaims } from "./saved-work";
+import { createBankedUpkeep } from "./banked-upkeep";
 import toml from "@iarna/toml";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -516,6 +517,8 @@ function consumeParkedResumeGrant(sessionId: number) {
     });
   }
 }
+// Saved-work upkeep (banked admission, quiet cutoff, expiry alerts); shared with session-runtime.ts.
+const bankedUpkeep = createBankedUpkeep({ registry: () => activeTurnDispatch });
 const activeTurnDispatch = new ActiveTurnDispatchRegistry({
   onStarted: () => { activeTurnCount += 1; },
   onSettled: (turnId) => {
@@ -626,7 +629,7 @@ function turnsThatEndWithThisProcess() {
 // A run that gains independent custody (its host is now recorded) no longer ends with this
 // process; a shutdown waiting on it re-evaluates at once rather than at the next settlement.
 // The queue also re-reads admission here: a Codex restart releases its admission hold this way.
-observeExecutionChanges(() => { resolveDrainIfIdle(); if(sessionTurnQueue)recoverExhaustedClaudeWork(); sessionTurnQueue?.wake(); });
+observeExecutionChanges(() => { resolveDrainIfIdle(); if(sessionTurnQueue){bankedUpkeep.onExecutionChange();recoverExhaustedClaudeWork();} sessionTurnQueue?.wake(); });
 
 function resolveDrainIfIdle() {
   // Checked first: execution changes call this often, and only a waiting shutdown needs the count.
@@ -2503,6 +2506,12 @@ async function runClaimedTurn(input: ClaimedTurnInput): Promise<TurnRunOutcome> 
 }
 
 async function runPersistedQueuedTurn(claim: QueuedTurnClaimRow) {
+  bankedUpkeep.started(claim.turn_id);
+  try { return await runPersistedQueuedTurnBody(claim); }
+  finally { bankedUpkeep.settled(claim.turn_id); }
+}
+
+async function runPersistedQueuedTurnBody(claim: QueuedTurnClaimRow) {
   if(claim.turn_kind==='native')return sessionExecutionHost.run(claim);
   const outcome = await executePersistedQueuedTurn(claim, {
     buildInput: (queuedClaim) => buildQueuedTurnInput(queuedClaim, {
@@ -3813,6 +3822,7 @@ async function reconcilePriorInstanceTurns() {
   // their turns as orphaned, and continue under the same run (design 2026-10-07 §3.1 step 4).
   const runAdopted = (adoption: Adoption) => {
     adoptedTurnIds.add(adoption.claim.turn_id);
+    bankedUpkeep.started(adoption.claim.turn_id);
     // A Codex turn is already held by its App Server. Keep its adopted identity through recovery,
     // but do not contact that server until it has answered (after the request socket and any
     // runner relay channel exist).
@@ -3820,7 +3830,7 @@ async function reconcilePriorInstanceTurns() {
     void ready.then(() => sessionExecutionHost.run(adoption.claim, adoption)).catch((error) => {
       log("error", "execution_adoption_failed", { turn_id: adoption.claim.turn_id, execution_id: adoption.execution.execution_id, ...errorFields(error) });
       settleClaimedTurnSetupFailure(adoption.claim, error);
-    }).finally(() => { adoptedTurnIds.delete(adoption.claim.turn_id); sessionTurnQueue?.wake(); });
+    }).finally(() => { adoptedTurnIds.delete(adoption.claim.turn_id); bankedUpkeep.settled(adoption.claim.turn_id); sessionTurnQueue?.wake(); });
   };
   const executions = await claimAdoptableExecutions({ instanceId, isOwnerAlive: isProcessIdentityAlive });
   for (const adoption of executions.adopted) runAdopted(adoption);
@@ -4030,7 +4040,7 @@ async function reconcilePriorInstanceTurns() {
 // One in-flight pass is owned by the reader itself, so a credential change and this
 // watch cannot start competing reads of the same accounts. Each reading is followed by the
 // forecast check, which is what turns a number on a screen into a warning before the wall.
-startProviderUsageWatch({ stopped: () => draining, onReading: () => { void keepThreadsCurrent((admission) => sessionExecutionHost.owner.admit(admission)).catch(error => log('error','inbox_recovery_pass_failed',errorFields(error))); reconcileCoveredTasteRequest(); recoverOctoberBudgetPauses(); recoverExhaustedClaudeWork(); maybeStartInboxProviderFailover(); moveHeldWork(); wakeDeferredQuestions(Date.now(), (admission) => sessionExecutionHost.owner.admit(admission)); void closeQuestionsAnsweredByTodos((admission) => sessionExecutionHost.owner.admit(admission)).catch(() => {}); publishUsageForecastNotices(recordOwnerEvent); publishExpiringResetNotices(recordOwnerEvent); refreshUsageBreakdownIfStale(); briefRunningSessions(admission => sessionExecutionHost.owner.admit(admission)); } });
+startProviderUsageWatch({ stopped: () => draining, urgent: bankedUpkeep.hasActiveUnattendedBanked, onReading: () => { bankedUpkeep.onReading(); void keepThreadsCurrent((admission) => sessionExecutionHost.owner.admit(admission)).catch(error => log('error','inbox_recovery_pass_failed',errorFields(error))); reconcileCoveredTasteRequest(); recoverOctoberBudgetPauses(); recoverExhaustedClaudeWork(); maybeStartInboxProviderFailover(); moveHeldWork(); wakeDeferredQuestions(Date.now(), (admission) => sessionExecutionHost.owner.admit(admission)); void closeQuestionsAnsweredByTodos((admission) => sessionExecutionHost.owner.admit(admission)).catch(() => {}); publishUsageForecastNotices(recordOwnerEvent); publishExpiringResetNotices(recordOwnerEvent); refreshUsageBreakdownIfStale(); briefRunningSessions(admission => sessionExecutionHost.owner.admit(admission)); } });
 const stopBackgroundJobWatch = startBackgroundJobWatch(admission => sessionExecutionHost.owner.admit(admission));
 const stopUpdateWaitWatch = startUpdateWaitWatch({admit: admission => sessionExecutionHost.owner.admit(admission), stateDir: process.env.CONCIERGE_STATE_DIR!});
 const stopWatchWorker = startMachineWatchWorker(admission => sessionExecutionHost.owner.admit(admission), () => draining);
