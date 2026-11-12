@@ -395,6 +395,17 @@ its answer returns to the Mac agent like any peer reply, queued if the server is
 Before 2026-10-15 the Mac created the chat locally and every one failed at once with "chatgpt start
 unavailable".
 
+### Commits a Mac session makes on the server
+
+Every native agent turn carries `CONCIERGE_COMMIT_SESSION` (thnkr.ing's name for the session:
+`concierge:<n>` on the server, `mac:<n>` on the Mac) and `CONCIERGE_COMMIT_INPUT`. thnkr.ing's
+commit hook stamps those, replacing any hand-written trailer. Mac agents often commit in a server
+checkout over `ssh remote-box`; the Mac's SSH configuration sends both variables
+(`SendEnv CONCIERGE_COMMIT_*`) and the server's `sshd` accepts exactly those names
+(remote-box `config/sshd/60-concierge-commit-identity.conf`). Before 2026-11-12 nothing crossed
+SSH, so the hook kept the agent's hand-written `concierge:351`, the Mac's local name for its own
+session, and every later thnkr.ing release failed its identity seal.
+
 ### Opening a link on his Mac without a session
 
 `router-actions.sh sessions open <link> <source-flags> --action-id A` (optionally
