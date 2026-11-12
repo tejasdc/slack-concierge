@@ -353,7 +353,10 @@ contract and fixture; unknown old-style paths cannot become an accidental bypass
 A registered presentation route's database scope refuses
 collection reads without a final SQL limit, iterators, writes, excess calls, returned rows or
 returned value bytes. The encoded response has a separate byte budget. Refusal is a visible
-503, never a silent truncation or full-history fallback. These guards bound materialization and
+503, never a silent truncation or full-history fallback. Its `owner_read_budget_refused` record
+names the refused statement (fingerprint, method and the first 240 characters of SQL, never
+bound values), the request's parameter names and the calling stack: on Nov 12 162 Threads reads
+were refused for an unbounded collection with nothing naming which statement. These guards bound materialization and
 expose misuse; they do not prove rows visited by SQLite, so release growth fixtures and query
 plans remain required. The registry's limits belong to the owner and are shared by consumers.
 
