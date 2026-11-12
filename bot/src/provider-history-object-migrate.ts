@@ -1,7 +1,7 @@
 /** Operator-only conversion of one immutable Claude history snapshot. Run with Concierge stopped. */
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, openSync, renameSync, statfsSync, unlinkSync } from "node:fs";
+import { closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync, openSync, renameSync, statfsSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -52,7 +52,9 @@ export type ConversionGate = {
   validate: () => Promise<void>;
   prove: typeof provenHostTranscriptObject;
   decode: typeof decodeStoredSdkRow;
-  beforePublish?: (path: string) => Promise<void>;
+  stagingPath?: string;
+  keepPrepared?: () => boolean;
+  beforePublish?: (path: string, result: {changed: boolean}) => Promise<void>;
 };
 
 async function compareSnapshots(path: string, next: string, decode: typeof decodeStoredSdkRow) {
@@ -85,6 +87,24 @@ async function compareSnapshots(path: string, next: string, decode: typeof decod
   } finally { before.close(); after.close(); }
 }
 
+export async function publishPreparedHistorySnapshot(gate: ConversionGate, temporary: string) {
+  gate.quiescent();
+  const before = fingerprint(gate.path);
+  const db = new Database(temporary, {readonly:true,strict:true});
+  try {
+    const check = db.query("PRAGMA integrity_check").all() as {integrity_check:string}[];
+    if (check.length !== 1 || check[0]?.integrity_check !== "ok") throw new Error("INVALID_HISTORY_SNAPSHOT_COPY");
+  } finally { db.close(); }
+  await compareSnapshots(gate.path, temporary, gate.decode);
+  await gate.validate();
+  gate.quiescent();
+  if (!sameFingerprint(before, fingerprint(gate.path))) throw new Error("HISTORY_SNAPSHOT_CHANGED");
+  const descriptor = openSync(temporary, "r");
+  try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
+  renameSync(temporary, gate.path);
+  syncParent(gate.path);
+}
+
 function withSnapshotCopy<T extends {changed: boolean}>(
   gate: ConversionGate, run: (db: Database) => Promise<T>,
 ): Promise<T> {
@@ -93,13 +113,15 @@ function withSnapshotCopy<T extends {changed: boolean}>(
   const space = statfsSync(dirname(path));
   if (space.bavail * space.bsize < before.size * 2 + 1024 * 1024 * 1024)
     throw new Error("HISTORY_MIGRATION_INSUFFICIENT_SPACE");
-  const temporary = `${path}.${process.pid}.${randomUUID()}.object-next`;
+  const temporary = gate.stagingPath || `${path}.${process.pid}.${randomUUID()}.object-next`;
   let db: Database;
+  let copied=false;
   try {
-    copyFileSync(path, temporary);
+    copyFileSync(path, temporary, constants.COPYFILE_EXCL);
+    copied=true;
     db = new Database(temporary, { strict: true });
   } catch (error) {
-    if (existsSync(temporary)) unlinkSync(temporary);
+    if(copied && existsSync(temporary))unlinkSync(temporary);
     throw error;
   }
   return run(db).then(async result => {
@@ -109,19 +131,13 @@ function withSnapshotCopy<T extends {changed: boolean}>(
     db.close();
     gate.quiescent();
     if (!sameFingerprint(before, fingerprint(path))) throw new Error("HISTORY_SNAPSHOT_CHANGED");
-    await compareSnapshots(path, temporary, gate.decode);
     await gate.validate();
-    await gate.beforePublish?.(temporary);
-    gate.quiescent();
-    if (!sameFingerprint(before, fingerprint(path))) throw new Error("HISTORY_SNAPSHOT_CHANGED");
-    const descriptor = openSync(temporary, "r");
-    try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
-    renameSync(temporary, path);
-    syncParent(path);
+    await gate.beforePublish?.(temporary, result);
+    await publishPreparedHistorySnapshot(gate, temporary);
     return result;
   }).catch(error => {
     try { db.close(); } catch {}
-    if (existsSync(temporary)) unlinkSync(temporary);
+    if (!gate.keepPrepared?.() && existsSync(temporary)) unlinkSync(temporary);
     throw error;
   });
 }

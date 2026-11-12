@@ -58,6 +58,8 @@
     "control/application/owner-task-watchdog-worker.js": "bot/src/owner-task-watchdog-worker.ts"
   },
   "controlFiles": {
+    "control/history-cache-format.json": "bot/src/provider-history-cache-format.json",
+    "control/history-cache-control-format.json": "bot/src/provider-history-cache-format.json",
     "control/bot/scripts/mac-browser-fallback.sh": "bot/scripts/mac-browser-fallback.sh",
     "control/bot/scripts/mac-update-ax.swift": "bot/scripts/mac-update-ax.swift",
     "control/bot/scripts/mac-focus-ax.swift": "bot/scripts/mac-focus-ax.swift",

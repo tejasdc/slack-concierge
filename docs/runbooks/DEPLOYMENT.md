@@ -918,13 +918,50 @@ backup must be fully stopped. The conversion rechecks the backup pin, live
 identity and sidecar, verifies object dependencies and compares complete decoded
 SDK rows and indexes before atomic replacement. It mints a fresh cursor
 generation and preserves the matching verifier checkpoint. A replaced cache or
-changed sidecar skips the batch and preserves the old pin. Other failures leave
-the pending request and pin for investigation and fail that deployment step.
+changed sidecar skips an unstarted batch and preserves the old pin. Before an
+attempt starts, `pending.json` is renamed durably to `attempt.json`. A process
+interruption leaves that claim for reconciliation on the next deployment. An
+ordinary failed attempt is moved into its batch beside a `failure-*.json` record,
+so it does not become every later release's job. Its pin and any prepared
+generation remain available. When the exact intended generation was published
+but cannot complete safely, maintenance attempts exact rollback and records
+whether it succeeded or remains unresolved. Unknown/newer cache bytes are never
+overwritten. A published conversion is never reported as a stale skip.
 
-`conversion.json` records the intended new digest before publication;
-`result.json` records completion and allocation counts afterwards. A crash between
-those steps is ambiguous, never a reason to replay conversion. The old pin and
-the intended digest support exact rollback. The report distinguishes live cache
+The deployment hook handles an active backup, a nonblocking maintenance lock,
+unproven objects, stale source and other optional failures without entering the
+deployment repair path. Lock losers leave the active writer's queue untouched.
+Their deferred attempts appear in the deployment journal and
+`history-cache-maintenance/deployment-attempts.jsonl`; accepted attempts have
+durable batch receipts. `history-cache status [batch-uuid]` returns queue/attempt
+metadata, or that batch's backup, result, rollback and failure records, without
+revealing transcript payloads. These records describe operation evidence, not a
+fresh assertion that the current cache still equals an earlier result.
+
+Before a new conversion, both candidate and last-known-good artifacts must prove
+reader and controller support. A durable per-session reader requirement is
+written **before** reference publication. Independently of the optional hook,
+release activation and rollback refuse an application or controller without the
+appropriate sealed capability while a requirement remains. An incompatible
+binary is a hard compatibility refusal, not an optional-conversion failure.
+Hybrid artifacts take reader capability from their application commit and
+controller capability from their controller commit; one cannot certify the
+other. Older artifacts without this explicit declaration are unproven even when
+source inspection suggests they contain a decoder. Full-row materialization or
+exact rollback removes a session's requirement only after inspecting its cache
+and finding no reference rows. Import growth alone does not clear this fence.
+
+`conversion.json` records the old and intended new digest and allocation report
+before publication. `converted.sqlite` retains that exact prepared generation;
+`result.json` records completion afterwards. Recovery compares actual bytes:
+when the original is still published it validates and publishes the same
+prepared file; when the intended new version is already published it finishes
+the verifier checkpoint and result without converting again. A verifier that
+already checkpointed that exact new generation is preserved. Other bytes remain
+explicitly ambiguous. Whole-pin digest and integrity are checked once per
+attempt; subsequent publication checks use the closed inode's identity, exact
+sidecar and source metadata, avoiding repeated whole-cache hashes while stopped.
+The report distinguishes live cache
 blocks, retained pin blocks and the unchanged mirror. Before pin release, apparent
 cache shrinkage is **not** reclaimed disk: the old inode still occupies its blocks.
 Metadata and offsite repository bytes are additional costs, not payload savings.
@@ -951,11 +988,16 @@ With the coordinator stopped through the deployment boundary, rollback uses:
 /usr/local/lib/slack-concierge-deployment/control history-cache materialize <claude-session-uuid>
 ```
 
-`restore` requires the live target equal the recorded converted digest (or be
-absent), never a newer cache. It restores the old pin, or independently downloads
+`restore` requires the live target equal the recorded converted digest, the exact
+original digest (a resumed rollback), or be absent; never a newer cache. Its
+durable restore intent pins both cache targets and the verifier state it is
+replacing. It restores the old pin, or independently downloads
 and verifies the exact offsite cache when the pin has been released, checks
-SQLite and generation, then restores its verifier bytes. It needs no live provider
-file. `materialize` expands references into full SDK JSON, compares all decoded
+SQLite and generation, then restores its verifier bytes. A crash after the cache
+rename resumes at the sidecar instead of renaming again. A different verifier
+checkpoint refuses overwrite. An unfinished rollback takes precedence over
+finishing conversion; a completed rollback cannot replay that conversion. It
+needs no live provider file. `materialize` expands references into full SDK JSON, compares all decoded
 rows and indexes, and publishes a fresh generation before an older binary is
 installed. Missing objects first use the host's restore-by-digest command, which
 refuses corrupt existing inodes. If the host's original snapshot expired, restore
@@ -963,11 +1005,30 @@ the exact object from the batch's named later snapshot using the host command's
 `--snapshot` option, then retry materialization. Missing backup, ambiguous target,
 failed integrity/readback or failed object recovery never authorizes replacement.
 
+For a retained failed or interrupted conversion, explicitly queue the same batch
+again after resolving its cause; exact original or exact intended bytes qualify
+for reconciliation in the next normal stopped interval. An outstanding
+`attempt.json` is reconciled first. `history-cache resume <batch-uuid>` invokes the
+same byte-based recovery when the coordinator is already stopped. A batch that
+was rolled back requires a new prepare/queue operation, not replay. `release`
+still requires the exact converted target; growth can replace the cache with full
+rows and erase the ongoing saving, while the old pin remains retained. This is a
+deliberate conservative retirement boundary, not a promise of durable savings for
+an active conversation.
+
+Operational pacing is **not** inherited from `restic.sh`: that wrapper only loads
+credentials and executes Restic. The host's transcript-object pacing internals
+are not a supported generic product backup entrance. Production backup remains
+held until its own reviewed operational contract and measured I/O/stopped-window
+cost are accepted; do not copy the host's internal constants or declare this path
+paced. No production load or retention proof is supplied by the disposable check.
+
 Focused disposable verification (including a local native Restic repository;
 this is not an offsite production proof):
 
 ```bash
 bun run bot/scripts/private-code-command.ts -- bun run bot/scripts/history-cache-maintenance-fixture.ts
+bun run bot/scripts/private-code-command.ts -- bun run bot/scripts/history-cache-crash-fixture.ts
 ```
 
 ## State migration and backups

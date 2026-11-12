@@ -39,7 +39,7 @@ class MemoryRestic implements CacheRestic {
   }
 }
 
-function fixture() {
+export function fixture() {
   const state = mkdtempSync(join(tmpdir(), "history-cache-maintenance-")), objects = join(state, "objects");
   const session = randomUUID(), source = join(state, "source.jsonl"), path = join(state, "provider-history-cache", `${session}.sqlite`);
   const sdk = (uuid: string, type: string, content: unknown) => ({uuid, type, session_id: session,
@@ -94,17 +94,18 @@ function fixture() {
     setStopped: (value: boolean) => { stopped = value; }, cleanup: () => rmSync(state, {recursive: true, force: true})};
 }
 
-async function check(name: string, run: (f: ReturnType<typeof fixture>) => Promise<void>) {
+export async function check(name: string, run: (f: ReturnType<typeof fixture>) => Promise<void>) {
   const f = fixture();
   try { await run(f); console.log(JSON.stringify({check: name, status: "passed"})); }
   finally { f.cleanup(); }
 }
-function rowsAt(f: ReturnType<typeof fixture>) {
+export function rowsAt(f: ReturnType<typeof fixture>) {
   const db = new Database(f.path, {readonly: true});
   try { return (db.query("SELECT json FROM rows ORDER BY ordinal").all() as any[]).map(row => decodeStoredSdkRow(row.json, f.objects)); }
   finally { db.close(); }
 }
 
+if (import.meta.main) {
 await check("exact backup, selective conversion, SDK readback, pin accounting and materialization", async f => {
   const before = readFileSync(f.path), sourceBefore = readFileSync(f.source), beforeInode = lstatSync(f.path).ino;
   const prepared = await f.maintenance.prepare(f.session);
@@ -215,7 +216,7 @@ await check("rollback and pin release refuse a newer cache", async f => {
 await check("native Restic backup, full stream readback and exact restore", async f => {
   const repository = join(f.state, "restic-repo"), password = join(f.state, "fixture-password");
   writeFileSync(password, "disposable-fixture-password", {mode: 0o600});
-  const command = ["restic", "-r", repository, "--password-file", password];
+  const command = ["restic", "--no-cache", "-r", repository, "--password-file", password];
   const init = Bun.spawn([...command, "init"], {stdout: "ignore", stderr: "inherit"});
   assert.equal(await init.exited, 0);
   const native = new HistoryCacheMaintenance(f.state, new HostCacheRestic(command), () => {}, f.objects);
@@ -242,3 +243,4 @@ await check("missing offsite backup refuses rollback without replacing current b
   assert.deepEqual(readFileSync(f.path), current);
 });
 console.log("history cache maintenance fixture passed");
+}

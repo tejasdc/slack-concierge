@@ -2,14 +2,15 @@
 import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, closeSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync,
-  openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+  openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { open } from "node:fs/promises";
 import { isDeepStrictEqual } from "node:util";
 import { checkSqliteBackup } from "./verified-sqlite-backup";
 import { decodeStoredSdkRow, provenHostTranscriptObject } from "./provider-history-object-spans";
-import { materializeHistorySnapshot, migrateHistorySnapshot, requireQuiescentHost, requireStoppedServices } from "./provider-history-object-migrate";
+import { materializeHistorySnapshot, migrateHistorySnapshot, publishPreparedHistorySnapshot, requireQuiescentHost, requireStoppedServices, type ConversionGate } from "./provider-history-object-migrate";
+import {HISTORY_CACHE_READER_FORMAT,historyCacheRequirements,assertHistoryCacheReader} from "./provider-history-cache-compatibility";
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const SHA = /^[a-f0-9]{64}$/;
@@ -27,6 +28,11 @@ function publish(path: string, value: unknown) {
   // Receipts never silently replace an earlier operation's evidence.
   try { linkSync(temporary, path); sync(dirname(path)); }
   finally { unlinkSync(temporary); }
+}
+function publishOnce(path: string,value: unknown) {
+  if(existsSync(path)) {
+    if(!isDeepStrictEqual(JSON.parse(readFileSync(path,"utf8")),value))throw new Error("HISTORY_OPERATION_CONFLICT");
+  } else publish(path,value);
 }
 function identity(path: string) {
   const s = lstatSync(path);
@@ -135,7 +141,8 @@ type Manifest = {
 export class HistoryCacheMaintenance {
   readonly root: string;
   constructor(readonly state: string, readonly restic: CacheRestic,
-    readonly quiescent = requireQuiescentHost, readonly objects = OBJECTS) {
+    readonly quiescent = requireQuiescentHost, readonly objects = OBJECTS,
+    readonly checkpoint: (point: string) => void = () => {}) {
     this.root = join(state, "history-cache-maintenance");
   }
   cache(session: string) {
@@ -149,6 +156,20 @@ export class HistoryCacheMaintenance {
   object(dep: Dependency) {
     if (!SHA.test(dep.sha256) || !Number.isSafeInteger(dep.bytes) || dep.bytes < 0) throw new Error("INVALID_HISTORY_DEPENDENCY");
     return join(this.objects, "sha256", dep.sha256.slice(0, 2), dep.sha256);
+  }
+  requireReader(session: string) {
+    const directory=historyCacheRequirements(this.state);
+    mkdirSync(directory,{recursive:true,mode:0o700}); sync(this.root);
+    publishOnce(join(directory,`${session}.json`),HISTORY_CACHE_READER_FORMAT);
+  }
+  clearReaderIfFull(session: string) {
+    const db=openSnapshot(this.cache(session));
+    try {
+      for(const row of db.query("SELECT json FROM rows WHERE json LIKE '%\"conciergeRawReference\":1%'").iterate() as IterableIterator<any>)
+        if(JSON.parse(row.json)?.conciergeRawReference===1)return;
+    } finally {db.close();}
+    const marker=join(historyCacheRequirements(this.state),`${session}.json`);
+    if(existsSync(marker)){unlinkSync(marker);sync(dirname(marker));}
   }
   async prepare(session: string) {
     const path = this.cache(session), id = randomUUID(), folder = this.batch(id), pin = join(folder, "cache.sqlite");
@@ -236,33 +257,93 @@ export class HistoryCacheMaintenance {
   async migrate(id: string) {
     const started = performance.now();
     this.quiescent();
-    const manifest = await this.proof(id), path = this.cache(manifest.session), folder = this.batch(id);
-    if (existsSync(join(folder, "result.json"))) throw new Error("HISTORY_BATCH_ALREADY_APPLIED");
+    const manifest = await this.proof(id,false), path = this.cache(manifest.session), folder = this.batch(id);
+    if(existsSync(join(folder,"restore-intent.json")))throw new Error(existsSync(join(folder,"restore.json"))
+      ? "HISTORY_CONVERSION_ROLLED_BACK" : "HISTORY_CONVERSION_ROLLBACK_PENDING");
+    const intentPath=join(folder,"conversion.json"), prepared=join(folder,"converted.sqlite"), resultPath=join(folder,"result.json");
+    const live=await digest(path);
+    if(existsSync(resultPath)) {
+      const result=JSON.parse(readFileSync(resultPath,"utf8"));
+      if(!isDeepStrictEqual(live,result.after))throw new Error("HISTORY_CACHE_GENERATION_CHANGED");
+      return result;
+    }
     for (const dep of manifest.dependencies) {
       if (!await provenHostTranscriptObject(dep.sha256, dep.bytes, this.objects)) throw new Error("HISTORY_UNPROVEN_DEPENDENCY");
     }
-    const result = await migrateHistorySnapshot(manifest.session, {
-      path, quiescent: this.quiescent, validate: async () => { await this.proof(id); },
+    const gate: ConversionGate={
+      path, stagingPath:prepared, keepPrepared:()=>existsSync(intentPath), quiescent: this.quiescent,
+      validate: async () => {
+        requireClosedSnapshot(path);
+        if(!isDeepStrictEqual(identity(path),manifest.cacheIdentity)
+          || sidecar(path+".verified.json")!==manifest.sidecar)throw new Error("HISTORY_CACHE_GENERATION_CHANGED");
+        const db=openSnapshot(path);
+        try {
+          const meta=db.query("SELECT source_path,source_size,source_mtime_ms FROM meta").get() as any;
+          const source=identity(meta.source_path);
+          if(source.size!==meta.source_size || source.mtimeMs!==meta.source_mtime_ms)throw new Error("HISTORY_SOURCE_CHANGED");
+        } finally {db.close();}
+      },
       decode: json => decodeStoredSdkRow(json, this.objects),
-      beforePublish: async next => {
-        publish(join(folder, "conversion.json"), {changed: true, after: await digest(next)});
+      beforePublish: async (next,result) => {
+        const report=await this.conversionReport(id,manifest,result,next,performance.now()-started);
+        this.requireReader(manifest.session);
+        publishOnce(intentPath,{schema:1,changed:true,before:manifest.cache,after:report.after,result:report});
+        this.checkpoint("conversion_intent");
       },
       prove: async (sha, bytes) => manifest.dependencies.some(dep => dep.sha256 === sha && dep.bytes === bytes)
         ? provenHostTranscriptObject(sha, bytes, this.objects) : null,
-    });
-    if (result.changed) carryVerifierStatus(path, manifest.generation, manifest.sidecar);
-    const pin = join(folder, "cache.sqlite"), retainedPinAllocatedBytes = result.changed ? lstatSync(pin).blocks * 512 : 0;
+    };
+    if(existsSync(intentPath)) {
+      const intent=JSON.parse(readFileSync(intentPath,"utf8"));
+      if(intent.schema!==1 || !isDeepStrictEqual(intent.before,manifest.cache) || !intent.result
+        || !isDeepStrictEqual(intent.after,intent.result.after))throw new Error("HISTORY_CONVERSION_INTENT_INVALID");
+      if(isDeepStrictEqual(live,manifest.cache)) {
+        if(!isDeepStrictEqual(await digest(prepared),intent.after))throw new Error("HISTORY_PREPARED_GENERATION_CHANGED");
+        await publishPreparedHistorySnapshot(gate,prepared);
+      } else if(!isDeepStrictEqual(live,intent.after))throw new Error("HISTORY_CONVERSION_TARGET_AMBIGUOUS");
+      return this.finishConversion(id,manifest,intent.result,true);
+    }
+    await gate.validate();
+    const result=await migrateHistorySnapshot(manifest.session,gate);
+    if(result.changed) {
+      const intent=JSON.parse(readFileSync(intentPath,"utf8"));
+      return this.finishConversion(id,manifest,intent.result,false);
+    }
+    const report=await this.conversionReport(id,manifest,result,path,performance.now()-started);
+    publishOnce(resultPath,report);
+    return report;
+  }
+  async conversionReport(id:string,manifest:Manifest,result:{changed:boolean},next:string,durationMs:number) {
+    const path=this.cache(manifest.session), before=lstatSync(join(this.batch(id),"cache.sqlite")).blocks*512;
+    const after=lstatSync(next).blocks*512, retainedPinAllocatedBytes=result.changed?before:0;
     const mirror = openSnapshot(path);
     let mirrorAllocatedBytes: number;
     try { mirrorAllocatedBytes = lstatSync((mirror.query("SELECT source_path FROM meta").get() as any).source_path).blocks * 512; }
     finally { mirror.close(); }
-    const report = {...result, id, before: manifest.cache, after: await digest(path), retainedPinAllocatedBytes,
-      durationMs: performance.now() - started, mirrorAllocatedBytes,
-      allocatedBeforeIncludingMirrorBytes: result.allocatedBeforeBytes + mirrorAllocatedBytes,
-      allocatedAfterIncludingMirrorAndPinBytes: result.allocatedAfterBytes + mirrorAllocatedBytes + retainedPinAllocatedBytes,
-      netAllocatedSavedBytes: result.allocatedSavedBytes - retainedPinAllocatedBytes};
-    publish(join(folder, "result.json"), report);
-    return report;
+    return {...result,id,before:manifest.cache,after:await digest(next),retainedPinAllocatedBytes,durationMs,mirrorAllocatedBytes,
+      allocatedBeforeBytes:before,allocatedAfterBytes:after,allocatedSavedBytes:before-after,
+      allocatedBeforeIncludingMirrorBytes:before+mirrorAllocatedBytes,
+      allocatedAfterIncludingMirrorAndPinBytes:after+mirrorAllocatedBytes+retainedPinAllocatedBytes,
+      netAllocatedSavedBytes:before-after-retainedPinAllocatedBytes};
+  }
+  async finishConversion(id:string,manifest:Manifest,report:any,recovered:boolean) {
+    const path=this.cache(manifest.session);
+    if(!isDeepStrictEqual(await digest(path),report.after))throw new Error("HISTORY_CONVERSION_TARGET_AMBIGUOUS");
+    this.requireReader(manifest.session);
+    this.checkpoint("conversion_published");
+    const db=openSnapshot(path);
+    let generation:string;
+    try {generation=(db.query("SELECT generation FROM meta").get() as any).generation;} finally {db.close();}
+    let current:any;
+    try {current=JSON.parse(sidecar(path+".verified.json")??"null");} catch {}
+    // A verifier that already checkpointed this exact new generation is newer
+    // evidence; a resumed publication must not replace it with the old checkpoint.
+    if(current?.generation!==generation)carryVerifierStatus(path,manifest.generation,manifest.sidecar);
+    this.checkpoint("conversion_sidecar");
+    const completed={...report,recovered};
+    publishOnce(join(this.batch(id),"result.json"),completed);
+    this.checkpoint("conversion_result");
+    return completed;
   }
   async materialize(session: string) {
     this.quiescent();
@@ -289,6 +370,7 @@ export class HistoryCacheMaintenance {
       validate: async () => {}, prove: provenHostTranscriptObject,
       decode: json => decodeStoredSdkRow(json, this.objects)});
     if (result.changed) carryVerifierStatus(path, generation, status);
+    this.clearReaderIfFull(session);
     return result;
   }
   async restore(id: string) {
@@ -297,9 +379,18 @@ export class HistoryCacheMaintenance {
     const folder = this.batch(id);
     const result = JSON.parse(readFileSync(join(folder, existsSync(join(folder, "result.json")) ? "result.json" : "conversion.json"), "utf8"));
     const before = existsSync(path) ? await digest(path) : null;
-    if (!result.changed || before !== null && !isDeepStrictEqual(before, result.after)) throw new Error("HISTORY_ROLLBACK_TARGET_CHANGED");
+    if (!result.changed || before !== null && !isDeepStrictEqual(before, result.after)
+      && !isDeepStrictEqual(before,manifest.cache)) throw new Error("HISTORY_ROLLBACK_TARGET_CHANGED");
+    const intentPath=join(folder,"restore-intent.json");
+    if(!existsSync(intentPath))publish(intentPath,{schema:1,before:result.after,after:manifest.cache,
+      beforeSidecar:sidecar(path+".verified.json")});
+    const intent=JSON.parse(readFileSync(intentPath,"utf8"));
+    if(intent.schema!==1 || !isDeepStrictEqual(intent.before,result.after) || !isDeepStrictEqual(intent.after,manifest.cache))
+      throw new Error("HISTORY_ROLLBACK_INTENT_INVALID");
+    const status=sidecar(path+".verified.json");
+    if(status!==intent.beforeSidecar && status!==manifest.sidecar)throw new Error("HISTORY_ROLLBACK_VERIFIER_CHANGED");
     const temporary = `${path}.${randomUUID()}.rollback`;
-    try {
+    if(!isDeepStrictEqual(before,manifest.cache))try {
       const pin = join(folder, "cache.sqlite");
       if (existsSync(pin)) {
         await this.proof(id, false);
@@ -317,8 +408,13 @@ export class HistoryCacheMaintenance {
       if (!isDeepStrictEqual(existsSync(path) ? await digest(path) : null, before)) throw new Error("HISTORY_ROLLBACK_TARGET_CHANGED");
       renameSync(temporary, path); sync(dirname(path));
     } finally { if (existsSync(temporary)) unlinkSync(temporary); }
+    this.checkpoint("restore_published");
     replaceSidecar(path + ".verified.json", manifest.sidecar);
-    return {restored: manifest.generation};
+    this.checkpoint("restore_sidecar");
+    this.clearReaderIfFull(manifest.session);
+    const restored={restored:manifest.generation};
+    publishOnce(join(folder,"restore.json"),restored);
+    return restored;
   }
   async release(id: string) {
     const manifest = await this.proof(id, false, false), folder = this.batch(id), path = this.cache(manifest.session);
@@ -339,22 +435,66 @@ export class HistoryCacheMaintenance {
     return released;
   }
   async queue(id: string) {
-    await this.proof(id);
-    publish(join(this.root, "pending.json"), {id});
+    if(existsSync(join(this.root,"attempt.json")))throw new Error("HISTORY_OPTIONAL_ATTEMPT_REQUIRES_RECOVERY");
+    const folder=this.batch(id),manifest=await this.proof(id,false);
+    if(existsSync(join(folder,"restore-intent.json")))throw new Error("HISTORY_CONVERSION_ROLLBACK_PENDING");
+    if(existsSync(join(folder,"conversion.json"))) {
+      const intent=JSON.parse(readFileSync(join(folder,"conversion.json"),"utf8")),live=await digest(this.cache(manifest.session));
+      if(intent.schema!==1 || !isDeepStrictEqual(intent.before,manifest.cache) || !intent.result
+        || !isDeepStrictEqual(intent.after,intent.result.after))throw new Error("HISTORY_CONVERSION_INTENT_INVALID");
+      if(!isDeepStrictEqual(live,intent.after))await this.proof(id);
+    } else await this.proof(id);
+    publishOnce(join(this.root, "pending.json"), {id});
     return {queued: id};
+  }
+  status(id?:string) {
+    const read=(path:string)=>existsSync(path)?JSON.parse(readFileSync(path,"utf8")):null;
+    if(!id)return {pending:read(join(this.root,"pending.json")),attempt:read(join(this.root,"attempt.json"))};
+    const folder=this.batch(id),manifest=read(join(folder,"manifest.json"));
+    return {id,session:manifest?.session,generation:manifest?.generation,retainedPin:existsSync(join(folder,"cache.sqlite")),
+      backup:read(join(folder,"receipt.json")),conversionIntent:!!read(join(folder,"conversion.json")),
+      result:read(join(folder,"result.json")),rollback:read(join(folder,"restore.json")),
+      failures:readdirSync(folder).filter(name=>/^failure-[a-f0-9-]+\.json$/.test(name)).map(name=>read(join(folder,name)))};
   }
   async applyPending() {
     const pending = join(this.root, "pending.json");
-    if (!existsSync(pending)) return {status: "no_pending_batch"};
-    const {id} = JSON.parse(readFileSync(pending, "utf8"));
+    // Consume the queue before attempting work. A durable attempt can be resumed
+    // deliberately; a failed optional batch never becomes every release's job.
+    const attempt=join(this.root,"attempt.json");
+    if(!existsSync(attempt)) {
+      if (!existsSync(pending)) return {status: "no_pending_batch"};
+      renameSync(pending,attempt);sync(this.root);
+    }
+    const {id} = JSON.parse(readFileSync(attempt, "utf8"));
     let result;
     try { result = await this.migrate(id); }
     catch (error) {
-      if (!(error instanceof Error) || error.message !== "HISTORY_CACHE_GENERATION_CHANGED") throw error;
-      result = {status: "skipped_changed_generation", id};
-      publish(join(this.batch(id), "skipped.json"), result);
+      const message=error instanceof Error?error.message:"HISTORY_OPTIONAL_CONVERSION_FAILED";
+      // Exact operation state stays with its batch, including any prepared or
+      // published generation; never call a published conversion a stale skip.
+      const folder=this.batch(id);
+      let rollback="not_needed",rollbackError:string|undefined;
+      if(existsSync(join(folder,"conversion.json"))) {
+        try {
+          const manifest=await this.proof(id,false),intent=JSON.parse(readFileSync(join(folder,"conversion.json"),"utf8"));
+          const current=await digest(this.cache(manifest.session));
+          if(isDeepStrictEqual(current,intent.after) || existsSync(join(folder,"restore-intent.json"))) {
+            await this.restore(id);rollback="restored_original";
+          } else if(!isDeepStrictEqual(current,manifest.cache))rollback="target_changed_preserved";
+        } catch(recoveryError) {
+          rollback="unresolved_preserved";rollbackError=recoveryError instanceof Error?recoveryError.message:"HISTORY_RECOVERY_UNKNOWN";
+        }
+      }
+      result={status:message==="HISTORY_CACHE_GENERATION_CHANGED" && !existsSync(join(folder,"conversion.json"))
+        ? "skipped_changed_generation" : "failed_optional_conversion",id,error:message,rollback,...(rollbackError?{rollbackError}:{})};
+      publish(join(folder,`failure-${randomUUID()}.json`),result);
+      try {
+        const manifest=await this.proof(id,false);
+        this.clearReaderIfFull(manifest.session);
+      } catch { /* Keep unknown custody fenced by the required-reader marker. */ }
     }
-    unlinkSync(pending); sync(this.root);
+    const folder=this.batch(id);
+    renameSync(attempt,join(folder,`attempt-${randomUUID()}.json`));sync(folder);sync(this.root);
     return result;
   }
 }
@@ -370,14 +510,25 @@ if (import.meta.main) {
     process.exit(await child.exited);
   }
   const [command, id] = args.slice(1);
+  if(command==="check-readers") {
+    const artifacts=args.slice(2);
+    if(!artifacts.length)throw new Error("HISTORY_CACHE_READER_NOT_PROVEN");
+    for(const artifact of artifacts) {
+      const files=JSON.parse(readFileSync(join(artifact,"manifest.json"),"utf8")).files;
+      assertHistoryCacheReader(artifact,files);assertHistoryCacheReader(artifact,files,true);
+    }
+    console.log(JSON.stringify({status:"history_cache_readers_proven"}));process.exit(0);
+  }
   if (command === "prepare" || command === "release") requireStoppedServices(["remote-box-backup.service"]);
   const maintenance = new HistoryCacheMaintenance(state, new HostCacheRestic());
   const result = command === "prepare" && id ? await maintenance.prepare(id)
     : command === "queue" && id ? await maintenance.queue(id)
     : command === "apply-pending" ? await maintenance.applyPending()
+    : command === "resume" && id ? await maintenance.migrate(id)
+    : command === "status" ? maintenance.status(id)
     : command === "materialize" && id ? await maintenance.materialize(id)
     : command === "restore" && id ? await maintenance.restore(id)
     : command === "release" && id ? await maintenance.release(id)
-    : (() => { throw new Error("USAGE: history-cache prepare|queue|materialize|restore|release <id> | apply-pending"); })();
+    : (() => { throw new Error("USAGE: history-cache prepare|queue|resume|materialize|restore|release <id> | status [id] | apply-pending | check-readers <artifacts...>"); })();
   console.log(JSON.stringify(result));
 }

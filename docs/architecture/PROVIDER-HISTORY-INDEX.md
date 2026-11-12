@@ -34,6 +34,15 @@ an interruption retains that recovery generation. Restic readback and complete
 decoder equivalence are distinct from installed page/detail acceptance. The
 runner mirror and Codex window remain intact.
 
+Optional-maintenance failures retain their exact attempt and recovery evidence
+without failing unrelated releases. Recovery reconciles the old, prepared and
+published cache bytes and finishes only the corresponding operation. A separate
+file-only release compatibility fence prevents an application or deployment
+controller that cannot handle object references from being activated while any
+session requires that format. Exact rollback and materialization clear a
+requirement only after a reference-free cache is observed; capability metadata
+in a hybrid release belongs to its respective application or controller source.
+
 ## Source history and archive evidence
 
 - Claude history reads resolve the bound provider UUID through the SDK across project
