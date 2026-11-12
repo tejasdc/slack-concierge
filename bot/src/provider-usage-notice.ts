@@ -10,7 +10,7 @@ import { noticeTime, publishProviderFreeNotice, SERVICE_NOTICE_SCOPE } from "./p
 import { fileServiceNotices, settleServiceNotice } from "./session-topics";
 import { nativeRunId } from "./session-inputs";
 import { providerAccountUsage } from "./provider-account-usage";
-import { budgetBriefWithProviderRoom, codexRoomForClaudeDelegation, measuredBudgetPressure, newWorkCapacity } from './provider-start-choice';
+import { budgetBriefWithProviderRoom, otherProviderRoomForDelegation, measuredBudgetPressure, newWorkCapacity } from './provider-start-choice';
 import { decideAutomaticReset, resetUsedSentence } from "./provider-reset-policy";
 import { clearCodexAccountUsage, type UsageProvider } from "./provider-usage";
 import type {TurnContinuationReason} from './session-inputs';
@@ -456,8 +456,8 @@ export function publishExpiringResetNotices(_record?: RecordEvent): void {
  *  - One brief for each delegation-availability state per session, account and
  *    allowance period. A change in available room can update the action without
  *    repeated notices for every usage reading.
- *  - It gives a delegation action only when the same account choice that starts helpers
- *    verifies Codex has the room. The session keeps its model and its work.
+ *  - It gives a delegation action only when the same account choice that starts separate
+ *    work verifies the other provider has room. The session keeps its model and its work.
  */
 export function briefRunningSessions(admit: (input: {
   sessionId: number; inputId: string; origin: "service"; sourceInputId: string; sourceRunId: string;
@@ -487,8 +487,9 @@ export function briefRunningSessions(admit: (input: {
       const episode = `${provider}:${pressure.account}:${pressure.window}:${period}`;
       // A previous brief this allowance period lacked verified provider room and the
       // delegation action. The versioned identity delivers the changed contract once.
-      const direction = provider === 'claude-code' && codexRoomForClaudeDelegation(Date.now(), pressure.account)
-        ? 'codex-ready' : 'budget-only';
+      const otherRoom = otherProviderRoomForDelegation(provider, Date.now(), pressure.account);
+      const direction = otherRoom === 'codex' ? 'codex-ready'
+        : otherRoom === 'claude-code' ? 'claude-ready' : 'budget-only';
       const inputId = `budget-room-v1:${direction}:${episode}:${run.session_id}`;
       if (db.query("SELECT 1 FROM session_inputs WHERE id = ?").get(inputId)) continue;
       try {
@@ -501,7 +502,7 @@ export function briefRunningSessions(admit: (input: {
         log("info", "provider_usage_session_briefed", { provider, session_id: run.session_id,
           turn_id: run.turn_id, account: pressure.account, window: pressure.window,
           used_percent: pressure.usedPercent, observed_at: pressure.observedAt,
-          codex_delegation_ready: provider === 'claude-code' && !!codexRoomForClaudeDelegation(Date.now(), pressure.account) });
+          other_provider_room: otherRoom });
       } catch (error) {
         // A run that ended between the query and the admission is the ordinary case here.
         log("info", "provider_usage_session_brief_skipped", { provider, session_id: run.session_id,

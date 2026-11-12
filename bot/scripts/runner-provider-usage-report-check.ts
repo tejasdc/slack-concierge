@@ -16,23 +16,35 @@ try{
   await mkdir(secondProjects,{recursive:true});
   const count=Number(process.env.USAGE_REPORT_FIXTURE_ROWS??2001),at=new Date().toISOString();
   const lines=Array.from({length:count},(_,index)=>JSON.stringify({type:'assistant',timestamp:at,
-    message:{id:`record-${index}`,model:'claude-opus-5-5',usage:{input_tokens:17,cache_creation_input_tokens:0,
+    message:{id:`record-${index}`,model:'claude-opus-5-5',content:index===0
+      ?[{type:'tool_use',id:'edit-main',name:'Edit',input:{file_path:'example.ts'}},
+        {type:'tool_use',id:'read-main',name:'Read',input:{file_path:'example.ts'}}]:[],
+      usage:{input_tokens:17,cache_creation_input_tokens:0,
       cache_read_input_tokens:5,output_tokens:7}}})).join('\n')+'\n';
   await writeFile(join(projects,`${nativeId}.jsonl`),lines);
+  const helpers=join(projects,nativeId,'subagents');await mkdir(helpers,{recursive:true});
+  await writeFile(join(helpers,'agent-fixture.jsonl'),JSON.stringify({type:'assistant',timestamp:at,
+    message:{id:'helper-record',model:'claude-sonnet-5-5',content:[{type:'tool_use',id:'edit-helper',name:'Write',input:{file_path:'helper.ts'}}],
+      usage:{input_tokens:3,cache_creation_input_tokens:0,cache_read_input_tokens:0,output_tokens:2}}})+'\n');
   await writeFile(join(secondProjects,`${secondNativeId}.jsonl`),lines.split('\n').slice(0,3).join('\n')+'\n');
   const db=new Database(':memory:');
   db.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,agent_session_uuid TEXT,provider_id TEXT,native_metadata_json TEXT,last_turn_at TEXT);
     CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,status TEXT,provider_turn_id TEXT,provider_started_at TEXT,ended_at TEXT,
-      saved_kind TEXT,saved_repeat_ms INTEGER,saved_root_id INTEGER,saved_sequence INTEGER,saved_fire_at_ms INTEGER,provider_duration_ms INTEGER);
-    CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,session_id INTEGER,turn_id INTEGER,kind TEXT,payload_json TEXT,created_at TEXT);
+      saved_kind TEXT,saved_repeat_ms INTEGER,saved_root_id INTEGER,saved_sequence INTEGER,saved_fire_at_ms INTEGER,provider_duration_ms INTEGER,accepted_input_id TEXT);
+    CREATE TABLE session_communication_requests(target_input_id TEXT,topic_root_input_id TEXT,thread_root_input_id TEXT,created_at_ms INTEGER);
+    CREATE TABLE inbox_topic_roots(root_input_id TEXT PRIMARY KEY,topic_id TEXT);
+    CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,session_id INTEGER,turn_id INTEGER,kind TEXT,payload_json TEXT,created_at TEXT,input_id TEXT);
     CREATE TABLE saved_work_settings(singleton INTEGER PRIMARY KEY,time_zone TEXT);`);
   const started=new Date(Date.now()-60_000).toISOString().slice(0,19).replace('T',' ');
   db.query('INSERT INTO sessions(id,agent_session_uuid,provider_id,native_metadata_json) VALUES(1,?,?,?)').run(nativeId,'claude-code',JSON.stringify({title:'Usage fixture',project:'/workspace/usage-fixture'}));
-  db.query('INSERT INTO turns(id,session_id,status,provider_started_at) VALUES(1,1,?,?)').run('running',started);
-  db.query('INSERT INTO session_owner_events VALUES(1,1,1,?,?,?)').run('account',JSON.stringify({account:'fixture@example.test'}),started);
+  db.query('INSERT INTO turns(id,session_id,status,provider_started_at,accepted_input_id) VALUES(1,1,?,?,?)').run('running',started,'request:one');
+  db.query('INSERT INTO session_owner_events(sequence,session_id,turn_id,kind,payload_json,created_at) VALUES(1,1,1,?,?,?)').run('account',JSON.stringify({account:'fixture@example.test'}),started);
   db.query('INSERT INTO sessions(id,agent_session_uuid,provider_id,native_metadata_json) VALUES(2,?,?,?)').run(secondNativeId,'claude-code',JSON.stringify({title:'Second fixture',project:'/workspace/usage-fixture'}));
-  db.query('INSERT INTO turns(id,session_id,status,provider_started_at) VALUES(2,2,?,?)').run('running',started);
-  db.query('INSERT INTO session_owner_events VALUES(2,2,2,?,?,?)').run('account',JSON.stringify({account:'second@example.test'}),started);
+  db.query('INSERT INTO turns(id,session_id,status,provider_started_at,accepted_input_id) VALUES(2,2,?,?,?)').run('running',started,'request:two');
+  db.query('INSERT INTO inbox_topic_roots VALUES(?,?)').run('capture:shared','topic:shared');
+  db.query('INSERT INTO session_communication_requests VALUES(?,?,?,?)').run('request:one','capture:shared',null,Date.now());
+  db.query('INSERT INTO session_communication_requests VALUES(?,?,?,?)').run('request:two','capture:shared',null,Date.now());
+  db.query('INSERT INTO session_owner_events(sequence,session_id,turn_id,kind,payload_json,created_at) VALUES(2,2,2,?,?,?)').run('account',JSON.stringify({account:'second@example.test'}),started);
   db.query('INSERT INTO saved_work_settings VALUES(1,?)').run('America/New_York');
   const snapshot=encodeUsageSnapshot(captureUsageLedgerSnapshot(db,Date.now()-7*86400_000));db.close();
   let calls=0;
@@ -45,10 +57,16 @@ try{
     });
   const account=result.week.accounts.find((value:any)=>value.account==='fixture@example.test');
   const other=result.week.accounts.find((value:any)=>value.account==='second@example.test');
-  if(calls!==2||result.week.callMix.totalCalls!==count+3||account?.bySession?.[0]?.sessionId!==1
-    ||account?.callMix.totalCalls!==count||result.week.cacheDiagnostics.callCount!==count+3
+  if(calls!==2||result.week.callMix.totalCalls!==count+4||account?.bySession?.[0]?.sessionId!==1
+    ||account?.callMix.totalCalls!==count+1||result.week.cacheDiagnostics.callCount!==count+4
     ||other?.bySession?.[0]?.sessionId!==2||other?.callMix.totalCalls!==3
-    ||result.week.cacheDiagnostics.calls.length>100||result.week.cacheDiagnostics.turns[0]?.turnId!==1)
+    ||result.week.editMix.totalEdits!==3||result.week.editMix.helperEdits!==1
+    ||account?.bySession?.[0]?.editMix?.totalEdits!==2
+    ||account?.bySession?.[0]?.editMix?.byModel?.find((model:any)=>model.model==='claude-sonnet-5-5')?.helperEdits!==1
+    ||other?.bySession?.[0]?.editMix?.mainEdits!==1
+    ||result.week.cacheDiagnostics.calls.length>100||result.week.cacheDiagnostics.turns[0]?.turnId!==1
+    ||result.week.attributionBuckets.length!==2
+    ||result.week.attributionBuckets.some((bucket:any)=>bucket.topicId!=='topic:shared'))
     throw new Error('bounded report lost account, session, call mix or cache diagnostics');
-  console.log(`two runner report calls returned ${count+3} attributed calls with bounded diagnostics`);
+  console.log(`two runner report calls returned ${count+4} attributed calls and split edit counts with bounded diagnostics`);
 }finally{await rm(root,{recursive:true,force:true});}

@@ -4,7 +4,12 @@ import type { Database } from 'bun:sqlite';
  * Bun's run().changes includes those writes; SQLite changes() excludes them. Read it on the
  * same connection immediately after the synchronous write, before another statement can run.
  */
-export function ledgerWriteResults(database: Database): Database {
+export function ledgerWriteResults(database: Database, lockWaitMs = 5000): Database {
+  // Every ledger statement waits for a lock instead of failing at once, including the
+  // first one below: preparing it reads the schema. Without this, a start right after a
+  // crash failed with "database is locked" while the dying owner's helpers still held
+  // the ledger (2026-11-11), because the caller's own wait was configured only afterwards.
+  database.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.trunc(lockWaitMs))}`);
   // A short-lived ledger writer has SQLite's default auto-checkpoint enabled unless it
   // opts out on its own connection. The owner's checkpoint thread is the only checkpointer
   // on Linux: an outside writer otherwise copies and syncs the WAL on its calling thread,

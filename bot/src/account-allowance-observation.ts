@@ -89,13 +89,17 @@ export function accountReadingFresh(provider:AccountIdentityProvider,usage:Provi
 export function chooseAccountObservation(provider:AccountIdentityProvider,localUsage:ProviderUsage,
   local:AccountUsage,peer:AccountUsage,now=Date.now()):AccountUsage {
   if(local.label!==peer.label)throw new Error('Cannot compare different account labels.');
-  if(!local.windows.length)return {...peer,current:local.current};
+  // The peer contributes usage, never this machine's sign-in state. A Mac home can be
+  // signed out while the same account still has a good reading on the server.
+  const borrowed=():AccountUsage=>({...peer,current:local.current,signedOut:local.signedOut,
+    ...(local.signedOut?{problem:local.problem}:{})});
+  if(!local.windows.length)return borrowed();
   if(!peer.windows.length)return local;
   const localFresh=accountReadingFresh(provider,local.viaPeer?{...localUsage,problem:null}:localUsage,local,now);
   const peerFresh=accountReadingFresh(provider,{observedAt:peer.readAt??'',accounts:[peer],problem:null},peer,now);
-  if(localFresh!==peerFresh)return peerFresh?{...peer,current:local.current}:local;
+  if(localFresh!==peerFresh)return peerFresh?borrowed():local;
   return (accountReadingAt(peer)??-Infinity)>(accountReadingAt(local)??-Infinity)
-    ?{...peer,current:local.current}:local;
+    ?borrowed():local;
 }
 
 /** Keep historical bars visible with a source-time status, never a current room claim. */

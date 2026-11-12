@@ -10,7 +10,7 @@ export function humanChoseTopModel(sourceInputId:string|undefined,model:string):
   const human=humanId?getAcceptedSessionInput(humanId):null;
   if(!human||human.origin!=='human')return !!provenance?.originatingHuman&&!!topModel(model)
     &&'humanModelChoices' in provenance&&Array.isArray(provenance.humanModelChoices)
-    &&provenance.humanModelChoices.includes(model);
+    &&provenance.humanModelChoices.some((choice:unknown)=>typeof choice==='string'&&topModel(choice)===topModel(model));
   const words=JSON.parse(human.payload_json).text;
   if(typeof words!=='string')return false;
   const name=topModel(model)==='fable'?'fable':'astra';

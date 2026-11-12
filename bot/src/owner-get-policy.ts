@@ -17,6 +17,7 @@ export const OWNER_GET_EXCEPTIONS:readonly Route[]=[
  {path:'/auth/claude-launch-choice',purpose:'account binding for one new agent-started Claude process',maxResponseBytes:MiB,kind:'control'},
  {path:'/models',purpose:'provider model choices',maxResponseBytes:MiB,kind:'control'},
  {path:'/usage/breakdown',purpose:'two bounded accounting periods',maxResponseBytes:MiB,kind:'control'},
+ {path:'/usage/allowance',purpose:'cached weekly allowance for up to 100 visible session and topic rows',maxResponseBytes:MiB,kind:'control'},
  {path:'/projects',purpose:'registered project choices; finite owner catalogue',maxResponseBytes:2*MiB,kind:'control'},
  {path:'/projects/:id/status',purpose:'one project setup status',maxResponseBytes:MiB,kind:'control'},
  {path:'/canvas-projects/:id',purpose:'one Canvas project provisioning status',maxResponseBytes:MiB,kind:'control'},

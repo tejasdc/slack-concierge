@@ -760,7 +760,10 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
           WHERE json_extract(native_metadata_json,'$.origin')='imported';
         -- Thread refresh lists forwarded replies on every usage reading; it parsed every request's payload.
         CREATE INDEX IF NOT EXISTS session_communication_forwarded ON session_communication_requests(created_at_ms) WHERE json_extract(payload_json,'$.forwardedReply') IS NOT NULL;
-        CREATE INDEX IF NOT EXISTS session_peer_forwarded ON session_peer_requests(created_at_ms) WHERE json_extract(payload_json,'$.forwardedReply') IS NOT NULL;`);
+        CREATE INDEX IF NOT EXISTS session_peer_forwarded ON session_peer_requests(created_at_ms) WHERE json_extract(payload_json,'$.forwardedReply') IS NOT NULL;
+        -- The sign-in renewal hold reads one account's failed renewals by action name on every usage
+        -- check; it scanned every request (835 ms on 2026-11-12) and hid ones older than two days.
+        CREATE INDEX IF NOT EXISTS session_peer_failed_action ON session_peer_requests(action_id) WHERE outcome='failed';`);
       // Inputs agents posted through his intake or sign-in, found by the September 23, 2026 audit
       // (docs/runbooks/THINKERING-CAPTURE.md#nothing-but-him). Applied only where the exact input and
       // author exist, so another instance's ledger is untouched. A correction never re-labels in the

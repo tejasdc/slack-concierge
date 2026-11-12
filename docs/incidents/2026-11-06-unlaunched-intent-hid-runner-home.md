@@ -23,6 +23,12 @@ that the native conversation's home was unknown. The same query shaped handoff w
 Continuation and handoff share a query that selects the most recent launched host. A launched
 runner execution with missing lease still refuses to guess its machine.
 
+Follow-up (2026-11-11): the owner's project-location read (registered-project check, task
+creation, outage rerun) kept its own unfiltered copy of the old query, so the same withdrawn
+intent could still refuse there. It now calls the shared launched-host query too. No
+missing-lease refusal has been logged since the dispatch fix installed; the last was the old
+process at 19:27:39 UTC on 2026-11-06, and session 8945 ran turns again through 2026-11-09.
+
 ## Acceptance scenario
 
 - **Seed:** a Claude conversation ran on `ax41`, followed by an execution intent withdrawn before

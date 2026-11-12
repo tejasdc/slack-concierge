@@ -12,6 +12,7 @@ assert.equal(search.search('AI',20).hits[0]?.sessionId,1);
 assert.equal(search.search('京都',20).hits[0]?.sessionId,1);
 assert.equal(search.search('ïv',20).hits[0]?.sessionId,1);
 assert.equal(search.search('threaded recordings',20).hits[0]?.sessionId,2);
+assert.deepEqual(search.search('ai handles',20).hits.map(hit=>hit.sessionId),[1],'a short term beside a long one is checked by rowid');
 search.upsert(document(2,'Replaced words about bicycles.'));
 assert.equal(search.search('threaded',20).hits.length,0);
 assert.equal(search.search('bicycles',20).hits.length,1);
@@ -26,7 +27,7 @@ assert.ok(large.snippet.includes('late exact match'));
 assert.equal(large.eventId,'id:3');
 search.upsert({...document(4,'Private tool output'),role:'tool'});
 assert.equal(search.search('Private',20).hits.length,0);
-assert.equal(search.search('Private',20,true).hits.length,1);
+assert.equal(search.search('Private',20,true).hits.length,0,'tool evidence is searched in the archive index');
 const fixture=(from:number,to:number)=>{
  for(let start=from;start<to;start+=250){
   db.transaction(()=>{
@@ -41,7 +42,7 @@ fixture(1010,10010);
 const largeCorpus=search.search('naïve',20);
 assert.equal(small.examined,1);assert.equal(largeCorpus.examined,1);
 assert.deepEqual(small.hits,largeCorpus.hits);
-const plan=db.query('EXPLAIN QUERY PLAN SELECT rowid FROM prepared_search_text WHERE prepared_search_text MATCH ? ORDER BY rowid DESC LIMIT ?')
+const plan=db.query('EXPLAIN QUERY PLAN SELECT rowid FROM search_text WHERE search_text MATCH ? ORDER BY rowid DESC LIMIT ?')
  .all('"naïve"',201) as {detail:string}[];
 assert.ok(plan.some(row=>/VIRTUAL TABLE INDEX.*M/.test(row.detail)),JSON.stringify(plan));
 assert.ok(!plan.some(row=>/TEMP B-TREE/.test(row.detail)),JSON.stringify(plan));

@@ -125,4 +125,33 @@ projection.checkpoint(generation,101);
 const changes=readPreparedReceiptChanges(prepared,1,101,window.asOf,40),changed=changes.operations.find(item=>item.operationId==='held-input');
 expect(changed?.attachments[0]?.name==='held-note.txt'&&changed.attachments[0]?.contentType==='text/plain',
   'prepared receipt change page carries the same retained attachment reference');
-console.log('receipt-projection: retry set, restart, clear, hold, readable ChatGPT failure and bounded preview passed');
+// A request the Inbox routed from his own words names him only through routedFrom. On 2026-11-10 the
+// list ran an older copy of the provenance walk and listed no human while the full record named his capture.
+db.exec(`ALTER TABLE session_inputs ADD COLUMN source_run_id TEXT;
+  ALTER TABLE session_communication_requests ADD COLUMN source_session_id INTEGER;
+  ALTER TABLE session_communication_requests ADD COLUMN source_turn_id INTEGER;`);
+db.query(`INSERT INTO turns(id,session_id,status,native_run_id,dispatch_attempt,turn_kind) VALUES(7,1,'completed','run-ring',1,'native'),
+  (8,1,'completed','run-router',1,'native')`).run();
+const addInput=db.query(`INSERT INTO session_inputs(id,session_id,kind,origin,source_input_id,source_run_id,request_id,turn_id,
+  created_at,updated_at,payload_json) VALUES(?,1,?,?,?,?,?,?,'2026-11-10T00:00:00Z','2026-11-10T00:00:00Z',?)`);
+addInput.run('ring-input','input','human',null,null,null,7,JSON.stringify({text:'Ring her',capture:{id:'capture:ring'}}));
+addInput.run('router-input','input','agent',null,null,null,8,JSON.stringify({text:'File it'}));
+addInput.run('routed-request','input','agent','router-input','run-router','routed-rq',null,
+  JSON.stringify({text:'Ring her',routedFrom:{authorKind:'human',messageId:'ring-input'}}));
+db.query(`INSERT INTO session_communication_requests(request_id,target_input_id,target_session_id,source_input_id,source_session_id,
+  source_turn_id,payload_json) VALUES('routed-rq','routed-request',1,'router-input',1,8,?)`).run(JSON.stringify({requestedEffect:'work'}));
+const routed=readCompactReceipt(db,'routed-request')!.provenance as any;
+expect(routed?.originatingHuman?.inputId==='ring-input'&&routed.originatingHuman.captureId==='capture:ring'
+  &&routed.originatingHuman.runId==='run-ring'&&routed.effectScope==='work',
+  'the receipt list names the human a routed request came from, as the full record does');
+// An ask made from a later informational wake names the earlier open work input as its authority.
+db.query(`INSERT INTO turns(id,session_id,status,native_run_id,dispatch_attempt,turn_kind) VALUES(9,1,'completed','run-wake',1,'native')`).run();
+addInput.run('wake-input','input','service',null,null,null,9,JSON.stringify({text:'Answer arrived'}));
+addInput.run('granted-request','input','agent','wake-input','run-wake','granted-rq',null,JSON.stringify({text:'Continue'}));
+db.query(`INSERT INTO session_communication_requests(request_id,target_input_id,target_session_id,source_input_id,source_session_id,
+  source_turn_id,payload_json) VALUES('granted-rq','granted-request',1,'wake-input',1,9,?)`)
+  .run(JSON.stringify({requestedEffect:'work',authorityInputId:'ring-input'}));
+const granted=readCompactReceipt(db,'granted-request')!.provenance as any;
+expect(granted?.source?.inputId==='wake-input'&&granted.originatingHuman?.inputId==='ring-input'&&granted.effectScope==='work',
+  'an ask carrying an earlier work grant lists the human behind that grant');
+console.log('receipt-projection: retry set, restart, clear, hold, readable ChatGPT failure, bounded preview, routed human and granted authority passed');
