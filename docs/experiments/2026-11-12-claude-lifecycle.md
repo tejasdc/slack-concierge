@@ -49,7 +49,7 @@ this report does not convert healthy account availability into that proof.
 | Observation | Result | Evidence boundary |
 | --- | --- | --- |
 | Ordinary native account-route continuation | Observed: session `concierge:9470`, native UUID `71413915-fc5b-4986-8ae4-b724290e5dd6`, reported Chann at 19:34 UTC and Hey at 20:49 UTC | Direct inherited auth checks; ordinary addressed follow-up supplied no account pin; one final receipt per request |
-| Independent memory across that account change | Not proved | Automatic earlier-work context supplied the first account value in the complete follow-up, contaminating the recall check |
+| Original context under the later account | Observed with independent recorded-request reconstruction | Original Chann organization identifier recalled under Hey before tools; first email-recall probe remains contaminated and invalid |
 | Same-account conversation memory comparator | Observed: session `concierge:9503` returned its earlier random fact while still on Chann | The fact was absent from the complete admitted follow-up; this does not prove different-account memory |
 | Pause and isolation | Observed on installed control: target held its exact marked accepted input while comparison 9506 completed | Target-only controls retained agent provenance; no global Pause mutation |
 | Continue of accepted input | Failed on installed 30091dda; original input completed after repair installation on a0cad8cd | Same accepted input, native UUID and earlier fact; one observed native admission and terminal answer, without a resend |
@@ -114,4 +114,55 @@ A bounded account-event read for earlier cold9470 now independently identifies
 its actual Chann-to-Hey selection as `moved-for-room`, with Chann expected. Its
 20:58 synthetic fact seed remained on Hey for warm cache. This strengthens the
 ordinary automatic account-route observation, while independent cross-account
-recall and fresh exhaustion remain unproved.
+recall was still unproved at that checkpoint; the later original-context check
+below supplies its separate evidence. Fresh exhaustion remains unrun.
+
+
+## Original-context check under the later account
+
+The idle follow-up at 22:00 UTC recalled its seeded fact without the value in
+its full 7927-byte newly admitted input. It remained on Hey; this is a clean
+same-account control, not another account move. Its watch recorded a 24-second
+update observation gap; a direct transcript check before admission found the
+last user/assistant activity at 20:58:14.761 UTC, over an hour earlier.
+
+A stronger original-context oracle uses the random organization identifier in
+this conversation’s **first Chann auth result**, native message
+`b9bd509d-8a6d-423a-b50e-236fc31639f1` at 19:34:25.964 UTC. That value was
+absent from all later newly supplied native user text before the check. Request
+`429a4b46-8332-46c3-874e-33dd105aac9b` asked for that original identifier without
+supplying it, before running the current auth check.
+
+In the same native UUID, its complete 7624-byte admitted prompt omitted the
+original identifier. It stated the exact original value at 22:05:35.214 UTC,
+before its first tool call at 22:05:35.222 UTC. The direct current auth result
+at 22:05:35.820 UTC reported Hey and its different organization identifier.
+The comparison is original Chann context under a later verified Hey execution,
+following the already-observed automatic move at 20:49; no new move on the
+22:05 follow-up is claimed. Independent read-only GPT-6 Luna audit supports
+this original-context-under-later-account acceptance.
+
+[Both context checks and source identities](2026-11-12-claude-original-context.json)
+are retained separately. The earlier contaminated email-recall result remains
+invalid; the new observation does not rewrite it. No fresh exhaustion event or
+Mac acceptance is inferred. The preregistered automatic-account cell permits a
+real refusal **or a natural dispatch change**; fresh exhaustion is a separate
+unrun observation, not a required trigger for the natural-change branch.
+
+
+The contamination audit initially flagged local credential-organization and
+session-owner metadata that also carried the original identifier. The CLI’s
+recorded API request before the answer resolves that ambiguity: its 34 message
+references (32 unique) all reconstruct by canonical SHA-256, and its complete
+system/tools shape matches its recorded hash. The original identifier occurs
+only in the retained first auth-result message. It is absent from the newly
+supplied input and selected system/tools material; the local metadata is not
+selected request content. The independent auditor reconstructed this directly
+from the native transcript. This establishes the recorded request construction
+and observed answer, not an independent network capture.
+
+All preregistered **server** native lifecycle/account-continuity cells now have
+bounded acceptance evidence. Fresh exhaustion is separately unrun. Mac lifecycle
+acceptance remains pending with its existing controller; the latest coordination
+question is queued while the peer is unreachable. The overall delegated work
+request remains open for those Mac cells.

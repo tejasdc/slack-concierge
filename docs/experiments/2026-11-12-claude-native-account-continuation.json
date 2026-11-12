@@ -234,5 +234,6 @@
     },
     "boundary": "Random fact recalled from existing native context without being resupplied in the complete admitted followup; account stayed Chann. Not Pause/Continue proof."
   },
-  "audit": "Independent read-only GPT-6 Luna audit completed: narrow same-native-UUID Chann-to-Hey account-route continuity PASS; independent memory across that change NOT PROVEN because the admitted follow-up supplied the first account value. Pause/Continue and exhaustion recovery NOT RUN. No account-mutation command appears in the target transcript; credential bytes and all unrelated processes were not measured."
+  "audit": "Initial GPT-6 Luna audit passed automatic Chann-to-Hey same-native-UUID routing, while original account-name recall was contaminated. Later original-context check independently reconstructs the actual recorded request and supports original Chann dialogue retained under Hey; see claude-original-context.json. Server Pause/Continue was separately installed and checked; fresh exhaustion remains unrun. No universal credential-byte/process-safety claim.",
+  "laterOriginalContextEvidence": "2026-11-12-claude-original-context.json"
 }
