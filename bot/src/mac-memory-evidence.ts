@@ -33,9 +33,9 @@ export function parseSwapUsage(text: string): { usedMb: number; totalMb: number 
   const total = Number(text.match(/total = ([\d.]+)M/)?.[1]), used = Number(text.match(/used = ([\d.]+)M/)?.[1]);
   return Number.isFinite(total) && Number.isFinite(used) ? { usedMb: Math.round(used), totalMb: Math.round(total) } : null;
 }
-/** The last number of `top -stats cmprs` output: "208M", "512K", "1.2G", with a trailing +/- change mark. */
+/** The last line of `top -pid N -stats pid,cmprs`: "32010  736K" (K, M or G, with a trailing +/- change mark). */
 export function parseCompressed(top: string): number | null {
-  const last = top.trim().split("\n").pop()?.trim().match(/^([\d.]+)([KMG])[+-]?$/);
+  const last = top.trim().split("\n").pop()?.trim().match(/^\d+\s+([\d.]+)([KMG])[+-]?$/);
   if (!last) return null;
   const value = Number(last[1]);
   return Math.round(last[2] === "K" ? value / 1024 : last[2] === "G" ? value * 1024 : value);
@@ -48,7 +48,7 @@ async function sample(): Promise<void> {
   const [vm, swap, pressure, top] = await Promise.all([
     run("/usr/bin/vm_stat", []), run("/usr/sbin/sysctl", ["-n", "vm.swapusage"]),
     run("/usr/sbin/sysctl", ["-n", "kern.memorystatus_vm_pressure_level"]),
-    run("/usr/bin/top", ["-l", "1", "-n", "0", "-pid", String(process.pid), "-stats", "cmprs"]),
+    run("/usr/bin/top", ["-l", "1", "-pid", String(process.pid), "-stats", "pid,cmprs"]),
   ]);
   const swapUsage = swap ? parseSwapUsage(swap) : null, level = Number(pressure?.trim());
   latest = { atMs: Date.now(), pressure: Number.isInteger(level) ? level : null, swapUsedMb: swapUsage?.usedMb ?? null,
