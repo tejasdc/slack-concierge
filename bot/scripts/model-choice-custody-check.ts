@@ -19,7 +19,9 @@ for(const [name,chosen] of cases){
   text=`Use ${name}.`;assert.equal(chosen('human'),true,text);
   for(const phrase of [`Should I use ${name}?`,`Use ${name}?`,`Use ${name} if needed.`,
     `If needed, use ${name}.`,`When needed, use ${name}.`,`Provided it is needed, use ${name}.`,
-    `Assuming it is needed, use ${name}.`,`Maybe use ${name}.`,`Could we use ${name}.`]){
+    `Assuming it is needed, use ${name}.`,`Maybe use ${name}.`,`Could we use ${name}.`,
+    `Use ${name} only after three failed fixes and ChatGPT Pro has failed.`,
+    `Once ChatGPT Pro has failed three times, use ${name}.`,`If needed,\nuse ${name}.`]){
     text=phrase;assert.equal(chosen('human'),false,text);
   }
   text=`Can we discuss this? Use ${name}.`;assert.equal(chosen('human'),true,text);
