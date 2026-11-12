@@ -472,7 +472,13 @@ function report(period:'today'|'week',since:number,zone:string){
     FROM edit_events WHERE at_ms>=? ORDER BY path,at_ms,record_id`).all(since) as {
       path:string;record_id:string;provider:string;conversation:string;helper:number;at_ms:number;model:string|null;provider_turn_id:string|null;tool_name:string}[];
   const providerRoots=configuredRoots().map(root=>({...root,prefix:join(root.home,root.provider==='claude-code'?'projects':'sessions')}));
+  // The same provider conversation can be mirrored under several account homes.
+  // A tool-use ID belongs to the conversation, not to a transcript file path.
+  const countedEditIds=new Set<string>();
   for(const edit of editRows){
+    const editId=JSON.stringify([edit.provider,edit.conversation,edit.record_id]);
+    if(countedEditIds.has(editId))continue;
+    countedEditIds.add(editId);
     const owning=edit.provider==='codex'?rootConversation(edit.conversation):edit.conversation;
     const helper=!!edit.helper||owning!==edit.conversation;
     addEdit(overallEditMix,edit.model,helper);

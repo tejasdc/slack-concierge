@@ -1083,7 +1083,8 @@ The read now includes `callMix` for all calls, each account, and each session:
 total calls, helper and main calls, helper share, and each model's call share.
 It also includes `editMix` at those three levels: recognized code-editing tool
 calls split by model and helper versus main conversation. Claude transcript
-tool-use IDs and Codex completed-item IDs deduplicate repeated provider records;
+tool-use IDs and Codex completed-item IDs deduplicate repeated provider records
+across transcript copies in different account homes;
 Codex child conversations follow their root session. The edit count includes
 dedicated edit/write/file-change tools and recognized patch commands. It does
 not infer arbitrary writes from every shell command, so it is a lower bound on
