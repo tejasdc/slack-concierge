@@ -56,6 +56,11 @@ async function child(){
   const standingInput=retainSessionInput({sessionId:standing.id,scope:'quiet-bank-fixture',actionId:'standing',
     kind:'input',origin:'agent',payload:{text:'standing'}}).input;
   const standingTurn=enqueueSessionInput(standingInput.id).turn_id!;
+  // During an update drain it would be paused at once and its continuation claimed again.
+  db.query("INSERT INTO deployment_drain(singleton,token,owner_pid,owner_boot_id,owner_start_ticks) VALUES(1,'fixture',1,'boot','1')").run();
+  assert.notEqual(claimNextQueuedTurn('fixture',night)?.turn_id,phone.turnId,'banked work is not admitted during an update drain');
+  db.query("UPDATE turns SET status='queued',owner_instance_id=NULL WHERE id=? AND status='running'").run(standingTurn);
+  db.query('DELETE FROM deployment_drain').run();
   assert.equal(claimNextQueuedTurn('fixture',night)?.turn_id,phone.turnId,'quiet-only work claims at night while other agent work is queued');
   assert.equal(claimNextQueuedTurn('fixture',night)?.turn_id,standingTurn,'the ordinary standing turn runs too');
   const idleOnly=make('idle-only',false);
@@ -111,7 +116,7 @@ async function child(){
   assert.equal(noticeMissedQuietWindows(expiry+120_000),0,'the expiry notice is sent once');
   const expiredNotice=db.query("SELECT payload_json FROM session_communication_events WHERE request_id='quiet-req' AND event_id LIKE 'quiet-expired:%'").get() as {payload_json:string};
   assert.match(JSON.parse(expiredNotice.payload_json).text,/expired at .* without starting/);
-  console.log(JSON.stringify({fixture:'quiet-only-bank',busyFleetClaimed:true,missedWindowNotice:true,afternoonBlocked:true,morningBlocked:true,genericClaimed:true,continuationPreserved:true,savedCancellation:true}));
+  console.log(JSON.stringify({fixture:'quiet-only-bank',busyFleetClaimed:true,drainRefused:true,missedWindowNotice:true,afternoonBlocked:true,morningBlocked:true,genericClaimed:true,continuationPreserved:true,savedCancellation:true}));
 }
 
 if(import.meta.main){
