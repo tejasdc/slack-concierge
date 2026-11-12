@@ -52,7 +52,14 @@ for(const command of [FOCUS_START_COMMAND,FOCUS_VERIFY_START_COMMAND,FOCUS_END_C
     {...focusNeed,why:focusNeed.why.replace('bounded Focus Start/End acceptance','other task')}])
     assert.ok(macSurfaceRefusal({command,need,platform:'darwin',toolName:'exec_command',toolInput:{cmd:command}}));
   assert.ok(macSurfaceRefusal({command:command+'; /usr/bin/open -a Safari',need:focusNeed,platform:'darwin',toolName:'exec_command',toolInput:{cmd:command+'; /usr/bin/open -a Safari'}}));
+  // The 2026-11-12 Mac session's exact Start form: a stderr merge is not another action.
+  assert.equal(macSurfaceRefusal({command:command+' 2>&1',need:focusNeed,platform:'darwin',toolName:'Bash',toolInput:{command:command+' 2>&1'}}),null);
+  assert.ok(macSurfaceRefusal({command:command+' 2>&1; open -a Safari',need:focusNeed,platform:'darwin',toolName:'Bash',toolInput:{command:command+' 2>&1; open -a Safari'}}));
+  assert.match(macSurfaceRefusal({command,need:{...focusNeed,focusAuthorization:false},platform:'darwin',toolName:'Bash',toolInput:{command}})??'',/holds no Focus grant/);
 }
+// Its compound listing of the helper: refused, and the message says the grant is active.
+const listing='echo "$CONCIERGE_ROUTER_BOT_DIR"; ls "$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-focus-ax.swift" 2>&1';
+assert.match(macSurfaceRefusal({command:listing,need:focusNeed,platform:'darwin',toolName:'Bash',toolInput:{command:listing}})??'',/grant is active/);
 const focusRead='var thnkrFocusInspectionApp = await cua.getApp("com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792"); await thnkrFocusInspectionApp.getAXStateAndScreenshot()';
 assert.equal(macSurfaceRefusal({command:null,need:focusNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:focusRead}}),null);
 assert.ok(macSurfaceRefusal({command:null,need:focusNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Safari")'}}));
