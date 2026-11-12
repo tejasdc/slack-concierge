@@ -2,6 +2,9 @@
 import {parentPort,workerData} from 'node:worker_threads';
 import {readFileSync} from 'node:fs';
 import {log} from './log';
+import {macMemoryEvidence,startMacMemorySampler} from './mac-memory-evidence';
+// Sampled from this thread, which the owner's freezes do not stop.
+startMacMemorySampler(15_000);
 
 // Same layout as owner-task-labels.ts: labels [running, last ended, published block label, block
 // sequence]; times [heartbeat, running set, last ended, published block start, cumulative ledger
@@ -143,13 +146,13 @@ setInterval(()=>{
       block.nextThreadSampleAt=now+500;
     }
     // Logged while still blocked too, in case the process dies before the loop answers again.
-    if(heldMs>=STILL_MS&&!block.stillLogged){block.stillLogged=true;log('warn','owner_task_still_blocked',{...describe(block),blocked_ms:heldMs,rss_start_mb:block.startMb,rss_now_mb:mb,
+    if(heldMs>=STILL_MS&&!block.stillLogged){block.stillLogged=true;log('warn','owner_task_still_blocked',{...describe(block),blocked_ms:heldMs,rss_start_mb:block.startMb,rss_now_mb:mb,...macMemoryEvidence(),
       ...threadEvidence(block.threadSamples),...readEvidence(block.readsAtFirstSample,threadReads(),block.firstSampleAtMs),
       ...statementEvidence(block.statementSamples,block.statementHistoryTruncated)});}
   } else if(block) {
     // Ledger time is added when each statement ends, so after the block it covers the whole block.
     if(block.heldMs>=LOG_MS)log('warn','owner_task_blocked',{...describe(block),blocked_ms:block.heldMs,label_shares_ms:shares(block),
-      ledger_wait_ms:Math.round(times[4]!-block.ledgerAtStart),rss_start_mb:block.startMb,rss_peak_mb:block.peakMb,rss_end_mb:rssMb(),
+      ledger_wait_ms:Math.round(times[4]!-block.ledgerAtStart),rss_start_mb:block.startMb,rss_peak_mb:block.peakMb,rss_end_mb:rssMb(),...macMemoryEvidence(),
       ...threadEvidence([...block.threadSamples,threadSample(now)]),...readEvidence(block.readsAtFirstSample,threadReads(),block.firstSampleAtMs),
       ...statementEvidence(block.statementSamples,block.statementHistoryTruncated)});
     block=null;

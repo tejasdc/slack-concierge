@@ -101,6 +101,7 @@ import {ProviderHistoryPageClient} from './provider-history-page-client';
 import {ATTENTION_INSTRUCTION,releaseFocusForPost,settleExitedProcessReport,topicPromptContext} from './session-topics';
 import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,reservePendingRunnerSignIn,clearPendingSignIn,pendingRunnerSignIn} from './state';
 import {log,errorFields} from './log';
+import {describeWaitingStarts,orderPrompt,parseOrder,setStartPaceOrderer,slotWaitingStarts,startPaceConfig,startsToOrder,storeOrder} from './start-pace';
 import {attachedRecordingWords,transcriptionPrompt} from './transcription';
 import {ProviderLoginManager} from './auth-login';
 import {codexSignInState,codexAccountInUse} from './codex-device-login';
@@ -120,7 +121,7 @@ import {storedUsage,withResetAdvice,accountAvailability} from './provider-usage-
 import {budgetBriefWithProviderRoom} from './provider-start-choice';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 import {MANAGED_CODEX,activateCredentials,claudeAccountWorks,claudeCredentialsAnswer,runningCodexTurns,type ActivationReport} from './provider-activation';
-import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork,observeExecutionChanges} from './state';
+import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork,observeExecutionChanges,executionChanged} from './state';
 import {activateRunnerCodexAccount} from './runner-provider-account-owner';
 import {noticeTime,publishProviderFreeNotice} from './provider-free-notice';
 import {accountHome,setRunnerAccountInUse} from './provider-accounts';
@@ -221,6 +222,7 @@ export class SessionExecutionHost {
   private readonly lastSignIn=new Map<ProviderKey,{ok:boolean;detail:string|null}>();
   private readonly runnerSignIns=new Map<ProviderKey,RunnerSignInState>();
   constructor(readonly options:{instanceId:string;registry:ActiveTurnDispatchRegistry;providers:Partial<Record<ProviderId,AgentProvider>>;defaultCwd:string;wake():void;history?:SessionOwnerRuntime['history'];sources?:SessionOwnerRuntime['sources'];capabilitySocket?:string;capabilityClient?:SessionCapabilityClient;thesaurusContext?:(text:string)=>Promise<string>;findForks?(pin:NativeForkPin):Promise<string[]>;providerSessionBound?(providerThreadUuid:string):Promise<void>;claudeAuthRefreshCommand?:string}) {
+    setStartPaceOrderer(()=>void this.orderPacedStarts());
     for(const provider of ['codex','claude-code'] as const)if(providerRunnerTarget(provider))setRunnerAccountInUse(provider,null);
     for(const provider of ['codex','claude-code'] as const){
       const pending=pendingRunnerSignIn(provider);
@@ -587,6 +589,48 @@ export class SessionExecutionHost {
   }
   /** One deliberate, tool-free admission check. The held work moves only after this succeeds. */
   private usageCheck:Promise<unknown>|null=null;
+  private paceOrdering=false;
+  /**
+   * Ask a small model to order starts the machine is pacing (docs/plans/2026-11-12-mac-held-work-pacing.md).
+   * One-shot, no tools; an answer later than the configured wait, or one that does not name every
+   * waiting turn exactly once, leaves the fallback order (Tejas's own work, then work an Inbox
+   * thread waits on, then the oldest). Asked again only when new starts join the waiting set.
+   */
+  private async orderPacedStarts(){
+    const config=startPaceConfig();
+    if(!config||this.paceOrdering)return;
+    const ids=startsToOrder(db,config);
+    if(!ids.length)return;
+    this.paceOrdering=true;
+    let order:ReturnType<typeof parseOrder>=null,failure:string|null=null;
+    try{
+      const runner=this.options.providers['claude-code'];
+      if(!runner||providerRunnerTarget('claude-code'))failure='no Claude on this machine';
+      else{
+        const home=selectedClaudeHome();
+        const cancellation:{stop:(()=>Promise<void>)|null}={stop:null};
+        let expired=false;
+        const execution=Promise.resolve().then(()=>runner.run({
+          prompt:orderPrompt(describeWaitingStarts(db,ids,Date.now())),cwd:this.options.defaultCwd,additionalDirs:[],sessionUUID:null,
+          model:'claude-haiku-5-5',accountLabel:home?.label,interactionPolicy:'consultation-only',
+          ...(home?{environment:{CLAUDE_CONFIG_DIR:home.home}}:{}),
+          onCancellationReady:stop=>{cancellation.stop=stop;if(expired)void stop().catch(()=>{});},
+        }));
+        let deadline:ReturnType<typeof setTimeout>|null=null;
+        const answer=await Promise.race([execution,new Promise<null>(resolve=>{deadline=setTimeout(()=>resolve(null),config.agentOrderTimeoutMs);deadline.unref?.();})]);
+        if(deadline)clearTimeout(deadline);
+        if(!answer){expired=true;if(cancellation.stop)void cancellation.stop().catch(()=>{});void execution.catch(()=>{});failure='the agent answered too late';}
+        else{order=parseOrder(answer.text,ids);if(!order)failure='the answer did not order every waiting start';}
+      }
+    }catch(error){failure=error instanceof Error?error.message:String(error);}
+    try{
+      db.transaction(()=>{storeOrder(db,ids,order,Date.now());slotWaitingStarts(db,Date.now(),config);})();
+      log(order?'info':'warn','start_pace_ordered',{waiting:ids.length,by:order?'agent':'fallback',...(failure?{reason:failure}:{}),
+        ...(order?{order:order.map(entry=>({turn:entry.turnId,reason:entry.reason}))}:{})});
+      executionChanged();
+    }finally{this.paceOrdering=false;}
+    if(startsToOrder(db,config).length)setTimeout(()=>void this.orderPacedStarts(),0);
+  }
   private usageProbeRunning=false;
   private usageProbeContext:{provider:'claude-code'|'codex';account:string;model:string|null}|null=null;
   private retryHeldUsage(){

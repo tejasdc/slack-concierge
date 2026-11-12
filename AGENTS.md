@@ -118,6 +118,10 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - External Codex resets on a saved account clear that account's older refusal on a fresh direct reading before automatic account switching; see [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md#what-the-allowance-evidence-means).
 - The Mac peer's per-session usage breakdown reads its local transcript history when it has no provider runners; stale results are marked rather than silently presented as current. See [provider usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
 - The prepared word search keeps one copy of dialogue only (tool evidence comes from the archive index) and returns freed pages without VACUUM; its size budget and the paced move from the old layout are in [prepared search](docs/architecture/PREPARED-SEARCH.md).
+- The Mac paces new provider-process starts (3 per 2 minutes, jitter, agent-set order, held under macOS memory
+  pressure), shares one Playwright server across its Claude sessions and records memory evidence on freezes;
+  the server is unpaced. See [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md#paced-starts) and
+  [peer instances](docs/runbooks/PEER-INSTANCES.md#paced-starts-shared-playwright-and-memory-evidence-on-the-mac).
 - Weekly subscription allowance attribution, its coverage, and the compact Threads/Sessions lookup follow [provider usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
 
 ## Session and Inbox obligations

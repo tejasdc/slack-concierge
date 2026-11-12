@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Rendered by scripts/install-mac.sh. One browser-automation server shared by every Claude session
+       Concierge starts on this Mac, instead of a copy per session (docs/plans/2026-11-12-mac-held-work-pacing.md).
+       Each connected session gets its own in-memory browser context (--isolated); the browser itself
+       starts only when a session first uses it and closes after an idle hour. It never touches Tejas's
+       signed-in Chrome profile. Loopback only. -->
+  <key>Label</key><string>com.tejasdc.concierge-playwright</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@NODE@</string>
+    <string>@STATE@/playwright-mcp/node_modules/@playwright/mcp/cli.js</string>
+    <string>--host</string><string>127.0.0.1</string>
+    <string>--port</string><string>@PLAYWRIGHT_PORT@</string>
+    <string>--isolated</string>
+    <string>--headless</string>
+  </array>
+  <key>WorkingDirectory</key><string>@STATE@/playwright-mcp</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>@STATE@/logs/playwright-mcp.log</string>
+  <key>StandardErrorPath</key><string>@STATE@/logs/playwright-mcp.err</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>@HOME@</string>
+    <key>PATH</key><string>@NODE_DIR@:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>
