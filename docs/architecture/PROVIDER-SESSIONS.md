@@ -676,7 +676,9 @@ returns a refusal before the edit.
 A new ask declaring `--purpose research|design-critique|design-review` resolves
 to ChatGPT Pro on the asking machine before peer forwarding. An explicit other
 provider needs `--provider-reason`; the owner validates both fields and retains
-them with the request. Tejas's explicit provider, model or ChatGPT thinking-level
+them with the request. Pro effort applies only to the ChatGPT route; an alternate
+provider uses its own default effort unless a compatible effort was explicitly
+supplied. Tejas's explicit provider, model or ChatGPT thinking-level
 choice is derived from the retained human source and carried over a peer hop.
 Existing addressed requests and implementation handoffs
 retain their own routes. The usage report counts declared routes and reasons,
