@@ -1,0 +1,286 @@
+{
+  "schema": "concierge.account-switching-experiment.v1",
+  "date": "2026-11-12",
+  "machine": "ax41",
+  "controller": {
+    "session": "concierge:9410",
+    "model": "GPT-6.1 Sol",
+    "scope": "read and direct Claude CLI account/history probe; no Concierge agent turn was routed for these probes"
+  },
+  "software": {
+    "claude_cli": "2.1.322",
+    "codex_cli": "0.162.0",
+    "claude_probe_model": "claude-sonnet-5-5"
+  },
+  "evidence_root": "/tmp/account-experiments-server-20261112",
+  "raw_cli_probe": {
+    "result": "pass",
+    "boundary": "installed Claude CLI with two explicitly selected existing account homes and their shared native conversation history",
+    "not_claimed": [
+      "Concierge account selection",
+      "Concierge native pause or account-switch orchestration",
+      "automatic recovery of an interrupted Concierge turn",
+      "visible Thinkering page behavior"
+    ],
+    "accounts": [
+      {
+        "label": "gmail",
+        "email": "tejastej.dc@gmail.com",
+        "cli_auth_status_before_and_after": "logged_in",
+        "credential_file_sha256_unchanged_before_after": true
+      },
+      {
+        "label": "chann",
+        "email": "tejas@chann.app",
+        "cli_auth_status_before_and_after": "logged_in",
+        "credential_file_sha256_unchanged_before_after": true
+      }
+    ],
+    "credential_bytes_unchanged_before_after": true,
+    "credential_hashes_included": false,
+    "credential_copies_or_login_changes": false,
+    "cross_account_credential_files_byte_identical": false,
+    "default_projects_path": {
+      "path": "/root/.claude/projects",
+      "real_directory_not_symlink": true,
+      "both_account_projects_links_resolve_here": true,
+      "existing_history_changed": false,
+      "new_experiment_transcripts_created": true,
+      "new_transcript_directory": "/root/.claude/projects/-tmp-account-experiments-server-20261112"
+    },
+    "concurrent_starts": {
+      "result": "pass",
+      "process_intervals_overlap": true,
+      "overlap_seconds": 6.205018,
+      "runs": [
+        {
+          "account": "gmail",
+          "conversation_uuid": "3ac01438-7b6b-4fb0-a301-7a98219cf2e6",
+          "started_epoch_seconds": 1794511278.403791,
+          "ended_epoch_seconds": 1794511284.6146894,
+          "exit_code": 0,
+          "is_error": false,
+          "result": "OK"
+        },
+        {
+          "account": "chann",
+          "conversation_uuid": "26032314-d2b0-4e38-b837-1570638047db",
+          "started_epoch_seconds": 1794511278.40967,
+          "ended_epoch_seconds": 1794511284.7602956,
+          "exit_code": 0,
+          "is_error": false,
+          "result": "OK"
+        }
+      ]
+    },
+    "cross_home_resume": [
+      {
+        "conversation_uuid": "3ac01438-7b6b-4fb0-a301-7a98219cf2e6",
+        "started_under": "gmail",
+        "resumed_under": "chann",
+        "same_uuid_resumed": true,
+        "prior_random_fact_recalled_exactly": true,
+        "initial_and_resumed_transcript_retained": true,
+        "cli_exit_code": 0,
+        "is_error": false
+      },
+      {
+        "conversation_uuid": "26032314-d2b0-4e38-b837-1570638047db",
+        "started_under": "chann",
+        "resumed_under": "gmail",
+        "same_uuid_resumed": true,
+        "prior_random_fact_recalled_exactly": true,
+        "initial_and_resumed_transcript_retained": true,
+        "cli_exit_code": 0,
+        "is_error": false
+      }
+    ],
+    "primary_evidence": [
+      "plan.json",
+      "before.json",
+      "after.json",
+      "results.jsonl",
+      "start-gmail.stdout.json",
+      "start-chann.stdout.json",
+      "resume-gmail-on-chann.stdout.json",
+      "resume-chann-on-gmail.stdout.json",
+      "/root/.claude/projects/-tmp-account-experiments-server-20261112/3ac01438-7b6b-4fb0-a301-7a98219cf2e6.jsonl",
+      "/root/.claude/projects/-tmp-account-experiments-server-20261112/26032314-d2b0-4e38-b837-1570638047db.jsonl"
+    ],
+    "durable_produced_trace": "2026-11-12-account-switching-server.jsonl"
+  },
+  "historical_request": {
+    "request_id": "c46c3754-9264-4f40-8fcb-be2c93d65a87",
+    "source_input_id": "capture:5cb141601f47030fd47980780e8b7836e5e2de28904a4b889f5d4f7b46fa11fb",
+    "source_run_id": "c679b285-d0c8-4105-84ab-993870f7756e",
+    "source_session": "cloud:3172",
+    "final_event_id": "40dff5f6-2bf8-44d9-b904-5e4b4a25538c",
+    "final_run_id": "6880cc67-5c0b-470b-ab98-334081d22432",
+    "final_responder": "mac:23",
+    "work_disposition": "completed",
+    "completion_turn_id": 227,
+    "receipt_source": "tmp/reviews/retro-2026-09-29/sources/inbox-router-concierge3172-before-0926.txt:64670-64681",
+    "note": "Separate-app infrastructure and speech experiment completed. Later tuning and Gemma work was a separate request; this historical completion is not evidence for current account-switch or recovery behavior.",
+    "return_received_on_run_id": "933fad3d-22c4-438f-827f-19242896a061"
+  },
+  "live_recovery_failure": {
+    "result": "fail",
+    "report": "/tmp/account-experiments-claude-crash-failure-20261112.md",
+    "request_id": "a578143f-fa9c-43f6-902a-6034876db3e0",
+    "session": "concierge:9466",
+    "conversation_uuid": "d35979ce-2f9c-4350-a578-9b9015508486",
+    "run_id": "c4af9105-7e08-4b0d-a7bd-289606ed9a76",
+    "turn_id": 28948,
+    "execution_id": "adb3bbdfa7b1d033",
+    "signal": "SIGKILL",
+    "target": "the exact disposable Claude provider PID only",
+    "observed_return": "Not done: the agent could not finish because its run stopped with an error. Nothing will retry this by itself; ask again or send it to another agent.",
+    "automatic_continuation_observed": false,
+    "repair_request_id": "eaa06fab-8243-4039-a167-2b13cc5bc292",
+    "repair_session": "concierge:9467",
+    "status": "retained failed before-fix counterexample; separate repair installed and independently accepted in a fresh request",
+    "injected_at_epoch_seconds": 1794511588.6508236,
+    "provider_pid": 3326101,
+    "failure_event_id": "8282ba85-1442-4dfd-a722-40bfd50ec070",
+    "provider_error": "Error: Claude Code ended before producing a terminal result.",
+    "retained_request_status": "settled",
+    "retained_request_outcome": "failed"
+  },
+  "blocked_or_pending": [
+    {
+      "case": "Codex on Gmail after current exhaustion",
+      "status": "blocked",
+      "reason": "the relevant Codex account currently has no usable allowance; no success or failure result is claimed"
+    },
+    {
+      "case": "switch account during a real active Concierge turn",
+      "status": "blocked",
+      "reason": "active-turn switch refusal was observed; this is a safety refusal, not a pass for completing a switch or preserving the controller"
+    },
+    {
+      "case": "Mac Concierge automatic crash recovery",
+      "status": "not_checked",
+      "reason": "source shared; installed Mac revision and fresh native kill-and-recover acceptance still require proof"
+    }
+  ],
+  "upstream_references": [
+    "https://code.claude.com/docs/en/cli-reference",
+    "https://learn.chatgpt.com/docs/app-server"
+  ],
+  "remaining_codex_continuation": {
+    "request": "82590c18-741b-4cac-8666-01a4753416ed",
+    "session": "concierge:9468",
+    "saved_turn": 28951,
+    "due": "2026-11-13T16:16:00Z",
+    "repeat": null,
+    "readback_status": "queued",
+    "provider_reported_gmail_reset": "2026-11-13T16:14:44Z"
+  },
+  "mac_request": {
+    "request": "7f50bf52-8bb8-4e8c-869c-91e2b7da64e3",
+    "session": "mac:314",
+    "observed_status": "completed",
+    "evidence_status": "inspected and independently audited",
+    "report": "2026-11-12-mac-account-experiments.md",
+    "receipts": "2026-11-12-mac-account-receipts.json",
+    "independent_audit": "tmp/reviews/account-experiments-mac-independent-verdict-20261112.md",
+    "concurrent_distinct_accounts": "pass",
+    "provider_overlap_ms": 903,
+    "saved_conversation_cross_home": "pass",
+    "manual_partial_response_continuation": "observed; provider cancellation acknowledgement not established",
+    "native_pause_proven": false
+  },
+  "machine_hostname": "cortex-docker-users",
+  "native_unpinned_dispatch": {
+    "request": "a5f2ba86-8a16-4511-8568-def18e77d37e",
+    "session": "concierge:9470",
+    "turn": 28963,
+    "provider": "claude-code",
+    "model": "claude-sonnet-5-5",
+    "status": "done",
+    "effective_account": "tejas@chann.app",
+    "effective_home": "/root/.claude-accounts/tejas-chann-app",
+    "logged_in": true,
+    "cross_account_movement_proven": false,
+    "receipt": "/tmp/account-experiments-native-route.json",
+    "native_conversation": "71413915-fc5b-4986-8ae4-b724290e5dd6",
+    "tool_evidence": "/root/.claude/projects/-root-workspace-slack-concierge/71413915-fc5b-4986-8ae4-b724290e5dd6.jsonl"
+  },
+  "installed_repair": {
+    "source_commit": "ae879cb92ac7715bf367fab74bff33cdb9889a42",
+    "merge_commit": "c6aaaffedebf6ff4747c64eef8266a82a9ba8409",
+    "artifact": "74433e42078f68d770a78b1bc1ebcdaf2ab7abc44fd7e8ce8c1fb30afac25e14",
+    "installed_at": "2026-11-12T19:46:41.462476+00:00",
+    "positive_acceptance": {
+      "verdict": "pass",
+      "source_turn": 28991,
+      "completion_turn": 29005,
+      "native_conversation": "fd3613cb-df78-47c4-9d62-e4ad2cc04bb4",
+      "remembered_fact": "RECOVERY-ORCHID-56291",
+      "barrier_invocations": 1,
+      "final_settlements": 1,
+      "service_continuation": "turn-continuation:28991",
+      "same_conversation": true,
+      "initial_request_resent": false,
+      "native_evidence": "/root/.claude/projects/-root-workspace-slack-concierge/fd3613cb-df78-47c4-9d62-e4ad2cc04bb4.jsonl",
+      "observed_continuation_records": [
+        {
+          "type": "user",
+          "at": "2026-11-12T19:47:16.571Z"
+        }
+      ],
+      "request_headers": 1,
+      "continuation_headers": 1
+    },
+    "cancellation_control": {
+      "verdict": "pass",
+      "request": "a54b5dc9-d658-4127-b778-adb7c95f7e34",
+      "outcome": "canceled",
+      "service_continuations": 0,
+      "pending": 0,
+      "active_run": null,
+      "native_conversation": "daa5eec7-bbea-4f5a-9862-ec7381ae4d4c",
+      "native_evidence": "/root/.claude/projects/-root-workspace-slack-concierge/daa5eec7-bbea-4f5a-9862-ec7381ae4d4c.jsonl",
+      "barrier_invocations": 1
+    },
+    "cancellation_then_crash_control": {
+      "verdict": "pass",
+      "request": "d41fa95e-e0aa-416e-8363-119f4d96ea36",
+      "outcome": "canceled",
+      "provider_execution": "failed after injected crash",
+      "continuations": 0,
+      "pending": 0,
+      "active_run": null,
+      "barrier_invocations": 1,
+      "native_conversation": "351fd29d-13b0-48c4-ab2e-cb9550f8659e",
+      "native_evidence": "/root/.claude/projects/-root-workspace-slack-concierge/351fd29d-13b0-48c4-ab2e-cb9550f8659e.jsonl",
+      "injection": {
+        "case": "canceled-crash",
+        "at": 1794513029.816628,
+        "pid": 3568570,
+        "execution": "e67bce510bd60d07",
+        "request": "d41fa95e-e0aa-416e-8363-119f4d96ea36",
+        "signal": "SIGKILL",
+        "scope": "exact verified disposable Claude process only"
+      }
+    },
+    "independent_live_verdict": "tmp/reviews/account-experiments-independent-live-verdict-20261112.md",
+    "process_absence_audit": "2026-11-12-crash-recovery-process-audit.json"
+  },
+  "mac_native_recovery_request": {
+    "request": "36e3daf6-0b8e-49fb-8485-30af5ebc12ac",
+    "session": "mac:314",
+    "status": "admitted; exact peer request observed running at 2026-11-12T20:00:48.906Z",
+    "scope": "native automatic Claude crash recovery and cancelled-before-crash control"
+  },
+  "native_pause_continuation": {
+    "request": "d6f63731-ef12-4579-a4c8-a46f87ff586e",
+    "session": "concierge:9501",
+    "address": "session:WzIsOTUwMSwxXQ",
+    "model": "gpt-6.1-sol",
+    "project": "/root/workspace/slack-concierge",
+    "machine": "server",
+    "status": "accepted; no test result claimed",
+    "scope": "remaining native Claude Pause/Continue and account movement on server and Mac; coordinates rather than repeats Mac native crash request"
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "installation": {
+    "status": "installed",
+    "observedAt": "2026-11-12T19:46:41.462476+00:00",
+    "gitCommit": "c6aaaffedebf6ff4747c64eef8266a82a9ba8409",
+    "artifactDigest": "74433e42078f68d770a78b1bc1ebcdaf2ab7abc44fd7e8ce8c1fb30afac25e14",
+    "runtimeDigest": "b533562b5f3e778747621b789669c5be004406e554b4092f1c1e6f3a759e8d8c",
+    "servicePid": 3513831,
+    "serviceInvocation": "de5d7cac7e2b4e399d3cfa1b915d93c1",
+    "successfulDeploymentProof": "commit-scoped watch 1c704015c8eb fired",
+    "watchObservationGapSeconds": 21,
+    "entrance": "source-bound sessions context session:WzIsOTQ2NywxXQ returned this exact native session and active run"
+  },
+  "positive": {
+    "verdict": "pass",
+    "source_turn": 28991,
+    "completion_turn": 29005,
+    "native_conversation": "fd3613cb-df78-47c4-9d62-e4ad2cc04bb4",
+    "remembered_fact": "RECOVERY-ORCHID-56291",
+    "barrier_invocations": 1,
+    "final_settlements": 1,
+    "service_continuation": "turn-continuation:28991",
+    "same_conversation": true,
+    "initial_request_resent": false,
+    "native_evidence": "/root/.claude/projects/-root-workspace-slack-concierge/fd3613cb-df78-47c4-9d62-e4ad2cc04bb4.jsonl",
+    "observed_continuation_records": [
+      {
+        "type": "user",
+        "at": "2026-11-12T19:47:16.571Z"
+      }
+    ],
+    "request_headers": 1,
+    "continuation_headers": 1
+  },
+  "cancel": {
+    "verdict": "pass",
+    "request": "a54b5dc9-d658-4127-b778-adb7c95f7e34",
+    "outcome": "canceled",
+    "service_continuations": 0,
+    "pending": 0,
+    "active_run": null,
+    "native_conversation": "daa5eec7-bbea-4f5a-9862-ec7381ae4d4c",
+    "native_evidence": "/root/.claude/projects/-root-workspace-slack-concierge/daa5eec7-bbea-4f5a-9862-ec7381ae4d4c.jsonl",
+    "barrier_invocations": 1
+  },
+  "cancel_then_crash": {
+    "verdict": "pass",
+    "request": "d41fa95e-e0aa-416e-8363-119f4d96ea36",
+    "outcome": "canceled",
+    "provider_execution": "failed after injected crash",
+    "continuations": 0,
+    "pending": 0,
+    "active_run": null,
+    "barrier_invocations": 1,
+    "native_conversation": "351fd29d-13b0-48c4-ab2e-cb9550f8659e",
+    "native_evidence": "/root/.claude/projects/-root-workspace-slack-concierge/351fd29d-13b0-48c4-ab2e-cb9550f8659e.jsonl",
+    "injection": {
+      "case": "canceled-crash",
+      "at": 1794513029.816628,
+      "pid": 3568570,
+      "execution": "e67bce510bd60d07",
+      "request": "d41fa95e-e0aa-416e-8363-119f4d96ea36",
+      "signal": "SIGKILL",
+      "scope": "exact verified disposable Claude process only"
+    }
+  }
+}
