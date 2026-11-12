@@ -138,7 +138,7 @@
     "automatic_continuation_observed": false,
     "repair_request_id": "eaa06fab-8243-4039-a167-2b13cc5bc292",
     "repair_session": "concierge:9467",
-    "status": "outside repair owns the fix; no source or live service state changed by this evidence record",
+    "status": "retained failed before-fix counterexample; separate repair installed and independently accepted in a fresh request",
     "injected_at_epoch_seconds": 1794511588.6508236,
     "provider_pid": 3326101,
     "failure_event_id": "8282ba85-1442-4dfd-a722-40bfd50ec070",
@@ -264,7 +264,8 @@
         "scope": "exact verified disposable Claude process only"
       }
     },
-    "independent_live_verdict": "tmp/reviews/account-experiments-independent-live-verdict-20261112.md"
+    "independent_live_verdict": "tmp/reviews/account-experiments-independent-live-verdict-20261112.md",
+    "process_absence_audit": "2026-11-12-crash-recovery-process-audit.json"
   },
   "mac_native_recovery_request": {
     "request": "36e3daf6-0b8e-49fb-8485-30af5ebc12ac",
