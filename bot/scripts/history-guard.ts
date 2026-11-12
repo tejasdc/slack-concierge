@@ -170,7 +170,10 @@ try {
   }
   if(computerUse&&(!hook.session_id||typeof hook.session_id!=='string'))reason=macSurfaceRefusal({...surface,need:''});
   if(nativeUpdate&&(!hook.session_id||typeof hook.session_id!=='string'))reason=macSurfaceRefusal({...surface,need:''});
-  // Codex names a command's own working directory in its input; Claude's is the hook's cwd.
+  // Claude's command folder is the hook's cwd. Codex puts the command's own folder in the hook's
+  // cwd only from 0.166.0 (openai/codex #57198); 0.162 sent the session's folder and no workdir, so
+  // on 2026-11-12 a local-only amend in a Thinkering task folder was judged by the Concierge
+  // checkout's pushed HEAD and refused. Refusals name the folder they judged.
   const start = [input.workdir, hook.cwd].find(dir => typeof dir === 'string' && dir) ?? process.cwd();
   // The machine wrapper's current-release pass already checked whole-machine crawls.
   if (!reason && process.env.CONCIERGE_CURRENT_LIVE_COPY_CHECKED !== '1') {
