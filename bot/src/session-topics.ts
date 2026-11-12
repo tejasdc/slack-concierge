@@ -24,6 +24,7 @@ import {deviceQuestionNamesPhysicalPrerequisite} from './agent-reachable-app-que
 import {preparedInboxDisplays,preparedTopicEntries} from './presentation-message-reader';
 import {preparedTopicEventDisplays,preparedTopics,unpreparedTopics,preparedTopicOverview,preparedTopicItems,
   preparedTopicResolution,preparedQuestions,preparedTopicDetail,preparedTopicsReady} from './presentation-topic-reader';
+import {movesThreadForHim} from './inbox-thread-time';
 import {areasCommand,checkedAreaIds,applyAreaChange,ensureAgentReportArea,ensureSystemNoticeArea,threadChanges} from './session-areas';
 import {OPEN_QUESTION_STATES,briefMissing,missingFor,questionReadiness,awaitingHim,
   toReadByHim as toReadByHimWithReads,preparingForHim,type QuestionKind,type QuestionOrigin} from './topic-attention-rules';
@@ -313,20 +314,23 @@ type EntryRecord={sequence:number;at:string;sessionId:number};
 /** `final` is a worker's final answer returned into this thread; `post` the router's deliberate reply there. */
 type EntryKind='final'|'post'|'other';
 type EntryIndex={watermark:number;messages:Map<string,EntryRecord&{root:string|null;kind:EntryKind}>;byRoot:Map<string,EntryRecord>;
+  /** Per root, the newest message that changed something for him (inbox-thread-time.ts): the thread's time and unread mark. */
+  forHim:Map<string,EntryRecord>;
   /** Per root, the newest final return and the newest router post, so a result nobody relayed is visible. */
   finals:Map<string,EntryRecord&{inputId:string}>;posts:Map<string,EntryRecord>};
 let entryIndexState:EntryIndex|null=null;
 function newestByRoot(messages:EntryIndex['messages']) {
-  const byRoot=new Map<string,EntryRecord>(),finals=new Map<string,EntryRecord&{inputId:string}>(),posts=new Map<string,EntryRecord>();
+  const byRoot=new Map<string,EntryRecord>(),forHim=new Map<string,EntryRecord>(),finals=new Map<string,EntryRecord&{inputId:string}>(),posts=new Map<string,EntryRecord>();
   for(const [messageId,entry] of messages) {
     if(!entry.root)continue;
     const record={sequence:entry.sequence,at:entry.at,sessionId:entry.sessionId};
     const current=byRoot.get(entry.root);
     if(!current||entry.sequence>current.sequence)byRoot.set(entry.root,record);
+    if(movesThreadForHim(messageId,entry.kind,entry.root)&&(forHim.get(entry.root)?.sequence??-1)<entry.sequence)forHim.set(entry.root,record);
     if(entry.kind==='final'&&(finals.get(entry.root)?.sequence??-1)<entry.sequence)finals.set(entry.root,{...record,inputId:messageId});
     if(entry.kind==='post'&&(posts.get(entry.root)?.sequence??-1)<entry.sequence)posts.set(entry.root,record);
   }
-  return {byRoot,finals,posts};
+  return {byRoot,forHim,finals,posts};
 }
 /** A `return:<eventId>` input is a final answer when the event it carries is the worker's final reply. */
 function entryKind(row:any):EntryKind {
@@ -345,7 +349,7 @@ function entryKind(row:any):EntryKind {
 /** Every Inbox message with its thread root, and every root with its newest entry. Built once, then only over new rows. */
 function entryIndex():EntryIndex {
   refreshRootMemo();
-  const index=entryIndexState??={watermark:0,messages:new Map(),byRoot:new Map(),finals:new Map(),posts:new Map()};
+  const index=entryIndexState??={watermark:0,messages:new Map(),byRoot:new Map(),forHim:new Map(),finals:new Map(),posts:new Map()};
   entryIndexState=index;
   extendEntryIndex(index,-1);
   return index;
@@ -362,7 +366,7 @@ export async function warmEntryIndex(options:{stopped?:()=>boolean;batch?:number
   for(;;) {
     if(options.stopped?.())return {rows,steps,ms:Math.round(performance.now()-started),complete:false};
     refreshRootMemo();
-    const index=entryIndexState??={watermark:0,messages:new Map(),byRoot:new Map(),finals:new Map(),posts:new Map()};
+    const index=entryIndexState??={watermark:0,messages:new Map(),byRoot:new Map(),forHim:new Map(),finals:new Map(),posts:new Map()};
     entryIndexState=index;
     const read=extendEntryIndex(index,batch,performance.now()+ENTRY_INDEX_WARM_STEP_MS);
     rows+=read.rows;steps+=1;
@@ -394,6 +398,7 @@ function indexEntryRow(index:EntryIndex,row:any) {
   if(!root)return;
   const current=index.byRoot.get(root);
   if(!current||row.sequence>current.sequence)index.byRoot.set(root,record);
+  if(movesThreadForHim(messageId,kind,root)&&(index.forHim.get(root)?.sequence??-1)<row.sequence)index.forHim.set(root,record);
   if(kind==='final'&&(index.finals.get(root)?.sequence??-1)<row.sequence)index.finals.set(root,{...record,inputId:messageId});
   if(kind==='post'&&(index.posts.get(root)?.sequence??-1)<row.sequence)index.posts.set(root,record);
 }
@@ -946,8 +951,10 @@ function topicSummary(topic:StoredTopic,session:SessionRow,index:EntryIndex,work
   // Timeline and moves none of them: withdrawing 39 stale questions at 20:17 UTC on 2026-10-07 put
   // "Action Button recording", last spoken in on Sept 22, at the top of Open as 4:17 PM (Tejas:
   // "we need to separate what is happening within the thread and what actions you take on the
-  // thread"). A thread with no conversation yet is dated by its creation.
-  const last=roots.map(root=>index.byRoot.get(root)).filter(Boolean) as {sequence:number;at:string}[];
+  // thread"). Agent upkeep shown in the conversation (handoff cards, re-sends, progress-only
+  // partials) moves none of them either; inbox-thread-time.ts says why. A thread with no
+  // conversation for him yet is dated by its creation.
+  const last=roots.map(root=>index.forHim.get(root)).filter(Boolean) as {sequence:number;at:string}[];
   const lastSequence=Math.max(0,...last.map(entry=>entry.sequence));
   const lastAt=last.map(entry=>entry.at).sort().at(-1)??topic.createdAt;
   return {id:topic.topicId,title:topic.title,aliases:topic.aliases,summary:topic.summary,state:topic.state,setAside:topic.setAside,

@@ -4,6 +4,7 @@ import {topicReplyTargets} from './reply-target-rules';
 import type {Database} from 'bun:sqlite';
 import {INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
 import {inboxRootResolver} from './presentation-message-source';
+import {movesThreadForHimSql} from './inbox-thread-time';
 import {preparedInboxDisplay} from './presentation-inbox-display';
 import {awaitingHim,missingFor,preparingForHim,questionReadiness,toReadByHim,OPEN_QUESTION_STATES} from './topic-attention-rules';
 
@@ -251,7 +252,7 @@ export function preparedTopicValue(context:TopicContext,topicId:string,sink?:Top
  let foundEntry=false;
  for(const root of roots){
   const latest=prepared.query(`SELECT event_sequence AS sequence,created_at AS at FROM presentation_messages
-   WHERE generation=? AND root_input_id=? ORDER BY event_sequence DESC LIMIT 1`).get(generation,root) as {sequence:number;at:string}|null;
+   WHERE generation=? AND root_input_id=? AND ${movesThreadForHimSql} ORDER BY event_sequence DESC LIMIT 1`).get(generation,root) as {sequence:number;at:string}|null;
   if(!latest)continue;
   lastSequence=Math.max(lastSequence,latest.sequence);
   const at=iso(latest.at)!;if(!foundEntry||at>lastAt)lastAt=at;foundEntry=true;
