@@ -295,6 +295,19 @@ files had been mirrored onto the Mac, which made `codex` unrunnable there and th
 believe it was already running. The excludes are in `sync-remote.yaml`; the mirrored
 files were moved to `~/.codex/synced-linux-state.stale-20260918/`.
 
+## Paced starts, shared Playwright and memory evidence on the Mac
+
+`scripts/install-mac.sh` also installs, before restarting Concierge: a pinned `@playwright/mcp` under
+`$STATE/playwright-mcp` run by its own launchd job `com.tejasdc.concierge-playwright` (loopback `:8931`,
+`--isolated --headless`), and sets `CONCIERGE_SHARED_PLAYWRIGHT_URL` for Concierge only once the server answers. Claude
+sessions Concierge launches then add that server with `--mcp-config` and turn the per-session
+`playwright@claude-plugins-official` plugin off in their `--settings` (`claudeAgentSettings` in `bot/src/claude-code.ts`);
+sessions started from elsewhere on the Mac keep the plugin. The same environment sets the start pace (3 per 120 s, jitter
+30 s; see [turn lifecycle](../architecture/TURN-LIFECYCLE.md#paced-starts)). On macOS the freeze records
+(`owner_unresponsive`, `owner_task_blocked`, `owner_task_still_blocked`) carry `mem_pressure_level`, `swap_used_mb`,
+`owner_compressed_mb` and `pageins_since_previous` from a sampler off the blocked path (`bot/src/mac-memory-evidence.ts`).
+Plan: [2026-11-12](../plans/2026-11-12-mac-held-work-pacing.md).
+
 ## Durable project setup
 
 The project lists can differ deliberately. `router-actions.sh projects new` runs on the

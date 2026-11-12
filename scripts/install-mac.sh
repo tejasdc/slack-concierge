@@ -211,9 +211,54 @@ LAUNCHER=$("$REPO/scripts/build-mac-agent-host.sh" "$REPO" "$STATE" | tail -1)
 HELPERS=$(cd "$REPO/bot" && "$BUN" scripts/build-pinned-helpers.ts "$STATE/helpers" | tail -1)
 [ -f "$HELPERS/scripts/router-sessions.js" ] || { echo "The agent helpers did not build; Concierge was left as it was." >&2; exit 2; }
 
+# One Playwright browser-automation server for every Claude session on this Mac, under its own launchd
+# job and a pinned version (never `npx ...@latest` at session start). Installed and running before
+# Concierge restarts, because new sessions connect to it; its own label, so restarting it here never
+# touches the job doing this install. See docs/plans/2026-11-12-mac-held-work-pacing.md.
+PLAYWRIGHT_MCP_VERSION=0.0.85
+PLAYWRIGHT_PORT=${CONCIERGE_PLAYWRIGHT_PORT:-8931}
+PLAYWRIGHT_LABEL=com.tejasdc.concierge-playwright
+PLAYWRIGHT_PLIST="$HOME/Library/LaunchAgents/$PLAYWRIGHT_LABEL.plist"
+PLAYWRIGHT_DIR="$STATE/playwright-mcp"
+NODE_DIR=$(dirname "$NODE")
+mkdir -p "$PLAYWRIGHT_DIR" "$STATE/logs"
+playwright_changed=0
+if [ "$(cat "$PLAYWRIGHT_DIR/.version" 2>/dev/null || true)" != "$PLAYWRIGHT_MCP_VERSION" ] || [ ! -f "$PLAYWRIGHT_DIR/node_modules/@playwright/mcp/cli.js" ]; then
+  (cd "$PLAYWRIGHT_DIR" && PATH="$NODE_DIR:$PATH" "$NODE_DIR/npm" install --no-audit --no-fund --silent "@playwright/mcp@$PLAYWRIGHT_MCP_VERSION") \
+    && echo "$PLAYWRIGHT_MCP_VERSION" > "$PLAYWRIGHT_DIR/.version" && playwright_changed=1 \
+    || echo "Playwright MCP $PLAYWRIGHT_MCP_VERSION did not install; sessions here keep their own copy until it does." >&2
+fi
+sed -e "s|@HOME@|$HOME|g" -e "s|@STATE@|$STATE|g" -e "s|@NODE@|$NODE|g" -e "s|@NODE_DIR@|$NODE_DIR|g" -e "s|@PLAYWRIGHT_PORT@|$PLAYWRIGHT_PORT|g" \
+    "$REPO/launchd/$PLAYWRIGHT_LABEL.plist" > "$PLAYWRIGHT_PLIST.tmp"
+plutil -lint "$PLAYWRIGHT_PLIST.tmp" >/dev/null
+mv "$PLAYWRIGHT_PLIST.tmp" "$PLAYWRIGHT_PLIST"
+SHARED_PLAYWRIGHT_URL=""
+if [ -f "$PLAYWRIGHT_DIR/node_modules/@playwright/mcp/cli.js" ]; then
+  if ! launchctl print "gui/$(id -u)/$PLAYWRIGHT_LABEL" >/dev/null 2>&1; then
+    launchctl bootstrap "gui/$(id -u)" "$PLAYWRIGHT_PLIST"
+  elif [ "$playwright_changed" = 1 ]; then
+    launchctl kickstart -k "gui/$(id -u)/$PLAYWRIGHT_LABEL"
+  fi
+  # Sessions are pointed at the server only once it answers; otherwise they keep today's plugin.
+  for _ in $(seq 1 20); do
+    curl -s -m 2 -o /dev/null -X POST "http://127.0.0.1:$PLAYWRIGHT_PORT/mcp" -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
+      -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"install","version":"1"}}}' \
+      && { SHARED_PLAYWRIGHT_URL="http://127.0.0.1:$PLAYWRIGHT_PORT/mcp"; break; }
+    sleep 1
+  done
+  [ -n "$SHARED_PLAYWRIGHT_URL" ] || echo "The shared Playwright server did not answer; sessions here keep their own copy for now." >&2
+fi
+# Starts of held work are paced on this Mac: a few sessions per window with jitter, and held back
+# while macOS reports memory pressure. Tunable here, never on the server.
+START_PACE_BUDGET=${CONCIERGE_START_PACE_BUDGET:-3}
+START_PACE_WINDOW_MS=${CONCIERGE_START_PACE_WINDOW_MS:-120000}
+START_PACE_JITTER_MS=${CONCIERGE_START_PACE_JITTER_MS:-30000}
+
 sed -e "s|@HOME@|$HOME|g" -e "s|@REPO@|$REPO|g" -e "s|@STATE@|$STATE|g" -e "s|@TAILNET_IP@|$TAILNET_IP|g" -e "s|@LAUNCHER@|$LAUNCHER|g" \
     -e "s|@HELPERS@|$HELPERS|g" -e "s|@HOST_LAUNCHER@|${HOST_LAUNCHER:+$LAUNCHER}|g" \
     -e "s|@PEERS@|$PEERS|g" -e "s|@CLAUDE@|$CLAUDE|g" -e "s|@CODEX@|$CODEX|g" -e "s|@NODE@|$NODE|g" \
+    -e "s|@SHARED_PLAYWRIGHT_URL@|$SHARED_PLAYWRIGHT_URL|g" -e "s|@START_PACE_BUDGET@|$START_PACE_BUDGET|g" \
+    -e "s|@START_PACE_WINDOW_MS@|$START_PACE_WINDOW_MS|g" -e "s|@START_PACE_JITTER_MS@|$START_PACE_JITTER_MS|g" \
     "$REPO/launchd/$LABEL.plist" > "$PLIST.tmp"
 plutil -lint "$PLIST.tmp" >/dev/null
 mv "$PLIST.tmp" "$PLIST"

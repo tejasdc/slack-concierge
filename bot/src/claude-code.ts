@@ -432,7 +432,9 @@ export function claudeCodeArgs(input: {
     ...(input.systemPrompt ? ["--append-system-prompt", input.systemPrompt] : []),
     // The request protocol is enforced when the agent tries to stop, not by repeating it to the
     // agent: a Stop hook sends it back if it still owes a reply (bot/scripts/owed-reply-stop-hook.ts).
-    ...(consultation ? [] : ["--settings", CLAUDE_AGENT_HOOK_SETTINGS]),
+    ...(consultation ? [] : ["--settings", claudeAgentSettings()]),
+    // One browser-automation server for this machine's sessions (see sharedPlaywrightServerUrl).
+    ...(consultation || !sharedPlaywrightServerUrl() ? [] : ["--mcp-config", sharedPlaywrightMcpConfig(sharedPlaywrightServerUrl()!)]),
     // Root cannot skip permissions, so remote-box allows tools in its settings; a peer
     // instance running as its user opts in here to match how Tejas runs claude himself.
     ...(process.env.CONCIERGE_CLAUDE_CODE_SKIP_PERMISSIONS === "1" && !consultation ? ["--dangerously-skip-permissions"] : []),
@@ -441,6 +443,27 @@ export function claudeCodeArgs(input: {
   // Claude variadic flags consume following args, so keep them at the end.
   if (!consultation) for (const dir of input.additionalDirs) args.push("--add-dir", dir);
   return args;
+}
+
+/**
+ * The Mac runs one long-lived Playwright browser-automation server under its own launchd job
+ * (launchd/com.tejasdc.concierge-playwright.plist) and names its address here. Each session it launches
+ * connects to that server, and the per-session copy of the plugin (an npm wrapper plus a node
+ * server, 90-130 MB each) is switched off. A machine without the setting launches exactly as before.
+ * The server keeps every connected session's pages in its own isolated in-memory context.
+ */
+export function sharedPlaywrightServerUrl(env: Record<string, string | undefined> = process.env): string | null {
+  const url = env.CONCIERGE_SHARED_PLAYWRIGHT_URL?.trim();
+  return url ? url : null;
+}
+export function sharedPlaywrightMcpConfig(url: string): string {
+  return JSON.stringify({ mcpServers: { playwright: { type: "http", url } } });
+}
+export const PLAYWRIGHT_PLUGIN = "playwright@claude-plugins-official";
+/** The hook settings, plus the plugin switched off when the shared server stands in for it. */
+export function claudeAgentSettings(env: Record<string, string | undefined> = process.env): string {
+  if (!sharedPlaywrightServerUrl(env)) return CLAUDE_AGENT_HOOK_SETTINGS;
+  return JSON.stringify({ ...JSON.parse(CLAUDE_AGENT_HOOK_SETTINGS), enabledPlugins: { [PLAYWRIGHT_PLUGIN]: false } });
 }
 
 /**
