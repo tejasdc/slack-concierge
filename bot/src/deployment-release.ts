@@ -446,8 +446,14 @@ export class TrustedRootReleaseManager {
         const now = new Date();
         utimesSync(artifactPath, now, now);
       } else {
-        makeReadOnly(outputRoot);
-        renameSync(outputRoot, artifactPath);
+        // Linux needs directory write permission to change its parent. Move the
+        // writable candidate beside its final name first; seal before the
+        // same-parent atomic publication. A failed unpublished candidate stays
+        // retained, never made writable at a published artifact's path.
+        const unpublishedPath=join(dirname(artifactPath),`.preparing-${randomUUID()}`);
+        renameSync(outputRoot,unpublishedPath);
+        makeReadOnly(unpublishedPath);
+        renameSync(unpublishedPath, artifactPath);
       }
       return { artifactPath, manifest: this.verify(artifactPath) };
     } finally {

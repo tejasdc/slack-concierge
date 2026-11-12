@@ -59,3 +59,11 @@ masked cleanup failure. Fixture cleanup now restores write permission only withi
 its own disposable tree and never follows symlinks. A separate probe run as UID
 65534 verifies sealed-tree removal and unchanged external target permissions.
 Production sealing is unchanged.
+The complete non-root replay then exposed a distinct earlier failure: release
+preparation sealed a directory before moving it between parents. Linux refuses
+that move without write permission on the directory, and finally cleanup masked
+the original error. A read-only independent Sol diagnosis and UID65534 syscall
+probe confirmed it. Preparation now moves the writable candidate to an unpublished
+sibling, seals it and publishes by a same-parent atomic rename. The full non-root
+hybrid fixture verifies 0555 publication and absence of leftover successful staging;
+failed unpublished candidates remain retained rather than weakening a published seal.

@@ -18,7 +18,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   The [capture](docs/runbooks/THINKERING-CAPTURE.md) and
   [native Inbox](docs/contracts/native-inbox.md) contracts own Thinkering delivery.
 - Implement a requested change as one whole through the normal Git and
-  [deployment path](docs/runbooks/DEPLOYMENT.md). Use an isolated task worktree
+  [sealed deployment path](docs/runbooks/DEPLOYMENT.md). Use an isolated task worktree
   when writers may overlap. Never hand-edit an installed release or host-owned
   service configuration in this repository. Check the installed behavior through
   the agent's own marked entrance before calling it done

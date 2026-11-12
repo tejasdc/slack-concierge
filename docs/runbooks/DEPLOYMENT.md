@@ -66,6 +66,14 @@ peer read deadline. The foreground request gateway still becomes unavailable at 
 so compare that timestamp with the final request-surface stop marker to measure the actual gap.
 
 The stable controller launcher resolves its control artifact once for each invocation.
+Prepared candidates move into an unpublished `.preparing-<uuid>` sibling beneath
+the releases directory while writable, are sealed there, then become their digest
+name through a same-parent atomic rename. Linux requires directory write permission
+for a cross-parent move; sealing first made an ordinary-owner preparation fail and
+its staging cleanup mask that failure. Publication still exposes only sealed
+digest-named artifacts. A failure after the sibling move retains that unpublished
+candidate for inspection; it cannot pass digest-path verification or activation and
+is not automatically pruned as a published release.
 Restoring or promoting the control pointer cannot switch a running deployment's helper
 programs midway through the run; the following invocation takes the new artifact.
 Normal rollout restores use `restore-lkg --keep-control`: they restore the application while

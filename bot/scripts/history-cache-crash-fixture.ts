@@ -237,6 +237,8 @@ await regression("real hybrid preparation binds reader capability to the applica
   const oldControl=await manager.prepare("hybrid-old-control",modern,old);
   assert.equal(existsSync(join(oldControl.artifactPath,"control/history-cache-format.json")),true);
   assert.equal(existsSync(join(oldControl.artifactPath,"control/history-cache-control-format.json")),false);
+  assert.equal((await import("node:fs")).lstatSync(oldControl.artifactPath).mode&0o777,0o555,"publication must remain sealed");
+  assert.equal((await import("node:fs")).readdirSync(join(f.state,"hybrid-releases/releases")).some(name=>name.startsWith(".preparing-")),false);
 });
 if(failures.length)throw new Error(`history cache crash regressions: ${failures.join(", ")}`);
 console.log("history cache crash fixture passed");
