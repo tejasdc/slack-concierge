@@ -573,7 +573,17 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   prepared (`agent_checking` or missing fields) is not shown to him, so it does not quiet the
   request; its recovery input names the question and its missing fields so the router finishes
   it. A declaration carrying `onlyHeCan` with missing fields and no explicit `context` is
-  refused (`QUESTION_NOT_ANSWERABLE`) instead of being parked out of his sight. If the router's input ends without a replacement dispatch or checked completion, upkeep
+  refused (`QUESTION_NOT_ANSWERABLE`) instead of being parked out of his sight.
+  An unanswered attempt whose agent can do nothing until a provider hold lifts (nothing of its own
+  running, its earliest queued turn held for allowance or sign-in, not a saved wait he chose) counts
+  as live work for one hour (`HELD_ATTEMPT_RECOVERY_MS`); after that it comes back to the router
+  like a stall, saying which agent is held and since when, so the router can wait for a near reset
+  or send the work to an agent that can run now. On 2026-11-12 a Codex account switch released 37
+  turns held since Nov 5-7; their requests had counted as live the whole week and reached the router
+  together. When a newer linked attempt replaces one that is still held, upkeep withdraws the held
+  one (`withdrawSupersededAttempt`): a never-started queued turn is revoked, otherwise its agent is
+  told the request was cancelled, so the work is not done twice when the hold lifts. An attempt that
+  is still the newest work of another open request stays. If the router's input ends without a replacement dispatch or checked completion, upkeep
   sends another attempt after a bounded delay, starting at fifteen minutes and capped at one
   day. Upkeep admits at most five recovery inputs on one reading pass, leaving the rest
   eligible on the next pass. Stuck requests whose latest attempt is the same dispatch share one
@@ -592,7 +602,17 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   routed copy or original ID. The quote is retained with the closure.
   His Close control withdraws the requests it names; Stop ends the current attempt
   and leaves the human request open for reconciliation. An agent issue report may be
-  declined with its reason when it needs no work. An agent cannot supersede a human
+  declined with its reason when it needs no work. Concierge never makes a second open copy of one
+  of his messages: when his forwarded reply is already an open request in another thread, the
+  forward joins that request instead of opening a "Follow-up in …" copy, and when the router files
+  a message whose automatic "Follow-up in …" copy is open elsewhere (`request add`, or routed work
+  for that exact message), the new request takes the copy's attempts and the copy closes
+  `superseded` with `mergedInto`. On 2026-11-12 his Kindle replies existed both ways and each copy
+  was recovered separately. The router may still file one message with two different asks in two
+  threads (three such deliberate splits were open that day). Copies already made are joined with
+  `topics request merge <duplicate> --into <keeper>`, which needs a shared source, different threads
+  and no open question on the duplicate; the keeper takes every source, attempt and the duplicate's
+  brief. An agent cannot supersede a human
   request because another request shares its source message: both stay open until
   their work is individually checked. When one agent answer is linked to several
   requests, none closes automatically: the recovery input names the shared answer,

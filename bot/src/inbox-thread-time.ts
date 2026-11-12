@@ -10,12 +10,19 @@
  * top of Threads, so he "couldn't find anything" (bug report topic:7375afd2). Housekeeping on the
  * thread record (renames, links, flags, settling) already moved nothing; this closes the same gap
  * for the agent-to-agent messages that are shown in the conversation. They stay visible there.
- * A thread's opening message always counts: an agent's report to him opens its thread with the
- * handoff itself, and that thread is new to him.
+ * A thread's opening message counts: an agent's report to him opens its thread with the
+ * handoff itself, and that thread is new to him. Concierge's own upkeep notices never count,
+ * even as an opening message: the Inbox router files each recovery notice into the thread whose
+ * request it concerns, which makes it a root there. On 2026-11-12 about thirty recovery notices
+ * filed that way lifted a week of old threads to the top together (topic:ea98c6e2).
  */
 export type ThreadEntryKind='final'|'post'|'other';
 
+/** Inputs the owner itself sends the Inbox router about existing work: never news for him. */
+export const OWNER_UPKEEP_INPUT_PREFIXES=['thread-upkeep:','unfiled-wake:'] as const;
+
 export function movesThreadForHim(messageId:string,entryKind:ThreadEntryKind,root:string):boolean {
+  if(OWNER_UPKEEP_INPUT_PREFIXES.some(prefix=>messageId.startsWith(prefix)))return false;
   if(messageId===root)return true;
   if(messageId.startsWith('request:'))return false;
   if(messageId.startsWith('return:')&&entryKind!=='final')return false;
@@ -23,4 +30,5 @@ export function movesThreadForHim(messageId:string,entryKind:ThreadEntryKind,roo
 }
 
 /** The same rule over the prepared message table's columns. */
-export const movesThreadForHimSql=`(message_id=root_input_id OR NOT (message_id LIKE 'request:%' OR (message_id LIKE 'return:%' AND entry_kind<>'final')))`;
+export const movesThreadForHimSql=`(NOT (${OWNER_UPKEEP_INPUT_PREFIXES.map(prefix=>`message_id LIKE '${prefix}%'`).join(' OR ')})
+  AND (message_id=root_input_id OR NOT (message_id LIKE 'request:%' OR (message_id LIKE 'return:%' AND entry_kind<>'final'))))`;
