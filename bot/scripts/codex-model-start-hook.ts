@@ -6,19 +6,29 @@ import { escalationReason } from '../src/model-escalation';
 import {requestApiResponse} from './router-request-client';
 import {RETRY_POLICIES} from '../src/retry-policies';
 
-type Start = {model?: unknown;session_id?: unknown};
+type Start = {model?: unknown;session_id?: unknown;turn_id?:unknown;agent_id?:unknown};
 let start: Start = {};
 try { start = JSON.parse((await Bun.stdin.text()) || '{}'); } catch { /* A malformed hook input cannot prove an Astra start. */ }
-if (start.model !== 'gpt-6-astra') process.exit(0);
 
 const state = process.env.CONCIERGE_STATE_DIR || join(homedir(), '.local/state/concierge');
+const model=typeof start.model==='string'?start.model:'';
+const outside=process.env.CONCIERGE_OUTSIDE_RUN==='1';
+if(model!=='gpt-6-astra'&&!outside)process.exit(0);
 const providerSession = typeof start.session_id === 'string' ? start.session_id : '';
+const ownerTurnId=Number(process.env.CONCIERGE_TURN_ID??'');
 const owner=providerSession?await requestApiResponse('/session-communication/model-start-gate',
-  {providerSessionId:providerSession,model:'gpt-6-astra'},RETRY_POLICIES.ownerRestartInHook):null;
+  {providerSessionId:providerSession,model,
+    ...(typeof start.turn_id==='string'?{providerTurnId:start.turn_id}:{}),
+    ...(typeof start.agent_id==='string'?{providerAgentId:start.agent_id}:{}),
+    ...(Number.isSafeInteger(ownerTurnId)&&ownerTurnId>0?{ownerTurnId}:{}),
+    ...(process.env.CONCIERGE_SOURCE_RUN_ID?{sourceRunId:process.env.CONCIERGE_SOURCE_RUN_ID}:{})},
+  RETRY_POLICIES.ownerRestartInHook):null;
 if(owner?.ok&&owner.result?.known){
-  if(!owner.result.allowed)deny(String(owner.result.message??'GPT-6 Astra needs an owner-recorded escalation reason. Choose gpt-6.1-sol.'));
+  if(!owner.result.allowed)deny(String(owner.result.message??'This Codex prompt needs its bound execution and model. Choose gpt-6.1-sol.'));
   process.exit(0);
 }
+if(outside&&model==='gpt-6-astra')deny('Concierge cannot confirm this outside Astra prompt. Choose gpt-6.1-sol or retry when its owner answers.');
+if (start.model !== 'gpt-6-astra') process.exit(0);
 const reason = process.env.CODEX_ESCALATION_REASON?.trim() || '';
 // A direct process can set its own environment; only the owner can attest a human choice.
 const refusal = escalationReason('gpt-6-astra', reason, false);

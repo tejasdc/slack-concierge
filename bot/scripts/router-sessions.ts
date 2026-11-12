@@ -24,7 +24,7 @@ router-actions.sh sessions history-storage claude|codex <source-flags> [--after 
 router-actions.sh sessions auth switch codex <saved-profile-id> [--machine mac] <source-flags> --action-id A
 router-actions.sh sessions search <source-flags> [--limit N] [--peer <instance>] [--thread <message-id>] -- <concept...>
 router-actions.sh sessions context <address> <source-flags> [--thread <message-id>]
-router-actions.sh sessions ask <address> <source-flags> --action-id A [--thread <message-id> | --route-message <human-input-id>] [--return-to-requester] --summary "<one line>" [--answer-view summary|full] [--after-request <request-id> ...] [--after-settled <request-id> ...] -- <text>
+router-actions.sh sessions ask <address> <source-flags> --action-id A [--escalation-reason "<model-selection trigger>" for an existing Astra session] [--thread <message-id> | --route-message <human-input-id>] [--return-to-requester] --summary "<one line>" [--answer-view summary|full] [--after-request <request-id> ...] [--after-settled <request-id> ...] -- <text>
 router-actions.sh sessions ask --role <standing-agent-role> <source-flags> --action-id A --summary "<one line>" [--session-name <title>] -- <text>
 router-actions.sh sessions ask --project <registered-project> [--provider auto|<alias>] [--small-task] [--effort <level>] --session-name <title> --summary "<one line>" [--consult <address>] <source-flags> --action-id A [--file <path> ...] [--capture-id <id>] -- <text>
 router-actions.sh sessions ask --purpose research|design-critique|design-review [--provider <alias> --provider-reason "<why ChatGPT Pro is not used>"] [--project <registered-project> (alternate coding provider only)] --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
@@ -1064,7 +1064,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(smallTask&&(provider!=='auto'||peer||identity))invalid('--small-task requires a new local Automatic session.');
   if(outside&&(identity||peer||savedKind||provider==='chatgpt'||provider==='auto'||!project))
     invalid('--outside starts a new Codex session on this machine: give --project (and optionally a Codex --provider alias), not an address, --peer, ChatGPT, Automatic or saved work.');
-  if(!provider&&!role&&(project||effort||flags.has('--escalation-reason')))invalid('--project, --effort and --escalation-reason require new session creation.');
+  if(!provider&&!role&&(project||effort))invalid('--project and --effort require new session creation.');
   if(provider&&provider!=='chatgpt'&&!project)invalid(peer?'New coding sessions on a peer require --project from sessions projects --peer <instance>.':'New coding sessions require --project from sessions projects.');
   if(peer&&(after.length||pace.length))invalid('A peer request cannot wait on --after-request or --after-settled.');
   if(provider==='chatgpt'&&project)invalid('ChatGPT accepts no project.');
