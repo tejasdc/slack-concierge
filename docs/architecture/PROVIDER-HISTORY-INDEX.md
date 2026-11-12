@@ -23,6 +23,9 @@ backing up the precise closed cache inode and its generation-keyed verifier
 sidecar to Restic and streaming back every byte. The sidecar is recorded inside
 the private backup manifest; the backup certificate never uses the live
 `.verified.json` filename. Old, synthetic, unmatched and ambiguous rows stay full.
+Concierge owns its small-cache admission and Restic transfer controls; the host's
+generic credential wrapper provides neither pacing nor an exclusion lease. The
+maintenance runbook owns limits, observation, collision refusal and proof resumption.
 
 Conversion preserves source path, cwd, ordinals, message identities, tool names,
 and all SDK metadata. A fresh generation invalidates baseline cursors and detail

@@ -30,6 +30,11 @@ generation without rebuilding. Pin rollback targets and verifier state in a
 durable restore intent; finish the sidecar when original bytes are already back.
 Rollback takes precedence over conversion, and a completed rollback cannot replay
 conversion. Unknown/newer bytes and changed verifier checkpoints stay protected.
+The subsequent source review also identified an exit during staging, before
+intent exists: the fixed staging filename made that same batch fail every retry.
+Each unaccepted copy now has a fresh exclusive name. A real exit after copy
+preserves the original and leaves the unaccepted file unused; retry completes
+the same proven batch and subtracts retained staging blocks from net savings.
 
 ## Acceptance scenario
 
@@ -38,6 +43,8 @@ conversion. Unknown/newer bytes and changed verifier checkpoints stay protected.
 - **Action:** Exit the child process after conversion intent, cache publication,
   verifier publication or result publication; separately exit after either
   rollback publication step, then resume from another process.
+  Also exit after the staged copy and before intent; seed a partial old staging
+  file and verify retry neither adopts nor overwrites it.
 - **Expected:** The exact intended generation and complete SDK values survive;
   the matching sidecar and receipt finish once. Rollback finishes with the exact
   original bytes/checkpoint and does not rename again. Published conversion is

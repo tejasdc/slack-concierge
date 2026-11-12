@@ -48,7 +48,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   proves production custody, recovery, and page/detail behavior. The
   [object-backed history plan](docs/plans/2026-11-12-concierge-history-object-retirement.md)
   owns the cutover invariants. Optional attempt recovery and the independent
-  release-reader compatibility fence are documented at that maintenance gate. Read cache
+  release-reader compatibility fence and product-owned small-cache backup admission
+  are documented at that maintenance gate. Read cache
   allocation through [router actions](docs/runbooks/ROUTER-ACTIONS.md#agent-session-communication).
 - Marked messages held by per-session Pause retain their original admission identity;
   see [session recovery](docs/architecture/SESSION-OWNER.md#identity-and-admission).

@@ -33,3 +33,10 @@ jobs:
         env:
           CONCIERGE_STATE_DIR: ${{ runner.temp }}/concierge-release-check
         run: bun run build
+      - name: Native history cache backup and crash acceptance
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y restic
+          bun bot/scripts/history-cache-maintenance-fixture.ts
+          bun bot/scripts/history-cache-crash-fixture.ts
+          bun bot/scripts/history-cache-admission-fixture.ts

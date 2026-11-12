@@ -222,6 +222,9 @@ await check("native Restic backup, full stream readback and exact restore", asyn
   const native = new HistoryCacheMaintenance(f.state, new HostCacheRestic(command), () => {}, f.objects);
   const original = readFileSync(f.path), prepared = await native.prepare(f.session);
   assert.match(prepared.snapshot, /^[a-f0-9]{64}$/);
+  const folder=native.batch(prepared.id);
+  assert.equal(await new HostCacheRestic(command).backup([join(folder,"cache.sqlite"),join(folder,"manifest.json"),f.object],
+    `concierge-history-cache:${prepared.id}`),prepared.snapshot,"unique native tag must recover the accepted snapshot without another backup");
   await native.migrate(prepared.id);
   await native.release(prepared.id);
   await native.restore(prepared.id);

@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync, openSync, renameSync, statfsSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import {ledgerRows} from "./ledger-rows";
 import {
   decodeStoredSdkRow, provenHostTranscriptObject, scanRawMessageLines,
   type RawMessageSpan, type StoredSdkRowReference,
@@ -54,6 +55,7 @@ export type ConversionGate = {
   decode: typeof decodeStoredSdkRow;
   stagingPath?: string;
   keepPrepared?: () => boolean;
+  afterCopy?: () => void;
   beforePublish?: (path: string, result: {changed: boolean}) => Promise<void>;
 };
 
@@ -66,24 +68,17 @@ async function compareSnapshots(path: string, next: string, decode: typeof decod
     if (!left || !right || left.generation === right.generation) throw new Error("HISTORY_GENERATION_NOT_REPLACED");
     delete left.generation; delete right.generation;
     if (!isDeepStrictEqual(left, right)) throw new Error("HISTORY_METADATA_CHANGED");
-    for (const table of ["message_ids", "tool_names"]) {
-      const a = before.query(`SELECT * FROM ${table} ORDER BY 1`).iterate();
-      const b = after.query(`SELECT * FROM ${table} ORDER BY 1`).iterate();
-      for (;;) {
-        const x = a.next(), y = b.next();
-        if (!isDeepStrictEqual(x, y)) throw new Error("HISTORY_INDEX_CHANGED");
-        if (x.done) break;
-      }
-    }
-    const a = before.query("SELECT * FROM rows ORDER BY ordinal").iterate() as IterableIterator<any>;
-    const b = after.query("SELECT * FROM rows ORDER BY ordinal").iterate() as IterableIterator<any>;
-    for (;;) {
-      const x = a.next(), y = b.next();
-      if (x.done !== y.done) throw new Error("HISTORY_ROW_COUNT_CHANGED");
-      if (x.done) break;
-      if (x.value.ordinal !== y.value.ordinal || x.value.uuid !== y.value.uuid
-        || !isDeepStrictEqual(decode(x.value.json), decode(y.value.json))) throw new Error("HISTORY_ROW_CHANGED");
-    }
+    const compare=(sql:string,project=(row:any)=>row,error="HISTORY_INDEX_CHANGED")=>{
+      const a=ledgerRows<any>(before,sql),b=ledgerRows<any>(after,sql);
+      try {for(;;) {
+        const x=a.next(),y=b.next();
+        if(x.done!==y.done)throw new Error("HISTORY_ROW_COUNT_CHANGED");
+        if(x.done)break;
+        if(!isDeepStrictEqual(project(x.value),project(y.value)))throw new Error(error);
+      }} finally {a.return(undefined);b.return(undefined);}
+    };
+    for (const table of ["message_ids", "tool_names"]) compare(`SELECT * FROM ${table} ORDER BY 1`);
+    compare("SELECT * FROM rows ORDER BY ordinal",row=>({ordinal:row.ordinal,uuid:row.uuid,value:decode(row.json)}),"HISTORY_ROW_CHANGED");
   } finally { before.close(); after.close(); }
 }
 
@@ -119,6 +114,7 @@ function withSnapshotCopy<T extends {changed: boolean}>(
   try {
     copyFileSync(path, temporary, constants.COPYFILE_EXCL);
     copied=true;
+    gate.afterCopy?.();
     db = new Database(temporary, { strict: true });
   } catch (error) {
     if(copied && existsSync(temporary))unlinkSync(temporary);

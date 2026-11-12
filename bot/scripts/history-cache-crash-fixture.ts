@@ -27,12 +27,29 @@ await regression("pre-rename intent resumes the exact prepared generation", asyn
   const folder = f.maintenance.batch(prepared.id), intended = readFileSync(f.path);
   // Construct the exact durable crash image: intent plus staged generation,
   // original published inode, original checkpoint, no completion receipt.
-  copyFileSync(f.path, join(folder,"converted.sqlite"));
+  const intent=JSON.parse(readFileSync(join(folder,"conversion.json"),"utf8"));
+  copyFileSync(f.path, join(folder,intent.prepared));
   unlinkSync(f.path); linkSync(join(folder,"cache.sqlite"),f.path);
   writeFileSync(f.path+".verified.json",f.status); unlinkSync(join(folder,"result.json"));
   const result = await f.maintenance.applyPending() as any;
   assert.notEqual(result.status,"skipped_changed_generation");
   assert.deepEqual(readFileSync(f.path),intended);
+});
+await regression("an interrupted pre-intent staged copy cannot strand or authorize its batch",async f=>{
+  const original=readFileSync(f.path),prepared=await f.maintenance.prepare(f.session);
+  const folder=f.maintenance.batch(prepared.id);
+  // This fixed filename stranded the prior implementation before intent existed.
+  writeFileSync(join(folder,"converted.sqlite"),"partial, unaccepted bytes");
+  const child=Bun.spawn([process.execPath,import.meta.path,"--crash",f.state,prepared.id,f.objects,"conversion_staged","migrate"],
+    {stdout:"ignore",stderr:"inherit"});
+  assert.equal(await child.exited,73);
+  assert.deepEqual(readFileSync(f.path),original);
+  assert.equal(existsSync(join(folder,"conversion.json")),false);
+  const result=await f.maintenance.migrate(prepared.id);
+  assert.equal(result.changed,true);assert.deepEqual(rowsAt(f),f.rows);
+  assert.ok(result.retainedStagingAllocatedBytes>0);
+  assert.equal(result.netAllocatedSavedBytes,result.allocatedSavedBytes-result.retainedPinAllocatedBytes-result.retainedStagingAllocatedBytes);
+  assert.equal(readFileSync(join(folder,"converted.sqlite"),"utf8"),"partial, unaccepted bytes");
 });
 await regression("post-rename interruption is completed rather than reported skipped", async f => {
   const prepared = await f.maintenance.prepare(f.session); await f.maintenance.queue(prepared.id);
