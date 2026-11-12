@@ -216,7 +216,10 @@ handoff state. A Mac-app request must have a live work-effect peer delivery
 carrying that attestation (or the original source input/run
 `request:775cda97-…` / `e41da8b5-…`) and name the exact bundle plus the
 phrase. Only then does the Mac guard admit same-program passive reads
-and fixed native Start, verify-start and End commands. This is a single test route, not a
+and fixed native Start, verify-start and End commands. Each runs as the whole command;
+only a trailing `2>&1` may follow it. Any other command naming the helper file is refused,
+and the refusal says whether the run holds the grant or only used an inexact command.
+This is a single test route, not a
 general app or page control grant.
 
 The native action finds the one installed WebApp process, one window, one
