@@ -601,27 +601,74 @@ export function readPreparedIncoming(db:Database,options:{cursor?:string|null;li
  return {items,nextCursor:rows.length>limit&&last?cursor({g:current.generation,inbox:current.inbox_session,sequence:last.first_sequence,root:last.root_id}):null,
   coverage:coverage(current,options.canonicalHead)};
 }
+/**
+ * Threads search: every thread, open and closed, by any word in its title, his messages or the
+ * agents' answers, read from indexes written as each thread changes (thnkr.ing docs/architecture/threads-search.md).
+ *
+ * A thread matches when each word he typed appears somewhere in it; only when no thread holds every
+ * word are threads with some of them offered, marked partial. Threads whose name holds the words lead,
+ * then threads where they appear only in the conversation; each group newest activity first, and a
+ * conversation match carries the line it was found in. The old search took the first hundred index
+ * hits in storage order and filtered them by the tab, so "anil" on Open answered "No open threads
+ * yet" while the thread sat in Closed (2026-11-12).
+ */
+const LITTLE_WORDS=new Set(['a','an','and','are','as','at','be','by','for','from','i','in','is','it','me','my','of','on','or','the','to','was','with','this','that']);
+const SEARCH_PAGE_LIMIT=20;
 function searchPreparedTopics(db:Database,options:{state:State;query:string;cursor?:string|null;limit:number;canonicalHead:number}){
  const current=meta(db),old=options.cursor?decode(options.cursor):null;
  if(options.query.length>2000)throw new Error('Topic query is too long');
- if(options.cursor&&(!old||old.g!==current.generation||old.inbox!==current.inbox_session||old.query!==options.query||old.state!==options.state||!Number.isSafeInteger(old.row)))return reset(current);
- const table=[...options.query].length>=3?'presentation_topic_search':'presentation_topic_short';
- const expression='"'+(table==='presentation_topic_short'?gram([...options.query]):options.query).replaceAll('"','""')+'"';
- // A finite postings window prevents a common term from sorting the entire collection.
- // Continuation is explicit even if filtering yields an empty page; no match is silently lost.
- const candidates=db.query(`SELECT rowid AS id FROM ${table} WHERE ${table} MATCH ? AND rowid>? ORDER BY rowid LIMIT 101`)
-  .all(expression,old?.row??0) as {id:number}[];
- const topics:any[]=[];let consumed=old?.row??0,examined=0;
- for(const candidate of candidates.slice(0,100)){
-  consumed=candidate.id;examined++;
-  const row=db.query('SELECT state,background,summary_json FROM presentation_topics WHERE rowid=? AND generation=? AND session_id=?')
-   .get(candidate.id,current.generation,current.inbox_session) as {state:string;background:number;summary_json:string}|null;
-  if(!row||options.state==='background'&&!row.background||!['all','background'].includes(options.state)&&row.state!==options.state)continue;
-  topics.push(JSON.parse(row.summary_json));if(topics.length===options.limit)break;
- }
- const more=candidates.length>examined;
- return {topics,nextCursor:more?cursor({g:current.generation,inbox:current.inbox_session,state:options.state,query:options.query,row:consumed}):null,
-  coverage:{...coverage(current,options.canonicalHead),searchOrder:'indexed',examined,more}};
+ if(options.cursor&&(!old||old.g!==current.generation||old.inbox!==current.inbox_session||old.query!==options.query||old.state!==options.state||!Number.isSafeInteger(old.offset)))return reset(current);
+ const typed=[...new Set(options.query.split(/\s+/).filter(Boolean))];
+ const words=typed.filter(word=>!LITTLE_WORDS.has(word)).length?typed.filter(word=>!LITTLE_WORDS.has(word)):typed;
+ const phrase=(text:string)=>'"'+text.replaceAll('"','""')+'"';
+ const titleIds=(word:string)=>{
+  const short=[...word].length<3,table=short?'presentation_topic_short':'presentation_topic_search';
+  return new Set((db.query(`SELECT topic.topic_id AS id FROM ${table} hit JOIN presentation_topics topic ON topic.rowid=hit.rowid
+   WHERE hit.${table} MATCH ? AND topic.generation=? AND topic.session_id=?`)
+   .all(phrase(short?gram([...word]):word),current.generation,current.inbox_session) as {id:string}[]).map(row=>row.id));
+ };
+ const messages=db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='presentation_message_search'").get()
+  ?(db.query('SELECT generation FROM presentation_message_meta WHERE singleton=1').get() as {generation:number}|null)?.generation??null:null;
+ // Each thread's newest message holding the word, so its line is shown without another search.
+ const lines=new Map<string,number>();
+ const bodyIds=(word:string)=>messages===null||[...word].length<3?new Set<string>():
+  new Set((db.query(`SELECT root.topic_id AS id,MAX(text.id) AS line FROM presentation_message_search hit
+   JOIN presentation_message_text text ON text.id=hit.rowid
+   JOIN presentation_messages message ON message.generation=text.generation AND message.event_sequence=text.event_sequence
+   JOIN presentation_topic_roots root ON root.generation=? AND root.root_id=message.root_input_id
+   WHERE hit.presentation_message_search MATCH ? AND text.generation=? AND root.topic_id IS NOT NULL GROUP BY root.topic_id`)
+   .all(current.generation,phrase(word),messages) as {id:string;line:number}[]).map(row=>{
+    const known=lines.get(row.id);if(known===undefined||row.line>known)lines.set(row.id,row.line);return row.id;}));
+ const perWord=words.map(word=>{const title=titleIds(word),body=bodyIds(word);return {title,any:new Set([...title,...body])};});
+ const intersect=(sets:Set<string>[])=>sets.length?[...sets[0]!].filter(id=>sets.every(set=>set.has(id))):[];
+ let matched=intersect(perWord.map(word=>word.any)),partial=false;
+ if(!matched.length&&perWord.length>1){matched=[...new Set(perWord.flatMap(word=>[...word.any]))];partial=true;}
+ const named=new Set(intersect(perWord.map(word=>word.title)));
+ const rows=matched.length?db.query(`SELECT topic_id AS id,state,background,recency FROM presentation_topics
+  WHERE generation=? AND session_id=? AND topic_id IN (SELECT value FROM json_each(?))`)
+  .all(current.generation,current.inbox_session,JSON.stringify(matched)) as {id:string;state:string;background:number;recency:string}[]:[];
+ const eligible=rows.filter(row=>options.state==='all'||(options.state==='background'?!!row.background:row.state===options.state))
+  .sort((a,b)=>Number(named.has(b.id))-Number(named.has(a.id))||b.recency.localeCompare(a.recency)||a.id.localeCompare(b.id));
+ const offset=old?.offset??0,limit=Math.min(SEARCH_PAGE_LIMIT,options.limit),page=eligible.slice(offset,offset+limit);
+ const summary=db.query('SELECT summary_json FROM presentation_topics WHERE generation=? AND topic_id=?');
+ const lineText=db.query('SELECT text FROM presentation_message_text WHERE id=?');
+ const longWords=words.filter(word=>[...word].length>=3);
+ const topics=page.map(row=>{
+  const value=JSON.parse((summary.get(current.generation,row.id) as {summary_json:string}).summary_json);
+  const at=lines.get(row.id);
+  if(named.has(row.id)||at===undefined)return {...value,searchMatch:{in:'title'}};
+  const text=(lineText.get(at) as {text:string}|null)?.text??'';
+  const word=longWords.find(candidate=>text.toLocaleLowerCase().includes(candidate))??longWords[0]??'';
+  return {...value,searchMatch:{in:'conversation',line:matchLine(text,word)}};
+ });
+ const more=eligible.length>offset+page.length;
+ return {topics,nextCursor:more?cursor({g:current.generation,inbox:current.inbox_session,state:options.state,query:options.query,offset:offset+page.length}):null,
+  coverage:{...coverage(current,options.canonicalHead),searchOrder:'named-then-recent',matched:eligible.length,partial,more}};
+}
+/** The stretch of a message around the first place his word appears, on one line. */
+function matchLine(text:string,word:string){
+ const flat=text.replace(/\s+/g,' '),at=Math.max(0,flat.toLocaleLowerCase().indexOf(word)),start=Math.max(0,at-60),end=Math.min(flat.length,at+word.length+120);
+ return (start?'… ':'')+flat.slice(start,end).trim()+(end<flat.length?' …':'');
 }
 export function readPreparedTopicChanges(db:Database,after:string,canonicalHead:number,limit=20){
  const current=meta(db),old=decode(after);
