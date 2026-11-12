@@ -1076,6 +1076,13 @@ The owner serves `GET /sessions/v1/usage/breakdown?period=today|week`; agents ge
 same read through `router-actions.sh sessions usage --by-session --period today|week`.
 The read now includes `callMix` for all calls, each account, and each session:
 total calls, helper and main calls, helper share, and each model's call share.
+It also includes `editMix` at those three levels: recognized code-editing tool
+calls split by model and helper versus main conversation. Claude transcript
+tool-use IDs and Codex completed-item IDs deduplicate repeated provider records;
+Codex child conversations follow their root session. The edit count includes
+dedicated edit/write/file-change tools and recognized patch commands. It does
+not infer arbitrary writes from every shell command, so it is a lower bound on
+all code changes. Calls measure editing actions, not changed files or lines.
 For the Accounts dashboard, each account and session also carries `byModel` with
 the exact transcript token classes, a published-price weighted total, and the
 helper subset of both. Each session carries `byHelper`, keyed by the source

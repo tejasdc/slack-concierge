@@ -12,6 +12,7 @@ import { watchClaudeTranscript, type ClaudeTranscriptPickup } from "./claude-tra
 import { recordClaudeWorkload } from "./session-fit";
 import { webActivityDetails } from "./agent-progress";
 import { macSurfaceActivity } from "./mac-surface-activity";
+import {isCodeEditTool} from './implementation-models';
 import { claudeUsageFallbackModels, DEFAULT_CLAUDE_SUBAGENT_MODEL } from "./aliases";
 import { assertUsageAvailable, cachedUsageLimit, recordUsageExhaustion, recordUsageSuccess,
   resetEpochMilliseconds, usageAttempt, usageLimitMessage, type UsageAttempt } from "./provider-usage";
@@ -1140,6 +1141,7 @@ export async function runClaudeCodeTurn(input: {
         const details = toolName === "WebSearch" ? webActivityDetails({ query: block.input?.query })
           : toolName === "WebFetch" ? webActivityDetails({ url: block.input?.url }) : undefined;
         input.onProgress?.({ type: "tool_use", toolName,
+          ...(isCodeEditTool(toolName,block.input)?{codeEdit:true}:{}),
           ...(typeof block.id === "string" ? { itemId: block.id } : {}),
           ...(details ? { details } : {}),
         });

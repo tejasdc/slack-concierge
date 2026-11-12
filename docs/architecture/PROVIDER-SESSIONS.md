@@ -618,6 +618,29 @@ for the same selected model. Each accepted
 top-model start records its reason for the usage report.
 
 A running provider turn decides for itself when to hand work to another model.
+For a fixed implementation that needs its own checkout, `sessions implement`
+creates an `impl-<request-key>` worktree on the project's runner and starts a
+Sonnet session from a Claude designer or a Luna session from a Codex designer.
+The caller may select Haiku, Sonnet, Luna, Terra or Sol within its own provider.
+Sonnet is the conservative Claude coding default because the task may span
+files; Haiku is an explicit choice for mechanical work. Luna is the lowest
+listed Codex coding tier; Terra and Sol are explicit choices for harder bounded
+work. These defaults are judgment calls, not measured task-quality rankings.
+The worker's request returns to the designer, who reviews it before answering
+Tejas. The command and its return obligation are in each run's request protocol
+and `sessions --help`. Repeating the same source and action key reuses the
+worktree. The worker's session metadata identifies that it is implementation
+work, so it does not receive a top-model edit reminder.
+
+For other top-model main turns, Concierge counts distinct recognized editing
+tool calls during the provider run. At five in one turn it steers one advisory
+message into the live turn with the implementation command. In a sample of 189
+recent Opus/Fable turns with editing calls, the median was two, the 75th
+percentile four, and 35 turns (18.5%) had five or more. Five catches extended
+implementation while leaving short design edits alone. It never refuses an edit.
+The reminder is sent through the existing steering channel and recorded only
+after provider acknowledgement.
+
 The rule lives in the catalog `model-selection` skill, which the global AGENTS.md
 points to; project AGENTS.md files point to it rather than restating it. In short:
 work whose acceptance criterion is

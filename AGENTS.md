@@ -106,8 +106,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   helper directory; see [runners](docs/architecture/RUNNERS.md#agent-session-commands).
 - Runner-owned Codex account switches prove the new login through the bridge inside the sealed
   release; see [runner App Server](docs/architecture/RUNNERS.md#codex-app-server-on-a-runner-built-off-until-concierge_codex_runner-is-set).
-- Agent-started top-model choices and helper defaults follow [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#delegation-and-escalation);
-  measured model, project, session and helper tokens for Accounts follow [usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
+- Agent-started top-model choices, implementation handoffs and helper defaults follow [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#delegation-and-escalation);
+  measured model calls, code edits, project, session and helper tokens follow [usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
 - External Codex resets on a saved account clear that account's older refusal on a fresh direct reading before automatic account switching; see [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md#what-the-allowance-evidence-means).
 - The Mac peer's per-session usage breakdown reads its local transcript history when it has no provider runners; stale results are marked rather than silently presented as current. See [provider usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
 - The prepared word search keeps one copy of dialogue only (tool evidence comes from the archive index) and returns freed pages without VACUUM; its size budget and the paced move from the old layout are in [prepared search](docs/architecture/PREPARED-SEARCH.md).

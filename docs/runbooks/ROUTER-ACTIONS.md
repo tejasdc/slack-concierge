@@ -325,6 +325,15 @@ New work goes to Thinkering native sessions, including requests arriving through
 the retained DM. Agent Slack post/resume/upload/request ingress and automatic
 legacy routed recovery are retired; those commands refuse before publication.
 
+When a Claude or Codex design is fixed and the implementation needs a separate
+worktree, use `sessions implement --project <registered-project> --session-name
+"<task>" --summary "<acceptance criterion>" <source-flags> --action-id <stable-id>
+-- <design and acceptance criteria>`. It starts Sonnet for a Claude designer or
+Luna for a Codex designer by default; `--provider` may name a suitable cheaper
+tier in the same provider. The implementation request returns to the designer
+for review. `sessions --help` and the per-run request protocol carry the exact
+command. Use the same action ID on retry so the worktree and request stay one.
+
 Continue one exact owning session when it built the surface that the capture
 concerns and remains messageable. Use `sessions search` and `sessions context`
 to establish title, project, source and dialogue before copying its address:

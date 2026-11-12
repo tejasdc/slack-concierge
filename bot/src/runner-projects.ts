@@ -109,6 +109,38 @@ export async function serveProjectCall(method:string,params:Record<string,unknow
     const path=relative(registered.cwd,located.cwd);
     return {project:registered.name,path,cwd:located.cwd};
   }
+  if(method==='projects.implementationWorktree') {
+    const {root}=projectFolder(params.project);
+    const project=sessionProject(root,String(params.project));
+    if(!project||typeof params.key!=='string'||!/^[a-f0-9]{20}$/.test(params.key))
+      throw new Error('Implementation needs an exact registered Git project and request key.');
+    const name=`impl-${params.key}`,path=`.wt/${name}`,cwd=join(project.cwd,path),branch=`worktree-${name}`;
+    const git=async(...args:string[])=>execFile('git',['-C',...args],{timeout:10000,maxBuffer:1024*1024});
+    const {stdout:gitCommonDir}=await git(project.cwd,'rev-parse','--path-format=absolute','--git-common-dir');
+    const marker=join(gitCommonDir.trim(),'concierge-implementation',name);
+    const verify=async()=>{
+      if(!existsSync(cwd)||realpathSync(cwd)!==cwd)throw new Error('Implementation worktree is unavailable.');
+      const [{stdout:rootPath},{stdout:actualBranch}]=await Promise.all([git(cwd,'rev-parse','--show-toplevel'),git(cwd,'branch','--show-current')]);
+      if(rootPath.trim()!==cwd||actualBranch.trim()!==branch)
+        throw new Error('The implementation worktree path belongs to another Git checkout.');
+    };
+    if(!existsSync(cwd)){
+      await execFile(join(homedir(),'.local','bin','wt'),[name],{cwd:project.cwd,timeout:240000,maxBuffer:1024*1024});
+      await verify();
+      mkdirSync(join(gitCommonDir.trim(),'concierge-implementation'),{recursive:true});
+      writeFileSync(marker,`${cwd}\n`,{flag:'wx',mode:0o600});
+    }else{
+      await verify();
+      if(!existsSync(marker)){
+        const bootstrap=join(cwd,'scripts','worktree-bootstrap.sh');
+        if(existsSync(bootstrap))await execFile(bootstrap,[],{cwd,timeout:240000,maxBuffer:1024*1024});
+        mkdirSync(join(gitCommonDir.trim(),'concierge-implementation'),{recursive:true});
+        writeFileSync(marker,`${cwd}\n`,{flag:'wx',mode:0o600});
+      }else if(readFileSync(marker,'utf8')!==`${cwd}\n`)
+        throw new Error('The implementation worktree key belongs to another path.');
+    }
+    return {project:project.name,path,cwd};
+  }
   if(method==='projects.files') {
     const {project}=projectFolder(params.project),path=safeRelativePath(params.path);
     const {real}=exactFolder(project.cwd,path);

@@ -75,6 +75,11 @@ try {
   await assert.rejects(()=>serveProjectCall('projects.resolve',{project:'example-project',path:'../'}),/inside the registered project/);
   await assert.rejects(()=>serveProjectCall('projects.file',{project:'example-project',path:'escape/secret.md'}),/inside the registered project/);
   await assert.rejects(()=>serveProjectCall('projects.resolve',{project:project}),/registered project name/);
+  const implementation=await serveProjectCall('projects.implementationWorktree',{project:'example-project',key:'a'.repeat(20)}) as any;
+  assert.equal(implementation.project,'example-project');
+  assert.equal(implementation.path,`.wt/impl-${'a'.repeat(20)}`);
+  assert.equal((await serveProjectCall('projects.implementationWorktree',{project:'example-project',key:'a'.repeat(20)}) as any).cwd,implementation.cwd);
+  await assert.rejects(()=>serveProjectCall('projects.implementationWorktree',{project:'example-project/docs',key:'a'.repeat(20)}),/exact registered Git project/);
   await assert.rejects(()=>serveProjectCall('projects.launch',{project:'example-project'}),/Unknown runner project operation/);
 
   const settings=readFileSync(new URL('../src/claude-code.ts',import.meta.url),'utf8');
