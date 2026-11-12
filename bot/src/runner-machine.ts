@@ -13,9 +13,10 @@
  */
 import {mkdirSync,readFileSync,renameSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
+import {installedRouterActionsPath} from './session-command-path';
 
 /** Variables whose value is a path on the machine that runs the agent. */
-export const MACHINE_PATH_KEYS=['PATH','CONCIERGE_STATE_DIR','CONCIERGE_STATE_DB','CONCIERGE_ROUTER_BOT_DIR','CONCIERGE_BUN_BIN'] as const;
+export const MACHINE_PATH_KEYS=['PATH','CONCIERGE_STATE_DIR','CONCIERGE_STATE_DB','CONCIERGE_ROUTER_BOT_DIR','CONCIERGE_ROUTER_ACTIONS','CONCIERGE_BUN_BIN'] as const;
 
 /** The owner's half: its own folders are left out of anything a runner will run. */
 export function withoutMachinePaths(environment:Record<string,string>):Record<string,string> {
@@ -34,6 +35,8 @@ export function runnerMachineEnvironment(machine:RunnerMachine,runPath='',ownerS
     CONCIERGE_STATE_DIR:machine.stateDir,
     CONCIERGE_STATE_DB:join(machine.stateDir,'no-ledger-on-a-runner.db'),
     CONCIERGE_ROUTER_BOT_DIR:machine.botDir,
+    CONCIERGE_ROUTER_ACTIONS:installedRouterActionsPath(),
+    CONCIERGE_CODEX_CLI:'codex',
     CONCIERGE_BUN_BIN:machine.bunPath,
     // The helpers find this runner's connection file (below) through it.
     CONCIERGE_RUNNER_STATE:machine.stateDir,

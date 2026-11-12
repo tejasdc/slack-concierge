@@ -1,4 +1,4 @@
-import {db,claimNextQueuedTurn,executionChanged,getClaudePreferredModel,getSessionById,globalPauseHoldsSession,type QueuedTurnClaimRow} from './state';
+import {db,claimNextQueuedTurn,executionChanged,getClaudePreferredModel,getSessionById,globalPauseHoldsSession,settleTurnDependencies,type QueuedTurnClaimRow} from './state';
 import {enqueueSessionInput,getAcceptedSessionInput,nativeRunId,queueTurnContinuation,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {providerAccountUsage} from './provider-account-usage';
 import {usageForecasts} from './provider-usage-forecast';
@@ -7,6 +7,7 @@ import {savedWorkAccountRooms} from './provider-account-dispatch';
 import {includedAllowanceWindows} from './account-allowance-observation';
 import {chooseAccountForTurn} from './provider-account-choice';
 import {log,errorFields} from './log';
+import {endRepeatingScheduleForInput} from './request-liveness';
 import {savedStartAt} from './saved-start-time';
 import {inQuietHours,localParts,nextQuietEnd,quietOnlyAdmits,QUIET_STOP_MARGIN_MS} from './quiet-hours';
 export {savedStartAt} from './saved-start-time';
@@ -16,7 +17,7 @@ export type SavedTurn={id:number;session_id:number;status:string;saved_kind:Save
   saved_quiet_only:number;
   saved_repeat_ms:number|null;saved_root_id:number|null;saved_sequence:number|null;saved_fire_at_ms:number|null;
   saved_account:string|null;saved_window:string|null;saved_boundary_ms:number|null;dispatch_next_attempt_ms:number|null;dispatch_failure_class:string|null;
-  saved_alerted_at_ms:number|null;accepted_input_id:string|null};
+  saved_alerted_at_ms:number|null;accepted_input_id:string|null;saved_wait_reason?:string|null};
 
 const DAY=24*60*60_000, HOUR=60*60_000;
 export type SavedWorkSettings={quiet_start_hour:number;quiet_end_hour:number;reserve_percent:number;wait_days:number;time_zone:string};
@@ -96,6 +97,21 @@ const fleetBusy=(savedSessionId:number)=>!!db.query(`SELECT 1 FROM turns WHERE s
   AND (status IN ('running','delivering') OR (status='queued' AND saved_kind IS NULL)) LIMIT 1`).get(savedSessionId);
 const savedRows=()=>db.query("SELECT * FROM turns WHERE saved_kind IS NOT NULL AND status='queued' ORDER BY id").all() as SavedTurn[];
 
+/**
+ * Why a queued banked turn is not starting, in words the asking agent can act on. Stored on the
+ * turn and logged when it changes, because on 2026-11-12 a quiet-only job had waited seven nights
+ * and nothing recorded which of its conditions had held it.
+ */
+export type BankedWait='eligible_not_claimed'|'no_usage_reading'|'no_allowance_room'|'other_work_running'|'outside_quiet_hours'|'waiting_for_reset';
+export const BANKED_WAIT_WORDS:Record<BankedWait,string>={
+  eligible_not_claimed:'it was eligible to start but the queue did not take it (another unattended banked job was running, or a pause or Concierge update held the queue)',
+  no_usage_reading:'Concierge had no current allowance reading for its provider',
+  no_allowance_room:'no account had allowance left above the saved-work reserve',
+  other_work_running:'other agent work was running or queued, and generic banked work waits for an idle fleet',
+  outside_quiet_hours:'it was outside the quiet hours',
+  waiting_for_reset:'it is waiting until its allowance window is close to resetting',
+};
+
 /** Forecast and reachability are read outside the claim. Only changed instants are written. */
 export function reconsiderBankedWork(now=Date.now()):number {
   const settings=savedWorkSettings();let changed=0;
@@ -109,25 +125,41 @@ export function reconsiderBankedWork(now=Date.now()):number {
     const model=provider==='claude-code'
       ?getClaudePreferredModel(row.session_id,row.id)??sessionMetadata(session).model??null:undefined;
     const rooms=usage?savedWorkAccountRooms(provider,usage,now,model):[];
+    const quietOnly=row.saved_quiet_only===1;
+    // Generic banked work exists to spend allowance that would otherwise lapse, so it needs the
+    // forecast to say the window reaches its reset unspent and a floor of time before that reset.
+    // Quiet-only work was banked by him to run while he sleeps: it needs only room above the
+    // reserve. Its run is bounded by the quiet cutoff, not by the window's reset.
     const candidate=usage?usageForecasts(provider).filter(window=>window.resetsAt
       &&usage.accounts.some(account=>account.label===window.account
         &&includedAllowanceWindows(provider,account,model).some(item=>item.name===window.window))
       && chooseAccountForTurn({accounts:rooms,bound:{account:window.account,reason:'spending-this-window'},prefer:null}).account===window.account
-      && (usage.accounts.find(item=>item.label===window.account)?.windows.find(item=>item.name===window.window)?.willLastToReset===true
-        ||window.source!=='unknown'&&!window.runsOutBeforeReset)
-      && !window.runsOutBeforeReset&&window.usedPercent<100-settings.reserve_percent
+      && (quietOnly||(usage.accounts.find(item=>item.label===window.account)?.windows.find(item=>item.name===window.window)?.willLastToReset===true
+        ||window.source!=='unknown'&&!window.runsOutBeforeReset))
+      && (quietOnly||!window.runsOutBeforeReset)&&window.usedPercent<100-settings.reserve_percent
       && (rooms.find(room=>room.account===window.account)?.tightestUsedPercent??100)<100-settings.reserve_percent
-      && Date.parse(window.resetsAt)>=now+HOUR)
+      && (quietOnly||Date.parse(window.resetsAt)>=now+HOUR))
       .sort((a,b)=>Date.parse(a.resetsAt!)-Date.parse(b.resetsAt!))[0]:null;
     const account=candidate?.account??null;
     const reset=candidate?Date.parse(candidate.resetsAt!):null;
-    const quietOnly=row.saved_quiet_only===1;
-    const eligible=!!candidate&&!fleetBusy(row.session_id)&&(quietOnly
-      ?quietOnlyAdmits(now,settings)
-      :quiet(now,settings)||reset!-now<=2*HOUR);
+    // Only generic banking reads an idle fleet as evidence that nobody wants the allowance.
+    // Requiring it of quiet-only work kept a job banked for 2026-11-05 from ever starting: some
+    // standing agent is always running overnight. The reserve is what protects his own work.
+    const busy=!quietOnly&&fleetBusy(row.session_id);
+    const timely=quietOnly?quietOnlyAdmits(now,settings):quiet(now,settings)||(reset!==null&&reset-now<=2*HOUR);
+    const eligible=!!candidate&&!busy&&timely;
+    const wait:BankedWait=eligible?'eligible_not_claimed':!usage?'no_usage_reading':!candidate?'no_allowance_room'
+      :!timely?(quietOnly?'outside_quiet_hours':'waiting_for_reset'):'other_work_running';
     const next=eligible?0:quietOnly?nextQuietStart(now,settings):reset!==null?Math.min(nextQuietStart(now,settings),Math.max(now+60_000,reset-2*HOUR))
       :row.dispatch_next_attempt_ms!==null&&row.dispatch_next_attempt_ms>now+3*60_000?row.dispatch_next_attempt_ms:null;
-    const boundary=eligible?(quietOnly?Math.min(reset!,quietOnlyCutoff(now,settings)):reset):null;
+    const boundary=eligible?(quietOnly?quietOnlyCutoff(now,settings):reset):null;
+    // After the quiet window closes, keep the reason that held it during the window: that is what
+    // the missed-window notice reports, and "it was outside the quiet hours" would explain nothing.
+    if(row.saved_wait_reason!==wait&&!(quietOnly&&wait==='outside_quiet_hours'&&row.saved_wait_reason)){
+      db.query("UPDATE turns SET saved_wait_reason=? WHERE id=? AND status='queued' AND saved_kind='banked'").run(wait,row.id);
+      log('info','banked_work_wait',{turn_id:row.id,session_id:`concierge:${row.session_id}`,quiet_only:quietOnly,
+        reason:wait,previous:row.saved_wait_reason,account:candidate?.account??null,window:candidate?.window??null});
+    }
     if(row.dispatch_next_attempt_ms===next&&row.saved_account===(eligible?account:null)
       &&row.saved_window===(eligible?candidate!.window:null)&&row.saved_boundary_ms===boundary)continue;
     const result=db.query(`UPDATE turns SET dispatch_next_attempt_ms=?,saved_account=?,saved_window=?,saved_boundary_ms=?
@@ -136,6 +168,62 @@ export function reconsiderBankedWork(now=Date.now()):number {
   }
   if(changed)executionChanged();
   return changed;
+}
+
+/**
+ * The asking agent hears, once per quiet window, that its quiet-only job did not start and why,
+ * so a job never reaches its expiry silently. The notice is an overdue event on the request that
+ * banked the job; the request delivery wakes the asker with it and withdraws it if the request
+ * settles first.
+ */
+export function noticeMissedQuietWindows(now=Date.now()):number {
+  const settings=savedWorkSettings();let noticed=0;
+  const inWindow=quietOnlyAdmits(now,settings);
+  // The most recent morning cutoff at or before now.
+  const cutoff=nextQuietEnd(now-DAY,settings)-QUIET_STOP_MARGIN_MS;
+  const windowJustEnded=!inWindow&&cutoff<=now&&now-cutoff<DAY;
+  const rows=db.query(`SELECT * FROM turns WHERE saved_kind='banked' AND saved_quiet_only=1 AND status='queued'
+    AND saved_manual_start=0`).all() as SavedTurn[];
+  for(const row of rows){
+    const expired=row.saved_expires_at_ms!==null&&row.saved_expires_at_ms<=now;
+    // A window counts only when the job was waiting for most of it and had not expired by its end.
+    const missedWindow=windowJustEnded&&row.saved_at_ms<cutoff-60*60_000
+      &&(row.saved_expires_at_ms===null||row.saved_expires_at_ms>cutoff);
+    if(!expired&&!missedWindow)continue;
+    const reason=(row.saved_wait_reason??'eligible_not_claimed') as BankedWait;
+    const why=BANKED_WAIT_WORDS[reason]??reason;
+    const nextOpen=nextQuietStart(now,settings);
+    const gone=row.saved_expires_at_ms!==null&&row.saved_expires_at_ms<=nextOpen;
+    const last=gone||row.saved_expires_at_ms!==null&&row.saved_expires_at_ms<=quietOnlyCutoff(nextOpen+1,settings);
+    const text=expired
+      ?`Its quiet-only banked job (turn ${row.id}) expired at ${new Date(row.saved_expires_at_ms!).toISOString()} without starting; the last recorded reason was that ${why}. Start it with sessions saved start ${row.id} during quiet hours, or bank it again.`
+      :`Its quiet-only banked job (turn ${row.id}) did not start in the quiet window that ended ${new Date(cutoff).toISOString()}, because ${why}.`
+      +(gone?` It expires ${new Date(row.saved_expires_at_ms!).toISOString()}, before the next quiet window opens: start it with sessions saved start ${row.id} during quiet hours, or bank it again.`
+        :` It will try again from ${new Date(nextOpen).toISOString()}${row.saved_expires_at_ms!==null?` until it expires ${new Date(row.saved_expires_at_ms).toISOString()}`:''}.`
+          +(last?' That next quiet window is its last chance; if the reason above will not clear by then, start it yourself during quiet hours or bank it again.':''));
+    const key=expired?`quiet-expired:${row.id}`:`quiet-window-missed:${row.id}:${cutoff}`;
+    // A continuation turn carries a service input whose ancestry leads to the banking request.
+    const request=row.accepted_input_id?db.query(`WITH RECURSIVE ancestry(id,source_input_id) AS (
+        SELECT id,source_input_id FROM session_inputs WHERE id=?
+        UNION
+        SELECT parent.id,parent.source_input_id FROM session_inputs parent JOIN ancestry child ON parent.id=child.source_input_id
+      ) SELECT request.request_id FROM ancestry JOIN session_communication_requests request ON request.target_input_id=ancestry.id
+      WHERE request.outcome IS NULL ORDER BY request.rowid DESC LIMIT 1`).get(row.accepted_input_id) as {request_id:string}|null:null;
+    if(!request){
+      // Nobody asked through a request (a job banked by hand); the expiry alert in
+      // inspectSavedWork still reaches Tejas.
+      log('warn','quiet_window_missed_without_request',{turn_id:row.id,session_id:`concierge:${row.session_id}`,reason,expired});
+      continue;
+    }
+    const inserted=db.query(`INSERT OR IGNORE INTO session_communication_events(event_id,request_id,kind,action_key,payload_json,created_at_ms)
+      VALUES(?,?,'overdue',?,?,?)`).run(key,request.request_id,key,JSON.stringify({text,held:true,savedWorkWait:{turnId:row.id,reason,expired}}),now);
+    if(inserted.changes){
+      noticed++;
+      log('warn','quiet_window_missed',{turn_id:row.id,request_id:request.request_id,reason,last_window:last,expired});
+    }
+  }
+  if(noticed)executionChanged();
+  return noticed;
 }
 
 /** A declined or boundary-yielded banked run remains saved without a retry failure. */
@@ -162,7 +250,10 @@ export function resumeBankedAfterYield(turnId:number,reason:'allowance_boundary'
   // turn has ended, and a source without an end is refused, leaving the run held.
   const changed=db.transaction(()=>{
     const row=savedTurn(turnId);
-    if(!row||row.status!=='cancelled'||!row.accepted_input_id)return false;
+    if(!row||row.status!=='cancelled'||!row.accepted_input_id){
+      if(row?.status!=='running'&&row?.status!=='delivering')db.query('UPDATE turns SET saved_yield_reason=NULL WHERE id=?').run(turnId);
+      return false;
+    }
     const question=reason==='quiet_boundary'
       ?'Quiet-only banked work stopped before morning. Check what the agent completed before deciding how to continue.'
       :reason==='deployment_boundary'
@@ -185,8 +276,12 @@ export function resumeBankedAfterYield(turnId:number,reason:'allowance_boundary'
     // A continuation of banked work is still banked work: without this it would be ordinary
     // work that simply runs at its time, unbound to an account and outside the reserve.
     if(continued?.turn_id&&!savedTurn(continued.turn_id))saveQueuedTurn(continued.turn_id,'banked',undefined,undefined,undefined,turnId);
+    // No continuation (a human Stop, a withdrawn request, a session that moved on): the pause is
+    // not carried on after all, so its request settles as the cancellation it is.
+    if(!continued?.turn_id)db.query('UPDATE turns SET saved_yield_reason=NULL WHERE id=?').run(turnId);
     return true;
   })();
+  executionChanged();
   return changed;
 }
 
@@ -210,6 +305,9 @@ export function updateSavedTurn(turnId:number,action:string,body:Record<string,u
     if(expires!==undefined&&(typeof expires!=='number'||!Number.isFinite(expires)||expires<=at))throw new Error('Expiry must follow the scheduled time.');
     db.query(`UPDATE turns SET saved_kind='scheduled',dispatch_next_attempt_ms=?,saved_fire_at_ms=?,saved_expires_at_ms=?,saved_account=NULL,
       saved_window=NULL,saved_boundary_ms=NULL,saved_alerted_at_ms=NULL,saved_manual_start=0 WHERE id=? AND status='queued'`).run(at,at,expires??null,turnId);
+    // A repeating schedule's end lives on its first firing; changing it here changes the whole schedule's end.
+    if(row.saved_root_id!==null&&row.saved_root_id!==turnId)
+      db.query('UPDATE turns SET saved_expires_at_ms=? WHERE id=?').run(expires??null,row.saved_root_id);
     } else if(action==='start') {
     if(row.saved_quiet_only&&!quietOnlyAdmits(Date.now(),savedWorkSettings()))
       throw new Error('Quiet-only work can start only during its quiet window, before the morning cutoff.');
@@ -219,15 +317,25 @@ export function updateSavedTurn(turnId:number,action:string,body:Record<string,u
       const cancelingSessionId=body.cancelingSessionId;
       const reason=typeof cancelingSessionId==='number'&&Number.isSafeInteger(cancelingSessionId)
         ?`Agent session concierge:${cancelingSessionId} canceled this saved work.`:'Tejas dropped this saved work.';
-      db.query(`UPDATE turns SET status='cancelled',agent_text=?,ended_at=CURRENT_TIMESTAMP
-        WHERE session_id=? AND status='queued'`).run(reason,row.session_id);
-      db.query(`UPDATE session_inputs SET receipt_json=json_set(COALESCE(receipt_json,'{}'),'$.state','canceled')
-        WHERE session_id=? AND turn_id IN (SELECT id FROM turns WHERE session_id=? AND status='cancelled')`).run(row.session_id,row.session_id);
+      const canceled=db.query(`UPDATE turns SET status='cancelled',agent_text=?,ended_at=CURRENT_TIMESTAMP
+        WHERE id=? AND session_id=? AND status='queued' AND saved_kind IS NOT NULL`).run(reason,turnId,row.session_id);
+      if(canceled.changes!==1)throw new Error('The exact saved turn changed before cancellation.');
+      settleTurnDependencies(turnId);
+      if(row.accepted_input_id){
+        const prior=db.query('SELECT receipt_json FROM session_inputs WHERE id=? AND turn_id=?').get(row.accepted_input_id,turnId) as {receipt_json:string|null}|null;
+        if(!prior)throw new Error('The exact scheduled input changed before cancellation.');
+        db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id=?')
+          .run(JSON.stringify({...(prior.receipt_json?JSON.parse(prior.receipt_json):{}),state:'canceled',reason:'saved_work_drop',turnId,
+            cancelingSessionId:typeof cancelingSessionId==='number'?cancelingSessionId:null,
+            cancelingInputId:body.cancelingInputId??null,cancelingRunId:body.cancelingRunId??null}),row.accepted_input_id,turnId);
+      }
     }
     const session=getSessionById(row.session_id);
     if(session){const meta=sessionMetadata(session);const needs=(meta.needs??[]).filter(need=>need.eventId!==`saved-work-alert:${turnId}`);
       if(needs.length!==(meta.needs??[]).length)updateSessionMetadata(session.id,{needs});}
-    recordSessionEvent({eventId,sessionId:row.session_id,inputId:row.accepted_input_id,turnId,kind:'saved_control',payload:{action,fromKind:row.saved_kind,toKind:savedTurn(turnId)?.saved_kind,atMs:body.atMs??null}});
+    recordSessionEvent({eventId,sessionId:row.session_id,inputId:row.accepted_input_id,turnId,kind:'saved_control',payload:{action,fromKind:row.saved_kind,toKind:savedTurn(turnId)?.saved_kind,atMs:body.atMs??null,
+      ...(action==='drop'?{reason:'saved_work_drop',cancelingSessionId:body.cancelingSessionId??null,
+        cancelingInputId:body.cancelingInputId??null,cancelingRunId:body.cancelingRunId??null}:{})}});
     return {turn:savedTurn(turnId)};
   })();
   executionChanged();
@@ -326,14 +434,31 @@ export function advanceRepeatingSchedules(now=Date.now()):number {
       const current=savedTurn(row.id);
       if(!current||current.saved_repeat_ms===null||current.saved_root_id===null||current.saved_sequence===null)return;
       const left=current.status!=='queued';
-      if(left&&db.query(`SELECT 1 FROM session_owner_events WHERE turn_id=? AND kind='saved_control'
-        AND json_extract(payload_json,'$.action')='drop'`).get(current.id))return;
+      if(repeatingScheduleEnded(current.saved_root_id,current.id)) {
+        // A schedule ended while this firing waited (a cancellation recorded on another path)
+        // withdraws it through the same revocation as a cancelled request.
+        if(!left){const rootInput=(db.query('SELECT accepted_input_id FROM turns WHERE id=?').get(current.saved_root_id) as {accepted_input_id:string|null}|null)?.accepted_input_id;
+          if(rootInput)endRepeatingScheduleForInput(rootInput);}
+        return;
+      }
       if(left&&db.query(`SELECT 1 FROM sessions WHERE id=? AND (status='archived'
         OR COALESCE(json_extract(native_metadata_json,'$.suspended'),0)<>0)`).get(current.session_id))return;
       const interval=current.saved_repeat_ms,root=current.saved_root_id;
       const firedAt=current.saved_fire_at_ms??current.dispatch_next_attempt_ms!;
       const nextSequence=current.saved_sequence+Math.max(1,Math.floor((now-firedAt)/interval)+1);
       const nextAt=firedAt+(nextSequence-current.saved_sequence)*interval;
+      // A repeating schedule's expiry is when the whole schedule ends, kept on its first firing.
+      // Firings booked before 2026-11-11 carried a copy pushed one interval later each time, so the
+      // end never arrived (Lenny's refund watch fired for days past it); a queued one of those is
+      // withdrawn here when it comes due.
+      const end=(db.query('SELECT saved_expires_at_ms FROM turns WHERE id=?').get(root) as {saved_expires_at_ms:number|null}|null)?.saved_expires_at_ms??null;
+      if(end!==null&&(firedAt>=end||nextAt>=end)) {
+        // The last firing before the end still runs; the schedule ends once it has left the queue.
+        if(!left&&firedAt<end)return;
+        const rootInput=(db.query('SELECT accepted_input_id FROM turns WHERE id=?').get(root) as {accepted_input_id:string|null}|null)?.accepted_input_id;
+        if(rootInput)endRepeatingScheduleForInput(rootInput,'This repeating schedule reached its expiry.');
+        return;
+      }
       const skippedBetween=nextSequence-current.saved_sequence-1;
       const prior=!left&&db.query(`SELECT 1 FROM turns WHERE saved_root_id=? AND id<? AND status IN ('queued','running','delivering') LIMIT 1`)
         .get(root,current.id);
@@ -341,7 +466,8 @@ export function advanceRepeatingSchedules(now=Date.now()):number {
         db.query(`UPDATE turns SET status='cancelled',agent_text='Skipped because the previous firing was still in progress.',ended_at=CURRENT_TIMESTAMP
           WHERE id=? AND status='queued'`).run(current.id);
         if(current.accepted_input_id)db.query(`UPDATE session_inputs SET receipt_json=json_set(COALESCE(receipt_json,'{}'),
-          '$.state','canceled','$.error','Skipped because the previous firing was still in progress.') WHERE id=?`).run(current.accepted_input_id);
+          '$.state','canceled','$.reason','schedule_overlap','$.turnId',?,
+          '$.error','Skipped because the previous firing was still in progress.') WHERE id=?`).run(current.id,current.accepted_input_id);
         recordSessionEvent({eventId:`saved-repeat-skip:${root}:${current.saved_sequence}`,sessionId:current.session_id,
           inputId:current.accepted_input_id,turnId:current.id,kind:'saved_control',payload:{action:'skipped_overlap',sequence:current.saved_sequence}});
       }
@@ -361,15 +487,47 @@ export function advanceRepeatingSchedules(now=Date.now()):number {
         payload:{text,...(payload.attachments?{attachments:payload.attachments}:{})}}).input;
       const queued=enqueueSessionInput(input.id);
       if(queued.turn_id===null)throw new Error('Repeating firing could not enter its session queue.');
-      const expiry=current.saved_expires_at_ms===null?null:nextAt+(current.saved_expires_at_ms-firedAt);
       db.query(`UPDATE turns SET saved_kind='scheduled',saved_at_ms=?,saved_expires_at_ms=?,dispatch_next_attempt_ms=?,saved_fire_at_ms=?,
         saved_repeat_ms=?,saved_root_id=?,saved_sequence=? WHERE id=? AND status='queued'`)
-        .run(now,expiry,nextAt,nextAt,interval,root,nextSequence,queued.turn_id);
+        .run(now,end,nextAt,nextAt,interval,root,nextSequence,queued.turn_id);
       advanced++;
     })();} catch(error) {log('error','saved_repeat_advance_failed',{turn_id:row.id,...errorFields(error)});}
   }
   if(advanced)executionChanged();
   return advanced;
+}
+
+/**
+ * Whether a repeating schedule has been ended: dropped in Saved work (recorded on its latest
+ * firing), ended through its request, or its creating request withdrawn. Every later firing is
+ * its own input that the request never names, so the request alone cannot reach them; this is
+ * the one place the booking step asks (2026-11-06: a cancelled 15-minute schedule kept firing).
+ */
+function repeatingScheduleEnded(root:number,latestId:number):boolean {
+  if(db.query(`SELECT 1 FROM session_owner_events WHERE turn_id=? AND kind='saved_control'
+    AND json_extract(payload_json,'$.action') IN ('drop','schedule_ended')`).get(latestId))return true;
+  return !!db.query(`SELECT 1 FROM turns root JOIN session_inputs input ON input.id=root.accepted_input_id
+    JOIN session_communication_requests request ON request.request_id=input.request_id
+    WHERE root.id=? AND request.outcome='canceled'`).get(root);
+}
+
+/** The repeating schedule this accepted input started, with its firings still queued; null for any other input. */
+export function repeatingScheduleOf(inputId:string):{root:number;queued:{id:number;session_id:number;accepted_input_id:string}[]}|null {
+  const root=db.query(`SELECT id FROM turns WHERE accepted_input_id=? AND saved_kind='scheduled'
+    AND saved_repeat_ms IS NOT NULL AND saved_root_id=id`).get(inputId) as {id:number}|null;
+  if(!root)return null;
+  return {root:root.id,queued:db.query(`SELECT id,session_id,accepted_input_id FROM turns WHERE saved_root_id=? AND status='queued'
+    AND accepted_input_id IS NOT NULL ORDER BY id`).all(root.id) as {id:number;session_id:number;accepted_input_id:string}[]};
+}
+
+/** Records, once, on the schedule's latest firing that it has ended, so no later firing is booked. */
+export function markRepeatingScheduleEnded(root:number,reason:string,withdrawn:number):void {
+  const eventId=`saved-repeat-ended:${root}`;
+  if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))return;
+  const latest=db.query('SELECT id,session_id,accepted_input_id FROM turns WHERE saved_root_id=? ORDER BY saved_sequence DESC LIMIT 1')
+    .get(root) as {id:number;session_id:number;accepted_input_id:string|null};
+  recordSessionEvent({eventId,sessionId:latest.session_id,inputId:latest.accepted_input_id,turnId:latest.id,
+    kind:'saved_control',payload:{action:'schedule_ended',reason,withdrawn}});
 }
 
 /** Run the saved-work clock once before a queue wake drains claims. */

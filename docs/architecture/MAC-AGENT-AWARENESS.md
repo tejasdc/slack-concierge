@@ -101,11 +101,149 @@ This is a tool boundary;
 arbitrary programs outside the managed provider stream remain
 outside it. See [peer instances](../runbooks/PEER-INSTANCES.md#what-runs-on-the-mac).
 
+Tejas's November 6 direct Mac Codex instruction to install the thnkr.ing update is a
+provider-native user message, not a Concierge human input. The same retained Mac Codex
+thread later issued the outside request that reached the server repair worker. The Mac
+owner independently reads that local Codex transcript and verifies the exact user
+message, later request command and owner receipt before it marks the one peer request
+as update-authorized. Each accepted peer request must come from the exact server
+worker's still-running outside-request input and run, carry a work effect, and
+name the exact Safari web-app bundle, page and ready release. The Mac owner joins
+the currently open delivery by its own request ID and target input, so a failed
+request can be renewed with a fresh action ID without accepting a prose claim or
+replaying the same request ID. This evidence is kept separate from `originatingHuman`: an
+outside agent's statement that Tejas authorized an update does not turn into a human
+input. A missing or changed local transcript refuses the grant.
+
+The peer delivery row keeps the sender's local `concierge:9118` identity alongside
+peer `cloud`; provenance reads present that same session as `cloud:9118` on the Mac.
+The Mac guard uses the normalized source identity and joins the same exact delivery
+row by target input and request ID. Comparing the raw stored session to the
+normalized `cloud:9118` rejected the first exact passive request before Computer Use.
+
+For this grant, Computer Use may select the exact web app and make a same-program
+passive accessibility or screenshot read. Update clicks remain refused. Computer Use
+may also run one exact, fixed bounded accessibility read under this update grant.
+It selects the bundle again and asks for a full accessibility state, suppressing
+automatic emission on both calls. It explicitly writes one computed JSON result
+through the Computer Use REPL output API; an async expression's return value is
+not a tool result. The JSON contains only selected thnkr.ing URLs and counts of
+window, update, unsaved, recording and Deep work labels. This keeps the huge accessibility tree and
+draft text out of the agent result. Counts of zero are inconclusive when a control is
+collapsed or the accessibility tree omits it. The read is diagnostic; it does not
+establish document identity, safe update state or permission to click.
+Computer Use
+exposes a numeric accessibility index for a click, but no stable page ID, ready
+release identity or stable control handle. The former fixed program could identify
+the app window and an `Update now` label, but could not prove that the control
+belonged to the authorized page or release at click time. A read receipt does not
+prove the original page is still open, that its edits are saved, or that the new
+release loaded. The Mac worker must establish those separately before reporting an
+installed update. The local Codex transcript is verified on the Mac at the tool
+boundary because that machine holds the original provider history and the app.
+This is an audit and cooperative-agent policy boundary, not protection against an
+agent able to rewrite its own host's transcript or installed guard.
+The build named in the request identifies the offer observed before the ask; it is
+not a promise that the app will install that exact build. thnkr.ing's page-local
+update contract can carry one tap to a newer server release within its two-minute
+attempt, while the old page alone decides when saved work permits reload. The Mac
+worker must observe the actual running build after the page opens.
+The current update recovery no longer uses a historical page or
+Lekondo Canvas board ID as a click grant. The Mac-local Codex transcript proves Tejas's direct
+overnight instruction and the renewed outside request for the next ready web
+release, in that order. Only the new server source input/run and its still-open
+Mac peer delivery can grant an action; the earlier source is retired. A separate
+direct Mac work request names the exact WebApp bundle and either opening
+Workspace or pressing Update now. Content navigation does not require a new
+controller release or grant. The menu-open
+intent accepts the observed request wording, “Open Workspace once”; it does not
+depend on the literal word “menu.” While that exact delivery remains open,
+the Mac hook reads that current grant from the Mac owner on every native update
+action, even when the launch environment already names a Mac app. A missing owner
+answer refuses the action. It admits only the matching fixed invocation of
+`bot/scripts/mac-update-ax.swift`. The same hook admits exact `shasum -a 256`,
+`stat -f %Sp`, and `swiftc -typecheck` commands against either the launch
+environment's helper path or a quoted absolute path in Concierge's
+revision-named pinned helper directory under an ordinary Mac file request.
+Persistent provider sessions can retain an older launch environment after the
+coordinator updates, and a new session may have no helper-directory environment
+variable; the absolute form lets it verify current installed bytes without
+granting an app action.
+Those checks read or compile the source without performing an AX action;
+mentions of the helper in other commands still refuse without the attested
+action grant. This lets the Mac worker prove the installed bytes, mode and
+compiler compatibility before a one-shot app request.
+The one-shot Swift source checks the already-running bundle path and PID, one window,
+one WebArea at the HTTPS thnkr.ing origin, and one matching button under that
+WebArea. Its two traversals must retain the same process, window, WebArea,
+control and full URL; the helper re-reads that URL and control immediately before
+one native AX Press. A route or window change, ambiguous control or unknown
+origin refuses the action without a press. Immediately before Press, it atomically
+reserves a durable one-shot marker for the original request and action, regardless
+of the content route. It also refuses if either older page-specific marker was
+already spent, so a new helper release cannot replay an uncertain earlier press.
+A second invocation refuses even when the first AX result was ambiguous. The
+Workspace action can only open the menu and report the new control counts. A
+later, separately named Update now request can only press
+that unique first-tap control; any visible Update anyway control refuses it.
+The loaded page's own first-tap guard still decides whether unsaved work or voice
+activity holds installation, and the agent never presses Update anyway. The
+script is a one-off recovery action under the already-trusted Apple Swift process,
+not a standing helper identity or a new macOS permission grant. The hook is a
+cooperative agent boundary; the owner verifies source custody while the fixed
+script checks the live app and page immediately before the action.
+The app's ordinary Update now action checks unsaved drafts before beginning an
+install and shows a separate Update anyway choice when they exist. Its reload
+guard also waits for recordings and unsaved work. Those app checks do not turn
+an accessibility label into proof of the current page or ready release. A future
+update route needs a fresh, action-bound page and release identity, a positive
+safe-state signal and a stable target before Concierge can admit its click.
+
+The November 6 Mac Codex instruction also names the broken Deep work Stop and
+authorizes using and testing Tejas's Mac. The same original provider thread
+issued exact outside Focus recovery requests `5caf7de1-0937-46fe-9fc3-e72b48f119fc`
+and `775cda97-8177-4202-8545-b451f74ef3bd`. The Mac owner checks the
+original human message, both exact commands and their receipts in its local
+transcript. It does not invent a Concierge human input. The grant follows
+custody of request `775cda97-8177-4202-8545-b451f74ef3bd`, not one run: its
+first holder's run ended and that session was handed off, so a run-bound grant
+could never be presented again. When a server session sends a Mac-app work ask
+naming the exact Thinkering bundle and `bounded Focus Start/End acceptance`,
+the server attaches a custody attestation only if that session currently holds
+the open request (as a local, outside or peer-delivered request, after any
+handoffs). The Mac retains the attestation on the delivery; it reads no server
+handoff state. A Mac-app request must have a live work-effect peer delivery
+carrying that attestation (or the original source input/run
+`request:775cda97-…` / `e41da8b5-…`) and name the exact bundle plus the
+phrase. Only then does the Mac guard admit same-program passive reads
+and fixed native Start, verify-start and End commands. This is a single test route, not a
+general app or page control grant.
+
+The native action finds the one installed WebApp process, one window, one
+current thnkr.ing web area and one exact Deep work control. It reads twice,
+retains the accessibility object and URL, verifies them again immediately
+before a single Press, and persists an attempt marker first. The Start command
+records only that accessibility accepted the Press. A separate verify-start
+command must freshly read the enabled running Deep work control twice before End is allowed;
+End requires that verified state from the same process and URL within ten minutes.
+An uncertain Press is never repeated. A separate positive Focus backend readback
+is required before the worker calls either action successful;
+if the real account already has a Focus session, the worker must preserve it
+and skip Start and End. The helper never reloads, closes or navigates the app.
+The native helper executes under the Mac's existing Accessibility identity;
+if that identity lacks access, the route refuses rather than requesting a
+new permission. The Mac release packages the helper in its immutable pinned
+control directory, so the guarded command resolves to the installed bytes.
+
 The question gate accepts a device-only claim when its question names one action on a
 physical device. The agent first uses its available device route. If that route reaches
 a physical prerequisite such as unlocking his Mac, the question names that prerequisite.
 Starting one named app on an e-reader, watch or TV can also be a physical prerequisite:
 for example, KOReader must be started on a Kindle before it exposes an agent connection.
+For a physical USB connection, the question may name the instrument or controller
+and the host device (for example, "Please connect the Maschine+ to your Mac over
+USB."). This keeps the hardware name visible on the phone; a digital account or
+website connection is not a device prerequisite.
 The required explanation says which route was tried and why the agent cannot do that
 step itself. A generic request to open an app or website remains refused.
 The ask is the question's first sentence, phrased "Can you unlock your iPhone?" or

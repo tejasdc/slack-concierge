@@ -12,7 +12,7 @@ import { watchClaudeTranscript, type ClaudeTranscriptPickup } from "./claude-tra
 import { recordClaudeWorkload } from "./session-fit";
 import { webActivityDetails } from "./agent-progress";
 import { macSurfaceActivity } from "./mac-surface-activity";
-import { claudeUsageFallbackModels } from "./aliases";
+import { claudeUsageFallbackModels, DEFAULT_CLAUDE_SUBAGENT_MODEL } from "./aliases";
 import { assertUsageAvailable, cachedUsageLimit, recordUsageExhaustion, recordUsageSuccess,
   resetEpochMilliseconds, usageAttempt, usageLimitMessage, type UsageAttempt } from "./provider-usage";
 import { assertProviderForkPolicy, assertProviderInteractionPolicy, claudeConsultationArgs,
@@ -459,14 +459,16 @@ export function claudeCodeArgs(input: {
  * command remains a fallback for a machine awaiting its managed-hook installation.
  */
 const HOOK_SUFFIX = process.env.CONCIERGE_RELEASE_MANIFEST || process.env.CONCIERGE_PINNED_HELPERS_DIR ? "js" : "ts";
-const MANAGED_HISTORY_HOOK = `${process.env.CODEX_SYSTEM_DIR || "/etc/codex"}/hooks/concierge-history-guard`;
+// Hook settings are created by the owner but executed by the runner. Resolve machine-owned paths
+// from that process's environment so a Claude turn never carries the owner's Bun or system paths.
+const MANAGED_HISTORY_HOOK = '"${CONCIERGE_CODEX_SYSTEM_DIR:-/etc/codex}/hooks/concierge-history-guard"';
 /** Shell commands and monitors, file reads (so the Messages database refusal sees a direct read), plus browser navigation through MCP so the guard can name a website's runbook. */
 const BROWSER_AND_SHELL_MATCHER = "Bash|Monitor|Read|Grep|Glob|NotebookRead|mcp__.*|Computer|computer.*";
 export const CLAUDE_AGENT_HOOK_SETTINGS = JSON.stringify({ hooks: {
   Stop: [{ hooks: [{ type: "command",
-    command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/owed-reply-stop-hook.${HOOK_SUFFIX}" claude-code`, timeout: 20 }] }],
+    command: `"$CONCIERGE_BUN_BIN" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/owed-reply-stop-hook.${HOOK_SUFFIX}" claude-code`, timeout: 20 }] }],
   PreToolUse: [{ matcher: BROWSER_AND_SHELL_MATCHER, hooks: [{ type: "command",
-    command: `if [ -x "${MANAGED_HISTORY_HOOK}" ]; then "${MANAGED_HISTORY_HOOK}"; else "${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/history-guard.${HOOK_SUFFIX}"; fi`, timeout: 20 }] }],
+    command: `if [ -x ${MANAGED_HISTORY_HOOK} ]; then ${MANAGED_HISTORY_HOOK}; else "$CONCIERGE_BUN_BIN" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/history-guard.${HOOK_SUFFIX}"; fi`, timeout: 20 }] }],
 } });
 
 export async function runClaudeCodeTurn(input: {
@@ -1384,7 +1386,7 @@ export async function runClaudeCodeTurn(input: {
     args,
     cwd: input.cwd,
     environment: { ...(input.interactionPolicy === "consultation-only" ? claudeConsultationEnvironment(input.environment) : providerOwnerEnvironment(input.environment)),
-      CLAUDE_CODE_SUBAGENT_MODEL: input.environment?.CLAUDE_CODE_SUBAGENT_MODEL || "claude-sonnet-5" },
+      CLAUDE_CODE_SUBAGENT_MODEL: input.environment?.CLAUDE_CODE_SUBAGENT_MODEL || DEFAULT_CLAUDE_SUBAGENT_MODEL },
     ...(input.interactionPolicy === "consultation-only" ? { inheritEnvironment: false } : {}),
     stdin: `${claudeCodeUserMessage(input.prompt)}\n`,
     onStdinReady: (write, close) => {
@@ -1481,6 +1483,10 @@ export async function runClaudeCodeTurn(input: {
     });
   }
   if (!initialPromptAcknowledged) {
+    // Claude exits before its session exists when its launch itself is refused, and no transcript is
+    // written then; its own words on stderr are the only record of why (8876, 2026-11-06).
+    log("warn", "claude_code_ended_before_ack", { model: input.model ?? null, resumed: !!input.sessionUUID,
+      stderr_tail: stderr.replace(/\s+/g, " ").trim().slice(-600) || null });
     throw new Error("Claude Code ended before acknowledging the initial user message.");
   }
   if (!providerProducedResult) {

@@ -11,6 +11,7 @@ import { isAbsolute, join } from "node:path";
 import { createHash } from "node:crypto";
 import { SteeringNotSentError } from "./steering";
 import { WriteOutcomeUnknownError } from "./execution-host-client";
+import {providerRunnerTarget} from './provider-runner-target';
 
 /** Execution hosts have a supervisor PATH, so resolve the CLI on the owner before launch. */
 export function antigravityExecutable(): string {
@@ -34,6 +35,7 @@ export function antigravityExecutable(): string {
 }
 
 export function antigravityInstalled(): boolean {
+  if(providerRunnerTarget('antigravity'))return true;
   try { antigravityExecutable(); return true; } catch { return false; }
 }
 
@@ -342,8 +344,8 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
     if (quotaRefusal && beforeTurn) {
       // The error's prose may contain a duration, but only Google's fresh structured quota
       // reply can name a reset we may queue against.
-      const { scheduleProviderAccountUsageRefresh, providerAccountUsage } = await import("./provider-account-usage");
-      await scheduleProviderAccountUsageRefresh().catch(() => {});
+      const { scheduleProviderAccountUsageRefreshAfterCurrent, providerAccountUsage } = await import("./provider-account-usage");
+      await scheduleProviderAccountUsageRefreshAfterCurrent().catch(() => {});
       const usage = providerAccountUsage("antigravity");
       const account = usage?.accounts.find(item => item.current && !item.problem);
       if (!usage?.problem && account) {
@@ -351,8 +353,8 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
           .map(window => Date.parse(window.resetsAt ?? "")).filter(Number.isFinite);
         if (spent.length) clearsAtMs = Math.max(...spent);
       }
-      // The refusal is the truth. A reading that still shows room is itself broken, and on
-      // 2026-10-31 that went unnoticed for days; the repair agent hears of it once per day.
+      // The refusal is the truth even if a post-refusal reading still shows a small residual
+      // balance. The repair agent hears about that mismatch once per day.
       if (clearsAtMs === null) {
         try {
           const [{ db }, { publishProviderFreeNotice }] = await Promise.all([import("./state-database"), import("./provider-free-notice")]);

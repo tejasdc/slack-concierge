@@ -1,8 +1,29 @@
 /** Account binding for fresh Claude CLI work launched from a Concierge agent shell. */
-import {accessSync,constants,existsSync,realpathSync,readlinkSync,watch} from 'node:fs';
+import {accessSync,constants,existsSync,readdirSync,readFileSync,realpathSync,readlinkSync,watch} from 'node:fs';
 import {dirname,delimiter,isAbsolute,join,resolve,sep} from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {requestApiResponse} from './router-request-client';
+
+// When the owner places a launch on a runner, it names the account, not a path: the path is the
+// runner's own (runner-provider-accounts.ts). Passed through unresolved, Claude found no sign-in at
+// "runner-account:<email>" and every new Claude start on the server failed the identity check
+// (2026-11-11, Inbox takeover concierge:9326). Resolve it the way the runner does: the one local
+// account folder whose recorded account and saved sign-in match.
+const RUNNER_ACCOUNT_PREFIX='runner-account:';
+function runnerClaudeHome(account:string):string{
+  const root=join(process.env.HOME??'','.claude-accounts');
+  let names:string[]=[];
+  try{names=readdirSync(root).filter(name=>!name.startsWith('.'));}catch{}
+  const matches=names.map(name=>join(root,name)).filter(home=>{
+    try{
+      const recorded=readFileSync(join(home,'.account-email'),'utf8').trim();
+      const refresh=JSON.parse(readFileSync(join(home,'.credentials.json'),'utf8'))?.claudeAiOauth?.refreshToken;
+      return recorded===account&&typeof refresh==='string'&&refresh.length>0;
+    }catch{return false;}
+  });
+  if(matches.length!==1)throw new Error(`This runner has ${matches.length?'more than one':'no'} signed-in Claude folder for ${account}.`);
+  return matches[0]!;
+}
 
 const args=process.argv.slice(2);
 const wrapper=realpathSync(join(import.meta.dir,'claude'));
@@ -113,7 +134,8 @@ if(!passthrough){
   const choice=response.result?.choice as {account?:unknown;home?:unknown}|null;
   if(choice&&typeof choice.account!=='string')throw new Error('Concierge returned an invalid Claude account choice.');
   if(choice?.home!==null&&choice?.home!==undefined&&typeof choice.home!=='string')throw new Error('Concierge returned an invalid Claude account home.');
-  if(choice?.home)environment.CLAUDE_CONFIG_DIR=choice.home;
+  const home=choice?.home?.startsWith(RUNNER_ACCOUNT_PREFIX)?runnerClaudeHome(choice.home.slice(RUNNER_ACCOUNT_PREFIX.length)):choice?.home;
+  if(home)environment.CLAUDE_CONFIG_DIR=home;
   else delete environment.CLAUDE_CONFIG_DIR;
   if(choice?.account){
     // The directory is only a proposed route. Claude itself confirms the effective login.
@@ -122,7 +144,7 @@ if(!passthrough){
     try{identity=JSON.parse(status.stdout??'');}catch{throw new Error('Claude could not confirm the selected account.');}
     if(status.status!==0||!identity.loggedIn||identity.authMethod!=='claude.ai'||identity.apiProvider!=='firstParty'
       ||identity.email!==choice.account||!identity.configDirectory
-      ||realpathSync(identity.configDirectory)!==realpathSync(choice.home??join(process.env.HOME??'', '.claude'))){
+      ||realpathSync(identity.configDirectory)!==realpathSync(home??join(process.env.HOME??'', '.claude'))){
       throw new Error('Claude authenticated with a different account than Concierge selected.');
     }
   }

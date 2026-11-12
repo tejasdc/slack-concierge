@@ -1,4 +1,6 @@
-import {markTask,noteLedgerOccupied} from './owner-task-labels';
+import {markTask,markStorageStatement,clearStorageStatement,noteLedgerOccupied} from './owner-task-labels';
+import {existsSync,writeFileSync} from 'node:fs';
+const incidentSqlTraceEnabled=existsSync('/run/concierge-sql-incident-trace.enabled');
 /** The accepting loop enables this; workers and command-line readers pay no timing cost.
  * One interval has one slowest call, never SQL, values or an accumulating query history. */
 type Kind = 'statement' | 'transaction';
@@ -43,12 +45,19 @@ export function takeStorageInterval(): StorageInterval {
  * Nested calls contribute once to occupied time; a transaction includes its callback work. */
 export function observeSynchronousStorage<T>(kind: Kind, fingerprint: (() => string) | null, work: () => T, phases?: TransactionPhases): T {
   markTask();
+  if(incidentSqlTraceEnabled&&kind==='statement'){
+    try{writeFileSync(`/run/concierge-active-sql-${process.pid}.json`,JSON.stringify({
+      fingerprint:fingerprint?.()??null,stack:(new Error().stack??'').split('\n').slice(2,12)
+    }),{mode:0o600});}catch{}
+  }
   if (!enabled) return work();
   const outer = depth++ === 0;
   const start = performance.now();
+  const statementVersion=kind==='statement'&&fingerprint?markStorageStatement(fingerprint):0;
   if (phases) transactionStack.push(phases);
   try { return work(); }
   finally {
+    clearStorageStatement(statementVersion);
     if (phases) transactionStack.pop();
     depth--;
     const end = performance.now();

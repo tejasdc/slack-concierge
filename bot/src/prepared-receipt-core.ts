@@ -4,7 +4,8 @@ import {receiptStatusFromFacts,type StatusContext,type InputStatusDetail} from '
 import {survivableRunKinds} from './execution-survival';
 import {modelDisplayName} from './aliases';
 import {noticeTime} from './notice-time';
-import {receiveSessionFromPeer} from './peer-identity';
+import {inputProvenance,existingRunIdFor} from './input-provenance';
+import {receiptAttachmentProjection,type ReceiptAttachment} from './receipt-attachments';
 
 type SourceInput={id:string;session_id:number;kind:string;origin:string;source_input_id:string|null;
   source_run_id:string|null;
@@ -16,7 +17,8 @@ type Turn=NonNullable<ReceiptTurnFacts>&{id:number;native_run_id:string|null;end
 type Steering=ReceiptSteeringFacts&{error:string|null};
 type Conversation={known:boolean;outcome:string|null;targetSessionId:string|null;targetAddress:string|null;
   sourceInputId:string|null;resultPreview:string|null;acknowledgedAt:string|null};
-export type ReceiptDynamicFacts={kind:'exact';statusDetail:InputStatusDetail|null;providerOutage:unknown|null;provenance?:unknown|null};
+export type ReceiptDynamicFacts={kind:'exact';statusDetail:InputStatusDetail|null;providerOutage:unknown|null;
+  attachments:readonly ReceiptAttachment[];attachmentCount:number;provenance?:unknown|null};
 type ThreadLink={thread:string;attached:boolean;routedBy:unknown}|null;
 export type PreparedReceipt=Readonly<{
   operationId:string;sessionId:string;inputId:string|null;requestId:string|null;runId:string|null;
@@ -25,6 +27,8 @@ export type PreparedReceipt=Readonly<{
   replyToMessage:unknown|null;routedBy:unknown|null;settlementOutcome:string|null;childSessionId:string|null;
   textPreview:string|null;resultPreview:string|null;errorPreview:string|null;errorCode:string|null;
   textTruncated:boolean;resultTruncated:boolean;errorTruncated:boolean;
+  attachments:readonly ReceiptAttachment[];
+  attachmentsCoverage:Readonly<{complete:boolean;count:number}>;
   provenance:unknown|null;
   statusDetail:{code:string;message:string;messageTruncated:boolean;clearsAt:string|null;automaticRetry:boolean}|null;
   providerOutage:unknown|null;statusCoverage:'complete'|'catching_up';nextRefreshAtMs:number|null;detail:{operationId:string};
@@ -38,55 +42,8 @@ const preview=(value:unknown,maxBytes=384):{text:string|null;truncated:boolean}=
 const json=(value:string|null|undefined):any=>value?JSON.parse(value):{};
 const boundedObject=(value:unknown,maxBytes:number):unknown|null=>value!=null&&Buffer.byteLength(JSON.stringify(value))<=maxBytes?value:null;
 
-function sourceProvenance(source:Database,input:SourceInput):unknown|null{
-  const peer=(row:SourceInput)=>{
-    const delivery=source.query(`SELECT peer,origin_session_id,origin_input_id,origin_run_id,
-      requested_effect,origin_provenance_json FROM session_peer_deliveries WHERE target_input_id=?`)
-      .get(row.id) as {peer:string;origin_session_id:string;origin_input_id:string;origin_run_id:string;
-        requested_effect:string;origin_provenance_json:string|null}|null;
-    if(!delivery)return null;
-    const retained=json(delivery.origin_provenance_json);
-    const human=retained.originatingHuman&&typeof retained.originatingHuman.sessionId==='string'
-      ?{...retained.originatingHuman,sessionId:receiveSessionFromPeer(retained.originatingHuman.sessionId,delivery.peer)}:null;
-    return {source:{inputId:delivery.origin_input_id,runId:delivery.origin_run_id,
-      sessionId:receiveSessionFromPeer(delivery.origin_session_id,delivery.peer),peer:delivery.peer},
-      requestId:row.request_id,effectScope:retained.effectScope==='informational'||delivery.requested_effect!=='work'?'informational':'work',
-      originatingHuman:human,peer:delivery.peer};
-  };
-  if(!input.source_input_id||!input.source_run_id)return input.origin==='human'?null:boundedObject(peer(input),1000);
-  const seen=new Set<string>();let current:SourceInput|null=input,first:any=null,human:any=null,effect:'work'|'informational'|null=null;
-  while(current?.source_input_id&&current.source_run_id&&!seen.has(current.id)){
-    seen.add(current.id);
-    const parent=source.query('SELECT * FROM session_inputs WHERE id=?').get(current.source_input_id) as SourceInput|null;
-    const run=parent?.turn_id?source.query('SELECT native_run_id FROM turns WHERE id=? AND session_id=?')
-      .get(parent.turn_id,parent.session_id) as {native_run_id:string|null}|null:null;
-    if(!parent||run?.native_run_id!==current.source_run_id)break;
-    const identity={inputId:parent.id,runId:current.source_run_id,sessionId:`concierge:${parent.session_id}`};
-    first??=identity;
-    if(current.origin==='agent'&&['input','create','consultation','request'].includes(current.kind)){
-      const request=source.query(`SELECT payload_json FROM session_communication_requests WHERE request_id=?
-        AND ((target_input_id=? AND target_session_id=?) OR (?='request' AND source_session_id=?))
-        AND source_input_id=? AND source_turn_id=?`)
-        .get(current.request_id,current.id,current.session_id,current.kind,current.session_id,parent.id,parent.turn_id) as {payload_json:string}|null;
-      const remote=request?null:current.kind==='request'?source.query(`SELECT payload_json FROM session_peer_requests
-        WHERE request_id=? AND source_session_id=? AND source_input_id=? AND source_turn_id=?`)
-        .get(current.request_id,current.session_id,parent.id,parent.turn_id) as {payload_json:string}|null:null;
-      if(!request&&!remote)break;
-      const requested=json((request??remote)!.payload_json).requestedEffect??'informational';
-      effect=effect==='informational'||requested!=='work'?'informational':'work';
-    }
-    const corrected=source.query('SELECT 1 FROM session_input_author_corrections WHERE input_id=?').get(parent.id);
-    if(parent.origin==='human'&&!corrected){
-      const payload=json(parent.payload_json);
-      human={...identity,...(payload.capture?.id?{captureId:payload.capture.id}:{})};break;
-    }
-    current=parent;
-  }
-  const delivered=!human&&current?peer(current):null;
-  if(delivered){human=delivered.originatingHuman;effect=effect==='informational'||delivered.effectScope!=='work'?'informational':'work';}
-  return boundedObject(first?{source:first,requestId:input.request_id,effectScope:effect,originatingHuman:human,
-    ...(delivered?{peer:delivered.peer}:{})}:null,1000);
-}
+/** The same walk as the full record, read-only: the list must never name a different human. */
+const sourceProvenance=(source:Database,input:SourceInput)=>boundedObject(inputProvenance(source,input,existingRunIdFor(source)),1000);
 
 /** The worker provides exact live facts separately. A pending fact cannot masquerade as a
  * complete receipt; exact full bodies and return events stay behind the selected detail ID. */
@@ -104,7 +61,7 @@ export function compactReceiptFromFacts(input:SourceInput,turn:Turn|null,steerin
   const detail=dynamic.statusDetail;
   const detailMessage=preview(detail?.message,384);
   const textValue=preview(text),resultValue=preview(result),errorValue=preview(typeof error==='string'?error:error?.message);
-  const card:PreparedReceipt={operationId:input.id,sessionId:`concierge:${input.session_id}`,
+  let card:PreparedReceipt={operationId:input.id,sessionId:`concierge:${input.session_id}`,
     inputId:['input','create','consultation','comparison'].includes(input.kind)?input.id:
       ['request','reply'].includes(input.kind)?input.source_input_id:null,
     requestId:input.request_id,runId:input.kind==='stop'?payload.runId??null:control?null:turn?.native_run_id??null,
@@ -120,6 +77,7 @@ export function compactReceiptFromFacts(input:SourceInput,turn:Turn|null,steerin
     resultPreview:resultValue.text,errorPreview:errorValue.text,
     errorCode:typeof error==='object'&&error&&typeof error.code==='string'?preview(error.code,80).text:null,
     textTruncated:textValue.truncated,resultTruncated:resultValue.truncated,errorTruncated:errorValue.truncated,
+    attachments:[],attachmentsCoverage:{complete:false,count:dynamic.attachmentCount},
     provenance:dynamic.provenance??null,
     statusDetail:detail?{code:detail.code,message:detailMessage.text??'',messageTruncated:detailMessage.truncated,
       clearsAt:detail.clearsAt,automaticRetry:detail.automaticRetry}:null,
@@ -128,6 +86,15 @@ export function compactReceiptFromFacts(input:SourceInput,turn:Turn|null,steerin
       turn.dispatch_next_attempt_ms!==null&&turn.dispatch_next_attempt_ms>nowMs
       ?turn.dispatch_next_attempt_ms:null,
     detail:{operationId:input.id}};
+  // A bounded collection cannot contain an unbounded child collection. Carry the largest ordered
+  // prefix that fits; the existing exact detail reference owns the rare overflow.
+  for(const attachment of dynamic.attachments){
+    const candidate={...card,attachments:[...card.attachments,attachment]};
+    if(Buffer.byteLength(JSON.stringify(candidate))>4*1024)break;
+    card=candidate;
+  }
+  card={...card,attachmentsCoverage:{complete:card.attachments.length===dynamic.attachmentCount,
+    count:dynamic.attachmentCount}};
   // The list contract is a finite preview. A new field must not smuggle full retained text in.
   if(Buffer.byteLength(JSON.stringify(card))>4*1024)throw new Error('PREPARED_RECEIPT_EXCEEDS_BOUND');
   return card;
@@ -193,8 +160,10 @@ export function readCompactReceipt(source:Database,inputId:string):PreparedRecei
     session:(sessionId)=>{
       const row=source.query('SELECT status,provider_id,native_metadata_json FROM sessions WHERE id=?').get(sessionId) as
         {status:string;provider_id:string;native_metadata_json:string};
-      return {status:row.status,providerId:row.provider_id,suspended:!!json(row.native_metadata_json).suspended};
+      const metadata=json(row.native_metadata_json);
+      return {status:row.status,providerId:row.provider_id,suspended:!!metadata.suspended,outside:!!metadata.outside};
     },
+    otherLiveTurn:(sessionId,turnId)=>!!source.query("SELECT 1 FROM turns WHERE session_id=? AND id<>? AND status IN ('running','delivering') LIMIT 1").get(sessionId,turnId),
     deploymentHold:(providerId,inputKind)=>{
       if(!source.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get())return false;
       const survivable=survivableRunKinds(source);
@@ -229,6 +198,9 @@ export function readCompactReceipt(source:Database,inputId:string):PreparedRecei
     WHERE session_id=? AND kind='thread_link' AND input_id=? ORDER BY sequence DESC LIMIT 1`)
     .get(input.session_id,input.id) as {payload_json:string}|null:null;
   const link=linkRow?json(linkRow.payload_json) as ThreadLink:null;
+  const attachmentProjection=receiptAttachmentProjection(source,input.kind,json(input.payload_json));
   return compactReceiptFromFacts(input,turn,steering,conversation,stopped?.status??null,
-    {kind:'exact',statusDetail,providerOutage,provenance:sourceProvenance(source,input)},nowMs,link);
+    {kind:'exact',statusDetail,providerOutage,attachments:attachmentProjection.attachments,
+      attachmentCount:attachmentProjection.count,
+      provenance:sourceProvenance(source,input)},nowMs,link);
 }

@@ -12,6 +12,7 @@ import { reconcileRecoverableTurns, type TurnRecoveryServices } from "../src/tur
 import { acquireDatabaseTestLock } from "./db-lock";
 import { attachSessionSteering, bindSessionProvider, createNativeSession, enqueueSessionInput, getAcceptedSessionInput, nativeRunId, retainSessionInput, sessionMetadata } from "../src/session-inputs";
 import { SessionExecutionHost } from "../src/session-execution-host";
+import {fixtureThesaurusContext} from './fixture-thesaurus';
 import { ActiveTurnDispatchRegistry } from "../src/turn-dispatch-seams";
 import type { RunResult } from "../src/codex";
 
@@ -83,7 +84,7 @@ describe("native turn restart recovery", () => {
     scheduleWorkingReactionCleanup: forbidSlack,
   };
   const host = () => new SessionExecutionHost({ instanceId: "replacement-runtime", providers: {}, defaultCwd: "/tmp",
-    registry: new ActiveTurnDispatchRegistry({ onStarted: () => {}, onSettled: () => {} }), wake: () => {} });
+    registry: new ActiveTurnDispatchRegistry({ onStarted: () => {}, onSettled: () => {} }), wake: () => {},thesaurusContext:fixtureThesaurusContext });
   const recover = (overrides: Partial<TurnRecoveryServices> = {}, extra: Record<string, unknown> = {}) => reconcileRecoverableTurns({
     client: null, nativeOnly: true, instanceId: "replacement-runtime", isOwnerAlive: () => false,
     services: { ...services, ...overrides }, ...extra,

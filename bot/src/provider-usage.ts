@@ -177,8 +177,29 @@ export function clearCodexAccountUsage(accountId: string, verifiedReadStartedAtM
   return cleared;
 }
 
-/** The verified reset permits ordinary work on the active Codex login, not saved bindings. */
-export function releaseCodexOrdinaryUsageHeldWork(accountId: string): number {
+/**
+ * A Codex refusal is retired by a later reading of the same account that shows every window
+ * with room and no window still ending at the refused reset time: the window that refused has
+ * been replaced (a reset spent elsewhere, or on another machine sharing the login). Without
+ * this, only a reset Concierge spent itself cleared the mark, and on 2026-11-06 a Nov 3 refusal
+ * of tejas@chann.app (cached until Nov 9 19:36 UTC) held every Codex turn while the account read
+ * 7% used with its week ending Nov 12. A reading of the same window at 99% keeps the refusal.
+ */
+export function retireCodexRefusalSupersededByReading(label: string,
+  windows: ReadonlyArray<{ usedPercent: number; resetsAt: string | null }>, readAtMs: number): boolean {
+  const attempt = usageAttempt("codex", undefined, label);
+  const limit = cachedUsageLimit(attempt);
+  if (!limit || limit.resetAt === null || limit.observedAt >= readAtMs) return false;
+  if (!windows.length || !windows.every(window => window.usedPercent < 100 && window.resetsAt)) return false;
+  if (windows.some(window => Math.abs(Date.parse(window.resetsAt!) - limit.resetAt!) < 60_000)) return false;
+  const cleared = clearCodexAccountUsage(attempt.scope, readAtMs);
+  log("info", "codex_refusal_superseded_by_reading", { cleared, refused_until: new Date(limit.resetAt).toISOString(),
+    refused_observed_at: new Date(limit.observedAt).toISOString(), read_at: new Date(readAtMs).toISOString() });
+  return cleared;
+}
+
+/** A verified active Codex login permits ordinary and unbound scheduled work, not banked bindings. */
+export function releaseCodexUnboundUsageHeldWork(accountId: string): number {
   if (!accountId || currentAccount("codex")?.id !== accountId) return 0;
   return releaseScheduledProviderRetries("codex", true);
 }
@@ -189,10 +210,10 @@ export function releaseCodexOrdinaryUsageHeldWork(accountId: string): number {
  * Called where a credential change becomes effective; it schedules, it does not replay.
  */
 export function releaseUsageHeldWork(provider: UsageProvider, releasedBy = "account_switch"): number {
-  // A Codex login is shared by all new turns, while saved work may be bound to a
-  // different account or time. A generic room observation only wakes ordinary work.
+  // A Codex login is shared by ordinary turns and unbound schedules. Banked work
+  // spends its selected account's window and cannot be woken by another login.
   const released = provider === "codex"
-    ? releaseCodexOrdinaryUsageHeldWork(currentAccount("codex")?.id ?? "")
+    ? releaseCodexUnboundUsageHeldWork(currentAccount("codex")?.id ?? "")
     : releaseScheduledProviderRetries(provider);
   if (released > 0) {
     log("info", "provider_usage_hold_released", { provider, released, released_by: releasedBy });
@@ -209,7 +230,9 @@ export function releaseProvenUsageHolds(attempt: UsageAttempt, account: string, 
     JOIN sessions ON sessions.id=turns.session_id
     WHERE turns.status='queued' AND turns.dispatch_failure_class IN ('backoff','usage_wait')
       AND turns.dispatch_hold='usage'
-      AND sessions.provider_id=?`).all(attempt.provider) as {id:number;provider_model:string|null}[];
+      AND sessions.provider_id=?
+      AND (?<>'codex' OR turns.saved_kind IS NULL OR
+        (turns.saved_kind='scheduled' AND turns.saved_account IS NULL))`).all(attempt.provider,attempt.provider) as {id:number;provider_model:string|null}[];
   const ids = rows.filter(row => attempt.provider === 'codex' ||
     (row.provider_model === null ? defaultModelWasChecked : usageAttempt('claude-code',row.provider_model,account).scope===attempt.scope))
     .map(row=>row.id);

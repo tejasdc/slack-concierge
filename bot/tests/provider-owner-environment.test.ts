@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { providerOwnerEnvironment } from "../src/provider-owner-environment";
 import { runClaudeCodeTurn, SubprocessClaudeCodeTransport } from "../src/claude-code";
@@ -41,13 +41,16 @@ test("service paths override stale caller and inherited helper paths without cha
   const { state, environment } = fixture();
   const result = providerOwnerEnvironment({
     CONCIERGE_STATE_DIR: "/wrong/state", CONCIERGE_STATE_DB: "/wrong/state.db",
-    CONCIERGE_ROUTER_BOT_DIR: "/wrong/bot", CONCIERGE_SLACK_CONFIG: "/wrong/slack.toml",
+    CONCIERGE_ROUTER_BOT_DIR: "/wrong/bot", CONCIERGE_ROUTER_ACTIONS: "/wrong/release/control/bot/scripts/router-actions.sh",
+    CONCIERGE_SLACK_CONFIG: "/wrong/slack.toml",
     CONCIERGE_SOURCE_INPUT_ID: "input-exact", CONCIERGE_SOURCE_RUN_ID: "run-exact",
     CONCIERGE_COMMIT_PROVENANCE: "turn-token", CUSTOM_CONTEXT: "preserved",
   }, { ...environment, CONCIERGE_ROUTER_BOT_DIR: "/inherited/production/bot" });
   expect(result).toEqual({
     CONCIERGE_STATE_DIR: state, CONCIERGE_STATE_DB: join(state, "state.db"),
-    CONCIERGE_ROUTER_BOT_DIR: botDirectory, CONCIERGE_SLACK_CONFIG: environment.CONCIERGE_CONFIG_PATH,
+    CONCIERGE_ROUTER_BOT_DIR: botDirectory,
+    CONCIERGE_ROUTER_ACTIONS: join(homedir(), ".local", "bin", "router-actions.sh"),
+    CONCIERGE_SLACK_CONFIG: environment.CONCIERGE_CONFIG_PATH,
     CONCIERGE_BUN_BIN: process.execPath, PATH: `${join(botDirectory,"scripts")}:/usr/local/bin:/usr/bin:/bin`,
     CONCIERGE_RUNTIME_PROFILE: "sandbox", CONCIERGE_SLACK_ENABLED: "1",
     CONCIERGE_SOURCE_INPUT_ID: "input-exact", CONCIERGE_SOURCE_RUN_ID: "run-exact",

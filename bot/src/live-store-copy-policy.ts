@@ -67,6 +67,18 @@ function executableText(command: string): string {
   return text;
 }
 
+/** The committee's argparse help exits before its read-only ledger lookup or NotebookLM
+ * evidence copy. Its module form already avoids script inspection; give the direct file form
+ * the same treatment for these two help invocations only. */
+function committeeHelp(command: string, cwd: string): boolean {
+  if (/[;&|<>`$()\n\r]/.test(command)) return false;
+  const match = command.match(/^\s*(?:PYTHONPATH=\S+\s+)?(?:\S*\/)?python(?:3(?:\.\d+)?)?\s+(\S*committee\.py)\s+(?:open|twin)\s+--help\s*$/);
+  if (!match) return false;
+  const script = resolve(cwd || '.', match[1]);
+  try { return realpathSync(script) === '/root/workspace/agent-ecology/scripts/committee.py'; }
+  catch { return false; }
+}
+
 function mentionedScripts(command: string, cwd: string): string {
   let text = '';
   for (const match of [...command.matchAll(SCRIPT), ...command.matchAll(DIRECT_SCRIPT)]) {
@@ -110,10 +122,16 @@ function namesLiveStore(text: string, cwd: string, stores: LiveStores): boolean 
   return false;
 }
 
-export function liveStoreCopyRefusal(command: string | null, cwd = '', stores = liveStores()): string | null {
+/** `inspectScripts: false` is for the sealed private code entrance only: the code it runs cannot
+ * see the live stores (hidden mounts), so reading a fixture's own test strings, which name live
+ * paths and copy commands on purpose, refused the documented entrance (2026-11-06). The command
+ * as typed is still checked. */
+export function liveStoreCopyRefusal(command: string | null, cwd = '', stores = liveStores(),
+  { inspectScripts = true }: { inspectScripts?: boolean } = {}): string | null {
   if (!command) return null;
   if (standaloneRouterCall(command)) return null;
-  const inspected = command + mentionedScripts(command, cwd);
+  const inspected = inspectScripts && !committeeHelp(command, cwd)
+    ? command + mentionedScripts(command, cwd) : command;
   let canonicalCwd = cwd;
   try { canonicalCwd = realpathSync(cwd); } catch {}
   const inLiveDirectory = STATE_DIR.test(canonicalCwd) || stores.directories.includes(canonicalCwd);

@@ -7,6 +7,7 @@ import {getAcceptedSessionInput,recordSessionEvent,updateSessionMetadata} from '
 import {claudeHistoryMessages,codexHistoryMessages,type ProviderHistoryMessage} from '../src/provider-history';
 import type {AgentProvider} from '../src/providers';
 import {acquireDatabaseTestLock} from './db-lock';
+import {fixtureThesaurusContext} from './fixture-thesaurus';
 import {acceptedInputAuthor,historicalInputAuthor} from '../src/session-message-author';
 import {projectSessionHistoryMessage} from '../src/session-history-projection';
 
@@ -29,7 +30,7 @@ beforeEach(async()=>{
     history:async()=>({messages:[...messages],nextCursor:'native-cursor',coverage:{complete:false,omissions:['older page']}}),
     run:async input=>{run=input;input.onProviderThreadStarted?.('native-thread');if(provider.id==='codex')input.onProviderTurnStarted?.('native-turn');input.onInputAcknowledged?.();echo(input.prompt,input.clientUserMessageId!);
       input.onSteeringReady?.(async message=>{echo(message.text,message.clientMessageId);});ready();await finished;input.onProviderTerminal?.();return {text:'answer',sessionUUID:'native-thread',toolsUsed:[]};}};
-  host=new SessionExecutionHost({instanceId:'history-owner',registry:new ActiveTurnDispatchRegistry({onStarted:()=>{},onSettled:()=>{}}),providers:{codex:provider,'claude-code':provider},defaultCwd:'/tmp',wake:()=>{}});
+  host=new SessionExecutionHost({instanceId:'history-owner',registry:new ActiveTurnDispatchRegistry({onStarted:()=>{},onSettled:()=>{}}),providers:{codex:provider,'claude-code':provider},defaultCwd:'/tmp',wake:()=>{},thesaurusContext:fixtureThesaurusContext});
 });
 afterEach(async()=>{finish();await task;clear();unlock();});
 async function start(){const claim=claimNextQueuedTurn('history-owner')!;expect(claim).not.toBeNull();task=host.run(claim);await started;return claim;}

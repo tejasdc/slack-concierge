@@ -1,5 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {db,getSessionById} from './state';
+import {CURRENT_INBOX_ID_SQL} from './inbox-lineage-sql';
 import {recordSessionEvent,retainSessionInput,sessionMetadata} from './session-inputs';
 import type {TopicActor} from './session-topics';
 
@@ -142,8 +143,7 @@ export function areasCommand(actor:TopicActor,body:any){
 
 function humanAreaMutation(clientActionId:unknown,payload:any,result:any){
   const actionId=words(clientActionId,'clientActionId',200);
-  const inbox=db.query("SELECT id FROM sessions WHERE json_extract(native_metadata_json,'$.inbox')=1 ORDER BY id DESC LIMIT 1")
-    .get() as {id:number}|null;
+  const inbox=db.query(CURRENT_INBOX_ID_SQL).get() as {id:number}|null;
   if(!inbox)throw new AreaError('Inbox is unavailable.',503,'INBOX_UNAVAILABLE');
   return db.transaction(()=>{
     const saved=retainSessionInput({sessionId:inbox.id,scope:'surface:thinkering',actionId,

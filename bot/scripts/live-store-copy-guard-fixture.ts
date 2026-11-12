@@ -97,14 +97,19 @@ process.stdout.write(JSON.stringify({hookSpecificOutput})+'\\n');`);
   check(execute(wrappedRelease+'; npm run build').permissionDecision==='deny','a second package launch escaped the private wrapper');
   check(execute(`${bun} run ${privateCommand} -- npm run ship -- --checked "$(npm run build)"`).permissionDecision==='deny','command substitution escaped the private wrapper');
   check(execute('npm run ship -- --checked "Web build passed; handwriting panel checked"').permissionDecision==='deny','direct release escaped the inherited-live guard');
+  // A fixture's source names live paths and copy commands as test data (2026-11-06 refusal).
+  const sourceFixture=join(root,'copy-strings-fixture.ts');
+  writeFileSync(sourceFixture,`const example='sqlite3 /root/.local/state/${'concierge'}/state.db ".backup /tmp/copy.db"';\n`);
+  check(execute(`${bun} run ${privateCommand} -- ${bun} ${sourceFixture}`).additionalContext==='PINNED_OLD_SEMANTIC','private entrance was refused for a fixture whose source names live paths');
+  check(execute(`${bun} ${sourceFixture}`).permissionDecision==='deny','a live-path fixture outside the private entrance was not refused');
   const privateEnv=run(bun,['run',privateCommand,'--','/usr/bin/env'],{CONCIERGE_STATE_DIR:join(homedir(),'.local/state/'+'concierge')});
   check(/CONCIERGE_STATE_DIR=\/tmp\/concierge-private-code-/.test(privateEnv),'private command did not replace inherited live state');
   const canonical=join(homedir(),'.local/state/'+'concierge');
-  const probe=`const fs=require('node:fs');try{fs.accessSync(${JSON.stringify(canonical)},fs.constants.R_OK|fs.constants.X_OK);process.exit(11)}catch(error){if(error.code==='EACCES')console.log('hidden');else throw error}`;
+  const probe=`const fs=require('node:fs');try{fs.accessSync(${JSON.stringify(join(canonical,'state.db'))},fs.constants.R_OK);process.exit(11)}catch(error){if(error.code==='EACCES'||error.code==='ENOENT')console.log('hidden');else throw error}`;
   // GitHub's clean worker has no production ledger to hide. The installed builder on the
   // service host still proves the mount boundary against its existing canonical directory.
   if(existsSync(canonical))
-    check(run(bun,['run',privateCommand,'--',bun,'-e',probe],{CONCIERGE_STATE_DIR:canonical}).trim()==='hidden','private child could access canonical live state');
+    check(run(bun,['run',privateCommand,'--',bun,'-e',probe],{CONCIERGE_STATE_DIR:canonical}).trim()==='hidden','private child could open the canonical live ledger');
   else check(process.env.GITHUB_ACTIONS==='true','canonical live state missing outside the clean CI worker');
   // The ledger's own filesystem, reached by its real path rather than the state directory's link.
   if(existsSync(join(canonical,'state.db'))){

@@ -9,6 +9,7 @@ import {ProviderDispatchError} from '../src/provider-failures';
 import {getAcceptedSessionInput,recordSessionEvent,updateSessionMetadata} from '../src/session-inputs';
 import {inboxHistory} from '../src/session-inbox';
 import {acquireDatabaseTestLock} from './db-lock';
+import {fixtureThesaurusContext} from './fixture-thesaurus';
 import type {AgentProvider} from '../src/providers';
 
 let unlock:()=>void,detach:()=>void,host:SessionExecutionHost,calls:number;
@@ -16,7 +17,7 @@ const clear=()=>{for(const table of ['session_owner_events','session_communicati
 const provider=(terminalConfirmed:boolean):AgentProvider=>({id:'codex',fork:async()=>{throw new Error('not called');},run:async()=>{calls++;throw new ProviderDispatchError({message:'Retained native provider refusal',failureClass:'parked_terminal',terminalConfirmed});}});
 beforeEach(async()=>{
   unlock=await acquireDatabaseTestLock();clear();calls=0;
-  host=new SessionExecutionHost({instanceId:'attention-owner',registry:new ActiveTurnDispatchRegistry({onStarted:()=>{},onSettled:()=>{}}),providers:{codex:provider(true)},defaultCwd:'/tmp',wake:()=>{}});
+  host=new SessionExecutionHost({instanceId:'attention-owner',registry:new ActiveTurnDispatchRegistry({onStarted:()=>{},onSettled:()=>{}}),providers:{codex:provider(true)},defaultCwd:'/tmp',wake:()=>{},thesaurusContext:fixtureThesaurusContext});
   detach=installSessionProjection(host.owner);
 });
 afterEach(()=>{detach();clear();unlock();});

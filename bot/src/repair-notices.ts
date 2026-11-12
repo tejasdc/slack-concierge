@@ -82,13 +82,19 @@ export function repairNoticeText(notices: PendingRepairNotice[], when: (ms: numb
  * Delivers pending notices now and then once a minute. Writers outside Concierge (a failure hook,
  * the outside monitor) record while it is down; the first pass after it starts hands them over.
  */
-export function startRepairNoticeDelivery(deliver: () => number, log: (level: "info" | "error", event: string, fields: Record<string, unknown>) => void): () => void {
+export function startRepairNoticeDelivery(deliver: () => number|Promise<number>, log: (level: "info" | "error", event: string, fields: Record<string, unknown>) => void): () => void {
+  let running=false;
   const pass = () => {
+    if(running)return;
+    running=true;
     try {
-      const delivered = deliver();
-      if (delivered) log("info", "repair_notices_delivered", { count: delivered });
+      Promise.resolve(deliver()).then(delivered=>{
+        if (delivered) log("info", "repair_notices_delivered", { count: delivered });
+      }).catch(error=>log("error", "repair_notice_delivery_failed", { error: String(error) }))
+        .finally(()=>{running=false;});
     } catch (error) {
       log("error", "repair_notice_delivery_failed", { error: String(error) });
+      running=false;
     }
   };
   pass();

@@ -40,6 +40,11 @@ candidate can be built.
 
 `bot/scripts/deploy.sh` remains the operator-only forced rollout and recovery
 entrypoint. Ordinary agents do not invoke it or register deployment requests.
+In an operator-controlled offline rollout, it stops a still-running old owner
+before activating the candidate. This prevents an unresponsive owner from
+holding the ledger writer while the controller records the activation. The
+provider drain is already held at this point; the candidate starts through the
+normal release sequence after activation.
 
 The candidate-owned presentation check writes bounded step and reader markers to stderr.
 Even an older installed controller that retains only stderr can show the last marker;
@@ -47,6 +52,18 @@ the updated controller also retains stdout and process status. The markers name 
 checks, never private content. A fresh run of the same isolated check passing does not
 establish why an earlier candidate timed out; compare its last marker with the host's
 resources before changing the gate's deadline or candidate behavior.
+
+The serving coordinator records the start and elapsed time of each request-surface stop during
+SIGTERM. For a long `verifying` interval, compare `service_drain_surface_stopping` and
+`service_drain_surface_stopped` in `concierge-bot.service`'s journal with the deployment run's
+`verifying` and `releasing` events. A release can wait for active provider work while the old
+service is still serving; the duration of the whole release is not the duration of the restart.
+When the server owner stops, peer request status and reply reads are canceled before it waits
+for its request workers. The exact request and reply identities remain in its ledger for the
+next owner to reconcile; a peer admission POST is never canceled on the assumption that it did
+not arrive. This keeps a sleeping Mac from holding Concierge's server shutdown through the
+peer read deadline. The foreground request gateway still becomes unavailable at stop start,
+so compare that timestamp with the final request-surface stop marker to measure the actual gap.
 
 The stable controller launcher resolves its control artifact once for each invocation.
 Restoring or promoting the control pointer cannot switch a running deployment's helper
@@ -386,6 +403,11 @@ remains fully open to new turns and queued user work continues normally. A turn
 completion wakes the runner only after Concierge has synchronously promoted any
 queued successor. A long fallback wake protects liveness if a nonstandard owner
 completion emits no signal; it is not an active two-second provider poll.
+Runner sign-in start reserves its pending operation against that same drain gate
+before launching the provider CLI. If the release has claimed the gate, the
+sign-in does not start; if the sign-in reserved first, drain waits for it. The
+[sign-in interruption record](../incidents/2026-11-06-signin-started-inside-deployment-drain.md)
+captures the race this excludes.
 Further accepted pushes advance the same durable desired record and are included
 by the active pull or the next run after the current run reaches a terminal state.
 
@@ -515,6 +537,17 @@ SQL treats them as comment text, but the TypeScript parser sees them first. A
 compile failure leaves no candidate artifact and the deploy restores the prior
 LKG without changing the immutable control authority.
 
+### Candidate schema comparison
+
+The candidate's schema comparison scans the live ledger read-only both before and
+after the coordinator stops. SQLite can refuse a WAL reader while another
+connection closes or recovers. On `SQLITE_BUSY`, the comparison closes its
+connection and retries the entire scan up to three times, with one second between
+attempts; a persistent refusal still fails the release and preserves the
+last-known-good recovery path. The retry never reuses a partial schema result,
+changes the backup decision, or starts the coordinator. See the
+[November 5 lock incident](../incidents/2026-11-05-offline-schema-read-busy.md).
+
 Dependency directories are mutable installation output and must never be
 committed, including as absolute symlinks from a task worktree. A symlink that
 targets the service checkout's own dependency directory becomes self-referential
@@ -627,6 +660,9 @@ unit starts again after its durable run has already reached `succeeded`,
 `failed`, or `ambiguous`, the claim command reports that terminal state and the
 runner exits successfully without repeating deployment work. This prevents a
 terminal run from becoming a permanent ten-second systemd restart loop.
+While the repair supervisor owns a nonterminal run, claim reports that ownership
+and the old runner also exits successfully. A later reviewed retry gets a new
+claim only when the durable run returns to `retrying`.
 
 Terminal diagnostics lead with the deployment outcome and a plain-language
 reason for the failed operation. No deployment outcome starts a feature-agent
@@ -723,7 +759,20 @@ including every module's import-time schema work. Each step runs under its own w
 long block's `owner_task_blocked` names it, and the watchdog's `ledger_wait_ms` counts ledger time
 from the first statement (before 2026-11-05 it began only once the owner object existed and read 0
 for a 126 s start, incident ce2c2192). Startup costs what changed since the last start, not the size
-of history. Each sweep over history (forwarded final answers, timed-post retirement, the purpose
+of history. The schema owner checks all foreign keys only when this startup changes the schema;
+ordinary writes enforce foreign keys, and the release controller verifies migration backups.
+Recovery scans the existing index of open execution hosts rather than historical released hosts.
+Historical execution-folder pruning starts after online, two minutes later,
+in small pages. It never gates adoption or the request entrance; each pruned
+record is marked only after its cleanup finishes, so a stopped pass can safely
+resume on the next owner.
+The historical unreadable-reading repair records its completion; new reading items are checked
+at admission. During shutdown the read-only provider-history worker is asked to terminate without
+holding the service for a synchronous read, and each execution-host stop component logs its time.
+Every awaited stop after the request surfaces close also logs its duration, so an
+ordinary release can distinguish cleanup work from custody-preserving waits.
+See [the restart-gap incident](../incidents/2026-11-06-owner-restart-gap.md) for the measured boundary.
+Each sweep over history (forwarded final answers, timed-post retirement, the purpose
 backfill) is a catch-up over a key range with a high-water mark recorded as a `startup_catch_up`
 event on the Inbox session. Every unfinished range, including work left by an interrupted pass,
 runs two minutes after Concierge reports online, in small pages with a pause between them and a
@@ -853,6 +902,11 @@ checks integrity and foreign keys after `COMMIT` on only the tables it changed (
 each added index or trigger, each added table or column; the whole ledger when a change names
 something else), closes the migrator, then the runner
 starts the coordinator and checks health and adoption. Execution hosts are never stopped.
+The offline migrator emits `deployment_migration_phase` start and completion records for schema
+comparison, backup verification or a late backup, schema import and commit, integrity checks,
+and backup retention. A missing completion record identifies the phase that failed or stalled;
+durations are measured inside the migrator, so an operator can distinguish its work from the
+service stop, candidate launch and request API opening before changing a safety gate.
 Control recovery uses the same ordering. The combined manual command also requires the
 coordinator fully stopped; it cannot run schema work against a serving owner.
 
@@ -893,6 +947,10 @@ with the exact request ID and source pair; it reads through the owner API.
 The raw-copy check recognizes copy tools in command position, so words such as
 `install` in a quoted reply are ordinary message text. A standalone session helper
 call is handled as an owner API call; a chained shell copy is still checked.
+The agent-ecology committee's direct `open --help` and `twin --help` commands are
+recognized as argparse help, matching their already-allowed Python module form. The
+guard still checks the command text and inspects that script for other actions; see
+[the committee help failure record](../incidents/2026-11-06-committee-help-copy-guard.md).
 The machine wrapper makes this current check authoritative before invoking an
 older running agent's pinned semantic hook. At installation it derives a compatibility
 copy from each retained, recognized bundled hook, removing exactly its duplicate
@@ -905,7 +963,9 @@ additional hook runs the same current decision before its pinned semantic pass.
 The private entrance creates fresh temporary ledger and capture paths
 before executing any requested code and applies the same Linux mount isolation as release
 checks. Use the exact installed command printed by the guard, followed by `--` and the
-check command. Router API commands and ordinary shell inspection remain available outside
+check command. For that exact entrance the raw-copy check reads only the typed command,
+not the source of the scripts it runs: fixtures name live paths and copy commands as test
+data, and the hidden live mounts, not text matching, keep their code from the ledger. Router API commands and ordinary shell inspection remain available outside
 it; inside it Concierge is hidden, so router commands and fresh Claude launches refuse at
 once with that explanation instead of waiting for a restart. This
 closes the observed old archive-check import path; shell text checks are not a security
@@ -925,7 +985,9 @@ source inspection applies to executed scripts, not files merely read by `rg` or 
 When the canonical directory is accessible, the gate exercises the packaged controller with
 private state mounted at the canonical path but configured through its original temporary
 path outside home. The database's matching device/inode identity still selects live-entrypoint
-policy; the test-mode home-directory guard remains enforced. Configuring the child with the
+policy; a scratch owner socket returns the expected missing-release result and records that the
+packaged controller actually used the owner read while a separate database writer is held.
+The test-mode home-directory guard remains enforced. Configuring the child with the
 canonical home path instead caused incident `deb48b05` on October 10: the guard correctly
 refused the child before its `lkg` command could report a missing release. This candidate-owned
 check is also consumed by the preceding installed builder, so the correction needs no control
@@ -1002,6 +1064,28 @@ stop deadline and the pending restart proceeds; `systemctl kill --kill-whom=main
 --signal=SIGKILL concierge-bot.service` does the same sooner. Until then the held
 deployment gate queues every session input as `DEPLOYMENT_HOLD`.
 
+At the start of a planned drain, the Codex session observer stops accepting
+notifications before the first awaited shutdown step. Its in-flight provider
+reads check that stop before writing lifecycle or history observations. It
+rejects pending reads and terminates only its separate App Server bridge at
+drain entry, without waiting for the bridge's stream-write callback. The next
+owner refreshes those observations from the App Server after its request API
+opens; the observer does not own turn or request custody. An orderly stop does
+not mark those sessions disconnected. This keeps observational ledger writes
+from blocking the capture worker's stop during a release. Actual connection
+loss while serving still records uncertainty. The 2026-11-06 06:43 release showed a
+9.290-second lifecycle write lock wait after drain began and a 9.304-second
+capture stop despite claim cancellation; this ordering addresses that measured
+overlap without changing capture delivery acknowledgment or adoption.
+
+`capture_delivery_stop_timing` divides the capture worker's release stop into
+the synchronous queue-claim cancellation (`abort_ms`) and the remaining join
+(`join_ms`), with `activity_at_stop` identifying whether it was claiming,
+delivering, or between requests. Compare this line with `owner_task_blocked` and
+the `capture_delivery` drain-step duration before attributing an unmarked pause
+to cancellation. Delivery acknowledgment remains awaited to preserve its exact
+receipt.
+
 The unit starts the already-installed managed Codex App Server if it is absent,
 but ordinary deployment and autonomous repair never update, stop, or restart
 that daemon. See [Codex App Server lifecycle](CODEX-APP-SERVER.md).
@@ -1074,6 +1158,31 @@ that effect automatically.
 - Use isolated task worktrees for concurrent changes. Code and host configuration travel
   through their Git origins; host services belong in remote-box. Never hand-edit installed
   units or copy source into a service checkout.
+
+### Worktree rebases
+
+From a linked task worktree, run `scripts/rebase-worktree.sh` to fetch and rebase
+onto `origin/main`. The command uses `git stash create` to obtain the exact object
+ID for tracked and staged changes, pins that object under `refs/worktree/` for this
+worktree, then restores from that ID after the rebase. It never reads, pops or drops
+the repository-wide stash stack, so another worktree's stash activity cannot change
+which object is applied here. A clean worktree rebases without saving anything.
+It refuses a branch already on the remote before touching local changes: pushed
+history is never rebased. Use a new task worktree for follow-up work.
+
+Untracked files make the command stop before changing the worktree because `stash
+create` does not include them; stage or commit them first. If the rebase stops, the
+saved object remains pinned. Resolve or abort the rebase, make the worktree clean,
+then run `scripts/rebase-worktree.sh --restore`. If applying the saved object
+conflicts or is interrupted, the saved object and an attempted-restore marker
+remain. The command refuses a second apply, including from a clean tree.
+Resolve the partial result, compare it with the saved object shown in the error,
+and run `scripts/rebase-worktree.sh --finish <saved-object-id>` only after all
+paths are resolved and the intended changes are present. `--finish` requires the
+exact ID, no unresolved merge paths, and visible local changes; run it before
+committing the resolved changes. It then releases both private refs.
+Do not use bare `git stash pop` as a rebase restore: its default target is the
+shared stack's current top, which can belong to another worktree.
 
 - The managed pre-command guard refuses writable delegated Codex CLI launches from a
   repository's canonical checkout and gives `wt <task-name>` as the recovery command.

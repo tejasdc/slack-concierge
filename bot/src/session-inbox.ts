@@ -5,6 +5,7 @@ import {log} from './log';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {inboxRequestRoot,requestPromptInputId,routeTitle,topicRouteAnchor} from './inbox-request-root';
 import {firstInboxAcceptanceSql} from './inbox-message-identity';
+import {CURRENT_INBOX_ID_SQL,INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
 import type {ProviderHistoryMessage} from './provider-history';
 import {retainedReplyTarget} from './inbox-reply-lineage';
 import {messageDeliveryReceipts,messageRouteReceipts} from './message-route-receipts';
@@ -15,6 +16,7 @@ import {answeredByPostResultSql,postedResultMarkerId} from './inbox-posted-resul
 import {unrequestedProgressPostSql} from './inbox-progress-post';
 import type {InboxProducerKind} from './inbox-producer-sources';
 import {answerClosingLine} from './answer-closing-line';
+import {inboxAttribution} from './inbox-attribution-read';
 
 export type InboxCapture = {
   source:{kind:InboxProducerKind;id:string;recordedAt:string;title?:string;metadata?:Record<string,unknown>};
@@ -44,10 +46,11 @@ export function pebbleArrivalWaitMs(source:{kind?:unknown;recordedAt?:unknown}|u
 export const minutesText=(ms:number)=>{const minutes=Math.round(ms/60_000);return minutes>=120?`${Math.round(minutes/60)} hours`:`${minutes} min`;};
 export const captureIdentity=(source:InboxCapture['source'])=>createHash('sha256').update(JSON.stringify([source.kind,source.id])).digest('hex');
 export function inboxSession() {
-  return db.query("SELECT * FROM sessions WHERE json_extract(native_metadata_json,'$.inbox')=1 ORDER BY id DESC LIMIT 1").get() as SessionRow|null;
+  return db.query(`SELECT * FROM sessions WHERE id=(${CURRENT_INBOX_ID_SQL})`).get() as SessionRow|null;
 }
 export function retainedInboxCapture(captureId:string) {
-  const input=getAcceptedSessionInput(`capture:${captureId}`);
+  // The capture's id, or the Inbox message id it is shown under (`capture:<id>`).
+  const input=getAcceptedSessionInput(`capture:${captureId.replace(/^capture:/,'')}`);
   if(!input||!JSON.parse(input.payload_json).capture)throw new Error('Unknown retained Inbox capture.');
   return input;
 }
@@ -139,9 +142,10 @@ export function inboxMessage(row:any) {
     const original=source?JSON.parse(source.payload_json):{};
     const originalPayload=original.firstInput??original;
     const attachments=(originalPayload.attachments??[]).map((id:string)=>db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
-    return {id:row.event_id,sourceSessionId:row.session_id,role:source?.origin==='agent'?'assistant':'user',content:originalPayload.text??'',tool:null,phase:null,
+    const author=source?inboxAttribution(db)({sourceSessionId:source.session_id,id:source.id,role:'user',content:originalPayload.text??''}).author:{kind:'unknown'};
+    return {id:row.event_id,sourceSessionId:row.session_id,role:author.kind==='agent'?'assistant':'user',content:originalPayload.text??'',tool:null,phase:null,
       inputId:row.event_id,submissionId:route.sourceMessageId,attachments,
-      ...(source?.origin==='agent'?{author:{kind:'agent',outsideAgent:{name:'agent test',label:'Agent test'}}}:{}),
+      author,
       routedFrom:{sessionId:source?`concierge:${source.session_id}`:undefined,topicId:route.sourceTopicId,root:route.sourceRoot,messageId:route.sourceMessageId,
         title:routeTitle(db,route.sourceTopicId,null)},
       createdAt:source?.created_at?(source.created_at.includes('T')?source.created_at:source.created_at.replace(' ','T')+'Z')
@@ -208,8 +212,11 @@ export function inboxMessage(row:any) {
  */
 export type InboxThreadLink={inputId:string;root:string;thread:string;attached:boolean;routedBy:any;at:string};
 export function inboxThreadLink(sessionId:number,inputId:string):InboxThreadLink|null {
+  // An accepted input keeps its identity when the Inbox router changes provider.
+  // Its next placement may be recorded by the successor, so the latest event for
+  // that exact input wins across the handoff chain.
   const row=db.query(`SELECT payload_json,created_at FROM session_owner_events
-    WHERE session_id=? AND kind='thread_link' AND input_id=? ORDER BY sequence DESC LIMIT 1`).get(sessionId,inputId) as {payload_json:string;created_at:string}|null;
+    WHERE kind='thread_link' AND input_id=? ORDER BY sequence DESC LIMIT 1`).get(inputId) as {payload_json:string;created_at:string}|null;
   if(!row)return null;
   const payload=JSON.parse(row.payload_json);
   return {inputId,root:payload.root,thread:payload.thread,attached:payload.attached!==false,routedBy:payload.routedBy??null,
@@ -228,7 +235,7 @@ export function inboxThreadLink(sessionId:number,inputId:string):InboxThreadLink
  * restart took a minute resolving 2,000 messages, 2026-09-22). Each half uses its own index.
  */
 export function inboxRowByMessageId(sessionId:number|null,messageId:string):any|null {
-  const scope=sessionId===null?'':' AND event.session_id=?';
+  const scope=sessionId===null?'':` AND event.session_id IN (${INBOX_LINEAGE_SQL})`;
   const bind=sessionId===null?[messageId]:[sessionId,messageId];
   return db.query(`${inboxRows}${scope} AND event.kind IN ('result','post','request','topic_route') AND event.event_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
     ??db.query(`${inboxRows}${scope} AND event.kind NOT IN ('result','post','request','topic_route') AND event.input_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
@@ -237,12 +244,12 @@ export function inboxRowByMessageId(sessionId:number|null,messageId:string):any|
     ??null;
 }
 export function inboxThreadRoot(sessionId:number,messageId:string,seen=new Set<string>()):string|null {
-  const row=inboxRowByMessageId(sessionId,messageId) as {input_id:string|null;event_id:string;kind:string;payload_json:string}|null;
+  const row=inboxRowByMessageId(sessionId,messageId) as {session_id:number;input_id:string|null;event_id:string;kind:string;payload_json:string}|null;
   if(row?.kind==='request'){
     const requestId=JSON.parse(row.payload_json).requestId;
     if(typeof requestId==='string'){
-      const request=(db.query('SELECT thread_root_input_id FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(requestId,sessionId)
-        ??db.query('SELECT thread_root_input_id FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(requestId,sessionId)) as {thread_root_input_id:string|null}|null;
+      const request=(db.query('SELECT thread_root_input_id FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(requestId,row.session_id)
+        ??db.query('SELECT thread_root_input_id FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(requestId,row.session_id)) as {thread_root_input_id:string|null}|null;
       const linked=request?.thread_root_input_id?inboxRequestRoot(db,requestId,request.thread_root_input_id):null;
       if(linked&&linked!==row.event_id)return linked;
     }
@@ -268,7 +275,7 @@ export function inboxThreadRoot(sessionId:number,messageId:string,seen=new Set<s
   seen.add(row.input_id);
   // A capture placed into a thread answers that thread's root, so everything answering it
   // stays there too.
-  const link=inboxThreadLink(sessionId,row.input_id);
+  const link=inboxThreadLink(row.session_id,row.input_id);
   if(link?.attached)return link.root;
   // A returned answer is not a thread of its own: it belongs to the thread of the request it
   // settles, found through the input that request was sent from (which may itself be a
@@ -279,7 +286,7 @@ export function inboxThreadRoot(sessionId:number,messageId:string,seen=new Set<s
   const replyTo=retainedReplyTarget(own);
   if(typeof replyTo?.messageId==='string'&&replyTo.messageId!==row.input_id)
     return inboxThreadRoot(sessionId,replyTo.messageId,seen)??row.input_id;
-  const sent=returnedRequestSource(sessionId,row.input_id);
+  const sent=returnedRequestSource(row.session_id,row.input_id);
   return sent?inboxThreadRoot(sessionId,sent,seen)??row.input_id:row.input_id;
 }
 /** The input a service return's request was sent from, when this Inbox sent that request. */
@@ -352,7 +359,13 @@ export function threadOwedByTurn(session:SessionRow,openingInputId:string|null):
   if(!openingInputId||!sessionMetadata(session).inbox)return null;
   const opening=getAcceptedSessionInput(openingInputId);
   if(!opening||opening.origin==='human')return null;
-  if(opening.origin==='service'&&JSON.parse(opening.payload_json).alreadyPostedInThread===true)return null;
+  if(opening.origin==='service'){
+    const payload=JSON.parse(opening.payload_json);
+    // Older upkeep inputs were admitted before the explicit mark existed. Their
+    // service identity and owner-generated prefix still prove the no-reply contract.
+    if(payload.alreadyPostedInThread===true||payload.threadReplyNotRequired===true
+      ||opening.id.startsWith('thread-upkeep:'))return null;
+  }
   return inboxThreadRoot(session.id,openingInputId);
 }
 export function turnPostedInto(sessionId:number,turnId:number,root:string):boolean {

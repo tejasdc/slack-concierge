@@ -2,18 +2,23 @@ import {afterEach,beforeEach,expect,test} from 'bun:test';
 import {createHash,randomUUID} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {db,claimNextQueuedTurn,getSessionById,registerProcessInstance,markTurnDelivering,markTurnProviderAdmissionIntended,interruptOrphanedTurn,finishTurn,createOrGetSession,upsertChannel} from '../src/state';
-import {bindSessionProvider,createNativeSession,getAcceptedSessionInput,nativeRunId,updateSessionMetadata} from '../src/session-inputs';
+import {backfillHeldInputReceiptEvents,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,retainSessionInput,updateSessionMetadata} from '../src/session-inputs';
 import {SessionOwner} from '../src/session-owner';
 import {SessionExecutionHost} from '../src/session-execution-host';
 import {SessionCapabilityClient} from '../src/session-capability-client';
 import {ActiveTurnDispatchRegistry} from '../src/turn-dispatch-seams';
 import {currentProcessIdentity} from '../src/runtime-identity';
 import {acquireDatabaseTestLock} from './db-lock';
+import {fixtureThesaurusContext} from './fixture-thesaurus';
 import type {AgentProvider} from '../src/providers';
 
 let unlock:()=>void,host:SessionExecutionHost,provider:AgentProvider;
 let runs:Parameters<AgentProvider['run']>[0][],forks:Parameters<AgentProvider['fork']>[0][];
-const clear=()=>{for(const table of ['session_owner_events','session_communication_events','session_communication_requests','session_inputs','session_attachments','turn_dependencies','routed_requests','routed_input_events','deployment_drain','comparison_requests','fork_requests','slack_thread_statuses','slack_user_input_claims','turn_steering_messages','turn_delivery_chunks','turns','sessions','channels','process_instances'])db.query(`DELETE FROM ${table}`).run();};
+// Every table that refers to a cleared table is cleared with it, so a table a later change adds
+// cannot leave a row whose foreign key blocks the next test's cleanup.
+const clearedRoots=['session_owner_events','session_communication_events','session_communication_requests','session_inputs','session_attachments','turn_dependencies','routed_requests','routed_input_events','deployment_drain','comparison_requests','fork_requests','slack_thread_statuses','slack_user_input_claims','turn_steering_messages','turn_delivery_chunks','turns','sessions','channels','process_instances'];
+function clearedTables(){const tables=(db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as {name:string}[]).map(row=>row.name),cleared=new Set(clearedRoots);for(let grew=true;grew;){grew=false;for(const table of tables)if(!cleared.has(table)&&(db.query(`PRAGMA foreign_key_list(${JSON.stringify(table)})`).all() as {table:string}[]).some(key=>cleared.has(key.table))){cleared.add(table);grew=true;}}return [...cleared];}
+const clear=()=>{db.exec('PRAGMA foreign_keys=OFF');try{db.transaction(()=>{for(const table of clearedTables())db.query(`DELETE FROM ${JSON.stringify(table)}`).run();})();}finally{db.exec('PRAGMA foreign_keys=ON');};};
 const registry=()=>new ActiveTurnDispatchRegistry({onStarted:()=>{},onSettled:()=>{}});
 const capability=()=>new SessionCapabilityClient({socketPath:'/tmp/never-open-native-capability.sock'});
 beforeEach(async()=>{
@@ -22,14 +27,14 @@ beforeEach(async()=>{
     history:async()=>({messages:[{id:'message-before',role:'assistant',content:'native history',tool:null,phase:null,turnId:'cutoff'}],nextCursor:null}),
     fork:async input=>{forks.push(input);return {text:'native child',sessionUUID:'distinct-child',toolsUsed:[]};},
     run:async input=>{runs.push(input);input.onProviderThreadStarted?.(input.sessionUUID??'native-thread');input.onProviderTurnStarted?.('native-turn');input.onInputAcknowledged?.();input.onProviderTerminal?.();return {text:'',sessionUUID:input.sessionUUID??'native-thread',providerTurnId:'native-turn',toolsUsed:[]};}};
-  host=new SessionExecutionHost({instanceId:'owner',registry:registry(),providers:{codex:provider},defaultCwd:'/tmp',wake:()=>{}});
+  host=new SessionExecutionHost({instanceId:'owner',registry:registry(),providers:{codex:provider},defaultCwd:'/tmp',wake:()=>{},thesaurusContext:fixtureThesaurusContext});
 });
 afterEach(()=>{clear();unlock();});
 async function request(owner:SessionOwner,path:string,body?:unknown){const response=await owner.handle(new Request(`http://owner/sessions/v1/${path}`,body===undefined?{}:{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}));expect(response).not.toBeNull();return {status:response!.status,body:await response!.json()};}
 function bound(){const session=createNativeSession('codex',{title:'Original',cwd:'/tmp',project:'original-project'});bindSessionProvider(session.id,'codex','original-thread');return getSessionById(session.id)!;}
 async function execute(){const claim=claimNextQueuedTurn('owner')!;expect(claim).not.toBeNull();await host.run(claim);return claim;}
 function uncertainChat(client:SessionCapabilityClient){
-  host=new SessionExecutionHost({instanceId:'owner',registry:registry(),providers:{},capabilityClient:client,defaultCwd:'/tmp',wake:()=>{}});
+  host=new SessionExecutionHost({instanceId:'owner',registry:registry(),providers:{},capabilityClient:client,defaultCwd:'/tmp',wake:()=>{},thesaurusContext:fixtureThesaurusContext});
   const created=host.owner.create({clientActionId:randomUUID(),provider:'chatgpt',purpose:'chat',firstInput:{text:'only once'}});
   registerProcessInstance('dead',4321,'previous-boot','5678');
   const claim=claimNextQueuedTurn('dead')!,operation=getAcceptedSessionInput(claim.accepted_input_id!)!;
@@ -52,20 +57,68 @@ test('real HTTP wrappers preserve first acceptance, duplicate receipt identity a
   expect((await request(host.owner,'sessions',{...body,clientActionId:randomUUID(),firstInput:{text:'bad',evidence:[evidence]}})).status).toBe(400);
   expect(getSessionById(Number(id.slice(10)))?.agent_session_uuid).toBeNull();
   const claim=await execute();
+  expect(runs[0]!.prompt).toContain('Fixture thesaurus context.');
   expect((await request(host.owner,`operations/${first.body.operation.operationId}`)).body).toMatchObject({state:'completed',text:'human text',result:''});
   expect((await request(host.owner,`runs/${first.body.operation.runId}`)).body.run).toMatchObject({id:first.body.operation.runId,state:'completed',turnId:'native-turn'});
   expect(db.query('SELECT slack_user_msg_ts,slack_reply_thread_ts FROM turns WHERE id=?').get(claim.turn_id)).toEqual({slack_user_msg_ts:null,slack_reply_thread_ts:null});
   expect(db.query('SELECT count(*) AS n FROM slack_user_input_claims').get()).toEqual({n:0});
 });
 
+test('a held marked-agent input publishes one receipt delta without provider admission and startup repair restores it',async()=>{
+  const source=createNativeSession('codex',{title:'Marked source',purpose:'chat',cwd:'/tmp'});
+  const sourceInput=retainSessionInput({sessionId:source.id,scope:'surface:thinkering',actionId:randomUUID(),kind:'input',origin:'human',payload:{text:'Authorize the marked acceptance check.'}}).input;
+  const sourceTurn=enqueueSessionInput(sourceInput.id).turn_id!;
+  const target=createNativeSession('codex',{title:'Paused receiver',purpose:'chat',cwd:'/tmp',suspended:true});
+  const body={clientActionId:randomUUID(),text:'Retain this while paused.',agentSource:{inputId:sourceInput.id,runId:nativeRunId(sourceTurn)}};
+  const first=await request(host.owner,`sessions/concierge:${target.id}/inputs`,body);
+  expect(first.status).toBe(202);
+  expect(first.body.operation).toMatchObject({state:'waiting',origin:'agent',runId:null,admission:null});
+  const operationId=first.body.operation.operationId;
+  const heldEvents=()=>host.owner.events(0,`concierge:${target.id}`).filter(event=>event.kind==='receipt');
+  expect(heldEvents()).toEqual([expect.objectContaining({eventId:`receipt:${operationId}:retained`,sessionId:`concierge:${target.id}`,
+    operationId,inputId:operationId,runId:null,kind:'receipt',payload:{change:'retained'}})]);
+  expect(db.query('SELECT count(*) AS n FROM turns WHERE session_id=?').get(target.id)).toEqual({n:0});
+
+  const duplicate=await request(host.owner,`sessions/concierge:${target.id}/inputs`,body);
+  expect(duplicate.status).toBe(200);
+  expect(duplicate.body.operation.operationId).toBe(operationId);
+  expect(heldEvents()).toHaveLength(1);
+
+  const ambiguous=retainSessionInput({sessionId:target.id,scope:'surface:thinkering',actionId:randomUUID(),kind:'input',origin:'human',
+    payload:{text:'Legacy input with no explicit queue custody.'}}).input;
+  const hidden=retainSessionInput({sessionId:target.id,scope:'surface:thinkering',actionId:randomUUID(),kind:'input',origin:'human',
+    payload:{text:'Intentionally hidden held input.'}}).input;
+  db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({admissionIntent:'queue',state:'held'}),hidden.id);
+  db.query('DELETE FROM session_owner_events WHERE event_id=?').run(`receipt:${operationId}:retained`);
+  expect(heldEvents()).toEqual([]);
+  expect(backfillHeldInputReceiptEvents()).toBe(1);
+  expect(backfillHeldInputReceiptEvents()).toBe(0);
+  expect(heldEvents()).toHaveLength(1);
+  expect(db.query("SELECT count(*) AS n FROM session_owner_events WHERE input_id IN (?,?) AND kind='receipt'").get(ambiguous.id,hidden.id)).toEqual({n:0});
+  expect(db.query('SELECT count(*) AS n FROM turns WHERE session_id=?').get(target.id)).toEqual({n:0});
+});
+
+test('full operation receipts publish ordered attachment custody metadata without changing request IDs',async()=>{
+  const first=await request(host.owner,'attachments',{clientActionId:randomUUID(),name:'first.txt',contentType:'text/plain',base64:Buffer.from('first').toString('base64')});
+  const second=await request(host.owner,'attachments',{clientActionId:randomUUID(),name:'second.png',contentType:'image/png',base64:Buffer.from('second').toString('base64')});
+  const descriptors=[second.body.attachment,first.body.attachment].map(({agentSource:_,...attachment}:any)=>attachment);
+  const created=host.owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',
+    firstInput:{text:'Keep both files',attachments:descriptors.map(file=>file.id)}});
+  expect(created.operation.request.firstInput.attachments).toEqual(descriptors.map(file=>file.id));
+  expect(created.operation.attachments).toEqual(descriptors);
+  expect((await request(host.owner,`operations/${created.operation.operationId}`)).body.attachments).toEqual(descriptors);
+});
+
+// The attachment line names its local copy; later prompt sections may follow it.
+const attachedPath=(text:string)=>text.match(/Attached text\/plain file "notes\.txt": (\S+)/)![1]!;
 test('attachment custody downloads exact bytes and initial plus steering attachments reach the same provider',async()=>{
   const bytes=Buffer.from('Exact attachment bytes\n\u0000'),upload=await request(host.owner,'attachments',{clientActionId:randomUUID(),name:'notes.txt',contentType:'text/plain',base64:bytes.toString('base64')});
   expect(upload.status).toBe(200);
-  expect((await request(host.owner,`attachments/${upload.body.attachment.id}`)).body).toEqual({name:'notes.txt',contentType:'text/plain',base64:bytes.toString('base64'),sha256:createHash('sha256').update(bytes).digest('hex')});
+  expect((await request(host.owner,`attachments/${upload.body.attachment.id}`)).body).toEqual({name:'notes.txt',contentType:'text/plain',base64:bytes.toString('base64'),sha256:createHash('sha256').update(bytes).digest('hex'),transcriptText:null});
   let ready!:()=>void,finish!:()=>void;const started=new Promise<void>(resolve=>ready=resolve),completed=new Promise<void>(resolve=>finish=resolve);
   const sent:string[]=[];
-  provider.run=async input=>{runs.push(input);input.onProviderThreadStarted?.('native-thread');input.onInputAcknowledged?.();input.onSteeringReady?.(async message=>{sent.push(message.text);const path=message.text.split(': ').at(-1)!;expect(await readFile(path)).toEqual(bytes);finish();});
-    expect(await readFile(input.prompt.split(': ').at(-1)!)).toEqual(bytes);ready();await completed;input.onProviderTerminal?.();return {text:'',sessionUUID:'native-thread',toolsUsed:[]};};
+  provider.run=async input=>{runs.push(input);input.onProviderThreadStarted?.('native-thread');input.onInputAcknowledged?.();input.onSteeringReady?.(async message=>{sent.push(message.text);expect(await readFile(attachedPath(message.text))).toEqual(bytes);finish();});
+    expect(await readFile(attachedPath(input.prompt))).toEqual(bytes);ready();await completed;input.onProviderTerminal?.();return {text:'',sessionUUID:'native-thread',toolsUsed:[]};};
   const created=host.owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',firstInput:{text:'Inspect initial',attachments:[upload.body.attachment.id]}}),claim=claimNextQueuedTurn('owner')!,task=host.run(claim);
   await started;
   host.owner.submit(created.session.id,{clientActionId:randomUUID(),text:'Inspect steering',attachments:[upload.body.attachment.id],delivery:'steer',expectedRunId:created.operation.runId});
@@ -74,6 +127,30 @@ test('attachment custody downloads exact bytes and initial plus steering attachm
   expect(db.query('SELECT unreplayable_attachment_count,status FROM turn_steering_messages WHERE turn_id=?').get(claim.turn_id)).toMatchObject({unreplayable_attachment_count:1,status:'sent'});
   db.query('UPDATE session_attachments SET bytes=? WHERE id=?').run(Buffer.from('changed'),upload.body.attachment.id);
   expect((await request(host.owner,`attachments/${upload.body.attachment.id}`)).status).toBe(409);
+});
+
+test('marked attachment custody verifies and retains its agent source without changing human upload receipts',async()=>{
+  const source=host.owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',firstInput:{text:'Agent source'}});
+  const agentSource={inputId:source.operation.inputId,runId:source.operation.runId};
+  const bytes=Buffer.from('Synthetic marked attachment'),action=randomUUID();
+  const body={clientActionId:action,name:'marked.txt',contentType:'text/plain',base64:bytes.toString('base64'),agentSource};
+  const first=await request(host.owner,'attachments',body),duplicate=await request(host.owner,'attachments',body);
+  expect(first.status).toBe(200);expect(duplicate.body).toEqual(first.body);
+  expect(first.body.attachment).toMatchObject({name:'marked.txt',agentSource});
+  expect((await request(host.owner,`attachments/${first.body.attachment.id}`)).body).toMatchObject({
+    name:'marked.txt',base64:bytes.toString('base64'),agentSource});
+  expect(db.query('SELECT source_input_id,source_run_id FROM session_attachments WHERE id=?').get(first.body.attachment.id))
+    .toEqual({source_input_id:agentSource.inputId,source_run_id:agentSource.runId});
+
+  const other=host.owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',firstInput:{text:'Other source'}});
+  const otherSource={inputId:other.operation.inputId,runId:other.operation.runId};
+  expect((await request(host.owner,'attachments',{...body,agentSource:otherSource})).status).toBe(409);
+  expect((await request(host.owner,'attachments',{...body,agentSource:undefined})).status).toBe(409);
+  expect((await request(host.owner,'attachments',{...body,clientActionId:randomUUID(),agentSource:{inputId:agentSource.inputId,runId:otherSource.runId}})).status).toBe(403);
+  expect((db.query('SELECT count(*) AS count FROM session_attachments').get() as {count:number}).count).toBe(1);
+
+  const human=await request(host.owner,'attachments',{clientActionId:randomUUID(),name:'human.txt',contentType:'text/plain',base64:bytes.toString('base64')});
+  expect(human.body.attachment).toEqual({id:human.body.attachment.id,name:'human.txt',contentType:'text/plain',sha256:createHash('sha256').update(bytes).digest('hex')});
 });
 
 test('exact native fork uses the parent FIFO and creates one distinct child without a model input or parent rebind',async()=>{
@@ -209,11 +286,11 @@ test('ChatGPT admission pins the shared executor final prompt including interrup
     expect(stored.admission).toEqual(options.admission);
     expect(host.owner.receipt(getAcceptedSessionInput(options.run.operationId)!)).toMatchObject({state:'running',text:'current request',admission:options.admission});
     actual.onProviderThreadStarted?.('original-browser');actual.onProviderTurnStarted?.('browser-turn');actual.onInputAcknowledged?.();actual.onProviderTerminal?.();
-    return {text:'',sessionUUID:'original-browser',providerTurnId:'browser-turn',toolsUsed:[]};
+    return {text:'pinned answer',sessionUUID:'original-browser',providerTurnId:'browser-turn',toolsUsed:[]};
   }});
-  host=new SessionExecutionHost({instanceId:'owner',registry:registry(),providers:{},capabilityClient:client,defaultCwd:'/tmp',wake:()=>{}});
+  host=new SessionExecutionHost({instanceId:'owner',registry:registry(),providers:{},capabilityClient:client,defaultCwd:'/tmp',wake:()=>{},thesaurusContext:fixtureThesaurusContext});
   const accepted=host.owner.submit(`concierge:${session.id}`,{clientActionId:randomUUID(),text:'current request'});await execute();
-  expect(effects).toBe(1);expect(host.owner.receipt(getAcceptedSessionInput(accepted.operation.operationId)!)).toMatchObject({state:'completed',result:''});
+  expect(effects).toBe(1);expect(host.owner.receipt(getAcceptedSessionInput(accepted.operation.operationId)!)).toMatchObject({state:'completed',result:'pinned answer'});
 });
 
 test('consultation creates a distinct pinned child and same-child follow-up preserves enforced policy and source evidence',async()=>{
@@ -283,8 +360,8 @@ test.each(['failed','canceled'] as const)('reconcile settles explicit native %s 
 
 test('Claude fork uses the exact native message boundary rather than a turn alias',async()=>{
   provider.id='claude-code';provider.capabilities!.forkBoundary='message';
-  host=new SessionExecutionHost({instanceId:'owner',registry:registry(),providers:{'claude-code':provider},defaultCwd:'/tmp',wake:()=>{}});
-  const session=createNativeSession('claude-code',{cwd:'/tmp'});bindSessionProvider(session.id,'claude-code','original-claude');
+  host=new SessionExecutionHost({instanceId:'owner',registry:registry(),providers:{'claude-code':provider},defaultCwd:'/tmp',wake:()=>{},thesaurusContext:fixtureThesaurusContext});
+  const session=createNativeSession('claude-code',{cwd:'/tmp',summary:'Claude fork boundary fixture'});bindSessionProvider(session.id,'claude-code','original-claude');
   const rejected=host.owner.fork(`concierge:${session.id}`,{clientActionId:randomUUID(),boundary:'cutoff'});await execute();
   expect(host.owner.receipt(getAcceptedSessionInput(rejected.operation.operationId)!).state).toBe('failed');expect(forks).toHaveLength(0);
   const accepted=host.owner.fork(`concierge:${session.id}`,{clientActionId:randomUUID(),boundary:'message-before'});await execute();

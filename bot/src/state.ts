@@ -2,7 +2,7 @@ import { initializeSessionOwnerSchema } from "./session-schema";
 import {threadOnlyReturnInputSql} from './inbox-request-root';
 import { randomUUID } from "node:crypto";
 import { lstatSync, readdirSync } from "node:fs";
-import { db, initializeLedgerSchema } from "./state-database";
+import { db, initializeLedgerSchema, schemaVersionAtOpen } from "./state-database";
 import { initializeRouterSearchIndex, projectRouterSearchSource, refreshRouterSearchTurnIdentity } from "./router-search-index";
 import { isolatedSessionThread, resolveReplySession, visibleSlackRootSql } from "./slack-thread-identity";
 import {
@@ -17,7 +17,9 @@ export { db } from "./state-database";
 import { survivableRunKinds as survivableRunKindsIn } from "./execution-survival";
 import { log } from "./log";
 import { quietOnlyAdmits } from './quiet-hours';
+import { OWNER_DRAIN_WITHDRAWAL_REASON } from './runner-leases';
 import {CLAUDE_ALLOWANCE_HOLD_UNTIL_MS} from './claude-allowance-hold';
+import {CodexAdmissionHolds} from './codex-admission-holds';
 
 // Only the canonical writer owns schema upgrades. Read executors open a physically read-only
 // connection and must never run migration code during module initialization.
@@ -29,6 +31,11 @@ db.exec(`CREATE TABLE IF NOT EXISTS provider_usage_cache (
   generation INTEGER NOT NULL DEFAULT 0,
   revision INTEGER NOT NULL DEFAULT 0,
   limits_json TEXT NOT NULL DEFAULT '{}'
+)`);
+db.exec(`CREATE TABLE IF NOT EXISTS codex_admission_holds (
+  holder TEXT PRIMARY KEY,
+  recovery_json TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL
 )`);
 // Google joins through an additive table: deployment never rebuilds the live provider cache.
 db.exec(`CREATE TABLE IF NOT EXISTS antigravity_usage_cache (
@@ -438,7 +445,10 @@ CREATE TABLE IF NOT EXISTS pending_sign_ins (
   provider           TEXT PRIMARY KEY,
   owner_instance_id  TEXT NOT NULL,
   started_at_ms      INTEGER NOT NULL,
-  expires_at_ms      INTEGER NOT NULL
+  expires_at_ms      INTEGER NOT NULL,
+  runner_name        TEXT,
+  operation_id       TEXT,
+  profile_id         TEXT
 );
 
 CREATE TABLE IF NOT EXISTS background_job_status (
@@ -772,6 +782,9 @@ CREATE INDEX IF NOT EXISTS executions_open ON executions(turn_id) WHERE state IN
 CREATE INDEX IF NOT EXISTS executions_turn ON executions(turn_id,dispatch_attempt);`);
 addColumn('executions','adopted_live','adopted_live INTEGER NOT NULL DEFAULT 0');
 addColumn('executions','host_digest','host_digest TEXT');
+addColumn('pending_sign_ins','runner_name','runner_name TEXT');
+addColumn('pending_sign_ins','operation_id','operation_id TEXT');
+addColumn('pending_sign_ins','profile_id','profile_id TEXT');
 db.exec("CREATE INDEX IF NOT EXISTS executions_survival ON executions(provider,supervisor) WHERE adopted_live=1 AND state='released'");
 db.transaction(() => {
 migrateLegacyCodexRemoteMirrorEvents();
@@ -908,6 +921,9 @@ addColumn("turns", "status_desired_text", "status_desired_text TEXT");
 addColumn("turns", "status_desired_revision", "status_desired_revision INTEGER NOT NULL DEFAULT 0");
 addColumn("turns", "status_projected_revision", "status_projected_revision INTEGER NOT NULL DEFAULT 0");
 addColumn("turns", "status_projection_status", "status_projection_status TEXT NOT NULL DEFAULT 'not_needed'");
+// The minute recovery pass must inspect pending legacy statuses without scanning
+// every retained turn on the interactive owner loop.
+db.exec("CREATE INDEX IF NOT EXISTS turns_pending_status_projection ON turns(id) WHERE status_projection_status='pending'");
 addColumn("turns", "status_projection_attempts", "status_projection_attempts INTEGER NOT NULL DEFAULT 0");
 addColumn("turns", "status_projection_error", "status_projection_error TEXT");
 addColumn("turns", "status_projection_next_attempt_ms", "status_projection_next_attempt_ms INTEGER");
@@ -943,6 +959,12 @@ addColumn("turns", "saved_boundary_ms", "saved_boundary_ms INTEGER");
 addColumn("turns", "saved_alerted_at_ms", "saved_alerted_at_ms INTEGER");
 addColumn("turns", "saved_manual_start", "saved_manual_start INTEGER NOT NULL DEFAULT 0");
 addColumn("turns", "saved_quiet_only", "saved_quiet_only INTEGER NOT NULL DEFAULT 0 CHECK(saved_quiet_only IN (0,1))");
+// Why a queued banked turn is not starting (saved-work.ts BankedWait), so a long wait names its cause.
+addColumn("turns", "saved_wait_reason", "saved_wait_reason TEXT");
+// Set before a planned banked yield cancels its run (banked-upkeep.ts): the cancellation is carried
+// on by a continuation, so the request it serves stays open (session-inputs.ts carryingTurn).
+addColumn("turns", "saved_yield_reason", "saved_yield_reason TEXT");
+db.exec("CREATE INDEX IF NOT EXISTS banked_yields_awaiting ON turns(id) WHERE saved_yield_reason IS NOT NULL AND status='cancelled'");
 addColumn("turns", "saved_repeat_ms", "saved_repeat_ms INTEGER");
 addColumn("turns", "saved_root_id", "saved_root_id INTEGER");
 addColumn("turns", "saved_sequence", "saved_sequence INTEGER");
@@ -1035,7 +1057,7 @@ db.exec("CREATE INDEX IF NOT EXISTS codex_remote_mirror_events_thread_status_seq
 }).immediate();
 // This schema owner changes foreign_keys before its own transaction. Keep it outside
 // the legacy-upgrade batch so that SQLite can apply that connection-level setting.
-initializeSessionOwnerSchema(db);
+initializeSessionOwnerSchema(db, schemaVersionAtOpen);
 // Older continuations used retryable for a time deliberately chosen by the agent.
 // Preserve that intent before normalizing the old retry vocabulary. Session inputs
 // are initialized above, so this also works on checkouts with old ledger rows.
@@ -1211,12 +1233,24 @@ export function stopProcessInstance(instanceId: string) {
 }
 
 /** A sign-in he has started is now waiting; nothing may be restarted out from under it. */
-export function recordPendingSignIn(provider: string, ownerInstanceId: string, expiresAtMs: number) {
-  db.query(`INSERT INTO pending_sign_ins (provider, owner_instance_id, started_at_ms, expires_at_ms)
-    VALUES (?, ?, ?, ?)
+export function recordPendingSignIn(provider: string, ownerInstanceId: string, expiresAtMs: number,
+  runner?: { runner: string; operationId: string; profileId?: string | null }) {
+  db.query(`INSERT INTO pending_sign_ins (provider, owner_instance_id, started_at_ms, expires_at_ms, runner_name, operation_id, profile_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(provider) DO UPDATE SET owner_instance_id=excluded.owner_instance_id,
-      started_at_ms=excluded.started_at_ms, expires_at_ms=excluded.expires_at_ms`)
-    .run(provider, ownerInstanceId, Date.now(), expiresAtMs);
+      started_at_ms=excluded.started_at_ms, expires_at_ms=excluded.expires_at_ms,
+      runner_name=excluded.runner_name,operation_id=excluded.operation_id,profile_id=excluded.profile_id`)
+    .run(provider, ownerInstanceId, Date.now(), expiresAtMs, runner?.runner ?? null, runner?.operationId ?? null, runner?.profileId ?? null);
+}
+
+/** Reserve a runner sign-in before starting its CLI, serialized with the deployment drain claim. */
+export function reservePendingRunnerSignIn(provider: string, ownerInstanceId: string, expiresAtMs: number,
+  runner: { runner: string; operationId: string; profileId?: string | null }): boolean {
+  return db.transaction(() => {
+    if (db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get()) return false;
+    recordPendingSignIn(provider, ownerInstanceId, expiresAtMs, runner);
+    return true;
+  }).immediate();
 }
 
 export function clearPendingSignIn(provider: string) {
@@ -1226,6 +1260,16 @@ export function clearPendingSignIn(provider: string) {
 /** Only sign-ins that could still be finished; an expired one holds nothing back. */
 export function listPendingSignIns(nowMs = Date.now()): Array<{ provider: string; owner_instance_id: string; started_at_ms: number; expires_at_ms: number }> {
   return db.query("SELECT * FROM pending_sign_ins WHERE expires_at_ms > ? ORDER BY provider").all(nowMs) as any[];
+}
+
+/** A runner's durable operation identity, restored after the owner process restarts. */
+export function pendingRunnerSignIn(provider: string, nowMs = Date.now()):
+  { runner: string; operationId: string; profileId: string | null; expiresAtMs: number } | null {
+  const row = db.query(`SELECT runner_name,operation_id,profile_id,expires_at_ms FROM pending_sign_ins
+    WHERE provider=? AND expires_at_ms>?`).get(provider, nowMs) as
+    {runner_name:string|null;operation_id:string|null;profile_id:string|null;expires_at_ms:number}|null;
+  return row?.runner_name&&row.operation_id
+    ?{runner:row.runner_name,operationId:row.operation_id,profileId:row.profile_id,expiresAtMs:row.expires_at_ms}:null;
 }
 
 export function clearAbandonedDrain(isAlive: (identity: { pid: number; bootId: string; startTicks: string }) => boolean) {
@@ -4159,6 +4203,7 @@ export function requeueProvenUnsentNativeChatGptTurn(input: {
 export function requeueOrphanedPreAdmissionTurn(
   turnId: number,
   ownerInstanceId: string | null,
+  nextAttemptMs = 0,
 ): boolean {
   return db.transaction(() => {
     const turn = db.query(`
@@ -4187,7 +4232,7 @@ export function requeueOrphanedPreAdmissionTurn(
       UPDATE turns
       SET status='queued', owner_instance_id=NULL, ended_at=NULL,
           dispatch_failure_class=CASE WHEN saved_kind='banked' THEN NULL ELSE 'backoff' END,
-          dispatch_next_attempt_ms=CASE WHEN saved_kind='banked' THEN ? ELSE 0 END,
+          dispatch_next_attempt_ms=CASE WHEN saved_kind='banked' THEN ? ELSE ? END,
           saved_account=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_account END,
           saved_window=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_window END,
           saved_boundary_ms=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_boundary_ms END,
@@ -4198,7 +4243,7 @@ export function requeueOrphanedPreAdmissionTurn(
           status_projection_parked_at=NULL
       WHERE id=? AND status='running' AND owner_instance_id IS ?
         AND stop_requested_at IS NULL AND provider_admission_intended_at IS NULL
-    `).run(Date.now()+3*60_000, RETRYING_PROVIDER_TURN_STATUS_TEXT, turnId, ownerInstanceId);
+    `).run(Date.now()+3*60_000, nextAttemptMs, RETRYING_PROVIDER_TURN_STATUS_TEXT, turnId, ownerInstanceId);
     if (changed.changes !== 1) return false;
     if (turn.projection_mode === "agent" && turn.progress_stream_state === "starting" && !turn.progress_stream_ts) {
       db.query("DELETE FROM agent_progress_messages WHERE turn_id=? AND creation_state='pending'").run(turnId);
@@ -4208,6 +4253,52 @@ export function requeueOrphanedPreAdmissionTurn(
     db.query(`UPDATE sessions
               SET status=CASE WHEN status='archived' THEN status ELSE 'idle' END
               WHERE id=?`).run(turn.session_id);
+    return true;
+  })();
+}
+
+/** A withdrawn runner launch is proof of no provider admission even though intent was recorded. */
+export function requeueWithdrawnRunnerTurn(turnId: number, ownerInstanceId: string, dispatchAttempt: number): boolean {
+  return db.transaction(() => {
+    const row = db.query(`SELECT turn.session_id, turn.projection_mode, turn.progress_stream_state,
+        turn.progress_stream_ts, execution.execution_id
+      FROM turns turn JOIN executions execution ON execution.turn_id=turn.id
+        AND execution.dispatch_attempt=turn.dispatch_attempt
+      JOIN runner_jobs job ON job.job_id='turn:'||execution.execution_id
+      WHERE turn.id=? AND turn.status='running' AND turn.owner_instance_id=?
+        AND turn.dispatch_attempt=? AND turn.stop_requested_at IS NULL
+        AND turn.provider_started_at IS NULL AND turn.provider_turn_id IS NULL
+        AND turn.provider_input_acknowledged_at IS NULL
+        AND execution.supervisor='runner' AND execution.state='intended'
+        AND execution.coordinator_instance_id=?
+        AND job.kind='turn' AND job.state='finished'
+        AND json_extract(job.result_json,'$.withdrawn')=?
+        AND NOT EXISTS (SELECT 1 FROM runner_attempts WHERE job_id=job.job_id)
+        AND NOT EXISTS (SELECT 1 FROM turn_steering_messages
+          WHERE turn_id=turn.id AND status IN ('sent','sending','ambiguous'))
+        AND NOT EXISTS (SELECT 1 FROM turn_artifact_deliveries WHERE turn_id=turn.id)
+        AND NOT EXISTS (SELECT 1 FROM turn_artifact_batches
+          WHERE turn_id=turn.id AND status<>'collecting')`)
+      .get(turnId,ownerInstanceId,dispatchAttempt,ownerInstanceId,OWNER_DRAIN_WITHDRAWAL_REASON) as {session_id:number;projection_mode:string;
+        progress_stream_state:string;progress_stream_ts:string|null;execution_id:string}|null;
+    if(!row||turnHasAmbiguousAgentProgressStart(turnId))return false;
+    const changed=db.query(`UPDATE turns SET status='queued',owner_instance_id=NULL,
+      provider_admission_intended_at=NULL,dispatch_failure_class=NULL,dispatch_next_attempt_ms=0,
+      agent_text=NULL,ended_at=NULL,status_projection_status='not_needed',
+      status_projection_error=NULL,status_projection_attempts=0,status_projection_next_attempt_ms=0
+      WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?`)
+      .run(turnId,ownerInstanceId,dispatchAttempt).changes;
+    if(changed!==1)return false;
+    db.query("UPDATE executions SET state='lost',detail='runner job withdrawn before claim',updated_at_ms=? WHERE execution_id=?")
+      .run(Date.now(),row.execution_id);
+    if(row.projection_mode==='agent'&&row.progress_stream_state==='starting'&&!row.progress_stream_ts){
+      db.query("DELETE FROM agent_progress_messages WHERE turn_id=? AND creation_state='pending'").run(turnId);
+      db.query(`UPDATE turns SET progress_stream_state='not_started',progress_activity_id=NULL,
+        progress_stream_error=NULL,progress_terminal_requested=0 WHERE id=?`).run(turnId);
+    }
+    db.query("UPDATE sessions SET status=CASE WHEN status='archived' THEN status ELSE 'idle' END WHERE id=?")
+      .run(row.session_id);
+    turnFactChanged(turnId,'queued');
     return true;
   })();
 }
@@ -5333,13 +5424,13 @@ export function nextQueuedTurnAttemptMs(nowMs = Date.now()): number | null {
  * move; ordinary timed retries and paused, archived or stopped inputs stay as they
  * were. Returns the number of actual turn rows released.
  */
-export function releaseScheduledProviderRetries(providerId: ProviderId, ordinaryOnly = false): number {
+export function releaseScheduledProviderRetries(providerId: ProviderId, unboundOnly = false): number {
   const released = (db.query(`UPDATE turns SET dispatch_next_attempt_ms=0
     WHERE status='queued' AND dispatch_failure_class='backoff' AND dispatch_hold='usage'
-      AND (?=0 OR saved_kind IS NULL)
+      AND (?=0 OR saved_kind IS NULL OR (saved_kind='scheduled' AND saved_account IS NULL))
       AND COALESCE(dispatch_next_attempt_ms,0)>0
       AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)
-    RETURNING id`).all(ordinaryOnly ? 1 : 0,providerId) as {id:number}[]).length;
+    RETURNING id`).all(unboundOnly ? 1 : 0,providerId) as {id:number}[]).length;
   if (released) executionChanged();
   return released;
 }
@@ -5422,8 +5513,10 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
   AND (turn.saved_manual_start=1 OR turn.saved_kind IS NULL OR turn.saved_kind<>'banked' OR turn.saved_expires_at_ms>?)
   AND (turn.saved_manual_start=1 OR turn.saved_kind IS NULL OR turn.saved_kind='scheduled' OR
     (turn.saved_kind='banked' AND turn.saved_account IS NOT NULL AND turn.saved_boundary_ms>?
-      AND NOT EXISTS (SELECT 1 FROM turns other WHERE other.session_id<>turn.session_id
-        AND other.status IN ('queued','running','delivering') AND other.saved_kind IS NULL)
+      -- Only generic banking waits for an idle fleet; quiet-only work runs in his night whatever
+      -- standing agents are doing, protected by the reserve (saved-work.ts reconsiderBankedWork).
+      AND (turn.saved_quiet_only=1 OR NOT EXISTS (SELECT 1 FROM turns other WHERE other.session_id<>turn.session_id
+        AND other.status IN ('queued','running','delivering') AND other.saved_kind IS NULL))
       AND NOT EXISTS (SELECT 1 FROM turns other WHERE other.id<>turn.id
         AND other.status IN ('running','delivering') AND other.saved_kind='banked' AND other.saved_manual_start=0)))
   AND turn.session_id NOT IN (SELECT value FROM json_each(?))
@@ -5451,19 +5544,36 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
   )
   AND (? = 0 OR (turn.turn_kind='native'
     AND COALESCE((SELECT kind FROM session_inputs WHERE id=turn.accepted_input_id), '')<>'fork'
+    -- Banked work that yields at a deployment boundary is never admitted during the drain:
+    -- banked-upkeep.ts cancels it at once and queues a continuation, which was claimed again,
+    -- 19 times in two minutes on 2026-11-12 (docs/incidents/2026-11-12-banked-pause-closed-its-request.md).
+    AND NOT (COALESCE(turn.saved_kind,'')='banked' AND (turn.saved_manual_start=0 OR turn.saved_quiet_only=1))
     AND session.provider_id IN (SELECT value FROM json_each(?))))
   AND NOT (session.provider_id='codex' AND ?=1)`;
 
-// Set only while Codex's App Server is being restarted (provider-activation.ts): a Codex turn
-// claimed in that window would start on a server that is about to stop. In-process on purpose: the
-// restart runs in this process, and a restart of this process ends the hold with it.
-let codexAdmissionHeld=false;
-export function holdCodexAdmission(held:boolean){codexAdmissionHeld=held;if(!held)executionChanged();}
+// Runner replacements survive an owner restart, so their admission holders are restored from the
+// ledger and reconciled asynchronously before they can release queued Codex turns.
+const codexAdmissionHolders=new CodexAdmissionHolds();
+for(const row of db.query('SELECT holder FROM codex_admission_holds').all() as {holder:string}[])
+  codexAdmissionHolders.set(row.holder,true);
+export type CodexAdmissionRecovery={kind:'runner-activation';runner:string;account:string;operationId:string}|{kind:'runner-rehome';runner:string};
+export function holdCodexAdmission(holder:string,held:boolean,recovery?:CodexAdmissionRecovery){
+  if(held&&recovery){
+    db.query('INSERT INTO codex_admission_holds(holder,recovery_json,created_at_ms) VALUES(?,?,?) ON CONFLICT(holder) DO UPDATE SET recovery_json=excluded.recovery_json')
+      .run(holder,JSON.stringify(recovery),Date.now());
+  }
+  const changed=codexAdmissionHolders.set(holder,held);
+  if(!held){db.query('DELETE FROM codex_admission_holds WHERE holder=?').run(holder);if(changed)executionChanged();}
+}
+export function codexAdmissionRecoveryHolds():Array<{holder:string;recovery:CodexAdmissionRecovery}>{
+  return (db.query('SELECT holder,recovery_json FROM codex_admission_holds').all() as {holder:string;recovery_json:string}[])
+    .flatMap(row=>{try{const recovery=JSON.parse(row.recovery_json);return recovery&&typeof recovery.runner==='string'?[{holder:row.holder,recovery}]:[];}catch{return [];}});
+}
 
 function claimableQueuedTurnParameters(nowMs:number,activeSessionIds:readonly number[],survivable:ReturnType<typeof survivableRunKinds>|null) {
   const quietSettings=db.query('SELECT quiet_start_hour,quiet_end_hour,time_zone FROM saved_work_settings WHERE singleton=1').get() as {quiet_start_hour:number;quiet_end_hour:number;time_zone:string};
   return [nowMs,CLAUDE_ALLOWANCE_HOLD_UNTIL_MS,nowMs,nowMs,quietOnlyAdmits(nowMs,quietSettings)?1:0,nowMs,nowMs,nowMs,nowMs,JSON.stringify(activeSessionIds),nowMs,
-    survivable ? 1 : 0,JSON.stringify(survivable?.providers ?? []),codexAdmissionHeld ? 1 : 0] as const;
+    survivable ? 1 : 0,JSON.stringify(survivable?.providers ?? []),codexAdmissionHolders.isHeld ? 1 : 0] as const;
 }
 
 function currentClaimSurvivability() {

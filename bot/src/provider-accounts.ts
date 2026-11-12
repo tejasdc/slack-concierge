@@ -171,6 +171,16 @@ export async function refreshClaudeAccount(): Promise<void> {
  * answers for the daemon when the file cannot.
  */
 let codexSignIn: ProviderAccount | null = null;
+// A configured runner is the credential authority for provider turns. The owner's credential
+// file must never fill in an identity when a runner is configured (including when it is offline).
+const runnerIdentity = new Map<ProviderKey, ProviderAccount | null>();
+export function setRunnerAccountInUse(provider: ProviderKey, account: { id: string; label: string } | null): void {
+  if (provider === 'antigravity') return;
+  const normalized=account ? { id: account.id, label: account.label, detail: null } : null;
+  runnerIdentity.set(provider,normalized);
+  if(provider==='codex')codexSignIn=normalized;
+  else claudeSignIn=normalized;
+}
 // Antigravity keeps its own credential in the platform keyring. Only its official CLI may
 // read that credential; a successful CLI account/usage observation supplies this identity.
 let antigravitySignIn: ProviderAccount | null = null;
@@ -197,6 +207,7 @@ const memo = new Map<ProviderKey, Memo>();
  */
 export function currentAccount(provider: AccountIdentityProvider): ProviderAccount | null {
   if(provider==="antigravity")return antigravitySignIn;
+  if(runnerIdentity.has(provider))return runnerIdentity.get(provider)??null;
   const path = credentialPath(provider);
   let key: string;
   try { const stat = statSync(path); key = `${stat.mtimeMs}:${stat.size}`; }

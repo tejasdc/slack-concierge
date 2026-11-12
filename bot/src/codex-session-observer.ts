@@ -74,12 +74,15 @@ export class CodexSessionObserver {
   async stop() {
     this.stopped = true;
     this.resolveStoppedSignal();
-    await Promise.allSettled([
+    // Closing this observer-owned bridge rejects its pending reads. Waiting for
+    // those reads before closing could hold a release for their 30-second deadline.
+    const close = this.ownsAppServer ? (this.appServer as CodexAppServerClient).close({ immediate: true }) : Promise.resolve();
+    const settled = await Promise.allSettled([close,
       this.connectionLoop,
       this.notificationLoop,
       ...this.pendingThreadSubscriptions.values(),
     ].filter(Boolean) as Promise<void>[]);
-    if (this.ownsAppServer) await (this.appServer as CodexAppServerClient).close();
+    if (settled[0]?.status === "rejected") throw settled[0].reason;
   }
 
   private async runConnections() {
@@ -91,6 +94,7 @@ export class CodexSessionObserver {
         generation = await this.appServer.connect();
         if (!await this.observeLoadedBindings(this.appServer, generation)) continue;
         failures = 0;
+        if (this.stopped) return;
         clearRetryBreaker("codex-session-observer:app-server");
         await Promise.race([this.appServer.waitForDisconnect(generation), this.stoppedSignal]);
       } catch (error) {
@@ -98,7 +102,11 @@ export class CodexSessionObserver {
       } finally {
         unsubscribe();
         await this.notificationLoop;
-        for (const threadId of this.subscribedThreadIds) disconnectCodexLifecycle(threadId);
+        // A planned owner handoff has no new provider evidence to record here. The next
+        // owner refreshes lifecycle from the App Server after its request API opens.
+        if (!this.stopped) {
+          for (const threadId of this.subscribedThreadIds) disconnectCodexLifecycle(threadId);
+        }
         this.subscribedThreadIds.clear();
       }
       if (!this.stopped) {
@@ -115,13 +123,15 @@ export class CodexSessionObserver {
     const bindings = new Map(listUniqueCodexSessionBindings().map(binding => [binding.provider_thread_uuid, binding]));
     let cursor: string | null = null;
     do {
+      if (this.stopped) return false;
       const page = await connection.request("thread/loaded/list", { cursor, limit: 100 });
+      if (this.stopped) return false;
       if (!Array.isArray(page?.data)) throw new Error("Codex did not return loaded thread IDs.");
       for (const threadId of page.data) {
         const binding = bindings.get(threadId);
         if (!binding || this.subscribedThreadIds.has(threadId)) continue;
         if (this.stopped) return false;
-        if (await connection.connect() !== generation) return false;
+        if (this.stopped || await connection.connect() !== generation || this.stopped) return false;
         try {
           // Read stored state without loading a dormant conversation. A loaded idle
           // thread may have completed before reconnect, so refresh its receipts.
@@ -130,14 +140,14 @@ export class CodexSessionObserver {
           await this.refreshHistoryHead(binding.session_id, threadId);
           if (snapshot.thread?.status?.type === "active") await this.providerSessionBound(threadId);
         } catch (error) {
-          if (await connection.connect() !== generation) return false;
+          if (this.stopped || await connection.connect() !== generation || this.stopped) return false;
           log("warn", "codex_session_thread_subscription_failed", {
             ...errorFields(error),
             provider_thread_uuid: threadId,
             session_id: binding.session_id,
           });
         }
-        if (await connection.connect() !== generation) return false;
+        if (this.stopped || await connection.connect() !== generation || this.stopped) return false;
       }
       cursor = typeof page.nextCursor === "string" ? page.nextCursor : null;
     } while (cursor);
@@ -145,18 +155,20 @@ export class CodexSessionObserver {
   }
 
   private async subscribeBoundProviderSession(providerThreadUuid: string) {
+    if (this.stopped) return;
     const binding = getUniqueCodexSessionBinding(providerThreadUuid);
     if (!binding) return;
     const generation = await this.appServer.connect();
-    if (this.stopped || await this.appServer.connect() !== generation) {
+    if (this.stopped || await this.appServer.connect() !== generation || this.stopped) {
       throw new Error("The provider observer connection changed while subscribing a newly bound session.");
     }
     await this.appServer.request("thread/resume", { threadId: providerThreadUuid, excludeTurns: true });
-    if (this.stopped || await this.appServer.connect() !== generation) {
+    if (this.stopped || await this.appServer.connect() !== generation || this.stopped) {
       throw new Error("The provider observer connection changed after subscribing a newly bound session.");
     }
     this.subscribedThreadIds.add(providerThreadUuid);
     await this.queueLifecycleRefresh(providerThreadUuid);
+    if (this.stopped) return;
     await this.refreshHistoryHead(binding.session_id, providerThreadUuid);
     log("info", "codex_session_thread_subscribed", {
       provider_thread_uuid: providerThreadUuid,
@@ -176,6 +188,7 @@ export class CodexSessionObserver {
   }
 
   private async refreshHistoryHead(sessionId: number, providerThreadUuid: string) {
+    if (this.stopped) return;
     let digest: string;
     try {
       const page = await this.appServer.request("thread/items/list", {
@@ -184,18 +197,21 @@ export class CodexSessionObserver {
       if (!Array.isArray(page?.data)) throw new Error("Codex did not return an item page.");
       digest = createHash("sha256").update(JSON.stringify(page.data[0] ?? null)).digest("hex");
     } catch (error) {
+      if (this.stopped) return;
       log("warn", "codex_session_history_head_failed", {
         ...errorFields(error), provider_thread_uuid: providerThreadUuid, session_id: sessionId,
       });
       this.invalidateHistory(sessionId, providerThreadUuid);
       return;
     }
+    if (this.stopped) return;
     if (recordCodexSessionHistoryHead(sessionId, providerThreadUuid, digest)) {
       this.invalidateHistory(sessionId, providerThreadUuid);
     }
   }
 
   private queueNotification(event: any) {
+    if (this.stopped) return;
     if (event.method === "thread/started" && typeof event.params?.thread?.id === "string") {
       void this.providerSessionBound(event.params.thread.id).catch(() => {
         log("warn", "codex_session_lifecycle_subscription_failed", { provider_thread_uuid: event.params.thread.id });
@@ -285,9 +301,11 @@ export class CodexSessionObserver {
   }
 
   private async releaseIdleSubscription(threadId: string) {
+    if (this.stopped) return;
     if (!this.subscribedThreadIds.has(threadId)) return;
     try {
       const snapshot = await this.appServer.request("thread/read", { threadId, includeTurns: false });
+      if (this.stopped) return;
       if (snapshot.thread?.status?.type !== "idle") return;
       await this.appServer.request("thread/unsubscribe", { threadId });
       this.subscribedThreadIds.delete(threadId);
@@ -300,11 +318,13 @@ export class CodexSessionObserver {
   }
 
   private queueLifecycleRefresh(threadId: string) {
+    if (this.stopped) return Promise.resolve();
     this.notificationLoop = this.notificationLoop.then(() => this.refreshLifecycle(threadId));
     return this.notificationLoop;
   }
 
   private async refreshLifecycle(threadId: string) {
+    if (this.stopped) return;
     const version = this.lifecycleVersions.get(threadId) ?? 0;
     let page: any, snapshot: any;
     try {
@@ -313,7 +333,7 @@ export class CodexSessionObserver {
         this.appServer.request("thread/read", { threadId, includeTurns: false }),
       ]);
     } catch {
-      disconnectCodexLifecycle(threadId);
+      if (!this.stopped) disconnectCodexLifecycle(threadId);
       log("warn", "codex_session_lifecycle_refresh_failed", { provider_thread_uuid: threadId });
       return;
     }

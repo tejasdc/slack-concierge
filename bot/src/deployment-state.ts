@@ -3,6 +3,7 @@ import { db, initializeLedgerSchema } from "./state-database";
 import type { ProviderId, SessionRow } from "./state";
 import { isProcessIdentityAlive } from "./runtime-identity";
 import { recordRepairNotice } from "./repair-notices";
+import { CURRENT_INBOX_ID_SQL } from "./inbox-lineage-sql";
 import { logToStderr } from "./log";
 
 function writeDeploymentTransaction<T>(work: () => T): () => T {
@@ -728,8 +729,7 @@ export function recordPreservedCheckout(input: { runId: string; branch: string; 
     if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) throw new Error("No active deployment owns this preserved checkout.");
     appendRunEvent(input.runId, "shared_checkout_preserved", input);
     // The same service-origin Inbox/Needs-attention path as key-change-notice: no provider turn.
-    const inbox = db.query(`SELECT id,native_metadata_json FROM sessions
-      WHERE json_extract(native_metadata_json,'$.inbox')=1 ORDER BY id DESC LIMIT 1`)
+    const inbox = db.query(`SELECT id,native_metadata_json FROM sessions WHERE id=(${CURRENT_INBOX_ID_SQL})`)
       .get() as { id: number; native_metadata_json: string | null } | null;
     if (!inbox) throw new Error("The preserved checkout has no Inbox destination for its notice.");
     const inputId = `deployment-preserved:${input.runId}`;

@@ -4,6 +4,7 @@ import {preparedTopicValue,topicContext,type TopicContext} from './prepared-topi
 import {inboxRootResolver} from './presentation-message-source';
 import {gram,shortTokens} from './prepared-search';
 import {topicEventDisplay} from './topic-event-display';
+import {CURRENT_INBOX_ID_SQL,INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
 
 const PAGE=20,CHUNK_BYTES=16*1024;
 type State='open'|'closed'|'background'|'all';
@@ -109,6 +110,35 @@ export class PreparedTopics {
    prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN newest_speaker_reply INTEGER NOT NULL DEFAULT 1');
    prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
   })();
+  // A worker waiting on another agent counts as working since 2026-11-11; threads prepared under the
+  // older rule stay idle until they change, so recompute each once.
+  if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='work_through_waits'))prepared.transaction(()=>{
+   prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN work_through_waits INTEGER NOT NULL DEFAULT 1');
+   prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
+  })();
+  // Requests sent by an earlier Inbox session in the lineage count as the thread's work since
+  // 2026-11-11 (a thread routed before an Inbox handoff showed green while its agent ran); recompute once.
+  if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='work_across_inbox_lineage'))prepared.transaction(()=>{
+   prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN work_across_inbox_lineage INTEGER NOT NULL DEFAULT 1');
+   prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
+  })();
+  // A request's dispatch names its current holder after a handoff since 2026-11-11, so the thread
+  // depends on the successor's turns; recompute once.
+  if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='dispatch_current_holder'))prepared.transaction(()=>{
+   prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN dispatch_current_holder INTEGER NOT NULL DEFAULT 1');
+   prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
+  })();
+  // A dispatch that belongs only to the thread's closed requests no longer counts as its work since
+  // 2026-11-11 (closed threads pulsed while their agent worked elsewhere); recompute once.
+  if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='work_ignores_closed_requests'))prepared.transaction(()=>{
+   prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN work_ignores_closed_requests INTEGER NOT NULL DEFAULT 1');
+   prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
+  })();
+  // A thread's own open requests count their live deliveries directly since 2026-11-12; recompute once.
+  if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='work_from_own_open_requests'))prepared.transaction(()=>{
+   prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN work_from_own_open_requests INTEGER NOT NULL DEFAULT 1');
+   prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
+  })();
   // Each choice is named as its newest message in the thread is signed since 2026-11-05; recompute once.
   if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='choice_named_as_signed'))prepared.transaction(()=>{
    prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN choice_named_as_signed INTEGER NOT NULL DEFAULT 1');
@@ -192,7 +222,7 @@ export class PreparedTopics {
   this.prepared.query('DELETE FROM presentation_topic_chunk_refs WHERE generation=?').run(generation);
   this.prepared.query('DELETE FROM presentation_inbox_attention WHERE generation=?').run(generation);
  }
- private inboxSession(){return (this.source.query("SELECT id FROM sessions WHERE json_extract(native_metadata_json,'$.inbox')=1 ORDER BY id DESC LIMIT 1").get() as {id:number}|null)?.id??0;}
+ private inboxSession(){return (this.source.query(CURRENT_INBOX_ID_SQL).get() as {id:number}|null)?.id??0;}
  context(generation:number,sessionId:number){return {...topicContext(this.source,this.prepared,generation,this.inboxSession()||sessionId),requestedSessionId:sessionId};}
  rebuildRootsPage(generation:number,after='',limit=100){
   const rows=this.prepared.query('SELECT root_input_id AS root FROM presentation_messages WHERE generation=? AND root_input_id>? GROUP BY root_input_id ORDER BY root_input_id LIMIT ?')
@@ -314,9 +344,7 @@ export class PreparedTopics {
    .run(context.generation,json(value));
  }
  rebuildPage(generation:number,sessionId:number,after='',limit=20){
-  const rows=this.source.query(`SELECT topic_id FROM inbox_topics WHERE session_id IN (
-    WITH RECURSIVE lineage(id) AS (SELECT ? UNION ALL SELECT predecessor_session_id FROM session_handoffs
-      JOIN lineage ON successor_session_id=lineage.id WHERE state='accepted') SELECT id FROM lineage)
+  const rows=this.source.query(`SELECT topic_id FROM inbox_topics WHERE session_id IN (${INBOX_LINEAGE_SQL})
     AND topic_id>? ORDER BY topic_id LIMIT ?`)
    .all(sessionId,after,limit+1) as {topic_id:string}[];
   const context=this.context(generation,sessionId);
@@ -406,6 +434,11 @@ export class PreparedTopics {
   if(['router_working','router_queued'].includes(value.summary.work.kind))depend('inbox-work',String(value.sessionId));
   for(const target of value.detail.replyTargets.choices)depend('session',target.sessionId);
   if('sessionId' in value.summary.work&&value.summary.work.sessionId)depend('session',value.summary.work.sessionId);
+  for(const worker of ('workers' in value.summary.work?value.summary.work.workers??[]:[]))if(worker.sessionId)depend('session',worker.sessionId);
+  // A worker waiting on another agent stays working until someone down that chain stops, so the
+  // thread is rebuilt when any of them starts or ends a turn, not only its direct worker.
+  for(const dispatch of context.dispatches)if(dispatch.root&&value.summary.roots.includes(dispatch.root))
+   for(const session of dispatch.through??[])depend('session',session);
   const row=[generation,topicId,context.sessionId,value.summary.state,
    value.summary.state==='open'&&!value.summary.needsYou.count&&value.summary.work.kind!=='idle'?1:0,
    value.band,value.summary.lastEntryAt,value.summary.closedAt??value.summary.lastEntryAt,json(summary),ref.hash,value.search,listKey(value.band,value.summary.pinnedAt,value.summary.lastEntryAt,topicId),

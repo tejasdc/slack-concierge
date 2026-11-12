@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { db } from './state';
+import { authoredRunnerProviderSubject } from './runner-provider-history-client';
 
 const run = promisify(execFile);
 
@@ -94,22 +95,39 @@ export async function commitWork(commit: string, subject: string | null, atIso: 
   if (found.has(commit)) return found.get(commit)!;
   const at = Date.parse(atIso);
   if (!Number.isFinite(at)) return null;
-  const turns = db.query(`SELECT t.id, t.session_id AS session, t.accepted_input_id AS input, t.started_at AS started, s.agent_session_uuid AS uuid, s.provider_id AS provider
+  const turns = db.query(`SELECT t.id, t.session_id AS session, t.accepted_input_id AS input, t.started_at AS started,
+      s.agent_session_uuid AS uuid, s.provider_id AS provider,
+      json_extract(s.native_metadata_json,'$.providerRunner') AS bound_runner,
+      json_extract(s.native_metadata_json,'$.providerAccount') AS bound_account,
+      (SELECT attempt.runner FROM executions execution JOIN runner_attempts attempt
+        ON attempt.job_id='turn:'||execution.execution_id
+        WHERE execution.turn_id=t.id AND execution.supervisor='runner'
+        ORDER BY execution.created_at_ms DESC,attempt.started_at_ms DESC LIMIT 1) AS execution_runner,
+      (SELECT 1 FROM executions execution WHERE execution.turn_id=t.id AND execution.supervisor='runner' LIMIT 1) AS ran_remote
     FROM turns t JOIN sessions s ON s.id=t.session_id
     WHERE t.status<>'queued' AND t.started_at<=? AND (t.ended_at IS NULL OR t.ended_at>=?) AND s.agent_session_uuid IS NOT NULL
     ORDER BY t.id`)
-    .all(sqliteTime(at + SLACK_MS), sqliteTime(at - SLACK_MS)) as { id: number; session: number; input: string | null; started: string; uuid: string; provider: string }[];
+    .all(sqliteTime(at + SLACK_MS), sqliteTime(at - SLACK_MS)) as { id: number; session: number; input: string | null; started: string;
+      uuid: string; provider: string; bound_runner:string|null;bound_account:string|null;execution_runner:string|null;ran_remote:number|null }[];
   // One candidate per session: its latest turn begun by the commit's time (the slack only admits
   // a turn whose recorded start trails the commit by a clock's worth).
   const bySession = new Map<number, (typeof turns)[number]>();
   for (const turn of turns) if (!bySession.has(turn.session) || turn.started <= sqliteTime(at)) bySession.set(turn.session, turn);
   const candidates = [...bySession.values()];
-  const located = await Promise.all(candidates.map(async turn => ({ turn, files: await transcripts(turn.provider, turn.uuid, at) })));
   if (!subject) return null;
   let turn: (typeof candidates)[number] | null = null, nearest = -Infinity;
-  for (const entry of located) {
-    const writtenAt = await authored(entry.files, subject, at + SLACK_MS);
-    if (writtenAt !== null && writtenAt > nearest) { nearest = writtenAt; turn = entry.turn; }
+  for (const candidate of candidates) {
+    const runner = candidate.bound_runner || candidate.execution_runner
+      || (candidate.ran_remote ? process.env.CONCIERGE_TURN_RUNNER?.trim() : null)
+      || (candidate.provider === 'codex' ? process.env.CONCIERGE_CODEX_RUNNER?.trim() : null);
+    if(candidate.ran_remote&&!runner)return null;
+    const writtenAt = runner && (candidate.provider === 'claude-code' || candidate.provider === 'codex')
+      ? (() => authoredRunnerProviderSubject({runner,provider:candidate.provider as 'claude-code'|'codex',
+          account:candidate.bound_account,sessionUuid:candidate.uuid,subject,beforeMs:at+SLACK_MS})
+          .then(result=>result.timestamp===null?null:Date.parse(result.timestamp)))()
+      : transcripts(candidate.provider,candidate.uuid,at).then(files=>authored(files,subject,at+SLACK_MS));
+    const timestamp = await writtenAt;
+    if (timestamp !== null && timestamp > nearest) { nearest = timestamp; turn = candidate; }
   }
   const answer = turn ? { sessionId: turn.session, turnId: turn.id, input: originInput(turn.input) } : null;
   // Only a found commit is kept: one not yet in a transcript (the turn still writing) is asked again later.

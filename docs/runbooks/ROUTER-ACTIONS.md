@@ -11,6 +11,7 @@ router-actions.sh external work-flow-supervisor capture -- "A message for the In
 router-actions.sh external work-flow-supervisor capture --id incident-42 --file /path/to/evidence.txt -- "Please route this"
 router-actions.sh external work-flow-supervisor ask '<exact-discovered-session-address>' --action-id incident-42 --requested-effect work -- "Check this incident"
 router-actions.sh external work-flow-supervisor get '<request-id>'
+router-actions.sh external work-flow-supervisor withdraw '<request-id>' --ask-action-id incident-42 --action-id withdraw-incident-42
 ```
 
 Names match `^[a-z][a-z0-9-]{2,40}$`. `ask` also accepts `--text-file` in place of
@@ -22,6 +23,12 @@ Capture enters the normal Inbox intake and starts its router turn. Direct asks u
 and reply command. The outside caller polls `get`; no return input is delivered to
 an imaginary session. The owner socket is root only. The old `test-capture` command
 remains a path check by an agent already inside Concierge and starts no Inbox turn.
+`withdraw` works only for that outside agent's exact unstarted request, using its
+original ask action ID and a stable withdrawal action ID. It returns a retained
+`canceled` receipt; a started or uncertain request is refused. The human obligation
+remains open for reassignment. Repeat the same withdrawal command to read the same
+receipt after a lost response; never submit a second ask to another provider before
+the cancellation is confirmed.
 
 The same root-only owner socket answers `GET /supervisor/ping` with process identity,
 start time and installed release, which the outside work-flow supervisor uses to tell a
@@ -48,7 +55,12 @@ thread and sends it back if it tries to stop owing a reply. If it stopped while 
 not run (Concierge down or restarting), the owner admits one report-back notice into the same
 conversation, and only a second silent stop is recorded as stalled in the thread. Follow-ups to
 the session queue and run as the next outside turn (`codex exec resume`); an outside run cannot
-be steered. Its history is Codex's own record of the conversation.
+be steered. The session view therefore advertises no live steering, and a waiting
+message says why it will be read in the next turn. A human message accepted by an older
+owner as steering but provably never sent is restored to that queue under its
+original identity at startup, including when the outside run already finished.
+Its history is Codex's own
+record of the conversation.
 
 Use it for work that changes Concierge itself or must outlive trouble in Concierge. It replaces
 starting `codex exec` by hand as a background job or through a launcher script with a file watch
@@ -66,6 +78,33 @@ the asking agent must receive the exact answer and record how it handled it
 before its task can finish. The owner refuses a threaded ChatGPT ask without
 that return.
 `sessions get` still exposes every retained reply, outcome and attachment.
+
+## Report evidence reads
+
+`router-actions.sh reports capture <captureId>` reads one retained capture's exact words, source,
+attachment list and held state by its ID (with or without the `capture:` prefix), at any age and
+from any earlier Inbox session. Use it when a request cites his capture; the paged captures list
+covers only the current Inbox's recent captures.
+
+`router-actions.sh reports chain <accepted-input-or-request-id>` reads up to eight source links
+from the owner. A bare UUID is a communication request ID. The JSON includes each accepted input's
+session, origin, source input and run, capture marker, own files, exact words (`text`; a human's
+words up to 65,536 characters, an agent or service input's up to 8,192, with `textTruncated`), and
+the communication request's carried files. `inboxLinks` lists every exact Inbox obligation whose dispatch matches a request in
+the chain, with its source captures. `direct: true` means the link belongs to the named request or
+to a request sent directly from the named input; ancestral links are labeled `direct: false`.
+The Inbox's link can name several human reports across topics. The legacy `resolvedCapture` and
+`carriedReports` fields preserve the attachment fallback for unlinked historic sends.
+
+`router-actions.sh reports window <since-UTC> <until-UTC>` reads the half-open interval of accepted
+in-app reports and human inputs. Times are whole-second UTC, for example
+`2026-11-04T06:00:23Z`. Each report has its linked communication requests, their settlement,
+target session, and exact thread-post event IDs and times. An absent communication row has
+`known: false`; an open row has `known: true` and `outcome: null`. The read refuses a ledger
+with no accepted inputs, an invalid range, or more than 5,000 rows in a collection. A refused read
+is never a clean zero. Both commands use the same authenticated owner entrance as session reads,
+including from a runner where the ledger file is hidden; the query runs in the isolated read
+process. The owning contract is [Runners](../architecture/RUNNERS.md).
 
 ## Waiting for a local process
 
@@ -94,6 +133,17 @@ thnkr.ing logs each decision too. It runs only on the Mac; the server answers
 `MESSAGES_NOT_ON_THIS_MACHINE`. Checked 2026-10-07 on his real texts: an Amazon sign-in code was
 shown as an ordinary site and a T-Mobile code stayed hidden as his carrier.
 
+Pictures and files sent in texts: a shown text lists `attachments` as `{id, type, name, bytes,
+onThisMac}`. `router-actions.sh messages --attachment <id> --to <folder>` copies that one
+attachment into the named folder (created if missing), converting HEIC/HEIF photos to JPEG with
+`sips`, and answers `{exported: {path, type, convertedFrom, bytes}}`; agents then open the copy
+with their ordinary tools and never touch the Messages folder. The code rule extends to
+attachments: a text whose words look like a code, reset or sign-in link (even one thnkr.ing would
+show), or any text from an automated or short-code sender, lists no attachments and its
+attachment ids answer `ATTACHMENT_WITHHELD`. Pictures from a person's number or address, or ones
+Tejas sent, are ordinary. `ATTACHMENT_NOT_ON_THIS_MAC` means Messages has not downloaded the file
+(it may be in iCloud only). Every export and refusal is logged to the same diagnostics file.
+
 It is the sanctioned way in, not the only one. The pre-command guard refuses any call that names
 the Messages folder, chat.db or Notification Center's store, or a `mac-screenshot app Messages`,
 from either machine [decision: codes-hidden-only-for-money-and-identity]. That includes commands that only
@@ -113,7 +163,7 @@ long numbers and codes he forwarded), which errs toward hiding.
 
 ## Current native routing
 
-For resource-heavy phone work that Tejas authorized only while he sleeps, create a new banked coding session with `sessions bank --quiet-only` and the usual project, session name, summary, source pair and action ID. The saved-work quiet hours and time zone in thnkr.ing Settings govern the window. Concierge refuses a claim outside that band or during its last five minutes, and asks an active run to stop at that early cutoff; a continuation keeps the same choice. Ordinary `sessions bank` retains its allowance-reset behavior. `sessions cancel <request-id>` withdraws a queued saved turn; `sessions saved cancel <turn-id>` remains the direct saved-work control. Check `sessions saved list` after cancellation. See [session ownership](../architecture/SESSION-OWNER.md#one-execution-owner).
+For resource-heavy phone work that Tejas authorized only while he sleeps, create a new banked coding session with `sessions bank --quiet-only` and the usual project, session name, summary, source pair and action ID. The saved-work quiet hours and time zone in thnkr.ing Settings govern the window. Concierge refuses a claim outside that band or during its last five minutes, and asks an active run to stop at that early cutoff; a continuation keeps the same choice. Inside the band it starts whenever an account has room above the reserve, even while other agents run. Each night it does not start, you are woken with why; `sessions saved list` shows the current reason as `waitingBecause`. Ordinary `sessions bank` retains its allowance-reset behavior. `sessions cancel <request-id>` withdraws a queued saved turn; `sessions saved cancel <turn-id>` remains the direct saved-work control. Check `sessions saved list` after cancellation. See [session ownership](../architecture/SESSION-OWNER.md#one-execution-owner).
 
 ### Standing agents
 
@@ -131,15 +181,48 @@ name for creation. `sessions agents bind <role> <session-address> <source-flags>
 moves a role's binding to an existing non-archived session in its exact declared folder. The
 source and action ID make retries idempotent. Moving a bound session to another folder clears its
 binding. The role table in `bot/src/standing-agents.ts` is the sole home for these folders and wake facts.
+Binding `inbox` makes that session the Inbox router, exactly as an accepted provider handoff does:
+new captures, his thread replies, thread-named requests (`sessions ask --thread`), topic commands
+and Inbox reads go through it, and it carries the former router's open attention. Every session
+ever marked as the Inbox stays part of the one Inbox, so their threads and topics remain usable
+from the new router. Inputs already queued on the former router stay there; the bind receipt lists
+them under `formerRouter.stillQueued`. A provider handoff moves them; otherwise read and route them
+by exact id. `bot/src/inbox-lineage-sql.ts` holds the one definition of the current router and of
+the Inbox's sessions.
+
+`sessions topics message <messageId>` returns one Inbox message's words, author, time,
+attachments, thread root and topic: a capture, his reply, an agent's post, result or routed request,
+or a request input that a topic request names as its source or dispatch. Topic reads carry ids and
+short excerpts; this is the read for judging the message itself. Its `from` and full `author`
+resolve the current author, including a later correction to an originally human-origin input;
+an unproved user-role message reports unknown rather than Tejas.
 `sessions context` and the session view expose only a session's explicit role binding.
 
 `sessions schedule --role <role> --at <future ISO-8601 time> [--every-ms <interval>] --summary "<one line>" <source-flags> --action-id A -- <text>`
 queues one firing in that bound session, or creates and binds the role's session first. The bound session may run it for its own role: its firing is then a plain scheduled input in itself, with no request to itself and nothing returned. A repeating
 schedule keeps firing there. While one repeating firing for the role is queued, another repeating
 schedule is refused with its exact turn ID; change its time in Thinkering Saved work or cancel it
-with `sessions saved cancel <turn-id>` before replacing it. `sessions schedule --project` remains available for
+with `sessions saved cancel <turn-id>` before replacing it. That control cancels only the named
+queued turn; on a repeating schedule it also prevents another firing from being booked. Other
+scheduled turns in the same session remain queued. `sessions schedule --project` remains available for
 registered projects. The read caps repeating schedules at 32, watches per role at 20, and host
 timers at 128; its coverage field says when a cap was reached.
+On a runner, the role's declared workspace-relative folder (such as `agents/concierge-repair`)
+must resolve to that runner's registered project at that exact folder before a wake is saved.
+The returned project identity belongs to the existing bound session; a nested agent folder does
+not cause a new session or a fallback to a similarly named root project.
+
+To stop any repeating schedule, run `sessions cancel <request-id>` on the request that created it, or
+`sessions saved cancel <turn-id>` on its queued firing. Either one withdraws every queued firing and
+books no more; a firing already running finishes. The request names only the first firing, so the
+saved-work step that books each next firing checks whether the schedule was dropped or its request
+cancelled. Until 2026-11-06 a cancelled request left later firings running. `sessions saved list`
+shows each armed schedule's next firing, turn ID and interval.
+
+A repeating schedule created with `--expires` ends at that instant: the last firing due before it
+runs, no firing is booked at or after it, and every firing carries that same expiry. Until
+2026-11-11 each firing moved the expiry one interval later, so a schedule with an expiry never ended;
+a firing still queued from that time is withdrawn when it comes due past the original end.
 
 New repeating schedules and renewing file watches require both the requesting session and
 the scheduled session, where applicable, to belong to a registered project. Placement under
@@ -168,6 +251,10 @@ before creating a project. Its completed work reply is one JSON object with the 
 `null` for the workspace root, or the established `agent-ecology/expertise` lab group).
 For the example above, a grouped answer is
 `{"project":"canvas-essay-notes","purpose":"An essay exploring how Canvas changes drafting.","template":"writing","group":"canvases"}`.
+The decision is read from the organizer's own words: the required "What came before" lead a
+first reply carries (recorded as its own reply field) is set aside, and the one JSON object may
+stand alone or among the organizer's prose or a fenced block; two candidate objects are refused
+as ambiguous. The Canvas policy answer below is read the same way.
 Pass that request ID with `--consultation` and the creator's current source input and run. The creation API checks that the bound organizer
 answered the asking session, completed the request, and accepted these exact fields before
 creating any folder. It reserves that exact answer for one project, allows retries of the
@@ -490,6 +577,13 @@ router-actions.sh sessions reply <request-id> <source-flags> --action-id A --wor
 His words are checked against the message that started the work and his other messages of the
 last thirty days in this ledger; work that began on the other machine is taken as given. A
 session in a writing project (the messaging agent) cannot send `--requested-effect work`.
+
+An `only-he-can device` question may ask for one physical action in its first sentence,
+including saying a named `Alexa, open …` launch phrase to an Echo. For example:
+`Please say “Alexa, open thinkering box” to your Echo.` The reason field explains why
+the agent route cannot perform this check. A server or simulator result does not establish
+what the Echo heard or whether a capture reached the Inbox. Keep the source request open
+until the physical attempt and its resulting capture or refusal are observed.
 
 ### Approval required by a permanent decision
 

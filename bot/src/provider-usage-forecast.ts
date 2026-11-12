@@ -6,6 +6,7 @@ import {accountReadingAt,accountReadingFresh,includedAllowanceWindows,accountCan
 import { BUDGET_NOTICE_MAX_AGE_MS, type AccountIdentityProvider } from "./provider-accounts";
 import { accountUsageTable } from "./provider-usage-tables";
 import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
+import { providerRunnerTarget } from "./provider-runner-target";
 import { cachedUsageLimit, claudeAccountCachedReset, usageAttempt } from "./provider-usage";
 import { RESET_FACTS, resetAdvice } from "./provider-reset-facts";
 import { noticeTime } from "./notice-time";
@@ -44,8 +45,9 @@ if (process.env.CONCIERGE_READ_WORKER !== "1") db.exec(`CREATE TABLE IF NOT EXIS
   PRIMARY KEY (provider, account, window_name, observed_at_ms)
 )`);
 
-/** Samples kept per window: a day of five-minute readings, far more than a line needs. */
-const KEEP_SAMPLES = 300;
+/** Weekly attribution needs the observed meter history across a rolling seven-day report. */
+const KEEP_WEEKLY_MS = 8 * 86_400_000;
+const KEEP_OTHER_SAMPLES = 300;
 /** Below this the readings are noise rather than a rate. */
 const MIN_SPAN_MS = 8 * 60_000;
 const MIN_RATE_PER_HOUR = 0.5;
@@ -97,6 +99,7 @@ export function storedUsage(provider: AccountIdentityProvider): ProviderUsage | 
 export function withAgentsAccountCurrent(provider: AccountIdentityProvider, usage: ProviderUsage): ProviderUsage {
   if (provider !== "claude-code" || !claudeRunsFromOwnHomes()) return usage;
   const chosen = selectedClaudeHome()?.label ?? null;
+  if(providerRunnerTarget('claude-code')&&!chosen)return usage;
   return withLocalCurrentAccount(usage,chosen);
 }
 
@@ -116,11 +119,16 @@ export function recordUsageReading(provider: AccountIdentityProvider, usage: Pro
         db.query(`INSERT OR REPLACE INTO provider_usage_readings
           (provider, account, window_name, observed_at_ms, used_percent, resets_at_ms) VALUES (?,?,?,?,?,?)`)
           .run(provider, account.label, window.name, observedAt, window.usedPercent, at(window.resetsAt));
-        db.query(`DELETE FROM provider_usage_readings
+        // Weekly readings are kept by age, so a rolling seven-day report covers every day whatever
+        // the reading cadence; other windows keep a fixed number of samples.
+        if(window.name==='Weekly'||window.name==='Weekly · Fable only')
+          db.query(`DELETE FROM provider_usage_readings WHERE provider=? AND account=? AND window_name=? AND observed_at_ms<?`)
+            .run(provider, account.label, window.name, observedAt-KEEP_WEEKLY_MS);
+        else db.query(`DELETE FROM provider_usage_readings
           WHERE provider=? AND account=? AND window_name=? AND observed_at_ms NOT IN (
             SELECT observed_at_ms FROM provider_usage_readings
             WHERE provider=? AND account=? AND window_name=? ORDER BY observed_at_ms DESC LIMIT ?)`)
-          .run(provider, account.label, window.name, provider, account.label, window.name, KEEP_SAMPLES);
+          .run(provider, account.label, window.name, provider, account.label, window.name, KEEP_OTHER_SAMPLES);
       }
     }
   })();

@@ -1,12 +1,12 @@
 #!/usr/bin/env bun
 
 import { Database } from "bun:sqlite";
-import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readdirSync, rmSync, realpathSync, statSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readdirSync, rmSync, realpathSync, statSync, statfsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from 'node:child_process';
 import { canonicalSql } from '../src/canonical-sql';
-import { checkSqliteBackup as checks, publishSqliteBackup, pruneVerifiedBackups, verifyMigrationBackup } from '../src/verified-sqlite-backup';
+import { checkSqliteBackup as checks, isVerifiedBackup, publishSqliteBackup, pruneVerifiedBackups, verifyMigrationBackup } from '../src/verified-sqlite-backup';
 
 /**
  * The schema this release's code builds, read from a database it creates from nothing. Run in a
@@ -51,6 +51,14 @@ const namedBackup = (backupArgument >= 0 ? process.argv[backupArgument + 1] : un
 const backupPath = namedBackup || join(stateDirectory, "backups", `state.pre-deployment-repair.${Date.now()}.db`);
 mkdirSync(dirname(backupPath), { recursive: true, mode: 0o700 });
 
+function beginOfflinePhase(phase: string): () => void {
+  if (!schemaOnly) return () => {};
+  const startedAt = performance.now();
+  console.error(JSON.stringify({ event: 'deployment_migration_phase', phase, status: 'started', at: new Date().toISOString() }));
+  return () => console.error(JSON.stringify({ event: 'deployment_migration_phase', phase, status: 'completed',
+    duration_ms: Math.round(performance.now() - startedAt), at: new Date().toISOString() }));
+}
+
 /**
  * What this release's schema step would add to the live ledger: missing tables, columns, indexes,
  * triggers or views, or one whose SQL differs. Nothing means the step only re-runs what every
@@ -58,7 +66,7 @@ mkdirSync(dirname(backupPath), { recursive: true, mode: 0o700 });
  * every update anyway filled the disk to 99% on 2026-10-10 (ten copies in 90 minutes) and added
  * gigabytes of writes an hour on the disk that stalls the owner.
  */
-function schemaChanges(): string[] {
+async function schemaChanges(): Promise<string[]> {
   const scratch = mkdtempSync(join(tmpdir(), "concierge-schema-plan-"));
   try {
     const { CONCIERGE_DEPLOYMENT_MIGRATION_BACKUP: _drop, ...environment } = process.env;
@@ -66,9 +74,23 @@ function schemaChanges(): string[] {
       encoding: "utf8", timeout: 120_000, env: { ...environment, CONCIERGE_STATE_DIR: scratch } });
     if (child.status !== 0) throw new Error(`The release's schema could not be built for comparison: ${(child.stderr || String(child.error ?? "")).slice(-1500)}`);
     const wanted = JSON.parse(child.stdout.trim().split("\n").at(-1)!) as SchemaShape;
-    const live = new Database(statePath, { readonly: true });
-    let have: SchemaShape;
-    try { live.exec("PRAGMA busy_timeout=5000"); have = schemaShape(live); } finally { live.close(); }
+    let have!: SchemaShape;
+    // A WAL reader can receive SQLITE_BUSY during another connection's final close or
+    // recovery. Retry the whole read on a fresh connection so the next attempt gets a new
+    // snapshot. This scan has no effects; every attempt must still compare the full schema.
+    for (let attempt = 1; ; attempt++) {
+      let live: Database | null = null;
+      try {
+        live = new Database(statePath, { readonly: true });
+        live.exec("PRAGMA busy_timeout=5000");
+        have = schemaShape(live);
+        break;
+      } catch (error) {
+        if ((error as { code?: string }).code !== 'SQLITE_BUSY' || attempt === 3) throw error;
+        console.error(JSON.stringify({ event: 'deployment_schema_read_busy', attempt }));
+      } finally { live?.close(); }
+      await Bun.sleep(1000);
+    }
     const changes: string[] = [];
     for (const [table, columns] of Object.entries(wanted.tables)) {
       const present = have.tables[table];
@@ -195,20 +217,76 @@ if (!backupOnly && !backupIfNeeded && !process.argv.includes('--plan')) {
     throw new Error(`Schema migration requires ${service} fully stopped; observed ${JSON.stringify(values)}.`);
 }
 
+// The copy is the ledger's full size (12.9 GB on 2026-11-12) and is written before older copies are
+// pruned. That night's copy took the root disk from about 21 GB to 7 GB free in minutes; a copy
+// started with less room would fill it and stop every writer. Refuse instead, leaving the deploy
+// failed and the ledger untouched, unless the copy fits with a margin left over.
+const COPY_MARGIN_BYTES = 10 * 1024 ** 3;
+/**
+ * Older automatic copies the retention cap will drop as soon as the new copy is published. With the
+ * ledger at 12.9 GB and a 12 GiB cap, the cap keeps only the newest copy, so the previous one is
+ * removed seconds after the new one lands; requiring room for both at once refused the update on
+ * 2026-11-12 (14.8 GiB free, 22.2 GiB needed). Removing them first changes nothing that survives:
+ * the ledger is untouched until its own new copy is verified, and the evicted copy only rolled back
+ * the previous release, which this update replaces.
+ */
+function copiesTheNewCopyEvicts(newCopyBytes: number): string[] {
+  if (process.env.CONCIERGE_DEPLOYMENT_MIGRATION_BACKUP) return [];
+  const folder = dirname(backupPath);
+  const stamp = (name: string) => Number(name.split('.')[2]);
+  const verified = readdirSync(folder).filter(name => /^state\.pre-deployment-repair\.\d+\.db$/.test(name))
+    .filter(name => isVerifiedBackup(join(folder, name))).sort((a, b) => stamp(b) - stamp(a));
+  let kept = 1, bytes = newCopyBytes, full = false;
+  const evicted: string[] = [];
+  for (const name of verified) {
+    const size = statSync(join(folder, name)).size;
+    if (!full && kept < AUTOMATIC_COPIES_KEPT && bytes + size <= AUTOMATIC_COPY_BYTES) { kept++; bytes += size; continue; }
+    full = true;
+    evicted.push(name);
+  }
+  return evicted;
+}
+
+function requireRoomForCopy() {
+  const wal = existsSync(statePath + '-wal') ? statSync(statePath + '-wal').size : 0;
+  const copyBytes = statSync(statePath).size + wal;
+  const needed = copyBytes + COPY_MARGIN_BYTES;
+  const disk = statfsSync(dirname(backupPath));
+  let free = Number(disk.bavail) * Number(disk.bsize);
+  if (free < needed) {
+    const folder = dirname(backupPath);
+    const evicted = copiesTheNewCopyEvicts(copyBytes);
+    const reclaimable = evicted.reduce((sum, name) => sum + statSync(join(folder, name)).size, 0);
+    if (free + reclaimable >= needed) {
+      for (const name of evicted) {
+        // Qualification first, as the prune does: an interrupted removal cannot count a missing file.
+        rmSync(join(folder, `${name}.verified.json`), { force: true });
+        rmSync(join(folder, name), { force: true });
+      }
+      console.error(JSON.stringify({ event: 'deployment_migration_copy_preevicted', evicted, reclaimed_bytes: reclaimable }));
+      const after = statfsSync(folder);
+      free = Number(after.bavail) * Number(after.bsize);
+    }
+  }
+  if (free < needed)
+    throw new Error(`Not enough disk for the pre-migration ledger copy: ${(free / 1024 ** 3).toFixed(1)} GiB free, ${(needed / 1024 ** 3).toFixed(1)} GiB needed (ledger plus a 10 GiB margin). Free space, then deploy again.`);
+}
+
 function backUp() {
+  requireRoomForCopy();
   publishSqliteBackup(statePath, backupPath);
   pruneAutomaticCopies();
 }
 
 if (process.argv.includes('--plan')) {
   // Read-only: what this release's schema step would add to the live ledger.
-  console.log(JSON.stringify({ status: 'planned', changes: schemaChanges() }));
+  console.log(JSON.stringify({ status: 'planned', changes: await schemaChanges() }));
   process.exit(0);
 }
 if (backupIfNeeded) {
   // Run from the release being installed, before the coordinator stops: its own code says what its
   // schema step would add, and only then is the ledger copied.
-  const changes = schemaChanges();
+  const changes = await schemaChanges();
   if (changes.length) backUp();
   else pruneAutomaticCopies();
   console.log(JSON.stringify(changes.length ? { status: 'backed_up', backup_path: backupPath, changes }
@@ -217,7 +295,9 @@ if (backupIfNeeded) {
 }
 // What this migration will add, read with the coordinator stopped. It also bounds the check after
 // the migration to the tables the migration could have written.
-const changes = backupOnly ? [] : schemaChanges();
+const finishSchemaComparison = beginOfflinePhase('schema_comparison');
+const changes = backupOnly ? [] : await schemaChanges();
+finishSchemaComparison();
 if (schemaOnly && !namedBackup) {
   // No copy was taken because the release would change nothing. Confirm that with the coordinator
   // stopped; if it no longer holds, copy now rather than change the schema without one.
@@ -225,15 +305,22 @@ if (schemaOnly && !namedBackup) {
     console.log(JSON.stringify({ status: 'unchanged', backup_path: null }));
     process.exit(0);
   }
+  const finishLateBackup = beginOfflinePhase('late_backup');
   backUp();
+  finishLateBackup();
 } else if (!schemaOnly) backUp();
-else verifyMigrationBackup(backupPath);
+else {
+  const finishBackupVerification = beginOfflinePhase('backup_verification');
+  verifyMigrationBackup(backupPath);
+  finishBackupVerification();
+}
 
 if (backupOnly) {
   console.log(JSON.stringify({ status: 'backed_up', backup_path: backupPath }));
   process.exit(0);
 }
 
+const finishSchemaImport = beginOfflinePhase('schema_import');
 const { db: migrationDatabase } = await import("../src/state-database");
 try {
   // Reserve the writer before either schema owner loads. Importing state first and
@@ -244,6 +331,7 @@ try {
   await import("../src/deployment-state");
   if (process.argv.includes("--force-failure")) throw new Error("forced deployment repair migration failure");
   migrationDatabase.exec("COMMIT");
+  finishSchemaImport();
 } catch (error) {
   try { migrationDatabase.exec("ROLLBACK"); } catch {}
   const restored = new Database(statePath, { readonly: true });
@@ -297,13 +385,18 @@ function checkTables(database: Database, tables: string[]) {
 // took about two minutes with Concierge stopped on 2026-11-04, longer than an agent's command
 // waits for it to come back. A failure here stops the deployment with that backup named.
 try {
+  const finishIntegrityChecks = beginOfflinePhase('integrity_checks');
   const tables = touchedTables(migrationDatabase as unknown as Database, changes);
   if (tables) checkTables(migrationDatabase as unknown as Database, tables);
   else checks(migrationDatabase);
+  finishIntegrityChecks();
 } catch (error) {
   console.error(JSON.stringify({ status: "migrated_check_failed", backup_path: backupPath,
     error: error instanceof Error ? error.message : String(error) }));
   process.exit(1);
 }
-console.log(JSON.stringify({ status: "migrated", backup_path: backupPath, pruned: pruneAutomaticCopies() }));
+const finishBackupRetention = beginOfflinePhase('backup_retention');
+const pruned = pruneAutomaticCopies();
+finishBackupRetention();
+console.log(JSON.stringify({ status: "migrated", backup_path: backupPath, pruned }));
 migrationDatabase.close();

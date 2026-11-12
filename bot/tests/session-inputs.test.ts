@@ -1,17 +1,19 @@
 import {afterEach,beforeEach,expect,test} from 'bun:test';
 import {Database} from 'bun:sqlite';
 import {randomUUID} from 'node:crypto';
-import {db,claimNextQueuedTurn,getSessionById,createOrGetSession,upsertChannel,listInterruptedInputContext,finishTurn} from '../src/state';
+import {db,claimNextQueuedTurn,getSessionById,createOrGetSession,upsertChannel,listInterruptedInputContext,finishTurn,markTurnSteeringMessageFailed} from '../src/state';
 import {interruptedInputNotice} from '../src/input-continuity';
 import {initializeSessionOwnerSchema} from '../src/session-schema';
-import {attachSessionSteering,bindSessionProvider,createNativeSession,enqueueSessionInput,nativeRunId,retainSessionInput} from '../src/session-inputs';
+import {attachSessionSteering,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recoverUnsentAntigravityInputs,retainSessionInput,updateSessionMetadata} from '../src/session-inputs';
 import {acquireDatabaseTestLock} from './db-lock';
 
 let release:()=>void;
 const owned:number[]=[];
 beforeEach(async()=>{release=await acquireDatabaseTestLock();});
 afterEach(()=>{
-  for(const id of owned.splice(0)) {
+  for(const id of owned.splice(0).reverse()) {
+    db.query('DELETE FROM session_external_requests WHERE target_session_id=?').run(id);
+    db.query('DELETE FROM session_handoffs WHERE predecessor_session_id=? OR successor_session_id=?').run(id,id);
     db.query('DELETE FROM session_owner_events WHERE session_id=?').run(id);
     db.query('DELETE FROM session_inputs WHERE session_id=?').run(id);
     db.query('DELETE FROM turn_steering_messages WHERE turn_id IN (SELECT id FROM turns WHERE session_id=?)').run(id);
@@ -20,7 +22,7 @@ afterEach(()=>{
   }
   release();
 });
-function session(){const value=createNativeSession('codex',{cwd:'/tmp',purpose:'chat'});owned.push(value.id);return value;}
+function session(){const value=createNativeSession('codex',{cwd:'/tmp',purpose:'chat',summary:'Session input fixture'});owned.push(value.id);return value;}
 function input(sessionId:number,actionId=randomUUID(),text='question') {
   return db.transaction(()=>retainSessionInput({sessionId,scope:'surface:thinkering',actionId,kind:'input',origin:'human',payload:{text}}))();
 }
@@ -39,6 +41,58 @@ test('native inputs use existing FIFO without Slack claims and immutable actions
   expect(db.query('SELECT 1 FROM slack_user_input_claims WHERE turn_id IN (?,?)').get(a.turn_id,b.turn_id)).toBeNull();
   expect(nativeRunId(a.turn_id!)).toBe(nativeRunId(a.turn_id!));
   expect(db.query('SELECT 1 FROM turn_reaction_cleanups WHERE turn_id=?').get(a.turn_id)).toBeNull();
+});
+test('a never-written Antigravity follow-up returns to FIFO once after restart',()=>{
+  const target=createNativeSession('antigravity',{cwd:'/tmp',purpose:'chat',summary:'Sequential provider fixture'});
+  owned.push(target.id);
+  const first=enqueueSessionInput(input(target.id).input.id);
+  expect(claimNextQueuedTurn('native-owner')?.turn_id).toBe(first.turn_id);
+  const unsent=attachSessionSteering(input(target.id,randomUUID(),'still owed').input.id,first.turn_id!);
+  const settled=attachSessionSteering(input(target.id,randomUUID(),'already settled').input.id,first.turn_id!);
+  markTurnSteeringMessageFailed(unsent.steering_id!,'Never written to the provider.');
+  markTurnSteeringMessageFailed(settled.steering_id!,'Never written to the provider.');
+  db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed'}),settled.id);
+  expect(recoverUnsentAntigravityInputs()).toBe(1);
+  const recovered=getAcceptedSessionInput(unsent.id)!;
+  expect(recovered.steering_id).toBeNull();
+  expect(recovered.turn_id).not.toBe(first.turn_id);
+  expect(db.query('SELECT status,accepted_input_id FROM turns WHERE id=?').get(recovered.turn_id))
+    .toEqual({status:'queued',accepted_input_id:unsent.id});
+  expect(getAcceptedSessionInput(settled.id)!.steering_id).toBe(settled.steering_id);
+  expect(recoverUnsentAntigravityInputs()).toBe(0);
+  expect(claimNextQueuedTurn('native-owner')).toBeNull();
+  finishTurn(first.turn_id!,'done');
+  expect(claimNextQueuedTurn('native-owner')?.accepted_input_id).toBe(unsent.id);
+});
+test('a never-written Google follow-up follows an accepted handoff with its exact return target',()=>{
+  const source=createNativeSession('antigravity',{cwd:'/tmp',purpose:'chat',summary:'Old Inbox fixture'});
+  const successor=createNativeSession('antigravity',{cwd:'/tmp',purpose:'chat',summary:'New Inbox fixture'});
+  owned.push(source.id,successor.id);
+  const first=enqueueSessionInput(input(source.id).input.id);
+  expect(claimNextQueuedTurn('native-owner')?.turn_id).toBe(first.turn_id);
+  const handoff=randomUUID(),request=randomUUID();
+  const accepted=retainSessionInput({sessionId:source.id,scope:'agent-request',actionId:request,
+    kind:'input',origin:'agent',payload:{text:'still owed'},requestId:request}).input;
+  const owed=attachSessionSteering(accepted.id,first.turn_id!);
+  db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({admissionIntent:'live'}),owed.id);
+  markTurnSteeringMessageFailed(owed.steering_id!,'Never written to Google.');
+  db.query(`INSERT INTO session_handoffs(id,predecessor_session_id,successor_session_id,state,action_id,caller_session_id,
+    reason,requesting_input_id,requesting_run_id,inventory_json,inventory_digest,accepted_at)
+    VALUES(?,?,?,'accepted',?,?,?,?,?,'{}','digest',CURRENT_TIMESTAMP)`).run(handoff,source.id,successor.id,handoff,source.id,
+      'capacity',owed.id,nativeRunId(first.turn_id!));
+  updateSessionMetadata(source.id,{suspended:true});
+  db.query(`INSERT INTO session_external_requests(request_id,agent_name,action_id,target_session_id,target_input_id,
+    requested_effect,text,payload_hash,created_at_ms) VALUES(?,?,?,?,?,'work','follow-up','hash',?)`)
+    .run(request,'test-agent',request,successor.id,`handoff:${handoff}`,Date.now());
+  expect(recoverUnsentAntigravityInputs()).toBe(1);
+  const continued=getAcceptedSessionInput(`handoff-unsent:${owed.id}`)!;
+  expect(continued.session_id).toBe(successor.id);
+  expect(continued.turn_id).not.toBeNull();
+  expect(db.query('SELECT target_input_id FROM session_external_requests WHERE request_id=?').get(request))
+    .toEqual({target_input_id:continued.id});
+  expect(JSON.parse(getAcceptedSessionInput(owed.id)!.receipt_json!))
+    .toMatchObject({admissionIntent:'live',state:'canceled',continuedAs:continued.id});
+  expect(recoverUnsentAntigravityInputs()).toBe(0);
 });
 test('a native input resumes an existing Slack branch without changing its session or native identity',()=>{
   const channel=`C${randomUUID()}`;
@@ -65,20 +119,24 @@ test('steering binds one accepted input to one exact existing execution without 
 test('adapter-nullability upgrade preserves exact old identities, foreign keys, indexes, triggers and sequence',()=>{
   const store=new Database(':memory:');
   try {
-    store.exec(`PRAGMA foreign_keys=ON;
-      CREATE TABLE sessions(id INTEGER PRIMARY KEY AUTOINCREMENT,slack_channel_id TEXT NOT NULL,slack_thread_ts TEXT NOT NULL,provider_id TEXT NOT NULL,agent_session_uuid TEXT,UNIQUE(slack_channel_id,slack_thread_ts));
-      CREATE TABLE turns(id INTEGER PRIMARY KEY AUTOINCREMENT,session_id INTEGER REFERENCES sessions(id),slack_user_msg_ts TEXT NOT NULL);
-      CREATE TABLE turn_steering_messages(id INTEGER PRIMARY KEY,turn_id INTEGER REFERENCES turns(id),slack_user_msg_ts TEXT NOT NULL);
-      CREATE TABLE session_communication_requests(request_id TEXT PRIMARY KEY,source_channel TEXT NOT NULL,source_message_ts TEXT NOT NULL,source_root_ts TEXT NOT NULL,target_channel TEXT NOT NULL,target_root_ts TEXT NOT NULL,action_id TEXT);
-      CREATE TABLE session_communication_events(event_id TEXT PRIMARY KEY);
+    // The old ledger is today's ledger with the adapter fields still required: copying the
+    // real tables keeps this fixture current as other migrations add columns and tables.
+    store.exec('PRAGMA foreign_keys=ON');
+    const required:Record<string,string[]>={sessions:['slack_channel_id','slack_thread_ts'],turns:['slack_user_msg_ts'],turn_steering_messages:['slack_user_msg_ts'],session_communication_requests:['source_channel','source_message_ts','source_root_ts','target_channel','target_root_ts']};
+    for(const table of db.query("SELECT name,sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY rowid").all() as {name:string;sql:string}[]) {
+      if(store.query("SELECT 1 FROM sqlite_master WHERE name=?").get(table.name))continue;
+      const sql=(required[table.name]??[]).reduce((ddl,field)=>ddl.replace(new RegExp(`\\b${field}(\\s+)TEXT\\b(?! NOT NULL)`),`${field}$1TEXT NOT NULL`),table.sql);
+      store.exec(sql);
+    }
+    store.exec(`
       CREATE INDEX fixture_provider ON sessions(provider_id);
       CREATE TABLE fixture_audit(id INTEGER);
       CREATE TRIGGER fixture_update AFTER UPDATE ON sessions BEGIN INSERT INTO fixture_audit VALUES(new.id); END;
       CREATE VIEW fixture_existing_session_history AS SELECT sessions.id, turns.slack_user_msg_ts
         FROM sessions JOIN turns ON turns.session_id=sessions.id;
-      INSERT INTO sessions VALUES(17,'C1','1.000001','codex','native-old');
-      INSERT INTO turns VALUES(23,17,'1.000002');
-      INSERT INTO sessions VALUES(99,'C2','2.000001','codex','removed');
+      INSERT INTO sessions(id,slack_channel_id,slack_thread_ts,provider_id,agent_session_uuid) VALUES(17,'C1','1.000001','codex','native-old');
+      INSERT INTO turns(id,session_id,slack_user_msg_ts,user_text) VALUES(23,17,'1.000002','old question');
+      INSERT INTO sessions(id,slack_channel_id,slack_thread_ts,provider_id,agent_session_uuid) VALUES(99,'C2','2.000001','codex','removed');
       DELETE FROM sessions WHERE id=99;`);
     initializeSessionOwnerSchema(store);
     initializeSessionOwnerSchema(store);

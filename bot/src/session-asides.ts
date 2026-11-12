@@ -1,8 +1,7 @@
 import {spawn} from 'node:child_process';
 import {unlink} from 'node:fs/promises';
-import {forkSession,getSessionMessages} from '@anthropic-ai/claude-agent-sdk';
 import {claudeConfigDir,locateClaudeTranscript} from './claude-transcript-watch';
-import {mkdtempSync,readFileSync} from 'node:fs';
+import {constants,copyFileSync,mkdirSync,mkdtempSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {chooseClaudeDispatch} from './provider-account-dispatch';
@@ -11,21 +10,22 @@ import {db} from './state-database';
 import {noticeTime} from './notice-time';
 import {MANAGED_CODEX} from './codex-daemon-file-limit';
 import {log} from './log';
+import {runnerMachineCall} from './runner-machine-calls';
+import {latestClaudeBoundary,sideCopy} from './aside-copy';
+import {samePhysicalFile} from './runner-asides';
 
 /**
- * A side question: answered from a throwaway copy of a session's conversation, the way Claude
- * Code's /btw and Codex's /side answer one. The copy is made from the provider's own transcript at
- * the moment of asking (so it sees a busy session's work up to now), is never saved, has no tools,
- * and the session itself never learns it happened: nothing is queued, steered or written into its
- * history. Follow-ups replay the earlier exchanges about the same passage, as /btw replays its last
- * twenty, so every answer is made from the conversation as it stands when that question is asked.
+ * A side question reads one saved native provider copy at the latest completed final response.
+ * Its own question turn is unsaved and has no tools. Follow-ups about one passage also replay
+ * their earlier exchanges, while questions about other passages reuse the same provider copy.
  */
 export type AsideExchange={question:string;answer:string};
 export type AsideInput={provider:string;sessionUuid:string;cwd:string;model:string|null;
-  /** The session is working now: its unfinished turn is left out, so the copy ends at its last finished answer. */
-  running:boolean;passage:string;question:string;earlier:AsideExchange[];
+  /** The latest completed Codex provider turn; an active turn never advances this boundary. */
+  boundary:string|null;passage:string;question:string;earlier:AsideExchange[];
   /** Another agent asking about this archived or paused session's work, instead of Tejas asking about a passage he selected. */
-  agentAsker?:string};
+  agentAsker?:string;runner?:string;account?:string|null;project?:string|null;projectPath?:string;
+  operationId?:string};
 export type AsideAnswer={answer:string;model:string|null;durationMs:number};
 
 const ASIDE_TIMEOUT_MS=180_000;
@@ -79,27 +79,24 @@ function run(command:string,args:string[],options:{cwd:string;env:NodeJS.Process
  * behind or ahead". Prompts are no guide, because a running turn also carries text written into it
  * (his mid-turn messages, notices). Null when no answer has finished, and the copy is then whole.
  */
-async function finishedBoundary(sessionUuid:string,cwd:string):Promise<string|null> {
-  const rows=await getSessionMessages(sessionUuid,{dir:cwd}) as Array<{type?:string;uuid?:string;message?:{stop_reason?:unknown}}>;
-  for(let index=rows.length-1;index>=0;index--){
-    const row=rows[index]!;
-    if(row.type==='assistant'&&row.message?.stop_reason==='end_turn'&&row.uuid)return row.uuid;
-  }
-  return null;
-}
-
 async function claudeAside(input:AsideInput,prompt:string):Promise<AsideAnswer> {
   const started=Date.now();
   const account=claudeAsideAccount(input.model);
-  const env={...process.env,...(account?.home?{CLAUDE_CONFIG_DIR:account.home}:{})};
-  // A busy session is copied only up to its last finished answer, through a trimmed transcript
-  // that exists for this one question and is deleted after it.
-  const boundary=input.running?await finishedBoundary(input.sessionUuid,input.cwd).catch(()=>null):null;
-  const trimmed=boundary?(await forkSession(input.sessionUuid,{dir:input.cwd,upToMessageId:boundary,title:'Side question copy'})).sessionId:null;
+  const sourceHome=claudeConfigDir(),spendHome=account?.home??sourceHome;
+  const boundary=await latestClaudeBoundary(input.sessionUuid,input.cwd);
+  const fork=await sideCopy({provider:'claude-code',source:input.sessionUuid,boundary,cwd:input.cwd,home:sourceHome});
+  const source=await locateClaudeTranscript(sourceHome,fork);
+  if(!source)throw new Error('The saved side question copy is unavailable.');
+  let copied:string|null=null;
   try {
-    return await claudeAnswer({...input,sessionUuid:trimmed??input.sessionUuid},prompt,env,started);
+    if(spendHome!==sourceHome){
+      const directory=join(spendHome,'projects',input.cwd.replace(/[\\/.]/g,'-'));
+      mkdirSync(directory,{recursive:true,mode:0o700});copied=join(directory,`${fork}.jsonl`);
+      if(!samePhysicalFile(source,copied))copyFileSync(source,copied,constants.COPYFILE_EXCL);
+    }
+    return await claudeAnswer({...input,sessionUuid:fork},prompt,{...process.env,CLAUDE_CONFIG_DIR:spendHome},started);
   } finally {
-    if(trimmed){const file=await locateClaudeTranscript(claudeConfigDir(env as Record<string,string>),trimmed).catch(()=>null);if(file)await unlink(file).catch(()=>{});}
+    if(copied)await unlink(copied).catch(()=>{});
   }
 }
 
@@ -122,11 +119,11 @@ function claudeAsideAccount(model:string|null):{account:string;home:string|null}
 }
 
 async function claudeAnswer(input:AsideInput,prompt:string,env:NodeJS.ProcessEnv,started:number):Promise<AsideAnswer> {
-  // --fork-session copies the transcript, --no-session-persistence keeps the copy off disk, and
+  // The saved fork supplies context, --no-session-persistence keeps this question turn off disk, and
   // --tools "" with --strict-mcp-config (and no MCP config) leaves it nothing to act with: the
   // built-in tools and every MCP server (his Mac's include a vault delete) are absent, so the
   // session's files, history and accounts stay untouched.
-  const args=['-p','--resume',input.sessionUuid,'--fork-session','--no-session-persistence','--tools','','--strict-mcp-config',
+  const args=['-p','--resume',input.sessionUuid,'--no-session-persistence','--tools','','--strict-mcp-config',
     '--output-format','json',...(input.model?['--model',input.model]:[]),prompt];
   const result=await run(process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE||'claude',args,{cwd:input.cwd,env});
   let parsed:any=null;
@@ -149,10 +146,13 @@ async function claudeAnswer(input:AsideInput,prompt:string,env:NodeJS.ProcessEnv
 
 async function codexAside(input:AsideInput,prompt:string):Promise<AsideAnswer> {
   const started=Date.now();
+  if(!input.boundary)throw new Error('This conversation has no completed final answer yet.');
+  const fork=await sideCopy({provider:'codex',source:input.sessionUuid,boundary:input.boundary,cwd:input.cwd,
+    home:process.env.CODEX_HOME||join(process.env.HOME||'', '.codex')});
   const out=join(mkdtempSync(join(tmpdir(),'concierge-aside-')),'answer.txt');
   // codex exec's own options precede the fork subcommand; --ephemeral writes no session file and
   // the read-only sandbox refuses any change the model might still attempt.
-  const args=['exec','--ephemeral','-s','read-only','--skip-git-repo-check','-o',out,'fork',input.sessionUuid,prompt];
+  const args=['exec','--ephemeral','-s','read-only','--skip-git-repo-check','-o',out,'fork',fork,prompt];
   const result=await run(MANAGED_CODEX,args,{cwd:input.cwd,env:process.env});
   let answer='';
   try{answer=readFileSync(out,'utf8').trim();}catch{}
@@ -163,11 +163,30 @@ async function codexAside(input:AsideInput,prompt:string):Promise<AsideAnswer> {
   return {answer,model:null,durationMs:Date.now()-started};
 }
 
-export async function askAside(input:AsideInput):Promise<AsideAnswer> {
+async function askAsideNow(input:AsideInput):Promise<AsideAnswer> {
   const prompt=asidePrompt(input);
+  if(input.runner){
+    if(!input.operationId)throw new Error('A runner side question needs its operation identity.');
+    if(input.provider!=='claude-code'&&input.provider!=='codex')throw new Error('Side questions are available for Claude and Codex sessions.');
+    const spendAccount=input.provider==='claude-code'?claudeAsideAccount(input.model)?.account??null:null;
+    return runnerMachineCall<AsideAnswer>(input.runner,'asides.ask',{
+      operationId:input.operationId,provider:input.provider,account:input.account??null,sessionUuid:input.sessionUuid,
+      spendAccount,project:input.project??null,path:input.projectPath??'',model:input.model,boundary:input.boundary,prompt},195_000);
+  }
   if(input.provider==='claude-code')return claudeAside(input,prompt);
   if(input.provider==='codex')return codexAside(input,prompt);
   throw new Error('Side questions are available for Claude and Codex sessions.');
+}
+
+const copyQueues=new Map<string,Promise<void>>();
+export function askAside(input:AsideInput):Promise<AsideAnswer>{
+  const key=`${input.provider}:${input.sessionUuid}`;
+  const previous=copyQueues.get(key)??Promise.resolve();
+  const answer=previous.catch(()=>{}).then(()=>askAsideNow(input));
+  const tail=answer.then(()=>{},()=>{});
+  copyQueues.set(key,tail);
+  void tail.then(()=>{if(copyQueues.get(key)===tail)copyQueues.delete(key);});
+  return answer;
 }
 
 /**
@@ -183,7 +202,7 @@ export async function askAsideOnce(id:string,input:()=>AsideInput,waitMs:number)
   for(const [key,job] of jobs)if(job.settled&&now-job.at>JOB_KEEP_MS)jobs.delete(key);
   let job=jobs.get(id);
   if(!job){
-    const created={promise:askAside(input()),settled:null as {answer?:AsideAnswer;error?:string}|null,at:now};
+    const created={promise:askAside({...input(),operationId:id}),settled:null as {answer?:AsideAnswer;error?:string}|null,at:now};
     created.promise.then(answer=>{created.settled={answer};created.at=Date.now();},
       error=>{created.settled={error:error instanceof Error?error.message:String(error)};created.at=Date.now();});
     jobs.set(id,created);job=created;

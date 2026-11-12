@@ -27,6 +27,7 @@ import { forgetWatchObservation, loadWatchObservationCursors, observationForWatc
 import { executionHostsEnabled, hostProcessorSeconds, newExecutionId } from "./execution-host-client";
 import { localWatchMachine, ordinaryCommandEnvironment, runnerWatchMachine, type WatchMachine } from "./watch-machine";
 import { runnerMachineCall } from "./runner-machine-calls";
+import { releaseIncludesCommit } from "./release-watch-condition";
 
 export const WATCH_POLL_MS = 5_000;
 /** Three missed polls: a longer silence is a pause (a restart, a sleeping Mac) and is recorded as a gap. */
@@ -138,7 +139,26 @@ export function parseUntil(value: string, now: number): number {
 export type WatchRegistration = { sessionId: number; originInputId: string; originRunId: string; actionId: string; until: string; renew?: boolean;
   /** The runner the registering agent runs on: its path or command is on that machine, not this one. */
   runner?: string | null }
-  & ({ kind: "file"; path: string } | { kind: "command"; argv: string[]; cwd: string });
+  & ({ kind: "file"; path: string; requiredCommit?: string } | { kind: "command"; argv: string[]; cwd: string });
+
+const RELEASE_LINK = "/var/lib/slack-concierge-deployment/current";
+const RELEASE_REPO = "/var/lib/slack-concierge-deployment/source";
+type FileCondition = { path: string; requiredCommit?: string };
+
+/** A scoped release is ready only after its installed commit has a successful deployment receipt. */
+async function installedReleaseIncludes(commit: string): Promise<"included" | "excluded" | "unconfirmed"> {
+  try {
+    return await releaseIncludesCommit({ requiredCommit: commit, manifestPath: `${RELEASE_LINK}/manifest.json`,
+      repositoryRoot: process.env.CONCIERGE_REPO || RELEASE_REPO,
+      succeeded: (installed, artifact) => !!db.query(`SELECT 1 FROM deployment_releases release
+        JOIN deployment_runs run ON run.id=release.run_id
+        WHERE release.artifact_digest=? AND release.git_commit=? AND release.state='lkg'
+          AND run.status='succeeded' AND run.deployed_commit=? LIMIT 1`).get(artifact, installed, installed) });
+  } catch (error) {
+    log("warn", "scoped_release_unconfirmed", errorFields(error));
+    return "unconfirmed";
+  }
+}
 
 export function watchView(row: WatchRow) {
   const condition = JSON.parse(row.condition_json);
@@ -171,7 +191,13 @@ function recoveryLineage(sessionId: number): number[] {
 /** Idempotent by (origin input, action id): a retry returns the first registration and never makes a second. */
 export async function registerWatch(input: WatchRegistration, now = Date.now()): Promise<{ watch: ReturnType<typeof watchView>; duplicate: boolean; takenOverFrom?: string }> {
   if (!input.actionId || input.actionId.length > 200) throw new Error("A stable action id is required.");
-  const condition = input.kind === "file" ? { path: input.path } : { argv: input.argv, cwd: input.cwd };
+  if (input.kind === "file" && input.requiredCommit !== undefined) {
+    if (input.path !== RELEASE_LINK || !input.renew || process.env.CONCIERGE_PEER_NAME === "mac")
+      throw new Error("--required-commit needs a renewing watch on this server's Concierge current-release link.");
+    if (!/^[0-9a-f]{40}$/.test(input.requiredCommit)) throw new Error("--required-commit needs a full lowercase Git commit SHA.");
+  }
+  const condition = input.kind === "file" ? { path: input.path, ...(input.requiredCommit !== undefined ? { requiredCommit: input.requiredCommit } : {}) }
+    : { argv: input.argv, cwd: input.cwd };
   if (input.renew && input.kind !== "file") throw new Error("Only file watches can renew.");
   if (input.renew && !/^(?:(?:\d+)d)?(?:(?:\d+)h)?(?:(?:\d+)m)?(?:(?:\d+)s)?$/.test(input.until.trim()))
     throw new Error("A renewing watch needs a duration, not an absolute deadline.");
@@ -200,7 +226,9 @@ export async function registerWatch(input: WatchRegistration, now = Date.now()):
     }
     if (active) return { watch: watchView(active), duplicate: true };
   }
-  const runner = input.runner?.trim() || null;
+  // The scoped condition reads this owner's installed release and receipts, never the agent's
+  // machine: every server agent runs on a runner, and refusing runners refused every agent.
+  const runner = input.kind === "file" && input.requiredCommit !== undefined ? null : input.runner?.trim() || null;
   if (runner && !/^[A-Za-z0-9._-]{1,64}$/.test(runner)) throw new Error("That runner name is not valid.");
   const machine = machineFor({ runner });
   let baseline: unknown, mode: string;
@@ -311,8 +339,12 @@ function everyWaitingRequestClosed(row: WatchRow): boolean {
     UNION ALL
     SELECT request.closed_at_ms IS NULL AS open FROM session_peer_replies reply
       JOIN session_peer_deliveries request ON request.request_id=reply.request_id
-      WHERE reply.kind='progress' AND json_extract(reply.payload_json,'$.waitingOnWatch') IN (${marks})`)
-    .all(...series, ...series) as { open: number }[];
+      WHERE reply.kind='progress' AND json_extract(reply.payload_json,'$.waitingOnWatch') IN (${marks})
+    UNION ALL
+    SELECT request.outcome IS NULL AS open FROM session_external_replies reply
+      JOIN session_external_requests request ON request.request_id=reply.request_id
+      WHERE reply.final=0 AND json_extract(reply.payload_json,'$.waitingOnWatch') IN (${marks})`)
+    .all(...series, ...series, ...series) as { open: number }[];
   return waits.length > 0 && waits.every(wait => !wait.open);
 }
 
@@ -353,7 +385,9 @@ You do not need to reply to this.`;
         text, JSON.stringify(gaps), settlement.observedAt ?? last, requestsOver ? null : "pending", requestsOver ? null : `watch:${watchId}:${event}`, watchId);
     if (result.changes !== 1) return false;
     if (requestsOver) log("info", "watch_series_ended_with_requests", { watch_id: watchId, series_id: row.series_id ?? row.watch_id, session_id: row.session_id });
-    if (event !== "cancelled" && row.renew_ms !== null) {
+    // A scoped release dependency is met once: renewing after it fires would re-check the same
+    // installed release and wake the session again on every poll.
+    if (event !== "cancelled" && row.renew_ms !== null && !(event === "fired" && condition.requiredCommit)) {
       const nextId = randomBytes(6).toString("hex");
       const baseline = settlement.observed && typeof settlement.observed === "object" && "version" in settlement.observed
         ? (settlement.observed as { version: PathVersion }).version : JSON.parse(row.baseline_json) as PathVersion;
@@ -373,7 +407,7 @@ You do not need to reply to this.`;
 // ---- the worker --------------------------------------------------------------------------------
 
 export type WatchAdmission = {
-  sessionId: number; inputId: string; origin: "service"; sourceInputId: string; sourceRunId: string; requestId: string; text: string;
+  sessionId: number; inputId: string; origin: "service"; sourceInputId: string; sourceRunId: string; requestId: string; text: string; threadReplyNotRequired: true;
 };
 export type WatchWorkerDeps = {
   admit: (input: WatchAdmission) => unknown;
@@ -406,18 +440,53 @@ function describeExit(exit: { code: number | null; signal: string | null }) {
 }
 
 async function observeFile(row: WatchRow, now: number) {
+  const condition = JSON.parse(row.condition_json) as FileCondition;
   const baseline = JSON.parse(row.baseline_json) as PathVersion;
   let current: PathVersion;
-  try { current = await machineFor(row).observe(JSON.parse(row.condition_json).path); }
+  try { current = await machineFor(row).observe(condition.path); }
   catch (error) {
     // Unreadable now: nothing was observed, so the silence is recorded as a gap when observation resumes.
     log("warn", "watch_unreadable", { watch_id: row.watch_id, ...errorFields(error) });
+    if (condition.requiredCommit) {
+      if (everyWaitingRequestClosed(row)) settle(row.watch_id, "cancelled", { observedAt: null, now, detail: "every request that waited on it has closed" });
+      else if (now >= row.deadline_ms) update(row.watch_id, "deadline_ms=?", now + row.renew_ms!);
+      return;
+    }
     if (now >= row.deadline_ms) settle(row.watch_id, "expired", { observedAt: null, now, detail: "no change was observed, but the path could not be read at the end" });
     return;
   }
   const change = versionChange(baseline, current);
-  if (change) { settle(row.watch_id, "fired", { observedAt: now, now, detail: `${JSON.parse(row.condition_json).path}: ${change}`, observed: { version: current } }); return; }
-  if (now >= row.deadline_ms) { settle(row.watch_id, "expired", { observedAt: now, now, detail: `no change to ${JSON.parse(row.condition_json).path} was observed (still ${describeBaseline(baseline)})` }); return; }
+  if (condition.requiredCommit) {
+    if (everyWaitingRequestClosed(row)) {
+      settle(row.watch_id, "cancelled", { observedAt: now, now, detail: "every request that waited on it has closed" });
+      return;
+    }
+    // Also check the registration baseline once: the repair may already be installed before
+    // the caller binds this watch to its request. Later polls read Git only after a link swap.
+    if (change || row.state === "accepted") {
+      const match = await installedReleaseIncludes(condition.requiredCommit);
+      if (match === "included") {
+        settle(row.watch_id, "fired", { observedAt: now, now,
+          detail: `installed release includes commit ${condition.requiredCommit}`, observed: { version: current } });
+        return;
+      }
+      // An incomplete activation is retried against the same baseline. An unrelated installed
+      // release becomes the new baseline without producing a turn or a new watch ID.
+      if (match === "excluded" && change) update(row.watch_id, "baseline_json=?, baseline_mode=?", JSON.stringify(current), current.mode);
+      if (match === "unconfirmed") {
+        if (now >= row.deadline_ms) update(row.watch_id, "deadline_ms=?", now + row.renew_ms!);
+        await markObserved(row, now);
+        return;
+      }
+    }
+    // A scoped dependency's duration is a storage lease, not a reason to spend an agent turn.
+    if (now >= row.deadline_ms) update(row.watch_id, "deadline_ms=?", now + row.renew_ms!);
+    if (row.state === "accepted") update(row.watch_id, "state='observing'");
+    await markObserved(row, now);
+    return;
+  }
+  if (change) { settle(row.watch_id, "fired", { observedAt: now, now, detail: `${condition.path}: ${change}`, observed: { version: current } }); return; }
+  if (now >= row.deadline_ms) { settle(row.watch_id, "expired", { observedAt: now, now, detail: `no change to ${condition.path} was observed (still ${describeBaseline(baseline)})` }); return; }
   await markObserved(row, now);
 }
 
@@ -541,7 +610,7 @@ function deliverPending(deps: WatchWorkerDeps, now: number) {
       // after a lost answer reaches the same input. A paused or archived session holds it.
       const admissionStarted = performance.now();
       deps.admit({ sessionId: row.session_id, inputId: row.delivery_input_id!, origin: "service", sourceInputId: row.origin_input_id,
-        sourceRunId: row.origin_run_id, requestId: row.delivery_input_id!, text: row.message_text! });
+        sourceRunId: row.origin_run_id, requestId: row.delivery_input_id!, text: row.message_text!, threadReplyNotRequired: true });
       const admissionMs = performance.now() - admissionStarted;
       update(row.watch_id, "delivery_state='accepted', delivery_next_ms=NULL");
       log("info", "watch_delivered", { watch_id: row.watch_id, event: row.terminal_event, admission_ms: Math.round(admissionMs) });
@@ -584,9 +653,13 @@ export async function runWatchTick(deps: WatchWorkerDeps, now = Date.now()) {
     AND (?=0 OR EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=?
       AND allowed.machine=? AND allowed.session_id=watches.session_id)) ORDER BY created_at_ms`)
     .all(pause.paused?1:0,pause.generation,process.env.CONCIERGE_PEER_NAME==='mac'?'mac':'cloud') as WatchRow[];
+  const started = performance.now();
   deliverPending(deps, now);
   const reachable = pollReachable = await reachableRunners([...open.map(row => row.runner), ...endedCommands().map(row => row.runner)]);
+  const pingMs = performance.now() - started;
+  let slowest: { row: WatchRow; ms: number } | null = null;
   for (const row of open) {
+    const watchStarted = performance.now();
     // An unreachable runner's watches are not observed this poll; the silence becomes a recorded gap.
     if (row.runner && !reachable.has(row.runner)) {
       if (now >= row.deadline_ms) settle(row.watch_id, "expired", { observedAt: null, now, detail:
@@ -599,12 +672,19 @@ export async function runWatchTick(deps: WatchWorkerDeps, now = Date.now()) {
       if (row.kind === "file") await observeFile(row, now);
       else await observeCommand(row, deps, now);
     } catch (error) { log("error", "watch_poll_failed", { watch_id: row.watch_id, ...errorFields(error) }); }
+    const ms = performance.now() - watchStarted;
+    if (!slowest || ms > slowest.ms) slowest = { row, ms };
   }
   for (const row of endedCommands()) {
     if (row.runner && !reachable.has(row.runner)) continue;
     try { await cleanUpHost(row, now); } catch (error) { log("warn", "watch_host_cleanup_failed", { watch_id: row.watch_id, ...errorFields(error) }); }
   }
   deliverPending(deps, now);
+  // A poll longer than the gap threshold is itself a recorded gap; this names what it waited on.
+  const durationMs = performance.now() - started;
+  if (durationMs > WATCH_GAP_MS) log("warn", "watch_poll_slow", { duration_ms: Math.round(durationMs), open_watches: open.length,
+    ping_ms: Math.round(pingMs), slowest_watch_id: slowest?.row.watch_id ?? null, slowest_kind: slowest?.row.kind ?? null,
+    slowest_runner: slowest?.row.runner ?? null, slowest_ms: slowest ? Math.round(slowest.ms) : null });
 }
 
 /** Starts this machine's one watch worker; returns its stop function. */

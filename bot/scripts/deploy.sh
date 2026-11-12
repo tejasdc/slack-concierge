@@ -258,7 +258,8 @@ claim_deployment_run() {
   printf '%s\n' "$claim_output"
   claim_status=$(printf '%s\n' "$claim_output" | jq -er '.status')
   DEPLOY_DESIRED_COMMIT=$(printf '%s\n' "$claim_output" | jq -r '.desired_commit // empty')
-  if [ "$claim_status" = "terminal" ]; then
+  if [ "$claim_status" = "terminal" ] || [ "$claim_status" = "repair_owned" ]; then
+    # This runner is finished; a repair-owned durable run remains nonterminal under its supervisor.
     DEPLOY_RUN_TERMINAL=1
     INTERRUPTED_RECOVERY_HANDLED=1
     return 0
@@ -807,6 +808,13 @@ prepare_candidate_release() {
     return "$status"
   fi
   printf '%s\n' "$output"
+  # In an operator-controlled offline rollout, the serving owner is not needed
+  # for activation. A stuck old owner can retain the ledger writer and make the
+  # activated candidate impossible to record, so stop it before the pointer moves.
+  if [ "${CONCIERGE_RELEASE_OFFLINE:-0}" = "1" ] && systemctl is-active --quiet "$SERVICE"; then
+    echo "=== stop old coordinator before offline candidate activation ==="
+    stop_unit "$SERVICE"
+  fi
   status=0
   run_retaining_output candidate-activate env CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" activate \
     --run-id "$DEPLOY_RUN_ID" --artifact "$CANDIDATE_ARTIFACT_PATH" --allow-supersede || status=$?

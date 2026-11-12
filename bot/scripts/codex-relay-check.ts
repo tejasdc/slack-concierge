@@ -12,7 +12,7 @@ import {strict as assert} from 'node:assert';
 delete process.env.THINKERING_CAPABILITY_URL;
 import {chmod,mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {existsSync,readFileSync} from 'node:fs';
-import {tmpdir} from 'node:os';
+import {homedir,tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 
 if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
@@ -82,13 +82,14 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
     // the owner is in its connection file (runner-machine.ts).
     const runnerState=join(root,'runner');
     const {withoutMachinePaths,readRunnerConnection}=await import('../src/runner-machine');
-    const ownerShell=withoutMachinePaths({PATH:'/owner/bot/scripts:/usr/bin',CONCIERGE_STATE_DIR:'/owner/state',CONCIERGE_ROUTER_BOT_DIR:'/owner/bot',CONCIERGE_TURN_ID:'9'});
+    const ownerShell=withoutMachinePaths({PATH:'/owner/bot/scripts:/usr/bin',CONCIERGE_STATE_DIR:'/owner/state',CONCIERGE_ROUTER_BOT_DIR:'/owner/bot',CONCIERGE_ROUTER_ACTIONS:'/owner/bot/scripts/router-actions.sh',CONCIERGE_TURN_ID:'9'});
     const started=await client.request('thread/start',{cwd:root,config:{shell_environment_policy:{inherit:'all',set:ownerShell}}},{requestTimeoutMs:10_000});
     const set=started.received.config.shell_environment_policy.set;
     assert.equal(set.CONCIERGE_TURN_ID,'9');
     assert.equal(set.CONCIERGE_STATE_DIR,runnerState);
     assert.equal(set.CONCIERGE_RUNNER_STATE,runnerState);
     assert.equal(set.CONCIERGE_ROUTER_BOT_DIR,resolve(import.meta.dir,'..'));
+    assert.equal(set.CONCIERGE_ROUTER_ACTIONS,join(homedir(),'.local','bin','router-actions.sh'));
     assert.ok(set.PATH.startsWith(`${resolve(import.meta.dir,'..')}/scripts:`),set.PATH);
     assert.ok(!JSON.stringify(set).includes('/owner/'),'An owner folder reached the runner\'s App Server.');
     const consulted=await client.request('thread/start',{cwd:root,config:{shell_environment_policy:{inherit:'none',set:{}}}},{requestTimeoutMs:10_000});
@@ -101,7 +102,7 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
     // The owner's calls on the runner's machine ride the same channel (runner-machine-calls.ts): a
     // watch reads a path there, and a host record outside the runner's own folder is refused.
     process.env.CONCIERGE_STATE_DIR=root;
-    const {runnerMachineCall,closeRunnerMachineCalls}=await import('../src/runner-machine-calls');
+    const {RunnerCallNotSentError,runnerMachineCall,closeRunnerMachineCalls}=await import('../src/runner-machine-calls');
     await writeFile(join(root,'watched.txt'),'one');
     const seenVersion=await runnerMachineCall('ax41','watch.observe',{path:join(root,'watched.txt')});
     assert.equal(seenVersion.type,'file');assert.equal(seenVersion.mode,'content-hash');
@@ -109,6 +110,16 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
     await assert.rejects(runnerMachineCall('ax41','watch.prune',{executionId:'etc',directory:'/etc'}),/not an execution id/);
     await assert.rejects(runnerMachineCall('ax41','watch.signal',{executionId:'0123456789abcdef',directory:'/etc',signal:'SIGKILL',commandId:'x'}),/not this runner's/);
     assert.equal(await runnerMachineCall('ax41','ping',{}),true);
+    assert.deepEqual(await runnerMachineCall('ax41','codex.leftoverProcesses',{threadId:'00000000-0000-0000-0000-000000000000'}),[]);
+    await assert.rejects(runnerMachineCall('ax41','codex.processAlive',{process:{pid:0,startTicks:'1'}}),/process identity/);
+    assert.equal(await runnerMachineCall('ax41','codex.processAlive',{process:{pid:999999999,startTicks:'1'}}),false);
+    const sleeper=Bun.spawn(['/bin/sleep','10'],{stdout:'ignore',stderr:'ignore'});
+    try {
+      const stat=readFileSync(`/proc/${sleeper.pid}/stat`,'utf8');
+      const startTicks=stat.slice(stat.lastIndexOf(')')+2).split(' ')[19]!;
+      assert.equal(await runnerMachineCall('ax41','codex.processAlive',{process:{pid:sleeper.pid,startTicks}}),true);
+      assert.equal(await runnerMachineCall('ax41','codex.processAlive',{process:{pid:sleeper.pid,startTicks:'0'}}),false);
+    } finally {sleeper.kill();await sleeper.exited;}
     // A real watch execution's record is the runner's to remove; a turn's is refused.
     const {mkdirSync:makeDir,writeFileSync:writeSync}=await import('node:fs');
     for(const [id,args] of [['0123456789abcdef',['-c','exec "$@"','concierge-watch','/bin/true']],['fedcba9876543210',['--print']]] as const){
@@ -118,7 +129,8 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
     await runnerMachineCall('ax41','watch.prune',{executionId:'0123456789abcdef',directory:join(runnerState,'exec','0123456789abcdef')});
     assert.ok(!existsSync(join(runnerState,'exec','0123456789abcdef')),'The runner kept a pruned watch record.');
     await assert.rejects(runnerMachineCall('ax41','watch.prune',{executionId:'fedcba9876543210',directory:join(runnerState,'exec','fedcba9876543210')}),/not a watched command/);
-    await assert.rejects(runnerMachineCall('other','watch.observe',{path:root}),/no call channel|not listening|closed/);
+    await assert.rejects(runnerMachineCall('other','watch.observe',{path:root}),error=>error instanceof RunnerCallNotSentError,
+      'An unavailable runner must prove that the call was never sent.');
     closeRunnerMachineCalls();
 
     // The App Server drops its connection: the relay and the client's connection end with it.

@@ -5,9 +5,12 @@ export function humanChoseTopModel(sourceInputId:string|undefined,model:string):
   if(!sourceInputId)return false;
   const source=getAcceptedSessionInput(sourceInputId);
   if(!source)return false;
-  const humanId=source.origin==='human'?source.id:sessionInputProvenance(source)?.originatingHuman?.inputId;
+  const provenance=source.origin==='human'?null:sessionInputProvenance(source);
+  const humanId=source.origin==='human'?source.id:provenance?.originatingHuman?.inputId;
   const human=humanId?getAcceptedSessionInput(humanId):null;
-  if(!human||human.origin!=='human')return false;
+  if(!human||human.origin!=='human')return !!provenance?.originatingHuman&&!!topModel(model)
+    &&'humanModelChoices' in provenance&&Array.isArray(provenance.humanModelChoices)
+    &&provenance.humanModelChoices.some((choice:unknown)=>typeof choice==='string'&&topModel(choice)===topModel(model));
   const words=JSON.parse(human.payload_json).text;
   if(typeof words!=='string')return false;
   const name=topModel(model)==='fable'?'fable':'astra';

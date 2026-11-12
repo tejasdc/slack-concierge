@@ -1,33 +1,52 @@
 #!/usr/bin/env python3
-"""Count how Claude Code sessions handed work to other models in a time window.
+"""Count how Claude Code sessions delegated work down and escalated it up.
 
-Reads provider transcripts (the box's live directory plus both machines' copies
-in the transcript archive) and prints one row per session: its own model, the
-sub-agents it started and with which model, `codex exec` runs, `claude -p` runs,
-session requests, web research, and `Escalated:` lines in its answers. The rule
-being checked is the global instructions' Model selection section.
+The rule is the `model-selection` skill; the owner's own escalation records and
+the usage breakdown ("who used the allowance") are the live counters for model
+and helper call shares. This script is the transcript-level view they cannot
+give: what a session actually ran, and whether a turn that escalated announced
+it with an `Escalated:` line.
 
-    scripts/model-use-audit.py --since 2026-09-21T20:00 [--until ...] [--project thinkering]
+Reads every Claude transcript location on this machine — the default live
+folder, each signed-in account's live folder, and both machines' copies in the
+transcript archive — and prints one row per session: its own model, helpers it
+started and on which model, read-only second opinions, ChatGPT Pro asks,
+strong-model starts carrying an escalation reason, web research, and
+`Escalated:` lines in its answers.
+
+    scripts/model-use-audit.py --since 2026-11-01T00:00 [--until ...] [--project thinkering]
 """
 import argparse
+import calendar
 import collections
 import glob
 import json
 import os
 import re
+import time
 
 ROOTS = [
     os.path.expanduser("~/.claude/projects"),
+    *glob.glob(os.path.expanduser("~/.claude-accounts/*/projects")),
     "/root/transcript-archive/claude-projects",
     "/root/transcript-archive/mac-claude-projects",
 ]
 
 
-def transcripts(project):
+def transcripts(project, since):
+    """Transcripts that can hold a row in the window.
+
+    The archives hold years of both machines' sessions, so a file last written
+    before the window cannot contain a row inside it: skipping those by
+    modification time is what keeps this runnable over the whole archive.
+    """
+    floor = calendar.timegm(time.strptime(since[:16], "%Y-%m-%dT%H:%M"))
     newest = {}
     for root in ROOTS:
         for path in glob.glob(os.path.join(root, "*", "*.jsonl")):
             if project and not os.path.basename(os.path.dirname(path)).endswith(project):
+                continue
+            if os.path.getmtime(path) < floor:
                 continue
             name = os.path.basename(path)
             if name not in newest or os.path.getsize(path) > os.path.getsize(newest[name]):
@@ -39,6 +58,26 @@ def text_of(content):
     if isinstance(content, str):
         return content
     return " ".join(part.get("text", "") for part in content or [] if isinstance(part, dict))
+
+
+def count_command(command, delegated, counts):
+    """Classify one shell command the session ran."""
+    if re.search(r"\bcodex\b.*\bexec\b", command):
+        model = re.search(r"(?:-m|--model)[ =](\S+)", command)
+        named = model.group(1).strip("\"'") if model else "default"
+        read_only = "-s read-only" in command or "--sandbox read-only" in command
+        delegated[("second-opinion:" if read_only else "codex:") + named] += 1
+        if "CODEX_ESCALATION_REASON" in command:
+            counts["escalation_reason_starts"] += 1
+    if re.search(r"\bclaude\b.*(?:-p|--print)\b", command):
+        model = re.search(r"--model[ =](\S+)", command)
+        delegated["claude-cli:" + (model.group(1).strip("\"'") if model else "default")] += 1
+    if "sessions ask" in command:
+        counts["session_requests"] += 1
+        if "--provider chatgpt" in command:
+            counts["chatgpt_pro_asks" if "--effort pro" in command else "chatgpt_asks"] += 1
+        if "--escalation-reason" in command:
+            counts["escalation_reason_starts"] += 1
 
 
 def audit(path, since, until):
@@ -63,29 +102,21 @@ def audit(path, since, until):
                 continue
             name, args = part.get("name"), part.get("input") or {}
             if name in ("Agent", "Task"):
-                delegated["agent:" + (args.get("model") or "inherited")] += 1
+                delegated["helper:" + (args.get("model") or "inherited")] += 1
             elif name in ("WebSearch", "WebFetch"):
                 counts["web_research"] += 1
             elif name == "Bash":
-                command = args.get("command", "")
-                if re.search(r"\bcodex\b.*\bexec\b", command):
-                    model = re.search(r"(?:-m|--model)[ =](\S+)", command)
-                    delegated["codex:" + (model.group(1) if model else "default")] += 1
-                if re.search(r"\bclaude\b.*(?:-p|--print)\b", command):
-                    model = re.search(r"--model[ =](\S+)", command)
-                    delegated["claude-cli:" + (model.group(1) if model else "default")] += 1
-                if "sessions ask" in command:
-                    counts["session_requests"] += 1
+                count_command(args.get("command", ""), delegated, counts)
     return own_models, delegated, counts
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--since", required=True, help="UTC ISO prefix, e.g. 2026-09-21T20:00")
+    parser.add_argument("--since", required=True, help="UTC ISO prefix, e.g. 2026-11-01T00:00")
     parser.add_argument("--until")
     parser.add_argument("--project", help="project folder suffix, e.g. thinkering")
     options = parser.parse_args()
-    for path in sorted(transcripts(options.project), key=os.path.getmtime):
+    for path in sorted(transcripts(options.project, options.since), key=os.path.getmtime):
         own, delegated, counts = audit(path, options.since, options.until)
         if not own:
             continue

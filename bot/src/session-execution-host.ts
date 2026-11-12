@@ -1,14 +1,17 @@
 import {onCodexHistoryChanged} from './codex-session-observer';
-import { codexAppServerReady } from "./codex-app-server-client";
+import { codexAppServerReady, codexRelayRunner, waitForCodexAppServerOrDrain } from "./codex-app-server-client";
 import {CODEX_PROCESS_REPORT_GRACE_MS,codexLeftoverProcesses,codexProcessStillRunning,type CodexLeftoverProcess} from './codex-leftover-processes';
-import {createHash} from 'node:crypto';
+import {runnerMachineCall,RunnerUnreachableError} from './runner-machine-calls';
+import {resolveRunnerProjectLocation} from './runner-project-location';
+import {createHash,randomUUID} from 'node:crypto';
 import {ledgerDurable} from './ledger-durability-barrier';
 import {thesaurusTurnContext} from './thesaurus-context';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {basename,join} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
-import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,requeueProvenUnsentNativeChatGptTurn,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
-import {acceptedInputForTurn,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordRecoveredResultAttention,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,requeueProvenUnsentNativeChatGptTurn,requeueOrphanedPreAdmissionTurn,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
+import {acceptedInputForTurn,adoptProviderConversationTitle,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,providerRunnerForSession,recordRecoveredResultAttention,recordSessionEvent,recordSessionInputAttention,recoverUnsentAntigravityInputs,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {lastLaunchedConversationHome} from './session-runner-home';
 import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
 import {flushPendingProviderProgressEvents} from './session-projection';
 import {recordResultTurnOutcome,recordUnsaidTurnOutcome} from './session-turn-outcome';
@@ -18,6 +21,7 @@ import {SessionOwner,type SessionOwnerRuntime} from './session-owner';
 import type {AgentProvider} from './providers';
 import {antigravityExecutable} from './antigravity';
 import {runOutsideCodexTurn,type OutsideRun} from './outside-codex';
+import {outsideCodexPromptContent} from './outside-codex';
 import type {ProviderId} from './state';
 import {thinkeringConfigured} from './thinkering-capability-target';
 import {SessionCapabilityClient,chatGptCapabilities,type ChatGptAdmission,type CapabilityEvidence,type ChatGptReceipt} from './session-capability-client';
@@ -25,12 +29,13 @@ import {completeNativeFork,readNativeForkPin,type NativeForkPin} from './native-
 import {readRetainedNativeResult} from './turn-recovery';
 import {isProcessIdentityAlive} from './runtime-identity';
 import {ProviderCapabilityUnavailableError} from './provider-policy';
-import {ProviderDispatchError} from './provider-failures';
+import {OwnerDrainBeforeProviderAdmissionError,ProviderDispatchError} from './provider-failures';
 import {providerRetryDelayMs} from './provider-failures';
 import {chooseClaudeDispatch} from './provider-account-dispatch';
 import {maybeStartInboxProviderFailover} from './inbox-provider-failover';
 import {CHATGPT_THINKING_LEVELS,HIS_CHATGPT_PREFIX,PROVIDER_ALIASES, providerDisplayName } from './aliases';
 import {recordRepairNotice} from './repair-notices';
+import type {HostRunnerFile} from './host-access';
 
 /**
  * A ChatGPT request that fails because the channel itself broke (the page changed, sign-in failed,
@@ -94,9 +99,9 @@ import {INBOX_INSTRUCTIONS,markResultAnsweredByPost,minutesText,pebbleArrivalWai
 import {readClaudeCachedMessage,readCodexHistoryMessage,readClaudeHistory,readCodexHistory} from './provider-history';
 import {ProviderHistoryPageClient} from './provider-history-page-client';
 import {ATTENTION_INSTRUCTION,releaseFocusForPost,settleExitedProcessReport,topicPromptContext} from './session-topics';
-import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,clearPendingSignIn} from './state';
+import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,reservePendingRunnerSignIn,clearPendingSignIn,pendingRunnerSignIn} from './state';
 import {log,errorFields} from './log';
-import {transcribeAudioPath,transcriptionPrompt} from './transcription';
+import {attachedRecordingWords,transcriptionPrompt} from './transcription';
 import {ProviderLoginManager} from './auth-login';
 import {codexSignInState,codexAccountInUse} from './codex-device-login';
 import {CodexAccountLogin} from './codex-account-login';
@@ -116,17 +121,21 @@ import {budgetBriefWithProviderRoom} from './provider-start-choice';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 import {MANAGED_CODEX,activateCredentials,claudeAccountWorks,claudeCredentialsAnswer,runningCodexTurns,type ActivationReport} from './provider-activation';
 import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork,observeExecutionChanges} from './state';
+import {activateRunnerCodexAccount} from './runner-provider-account-owner';
 import {noticeTime,publishProviderFreeNotice} from './provider-free-notice';
-import {accountHome} from './provider-accounts';
+import {accountHome,setRunnerAccountInUse} from './provider-accounts';
+import {providerRunnerTarget} from './provider-runner-target';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
-import {claudeAccountCachedReset,clearCodexAccountUsage,releaseCodexOrdinaryUsageHeldWork,releaseUsageHeldWork,releaseProvenUsageHolds,usageAttempt,cachedUsageLimit} from './provider-usage';
+import {claudeAccountCachedReset,clearCodexAccountUsage,releaseCodexUnboundUsageHeldWork,releaseUsageHeldWork,releaseProvenUsageHolds,usageAttempt,cachedUsageLimit} from './provider-usage';
 import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
 import {readFileSync,realpathSync,writeFileSync} from 'node:fs';
 import {providerOwnerEnvironment} from './provider-owner-environment';
+import {installedRouterActionsPath} from './session-command-path';
 import {pinCodexThreadHooks} from './hook-pins';
 import {HostedClaudeCodeTransport,HostUnavailableError,claudeExecutable,executionDirectory,executionHostsEnabled,newExecutionId,streamJournal} from './execution-host-client';
 import {RUNNER_SUPERVISOR,RunnerHostAccess} from './runner-host-access';
 import {agentRunEnvironment} from './agent-run-tokens';
+import {commitSessionIdentity} from './peer-identity';
 import {recordExecutionExited,recordExecutionLaunched,recordLiveAdoption,releaseExecution,retainExecutionIntent,type Adoption,type ExecutionRow} from './executions';
 
 export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex'|'antigravity';mode:'interactive'|'device'|'host-managed';pending:boolean;signInKeepsCurrent:true;pendingFor:string|null;pendingUrl:string|null;lastSignIn:{ok:boolean;detail:string|null}|null;message:string;signedIn?:boolean;checking?:boolean;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
@@ -136,6 +145,8 @@ export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex'|'antigravi
  * that had been taken away by a restart was reported to him as a wrong code.
  */
 export type ProviderAuthRefreshResult=Readonly<{status:'awaiting_code'|'awaiting_approval'|'completed'|'failed'|'no_pending_login';url?:string;userCode?:string|null;detail?:string;needsSignIn?:boolean;resumedTurnIds?:readonly number[];activation?:ActivationReport|null}>;
+
+type RunnerSignInState={runner:string;operationId:string;profileId:string|null;status:string;url?:string;userCode?:string|null;account?:string;detail?:string};
 
 const SIGN_IN_FAILURE_DETAIL:Record<string,string>={
   no_url_before_timeout:'The sign-in tool did not produce a link. Nothing changed.',
@@ -181,6 +192,10 @@ function canvasSpeechApplicationContext(input:AcceptedSessionInput,runId:string,
 }
 
 export class SessionExecutionHost {
+  private draining=false;
+  private resolveDrainStarted:()=>void=()=>{};
+  private readonly drainStarted=new Promise<void>(resolve=>{this.resolveDrainStarted=resolve;});
+  beginDrain(){if(this.draining)return;this.draining=true;this.resolveDrainStarted();}
   private readonly codexProcessAudits=new Set<number>();
   private readonly historyPages=new ProviderHistoryPageClient();
   private readonly stopCodexWindows:()=>void;
@@ -204,7 +219,13 @@ export class SessionExecutionHost {
   private readonly stopCodexMoves:()=>void;
   // How the last sign-in that finished on its own ended, for the screen that waited on it.
   private readonly lastSignIn=new Map<ProviderKey,{ok:boolean;detail:string|null}>();
-  constructor(readonly options:{instanceId:string;registry:ActiveTurnDispatchRegistry;providers:Partial<Record<ProviderId,AgentProvider>>;defaultCwd:string;wake():void;history?:SessionOwnerRuntime['history'];sources?:SessionOwnerRuntime['sources'];capabilitySocket?:string;capabilityClient?:SessionCapabilityClient;findForks?(pin:NativeForkPin):Promise<string[]>;providerSessionBound?(providerThreadUuid:string):Promise<void>;claudeAuthRefreshCommand?:string}) {
+  private readonly runnerSignIns=new Map<ProviderKey,RunnerSignInState>();
+  constructor(readonly options:{instanceId:string;registry:ActiveTurnDispatchRegistry;providers:Partial<Record<ProviderId,AgentProvider>>;defaultCwd:string;wake():void;history?:SessionOwnerRuntime['history'];sources?:SessionOwnerRuntime['sources'];capabilitySocket?:string;capabilityClient?:SessionCapabilityClient;thesaurusContext?:(text:string)=>Promise<string>;findForks?(pin:NativeForkPin):Promise<string[]>;providerSessionBound?(providerThreadUuid:string):Promise<void>;claudeAuthRefreshCommand?:string}) {
+    for(const provider of ['codex','claude-code'] as const)if(providerRunnerTarget(provider))setRunnerAccountInUse(provider,null);
+    for(const provider of ['codex','claude-code'] as const){
+      const pending=pendingRunnerSignIn(provider);
+      if(pending)this.runnerSignIns.set(provider,{runner:pending.runner,operationId:pending.operationId,profileId:pending.profileId,status:'starting'});
+    }
     // Codex work moves to an account with room by itself, as Claude's does (Tejas, 2026-10-08, capture
     // f48861f1: "Can we extend the same Claude code automation for account switching here to Codex too").
     // Checked whenever work stops or starts and once a minute, since a usage reading can arrive between.
@@ -260,41 +281,157 @@ export class SessionExecutionHost {
     // Each change to a Codex conversation's history tops up its kept window off the owner loop.
     this.stopCodexWindows=onCodexHistoryChanged((sessionId,thread)=>this.historyPages.prepareCodexWindow(sessionId,thread));
   }
+  private runnerAuthTarget(provider:ProviderKey):string|null{
+    return providerRunnerTarget(provider);
+  }
+  private restoreRunnerSignIn(provider:ProviderKey):RunnerSignInState|null{
+    const known=this.runnerSignIns.get(provider);if(known)return known;
+    const pending=pendingRunnerSignIn(provider);if(!pending)return null;
+    const restored={runner:pending.runner,operationId:pending.operationId,profileId:pending.profileId,status:'starting'};
+    this.runnerSignIns.set(provider,restored);return restored;
+  }
+  private async finishRunnerSignIn(provider:ProviderKey,answer:any):Promise<ProviderAuthRefreshResult>{
+    const operation=this.restoreRunnerSignIn(provider);
+    if(!operation||answer?.status!=='completed'||typeof answer.account!=='string')return {status:'failed',detail:'The runner did not confirm a completed sign-in.'};
+    const account=answer.account as string;
+    if(provider==='codex'){
+      let activation:ActivationReport;
+      try{
+        const result=await activateRunnerCodexAccount(operation.runner,account,`activate:${operation.operationId}`) as any;
+        activation={status:result?.status==='applied'?'applied':result?.status==='deferred'?'deferred':'failed',detail:String(result?.detail??'')};
+      }catch(error){activation={status:'failed',detail:'The runner account was saved, but Codex could not be switched on the runner.'};log('warn','runner_codex_activation_failed',{error_name:(error as Error)?.name??'Error'});}
+      const activated=activation.status==='applied';
+      this.lastSignIn.set(provider,{ok:activated,detail:activated?null:activation.detail||'The runner saved the account, but could not confirm that Codex switched to it.'});
+      if(activated){void scheduleProviderAccountUsageRefresh().catch(()=>{});this.resumeParkedWorkAfterAuthRefresh(provider);}
+      this.runnerSignIns.delete(provider);clearPendingSignIn(provider);
+      return {status:activated?'completed':'failed',detail:activated?`Codex on runner ${operation.runner} now uses ${account}.`:activation.detail,
+        activation,resumedTurnIds:activated?[]:undefined};
+    }
+    const expected=operation.profileId?this.claudeProfile(operation.profileId)?.label??null:null;
+    if(expected&&expected!==account){
+      this.lastSignIn.set(provider,{ok:false,detail:`That signed in ${account}, not ${expected}. ${account} is kept on runner ${operation.runner}; nothing was selected.`});
+      this.runnerSignIns.delete(provider);clearPendingSignIn(provider);
+      return {status:'failed',detail:this.lastSignIn.get(provider)?.detail};
+    }
+    const profileId=`runner-${createHash('sha256').update(account).digest('hex').slice(0,16)}`;
+    selectClaudeAccount(profileId,account);
+    this.lastSignIn.set(provider,{ok:true,detail:`${account} is saved on runner ${operation.runner}.`});
+    this.runnerSignIns.delete(provider);clearPendingSignIn(provider);
+    void scheduleProviderAccountUsageRefresh().catch(()=>{});
+    return {status:'completed',detail:`${account} is saved on runner ${operation.runner} and selected for new Claude turns.`,
+      resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh(provider)};
+  }
+  private async refreshRunnerSignIn(provider:ProviderKey):Promise<void>{
+    const operation=this.restoreRunnerSignIn(provider);if(!operation)return;
+    try{
+      const answer=await runnerMachineCall<any>(operation.runner,'accounts.signin.status',{operationId:operation.operationId});
+      if(!answer||typeof answer.status!=='string')return;
+      this.runnerSignIns.set(provider,{...operation,...answer});
+      if(answer.status==='completed')await this.finishRunnerSignIn(provider,answer);
+      else if(['failed','interrupted','not_found'].includes(answer.status)){
+        this.lastSignIn.set(provider,{ok:false,detail:answer.detail??'The runner sign-in ended before it could be completed. Start it again.'});
+        this.runnerSignIns.delete(provider);clearPendingSignIn(provider);
+      }
+    }catch(error){log('warn','runner_signin_status_unavailable',{provider,runner:operation.runner,error_name:(error as Error)?.name??'Error'});}
+  }
+  private async startRunnerSignIn(provider:ProviderKey,profileId?:string|null):Promise<ProviderAuthRefreshResult>{
+    const runner=this.runnerAuthTarget(provider);if(!runner)return {status:'failed',detail:'No runner is configured for this provider.'};
+    if(this.restoreRunnerSignIn(provider))return {status:'failed',detail:'A sign-in is already waiting on the runner. Refresh the Accounts page to continue it.'};
+    const operationId=`signin:${randomUUID()}`;
+    const operation:RunnerSignInState={runner,operationId,profileId:profileId??null,status:'starting'};
+    if(!reservePendingRunnerSignIn(provider,this.options.instanceId,Date.now()+10*60_000,{runner,operationId,profileId}))
+      return {status:'failed',detail:'This machine is installing an update. No sign-in started; try again after the update finishes.'};
+    this.runnerSignIns.set(provider,operation);
+    try{
+      const answer=await runnerMachineCall<any>(runner,'accounts.signin.start',{operationId,provider});
+      if(!answer||typeof answer.status!=='string')throw new Error('The runner returned no sign-in outcome.');
+      this.runnerSignIns.set(provider,{...operation,...answer});
+      if(answer.status==='completed')return await this.finishRunnerSignIn(provider,answer);
+      if(answer.status==='awaiting_approval')return {status:'awaiting_approval',url:answer.url,userCode:answer.userCode};
+      if(answer.status==='awaiting_code')return {status:'awaiting_code',url:answer.url};
+      this.lastSignIn.set(provider,{ok:false,detail:answer.detail??'The runner could not start sign-in.'});
+      this.runnerSignIns.delete(provider);clearPendingSignIn(provider);
+      return {status:'failed',detail:answer.detail??'The runner could not start sign-in.'};
+    }catch(error){
+      // The request may have reached the runner even when its reply was lost. Keep the same
+      // durable operation ID so refresh/status can recover it without starting a second login.
+      this.runnerSignIns.set(provider,{...operation,status:'unknown'});
+      log('warn','runner_signin_start_failed',{provider,runner,error_name:(error as Error)?.name??'Error'});
+      return {status:'failed',detail:'The runner could not confirm whether sign-in started. Refresh the Accounts page before trying again.'};
+    }
+  }
+  private async completeRunnerSignIn(provider:ProviderKey,code:string):Promise<ProviderAuthRefreshResult>{
+    const operation=this.restoreRunnerSignIn(provider);
+    if(!operation)return {status:'no_pending_login',detail:'This runner sign-in is no longer waiting. Start it again.'};
+    try{
+      const status=await runnerMachineCall<any>(operation.runner,'accounts.signin.status',{operationId:operation.operationId});
+      if(status?.status==='completed')return this.finishRunnerSignIn(provider,status);
+      if(status?.status==='interrupted'||status?.status==='not_found'){
+        this.runnerSignIns.delete(provider);clearPendingSignIn(provider);
+        return {status:'no_pending_login',detail:'This runner sign-in ended before the code was submitted. Start it again.'};
+      }
+      if(status?.status!=='awaiting_code'||provider!=='claude-code')
+        return {status:'no_pending_login',detail:'The runner is not waiting for a pasted sign-in code.'};
+      this.runnerSignIns.set(provider,{...operation,...status,status:'completing'});
+      const answer=await runnerMachineCall<any>(operation.runner,'accounts.signin.complete',{operationId:operation.operationId,code});
+      if(answer?.status==='completed')return this.finishRunnerSignIn(provider,answer);
+      if(answer?.status==='awaiting_code')return {status:'awaiting_code',url:answer.url};
+      this.lastSignIn.set(provider,{ok:false,detail:answer?.detail??'The runner did not accept that sign-in code.'});
+      this.runnerSignIns.delete(provider);clearPendingSignIn(provider);
+      return {status:'failed',detail:answer?.detail??'The runner did not accept that sign-in code.'};
+    }catch(error){
+      log('warn','runner_signin_complete_failed',{provider,runner:operation.runner,error_name:(error as Error)?.name??'Error'});
+      return {status:'failed',detail:'The runner could not confirm the sign-in code outcome. Refresh the Accounts page before trying again.'};
+    }
+  }
   /** What Codex itself last said about its sign-in; see codexSignInState. */
   private codexSignIn:'signed-in'|'signed-out'|'unknown'='unknown';
   /** Private control answer: never reads credentials, usage, SQLite or the filesystem. */
   authEphemera():ProviderAuthEphemera {
+    const remoteCodex=this.runnerSignIns.get('codex'),remoteClaude=this.runnerSignIns.get('claude-code');
     return {observedAtMs:Date.now(),checking:this.providerAuthCheck!==null,usageRefreshing:usageRefreshing(),codexSignIn:this.codexSignIn,
       antigravityAccount:currentAccount('antigravity'),
       accountFallback:{codex:accountMemoryFallback('codex'),'claude-code':accountMemoryFallback('claude-code')},
-      codexPending:this.codexLogin.hasPending(),claudePending:this.claudeLogin.hasPending(),
-      claudePendingFor:this.claudeLogin.pendingFor(),claudePendingUrl:this.claudeLogin.pendingUrl(),
+      codexPending:remoteCodex?['starting','awaiting_approval','completing','unknown'].includes(remoteCodex.status):this.codexLogin.hasPending(),
+      claudePending:remoteClaude?['starting','awaiting_code','completing','unknown'].includes(remoteClaude.status):this.claudeLogin.hasPending(),
+      claudePendingFor:remoteClaude?.profileId??this.claudeLogin.pendingFor(),claudePendingUrl:remoteClaude?.url??this.claudeLogin.pendingUrl(),
       lastSignIn:{codex:this.lastSignIn.get('codex')??null,'claude-code':this.lastSignIn.get('claude-code')??null}};
   }
   private providerAuthView(provider:ProviderKey):ProviderAuthView{
     let mark=performance.now();
     const step=(name:string)=>{const now=performance.now();this.authViewSteps[name]=Math.round(now-mark);mark=now;};
+    const remoteRunner=this.runnerAuthTarget(provider);
     const defaultAccount=currentAccount(provider);step('current_account_ms');
     const selection=provider==='claude-code'?claudeAccountSelection():null;step('selection_ms');
-    const saved=listProfiles(provider);step('list_profiles_ms');
+    const saved=remoteRunner?[]:listProfiles(provider);step('list_profiles_ms');
     // Where accounts have homes of their own, the main folder's login is a terminal's and is never
     // offered: agents never run on it, so a hand sign-in there cannot displace theirs.
     const ownHomes=provider==='claude-code'&&claudeRunsFromOwnHomes();step('own_homes_ms');
-    const profiles=provider==='claude-code'&&ownHomes
+    let profiles=provider==='claude-code'&&ownHomes
       ?saved.map(profile=>({...profile,current:selection?.profileId===profile.id}))
       :provider==='claude-code'&&defaultAccount
       ?[{id:'default',label:defaultAccount.label,detail:defaultAccount.detail,current:!selection||selection.profileId==='default',signedIn:true},
         ...saved.filter(profile=>profile.label!==defaultAccount.label).map(profile=>({...profile,current:selection?.profileId===profile.id}))]
       :saved;
-    const account=provider==='claude-code'&&ownHomes
+    let account=provider==='claude-code'&&ownHomes
       ?profiles.find(profile=>profile.current)??null
       :provider==='claude-code'&&selection&&selection.profileId!=='default'
       ?profiles.find(profile=>profile.id===selection.profileId)??defaultAccount:defaultAccount;
+    const runnerSignIn=this.runnerSignIns.get(provider);
+    const signInPending=runnerSignIn?['starting','awaiting_code','awaiting_approval','completing'].includes(runnerSignIn.status)
+      :provider==='codex'?this.codexLogin.hasPending():this.claudeLogin.hasPending();
     // A sign-in Codex refused shows as signed out, on the account in use and on any kept
     // account whose usage reading was refused, so the row offers "Sign in again".
     // Each account row carries what a reset would do for it right now (provider-reset-facts.ts).
     const stored=providerAccountUsage(provider);
     const usage=stored?markUncurrentAccountReadings(provider,withResetAdvice(provider,stored)):null;step('usage_ms');
+    if(this.runnerAuthTarget(provider)){
+      const selectedLabel=selection?.label??usage?.accounts.find(item=>item.current)?.label??null;
+      profiles=(usage?.accounts??[]).map(item=>({id:`runner-${createHash('sha256').update(item.label).digest('hex').slice(0,16)}`,
+        label:item.label,detail:item.problem,current:item.label===selectedLabel,signedIn:item.signedOut!==true}));
+      const active=profiles.find(item=>item.current);
+      account=active?{id:active.id,label:active.label,detail:active.detail}:null;
+    }
     const refused=new Set((usage?.accounts??[]).filter(entry=>entry.signedOut).map(entry=>entry.label));
     const brokenInUse=provider==='codex'&&this.codexSignIn==='signed-out';
     // The Codex login in use lives in the agents' own home, not in a kept account's folder, so it
@@ -303,22 +440,22 @@ export class SessionExecutionHost {
       ?[{id:'in-use',label:account.label,detail:account.detail,current:true,signedIn:true},...profiles.filter(profile=>profile.label!==account.label)]
       :profiles;
     const checked=listed.map(profile=>({...profile,signedIn:profile.signedIn!==false&&!refused.has(profile.label)&&!(brokenInUse&&profile.current)}));
-    if(provider==='codex'&&account)return {provider,mode:'device',pending:this.codexLogin.hasPending(),signInKeepsCurrent:true,pendingFor:null,pendingUrl:null,
+    if(provider==='codex'&&account)return {provider,mode:'device',pending:signInPending,signInKeepsCurrent:true,pendingFor:null,pendingUrl:runnerSignIn?.url??null,
       lastSignIn:this.lastSignIn.get(provider)??null,
       message:brokenInUse||refused.has(account.label)?`Codex on this machine is signed out: the sign-in for ${account.label} stopped working. Sign in again to run Codex work here.`:'',
       signedIn:!(brokenInUse||refused.has(account.label)),account,profiles:checked,usage};
     return {provider,mode:provider==='codex'?'device':'interactive',
-      pending:provider==='codex'?this.codexLogin.hasPending():this.claudeLogin.hasPending(),
+      pending:signInPending,
       // A signed-in account is kept before anything replaces it. A surface talking to an
       // older build sees this absent and warns him first, and stops once this is live.
       signInKeepsCurrent:true,
       // Which account's row a waiting sign-in belongs to, so a reloaded page puts the code
       // box back under the account he pressed rather than under "another account".
-      pendingFor:provider==='claude-code'?this.claudeLogin.pendingFor():null,
+      pendingFor:provider==='claude-code'?runnerSignIn?.profileId??this.claudeLogin.pendingFor():null,
       // The page that sign-in is waiting on, so a page that lost the answer to its press (a reload,
       // or a read that raced the start) can still open it; the Mac's browser agent was left with a
       // code box and no link on 2026-10-08. It goes only to the authenticated Accounts read.
-      pendingUrl:provider==='claude-code'?this.claudeLogin.pendingUrl():null,
+      pendingUrl:provider==='claude-code'?runnerSignIn?.url??this.claudeLogin.pendingUrl():null,
       // A Codex sign-in finishes in the browser, so its refusal can only reach him here.
       lastSignIn:this.lastSignIn.get(provider)??null,
       message:account?(provider==='claude-code'?this.claudeInUseSentence(account.label,usage):'')
@@ -362,14 +499,33 @@ export class SessionExecutionHost {
    */
   async refreshAuthEphemera():Promise<ProviderAuthEphemera>{
     this.checkProviderAuth(true);
+    for(const provider of ['codex','claude-code'] as const)void this.refreshRunnerSignIn(provider);
     return this.authEphemera();
   }
   private checkProviderAuth(fresh=false):void{
     const recent=Date.now()-this.providerAuthCheckedAt<30_000;
-    this.providerAuthCheck??=!fresh&&recent?null:Promise.all([refreshClaudeAccount(),
-      codexSignInState().then(answer=>{this.codexSignIn=answer.state;if(answer.state==='signed-in')setCodexAccountInUse(answer);}).catch(()=>{}),
-      scheduleProviderAccountUsageRefresh().catch(()=>{})]).then(()=>undefined,()=>undefined)
-      .finally(()=>{this.providerAuthCheck=null;this.providerAuthCheckedAt=Date.now();});
+    if(this.providerAuthCheck){
+      if(fresh){
+        const current=this.providerAuthCheck;
+        const forced=scheduleProviderAccountUsageRefresh(true).catch(()=>{});
+        this.trackProviderAuthCheck(Promise.all([current,forced]));
+      }
+      return;
+    }
+    if(!fresh&&recent)return;
+    this.trackProviderAuthCheck(Promise.all([
+      providerRunnerTarget('claude-code')?Promise.resolve():refreshClaudeAccount(),
+      providerRunnerTarget('codex')?Promise.resolve():codexSignInState().then(answer=>{this.codexSignIn=answer.state;if(answer.state==='signed-in')setCodexAccountInUse(answer);}).catch(()=>{}),
+      scheduleProviderAccountUsageRefresh(fresh).catch(()=>{})]));
+  }
+  private trackProviderAuthCheck(work:Promise<unknown>):void{
+    const check=work.then(()=>undefined,()=>undefined);
+    this.providerAuthCheck=check;
+    void check.then(()=>{
+      if(this.providerAuthCheck!==check)return;
+      this.providerAuthCheck=null;
+      this.providerAuthCheckedAt=Date.now();
+    });
   }
   private async providerAuthStatus(fresh=false):Promise<readonly ProviderAuthView[]>{
     this.checkProviderAuth(fresh);
@@ -399,12 +555,15 @@ export class SessionExecutionHost {
    */
   private async useProviderResetCredit(provider:string,account:string){
     if(provider!=='codex')throw new ProviderCapabilityUnavailableError('auth','This provider does not grant allowance resets.');
-    let outcome=await useCodexResetCredit(account);
+    const runner=this.runnerAuthTarget('codex');
+    let outcome=runner
+      ?await runnerMachineCall<any>(runner,'accounts.codex.resetCredit',{account,operationId:`owner-reset:${randomUUID()}`})
+      :await useCodexResetCredit(account);
     if(outcome.status==='used'&&outcome.accountId&&outcome.verifiedReadStartedAtMs){
       try {
         const cleared=clearCodexAccountUsage(outcome.accountId,outcome.verifiedReadStartedAtMs);
         if(cleared){
-          if(currentAccount('codex')?.id===outcome.accountId){releaseCodexOrdinaryUsageHeldWork(outcome.accountId);this.options.wake();}
+          if(currentAccount('codex')?.id===outcome.accountId){releaseCodexUnboundUsageHeldWork(outcome.accountId);this.options.wake();}
         } else outcome={...outcome,status:'redeemed',detail:'The reset was redeemed, but a newer refusal prevents confirming launch availability. Work remains held.'};
       } catch(error) {
         log('error','codex_reset_cache_clear_failed',errorFields(error));
@@ -440,19 +599,49 @@ export class SessionExecutionHost {
     if(this.usageProbeRunning)return {status:'unconfirmed',...this.usageProbeContext,
       detail:'The previous provider check is still stopping; no new check was started.'};
     for(const provider of ['claude-code','codex'] as const){
-      const home=provider==='claude-code'?selectedClaudeHome():null;
-      const accountLabel=home?.label??currentAccount(provider)?.label;
-      if(!accountLabel)continue;
       const waiting=db.query(`SELECT COALESCE(turns.provider_model,
           (SELECT earlier.provider_model FROM turns earlier WHERE earlier.session_id=turns.session_id
-            AND earlier.id<turns.id AND earlier.provider_model IS NOT NULL ORDER BY earlier.id DESC LIMIT 1)) AS model
+            AND earlier.id<turns.id AND earlier.provider_model IS NOT NULL ORDER BY earlier.id DESC LIMIT 1)) AS model,
+          sessions.native_metadata_json AS metadata_json
         FROM turns JOIN sessions ON sessions.id=turns.session_id
         WHERE turns.status='queued' AND turns.dispatch_hold='usage'
           AND turns.dispatch_failure_class IN ('backoff','usage_wait')
-          AND sessions.provider_id=? ORDER BY turns.id LIMIT 1`).get(provider) as {model:string|null}|null;
+          AND sessions.provider_id=? ORDER BY turns.id LIMIT 1`).get(provider) as {model:string|null;metadata_json:string}|null;
       if(!waiting)continue;
+      let savedRunner:string|null=null,savedAccount:string|null=null;
+      try{const metadata=JSON.parse(waiting.metadata_json);savedRunner=typeof metadata.providerRunner==='string'?metadata.providerRunner:null;
+        savedAccount=provider==='claude-code'?(typeof metadata.claudeAccount==='string'?metadata.claudeAccount:
+          typeof metadata.providerAccount==='string'?metadata.providerAccount:null):null;}catch{}
+      const runnerTarget=providerRunnerTarget(provider)??savedRunner;
+      let runnerIdentity:{id:string;label:string}|null=null;
+      if(runnerTarget){
+        try{runnerIdentity=await runnerMachineCall(runnerTarget,'accounts.identity',{provider,...(savedAccount?{account:savedAccount}:{})});}
+        catch{return {status:'unconfirmed',provider,account:null,detail:`Runner ${runnerTarget} could not confirm the account for this held turn.`};}
+      }
+      const home=runnerTarget?null:provider==='claude-code'?selectedClaudeHome():null;
+      const accountLabel=runnerTarget?runnerIdentity?.label:home?.label??currentAccount(provider)?.label;
+      if(!accountLabel) return {status:'unconfirmed',provider,account:null,detail:'No exact active account identity is available for this held turn.'};
       const attempt=usageAttempt(provider,waiting.model??'unresolved',accountLabel);
       const priorLimit=cachedUsageLimit(attempt);
+      if(runnerTarget){
+        try{
+          const readings=await runnerMachineCall<Record<string,any>>(runnerTarget,'accounts.readings',{},100_000);
+          const usage=readings?.[provider];
+          const reading=usage?.accounts?.find((item:any)=>item.label===accountLabel);
+          const hasRoom=!!usage&&!!reading&&reading.signedOut!==true
+            &&accountReadingFresh(provider,usage,reading,Date.now(),undefined,waiting.model)
+            &&includedAllowanceWindows(provider,reading,waiting.model).length>0
+            &&includedAllowanceWindows(provider,reading,waiting.model).every(window=>window.usedPercent<100);
+          if(!hasRoom)return {status:'unconfirmed',provider,account:accountLabel,model:waiting.model,
+            detail:`Runner ${runnerTarget} has no fresh allowance proof for ${accountLabel}; waiting work remains held.`};
+          const {released,turnIds}=releaseProvenUsageHolds(attempt,accountLabel,provider==='claude-code'&&!waiting.model);
+          if(provider==='claude-code'&&released){const revision=claudeAccountSelection()?.revision??0;
+            for(const turnId of turnIds)admitProvenClaudeWaitingTurn(turnId,accountLabel,revision);}
+          if(released)this.options.wake();
+          return {status:'available',provider,account:accountLabel,model:waiting.model,released};
+        }catch(error){return {status:'unconfirmed',provider,account:accountLabel,model:waiting.model,
+          detail:`Runner ${runnerTarget} could not confirm fresh allowance: ${error instanceof Error?error.message:String(error)}`};}
+      }
       const runner=this.options.providers[provider];
       if(!runner)return {status:'unconfirmed',provider,account:accountLabel,detail:'The provider is not available on this machine.'};
       try{
@@ -539,6 +728,7 @@ export class SessionExecutionHost {
    */
   private async startProviderAuthRefresh(provider:string,profileId?:string|null):Promise<ProviderAuthRefreshResult>{
     const key=this.assertAuthProvider(provider);
+    if(this.runnerAuthTarget(key))return this.startRunnerSignIn(key,profileId);
     if(key==='codex'){
       this.lastSignIn.delete('codex');
       const started=await this.codexLogin.start();
@@ -556,6 +746,7 @@ export class SessionExecutionHost {
   }
   private async completeProviderAuthRefresh(provider:string,code:string):Promise<ProviderAuthRefreshResult>{
     const key=this.assertAuthProvider(provider);
+    if(this.runnerAuthTarget(key))return this.completeRunnerSignIn(key,code);
     const completion=key==='claude-code'?await this.claudeLogin.complete(code):await this.providerLoginManager.complete(key,code);
     // Not a wrong code: the waiting sign-in is gone, most often because Concierge updated
     // between his opening the link and his pasting what it gave him. Telling him the code
@@ -582,6 +773,11 @@ export class SessionExecutionHost {
     return this.switchProviderAuthProfile('claude-code',basename(filed.home));
   }
   private claudeProfile(profileId:string):{id:string;label:string}|null{
+    if(this.runnerAuthTarget('claude-code')){
+      const account=providerAccountUsage('claude-code')?.accounts.find(item=>
+        `runner-${createHash('sha256').update(item.label).digest('hex').slice(0,16)}`===profileId);
+      return account?{id:profileId,label:account.label}:null;
+    }
     const defaultAccount=currentAccount('claude-code');
     return profileId==='default'&&defaultAccount&&!claudeRunsFromOwnHomes()?{id:'default',label:defaultAccount.label}
       :listProfiles('claude-code').find(item=>item.id===profileId)??null;
@@ -595,6 +791,18 @@ export class SessionExecutionHost {
    * and restarts Codex onto the one it had, so a refused switch leaves his machine unchanged.
    */
   private async putCodexAccountInUse(source:string):Promise<ProviderAuthRefreshResult>{
+    const runner=this.runnerAuthTarget('codex');
+    if(runner){
+      if(this.codexSwitching)return {status:'failed',detail:'Another Codex switch is still finishing on the runner. Nothing was changed.'};
+      this.codexSwitching=true;
+      try{
+        const activation=await activateRunnerCodexAccount(runner,source,`switch:${randomUUID()}`) as any;
+        if(activation?.status!=='applied')return {status:'failed',detail:activation?.detail??'Codex account switching on the runner could not be confirmed.'};
+        void scheduleProviderAccountUsageRefresh().catch(()=>{});
+        return {status:'completed',activation:{status:'applied',detail:`Codex on runner ${runner} now uses ${source}.`},
+          resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh('codex')};
+      }finally{this.codexSwitching=false;}
+    }
     if(this.codexSwitching)return {status:'failed',detail:'Another Codex switch is still finishing on this machine. Nothing was changed.'};
     if(runningCodexTurns()!==0)return {status:'failed',detail:'Codex is working on this machine right now, so nothing was changed. Switch once that work finishes.'};
     const releaseSavedLogin=beginCodexAccountSwitch();
@@ -627,6 +835,15 @@ export class SessionExecutionHost {
     const key='claude-code' as const;
     const profile=this.claudeProfile(profileId);
     if(!profile)throw new ProviderCapabilityUnavailableError('auth','That Claude account is not available on this machine.');
+    const runner=this.runnerAuthTarget(key);
+    if(runner){
+      const check=await runnerMachineCall<{available:boolean;resolution:string}>(runner,'accounts.validate',{provider:key,account:profile.label});
+      if(!check?.available)return {status:'failed',detail:`${profile.label} is not uniquely available on runner ${runner}. Nothing was switched.`};
+      selectClaudeAccount(profile.id,profile.label);
+      void scheduleProviderAccountUsageRefresh().catch(()=>{});
+      return {status:'completed',detail:`New Claude turns will use ${profile.label} on runner ${runner}.`,
+        resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh(key)};
+    }
     const home=profile.id==='default'?null:accountHome(key,profile.id);
     if(profile.id!=='default'){
       if(!sharedClaudeHome(profile.label,home!,true)){
@@ -679,6 +896,17 @@ export class SessionExecutionHost {
       this.claudeSwitching=true;
       try { return await this.switchClaudeAccount(profileId); } finally { this.claudeSwitching=false; }
     }
+    const runner=this.runnerAuthTarget('codex');
+    if(runner){
+      const account=providerAccountUsage('codex')?.accounts.find(item=>
+        `runner-${createHash('sha256').update(item.label).digest('hex').slice(0,16)}`===profileId);
+      if(!account)throw new ProviderCapabilityUnavailableError('auth','That Codex account is not available on the configured runner.');
+      const activation=await activateRunnerCodexAccount(runner,account.label,`switch:${randomUUID()}`) as any;
+      if(activation?.status!=='applied')return {status:'failed',detail:activation?.detail??'Codex account switching on the runner could not be confirmed.'};
+      void scheduleProviderAccountUsageRefresh().catch(()=>{});
+      return {status:'completed',activation:{status:'applied',detail:`Codex on runner ${runner} now uses ${account.label}.`},
+        resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh('codex')};
+    }
     const source=codexProfileSource(profileId);
     if(!source)throw new ProviderCapabilityUnavailableError('auth','That Codex account is not available on this machine.');
     return this.putCodexAccountInUse(source);
@@ -705,7 +933,20 @@ export class SessionExecutionHost {
       log('warn','codex_account_move_failed',{detail:String(result.detail??'').slice(0,300)});
     }
   }
-  async stop():Promise<void>{this.stopCodexMoves();this.stopCodexWindows();await Promise.all([this.providerLoginManager.stop(),this.codexLogin.stop(),this.claudeLogin.stop(),this.historyPages.close()]);}
+  async stop():Promise<void>{
+    this.beginDrain();this.stopCodexMoves();this.stopCodexWindows();
+    const timedStop=async(name:string,stop:()=>Promise<void>)=>{
+      const started=performance.now();
+      try{await stop();}
+      finally{log('info','execution_host_stop_component',{component:name,duration_ms:Math.round(performance.now()-started)});}
+    };
+    await Promise.all([
+      timedStop('provider_login',()=>this.providerLoginManager.stop()),
+      timedStop('codex_login',()=>this.codexLogin.stop()),
+      timedStop('claude_login',()=>this.claudeLogin.stop()),
+      timedStop('history_pages',()=>this.historyPages.close()),
+    ]);
+  }
   private capabilities(session:SessionRow) {
     if(session.provider_id==='chatgpt'&&this.capabilityClient)return {...chatGptCapabilities,recover:true,models:['chat','work',...CHATGPT_THINKING_LEVELS,...CHATGPT_THINKING_LEVELS.map(level=>HIS_CHATGPT_PREFIX+level)],attachments:['*/*']};
     const provider=this.options.providers[session.provider_id],restricted=sessionMetadata(session).interactionPolicy==='consultation-only';
@@ -722,7 +963,10 @@ export class SessionExecutionHost {
     }
     const provider=this.options.providers[session.provider_id];
     if(!provider?.history||!session.agent_session_uuid)return null;
-    return provider.history({sessionUuid:session.agent_session_uuid,cwd:this.cwd(session),cursor,limit,ownerSessionId:session.id});
+    const metadata=sessionMetadata(session);
+    return provider.history({sessionUuid:session.agent_session_uuid,cwd:this.cwd(session),cursor,limit,ownerSessionId:session.id,
+      ...(typeof metadata.providerRunner==='string'?{runner:metadata.providerRunner}:{}),
+      ...(typeof metadata.providerAccount==='string'?{account:metadata.providerAccount}:{})});
   }
   private async historyMessage(session:SessionRow,messageId:string,turnId:string|null) {
     if(!session.agent_session_uuid)return null;
@@ -777,22 +1021,30 @@ export class SessionExecutionHost {
       const session=getSessionById(sessionId);
       // The Inbox keeps its own queue rules (focus hold, captures waiting in order).
       if(!session||sessionMetadata(session).inbox||sessionMetadata(session).interactionPolicy==='consultation-only')return;
+      const outside=!!sessionMetadata(session).outside;
       // Messages whose latest hand-off never reached the provider and that are not yet back in the
       // queue: still attached to that failed attempt, or left detached by an interrupted pull.
+      // Outside startup takes back only his messages; older service notices and settled agent
+      // requests need their own obligation audit before anything wakes them again.
       const unsent=db.query(`SELECT input.id,input.origin,input.request_id FROM session_inputs input
         JOIN turn_steering_messages steering ON steering.accepted_input_id=input.id
           AND steering.id=(SELECT MAX(latest.id) FROM turn_steering_messages latest WHERE latest.accepted_input_id=input.id)
         WHERE input.session_id=? AND steering.status='failed' AND steering.provider_sent_at IS NULL
           AND json_extract(input.receipt_json,'$.state') IS NULL
-          AND (input.steering_id=steering.id OR input.steering_id IS NULL AND input.turn_id IS NULL)`).all(sessionId) as {id:string;origin:string;request_id:string|null}[];
+          AND (?=0 OR input.origin='human')
+          AND (input.steering_id=steering.id OR input.steering_id IS NULL AND input.turn_id IS NULL)`).all(sessionId,outside?1:0) as {id:string;origin:string;request_id:string|null}[];
       for(const row of unsent) {
         const recovered=recoverUnsentSteeredInput(row.id);
+        if(recovered&&recovered.session_id!==sessionId)this.pullWaitingInputs(recovered.session_id);
         // A reminder to answer a request already answered says nothing true any more; delivering it
         // late made the agent answer twice. Answers withdraw overdue notices the same way.
         if(row.origin==='service'&&row.id.startsWith('question-reminder:')&&row.request_id
           &&db.query('SELECT 1 FROM session_communication_requests WHERE request_id=? AND (prompt_answered_at_ms IS NOT NULL OR outcome IS NOT NULL)').get(row.request_id))
           withdrawUnstartedServiceInput(recovered?.id??row.id,'Answered before this reminder was delivered.');
       }
+      // The outside CLI accepts one opening message only. Recovery may restore earlier unsent
+      // inputs to FIFO, but must never withdraw them to try another live delivery.
+      if(outside){if(unsent.length)this.options.wake();return;}
       // Only messages the taken-back run will take leave the queue; a Canvas speech run refuses
       // every other message, which then keeps its queued turn instead of being re-queued.
       const running=db.query("SELECT id FROM turns WHERE session_id=? AND status='running' AND stop_requested_at IS NULL ORDER BY id DESC LIMIT 1").get(sessionId) as {id:number}|null;
@@ -809,6 +1061,25 @@ export class SessionExecutionHost {
       log('warn','waiting_inputs_join_failed',{session_id:sessionId,...errorFields(error)});
     }
   }
+  /** A finished outside run has no live sender to trigger recovery. */
+  recoverOutsideWaitingInputs() {
+    const sessions=db.query(`SELECT DISTINCT input.session_id FROM session_inputs input
+      JOIN sessions session ON session.id=input.session_id
+      JOIN turn_steering_messages steering ON steering.accepted_input_id=input.id
+        AND steering.id=(SELECT MAX(latest.id) FROM turn_steering_messages latest WHERE latest.accepted_input_id=input.id)
+      WHERE COALESCE(json_extract(session.native_metadata_json,'$.outside'),0)=1
+        AND input.origin='human'
+        AND steering.status='failed' AND steering.provider_sent_at IS NULL
+        AND json_extract(input.receipt_json,'$.state') IS NULL
+        AND (input.steering_id=steering.id OR input.steering_id IS NULL AND input.turn_id IS NULL)`).all() as {session_id:number}[];
+    for(const row of sessions)this.pullWaitingInputs(row.session_id);
+    if(sessions.length)log('info','outside_unsent_human_sessions_scanned',{sessions:sessions.length});
+  }
+  recoverAntigravityUnsentInputs() {
+    const queued=recoverUnsentAntigravityInputs();
+    if(queued)this.options.wake();
+    return queued;
+  }
   private steer(input:AcceptedSessionInput):boolean {
     const body=JSON.parse(input.payload_json);
     const session=getSessionById(input.session_id);
@@ -816,7 +1087,7 @@ export class SessionExecutionHost {
     // predecessor. It can enter its already-running provider queue, but grants no
     // permission to enqueue another turn or write through the owner.
     const closingHandoffNotice=input.origin==='service'&&input.scope.startsWith('handoff-notice:');
-    if(!session||!closingHandoffNotice&&!this.owner.view(session).capabilities.steer)return false;
+    if(!session||sessionMetadata(session).outside||!closingHandoffNotice&&!this.owner.view(session).capabilities.steer)return false;
     if(sessionMetadata(session).interactionPolicy==='consultation-only'&&body.attachments?.length)return false;
     const matched=this.options.registry.dispatchSessionSteering(input.session_id,target=>{
       // Stop owns this run only. New communication waits in its session's FIFO.
@@ -846,13 +1117,15 @@ export class SessionExecutionHost {
         // of showing it queued until their next periodic check.
         const deliveryChanged=(state:'sent'|'ambiguous'|'failed')=>recordSessionEvent({eventId:steeringAttemptEventId(`delivery:${input.id}:${state}`,input.id,steeringId),
           sessionId:input.session_id,inputId:input.id,turnId:target.turnId,kind:'delivery',payload:{state}});
-        const accepted=target.controller.enqueue({clientMessageId:input.id,text:this.prompt(attached),
+        // prepareText always supplies the actual provider words. Preparing them here would
+        // synchronously finish the Inbox history index before the message even enters its queue.
+        const accepted=target.controller.enqueue({clientMessageId:input.id,text:'',
           prepareText:async root=>{
             const attachments=this.owner.attachments(body.attachments);
             let text=this.prompt(attached);
             if(attachments.length) {
               if(!root)throw new Error('The active turn has no owned attachment root.');
-              const transcripts=[];for(const attachment of attachments){const path=join(root,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});text+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/'))transcripts.push(attachment.transcriptText?{slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const}:await transcribeAudioPath({slackFileId:attachment.id,title:attachment.name,path}));}const transcript=transcriptionPrompt(transcripts.filter(item=>!body.text?.includes(item.text)));text+=transcript?`\n\n${transcript}`:'';
+              const transcripts=[];for(const attachment of attachments){const path=join(root,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});text+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/')){if(attachment.transcriptText)transcripts.push({slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const});else{const heard=await attachedRecordingWords({slackFileId:attachment.id,title:attachment.name,path});if(heard.transcript)transcripts.push(heard.transcript);if(heard.note)text+=`\n${heard.note}`;}}}const transcript=transcriptionPrompt(transcripts.filter(item=>!body.text?.includes(item.text)));text+=transcript?`\n\n${transcript}`:'';
             }
             if(sessionMetadata(session).interactionPolicy!=='consultation-only'&&session.provider_id!=='chatgpt'&&!canvasSpeechContext(attached))text=sessionInputEnvelope(attached,nativeRunId(target.turnId),text);
             updateTurnSteeringReplayText(steeringId,text,attachments.length);
@@ -947,7 +1220,11 @@ export class SessionExecutionHost {
     try {
       return await this.options.registry.run({turnId:claim.turn_id,sessionId:session.id},async(steeringController,closeSteering,cancellationController)=>{
         if(input.kind==='fork'){closeSteering(new Error('A native fork control has no model input channel.'));return this.runFork(claim,input,session);}
-        if(adoption)await this.settleUnsentSteering(claim.turn_id,adoption.execution);
+        if(sessionMetadata(session).outside)steeringController.close(new Error('An independent Codex command has no live input channel.'));
+        if(adoption){
+          await this.settleUnsentSteering(claim.turn_id,adoption.execution);
+          if(session.provider_id==='antigravity')this.recoverAntigravityUnsentInputs();
+        }
         const outcome=await this.runModel(claim,input,session,steeringController,closeSteering,cancellationController,adoption);
         // Only here is the run's outcome durably settled; a crash before this leaves the host's
         // record for the next coordinator to settle from.
@@ -962,8 +1239,9 @@ export class SessionExecutionHost {
       recordSessionEvent({eventId:priorTerminal
         ?`recovered-terminal:${claim.turn_id}:${claim.dispatch_attempt}:${count}`
         :`terminal:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'run',payload:{run:this.owner.run(nativeRunId(claim.turn_id))}});
-      if(sessionMetadata(session).inboxRole==='project-router')maybeStartInboxProviderFailover(session);
-      if(session.provider_id==='codex'&&process.platform==='linux')await this.auditCodexTurn(claim.turn_id).catch(error=>
+      // A drain's proven-unsent requeue is a handoff, not a provider failure.
+      if(!this.draining&&sessionMetadata(session).inboxRole==='project-router')maybeStartInboxProviderFailover(session);
+      if(session.provider_id==='codex'&&(process.platform==='linux'||process.env.CONCIERGE_CODEX_RUNNER))await this.auditCodexTurn(claim.turn_id).catch(error=>
         log('warn','codex_process_audit_failed',{turn_id:claim.turn_id,...errorFields(error)}));
     }
   }
@@ -973,7 +1251,7 @@ export class SessionExecutionHost {
    * marked done and defers; this sweep is what completes it.
    */
   startCodexProcessAuditSweep(stopped:()=>boolean):()=>void {
-    if(process.platform!=='linux')return ()=>{};
+    if(process.platform!=='linux'&&!process.env.CONCIERGE_CODEX_RUNNER)return ()=>{};
     const sweep=()=>{if(!stopped())void this.reconcileCodexProcessAudits().catch(error=>
       log('error','codex_process_audit_recovery_failed',errorFields(error)));};
     sweep();
@@ -1017,9 +1295,15 @@ export class SessionExecutionHost {
   private async followCodexProcessSighting(row:{turn_id:number;session_id:number;input_id:string;payload_json:string;
     native_run_id:string|null;reported_json:string|null}) {
     {
-      const sighting=JSON.parse(row.payload_json) as {threadId:string;processes:CodexLeftoverProcess[];sightedAtMs:number};
+      const sighting=JSON.parse(row.payload_json) as {threadId:string;runner?:string;processes:CodexLeftoverProcess[];sightedAtMs:number};
       const reportRequestId=row.reported_json?JSON.parse(row.reported_json).requestId as string|null:null;
-      const alive=sighting.processes.filter(codexProcessStillRunning);
+      // Older sightings predate runner attribution but used this runner when the relay was on.
+      const sightingRunner=sighting.runner||process.env.CONCIERGE_CODEX_RUNNER?.trim();
+      const alive=sightingRunner
+        ?(await Promise.all(sighting.processes.map(async processRecord =>
+          await runnerMachineCall<boolean>(sightingRunner,'codex.processAlive',{process:processRecord})?processRecord:null)))
+          .filter((record):record is CodexLeftoverProcess=>record!==null)
+        :sighting.processes.filter(codexProcessStillRunning);
       if(!alive.length){
         recordSessionEvent({eventId:`codex-process-sighting-settled:${row.turn_id}`,sessionId:row.session_id,inputId:row.input_id,
           turnId:row.turn_id,kind:'process_audit',payload:{outcome:'exited',requestId:reportRequestId}});
@@ -1072,10 +1356,10 @@ export class SessionExecutionHost {
     if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`codex-process-audit-done:${turnId}`))return;
     this.codexProcessAudits.add(turnId);
     try {
-      const row=db.query(`SELECT turn.session_id,turn.accepted_input_id,turn.native_run_id,session.agent_session_uuid
+      const row=db.query(`SELECT turn.session_id,turn.accepted_input_id,turn.native_run_id,session.agent_session_uuid,session.native_metadata_json
         FROM turns turn JOIN sessions session ON session.id=turn.session_id
         WHERE turn.id=? AND session.provider_id='codex'`)
-        .get(turnId) as {session_id:number;accepted_input_id:string;native_run_id:string|null;agent_session_uuid:string|null}|null;
+        .get(turnId) as {session_id:number;accepted_input_id:string;native_run_id:string|null;agent_session_uuid:string|null;native_metadata_json:string|null}|null;
       if(!row)throw new Error('Codex process audit intent has no turn.');
       // A terminal event records the coordinator's attempt, including one that parks because
       // provider completion is uncertain. Only a settled turn proves its tools have stopped.
@@ -1085,7 +1369,11 @@ export class SessionExecutionHost {
           inputId:row.accepted_input_id,turnId,kind:'process_audit',payload:{reason:'no-provider-thread'}});
         return;
       }
-      const remaining=await codexLeftoverProcesses(row.agent_session_uuid);
+      const savedRunner=row.native_metadata_json?JSON.parse(row.native_metadata_json)?.providerRunner:null;
+      const runner=typeof savedRunner==='string'&&savedRunner? savedRunner : process.env.CONCIERGE_CODEX_RUNNER?.trim()||null;
+      const remaining=runner
+        ?await runnerMachineCall<CodexLeftoverProcess[]>(runner,'codex.leftoverProcesses',{threadId:row.agent_session_uuid})
+        :await codexLeftoverProcesses(row.agent_session_uuid);
       if(!this.codexProcessAuditReady(turnId,row.session_id))return;
       // A sighting is held, not reported: most detached jobs (a build, a short wait) finish on
       // their own within minutes, and only one that keeps running needs anyone's attention.
@@ -1093,7 +1381,7 @@ export class SessionExecutionHost {
       if(remaining.length&&!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`codex-process-sighting:${turnId}`))
         recordSessionEvent({eventId:`codex-process-sighting:${turnId}`,sessionId:row.session_id,
         inputId:row.accepted_input_id,turnId,kind:'process_audit',
-        payload:{threadId:row.agent_session_uuid,processes:remaining,sightedAtMs:Date.now()}});
+        payload:{threadId:row.agent_session_uuid,runner,processes:remaining,sightedAtMs:Date.now()}});
       recordSessionEvent({eventId:`codex-process-audit-done:${turnId}`,sessionId:row.session_id,
         inputId:row.accepted_input_id,turnId,kind:'process_audit',payload:{threadId:row.agent_session_uuid,remaining:remaining.length}});
     } finally {this.codexProcessAudits.delete(turnId);}
@@ -1102,8 +1390,11 @@ export class SessionExecutionHost {
     const boundary=getRunningTurnDispatchBoundary(claim.turn_id,this.options.instanceId,claim.dispatch_attempt);
     if(!boundary)return false;
     const message=error instanceof Error?error.message:String(error);
-    if(!boundary.admissionIntended&&!boundary.unsafeSteering&&!boundary.durableArtifactActivity)
+    if(!boundary.admissionIntended&&!boundary.unsafeSteering&&!boundary.durableArtifactActivity){
+      if(error instanceof RunnerUnreachableError&&requeueOrphanedPreAdmissionTurn(claim.turn_id,this.options.instanceId,
+        Date.now()+providerRetryDelayMs(claim.dispatch_attempt)))return true;
       return failRunningTurnAndReleaseSession(claim.turn_id,this.options.instanceId,message);
+    }
     return parkRunningTurnAfterProviderFailure({turnId:claim.turn_id,ownerInstanceId:this.options.instanceId,dispatchAttempt:claim.dispatch_attempt,failureClass:'parked_ambiguous',error:message});
   }
   /**
@@ -1160,6 +1451,8 @@ export class SessionExecutionHost {
   }
   private async runModel(claim:QueuedTurnClaimRow,input:AcceptedSessionInput,session:SessionRow,steeringController:TurnSteeringController,closeSteering:(reason?:Error)=>void,cancellationController:TurnCancellationController,adoption?:Adoption) {
     const saved=savedTurn(claim.turn_id);
+    const metadata=sessionMetadata(session);
+    const runnerTarget=chooseTurnRunner(session,metadata);
     let boundAccount:{account:string;home:string|null}|null=adoption?.processor.account??null;
     if(!adoption&&saved?.saved_kind==='banked'&&!saved.saved_manual_start) {
       const usage=session.provider_id==='codex'||session.provider_id==='claude-code'||session.provider_id==='antigravity'
@@ -1168,7 +1461,7 @@ export class SessionExecutionHost {
         ?savedWorkAccountRooms(session.provider_id as ProviderKey|'antigravity',usage,Date.now(),
           session.provider_id==='claude-code'
             ?claim.provider_model??getClaudePreferredModel(session.id,claim.turn_id)??sessionMetadata(session).model??null
-            :undefined):[];
+            :undefined,runnerTarget):[];
       const choice=chooseAccountForTurn({accounts:rooms,
         bound:saved.saved_account?{account:saved.saved_account,reason:'spending-this-window'}:null,prefer:null});
       if(!saved.saved_account||saved.saved_boundary_ms===null||saved.saved_boundary_ms<=Date.now()
@@ -1179,9 +1472,20 @@ export class SessionExecutionHost {
       }
       boundAccount={account:choice.account,home:choice.home};
     }
-    const metadata=sessionMetadata(session);
     const channel=session.slack_channel_id?getChannel(session.slack_channel_id):null;
-    const cwd=this.cwd(session);
+    const outsideCodex=session.provider_id==='codex'&&metadata.outside===true;
+    // A runner-bound conversation resolves its stable project identity on that machine. Owner
+    // absolute cwd paths are retained for presentation only and never go into a remote manifest.
+    const onRunner=!adoption&&!!runnerTarget&&(session.provider_id==='claude-code'||session.provider_id==='antigravity'||outsideCodex);
+    if(onRunner&&providerRunnerForSession(session).status==='legacy'&&session.agent_session_uuid===null)
+      updateSessionMetadata(session.id,{providerRunner:runnerTarget});
+    let cwd=onRunner?'':this.cwd(session);
+    if(onRunner) {
+      const resolved=typeof metadata.projectName==='string'
+        ?await runnerMachineCall<{cwd:string}>(runnerTarget!,'projects.resolve',{project:metadata.projectName,path:metadata.projectPath??''})
+        :await runnerMachineCall<{cwd:string}>(runnerTarget!,'projects.default',{});
+      cwd=resolved.cwd;
+    }
     const body=JSON.parse(input.payload_json),payload=input.kind==='create'?body.firstInput:body;
     const attachments=this.owner.attachments(payload.attachments);
     // An adopted run continues exactly what was started: the same words, files and folders, never
@@ -1190,20 +1494,20 @@ export class SessionExecutionHost {
     const additionalDirs=adoption?[...adoption.processor.runAdditionalDirs as string[]]:[...(metadata.additionalDirs??parseAdditionalPaths(channel))];
     // A new Claude turn may run on a runner machine (RUNNERS.md, "Turns on a runner"): it then
     // carries its files' bytes and a run token, and nothing in it relies on this machine.
-    const onRunner=!adoption&&session.provider_id==='claude-code'&&turnRunsOnRunner(metadata);
+    const sharedCodex=!adoption&&session.provider_id==='codex'&&metadata.outside!==true&&executionHostsEnabled();
     const stagedFiles:{path:string;base64:string}[]=[];
     try {
       if(attachments.length&&metadata.interactionPolicy==='consultation-only')throw new ProviderCapabilityUnavailableError('attachments','Information-only consultation cannot read attached files.');
       if(!adoption&&attachments.length&&session.provider_id!=='chatgpt') {
         staging=await mkdtemp(join(tmpdir(),`concierge-native-${claim.turn_id}-`));additionalDirs.push(staging);
-        const transcripts=[];for(const attachment of attachments){const path=join(staging,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});if(onRunner)stagedFiles.push({path,base64:attachment.base64});prompt+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/'))transcripts.push(attachment.transcriptText?{slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const}:await transcribeAudioPath({slackFileId:attachment.id,title:attachment.name,path}));}const transcript=transcriptionPrompt(transcripts.filter(item=>!payload.text?.includes(item.text)));prompt+=transcript?`\n\n${transcript}`:'';
+        const transcripts=[];for(const attachment of attachments){const path=join(staging,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});if(onRunner)stagedFiles.push({path,base64:attachment.base64});prompt+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/')){if(attachment.transcriptText)transcripts.push({slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const});else{const heard=await attachedRecordingWords({slackFileId:attachment.id,title:attachment.name,path});if(heard.transcript)transcripts.push(heard.transcript);if(heard.note)prompt+=`\n${heard.note}`;}}}const transcript=transcriptionPrompt(transcripts.filter(item=>!payload.text?.includes(item.text)));prompt+=transcript?`\n\n${transcript}`:'';
       }
       const nativeContext=metadata.interactionPolicy!=='consultation-only'&&session.provider_id!=='chatgpt';
       let canvasApplicationContext:string|null=null;
       if(nativeContext&&!adoption) {
         const runId=nativeRunId(claim.turn_id);
         // His meanings for his own terms in these words, so no agent guesses at one (thesaurus-context.ts).
-        const thesaurus=await thesaurusTurnContext(prompt);
+        const thesaurus=await (this.options.thesaurusContext??thesaurusTurnContext)(prompt);
         canvasApplicationContext=canvasSpeechApplicationContext(input,runId,session.id);
         if(canvasApplicationContext)canvasApplicationContext=`${canvasApplicationContext}\n\n${thesaurus}`;
         else {
@@ -1214,6 +1518,16 @@ export class SessionExecutionHost {
         }
       }
       const replayPrompt=prompt,runAdditionalDirs=[...additionalDirs];
+      if(onRunner) {
+        for(let index=0;index<runAdditionalDirs.length;index++) {
+          const directory=runAdditionalDirs[index]!;
+          if(staging&&directory===staging)continue;
+          const remote=await runnerMachineCall<{cwd:string}>(runnerTarget!,'projects.locate',{location:directory}).catch(error=>{
+            throw new ProviderCapabilityUnavailableError('execution',`An additional folder cannot be resolved on runner ${runnerTarget}: ${error instanceof Error?error.message:String(error)}`);
+          });
+          runAdditionalDirs[index]=remote.cwd;
+        }
+      }
       let launchClaudeExecutable:string|undefined;
       const underlying=this.options.providers[session.provider_id];
       const provider:AgentProvider={id:session.provider_id,capabilities:underlying?.capabilities,
@@ -1221,7 +1535,7 @@ export class SessionExecutionHost {
         run:async prepared=>{
           // The claimed turn, its execution record and its input are on disk before any provider
           // (Claude, Codex or ChatGPT) is started or told anything.
-          await ledgerDurable();
+          await ledgerDurable({kind:'provider_input',id:input.id});
           // A run taken back after a restart takes messages again only once its history is rebuilt;
           // what the restart returned to the queue meanwhile goes into it then.
           if(adoption&&prepared.onSteeringReady){
@@ -1237,22 +1551,26 @@ export class SessionExecutionHost {
             ?{account:prepared.accountLabel,home:(session.provider_id==='codex'?prepared.environment?.CODEX_HOME:prepared.environment?.CLAUDE_CONFIG_DIR)??null}:null};
           if(outside) {
             if(!adoption&&!executionHostsEnabled())throw new ProviderCapabilityUnavailableError('execution','An outside run needs an execution host on this machine.');
-            actual=adoption?this.adoptedOutsideRun(prepared,adoption):this.outsideRun(prepared,claim,session,kept);
+            actual=adoption?this.adoptedOutsideRun(prepared,adoption):this.outsideRun(prepared,claim,session,kept,onRunner?runnerTarget!:undefined);
           } else if(session.provider_id==='antigravity') {
             if(!adoption&&!executionHostsEnabled())throw new ProviderCapabilityUnavailableError('execution','Google work requires a durable execution host on this machine.');
             actual=adoption?this.adoptedRun(prepared,adoption)
-              :this.hostedRun(prepared,claim,session,kept,antigravityExecutable());
+              :onRunner?this.hostedRun(prepared,claim,session,kept,'agy',stagedFiles,runnerTarget!)
+                :this.hostedRun(prepared,claim,session,kept,antigravityExecutable());
           } else if(onRunner) {
-            actual=this.hostedRun(prepared,claim,session,kept,process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE||'claude',stagedFiles);
+            actual=this.hostedRun(prepared,claim,session,kept,'claude',stagedFiles,runnerTarget!);
           } else if(session.provider_id==='claude-code'&&(adoption||executionHostsEnabled())) {
             actual=adoption?this.adoptedRun(prepared,adoption):this.hostedRun(prepared,claim,session,kept,launchClaudeExecutable);
           } else if(privateCodex) {
             actual=this.adoptedRun(prepared,adoption!,MANAGED_CODEX);
           } else if(session.provider_id==='codex'&&(adoption||executionHostsEnabled())) {
-            // Wait for the App Server before recording or admitting a new run: a restart during the
-            // wait then requeues the turn as unsent instead of adopting and parking it. A Stop
-            // requested meanwhile is held and applied when the wait ends.
-            if(!adoption)await codexAppServerReady();
+            // The readiness wait ended before provider admission. Keep admission and execution
+            // intent adjacent, with no await between them, so drain can requeue a waiting turn.
+            if(!adoption){
+              if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
+              if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
+                throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
+            }
             // The shared daemon already outlives Concierge; recording the run lets the next Concierge follow it.
             actual=adoption?this.adoptedCodexRun(prepared,adoption,session):this.trackedCodexRun(prepared,claim,session,kept);
           }
@@ -1279,6 +1597,7 @@ export class SessionExecutionHost {
               directory:'',coordinatorInstanceId:this.options.instanceId,supervisor:'capability-host',processor:{replayPrompt,runAdditionalDirs,staging:null,account:null}});
             return this.capabilityClient.createChatGptProvider({run:{operationId:input.id,sessionId:`concierge:${session.id}`,inputId:input.id,runId:admission.runId},admission:admission as ChatGptAdmission,attachments:attachments.map(({transcriptText,...file})=>file),
               onEvidence:evidence=>this.capabilityEvidence(input,claim.turn_id,evidence),onNativeBinding:binding=>updateSessionMetadata(session.id,{nativeBinding:binding}),
+              onConversationTitle:title=>adoptProviderConversationTitle(session.id,title),
               ...(adoption?{follow:{onLive:()=>{recordLiveAdoption(adoption.execution.execution_id);
                 log('info','chatgpt_run_followed',{turn_id:claim.turn_id,execution_id:adoption.execution.execution_id,still_running:true});}}}:{})}).run(actual)
               .then(result=>{
@@ -1290,7 +1609,13 @@ export class SessionExecutionHost {
                 return result;
               },error=>{noteChatgptChannelFailure(error,session.id,claim.dispatch_attempt);throw error;});
           }
-          if(outside)return runOutsideCodexTurn(actual as OutsideRun);
+          if(outside){
+            // Older owners advertised steering for outside CLI turns, whose one-shot input has no
+            // receiver. Adoption first marks those attempts unsent; bring each exact input back
+            // to this session's FIFO before following the independent process again.
+            this.pullWaitingInputs(session.id);
+            return runOutsideCodexTurn(actual as OutsideRun);
+          }
           if(!underlying)throw new ProviderCapabilityUnavailableError('send',`${session.provider_id} is unavailable; no provider substitution was attempted.`);
           return underlying.run(actual);
         }};
@@ -1305,6 +1630,12 @@ export class SessionExecutionHost {
       interactionPolicy:metadata.interactionPolicy??'standard',
       ownerInstanceId:this.options.instanceId,dispatchAttempt:claim.dispatch_attempt,steeringController,closeSteering,cancellationController,
       providerEnvironment:{CONCIERGE_SOURCE_INPUT_ID:input.id,CONCIERGE_SOURCE_RUN_ID:nativeRunId(claim.turn_id),
+        // Commit provenance under names nothing else reads, so the Mac's SSH to the server
+        // can carry them and a commit made there still names its real session.
+        CONCIERGE_COMMIT_SESSION:commitSessionIdentity(session.id),CONCIERGE_COMMIT_INPUT:input.id,
+        ...(onRunner?{CONCIERGE_PROVIDER_RUNNER:runnerTarget!}:{
+          CONCIERGE_ROUTER_ACTIONS:installedRouterActionsPath(),
+          CONCIERGE_CODEX_CLI:Bun.which('codex')||join(homedir(),'.local','bin','codex')}),
         CONCIERGE_MAC_NEED:process.platform==='darwin'&&typeof payload.machineNeed?.kind==='string'?payload.machineNeed.kind:'',
         // A runner's agents can reach this owner only over its network entrance, with this run's token.
         ...(onRunner?agentRunEnvironment({turnId:claim.turn_id,sessionId:session.id},process.env,{network:true}):{})},
@@ -1327,7 +1658,11 @@ export class SessionExecutionHost {
             }
             if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
               throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
-          }}:{}),
+          }}
+        :sharedCodex?{beforeProviderAdmission:()=>{
+          if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
+          return waitForCodexAppServerOrDrain(codexAppServerReady(),this.drainStarted,()=>this.draining);
+        }}:{}),
       services:{bindProviderSession:(sessionId,provider,uuid)=>{
         bindSessionProvider(sessionId,provider,uuid);
         // An outside run's thread lives in its own CLI process; the shared App Server must not load it.
@@ -1345,14 +1680,24 @@ export class SessionExecutionHost {
    */
   private hostedRun(prepared:Parameters<AgentProvider['run']>[0],claim:QueuedTurnClaimRow,session:SessionRow,
     kept:{replayPrompt:string;runAdditionalDirs:string[];staging:string|null;account:{account:string;home:string|null}|null},executable?:string,
-    runnerFiles?:{path:string;base64:string}[]):Parameters<AgentProvider['run']>[0] {
+    runnerFiles?:HostRunnerFile[],targetRunner?:string):Parameters<AgentProvider['run']>[0] {
     const executionId=newExecutionId(),stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!);
+    let runnerPrepared=prepared;
+    if(targetRunner) {
+      const additionalDirs=[...(prepared.additionalDirs??[])];
+      for(let index=0;index<additionalDirs.length;index++)if(/(?:^|\/)concierge-turn-\d+-attachments-[^/]+$/.test(additionalDirs[index]!)) {
+        additionalDirs[index]=`@runner-state/attachments/${executionId}`;
+        runnerFiles??=[];
+        runnerFiles.push({scope:'runner-state',relativePath:`attachments/${executionId}`,base64:'',kind:'directory'});
+      }
+      runnerPrepared={...prepared,additionalDirs};
+    }
     const {onProgress,onProviderMessage,onProviderThreadStarted,onProviderTurnStarted,onSteeringReady,onCancellationReady,onProviderTerminal,
-      onBackgroundWait,onBackgroundReportMissing,onBackgroundReleaseReady,onProviderRetry,onRetryRestartReady,onInputAcknowledged,onPreferredModel,...data}=prepared as any;
+      onBackgroundWait,onBackgroundReportMissing,onBackgroundReleaseReady,onProviderRetry,onRetryRestartReady,onInputAcknowledged,onPreferredModel,...data}=runnerPrepared as any;
     retainExecutionIntent({executionId,turnId:claim.turn_id,dispatchAttempt:claim.dispatch_attempt,sessionId:session.id,provider:session.provider_id,
       directory:runnerFiles?'':executionDirectory(stateDir,executionId),coordinatorInstanceId:this.options.instanceId,processor:{...kept,run:data},
       ...(runnerFiles?{supervisor:RUNNER_SUPERVISOR}:{})});
-    return {...prepared,transport:this.hostedTransport('launch',executionId,stateDir,executable,undefined,runnerFiles)} as any;
+    return {...runnerPrepared,transport:this.hostedTransport('launch',executionId,stateDir,executable,undefined,runnerFiles,targetRunner)} as any;
   }
   private adoptedRun(prepared:Parameters<AgentProvider['run']>[0],adoption:Adoption,executable?:string):Parameters<AgentProvider['run']>[0] {
     const stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!);
@@ -1386,19 +1731,24 @@ export class SessionExecutionHost {
    * (outside-codex.ts). Its opening words go in a private file beside the state, read once by the CLI.
    */
   private outsideRun(prepared:Parameters<AgentProvider['run']>[0],claim:QueuedTurnClaimRow,session:SessionRow,
-    kept:{replayPrompt:string;runAdditionalDirs:string[];staging:string|null;account:{account:string;home:string|null}|null}):Parameters<AgentProvider['run']>[0] {
+    kept:{replayPrompt:string;runAdditionalDirs:string[];staging:string|null;account:{account:string;home:string|null}|null},targetRunner?:string):Parameters<AgentProvider['run']>[0] {
     const executionId=newExecutionId(),stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!);
-    const outside={...prepared,promptFile:join(stateDir,'outside-prompts',executionId),codexExecutable:MANAGED_CODEX};
+    const runnerFiles:HostRunnerFile[]|undefined=targetRunner?[{scope:'runner-state',relativePath:`outside-prompts/${executionId}`,
+      base64:Buffer.from(outsideCodexPromptContent(prepared)).toString('base64')}]:undefined;
+    const outside={...prepared,promptFile:targetRunner?`@runner-state/outside-prompts/${executionId}`:join(stateDir,'outside-prompts',executionId),
+      ...(targetRunner?{runnerPromptFile:true}:{}),codexExecutable:MANAGED_CODEX};
     const {onProgress,onProviderMessage,onProviderThreadStarted,onProviderTurnStarted,onSteeringReady,onCancellationReady,onProviderTerminal,
       onBackgroundWait,onBackgroundReportMissing,onBackgroundReleaseReady,onProviderRetry,onRetryRestartReady,onInputAcknowledged,onPreferredModel,...data}=outside as any;
     retainExecutionIntent({executionId,turnId:claim.turn_id,dispatchAttempt:claim.dispatch_attempt,sessionId:session.id,provider:'codex',
-      directory:executionDirectory(stateDir,executionId),coordinatorInstanceId:this.options.instanceId,processor:{...kept,run:data}});
-    return {...outside,transport:this.hostedTransport('launch',executionId,stateDir,'/bin/sh',{inactivityMs:null})} as any;
+      directory:targetRunner?'':executionDirectory(stateDir,executionId),coordinatorInstanceId:this.options.instanceId,
+      ...(targetRunner?{supervisor:RUNNER_SUPERVISOR}:{}),processor:{...kept,run:data}});
+    return {...outside,transport:this.hostedTransport('launch',executionId,stateDir,'/bin/sh',{inactivityMs:null},runnerFiles,targetRunner)} as any;
   }
   private adoptedOutsideRun(prepared:Parameters<AgentProvider['run']>[0],adoption:Adoption):Parameters<AgentProvider['run']>[0] {
     const stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!);
     return {...prepared,...adoption.processor.run,adopted:true,
-      transport:this.hostedTransport(adoption.mode,adoption.execution.execution_id,stateDir,'/bin/sh',{inactivityMs:null})} as any;
+      transport:this.hostedTransport(adoption.mode,adoption.execution.execution_id,stateDir,'/bin/sh',{inactivityMs:null},
+        adoption.execution.supervisor===RUNNER_SUPERVISOR?[]:undefined)} as any;
   }
   /** Follow the daemon's turn by its exact thread and turn; never start one (design §4.2). */
   private adoptedCodexRun(prepared:Parameters<AgentProvider['run']>[0],adoption:Adoption,session:SessionRow):Parameters<AgentProvider['run']>[0] {
@@ -1415,13 +1765,13 @@ export class SessionExecutionHost {
   }
   /** `runnerFiles` places the host on a runner (an empty list when taking a runner's run back). */
   private hostedTransport(mode:'launch'|'adopt'|'adopt-record',executionId:string,stateDir:string,executable?:string,timeouts?:{inactivityMs:number|null},
-    runnerFiles?:{path:string;base64:string}[]) {
+    runnerFiles?:HostRunnerFile[],targetRunner?:string) {
     // From the owner, not the run's environment: an information-only consultation runs without it.
     const routerBotDir=runnerFiles?undefined:providerOwnerEnvironment().CONCIERGE_ROUTER_BOT_DIR;
     // Only a launch resolves the CLI. On 2026-11-04 Claude Code was reinstalled during a Concierge
     // restart; adoption looked it up, found no `claude` and parked 25 agents that were still running.
     return new HostedClaudeCodeTransport({mode,executionId,stateDir,routerBotDir,
-      ...(runnerFiles?{access:new RunnerHostAccess(executionId)}:{}),
+      ...(runnerFiles?{access:new RunnerHostAccess(executionId,mode==='launch'?this.options.instanceId:undefined,targetRunner)}:{}),
       executable:executable??(mode==='launch'?claudeExecutable():undefined),
       onLaunched:launch=>recordExecutionLaunched(executionId,launch),
       onAttached:status=>{
@@ -1456,9 +1806,13 @@ export class SessionExecutionHost {
     try {
       const pin=readNativeForkPin(operation),provider=this.options.providers[pin.provider];
       if(session.provider_id!==pin.provider||session.agent_session_uuid!==pin.parentSessionUUID||session.binding_generation!==pin.bindingGeneration||sessionMetadata(session).interactionPolicy==='consultation-only'||!provider?.capabilities?.fork||!provider.history)throw new ProviderCapabilityUnavailableError('fork','The pinned native fork capability or parent binding is unavailable.');
+      const metadata=sessionMetadata(session),runnerBinding=providerRunnerForSession(session);
+      const runner=runnerBinding.status==='bound'?runnerBinding.runner:null;
       let cursor:string|null=null,found=false;const cursors=new Set<string>();
       do {
-        const page=await provider.history({sessionUuid:pin.parentSessionUUID,cwd:this.cwd(session),cursor,limit:100});
+        const page=await provider.history({sessionUuid:pin.parentSessionUUID,cwd:this.cwd(session),cursor,limit:100,
+          ...(runner?{runner}:{}),
+          ...(typeof metadata.providerAccount==='string'?{account:metadata.providerAccount}:{})});
         found=page.messages.some(message=>provider.capabilities!.forkBoundary==='message'?message.id===pin.boundary:message.turnId===pin.boundary);
         if(found)break;
         cursor=page.nextCursor;
@@ -1471,13 +1825,47 @@ export class SessionExecutionHost {
       const stop=db.query('SELECT stop_requested_at FROM turns WHERE id=?').get(claim.turn_id) as {stop_requested_at:string|null}|null;
       if(stop?.stop_requested_at){cancelRunningTurnAndReleaseSession(claim.turn_id,this.options.instanceId,'Stopped before native fork admission.');return;}
       const channel=current.slack_channel_id?getChannel(current.slack_channel_id):null;
-      const retained={...pin,cwd:this.cwd(current),additionalDirs:sessionMetadata(current).additionalDirs??parseAdditionalPaths(channel),metadata:sessionMetadata(current),threadSource:`concierge-native-fork:${operation.id}`};
+      const additionalDirs=metadata.additionalDirs??parseAdditionalPaths(channel);
+      const retained:any={...pin,cwd:this.cwd(current),additionalDirs,metadata,threadSource:`concierge-native-fork:${operation.id}`};
+      let remoteCall:Record<string,unknown>|null=null;
+      if(runner) {
+        let account=typeof metadata.providerAccount==='string'?metadata.providerAccount:null;
+        if(account){
+          const validation=await runnerMachineCall<any>(runner,'accounts.validate',{provider:pin.provider,account});
+          if(validation?.available!==true)throw new ProviderCapabilityUnavailableError('fork','The conversation’s recorded provider account is not uniquely available on its runner.');
+        }else{
+          const discovery=await runnerMachineCall<any>(runner,'accounts.transcript',{provider:pin.provider,account:null,nativeId:pin.parentSessionUUID});
+          if(discovery?.resolution!=='unique'||typeof discovery.account!=='string'||!discovery.account)
+            throw new ProviderCapabilityUnavailableError('fork','This older conversation does not identify one unique provider account on its runner.');
+          account=discovery.account;
+        }
+        let location:{project:string|null;path:string};
+        if(typeof metadata.projectName==='string')location={project:metadata.projectName,path:typeof metadata.projectPath==='string'?metadata.projectPath:''};
+        else {
+          const resolved=await resolveRunnerProjectLocation(runner,{project:metadata.project,cwd:metadata.cwd??pin.cwd});
+          location={project:resolved.project,path:resolved.path};
+        }
+        const additionalLocations=await Promise.all(additionalDirs.map(async directory=>{
+          const resolved=await runnerMachineCall<any>(runner,'projects.locate',{location:directory});
+          if(typeof resolved?.project!=='string'||typeof resolved?.path!=='string')
+            throw new ProviderCapabilityUnavailableError('fork','An additional project folder cannot be resolved on the conversation’s runner.');
+          return {project:resolved.project,path:resolved.path};
+        }));
+        retained.runner=runner;retained.account=account;retained.location=location;retained.additionalLocations=additionalLocations;
+        remoteCall={provider:pin.provider,account,sessionUUID:pin.parentSessionUUID,boundary:pin.boundary,
+          threadSource:retained.threadSource,location,additionalLocations};
+      }
       db.transaction(()=>{
         if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))throw new Error('Native fork control lost its owner.');
         db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({...JSON.parse(operation.receipt_json!),fork:retained}),operation.id);
       })();
       effectIntended=true;
-      const result=await provider.fork({sessionUUID:pin.parentSessionUUID,cwd:retained.cwd,additionalDirs:retained.additionalDirs,lastTurnId:pin.boundary,threadSource:retained.threadSource,interactionPolicy:'standard'});
+      const remoteResult=remoteCall?await runnerMachineCall<any>(runner!,'provider-fork.execute',remoteCall,120_000):null;
+      if(remoteResult?.status==='rejected')throw Object.assign(new Error(String(remoteResult.reason)),{outcome:'rejected'});
+      const result:RunResult=remoteCall
+        ?{text:'Fork created.',sessionUUID:remoteResult?.sessionUUID,toolsUsed:[],providerTurnId:null}
+        :await provider.fork({sessionUUID:pin.parentSessionUUID,cwd:retained.cwd,additionalDirs:retained.additionalDirs,lastTurnId:pin.boundary,threadSource:retained.threadSource,interactionPolicy:'standard'});
+      if(typeof result.sessionUUID!=='string'||result.sessionUUID===pin.parentSessionUUID)throw new Error('The runner did not return a distinct provider fork identity.');
       completeNativeFork(operation.id,this.options.instanceId,result);
     } catch(error) {
       const reason=error instanceof Error?error.message:String(error);
@@ -1570,7 +1958,11 @@ export class SessionExecutionHost {
     if(operation.kind==='fork') {
       const pin=readNativeForkPin(operation);
       if(pin.provider!=='codex'||!pin.threadSource||!pin.cwd)return;
-      const matches=await (this.options.findForks?this.options.findForks(pin):(await import('./codex')).findCodexForksByThreadSource({sourceSessionUUID:pin.parentSessionUUID,threadSource:pin.threadSource,cwd:pin.cwd}));
+      const retained=pin as NativeForkPin&{runner?:string;account?:string;location?:{project:string|null;path:string}};
+      const matches=retained.runner&&retained.account&&retained.location
+        ?(await runnerMachineCall<any>(retained.runner,'provider-fork.find',{provider:'codex',account:retained.account,sessionUUID:pin.parentSessionUUID,
+          threadSource:pin.threadSource,location:retained.location},120_000))?.sessionUUIDs??[]
+        :await (this.options.findForks?this.options.findForks(pin):(await import('./codex')).findCodexForksByThreadSource({sourceSessionUUID:pin.parentSessionUUID,threadSource:pin.threadSource,cwd:pin.cwd}));
       if(matches.length!==1||matches[0]===pin.parentSessionUUID)return;
       const result:RunResult={text:'Fork recovered from exact native provenance.',sessionUUID:matches[0]!,toolsUsed:[],providerTurnId:null};
       db.transaction(()=>{if(this.claimResult(turn,result))completeNativeFork(operation.id,this.options.instanceId,result);})();
@@ -1649,8 +2041,8 @@ export class SessionExecutionHost {
  * cannot send the machine back. Among accounts with room in every window, the least used wins.
  */
 function codexAccountWithRoomWhileInUseIsSpent():{label:string;source:string}|null{
-  const inUse=currentAccount('codex')?.label;
   const usage=storedUsage('codex');
+  const inUse=currentAccount('codex')?.label??(providerRunnerTarget('codex')?usage?.accounts.find(item=>item.current)?.label:null);
   if(!inUse||!usage)return null;
   const current=usage.accounts.find(account=>account.label===inUse);
   const availability=accountAvailability('codex');
@@ -1662,6 +2054,10 @@ function codexAccountWithRoomWhileInUseIsSpent():{label:string;source:string}|nu
   const room=usage.accounts.filter(account=>account.label!==inUse&&available.has(account.label)&&!account.signedOut
     &&(includedRoom(account)||!selected.hasRoom))
     .sort((a,b)=>Number(includedRoom(b))-Number(includedRoom(a))||used(a)-used(b));
+  if(providerRunnerTarget('codex')){
+    const account=room[0];
+    return account?{label:account.label,source:account.label}:null;
+  }
   const profiles=listProfiles('codex');
   for(const account of room){
     const profile=profiles.find(each=>each.label===account.label);
@@ -1680,4 +2076,44 @@ export function turnRunsOnRunner(metadata:{onRunner?:unknown},mode=process.env.C
   if(mode==='all')return true;
   if(mode==='off')return false;
   return metadata.onRunner===true;
+}
+
+/** Stable machine for this provider conversation; a legacy binding is never guessed from today's config. */
+export function chooseTurnRunner(session:SessionRow,metadata=sessionMetadata(session)):string|null {
+  const saved=providerRunnerForSession(session);
+  if(session.provider_id==='codex'){
+    const configured=codexRelayRunner();
+    if(saved.status==='bound'&&saved.runner!==configured)
+      throw new Error('This Codex conversation is bound to a different runner than the configured App Server.');
+    return saved.status==='bound'?saved.runner:configured;
+  }
+  if(saved.status==='bound')return saved.runner;
+  if(session.provider_id!=='claude-code'&&session.provider_id!=='antigravity')return null;
+  if(session.agent_session_uuid){
+    // A bound native conversation keeps the machine that last ran it. Current deployment
+    // settings cannot recover that fact: use the durable execution and lease that actually
+    // launched its latest turn, and refuse if that evidence is incomplete or ambiguous.
+    const prior=lastLaunchedConversationHome(db,session.id,session.provider_id);
+    if(!prior){
+      // Older local copies predate the explicit local binding. A fork inherited its parent's
+      // machine; a local resurrection copied the transcript into this machine's provider home.
+      if(metadata.lineage&&session.parent_session_id){
+        const parent=getSessionById(session.parent_session_id);
+        if(parent?.provider_id===session.provider_id)return chooseTurnRunner(parent);
+      }
+      if(metadata.resurrection)return null;
+      throw new Error(`This ${session.provider_id} conversation has no saved machine binding and no exact execution record; refusing to guess its home.`);
+    }
+    if(prior.supervisor===RUNNER_SUPERVISOR){
+      if(!prior.runner)throw new Error(`This ${session.provider_id} conversation ran on a runner, but its exact runner lease is unavailable.`);
+      return prior.runner;
+    }
+    return null;
+  }
+  // Claude and Google share one placement setting: a machine without runners (the Mac peer's
+  // default `marked`) runs unmarked work itself instead of refusing for a missing target.
+  if(!turnRunsOnRunner(metadata))return null;
+  const selected=process.env.CONCIERGE_TURN_RUNNER?.trim()||codexRelayRunner();
+  if(!selected)throw new Error(`${session.provider_id} runner placement is enabled, but no runner target is configured.`);
+  return selected;
 }

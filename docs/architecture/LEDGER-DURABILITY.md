@@ -44,6 +44,13 @@ Linux only) changes where the disk is waited for, not what is written or when it
 - `ledgerDurable()` (`ledger-durability-barrier.ts`) resolves once every commit made before the
   call is synced. Waiters resolve in call order. It samples the connection's `total_changes()` in a
   microtask, after any enclosing synchronous transaction has committed.
+- A slow-sync record joins up to 16 labelled released waiters to that successful sync. It keeps
+  the committed change target sampled by the barrier, sample time, the sync already in flight
+  when a later target arrived, the selected sync ID, worker notification time and owner delivery
+  time. The owner socket supplies its gateway admission ID; provider launch supplies its exact
+  accepted input ID. Other callers remain unlabelled. IDs are bounded, and no request body or
+  dialogue is logged. The record gives a caller-to-barrier timeline, not the filesystem work
+  responsible for a slow `fdatasync`; the host recorder owns that separate attribution.
 - **Nothing leaves the process before the rows it rests on are durable.** The barrier sits on the
   owner socket's non-GET answers (command receipts, for the gateway, Thinkering and router
   commands alike), on a provider run's start (Claude, Codex, ChatGPT), on every command to a Claude
@@ -261,10 +268,25 @@ rebuildable index) commits with `synchronous=OFF` and is rebuilt from the ledger
 opened after a crash; a power loss can leave it missing recent passages, which only narrows search
 until those passages are indexed again.
 
+Every ledger connection is opened through one wrapper that sets SQLite's lock wait before its
+first statement (five seconds; thirty for the service's pre-start recovery, which runs while
+nothing serves). A process that ends after a crash, or a retiring coordinator, can still hold
+the ledger for a few seconds; without the wait the next start failed at once with
+`database is locked` (2026-11-11: three failed starts after a crash, see
+`docs/incidents/2026-11-11-restart-after-crash-failed-on-ledger-lock.md`).
+
 ## Signals
 
 - `GET /supervisor/ping` → `ledgerDurability`: mode, sync count, slow syncs, slowest and last sync
-  time, waiters, age of the sync in flight, unsynced changes, checkpoint counts. This is database
-  completion latency, kept apart from the owner's loop lag (`owner_event_loop_lag`).
+  time, last worker-queue, `fdatasync` and worker-to-owner delivery times, waiters, age of the sync
+  in flight, unsynced changes, checkpoint counts. The owner and worker timestamp messages on a
+  shared epoch to split a sync request into queueing before the worker receives it, the syscall itself,
+  and delivery after the worker posts its reply. Delivery includes time spent waiting for the
+  owner's event loop; compare it with `owner_event_loop_lag.storage` and the gateway's
+  `foreground_owner_dependency_delayed` header time to distinguish disk sync from owner admission.
+  Negative cross-thread intervals, which can result from a clock adjustment, are reported as
+  unknown. The remaining worker time includes the WAL-inode check. These timings change observation only:
+  the owner still releases waiters only after the worker reports a successful sync.
 - `ledger_durability_slow_sync` (warn, sync ≥ 1 s), `ledger_checkpoint` (each checkpoint, with
-  bytes, pressure and SQLite's result), `ledger_durability_started`, `ledger_durability_lost`, `ledger_durability_thread_failed`, `ledger_durability_sync_stalled`.
+  bytes, pressure and SQLite's result), `ledger_durability_started`, `ledger_durability_lost`, `ledger_durability_thread_failed`, `ledger_durability_sync_stalled`. A slow sync includes the same
+  queue, syscall and delivery fields alongside its established total and worker time.

@@ -2,7 +2,7 @@ import {closeModuleLoadStorage} from './owner-task-labels-install';
 import { App, LogLevel } from "@slack/bolt";
 import { recordModuleLoadStep, runStartupPhase, runStartupStep } from './startup-phase';
 import { RoutedRequestCoordinator } from "./routed-requests";
-import { initializeSessionTitle } from "./session-inputs";
+import { backfillHeldInputReceiptEvents, initializeSessionTitle } from "./session-inputs";
 import {backfillResultAnsweredByPost} from './session-inbox';
 import { startRoutedRequestApi } from "./routed-request-api";
 import { peerSettings } from "./session-peers";
@@ -12,11 +12,12 @@ import { RETRY_POLICIES } from './retry-policies';
 import { SessionCommunicationCoordinator } from './session-communication';
 import { db, getTurnDependencies, recoverRoutedInputClaim } from "./state";
 import { prepareSavedWorkForClaims } from "./saved-work";
+import { createBankedUpkeep } from "./banked-upkeep";
 import toml from "@iarna/toml";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeSync } from "node:fs";
 import { isHintCommand, renderCommandHints } from "./command-hints";
 import {
   addDir,
@@ -246,9 +247,11 @@ import { beginAgentProgressMessages, createProgressMessageClient, hasAgentProgre
 import { handleAgentSessionStop } from "./agent-session-stop";
 import { GHOST_TURN_INTERRUPT_AGE_MS, reconcileRecoverableTurns, sweepGhostRunningTurns } from "./turn-recovery";
 import { claimAdoptableExecutions, hostedTurns, watchHeldExecution, type Adoption } from "./executions";
+import { beginRunnerTurnDrain } from "./runner-host-access";
 import { interruptOrphanedTurn, observeExecutionChanges } from "./state";
 import {recoverExhaustedClaudeWork} from './provider-exhaustion-recovery';
 import {maybeStartInboxProviderFailover} from './inbox-provider-failover';
+import {moveHeldWork} from './held-work-failover';
 import {reconcileCoveredTasteRequest,recoverOctoberBudgetPauses} from './incident-budget-pause-recovery';
 import {
   ensureChannelList,
@@ -352,7 +355,7 @@ import { startMachineWatchWorker,wakeWatchWorker } from './watches';
 import {recordSessionEvent as recordOwnerEvent,recoverProviderRefusalContinuations} from './session-inputs';
 import {refreshClaudeAccount} from './provider-accounts';
 import {installSessionProjection} from './session-projection';
-import {expireUnreadableReadingItems,fileServiceNotices,keepThreadsCurrent,migrateInboxAttention,migrateInboxTopics,reconcileCarriedClosures,reconcileForwardedFinalAnswers,repairOctober21RepeatedAnswer,repairNovember4RepeatedThreadNotices,retireTimedRequestPosts,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
+import {expireUnreadableReadingItems,fileServiceNotices,settleReadInboxAttention,keepThreadsCurrent,migrateInboxAttention,migrateInboxTopics,reconcileCarriedClosures,reconcileForwardedFinalAnswers,repairOctober21RepeatedAnswer,repairNovember4RepeatedThreadNotices,retireRecoveredBookkeepingRequests,retireTimedRequestPosts,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
 import {resolveRetryNotices} from './retry-breaker-notice';
 import {ownerEventMaxSequence,runStartupCatchUp,runStartupSweep,scheduleSessionPurposeRepair,startDeferredStartupRepairs} from './startup-repairs';
 import {CodexSessionObserver} from './codex-session-observer';
@@ -442,6 +445,20 @@ function detectedRuntimeGitSha() {
 
 const runtimeGitSha = detectedRuntimeGitSha();
 let draining = false;
+// An error nothing caught ends the owner, as it always has; first it records what it was.
+// On 2026-11-11 at 05:33:45 UTC the owner exited with status 1 and Bun printed no error at all,
+// so the crash could not be named (a rejection with no value, as the old Slack socket gives,
+// prints nothing). The drain installs its own ignoring handlers, so these stand aside then.
+for (const kind of ["unhandledRejection", "uncaughtException"] as const) {
+  process.on(kind, (reason: unknown) => {
+    if (draining) return;
+    const fields = reason instanceof Error ? errorFields(reason)
+      : { reason_type: reason === null ? "null" : typeof reason, reason: String(reason).slice(0, 500) };
+    // Written synchronously too: the log stream may not flush before the exit below.
+    try { writeSync(2, `${JSON.stringify({ ts: new Date().toISOString(), level: "error", event: "owner_crashed_unhandled", kind, ...fields })}\n`); } catch { /* exit regardless */ }
+    process.exit(1);
+  });
+}
 let serviceOnline = false;
 let activeTurnCount = 0;
 let activeInputHandlerCount = 0;
@@ -500,6 +517,8 @@ function consumeParkedResumeGrant(sessionId: number) {
     });
   }
 }
+// Saved-work upkeep (banked admission, quiet cutoff, expiry alerts); shared with session-runtime.ts.
+const bankedUpkeep = createBankedUpkeep({ registry: () => activeTurnDispatch });
 const activeTurnDispatch = new ActiveTurnDispatchRegistry({
   onStarted: () => { activeTurnCount += 1; },
   onSettled: (turnId) => {
@@ -535,6 +554,8 @@ bindOwner();
 for(const held of recoverProviderRefusalContinuations())noticeTurnContinuation({
   provider:held.provider,model:null,turnId:held.turnId,reason:held.reason},recordOwnerEvent);
 runStartupStep('session_projection', () => installSessionProjection(sessionExecutionHost.owner));
+try {log('info','held_input_receipt_events_backfilled',{count:runStartupStep('held_input_receipt_events',backfillHeldInputReceiptEvents)});}
+catch(error) {log('error','held_input_receipt_event_backfill_failed',errorFields(error));}
 // Every startup step below is timed and named (runStartupStep). Sweeps over history are catch-ups
 // with a high-water mark: their remaining work runs page by page after Concierge is online
 // (startup-repairs.ts). File-authored purposes finish before the generic fallback begins.
@@ -544,6 +565,7 @@ catch(error) {log('error','session_purposes_fill_failed',errorFields(error));}
 // Production starts through this path, so the one-time topics migration runs here too; it is
 // guarded by its own event and does nothing once it has run.
 try {runStartupStep('inbox_topics_migration',()=>migrateInboxTopics());} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
+try {runStartupStep('inbox_bookkeeping_repair',()=>retireRecoveredBookkeepingRequests());} catch(error) {log('error','inbox_bookkeeping_repair_failed',errorFields(error));}
 try {runStartupStep('forwarded_final_answers',()=>runStartupCatchUp('forwarded-final-answers',ownerEventMaxSequence,
   (afterSequence,throughSequence)=>reconcileForwardedFinalAnswers(undefined,{afterSequence,throughSequence}),20_000));}
 catch(error) {log('error','inbox_request_answer_reconciliation_failed',errorFields(error));}
@@ -561,6 +583,8 @@ catch(error) {log('error','repeated_thread_notice_repair_failed',errorFields(err
 try {runStartupStep('inbox_attention_migration',()=>migrateInboxAttention());} catch(error) {log('error','inbox_attention_migration_failed',errorFields(error));}
 // A reading item with nothing to read is ended with its reason; new ones are refused at the door.
 try {runStartupStep('unreadable_reading_items',()=>expireUnreadableReadingItems());} catch(error) {log('error','inbox_unreadable_reading_items_failed',errorFields(error));}
+// Reading items his read or seen mark already passed, and repeats of one capture's answer, end here.
+try {runStartupStep('read_inbox_attention',()=>settleReadInboxAttention());} catch(error) {log('error','inbox_read_attention_settle_failed',errorFields(error));}
 // A service notice has a thread from the moment it exists; those published while this process
 // was down, or by another process, get theirs here.
 try {runStartupStep('service_notices',()=>fileServiceNotices());} catch(error) {log('error','inbox_service_notices_failed',errorFields(error));}
@@ -605,7 +629,7 @@ function turnsThatEndWithThisProcess() {
 // A run that gains independent custody (its host is now recorded) no longer ends with this
 // process; a shutdown waiting on it re-evaluates at once rather than at the next settlement.
 // The queue also re-reads admission here: a Codex restart releases its admission hold this way.
-observeExecutionChanges(() => { resolveDrainIfIdle(); if(sessionTurnQueue)recoverExhaustedClaudeWork(); sessionTurnQueue?.wake(); });
+observeExecutionChanges(() => { resolveDrainIfIdle(); if(sessionTurnQueue){bankedUpkeep.onExecutionChange();recoverExhaustedClaudeWork();} sessionTurnQueue?.wake(); });
 
 function resolveDrainIfIdle() {
   // Checked first: execution changes call this often, and only a waiting shutdown needs the count.
@@ -2482,6 +2506,12 @@ async function runClaimedTurn(input: ClaimedTurnInput): Promise<TurnRunOutcome> 
 }
 
 async function runPersistedQueuedTurn(claim: QueuedTurnClaimRow) {
+  bankedUpkeep.started(claim.turn_id);
+  try { return await runPersistedQueuedTurnBody(claim); }
+  finally { bankedUpkeep.settled(claim.turn_id); }
+}
+
+async function runPersistedQueuedTurnBody(claim: QueuedTurnClaimRow) {
   if(claim.turn_kind==='native')return sessionExecutionHost.run(claim);
   const outcome = await executePersistedQueuedTurn(claim, {
     buildInput: (queuedClaim) => buildQueuedTurnInput(queuedClaim, {
@@ -3792,6 +3822,7 @@ async function reconcilePriorInstanceTurns() {
   // their turns as orphaned, and continue under the same run (design 2026-10-07 §3.1 step 4).
   const runAdopted = (adoption: Adoption) => {
     adoptedTurnIds.add(adoption.claim.turn_id);
+    bankedUpkeep.started(adoption.claim.turn_id);
     // A Codex turn is already held by its App Server. Keep its adopted identity through recovery,
     // but do not contact that server until it has answered (after the request socket and any
     // runner relay channel exist).
@@ -3799,7 +3830,7 @@ async function reconcilePriorInstanceTurns() {
     void ready.then(() => sessionExecutionHost.run(adoption.claim, adoption)).catch((error) => {
       log("error", "execution_adoption_failed", { turn_id: adoption.claim.turn_id, execution_id: adoption.execution.execution_id, ...errorFields(error) });
       settleClaimedTurnSetupFailure(adoption.claim, error);
-    }).finally(() => { adoptedTurnIds.delete(adoption.claim.turn_id); sessionTurnQueue?.wake(); });
+    }).finally(() => { adoptedTurnIds.delete(adoption.claim.turn_id); bankedUpkeep.settled(adoption.claim.turn_id); sessionTurnQueue?.wake(); });
   };
   const executions = await claimAdoptableExecutions({ instanceId, isOwnerAlive: isProcessIdentityAlive });
   for (const adoption of executions.adopted) runAdopted(adoption);
@@ -3819,6 +3850,8 @@ async function reconcilePriorInstanceTurns() {
   }, 60_000);
   parkedRecovery.unref?.();
   const recoveredSteering = recoverUnsettledSteeringMessages(isProcessIdentityAlive);
+  sessionExecutionHost.recoverOutsideWaitingInputs();
+  sessionExecutionHost.recoverAntigravityUnsentInputs();
   if (recoveredSteering.failed > 0 || recoveredSteering.ambiguous > 0) {
     log("warn", "unsettled_steering_recovered", recoveredSteering);
   }
@@ -4007,7 +4040,7 @@ async function reconcilePriorInstanceTurns() {
 // One in-flight pass is owned by the reader itself, so a credential change and this
 // watch cannot start competing reads of the same accounts. Each reading is followed by the
 // forecast check, which is what turns a number on a screen into a warning before the wall.
-startProviderUsageWatch({ stopped: () => draining, onReading: () => { try { keepThreadsCurrent((admission) => sessionExecutionHost.owner.admit(admission)); } catch(error) { log('error','inbox_recovery_pass_failed',errorFields(error)); } reconcileCoveredTasteRequest(); recoverOctoberBudgetPauses(); recoverExhaustedClaudeWork(); maybeStartInboxProviderFailover(); wakeDeferredQuestions(Date.now(), (admission) => sessionExecutionHost.owner.admit(admission)); void closeQuestionsAnsweredByTodos((admission) => sessionExecutionHost.owner.admit(admission)).catch(() => {}); publishUsageForecastNotices(recordOwnerEvent); publishExpiringResetNotices(recordOwnerEvent); refreshUsageBreakdownIfStale(); briefRunningSessions(admission => sessionExecutionHost.owner.admit(admission)); } });
+startProviderUsageWatch({ stopped: () => draining, urgent: bankedUpkeep.hasActiveUnattendedBanked, onReading: () => { bankedUpkeep.onReading(); void keepThreadsCurrent((admission) => sessionExecutionHost.owner.admit(admission)).catch(error => log('error','inbox_recovery_pass_failed',errorFields(error))); reconcileCoveredTasteRequest(); recoverOctoberBudgetPauses(); recoverExhaustedClaudeWork(); maybeStartInboxProviderFailover(); moveHeldWork(); wakeDeferredQuestions(Date.now(), (admission) => sessionExecutionHost.owner.admit(admission)); void closeQuestionsAnsweredByTodos((admission) => sessionExecutionHost.owner.admit(admission)).catch(() => {}); publishUsageForecastNotices(recordOwnerEvent); publishExpiringResetNotices(recordOwnerEvent); refreshUsageBreakdownIfStale(); briefRunningSessions(admission => sessionExecutionHost.owner.admit(admission)); } });
 const stopBackgroundJobWatch = startBackgroundJobWatch(admission => sessionExecutionHost.owner.admit(admission));
 const stopUpdateWaitWatch = startUpdateWaitWatch({admit: admission => sessionExecutionHost.owner.admit(admission), stateDir: process.env.CONCIERGE_STATE_DIR!});
 const stopWatchWorker = startMachineWatchWorker(admission => sessionExecutionHost.owner.admit(admission), () => draining);
@@ -4104,6 +4137,10 @@ async function drainAndStop(signal: string) {
       log("warn", "service_drain_error_ignored", { signal, kind, error: reason instanceof Error ? reason.message : String(reason) });
     });
   }
+  // Provider lifecycle observation is recoverable from the App Server. Stop its
+  // ledger writes before any drain await can let a queued notification run.
+  const codexSessionObserverStop = codexSessionObserver?.stop();
+  if (codexSessionObserverStop) void codexSessionObserverStop.catch(() => {});
   stopBackgroundJobWatch();
   stopUpdateWaitWatch();
   stopWatchWorker();
@@ -4114,43 +4151,62 @@ async function drainAndStop(signal: string) {
     log("error", "sandbox_readiness_cleanup_failed", errorFields(error));
   }
   sessionTurnQueue?.stop();
+  sessionExecutionHost.beginDrain();
+  const withdrawnRunnerTurns = beginRunnerTurnDrain(instanceId);
   log("info", "service_drain_started", {
     signal,
     active_turns: activeTurnCount,
     active_input_handlers: activeInputHandlerCount,
+    withdrawn_runner_turn_jobs: withdrawnRunnerTurns,
     instance_id: instanceId,
   });
   // Bun waits for every in-flight response before a graceful stop resolves, and an
   // event-stream subscriber never ends its response, so the owner ends them first.
   sessionExecutionHost.owner.closeStreams();
-  if (routedRequestServer) await routedRequestServer.stop(false);
-  await sessionCommunication?.stop();
-  await routedRequests.stop();
-  await sessionExecutionHost.stop();
+  const stopRequestSurface = async (surface: string, stop: () => Promise<unknown>) => {
+    const startedAt = performance.now();
+    log("info", "service_drain_surface_stopping", { signal, surface, instance_id: instanceId });
+    try {
+      await stop();
+    } finally {
+      log("info", "service_drain_surface_stopped", {
+        signal, surface, duration_ms: Math.round(performance.now() - startedAt), instance_id: instanceId,
+      });
+    }
+  };
+  if (routedRequestServer) await stopRequestSurface("routed_request_server", () => routedRequestServer.stop(false));
+  if (sessionCommunication) await stopRequestSurface("session_communication", () => sessionCommunication.stop());
+  await stopRequestSurface("routed_requests", () => routedRequests.stop());
+  await stopRequestSurface("session_execution_host", () => sessionExecutionHost.stop());
   log("info", "service_drain_request_surfaces_closed", { signal, active_turns: activeTurnCount, instance_id: instanceId });
+  const stopDrainStep = async (step: string, stop: () => Promise<unknown>) => {
+    const startedAt = performance.now();
+    try { await stop(); }
+    finally { log("info", "service_drain_step_finished", { signal, step, duration_ms: Math.round(performance.now() - startedAt), instance_id: instanceId }); }
+  };
   if (deploymentEventServer) {
     const server = deploymentEventServer;
     deploymentEventServer = null;
-    await server.stop(false);
+    await stopDrainStep("deployment_event_server", () => server.stop(false));
   }
-  if (captureDeliveryWorker) await captureDeliveryWorker.stop();
-  if (humanCommandWorker) await humanCommandWorker.stop();
-  await grafanaAlerts?.stop();
-  if (codexRemoteObserver) await codexRemoteObserver.stop();
-  if (codexSessionObserver) await codexSessionObserver.stop();
-  try { await app.stop(); } catch (error) { log("warn", "slack_app_stop_failed", { signal, error: error instanceof Error ? error.message : String(error) }); }
+  if (captureDeliveryWorker) await stopDrainStep("capture_delivery", () => captureDeliveryWorker!.stop());
+  if (humanCommandWorker) await stopDrainStep("human_commands", () => humanCommandWorker!.stop());
+  if (grafanaAlerts) await stopDrainStep("grafana_alerts", () => grafanaAlerts!.stop());
+  if (codexRemoteObserver) await stopDrainStep("codex_remote_observer", () => codexRemoteObserver!.stop());
+  if (codexSessionObserverStop) await stopDrainStep("codex_session_observer", () => codexSessionObserverStop);
+  try { await stopDrainStep("slack_app", () => app.stop()); } catch (error) { log("warn", "slack_app_stop_failed", { signal, error: error instanceof Error ? error.message : String(error) }); }
   if (turnsThatEndWithThisProcess() > 0 || activeInputHandlerCount > 0) {
-    await new Promise<void>((resolve) => { resolveDrained = resolve; });
+    await stopDrainStep("local_turns", () => new Promise<void>((resolve) => { resolveDrained = resolve; }));
   }
   const activeDeploymentWork = deploymentWorkRunner.active();
-  if (activeDeploymentWork) await activeDeploymentWork;
+  if (activeDeploymentWork) await stopDrainStep("deployment_work", () => activeDeploymentWork);
   canvasCommitWatcher?.close();
   todoFileWatcher?.close();
-  await todoProjectionManager?.drain();
-  await closeSharedCodexAppServerClient();
+  if (todoProjectionManager) await stopDrainStep("todo_projection", () => todoProjectionManager!.drain());
+  await stopDrainStep("shared_codex_client", () => closeSharedCodexAppServerClient());
   // Last, as the local App Server socket is: a Codex turn relayed to a runner keeps its connection
   // through the drain, and the next owner follows it as it does after any restart.
-  await routedRequestServer?.closeRelays();
+  if (routedRequestServer) await stopDrainStep("runner_relays", () => routedRequestServer!.closeRelays());
   stopProcessInstance(instanceId);
   log("info", "service_drain_complete", { signal, instance_id: instanceId });
   process.exit(0);
@@ -4378,6 +4434,9 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
             port: runtime.profile === "sandbox" ? 8380 + runtime.sandboxLane! : 8082,
             deploymentEnabled: runtime.ownership.deployment,
             acceptAlerts: async (alerts) => grafanaAlerts!.accept(alerts),
+            observeAlerts: (http_status, accepted_instances, omitted, reason) => {
+              if (http_status >= 400) log("warn", "grafana_receiver_refused", { http_status, accepted_instances, omitted, reason });
+            },
             accept: async (push) => {
               const result = await acceptGitHubDeploymentPush(push, deploymentRepositoryRoot);
               log("info", "github_deployment_push_accepted", {

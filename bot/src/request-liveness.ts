@@ -1,6 +1,7 @@
 import { db, finishTurn, getSessionById, settleTurnDependencies } from './state';
 import { canceledNotice, requestLabel } from './session-notices';
 import { getAcceptedSessionInput } from './session-inputs';
+import { markRepeatingScheduleEnded, repeatingScheduleOf } from './saved-work';
 import type { SessionOwner } from './session-owner';
 import {resolveUsageHoldNoticesForSettledTurn,type UsageProvider} from './provider-usage';
 
@@ -82,8 +83,13 @@ export function waitingOnDependency(sessionId: number, requestId: string, sinceM
                 JOIN session_peer_replies reply ON reply.request_id=request.request_id AND reply.kind='progress'
                 JOIN watches named ON named.watch_id=json_extract(reply.payload_json,'$.waitingOnWatch')
                 WHERE request.request_id=? AND request.target_session_id=? AND request.closed_at_ms IS NULL AND request.created_at_ms>=?
+                  AND coalesce(named.series_id,named.watch_id)=coalesce(watch.series_id,watch.watch_id))
+              OR EXISTS (SELECT 1 FROM session_external_requests request
+                JOIN session_external_replies reply ON reply.request_id=request.request_id AND reply.final=0
+                JOIN watches named ON named.watch_id=json_extract(reply.payload_json,'$.waitingOnWatch')
+                WHERE request.request_id=? AND request.target_session_id=? AND request.outcome IS NULL AND request.created_at_ms>=?
                   AND coalesce(named.series_id,named.watch_id)=coalesce(watch.series_id,watch.watch_id))) LIMIT 1`)
-            .get(sessionId,requestId,sessionId,sinceMs,requestId,sessionId,sinceMs)
+            .get(sessionId,requestId,sessionId,sinceMs,requestId,sessionId,sinceMs,requestId,sessionId,sinceMs)
         || waitingOnLiveRequest(sessionId, sinceMs, untakenAnswers);
 }
 
@@ -167,19 +173,61 @@ export function tellWorkerCanceled(owner: SessionOwner, input: { requestId: stri
     });
 }
 
+/** Withdraws one queued turn of withdrawn work, settling what waits on it and any usage-hold notice. */
+function revokeQueuedTurn(inputId: string, turnId: number, sessionId: number, reason: string, receiptReason = 'request_withdrawn') {
+    finishTurn(turnId, 'cancelled', reason);
+    settleTurnDependencies(turnId);
+    const session = getSessionById(sessionId);
+    if (session && ['codex', 'claude-code', 'antigravity'].includes(session.provider_id))
+        resolveUsageHoldNoticesForSettledTurn(session.provider_id as UsageProvider, turnId, 'request_withdrawn');
+    db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled','$.reason',?,'$.cancellationDetail',?,'$.turnId',?),updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id=?")
+        .run(receiptReason,reason,turnId,inputId,turnId);
+}
+
+/**
+ * The keeper reads an entry's current words from thnkr.ing, never the words at filing time, so
+ * a waiting older request for the same entry can only repeat the newer one. While he writes, each
+ * pause files a new request; a keeper held by usage then ran all of them on the same final words
+ * (journal-entry 0d5c3606: 12 filings on Nov 7, 8 identical turns on Nov 8). Retire every one that
+ * never reached a provider; one already started finishes as it is.
+ */
+export function supersedeWaitingJournalObservations(sessionId: number, newestInputId: string, objectId: string): number {
+    const marker = `objectId=${encodeURIComponent(objectId)} `;
+    const waiting = db.query(`SELECT input.id, turn.id AS turn_id FROM session_inputs input JOIN turns turn ON turn.id=input.turn_id
+        WHERE input.session_id=? AND input.id LIKE 'journal-tracker:%' AND input.id<>? AND input.origin='service' AND input.steering_id IS NULL
+          AND instr(json_extract(input.payload_json,'$.text'),?)>0
+          AND turn.status='queued' AND turn.provider_admission_intended_at IS NULL AND turn.provider_started_at IS NULL
+          AND turn.provider_turn_id IS NULL AND turn.provider_input_acknowledged_at IS NULL`)
+        .all(sessionId, newestInputId, marker) as { id: string; turn_id: number }[];
+    for (const item of waiting)
+        revokeQueuedTurn(item.id, item.turn_id, sessionId, 'A newer save of the same journal entry replaced this waiting filing request.', 'journal_observation_superseded');
+    return waiting.length;
+}
+
+/**
+ * Ends the repeating schedule this input started: each queued firing is revoked like any withdrawn
+ * request turn, and the schedule is marked ended. A firing already running finishes. Returns how many
+ * firings were withdrawn, or null when the input starts no repeating schedule.
+ */
+export function endRepeatingScheduleForInput(inputId: string, reason = 'The requesting session cancelled this repeating schedule.'): number | null {
+    const schedule = repeatingScheduleOf(inputId);
+    if (!schedule) return null;
+    for (const firing of schedule.queued)
+        revokeQueuedTurn(firing.accepted_input_id, firing.id, firing.session_id, reason);
+    markRepeatingScheduleEnded(schedule.root, reason, schedule.queued.length);
+    return schedule.queued.length;
+}
+
 /** A withdrawn request that never reached a provider has no worker to notify. */
 export function cancelQueuedWithdrawnRequest(targetInputId: string): boolean {
     const target = getAcceptedSessionInput(targetInputId);
     if (!target) return false;
-    const revokeQueued=(inputId:string,turnId:number,sessionId:number)=>{
-        finishTurn(turnId, 'cancelled', 'The requesting session withdrew this work before it resumed.');
-        settleTurnDependencies(turnId);
-        const session=getSessionById(sessionId);
-        if(session&&['codex','claude-code','antigravity'].includes(session.provider_id))
-            resolveUsageHoldNoticesForSettledTurn(session.provider_id as UsageProvider,turnId,'request_withdrawn');
-        db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled'),updated_at=CURRENT_TIMESTAMP WHERE id=?")
-            .run(inputId);
-    };
+    const revokeQueued=(inputId:string,turnId:number,sessionId:number)=>
+        revokeQueuedTurn(inputId,turnId,sessionId,'The requesting session withdrew this work before it resumed.');
+    // A repeating schedule's request names only its first firing; ending the schedule withdraws
+    // every queued later firing the same way and stops new ones being booked.
+    const withdrawnFirings = endRepeatingScheduleForInput(target.id);
+    if (withdrawnFirings) return true;
     if (target.turn_id !== null) {
         const queued = db.query("SELECT status FROM turns WHERE id=? AND session_id=?")
             .get(target.turn_id, target.session_id) as { status: string } | null;

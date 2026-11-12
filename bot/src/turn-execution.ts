@@ -6,9 +6,13 @@ import {budgetBriefWithProviderRoom,chooseProviderForNewWork,newWorkCapacity,cap
 import {clearModelCapacityRefusal,modelCapacityRefused,rememberModelCapacityRefusal} from './provider-model-capacity';
 import {needClaudeSignInRenewal,needSignInRenewal} from './signin-renewal';
 import {chooseClaudeDispatch,claudeAccountWithRoomBesides,claudeEveryAccountClearsAt,markClaudeHomeRefused,markClaudeHomeVerified} from './provider-account-dispatch';
+import {providerAccountUsage,type ProviderUsage} from './provider-account-usage';
 import {warmClaudeAccount} from './prompt-cache-lifetime';
 import {yieldBankedTurn} from './saved-work';
 import {recordSessionEvent,sessionMetadata,updateSessionMetadata} from './session-inputs';
+import {codexRelayRunner} from './codex-app-server-client';
+import {runnerMachineCall} from './runner-machine-calls';
+import {claudeAccountSelection} from './provider-account-selection';
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {homedir} from 'node:os';
@@ -36,7 +40,9 @@ import {
   providerInterruptionDetail,
   providerDispatchError,
   providerRetryDelayMs,
+  ProviderDispatchError,
   ProviderTurnCancelledError,
+  OwnerDrainBeforeProviderAdmissionError,
 } from "./provider-failures";
 import {queueTurnContinuation} from './session-inputs';
 import { ChatGptDispatchError } from './session-capability-client';
@@ -79,6 +85,8 @@ import {
   markTurnProviderAdmissionIntended,
   parkRunningTurnAfterProviderFailure,
   retryRunningTurnAfterProviderFailure,
+  requeueWithdrawnRunnerTurn,
+  requeueOrphanedPreAdmissionTurn,
   recordTurnProviderTurnId,
   registerTurnArtifactIntents,
   markTurnResponseDelivered,
@@ -124,9 +132,8 @@ import { recordTurnProviderRetry, registerTurnRetryRestart } from "./provider-re
 import { OUTAGE_CONFIRM_MS, offerOutageChoices, providerTroubleStatus } from "./provider-outage";
 import { noticeUsageHold, noticeAuthHold, noticeTurnContinuation, useResetIfWorkStopped } from "./provider-usage-notice";
 import { useCodexResetCredit } from "./codex-reset-credit";
-import { releaseCodexOrdinaryUsageHeldWork,resolveUsageHoldNoticesForSettledTurn } from "./provider-usage";
+import { releaseCodexUnboundUsageHeldWork,resolveUsageHoldNoticesForSettledTurn } from "./provider-usage";
 import { scheduleProviderAccountUsageRefresh } from "./provider-account-usage";
-import { recordSessionEvent } from "./session-inputs";
 import type { ProgressCb, RunResult } from "./codex";
 
 // Agents in long turns open a fresh `agent-browser --session` per check and never close the old
@@ -253,7 +260,7 @@ export interface SlackTurnExecutionInput {
   providerEnvironment?: Record<string, string>;
   boundAccount?: {account:string;home:string|null};
   interactionPolicy?: 'standard' | 'consultation-only';
-  beforeProviderAdmission?: () => void;
+  beforeProviderAdmission?: () => void | Promise<void>;
   /** This run's provider process was started by an earlier coordinator and is being taken back. */
   adopted?: boolean;
   steeringController: TurnSteeringController;
@@ -318,7 +325,7 @@ function moveAutomaticFirstTurnOffRefusingModel(input:TurnExecutionInput,dispatc
     input.providerId==='chatgpt')return false;
   let other: keyof typeof AUTOMATIC_PROVIDER_ALIASES;
   try {
-    other=chooseProviderForNewWork(provider=>provider!==input.providerId,input.inputId,Date.now(),false,
+    other=chooseProviderForNewWork(provider=>provider!==input.providerId,input.inputId,Date.now(),null,
       !!sessionMetadata(input.session).automaticSmallTask);
   } catch { return false; }
   const capacity=newWorkCapacity(other);
@@ -450,6 +457,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   let runningClaudeAccount:string|null=null;
   let runningClaudeModel:string|null=null;
   let runningCodexAccount:string|null=null;
+  let runningCodexRunner:string|null=null;
   // The extra Claude home this turn launched from, so its outcome counts as evidence about that
   // home: a finished turn proves it works, a sign-in refusal withdraws that proof.
   let runningClaudeHome:string|null=null;
@@ -600,15 +608,6 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       providerStarted = true;
       markTurnProviderStarted(input.turnId);
     };
-    if (input.beforeProviderAdmission) {
-      input.beforeProviderAdmission();
-    } else if (!markTurnProviderAdmissionIntended(
-      input.turnId,
-      input.ownerInstanceId,
-      dispatchAttempt,
-    )) {
-      throw new Error("Provider admission intent could not be persisted for the current turn attempt.");
-    }
     const commitProvenanceToken = getOrCreateTurnCommitProvenance(input.turnId);
     const previousClaudeAccount=input.providerId==='claude-code'?sessionMetadata(input.session).claudeAccount??null:null;
     const lastClaudeCall=input.providerId==='claude-code'?sessionMetadata(input.session).claudeCacheCall??null:null;
@@ -617,22 +616,89 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     const claudeLaunchModel=input.providerId==='claude-code'
       ?input.model||getClaudePreferredModel(input.session.id,input.turnId)||null:null;
     runningClaudeModel=claudeLaunchModel;
-    const claudeChoice=input.providerId==='claude-code'
-      ?input.boundAccount?{...input.boundAccount,because:'spending-this-window' as const,expected:input.boundAccount.account,selectionRevision:sessionMetadata(input.session).claudeSelectionRevision??0}
-        :chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0,input.turnId,claudeLaunchModel,warmClaudeCacheAccount)
+    const remoteClaudeRunner=input.providerId==='claude-code'?input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER?.trim()||null:null;
+    const remoteGoogleRunner=input.providerId==='antigravity'?input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER?.trim()||null:null;
+    if(remoteClaudeRunner&&!input.adopted&&providerAccountUsage('claude-code')?.sourceRunner!==remoteClaudeRunner){
+      throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,
+        accountReadingWait:true,
+        message:`Claude was placed on runner ${remoteClaudeRunner}, but the owner's saved Claude allowance reading is not from that runner. This unsent turn will retry after the owner reads that runner's allowance.`});
+    }
+    const adoptedClaudeAccount=input.boundAccount?.account??previousClaudeAccount;
+    let claudeChoice=input.providerId==='claude-code'
+      ?input.adopted?(adoptedClaudeAccount?{account:adoptedClaudeAccount,home:input.boundAccount?.home??null,because:'spending-this-window' as const,expected:adoptedClaudeAccount,
+          selectionRevision:sessionMetadata(input.session).claudeSelectionRevision??0}:null)
+      :input.boundAccount?{...input.boundAccount,because:'spending-this-window' as const,expected:input.boundAccount.account,selectionRevision:sessionMetadata(input.session).claudeSelectionRevision??0}
+        :chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0,input.turnId,claudeLaunchModel,warmClaudeCacheAccount,remoteClaudeRunner)
       :null;
-    runningClaudeAccount=input.providerId==='claude-code'?(claudeChoice?.account??currentAccount('claude-code')?.label??null):null;
-    runningCodexAccount=input.providerId==='codex'?currentAccount('codex')?.label??null:null;
-    runningClaudeHome=claudeChoice?.home??null;
+    if(remoteClaudeRunner&&!input.adopted){
+      if(!claudeChoice)throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,
+        message:`No cached Claude account choice is available for runner ${remoteClaudeRunner}; the turn remains held until owner account readings are available.`});
+      let validation:{available:boolean;resolution:string}|null=null;
+      try{validation=await runnerMachineCall(remoteClaudeRunner,'accounts.validate',
+        {provider:'claude-code',account:claudeChoice.account});}
+      catch(error){throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,
+        message:`Runner ${remoteClaudeRunner} could not validate Claude account ${claudeChoice.account}: ${error instanceof Error?error.message:String(error)}`});}
+      if(!validation?.available)throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,
+        message:`Runner ${remoteClaudeRunner} cannot resolve selected Claude account ${claudeChoice.account} (${validation?.resolution??'unknown'}); the turn remains held.`});
+    }
+    runningClaudeAccount=input.providerId==='claude-code'
+      ?(remoteClaudeRunner?claudeChoice?.account??null
+        :claudeChoice?.account??currentAccount('claude-code')?.label??null):null;
+    if(remoteClaudeRunner&&!input.adopted&&!runningClaudeAccount)throw new Error(`Runner ${remoteClaudeRunner} could not identify a signed-in Claude account.`);
+    const savedGoogleAccount=sessionMetadata(input.session).providerAccount;
+    let remoteGoogleIdentity:{id:string;label:string}|null=null;
+    if(remoteGoogleRunner&&!input.adopted){
+      try{remoteGoogleIdentity=await runnerMachineCall<{id:string;label:string}|null>(remoteGoogleRunner,'accounts.identity',{provider:'antigravity'},45_000);}
+      catch(error){
+        throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,accountReadingWait:true,
+          message:`Runner ${remoteGoogleRunner} could not read its Google account before this turn started: ${error instanceof Error?error.message:String(error)}`});
+      }
+      if(!remoteGoogleIdentity){
+        throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,accountReadingWait:true,
+          message:`Runner ${remoteGoogleRunner} has not identified its Google account; this unsent turn waits for a fresh account reading.`});
+      }
+    }
+    if(remoteGoogleRunner&&!input.adopted&&savedGoogleAccount&&remoteGoogleIdentity?.label!==savedGoogleAccount)
+      throw new Error(`Runner ${remoteGoogleRunner} is signed in to a different Google account than this conversation; refusing to resume it under another identity.`);
+    const runningGoogleAccount=input.providerId==='antigravity'
+      ?savedGoogleAccount??remoteGoogleIdentity?.label??null:null;
+    if(remoteGoogleRunner&&!input.adopted&&!runningGoogleAccount)throw new Error(`Runner ${remoteGoogleRunner} could not identify a signed-in Google account.`);
+    if(input.providerId==='codex'){
+      const metadata=sessionMetadata(input.session);
+      const runner=metadata.providerAccount!==undefined
+        ?metadata.providerRunner??null:codexRelayRunner();
+      let identity:{label:string}|null=metadata.providerAccount!==undefined
+        ?{label:metadata.providerAccount}
+        :runner?null:currentAccount('codex');
+      if(runner&&metadata.providerAccount===undefined&&!input.adopted){
+        try{identity=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider:'codex'});}
+        catch(error){
+          throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,accountReadingWait:true,
+            message:`Runner ${runner} could not read its Codex account before this turn started: ${error instanceof Error?error.message:String(error)}`});
+        }
+      }
+      runningCodexAccount=identity?.label??null;
+      runningCodexRunner=metadata.providerAccount!==undefined?metadata.providerRunner??null:runner;
+    }
+    const remoteProviderRunner=remoteClaudeRunner;
+    runningClaudeHome=remoteProviderRunner?null:claudeChoice?.home??null;
     const actualClaudeBrief=input.presentation==='native'&&!input.adopted&&runningClaudeAccount
       ?budgetBriefWithProviderRoom('claude-code',Date.now(),runningClaudeAccount):null;
-    if(input.presentation==='native'&&(input.providerId==='claude-code'||input.providerId==='codex')){
+    // An adopted run keeps the identity recorded when its provider started; this release's
+    // rebuilt instructions were never sent to it.
+    if(input.presentation==='native'&&!input.adopted&&(input.providerId==='claude-code'||input.providerId==='codex')){
       try{
         recordSessionEvent({eventId:`prompt-cache-identity:${input.turnId}:${dispatchAttempt}`,
           sessionId:input.session.id,turnId:input.turnId,kind:'prompt_cache_identity',
           payload:{systemInstructionsSha256:createHash('sha256').update(preparedTurn.systemPrompt??'').digest('hex'),
             effort:input.reasoningEffort??null}});
       }catch(error){log('warn','prompt_cache_identity_record_failed',{turn_id:input.turnId,...errorFields(error)});}
+    }
+    if (input.beforeProviderAdmission) {
+      const prerequisite = input.beforeProviderAdmission();
+      if (prerequisite) await prerequisite;
+    } else if (!markTurnProviderAdmissionIntended(input.turnId,input.ownerInstanceId,dispatchAttempt)) {
+      throw new Error("Provider admission intent could not be persisted for the current turn attempt.");
     }
     const providerPrompt=[preparedTurn.prompt,actualClaudeBrief].filter(Boolean).join('\n\n');
     // History attribution compares the provider's exact user bytes with this retained replay.
@@ -656,7 +722,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       environment: {
         AGENT_BROWSER_IDLE_TIMEOUT_MS: String(AGENT_BROWSER_IDLE_MS),
         ...input.providerEnvironment,
-        ...(claudeChoice?.home?{CLAUDE_CONFIG_DIR:claudeChoice.home}:{}),
+        ...(runningClaudeHome?{CLAUDE_CONFIG_DIR:runningClaudeHome}:{}),
+        ...(remoteProviderRunner&&runningClaudeAccount?{CONCIERGE_PROVIDER_ID:'claude-code',CONCIERGE_PROVIDER_ACCOUNT:runningClaudeAccount}:{}),
+        ...(remoteGoogleRunner?{CONCIERGE_PROVIDER_ID:'antigravity',...(runningGoogleAccount?{CONCIERGE_PROVIDER_ACCOUNT:runningGoogleAccount}:{})}:{}),
         // Only an older private execution being adopted needs its original Codex home.
         ...(input.providerId==='codex'&&input.adopted&&input.boundAccount?{CODEX_HOME:input.boundAccount.home??join(homedir(),'.codex')}:{}),
         CONCIERGE_TURN_ID: String(input.turnId),
@@ -712,10 +780,31 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
             updateSessionMetadata(input.session.id,{claudeAccount:runningClaudeAccount,
               claudeSelectionRevision:claudeChoice?.selectionRevision??0,
               claudeAccountNotice:null});
+            if(input.session.agent_session_uuid===null&&sessionMetadata(input.session).providerAccount===undefined){
+              const providerRunner=input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER?.trim()||null;
+              updateSessionMetadata(input.session.id,{providerAccount:runningClaudeAccount,providerRunner});
+            }
             recordSessionEvent({eventId:`claude-account:${input.turnId}:${dispatchAttempt}`,sessionId:input.session.id,turnId:input.turnId,
               kind:'account',payload:{account:runningClaudeAccount,
                 ...(claudeChoice?{because:claudeChoice.because,expected:claudeChoice.expected}:{})}});
           } catch(error){log('warn','claude_account_record_failed',{turn_id:input.turnId,...errorFields(error)});}
+        }
+        if(event.type==='started'&&input.providerId==='codex'&&runningCodexAccount
+          &&input.session.agent_session_uuid===null&&sessionMetadata(input.session).providerAccount===undefined){
+          try{
+            updateSessionMetadata(input.session.id,{providerAccount:runningCodexAccount,providerRunner:runningCodexRunner});
+            recordSessionEvent({eventId:`provider-account:${input.turnId}:${dispatchAttempt}`,sessionId:input.session.id,turnId:input.turnId,
+              kind:'account',payload:{provider:'codex',account:runningCodexAccount,runner:runningCodexRunner}});
+          }catch(error){log('warn','provider_account_record_failed',{turn_id:input.turnId,...errorFields(error)});}
+        }
+        if(event.type==='started'&&input.providerId==='antigravity'&&runningGoogleAccount
+          &&input.session.agent_session_uuid===null&&sessionMetadata(input.session).providerAccount===undefined){
+          try{
+            updateSessionMetadata(input.session.id,{providerAccount:runningGoogleAccount,
+              providerRunner:remoteGoogleRunner??null});
+            recordSessionEvent({eventId:`provider-account:${input.turnId}:${dispatchAttempt}`,sessionId:input.session.id,turnId:input.turnId,
+              kind:'account',payload:{provider:'antigravity',account:runningGoogleAccount,runner:remoteGoogleRunner}});
+          }catch(error){log('warn','provider_account_record_failed',{turn_id:input.turnId,...errorFields(error)});}
         }
         statusController?.recordProgress(event);
         progressController?.recordProgress(event);
@@ -1162,6 +1251,21 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       && !artifactActivity
       && dispatchBoundary !== null
       && !dispatchBoundary.durableArtifactActivity;
+    if (preserveDispatchFailure && input.presentation === 'native'
+      && error instanceof OwnerDrainBeforeProviderAdmissionError
+      && requeueOrphanedPreAdmissionTurn(input.turnId,input.ownerInstanceId)) {
+      await progressController?.pauseForRetry();
+      await statusController?.stop();
+      log('info','codex_readiness_requeued_on_owner_drain',{turn_id:input.turnId,dispatch_attempt:dispatchAttempt});
+      return {status:'retry_queued',turnId:input.turnId};
+    }
+    if (preserveDispatchFailure && input.presentation === 'native'
+      && requeueWithdrawnRunnerTurn(input.turnId,input.ownerInstanceId,dispatchAttempt)) {
+      await progressController?.pauseForRetry();
+      await statusController?.stop();
+      log('info','runner_turn_requeued_unsent',{turn_id:input.turnId,dispatch_attempt:dispatchAttempt});
+      return {status:'retry_queued',turnId:input.turnId};
+    }
     if (preserveDispatchFailure) {
       if (structuredFailure?.providerSessionId && providerIdentityCompatible) {
         recordProviderSession(input, structuredFailure.providerSessionId);
@@ -1217,6 +1321,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // later fresh allowance reading proves room; a guessed timer could replay it early.
       const googleUsageWait=replaySafe&&input.providerId==='antigravity'&&heldUntilMs===null
         &&/RESOURCE_EXHAUSTED|individual quota reached|quota exhausted/i.test(message);
+      const runnerAccountReadingWait=replaySafe&&structuredFailure?.accountReadingWait===true;
       // A first turn the owner placed on this provider by itself, refused for allowance before any
       // work, goes to a provider with room instead of waiting for this one's reset. On 2026-10-31 his
       // 4 AM afterparties request was placed on Google with 65 hours left on its quota and ended.
@@ -1230,9 +1335,11 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       }
       if(isRefreshableAuthFailure(message)){
         markClaudeHomeRefused(runningClaudeHome);
-        // An expired login on an account's own home is renewed by the Mac's browser agent, once per episode.
-        if(runningClaudeHome)needClaudeSignInRenewal(runningClaudeAccount,'a turn was refused');
-        if(input.providerId==='codex')needSignInRenewal('codex',currentAccount('codex')?.label??null,'a turn was refused');
+        // A runner account has no owner-local home; its exact saved label still names the
+        // sign-in that the Mac browser agent must renew.
+        if(runningClaudeHome||input.providerId==='claude-code'&&input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER)
+          needClaudeSignInRenewal(runningClaudeAccount,'a turn was refused');
+        if(input.providerId==='codex')needSignInRenewal('codex',runningCodexAccount??currentAccount('codex')?.label??null,'a turn was refused');
       }
       const authWait = replaySafe && input.providerId !== 'chatgpt'
         && isRefreshableAuthFailure(message)
@@ -1247,7 +1354,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         && error.evidence.code === 'CHATGPT_NOT_SENT';
       const localPrerequisiteWait = replaySafe && structuredFailure?.localPrerequisiteUnavailable === true;
       let retryable = replaySafe
-        && (authWait || googleUsageWait || chatgptNeverSent || localPrerequisiteWait || structuredFailure?.failureClass === "retryable" ||
+        && (authWait || googleUsageWait || runnerAccountReadingWait || chatgptNeverSent || localPrerequisiteWait || structuredFailure?.failureClass === "retryable" ||
           structuredFailure?.modelAtCapacity === true || heldUntilMs !== null || switchClaudeAccount);
       let policyRetryAtMs: number | null = null;
       // A rejected model is a property of this session's binding, not of the Google
@@ -1256,7 +1363,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       if (invalidGoogleModel) retryable = false;
       // Sign-in and allowance holds have their own release signals, so they do not
       // consume a timed provider-request retry budget.
-      if (replaySafe && !authWait && !googleUsageWait && heldUntilMs === null && !switchClaudeAccount &&
+      if (replaySafe && !authWait && !googleUsageWait && !runnerAccountReadingWait && heldUntilMs === null && !switchClaudeAccount &&
         !invalidGoogleModel && !chatgptNeverSent && !structuredFailure?.threadWriterConflict) {
         const failure = retryable
           ? { kind: 'transient' as const, reason: message, retryAtMs: heldUntilMs,
@@ -1300,8 +1407,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
             dispatchAttempt,
             error: message,
             authWait,
-            usageHold: heldUntilMs !== null || googleUsageWait,
-            usageResetUnknown: googleUsageWait,
+            usageHold: heldUntilMs !== null || googleUsageWait || runnerAccountReadingWait,
+            usageResetUnknown: googleUsageWait || runnerAccountReadingWait,
             nextAttemptMs: switchClaudeAccount || providerDispatchError(error)?.immediateRetry
               ? Date.now() : policyRetryAtMs ?? heldUntilMs ?? Date.now() + providerRetryDelayMs(dispatchAttempt),
           })
@@ -1322,6 +1429,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
               : `Status: parked - provider dispatch failed; input preserved as turn ${input.turnId} until resumed`,
           });
       if (!preserved) throw new Error("Provider dispatch failure could not be durably preserved.");
+      if(runnerAccountReadingWait)void scheduleProviderAccountUsageRefresh().catch(()=>{});
       preserveWorkingReaction = retryable;
       if (input.presentation !== "native") {
         if (!useAgentExperience) {
@@ -1371,9 +1479,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         // 2026-09-23: "You don't have to wait for me to reset the usage."
         void useResetIfWorkStopped(hold, recordSessionEvent,
           (account,idempotencyKey,beforeConsume)=>useCodexResetCredit(account,idempotencyKey,true,beforeConsume), async (accountId) => {
-          // Count the exact ordinary releases before the asynchronous Accounts refresh.
-          // That refresh uses the same ordinary-only Codex wake contract.
-          const released=releaseCodexOrdinaryUsageHeldWork(accountId);
+          // Count unbound releases before the asynchronous Accounts refresh.
+          const released=releaseCodexUnboundUsageHeldWork(accountId);
           void scheduleProviderAccountUsageRefresh().catch(()=>{});
           return released;
         }).catch(error => log("error", "provider_reset_auto_error", errorFields(error)));
@@ -1387,7 +1494,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         session_id: input.session.id,
         dispatch_attempt: dispatchAttempt,
         failure_class: retryable
-          ? authWait ? "auth_wait" : googleUsageWait ? "usage_wait" : "backoff"
+          ? authWait ? "auth_wait" : googleUsageWait || runnerAccountReadingWait ? "usage_wait" : "backoff"
           : ambiguous
           ? "parked_ambiguous"
           : structuredFailure?.failureClass || "parked_terminal",

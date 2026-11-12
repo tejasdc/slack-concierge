@@ -732,14 +732,14 @@ export function createCaptureRequestHandler(
         method: "POST", headers: { authorization: `Bearer ${config.queue.token}`, "content-type": "application/json" },
         body: JSON.stringify(grafanaEnvelope(alerts)), signal: AbortSignal.timeout(10_000),
       });
-      if (!response.ok) throw new Error("Grafana receiver unavailable.");
+      if (!response.ok) throw new Error(`Grafana receiver answered HTTP ${response.status}.`);
       const receipt: any = await response.json();
       if (receipt?.accepted !== true || !Array.isArray(receipt.alerts)) throw new Error("Unconfirmed Grafana acceptance.");
       return receipt;
     },
-    observe: (http_status, accepted_instances, omitted) => {
+    observe: (http_status, accepted_instances, omitted, reason) => {
       (dependencies.logRequest || log)(http_status >= 400 ? "warn" : "info", "grafana_webhook_completed",
-        { http_status, accepted_instances, omitted });
+        { http_status, accepted_instances, omitted, ...(reason ? { reason } : {}) });
     },
   });
   const forwardDeploymentPush = dependencies.forwardDeploymentPush || (async (push: GitHubDeploymentPush) => {

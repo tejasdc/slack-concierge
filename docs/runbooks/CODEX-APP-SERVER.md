@@ -1,8 +1,8 @@
 # Codex App Server Lifecycle
 
-Slack Concierge is the repository authority for the shared Codex App Server's host startup integration and restart-safety policy. This does not mean Concierge implements or owns the Codex updater. The Codex daemon owns provider-thread runtime; `concierge-bot.service` invokes its standalone managed binary's `app-server daemon start` before starting the bot. Concierge's controllers, its Codex Remote observer, and the Mac Codex app's SSH proxy are clients of the same Unix socket; none is a second App Server.
+Slack Concierge is the repository authority for the shared Codex App Server's host startup integration and restart-safety policy. This does not mean Concierge implements or owns the Codex updater. The Codex daemon owns provider-thread runtime; the AX41 runner starts its standalone managed binary when the App Server is absent. Concierge's controllers, its Codex Remote observer, and the Mac Codex app's SSH proxy are clients of the same Unix socket; none is a second App Server.
 
-The daemon is detached from the Concierge process and may outlive a bot restart. Ordinary Concierge deployment starts it if absent but does not stop, restart, bootstrap, or update it.
+The daemon is detached from the Concierge process and may outlive a bot restart. Ordinary Concierge deployment restarts the runner, whose start path starts the daemon if absent; deployment does not stop, restart, bootstrap, or update an App Server that is already running.
 
 Concierge's native session observer uses a separate App Server connection. It scans
 loaded threads once after connecting, reads their status and history head without
@@ -14,6 +14,11 @@ On 2026-11-03 an account switch restarted the daemon and the old observer resume
 closes that observer connection without restarting the daemon; Codex can then unload
 the idle threads after its grace period. Verify the loaded-thread count and daemon
 memory after release, and do not manually restart a daemon with running turns.
+
+Both observers reconnect on their own and file a "stopped after repeated failures" repair
+notice only after two minutes of continuous failure. Every release closes the runner relay for
+a few seconds (503 `RUNNER_NOT_LISTENING`); that gap is not an outage
+([failure record](../incidents/2026-11-11-codex-observer-false-outage-on-release.md)).
 
 ## Lifecycle Invariants
 

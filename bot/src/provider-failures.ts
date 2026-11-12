@@ -31,6 +31,14 @@ export class ProviderTurnCancelledError extends Error {
   }
 }
 
+/** This owner stopped while a local prerequisite was still waiting; no provider was admitted. */
+export class OwnerDrainBeforeProviderAdmissionError extends Error {
+  constructor() {
+    super("Concierge drained before provider admission.");
+    this.name = "OwnerDrainBeforeProviderAdmissionError";
+  }
+}
+
 export class ProviderDispatchError extends Error {
   readonly failureClass: ProviderDispatchFailureClass;
   readonly terminalConfirmed: boolean;
@@ -46,6 +54,8 @@ export class ProviderDispatchError extends Error {
   readonly threadWriterConflict: boolean;
   /** A local launch prerequisite failed before provider admission, so no provider budget is spent. */
   readonly localPrerequisiteUnavailable: boolean;
+  /** A runner account reading is missing before provider admission; a fresh reading releases the hold. */
+  readonly accountReadingWait: boolean;
   /**
    * The failure belongs to one provider conversation (opening or resuming its thread), not
    * to the account, so it spends that conversation's retry budget alone. On 2026-10-21 one
@@ -74,6 +84,7 @@ export class ProviderDispatchError extends Error {
     modelAtCapacity?: boolean;
     threadWriterConflict?: boolean;
     localPrerequisiteUnavailable?: boolean;
+    accountReadingWait?: boolean;
     threadScoped?: boolean;
     clearsAtMs?: number | null;
   }) {
@@ -89,6 +100,7 @@ export class ProviderDispatchError extends Error {
     this.modelAtCapacity = input.modelAtCapacity === true || isModelCapacityRefusal(input.message);
     this.threadWriterConflict = input.threadWriterConflict === true || isCodexThreadWriterConflict(input.message);
     this.localPrerequisiteUnavailable = input.localPrerequisiteUnavailable === true;
+    this.accountReadingWait = input.accountReadingWait === true;
     this.threadScoped = input.threadScoped === true;
     const clears = input.clearsAtMs;
     this.clearsAtMs = typeof clears === "number" && Number.isSafeInteger(clears) && clears > Date.now() ? clears : null;

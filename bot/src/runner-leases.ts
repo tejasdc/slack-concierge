@@ -38,6 +38,7 @@ export const LEASE_MS=300_000;
 export const RUNNER_FENCE_MS=LEASE_MS-60_000;
 const CONTACT_RESOLUTION_MS=5_000;
 export const HEARTBEAT_MS=15_000;
+export const OWNER_DRAIN_WITHDRAWAL_REASON='owner drained before a runner claimed the turn';
 
 export type RunnerJobState='queued'|'leased'|'finished'|'unconfirmed';
 export class RunnerProtocolError extends Error {
@@ -101,6 +102,17 @@ type Job={job_id:string;kind:string;payload_json:string;replay_safe:number;state
 export class RunnerLeases {
   constructor(private readonly db:Database,private readonly now:()=>number=Date.now){}
 
+  queuedTurnJobsForOwner(ownerInstanceId:string):string[] {
+    return (this.db.query(`SELECT job.job_id FROM runner_jobs job
+      JOIN executions execution ON execution.execution_id=substr(job.job_id,6)
+        AND job.job_id='turn:'||execution.execution_id
+      JOIN turns turn ON turn.id=execution.turn_id AND turn.status='running'
+        AND turn.owner_instance_id=? AND turn.dispatch_attempt=execution.dispatch_attempt
+      WHERE job.kind='turn' AND job.state='queued' AND execution.supervisor='runner'
+        AND execution.state='intended' AND execution.coordinator_instance_id=?`).all(ownerInstanceId,ownerInstanceId) as {job_id:string}[])
+      .map(row=>row.job_id);
+  }
+
   /** The coordinator's side: record work for a runner. The same job id records once. */
   enqueue(input:{jobId?:string;kind:string;payload:unknown;replaySafe?:boolean}):{jobId:string;created:boolean} {
     const jobId=input.jobId??randomUUID();
@@ -132,13 +144,15 @@ export class RunnerLeases {
   claim(runner:string,kinds:readonly string[]) {
     if(!kinds.length)return null;
     const marks=kinds.map(()=>'?').join(',');
+    // A named turn stays on the machine that owns its account and provider history.
+    const eligible=`(json_extract(payload_json,'$.targetRunner') IS NULL OR json_extract(payload_json,'$.targetRunner')=?)`;
     // An idle runner polls every few seconds: with nothing queued and no lease due, answer from a read.
-    if(!this.db.query(`SELECT 1 FROM runner_jobs WHERE state='queued' AND kind IN (${marks}) LIMIT 1`).get(...kinds)
+    if(!this.db.query(`SELECT 1 FROM runner_jobs WHERE state='queued' AND kind IN (${marks}) AND ${eligible} LIMIT 1`).get(...kinds,runner)
       &&!this.db.query("SELECT 1 FROM runner_attempts WHERE state='live' AND lease_expires_at_ms<=? LIMIT 1").get(this.now()))return null;
     return this.db.transaction(()=>{
       this.settleExpired();
-      const job=this.db.query(`SELECT * FROM runner_jobs WHERE state='queued' AND kind IN (${marks})
-        ORDER BY created_at_ms LIMIT 1`).get(...kinds) as Job|null;
+      const job=this.db.query(`SELECT * FROM runner_jobs WHERE state='queued' AND kind IN (${marks}) AND ${eligible}
+        ORDER BY created_at_ms LIMIT 1`).get(...kinds,runner) as Job|null;
       if(!job)return null;
       const now=this.now(),attemptId=randomUUID();
       this.db.query("UPDATE runner_jobs SET state='leased' WHERE job_id=? AND state='queued'").run(job.job_id);

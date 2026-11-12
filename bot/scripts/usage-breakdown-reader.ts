@@ -1,10 +1,15 @@
 #!/usr/bin/env bun
 import {Database} from 'bun:sqlite';
-import {closeSync,createReadStream,existsSync,mkdirSync,openSync,readFileSync,readSync,readdirSync,statSync} from 'node:fs';
+import {createReadStream,existsSync,mkdirSync,readFileSync,readdirSync,statSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {basename,dirname,join,resolve} from 'node:path';
+import {createHash} from 'node:crypto';
 import {jsonLines} from '../src/json-lines';
 import {CLAUDE_HELPER_CACHE_LIFETIME_MS,CLAUDE_MAIN_CACHE_LIFETIME_MS} from '../src/prompt-cache-lifetime';
+import {closeRunnerMachineCalls} from '../src/runner-machine-calls';
+import {decodeUsageSnapshot,ledgerFromUsageSnapshot,captureUsageLedgerSnapshot,encodeUsageSnapshot} from '../src/usage-breakdown-ledger-snapshot';
+import {collectRunnerUsageReports} from '../src/provider-usage-report-client';
+import {attributeWeeklyAllowance,nameAllowanceRows,weeklyReadings} from '../src/weekly-allowance-attribution';
 
 type Counts={input:number;cacheWrite:number;cacheWrite1h:number;cacheRead:number;output:number};
 type FileRow={offset:number;size:number;mtime:number;total_json:string};
@@ -12,21 +17,24 @@ const home=homedir();
 const state=process.env.CONCIERGE_STATE_DIR??join(home,'.local/state/concierge');
 const ledgerPath=process.env.USAGE_BREAKDOWN_LEDGER??join(state,'state.db');
 const cachePath=process.env.USAGE_BREAKDOWN_CACHE??join(state,'usage-breakdown.db');
-const claudeRoot=process.env.USAGE_BREAKDOWN_CLAUDE_ROOT??join(home,'.claude/projects');
-const codexRoots=[process.env.USAGE_BREAKDOWN_CODEX_ROOT??join(home,'.codex/sessions'),join(home,'.codex-accounts')];
 const empty=():Counts=>({input:0,cacheWrite:0,cacheWrite1h:0,cacheRead:0,output:0});
 const number=(v:unknown)=>typeof v==='number'&&Number.isFinite(v)?Math.max(0,v):0;
 const stamp=(v:unknown)=>typeof v==='string'?Date.parse(v):NaN;
-const oneWeekAgo=Date.now()-7*86400_000;
-const ledger=new Database(ledgerPath,{readonly:true});
+let oneWeekAgo=Date.now()-7*86400_000;
+let activeUsageWindowStartMs=oneWeekAgo;
+let ledger:Database|null=null;
+function ownerLedger(){return ledger??=new Database(ledgerPath,{readonly:true});}
 mkdirSync(dirname(cachePath),{recursive:true});
 const cache=new Database(cachePath);
 cache.exec(`PRAGMA journal_mode=WAL;
  CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY,offset INTEGER NOT NULL,size INTEGER NOT NULL,mtime INTEGER NOT NULL,total_json TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS records(path TEXT NOT NULL,record_id TEXT NOT NULL,provider TEXT NOT NULL,conversation TEXT NOT NULL,
    helper INTEGER NOT NULL,at_ms INTEGER NOT NULL,model TEXT, input INTEGER NOT NULL,cache_write INTEGER NOT NULL,
-   cache_write_1h INTEGER NOT NULL,cache_read INTEGER NOT NULL,output INTEGER NOT NULL,PRIMARY KEY(path,record_id));
+   cache_write_1h INTEGER NOT NULL,cache_read INTEGER NOT NULL,output INTEGER NOT NULL,source_account TEXT,parent_thread_id TEXT,
+   first_usage INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(path,record_id));
  CREATE INDEX IF NOT EXISTS records_recent ON records(at_ms);
+ CREATE TABLE IF NOT EXISTS provider_record_sequence(id INTEGER PRIMARY KEY AUTOINCREMENT,path TEXT NOT NULL,record_id TEXT NOT NULL,at_ms INTEGER NOT NULL,UNIQUE(path,record_id));
+ CREATE INDEX IF NOT EXISTS provider_record_sequence_time ON provider_record_sequence(at_ms);
  CREATE TABLE IF NOT EXISTS cache_boundaries(path TEXT NOT NULL,at_ms INTEGER NOT NULL,kind TEXT NOT NULL,
    PRIMARY KEY(path,at_ms,kind));
  CREATE INDEX IF NOT EXISTS cache_boundaries_recent ON cache_boundaries(at_ms);`);
@@ -34,6 +42,12 @@ if(!cache.query('PRAGMA table_info(records)').all().some((column:any)=>column.na
   cache.exec('ALTER TABLE records ADD COLUMN provider_turn_id TEXT');
 if(!cache.query('PRAGMA table_info(records)').all().some((column:any)=>column.name==='client_version'))
   cache.exec('ALTER TABLE records ADD COLUMN client_version TEXT');
+if(!cache.query('PRAGMA table_info(records)').all().some((column:any)=>column.name==='source_account'))
+  cache.exec('ALTER TABLE records ADD COLUMN source_account TEXT');
+if(!cache.query('PRAGMA table_info(records)').all().some((column:any)=>column.name==='parent_thread_id'))
+  cache.exec('ALTER TABLE records ADD COLUMN parent_thread_id TEXT');
+if(!cache.query('PRAGMA table_info(records)').all().some((column:any)=>column.name==='first_usage'))
+  cache.exec('ALTER TABLE records ADD COLUMN first_usage INTEGER NOT NULL DEFAULT 0');
 function* walk(root:string):Generator<string>{
   if(!existsSync(root))return;
   const dirs=[root];
@@ -46,13 +60,35 @@ function* walk(root:string):Generator<string>{
     }
   }
 }
+type ProviderRoot={provider:'claude-code'|'codex';account:string;home:string};
+function configuredRoots():ProviderRoot[]{
+  const raw=process.env.USAGE_BREAKDOWN_PROVIDER_ROOTS;
+  if(!raw)return [];
+  let parsed:any;try{parsed=JSON.parse(raw);}catch{throw new Error('INVALID_USAGE_BREAKDOWN_ROOTS');}
+  if(!Array.isArray(parsed)||parsed.length>64||parsed.some(row=>!row||!['claude-code','codex'].includes(row.provider)
+    ||typeof row.account!=='string'||!row.account||row.account.length>320||typeof row.home!=='string'||!row.home.startsWith('/')))
+    throw new Error('INVALID_USAGE_BREAKDOWN_ROOTS');
+  return parsed;
+}
+/** The Mac peer still owns local provider turns, without a runner or account-home registry. */
+function macPeerRoots():ProviderRoot[]{
+  const roots:ProviderRoot[]=[
+    {provider:'claude-code',account:'unknown',home:join(home,'.claude')},
+    {provider:'codex',account:'unknown Codex account',home:join(home,'.codex')},
+  ];
+  const saved=join(home,'.codex-accounts');
+  if(existsSync(saved))for(const entry of readdirSync(saved,{withFileTypes:true})){
+    if(entry.isDirectory())roots.push({provider:'codex',account:'unknown Codex account',home:join(saved,entry.name)});
+  }
+  return roots.filter(root=>existsSync(join(root.home,root.provider==='claude-code'?'projects':'sessions')));
+}
 function countsClaude(u:any):Counts{return {input:number(u.input_tokens),cacheWrite:number(u.cache_creation_input_tokens)-number(u.cache_creation?.ephemeral_1h_input_tokens),cacheWrite1h:number(u.cache_creation?.ephemeral_1h_input_tokens),cacheRead:number(u.cache_read_input_tokens),output:number(u.output_tokens)};}
 function countsCodex(u:any):Counts{return {input:Math.max(0,number(u.input_tokens)-number(u.cached_input_tokens)-number(u.cache_write_input_tokens)),cacheWrite:number(u.cache_write_input_tokens),cacheWrite1h:0,cacheRead:number(u.cached_input_tokens),output:number(u.output_tokens)};}
-function insert(path:string,id:string,provider:string,conversation:string,helper:boolean,at:number,model:string|null,c:Counts,providerTurnId:string|null,clientVersion:string|null){
-  if(at<oneWeekAgo||at>Date.now()+60000)return;
+function insert(path:string,id:string,provider:string,conversation:string,helper:boolean,at:number,model:string|null,c:Counts,providerTurnId:string|null,clientVersion:string|null,sourceAccount:string|null=null,parentThreadId:string|null=null,firstUsage=false){
+  if(at<activeUsageWindowStartMs||at>Date.now()+60000)return;
   cache.query(`INSERT OR IGNORE INTO records
-    (path,record_id,provider,conversation,helper,at_ms,model,input,cache_write,cache_write_1h,cache_read,output,provider_turn_id,client_version)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(path,id,provider,conversation,helper?1:0,at,model,c.input,c.cacheWrite,c.cacheWrite1h,c.cacheRead,c.output,providerTurnId,clientVersion);
+    (path,record_id,provider,conversation,helper,at_ms,model,input,cache_write,cache_write_1h,cache_read,output,provider_turn_id,client_version,source_account,parent_thread_id,first_usage)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(path,id,provider,conversation,helper?1:0,at,model,c.input,c.cacheWrite,c.cacheWrite1h,c.cacheRead,c.output,providerTurnId,clientVersion,sourceAccount,parentThreadId,firstUsage?1:0);
 }
 async function scan(path:string,provider:'claude-code'|'codex'){
   const stat=statSync(path), prior=cache.query('SELECT * FROM files WHERE path=?').get(path) as FileRow|null;
@@ -60,7 +96,7 @@ async function scan(path:string,provider:'claude-code'|'codex'){
     &&(JSON.parse(prior.total_json) as {schemaVersion?:number}).schemaVersion===4)return;
   // An old file cannot add a row to the one-week report. Retire its old cursor
   // without rereading archived transcript bytes during the format upgrade.
-  if(stat.mtimeMs<oneWeekAgo){
+  if(stat.mtimeMs<activeUsageWindowStartMs){
     if(prior){
       cache.query('DELETE FROM records WHERE path=?').run(path);
       cache.query('DELETE FROM cache_boundaries WHERE path=?').run(path);
@@ -116,7 +152,7 @@ async function scan(path:string,provider:'claude-code'|'codex'){
       if(provider==='claude-code'&&row.type==='assistant'&&row.message?.usage&&row.message?.id){
         if(!firstUsageId&&offset===0)firstUsageId=row.message.id;
         insert(path,row.message.id,provider,conversation,helper,at,row.message.model??null,countsClaude(row.message.usage),null,
-          typeof row.version==='string'?row.version:null);
+          typeof row.version==='string'?row.version:null,null,null,firstUsageId===row.message.id);
       }
       if(provider==='codex'&&row.type==='token_usage_record'&&row.payload?.usage
         &&typeof row.payload.response_id==='string'){
@@ -130,7 +166,7 @@ async function scan(path:string,provider:'claude-code'|'codex'){
         const id=row.payload.response_id;
         if(!firstUsageId&&offset===0)firstUsageId=id;
         insert(path,id,provider,conversation,!!codexParentThreadId,at,model,counts,
-          typeof row.payload.turn_id==='string'?row.payload.turn_id:providerTurnId,codexClientVersion);
+          typeof row.payload.turn_id==='string'?row.payload.turn_id:providerTurnId,codexClientVersion,null,codexParentThreadId,firstUsageId===id);
       }
       if(provider==='codex'&&row.type==='event_msg'&&row.payload?.type==='token_count'&&row.payload.info?.total_token_usage){
         const next=countsCodex(row.payload.info.total_token_usage);
@@ -139,7 +175,7 @@ async function scan(path:string,provider:'claude-code'|'codex'){
         if(!nativeCodexUsageSeen&&Object.values(delta).some(Boolean)){
           const id=String(row.ordinal??atByte);
           if(!firstUsageId&&offset===0)firstUsageId=id;
-          insert(path,id,provider,conversation,!!codexParentThreadId,at,model,delta,providerTurnId,codexClientVersion);
+          insert(path,id,provider,conversation,!!codexParentThreadId,at,model,delta,providerTurnId,codexClientVersion,null,codexParentThreadId,firstUsageId===id);
           lastLegacyCodex={id,at,counts:delta};
         }
         total=next;
@@ -166,6 +202,7 @@ function midnight(zone:string,now=Date.now()){
 const pricing:Record<string,{input:number;cacheWrite:number;cacheWrite1h:number;cacheRead:number;output:number}>={
   'claude-opus-5-5':{input:4,cacheWrite:5,cacheWrite1h:8,cacheRead:.2,output:20},
   'claude-opus-5':{input:5,cacheWrite:6.25,cacheWrite1h:10,cacheRead:.5,output:25},
+  'claude-fable-5-2':{input:8,cacheWrite:10,cacheWrite1h:16,cacheRead:.2,output:40},
   'claude-fable-5-1':{input:10,cacheWrite:12.5,cacheWrite1h:20,cacheRead:.25,output:50},
   'claude-sonnet-5':{input:2,cacheWrite:2.5,cacheWrite1h:4,cacheRead:.2,output:10},
   'claude-sonnet-5-5':{input:2,cacheWrite:2.5,cacheWrite1h:4,cacheRead:.2,output:10},
@@ -180,39 +217,13 @@ const pricing:Record<string,{input:number;cacheWrite:number;cacheWrite1h:number;
 };
 function price(provider:string,model:string|null){return pricing[model??'']??(provider==='claude-code'?pricing['claude-opus-5-5']!:pricing['gpt-6.1-sol']!);}
 type RecordRow={path:string;record_id:string;provider:string;conversation:string;helper:number;at_ms:number;model:string|null;
-  input:number;cache_write:number;cache_write_1h:number;cache_read:number;output:number;provider_turn_id:string|null;client_version:string|null};
+  input:number;cache_write:number;cache_write_1h:number;cache_read:number;output:number;provider_turn_id:string|null;client_version:string|null;
+  source_account:string|null;parent_thread_id:string|null;first_usage:number};
 type Session={id:number;agent_session_uuid:string;native_metadata_json:string;provider_id:string};
 type Turn={id:number;session_id:number;status:string;provider_turn_id:string|null;provider_started_at:string|null;ended_at:string|null;
-  systemInstructionsSha256:string|null;effort:string|null;startMs:number;endMs:number};
+  systemInstructionsSha256:string|null;effort:string|null;topic_id:string|null;startMs:number;endMs:number};
 type ScheduledFiring={id:number;session_id:number;status:string;saved_root_id:number;saved_sequence:number;saved_fire_at_ms:number;
   provider_started_at:string|null;provider_duration_ms:number|null;ended_at:string|null};
-const codexLabels=new Map<string,string>();
-for(const accountHome of [join(home,'.codex'),...existsSync(join(home,'.codex-accounts'))
-  ?readdirSync(join(home,'.codex-accounts'),{withFileTypes:true}).filter(x=>x.isDirectory()).map(x=>join(home,'.codex-accounts',x.name)):[]]){
-  try{
-    const auth=JSON.parse(readFileSync(join(accountHome,'auth.json'),'utf8'));
-    const id=auth?.tokens?.account_id;
-    if(typeof id!=='string')continue;
-    let label=id;
-    try{
-      const claims=JSON.parse(Buffer.from(auth.tokens.id_token.split('.')[1],'base64url').toString('utf8'));
-      if(typeof claims.email==='string')label=claims.email;
-    }catch{}
-    codexLabels.set(id,label);
-  }catch{}
-}
-const codexTranscriptAccount=new Map<string,string>();
-function codexAccount(path:string){
-  const known=codexTranscriptAccount.get(path);if(known)return known;
-  let id:string|null=null;
-  try{
-    const fd=openSync(path,'r'),bytes=Buffer.alloc(4096);
-    try{const n=readSync(fd,bytes,0,bytes.length,0);id=bytes.toString('utf8',0,n).match(/"creator_account_id":"([^"]+)"/)?.[1]??null;}
-    finally{closeSync(fd);}
-  }catch{}
-  const label=id?(codexLabels.get(id)??`Codex account ${id}`):'unknown Codex account';
-  codexTranscriptAccount.set(path,label);return label;
-}
 type CallMix={totalCalls:number;helperCalls:number;models:Map<string,{calls:number;helperCalls:number}>};
 const newCallMix=():CallMix=>({totalCalls:0,helperCalls:0,models:new Map()});
 function addCall(mix:CallMix,model:string|null,helper:boolean){
@@ -225,6 +236,7 @@ function callMixView(mix:CallMix){return {totalCalls:mix.totalCalls,helperCalls:
   byModel:[...mix.models].map(([model,value])=>({model,...value,mainCalls:value.calls-value.helperCalls,
     share:mix.totalCalls?value.calls/mix.totalCalls:0})).sort((a,b)=>b.calls-a.calls)};}
 function report(period:'today'|'week',since:number,zone:string){
+  const ledger=ownerLedger();
   const sessions=new Map((ledger.query("SELECT id,agent_session_uuid,native_metadata_json,provider_id FROM sessions WHERE agent_session_uuid IS NOT NULL").all() as Session[])
     .map(s=>[`${s.provider_id}:${s.agent_session_uuid}`,s]));
   const events=ledger.query("SELECT event.session_id,event.turn_id,event.created_at,json_extract(event.payload_json,'$.account') AS account FROM session_owner_events event WHERE event.kind='account' ORDER BY event.session_id,event.created_at").all() as {session_id:number;turn_id:number|null;created_at:string;account:string}[];
@@ -232,7 +244,7 @@ function report(period:'today'|'week',since:number,zone:string){
   const accountsByTurn=new Map<number,string>();
   for(const e of events){const a=accounts.get(e.session_id)??[];a.push({at:Date.parse(e.created_at+'Z'),name:e.account});accounts.set(e.session_id,a);
     if(e.turn_id!==null)accountsByTurn.set(e.turn_id,e.account);}
-  const turns=(ledger.query(`SELECT turn.id,turn.session_id,turn.status,turn.provider_turn_id,turn.provider_started_at,turn.ended_at,
+  const turns=(ledger.query(`SELECT turn.id,turn.session_id,turn.status,turn.provider_turn_id,turn.provider_started_at,turn.ended_at,turn.topic_id,
     json_extract(identity.payload_json,'$.systemInstructionsSha256') AS systemInstructionsSha256,
     json_extract(identity.payload_json,'$.effort') AS effort
     FROM turns turn LEFT JOIN session_owner_events identity ON identity.sequence=(
@@ -248,9 +260,10 @@ function report(period:'today'|'week',since:number,zone:string){
   const firstUsageByPath=new Map((cache.query('SELECT path,total_json FROM files').all() as {path:string;total_json:string}[])
     .map(file=>[file.path,(JSON.parse(file.total_json) as {firstUsageId?:string}).firstUsageId??null] as const));
   const codexParents=new Map<string,string>();
-  for(const file of cache.query('SELECT path,total_json FROM files WHERE path LIKE ?').all('%.jsonl') as {path:string;total_json:string}[]){
-    const parent=(JSON.parse(file.total_json) as {parentThreadId?:string}).parentThreadId;
-    if(parent)codexParents.set(basename(file.path,'.jsonl').match(/([0-9a-f]{8}-[0-9a-f-]{27,})$/)?.[1]??'',parent);
+  for(const file of cache.query('SELECT path,total_json FROM files WHERE path LIKE ? OR path LIKE ?').all('%.jsonl','runner:%') as {path:string;total_json:string}[]){
+    const details=JSON.parse(file.total_json) as {parentThreadId?:string;conversation?:string};
+    const conversation=details.conversation??basename(file.path,'.jsonl').match(/([0-9a-f]{8}-[0-9a-f-]{27,})$/)?.[1]??'';
+    if(details.parentThreadId&&conversation)codexParents.set(conversation,details.parentThreadId);
   }
   const rootConversation=(id:string)=>{let current=id;const seen=new Set<string>();
     while(codexParents.has(current)&&!seen.has(current)){seen.add(current);current=codexParents.get(current)!;}return current;};
@@ -266,6 +279,8 @@ function report(period:'today'|'week',since:number,zone:string){
     const model=event.model??'unreported';counts[model]=(counts[model]??0)+1;return counts;
   },{}));
   const groups=new Map<string,any>();
+  const attributionBuckets=new Map<string,{provider:string;account:string;window:string;atMs:number;sessionId:string|null;topicId:string|null;
+    routineRootId:number|null;weighted:number;raw:Counts;calls:number;conversation:string|null}>();
   const scheduled=(ledger.query(`SELECT id,session_id,status,saved_root_id,saved_sequence,saved_fire_at_ms,
     provider_started_at,provider_duration_ms,ended_at FROM turns
     WHERE saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL AND saved_root_id IS NOT NULL
@@ -276,7 +291,7 @@ function report(period:'today'|'week',since:number,zone:string){
   for(const firing of scheduled){const list=scheduledBySession.get(firing.session_id)??[];list.push(firing);scheduledBySession.set(firing.session_id,list);}
   const fallbackModels=new Set<string>();
   const rows=cache.query(`SELECT path,record_id,provider,conversation,helper,at_ms,model,input,cache_write,cache_write_1h,cache_read,output,
-    provider_turn_id,client_version FROM records WHERE at_ms>=? ORDER BY path,at_ms,record_id`).all(oneWeekAgo) as RecordRow[];
+    provider_turn_id,client_version,source_account,parent_thread_id,first_usage FROM records WHERE at_ms>=? ORDER BY path,at_ms,record_id`).all(oneWeekAgo) as RecordRow[];
   const calls:any[]=[];
   const overallMix=newCallMix();
   const unknownEvidence:{atMs:number;provider:string;gapMs:number|null;instructions:'same'|'changed'|'unavailable';accountKnown:boolean}[]=[];
@@ -285,6 +300,8 @@ function report(period:'today'|'week',since:number,zone:string){
   const previousByPath=new Map<string,{row:RecordRow;turn:Turn|null}>();
   for(const r of rows){
     const owningConversation=r.provider==='codex'?rootConversation(r.conversation):r.conversation;
+    const isHelper=!!r.helper||owningConversation!==r.conversation;
+    const helperId=isHelper?(r.provider==='codex'?r.conversation:basename(r.path,'.jsonl')):null;
     const s=sessions.get(`${r.provider}:${owningConversation}`),meta=s?JSON.parse(s.native_metadata_json):{};
     const candidates=s?turnsBySession.get(s.id)??[]:[];
     const exact=r.provider_turn_id?candidates.filter(t=>t.provider_turn_id===r.provider_turn_id):[];
@@ -294,9 +311,9 @@ function report(period:'today'|'week',since:number,zone:string){
     let account='unknown';for(const e of accountEvents){if(e.at<=r.at_ms)account=e.name;else break;}
     if(turn&&accountsByTurn.has(turn.id))account=accountsByTurn.get(turn.id)!;
     // Codex homes have separate transcript trees; Claude's shared history gives no account for an unrelated process.
-    if(r.provider==='codex'&&account==='unknown')account=codexAccount(r.path);
+    if(r.provider==='codex'&&account==='unknown')account=r.source_account??'unknown Codex account';
     const project=meta.project?basename(meta.project):meta.cwd?basename(meta.cwd):null;
-    const kind=!s?'outside Concierge':r.helper?'helper sub-agents':project==='slack-inbox'?'Inbox router':project??'ordinary sessions';
+    const kind=!s?'outside Concierge':isHelper?'helper sub-agents':project==='slack-inbox'?'Inbox router':project??'ordinary sessions';
     const weights=price(r.provider,r.model);
     const previous=previousByPath.get(r.path);
     const rewritten=r.input+r.cache_write+r.cache_write_1h;
@@ -339,7 +356,7 @@ function report(period:'today'|'week',since:number,zone:string){
       instructions:previous?.turn?.systemInstructionsSha256&&turn?.systemInstructionsSha256
         ?previous.turn.systemInstructionsSha256===turn.systemInstructionsSha256?'same':'changed':'unavailable',
       accountKnown:account!=='unknown'});
-    const call={provider:r.provider,account,sessionId:s?.id??null,turnId:turn?.id??null,helper:!!r.helper,
+    const call={provider:r.provider,account,sessionId:s?.id??null,turnId:turn?.id??null,helper:isHelper,
       providerConversationId:r.conversation,callId:r.record_id,at:new Date(r.at_ms).toISOString(),model:r.model,
       clientVersion:r.client_version,raw:{input:r.input,cacheWrite:r.cache_write,cacheWrite1h:r.cache_write_1h,
         cacheRead:r.cache_read,output:r.output},cachedInputTokens:r.cache_read,rewrittenInputTokens:rewritten,
@@ -348,7 +365,7 @@ function report(period:'today'|'week',since:number,zone:string){
     previousByPath.set(r.path,{row:r,turn});
     if(r.at_ms<since)continue;
     calls.push(call);
-    addCall(overallMix,r.model,!!r.helper);
+    addCall(overallMix,r.model,isHelper);
     if(turn){
       let entry=callsByTurn.get(turn.id);
       if(!entry){entry={turnId:turn.id,sessionId:turn.session_id,provider:r.provider,account,status:turn.status,
@@ -359,29 +376,58 @@ function report(period:'today'|'week',since:number,zone:string){
     }
     if(!pricing[r.model??'']&&r.input+r.cache_write+r.cache_write_1h+r.cache_read+r.output>0)fallbackModels.add(r.model??'unreported');
     const weighted=(r.input*weights.input+r.cache_write*weights.cacheWrite+r.cache_write_1h*weights.cacheWrite1h+r.cache_read*weights.cacheRead+r.output*weights.output)/1e6;
+    const firing=s?scheduledBySession.get(s.id)?.find(t=>t.providerStartMs!==null&&t.endedMs!==null
+      &&r.at_ms>=t.providerStartMs&&r.at_ms<=t.endedMs):null;
     if(s){
-      const firing=scheduledBySession.get(s.id)?.find(t=>t.providerStartMs!==null&&t.endedMs!==null
-        &&r.at_ms>=t.providerStartMs&&r.at_ms<=t.endedMs);
       if(firing){firing.weighted+=weighted;firing.usageRecords++;
         firing.raw.input+=r.input;firing.raw.cacheWrite+=r.cache_write;firing.raw.cacheWrite1h+=r.cache_write_1h;
         firing.raw.cacheRead+=r.cache_read;firing.raw.output+=r.output;}
     }
     const key=`${r.provider}:${account}`;
+    // Fifteen-minute points let the owner compare transcript work with the same observed
+    // provider-meter span after it has merged all runners. They are never served to clients.
+    const atMs=Math.floor(r.at_ms/900_000)*900_000,sessionId=s?`concierge:${s.id}`:null;
+    // Fable draws on Claude's all-models weekly meter as well as its own; it is weighted into both.
+    const windows=r.provider==='claude-code'&&r.model?.includes('fable')?['Weekly','Weekly · Fable only']:['Weekly'];
+    const topicId=turn?.topic_id??null,routineRootId=firing?.saved_root_id??null;
+    const conversation=s?null:`outside:${r.conversation}`;
+    for(const window of windows){
+      const bucketKey=JSON.stringify([key,window,atMs,sessionId,conversation,topicId,routineRootId]);
+      let bucket=attributionBuckets.get(bucketKey);
+      if(!bucket){bucket={provider:r.provider,account,window,atMs,sessionId,topicId,routineRootId,weighted:0,raw:empty(),calls:0,conversation};attributionBuckets.set(bucketKey,bucket);}
+      bucket.weighted+=weighted;bucket.calls++;
+      bucket.raw.input+=r.input;bucket.raw.cacheWrite+=r.cache_write;bucket.raw.cacheWrite1h+=r.cache_write_1h;
+      bucket.raw.cacheRead+=r.cache_read;bucket.raw.output+=r.output;
+    }
     let g=groups.get(key);
     if(!g){g={provider:r.provider,account,total:0,raw:empty(),cache:{callCount:0,flaggedCallCount:0,unknownCauseCount:0},
-      bySession:new Map(),byKind:new Map(),mix:newCallMix()};groups.set(key,g);}
-    addCall(g.mix,r.model,!!r.helper);
+      bySession:new Map(),byKind:new Map(),byModel:new Map(),mix:newCallMix()};groups.set(key,g);}
+    addCall(g.mix,r.model,isHelper);
     g.total+=weighted;g.raw.input+=r.input;g.raw.cacheWrite+=r.cache_write;g.raw.cacheWrite1h+=r.cache_write_1h;g.raw.cacheRead+=r.cache_read;g.raw.output+=r.output;
     g.cache.callCount++;g.cache.flaggedCallCount+=Number(largeUnexpected);g.cache.unknownCauseCount+=Number(cause.status==='unknown');
     const sessionKey=s?String(s.id):`outside:${r.conversation}`;
     let entry=g.bySession.get(sessionKey);
     if(!entry){entry={sessionId:s?.id??null,address:s?`concierge:${s.id}`:null,providerConversationId:r.conversation,
       title:meta.title??(s?null:`Outside Concierge · ${r.conversation}`),project,kind:s?project==='slack-inbox'?'Inbox router':'ordinary session':'outside Concierge',weighted:0,helperWeighted:0,raw:empty(),
-      cache:{callCount:0,flaggedCallCount:0,unknownCauseCount:0},mix:newCallMix()};g.bySession.set(sessionKey,entry);}
-    addCall(entry.mix,r.model,!!r.helper);
+      cache:{callCount:0,flaggedCallCount:0,unknownCauseCount:0},byModel:new Map(),byHelper:new Map(),mix:newCallMix()};g.bySession.set(sessionKey,entry);}
+    addCall(entry.mix,r.model,isHelper);
     entry.weighted+=weighted;entry.raw.input+=r.input;entry.raw.cacheWrite+=r.cache_write;entry.raw.cacheWrite1h+=r.cache_write_1h;entry.raw.cacheRead+=r.cache_read;entry.raw.output+=r.output;
     entry.cache.callCount++;entry.cache.flaggedCallCount+=Number(largeUnexpected);entry.cache.unknownCauseCount+=Number(cause.status==='unknown');
-    if(r.helper)entry.helperWeighted+=weighted;
+    if(isHelper)entry.helperWeighted+=weighted;
+    const addMeasured=(map:Map<string,any>,key:string,details:Record<string,unknown>)=>{
+      let item=map.get(key);
+      if(!item){item={...details,weighted:0,raw:empty(),calls:0,helperWeighted:0,helperRaw:empty(),helperCalls:0};map.set(key,item);}
+      item.weighted+=weighted;item.calls++;
+      item.raw.input+=r.input;item.raw.cacheWrite+=r.cache_write;item.raw.cacheWrite1h+=r.cache_write_1h;
+      item.raw.cacheRead+=r.cache_read;item.raw.output+=r.output;
+      if(isHelper){item.helperWeighted+=weighted;item.helperCalls++;
+        item.helperRaw.input+=r.input;item.helperRaw.cacheWrite+=r.cache_write;
+        item.helperRaw.cacheWrite1h+=r.cache_write_1h;item.helperRaw.cacheRead+=r.cache_read;item.helperRaw.output+=r.output;}
+    };
+    const model=r.model??'unreported';
+    addMeasured(g.byModel,model,{model});
+    addMeasured(entry.byModel,model,{model});
+    if(helperId)addMeasured(entry.byHelper,`${helperId}:${model}`,{id:helperId,model});
     let category=g.byKind.get(kind);
     if(!category){category={weighted:0,raw:empty()};g.byKind.set(kind,category);}
     category.weighted+=weighted;category.raw.input+=r.input;category.raw.cacheWrite+=r.cache_write;
@@ -427,12 +473,15 @@ function report(period:'today'|'week',since:number,zone:string){
         accountAttribution:counts(item=>item.accountKnown?'known':'unavailable')}};
   };
   return {period,since:new Date(since).toISOString(),through:new Date().toISOString(),timeZone:zone,
+    attributionBuckets:[...attributionBuckets.values()],
     callMix:callMixView(overallMix),escalations:{count:escalations.length,byModel:Object.fromEntries(escalationModels)},
     measure:'Published API price equivalent in USD; a proxy for allowance share, not the provider subscription meter.',
     fallbackModels:[...fallbackModels].sort(),
     cacheDiagnostics:{meaning:'Cached input was read from the provider cache; rewritten input was sent as uncached input or cache creation. Cause reasons are coincident observed changes, not proof that a specific change invalidated the cache prefix. Possible reasons include submitted Claude instructions that its recorded prompt may have ignored.',
       flagRule:'A call rewrites over half of more than 50000 input tokens after an earlier call, with no observed compaction or provider-supported cache lifetime elapsed. A turn or session is a bug candidate when its flagged-call rate exceeds both 5% and twice its provider period baseline.',
       ordinaryMissRate,
+      ordinaryCallCount,
+      providerRates:Object.fromEntries(providerRates),
       callCount:calls.length,turnCount:callsByTurn.size,
       last48Hours:summarySince(Date.now()-48*3600_000),
       last15Minutes:summarySince(Date.now()-15*60_000),
@@ -448,25 +497,140 @@ function report(period:'today'|'week',since:number,zone:string){
       apiPriceEquivalentUsd:t.usageRecords?t.weighted:null,rawTokens:t.usageRecords?t.raw:null})),
     weighting:pricing,pricingSources:['https://platform.claude.com/docs/en/about-claude/pricing','https://platform.openai.com/pricing'],
     accounts:[...groups.values()].map(g=>({provider:g.provider,account:g.account,totalWeighted:g.total,raw:g.raw,cache:g.cache,callMix:callMixView(g.mix),
+      byModel:[...g.byModel.values()].sort((a:any,b:any)=>b.weighted-a.weighted),
       cachedInputTokens:g.raw.cacheRead,rewrittenInputTokens:g.raw.input+g.raw.cacheWrite+g.raw.cacheWrite1h,
       bySession:[...g.bySession.values()].map((x:any)=>({...x,mix:undefined,callMix:callMixView(x.mix),share:g.total?x.weighted/g.total:0,
+        byModel:[...x.byModel.values()].sort((a:any,b:any)=>b.weighted-a.weighted),
+        byHelper:[...x.byHelper.values()].sort((a:any,b:any)=>b.weighted-a.weighted),
         cachedInputTokens:x.raw.cacheRead,rewrittenInputTokens:x.raw.input+x.raw.cacheWrite+x.raw.cacheWrite1h}))
         .sort((a:any,b:any)=>b.weighted-a.weighted),
       byKind:[...g.byKind].map(([kind,value])=>({kind,...value,share:g.total?value.weighted/g.total:0})).sort((a:any,b:any)=>b.weighted-a.weighted)}))};
 }
-async function main(){
-  const started=performance.now();
+function decodeRunnerCursor(value:string):{snapshotMaxRowid:number;afterRowid:number;providers:string;roots:string;sinceMs:number}{
+  let parsed:any;try{parsed=JSON.parse(Buffer.from(value,'base64url').toString('utf8'));}catch{throw new Error('INVALID_USAGE_BREAKDOWN_CURSOR');}
+  if(!Number.isSafeInteger(parsed?.snapshotMaxRowid)||parsed.snapshotMaxRowid<0||!Number.isSafeInteger(parsed?.afterRowid)||parsed.afterRowid<0||parsed.afterRowid>parsed.snapshotMaxRowid||typeof parsed.providers!=='string'||typeof parsed.roots!=='string'||!Number.isSafeInteger(parsed.sinceMs)||parsed.sinceMs<0)
+    throw new Error('INVALID_USAGE_BREAKDOWN_CURSOR');
+  return parsed;
+}
+function encodeRunnerCursor(value:{snapshotMaxRowid:number;afterRowid:number;providers:string;roots:string;sinceMs:number}){return Buffer.from(JSON.stringify(value)).toString('base64url');}
+async function scanRunnerProviderRoots(providers:string[],sinceMs:number,buildSequence:boolean,availableRoots=configuredRoots()){
+  const roots=availableRoots.filter(root=>providers.includes(root.provider));if(!roots.length)throw new Error('NO_PROVIDER_USAGE_HOMES');
+  activeUsageWindowStartMs=sinceMs;
   cache.exec('BEGIN IMMEDIATE');
   try{
-    for(const path of walk(claudeRoot))await scan(path,'claude-code');
-    for(const root of codexRoots)for(const path of walk(root))if(path.includes('/sessions/'))await scan(path,'codex');
-    cache.query('DELETE FROM records WHERE at_ms<?').run(oneWeekAgo);
-    cache.query('DELETE FROM cache_boundaries WHERE at_ms<?').run(oneWeekAgo);
+    for(const root of roots){
+      const path=join(root.home,root.provider==='claude-code'?'projects':'sessions');
+      for(const transcript of walk(path))await scan(transcript,root.provider);
+    }
+    for(const provider of providers){
+      const allowed=roots.filter(root=>root.provider===provider).map(root=>join(root.home,provider==='claude-code'?'projects':'sessions'));
+      const known=cache.query('SELECT DISTINCT path FROM records WHERE provider=?').all(provider) as {path:string}[];
+      for(const row of known)if(!allowed.some(root=>row.path===root||row.path.startsWith(`${root}/`))){
+        cache.query('DELETE FROM records WHERE path=?').run(row.path);
+        cache.query('DELETE FROM cache_boundaries WHERE path=?').run(row.path);
+        cache.query('DELETE FROM files WHERE path=?').run(row.path);
+        cache.query('DELETE FROM provider_record_sequence WHERE path=?').run(row.path);
+      }
+    }
+    cache.query('DELETE FROM records WHERE at_ms<?').run(activeUsageWindowStartMs);
+    cache.query('DELETE FROM cache_boundaries WHERE at_ms<?').run(activeUsageWindowStartMs);
+    cache.query('DELETE FROM provider_record_sequence WHERE at_ms<?').run(activeUsageWindowStartMs);
+    if(buildSequence)cache.query('INSERT OR IGNORE INTO provider_record_sequence(path,record_id,at_ms) SELECT path,record_id,at_ms FROM records WHERE at_ms>=?').run(activeUsageWindowStartMs);
     cache.exec('COMMIT');
   }catch(error){cache.exec('ROLLBACK');throw error;}
-  const zone=(ledger.query('SELECT time_zone FROM saved_work_settings WHERE singleton=1').get() as {time_zone:string}|null)?.time_zone??'America/New_York';
-  const week=report('week',oneWeekAgo,zone),today=report('today',midnight(zone),zone);
-  today.cacheDiagnostics.last48Hours=week.cacheDiagnostics.last48Hours;
-  console.log(JSON.stringify({today,week,scanMs:Math.round(performance.now()-started)}));
+  return roots;
 }
-main().catch(error=>{console.error(error);process.exitCode=1;});
+async function runnerProviderPage(argument:string){
+  let input:any;try{input=JSON.parse(argument);}catch{throw new Error('INVALID_USAGE_BREAKDOWN_PAGE');}
+  if(!input||input.cursor!==null&&typeof input.cursor!=='string'||input.limit!==undefined&&(!Number.isSafeInteger(input.limit)||input.limit<1||input.limit>100)
+    ||!Array.isArray(input.providers)||!input.providers.length||input.providers.some((provider:unknown)=>provider!=='claude-code'&&provider!=='codex')
+    ||!Number.isSafeInteger(input.sinceMs)||input.sinceMs<0||input.sinceMs>Date.now())
+    throw new Error('INVALID_USAGE_BREAKDOWN_PAGE');
+  const providers=[...new Set(input.providers)].sort() as string[],providersKey=providers.join(',');
+  const roots=configuredRoots().filter(root=>providers.includes(root.provider));if(!roots.length)throw new Error('NO_PROVIDER_USAGE_HOMES');
+  const rootsKey=createHash('sha256').update(JSON.stringify(roots.map(root=>[root.provider,root.account,root.home]).sort())).digest('hex');
+  await scanRunnerProviderRoots(providers,input.sinceMs,true);
+  const cursor=input.cursor===null?null:decodeRunnerCursor(input.cursor);
+  if(cursor&&(cursor.providers!==providersKey||cursor.roots!==rootsKey||cursor.sinceMs!==activeUsageWindowStartMs))throw new Error('INVALID_USAGE_BREAKDOWN_CURSOR');
+  const snapshotMaxRowid=cursor?.snapshotMaxRowid??Number((cache.query('SELECT COALESCE(MAX(id),0) AS n FROM provider_record_sequence').get() as {n:number}).n);
+  const afterRowid=cursor?.afterRowid??0,limit=input.limit??80;
+  const entries=cache.query(`SELECT s.id AS rowid,r.path,r.record_id,r.provider,r.conversation,r.helper,r.at_ms,r.model,r.input,r.cache_write,r.cache_write_1h,r.cache_read,r.output,
+    r.provider_turn_id,r.client_version,r.parent_thread_id,r.first_usage,f.total_json FROM records r LEFT JOIN files f ON f.path=r.path
+    JOIN provider_record_sequence s ON s.path=r.path AND s.record_id=r.record_id
+    WHERE s.id>? AND s.id<=? AND r.at_ms>=? AND r.provider IN (${providers.map(()=>'?').join(',')}) ORDER BY s.id LIMIT ?`)
+    .all(afterRowid,snapshotMaxRowid,activeUsageWindowStartMs,...providers,limit+1) as (RecordRow&{rowid:number;total_json:string|null})[];
+  const hasMore=entries.length>limit,page=entries.slice(0,limit),nextRowid=page.at(-1)?.rowid??afterRowid;
+  const rootsByProvider=roots.map(root=>({provider:root.provider,account:root.account,root:join(root.home,root.provider==='claude-code'?'projects':'sessions')}));
+  const records=page.map(row=>{
+    const sourceRoot=rootsByProvider.find(root=>root.provider===row.provider&&(row.path===root.root||row.path.startsWith(`${root.root}/`)));
+    const sourceId=createHash('sha256').update(`${row.provider}\0${row.path}`).digest('hex');
+    const boundaries=cache.query('SELECT at_ms FROM cache_boundaries WHERE path=? AND at_ms>=? ORDER BY at_ms').all(row.path,activeUsageWindowStartMs) as {at_ms:number}[];
+    const fileInfo=row.total_json?JSON.parse(row.total_json) as {firstUsageId?:string;parentThreadId?:string}:{};
+    return {sourceId,recordId:row.record_id,provider:row.provider,conversation:row.conversation,helper:!!row.helper,atMs:row.at_ms,model:row.model,
+      input:row.input,cacheWrite:row.cache_write,cacheWrite1h:row.cache_write_1h,cacheRead:row.cache_read,output:row.output,
+      providerTurnId:row.provider_turn_id,clientVersion:row.client_version,sourceAccount:sourceRoot?.account??null,
+      parentThreadId:row.parent_thread_id??fileInfo.parentThreadId??null,firstUsage:row.record_id===(fileInfo.firstUsageId??null),
+      boundaries:boundaries.map(value=>value.at_ms)};
+  });
+  const serialized=JSON.stringify(records);
+  if(Buffer.byteLength(serialized)>192*1024)throw new Error('USAGE_BREAKDOWN_PAGE_TOO_LARGE');
+  console.log(JSON.stringify({snapshotMaxRowid,records,nextCursor:hasMore?encodeRunnerCursor({snapshotMaxRowid,afterRowid:nextRowid,providers:providersKey,roots:rootsKey,sinceMs:activeUsageWindowStartMs}):null}));
+}
+async function runnerProviderReport(){
+  const snapshot=decodeUsageSnapshot(readFileSync(0,'utf8'));
+  oneWeekAgo=snapshot.sinceMs;
+  ledger=ledgerFromUsageSnapshot(snapshot);
+  const providers=[...new Set(configuredRoots().map(root=>root.provider))];
+  await scanRunnerProviderRoots(providers,oneWeekAgo,false);
+  const week=report('week',oneWeekAgo,snapshot.timeZone),today=report('today',midnight(snapshot.timeZone),snapshot.timeZone);
+  today.cacheDiagnostics.last48Hours=week.cacheDiagnostics.last48Hours;
+  console.log(JSON.stringify({today,week}));
+}
+async function macPeerReport(){
+  const owner=ownerLedger();
+  const snapshot=captureUsageLedgerSnapshot(owner,oneWeekAgo);
+  owner.close();
+  oneWeekAgo=snapshot.sinceMs;
+  ledger=ledgerFromUsageSnapshot(snapshot);
+  await scanRunnerProviderRoots(['claude-code','codex'],oneWeekAgo,false,macPeerRoots());
+  const week=report('week',oneWeekAgo,snapshot.timeZone),today=report('today',midnight(snapshot.timeZone),snapshot.timeZone);
+  today.cacheDiagnostics.last48Hours=week.cacheDiagnostics.last48Hours;
+  return {today,week};
+}
+
+function configuredRunnerProviders(){
+  const result=new Map<string,Set<'claude-code'|'codex'>>();
+  const add=(runner:unknown,provider:'claude-code'|'codex')=>{
+    if(typeof runner!=='string'||!runner.trim()||runner.length>160)return;
+    const providers=result.get(runner)??new Set<'claude-code'|'codex'>();providers.add(provider);result.set(runner,providers);
+  };
+  add(process.env.CONCIERGE_TURN_RUNNER,'claude-code');add(process.env.CONCIERGE_CODEX_RUNNER,'codex');
+  const sessions=ownerLedger().query("SELECT provider_id,native_metadata_json FROM sessions WHERE agent_session_uuid IS NOT NULL").all() as {provider_id:string;native_metadata_json:string}[];
+  for(const session of sessions){
+    if(session.provider_id!=='claude-code'&&session.provider_id!=='codex')continue;
+    try{add(JSON.parse(session.native_metadata_json)?.providerRunner,session.provider_id);}catch{}
+  }
+  return result;
+}
+
+async function main(){
+  if(process.argv[2]==='--provider-page'){
+    await runnerProviderPage(process.argv[3]??'');
+    return;
+  }
+  if(process.argv[2]==='--provider-report'){
+    await runnerProviderReport();
+    return;
+  }
+  const started=performance.now();
+  const runners=configuredRunnerProviders();
+  if(!runners.size&&process.env.CONCIERGE_PEER_NAME!=='mac')throw new Error('NO_PROVIDER_USAGE_RUNNERS_CONFIGURED');
+  const {today,week}=runners.size
+    ?await collectRunnerUsageReports(runners,encodeUsageSnapshot(captureUsageLedgerSnapshot(ownerLedger(),oneWeekAgo)))
+    :await macPeerReport();
+  const readings=weeklyReadings(ownerLedger(),oneWeekAgo);
+  console.log(JSON.stringify({today:nameAllowanceRows(attributeWeeklyAllowance(today,readings),ownerLedger()),
+    week:nameAllowanceRows(attributeWeeklyAllowance(week,readings),ownerLedger()),
+    scanMs:Math.round(performance.now()-started)}));
+}
+main().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>closeRunnerMachineCalls());

@@ -1,5 +1,7 @@
 import {Database} from 'bun:sqlite';
 import {readCompactReceipt} from '../src/prepared-receipt-core';
+import {PreparedReceipts,readPreparedReceiptChanges,readPreparedReceiptWindow} from '../src/prepared-receipts';
+import {receiptAttachmentProjection} from '../src/receipt-attachments';
 
 const db=new Database(':memory:');
 db.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,status TEXT,provider_id TEXT,native_metadata_json TEXT);
@@ -10,6 +12,7 @@ db.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,status TEXT,provider_id TE
   CREATE TABLE session_inputs(id TEXT PRIMARY KEY,session_id INTEGER,kind TEXT,origin TEXT,source_input_id TEXT,
     request_id TEXT,turn_id INTEGER,steering_id INTEGER,created_at TEXT,updated_at TEXT,
     payload_json TEXT,receipt_json TEXT);
+  CREATE TABLE session_attachments(id TEXT PRIMARY KEY,name TEXT,content_type TEXT,sha256 TEXT);
   CREATE TABLE turn_steering_messages(id INTEGER PRIMARY KEY,status TEXT,provider_sent_at TEXT,error TEXT);
   CREATE TABLE session_communication_requests(request_id TEXT PRIMARY KEY,target_input_id TEXT,payload_json TEXT,
     outcome TEXT,target_session_id INTEGER,source_input_id TEXT,result_json TEXT);
@@ -21,17 +24,27 @@ db.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,status TEXT,provider_id TE
     attempt INTEGER,max_retries INTEGER,status INTEGER,retry_at_ms INTEGER);
   CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,session_id INTEGER,kind TEXT,input_id TEXT,payload_json TEXT);
   CREATE TABLE deployment_drain(singleton INTEGER PRIMARY KEY);
+  CREATE TABLE focus_hold(singleton INTEGER PRIMARY KEY,until_ms INTEGER,label TEXT,since_ms INTEGER,action_id TEXT);
   CREATE TABLE turn_dependencies(turn_id INTEGER,satisfied_at TEXT);`);
+db.query('INSERT INTO focus_hold(singleton) VALUES(1)').run();
 db.exec(`CREATE TABLE session_peer_deliveries(target_input_id TEXT,peer TEXT,origin_session_id TEXT,
   origin_input_id TEXT,origin_run_id TEXT,requested_effect TEXT,origin_provenance_json TEXT);
   CREATE TABLE session_input_author_corrections(input_id TEXT PRIMARY KEY);`);
 db.query('INSERT INTO sessions VALUES(1,?,?,?)').run('active','claude-code','{}');
+db.query('INSERT INTO session_attachments VALUES(?,?,?,?)')
+  .run('attachment-1','held-note.txt','text/plain','a'.repeat(64));
+const crowdedAttachmentIds:string[]=[];
+for(let index=0;index<20;index++){
+  const id=`crowded-${index}`;crowdedAttachmentIds.push(id);
+  db.query('INSERT INTO session_attachments VALUES(?,?,?,?)')
+    .run(id,`${'long-name-'.repeat(28)}${index}.txt`,'text/plain',String(index).padStart(64,'0'));
+}
 db.query(`INSERT INTO turns(id,session_id,status,native_run_id,ended_at,provider_input_acknowledged_at,
   agent_text,dispatch_failure_class,dispatch_next_attempt_ms,dispatch_attempt,saved_kind,turn_kind) VALUES(1,1,?,?,?,?,?,?,?,?,?,?)`)
   .run('running','run-1',null,null,null,null,null,1,null,'native');
 db.query('INSERT INTO session_inputs VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
   .run('input-1',1,'input','human',null,null,1,null,'2026-10-08T00:00:00Z','2026-10-08T00:00:00Z',
-    JSON.stringify({text:'x'.repeat(20000)}),null);
+    JSON.stringify({text:'x'.repeat(20000),attachments:['attachment-1']}),null);
 db.query('INSERT INTO provider_retry_incarnation VALUES(1,?)').run('owner-a');
 db.query('INSERT INTO provider_retry_observations VALUES(1,?,?,?,?,?,?)')
   .run('owner-a',Date.now(),2,4,529,Date.now()+10000);
@@ -39,7 +52,21 @@ const receipt=()=>readCompactReceipt(db,'input-1')!;
 const expect=(condition:unknown,description:string)=>{if(!condition)throw new Error(description);};
 expect(receipt().statusDetail?.code==='PROVIDER_RETRYING','live retry remains visible');
 expect(receipt().statusDetail?.automaticRetry===true,'retry tells the truth about automatic retry');
+expect(JSON.stringify(receipt().attachments)===JSON.stringify([
+  {id:'attachment-1',name:'held-note.txt',contentType:'text/plain',sha256:'a'.repeat(64)}
+]),'compact receipt publishes ordered retained attachment metadata');
 expect(Buffer.byteLength(JSON.stringify(receipt()))<4096,'retained text remains outside receipt window');
+db.query('INSERT INTO session_inputs VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+  .run('crowded-input',1,'input','agent',null,null,null,null,'2026-10-08T00:00:30Z','2026-10-08T00:00:30Z',
+    JSON.stringify({text:'Many retained files',attachments:crowdedAttachmentIds}),JSON.stringify({state:'waiting'}));
+const crowded=readCompactReceipt(db,'crowded-input')!;
+expect(crowded.attachmentsCoverage.complete===false&&crowded.attachmentsCoverage.count===crowdedAttachmentIds.length,
+  'an unbounded attachment list becomes an explicit bounded prepared prefix');
+expect(crowded.attachments.length>0&&crowded.attachments.length<crowdedAttachmentIds.length,
+  'the bounded prepared prefix remains useful without pretending to be exhaustive');
+expect(Buffer.byteLength(JSON.stringify(crowded))<4096,'many long attachment names cannot overflow a prepared card');
+expect(receiptAttachmentProjection(db,'input',{attachments:crowdedAttachmentIds}).attachments.length===crowdedAttachmentIds.length,
+  'the exact attachment projection remains exhaustive');
 db.query('UPDATE provider_retry_incarnation SET incarnation=? WHERE singleton=1').run('owner-b');
 expect(receipt().statusDetail===null,'old owner retry is never shown after restart');
 db.query('UPDATE provider_retry_observations SET incarnation=? WHERE turn_id=1').run('owner-b');
@@ -56,6 +83,12 @@ expect(receipt().statusDetail?.code==='PROVIDER_AUTH_HELD','queued sign-in hold 
 db.query("UPDATE turns SET dispatch_failure_class=NULL WHERE id=1").run();
 db.query("UPDATE sessions SET status='archived' WHERE id=1").run();
 expect(receipt().statusDetail?.code==='SESSION_PAUSED','paused session remains visible');
+db.query("UPDATE sessions SET status='active' WHERE id=1").run();
+db.query("UPDATE turns SET status='error',ended_at='2026-10-08T00:02:00Z',agent_text='ChatGptDispatchError: CHATGPT_SEND_FAILED' WHERE id=1").run();
+expect(receipt().statusDetail?.code==='CHATGPT_SEND_FAILED','the exact ChatGPT failure stays machine-readable');
+expect(receipt().statusDetail?.message==='The ChatGPT send stopped before Send, so no message reached ChatGPT. This input will not be retried automatically.',
+  'the ChatGPT send code is translated for a person');
+expect(receipt().errorPreview==='ChatGptDispatchError: CHATGPT_SEND_FAILED','the raw ChatGPT failure stays available for diagnosis');
 db.query('INSERT INTO turns(id,session_id,status,native_run_id,provider_input_acknowledged_at,accepted_input_id) VALUES(2,1,?,?,?,?)')
   .run('done','run-2','2026-10-08T00:01:00Z','input-2');
 db.query('INSERT INTO session_inputs VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
@@ -70,4 +103,55 @@ db.query('INSERT INTO provider_outage_offers VALUES(?,?,?,?,?)')
   .run(1,JSON.stringify({offeredAt:'2026-10-08T00:00:00Z',provider:'claude-code',model:null,status:529,
     incident:{name:'x'.repeat(4000)},alternatives:[]}),null,null,null);
 expect(Buffer.byteLength(JSON.stringify(receipt()))<4096,'a large incident title cannot stall the projection');
-console.log('receipt-projection: retry set, restart, clear, hold and bounded preview passed');
+
+db.query('INSERT INTO session_inputs VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+  .run('held-input',1,'input','agent',null,null,null,null,'2026-10-08T00:03:00Z','2026-10-08T00:03:00Z',
+    JSON.stringify({text:'Held with its file',attachments:['attachment-1']}),JSON.stringify({state:'waiting'}));
+const prepared=new Database(':memory:'),projection=new PreparedReceipts(db,prepared),generation=projection.nextGeneration();
+projection.beginRebuild(generation);
+for(let after=0;;){const page=projection.rebuildPage(generation,after,20);after=page.lastRowid;if(!page.hasMore)break;}
+projection.activate(generation,100,'fixture-revision');
+const window=readPreparedReceiptWindow(prepared,1,100,null,40),held=window.operations.find(item=>item.operationId==='held-input');
+expect(held?.state==='waiting','historical held receipt rebuild preserves its waiting state');
+expect(held?.attachments[0]?.id==='attachment-1'&&held.attachments[0]?.sha256==='a'.repeat(64),
+  'prepared receipt window carries the retained attachment reference');
+const crowdedPrepared=window.operations.find(item=>item.operationId==='crowded-input');
+expect(crowdedPrepared?.attachmentsCoverage.complete===false&&crowdedPrepared.attachmentsCoverage.count===20,
+  'historical rebuild retains explicit incomplete coverage for an oversized attachment list');
+db.query("UPDATE session_inputs SET updated_at='2026-10-08T00:04:00Z' WHERE id='held-input'").run();
+projection.apply(generation,[{sequence:101,source_table:'session_inputs',row_key:'held-input',session_id:1,
+  input_id:'held-input',target_input_id:null,turn_id:null,request_id:null}]);
+projection.checkpoint(generation,101);
+const changes=readPreparedReceiptChanges(prepared,1,101,window.asOf,40),changed=changes.operations.find(item=>item.operationId==='held-input');
+expect(changed?.attachments[0]?.name==='held-note.txt'&&changed.attachments[0]?.contentType==='text/plain',
+  'prepared receipt change page carries the same retained attachment reference');
+// A request the Inbox routed from his own words names him only through routedFrom. On 2026-11-10 the
+// list ran an older copy of the provenance walk and listed no human while the full record named his capture.
+db.exec(`ALTER TABLE session_inputs ADD COLUMN source_run_id TEXT;
+  ALTER TABLE session_communication_requests ADD COLUMN source_session_id INTEGER;
+  ALTER TABLE session_communication_requests ADD COLUMN source_turn_id INTEGER;`);
+db.query(`INSERT INTO turns(id,session_id,status,native_run_id,dispatch_attempt,turn_kind) VALUES(7,1,'completed','run-ring',1,'native'),
+  (8,1,'completed','run-router',1,'native')`).run();
+const addInput=db.query(`INSERT INTO session_inputs(id,session_id,kind,origin,source_input_id,source_run_id,request_id,turn_id,
+  created_at,updated_at,payload_json) VALUES(?,1,?,?,?,?,?,?,'2026-11-10T00:00:00Z','2026-11-10T00:00:00Z',?)`);
+addInput.run('ring-input','input','human',null,null,null,7,JSON.stringify({text:'Ring her',capture:{id:'capture:ring'}}));
+addInput.run('router-input','input','agent',null,null,null,8,JSON.stringify({text:'File it'}));
+addInput.run('routed-request','input','agent','router-input','run-router','routed-rq',null,
+  JSON.stringify({text:'Ring her',routedFrom:{authorKind:'human',messageId:'ring-input'}}));
+db.query(`INSERT INTO session_communication_requests(request_id,target_input_id,target_session_id,source_input_id,source_session_id,
+  source_turn_id,payload_json) VALUES('routed-rq','routed-request',1,'router-input',1,8,?)`).run(JSON.stringify({requestedEffect:'work'}));
+const routed=readCompactReceipt(db,'routed-request')!.provenance as any;
+expect(routed?.originatingHuman?.inputId==='ring-input'&&routed.originatingHuman.captureId==='capture:ring'
+  &&routed.originatingHuman.runId==='run-ring'&&routed.effectScope==='work',
+  'the receipt list names the human a routed request came from, as the full record does');
+// An ask made from a later informational wake names the earlier open work input as its authority.
+db.query(`INSERT INTO turns(id,session_id,status,native_run_id,dispatch_attempt,turn_kind) VALUES(9,1,'completed','run-wake',1,'native')`).run();
+addInput.run('wake-input','input','service',null,null,null,9,JSON.stringify({text:'Answer arrived'}));
+addInput.run('granted-request','input','agent','wake-input','run-wake','granted-rq',null,JSON.stringify({text:'Continue'}));
+db.query(`INSERT INTO session_communication_requests(request_id,target_input_id,target_session_id,source_input_id,source_session_id,
+  source_turn_id,payload_json) VALUES('granted-rq','granted-request',1,'wake-input',1,9,?)`)
+  .run(JSON.stringify({requestedEffect:'work',authorityInputId:'ring-input'}));
+const granted=readCompactReceipt(db,'granted-request')!.provenance as any;
+expect(granted?.source?.inputId==='wake-input'&&granted.originatingHuman?.inputId==='ring-input'&&granted.effectScope==='work',
+  'an ask carrying an earlier work grant lists the human behind that grant');
+console.log('receipt-projection: retry set, restart, clear, hold, readable ChatGPT failure, bounded preview, routed human and granted authority passed');

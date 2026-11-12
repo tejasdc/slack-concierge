@@ -2,7 +2,7 @@ import { Worker } from 'node:worker_threads';
 import { realpathSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { db } from './state-database';
-import { installLedgerBarrier } from './ledger-durability-barrier';
+import { installLedgerBarrier, type LedgerBarrierContext } from './ledger-durability-barrier';
 import { releaseWorkerPath } from './release-worker';
 import { log } from './log';
 
@@ -21,15 +21,17 @@ const STALLED_SYNC_LOG_MS = 60_000;
 const RESTART_AFTER_MS = 5_000;
 const CHECKPOINT = { quietBytes: 64 * 1024 * 1024, forceBytes: 256 * 1024 * 1024, quietPressure: 10, intervalMs: 5_000 };
 
-type Waiter = { changes: number; resolve: () => void };
+type Waiter = { changes: number; sampledAtMs: number; precedingSyncId: number | null;
+  context?: LedgerBarrierContext; resolve: () => void };
 const counters = { syncs: 0, slowSyncs: 0, slowestSyncMs: 0, lastSyncMs: 0, checkpoints: 0, slowestCheckpointMs: 0,
-  lastCheckpointAt: null as string | null, failure: null as string | null };
+  lastCheckpointAt: null as string | null, failure: null as string | null,
+  lastQueueMs: null as number | null, lastFdatasyncMs: null as number | null, lastDeliveryMs: null as number | null };
 /** Once the owner's connection stops syncing (`deferred`), it never syncs again for the life of
  * the process, and only a confirmed sync releases anything. A thread that fails is replaced while
  * waiters keep waiting: returning to synchronous commits would put the disk wait back on the loop. */
 let threads: { sync: Worker; checkpoint: Worker } | null = null;
 let deferred = false, databasePath = '';
-let synced = 0, inFlight: { changes: number; since: number; loggedAt: number } | null = null, nextId = 0;
+let synced = 0, inFlight: { id: number; changes: number; since: number; startedAtMs: number; loggedAt: number } | null = null, nextId = 0;
 const waiters: Waiter[] = [];
 
 const totalChanges = () => (db.query('SELECT total_changes() AS n').get() as { n: number }).n;
@@ -42,14 +44,15 @@ function pump() {
   if (!threads || inFlight || db.inTransaction) return;
   const changes = totalChanges();
   if (changes <= synced) { settle(); return; }
-  inFlight = { changes, since: performance.now(), loggedAt: performance.now() };
-  threads.sync.postMessage({ id: ++nextId });
+  const now = performance.now(), id = ++nextId;
+  inFlight = { id, changes, since: now, startedAtMs: performance.timeOrigin + now, loggedAt: now };
+  threads.sync.postMessage({ id, sentAtMs: inFlight.startedAtMs });
 }
 
 /** Resolves once every ledger commit made before the call is on disk. Waiters resolve in call
  * order, so callers that write to one stream keep their order. It never rejects: while the disk
  * cannot confirm a sync, what depends on it waits. */
-function durable(): Promise<void> {
+function durable(context?: LedgerBarrierContext): Promise<void> {
   return new Promise(resolve => {
     // Sample after the current synchronous task: a caller inside a transaction callback must
     // not count rows that are not committed yet.
@@ -57,7 +60,10 @@ function durable(): Promise<void> {
       if (!deferred) { resolve(); return; }
       const changes = totalChanges();
       if (!waiters.length && changes <= synced) { resolve(); return; }
-      waiters.push({ changes, resolve });
+      const id = context?.id;
+      waiters.push({ changes, resolve, sampledAtMs: performance.timeOrigin + performance.now(),
+        precedingSyncId: inFlight && changes > inFlight.changes ? inFlight.id : null,
+        context: context && (!id || /^[A-Za-z0-9:_-]{1,128}$/.test(id)) ? context : undefined });
       pump();
     });
   });
@@ -119,7 +125,8 @@ function startThreads() {
     return;
   }
   threads = { sync, checkpoint };
-  sync.on('message', (reply: { ready?: boolean; id?: number; ms?: number; error?: string }) => {
+  sync.on('message', (reply: { ready?: boolean; id?: number; ms?: number; error?: string;
+    queueMs?: number | null; fdatasyncMs?: number; postedAtMs?: number }) => {
     if (threads?.sync !== sync) return;
     if (reply.ready) {
       // The sync thread holds its descriptor before any commit skips the sync, so a writeback
@@ -137,13 +144,33 @@ function startThreads() {
     }
     if (!inFlight) return;
     if (reply.error) { fail('sync', `log sync failed: ${reply.error}`); return; }
-    const ms = performance.now() - inFlight.since;
-    synced = Math.max(synced, inFlight.changes);
+    const completed = inFlight;
+    const ms = performance.now() - completed.since;
+    const completedAtMs = performance.timeOrigin + performance.now();
+    const deliveryMs = reply.postedAtMs == null ? null
+      : performance.timeOrigin + performance.now() - reply.postedAtMs;
+    synced = Math.max(synced, completed.changes);
+    const released = ms >= SLOW_SYNC_MS ? waiters.filter(waiter => waiter.changes <= synced) : [];
     inFlight = null;
     counters.syncs++; counters.lastSyncMs = Math.round(ms); counters.slowestSyncMs = Math.max(counters.slowestSyncMs, Math.round(ms));
-    // Database completion latency, kept apart from the owner's loop lag: a slow sync here is
-    // the disk being slow while the owner keeps working.
-    if (ms >= SLOW_SYNC_MS) { counters.slowSyncs++; log('warn', 'ledger_durability_slow_sync', { ms: Math.round(ms), sync_ms: Math.round(reply.ms ?? 0), waiters: waiters.length }); }
+    counters.lastQueueMs = reply.queueMs == null || reply.queueMs < 0 ? null : Math.round(reply.queueMs);
+    counters.lastFdatasyncMs = reply.fdatasyncMs == null ? null : Math.round(reply.fdatasyncMs);
+    counters.lastDeliveryMs = deliveryMs == null || deliveryMs < 0 ? null : Math.round(deliveryMs);
+    // The worker's syscall and the owner's callback can each be delayed independently.
+    if (ms >= SLOW_SYNC_MS) { counters.slowSyncs++; log('warn', 'ledger_durability_slow_sync', {
+      ms: Math.round(ms), sync_ms: Math.round(reply.ms ?? 0), queue_ms: counters.lastQueueMs,
+      fdatasync_ms: counters.lastFdatasyncMs, delivery_ms: counters.lastDeliveryMs, waiters: waiters.length,
+      owner_pid: process.pid, sync_id: completed.id, sync_target_changes: completed.changes,
+      sync_started_at_ms: completed.startedAtMs, worker_posted_at_ms: reply.postedAtMs ?? null,
+      sync_completed_at_ms: completedAtMs, released_waiters: released.length,
+      receipt_join_truncated: Math.max(0, released.filter(waiter => waiter.context).length - 16),
+      receipt_join: released.filter(waiter => waiter.context).slice(0, 16).map(waiter => ({
+        kind: waiter.context?.kind ?? 'unlabelled', id: waiter.context?.id ?? null,
+        target_changes: waiter.changes, sampled_at_ms: waiter.sampledAtMs,
+        preceding_sync_id: waiter.precedingSyncId,
+        waited_ms: Math.round(completedAtMs - waiter.sampledAtMs),
+      })),
+    }); }
     settle();
     pump();
   });

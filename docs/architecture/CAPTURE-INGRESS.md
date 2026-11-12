@@ -232,6 +232,15 @@ credential and its existing Slack user token, connects Socket Mode, and starts
 the capture worker before emitting the current-invocation
 `concierge_bot_online` readiness marker. Only then may deploy release both exact
 gate tokens. A failed restart or readiness probe leaves capture delivery held.
+When Concierge stops, its capture worker cancels an unanswered claim call or claim retry
+wait instead of making the release wait for that network timeout. An in-flight
+delivery acknowledgment keeps its existing completion path. The deployment
+gate has already excluded new claims and waited for active claims. For an
+unexpected stop outside that gate, ingress keeps a claimed event under its exact
+process and claim identities; after that process dies, the next claimant recovers
+the event. Destination delivery uses the retained capture identity, so an
+interrupted queue acknowledgment cannot authorize a different capture or replay
+an ambiguous Slack effect.
 
 Tokens and transcript bodies are never included in service logs.
 

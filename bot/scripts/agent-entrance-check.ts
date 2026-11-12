@@ -59,6 +59,9 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
     const environment=agentRunEnvironment({turnId:43,sessionId:7},{CONCIERGE_STATE_DIR:root,CONCIERGE_AGENT_API_URL:`http://127.0.0.1:${port}`});
     assert.equal(verifyAgentToken(key,environment.CONCIERGE_AGENT_TOKEN!)?.kind,'run');
     Object.assign(process.env,environment,{CONCIERGE_STATE_DIR:join(root,'no-local-owner'),CONCIERGE_STATE_DB:join(root,'no-local-owner','state.db')});
+    // A production runner names its live connection before any inherited owner URL.
+    // This fixture must exercise the synthetic owner it started above.
+    delete process.env.CONCIERGE_RUNNER_STATE;
     const {requestApiResponse}=await import('./router-request-client');
     const response=await requestApiResponse('/session-communication/check',{action_id:'a2'});
     assert.equal(response.status,200,JSON.stringify(response));

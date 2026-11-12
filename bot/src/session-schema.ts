@@ -32,7 +32,7 @@ function allowAbsentAdapterFields(db: Database, table: string, names: string[]) 
   for (const item of auxiliary) db.exec(item.sql);
 }
 
-export function initializeSessionOwnerSchema(db: Database) {
+export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: number) {
   const foreignKeys = (db.query('PRAGMA foreign_keys').get() as {foreign_keys:number}).foreign_keys;
   db.exec('PRAGMA foreign_keys=OFF');
   try {
@@ -273,6 +273,7 @@ export function initializeSessionOwnerSchema(db: Database) {
         CREATE TABLE IF NOT EXISTS session_attachments (
           id TEXT PRIMARY KEY, action_id TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
           content_type TEXT NOT NULL, sha256 TEXT NOT NULL, bytes BLOB NOT NULL,
+          source_input_id TEXT, source_run_id TEXT,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS session_attachment_transcription_outcomes (
@@ -495,6 +496,11 @@ export function initializeSessionOwnerSchema(db: Database) {
           request_id TEXT PRIMARY KEY, project TEXT NOT NULL, purpose TEXT NOT NULL,
           template TEXT, group_name TEXT, reserved_at_ms INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS project_setup_runner_jobs (
+          creation_key TEXT PRIMARY KEY, body_json TEXT NOT NULL, target_runner TEXT NOT NULL,
+          attempt INTEGER NOT NULL, job_id TEXT NOT NULL UNIQUE, state TEXT NOT NULL,
+          result_json TEXT, updated_at_ms INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS project_setup_receipts (
           order_id TEXT PRIMARY KEY, body_json TEXT NOT NULL, result_json TEXT
         );
@@ -575,6 +581,7 @@ export function initializeSessionOwnerSchema(db: Database) {
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS inbox_requests_topic ON inbox_requests(topic_id,state);
+        CREATE INDEX IF NOT EXISTS inbox_requests_state ON inbox_requests(state);
         CREATE TABLE IF NOT EXISTS inbox_questions (
           question_id TEXT PRIMARY KEY,
           topic_id TEXT NOT NULL,
@@ -638,6 +645,10 @@ export function initializeSessionOwnerSchema(db: Database) {
       add('session_attachments','transcript_engine','transcript_engine TEXT');
       add('session_attachments','transcript_engine_version','transcript_engine_version TEXT');
       add('session_attachments','duration_ms','duration_ms INTEGER');
+      // A marked public upload keeps the verified Concierge input/run that authored its
+      // custody. Ordinary human uploads keep both fields null.
+      add('session_attachments','source_input_id','source_input_id TEXT');
+      add('session_attachments','source_run_id','source_run_id TEXT');
       // A forwarded copy of a recording finds its original's words by the bytes' hash.
       db.exec('CREATE INDEX IF NOT EXISTS session_attachments_sha256 ON session_attachments(sha256)');
       // A peer request accepted while the peer was offline keeps its exact delivery body until it lands.
@@ -790,8 +801,13 @@ export function initializeSessionOwnerSchema(db: Database) {
           AND json_extract(native_metadata_json, '$.source.nativeId') IS NOT NULL;`);
       initializePresentationChanges(db);
       initializeRunnerSchema(db);
-      const violation = db.query('PRAGMA foreign_key_check').get();
-      if (violation) throw new Error(`Session owner migration violates a foreign key: ${JSON.stringify(violation)}`);
+      // This whole-ledger scan grows with history. Foreign keys guard ordinary writes; run
+      // the full check when this startup changed the schema, including earlier state batches.
+      const schemaVersionNow = (db.query('PRAGMA schema_version').get() as { schema_version: number }).schema_version;
+      if (schemaVersionNow !== schemaVersionAtOpen) {
+        const violation = db.query('PRAGMA foreign_key_check').get();
+        if (violation) throw new Error(`Session owner migration violates a foreign key: ${JSON.stringify(violation)}`);
+      }
     // Immediate: it reads the schema and then writes (idempotent inserts, index statements). A
     // deferred transaction that upgrades to write fails at once with SQLITE_BUSY when the running
     // service has committed in between, whatever the busy timeout; that failed a deployment's run

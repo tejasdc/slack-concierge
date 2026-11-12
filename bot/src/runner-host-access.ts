@@ -19,11 +19,11 @@
  */
 import { createHash } from "node:crypto";
 import { ledgerDurable } from "./ledger-durability-barrier";
-import { runnerActivity } from "./runner-leases";
+import { OWNER_DRAIN_WITHDRAWAL_REASON, runnerActivity } from "./runner-leases";
 import { runnerLedger } from "./runner-ledger";
 import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION, HostNotStartedError, HostUnavailableError,
   type HostCustody, type HostFrame, type HostLaunch, type HostStatus, type SupervisorView } from "./execution-host-client";
-import type { HostAccess, HostLink, HostManifest } from "./host-access";
+import type { HostAccess, HostLink, HostManifest, HostRunnerFile } from "./host-access";
 
 export const RUNNER_SUPERVISOR = "runner";
 export const TURN_JOB_KIND = "turn";
@@ -33,6 +33,17 @@ export const turnJobId = (executionId: string) => `turn:${executionId}`;
 /** How long a new turn waits for a runner to claim and start it before it is withdrawn, unstarted. */
 const claimDeadlineMs = () => Number(process.env.CONCIERGE_RUNNER_CLAIM_MS) || 120_000;
 const POLL_MS = 1_000;
+const drainingOwners = new Set<string>();
+
+/** Withdraw only this owner's jobs that no runner has claimed; claimed jobs retain custody. */
+export function beginRunnerTurnDrain(ownerInstanceId: string): number {
+  drainingOwners.add(ownerInstanceId);
+  const queued = engine().queuedTurnJobsForOwner(ownerInstanceId);
+  let withdrawn = 0;
+  for (const jobId of queued)
+    if (engine().withdraw(jobId, OWNER_DRAIN_WITHDRAWAL_REASON)) withdrawn++;
+  return withdrawn;
+}
 
 type Position = { attempt: number; seq: number };
 type RunnerEvent = { attempt: number; seq: number; frame: any };
@@ -64,13 +75,20 @@ const ended = (state: string) => state === "finished" || state === "unconfirmed"
 export class RunnerHostAccess implements HostAccess {
   readonly place = "runner" as const;
   readonly jobId: string;
-  constructor(readonly executionId: string) { this.jobId = turnJobId(executionId); }
+  constructor(readonly executionId: string, private readonly ownerInstanceId?: string,
+    private readonly targetRunner?: string) { this.jobId = turnJobId(executionId); }
 
-  async launch(manifest: HostManifest, files: { path: string; base64: string }[] = []): Promise<HostLaunch> {
-    const payload = { executionId: this.executionId, manifest, files, protocols: ADOPTABLE_HOST_PROTOCOLS };
+  async launch(manifest: HostManifest, files: HostRunnerFile[] = []): Promise<HostLaunch> {
+    const payload = { executionId: this.executionId, manifest, files, protocols: ADOPTABLE_HOST_PROTOCOLS,
+      ...(this.targetRunner ? { targetRunner: this.targetRunner } : {}) };
     // The execution's intent and turn are on disk before any runner can see the work.
     await ledgerDurable();
     engine().enqueue({ jobId: this.jobId, kind: TURN_JOB_KIND, payload, replaySafe: false });
+    // A launch that crossed the drain's first sweep still has no runner custody. The enqueue and
+    // withdrawal run without an await between them, and withdraw refuses a concurrent claim.
+    if (this.ownerInstanceId && drainingOwners.has(this.ownerInstanceId)
+      && engine().withdraw(this.jobId, OWNER_DRAIN_WITHDRAWAL_REASON))
+      throw new HostNotStartedError(OWNER_DRAIN_WITHDRAWAL_REASON);
     const deadline = Date.now() + claimDeadlineMs();
     for (;;) {
       const job = engine().job(this.jobId, Number.MAX_SAFE_INTEGER);

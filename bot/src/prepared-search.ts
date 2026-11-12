@@ -1,6 +1,14 @@
 import type {Database} from 'bun:sqlite';
 
-/** Rebuildable text index owned by the presentation worker, never by the command owner. */
+/**
+ * Rebuildable word index owned by the presentation worker, never by the command owner.
+ *
+ * Size rule (docs/architecture/PREPARED-SEARCH.md): every indexed text exists once, in
+ * search_documents. The trigram index reads it as external content and the short-string
+ * index keeps no content at all. Tool calls and results are not indexed here: thnkr.ing's
+ * archive index already holds every provider transcript's tool entries and the owner's search
+ * merges both, so a second copy of tool output only cost disk.
+ */
 export type PreparedSearchDocument={
  key:string;sessionId:number;kind:'input'|'message'|'session';eventId:string;
  sourceId:string;sourceVersion:string|null;textHash:string|null;
@@ -21,95 +29,114 @@ function snippet(text:string,terms:string[]){
  const at=positions.length?Math.min(...positions):0,start=Math.max(0,at-80),end=Math.min(text.length,at+240);
  return (start?'… ':'')+text.slice(start,end).replace(/\s+/g,' ')+(end<text.length?' …':'');
 }
+/** Tool evidence is searched in the archive index; see the size rule above. */
+export const indexedRole=(role:string)=>role!=='tool';
 
 export class PreparedSearchIndex {
  private indexedChangesSinceMerge=0;
+ /** Text bytes written to the index since the caller last read it; paces bulk backfills. */
+ indexedBytes=0;
  constructor(private readonly db:Database,initialize=true){
   if(!initialize)return;
-  db.exec(`CREATE TABLE IF NOT EXISTS prepared_search_documents(
-    id INTEGER PRIMARY KEY,document_key TEXT NOT NULL UNIQUE,session_id INTEGER NOT NULL,
-    kind TEXT NOT NULL,role TEXT NOT NULL,text TEXT NOT NULL,folded TEXT NOT NULL,metadata TEXT NOT NULL
+  db.exec(`CREATE TABLE IF NOT EXISTS search_documents(
+    id INTEGER PRIMARY KEY,document_key TEXT NOT NULL UNIQUE,ordinal INTEGER NOT NULL,text TEXT NOT NULL,metadata TEXT NOT NULL
   );
-  CREATE INDEX IF NOT EXISTS prepared_search_session ON prepared_search_documents(session_id,id);
-  CREATE VIRTUAL TABLE IF NOT EXISTS prepared_search_text USING fts5(folded,tokenize='trigram');
-  CREATE VIRTUAL TABLE IF NOT EXISTS prepared_search_short USING fts5(tokens,detail=none);`);
+  CREATE VIRTUAL TABLE IF NOT EXISTS search_text USING fts5(text,content='search_documents',content_rowid='id',tokenize='trigram');
+  CREATE VIRTUAL TABLE IF NOT EXISTS search_short USING fts5(tokens,content='',contentless_delete=1,detail=none);
+  CREATE TABLE IF NOT EXISTS search_meta(
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),ready INTEGER NOT NULL,backfill_json TEXT
+  );
+  INSERT OR IGNORE INTO search_meta(singleton,ready,backfill_json) VALUES(1,0,'{"phase":"legacy"}');`);
   // FTS5's default crisis merge rewrites whole, accumulated segments inside the
-  // insertion that crosses its threshold. This index is large; give merging its
-  // own bounded worker budget instead of charging an arbitrary source event.
-  db.query("INSERT INTO prepared_search_text(prepared_search_text,rank) VALUES('automerge',0)").run();
-  db.query("INSERT INTO prepared_search_text(prepared_search_text,rank) VALUES('crisismerge',2147483647)").run();
+  // insertion that crosses its threshold. Give merging its own bounded worker budget
+  // instead of charging an arbitrary source event (2026-11-01 write-burst record).
+  db.query("INSERT INTO search_text(search_text,rank) VALUES('automerge',0)").run();
+  db.query("INSERT INTO search_text(search_text,rank) VALUES('crisismerge',2147483647)").run();
  }
  /** Called between replay batches, after a fixed interval or indexed change count. */
  get mergeDue(){return this.indexedChangesSinceMerge>=250;}
  maintain(pageBudget:number){
   if(!Number.isSafeInteger(pageBudget)||pageBudget<1)throw new Error('INVALID_SEARCH_MERGE_BUDGET');
-  this.db.query("INSERT INTO prepared_search_text(prepared_search_text,rank) VALUES('merge',?)").run(pageBudget);
+  this.db.query("INSERT INTO search_text(search_text,rank) VALUES('merge',?)").run(pageBudget);
   this.indexedChangesSinceMerge=0;
  }
+ private unindex(id:number,text:string){
+  // External content: the trigram index must be told the exact text it indexed.
+  this.db.query("INSERT INTO search_text(search_text,rowid,text) VALUES('delete',?,?)").run(id,text);
+  this.db.query('DELETE FROM search_short WHERE rowid=?').run(id);
+ }
  upsert(document:PreparedSearchDocument){
-  const {text,...metadata}=document,folded=text.toLocaleLowerCase(),encoded=JSON.stringify(metadata);
+  if(!indexedRole(document.role)){this.remove(document.key,document.ordinal);return;}
+  const {text,...metadata}=document,encoded=JSON.stringify(metadata);
   let indexed=false;
   this.db.transaction(()=>{
-   const prior=this.db.query('SELECT id,text,metadata FROM prepared_search_documents WHERE document_key=?').get(document.key) as {id:number;text:string;metadata:string}|null;
-   if(prior?.text===text&&prior.metadata===encoded)return;
+   const prior=this.db.query('SELECT id,ordinal,text,metadata FROM search_documents WHERE document_key=?')
+    .get(document.key) as {id:number;ordinal:number;text:string;metadata:string}|null;
+   // A backfill can reach an older version after catch-up indexed a newer one.
+   if(prior&&prior.ordinal>document.ordinal)return;
    if(prior?.text===text){
-    this.db.query('UPDATE prepared_search_documents SET session_id=?,kind=?,role=?,metadata=? WHERE id=?')
-     .run(document.sessionId,document.kind,document.role,encoded,prior.id);
+    if(prior.metadata!==encoded)this.db.query('UPDATE search_documents SET ordinal=?,metadata=? WHERE id=?').run(document.ordinal,encoded,prior.id);
     return;
    }
-   const id=prior?.id??Number(this.db.query('INSERT INTO prepared_search_documents(document_key,session_id,kind,role,text,folded,metadata) VALUES(?,?,?,?,?,?,?)')
-    .run(document.key,document.sessionId,document.kind,document.role,text,folded,encoded).lastInsertRowid);
+   let id:number;
    if(prior){
-    this.db.query('DELETE FROM prepared_search_text WHERE rowid=?').run(id);
-    this.db.query('DELETE FROM prepared_search_short WHERE rowid=?').run(id);
-    this.db.query('UPDATE prepared_search_documents SET session_id=?,kind=?,role=?,text=?,folded=?,metadata=? WHERE id=?')
-     .run(document.sessionId,document.kind,document.role,text,folded,encoded,id);
-   }
-   this.db.query('INSERT INTO prepared_search_text(rowid,folded) VALUES(?,?)').run(id,folded);
-   indexed=true;
+    id=prior.id;this.unindex(id,prior.text);
+    this.db.query('UPDATE search_documents SET ordinal=?,text=?,metadata=? WHERE id=?').run(document.ordinal,text,encoded,id);
+   }else id=Number(this.db.query('INSERT INTO search_documents(document_key,ordinal,text,metadata) VALUES(?,?,?,?)')
+    .run(document.key,document.ordinal,text,encoded).lastInsertRowid);
+   this.db.query('INSERT INTO search_text(rowid,text) VALUES(?,?)').run(id,text);
    // Native trigram indexing cannot search one/two-character strings (including “AI”).
-   // A compact set of encoded short substrings preserves that behavior without a scan.
-   this.db.query('INSERT INTO prepared_search_short(rowid,tokens) VALUES(?,?)').run(id,shortTokens(folded));
+   // A compact, contentless set of encoded short substrings preserves that without a scan.
+   this.db.query('INSERT INTO search_short(rowid,tokens) VALUES(?,?)').run(id,shortTokens(text.toLocaleLowerCase()));
+   indexed=true;
   })();
-  if(indexed)this.indexedChangesSinceMerge++;
+  if(indexed){this.indexedChangesSinceMerge++;this.indexedBytes+=Buffer.byteLength(text);}
  }
- remove(key:string){
+ /** Removes a document unless a newer version (higher ordinal) is already indexed. */
+ remove(key:string,ordinal=Number.MAX_SAFE_INTEGER){
   let removed=false;
   this.db.transaction(()=>{
-   const row=this.db.query('SELECT id FROM prepared_search_documents WHERE document_key=?').get(key) as {id:number}|null;
-   if(!row)return;
-   this.db.query('DELETE FROM prepared_search_text WHERE rowid=?').run(row.id);
-   this.db.query('DELETE FROM prepared_search_short WHERE rowid=?').run(row.id);
-   this.db.query('DELETE FROM prepared_search_documents WHERE id=?').run(row.id);
+   const row=this.db.query('SELECT id,ordinal,text FROM search_documents WHERE document_key=?').get(key) as {id:number;ordinal:number;text:string}|null;
+   if(!row||row.ordinal>ordinal)return;
+   this.unindex(row.id,row.text);
+   this.db.query('DELETE FROM search_documents WHERE id=?').run(row.id);
    removed=true;
   })();
   if(removed)this.indexedChangesSinceMerge++;
  }
- search(query:string,limit:number,includeTools=false){
+ /** includeTools is accepted for the wire contract; tool evidence comes from the archive index. */
+ search(query:string,limit:number,_includeTools=false){
   if(!Number.isSafeInteger(limit)||limit<1||limit>100)throw new Error('INVALID_SEARCH_WINDOW');
   const terms=query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
   if(!terms.length||query.length>2000)throw new Error('INVALID_SEARCH_QUERY');
   const long=terms.filter(term=>[...term].length>=3),short=terms.filter(term=>[...term].length<3);
-  const table=long.length?'prepared_search_text':'prepared_search_short';
-  const expression=(long.length?long.map(quote):short.map(term=>quote(gram([...term])))).join(' AND ');
+  const shortExpression=short.map(term=>quote(gram([...term]))).join(' AND ');
+  const table=long.length?'search_text':'search_short';
+  const expression=long.length?long.map(quote).join(' AND '):shortExpression;
   const window=Math.min(1000,Math.max(100,limit*10));
   // Search the postings, then inspect a finite candidate window. A common word can have
   // millions of hits; it must not sort/materialize every matching message to show twenty.
+  // A trigram phrase match is an exact case-folded substring match, so long terms need no
+  // second check; short terms beside them are checked in the short index by rowid.
   const ids=this.db.query(`SELECT rowid AS id FROM ${table} WHERE ${table} MATCH ? ORDER BY rowid DESC LIMIT ?`)
    .all(expression,window+1) as {id:number}[];
+  const shortCheck=long.length&&short.length
+   ?this.db.query('SELECT 1 AS hit FROM search_short WHERE search_short MATCH ? AND rowid=?'):null;
+  const read=this.db.query(`SELECT metadata,substr(text,1,6000) AS text,length(text)>6000 AS truncated,
+     substr(text,max(1,instr(lower(text),?)-80),320) AS excerpt FROM search_documents WHERE id=?`);
   const selected=new Map<number,PreparedSearchHit>();
   let examined=0;
   for(const {id} of ids.slice(0,window)){
    examined++;
-   const row=this.db.query(`SELECT metadata,substr(text,1,6000) AS text,length(text)>6000 AS truncated,
-      substr(text,max(1,instr(folded,?)-80),320) AS excerpt,
-      ${terms.map(()=>'instr(folded,?)>0').join(' AND ')} AS matches
-      FROM prepared_search_documents WHERE id=? ${includeTools?'':"AND role<>'tool'"}`).get(terms[0],...terms,id) as {metadata:string;text:string;excerpt:string;truncated:number;matches:number}|null;
-   if(!row?.matches)continue;
+   if(shortCheck&&!shortCheck.get(shortExpression,id))continue;
+   const row=read.get(terms[0]!,id) as {metadata:string;text:string;excerpt:string;truncated:number}|null;
+   if(!row)continue;
    const meta=JSON.parse(row.metadata) as Omit<PreparedSearchDocument,'text'>;
-   if(selected.has(meta.sessionId))continue;
+   if(!indexedRole(meta.role)||selected.has(meta.sessionId))continue;
    const {key:_key,...reference}=meta;
-   selected.set(meta.sessionId,{...reference,text:row.text,snippet:snippet(row.excerpt,terms),truncated:!!row.truncated});
+   // SQLite's lower() folds ASCII only; when the excerpt missed a non-ASCII match, use the opening text.
+   const excerptHit=terms.some(term=>row.excerpt.toLocaleLowerCase().includes(term));
+   selected.set(meta.sessionId,{...reference,text:row.text,snippet:snippet(excerptHit?row.excerpt:row.text,terms),truncated:!!row.truncated});
    if(selected.size>=limit)break;
   }
   const hasMore=examined<ids.length;

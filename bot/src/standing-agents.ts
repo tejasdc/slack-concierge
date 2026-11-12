@@ -1,7 +1,8 @@
-import {relative} from 'node:path';
+import {basename,relative} from 'node:path';
 import {realpathSync} from 'node:fs';
 import {db,getSessionById,type SessionRow} from './state';
-import {sessionMetadata,updateSessionMetadata} from './session-inputs';
+import {sessionMetadata,updateSessionMetadata,type NativeSessionMetadata as SessionMetadata} from './session-inputs';
+import {CURRENT_INBOX_ID_SQL} from './inbox-lineage-sql';
 import {containingProject,sessionProject} from './session-projects';
 import {sessionAddress} from './session-address';
 import {REPAIR_AGENT_TITLE} from './repair-notices';
@@ -53,7 +54,12 @@ export function standingAgentForCwd(workspaceRoot:string,cwd:string|null|undefin
 
 export function standingAgentForSession(workspaceRoot:string,session:SessionRow) {
   const meta=sessionMetadata(session);
-  return meta.standingRole&&standingAgentForCwd(workspaceRoot,meta.cwd)?.role===meta.standingRole?meta.standingRole:null;
+  if(!meta.standingRole)return null;
+  if(typeof meta.providerRunner==='string'&&meta.providerRunner.trim()) {
+    const agent=standingAgent(meta.standingRole);
+    return agent&&meta.projectName===basename(agent.project)&&(!meta.projectPath||meta.projectPath==='')?agent.role:null;
+  }
+  return standingAgentForCwd(workspaceRoot,meta.cwd)?.role===meta.standingRole?meta.standingRole:null;
 }
 
 export function assertStandingAgentFolder(workspaceRoot:string,role:string,cwd:string|null|undefined) {
@@ -61,17 +67,58 @@ export function assertStandingAgentFolder(workspaceRoot:string,role:string,cwd:s
   if(!project||cwd!==project.cwd)throw new Error(`The ${role} binding requires a session in its declared agent folder.`);
 }
 
+export function assertStandingAgentPlacement(workspaceRoot:string,role:string,meta:ReturnType<typeof sessionMetadata>) {
+  const agent=standingAgent(role);
+  if(!agent)throw new Error(`Unknown standing agent role ${role}; use sessions agents.`);
+  if(typeof meta.providerRunner==='string'&&meta.providerRunner.trim()) {
+    if(meta.projectName!==basename(agent.project)||meta.projectPath&&meta.projectPath!=='')
+      throw new Error(`The ${role} binding requires its declared project on its bound runner.`);
+    return;
+  }
+  assertStandingAgentFolder(workspaceRoot,role,meta.cwd);
+}
+
+export function assertStandingAgentSession(workspaceRoot:string,role:string,session:SessionRow) {
+  assertStandingAgentPlacement(workspaceRoot,role,sessionMetadata(session));
+}
+
 /** The target and every former holder change in one owner transaction. */
 export function bindStandingAgentSession(workspaceRoot:string,role:string,session:SessionRow) {
-  db.transaction(()=>{
+  return db.transaction(()=>{
     const agent=standingAgent(role);
     if(!agent)throw new Error(`Unknown standing agent role ${role}; use sessions agents.`);
     if(session.status==='archived')throw new Error('An archived session cannot hold a standing agent role.');
-    assertStandingAgentFolder(workspaceRoot,agent.role,sessionMetadata(session).cwd);
+    assertStandingAgentSession(workspaceRoot,agent.role,session);
+    if(agent.role==='inbox'){
+      const former=db.query(CURRENT_INBOX_ID_SQL).get() as {id:number}|null;
+      const formerSession=former&&former.id!==session.id?getSessionById(former.id):null;
+      takeInboxRouterRole(session.id,formerSession?sessionMetadata(formerSession):null);
+      return {former:formerSession};
+    }
     db.query(`UPDATE sessions SET native_metadata_json=json_remove(native_metadata_json,'$.standingRole')
       WHERE id<>? AND json_extract(native_metadata_json,'$.standingRole')=?`).run(session.id,agent.role);
     updateSessionMetadata(session.id,{standingRole:agent.role});
+    return {former:null};
   })();
+}
+
+/**
+ * Make one session the current Inbox router: it holds the inbox role and the Inbox marker, so
+ * new captures, thread-named requests, topic commands and the Inbox's own reads go through it,
+ * and it carries the former router's attention so open questions stay in Needs attention.
+ * The former router keeps its marker: its rows stay part of the one Inbox's threads. A provider
+ * handoff and `sessions agents bind inbox` are the two ways the role moves; both come here.
+ */
+export function takeInboxRouterRole(sessionId:number,from:SessionMetadata|null) {
+  db.query(`UPDATE sessions SET native_metadata_json=json_remove(native_metadata_json,'$.standingRole')
+    WHERE id<>? AND json_extract(native_metadata_json,'$.standingRole')='inbox'`).run(sessionId);
+  const own=sessionMetadata(getSessionById(sessionId)!);
+  // The new router keeps its own open questions and gains the former router's, once each.
+  const needs=[...(own.needs??[])];
+  for(const need of from?.needs??[])if(!needs.some(held=>held.eventId===need.eventId))needs.push(need);
+  updateSessionMetadata(sessionId,{inbox:true,inboxRole:'project-router',standingRole:'inbox',
+    ...(from?{needs,generation:Math.max(from.generation??0,own.generation??0),
+      readGeneration:from.readGeneration,dismissedGeneration:from.dismissedGeneration}:{})});
 }
 
 export function canOwnStandingWork(workspaceRoot:string,cwd:string|null|undefined):boolean {
@@ -86,6 +133,16 @@ export const STANDING_WORK_REFUSAL =
   + 'Ask the workspace organizer to place a new project before creating one.';
 
 export function standingAgentSession(workspaceRoot:string,role:string):SessionRow|null {
+  const agent=standingAgent(role);
+  if(!agent)return null;
+  const bound=db.query(`SELECT * FROM sessions WHERE status!='archived'
+    AND json_extract(native_metadata_json,'$.standingRole')=? ORDER BY id DESC`).all(role) as SessionRow[];
+  const remote=bound.find(row=>{
+    const meta=sessionMetadata(row);
+    return typeof meta.providerRunner==='string'&&!!meta.providerRunner.trim()
+      &&meta.projectName===basename(agent.project)&&(!meta.projectPath||meta.projectPath==='');
+  });
+  if(remote)return remote;
   const project=standingAgentProject(workspaceRoot,role);
   return project?db.query(`SELECT * FROM sessions WHERE status!='archived'
     AND json_extract(native_metadata_json,'$.cwd')=?
@@ -100,8 +157,13 @@ function hasStandingAgentBinding(role:string):boolean {
 export function unboundJournalKeeperSession(workspaceRoot:string):SessionRow|null {
   // 2026-10-29: concierge:4571 is the known keeper until sessions agents bind journal-keeper has run.
   if(hasStandingAgentBinding('journal-keeper'))return null;
-  const project=standingAgentProject(workspaceRoot,'journal-keeper');
   const session=getSessionById(4571);
+  if(session&&session.status!=='archived'){
+    const meta=sessionMetadata(session),agent=standingAgent('journal-keeper');
+    if(typeof meta.providerRunner==='string'&&meta.providerRunner.trim()
+      &&meta.projectName===basename(agent!.project)&&(!meta.projectPath||meta.projectPath===''))return session;
+  }
+  const project=standingAgentProject(workspaceRoot,'journal-keeper');
   if(!project||!session||session.status==='archived')return null;
   return sessionMetadata(session).cwd===project.cwd?session:null;
 }
@@ -109,6 +171,15 @@ export function unboundJournalKeeperSession(workspaceRoot:string):SessionRow|nul
 export function unboundRepairAgentSession(workspaceRoot:string):SessionRow|null {
   // 2026-10-29: exact-title repair delivery ends once sessions agents bind concierge-repair has run.
   if(hasStandingAgentBinding('concierge-repair'))return null;
+  const agent=standingAgent('concierge-repair');
+  const remote=db.query(`SELECT * FROM sessions WHERE status!='archived'
+    AND json_extract(native_metadata_json,'$.title')=? ORDER BY id DESC`).all(REPAIR_AGENT_TITLE) as SessionRow[];
+  const runnerSession=remote.find(session=>{
+    const meta=sessionMetadata(session);
+    return typeof meta.providerRunner==='string'&&!!meta.providerRunner.trim()
+      &&meta.projectName===basename(agent!.project)&&(!meta.projectPath||meta.projectPath==='');
+  });
+  if(runnerSession)return runnerSession;
   const project=standingAgentProject(workspaceRoot,'concierge-repair');
   return project?db.query(`SELECT * FROM sessions WHERE status!='archived'
     AND json_extract(native_metadata_json,'$.cwd')=?

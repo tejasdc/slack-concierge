@@ -35,6 +35,7 @@ router-actions.sh sessions schedule --role <standing-agent-role> --at <ISO-8601-
 router-actions.sh sessions bank [--quiet-only] --provider <alias> --project <registered-project> --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
 router-actions.sh sessions ask <peer-address|imported-address> <source-flags> --action-id A --resurrect -- <text>
 router-actions.sh sessions note <captureId | any message ID> <source-flags> --action-id A --summary-file <markdown-path> [--add-to <earlier captureId or message ID> | --person <name> | --journal entry|checkin]
+router-actions.sh sessions note <captureId | any message ID> <source-flags> --action-id A --journal entry --add-to <earlier captureId or message ID>
 Any message the owner retained can become a note: a capture, a thread reply, a post, a routed message or an agent's answer.
 router-actions.sh sessions title [--session <session-address>] <source-flags> --action-id A -- <title>
 router-actions.sh sessions move <session-address> --project <project or project/folder, e.g. agent-ecology/expertise/alan-kay> <source-flags> --action-id A
@@ -59,8 +60,9 @@ router-actions.sh sessions obligations [<address>] <source-flags>
 Provider changes use handoff between sessions on the same machine. Choose a coding provider alias: ChatGPT cannot acknowledge a handoff. The successor reads the predecessor's context and acknowledges the exact inventory digest before the owner moves obligations. A proposed handoff can be withdrawn while the predecessor keeps working. cancel --reason provider-change is refused with the handoff command.
 router-actions.sh sessions saved list <source-flags> [--cursor <nextCursor>]
 router-actions.sh sessions saved start|cancel <turn-id> <source-flags> --action-id A
+Stopping a repeating schedule (sessions schedule --every-ms): sessions cancel <its request-id> withdraws every queued firing and books no more (a firing already running finishes); sessions saved cancel <turn-id> of its queued firing does the same. sessions saved list shows each armed schedule's next firing, turn ID and interval.
 router-actions.sh sessions pause status|all|resume <source-flags> [--action-id A] [--session <concierge:N|mac:N> ...]  # --session is for resume only
-router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> [--renew] <source-flags> --action-id A
+router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> [--renew] [--required-commit <full-sha>] <source-flags> --action-id A
 router-actions.sh sessions watch command --cwd <dir> --until <ISO time | duration> <source-flags> --action-id A -- <argv...>
 router-actions.sh sessions watch list <source-flags>
 router-actions.sh sessions watch cancel <watch-id> <source-flags> --action-id A
@@ -80,7 +82,7 @@ router-actions.sh sessions board cards --design <design handle> --inbox-session 
 router-actions.sh sessions board status   # says where the board lives now
 A design (--product design, --text-file with ## sections separated by blank lines, --from the open thread whose sessions answer him; --inbox-session/--inbox-message name the Inbox thread the work belongs to, where one line about the publication is filed) is reviewed section by section in thnkr.ing's Lab. Answer his section post with board post --reply-to <his entry> --target <the section address> --intent answer; register your own challenge to an exact passage with --target <passage> --intent challenge. To propose or select a disposition, use --intent disposition --target <current design passage> --disposition-file <JSON object with challenge, version, scope, kind, evidence, nextActor, nextAction, replaces, selected>; the Lab enforces author and decider authority. Place words he said in an Inbox thread at a section with --speaker tejas --his-input <that input id> --intent ask|comment (you stay the author of record); add --inbox-session/--inbox-message so a later answer to that placed post is also filed into his Inbox thread. board verdict records his per-version verdict on a design (approve is refused while a section is contested or has an unanswered ask; the refusal lists them). board cards files the author's section cards (claim, consequence, recommendation, alternative, question) under their sections and one line each into the Inbox thread. board read --address lab:<design> prints the review: each section's state (missing|open|asked|answered|accepted|contested), his entries and the replies, and owed, the sections still waiting on an agent. The board defaults to "lab". Ends: question answered|unanswerable; proposal decided|withdrawn (sealed positions stay hidden from other members until every member posted or the owner or decider reveals); report accepted|retracted; task done|failed (one exclusive claim; the claimer closes); meeting closed. A mention wakes that session once with a notice that owes no reply; nothing else interrupts anyone. It is stored in thnkr.ing's lab journal, so board commands run from a session on the server.
 
-A watch wakes this conversation once, with no model awake meanwhile: when the file or directory changes (a deletion counts), when the command finishes (with its exit code), or at --until, whichever comes first (at most 30 days). One service input watch:<id>:<fired|expired|failed|cancelled> then reaches this session and says what was observed and any gap in observation (a Concierge restart or a sleeping Mac is a recorded gap). It is on this agent's own machine (its runner, when it runs on one); the same --action-id registers nothing twice. A progress reply that says it is waiting for a release names the active watch with --waiting-on-watch <watch-id>; Concierge checks the link between the open request and the watch, then wakes the agent when it changes.
+A watch wakes this conversation once, with no model awake meanwhile: when the file or directory changes (a deletion counts), when the command finishes (with its exit code), or at --until, whichever comes first (at most 30 days). One service input watch:<id>:<fired|expired|failed|cancelled> then reaches this session and says what was observed and any gap in observation (a Concierge restart or a sleeping Mac is a recorded gap). It is on this agent's own machine (its runner, when it runs on one); the same --action-id registers nothing twice. A progress reply that says it is waiting for a release names the active watch with --waiting-on-watch <watch-id>. For a specific Concierge repair, --renew --required-commit <full-sha> on /var/lib/slack-concierge-deployment/current wakes only after a successful installed release includes that commit. An unscoped file watch still wakes on any change.
 
 Topics — the Inbox's recognizable conversations. Every mutation takes <source-flags> and --action-id A; --expected-revision N refuses a stale decision.
 router-actions.sh sessions topics list <source-flags> [--state open|background|closed|all] [--query q] [--limit N] [--cursor C]
@@ -90,6 +92,7 @@ router-actions.sh sessions topics items <topicId> <source-flags> --kind question
 router-actions.sh sessions topics detail <topicId> <source-flags> --digest HASH [--part N]
 router-actions.sh sessions topics questions-read <source-flags> [--state open|reading|history|deferred|checking] [--cursor C] [--limit N]
 router-actions.sh sessions topics resolve <messageId> <source-flags>
+router-actions.sh sessions topics message <messageId> <source-flags>  # the words, author, time and attachments of one Inbox message or topic-named request
 router-actions.sh sessions topics create <source-flags> --action-id A --title T [--area <areaId> ...] [--from <source-topicId>] [--summary S] [--root <inputId> ...] [--reason R]
 router-actions.sh sessions topics place <topicId> <source-flags> --action-id A --root <conversation-root> [--root ...] [--reason R]
 router-actions.sh sessions topics route <topicId> <source-flags> --action-id A --message <exact-human-input-id> [--reason R]
@@ -160,7 +163,7 @@ export type SessionCommunicationRequest =
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string; thread?: string } }
   | { operation: "context"; body: { source: Source; address: string; thread?: string } }
   | { operation: "ask"; body: { source: Source; action_id: string; address?: string; role?:string; provider?: string; smallTask?:boolean; effort?:string; escalationReason?:string; project?:string; title?: string; text: string; after?: string[]; pace?: string[]; summary?: string; answer_view?: 'summary'|'full'; return_to_requester?:boolean; for_task?:string; recovery_of?:string; correction_of?:string; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean} } }
-  | { operation: "note"; body: { source: Source; action_id:string; captureId?:string; messageId?:string; summary:string; addTo?:string; person?:string; journal?:"entry"|"checkin" } }
+  | { operation: "note"; body: { source: Source; action_id:string; captureId?:string; messageId?:string; summary?:string; addTo?:string; person?:string; journal?:"entry"|"checkin" } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string; address?:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; promise_request?:string; keep_working?:boolean; notify?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
   | { operation: "outcome"; body: { source: Source; action_id:string; outcome:'done'|'response'|'needs_you'|'failed'; text?:string; quiet_because?:string; summary?:string; his_words?:string; why_not_answered?:string; only_he_can?:string; todo?:string; decision_id?:string; approval_action?:string } }
@@ -175,7 +178,7 @@ export type SessionCommunicationRequest =
   | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string; reason?: string } }
   | { operation: "handoff"; body: { source: Source; verb: 'propose'|'accept'|'withdraw'; address?: string; provider?: string; model?: string; effort?: string; reason?: string; session_name?: string; action_id: string; handoff_id?: string; digest?: string } }
   | { operation: "obligations"; body: { source: Source; address?: string } }
-  | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'; action_id?: string; until?: string; renew?: boolean; path?: string; argv?: string[]; cwd?: string; watch_id?: string; runner?: string } }
+  | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'; action_id?: string; until?: string; renew?: boolean; requiredCommit?: string; path?: string; argv?: string[]; cwd?: string; watch_id?: string; runner?: string } }
   | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'; turn_id?:number; action_id?:string;cursor?:string } }
   | { operation: "pause"; body: { source: Source; verb:'status'|'all'|'resume'; action_id?:string; session_ids?:string[] } }
   | { operation: "board"; body: { source?: Source; verb: string; [key: string]: unknown } };
@@ -202,7 +205,7 @@ function sourceFrom(flags: Map<string, string>): Source {
   return { channel_id: channel, message_ts: timestamp };
 }
 
-const TOPIC_VERBS = ["list","obligations","read","items","detail","resolve","questions-read","create","place","route","link","unlink","rename","summary","merge","close","reopen","pin","unpin","request","questions","question","answer","acknowledge","focus","release","file","area"];
+const TOPIC_VERBS = ["list","obligations","read","items","detail","resolve","message","questions-read","create","place","route","link","unlink","rename","summary","merge","close","reopen","pin","unpin","request","questions","question","answer","acknowledge","focus","release","file","area"];
 const TOPIC_REPEATABLE = ["--root","--source","--item","--input","--evidence","--area"];
 const TOPIC_SINGLE = ["--source-channel","--source-ts","--source-input","--source-run","--action-id","--title","--summary","--reason",
   "--into","--from","--thread","--scope","--dispatch","--disposition","--human-quote","--json-file","--state","--answer","--replacement","--limit","--cursor","--query","--expected-revision","--need","--kind","--part","--digest","--message"];
@@ -250,7 +253,7 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
     }
   }
   const source = sourceFrom(flags);
-  const mutating = !["list","obligations","read","items","detail","resolve","questions-read","area.list","area.suggest"].includes(verb);
+  const mutating = !["list","obligations","read","items","detail","resolve","message","questions-read","area.list","area.suggest"].includes(verb);
   const actionId = flags.get("--action-id");
   if (mutating && !actionId) invalid(`topics ${verb.replace(".", " ")} requires an explicit stable --action-id.`);
   const takesText = ["rename","summary","close","reopen","request.add","request.amend","request.close","request.reopen","question.settle","focus"].includes(verb);
@@ -307,7 +310,7 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
     }
   }
   if (identity) {
-    if (verb === "resolve") body.message_id = identity;
+    if (verb === "resolve" || verb === "message") body.message_id = identity;
     // `request add` opens a request inside a topic; the other request verbs name the request.
     else if (verb.startsWith("request.") && verb !== "request.add") body.request_id = identity;
     else if (verb === "question.settle") body.question_id = identity;
@@ -557,7 +560,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     while(options.length){const flag=options.shift()!;
       if(flag==='--renew') {if(renew)invalid('Repeated --renew.');renew=true;continue;}
       const value=options.shift();
-      if(!['--source-input','--source-run','--source-channel','--source-ts','--action-id','--until','--cwd'].includes(flag)||!value?.trim()||flags.has(flag))invalid(`Invalid watch option ${flag}.`);
+      if(!['--source-input','--source-run','--source-channel','--source-ts','--action-id','--until','--cwd','--required-commit'].includes(flag)||!value?.trim()||flags.has(flag))invalid(`Invalid watch option ${flag}.`);
       flags.set(flag,value);
     }
     const source=sourceFrom(flags),actionId=flags.get('--action-id'),until=flags.get('--until'),cwd=flags.get('--cwd');
@@ -569,9 +572,11 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     } else if(separatorAt>=0||cwd)invalid(`watch ${sub} takes no command or --cwd.`);
     if(sub!=='file'&&sub!=='command'&&until)invalid(`watch ${sub} takes no --until.`);
     if(renew&&sub!=='file')invalid('--renew is only for a file watch.');
+    if(flags.has('--required-commit')&&(sub!=='file'||!renew))invalid('--required-commit needs a renewing file watch.');
     // A bare command name becomes the path the agent's own shell would run.
     const resolved=sub==='command'&&!argv[0]!.includes('/')?(Bun.which(argv[0]!)??argv[0]!):argv[0];
     return {operation:'watch',body:{source,verb:sub,...(actionId?{action_id:actionId}:{}),...(until?{until}:{}),...(renew?{renew:true}:{}),
+      ...(flags.has('--required-commit')?{requiredCommit:flags.get('--required-commit')!}:{}),
       ...(sub==='file'?{path:target!}:{}),...(sub==='cancel'?{watch_id:target!}:{}),
       ...(sub==='command'?{argv:[resolved!,...argv.slice(1)],cwd:cwd!}:{}),
       // An agent on a runner watches its own machine's files and runs its command there (RUNNERS.md).
@@ -841,16 +846,10 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if(separator>=0)invalid('note accepts a capture ID or a message ID, not replacement source text.');
     // Any other ID names a retained message; the owner reads its words.
     const message=!/^[0-9a-f]{64}$/.test(identity??'');
-    // The note is a summary of the capture; his own words stay its source (Tejas, 2026-10-01:
-    // "you should not dump my whole transcript here ... create like a nice bulleted list").
-    const summaryFile=flags.get('--summary-file');
-    if(!summaryFile)invalid('note needs --summary-file: a Markdown file with a title line and "- " bullets summarizing what he said, without the spoken command. His words stay the note\'s Source.');
-    const summary=readFileSync(summaryFile!,'utf8');
-    if(!summary.trim())invalid('The summary file is empty.');
     // A follow-up to a thread whose note already exists joins that note as a new section
     // (Tejas, 2026-10-01: "if my platform is built on threads ... where can I find the idea").
-    const addTo=flags.get('--add-to');
-    if(addTo!==undefined&&!addTo.trim())invalid('--add-to takes the earlier capture or message ID whose note this one follows up.');
+    const addTo=flags.get('--add-to')?.trim();
+    if(flags.has('--add-to')&&!addTo)invalid('--add-to takes the earlier capture or message ID whose note this one follows up.');
     // A fact about a person goes into that person's one note in thnkr.ing (Tejas, 2026-10-07:
     // "start a thread for each person and keep adding to a central note").
     const person=flags.get('--person')?.trim();
@@ -858,10 +857,20 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if(person&&addTo)invalid('A note goes to one place: --person or --add-to, not both.');
     // His journal in thnkr.ing (Tejas, 2026-10-08: "another section for journals"): the capture's
     // journal part becomes an entry (or a check-in) on the Journal page, its words still the Source.
+    // A continuation piece (--journal entry --add-to <earlier capture>) moves its exact words,
+    // original recorded time and source into the earlier entry without a separate summary.
     const journal=flags.get('--journal');
     if(flags.has('--journal')&&journal!=='entry'&&journal!=='checkin')invalid('--journal takes entry or checkin.');
-    if(journal&&(person||addTo))invalid('A journal entry is its own note: --journal goes without --person or --add-to.');
-    return {operation,body:{source,action_id:actionId,...(message?{messageId:identity!}:{captureId:identity!}),summary,...(addTo?{addTo}:{}),...(person?{person}:{}),...(journal?{journal:journal as 'entry'|'checkin'}:{})}};
+    if(journal&&(person||(addTo&&journal!=='entry')))invalid('A journal entry is its own note: --journal goes without --person, and only --journal entry accepts --add-to.');
+    const journalContinuation=journal==='entry'&&Boolean(addTo);
+    // The note is a summary of the capture; his own words stay its source (Tejas, 2026-10-01:
+    // "you should not dump my whole transcript here ... create like a nice bulleted list").
+    const summaryFile=flags.get('--summary-file');
+    if(journalContinuation&&summaryFile!==undefined)invalid('--journal entry --add-to moves the capture\'s exact words into the earlier entry and does not take --summary-file.');
+    if(!journalContinuation&&!summaryFile)invalid('note needs --summary-file: a Markdown file with a title line and "- " bullets summarizing what he said, without the spoken command. His words stay the note\'s Source.');
+    const summary=summaryFile?readFileSync(summaryFile,'utf8'):undefined;
+    if(summary!==undefined&&!summary.trim())invalid('The summary file is empty.');
+    return {operation,body:{source,action_id:actionId,...(message?{messageId:identity!}:{captureId:identity!}),...(summary!==undefined?{summary}:{}),...(addTo?{addTo}:{}),...(person?{person}:{}),...(journal?{journal:journal as 'entry'|'checkin'}:{})}};
   }
   if(operation==='answer') {
     if(separator>=0||content.length)invalid('answer records a handling disposition; it takes no free-form message.');

@@ -14,7 +14,8 @@ export class PreparedReceipts {
   constructor(private readonly source:Database,private readonly prepared:Database){
     prepared.exec(`CREATE TABLE IF NOT EXISTS presentation_receipt_meta(
       singleton INTEGER PRIMARY KEY CHECK(singleton=1),generation INTEGER NOT NULL DEFAULT 0,
-      source_head INTEGER NOT NULL DEFAULT 0,change_base INTEGER NOT NULL DEFAULT 0,ready INTEGER NOT NULL DEFAULT 0
+      source_head INTEGER NOT NULL DEFAULT 0,change_base INTEGER NOT NULL DEFAULT 0,ready INTEGER NOT NULL DEFAULT 0,
+      projection_revision TEXT NOT NULL DEFAULT ''
     ); INSERT OR IGNORE INTO presentation_receipt_meta(singleton) VALUES(1);
     CREATE TABLE IF NOT EXISTS presentation_receipts(
       generation INTEGER NOT NULL,session_id INTEGER NOT NULL,input_id TEXT NOT NULL,
@@ -33,8 +34,25 @@ export class PreparedReceipts {
     );
     CREATE INDEX IF NOT EXISTS presentation_receipt_changes_page
       ON presentation_receipt_changes(generation,session_id,change_id);`);
+    const hasProjectionRevision=(prepared.query('PRAGMA table_info(presentation_receipt_meta)').all() as {name:string}[])
+      .some(column=>column.name==='projection_revision');
+    if(!hasProjectionRevision)
+      prepared.exec("ALTER TABLE presentation_receipt_meta ADD COLUMN projection_revision TEXT NOT NULL DEFAULT ''");
   }
+  isCurrent(projectionRevision:string){
+    const meta=this.prepared.query('SELECT ready,projection_revision AS revision FROM presentation_receipt_meta WHERE singleton=1')
+      .get() as {ready:number;revision:string}|null;
+    return !!meta?.ready&&meta.revision===projectionRevision;
+  }
+  activeGeneration(){
+    return (this.prepared.query('SELECT generation FROM presentation_receipt_meta WHERE singleton=1')
+      .get() as {generation:number}).generation;
+  }
+  nextGeneration(){return this.activeGeneration()+1;}
   beginRebuild(generation:number){
+    const active=this.activeGeneration();
+    this.prepared.query('DELETE FROM presentation_receipts WHERE generation<>?').run(active);
+    this.prepared.query('DELETE FROM presentation_receipt_changes WHERE generation<>?').run(active);
     this.prepared.query('DELETE FROM presentation_receipts WHERE generation=?').run(generation);
     this.prepared.query('DELETE FROM presentation_receipt_changes WHERE generation=?').run(generation);
   }
@@ -44,13 +62,13 @@ export class PreparedReceipts {
     for(const row of rows.slice(0,limit))this.write(generation,row.id,0,false);
     return {lastRowid:rows[Math.min(rows.length,limit)-1]?.rowid??afterRowid,hasMore:rows.length>limit};
   }
-  activate(generation:number,sourceHead:number){
+  activate(generation:number,sourceHead:number,projectionRevision:string){
     const base=(this.prepared.query('SELECT COALESCE(MAX(change_id),0) AS n FROM presentation_receipt_changes WHERE generation=?')
       .get(generation) as {n:number}).n;
-    this.prepared.query('UPDATE presentation_receipt_meta SET generation=?,source_head=?,change_base=?,ready=1 WHERE singleton=1')
-      .run(generation,sourceHead,base);
-    this.prepared.query('DELETE FROM presentation_receipts WHERE generation<?').run(generation);
-    this.prepared.query('DELETE FROM presentation_receipt_changes WHERE generation<?').run(generation);
+    this.prepared.query('UPDATE presentation_receipt_meta SET generation=?,source_head=?,change_base=?,ready=1,projection_revision=? WHERE singleton=1')
+      .run(generation,sourceHead,base,projectionRevision);
+    this.prepared.query('DELETE FROM presentation_receipts WHERE generation<>?').run(generation);
+    this.prepared.query('DELETE FROM presentation_receipt_changes WHERE generation<>?').run(generation);
   }
   checkpoint(generation:number,sourceHead:number){
     this.prepared.query('UPDATE presentation_receipt_meta SET source_head=? WHERE singleton=1 AND generation=? AND ready=1')

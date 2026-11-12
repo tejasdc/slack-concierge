@@ -8,7 +8,7 @@ import { dirname,join } from "node:path";
 import { lookupExecutions, readRoutedRequest, RETIRED_SLACK_ROUTING, type RoutedRequestCoordinator } from "./routed-requests";
 import type { SessionCommunicationCoordinator } from './session-communication';
 import type {SessionOwner} from './session-owner';
-import {unopenableLinks} from './workspace-files';
+import {unopenableLinksWithReader} from './workspace-files';
 import {usageBreakdown} from './usage-breakdown';
 import {startPresentationWorker} from './presentation-worker-supervisor';
 import {log,logSinkCounters} from './log';
@@ -27,6 +27,8 @@ import {resolveDeploymentReactionTargets} from './deployment-reaction-provenance
 import {releaseFilesInUse} from './executions';
 import {enrollNativePipelineContinuation,tickNativePipelineContinuation} from './native-pipeline-continuation-owner';
 import {runnerRoutes} from './runner-routes';
+import {listReadHead} from './presentation-topic-reader';
+import {activeGrafanaAlerts,type GrafanaFiringEvidence,type GrafanaRecoveryEvidence} from './grafana-alerts';
 
 function requestFailure(request:Request,error:unknown):Response {
   const transient=isTransientDatabaseError(error);
@@ -53,9 +55,9 @@ const release=(()=>{
  * A post or reply that names files he cannot open tells its author at once, beside the receipt,
  * so the agent sends a path that opens; nothing is refused (agents are never handcuffed).
  */
-function withLinkCheck<T>(result:T,input:{text?:unknown},owner?:SessionOwner):T|(T&{unopenable_links:unknown[];warning:string}){
+async function withLinkCheck<T>(result:T,input:{text?:unknown},owner?:SessionOwner):Promise<T|(T&{unopenable_links:unknown[];warning:string})>{
   if(!owner||typeof input?.text!=='string'||!result||typeof result!=='object')return result;
-  const refused=unopenableLinks(input.text,owner.defaultCwd);
+  const refused=await unopenableLinksWithReader(input.text,path=>owner.file(path,null));
   if(!refused.length)return result;
   return {...result,unopenable_links:refused,
     warning:`Posted, but ${refused.length===1?'this file link':'these file links'} will not open for Tejas: ${refused.map(link=>`${link.path} (${link.reason})`).join('; ')}. Move the file somewhere it opens or send a corrected path.`};
@@ -136,18 +138,22 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'mac-need') return Response.json(sessions.macNeed(input));
         if (operation === 'note') return Response.json(await sessions.note(input));
         if (operation === 'title') return Response.json(sessions.title(input));
-        if (operation === 'move') return Response.json(sessions.move(input));
-        if (operation === 'post') return Response.json(withLinkCheck(sessions.post(input),input,owner));
+        if (operation === 'move') return Response.json(await sessions.move(input));
+        if (operation === 'post') return Response.json(await withLinkCheck(sessions.post(input),input,owner));
         if (operation === 'outcome') return Response.json(sessions.outcome(await withTodoState(input)));
         if (operation === 'answer') return Response.json(sessions.handleChatGptAnswer(input));
         if (operation === 'legacy-link') return Response.json(sessions.classifyLegacyChatGpt(input));
         if (operation === 'chatgpt-recover') return Response.json(await sessions.recoverChatGptNeverSent(input));
         if (operation === 'attention-withdraw') return Response.json(sessions.withdrawAttention(input));
         if (operation === 'thread') return Response.json(sessions.thread(input));
-        if (operation === 'topics') { await refuseFinishedTodoQuestions(input); return Response.json(sessions.topics(input)); }
+        if (operation === 'topics') {
+            await refuseFinishedTodoQuestions(input);
+            const listHead=input.verb==='list'?await listReadHead(typeof input.cursor==='string'?input.cursor:null,request.signal):undefined;
+            return Response.json(sessions.topics(input,listHead));
+        }
         if (operation === 'context') return Response.json(await sessions.context(input));
         if (operation === 'ask') return Response.json(await sessions.ask(input), {status:202});
-        if (operation === 'reply') return Response.json(withLinkCheck(await sessions.reply(await withTodoState(input)),input,owner));
+        if (operation === 'reply') return Response.json(await withLinkCheck(await sessions.reply(await withTodoState(input)),input,owner));
         if (operation === 'get') return Response.json(sessions.get(input));
         if (operation === 'cancel') return Response.json(sessions.cancel(input));
       }
@@ -191,6 +197,22 @@ function localOwnerRequest(shared:(request:Request)=>Promise<Response>,sessions?
         return Response.json(await owner.refreshAuthEphemera());
       if(request.method==='GET'&&url.pathname==='/supervisor/ping')
         return Response.json({ok:true,pid:process.pid,startedAt,release,logging:logSinkCounters(),ledgerDurability:ledgerDurabilityCounters()});
+      // The outside Grafana reconciler (remote-box) reads retained firing episodes and submits
+      // recoveries and new episodes Grafana recorded but whose notification this receiver never accepted.
+      if(url.pathname==='/grafana/v1/firing'||url.pathname==='/grafana/v1/recoveries'||url.pathname==='/grafana/v1/firings'){
+        const alerts=activeGrafanaAlerts();
+        if(!alerts)return Response.json({error:'alert_receiver_unavailable'},{status:503});
+        if(request.method==='GET'&&url.pathname==='/grafana/v1/firing')return Response.json({episodes:alerts.firing()});
+        if(request.method==='POST'&&url.pathname==='/grafana/v1/recoveries'){
+          const result=alerts.reconcileRecovery(await request.json() as GrafanaRecoveryEvidence);
+          return Response.json(result,{status:result.status});
+        }
+        if(request.method==='POST'&&url.pathname==='/grafana/v1/firings'){
+          const result=alerts.reconcileFiring(await request.json() as GrafanaFiringEvidence);
+          return Response.json(result,{status:result.status});
+        }
+        return Response.json({error:'method_not_allowed'},{status:405});
+      }
       if(request.method==='GET'&&url.pathname==='/internal/deployment-last-known-good'&&owner)
         return Response.json(getLastKnownGoodRelease());
       if(request.method==='GET'&&url.pathname==='/internal/deployment-release-files-in-use'&&owner)
@@ -242,6 +264,7 @@ function localOwnerRequest(shared:(request:Request)=>Promise<Response>,sessions?
           catch(error){
             const run=getDeploymentRun(input.runId);
             if(run&&['succeeded','failed','ambiguous'].includes(run.status))return Response.json({terminal:true,run});
+            if(run?.repair_state&&run.repair_state!=='retrying')return Response.json({repairOwned:true,run});
             throw error;
           }
         }
@@ -286,6 +309,8 @@ function localOwnerRequest(shared:(request:Request)=>Promise<Response>,sessions?
         const input=await request.json() as {name:string;request_id:string};
         return Response.json(sessions.externalGet(input.name,input.request_id));
       }
+      if(request.method==='POST'&&url.pathname==='/external/withdraw'&&sessions)
+        return Response.json(sessions.externalWithdraw(await request.json()));
       return shared(request);
     } catch(error) {
       return requestFailure(request,error);
@@ -306,7 +331,7 @@ export async function startRoutedRequestApi(stateDir: string, coordinator: Route
     fetch: async request=>{
       try {
         const response=await handle(request);
-        if(request.method!=='GET')await ledgerDurable();
+        if(request.method!=='GET')await ledgerDurable({kind:'owner_receipt',id:request.headers.get('x-concierge-admission-id')??undefined});
         return response;
       } catch(error) {return requestFailure(request,error);}
     },
