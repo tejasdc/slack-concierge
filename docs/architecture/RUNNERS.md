@@ -129,6 +129,11 @@ authenticated relay also serves Codex App Server traffic and bounded machine cal
 
 ## Turns on a runner (built for Claude Code turns)
 
+Legacy conversation recovery selects the most recent host that actually
+launched the run. An unclaimed execution intent is not evidence of a launched
+host and cannot replace it; see the
+[runner-home failure record](../incidents/2026-11-06-unlaunched-intent-hid-runner-home.md).
+
 The execution host program is unchanged; what moved is who talks to it. The coordinator reaches a
 host through one interface (`host-access.ts`) with two places: **local** (systemd or launchd on the
 owner's machine, socket and journal on its disk, exactly as before) and **runner**
