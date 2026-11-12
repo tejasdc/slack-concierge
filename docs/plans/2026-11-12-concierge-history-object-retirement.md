@@ -65,14 +65,31 @@ keep their full payload. Versions are never chosen by UUID alone.
 ## Runner mirror and Codex boundary
 
 The runner owns provider homes. Concierge's current mirror under its private
-state is an import cache, not authority. A page read must first compare bounded
-runner metadata with the snapshot; it must not copy the entire remote transcript
-merely to decide that an unchanged snapshot is current. When an import is needed,
-the SDK reads the exact immutable object through a temporary project tree if it
-covers the source version. Otherwise it uses the existing runner transfer and
-keeps that mirror until a proven object covers it. Temporary files are removed
-only after the import has published its snapshot. Old snapshots keep serving
-through an interrupted import.
+state is an import cache, not authority. Its stable path, size and mtime are
+part of the current snapshot identity. Page reads use that path to verify new
+source bytes incrementally, and the Claude SDK reads a local config tree during
+import. The compaction reader also needs local, seekable bytes to make and
+truncate one temporary prefix. An object reference cannot simply remove the
+mirror: a missing or moved path triggers a re-import, and an append without the
+mirror would require a full runner transfer in bounded relay chunks.
+
+The row-payload cutover therefore keeps the mirror until a separate, installed
+source adapter can preserve a stable local SDK path and incremental verification
+against exact retained versions. A page read must compare bounded runner metadata
+with the snapshot without downloading the entire transcript when unchanged.
+When an import is needed, the SDK can read an exact immutable object through a
+temporary project tree if that object covers the runner version; otherwise it
+uses the existing runner transfer. The import child has a 120-second deadline
+and one serialized lane, so any object lookup or transfer needed by the child
+must be assessed against that bound. Old snapshots keep serving through an
+interrupted import.
+
+The snapshot's generation pins cursors and detail keys. Rebuilding it for a
+format change invalidates an open cursor once; clients must reset to the latest
+page. The reader must retain `message_ids`, `tool_names`, ordinals and UUIDs
+exactly, since the accepted-message overlay joins against those IDs and detail
+reads resolve through the stored row. A reference expansion must return the
+same complete SDK value before the existing page/detail translators run.
 
 The Codex window is App Server output with provider timestamps and continuation
 markers. Its rows cannot use Claude's raw-line matcher. Keep that window until a
