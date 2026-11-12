@@ -5425,14 +5425,74 @@ export function nextQueuedTurnAttemptMs(nowMs = Date.now()): number | null {
  * were. Returns the number of actual turn rows released.
  */
 export function releaseScheduledProviderRetries(providerId: ProviderId, unboundOnly = false): number {
-  const released = (db.query(`UPDATE turns SET dispatch_next_attempt_ms=0
-    WHERE status='queued' AND dispatch_failure_class='backoff' AND dispatch_hold='usage'
-      AND (?=0 OR saved_kind IS NULL OR (saved_kind='scheduled' AND saved_account IS NULL))
-      AND COALESCE(dispatch_next_attempt_ms,0)>0
-      AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)
-    RETURNING id`).all(unboundOnly ? 1 : 0,providerId) as {id:number}[]).length;
+  const released = db.transaction(() => {
+    const count = (db.query(`UPDATE turns SET dispatch_hold='${RELEASE_PACE_HOLD}'
+      WHERE status='queued' AND dispatch_failure_class='backoff' AND dispatch_hold='usage'
+        AND (?=0 OR saved_kind IS NULL OR (saved_kind='scheduled' AND saved_account IS NULL))
+        AND COALESCE(dispatch_next_attempt_ms,0)>0
+        AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)
+      RETURNING id`).all(unboundOnly ? 1 : 0,providerId) as {id:number}[]).length;
+    if (count) paceReleasedWork(providerId);
+    return count;
+  })();
   if (released) executionChanged();
   return released;
+}
+
+/**
+ * Held work that becomes free all at once (an account switch, a top-up, a sign-in) starts a few
+ * sessions at a time, sessions owing one of his open Inbox requests first and then the longest
+ * waiting. On 2026-11-12 a Codex account switch set 37 held turns runnable in one instant: about
+ * 78 agent units started in six minutes, the owner blocked 35 s in five minutes on the disk, and
+ * the shared Codex App Server dropped its connection and parked 36 of them
+ * (docs/incidents/2026-11-12-account-switch-released-held-work-at-once.md); Nov 6 froze the
+ * owner for 51 s the same way. Two sessions every 15 s (8 a minute) is the same order as the
+ * paced provider failover's two moved sessions in flight, and drains 37 in under five minutes;
+ * a release of one or two starts at once, as before.
+ *
+ * Released rows carry their own hold, so a later reading's release never collapses the pace
+ * and the status line never calls them "waiting for an allowance". Each call re-ranks every
+ * still-queued released session of the provider from now, so overlapping releases share one pace.
+ */
+export const RELEASE_PACE_HOLD = 'release_pace';
+/**
+ * A usage hold that simply runs out is a bulk release too: every turn held for one account's
+ * reset shares that instant. Before each claim pass, due usage holds join the pace instead of
+ * becoming claimable together. The read is a cheap check; nothing is written unless one is due.
+ */
+export function paceLapsedUsageHolds(nowMs = Date.now()): number {
+  const due = `turn.status='queued' AND turn.dispatch_failure_class='backoff' AND turn.dispatch_hold='usage'
+    AND turn.dispatch_next_attempt_ms>0 AND turn.dispatch_next_attempt_ms<=?`;
+  const providers = db.query(`SELECT DISTINCT session.provider_id AS provider FROM turns turn
+    JOIN sessions session ON session.id=turn.session_id WHERE ${due}`).all(nowMs) as {provider:ProviderId}[];
+  if (!providers.length) return 0;
+  return db.transaction(() => providers.reduce((count, {provider}) => {
+    const lapsed = db.query(`UPDATE turns SET dispatch_hold='${RELEASE_PACE_HOLD}' WHERE id IN (SELECT turn.id FROM turns turn
+      JOIN sessions session ON session.id=turn.session_id WHERE ${due} AND session.provider_id=?)`).run(nowMs, provider).changes;
+    if (lapsed) paceReleasedWork(provider, nowMs);
+    return count + lapsed;
+  }, 0))();
+}
+export const RELEASE_PACE_SESSIONS = 2;
+export const RELEASE_PACE_INTERVAL_MS = 15_000;
+export function paceReleasedWork(providerId: ProviderId, nowMs = Date.now()): number {
+  const sessions = db.query(`SELECT turn.session_id AS id,
+      EXISTS (SELECT 1 FROM session_communication_requests request
+        JOIN inbox_requests inbox ON inbox.state='open'
+        JOIN json_each(inbox.dispatches_json) dispatch ON json_extract(dispatch.value,'$.requestId')=request.request_id
+        WHERE request.target_session_id=turn.session_id AND request.outcome IS NULL) AS owes_inbox,
+      MIN(turn.id) AS oldest
+    FROM turns turn JOIN sessions session ON session.id=turn.session_id
+    WHERE turn.status='queued' AND turn.dispatch_hold='${RELEASE_PACE_HOLD}' AND session.provider_id=?
+    GROUP BY turn.session_id ORDER BY owes_inbox DESC, oldest`).all(providerId) as {id:number}[];
+  const slot = db.query(`UPDATE turns SET dispatch_next_attempt_ms=?
+    WHERE session_id=? AND status='queued' AND dispatch_hold='${RELEASE_PACE_HOLD}'`);
+  sessions.forEach((session, rank) =>
+    slot.run(nowMs + Math.floor(rank / RELEASE_PACE_SESSIONS) * RELEASE_PACE_INTERVAL_MS, session.id));
+  if (sessions.length > RELEASE_PACE_SESSIONS)
+    log('info', 'held_work_release_paced', { provider: providerId, sessions: sessions.length,
+      last_start_in_ms: Math.floor((sessions.length - 1) / RELEASE_PACE_SESSIONS) * RELEASE_PACE_INTERVAL_MS });
+  return sessions.length;
 }
 
 /**
@@ -5452,17 +5512,25 @@ export function moveUsageHoldsEarlier(providerId: ProviderId, atMs: number): num
 
 /** Release only the provider inputs that were refused before any work for lack of sign-in. */
 export function releaseAuthHeldWork(providerId: ProviderId): number {
-  const released = db.query(`UPDATE turns SET dispatch_failure_class='backoff', dispatch_next_attempt_ms=0
-    WHERE status='queued' AND dispatch_failure_class='auth_wait'
-      AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)`).run(providerId).changes;
+  const released = db.transaction(() => {
+    const count = db.query(`UPDATE turns SET dispatch_failure_class='backoff', dispatch_next_attempt_ms=0, dispatch_hold='${RELEASE_PACE_HOLD}'
+      WHERE status='queued' AND dispatch_failure_class='auth_wait'
+        AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)`).run(providerId).changes;
+    if (count) paceReleasedWork(providerId);
+    return count;
+  })();
   if (released) executionChanged();
   return released;
 }
 
 export function releaseUsageContinuationHolds(providerId:ProviderId):number {
-  const released=db.query(`UPDATE turns SET dispatch_failure_class='backoff',dispatch_next_attempt_ms=0
-    WHERE status='queued' AND dispatch_failure_class='usage_wait'
-      AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)`).run(providerId).changes;
+  const released=db.transaction(()=>{
+    const count=db.query(`UPDATE turns SET dispatch_failure_class='backoff',dispatch_next_attempt_ms=0,dispatch_hold='${RELEASE_PACE_HOLD}'
+      WHERE status='queued' AND dispatch_failure_class='usage_wait'
+        AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)`).run(providerId).changes;
+    if(count)paceReleasedWork(providerId);
+    return count;
+  })();
   if(released)executionChanged();
   return released;
 }

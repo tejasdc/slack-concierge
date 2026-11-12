@@ -1,4 +1,4 @@
-import {db,claimNextQueuedTurn,executionChanged,getClaudePreferredModel,getSessionById,globalPauseHoldsSession,settleTurnDependencies,type QueuedTurnClaimRow} from './state';
+import {db,claimNextQueuedTurn,executionChanged,getClaudePreferredModel,getSessionById,globalPauseHoldsSession,paceLapsedUsageHolds,settleTurnDependencies,type QueuedTurnClaimRow} from './state';
 import {enqueueSessionInput,getAcceptedSessionInput,nativeRunId,queueTurnContinuation,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {providerAccountUsage} from './provider-account-usage';
 import {usageForecasts} from './provider-usage-forecast';
@@ -365,6 +365,7 @@ export function settleMissedScheduledWork(now=Date.now()):number {
 export function inspectSavedWork(now=Date.now(),lateMs=5*60_000):number {
   let alerts=0;
   settleMissedScheduledWork(now);
+  if(paceLapsedUsageHolds(now))executionChanged();
   const rows=db.query(`SELECT * FROM turns WHERE saved_kind IS NOT NULL AND
     (status='queued' OR (status='error' AND saved_kind='scheduled' AND saved_expires_at_ms<=?)) ORDER BY id`).all(now) as SavedTurn[];
   for(const row of rows) {
@@ -535,6 +536,7 @@ export function prepareSavedWorkForClaims():void {
   const now=Date.now();
   advanceRepeatingSchedules(now);
   settleMissedScheduledWork(now);
+  if(paceLapsedUsageHolds(now))executionChanged();
 }
 
 /** A single-claim entrance for callers outside the wake-driven coordinator. */
