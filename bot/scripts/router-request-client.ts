@@ -85,9 +85,14 @@ export async function requestApiResponse(path: string, body?: unknown, policy: R
   for (let attempts = 1; ; attempts++) {
     let failure: unknown;
     try {
+      // A retry policy bounds the whole operation, not only the time between failures. In
+      // particular, managed provider hooks have a 20-second process limit and a 15-second
+      // owner-restart budget; the shared 120-second command timeout must not overrun either.
+      const remainingMs = policy.maxAgeMs - (Date.now() - started);
+      if (remainingMs <= 0) throw new Error('owner request retry budget expired');
       // The socket path is resolved per attempt: a restart may have replaced the directory link.
       const response = await fetch(ownerUrl(path), {
-        ...ownerTransport(), signal: AbortSignal.timeout(OWNER_COMMAND_RESPONSE_MS),
+        ...ownerTransport(), signal: AbortSignal.timeout(Math.min(OWNER_COMMAND_RESPONSE_MS, remainingMs)),
         headers: { ...ownerHeaders(), ...(serialized === undefined ? {} : { 'Content-Type': 'application/json' }) },
         ...(serialized === undefined ? {} : { method: 'POST', body: serialized }),
       });
