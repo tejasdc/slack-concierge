@@ -162,7 +162,8 @@ from the native transcript. This establishes the recorded request construction
 and observed answer, not an independent network capture.
 
 All preregistered **server** native lifecycle/account-continuity cells now have
-bounded acceptance evidence. Fresh exhaustion is separately unrun. Mac lifecycle
-acceptance remains pending with its existing controller; the latest coordination
-question is queued while the peer is unreachable. The overall delegated work
-request remains open for those Mac cells.
+bounded acceptance evidence. Fresh exhaustion is separately unrun. The Mac
+Pause/Continue and ordinary different-account continuation cells also have
+bounded observations; see the [combined Mac evidence](2026-11-12-mac-native-lifecycle-acceptance.md).
+The public-device capture hop, fresh exhaustion, and refusal recovery remain
+unrun; they are not required to call the observed Mac lifecycle cells complete.
