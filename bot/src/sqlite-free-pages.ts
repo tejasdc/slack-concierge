@@ -14,6 +14,8 @@ import {openSync,readSync,statSync} from 'node:fs';
  */
 const PUNCH_HOLE_KEEP_SIZE=0x02|0x01;
 const PUNCHES_PER_PAUSE=2048,PUNCH_PAUSE_MS=20;
+/** Bounds one call's hold on the write lock well under the worker's 10 s lease; the rest waits for the next call. */
+const MAX_RANGES_PER_CALL=16_384;
 type Fallocate=(fd:number,mode:number,offset:number,length:number)=>number;
 let fallocate:Fallocate|null|undefined;
 function loadFallocate():Fallocate|null {
@@ -26,7 +28,7 @@ function loadFallocate():Fallocate|null {
  } catch {return fallocate=null;}
 }
 
-export type FreePageRelease={released:true;pages:number;ranges:number;bytes:number}
+export type FreePageRelease={released:true;pages:number;ranges:number;bytes:number;more:boolean}
  |{released:false;reason:'unsupported'|'checkpoint_busy'|'wal_not_empty'|'free_list_mismatch'|'punch_failed'};
 
 /** Reads the committed free list: header bytes 32..39, then each trunk's leaf numbers. */
@@ -73,16 +75,17 @@ export function releaseFreePages(db:Database,path:string):FreePageRelease {
    const {pageSize,leaves,total,trunks}=readFreeLeafPages(fd);
    if(leaves.length+trunks!==total)return {released:false,reason:'free_list_mismatch'};
    leaves.sort((a,b)=>a-b);
-   let ranges=0;
+   let ranges=0,pages=0;
    for(let index=0;index<leaves.length;){
+    if(ranges>=MAX_RANGES_PER_CALL)return {released:true,pages,ranges,bytes:pages*pageSize,more:true};
     let end=index;while(end+1<leaves.length&&leaves[end+1]===leaves[end]!+1)end++;
     const first=leaves[index]!,count=end-index+1;
     if(punch(fd,PUNCH_HOLE_KEEP_SIZE,(first-1)*pageSize,count*pageSize)!==0)return {released:false,reason:'punch_failed'};
-    ranges++;index=end+1;
+    ranges++;pages+=count;index=end+1;
     // Each hole is a journaled extent change on the ledger's filesystem; spread them out.
     if(ranges%PUNCHES_PER_PAUSE===0)Bun.sleepSync(PUNCH_PAUSE_MS);
    }
-   return {released:true,pages:leaves.length,ranges,bytes:leaves.length*pageSize};
+   return {released:true,pages,ranges,bytes:pages*pageSize,more:false};
   }
  }).immediate();
 }

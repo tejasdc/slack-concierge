@@ -110,6 +110,8 @@ export class PreparedSearchUpkeep {
   const reclaimable=before-(pages-free)*pageSize;
   const release=reclaimable>=this.releaseThresholdBytes?releaseFreePages(this.db,this.path):null;
   const documents=(this.db.query('SELECT COUNT(*) AS n FROM search_documents').get() as {n:number}).n;
+  // A partial release continues ten seconds later instead of in an hour.
+  if(release?.released&&release.more)this.lastCheck=now-HOUR+10_000;
   this.log('presentation_search_size',{documents,file_bytes:pages*pageSize,free_bytes:free*pageSize,
    allocated_bytes_before:before,allocated_bytes:allocatedBytes(this.path),release});
  }

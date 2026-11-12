@@ -98,7 +98,7 @@ try {
   JSON.stringify(logs.map(entry=>entry.event)));
  assert.deepEqual(reader.search('rollback window',5).hits.map(hit=>hit.sessionId),[9999]);
  assert.ok(!logs.some(entry=>entry.event==='presentation_search_upkeep_failed'),JSON.stringify(logs));
- // Last: Bun leaves an EXPLAIN statement holding its read snapshot. The backfill walks by rowid instead of sorting the whole generation each step.
+ // The backfill walks by rowid instead of sorting the whole generation each step.
  const plan=db.query(`EXPLAIN QUERY PLAN SELECT rowid FROM presentation_owner_messages NOT INDEXED WHERE rowid>? AND generation=? ORDER BY rowid LIMIT 250`)
   .all(0,1) as {detail:string}[];
  assert.ok(plan.some(row=>/INTEGER PRIMARY KEY|rowid>/.test(row.detail))&&!plan.some(row=>/TEMP B-TREE/.test(row.detail)),JSON.stringify(plan));
