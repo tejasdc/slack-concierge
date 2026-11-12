@@ -51,7 +51,8 @@ this report does not convert healthy account availability into that proof.
 | Ordinary native account-route continuation | Observed: session `concierge:9470`, native UUID `71413915-fc5b-4986-8ae4-b724290e5dd6`, reported Chann at 19:34 UTC and Hey at 20:49 UTC | Direct inherited auth checks; ordinary addressed follow-up supplied no account pin; one final receipt per request |
 | Independent memory across that account change | Not proved | Automatic earlier-work context supplied the first account value in the complete follow-up, contaminating the recall check |
 | Same-account conversation memory comparator | Observed: session `concierge:9503` returned its earlier random fact while still on Chann | The fact was absent from the complete admitted follow-up; this does not prove different-account memory |
-| Pause, Continue and isolation | Not run | Reviewed capability merged; installed acceptance still awaits its commit-scoped release watch |
+| Pause and isolation | Observed on installed control: target held its exact marked accepted input while comparison 9506 completed | Target-only controls retained agent provenance; no global Pause mutation |
+| Continue of accepted input | Failed on installed 30091dda; correction pending review/install | Continue cleared suspension, but exact input 71b9aeb2 remained unsubmitted; it was not resent |
 | Fresh exhaustion recovery | Not run | No genuine new refusal observed; ordinary account movement does not establish exhaustion recovery |
 
 The different-account requests were `a5f2ba86-8a16-4511-8568-def18e77d37e`
@@ -63,3 +64,20 @@ claims and the contaminated recall boundary. Sanitized request, auth and admissi
 metadata are retained in
 [the native continuation evidence](2026-11-12-claude-native-account-continuation.json).
 The original full lifecycle request remains open.
+
+## Installed control acceptance and observed release gap
+
+The commit-scoped watch fired with three retained observation gaps (63 s, 45 s, 16 s).
+Installed release 30091dda includes the reviewed control. Pause/Continue changed
+only 9503; old-action retries returned the original control operation and current
+state, and changed target/verb conflicted. This supports the captured target
+states, not a universal claim about external side effects.
+
+The marked entrance accepted input 71b9aeb2-54d5-4294-ba02-ff2afc33ac85
+at 21:14:21 UTC while paused. It remained INPUT_HELD with no run or acknowledgement
+after comparison 9506 completed request4b20d61c-96b6-4789-b0a0-4115ce166273.
+Explicit Continue cleared suspension but did not submit that input. The original
+input is retained without resend; acceptance remains failed pending reviewed
+normal recovery and the exact-input live check. See
+[raw sanitized control evidence](2026-11-12-claude-pause-live-gap.json) and
+[the diagnosed recovery gap](../incidents/2026-11-12-marked-paused-input-not-released.md).
