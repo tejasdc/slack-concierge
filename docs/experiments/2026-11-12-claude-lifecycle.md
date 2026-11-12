@@ -52,7 +52,7 @@ this report does not convert healthy account availability into that proof.
 | Independent memory across that account change | Not proved | Automatic earlier-work context supplied the first account value in the complete follow-up, contaminating the recall check |
 | Same-account conversation memory comparator | Observed: session `concierge:9503` returned its earlier random fact while still on Chann | The fact was absent from the complete admitted follow-up; this does not prove different-account memory |
 | Pause and isolation | Observed on installed control: target held its exact marked accepted input while comparison 9506 completed | Target-only controls retained agent provenance; no global Pause mutation |
-| Continue of accepted input | Failed on installed 30091dda; correction pending review/install | Continue cleared suspension, but exact input 71b9aeb2 remained unsubmitted; it was not resent |
+| Continue of accepted input | Failed on installed 30091dda; original input completed after repair installation on a0cad8cd | Same accepted input, native UUID and earlier fact; one observed native admission and terminal answer, without a resend |
 | Fresh exhaustion recovery | Not run | No genuine new refusal observed; ordinary account movement does not establish exhaustion recovery |
 
 The different-account requests were `a5f2ba86-8a16-4511-8568-def18e77d37e`
@@ -76,8 +76,42 @@ states, not a universal claim about external side effects.
 The marked entrance accepted input 71b9aeb2-54d5-4294-ba02-ff2afc33ac85
 at 21:14:21 UTC while paused. It remained INPUT_HELD with no run or acknowledgement
 after comparison 9506 completed request4b20d61c-96b6-4789-b0a0-4115ce166273.
-Explicit Continue cleared suspension but did not submit that input. The original
-input is retained without resend; acceptance remains failed pending reviewed
-normal recovery and the exact-input live check. See
+Explicit Continue cleared suspension but did not submit that input. At that pre-repair checkpoint, the original
+input was retained without resend and acceptance remained failed pending reviewed
+normal recovery and the exact-input live check below. See
 [raw sanitized control evidence](2026-11-12-claude-pause-live-gap.json) and
 [the diagnosed recovery gap](../incidents/2026-11-12-marked-paused-input-not-released.md).
+
+
+## Observed completion after installed recovery correction
+
+Repair `0a5d63e7` merged through PR817 at `0b678389` and was observed installed
+in release `a0cad8cd`. Its commit-scoped watch fired at 21:45:43 UTC with no
+observation gaps. The previously accepted input `71b9aeb2-54d5-4294-ba02-ff2afc33ac85`
+was queued once as turn29300 at 21:45:37 and completed at 21:46:02, without a
+new input or additional Continue command. Its native conversation remained
+`b4de3d93-02eb-428b-895b-80d8bf94788c`, binding1; its run was
+`53f4bab6-839e-4a0f-93b7-eaf1d5143f5d`.
+
+The complete admitted input was 1622 UTF-8 bytes. Its hash matched the retained
+admission hash exactly, and the earlier synthetic fact was absent from it. The
+native transcript contains one matching admitted input, one ordinary auth-status
+command and one terminal answer recalling that fact. Actual inherited account
+remained Chann. The owner events separately retain one accepted event and one
+result for that input/run; the account event uses attempt2, so this is **not**
+a one-dispatch-attempt claim. No universal external-effect exactly-once guarantee,
+credential-byte comparison or all-process survival check is inferred.
+
+Comparison9506 completed while the target was still held and remains unpaused;
+global Pause remains false at generation12. Independent read-only GPT-6 Luna audit
+passed this narrow repaired native context-and-isolation acceptance, after reading
+the exact receipts and complete native input, command and terminal answer.
+The sanitized completion record is
+[retained separately](2026-11-12-claude-pause-installed-completion.json), alongside
+the pre-repair failure evidence rather than replacing it.
+
+A bounded account-event read for earlier cold9470 now independently identifies
+its actual Chann-to-Hey selection as `moved-for-room`, with Chann expected. Its
+20:58 synthetic fact seed remained on Hey for warm cache. This strengthens the
+ordinary automatic account-route observation, while independent cross-account
+recall and fresh exhaustion remain unproved.
