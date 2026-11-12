@@ -1605,7 +1605,12 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         &&claudeAccountWithRoomBesides(runningClaudeAccount,runningClaudeModel)?{...refused,elsewhere:true}:refused;
       const workedOn=observedAssistantOutput || observedToolCount>0 || !!structuredFailure?.assistantOutput
         || (structuredFailure?.toolsUsed.length??0)>0 || artifactActivity;
-      const interruption=!refusal && input.providerId==='codex' && workedOn ? providerInterruptionDetail(String(error)) : null;
+      const claudeExit=input.providerId==='claude-code' && providerIdentityCompatible
+        ? structuredFailure?.processExit : null;
+      const interruption=!refusal && workedOn
+        ? claudeExit ? `Claude Code exited without a terminal result (code ${claudeExit.code ?? 'none'}, signal ${claudeExit.signal ?? 'none'})`
+          : input.providerId==='codex' ? providerInterruptionDetail(String(error)) : null
+        : null;
       let continuationTurnId:number|null=null;
       if (!failRunningTurnAndReleaseSession(input.turnId, input.ownerInstanceId, String(error),undefined,
         refusal?()=>{continuationTurnId=queueTurnContinuation(input.turnId,refusal)?.turn_id??null;}

@@ -1492,7 +1492,20 @@ export async function runClaudeCodeTurn(input: {
     throw new Error("Claude Code ended before acknowledging the initial user message.");
   }
   if (!providerProducedResult) {
-    throw new Error("Claude Code ended before producing a terminal result.");
+    const interrupted = output.read(unstructuredOutput);
+    log("warn", "claude_code_exited_without_result", {
+      code: outcome.code, signal: outcome.signal, session_uuid: interrupted.sessionUUID,
+      tool_count: interrupted.toolsUsed.length, assistant_output: interrupted.assistantOutput,
+    });
+    // run() resolved only after the process's retained exit. A disconnected host rejects
+    // instead; it must never authorize a second provider while the first may still act.
+    throw new ProviderDispatchError({
+      message: "Claude Code ended before producing a terminal result.",
+      // Death proves the process cannot act again, not that its effects were observed.
+      failureClass: "parked_terminal", terminalConfirmed: false, processExit: outcome,
+      toolsUsed: interrupted.toolsUsed, assistantOutput: interrupted.assistantOutput,
+      providerSessionId: interrupted.sessionUUID,
+    });
   }
 
   const parsed = output.read(unstructuredOutput);
