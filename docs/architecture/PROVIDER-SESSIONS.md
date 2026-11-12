@@ -658,8 +658,10 @@ percentile four, and 35 turns (18.5%) had five or more. Five catches extended
 implementation while leaving short design edits alone. Claude Code and Codex
 use their managed `PreToolUse` hooks to ask the owner before a recognized edit;
 Codex documents specialized tool paths that may bypass hooks, so its gate is a
-measured guardrail rather than a complete edit boundary. Both hooks refuse an
-edit when the owner cannot answer.
+guardrail rather than a complete edit boundary. The report counts transcript
+edits and gate decisions separately; it does not yet reconcile every executed
+edit with a hook decision. When a hook runs and the owner cannot answer, it
+returns a refusal before the edit.
 
 A new ask declaring `--purpose research|design-critique|design-review` resolves
 to ChatGPT Pro on the asking machine before peer forwarding. An explicit other
