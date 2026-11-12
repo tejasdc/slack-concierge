@@ -10,12 +10,14 @@ import {log,errorFields} from './log';
 import {endRepeatingScheduleForInput} from './request-liveness';
 import {savedStartAt} from './saved-start-time';
 import {inQuietHours,localParts,nextQuietEnd,quietOnlyAdmits,QUIET_STOP_MARGIN_MS} from './quiet-hours';
+import {localDayGap,nextDailyWallClock,validDailyWallClock,type DailyWallClock} from './daily-wall-clock';
 export {savedStartAt} from './saved-start-time';
 
 export type SavedKind='scheduled'|'banked';
 export type SavedTurn={id:number;session_id:number;status:string;saved_kind:SavedKind;saved_at_ms:number;saved_expires_at_ms:number|null;saved_manual_start:number;
   saved_quiet_only:number;
   saved_repeat_ms:number|null;saved_root_id:number|null;saved_sequence:number|null;saved_fire_at_ms:number|null;
+  saved_daily_time:string|null;saved_time_zone:string|null;
   saved_account:string|null;saved_window:string|null;saved_boundary_ms:number|null;dispatch_next_attempt_ms:number|null;dispatch_failure_class:string|null;
   saved_alerted_at_ms:number|null;accepted_input_id:string|null;saved_wait_reason?:string|null};
 
@@ -48,12 +50,14 @@ export function changeSavedWorkSettings(value:Partial<SavedWorkSettings>):SavedW
  * refused every continuation, the whole resume rolled back, and a run a Concierge update
  * interrupted was left with no continuation at all.
  */
-export function saveQueuedTurn(turnId:number,kind:SavedKind,atMs?:number,expiresAtMs?:number,repeatEveryMs?:number,continuationOf?:number,standingRole?:string,quietOnly=false):void {
+export function saveQueuedTurn(turnId:number,kind:SavedKind,atMs?:number,expiresAtMs?:number,repeatEveryMs?:number,continuationOf?:number,standingRole?:string,quietOnly=false,daily?:DailyWallClock):void {
   const now=Date.now();
   if(quietOnly&&kind!=='banked')throw new Error('Quiet-only work must be banked.');
   if(kind==='scheduled'&&(!Number.isFinite(atMs)||atMs!<=now))throw new Error('Schedule a future instant.');
   if(expiresAtMs!==undefined&&(!Number.isFinite(expiresAtMs)||expiresAtMs<=(atMs??now)))throw new Error('Expiry must follow the scheduled time.');
   if(repeatEveryMs!==undefined&&(kind!=='scheduled'||!Number.isSafeInteger(repeatEveryMs)||repeatEveryMs<60_000))throw new Error('Repeat interval must be at least one minute.');
+  if(daily&&(!validDailyWallClock(daily)||kind!=='scheduled'||repeatEveryMs!==DAY||atMs!==nextDailyWallClock(now,daily)))
+    throw new Error('Daily local time must match the next scheduled instant.');
   db.transaction(()=>{
     const turn=db.query('SELECT session_id,status,saved_kind FROM turns WHERE id=?').get(turnId) as {session_id:number;status:string;saved_kind:string|null}|null;
     if(!turn||turn.status!=='queued'||turn.saved_kind)throw new Error('Only a new queued turn can be saved.');
@@ -70,9 +74,9 @@ export function saveQueuedTurn(turnId:number,kind:SavedKind,atMs?:number,expires
     const inherited=continuationOf?savedTurn(continuationOf)?.saved_quiet_only===1:false;
     const next=kind==='scheduled'?atMs!:null;
     db.query(`UPDATE turns SET saved_kind=?,saved_at_ms=?,saved_expires_at_ms=?,dispatch_failure_class=NULL,dispatch_next_attempt_ms=?,
-      saved_fire_at_ms=?,saved_repeat_ms=?,saved_root_id=?,saved_sequence=?,saved_quiet_only=? WHERE id=?`)
+      saved_fire_at_ms=?,saved_repeat_ms=?,saved_root_id=?,saved_sequence=?,saved_quiet_only=?,saved_daily_time=?,saved_time_zone=? WHERE id=?`)
       .run(kind,now,kind==='scheduled'?expiresAtMs??null:now+savedWorkSettings().wait_days*DAY,next,next,
-        repeatEveryMs??null,repeatEveryMs?turnId:null,repeatEveryMs?0:null,quietOnly||inherited?1:0,turnId);
+        repeatEveryMs??null,repeatEveryMs?turnId:null,repeatEveryMs?0:null,quietOnly||inherited?1:0,daily?.time??null,daily?.timeZone??null,turnId);
   })();
   executionChanged();
 }
@@ -287,15 +291,38 @@ export function resumeBankedAfterYield(turnId:number,reason:'allowance_boundary'
 
 export function updateSavedTurn(turnId:number,action:string,body:Record<string,unknown>) {
   if(!Number.isSafeInteger(turnId)||turnId<1)throw new Error('Name an exact saved turn.');
-  if(!['start','time','schedule','drop'].includes(action))throw new Error('Choose start, time, schedule or drop.');
+  if(!['start','time','schedule','drop','daily'].includes(action))throw new Error('Choose start, time, schedule, daily or drop.');
   const actionId=body.clientActionId;
   if(typeof actionId!=='string'||!actionId.trim())throw new Error('Stable client action identity required.');
   const eventId=`saved-control:${turnId}:${actionId}`;
   const result=db.transaction(()=>{
-    if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))return {turn:savedTurn(turnId)};
+    const prior=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(eventId) as {payload_json:string}|null;
+    if(prior) {
+      const kept=JSON.parse(prior.payload_json);
+      if(action==='daily'&&(kept.action!=='daily'||kept.time!==body.time||kept.timeZone!==body.timeZone))
+        throw new Error('This action ID already names a different saved-work change.');
+      return {turn:savedTurn(turnId)};
+    }
     const row=savedTurn(turnId);
     if(!row||row.status!=='queued')throw new Error('This saved work is no longer waiting.');
-    if(action==='time'||action==='schedule') {
+    if(action==='daily') {
+      if(typeof body.time!=='string'||typeof body.timeZone!=='string'||!validDailyWallClock({time:body.time,timeZone:body.timeZone}))
+        throw new Error('Name a valid HH:MM time and IANA time zone.');
+      const daily={time:body.time,timeZone:body.timeZone};
+      if(row.saved_kind!=='scheduled'||row.saved_repeat_ms===null||row.saved_root_id===null||row.saved_manual_start)
+        throw new Error('Only a queued repeating schedule can move to daily local time.');
+      const latest=db.query('SELECT id FROM turns WHERE saved_root_id=? ORDER BY saved_sequence DESC LIMIT 1')
+        .get(row.saved_root_id) as {id:number}|null;
+      if(latest?.id!==row.id||repeatingScheduleEnded(row.saved_root_id,row.id))
+        throw new Error('This repeating schedule is no longer active.');
+      const at=nextDailyWallClock(Date.now(),daily);
+      db.query('UPDATE turns SET saved_daily_time=?,saved_time_zone=? WHERE id=?')
+        .run(daily.time,daily.timeZone,row.saved_root_id);
+      db.query(`UPDATE turns SET saved_daily_time=?,saved_time_zone=?,saved_fire_at_ms=?,dispatch_next_attempt_ms=?
+        WHERE id=? AND status='queued'`).run(daily.time,daily.timeZone,at,at,row.id);
+      if(row.accepted_input_id)db.query(`UPDATE session_communication_requests SET due_at_ms=?
+        WHERE target_input_id=? AND outcome IS NULL`).run(at+15*60_000,row.accepted_input_id);
+    } else if(action==='time'||action==='schedule') {
     if(row.saved_quiet_only)throw new Error('Quiet-only work cannot be converted to a daytime schedule. Drop it and create an explicitly scheduled request.');
     if(action==='time'&&row.saved_kind!=='scheduled')throw new Error('Use schedule to convert banked work into scheduled work.');
     if(action==='schedule'&&row.saved_kind!=='banked')throw new Error('Only banked work can be converted into a schedule.');
@@ -303,11 +330,18 @@ export function updateSavedTurn(turnId:number,action:string,body:Record<string,u
     if(typeof at!=='number'||!Number.isFinite(at)||at<=Date.now())throw new Error('Name a future time.');
     const expires=body.expiresAtMs;
     if(expires!==undefined&&(typeof expires!=='number'||!Number.isFinite(expires)||expires<=at))throw new Error('Expiry must follow the scheduled time.');
+    const expiry=expires??(row.saved_daily_time?row.saved_expires_at_ms:null);
+    if(action==='time'&&row.saved_daily_time&&row.saved_time_zone) {
+      const local=localParts(at,{time_zone:row.saved_time_zone});
+      const time=`${String(local.hour).padStart(2,'0')}:${String(local.minute).padStart(2,'0')}`;
+      db.query('UPDATE turns SET saved_daily_time=? WHERE id=?').run(time,row.saved_root_id);
+      db.query('UPDATE turns SET saved_daily_time=? WHERE id=?').run(time,turnId);
+    }
     db.query(`UPDATE turns SET saved_kind='scheduled',dispatch_next_attempt_ms=?,saved_fire_at_ms=?,saved_expires_at_ms=?,saved_account=NULL,
-      saved_window=NULL,saved_boundary_ms=NULL,saved_alerted_at_ms=NULL,saved_manual_start=0 WHERE id=? AND status='queued'`).run(at,at,expires??null,turnId);
+      saved_window=NULL,saved_boundary_ms=NULL,saved_alerted_at_ms=NULL,saved_manual_start=0 WHERE id=? AND status='queued'`).run(at,at,expiry,turnId);
     // A repeating schedule's end lives on its first firing; changing it here changes the whole schedule's end.
     if(row.saved_root_id!==null&&row.saved_root_id!==turnId)
-      db.query('UPDATE turns SET saved_expires_at_ms=? WHERE id=?').run(expires??null,row.saved_root_id);
+      db.query('UPDATE turns SET saved_expires_at_ms=? WHERE id=?').run(expiry,row.saved_root_id);
     } else if(action==='start') {
     if(row.saved_quiet_only&&!quietOnlyAdmits(Date.now(),savedWorkSettings()))
       throw new Error('Quiet-only work can start only during its quiet window, before the morning cutoff.');
@@ -334,6 +368,7 @@ export function updateSavedTurn(turnId:number,action:string,body:Record<string,u
     if(session){const meta=sessionMetadata(session);const needs=(meta.needs??[]).filter(need=>need.eventId!==`saved-work-alert:${turnId}`);
       if(needs.length!==(meta.needs??[]).length)updateSessionMetadata(session.id,{needs});}
     recordSessionEvent({eventId,sessionId:row.session_id,inputId:row.accepted_input_id,turnId,kind:'saved_control',payload:{action,fromKind:row.saved_kind,toKind:savedTurn(turnId)?.saved_kind,atMs:body.atMs??null,
+      ...(action==='daily'?{time:body.time,timeZone:body.timeZone}:{}),
       ...(action==='drop'?{reason:'saved_work_drop',cancelingSessionId:body.cancelingSessionId??null,
         cancelingInputId:body.cancelingInputId??null,cancelingRunId:body.cancelingRunId??null}:{})}});
     return {turn:savedTurn(turnId)};
@@ -446,8 +481,19 @@ export function advanceRepeatingSchedules(now=Date.now()):number {
         OR COALESCE(json_extract(native_metadata_json,'$.suspended'),0)<>0)`).get(current.session_id))return;
       const interval=current.saved_repeat_ms,root=current.saved_root_id;
       const firedAt=current.saved_fire_at_ms??current.dispatch_next_attempt_ms!;
-      const nextSequence=current.saved_sequence+Math.max(1,Math.floor((now-firedAt)/interval)+1);
-      const nextAt=firedAt+(nextSequence-current.saved_sequence)*interval;
+      const daily=current.saved_daily_time&&current.saved_time_zone
+        ?{time:current.saved_daily_time,timeZone:current.saved_time_zone}:null;
+      let nextAt=firedAt+(Math.max(1,Math.floor((now-firedAt)/interval)+1))*interval;
+      if(daily) {
+        nextAt=nextDailyWallClock(Math.max(now,firedAt),daily);
+        // A missed firing admitted late already produces today's digest. Do not book a
+        // second one for the same local date if its normal hour is still ahead.
+        if(localDayGap(firedAt,now,daily.timeZone)>0&&localDayGap(now,nextAt,daily.timeZone)===0)
+          nextAt=nextDailyWallClock(nextAt,daily);
+      }
+      const nextSequence=current.saved_sequence+(daily
+        ?Math.max(1,localDayGap(firedAt,nextAt,daily.timeZone))
+        :Math.max(1,Math.floor((now-firedAt)/interval)+1));
       // A repeating schedule's expiry is when the whole schedule ends, kept on its first firing.
       // Firings booked before 2026-11-11 carried a copy pushed one interval later each time, so the
       // end never arrived (Lenny's refund watch fired for days past it); a queued one of those is
@@ -489,8 +535,8 @@ export function advanceRepeatingSchedules(now=Date.now()):number {
       const queued=enqueueSessionInput(input.id);
       if(queued.turn_id===null)throw new Error('Repeating firing could not enter its session queue.');
       db.query(`UPDATE turns SET saved_kind='scheduled',saved_at_ms=?,saved_expires_at_ms=?,dispatch_next_attempt_ms=?,saved_fire_at_ms=?,
-        saved_repeat_ms=?,saved_root_id=?,saved_sequence=? WHERE id=? AND status='queued'`)
-        .run(now,end,nextAt,nextAt,interval,root,nextSequence,queued.turn_id);
+        saved_repeat_ms=?,saved_root_id=?,saved_sequence=?,saved_daily_time=?,saved_time_zone=? WHERE id=? AND status='queued'`)
+        .run(now,end,nextAt,nextAt,interval,root,nextSequence,daily?.time??null,daily?.timeZone??null,queued.turn_id);
       advanced++;
     })();} catch(error) {log('error','saved_repeat_advance_failed',{turn_id:row.id,...errorFields(error)});}
   }
