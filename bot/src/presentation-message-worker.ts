@@ -254,8 +254,9 @@ async function upgradeAnswerClosures(generation:number){
 }
 /** Thread time stopped counting agent upkeep (inbox-thread-time.ts); every prepared thread was
  * dated by its newest message of any kind, so each one is recomputed once, in bounded pages.
- * Version 2 also stops counting owner recovery notices filed as a thread's opening message. */
-const THREAD_TIME_VERSION=2;
+ * Version 2 also stops counting owner recovery notices filed as a thread's opening message;
+ * version 3 the router's working output under such a notice. */
+const THREAD_TIME_VERSION=3;
 async function upgradeThreadTime(generation:number){
   const version=(prepared.query('SELECT thread_time_version AS version FROM presentation_message_meta WHERE singleton=1')
     .get() as {version:number}).version;

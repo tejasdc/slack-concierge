@@ -48,11 +48,15 @@ try {
   assert.equal(movesThreadForHim('unfiled-wake:abc','other','unfiled-wake:abc'),false,'unfiled wake as root');
   assert.equal(movesThreadForHim('thread-upkeep:abc','final','other-root'),false);
   assert.equal(movesThreadForHim('human-1','other','human-1'),true,'ordinary root');
+  assert.equal(movesThreadForHim('router-working-text','other','thread-upkeep:abc'),false,'router output under a recovery notice');
+  assert.equal(movesThreadForHim('router-post','post','thread-upkeep:abc'),true,'a deliberate post under a recovery notice');
+  assert.equal(movesThreadForHim('return:y','final','thread-upkeep:abc'),true,'an agent final under a recovery notice');
   assert.equal(movesThreadForHim('human-2','post','human-1'),true,'ordinary message');
   assert.equal(movesThreadForHim('request:r','other','human-1'),false,'unchanged request rule');
   const cases:[string,string,'final'|'post'|'other'][]=[
     ['thread-upkeep:abc','thread-upkeep:abc','other'],['unfiled-wake:abc','unfiled-wake:abc','other'],
     ['thread-upkeep:abc','root','final'],['human-1','human-1','other'],['human-2','human-1','post'],
+    ['router-working-text','thread-upkeep:abc','other'],['router-post','thread-upkeep:abc','post'],['return:y','thread-upkeep:abc','final'],
     ['request:r','human-1','other'],['return:x','human-1','other'],['return:x','human-1','final']];
   for(const [id,root,kind] of cases){
     // The scratch ledger evaluates the rule over one literal row; no table is created.
