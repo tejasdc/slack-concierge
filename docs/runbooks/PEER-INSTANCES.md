@@ -302,7 +302,7 @@ files were moved to `~/.codex/synced-linux-state.stale-20260918/`.
 `--isolated --headless`), and sets `CONCIERGE_SHARED_PLAYWRIGHT_URL` for Concierge only once the server answers. Claude
 sessions Concierge launches then add that server with `--mcp-config` and turn the per-session
 `playwright@claude-plugins-official` plugin off in their `--settings` (`claudeAgentSettings` in `bot/src/claude-code.ts`);
-sessions started from elsewhere on the Mac keep the plugin. The same environment sets the start pace (3 per 120 s, jitter
+sessions started from elsewhere on the Mac keep the plugin. **It is not a working capability on the Mac:** the Mac's browser guard (`bot/src/mac-surface-policy.ts`) refuses every tool whose name contains `playwright`, because direct agent browser control of Tejas's Mac is refused on purpose (use the server's browser, or the isolated Mac browser after a recorded server failure). Observed 2026-11-12: a marked session connected to the shared server, saw `mcp__playwright__browser_navigate` and was refused. The shared server exists only so the idle per-session copies (90-130 MB each) are gone; do not read it as a way to automate a browser on the Mac. The memory-pressure level the start gate and crowding read is refreshed asynchronously every five seconds and never read synchronously on the owner's event loop. The same environment sets the start pace (3 per 120 s, jitter
 30 s; see [turn lifecycle](../architecture/TURN-LIFECYCLE.md#paced-starts)). On macOS the freeze records
 (`owner_unresponsive`, `owner_task_blocked`, `owner_task_still_blocked`) carry `mem_pressure_level`, `swap_used_mb`,
 `owner_compressed_mb` and `pageins_since_previous` from a sampler off the blocked path (`bot/src/mac-memory-evidence.ts`).
