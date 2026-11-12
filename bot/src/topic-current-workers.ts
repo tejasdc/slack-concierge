@@ -35,3 +35,20 @@ export function workingThrough(source:Database,sessionId:number,seen:Set<number>
  if(source.query('SELECT 1 FROM session_peer_requests WHERE source_session_id=? AND outcome IS NULL').get(sessionId))return [sessionId];
  return null;
 }
+
+/**
+ * Dispatches that belong only to the thread's closed requests. Closing a request settles the
+ * thread's work on it even when the agent never settled the delivery itself, so that agent being
+ * busy on other threads must not make this one look worked on (bug report 42e217cf, 2026-11-11:
+ * six threads closed by the Inbox showed "Still being worked on" and pulsed while their agent
+ * worked elsewhere).
+ */
+export function closedRequestDispatches(requests:readonly {state:string;dispatches?:readonly any[]}[]){
+ const open=new Set<string>(),closed=new Set<string>();
+ for(const request of requests)for(const dispatch of request.dispatches??[]){
+  const id=String(dispatch?.requestId??'');if(!id)continue;
+  (request.state==='open'?open:closed).add(id);
+ }
+ for(const id of open)closed.delete(id);
+ return closed;
+}
