@@ -8,12 +8,16 @@ const stateDir = join(process.env.CONCIERGE_STATE_DIR || "", "speech");
 const native = join(stateDir, "process-footprint");
 const webAppBundle = "com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792";
 const webContentPath = "/com.apple.WebKit.WebContent.xpc/";
+const eventRetentionMs = 14 * 24 * 60 * 60_000;
 const pre: Sample[] = [];
 const events = new Map<string, VoiceEvent>();
 let timer: ReturnType<typeof setInterval> | undefined;
 let eventTimer: ReturnType<typeof setInterval> | undefined;
 let busy = false;
 let last: Sample | undefined;
+let persistQueue: Promise<void> = Promise.resolve();
+let pendingWrites = 0;
+let lastPersistError: string | null = null;
 
 type ProcessReading = { pid: number; birthAbstime: number; userNs: number; systemNs: number; physicalBytes: number; path: string };
 type Sample = { at: string; elapsedMs: number; helper: ProcessReading | null; engine: ProcessReading | null; launcher: ProcessReading | null; shell: ProcessReading | null; children: ProcessReading[]; error?: string };
@@ -93,15 +97,33 @@ async function attribute(shell: ProcessReading | null, candidates: ProcessReadin
   } catch { return { page: null, attribution: "page_lifecycle_unavailable" }; }
 }
 
-async function persist(event: VoiceEvent) {
+async function writeEvent(event: VoiceEvent) {
   await mkdir(stateDir, { recursive: true });
   const path = join(stateDir, "voice-process-events.json");
   let previous: VoiceEvent[] = [];
-  try { previous = JSON.parse(await readFile(path, "utf8")) as VoiceEvent[]; } catch { /* no prior evidence */ }
-  const retained = [...previous.slice(-3), event].map((item) => ({ ...item, samples: item.samples.slice(-100) }));
+  try { previous = JSON.parse(await readFile(path, "utf8")) as VoiceEvent[]; }
+  catch (error) {
+    if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error;
+  }
+  const cutoff = Date.now() - eventRetentionMs;
+  const retained = [...previous, event]
+    .filter((item) => Date.parse(item.beganAt) >= cutoff)
+    .map((item) => ({ ...item, samples: item.samples.slice(-100) }));
   await writeFile(`${path}.tmp`, JSON.stringify(retained), { mode: 0o600 });
   const { rename } = await import("node:fs/promises");
   await rename(`${path}.tmp`, path);
+}
+
+function persist(event: VoiceEvent) {
+  // A shared temp path and read-modify-write file require one writer, including overlapping finishes.
+  pendingWrites++;
+  persistQueue = persistQueue.then(() => writeEvent(event)).then(() => {
+    lastPersistError = null;
+  }).catch((error) => {
+    lastPersistError = error instanceof Error ? error.message.slice(0, 100) : "unknown";
+  }).finally(() => {
+    pendingWrites--;
+  });
 }
 
 async function tick() {
@@ -119,7 +141,7 @@ async function tick() {
       if (now < (event.afterUntil ?? event.deadline)) continue;
       events.delete(id);
       if (now >= event.deadline) event.cutoffAt = new Date().toISOString();
-      void persist(event).catch(() => {});
+      persist(event);
     }
     if (!events.size && eventTimer) { clearInterval(eventTimer); eventTimer = undefined; }
   } finally { busy = false; }
@@ -132,7 +154,7 @@ export const macVoiceObserver = {
     timer.unref?.();
     void tick();
   },
-  stop() { if (timer) clearInterval(timer); if (eventTimer) clearInterval(eventTimer); timer = undefined; eventTimer = undefined; },
+  async stop() { if (timer) clearInterval(timer); if (eventTimer) clearInterval(eventTimer); timer = undefined; eventTimer = undefined; await persistQueue; },
   begin(id: string, mode: unknown, pageSessionId: unknown) {
     if (events.has(id)) return;
     if (events.size >= 4) return;
@@ -152,5 +174,5 @@ export const macVoiceObserver = {
     })().catch(() => { event.attribution = "observer_error"; });
   },
   end(id: string) { const event = events.get(id); if (event) { event.endedAt = new Date().toISOString(); event.afterUntil = Math.min(Date.now() + 30_000, event.deadline); } },
-  status() { return { activeEvents: events.size, ringSamples: pre.length, lastSampleAt: last?.at ?? null, lastSampleElapsedMs: last?.elapsedMs ?? null, lastPageAttribution: [...events.values()].at(-1)?.attribution ?? null }; },
+  status() { return { activeEvents: events.size, pendingWrites, ringSamples: pre.length, lastSampleAt: last?.at ?? null, lastSampleElapsedMs: last?.elapsedMs ?? null, lastPageAttribution: [...events.values()].at(-1)?.attribution ?? null, lastPersistError }; },
 };
