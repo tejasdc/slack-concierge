@@ -1112,10 +1112,12 @@ export class SessionOwner {
     if(!created||created.kind!=='create'||created.origin!=='agent'||created.source_input_id!==source.inputId||created.source_run_id!==source.runId
       ||created.request_id!==createId.slice('request:'.length)||sessionId&&`concierge:${created.session_id}`!==sessionId)
       throw new SessionOwnerError('This agent did not create the exact test session.',403,'AGENT_TEST_SCOPE_REFUSED');
-    // A later human or another agent can write to an ordinary session. Once that happens,
-    // this browser entrance must not expose their words or provider response to them.
-    const foreign=db.query(`SELECT 1 FROM session_inputs WHERE session_id=? AND
-      (origin<>'agent' OR source_input_id IS NOT ? OR source_run_id IS NOT ?) LIMIT 1`)
+    // The session's own replies and requests use its current input as their source.
+    // A human or another agent may also write here; their words close this entrance.
+    const foreign=db.query(`SELECT 1 FROM session_inputs AS candidate WHERE candidate.session_id=? AND
+      (candidate.origin<>'agent' OR ((candidate.source_input_id IS NOT ? OR candidate.source_run_id IS NOT ?)
+        AND NOT EXISTS (SELECT 1 FROM session_inputs AS own_source
+          WHERE own_source.id=candidate.source_input_id AND own_source.session_id=candidate.session_id))) LIMIT 1`)
       .get(created.session_id,source.inputId,source.runId);
     if(foreign)throw new SessionOwnerError('This session now contains other authorship.',403,'AGENT_TEST_SCOPE_CHANGED');
     return {source,sessionId:`concierge:${created.session_id}`};
@@ -4203,7 +4205,7 @@ export class SessionOwner {
             return ownerJson(this.presentationReceiptWindow(sessionId,boundedLimit(url.searchParams.get('limit'),PRESENTATION_PAGE),url.searchParams.get('cursor')));
           }
           if(tail[0]==='events'){
-            const page=this.eventPage(Number(url.searchParams.get('after'))||0,sessionId,null,
+            const page=this.eventPage(Number(url.searchParams.get('after'))||0,sessionId,url.searchParams.get('runId'),
               {kind:url.searchParams.get('kind'),limit:boundedLimit(url.searchParams.get('limit'),1000)});
             return ownerJson({events:page.events,nextCursor:page.nextCursor??url.searchParams.get('after')??null,hasMore:page.hasMore});
           }
@@ -4213,14 +4215,14 @@ export class SessionOwner {
           if(!after)throw new SessionOwnerError('An exact receipt position is required.',400,'RECEIPT_POSITION_REQUIRED');
           return ownerJson(this.presentationReceiptChanges(sessionId,after,boundedLimit(url.searchParams.get('limit'),PRESENTATION_PAGE)));
         } else if(tail.length===2&&tail[0]==='events'&&child==='stream'){
+          if(this.streamsClosed)throw new SessionOwnerError('The session owner is restarting.',503,'OWNER_DRAINING');
           const streamed=new URL(request.url);streamed.pathname='/sessions/v1/events/stream';streamed.searchParams.set('sessionId',sessionId);
-          streamed.searchParams.delete('runId');
           return this.stream(request,streamed,()=>{this.agentBrowserBinding(request,sessionId);});
         } else if(tail.length===4&&tail[0]==='history'&&tail[1]==='messages'&&tail[3]==='detail')
           target=`/sessions/${encodeURIComponent(sessionId)}/history/messages/${encodeURIComponent(tail[2]!)}/detail`;
         else if(tail.length===2&&tail[0]==='operations'){
-          const operation=this.input(child!);
-          if(operation.session_id!==Number(sessionId.slice('concierge:'.length))||operation.origin!=='agent'
+          const operation=getAcceptedSessionInput(child!);
+          if(!operation||operation.session_id!==Number(sessionId.slice('concierge:'.length))||operation.origin!=='agent'
             ||operation.source_input_id!==source.inputId||operation.source_run_id!==source.runId)
             throw new SessionOwnerError('This operation is outside the test session.',403,'AGENT_TEST_CHILD_REFUSED');
           return ownerJson(this.receipt(operation));
