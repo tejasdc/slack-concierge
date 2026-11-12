@@ -137,7 +137,7 @@ export async function runOutsideCodexTurn(input: OutsideRun): Promise<RunResult>
   try {
     const exit = await input.transport.run({
       args, cwd: input.cwd,
-      environment: providerOwnerEnvironment(input.environment),
+      environment: providerOwnerEnvironment({...input.environment,CONCIERGE_OUTSIDE_RUN:'1'}),
       stdin: "",
       onStdout: chunk => {
         buffer += chunk;
