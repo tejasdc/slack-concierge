@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { ScreenshotRefusal, takeLocalScreenshot } from "./local-screenshot";
 import { LocalCaptureState, localCaptureId } from "./local-capture-state";
 import { log } from "./log";
+import { macVoiceObserver } from "./mac-voice-observer";
 import { speechEngine } from "./speech-engine";
 import { transcribeWholeRecording } from "./transcription";
 
@@ -36,6 +37,8 @@ const ENGINE_VERSION = `darwin ${release()}`;
 
 type Recording = { stream: string; started: Promise<void>; decoder: ChildProcessWithoutNullStreams; decoded: Promise<number>; ended: boolean; remainder: Buffer; frames: number; touchedAt: number; startedAt: number };
 const recordings = new Map<string, Recording>();
+let finishing = 0;
+let wholeTranscriptions = 0;
 const localCapture = new LocalCaptureState();
 
 class SpeechRefusal extends Error {
@@ -45,7 +48,7 @@ class SpeechRefusal extends Error {
 // The page's recorder produces WebM/Opus (Chrome) or fragmented MP4 (Safari); ffmpeg decodes
 // either as it arrives and hands 16 kHz samples to the engine, which transcribes as they come.
 // Registered before the engine answers, so a piece that arrives while it starts waits for it.
-async function begin(id: string) {
+async function begin(id: string, mode?: unknown, pageSessionId?: unknown) {
   const existing = recordings.get(id);
   if (existing) return existing.started;
   const stream = `live-${randomUUID()}`;
@@ -65,6 +68,7 @@ async function begin(id: string) {
   decoder.stdin.on("error", () => {});
   recording.decoded = new Promise((resolve) => { decoder.on("close", (code) => { recording.ended = true; resolve(code ?? 1); }); decoder.on("error", () => { recording.ended = true; resolve(1); }); });
   recordings.set(id, recording);
+  macVoiceObserver.begin(id, mode, pageSessionId);
   try { await started; } catch (error) { cancel(id); throw error; }
 }
 
@@ -104,38 +108,46 @@ async function finish(id: string) {
   const recording = recordings.get(id);
   if (!recording) throw new SpeechRefusal("SPEECH_UNKNOWN_RECORDING", 404);
   recordings.delete(id);
-  const stopped = Date.now();
-  await recording.started.catch(() => { throw new SpeechRefusal("SPEECH_UNKNOWN_RECORDING", 404); });
-  recording.decoder.stdin.end();
-  // An undecodable live recording is answered as unknown, so the page hands over the whole file.
-  if (await recording.decoded !== 0) { speechEngine.cancelStream(recording.stream); throw new SpeechRefusal("SPEECH_UNKNOWN_RECORDING", 404); }
-  const result = await speechEngine.finishStream(recording.stream).catch((error: unknown) => {
-    log("warn", "live_transcription_failed", { engine: speechEngine.name, reason: error instanceof Error ? error.message.slice(0, 120) : "unknown" });
-    throw new SpeechRefusal("SPEECH_UNKNOWN_RECORDING", 404);
-  });
-  const text = result.text.trim();
-  const durationMs = Math.round(recording.frames / 16);
-  log("info", "live_audio_transcribed", { engine: speechEngine.name, audio_ms: durationMs, pieces: result.chunks, after_stop_ms: Date.now() - stopped, engine_finish_ms: result.computeMs, text_chars: text.length });
-  return { text, engine: ENGINE, engineVersion: ENGINE_VERSION, durationMs, remainingSegments: result.remainingSegments ?? [] };
+  macVoiceObserver.end(id);
+  finishing++;
+  try {
+    const stopped = Date.now();
+    await recording.started.catch(() => { throw new SpeechRefusal("SPEECH_UNKNOWN_RECORDING", 404); });
+    recording.decoder.stdin.end();
+    // An undecodable live recording is answered as unknown, so the page hands over the whole file.
+    if (await recording.decoded !== 0) { speechEngine.cancelStream(recording.stream); throw new SpeechRefusal("SPEECH_UNKNOWN_RECORDING", 404); }
+    const result = await speechEngine.finishStream(recording.stream).catch((error: unknown) => {
+      log("warn", "live_transcription_failed", { engine: speechEngine.name, reason: error instanceof Error ? error.message.slice(0, 120) : "unknown" });
+      throw new SpeechRefusal("SPEECH_UNKNOWN_RECORDING", 404);
+    });
+    const text = result.text.trim();
+    const durationMs = Math.round(recording.frames / 16);
+    log("info", "live_audio_transcribed", { engine: speechEngine.name, audio_ms: durationMs, pieces: result.chunks, after_stop_ms: Date.now() - stopped, engine_finish_ms: result.computeMs, text_chars: text.length });
+    return { text, engine: ENGINE, engineVersion: ENGINE_VERSION, durationMs, remainingSegments: result.remainingSegments ?? [] };
+  } finally { finishing--; }
 }
 
 function cancel(id: string) {
   const recording = recordings.get(id);
   if (!recording) return;
   recordings.delete(id);
+  macVoiceObserver.end(id);
   recording.decoder.kill("SIGKILL");
   speechEngine.cancelStream(recording.stream);
 }
 
 // A retry, or a recording the page did not follow live, arrives whole and takes the ordinary path.
 async function transcribeWhole(audio: Buffer, type: string) {
-  const directory = await mkdtemp(join(tmpdir(), "concierge-live-voice-"));
+  wholeTranscriptions++;
   try {
-    const path = join(directory, `recording.${type.includes("mp4") ? "m4a" : type.includes("ogg") ? "ogg" : "webm"}`);
-    await writeFile(path, audio, { mode: 0o600 });
-    const result = await transcribeWholeRecording({ id: `local-${randomUUID()}`, path });
-    return { text: result.text, engine: ENGINE, engineVersion: ENGINE_VERSION, durationMs: result.audioMs ?? 0 };
-  } finally { await rm(directory, { recursive: true, force: true }); }
+    const directory = await mkdtemp(join(tmpdir(), "concierge-live-voice-"));
+    try {
+      const path = join(directory, `recording.${type.includes("mp4") ? "m4a" : type.includes("ogg") ? "ogg" : "webm"}`);
+      await writeFile(path, audio, { mode: 0o600 });
+      const result = await transcribeWholeRecording({ id: `local-${randomUUID()}`, path });
+      return { text: result.text, engine: ENGINE, engineVersion: ENGINE_VERSION, durationMs: result.audioMs ?? 0 };
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  } finally { wholeTranscriptions--; }
 }
 
 const recordingId = (value: string | undefined) => {
@@ -178,19 +190,22 @@ async function handle(request: Request): Promise<Response> {
   try {
     if (parts[0] !== "speech" || parts[1] !== "v1") throw new SpeechRefusal("SPEECH_NOT_FOUND", 404);
     let result: unknown;
-    if (request.method === "GET" && parts[2] === "status" && parts.length === 3) {
+    if (request.method === "GET" && parts[2] === "observer" && parts[3] === "status" && parts.length === 4) {
+      const observer = macVoiceObserver.status();
+      result = { ...observer, activeRecordings: recordings.size, activeOperations: recordings.size + finishing + wholeTranscriptions + observer.pendingWrites };
+    } else if (request.method === "GET" && parts[2] === "status" && parts.length === 3) {
       // Which address a page reached, so a browser that never uses live dictation can be told
       // apart from one whose check never arrived.
       log("info", "live_speech_probe", { scheme: new URL(request.url).protocol.replace(":", ""), user_agent: (request.headers.get("user-agent") ?? "").slice(0, 160) });
       if (!speechEngine.installed()) throw new SpeechRefusal("SPEECH_UNAVAILABLE", 503);
       result = { version: 1, engine: ENGINE, engineVersion: ENGINE_VERSION };
     } else if (request.method === "POST") {
-      const body = (await request.json().catch(() => ({}))) as { audio?: unknown; type?: unknown; cursor?: unknown };
+      const body = (await request.json().catch(() => ({}))) as { audio?: unknown; type?: unknown; cursor?: unknown; mode?: unknown; pageSessionId?: unknown };
       const audio = () => { if (typeof body.audio !== "string" || !body.audio) throw new SpeechRefusal("SPEECH_BAD_REQUEST", 400); return Buffer.from(body.audio, "base64"); };
       if (parts[2] === "transcriptions" && parts.length === 3) result = await transcribeWhole(audio(), typeof body.type === "string" ? body.type : "");
       else if (parts[2] === "recordings" && parts.length === 5) {
         const id = recordingId(parts[3]);
-        if (parts[4] === "begin") { await begin(id); result = { ok: true }; }
+        if (parts[4] === "begin") { await begin(id, body.mode, body.pageSessionId); result = { ok: true }; }
         else if (parts[4] === "append") { await append(id, audio()); result = { ok: true }; }
         else if (parts[4] === "drain") result = await drain(id, Number(body.cursor ?? 0));
         else if (parts[4] === "finish") result = await finish(id);
@@ -235,8 +250,9 @@ export function startLiveSpeechListener() {
   // A page closed mid-recording never finishes; its stream is dropped rather than held forever.
   const sweep = setInterval(() => { for (const [id, recording] of recordings) if (Date.now() - recording.touchedAt > IDLE_MS) cancel(id); }, 60_000);
   sweep.unref?.();
+  macVoiceObserver.start();
   log("info", "live_speech_listener_online", { hostname: match[1], port: Number(match[2]), https_port: servers[1] ? Number(match[2]) + 1 : null, origins: [...ORIGINS] });
-  return { stop: async () => { clearInterval(sweep); localCapture.close(); for (const id of [...recordings.keys()]) cancel(id); for (const server of servers) await server.stop(true); } };
+  return { stop: async () => { clearInterval(sweep); await macVoiceObserver.stop(); localCapture.close(); for (const id of [...recordings.keys()]) cancel(id); for (const server of servers) await server.stop(true); } };
 }
 
 export const handleLiveSpeechRequest = handle;

@@ -20,6 +20,7 @@ import { SubprocessClaudeCodeTransport, type ClaudeCodeTransport, type Transport
 import { webActivityDetails } from "./agent-progress";
 import { ledgerDurable } from "./ledger-durability-barrier";
 import { macSurfaceActivity, type MacSurfaceActivity } from "./mac-surface-activity";
+import {isCodeEditTool} from './implementation-models';
 import { assertProviderForkPolicy, assertProviderInteractionPolicy, codexConsultationConfig,
   CONSULTATION_PERMISSION_PROFILE, ProviderCapabilityUnavailableError, type ProviderInteractionPolicy } from "./provider-policy";
 
@@ -43,7 +44,7 @@ export type ProgressEvent =
     }
   | { type: "compaction" }
   | { type: "steering"; clientMessageId: string }
-  | { type: "tool_use"; toolName?: string; itemId?: string; details?: string }
+  | { type: "tool_use"; toolName?: string; itemId?: string; details?: string; codeEdit?: boolean }
   | { type: "tool_started" | "tool_finished"; toolName?: string; itemId?: string }
   | { type: "mac_surface_activity"; itemId: string; activity: MacSurfaceActivity }
   | { type: "done"; text?: string };
@@ -698,7 +699,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
     } else if (phase === "completed" && item.type !== "file_change") {
       return;
     }
-    onProgress?.({ type: "tool_use", toolName, ...(itemId ? { itemId } : {}) });
+    onProgress?.({ type: "tool_use", toolName, ...(itemId ? { itemId } : {}), ...(isCodeEditTool(toolName,item.command??item)?{codeEdit:true}:{}) });
   };
   const reportActivityProgress = (item: any, status: "in_progress" | "complete" | "error") => {
     const activity = codexProgressActivity(item);
@@ -1260,7 +1261,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     } else if (phase === "completed" && item.type !== "file_change") {
       return;
     }
-    onProgress?.({ type: "tool_use", toolName, ...(itemId ? { itemId } : {}) });
+    onProgress?.({ type: "tool_use", toolName, ...(itemId ? { itemId } : {}), ...(isCodeEditTool(toolName,item.command??item)?{codeEdit:true}:{}) });
   };
   const reportActivityProgress = (item: any, status: "in_progress" | "complete" | "error") => {
     const activity = codexProgressActivity(item);

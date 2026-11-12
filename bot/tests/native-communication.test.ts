@@ -90,6 +90,39 @@ test('a router reply inside a thread does not show its closing result beside its
 });
 async function ask(source:any,target:any,action='ask',extra:any={}){return communication.ask({source,action_id:action,address:target.session.address,text:'Exact question',...extra});}
 
+test('a healthy request rechecks without a ledger deadline write or duplicate reminder after restart',async()=>{
+  session();const requester=run(),target=session();run();
+  const request=await ask(requester.source,target,'healthy-recheck');
+  const queuedTarget=session();
+  const other=await ask(requester.source,queuedTarget,'other-due');
+  await communication.idle();
+  const storedDue=Date.now()-1;
+  db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=?').run(storedDue,request.request_id);
+  db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=?').run(storedDue,other.request_id);
+  const scan=(communication as any).scanRows.bind(communication);
+  let dueScans=0;
+  (communication as any).scanRows=(table:string,sql:string,...args:unknown[])=>{
+    if(table==='session_communication_requests'&&sql.includes('request_id NOT IN'))dueScans++;
+    return scan(table,sql,...args);
+  };
+  (communication as any).nextRequestInspectionAt=0;
+  communication.wake();await communication.idle();
+  expect(dueScans).toBe(1);
+  expect(db.query('SELECT due_at_ms FROM session_communication_requests WHERE request_id=?').get(request.request_id)).toEqual({due_at_ms:storedDue});
+  expect(communication.inspect(request.request_id)).toMatchObject({overdue_at_ms:null,events:[],due_at_ms:expect.any(Number)});
+  expect(communication.inspect(request.request_id).due_at_ms).toBeGreaterThan(storedDue);
+  expect(communication.inspect(other.request_id).overdue_at_ms).not.toBeNull();
+  communication.wake();await communication.idle();
+  expect(dueScans).toBe(1);
+  expect(db.query('SELECT due_at_ms FROM session_communication_requests WHERE request_id=?').get(request.request_id)).toEqual({due_at_ms:storedDue});
+  await communication.stop();
+  await build('/tmp');
+  communication.wake();await communication.idle();
+  expect(communication.inspect(request.request_id)).toMatchObject({overdue_at_ms:null,events:[]});
+  expect(db.query('SELECT due_at_ms FROM session_communication_requests WHERE request_id=?').get(request.request_id)).toEqual({due_at_ms:storedDue});
+  expect(errors).toEqual([]);
+});
+
 test('a marked agent thread reply retained for a peer advances from its exact forwarding intent',async()=>{
   session();const agent=run();const inbox=session(),inboxId=Number(inbox.session.id.slice(10));
   const target={sessionId:'mac:22',local:null,peer:{peer:'mac',address:'mac/session:fixture'},title:'Mac agent',topicId:'topic:fixture',root:'capture:fixture'};
@@ -208,6 +241,44 @@ test('one explicit multi-request reply produces one return without comparing ans
   const b=communication.inspect(second.request_id).events.find(event=>event.kind==='final')!;
   expect(a.accepted_input_id).toBe(b.accepted_input_id);
   expect(db.query("SELECT count(*) AS n FROM session_inputs WHERE id LIKE 'return:%'").get()).toEqual({n:1});
+});
+
+// A steered request is attached to the running turn before its words are prepared and sent. On
+// 2026-11-09 concierge:3425's Stop hook demanded a verdict in that gap, twice, and the request's
+// text arrived seconds after the verdict. It is owed only once its text reached the provider.
+test('a steered request is owed only once its text was sent to the running turn',async()=>{
+  session();const requester=run(),target=session(),worker=run();
+  const targetId=Number(target.session.id.slice(10));
+  db.query("UPDATE sessions SET agent_session_uuid='owed-after-delivery' WHERE id=?").run(targetId);
+  steeringMode='pending';
+  const request=await ask(requester.source,target,'steered-unsent');
+  await communication.idle();
+  const steered=getAcceptedSessionInput('request:'+request.request_id)!;
+  expect(steered.turn_id).toBe(worker.claim.turn_id);
+  const owed=()=>communication.owed({provider:'codex',provider_session_id:'owed-after-delivery'}).owed.map(one=>one.request_id);
+  expect(owed()).not.toContain(request.request_id);
+  markTurnSteeringMessageSending(steered.steering_id!);
+  expect(owed()).not.toContain(request.request_id);
+  markTurnSteeringMessageSent(steered.steering_id!);
+  expect(owed()).toContain(request.request_id);
+});
+
+// A new session learns its provider conversation id from the output stream. On 2026-11-11 a
+// one-second first turn stopped before that arrived, so its Stop hook found no session and let it
+// end without its reply. The hook also names the run it was launched for, which is known at launch.
+test('a first turn whose conversation id is not yet recorded is still held to its reply',async()=>{
+  session();const requester=run(),target=session(),worker=run();
+  const targetId=Number(target.session.id.slice(10));
+  const request=await ask(requester.source,target,'first-turn-owed');
+  await communication.idle();
+  expect(db.query('SELECT agent_session_uuid AS uuid FROM sessions WHERE id=?').get(targetId)).toEqual({uuid:null});
+  const owed=(extra:object)=>communication.owed({provider:'codex',provider_session_id:'not-yet-recorded',...extra}).owed.map(one=>one.request_id);
+  expect(owed({})).toEqual([]);
+  expect(owed({run_id:worker.source.run_id})).toContain(request.request_id);
+  // Once the session has its own conversation, a run id alone no longer speaks for it.
+  db.query("UPDATE sessions SET agent_session_uuid='the-real-conversation' WHERE id=?").run(targetId);
+  expect(owed({run_id:worker.source.run_id})).toEqual([]);
+  expect(communication.owed({provider:'codex',provider_session_id:'the-real-conversation'}).owed.map(one=>one.request_id)).toContain(request.request_id);
 });
 
 // The Inbox sends one request per thread and they routinely steer into one recipient turn, so
@@ -697,6 +768,32 @@ test('delegation retains originating human provenance across agent hops without 
   expect(db.query('SELECT count(*) AS n FROM session_inputs').get()).toEqual(count);
   const reply=await ask(researcher.source,target,'clarify');await communication.idle();
   expect(sessionInputProvenance(getAcceptedSessionInput(reply.target_input_id!)!)).toMatchObject({effectScope:'informational',originatingHuman:{inputId:human.source.input_id}});
+  expect(errors).toEqual([]);
+});
+
+test('an informational wake preserves an earlier open work request without replaying it',async()=>{
+  const requester=session(),human=run();
+  const worker=owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'develop'});
+  const assigned=await ask(human.source,worker,'assigned-work',{requestedEffect:'work'});await communication.idle();
+  const first=run();
+  expect(first.claim.accepted_input_id).toBe(assigned.target_input_id);
+  finishTurn(first.claim.turn_id,'completed','Waiting for a release.');
+
+  const notifier=session(),notifierRun=run();
+  const note=await ask(notifierRun.source,worker,'release-note',{requestedEffect:'informational'});await communication.idle();
+  const wake=run();
+  expect(wake.claim.accepted_input_id).toBe(note.target_input_id);
+  const delegate=owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'develop'});
+  const asked=await ask(wake.source,delegate,'continue-assigned-work',{requestedEffect:'work'});await communication.idle();
+  expect(communication.inspect(assigned.request_id).outcome).toBeNull();
+  expect(sessionInputProvenance(getAcceptedSessionInput(asked.target_input_id!)!)).toMatchObject({
+    source:{inputId:wake.source.input_id,runId:wake.source.run_id},effectScope:'work',
+    originatingHuman:{inputId:human.source.input_id,sessionId:requester.session.id},
+  });
+  communication.reply({source:wake.source,action_id:'finish-assigned-work',request_id:assigned.request_id,
+    text:'Work completed.',final:true,workDisposition:'completed',all_done:true,checked:'The assigned work was checked.'});
+  expect(communication.inspect(assigned.request_id).outcome).toBe('answered');
+  await expect(ask(wake.source,delegate,'unrelated-work',{requestedEffect:'work'})).rejects.toThrow('informational request');
   expect(errors).toEqual([]);
 });
 

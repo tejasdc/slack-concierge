@@ -219,7 +219,7 @@ human origin. `SessionView.reasoningEffort` reports the retained selection or nu
 | `POST /sessions/v1/sessions/:id/forks` | `{clientActionId, boundary, provider?}`; exact native boundary and capability/policy checks. No retrospective policy escape. |
 | `POST /sessions/v1/sessions/:id/comparisons` | `{clientActionId, reference, provider}`; the owner resolves the exact retained selected message and replays only user requests through that boundary into a fresh session for the chosen different provider. Earlier agent replies are omitted. |
 | `POST /sessions/v1/sessions/:id/captures` | `{clientActionId, reference, intent:"note"|"action"}`; retains selected message bytes in the native Inbox with the explicit intent and no provider invocation. The browser never supplies replacement message text. |
-| `POST /sessions/v1/sessions/:id/asides` | `{asideId, question, passage, earlier:[{question,answer}]}`; a side question answered from a throwaway copy of the session's conversation (Claude and Codex sessions), retaining nothing and never touching the session. Answers `{state:"answered", answer, model, durationMs}` within 90 s, or `{state:"asking"}`; asking again with the same `asideId` rejoins that answer rather than starting another. The wait for the copy is recorded as `awaited_ms` on the owner's request line, never as owner slowness. |
+| `POST /sessions/v1/sessions/:id/asides` | `{asideId, question, passage, earlier:[{question,answer}]}`; a side question answered through one saved native Claude Code or Codex copy on the session's machine, keyed to its latest completed final answer. Questions about older passages reuse that copy; a running main turn does not advance it. Each question turn is unsaved and has no tools, so it leaves neither the copy nor the main session changed. After a newer final answer, the next question replaces and removes the previous copy. Answers `{state:"answered", answer, model, durationMs}` within 90 s, or `{state:"asking"}`; asking again with the same `asideId` rejoins that answer rather than starting another. The wait is recorded as `awaited_ms` on the owner's request line. |
 | `POST /sessions/v1/sessions/:id/tasks` | `{clientActionId, reference}`; appends the selected retained message to the exact registered project's existing `notes/TODOS.md` authority. It does not create a task store. |
 | `POST /sessions/v1/consultations` | `{clientActionId, address, sourceId, sourceVersion, boundary, text}`; creates one labeled information-only child, preserves immutable source. Initial/follow-up/retry/recovery retain no-tools/no-actions/no-network policy and service-only correlated returns. |
 | `POST /sessions/v1/imports` | Trusted surface body `{clientActionId, name, content, scope}`; imports exact UTF8 source bytes through retained source custody and returns source/version/branch evidence and canonical aliases without claiming runnable ownership. |
@@ -500,6 +500,8 @@ The session action `clear-queue` settles the same human waiting messages without
 it is used to recover a queue that remained after an older Stop. It does not continue a paused
 session or change any original input text.
 
+### Forwarded input provenance
+
 Forwarded input receipts and provider identity headers may include owner-resolved
 `provenance:{source:{inputId,runId,sessionId},requestId,effectScope,originatingHuman}`.
 `originatingHuman` is null when unproven, otherwise `{inputId,runId,sessionId,captureId?}`;
@@ -507,6 +509,14 @@ the optional capture ID identifies retained Inbox custody. The owner follows ret
 source/run links and exact communication request records, never text claims.
 `effectScope` is informational/work or null, and a delegated informational request
 cannot widen to work. This is task provenance, not a new grant of human authority.
+When a session still holds an open, delivered work request, a later informational wake
+does not revoke that existing grant. A work ask made during that wake retains the wake's
+actual source input and run, plus the exact earlier work input used as its authority.
+The receiver's provenance follows that retained authority link for scope and original
+human attribution. The owner checks that the work input belongs to the same session,
+was handed to a run, remains open, and itself has work scope before accepting the ask.
+Once the original request closes, that authority cannot support another ask. A session
+holding only informational requests remains information-only.
 The forwarded input's `origin` remains agent/service. Ordinary develop-session messages
 need no workspace selection or work intent; only explicitly confirmed context is shared.
 

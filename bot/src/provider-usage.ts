@@ -1,4 +1,4 @@
-import { db, releaseScheduledProviderRetries } from "./state";
+import { db, paceReleasedWork, RELEASE_PACE_HOLD, releaseScheduledProviderRetries } from "./state";
 import {createHash} from 'node:crypto';
 import { log } from "./log";
 import { ProviderDispatchError } from "./provider-failures";
@@ -198,8 +198,8 @@ export function retireCodexRefusalSupersededByReading(label: string,
   return cleared;
 }
 
-/** The verified reset permits ordinary work on the active Codex login, not saved bindings. */
-export function releaseCodexOrdinaryUsageHeldWork(accountId: string): number {
+/** A verified active Codex login permits ordinary and unbound scheduled work, not banked bindings. */
+export function releaseCodexUnboundUsageHeldWork(accountId: string): number {
   if (!accountId || currentAccount("codex")?.id !== accountId) return 0;
   return releaseScheduledProviderRetries("codex", true);
 }
@@ -210,10 +210,10 @@ export function releaseCodexOrdinaryUsageHeldWork(accountId: string): number {
  * Called where a credential change becomes effective; it schedules, it does not replay.
  */
 export function releaseUsageHeldWork(provider: UsageProvider, releasedBy = "account_switch"): number {
-  // A Codex login is shared by all new turns, while saved work may be bound to a
-  // different account or time. A generic room observation only wakes ordinary work.
+  // A Codex login is shared by ordinary turns and unbound schedules. Banked work
+  // spends its selected account's window and cannot be woken by another login.
   const released = provider === "codex"
-    ? releaseCodexOrdinaryUsageHeldWork(currentAccount("codex")?.id ?? "")
+    ? releaseCodexUnboundUsageHeldWork(currentAccount("codex")?.id ?? "")
     : releaseScheduledProviderRetries(provider);
   if (released > 0) {
     log("info", "provider_usage_hold_released", { provider, released, released_by: releasedBy });
@@ -230,19 +230,22 @@ export function releaseProvenUsageHolds(attempt: UsageAttempt, account: string, 
     JOIN sessions ON sessions.id=turns.session_id
     WHERE turns.status='queued' AND turns.dispatch_failure_class IN ('backoff','usage_wait')
       AND turns.dispatch_hold='usage'
-      AND sessions.provider_id=?`).all(attempt.provider) as {id:number;provider_model:string|null}[];
+      AND sessions.provider_id=?
+      AND (?<>'codex' OR turns.saved_kind IS NULL OR
+        (turns.saved_kind='scheduled' AND turns.saved_account IS NULL))`).all(attempt.provider,attempt.provider) as {id:number;provider_model:string|null}[];
   const ids = rows.filter(row => attempt.provider === 'codex' ||
     (row.provider_model === null ? defaultModelWasChecked : usageAttempt('claude-code',row.provider_model,account).scope===attempt.scope))
     .map(row=>row.id);
   if (!ids.length) return {released:0,turnIds:[] as number[]};
   const turnIds=db.transaction(()=>{
     const moved:number[]=[];
-    for(const id of ids){const row=db.query(`UPDATE turns SET dispatch_next_attempt_ms=0,dispatch_failure_class='backoff'
+    for(const id of ids){const row=db.query(`UPDATE turns SET dispatch_next_attempt_ms=0,dispatch_failure_class='backoff',dispatch_hold='${RELEASE_PACE_HOLD}'
       WHERE id=? AND status='queued' AND dispatch_hold='usage'
         AND dispatch_failure_class IN ('backoff','usage_wait')
         AND (dispatch_failure_class='usage_wait' OR COALESCE(dispatch_next_attempt_ms,0)>0)
         RETURNING id`).get(id) as {id:number}|null;
       if(row)moved.push(row.id);}
+    if(moved.length)paceReleasedWork(attempt.provider);
     return moved;
   }).immediate();
   if(turnIds.length)log('info','provider_usage_hold_released',{provider:attempt.provider,released:turnIds.length,scope:attempt.scope});
