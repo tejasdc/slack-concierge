@@ -83,7 +83,7 @@ function withSnapshotCopy<T extends {changed: boolean}>(
   });
 }
 
-export async function migrateHistorySnapshot(sessionUuid: string) {
+async function migrateHistorySnapshot(sessionUuid: string) {
   requireQuiescentHost();
   const path = snapshotPath(sessionUuid);
   const beforeAllocatedBytes = fingerprint(path).blocks * 512;
@@ -205,6 +205,9 @@ if (import.meta.main) {
   const [command, sessionUuid] = process.argv.slice(2);
   if (!sessionUuid || !SESSION_UUID.test(sessionUuid) || !["migrate", "materialize"].includes(command || ""))
     throw new Error("USAGE: provider-history-object-migrate.ts migrate|materialize <session-uuid>");
+  // The conversion procedure is staged, but no product-cache Restic receipt can be verified yet.
+  // Keep the irreversible entry point closed until the exact generation has independent readback.
+  if (command === "migrate") throw new Error("HISTORY_CACHE_BACKUP_NOT_PROVEN");
   requireQuiescentHost();
   const result = command === "migrate" ? await migrateHistorySnapshot(sessionUuid) : await materialize(sessionUuid);
   process.stdout.write(JSON.stringify(result) + "\n");

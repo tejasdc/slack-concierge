@@ -144,7 +144,12 @@ export function decodeStoredSdkRow(json: string): SessionMessage {
     || typeof ref.metadata !== "object" || "message" in ref.metadata)
     throw new Error("INVALID_HISTORY_OBJECT_REFERENCE");
   const objectPath = join(HOST_OBJECT_ROOT, "sha256", ref.objectSha256.slice(0, 2), ref.objectSha256);
-  const info = lstatSync(objectPath);
+  let info;
+  try { info = lstatSync(objectPath); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("HISTORY_OBJECT_UNAVAILABLE");
+    throw error;
+  }
   if (!info.isFile() || info.isSymbolicLink() || info.size !== ref.objectBytes
     || (info.mode & 0o777) !== 0o444) throw new Error("HISTORY_OBJECT_UNAVAILABLE");
   return readSdkMessageFromRawSpan(objectPath, ref.metadata, ref.span);

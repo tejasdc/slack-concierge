@@ -1,8 +1,10 @@
 # Concierge history payload retirement against retained transcript objects
 
 Status: reader, read-only allocation inventory, and stopped-service operator
-converter are committed. Automatic new-import conversion has been removed: it
-could replace a cache before a separately verified product backup existed. No
+conversion procedure are committed. Its `migrate` entry point explicitly
+refuses until an exact product-cache backup proof can be verified. Automatic
+new-import conversion has been removed: it could replace a cache before a
+separately verified product backup existed. No
 live cache row or runner mirror has been retired. The host object store and
 restore command are installed, but Concierge's private cache backup, owner-side
 measurement, and page/detail acceptance remain separate gates.
