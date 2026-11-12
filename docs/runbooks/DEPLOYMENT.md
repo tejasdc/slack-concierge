@@ -66,6 +66,14 @@ peer read deadline. The foreground request gateway still becomes unavailable at 
 so compare that timestamp with the final request-surface stop marker to measure the actual gap.
 
 The stable controller launcher resolves its control artifact once for each invocation.
+Prepared candidates move into an unpublished `.preparing-<uuid>` sibling beneath
+the releases directory while writable, are sealed there, then become their digest
+name through a same-parent atomic rename. Linux requires directory write permission
+for a cross-parent move; sealing first made an ordinary-owner preparation fail and
+its staging cleanup mask that failure. Publication still exposes only sealed
+digest-named artifacts. A failure after the sibling move retains that unpublished
+candidate for inspection; it cannot pass digest-path verification or activation and
+is not automatically pruned as a published release.
 Restoring or promoting the control pointer cannot switch a running deployment's helper
 programs midway through the run; the following invocation takes the new artifact.
 Normal rollout restores use `restore-lkg --keep-control`: they restore the application while
@@ -870,6 +878,241 @@ Repair artifacts and Codex JSONL/final messages are under
 `/var/lib/slack-concierge-deployment/incidents/<incident-id>/`. A parked incident
 is terminal by design; diagnose its recorded reason before creating a new
 operator deployment.
+
+## History cache maintenance
+
+This optional operator path retires only exact Claude SDK payloads, one cache
+generation per batch. It creates no timer, persistent service, credential or
+machine-wide resource setting. It uses the existing host Restic wrapper and
+retained-object proof/restore interface in remote-box `docs/transcript-objects.md`.
+The raw runner mirror, Codex window, ledger and event overlay are untouched.
+Installation does not queue or convert a cache. Live rollout remains subject to
+the [cutover plan](../plans/2026-11-12-concierge-history-object-retirement.md)
+and its review and installed acceptance gates.
+
+Use the installed controller, never a source script with private state exposed:
+
+```bash
+/usr/local/lib/slack-concierge-deployment/control history-cache prepare <claude-session-uuid>
+/usr/local/lib/slack-concierge-deployment/control history-cache queue <returned-batch-uuid>
+```
+
+The controller pins the sealed current release and runs a bounded transient host
+job in the existing agents slice. A private advisory lock excludes concurrent
+maintenance commands. `prepare` requires both scheduled backup services inactive;
+it does not stop the serving coordinator. It hard-links one closed cache inode,
+checks SQLite integrity, pins exact generation and source identity, and records
+the verifier sidecar's exact bytes or absence. References already in the cache
+and the current source's fully proven immutable object are the only candidate
+dependencies. It independently verifies host plan/proof bindings and object
+hashes. No catalogue-by-UUID or historical-path guessing is allowed.
+
+The private batch lives in `<state>/history-cache-maintenance/<batch>/`. Restic
+backs up its `cache.sqlite`, `manifest.json` (including verifier bytes), and exact
+object dependency paths under a unique tag. Exit 3 is a failure here, unlike the
+nightly best-effort backup. `receipt.json` is published only after a full snapshot
+ID is known and the complete offsite streams of every selected file match local
+digest and length. The cache stream is therefore exactly the already
+integrity-checked SQLite file, without allocating a second local payload copy.
+See [Restic's JSON backup contract](https://restic.readthedocs.io/en/stable/075_scripting.html).
+Preparation reports its batch ID before work, so an interrupted attempt's pin
+can be located; incomplete batches retain their pins and never authorize conversion.
+`backup.json` records the accepted exact snapshot before readback begins. Retry
+`history-cache prove <batch-uuid>` to resume the same snapshot's full readback.
+If the process exited after Restic accepted the snapshot but before recording it,
+the unique batch tag can recover exactly one candidate; multiple candidates refuse.
+The complete manifest/cache/dependency streams still have to match. An observed
+failed or interrupted backup leaves `backup-failed.json`, refuses adoption and
+requires a new batch; never obtain a new snapshot merely to refresh a receipt.
+
+`queue` rechecks the exact live inode, generation, bytes and sidecar against that
+receipt and exclusively creates one pending batch. Run the ordinary deployment
+path afterwards; it invokes `apply-pending` from the sealed candidate only after
+the existing admission drain and coordinator stop. The coordinator and both
+scheduled backups must be fully stopped. The conversion rechecks the backup pin, live
+identity and sidecar, verifies object dependencies and compares complete decoded
+SDK rows and indexes before atomic replacement. It mints a fresh cursor
+generation and preserves the matching verifier checkpoint. A replaced cache or
+changed sidecar skips an unstarted batch and preserves the old pin. Before an
+attempt starts, `pending.json` is renamed durably to `attempt.json`. A process
+interruption leaves that claim for reconciliation on the next deployment. An
+ordinary failed attempt is moved into its batch beside a `failure-*.json` record,
+so it does not become every later release's job. Its pin and any prepared
+generation remain available. When the exact intended generation was published
+but cannot complete safely, maintenance attempts exact rollback and records
+whether it succeeded or remains unresolved. Unknown/newer cache bytes are never
+overwritten. A published conversion is never reported as a stale skip.
+
+The deployment hook handles an active backup, a nonblocking maintenance lock,
+unproven objects, stale source and other optional failures without entering the
+deployment repair path. Lock losers leave the active writer's queue untouched.
+Their deferred attempts appear in the deployment journal and
+`history-cache-maintenance/deployment-attempts.jsonl`; accepted attempts have
+durable batch receipts. `history-cache status [batch-uuid]` returns queue/attempt
+metadata, or that batch's backup, result, rollback and failure records, without
+revealing transcript payloads. These records describe operation evidence, not a
+fresh assertion that the current cache still equals an earlier result.
+
+Before a new conversion, both candidate and last-known-good artifacts must prove
+reader and controller support. A durable per-session reader requirement is
+written **before** reference publication. Independently of the optional hook,
+release activation and rollback refuse an application or controller without the
+appropriate sealed capability while a requirement remains. An incompatible
+binary is a hard compatibility refusal, not an optional-conversion failure.
+Hybrid artifacts take reader capability from their application commit and
+controller capability from their controller commit; one cannot certify the
+other. Older artifacts without this explicit declaration are unproven even when
+source inspection suggests they contain a decoder. Full-row materialization or
+exact rollback removes a session's requirement only after inspecting its cache
+and finding no reference rows. Import growth alone does not clear this fence.
+
+`conversion.json` records the old and intended new digest and allocation report
+before publication. Its named `converted-<uuid>.sqlite` retains that exact prepared generation;
+`result.json` records completion afterwards. Recovery compares actual bytes:
+when the original is still published it validates and publishes the same
+prepared file; when the intended new version is already published it finishes
+the verifier checkpoint and result without converting again. A verifier that
+already checkpointed that exact new generation is preserved. Other bytes remain
+explicitly ambiguous. Whole-pin digest and integrity are checked once per
+attempt; subsequent publication checks use the closed inode's identity, exact
+sidecar and source metadata, avoiding repeated whole-cache hashes while stopped.
+The report distinguishes live cache
+blocks, retained pin blocks and the unchanged mirror. Before pin release, apparent
+cache shrinkage is **not** reclaimed disk: the old inode still occupies its blocks.
+Metadata and offsite repository bytes are additional costs, not payload savings.
+A process exit during the copy, before intent exists, cannot authorize that
+unaccepted file. Retry uses a fresh exclusive staging name in the same batch,
+leaves the interrupted bytes intact and performs the entire comparison again.
+Retained staging allocations are subtracted from net savings, including after
+pin release. No unknown staging inode is deleted or adopted to make retry pass.
+
+After reviewed installation, compare every page, older cursor page and detail
+through the product entrance, including compaction, queued prompts and owner
+replacements. Check the expected once-only stale baseline cursor, stable owner
+detail keys, source disappearance and missing/corrupt-object refusal. Keep the
+pin until those checks pass. Then explicitly release it:
+
+```bash
+/usr/local/lib/slack-concierge-deployment/control history-cache release <batch-uuid>
+```
+
+Release requires the current converted digest still equal the completed result.
+It counts released old blocks only when the pin is its inode's last local link;
+another link produces zero released bytes. No automatic cache or object GC exists.
+The offsite batch remains the recovery copy.
+
+With the coordinator stopped through the deployment boundary, rollback uses:
+
+```bash
+/usr/local/lib/slack-concierge-deployment/control history-cache restore <batch-uuid>
+/usr/local/lib/slack-concierge-deployment/control history-cache materialize <claude-session-uuid>
+```
+
+`restore` requires the live target equal the recorded converted digest, the exact
+original digest (a resumed rollback), or be absent; never a newer cache. Its
+durable restore intent pins both cache targets and the verifier state it is
+replacing. It restores the old pin, or independently downloads
+and verifies the exact offsite cache when the pin has been released, checks
+SQLite and generation, then restores its verifier bytes. A crash after the cache
+rename resumes at the sidecar instead of renaming again. A different verifier
+checkpoint refuses overwrite. An unfinished rollback takes precedence over
+finishing conversion; a completed rollback cannot replay that conversion. It
+needs no live provider file. `materialize` expands references into full SDK JSON, compares all decoded
+rows and indexes, and publishes a fresh generation before an older binary is
+installed. Missing objects first use the host's restore-by-digest command, which
+refuses corrupt existing inodes. If the host's original snapshot expired, restore
+the exact object from the batch's named later snapshot using the host command's
+`--snapshot` option, then retry materialization. Missing backup, ambiguous target,
+failed integrity/readback or failed object recovery never authorizes replacement.
+
+For a retained failed or interrupted conversion, explicitly queue the same batch
+again after resolving its cause; exact original or exact intended bytes qualify
+for reconciliation in the next normal stopped interval. An outstanding
+`attempt.json` is reconciled first. `history-cache resume <batch-uuid>` invokes the
+same byte-based recovery when the coordinator is already stopped. A batch that
+was rolled back requires a new prepare/queue operation, not replay. `release`
+still requires the exact converted target; growth can replace the cache with full
+rows and erase the ongoing saving, while the old pin remains retained. This is a
+deliberate conservative retirement boundary, not a promise of durable savings for
+an active conversation.
+
+### Product-owned backup admission and initial load contract
+
+Operational pacing is **not** inherited from `restic.sh`: that wrapper only loads
+credentials and executes Restic. Concierge owns the policy in
+`provider-history-cache-admission.ts`; it imports no private host transcript logic.
+The first trial permits one exact cache generation, at most 8 MiB of cache/source/
+dependency input, and five minutes of command lifetime, with no production CLI
+budget override. The existing private maintenance lock serializes commands; there
+is no new timer or machine-wide allocation. A larger generation requires reviewed
+measurements and a deliberate policy change, not an operator bypass.
+
+Before substantial cache work, the command requires both `remote-box-backup.service`
+and `remote-box-thinkering-backup.service` loaded, fully inactive and without a
+queued start, and both timers active/waiting with a known next due time beyond the
+five-minute budget plus one minute. Missing/blank/unavailable state refuses. The
+nightly service includes prune; the hourly service includes staging and streamed
+verification. The command never takes their locks, changes their schedules or
+stops either service. Checks continue at nominal one-second intervals through preparation,
+backup, readback and conversion. Activation, uncertainty or a missed safe window
+stops only this operation and its owned native children. Manual starts can race a
+sample: this is cooperative fail-stop, **not** atomic exclusion. Each unit query
+has a two-second deadline; synchronous SQLite phases and query latency can defer
+the next observation. Kernel-blocked
+children can delay termination and lock release.
+
+Restic runs at Nice 19 with one Go execution processor, one file reader and one
+SFTP backend connection, no local cache or extra scanning pass, 512 KiB/s upload
+and download limits, and a 4 MiB target pack. It does not wait/retry a repository
+lock. GNU timeout forwards termination to the owned native group, including its
+SFTP transport, and escalates after two seconds. The whole maintenance command
+has the same external deadline, so a stalled optional conversion cannot extend
+the stopped deployment indefinitely. Successful readback, source/object identity
+and publication comparisons remain mandatory; no load failure authorizes conversion.
+These are [supported Restic controls](https://github.com/restic/restic/blob/v0.16.4/doc/man/restic-backup.1).
+Transfer limits bound network bytes, not uncompressed scratch or physical disk
+traffic; a pack target can be exceeded by a native blob. Nice does not establish
+a disk limit on this host. The existing agents slice is unchanged.
+Native temporary packs use a private per-command scratch directory, removed only
+after that owned child has exited. An uncatchable process exit may leave this
+scratch retained; it is never adopted as backup proof or blindly garbage collected.
+Include retained native scratch in observed disk allocation before claiming savings.
+
+Admission samples actual kernel I/O pressure, available memory, physical-device
+counters and this command's process tree before work and while running. Initial
+refusal thresholds are I/O pressure above 5%, any observed device busy above 50%
+over the sample interval, or available memory below 1 GiB. These are conservative
+trial abort conditions, not capacity or responsiveness guarantees. Private
+`load-<operation>.json` records retain first/last device and sampled process counters,
+RSS/process-count peaks, elapsed time, policy, outcome and refusal reason; the
+bounded operational log names the same operation. Process peaks can miss short-lived
+children, and whole-device deltas include other work; do not call them attributable
+maintenance traffic. Query these files alongside batch receipts and deployment
+health instead of inferring success from a zero exit or a previous backup Result.
+
+The first measured acceptance uses a disposable local Restic repository and a
+small synthetic cache, with actual host admission/process/device observation:
+`history-cache-admission-fixture.ts --observe-host`. If a real backup is active,
+it fails before pinning rather than using a fake window. Run this separately from
+heavy build checks. Review that evidence before broadening input or transfer
+budgets. A local repository does not prove offsite speed, retention, actual product
+latency or the production credential path. Designer review and installed small-cache
+backup/readback, page/detail/cursor/overlay, restore/retention, stopped duration and
+net allocation checks still precede production conversion or pin release.
+
+Focused disposable verification (including a local native Restic repository;
+this is not an offsite production proof):
+
+```bash
+bun run bot/scripts/private-code-command.ts -- bun run bot/scripts/history-cache-maintenance-fixture.ts
+bun run bot/scripts/private-code-command.ts -- bun run bot/scripts/history-cache-crash-fixture.ts
+bun run bot/scripts/private-code-command.ts -- bun run bot/scripts/history-cache-admission-fixture.ts
+```
+
+The normal GitHub Release check runs these three native fixtures after its build
+gate with Restic installed in the disposable runner. It injects backup/load state
+for deterministic failure acceptance; the explicit host-observation probe remains
+separate and cannot claim production evidence from that CI run.
 
 ## State migration and backups
 

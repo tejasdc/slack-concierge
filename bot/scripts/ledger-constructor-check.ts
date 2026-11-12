@@ -40,6 +40,8 @@ const FIXTURE_WRITERS: Readonly<Record<string, readonly string[]>> = {
   'scripts/lab-growth-fixtures.ts': ["new Database(':memory:')", "new Database(':memory:')"],
   'scripts/presentation-growth-fixtures.ts': ["new Database(':memory:')", "new Database(':memory:')"],
   'scripts/history-delta-growth-fixtures.ts': ["new Database(':memory:')"],
+  // Synthetic history snapshots and replacement generations under mkdtemp-owned roots.
+  'scripts/history-cache-maintenance-fixture.ts': ['new Database(":memory:")','new Database(path)','new Database(next)'],
   'scripts/receipt-projection-fixture.ts': ["new Database(':memory:')", "new Database(':memory:')"],
   'scripts/codex-resume-notice-fixture.ts': ["new Database(':memory:')"],
   'scripts/topic-projection-fixture.ts': ["new Database(join(root,'presentation.db'))"],

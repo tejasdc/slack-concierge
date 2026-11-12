@@ -18,7 +18,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   The [capture](docs/runbooks/THINKERING-CAPTURE.md) and
   [native Inbox](docs/contracts/native-inbox.md) contracts own Thinkering delivery.
 - Implement a requested change as one whole through the normal Git and
-  [deployment path](docs/runbooks/DEPLOYMENT.md). Use an isolated task worktree
+  [sealed deployment path](docs/runbooks/DEPLOYMENT.md). Use an isolated task worktree
   when writers may overlap. Never hand-edit an installed release or host-owned
   service configuration in this repository. Check the installed behavior through
   the agent's own marked entrance before calling it done
@@ -44,8 +44,12 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - Agent session commands use each machine's installed wrapper, which selects
   the current release; see [runner command paths](docs/architecture/RUNNERS.md#agent-session-commands).
 - Claude history payload retirement preserves full SDK rows and the runner
-  mirror until the [object-backed history plan](docs/plans/2026-11-12-concierge-history-object-retirement.md)
-  proves production custody, recovery, and page/detail behavior. Read cache
+  mirror until the [exact-generation maintenance gate](docs/runbooks/DEPLOYMENT.md#history-cache-maintenance)
+  proves production custody, recovery, and page/detail behavior. The
+  [object-backed history plan](docs/plans/2026-11-12-concierge-history-object-retirement.md)
+  owns the cutover invariants. Optional attempt recovery and the independent
+  release-reader compatibility fence and product-owned small-cache backup admission
+  are documented at that maintenance gate. Read cache
   allocation through [router actions](docs/runbooks/ROUTER-ACTIONS.md#agent-session-communication).
 - Marked messages held by per-session Pause retain their original admission identity;
   see [session recovery](docs/architecture/SESSION-OWNER.md#identity-and-admission).

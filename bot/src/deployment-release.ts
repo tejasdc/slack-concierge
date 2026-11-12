@@ -18,6 +18,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import BUILT_IN_DECLARATION from "./deployment-artifact-files.json";
+import {assertHistoryCacheActivation,HISTORY_CACHE_CAPABILITY_PATH,HISTORY_CACHE_CONTROL_CAPABILITY_PATH} from "./provider-history-cache-compatibility";
 
 // Normal preparation took about 47 seconds; the same check passed in 52 seconds under
 // load after a 90-second deploy timeout. Three minutes leaves room for disk contention
@@ -114,6 +115,7 @@ export interface ReleaseEnvironment {
   releaseRoot: string;
   installRoot: string;
   bunExecutable: string;
+  historyCacheStateDirectory?: string;
 }
 
 interface SpawnResult {
@@ -291,6 +293,7 @@ export function defaultReleaseEnvironment(repositoryRoot: string): ReleaseEnviro
     releaseRoot: process.env.CONCIERGE_DEPLOYMENT_RELEASE_ROOT || "/var/lib/slack-concierge-deployment",
     installRoot: process.env.CONCIERGE_DEPLOYMENT_RUNTIME_DIR || "/usr/local/lib/slack-concierge-deployment",
     bunExecutable: process.env.CONCIERGE_BUN_BIN || "/root/.bun/bin/bun",
+    historyCacheStateDirectory: process.env.CONCIERGE_STATE_DIR || "/root/.local/state/concierge",
   };
 }
 
@@ -384,7 +387,15 @@ export class TrustedRootReleaseManager {
       // Keep the namespace understood by older builders, but a hybrid's application workers
       // always come from its application commit, never the independently upgraded control.
       const applicationPaths=new Set(applicationDeclaration.applicationBundles);
-      const declaration={...controlDeclaration,controlBundles:{...controlDeclaration.controlBundles,
+      const controlFiles={...controlDeclaration.controlFiles};
+      const controllerCapability=controlFiles[HISTORY_CACHE_CONTROL_CAPABILITY_PATH];
+      if(controllerCapability && !existsSync(join(effectiveControlSourceRoot,controllerCapability)))delete controlFiles[HISTORY_CACHE_CONTROL_CAPABILITY_PATH];
+      // Reader capability belongs to the application commit, even in a hybrid
+      // artifact with a separately upgraded deployment controller.
+      delete controlFiles[HISTORY_CACHE_CAPABILITY_PATH];
+      const readerCapability=applicationDeclaration.controlFiles[HISTORY_CACHE_CAPABILITY_PATH];
+      if(readerCapability && existsSync(join(sourceRoot,readerCapability)))controlFiles[HISTORY_CACHE_CAPABILITY_PATH]=readerCapability;
+      const declaration={...controlDeclaration,controlFiles,controlBundles:{...controlDeclaration.controlBundles,
         ...Object.fromEntries([...applicationPaths].map(path=>[path,applicationDeclaration.controlBundles[path]!]))}};
       const runtimeFiles = runtimeFilesFor(declaration);
       for (const [destination, source] of Object.entries(declaration.controlBundles)) {
@@ -393,7 +404,7 @@ export class TrustedRootReleaseManager {
       }
       for (const [destination, source] of Object.entries(declaration.controlFiles)) {
         mkdirSync(dirname(join(outputRoot, destination)), { recursive: true, mode: 0o700 });
-        copyFileSync(join(effectiveControlSourceRoot, source), join(outputRoot, destination));
+        copyFileSync(join(destination===HISTORY_CACHE_CAPABILITY_PATH?sourceRoot:effectiveControlSourceRoot, source), join(outputRoot, destination));
       }
       await this.services.build(
         join(effectiveControlSourceRoot, "bot/src/codex-app-server-bridge.mjs"),
@@ -435,8 +446,14 @@ export class TrustedRootReleaseManager {
         const now = new Date();
         utimesSync(artifactPath, now, now);
       } else {
-        makeReadOnly(outputRoot);
-        renameSync(outputRoot, artifactPath);
+        // Linux needs directory write permission to change its parent. Move the
+        // writable candidate beside its final name first; seal before the
+        // same-parent atomic publication. A failed unpublished candidate stays
+        // retained, never made writable at a published artifact's path.
+        const unpublishedPath=join(dirname(artifactPath),`.preparing-${randomUUID()}`);
+        renameSync(outputRoot,unpublishedPath);
+        makeReadOnly(unpublishedPath);
+        renameSync(unpublishedPath, artifactPath);
       }
       return { artifactPath, manifest: this.verify(artifactPath) };
     } finally {
@@ -518,6 +535,8 @@ export class TrustedRootReleaseManager {
   activateControl(artifactPath: string) {
     const canonical = realpathSync(artifactPath);
     const manifest = this.verify(canonical);
+    if(this.environment.historyCacheStateDirectory)
+      assertHistoryCacheActivation(this.environment.historyCacheStateDirectory,canonical,manifest.files,true);
     mkdirSync(this.environment.releaseRoot, { recursive: true, mode: 0o755 });
     const temporary = join(this.environment.releaseRoot, `.control-${randomUUID()}`);
     symlinkSync(relative(this.environment.releaseRoot, canonical), temporary);
@@ -530,6 +549,8 @@ export class TrustedRootReleaseManager {
   activate(artifactPath: string) {
     const canonical = realpathSync(artifactPath);
     const manifest = this.verify(canonical);
+    if(this.environment.historyCacheStateDirectory)
+      assertHistoryCacheActivation(this.environment.historyCacheStateDirectory,canonical,manifest.files);
     mkdirSync(this.environment.releaseRoot, { recursive: true, mode: 0o755 });
     const temporary = join(this.environment.releaseRoot, `.current-${randomUUID()}`);
     symlinkSync(relative(this.environment.releaseRoot, canonical), temporary);
@@ -540,6 +561,10 @@ export class TrustedRootReleaseManager {
   }
 
   restore(artifactPath: string) {
+    if(this.environment.historyCacheStateDirectory) {
+      const canonical=realpathSync(artifactPath),manifest=this.verify(canonical);
+      assertHistoryCacheActivation(this.environment.historyCacheStateDirectory,canonical,manifest.files,true);
+    }
     const manifest = this.activate(artifactPath);
     this.activateControl(artifactPath);
     return manifest;

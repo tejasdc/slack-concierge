@@ -102,6 +102,30 @@ relocate_ledger_to_own_filesystem() {
   "$BUN_BIN" run "$RELOCATE_LEDGER_SCRIPT" "$STATE_DIR" "$LEDGER_HOME"
 }
 
+run_optional_history_cache() {
+  local history_root="$STATE_DIR/history-cache-maintenance" history_status=0 rollback_artifact="" output=""
+  [ -f "$history_root/pending.json" ] || [ -f "$history_root/attempt.json" ] || return 0
+  # A failed optional attempt is visible, but it is not a failed release. Only
+  # the independent reader-compatibility fence can refuse activation/rollback.
+  if output=$(CONCIERGE_RELEASE_OFFLINE=1 CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" lkg); then
+    rollback_artifact=$(printf '%s' "$output" | jq -er '.artifact_path') || history_status=$?
+  else history_status=$?; fi
+  if [ "$history_status" -eq 0 ]; then
+    CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$CANDIDATE_ARTIFACT_PATH/control/history-cache.js" \
+      check-readers "$CANDIDATE_ARTIFACT_PATH" "$rollback_artifact" || history_status=$?
+  fi
+  if [ "$history_status" -eq 0 ]; then
+    CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$CANDIDATE_ARTIFACT_PATH/control/history-cache.js" apply-pending || history_status=$?
+  fi
+  if [ "$history_status" -ne 0 ]; then
+    output=$(jq -cn --arg run "${DEPLOY_RUN_ID:-operator}" --argjson code "$history_status" \
+      '{event:"history_cache_optional_deferred",run:$run,exitCode:$code}')
+    printf '%s\n' "$output" >&2
+    printf '%s\n' "$output" >> "$history_root/deployment-attempts.jsonl" || true
+  fi
+  return 0
+}
+
 # A start this runner asks for is not a crash. The units' StartLimitBurst (5 in 10 minutes)
 # exists to stop a crash loop, but systemd counts every start; six pushes deployed within ten
 # minutes on 2026-10-08 and the sixth deliberate restart was refused, leaving Concierge and
@@ -1289,6 +1313,9 @@ deploy() {
   record_deployment_phase verifying "{\"deployed_commit\":\"$DEPLOYED_COMMIT\"}"
   DEPLOY_FAILURE_REASON="The drained coordinator could not be stopped before schema migration."
   stop_unit "$SERVICE"
+  if ! run_optional_history_cache; then
+    echo 'Optional history cache maintenance could not report its attempt; release continues under the independent reader compatibility fence.' >&2
+  fi
   DEPLOY_FAILURE_REASON="The ledger could not be moved onto its own filesystem."
   relocate_ledger_to_own_filesystem
   if [ -n "$DEPLOY_RUN_ID" ] && [ "$MIGRATION_DONE" != "1" ]; then
