@@ -1,6 +1,6 @@
 # What came before: earlier work in every work request
 
-Current state as of 2026-11-04. Source: `bot/src/request-history.ts`, the `ask` and `reply`
+Current state as of 2026-11-12. Source: `bot/src/request-history.ts`, `bot/src/earlier-records.ts`, the `ask` and `reply`
 paths in `bot/src/session-communication.ts`, and `answersQuestionsOnly` in `bot/src/session-owner.ts`.
 
 ## Why
@@ -27,17 +27,40 @@ and a recipient that already has a request in the same thread (a follow-up, not 
    from the owner's meaning index (the one session search uses; no word search and no archive
    retention), meaning score at least 0.55, up to six, each with the latest request it was given
    and how that ended.
-3. **Diagnosed failures** in thnkr.ing's failure ledger
-   (`thinkering/docs/retrospectives/agent-failure-ledger.md`), compared by meaning through the
-   owner's meaning index (cached per case), up to three.
+3. **His requirements closest to the work**, from his taste profile
+   (`skills/interface-decisions-skill/references/taste-profile.md`, cut into one passage per
+   principle opening and per bolded rule), up to three, with an instruction to build to them and
+   say which were followed. Most of what he has asked for a kind of feature (search, loading
+   signs, notices, flow) lives here.
+4. **His decisions closest to the work**, from his decision record
+   (`decision-record/decisions/*.md`, permanent and for-now, not superseded), up to four, each
+   with its status, date and his words, and an instruction to cite `[decision: <id>]`.
+5. **Diagnosed failures** in thnkr.ing's failure cases
+   (`thinkering/docs/retrospectives/failure-cases/*.md`, one file per case; later reports of one
+   incident are left out), up to three.
+
+Items 3-5 are compared by meaning through the owner's meaning index; each record's vector is kept
+by key and exact words, so only new or edited records are embedded. The folders are re-read only
+when a file is added, removed or edited. `bot/src/earlier-records.ts` reads them without touching
+the ledger. Paths can be moved with `CONCIERGE_TASTE_PROFILE`, `CONCIERGE_DECISIONS` and
+`CONCIERGE_FAILURE_CASES`.
+
+From November 5 to 12, 2026 item 5 read the old single ledger file, which had become a pointer,
+so every brief said "The failure ledger was not found" and carried no lessons; and items 3 and 4
+did not exist, so an agent building Threads search was handed none of his earlier search
+requirements. Tejas, 2026-11-12: "When there's a requirement that was already present for a
+search, how can you come back and implement a search which has no reference to the older one that
+was done? ... Why are the lessons not captured automatically and transferred to future sessions?"
 
 Each earlier session states whether and how it can be asked now. The block is prepended to
 the request's words under `WHAT CAME BEFORE`. The request's retained payload records the counts
 (`history`). A first-time problem simply has no block.
 
 **Speed and failure.** The thread history is an indexed ledger read. The question is embedded
-once, at search priority, and compared against both the session index and the failure ledger
-within one 10 s bound (measured 2026-11-04: the embedding takes 1.3 s at the median and 4.5-7 s
+once, at search priority, and compared against the session index and the three written records
+within one 10 s bound (the first lookup after a record set changes embeds the new records, about a
+thousand on the first release; if that misses the bound it is named as not consulted and the
+vectors it finished are kept for the next request) (measured 2026-11-04: the embedding takes 1.3 s at the median and 4.5-7 s
 while the index catches up after a restart; 1.5 s and 4 s bounds missed the live tests). What has
 not answered is named under "Not consulted" rather than waited on. Any error in the lookup becomes a line telling the agent to search itself
 (`request_history_failed`); it never refuses the request. The lookup runs once, when the request is first accepted; an idempotent retry
