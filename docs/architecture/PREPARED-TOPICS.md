@@ -21,11 +21,15 @@ growing source rate without making the accepting owner loop do diagnostic work.
 
 Interactive reads use indexed keysets, at most twenty rows, and explicit source coverage.
 Lists retain exact counts and expose a detail reference when their value needs a preview.
-An Inbox list's first page, read by the device over HTTP or by an agent through `sessions topics list`, captures the source change head when the request enters. If the
-prepared list is behind, the owner yields while the existing presentation worker catches up to
-that head, for at most four seconds (ordinary worker batches took 0.7 to 3.6 seconds on
-Nov 10, 2026); changes accepted later belong to subsequent reads. A worker that cannot catch
-up still returns incomplete coverage so the client keeps its visible copy and retries. A
+An Inbox list's first page captures the source change head when the request enters. The
+device's HTTP read answers at once from the prepared copy: if that copy is behind the head it
+answers incomplete with `retryAfterMs: 1000`, so the client keeps its visible rows and reads
+again a second later. It never waits for the worker, because the head moves with every agent's
+activity and the worker is nearly always one batch behind; the four-second wait tried on Nov 11
+held nearly every read (p95 4,033 ms; see the
+[failure record](../incidents/2026-11-12-threads-list-waited-for-worker.md)). An agent's
+`sessions topics list` still yields up to four seconds for the worker to reach that head,
+since agents prefer a current answer to a fast one. A
 cursor page continues a walk whose first page established freshness: it answers at once and is
 complete whenever its generation is still ready, because requiring a newer head would tear a
 many-page walk on every busy minute; the client's own revision check still restarts a walk the

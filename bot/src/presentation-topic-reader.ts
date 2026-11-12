@@ -35,8 +35,8 @@ export function preparedTopics(options:Omit<Parameters<typeof readPreparedTopics
  * freshness; it needs the same generation (the cursor checks that) and the device's revision
  * check, never a newer head, or every busy minute tears a twenty-page walk. */
 const LIST_CATCH_UP_MS=4000;
-/** The change a list read must cover, after yielding while the worker reaches it. Both list
- * entrances use it: the device's HTTP read and the agents' `sessions topics list` command. */
+/** The change a list read must cover, after yielding while the worker reaches it. Only the agents'
+ * `sessions topics list` command uses it now; his device reads through `preparedTopicsNow` below. */
 export async function listReadHead(cursor:string|null|undefined,signal?:AbortSignal){
  if(cursor)return 0;
  const requiredHead=presentationHead(db),deadline=performance.now()+LIST_CATCH_UP_MS;
@@ -47,8 +47,16 @@ export async function listReadHead(cursor:string|null|undefined,signal?:AbortSig
   await awaitingOutside(()=>Bun.sleep(100));
  return requiredHead;
 }
-export async function preparedTopicsAfterCatchUp(options:Omit<Parameters<typeof readPreparedTopics>[1],'canonicalHead'>,signal?:AbortSignal){
- return preparedTopics(options,await listReadHead(options.cursor,signal));
+/** His Threads list, answered at once from the prepared copy. Waiting here for the worker (Nov 11)
+ * held every read for up to four seconds, because the ledger head moves with all agent activity and
+ * the worker is nearly always one batch behind: p95 went from 19 ms to 4,033 ms (Nov 12 nightly
+ * review). A first page behind its admission head still answers incomplete, so the device keeps the
+ * rows on screen, and it now asks again in one second rather than its five-second default. A cursor
+ * page continues a walk whose first page already established freshness, as before. */
+const LIST_BEHIND_RETRY_MS=1000;
+export function preparedTopicsNow(options:Omit<Parameters<typeof readPreparedTopics>[1],'canonicalHead'>){
+ const page=preparedTopics(options,options.cursor?0:presentationHead(db));
+ return page.coverage.complete?page:{...page,coverage:{...page.coverage,retryAfterMs:LIST_BEHIND_RETRY_MS}};
 }
 export function preparedAreas(query:string|null,cursor:string|null,limit:number){
  const reader=prepared();return reader&&reader.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='presentation_areas'").get()?readPreparedAreas(reader,presentationHead(db),query,cursor,limit):

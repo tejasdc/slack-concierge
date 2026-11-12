@@ -275,7 +275,7 @@ const idList=(value:unknown,field:string):string[]=>{
 let rootMemo=new Map<string,string|null>();
 let threadLinkWatermark=-1;
 export function invalidateTopicRoots() {rootMemo=new Map();threadLinkWatermark=-1;entryIndexState=null;}
-function refreshRootMemo() {
+export function refreshRootMemo() {
   const current=(db.query("SELECT COALESCE(MAX(sequence),0) AS sequence FROM session_owner_events WHERE kind='thread_link'").get() as {sequence:number}).sequence;
   if(current===threadLinkWatermark)return;
   if(threadLinkWatermark<0){rootMemo=new Map();entryIndexState=null;threadLinkWatermark=current;return;}
@@ -319,6 +319,12 @@ type EntryIndex={watermark:number;messages:Map<string,EntryRecord&{root:string|n
   /** Per root, the newest final return and the newest router post, so a result nobody relayed is visible. */
   finals:Map<string,EntryRecord&{inputId:string}>;posts:Map<string,EntryRecord>};
 let entryIndexState:EntryIndex|null=null;
+/**
+ * True while `warmEntryIndex` is filling the index in yielding steps after a restart. Background upkeep
+ * that reads the index waits for it: a reader arriving mid-warm finished the remaining ~10,000 rows in
+ * one synchronous read, freezing the owner for 5 to 26 seconds after every restart (Nov 11-12, 2026).
+ */
+let entryIndexWarming=false;
 function newestByRoot(messages:EntryIndex['messages']) {
   const byRoot=new Map<string,EntryRecord>(),forHim=new Map<string,EntryRecord>(),finals=new Map<string,EntryRecord&{inputId:string}>(),posts=new Map<string,EntryRecord>();
   for(const [messageId,entry] of messages) {
@@ -360,6 +366,8 @@ function entryIndex():EntryIndex {
  * memo mid-warm makes the next step start over. Nothing is written.
  */
 export async function warmEntryIndex(options:{stopped?:()=>boolean;batch?:number}={}):Promise<{rows:number;steps:number;ms:number;complete:boolean}> {
+  entryIndexWarming=true;
+  try {
   const batch=Math.max(1,options.batch??ENTRY_INDEX_WARM_BATCH);
   const started=performance.now();
   let rows=0,steps=0;
@@ -373,6 +381,7 @@ export async function warmEntryIndex(options:{stopped?:()=>boolean;batch?:number
     if(read.exhausted)return {rows,steps,ms:Math.round(performance.now()-started),complete:true};
     await new Promise<void>(resolve=>setImmediate(resolve));
   }
+  } finally {entryIndexWarming=false;}
 }
 const ENTRY_INDEX_WARM_BATCH=16;
 const ENTRY_INDEX_WARM_STEP_MS=12;
@@ -1312,7 +1321,7 @@ export function settleReadInboxAttention() {
 }
 
 /** Both list entrances use this source-readiness decision; each chooses how it reads the prepared
- * list (the device's HTTP read waits for the worker to catch up, the agent command reads directly). */
+ * list (the device's HTTP read answers at once, the agent command first waits briefly for the worker). */
 export function inboxTopicList<Prepared>(options:Parameters<typeof preparedTopics>[0],
   readPrepared:(options:Parameters<typeof preparedTopics>[0])=>Prepared){
   if(preparedTopicsReady())return readPrepared(options);
@@ -4080,6 +4089,8 @@ export const UNFILED_ALARM_MS=30*60_000;
  * a repair notice for any capture still unfiled past the alarm age (a stuck queue, a dead provider).
  */
 export function wakeRouterForUnfiled(session:SessionRow,admit:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string;threadReplyNotRequired:true})=>unknown,now=Date.now()) {
+  // The next upkeep pass covers it; reading now would finish the warm-up synchronously.
+  if(entryIndexWarming)return;
   const ageOf=(item:{at:string})=>now-Date.parse(iso(item.at)!);
   const overdue=unfiledInboxRoots().filter(item=>ageOf(item)>=UNFILED_WAKE_MS);
   ensureRepairNotices(db);
@@ -4178,6 +4189,9 @@ const UNFILED_ELSEWHERE_SHOWN=12;
  */
 function unfiledElsewhereContext(sessionId:number,inputId:string):string {
   if(sessionId!==inboxSession()?.id)return '';
+  // For the minute or so the index warms after a restart, the router is not shown these; the unfiled
+  // wake still hands over any capture older than ten minutes, and the next router turn lists them.
+  if(entryIndexWarming)return '';
   const items=unfiledInboxRoots().filter(item=>item.sessionId!==sessionId&&item.root!==inputId);
   if(!items.length)return '';
   return `\n\n<unfiled-from-earlier-routers>\n${JSON.stringify({

@@ -29,7 +29,7 @@ import {boundedChangedMessageIds,HISTORY_CHANGE_LIMIT} from './bounded-history-c
 import {historyContent,previewHistoryMessage} from './history-message-preview';
 import {HistoryDetailCache} from './history-detail-cache';
 import {preparedIncoming,preparedTopicOverview,preparedTopicItems,preparedQuestions,preparedTopicChanges,
-  preparedTopicResolution,preparedTopicDetail,preparedTopicsAfterCatchUp,preparedAreas,preparedArea,preparedThreadAreas} from './presentation-topic-reader';
+  preparedTopicResolution,preparedTopicDetail,preparedTopicsNow,preparedAreas,preparedArea,preparedThreadAreas} from './presentation-topic-reader';
 import {createAreaByHuman,areaHumanAction,AreaError} from './session-areas';
 import {presentationChangesForSession,presentationEpoch,presentationHead} from './presentation-changes';
 import {noteOwnerStall,noteSlowOwnerRequest,startOwnerResponsivenessWatch} from './owner-responsiveness';
@@ -90,7 +90,7 @@ import {inboxTopicList,openInboxObligationCount,openInboxObligations} from './se
 import {workThread} from './session-fit';
 import {sessionMutuals,mutualLift} from './session-mutuals';
 import {commitWork,originInput} from './commit-work';
-import {appendAgentReportObservation,closeQuestionsAnsweredByTodos,createTopicByHuman,inboxAttention,inboxMarkThrough,invalidateTopicRoots,openAgentReport,replyTargets,topicEntries,topicHumanAction,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
+import {appendAgentReportObservation,closeQuestionsAnsweredByTodos,createTopicByHuman,inboxAttention,inboxMarkThrough,openAgentReport,refreshRootMemo,replyTargets,topicEntries,topicHumanAction,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,projectCoordinates,sessionProject,sessionProjects} from './session-projects';
 import {expandHome,isSensitiveWorkspacePath,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
@@ -2807,8 +2807,8 @@ export class SessionOwner {
         recordSessionEvent({eventId:`thread-link:${session.id}:${action.messageId}:${actionId(input)}`,sessionId:session.id,inputId:action.messageId,kind:'thread_link',
           payload:{inputId:action.messageId,attached:false,routedBy:{kind:'human'}}});
         // The detached capture is its own thread root again, so it leaves its topic until
-        // someone places it. Topic membership is resolved from thread roots.
-        invalidateTopicRoots();
+        // someone places it. The root memo follows this thread_link event incrementally.
+        refreshRootMemo();
       }
       else {
         const table=action.kind==='follow'?'session_followed_messages':'session_saved_messages';
@@ -4316,7 +4316,7 @@ export class SessionOwner {
         const order=url.searchParams.get('order')??'updated';
         if(!['updated','started'].includes(order))throw new SessionOwnerError('Unknown thread order.');
         const options={state:state as 'open'|'closed'|'background'|'all',order:order as 'updated'|'started',query,cursor:url.searchParams.get('cursor'),limit:boundedLimit(url.searchParams.get('limit'),20)??20};
-        result=await inboxTopicList(options,prepared=>preparedTopicsAfterCatchUp(prepared,request.signal));
+        result=await inboxTopicList(options,prepared=>preparedTopicsNow(prepared));
       }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='areas'&&parts.length===2){
         const query=url.searchParams.get('query');if(query&&query.length>200)throw new SessionOwnerError('Area search is too long.');
