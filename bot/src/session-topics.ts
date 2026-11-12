@@ -3627,6 +3627,8 @@ function keepThreadOpenOrClosed(payload:any) {
 function whyThreadStaysOpen(topic:StoredTopic):string|null {
   if(topic.state!=='open')return 'already closed';
   if(topic.setAside)return 'set aside';
+  // He pins a thread to keep it in front of him; only he closes it.
+  if(topic.pinnedAt)return 'pinned';
   if(topicRequests(topic.topicId).some(request=>request.state==='open'))return 'a request is open';
   if(topicQuestions(topic.topicId).some(question=>OPEN_QUESTION_STATES.includes(question.state)||(question.state==='deferred'&&!!question.deferUntil)))return 'something waits on him';
   if(workRunningIn(topic.topicId))return 'work is running';
