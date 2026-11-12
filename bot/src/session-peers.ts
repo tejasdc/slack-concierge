@@ -811,6 +811,31 @@ export class SessionPeers {
       log('warn','session_peer_cancel_unsent',{request_id:requestId,peer:row.peer,...errorFields(error)});
     }
   }
+  /** The peer refused a repeat because it already holds this request ID with other bytes. */
+  private async adoptPeerHeldRequest(client:PeerClient,row:PeerRequestRow,conflict:string):Promise<boolean> {
+    let remote:any;
+    try{remote=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal);}
+    catch(error){
+      if(this.stopped)return false;
+      this.note(row.peer,error);
+      if(error instanceof PeerError&&error.kind==='refused'&&error.status===404)
+        this.settle(row,'failed',`${row.peer} refused this request as a changed repeat (${conflict}) but does not hold it; it was not sent again.`);
+      return false;
+    }
+    if(this.stopped)return false;
+    if(remote?.requestId!==row.request_id||typeof remote.sessionId!=='string'||typeof remote.address!=='string'){
+      this.settle(row,'failed',`${row.peer} refused this request as a changed repeat (${conflict}) and did not report the copy it holds; it was not sent again.`);
+      return false;
+    }
+    db.transaction(()=>{
+      db.query("UPDATE session_peer_requests SET remote_session_id=?,remote_address=?,remote_operation_id=coalesce(remote_operation_id,?),delivery_json=NULL,status='recorded' WHERE request_id=? AND status='queued_offline'")
+        .run(remote.sessionId,remote.address,typeof remote.operationId==='string'?remote.operationId:null,row.request_id);
+      this.event(row,'overdue',{text:`${row.peer} already held request ${row.request_id} with different content (${conflict}). Concierge now follows the copy ${row.peer} holds and does not send it again.`,
+        health:'peer request adopted after conflict',agentReminder:true},`peer-conflict-adopted:${row.request_id}`);
+    })();
+    log('warn','session_peer_request_conflict_adopted',{request_id:row.request_id,peer:row.peer,conflict});
+    return true;
+  }
   private event(row:PeerRequestRow,kind:PeerEventRow['kind'],payload:unknown,eventId=randomUUID()) {
     if(db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(eventId))return eventId;
     db.query('INSERT INTO session_peer_events(event_id,request_id,kind,payload_json,created_at_ms) VALUES(?,?,?,?,?)').run(eventId,row.request_id,kind,JSON.stringify(payload),this.now());
@@ -1081,6 +1106,7 @@ export class SessionPeers {
         row=this.row(row.request_id);
       }
       let accepted:any;
+      let adoptedPeerCopy=false;
       try{
         const delivery=queuedDelivery;
         accepted=await client.request('POST',delivery.correctionOf?'/sessions/v1/peers/requests/corrected-attachment':'/sessions/v1/peers/requests',delivery);
@@ -1089,16 +1115,27 @@ export class SessionPeers {
       }
       catch(error){
         this.note(row.peer,error);
+        // An idempotency conflict proves the peer already holds this request ID. Re-sending the
+        // same body can only be refused again: on 2026-11-11 seven Mac requests were re-sent
+        // about five times a second for days, enough owner log lines to blind the outside
+        // monitor. Follow the copy the peer holds instead, through the ordinary status poll.
+        if(error instanceof PeerError&&error.kind==='refused'&&error.status===409&&error.message.startsWith('Idempotency conflict')&&!queuedDelivery.correctionOf){
+          if(!await this.adoptPeerHeldRequest(client,row,error.message))return;
+          adoptedPeerCopy=true;
+          row=this.row(row.request_id);
+        }
         // A rejected or interrupted HTTP exchange is not proof that the receiver did not
         // retain this request. Keep its original ID and body for idempotent reconciliation.
-        if(error instanceof PeerError&&error.kind!=='unreachable'){
+        else if(error instanceof PeerError&&error.kind!=='unreachable'){
           const eventId=`peer-admission-uncertain:${row.request_id}`;
           if(!db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(eventId))
             this.event(row,'overdue',{text:`The ${row.peer} admission for request ${row.request_id} returned an error. Its exact request is retained for reconciliation; no new request identity will be sent. ${error.message}`,
               health:'peer admission uncertain',agentReminder:true},eventId);
+          return;
         }
-        return;
+        else return;
       }
+      if(!adoptedPeerCopy){
       if(typeof accepted?.sessionId!=='string'||typeof accepted.address!=='string'||typeof accepted.operationId!=='string')
         throw new Error('The peer did not return the exact accepted session and operation.');
       if(accepted.answerGuaranteeVersion!==1){
@@ -1126,6 +1163,7 @@ export class SessionPeers {
       if(row.outcome==='canceled'){
         await this.revokeCanceledRemote(row.request_id);
         return;
+      }
       }
     }
     let remote:any;
