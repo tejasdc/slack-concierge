@@ -46,6 +46,20 @@ this report does not convert healthy account availability into that proof.
 
 ## Results
 
-Pending installation of the source-checked control and live acceptance. Baseline
-account/context establishment is observed; Pause, Continue, isolation and fresh
-automatic cross-account movement are not yet claimed.
+| Observation | Result | Evidence boundary |
+| --- | --- | --- |
+| Ordinary native account-route continuation | Observed: session `concierge:9470`, native UUID `71413915-fc5b-4986-8ae4-b724290e5dd6`, reported Chann at 19:34 UTC and Hey at 20:49 UTC | Direct inherited auth checks; ordinary addressed follow-up supplied no account pin; one final receipt per request |
+| Independent memory across that account change | Not proved | Automatic earlier-work context supplied the first account value in the complete follow-up, contaminating the recall check |
+| Same-account conversation memory comparator | Observed: session `concierge:9503` returned its earlier random fact while still on Chann | The fact was absent from the complete admitted follow-up; this does not prove different-account memory |
+| Pause, Continue and isolation | Not run | Reviewed capability merged; installed acceptance still awaits its commit-scoped release watch |
+| Fresh exhaustion recovery | Not run | No genuine new refusal observed; ordinary account movement does not establish exhaustion recovery |
+
+The different-account requests were `a5f2ba86-8a16-4511-8568-def18e77d37e`
+and `3528218b-73fc-461e-8eac-07590464e327`. Both direct auth results belong
+to the same native transcript. No account mutation or transcript/file search command
+appears in that transcript; credential bytes and universal process survival were
+not measured. An independent read-only GPT-6 Luna audit confirmed these narrow
+claims and the contaminated recall boundary. Sanitized request, auth and admission
+metadata are retained in
+[the native continuation evidence](2026-11-12-claude-native-account-continuation.json).
+The original full lifecycle request remains open.
