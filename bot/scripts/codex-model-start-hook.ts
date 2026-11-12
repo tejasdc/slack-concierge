@@ -19,10 +19,9 @@ if(owner?.ok&&owner.result?.known){
   if(!owner.result.allowed)deny(String(owner.result.message??'GPT-6 Astra needs an owner-recorded escalation reason. Choose gpt-6.1-sol.'));
   process.exit(0);
 }
-const directReason = process.env.CODEX_ESCALATION_REASON?.trim() || '';
-const reason = directReason;
-const humanChoice = /^Tejas explicitly (?:chose|requested) Astra\b/i.test(reason);
-const refusal = escalationReason('gpt-6-astra', reason, humanChoice);
+const reason = process.env.CODEX_ESCALATION_REASON?.trim() || '';
+// A direct process can set its own environment; only the owner can attest a human choice.
+const refusal = escalationReason('gpt-6-astra', reason, false);
 if (!refusal) {
   try {
     mkdirSync(state, {recursive: true, mode: 0o700});

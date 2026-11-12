@@ -682,6 +682,9 @@ request field; free-text inference would misclassify ordinary work.
 The server installs a managed Codex prompt hook from the release. Before the
 first model request, it asks the owner whether a Concierge thread has a recorded
 Astra reason; a direct native run uses its stated `CODEX_ESCALATION_REASON`.
+An environment string cannot establish Tejas's choice: direct starts must give
+the qualifying escalation reason even if the string claims he chose Astra.
+An owner-verified human choice remains exempt on the Concierge path.
 It rejects an unexplained Astra prompt; the wrapper still checks command-line
 starts. The usage report flags transcript Fable/Astra calls that lack a matching
 record, including a newly discovered bypass.
@@ -732,8 +735,8 @@ not an explicit choice. The ordinary full-path `~/.local/bin/codex` command has 
 through command-line-tools; the package binary beneath that entry is the audit
 boundary. Accepted command-line Astra starts append
 their reason to the owner state's escalation log; the usage report counts that
-log alongside session events. A direct command-line start names Tejas's explicit
-choice in its reason when he made one. The direct human session picker preserves his
+log alongside session events. A direct command-line start cannot attest a human
+choice by naming it in the reason. The direct human session picker preserves his
 explicit model choice. The owner sends this policy again in every turn's context.
 
 **How the rule reaches running sessions.** Claude Code rereads the global file

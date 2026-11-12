@@ -18,8 +18,7 @@ for(let index=0;index<args.length;index++){
   }
 }
 const reason=process.env.CODEX_ESCALATION_REASON;
-const humanChoice=!!reason&&/\bTejas explicitly (?:chose|requested) Astra\b/i.test(reason);
-const refused=escalationReason(model,reason,humanChoice);
+const refused=escalationReason(model,reason,false);
 if(refused){console.error(refused);process.exit(64);}
 const executable=process.env.CONCIERGE_CODEX_EXECUTABLE||join(homedir(),'.codex/packages/standalone/current/bin/codex');
 if(!existsSync(executable)){console.error('The Codex command line is unavailable.');process.exit(127);}
