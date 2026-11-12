@@ -1,7 +1,8 @@
 # Concierge history payload retirement against retained transcript objects
 
-Status: implementation design; no cache row or runner mirror is retired before the
-host object store and its exact Restic restore proof are installed and checked.
+Status: reader and guarded converter committed; no live cache row or runner
+mirror has been retired. The host object store and restore command are installed,
+but Concierge's private state and page/detail acceptance remain separate gates.
 
 ## Requirement and current owners
 
@@ -196,5 +197,10 @@ full Restic snapshot ID, verification time, plan UUID, and exact canonical
 plan digest. A consumer must bind this finder to the plan proof and backup
 receipt and independently hash the object; parsing the finder is insufficient.
 The installed host recovery command restores a missing digest from its named
-snapshot or an operator-selected verified later one. Production by-object proof
-and product-owned acceptance remain absent, so no Concierge row qualifies yet.
+snapshot or an operator-selected verified later one. The first production plan
+proved five exact objects (488,160 logical bytes) with a separate Restic snapshot
+and converted five archive links. Archive blocks released and new object blocks
+allocated were both 495,616, so that batch saved zero host payload blocks.
+Further host rollout is in progress. This host proof alone does not qualify any
+Concierge cache row: its local source version, SDK equality, product backup,
+installed page/detail readback, and allocated-byte delta still need checking.

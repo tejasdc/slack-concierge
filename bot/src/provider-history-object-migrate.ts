@@ -161,12 +161,16 @@ async function migrate(sessionUuid: string) {
 async function materialize(sessionUuid: string) {
   const path = snapshotPath(sessionUuid);
   return withSnapshotCopy(path, async db => {
-    const refs = db.query("SELECT ordinal,json FROM rows WHERE json LIKE '%\"conciergeRawReference\":1%'");
+    const nextRef = db.query("SELECT ordinal,json FROM rows WHERE ordinal>? AND json LIKE '%\"conciergeRawReference\":1%' ORDER BY ordinal LIMIT 1");
     const update = db.query("UPDATE rows SET json=? WHERE ordinal=?");
     let restored = 0;
+    let lastOrdinal = -1;
     db.exec("BEGIN");
     try {
-      for (const row of refs.iterate() as Iterable<{ordinal:number;json:string}>) {
+      for (;;) {
+        const row = nextRef.get(lastOrdinal) as {ordinal:number;json:string} | null;
+        if (!row) break;
+        lastOrdinal = row.ordinal;
         const parsed = JSON.parse(row.json);
         if (parsed?.conciergeRawReference !== 1) continue;
         update.run(JSON.stringify(decodeStoredSdkRow(row.json)), row.ordinal);
