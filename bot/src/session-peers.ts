@@ -17,6 +17,7 @@ import {meaningIndex} from './meaning-index';
 import {acceptedInputForTurn,carryingTurn,enqueueSessionInput,getAcceptedSessionInput,handedToARun, withdrawUnstartedServiceInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {heldRequestNotice,inputHold,readInputExecution,resolveSessionAddress,sessionAddress,SessionOwnerError,type SessionOwner} from './session-owner';
 import {log,errorFields} from './log';
+import {deliverRequestReminder} from './request-reminder-carrier';
 import {expireQuestionsForFinalReply,filePeerWorkerNeedInThread,linkForwardedReplyWork,linkInboxDispatchWork,postAgentAnswer,recordSessionMessageRoute,topicOfRoot} from './session-topics';
 import {presentSessionForPeer,receiveSessionFromPeer} from './peer-identity';
 import {followForwardedReply,messageRouteForSource} from './session-inbox';
@@ -1296,15 +1297,13 @@ export class SessionPeers {
         db.query("UPDATE session_peer_events SET status='held',error='Asking agent is unavailable; reminder retained.' WHERE event_id=?").run(event.event_id);
         return;
       }
-      const inputId=`request-reminder:${event.event_id}`;
       const text=legacyAgentReminder?unresolvedRequestReminder(row.payload_json,STILL_WAITING_MINUTES,
         'Inspect the recipient’s status and follow up or cancel if the work can no longer wait.')
         :declared.held&&!declared.agentReminder?`${requestLabel(row.payload_json)} is waiting: ${String(declared.text)}`:String(declared.text);
-      const accepted=this.dependencies.owner.admit({sessionId:source.id,inputId,origin:'service',sourceInputId:row.source_input_id,sourceRunId:nativeRunId(row.source_turn_id),requestId:row.request_id,text});
-      const observed=readInputExecution(accepted);
-      const received=observed.acknowledgedAt||observed.turn?.input_context_received_by_turn_id;
-      db.query('UPDATE session_peer_events SET accepted_input_id=?,status=?,error=NULL WHERE event_id=?')
-        .run(inputId,received?'received':accepted.turn_id?'admitted':'held',event.event_id);
+      const delivered=deliverRequestReminder({eventId:event.event_id,acceptedInputId:event.accepted_input_id??null,sourceSessionId:source.id,
+        sourceInputId:row.source_input_id,sourceRunId:nativeRunId(row.source_turn_id),requestId:row.request_id,text,owner:this.dependencies.owner});
+      db.query('UPDATE session_peer_events SET accepted_input_id=?,status=?,error=? WHERE event_id=?')
+        .run(delivered.inputId,delivered.status,delivered.error,event.event_id);
       return;
     }
     const returnToRequester=returnsToRequester(row,event);
