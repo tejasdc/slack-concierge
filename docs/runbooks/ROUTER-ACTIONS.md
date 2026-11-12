@@ -476,6 +476,18 @@ new login, and a failed proof rolls back. The command retains an agent-authored
 receipt; an uncertain operation is inspected, never replayed under the same ID.
 See [provider usage](../architecture/PROVIDER-USAGE.md).
 
+`sessions history-storage claude|codex <source-flags> [--after <next filename>]
+[--limit 1..2000]` reads allocated and logical bytes for one page of private
+history cache files through the authenticated owner. It returns the exact file
+count scanned, eight largest files in that page, and `complete`/`next`. Sum
+pages until `complete` before reporting a total; a missing directory reports
+`exists:false`, while a read error is an error, never a zero-byte result. The
+Claude scope is snapshot SQLite files; the Codex scope is window JSON files.
+Sidecars, runner mirrors and the presentation ledger are separate allocations.
+This command reads file metadata only and never returns transcript content.
+The guarded cutover and its backup/readback gates are in the
+[history object plan](../plans/2026-11-12-concierge-history-object-retirement.md).
+
 ### Provider-change handoff
 
 When Tejas asks that ongoing work continue on another provider or model, hand off the

@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { historyStorageStatus, type HistoryStorageKind } from './history-storage-status';
 import { createHash, randomUUID } from 'node:crypto';
 import {implementationAlias} from './implementation-models';
 import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, settleTurnDependencies, SETTLED_EXECUTION_SQL, type SessionRow } from './state';
@@ -857,6 +858,12 @@ export class SessionCommunicationCoordinator {
     usage(input:{source:CommunicationSource}) {
         this.actor(input.source);
         return {providers:(['claude-code','codex','antigravity'] as const).map(provider=>usageSignal(provider))};
+    }
+    historyStorage(input:{source:CommunicationSource;kind:HistoryStorageKind;after?:string;limit?:number}) {
+        this.actor(input.source);
+        const stateDir=process.env.CONCIERGE_STATE_DIR;
+        if(!stateDir)throw new Error('Concierge owner state is unavailable.');
+        return historyStorageStatus(stateDir,input.kind,input.after,input.limit);
     }
     /** Switch through the same guarded account operation as Accounts, attributed to this agent run. */
     async switchCodexAccount(input:{source:CommunicationSource;action_id:string;profile_id:string;machine?:string}) {
