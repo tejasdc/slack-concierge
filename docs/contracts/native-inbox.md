@@ -619,7 +619,8 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
 - A thread closes itself (`topic-autoclose:<topic>:<revision>`, closure `automatic:true`, by the
   owner) at the moment its last request or question ends or an agent's final answer arrives,
   when no request is open, nothing waits on him (an unread answer counts, as does a question set
-  aside until a time), no work for its roots is running and it is not set aside. It is decided
+  aside until a time), no work for its roots is running and it is neither set aside nor pinned
+  (a pinned thread closes only by his own Close; he pins it to keep it in front of him). It is decided
   only at such an ending, never by a pass over quiet threads, so a thread reopened by hand stays
   open until something in it ends again.
 - A closed thread reopens when he writes in it (`topic-reopen:his:<input>`), when new work is
