@@ -95,6 +95,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - Fresh agent-started Claude Code commands skip older Concierge wrappers in PATH and tolerate the package install's brief
   missing-command window before account selection; see the
   [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md#claude-code-started-by-an-agent).
+- Mac agent replies may quote browser and Computer Use diagnostics without the surface guard treating
+  that report text as an action; the standalone reply and actual action boundary are in
+  [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md).
 - Shared Codex turn recovery and its exact identity boundary follow
   [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#codex-provider-turn-reconciliation).
 - Confirmed Claude process death after a checkpoint uses the existing bounded continuation;

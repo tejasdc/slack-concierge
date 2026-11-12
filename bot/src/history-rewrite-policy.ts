@@ -74,7 +74,9 @@ export function parseShell(source: string): Simple[] {
       continue;
     }
     let text = '', raw = '';
-    while (i < source.length && !/[\s;&|<>()]/.test(source[i]!)) {
+    // Shell token separators are ASCII space, tab and newline. Other Unicode
+    // whitespace is literal word text and must still advance the scanner.
+    while (i < source.length && !/[ \t\n;&|<>()]/.test(source[i]!)) {
       const ch = source[i]!;
       if (ch === "'") { const end = source.indexOf("'", i + 1); const stop = end < 0 ? source.length : end; text += source.slice(i + 1, stop); raw += source.slice(i, stop + 1); i = stop + 1; continue; }
       if (ch === '"') {
