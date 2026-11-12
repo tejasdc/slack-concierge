@@ -9,6 +9,8 @@ import {CLAUDE_HELPER_CACHE_LIFETIME_MS,CLAUDE_MAIN_CACHE_LIFETIME_MS} from '../
 import {closeRunnerMachineCalls} from '../src/runner-machine-calls';
 import {decodeUsageSnapshot,ledgerFromUsageSnapshot,captureUsageLedgerSnapshot,encodeUsageSnapshot} from '../src/usage-breakdown-ledger-snapshot';
 import {collectRunnerUsageReports} from '../src/provider-usage-report-client';
+import {attributeWeeklyAllowance,nameAllowanceRows,weeklyReadings} from '../src/weekly-allowance-attribution';
+import {isCodeEditTool} from '../src/implementation-models';
 
 type Counts={input:number;cacheWrite:number;cacheWrite1h:number;cacheRead:number;output:number};
 type FileRow={offset:number;size:number;mtime:number;total_json:string};
@@ -32,6 +34,10 @@ cache.exec(`PRAGMA journal_mode=WAL;
    cache_write_1h INTEGER NOT NULL,cache_read INTEGER NOT NULL,output INTEGER NOT NULL,source_account TEXT,parent_thread_id TEXT,
    first_usage INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(path,record_id));
  CREATE INDEX IF NOT EXISTS records_recent ON records(at_ms);
+ CREATE TABLE IF NOT EXISTS edit_events(path TEXT NOT NULL,record_id TEXT NOT NULL,provider TEXT NOT NULL,conversation TEXT NOT NULL,
+   helper INTEGER NOT NULL,at_ms INTEGER NOT NULL,model TEXT,provider_turn_id TEXT,tool_name TEXT NOT NULL,
+   PRIMARY KEY(path,record_id));
+ CREATE INDEX IF NOT EXISTS edit_events_recent ON edit_events(at_ms);
  CREATE TABLE IF NOT EXISTS provider_record_sequence(id INTEGER PRIMARY KEY AUTOINCREMENT,path TEXT NOT NULL,record_id TEXT NOT NULL,at_ms INTEGER NOT NULL,UNIQUE(path,record_id));
  CREATE INDEX IF NOT EXISTS provider_record_sequence_time ON provider_record_sequence(at_ms);
  CREATE TABLE IF NOT EXISTS cache_boundaries(path TEXT NOT NULL,at_ms INTEGER NOT NULL,kind TEXT NOT NULL,
@@ -69,6 +75,18 @@ function configuredRoots():ProviderRoot[]{
     throw new Error('INVALID_USAGE_BREAKDOWN_ROOTS');
   return parsed;
 }
+/** The Mac peer still owns local provider turns, without a runner or account-home registry. */
+function macPeerRoots():ProviderRoot[]{
+  const roots:ProviderRoot[]=[
+    {provider:'claude-code',account:'unknown',home:join(home,'.claude')},
+    {provider:'codex',account:'unknown Codex account',home:join(home,'.codex')},
+  ];
+  const saved=join(home,'.codex-accounts');
+  if(existsSync(saved))for(const entry of readdirSync(saved,{withFileTypes:true})){
+    if(entry.isDirectory())roots.push({provider:'codex',account:'unknown Codex account',home:join(saved,entry.name)});
+  }
+  return roots.filter(root=>existsSync(join(root.home,root.provider==='claude-code'?'projects':'sessions')));
+}
 function countsClaude(u:any):Counts{return {input:number(u.input_tokens),cacheWrite:number(u.cache_creation_input_tokens)-number(u.cache_creation?.ephemeral_1h_input_tokens),cacheWrite1h:number(u.cache_creation?.ephemeral_1h_input_tokens),cacheRead:number(u.cache_read_input_tokens),output:number(u.output_tokens)};}
 function countsCodex(u:any):Counts{return {input:Math.max(0,number(u.input_tokens)-number(u.cached_input_tokens)-number(u.cache_write_input_tokens)),cacheWrite:number(u.cache_write_input_tokens),cacheWrite1h:0,cacheRead:number(u.cached_input_tokens),output:number(u.output_tokens)};}
 function insert(path:string,id:string,provider:string,conversation:string,helper:boolean,at:number,model:string|null,c:Counts,providerTurnId:string|null,clientVersion:string|null,sourceAccount:string|null=null,parentThreadId:string|null=null,firstUsage=false){
@@ -77,29 +95,36 @@ function insert(path:string,id:string,provider:string,conversation:string,helper
     (path,record_id,provider,conversation,helper,at_ms,model,input,cache_write,cache_write_1h,cache_read,output,provider_turn_id,client_version,source_account,parent_thread_id,first_usage)
     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(path,id,provider,conversation,helper?1:0,at,model,c.input,c.cacheWrite,c.cacheWrite1h,c.cacheRead,c.output,providerTurnId,clientVersion,sourceAccount,parentThreadId,firstUsage?1:0);
 }
+function insertEdit(path:string,id:string,provider:string,conversation:string,helper:boolean,at:number,model:string|null,providerTurnId:string|null,toolName:string){
+  if(at<activeUsageWindowStartMs||at>Date.now()+60000)return;
+  cache.query(`INSERT OR IGNORE INTO edit_events(path,record_id,provider,conversation,helper,at_ms,model,provider_turn_id,tool_name)
+    VALUES(?,?,?,?,?,?,?,?,?)`).run(path,id,provider,conversation,helper?1:0,at,model,providerTurnId,toolName);
+}
 async function scan(path:string,provider:'claude-code'|'codex'){
   const stat=statSync(path), prior=cache.query('SELECT * FROM files WHERE path=?').get(path) as FileRow|null;
   if(prior&&prior.size===stat.size&&prior.mtime===stat.mtimeMs
-    &&(JSON.parse(prior.total_json) as {schemaVersion?:number}).schemaVersion===4)return;
+    &&(JSON.parse(prior.total_json) as {schemaVersion?:number}).schemaVersion===5)return;
   // An old file cannot add a row to the one-week report. Retire its old cursor
   // without rereading archived transcript bytes during the format upgrade.
   if(stat.mtimeMs<activeUsageWindowStartMs){
     if(prior){
       cache.query('DELETE FROM records WHERE path=?').run(path);
+      cache.query('DELETE FROM edit_events WHERE path=?').run(path);
       cache.query('DELETE FROM cache_boundaries WHERE path=?').run(path);
       cache.query('UPDATE files SET offset=?,size=?,mtime=?,total_json=? WHERE path=?')
         .run(prior.offset,stat.size,stat.mtimeMs,
-          JSON.stringify({...JSON.parse(prior.total_json),schemaVersion:4}),path);
+          JSON.stringify({...JSON.parse(prior.total_json),schemaVersion:5}),path);
     }
     return;
   }
   let offset=prior&&prior.size<=stat.size?prior.offset:0;
-  if(prior&&prior.size>stat.size){cache.query('DELETE FROM records WHERE path=?').run(path);cache.query('DELETE FROM cache_boundaries WHERE path=?').run(path);offset=0;}
+  if(prior&&prior.size>stat.size){cache.query('DELETE FROM records WHERE path=?').run(path);cache.query('DELETE FROM edit_events WHERE path=?').run(path);cache.query('DELETE FROM cache_boundaries WHERE path=?').run(path);offset=0;}
   let previous:any=prior&&offset?JSON.parse(prior.total_json):null;
   // Rebuild older cursors once: Claude needs the first response and compaction markers,
   // while Codex needs native per-response usage rather than cumulative event deltas.
-  if(previous?.schemaVersion!==4){
+  if(previous?.schemaVersion!==5){
     cache.query('DELETE FROM records WHERE path=?').run(path);
+    cache.query('DELETE FROM edit_events WHERE path=?').run(path);
     cache.query('DELETE FROM cache_boundaries WHERE path=?').run(path);
     offset=0;previous=null;
   }
@@ -121,9 +146,10 @@ async function scan(path:string,provider:'claude-code'|'codex'){
     const bytes=Buffer.byteLength(line)+1;
     if(atByte+bytes>stat.size)break;
     try{
-      if(provider==='claude-code'&&!line.includes('"usage"')&&!line.includes('"compact_boundary"')){atByte+=bytes;continue;}
+      if(provider==='claude-code'&&!line.includes('"usage"')&&!line.includes('"compact_boundary"')&&!line.includes('"tool_use"')){atByte+=bytes;continue;}
       if(provider==='codex'&&!line.includes('"token_count"')&&!line.includes('"token_usage_record"')
-        &&!line.includes('"turn_context"')&&!line.includes('"compacted"')&&!line.includes('"session_meta"')){atByte+=bytes;continue;}
+        &&!line.includes('"turn_context"')&&!line.includes('"compacted"')&&!line.includes('"session_meta"')
+        &&!line.includes('"item_completed"')){atByte+=bytes;continue;}
       const row=JSON.parse(line),at=stamp(row.timestamp);
       if(provider==='codex'&&row.type==='session_meta'){
         if(typeof row.payload?.cli_version==='string')codexClientVersion=row.payload.cli_version;
@@ -132,6 +158,16 @@ async function scan(path:string,provider:'claude-code'|'codex'){
       if(provider==='codex'&&row.type==='turn_context'){
         if(typeof row.payload?.model==='string')model=row.payload.model;
         if(typeof row.payload?.turn_id==='string')providerTurnId=row.payload.turn_id;
+      }
+      if(provider==='claude-code'&&row.type==='assistant'&&Array.isArray(row.message?.content))
+        for(const part of row.message.content)if(part?.type==='tool_use'&&typeof part.id==='string'
+          &&isCodeEditTool(part.name,part.input))
+          insertEdit(path,part.id,provider,conversation,helper,at,row.message.model??null,null,String(part.name));
+      if(provider==='codex'&&row.type==='event_msg'&&row.payload?.type==='item_completed'){
+        const item=row.payload.item;
+        if(item&&isCodeEditTool(item.type,item.command))
+          insertEdit(path,String(item.id??row.ordinal??atByte),provider,conversation,!!codexParentThreadId,at,model,
+            typeof row.payload.turn_id==='string'?row.payload.turn_id:providerTurnId,String(item.type));
       }
       if((provider==='claude-code'&&row.type==='system'&&row.subtype==='compact_boundary')
         ||(provider==='codex'&&row.type==='compacted'))
@@ -171,7 +207,7 @@ async function scan(path:string,provider:'claude-code'|'codex'){
     atByte+=bytes;
   }
   cache.query('INSERT INTO files VALUES(?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET offset=excluded.offset,size=excluded.size,mtime=excluded.mtime,total_json=excluded.total_json')
-    .run(path,Math.min(atByte,stat.size),stat.size,stat.mtimeMs,JSON.stringify({schemaVersion:4,counts:total,model,
+    .run(path,Math.min(atByte,stat.size),stat.size,stat.mtimeMs,JSON.stringify({schemaVersion:5,counts:total,model,
       providerTurnId,firstUsageId,nativeCodexUsageSeen,clientVersion:codexClientVersion,parentThreadId:codexParentThreadId}));
 }
 function midnight(zone:string,now=Date.now()){
@@ -189,6 +225,7 @@ function midnight(zone:string,now=Date.now()){
 const pricing:Record<string,{input:number;cacheWrite:number;cacheWrite1h:number;cacheRead:number;output:number}>={
   'claude-opus-5-5':{input:4,cacheWrite:5,cacheWrite1h:8,cacheRead:.2,output:20},
   'claude-opus-5':{input:5,cacheWrite:6.25,cacheWrite1h:10,cacheRead:.5,output:25},
+  'claude-fable-5-2':{input:8,cacheWrite:10,cacheWrite1h:16,cacheRead:.2,output:40},
   'claude-fable-5-1':{input:10,cacheWrite:12.5,cacheWrite1h:20,cacheRead:.25,output:50},
   'claude-sonnet-5':{input:2,cacheWrite:2.5,cacheWrite1h:4,cacheRead:.2,output:10},
   'claude-sonnet-5-5':{input:2,cacheWrite:2.5,cacheWrite1h:4,cacheRead:.2,output:10},
@@ -207,10 +244,21 @@ type RecordRow={path:string;record_id:string;provider:string;conversation:string
   source_account:string|null;parent_thread_id:string|null;first_usage:number};
 type Session={id:number;agent_session_uuid:string;native_metadata_json:string;provider_id:string};
 type Turn={id:number;session_id:number;status:string;provider_turn_id:string|null;provider_started_at:string|null;ended_at:string|null;
-  systemInstructionsSha256:string|null;effort:string|null;startMs:number;endMs:number};
+  systemInstructionsSha256:string|null;effort:string|null;topic_id:string|null;startMs:number;endMs:number};
 type ScheduledFiring={id:number;session_id:number;status:string;saved_root_id:number;saved_sequence:number;saved_fire_at_ms:number;
   provider_started_at:string|null;provider_duration_ms:number|null;ended_at:string|null};
 type CallMix={totalCalls:number;helperCalls:number;models:Map<string,{calls:number;helperCalls:number}>};
+type EditMix={totalEdits:number;helperEdits:number;models:Map<string,{edits:number;helperEdits:number}>};
+const newEditMix=():EditMix=>({totalEdits:0,helperEdits:0,models:new Map()});
+function addEdit(mix:EditMix,model:string|null,helper:boolean){
+  mix.totalEdits++;mix.helperEdits+=Number(helper);
+  const name=model??'unreported',prior=mix.models.get(name)??{edits:0,helperEdits:0};
+  prior.edits++;prior.helperEdits+=Number(helper);mix.models.set(name,prior);
+}
+function editMixView(mix:EditMix){return {totalEdits:mix.totalEdits,helperEdits:mix.helperEdits,
+  mainEdits:mix.totalEdits-mix.helperEdits,helperShare:mix.totalEdits?mix.helperEdits/mix.totalEdits:0,
+  byModel:[...mix.models].map(([model,value])=>({model,...value,mainEdits:value.edits-value.helperEdits,
+    share:mix.totalEdits?value.edits/mix.totalEdits:0})).sort((a,b)=>b.edits-a.edits)};}
 const newCallMix=():CallMix=>({totalCalls:0,helperCalls:0,models:new Map()});
 function addCall(mix:CallMix,model:string|null,helper:boolean){
   mix.totalCalls++;mix.helperCalls+=Number(helper);
@@ -230,7 +278,7 @@ function report(period:'today'|'week',since:number,zone:string){
   const accountsByTurn=new Map<number,string>();
   for(const e of events){const a=accounts.get(e.session_id)??[];a.push({at:Date.parse(e.created_at+'Z'),name:e.account});accounts.set(e.session_id,a);
     if(e.turn_id!==null)accountsByTurn.set(e.turn_id,e.account);}
-  const turns=(ledger.query(`SELECT turn.id,turn.session_id,turn.status,turn.provider_turn_id,turn.provider_started_at,turn.ended_at,
+  const turns=(ledger.query(`SELECT turn.id,turn.session_id,turn.status,turn.provider_turn_id,turn.provider_started_at,turn.ended_at,turn.topic_id,
     json_extract(identity.payload_json,'$.systemInstructionsSha256') AS systemInstructionsSha256,
     json_extract(identity.payload_json,'$.effort') AS effort
     FROM turns turn LEFT JOIN session_owner_events identity ON identity.sequence=(
@@ -265,6 +313,8 @@ function report(period:'today'|'week',since:number,zone:string){
     const model=event.model??'unreported';counts[model]=(counts[model]??0)+1;return counts;
   },{}));
   const groups=new Map<string,any>();
+  const attributionBuckets=new Map<string,{provider:string;account:string;window:string;atMs:number;sessionId:string|null;topicId:string|null;
+    routineRootId:number|null;weighted:number;raw:Counts;calls:number;conversation:string|null}>();
   const scheduled=(ledger.query(`SELECT id,session_id,status,saved_root_id,saved_sequence,saved_fire_at_ms,
     provider_started_at,provider_duration_ms,ended_at FROM turns
     WHERE saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL AND saved_root_id IS NOT NULL
@@ -278,12 +328,15 @@ function report(period:'today'|'week',since:number,zone:string){
     provider_turn_id,client_version,source_account,parent_thread_id,first_usage FROM records WHERE at_ms>=? ORDER BY path,at_ms,record_id`).all(oneWeekAgo) as RecordRow[];
   const calls:any[]=[];
   const overallMix=newCallMix();
+  const overallEditMix=newEditMix(),accountEdits=new Map<string,EditMix>(),sessionEdits=new Map<string,EditMix>();
   const unknownEvidence:{atMs:number;provider:string;gapMs:number|null;instructions:'same'|'changed'|'unavailable';accountKnown:boolean}[]=[];
   const callsByTurn=new Map<number,{turnId:number;sessionId:number;provider:string;account:string;status:string;raw:Counts;callCount:number;
     flaggedCallCount:number;unknownCauseCount:number}>();
   const previousByPath=new Map<string,{row:RecordRow;turn:Turn|null}>();
   for(const r of rows){
     const owningConversation=r.provider==='codex'?rootConversation(r.conversation):r.conversation;
+    const isHelper=!!r.helper||owningConversation!==r.conversation;
+    const helperId=isHelper?(r.provider==='codex'?r.conversation:basename(r.path,'.jsonl')):null;
     const s=sessions.get(`${r.provider}:${owningConversation}`),meta=s?JSON.parse(s.native_metadata_json):{};
     const candidates=s?turnsBySession.get(s.id)??[]:[];
     const exact=r.provider_turn_id?candidates.filter(t=>t.provider_turn_id===r.provider_turn_id):[];
@@ -295,7 +348,7 @@ function report(period:'today'|'week',since:number,zone:string){
     // Codex homes have separate transcript trees; Claude's shared history gives no account for an unrelated process.
     if(r.provider==='codex'&&account==='unknown')account=r.source_account??'unknown Codex account';
     const project=meta.project?basename(meta.project):meta.cwd?basename(meta.cwd):null;
-    const kind=!s?'outside Concierge':r.helper?'helper sub-agents':project==='slack-inbox'?'Inbox router':project??'ordinary sessions';
+    const kind=!s?'outside Concierge':isHelper?'helper sub-agents':project==='slack-inbox'?'Inbox router':project??'ordinary sessions';
     const weights=price(r.provider,r.model);
     const previous=previousByPath.get(r.path);
     const rewritten=r.input+r.cache_write+r.cache_write_1h;
@@ -338,7 +391,7 @@ function report(period:'today'|'week',since:number,zone:string){
       instructions:previous?.turn?.systemInstructionsSha256&&turn?.systemInstructionsSha256
         ?previous.turn.systemInstructionsSha256===turn.systemInstructionsSha256?'same':'changed':'unavailable',
       accountKnown:account!=='unknown'});
-    const call={provider:r.provider,account,sessionId:s?.id??null,turnId:turn?.id??null,helper:!!r.helper,
+    const call={provider:r.provider,account,sessionId:s?.id??null,turnId:turn?.id??null,helper:isHelper,
       providerConversationId:r.conversation,callId:r.record_id,at:new Date(r.at_ms).toISOString(),model:r.model,
       clientVersion:r.client_version,raw:{input:r.input,cacheWrite:r.cache_write,cacheWrite1h:r.cache_write_1h,
         cacheRead:r.cache_read,output:r.output},cachedInputTokens:r.cache_read,rewrittenInputTokens:rewritten,
@@ -347,7 +400,7 @@ function report(period:'today'|'week',since:number,zone:string){
     previousByPath.set(r.path,{row:r,turn});
     if(r.at_ms<since)continue;
     calls.push(call);
-    addCall(overallMix,r.model,!!r.helper);
+    addCall(overallMix,r.model,isHelper);
     if(turn){
       let entry=callsByTurn.get(turn.id);
       if(!entry){entry={turnId:turn.id,sessionId:turn.session_id,provider:r.provider,account,status:turn.status,
@@ -358,33 +411,85 @@ function report(period:'today'|'week',since:number,zone:string){
     }
     if(!pricing[r.model??'']&&r.input+r.cache_write+r.cache_write_1h+r.cache_read+r.output>0)fallbackModels.add(r.model??'unreported');
     const weighted=(r.input*weights.input+r.cache_write*weights.cacheWrite+r.cache_write_1h*weights.cacheWrite1h+r.cache_read*weights.cacheRead+r.output*weights.output)/1e6;
+    const firing=s?scheduledBySession.get(s.id)?.find(t=>t.providerStartMs!==null&&t.endedMs!==null
+      &&r.at_ms>=t.providerStartMs&&r.at_ms<=t.endedMs):null;
     if(s){
-      const firing=scheduledBySession.get(s.id)?.find(t=>t.providerStartMs!==null&&t.endedMs!==null
-        &&r.at_ms>=t.providerStartMs&&r.at_ms<=t.endedMs);
       if(firing){firing.weighted+=weighted;firing.usageRecords++;
         firing.raw.input+=r.input;firing.raw.cacheWrite+=r.cache_write;firing.raw.cacheWrite1h+=r.cache_write_1h;
         firing.raw.cacheRead+=r.cache_read;firing.raw.output+=r.output;}
     }
     const key=`${r.provider}:${account}`;
+    // Fifteen-minute points let the owner compare transcript work with the same observed
+    // provider-meter span after it has merged all runners. They are never served to clients.
+    const atMs=Math.floor(r.at_ms/900_000)*900_000,sessionId=s?`concierge:${s.id}`:null;
+    // Fable draws on Claude's all-models weekly meter as well as its own; it is weighted into both.
+    const windows=r.provider==='claude-code'&&r.model?.includes('fable')?['Weekly','Weekly · Fable only']:['Weekly'];
+    const topicId=turn?.topic_id??null,routineRootId=firing?.saved_root_id??null;
+    const conversation=s?null:`outside:${r.conversation}`;
+    for(const window of windows){
+      const bucketKey=JSON.stringify([key,window,atMs,sessionId,conversation,topicId,routineRootId]);
+      let bucket=attributionBuckets.get(bucketKey);
+      if(!bucket){bucket={provider:r.provider,account,window,atMs,sessionId,topicId,routineRootId,weighted:0,raw:empty(),calls:0,conversation};attributionBuckets.set(bucketKey,bucket);}
+      bucket.weighted+=weighted;bucket.calls++;
+      bucket.raw.input+=r.input;bucket.raw.cacheWrite+=r.cache_write;bucket.raw.cacheWrite1h+=r.cache_write_1h;
+      bucket.raw.cacheRead+=r.cache_read;bucket.raw.output+=r.output;
+    }
     let g=groups.get(key);
     if(!g){g={provider:r.provider,account,total:0,raw:empty(),cache:{callCount:0,flaggedCallCount:0,unknownCauseCount:0},
-      bySession:new Map(),byKind:new Map(),mix:newCallMix()};groups.set(key,g);}
-    addCall(g.mix,r.model,!!r.helper);
+      bySession:new Map(),byKind:new Map(),byModel:new Map(),mix:newCallMix()};groups.set(key,g);}
+    addCall(g.mix,r.model,isHelper);
     g.total+=weighted;g.raw.input+=r.input;g.raw.cacheWrite+=r.cache_write;g.raw.cacheWrite1h+=r.cache_write_1h;g.raw.cacheRead+=r.cache_read;g.raw.output+=r.output;
     g.cache.callCount++;g.cache.flaggedCallCount+=Number(largeUnexpected);g.cache.unknownCauseCount+=Number(cause.status==='unknown');
     const sessionKey=s?String(s.id):`outside:${r.conversation}`;
     let entry=g.bySession.get(sessionKey);
     if(!entry){entry={sessionId:s?.id??null,address:s?`concierge:${s.id}`:null,providerConversationId:r.conversation,
       title:meta.title??(s?null:`Outside Concierge · ${r.conversation}`),project,kind:s?project==='slack-inbox'?'Inbox router':'ordinary session':'outside Concierge',weighted:0,helperWeighted:0,raw:empty(),
-      cache:{callCount:0,flaggedCallCount:0,unknownCauseCount:0},mix:newCallMix()};g.bySession.set(sessionKey,entry);}
-    addCall(entry.mix,r.model,!!r.helper);
+      cache:{callCount:0,flaggedCallCount:0,unknownCauseCount:0},byModel:new Map(),byHelper:new Map(),mix:newCallMix()};g.bySession.set(sessionKey,entry);}
+    addCall(entry.mix,r.model,isHelper);
     entry.weighted+=weighted;entry.raw.input+=r.input;entry.raw.cacheWrite+=r.cache_write;entry.raw.cacheWrite1h+=r.cache_write_1h;entry.raw.cacheRead+=r.cache_read;entry.raw.output+=r.output;
     entry.cache.callCount++;entry.cache.flaggedCallCount+=Number(largeUnexpected);entry.cache.unknownCauseCount+=Number(cause.status==='unknown');
-    if(r.helper)entry.helperWeighted+=weighted;
+    if(isHelper)entry.helperWeighted+=weighted;
+    const addMeasured=(map:Map<string,any>,key:string,details:Record<string,unknown>)=>{
+      let item=map.get(key);
+      if(!item){item={...details,weighted:0,raw:empty(),calls:0,helperWeighted:0,helperRaw:empty(),helperCalls:0};map.set(key,item);}
+      item.weighted+=weighted;item.calls++;
+      item.raw.input+=r.input;item.raw.cacheWrite+=r.cache_write;item.raw.cacheWrite1h+=r.cache_write_1h;
+      item.raw.cacheRead+=r.cache_read;item.raw.output+=r.output;
+      if(isHelper){item.helperWeighted+=weighted;item.helperCalls++;
+        item.helperRaw.input+=r.input;item.helperRaw.cacheWrite+=r.cache_write;
+        item.helperRaw.cacheWrite1h+=r.cache_write_1h;item.helperRaw.cacheRead+=r.cache_read;item.helperRaw.output+=r.output;}
+    };
+    const model=r.model??'unreported';
+    addMeasured(g.byModel,model,{model});
+    addMeasured(entry.byModel,model,{model});
+    if(helperId)addMeasured(entry.byHelper,`${helperId}:${model}`,{id:helperId,model});
     let category=g.byKind.get(kind);
     if(!category){category={weighted:0,raw:empty()};g.byKind.set(kind,category);}
     category.weighted+=weighted;category.raw.input+=r.input;category.raw.cacheWrite+=r.cache_write;
     category.raw.cacheWrite1h+=r.cache_write_1h;category.raw.cacheRead+=r.cache_read;category.raw.output+=r.output;
+  }
+  const editRows=cache.query(`SELECT path,record_id,provider,conversation,helper,at_ms,model,provider_turn_id,tool_name
+    FROM edit_events WHERE at_ms>=? ORDER BY path,at_ms,record_id`).all(since) as {
+      path:string;record_id:string;provider:string;conversation:string;helper:number;at_ms:number;model:string|null;provider_turn_id:string|null;tool_name:string}[];
+  const providerRoots=configuredRoots().map(root=>({...root,prefix:join(root.home,root.provider==='claude-code'?'projects':'sessions')}));
+  for(const edit of editRows){
+    const owning=edit.provider==='codex'?rootConversation(edit.conversation):edit.conversation;
+    const helper=!!edit.helper||owning!==edit.conversation;
+    addEdit(overallEditMix,edit.model,helper);
+    const session=sessions.get(`${edit.provider}:${owning}`);
+    const candidates=session?turnsBySession.get(session.id)??[]:[];
+    const exact=edit.provider_turn_id?candidates.filter(turn=>turn.provider_turn_id===edit.provider_turn_id):[];
+    const matched=exact.length?exact:candidates.filter(turn=>edit.at_ms>=turn.startMs&&edit.at_ms<=turn.endMs);
+    const turn=matched.length===1?matched[0]!:null;
+    let account='unknown';
+    for(const event of session?accounts.get(session.id)??[]:[]){if(event.at<=edit.at_ms)account=event.name;else break;}
+    if(turn&&accountsByTurn.has(turn.id))account=accountsByTurn.get(turn.id)!;
+    if(edit.provider==='codex'&&account==='unknown')
+      account=providerRoots.find(root=>root.provider==='codex'&&(edit.path===root.prefix||edit.path.startsWith(`${root.prefix}/`)))?.account??'unknown Codex account';
+    const accountKey=`${edit.provider}:${account}`,sessionKey=session?String(session.id):`outside:${edit.conversation}`;
+    let mix=accountEdits.get(accountKey);if(!mix){mix=newEditMix();accountEdits.set(accountKey,mix);}addEdit(mix,edit.model,helper);
+    const key=`${accountKey}\0${sessionKey}`;
+    mix=sessionEdits.get(key);if(!mix){mix=newEditMix();sessionEdits.set(key,mix);}addEdit(mix,edit.model,helper);
   }
   const ordinaryCallCount=calls.filter(call=>!call.cause.reasons.includes('first_call')).length;
   const ordinaryMissRate=calls.filter(call=>call.flags.length>0).length/Math.max(1,ordinaryCallCount);
@@ -426,7 +531,8 @@ function report(period:'today'|'week',since:number,zone:string){
         accountAttribution:counts(item=>item.accountKnown?'known':'unavailable')}};
   };
   return {period,since:new Date(since).toISOString(),through:new Date().toISOString(),timeZone:zone,
-    callMix:callMixView(overallMix),escalations:{count:escalations.length,byModel:Object.fromEntries(escalationModels)},
+    attributionBuckets:[...attributionBuckets.values()],
+    callMix:callMixView(overallMix),editMix:editMixView(overallEditMix),escalations:{count:escalations.length,byModel:Object.fromEntries(escalationModels)},
     measure:'Published API price equivalent in USD; a proxy for allowance share, not the provider subscription meter.',
     fallbackModels:[...fallbackModels].sort(),
     cacheDiagnostics:{meaning:'Cached input was read from the provider cache; rewritten input was sent as uncached input or cache creation. Cause reasons are coincident observed changes, not proof that a specific change invalidated the cache prefix. Possible reasons include submitted Claude instructions that its recorded prompt may have ignored.',
@@ -449,8 +555,13 @@ function report(period:'today'|'week',since:number,zone:string){
       apiPriceEquivalentUsd:t.usageRecords?t.weighted:null,rawTokens:t.usageRecords?t.raw:null})),
     weighting:pricing,pricingSources:['https://platform.claude.com/docs/en/about-claude/pricing','https://platform.openai.com/pricing'],
     accounts:[...groups.values()].map(g=>({provider:g.provider,account:g.account,totalWeighted:g.total,raw:g.raw,cache:g.cache,callMix:callMixView(g.mix),
+      editMix:editMixView(accountEdits.get(`${g.provider}:${g.account}`)??newEditMix()),
+      byModel:[...g.byModel.values()].sort((a:any,b:any)=>b.weighted-a.weighted),
       cachedInputTokens:g.raw.cacheRead,rewrittenInputTokens:g.raw.input+g.raw.cacheWrite+g.raw.cacheWrite1h,
-      bySession:[...g.bySession.values()].map((x:any)=>({...x,mix:undefined,callMix:callMixView(x.mix),share:g.total?x.weighted/g.total:0,
+      bySession:[...g.bySession.values()].map((x:any)=>({...x,mix:undefined,callMix:callMixView(x.mix),
+        editMix:editMixView(sessionEdits.get(`${g.provider}:${g.account}\0${x.sessionId===null?`outside:${x.providerConversationId}`:String(x.sessionId)}`)??newEditMix()),share:g.total?x.weighted/g.total:0,
+        byModel:[...x.byModel.values()].sort((a:any,b:any)=>b.weighted-a.weighted),
+        byHelper:[...x.byHelper.values()].sort((a:any,b:any)=>b.weighted-a.weighted),
         cachedInputTokens:x.raw.cacheRead,rewrittenInputTokens:x.raw.input+x.raw.cacheWrite+x.raw.cacheWrite1h}))
         .sort((a:any,b:any)=>b.weighted-a.weighted),
       byKind:[...g.byKind].map(([kind,value])=>({kind,...value,share:g.total?value.weighted/g.total:0})).sort((a:any,b:any)=>b.weighted-a.weighted)}))};
@@ -462,8 +573,8 @@ function decodeRunnerCursor(value:string):{snapshotMaxRowid:number;afterRowid:nu
   return parsed;
 }
 function encodeRunnerCursor(value:{snapshotMaxRowid:number;afterRowid:number;providers:string;roots:string;sinceMs:number}){return Buffer.from(JSON.stringify(value)).toString('base64url');}
-async function scanRunnerProviderRoots(providers:string[],sinceMs:number,buildSequence:boolean){
-  const roots=configuredRoots().filter(root=>providers.includes(root.provider));if(!roots.length)throw new Error('NO_PROVIDER_USAGE_HOMES');
+async function scanRunnerProviderRoots(providers:string[],sinceMs:number,buildSequence:boolean,availableRoots=configuredRoots()){
+  const roots=availableRoots.filter(root=>providers.includes(root.provider));if(!roots.length)throw new Error('NO_PROVIDER_USAGE_HOMES');
   activeUsageWindowStartMs=sinceMs;
   cache.exec('BEGIN IMMEDIATE');
   try{
@@ -473,15 +584,20 @@ async function scanRunnerProviderRoots(providers:string[],sinceMs:number,buildSe
     }
     for(const provider of providers){
       const allowed=roots.filter(root=>root.provider===provider).map(root=>join(root.home,provider==='claude-code'?'projects':'sessions'));
-      const known=cache.query('SELECT DISTINCT path FROM records WHERE provider=?').all(provider) as {path:string}[];
+      const known=[...new Map(([
+        ...cache.query('SELECT DISTINCT path FROM records WHERE provider=?').all(provider),
+        ...cache.query('SELECT DISTINCT path FROM edit_events WHERE provider=?').all(provider),
+      ] as {path:string}[]).map(row=>[row.path,row])).values()];
       for(const row of known)if(!allowed.some(root=>row.path===root||row.path.startsWith(`${root}/`))){
         cache.query('DELETE FROM records WHERE path=?').run(row.path);
+        cache.query('DELETE FROM edit_events WHERE path=?').run(row.path);
         cache.query('DELETE FROM cache_boundaries WHERE path=?').run(row.path);
         cache.query('DELETE FROM files WHERE path=?').run(row.path);
         cache.query('DELETE FROM provider_record_sequence WHERE path=?').run(row.path);
       }
     }
     cache.query('DELETE FROM records WHERE at_ms<?').run(activeUsageWindowStartMs);
+    cache.query('DELETE FROM edit_events WHERE at_ms<?').run(activeUsageWindowStartMs);
     cache.query('DELETE FROM cache_boundaries WHERE at_ms<?').run(activeUsageWindowStartMs);
     cache.query('DELETE FROM provider_record_sequence WHERE at_ms<?').run(activeUsageWindowStartMs);
     if(buildSequence)cache.query('INSERT OR IGNORE INTO provider_record_sequence(path,record_id,at_ms) SELECT path,record_id,at_ms FROM records WHERE at_ms>=?').run(activeUsageWindowStartMs);
@@ -535,6 +651,17 @@ async function runnerProviderReport(){
   today.cacheDiagnostics.last48Hours=week.cacheDiagnostics.last48Hours;
   console.log(JSON.stringify({today,week}));
 }
+async function macPeerReport(){
+  const owner=ownerLedger();
+  const snapshot=captureUsageLedgerSnapshot(owner,oneWeekAgo);
+  owner.close();
+  oneWeekAgo=snapshot.sinceMs;
+  ledger=ledgerFromUsageSnapshot(snapshot);
+  await scanRunnerProviderRoots(['claude-code','codex'],oneWeekAgo,false,macPeerRoots());
+  const week=report('week',oneWeekAgo,snapshot.timeZone),today=report('today',midnight(snapshot.timeZone),snapshot.timeZone);
+  today.cacheDiagnostics.last48Hours=week.cacheDiagnostics.last48Hours;
+  return {today,week};
+}
 
 function configuredRunnerProviders(){
   const result=new Map<string,Set<'claude-code'|'codex'>>();
@@ -562,9 +689,13 @@ async function main(){
   }
   const started=performance.now();
   const runners=configuredRunnerProviders();
-  if(!runners.size)throw new Error('NO_PROVIDER_USAGE_RUNNERS_CONFIGURED');
-  const snapshot=encodeUsageSnapshot(captureUsageLedgerSnapshot(ownerLedger(),oneWeekAgo));
-  const {today,week}=await collectRunnerUsageReports(runners,snapshot);
-  console.log(JSON.stringify({today,week,scanMs:Math.round(performance.now()-started)}));
+  if(!runners.size&&process.env.CONCIERGE_PEER_NAME!=='mac')throw new Error('NO_PROVIDER_USAGE_RUNNERS_CONFIGURED');
+  const {today,week}=runners.size
+    ?await collectRunnerUsageReports(runners,encodeUsageSnapshot(captureUsageLedgerSnapshot(ownerLedger(),oneWeekAgo)))
+    :await macPeerReport();
+  const readings=weeklyReadings(ownerLedger(),oneWeekAgo);
+  console.log(JSON.stringify({today:nameAllowanceRows(attributeWeeklyAllowance(today,readings),ownerLedger()),
+    week:nameAllowanceRows(attributeWeeklyAllowance(week,readings),ownerLedger()),
+    scanMs:Math.round(performance.now()-started)}));
 }
 main().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>closeRunnerMachineCalls());

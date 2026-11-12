@@ -21,9 +21,26 @@ growing source rate without making the accepting owner loop do diagnostic work.
 
 Interactive reads use indexed keysets, at most twenty rows, and explicit source coverage.
 Lists retain exact counts and expose a detail reference when their value needs a preview.
+An Inbox list's first page captures the source change head when the request enters. The
+device's HTTP read answers at once from the prepared copy: if that copy is behind the head it
+answers incomplete with `retryAfterMs: 1000`, so the client keeps its visible rows and reads
+again a second later. It never waits for the worker, because the head moves with every agent's
+activity and the worker is nearly always one batch behind; the four-second wait tried on Nov 11
+held nearly every read (p95 4,033 ms; see the
+[failure record](../incidents/2026-11-12-threads-list-waited-for-worker.md)). An agent's
+`sessions topics list` still yields up to four seconds for the worker to reach that head,
+since agents prefer a current answer to a fast one. A
+cursor page continues a walk whose first page established freshness: it answers at once and is
+complete whenever its generation is still ready, because requiring a newer head would tear a
+many-page walk on every busy minute; the client's own revision check still restarts a walk the
+topics changed under. A stale or invalid cursor returns its reset response immediately.
+Initial rebuilds continue to use the ledger list until the prepared list is ready.
 Large individual values are retained as SHA-256-addressed, sixteen-KiB UTF-8 chunks.
 Clients must verify the concatenated digest before displaying a complete value. A newer
 generation invalidates old list cursors; source lag is indexing, never an empty complete list.
+While the prepared list is not ready and no Inbox session exists, both list entrances return an empty page with incomplete
+`presentation_indexing` coverage. Once the Inbox exists, an initial prepared-list rebuild
+uses the ledger list until the prepared generation is ready, so existing threads stay visible.
 The change feed carries both sides of each update and a null after-value for deletion.
 It retains seven days of revisions and explicitly resets an older cursor. Garbage collection
 walks finite batches, removes superseded generations and unreferenced chunks, and never
@@ -52,6 +69,14 @@ action needing complete roots; it does not eagerly copy all requests/questions. 
 reply-target and reading detail references are fetched only on explicit expansion.
 Topic search reads bounded substring postings (including single-character queries), with an
 explicit continuation. Its order is indexed search order, not the Open list's priority order.
+
+A thread's time, unread mark and place in the Open list come from its newest message that
+changed something for Tejas: his own message, an answer, a question or a result. Agent upkeep
+shown in the conversation (an agent's handoff card, including every re-send of an old request,
+a progress-only partial reply, and stall or overdue notices on a request) stays visible there but moves none of them; housekeeping on
+the thread record never did. A thread's opening message always counts, so an agent report is new to him. One rule in `bot/src/inbox-thread-time.ts` serves the prepared
+list and the ledger fallback. The 2026-11-11 flood report (about thirty re-sends lifted old
+threads over his own) is why; the release that introduced it recomputes every prepared thread once.
 Management entries use the shared sentence formatter on selected scalar source fields;
 their interactive display never parses a raw declaration containing all its questions.
 

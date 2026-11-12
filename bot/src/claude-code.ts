@@ -12,7 +12,8 @@ import { watchClaudeTranscript, type ClaudeTranscriptPickup } from "./claude-tra
 import { recordClaudeWorkload } from "./session-fit";
 import { webActivityDetails } from "./agent-progress";
 import { macSurfaceActivity } from "./mac-surface-activity";
-import { claudeUsageFallbackModels } from "./aliases";
+import {isCodeEditTool} from './implementation-models';
+import { claudeUsageFallbackModels, DEFAULT_CLAUDE_SUBAGENT_MODEL } from "./aliases";
 import { assertUsageAvailable, cachedUsageLimit, recordUsageExhaustion, recordUsageSuccess,
   resetEpochMilliseconds, usageAttempt, usageLimitMessage, type UsageAttempt } from "./provider-usage";
 import { assertProviderForkPolicy, assertProviderInteractionPolicy, claudeConsultationArgs,
@@ -1140,6 +1141,7 @@ export async function runClaudeCodeTurn(input: {
         const details = toolName === "WebSearch" ? webActivityDetails({ query: block.input?.query })
           : toolName === "WebFetch" ? webActivityDetails({ url: block.input?.url }) : undefined;
         input.onProgress?.({ type: "tool_use", toolName,
+          ...(isCodeEditTool(toolName,block.input)?{codeEdit:true}:{}),
           ...(typeof block.id === "string" ? { itemId: block.id } : {}),
           ...(details ? { details } : {}),
         });
@@ -1386,7 +1388,7 @@ export async function runClaudeCodeTurn(input: {
     args,
     cwd: input.cwd,
     environment: { ...(input.interactionPolicy === "consultation-only" ? claudeConsultationEnvironment(input.environment) : providerOwnerEnvironment(input.environment)),
-      CLAUDE_CODE_SUBAGENT_MODEL: input.environment?.CLAUDE_CODE_SUBAGENT_MODEL || "claude-sonnet-5" },
+      CLAUDE_CODE_SUBAGENT_MODEL: input.environment?.CLAUDE_CODE_SUBAGENT_MODEL || DEFAULT_CLAUDE_SUBAGENT_MODEL },
     ...(input.interactionPolicy === "consultation-only" ? { inheritEnvironment: false } : {}),
     stdin: `${claudeCodeUserMessage(input.prompt)}\n`,
     onStdinReady: (write, close) => {
@@ -1490,7 +1492,20 @@ export async function runClaudeCodeTurn(input: {
     throw new Error("Claude Code ended before acknowledging the initial user message.");
   }
   if (!providerProducedResult) {
-    throw new Error("Claude Code ended before producing a terminal result.");
+    const interrupted = output.read(unstructuredOutput);
+    log("warn", "claude_code_exited_without_result", {
+      code: outcome.code, signal: outcome.signal, session_uuid: interrupted.sessionUUID,
+      tool_count: interrupted.toolsUsed.length, assistant_output: interrupted.assistantOutput,
+    });
+    // run() resolved only after the process's retained exit. A disconnected host rejects
+    // instead; it must never authorize a second provider while the first may still act.
+    throw new ProviderDispatchError({
+      message: "Claude Code ended before producing a terminal result.",
+      // Death proves the process cannot act again, not that its effects were observed.
+      failureClass: "parked_terminal", terminalConfirmed: false, processExit: outcome,
+      toolsUsed: interrupted.toolsUsed, assistantOutput: interrupted.assistantOutput,
+      providerSessionId: interrupted.sessionUUID,
+    });
   }
 
   const parsed = output.read(unstructuredOutput);

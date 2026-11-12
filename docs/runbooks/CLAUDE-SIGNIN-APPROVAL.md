@@ -46,7 +46,10 @@ automatic retry after two minutes of this exact no-action failure. A second
 failure waits six hours. A Claude browser-verification rejection still waits
 six hours immediately; it is never classified as a pre-authentication failure.
 An open request or undelivered notice blocks every retry, so two sign-ins never
-run together. The November 7 first failure used a complete no-action attestation
+run together. Each failure is dated from when its answer arrived, however long the
+request waited for the Mac, and every failed renewal for the account counts; a
+request queued for three days once escaped the hold
+([failure record](../incidents/2026-11-12-queued-renewal-failure-hidden-from-hold.md)). The November 7 first failure used a complete no-action attestation
 before the typed prefix existed; the owner recognizes that retained result once.
 
 If Claude shows a different account, use **Switch account → Continue with Google**,

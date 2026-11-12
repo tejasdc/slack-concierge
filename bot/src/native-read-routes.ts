@@ -50,7 +50,7 @@ export function classifyNativeReadRoute(method:string,pathname:string):NativeRea
 }
 
 const independentCanonical=new Set([
-  '/events','/releases','/models','/usage/breakdown','/projects','/saved-work/settings','/pause-all',
+  '/events','/releases','/models','/usage/breakdown','/usage/allowance','/projects','/saved-work/settings','/pause-all',
   '/operations/:id','/runs/:id','/work-thread','/inbox','/inbox/obligations','/sessions','/sessions/:id',
   '/sessions/:id/view','/sessions/:id/capabilities','/reports/chain/:id','/reports/window',
 ]);

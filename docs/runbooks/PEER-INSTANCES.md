@@ -52,8 +52,11 @@ WebContent children of the installed thnkr.ing Safari Web App. Each reading uses
 `proc_pid_rusage(RUSAGE_INFO_V0)` for cumulative CPU time, current physical footprint and
 process birth time. A 20-sample, 15-second pre-event ring stays in memory. A natural speech
 `begin` starts two-second samples for at most 120 seconds, then 30 seconds after finish/cancel;
-at most four events coexist. The latest four bounded event records live in the private
-`~/Library/Application Support/concierge/speech/voice-process-events.json`. They hold no
+at most four events coexist. Completed event records from the last 14 days live in the private
+`~/Library/Application Support/concierge/speech/voice-process-events.json`. Writes are serialized
+so overlapping finishes cannot overwrite each other; a failed write remains visible through
+`lastPersistError` in observer status, and the Mac updater waits for pending writes before restarting
+the listener. The file holds no
 audio or words. CPU use for an interval is the delta of cumulative user plus system nanoseconds
 for the same PID and birth identity divided by the sample interval; never join different births.
 Older `begin` callers remain valid and have unknown mode and page session ID.
@@ -168,14 +171,30 @@ the page before any further action. A generic Safari selector remains refused.
 When a website genuinely fails in the server browser, the requesting server agent records
 `--machine-need browser-fallback:<specific reason> --server-attempt-url <URL>
 --server-attempt-failure "<observed failure>"`. The accepting Mac retains the failed origin
-and observation with that exact request. Its agent can run
+and observation with that exact request. For a newly created Mac session, the recorded need
+lives in its first input; for a request to an existing Mac session, it lives in that input
+directly. The owner checks the corresponding accepted shape and active run in both cases.
+Its agent can run
 `$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-browser-fallback.sh <agent-browser action>` without
 asking Tejas: the launcher checks the active accepted request with the local Mac owner, then
 uses a headless, request-specific profile and session. Environment variables name the request;
 they do not grant access by themselves. The launcher uses the Mac owner's fixed local socket and
-an empty browser configuration, so an agent's environment or browser preferences cannot replace
-the owner check or attach it to Tejas's Chrome. The recorded website bounds the first open; later
-navigation may include a site's authentication providers and remains the agent's responsibility. Direct
+its own private browser configuration, so an agent's environment or browser preferences cannot replace
+the owner check or attach it to Tejas's Chrome. The recorded website bounds the first open.
+For `https://thnkr.ing`, each open asks the server's private capability socket over `ssh remote-box`
+for a ticket verified against the exact accepted input and run. The Mac has no thnkr.ing capability
+socket or agent token of its own. The launcher gives agent-browser the ticket in a website-scoped
+header through its mode-0600 configuration, then clears that file after the open. The browser
+keeps the header in memory for its session; the ticket expires after 15 minutes. Its product
+authority is read-only, so Settings Refresh and other writes remain refused. Reopening the page
+requests a fresh verified ticket if a longer read is needed. `goto` and `navigate` get the same
+website check and ticket as `open`; `tab new` with a URL and a leading option before the action
+are refused so no navigation skips the check. A stop signal during a slow open still clears the
+ticket from disk. For thnkr.ing, `trace` and `network request`/`network har` are refused because
+they would copy the ticket's header into the transcript or a file. Each launch removes request
+profiles untouched for a day (their browsers idled out after 20 minutes), so cached workspace
+reads do not accumulate. Other websites retain an empty
+configuration and may navigate through their own authentication providers. Direct
 agent-browser, Playwright and Chrome DevTools tools remain refused on the Mac, as do foreground
 Chrome and app activation. Claude in Chrome is also refused for agent work because it
 attaches to his personal Chrome, even when a Mac browser fallback is recorded. Codex
@@ -378,6 +397,17 @@ becomes a peer ask to the server (`chatGptHost` in `session-peers.ts`); the chat
 its answer returns to the Mac agent like any peer reply, queued if the server is briefly unreachable.
 Before 2026-10-15 the Mac created the chat locally and every one failed at once with "chatgpt start
 unavailable".
+
+### Commits a Mac session makes on the server
+
+Every native agent turn carries `CONCIERGE_COMMIT_SESSION` (thnkr.ing's name for the session:
+`concierge:<n>` on the server, `mac:<n>` on the Mac) and `CONCIERGE_COMMIT_INPUT`. thnkr.ing's
+commit hook stamps those, replacing any hand-written trailer. Mac agents often commit in a server
+checkout over `ssh remote-box`; the Mac's SSH configuration sends both variables
+(`SendEnv CONCIERGE_COMMIT_*`) and the server's `sshd` accepts exactly those names
+(remote-box `config/sshd/60-concierge-commit-identity.conf`). Before 2026-11-12 nothing crossed
+SSH, so the hook kept the agent's hand-written `concierge:351`, the Mac's local name for its own
+session, and every later thnkr.ing release failed its identity seal.
 
 ### Opening a link on his Mac without a session
 

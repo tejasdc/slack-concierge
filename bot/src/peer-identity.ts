@@ -31,6 +31,16 @@ export function receiveSessionFromPeer(id:string,sender:string,self:string|null=
   return id;
 }
 
+/**
+ * The identity a commit made in a session records, as thnkr.ing names it: the server's
+ * sessions are `concierge:<n>` and every other instance's are `<peer>:<n>`. The local
+ * `concierge:<n>` a Mac agent sees is not this: copied by hand into a commit made on the
+ * server, `concierge:351` named an unknown server session and blocked every later release.
+ */
+export function commitSessionIdentity(sessionId:number,self:string|null=selfPeerName()):string {
+  return `${!self||self==='cloud'?'concierge':self}:${sessionId}`;
+}
+
 /** The local session number an identity names, or null when it names another instance. */
 export function localSessionNumber(id:string,self:string|null=selfPeerName()):number|null {
   const local=LOCAL.exec(id);

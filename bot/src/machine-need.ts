@@ -2,6 +2,17 @@ export type MachineNeedKind = 'ios-native' | 'mac-app' | 'mac-file' | 'mac-scree
 export type ServerBrowserAttempt = {url:string;failure:string};
 export type MachineNeed = {kind:MachineNeedKind;why:string;serverAttempt?:ServerBrowserAttempt};
 
+/** Creation retains the first turn inside firstInput; addressed turns retain it directly. */
+export function acceptedMachineNeed(kind:string,payload:unknown):MachineNeed|null {
+  if((kind!=='create'&&kind!=='input')||!payload||typeof payload!=='object')return null;
+  const value=kind==='create'?(payload as {firstInput?:{machineNeed?:unknown}}).firstInput?.machineNeed
+    :(payload as {machineNeed?:unknown}).machineNeed;
+  if(!value||typeof value!=='object')return null;
+  const need=value as Partial<MachineNeed>;
+  return need.kind==='browser-fallback'&&typeof need.why==='string'&&need.serverAttempt
+    ?need as MachineNeed:null;
+}
+
 const KINDS = new Set<MachineNeedKind>(['ios-native','mac-app','mac-file','mac-screen','messages','human-mac','browser-fallback']);
 
 /** The receiving machine gets a named capability and the specific observation it requires. */

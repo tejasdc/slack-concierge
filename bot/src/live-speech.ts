@@ -191,7 +191,8 @@ async function handle(request: Request): Promise<Response> {
     if (parts[0] !== "speech" || parts[1] !== "v1") throw new SpeechRefusal("SPEECH_NOT_FOUND", 404);
     let result: unknown;
     if (request.method === "GET" && parts[2] === "observer" && parts[3] === "status" && parts.length === 4) {
-      result = { ...macVoiceObserver.status(), activeRecordings: recordings.size, activeOperations: recordings.size + finishing + wholeTranscriptions };
+      const observer = macVoiceObserver.status();
+      result = { ...observer, activeRecordings: recordings.size, activeOperations: recordings.size + finishing + wholeTranscriptions + observer.pendingWrites };
     } else if (request.method === "GET" && parts[2] === "status" && parts.length === 3) {
       // Which address a page reached, so a browser that never uses live dictation can be told
       // apart from one whose check never arrived.
@@ -251,7 +252,7 @@ export function startLiveSpeechListener() {
   sweep.unref?.();
   macVoiceObserver.start();
   log("info", "live_speech_listener_online", { hostname: match[1], port: Number(match[2]), https_port: servers[1] ? Number(match[2]) + 1 : null, origins: [...ORIGINS] });
-  return { stop: async () => { clearInterval(sweep); macVoiceObserver.stop(); localCapture.close(); for (const id of [...recordings.keys()]) cancel(id); for (const server of servers) await server.stop(true); } };
+  return { stop: async () => { clearInterval(sweep); await macVoiceObserver.stop(); localCapture.close(); for (const id of [...recordings.keys()]) cancel(id); for (const server of servers) await server.stop(true); } };
 }
 
 export const handleLiveSpeechRequest = handle;

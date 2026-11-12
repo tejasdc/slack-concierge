@@ -10,6 +10,29 @@ Concierge accepts Slack events and authenticated native surface input into the s
 
 ## Continuing work after a provider refusal
 
+### Confirmed Claude process death after work
+
+When Claude's transport retains an actual process exit without a terminal provider
+result, the adapter carries that typed exit (code and signal) with the observed
+assistant/tool work and native conversation identity. After work began, the turn
+coordinator atomically records the failure and queues the existing `interrupted`
+continuation. The original input is never resent. The continuation resumes the
+same conversation and must inspect the transcript and prior effects before acting.
+One interrupted continuation is allowed; another interruption of that continuation
+does not create a loop. An already declared turn outcome or settled request blocks
+this recovery, as do Stop, withdrawn authority, pause, archive and superseding input.
+
+This requires the transport's confirmed process exit, not error-text matching.
+A still-running or unreachable host, an ambiguous transport failure, an ordinary
+Claude error result, and a launch without acknowledgement do not enter this path.
+Host adoption and liveness checks remain unchanged. There is no historical crash
+backfill: earlier failed experiments remain intact counterexamples.
+
+The replayable live acceptance and exact before-fix identities are in the
+[Claude crash record](../incidents/2026-11-12-claude-checkpoint-crash-not-continued.md).
+
+### Provider refusals
+
 When Claude or Codex confirms that a turn failed on usage, rate limiting, a model at
 capacity (treated as rate limiting; see [provider sessions](PROVIDER-SESSIONS.md#automatic-starts-for-new-work))
 or sign-in after producing assistant content or using tools, the failed turn remains in history. In the

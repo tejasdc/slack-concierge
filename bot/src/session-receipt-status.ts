@@ -94,6 +94,9 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
     const next=turn.dispatch_next_attempt_ms>context.now()?new Date(turn.dispatch_next_attempt_ms).toISOString():null;
     const when=next?context.formatTime(turn.dispatch_next_attempt_ms):null;
     const product=providerDisplayName(context.session(input.session_id).providerId)??String(context.session(input.session_id).providerId);
+    if(turn.dispatch_hold==='release_pace')return {code:'RETRY_SCHEDULED',message:when
+      ?`${product} can take work again. Held work restarts a few sessions at a time so the server is not swamped; ${waitingWork.toLowerCase()} starts at ${when}.`
+      :`${product} can take work again, and ${waitingWork.toLowerCase()} is starting now.`,clearsAt:next,automaticRetry:true};
     if(turn.dispatch_hold==='usage'||context.continuationRefusal(turn.id)==='usage'||/\busage (?:is|for)\b/i.test(reason)&&/exhaust/i.test(reason))return {code:'PROVIDER_USAGE_HELD',message:when
       ?`No ${product} account available on this machine has room now. The earliest reported reset is ${when}; Concierge will check again then. ${waitingWork} is kept here and will run when an account on this machine is ready.`
       :`No ${product} account available on this machine has room now, and none has reported a reset time. ${waitingWork} is kept here and will run when an account on this machine is ready.`,clearsAt:next,automaticRetry:true};
