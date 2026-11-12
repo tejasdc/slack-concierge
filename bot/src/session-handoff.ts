@@ -78,11 +78,15 @@ function ledgerItems(sessionId:number):Item[] {
     WHERE i.session_id=? AND t.session_id=? AND t.status='queued' AND t.accepted_input_id=i.id ORDER BY t.id`).all(sessionId,sessionId) as any[]){
     // The answer duty represents its service repair input. Transfer withdraws an unstarted
     // repair, then the current holder receives a fresh prompt for the same exact answer.
-    if(input.input_id.startsWith('chatgpt-repair:'))continue;
+    if(input.input_id.startsWith('chatgpt-repair:')&&safeTurn(input as WaitingTurn,getAcceptedSessionInput(input.input_id)!))continue;
     // A request's target input is already represented by its owed item; it is still a queued
     // execution and is shown here so the successor can see whether it is safe to move.
     items.push({id:`queued:${input.input_id}`,kind:'queued',ref:input.input_id,holder,turnId:input.turn_id,movable:safeTurn(input as WaitingTurn,getAcceptedSessionInput(input.input_id)!)});
   }
+  for(const repair of db.query(`SELECT i.id AS input_id,i.turn_id FROM session_inputs i JOIN turns t ON t.id=i.turn_id
+    WHERE i.session_id=? AND t.session_id=? AND i.id GLOB 'chatgpt-repair:*'
+      AND t.status='running' AND t.accepted_input_id=i.id ORDER BY t.id`).all(sessionId,sessionId) as any[])
+    items.push({id:`queued:${repair.input_id}`,kind:'queued',ref:repair.input_id,holder,turnId:repair.turn_id,movable:false});
   for(const watch of db.query("SELECT watch_id,state FROM watches WHERE session_id=? AND (state IN ('accepted','observing') OR delivery_state='pending') ORDER BY created_at_ms,watch_id").all(sessionId) as any[])
     items.push({id:`watch:${watch.watch_id}`,kind:'watch',ref:watch.watch_id,holder,state:watch.state});
   return items;

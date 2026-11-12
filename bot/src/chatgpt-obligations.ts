@@ -70,10 +70,11 @@ export function requireDirectChatGptOutcomeReady(sessionId:number,inputId:string
 function directTaskInputs(sessionId:number,inputId:string):string[] {
   const inputs=db.query(`SELECT task_input_id FROM session_chatgpt_direct_task_inputs WHERE source_input_id=?
     UNION SELECT ? AS task_input_id`).all(inputId,inputId) as {task_input_id:string}[];
-  const inherited=db.query(`SELECT DISTINCT task_id AS task_input_id FROM session_chatgpt_obligations
+  const brief=db.query(`SELECT 1 FROM session_handoffs WHERE id=? AND successor_session_id=? AND state='accepted'`)
+    .get(inputId.startsWith('handoff:')?inputId.slice('handoff:'.length):'',sessionId);
+  const inheritedFromPredecessor=brief?db.query(`SELECT DISTINCT task_id AS task_input_id FROM session_chatgpt_obligations
     WHERE asker_session_id=? AND task_kind='direct_input' AND state NOT IN ('resolved','withdrawn_by_tejas')`)
-    .all(sessionId) as {task_input_id:string}[];
-  const inheritedFromPredecessor=inherited.filter(row=>getAcceptedSessionInput(row.task_input_id)?.session_id!==sessionId);
+    .all(sessionId) as {task_input_id:string}[]:[];
   return [...new Set([...inputs,...inheritedFromPredecessor].map(row=>row.task_input_id))].flatMap(task_input_id=>{
     const original=getAcceptedSessionInput(task_input_id);
     return original&&humanAuthored(original)&&DIRECT_TURN_KINDS.has(original.kind)
@@ -142,6 +143,18 @@ export function transferChatGptAnswerOwnership(obligationId:string,from:number,t
   if(!obligation)return false;
   if(obligation.answer_event_id&&!obligation.answer_return_input_id)
     throw new Error(`ChatGPT answer ${obligationId} has no acknowledged return input to transfer.`);
+  const localRequest=db.query(`SELECT source_session_id FROM session_communication_requests WHERE request_id=?`)
+    .get(obligation.active_request_id) as {source_session_id:number}|null;
+  const peerRequest=localRequest?null:db.query(`SELECT source_session_id FROM session_peer_requests WHERE request_id=?`)
+    .get(obligation.active_request_id) as {source_session_id:number}|null;
+  const request=localRequest??peerRequest;
+  if(!request||request.source_session_id!==from&&request.source_session_id!==to)
+    throw new Error(`ChatGPT request ${obligation.active_request_id} has no source in this handoff.`);
+  if(request.source_session_id===from){
+    const table=localRequest?'session_communication_requests':'session_peer_requests';
+    db.query(`UPDATE ${table} SET source_session_id=? WHERE request_id=? AND source_session_id=?`)
+      .run(to,obligation.active_request_id,from);
+  }
   withdrawQueuedRepairInputs(obligationId);
   const generation=obligation.generation+1;
   db.query(`UPDATE session_chatgpt_obligations SET asker_session_id=?,generation=?,due_at_ms=?,updated_at_ms=?
