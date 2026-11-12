@@ -817,9 +817,9 @@ every watch tick. Other admission failures remain visible and retryable.
 
 #### Codex provider turn reconciliation
 
-Once App Server accepts a turn, transport failure is not a terminal provider outcome. The controller reconnects, resumes the exact provider thread, and identifies the daemon-owned turn by provider turn ID or the stable user-message client ID. It pages turn summaries to establish the exact identity and terminal status. While the turn runs, it observes live notifications without assuming persisted item pages are complete. After a terminal status, it replays only that turn's persisted item pages in order and settles the outcome. This keeps earlier turns out of the owner's recovery response and avoids losing live output from paginated Codex conversations. An explicit reconciliation RPC error, including an unsupported history method, or a failed consultation-policy check parks the same turn as ambiguous. The saved failure includes the initiating error and failed reconciliation with their RPC method, message, and numeric code when supplied; start RPC failures are also logged with exact thread/client-input identity. Repeating an unsupported operation cannot establish the missing proof. The existing parked-turn FIFO fence blocks successors and replay without another owner or daemon change.
+Once App Server accepts a turn, transport failure is not a terminal provider outcome. The controller reconnects, resumes the exact provider thread, and identifies the daemon-owned turn by provider turn ID or the stable user-message client ID. It pages turn summaries to establish the exact identity and terminal status. While the turn runs, it observes live notifications without assuming persisted item pages are complete. After a terminal status, it replays only that turn's persisted item pages in order and settles the outcome. This keeps earlier turns out of the owner's recovery response and avoids losing live output from paginated Codex conversations. An explicit reconciliation RPC error, including an unsupported history method, or a failed consultation-policy check parks the same turn as ambiguous. The saved failure includes the initiating error and failed reconciliation with their RPC method, message, and numeric code when supplied; start RPC failures are also logged with exact thread/client-input identity. Repeating an unsupported operation cannot establish the missing proof. An ambiguous parked turn is never replayed by the ordinary resume command.
 
-A lost `thread/start` or `thread/resume` response before `turn/start` is a different boundary: no user input has been submitted, so the accepted Concierge turn safely retries. The October 16 lyrics build was parked after a 30-second `thread/start` timeout while the App Server was also timing out historical observer resumes during a restart. That timeout did not prove that the build had begun. The retry retains its input identity and does not replay an admitted turn.
+A lost `thread/start` or `thread/resume` response before `turn/start` is a different boundary: no user input has been submitted, so the accepted Concierge turn safely retries. The same applies to a shared-client connect or setup/configuration failure before `turn/start`; the controller marks submission immediately before that request. A disconnect during setup ends that attempt before submission and cannot leave a stale start failure attached to a later turn. Adopted work is excluded because its provider effect predates the current controller and remains under exact-history reconciliation. The October 16 lyrics build was parked after a 30-second `thread/start` timeout while the App Server was also timing out historical observer resumes during a restart. That timeout did not prove that the build had begun. The retry retains its input identity and does not replay an admitted turn.
 
 Codex cancellation is registered before provider submission. A Stop before submission prevents model input; after submission, a missing provider turn ID or unconfirmed interrupt response remains an uncertain outcome, not a successful cancellation. Stop interrupts an exact known turn without waiting behind an in-flight recovery read. A confirmed terminal provider event still owns cancellation completion; an interrupt acknowledgement alone does not. Late recovery responses cannot attach provider identity, input acknowledgement, or results after the local controller has settled. Consultation restrictions and request/inactivity timeout budgets are unchanged.
 
@@ -850,9 +850,18 @@ rate-limit, overloaded, and temporary failures retry the same durable turn with
 bounded exponential backoff; authentication, entitlement, subscription,
 API-key, billing, and other definite failures park it with a visible resumable
 turn ID. Unknown setup failures park rather than guess that replay is safe.
-Queued retries and parked turns retain their place in the session FIFO, survive
-restart and deployment drain, and use a new fenced attempt identity on resume.
-An operator resumes an exact parked turn with
+Queued retries retain their place in the session FIFO, survive restart and
+deployment drain, and use a new fenced attempt identity on resume. Parked turns
+have distinct queue behavior: a parked non-native turn remains an earlier FIFO
+blocker; a parked native turn is historical context and does not block later
+native work once its matching execution attempts are no longer held in intended,
+live, or exited state. An unresolved hosted execution can continue to fence the
+session while it may still act. A released `codex-daemon` execution is not such
+a fence. Saved-work overlap skips a later same-series firing only while an
+earlier firing is queued, running, or delivering; parked is not an overlap
+state. That queue rule says nothing about whether an ambiguous provider effect
+is safe to replay. An operator resumes
+an exact eligible parked turn with
 `bun run bot/scripts/session-turn-queue.ts resume --turn-id <id>`.
 Post-admission outcomes without confirmed terminality, compatible provider
 identity, or complete steering history are parked as ambiguous and preserved,

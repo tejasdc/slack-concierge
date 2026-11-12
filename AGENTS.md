@@ -98,7 +98,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - Mac agent replies may quote browser and Computer Use diagnostics without the surface guard treating
   that report text as an action; the standalone reply and actual action boundary are in
   [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md).
-- Shared Codex turn recovery and its exact identity boundary follow
+- Shared Codex turn recovery, exact identity, and pre-submission transport boundary follow
   [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#codex-provider-turn-reconciliation).
 - Confirmed Claude process death after a checkpoint uses the existing bounded continuation;
   see [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md#confirmed-claude-process-death-after-work).

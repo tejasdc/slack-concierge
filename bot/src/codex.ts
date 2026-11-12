@@ -1598,10 +1598,10 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       void ensureRecovered(error);
       return;
     }
-    if (!turnStartSettled) {
-      turnStartSettled = true;
-      rejectTurnStarted(error);
-    }
+    // A setup disconnect must end this attempt before it can submit a turn. Rejecting
+    // turnStarted here leaves a stale rejection behind if setup later reconnects and
+    // admits the turn; its final race would then report the old socket closure.
+    interruptionReason ??= error;
   });
   try {
     input.onCancellationReady?.(async () => {
@@ -1639,28 +1639,14 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     if (interruptionReason) throw interruptionReason;
     const threadParams = await codexThreadParameters(input, request, threadEnvironment);
     if (interruptionReason) throw interruptionReason;
-    let threadResponse: any;
-    try {
-      // A turn reads only the thread's id, model and policy from this answer, so it never asks
-      // for history. A cold resume still loads the whole rollout before answering, which on
-      // 2026-11-04 took minutes for a 218 MB conversation on a swapping host. Giving up at a
-      // deadline and asking again only stacked more loads and ended in a refused turn, so the
-      // turn waits for this answer while the connection lives; Stop and a disconnect end it.
-      threadResponse = sessionUUID
-        ? await resumeUntilAnswered(sessionUUID, { threadId: sessionUUID, ...threadParams, excludeTurns: true })
-        : await request("thread/start", threadParams);
-    } catch (error) {
-      // Neither operation sends the user's input. Even if the App Server created or
-      // resumed a thread before the response was lost, a new dispatch cannot repeat
-      // the requested work because turn/start has not been called yet.
-      if (error instanceof CodexAppServerClientError && error.outcome === "ambiguous") {
-        throw new ProviderDispatchError({ message: error.message, terminalConfirmed: true,
-          failureClass: "retryable", toolsUsed,
-          // A disconnect is the daemon's, not this thread's; only an unanswered resume is.
-          threadScoped: Boolean(sessionUUID) && error instanceof CodexAppServerUnansweredError });
-      }
-      throw error;
-    }
+    // A turn reads only the thread's id, model and policy from this answer, so it never asks
+    // for history. A cold resume still loads the whole rollout before answering, which on
+    // 2026-11-04 took minutes for a 218 MB conversation on a swapping host. Giving up at a
+    // deadline and asking again only stacked more loads and ended in a refused turn, so the
+    // turn waits for this answer while the connection lives; Stop and a disconnect end it.
+    const threadResponse = sessionUUID
+      ? await resumeUntilAnswered(sessionUUID, { threadId: sessionUUID, ...threadParams, excludeTurns: true })
+      : await request("thread/start", threadParams);
     verifyCodexConsultationPolicy(input, threadResponse);
     threadId = threadResponse?.thread?.id || sessionUUID;
     model = typeof threadResponse?.model === "string" ? threadResponse.model.trim() || undefined : undefined;
@@ -1737,6 +1723,18 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       });
     }
     await turnCompletion;
+  } catch (error) {
+    // Connect, config reads, and thread start/resume all precede submission; even a
+    // created/resumed provider thread cannot contain this turn's input. Once turn/start
+    // is attempted, or for adopted work whose effect predates this controller, retain
+    // exact-history reconciliation instead of declaring the input unsent.
+    if (!input.adoptTurn && !input.adopted && !turnSubmissionAttempted
+      && error instanceof CodexAppServerClientError && error.outcome === "ambiguous") {
+      throw new ProviderDispatchError({ message: error.message, terminalConfirmed: true,
+        failureClass: "retryable", toolsUsed,
+        threadScoped: Boolean(sessionUUID) && error instanceof CodexAppServerUnansweredError });
+    }
+    throw error;
   } finally {
     controllerClosed = true;
     for (const endWatch of [...activeResumeWatches]) endWatch();
