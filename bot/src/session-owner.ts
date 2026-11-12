@@ -2591,7 +2591,7 @@ export class SessionOwner {
     if(input.kind!=='input'||input.turn_id!==null||input.steering_id!==null||input.request_id!==null)return;
     const receipt=input.receipt_json?JSON.parse(input.receipt_json):null;
     const body=JSON.parse(input.payload_json),marked=body.agentSource;
-    const markedAgent=input.origin==='agent'&&(!!receipt?.forwardTarget||receipt?.admissionIntent==='live')&&typeof input.source_input_id==='string'
+    const markedAgent=input.origin==='agent'&&(!!receipt?.forwardTarget||['queue','live'].includes(receipt?.admissionIntent))&&typeof input.source_input_id==='string'
       &&typeof input.source_run_id==='string'&&marked?.inputId===input.source_input_id&&marked?.runId===input.source_run_id;
     const fromHumanSurface=input.scope==='surface:thinkering'
       &&(input.origin==='human'&&input.source_input_id===null&&input.source_run_id===null||markedAgent);
@@ -2792,6 +2792,7 @@ export class SessionOwner {
     },actor);
     if(action.kind==='continue'||action.kind==='restore') {
       for(const input of db.query("SELECT * FROM session_inputs WHERE session_id=? AND turn_id IS NULL AND kind='input' AND receipt_json IS NULL ORDER BY rowid").all(session.id) as AcceptedSessionInput[])this.dispatch(input);
+      this.communication?.wake();
       this.runtime.wake();
     }
     return {session:this.view(getSessionById(session.id)!),operation:this.receipt(operation)};
