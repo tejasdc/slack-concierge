@@ -6,6 +6,7 @@ import {readFileSync,realpathSync} from 'node:fs';
 import {join} from 'node:path';
 import {canceledRequestNotice,inboxRootResolver,sourceMessagePage} from './presentation-message-source';
 import {PreparedSearchIndex} from './prepared-search';
+import {installThreadText,writeThreadText,threadMessageText,backfillThreadText} from './prepared-thread-text';
 import {PreparedSearchUpkeep} from './prepared-search-upkeep';
 import {sessionCatalogueLabels} from './session-labels';
 import {preparedInboxDisplay} from './presentation-inbox-display';
@@ -18,6 +19,7 @@ import {PreparedTopics} from './prepared-topics';
 import {PreparedAreas} from './prepared-areas';
 import {PreparedLabRequests} from './prepared-lab-requests';
 import {CURRENT_INBOX_ID_SQL} from './inbox-lineage-sql';
+import {postIsCollapsed} from './inbox-collapse-visibility';
 
 const directory=process.env.CONCIERGE_STATE_DIR;
 if(!directory)throw new Error('Presentation worker requires CONCIERGE_STATE_DIR.');
@@ -114,6 +116,10 @@ const {search,cards,receipts,topics,areas,labRequests}=prepared.transaction(()=>
     .some(column=>column.name==='routing_result_visibility_version');
   if(!hadRoutingResultVisibility)
     prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN routing_result_visibility_version INTEGER NOT NULL DEFAULT 0');
+  const hadDuplicateVisibility=(prepared.query('PRAGMA table_info(presentation_message_meta)').all() as {name:string}[])
+    .some(column=>column.name==='duplicate_visibility_version');
+  if(!hadDuplicateVisibility)
+    prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN duplicate_visibility_version INTEGER NOT NULL DEFAULT 0');
   const hadThreadTime=(prepared.query('PRAGMA table_info(presentation_message_meta)').all() as {name:string}[])
     .some(column=>column.name==='thread_time_version');
   if(!hadThreadTime)
@@ -127,6 +133,7 @@ const {search,cards,receipts,topics,areas,labRequests}=prepared.transaction(()=>
   prepared.exec(`CREATE INDEX IF NOT EXISTS presentation_messages_root_kind_latest
     ON presentation_messages(generation,root_input_id,entry_kind,event_sequence DESC);`);
   const search=new PreparedSearchIndex(prepared);
+  installThreadText(prepared);
   const cards=new PreparedSessionCards(source,prepared,(db,row)=>sessionCatalogueLabels(db,
     {...row,native_metadata_json:row.native_metadata_json??'{}'}));
   const receipts=new PreparedReceipts(source,prepared);
@@ -163,8 +170,8 @@ const withoutHeader=(text:string)=>{
   const end=text.indexOf('\n\n');return end<0?'':text.slice(end+2);
 };
 
-const meta=()=>prepared.query('SELECT generation,event_watermark,source_head,ready,agent_request_visibility_version,routing_result_visibility_version FROM presentation_message_meta WHERE singleton=1')
-  .get() as {generation:number;event_watermark:number;source_head:number;ready:number;agent_request_visibility_version:number;routing_result_visibility_version:number};
+const meta=()=>prepared.query('SELECT generation,event_watermark,source_head,ready,agent_request_visibility_version,routing_result_visibility_version,duplicate_visibility_version FROM presentation_message_meta WHERE singleton=1')
+  .get() as {generation:number;event_watermark:number;source_head:number;ready:number;agent_request_visibility_version:number;routing_result_visibility_version:number;duplicate_visibility_version:number};
 const head=()=>Number((source.query('SELECT COALESCE(MAX(sequence),0) AS n FROM presentation_change_log').get() as {n:number}).n);
 const observation=new PresentationWorkerObservation(()=>({...meta(),target:head()}));
 let lastSearchMaintenance=0;
@@ -186,6 +193,8 @@ function writeDisplay(generation:number,sequence:number,sessionId:number,message
   const result=preparedInboxDisplay(source,sessionId,sequence,messageId);
   if(!result)return;
   insertDisplay.run(generation,sequence,JSON.stringify(result.preview));
+  // Thread search reads every word of the message, not the 1 KB preview a long one displays.
+  writeThreadText(prepared,generation,sequence,threadMessageText(result.detailJson?JSON.parse(result.detailJson):result.preview));
   prepared.query('DELETE FROM presentation_message_detail_chunks WHERE generation=? AND event_sequence=?').run(generation,sequence);
   if(result.detailJson){const digest=hash(result.detailJson);
     for(let index=0,part=0;index<result.detailJson.length;index+=4096,part++)
@@ -249,8 +258,9 @@ async function upgradeAnswerClosures(generation:number){
 }
 /** Thread time stopped counting agent upkeep (inbox-thread-time.ts); every prepared thread was
  * dated by its newest message of any kind, so each one is recomputed once, in bounded pages.
- * Version 2 also stops counting owner recovery notices filed as a thread's opening message. */
-const THREAD_TIME_VERSION=2;
+ * Version 2 also stops counting owner recovery notices filed as a thread's opening message;
+ * version 3 the router's working output under such a notice. */
+const THREAD_TIME_VERSION=3;
 async function upgradeThreadTime(generation:number){
   const version=(prepared.query('SELECT thread_time_version AS version FROM presentation_message_meta WHERE singleton=1')
     .get() as {version:number}).version;
@@ -594,7 +604,7 @@ async function rebuild() {
     await rebuildAreaPages(generation);
     prepared.transaction(()=>{
       keepLease();
-      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=8,answer_closures_version=2,marked_reply_roots_version=1,agent_request_visibility_version=1,routing_result_visibility_version=2 WHERE singleton=1')
+      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=8,answer_closures_version=2,marked_reply_roots_version=1,agent_request_visibility_version=1,routing_result_visibility_version=2,duplicate_visibility_version=1 WHERE singleton=1')
         .run(generation,after,startHead);
       cards.activate(generation,startHead);
       receipts.activate(receiptGeneration,startHead,receiptProjectionRevision);
@@ -674,7 +684,7 @@ async function upgradeRoutingResultVisibility(generation:number){
 /** Changes to lineage request a new generation. New messages append without rereading history. */
 async function catchUp() {
   const current=meta();
-  if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)){await rebuild();return;}
+  if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)||!current.duplicate_visibility_version){await rebuild();return;}
   await advanceReceiptRebuild(current.source_head);
   const receiptGeneration=receipts.activeGeneration();
   if(!current.agent_request_visibility_version){await upgradeAgentRequestVisibility(current.generation);return;}
@@ -750,7 +760,7 @@ async function catchUp() {
       }
       if(row?.kind==='post_collapse'){
         const postId=JSON.parse(row.payload_json).postId;
-        if(typeof postId==='string')collapsedPosts.add(postId);
+        if(typeof postId==='string'&&postIsCollapsed(source,postId))collapsedPosts.add(postId);
       }
       if(row?.turn_id&&['post','turn_outcome','result_posted'].includes(row.kind))turnsToRefresh.add(row.turn_id);
     }
@@ -933,7 +943,7 @@ const searchUpkeep=new PreparedSearchUpkeep(prepared,preparedPath,search,{
   sessionsAfter:(after,limit)=>(source.query('SELECT id FROM sessions WHERE id>? ORDER BY id LIMIT ?').all(after,limit) as {id:number}[]).map(row=>row.id),
   indexSession:writeSession,
 },keepLease,(event,fields)=>writeLogLine('info',JSON.stringify({event,...fields})));
-let checkedDisplay=false,lastTopicCollection=0,touchBackfilled=false,lastFailureDetailAt=0;
+let checkedDisplay=false,lastTopicCollection=0,touchBackfilled=false,lastFailureDetailAt=0,threadTextBackfilled=-1;
 while(true){
   try {if(claimLease()){
     observation.emit();
@@ -949,6 +959,12 @@ while(true){
     await catchUp();observation.succeeded();
     maintainSearchIfDue();
     searchUpkeep.step();
+    {
+      // Messages prepared before thread search read every word: indexed a page per pass.
+      const current=meta();
+      if(current.ready&&threadTextBackfilled!==current.generation&&prepared.transaction(()=>{keepLease();
+        return backfillThreadText(prepared,current.generation);})())threadTextBackfilled=current.generation;
+    }
     if(!touchBackfilled){
       const current=meta();
       if(current.ready)touchBackfilled=!prepared.transaction(()=>{keepLease();

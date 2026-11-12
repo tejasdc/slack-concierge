@@ -47,7 +47,15 @@ when it first becomes ready; a later turn outcome for that same run and thread
 does not emit another. A reply already produces the thread's single attention
 event. When the same posted message has already used `--notify` or consumed a
 human notification arm, the blocking question remains visible without another
-push. The notifier still suppresses a push while Tejas is viewing that exact
+push. One agent turn rings at most once per Inbox thread: once a question or a
+`--notify` post from a run has produced a push event for a thread, a later
+question, `--notify` post or `needs_you` turn outcome from the same run in that
+thread is recorded and shown without one (`threadRangThisRun`). A skipped post
+leaves his own "notify me" request unconsumed for a later answer. On 2026-11-12 the Inbox agent filed an
+approval question and then posted the same choice in plain words with
+`--notify`, and Tejas's devices rang twice eight seconds apart for one decision
+("I literally got 2 different notifications"). Agent issue reports never create
+a push event; their thread rings only through such a question or post. The notifier still suppresses a push while Tejas is viewing that exact
 thread and keeps its normal per-thread slot and device delivery record.
 Routine progress and completed work do not acquire this default.
 
@@ -108,10 +116,12 @@ exists; the Inbox router's own topic questions carry the same `"todo"` field. Co
 to-do from thnkr.ing's to-dos over its local capability socket (over SSH from the Mac); a to-do he
 already marked done or dropped refuses the question, so it never rings him, and the refusal tells
 the agent he has done it. When thnkr.ing cannot be read, the question is accepted, never lost. The
-question records the to-do. Before an Inbox attention, question, or thread view is returned, Concierge
-rechecks linked questions against the current to-dos and settles a Done or Dropped question as
-answered, telling its asking agent to carry on. The owner's reading cadence remains a recovery
-pass. Direct session questions that carry an exact to-do also leave Needs attention when it is Done or Dropped, and the session receives a completion notice. A Mac agent's question is refused the same way (its Concierge reads the to-do over SSH), but its to-do does not yet travel with the question to the server, so it does not close by itself. Matching is by exact to-do
+question records the to-do. Opening an Inbox attention, question, thread or session view starts a recheck of linked questions
+against the current to-dos, one at a time per scope, and the view answers at once without waiting
+for it: a Done or Dropped question settles as answered, telling its asking agent to carry on, and
+its change event refreshes the open screen. Awaiting this read once held every Threads page for
+thnkr.ing's three-second socket timeout ([failure record](../incidents/2026-11-12-threads-list-waited-on-todo-read.md)).
+The owner's reading cadence remains a recovery pass. Direct session questions that carry an exact to-do also leave Needs attention when it is Done or Dropped, and the session receives a completion notice. A Mac agent's question is refused the same way (its Concierge reads the to-do over SSH), but its to-do does not yet travel with the question to the server, so it does not close by itself. Matching is by exact to-do
 id, never by wording. Source: 2026-11-04, the Diwali agent asked him at 2:58 PM for a Spotify
 invite he had marked done at 10:20 PM the night before
 ([record](../incidents/2026-11-04-asked-for-a-step-already-done.md)).

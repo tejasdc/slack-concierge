@@ -74,3 +74,27 @@ No startup scan reoffers earlier crashes.
 - **Replayable offline:** no; the acceptance is a real hosted Claude process
   interruption against an installed release. Unit suites are disabled in this
   project. The independent controller owns the fresh live retest after installation.
+
+## Installed server acceptance — independent controller
+
+After installed merge `c6aaaffedebf6ff4747c64eef8266a82a9ba8409` was confirmed,
+the separate Codex controller ran fresh real request
+`6d898287-b3e9-4f40-9114-b442494ff856` in Claude session `9476`.
+It killed only the verified native Claude child after the readiness checkpoint.
+The same conversation `fd3613cb-df78-47c4-9d62-e4ad2cc04bb4` automatically
+received `turn-continuation:28991`, retained the remembered fact, and completed
+the original request once on turn `29005`. The transcript contains one original
+request header and one continuation header; the barrier invocation log contains
+one entry. No manual resume or original-input resend occurred.
+
+A second fresh request `d41fa95e-e0aa-416e-8363-119f4d96ea36` had cancellation
+confirmed before its verified native Claude process was killed. Its provider
+execution failed while its request stayed cancelled, with no continuation,
+active run or queued work. A separate cancellation-only control also remained
+cancelled. These are server observations; Mac installation/execution, human Stop,
+archive and repeated-crash budget are not claimed as additional live checks.
+
+The controller's [experiment report](../experiments/2026-11-12-account-switching.md)
+and [machine trace](../experiments/2026-11-12-crash-recovery-acceptance.json)
+retain the exact identities, assertions and process-layer distinction between
+the injected native-child SIGKILL and the enclosing launcher's observed exit 143.

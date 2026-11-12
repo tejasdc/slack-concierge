@@ -102,6 +102,28 @@ for Remote mirroring or advance that Slack thread's cumulative summary.
 
 Extend the responsible component instead of adding another lifecycle branch to `handleUserMessage` in `index.ts`.
 
+## Paced starts
+
+A machine configured with `CONCIERGE_START_PACE_BUDGET` (the Mac; never the server) admits new
+provider-process starts at a bounded rate, whatever released the work, because the gate sits in
+`claimNextQueuedTurn` rather than in each release path (`bot/src/start-pace.ts`; plan
+[2026-11-12](../plans/2026-11-12-mac-held-work-pacing.md)). Unset means the query and claim are unchanged.
+
+- A non-exempt candidate over the window's budget stays `queued` with `dispatch_failure_class='backoff'`,
+  hold `start_pace:<place>`, and `dispatch_next_attempt_ms` at its slot; groups of `budget` share one instant and
+  follow each other by a window plus jitter, so the agent's order is the start order. The existing wake clock
+  (`nextQueuedTurnAttemptMs`) drives it. Starts are recorded in `start_pace_starts`.
+- Exempt: a direct human input, the Inbox router, ChatGPT. At macOS memory-pressure warning a paced start is
+  held one slot (hold `start_memory`); at critical every start is.
+- The order is fixed: input from Tejas, then agent requests an open Inbox thread waits on, then oldest. There is no
+  ordering agent; agents decide for themselves (next bullet).
+- Where `CONCIERGE_CROWD_SESSIONS` is set, a start while the machine is crowded (over that many running sessions, macOS
+  memory pressure, load over 2x the processors) carries a notice offering `sessions snooze` (`bot/src/crowding.ts`,
+  `bot/src/snooze.ts`). A snooze is a scheduled continuation turn of the same session with hold `snooze:<reason>`, refused
+  for his direct messages and when not crowded, capped at six hours; open requests stay open with their due time moved past
+  the wake.
+- The status line reads the hold: place and expected time, or the memory reason. No notification.
+
 ## Responses and status projections
 
 Concierge appends `_model: <reported model ID> - cwd: <working directory>_`

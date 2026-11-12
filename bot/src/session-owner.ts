@@ -91,7 +91,7 @@ import {inboxTopicList,openInboxObligationCount,openInboxObligations} from './se
 import {workThread} from './session-fit';
 import {sessionMutuals,mutualLift} from './session-mutuals';
 import {commitWork,originInput} from './commit-work';
-import {appendAgentReportObservation,closeQuestionsAnsweredByTodos,createTopicByHuman,inboxAttention,inboxMarkThrough,openAgentReport,refreshRootMemo,replyTargets,topicEntries,topicHumanAction,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
+import {appendAgentReportObservation,closeQuestionsAnsweredByTodosSoon,createTopicByHuman,inboxAttention,inboxMarkThrough,openAgentReport,refreshRootMemo,replyTargets,topicEntries,topicHumanAction,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,projectCoordinates,sessionProject,sessionProjects} from './session-projects';
 import {expandHome,isSensitiveWorkspacePath,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
@@ -1131,13 +1131,15 @@ export class SessionOwner {
     const attachments=this.attachments(ids),supported=this.runtime.capabilities?.(session)?.attachments;
     if(attachments.length&&(sessionMetadata(session).interactionPolicy==='consultation-only'||supported&&attachments.some(file=>!supported.includes('*/*')&&!supported.includes(file.contentType))))throw new SessionOwnerError('This provider policy does not support the selected attachment type.',409,'CAPABILITY_UNAVAILABLE');
   }
-  private saveControl(session:SessionRow,kind:string,body:Record<string,any>,effect:()=>unknown) {
+  private saveControl(session:SessionRow,kind:string,body:Record<string,any>,effect:()=>unknown,actor?:{sessionId:number;inputId:string;runId:string;targetAddress:string;authorityInputId?:string}) {
     return db.transaction(()=>{
-      const saved=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:actionId(body),kind,origin:'human',payload:body});
+      const payload=actor?{...body,actor}:body;
+      const saved=retainSessionInput({sessionId:session.id,scope:actor?`communication:${actor.inputId}`:'surface:thinkering',actionId:actionId(body),kind,
+        origin:actor?'agent':'human',payload,...(actor?{sourceInputId:actor.inputId,sourceRunId:actor.runId}:{})});
       if(!saved.duplicate) {
         const result=effect();
         db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',result}),saved.input.id);
-        recordSessionEvent({eventId:`control:${saved.input.id}`,sessionId:session.id,inputId:saved.input.id,kind,payload:body});
+        recordSessionEvent({eventId:`control:${saved.input.id}`,sessionId:session.id,inputId:saved.input.id,kind,payload});
       }
       return getAcceptedSessionInput(saved.input.id)!;
     })();
@@ -1210,6 +1212,7 @@ export class SessionOwner {
         startsAt:savedStartAt(saved),
         expiresAt:saved.saved_expires_at_ms?new Date(saved.saved_expires_at_ms).toISOString():null,
         account:saved.saved_account,window:saved.saved_window,repeatEveryMs:saved.saved_repeat_ms,
+        dailyLocal:saved.saved_daily_time?{time:saved.saved_daily_time,timeZone:saved.saved_time_zone}:null,
         sequence:saved.saved_sequence,status:saved.status}:null;})(),
       lineage:session.parent_session_id?{parentId:`concierge:${session.parent_session_id}`,kind:meta.recovery?'continued_on_codex':origin==='reconstructed'?'reconstructed_from':'forked_from',boundary:(meta as any).lineage?.boundary??(session.parent_message_idx===null?null:String(session.parent_message_idx)),sourceVersion:(meta as any).lineage?.sourceVersion??null}:null,
       resurrection:meta.resurrection??null,
@@ -1403,7 +1406,7 @@ export class SessionOwner {
   }
   /** Called only inside the communication owner's source-validated request transaction. */
   /** A peer instance's request has no local source input; its scope names the peer and the remote input instead. */
-  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;escalationReason?:string;attestedHumanModel?:string;project?:string;projectLocation?:{name:string;path:string;cwd:string;runner:string|null};title?:string;summary?:string;smallTask?:boolean;outside?:boolean;onRunner?:boolean;standingRole?:StandingAgentRole;implementation?:boolean;firstInput:{text:string;machineNeed?:import('./machine-need').MachineNeed;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean}}) {
+  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;escalationReason?:string;attestedHumanModel?:string;project?:string;projectLocation?:{name:string;path:string;cwd:string;runner:string|null};title?:string;summary?:string;smallTask?:boolean;outside?:boolean;onRunner?:boolean;standingRole?:StandingAgentRole;implementation?:boolean;firstInput:{text:string;machineNeed?:import('./machine-need').MachineNeed;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;daily?:{time:string;timeZone:string};quietOnly?:boolean}}) {
     const title=normalizeSessionTitle(input.title);
     const source=input.sourceInputId?getAcceptedSessionInput(input.sourceInputId):null;
     const sourceProvider=source&&getSessionById(source.session_id)?.provider_id;
@@ -1435,7 +1438,7 @@ export class SessionOwner {
     if(input.saved) {
       const queued=enqueueSessionInput(operation.id);
       if(queued.turn_id===null)throw new SessionOwnerError('Saved input could not be queued.',409);
-      saveQueuedTurn(queued.turn_id,input.saved.kind,input.saved.atMs,input.saved.expiresAtMs,input.saved.repeatEveryMs,undefined,input.standingRole,input.saved.quietOnly);
+      saveQueuedTurn(queued.turn_id,input.saved.kind,input.saved.atMs,input.saved.expiresAtMs,input.saved.repeatEveryMs,undefined,input.standingRole,input.saved.quietOnly,input.saved.daily);
     }
     return getAcceptedSessionInput(operation.id)!;
   }
@@ -2347,7 +2350,7 @@ export class SessionOwner {
   async create(body:unknown,projectLocationOverride?:{name:string;path:string;cwd:string;runner:string|null}) {
     const input=object(body);only(input,['clientActionId','provider','purpose','title','workflowId','project','model','reasoningEffort','firstInput','door','savedWork']);
     const savedWork=input.savedWork===undefined?null:object(input.savedWork);
-    if(savedWork){only(savedWork,['kind','atMs','expiresAtMs','repeatEveryMs','quietOnly']);if(!input.firstInput||!input.title||input.provider==='chatgpt'||!['scheduled','banked'].includes(savedWork.kind))
+    if(savedWork){only(savedWork,['kind','atMs','expiresAtMs','repeatEveryMs','daily','quietOnly']);if(!input.firstInput||!input.title||input.provider==='chatgpt'||!['scheduled','banked'].includes(savedWork.kind))
       throw new SessionOwnerError('Saved work needs a named new coding session and its first input.');}
     if(savedWork?.quietOnly!==undefined&&(savedWork.kind!=='banked'||savedWork.quietOnly!==true))
       throw new SessionOwnerError('Quiet-only is an explicit banked-work choice.');
@@ -2400,7 +2403,7 @@ export class SessionOwner {
       if(savedWork) {
         const queued=enqueueSessionInput(recorded.id);
         if(queued.turn_id===null)throw new SessionOwnerError('Saved input could not be queued.',409);
-        saveQueuedTurn(queued.turn_id,savedWork.kind as 'scheduled'|'banked',savedWork.atMs as number|undefined,savedWork.expiresAtMs as number|undefined,savedWork.repeatEveryMs as number|undefined,undefined,undefined,savedWork.quietOnly as boolean|undefined);
+        saveQueuedTurn(queued.turn_id,savedWork.kind as 'scheduled'|'banked',savedWork.atMs as number|undefined,savedWork.expiresAtMs as number|undefined,savedWork.repeatEveryMs as number|undefined,undefined,undefined,savedWork.quietOnly as boolean|undefined,savedWork.daily as {time:string;timeZone:string}|undefined);
       } else if(input.firstInput&&!recorded.receipt_json) enqueueSessionInput(recorded.id);
       return getAcceptedSessionInput(recorded.id)!;
     })();
@@ -2742,11 +2745,12 @@ export class SessionOwner {
     const verified=parseMachineNeed(`${need.kind}:${need.why}`,need.serverAttempt);
     return {origin:verified.serverAttempt!.url};
   }
-  action(id:string,body:unknown) {
+  action(id:string,body:unknown,actor?:{sessionId:number;inputId:string;runId:string;targetAddress:string;authorityInputId?:string}) {
     const session=this.session(id),input=object(body);only(input,['clientActionId','action']);
     const action=object(input.action);only(action,['kind','value','generation']);
     const allowed=['title','summary','outcome','read','dismiss','archive','restore','pause','continue','pin','save','model','clear-queue'];
     if(!allowed.includes(action.kind))throw new SessionOwnerError('Unknown session action.');
+    if(actor&&!['pause','continue'].includes(action.kind))throw new SessionOwnerError('Agent session control takes only Pause or Continue.');
     // A usage decision belongs to the provider hold, which has an account-specific release.
     // The October 10 outside steering action used a generic Pause and stranded thirteen
     // conversations after their allowance returned. Do not accept that shape again.
@@ -2785,7 +2789,7 @@ export class SessionOwner {
       }
       else if(action.kind==='clear-queue')this.clearWaitingHumanInputs(session.id,'clear-queue');
       else if(action.kind==='pin'||action.kind==='save') {if(typeof action.value!=='boolean')throw new SessionOwnerError('Boolean saved value required.');updateSessionMetadata(session.id,{[action.kind==='pin'?'pinned':'saved']:action.value});}
-    });
+    },actor);
     if(action.kind==='continue'||action.kind==='restore') {
       for(const input of db.query("SELECT * FROM session_inputs WHERE session_id=? AND turn_id IS NULL AND kind='input' AND receipt_json IS NULL ORDER BY rowid").all(session.id) as AcceptedSessionInput[])this.dispatch(input);
       this.runtime.wake();
@@ -4027,22 +4031,18 @@ export class SessionOwner {
    */
   eventPage(after=0,sessionId?:string|null,runId?:string|null,filter?:EventFilter) {
     const runIds=list(runId),kinds=list(filter?.kind),limit=filter?.limit??null;
-    // The notify watcher pages one session's run evidence from its durable cursor. A direct
-    // session/kind predicate uses the existing index; the optional-filter form scans the
-    // whole event log before it reaches a recently created Mac session.
-    const notifyPage=!!sessionId&&!runIds&&kinds?.length===3&&['accepted','run','turn_outcome'].every(kind=>kinds.includes(kind));
-    const rows=((notifyPage
-      ?db.query(`SELECT event.*,turn.native_run_id FROM session_owner_events event LEFT JOIN turns turn ON turn.id=event.turn_id
-        WHERE event.sequence>? AND event.session_id=? AND event.kind IN ('accepted','run','turn_outcome')
-        ORDER BY event.sequence LIMIT ?`).all(after,parseSessionId(sessionId!),limit??-1)
-      :db.query(`SELECT event.*,turn.native_run_id FROM session_owner_events event LEFT JOIN turns turn ON turn.id=event.turn_id
-      WHERE event.sequence>? AND (? IS NULL OR event.session_id=?)
-        AND (? IS NULL OR turn.native_run_id IN (SELECT value FROM json_each(?)))
-        AND (? IS NULL OR event.kind IN (SELECT value FROM json_each(?)))
-      ORDER BY event.sequence LIMIT ?`)
-      .all(after,sessionId??null,sessionId?parseSessionId(sessionId):null,
-        runIds?1:null,JSON.stringify(runIds??[]),kinds?1:null,JSON.stringify(kinds??[]),
-        limit??-1)) as any[]).map(row=>({...row,payload:JSON.parse(row.payload_json)}));
+    // Only the filters actually given appear in the statement, as direct predicates, so a
+    // session (and kind) read seeks the session/kind index for any kind list. The old
+    // "? IS NULL OR …" form hid them from the planner and walked the whole event log by
+    // sequence: one session's accepted events took 2.6 s while the one hand-written
+    // three-kind shape took 11 ms (2026-11-12).
+    const where=['event.sequence>?'],params:(string|number)[]=[after];
+    if(sessionId){where.push('event.session_id=?');params.push(parseSessionId(sessionId));}
+    if(kinds){where.push(`event.kind IN (${kinds.map(()=>'?').join(',')})`);params.push(...kinds);}
+    if(runIds){where.push(`turn.native_run_id IN (${runIds.map(()=>'?').join(',')})`);params.push(...runIds);}
+    const rows=(db.query(`SELECT event.*,turn.native_run_id FROM session_owner_events event LEFT JOIN turns turn ON turn.id=event.turn_id
+      WHERE ${where.join(' AND ')} ORDER BY event.sequence LIMIT ?`)
+      .all(...params,limit??-1) as any[]).map(row=>({...row,payload:JSON.parse(row.payload_json)}));
     const entries=rows.flatMap(row=>row.kind==='message'&&row.payload.message?[{sessionId:row.session_id,message:row.payload.message}]:[]);
     const metadata=sessionMessageMetadataProjection(entries),identity=sessionMessageInputProjection(entries);
     const events=rows.map(row=>{
@@ -4284,7 +4284,7 @@ export class SessionOwner {
         return this.stream(request,url);
       }
       if(request.method==='GET'&&parts[0]==='presentation'&&['topics','questions'].includes(parts[1]??''))
-        await closeQuestionsAnsweredByTodos(admission=>this.admit(admission),'inbox');
+        closeQuestionsAnsweredByTodosSoon(admission=>this.admit(admission),'inbox');
       if(request.method==='GET'&&parts[0]==='reports'&&parts[1]==='chain'&&parts.length===3)
         result=reportSourceChain(db,parts[2]!);
       else if(request.method==='GET'&&parts[0]==='reports'&&parts[1]==='window'&&parts.length===2)
@@ -4336,7 +4336,7 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='sessions'&&parts[2]==='window'&&parts.length===3){
         const space=sessionSpaceParam(url.searchParams.get('space'));
         if(!space)throw new SessionOwnerError('space is required: lab or everyday.');
-        await closeQuestionsAnsweredByTodos(admission=>this.admit(admission));
+        closeQuestionsAnsweredByTodosSoon(admission=>this.admit(admission));
         const attention=url.searchParams.get('needsAttention');
         if(attention!==null&&attention!=='true'&&attention!=='false')throw new SessionOwnerError('needsAttention is true or false.');
         const workflowId=url.searchParams.get('workflowId');
@@ -4491,13 +4491,13 @@ export class SessionOwner {
       }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='view'&&parts.length===3){
         const session=this.session(parts[1]!);
-        await closeQuestionsAnsweredByTodos(admission=>this.admit(admission),sessionMetadata(session).inbox?'inbox':session.id);
+        closeQuestionsAnsweredByTodosSoon(admission=>this.admit(admission),sessionMetadata(session).inbox?'inbox':session.id);
         result={session:this.view(this.session(parts[1]!))};
       }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='sessions'&&parts[3]==='attention'&&parts.length===4){
         const session=this.session(parts[2]!);
         if(!sessionMetadata(session).inbox)throw new SessionOwnerError('Paged attention belongs to the Inbox.');
-        await closeQuestionsAnsweredByTodos(admission=>this.admit(admission),'inbox');
+        closeQuestionsAnsweredByTodosSoon(admission=>this.admit(admission),'inbox');
         result=preparedInboxAttention(session.id,url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),20)??20);
       }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===2)

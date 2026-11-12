@@ -24,7 +24,9 @@ import { deliverRequestReminder } from './request-reminder-carrier';
 import { heldPrerequisite } from './request-prerequisite-hold';
 import { STEP_ASKS, finishedTodoRefusal, type TodoState } from './question-todos';
 import {boundSearchResponse} from './search-response-boundary';
-import {saveQueuedTurn,savedWorkSettings} from './saved-work';
+import {saveQueuedTurn,savedTurn,savedWorkSettings} from './saved-work';
+import {crowdingConfig} from './crowding';
+import {checkSnooze,continuationText,recordSnooze} from './snooze';
 import {cancelWatch,listWatches,registerWatch} from './watches';
 import {boardCommand,type BoardActor,type BoardInput} from './commons-board-service';
 import {notifyAgentPost} from './thread-notifications';
@@ -1035,7 +1037,7 @@ export class SessionCommunicationCoordinator {
                 throw new Error('This post promises an answer without a matching open Inbox request. Route the exact human message as work, or name an open topic request with --promise-request. Nothing was posted.');
             recordSessionEvent({eventId:messageId,sessionId:session.id,inputId:rootInputId,...(router?{turnId:actor.turn}:{}),kind:'post',
                 payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${session.id}`,messageId:input.thread},postedBy:saved.input.id,...(router?{}:{postedBySession:`concierge:${own.id}`}),...(attachments.length?{attachments}:{})}});
-            if(input.notify)notifyAgentPost(session.id,rootInputId,messageId,text);
+            if(input.notify)notifyAgentPost(session.id,rootInputId,messageId,text,true,nativeRunId(actor.turn));
             // Post and release: a deliberate reply ends the router's declared work on the
             // inputs it covers, unless it said it keeps working.
             const topic=input.keep_working||!router?null:releaseFocusForPost(session,rootInputId,input.topic??null);
@@ -1400,15 +1402,52 @@ export class SessionCommunicationCoordinator {
             events: (db.query('SELECT * FROM session_communication_events WHERE request_id=? ORDER BY rowid').all(row.request_id) as EventRow[])
                 .map(event => ({ event_id: event.event_id, kind: event.kind, status: event.status, error: event.error, payload: JSON.parse(event.payload_json), routed_request_id: event.routed_request_id })) };
     }
-    saved(input:{source:CommunicationSource;verb:'list'|'start'|'cancel';turn_id?:number;action_id?:string;cursor?:string}) {
+    saved(input:{source:CommunicationSource;verb:'list'|'start'|'cancel'|'daily';turn_id?:number;action_id?:string;cursor?:string;time?:string;timeZone?:string}) {
         const actor=this.actor(input.source);
         if(input.verb==='list')return this.dependencies.owner.savedWorkList(input.cursor??null);
-        if(input.verb!=='start'&&input.verb!=='cancel')throw new Error('Choose a saved work action.');
+        if(input.verb!=='start'&&input.verb!=='cancel'&&input.verb!=='daily')throw new Error('Choose a saved work action.');
         if(!input.action_id||!Number.isSafeInteger(input.turn_id)||input.turn_id!<1)throw new Error('Name a stable action and exact saved turn.');
         action(input.action_id);
-        return this.dependencies.owner.savedWorkControl(input.turn_id!,input.verb==='start'?'start':'drop',
-            {clientActionId:input.action_id,cancelingSessionId:actor.session,
+        return this.dependencies.owner.savedWorkControl(input.turn_id!,input.verb==='start'?'start':input.verb==='daily'?'daily':'drop',
+            {clientActionId:input.action_id,cancelingSessionId:actor.session,time:input.time,timeZone:input.timeZone,
                 cancelingInputId:actor.inputId,cancelingRunId:nativeRunId(actor.turn)});
+    }
+    /**
+     * An agent on a crowded machine sets its own later start (docs/plans/2026-11-12-mac-held-work-pacing.md).
+     * The continuation is a scheduled turn of the same session; refusals live in snooze.ts.
+     */
+    snooze(input:{source:CommunicationSource;action_id:string;until_ms:number;reason:string}) {
+        const actor=this.actor(input.source);
+        action(input.action_id);
+        const nowMs=Date.now(),reason=String(input.reason??'');
+        checkSnooze(db,{turnId:actor.turn,untilMs:input.until_ms,reason,nowMs},crowdingConfig());
+        return db.transaction(()=>{
+            const retained=retainSessionInput({id:`snooze:${actor.session}:${input.action_id}`,sessionId:actor.session,scope:`snooze:${actor.session}`,
+                actionId:input.action_id,kind:'input',origin:'service',payload:{text:continuationText(reason,input.until_ms),delivery:'queue'},
+                sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn)}).input;
+            const queued=enqueueSessionInput(retained.id);
+            if(queued.turn_id===null)throw new Error('The snooze could not be queued.');
+            if(!savedTurn(queued.turn_id))saveQueuedTurn(queued.turn_id,'scheduled',input.until_ms,undefined,undefined,undefined,'snooze');
+            recordSnooze(db,{continuationTurnId:queued.turn_id,sessionId:actor.session,untilMs:input.until_ms,reason});
+            return {status:'snoozed',turn_id:queued.turn_id,until:new Date(input.until_ms).toISOString(),reason:reason.trim(),
+                message:'Snoozed. End your turn now; you wake then with your open requests still open.'};
+        })();
+    }
+    control(input:{source:CommunicationSource;action_id:string;address:string;verb:'pause'|'continue'}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const authority=this.authority(this.fenced(this.actor(input.source))),actor=authority.actor;
+        action(input.action_id);
+        if(authority.scope!=='work'||!actor.inputId)throw new Error('Session control needs an exact live native work request.');
+        if(input.verb!=='pause'&&input.verb!=='continue')throw new Error('Session control takes only pause or continue.');
+        if(typeof input.address!=='string'||!input.address.startsWith('session:'))
+            throw new Error('Use an exact discovered local session address; peer session control must run on its own machine.');
+        const target=resolveSessionAddress(input.address),meta=sessionMetadata(target);
+        if((meta.origin??'native')!=='native'||meta.canvasObservation)
+            throw new Error('Session control requires a native session.');
+        if(supersededBy(target.id)||withdrawnSuccessor(target.id))throw new Error('That session no longer holds its work.');
+        return this.dependencies.owner.action(`concierge:${target.id}`,{clientActionId:input.action_id,action:{kind:input.verb}},
+            {sessionId:actor.session,inputId:actor.inputId,runId:nativeRunId(actor.turn),targetAddress:input.address,
+                ...(authority.authorityInputId?{authorityInputId:authority.authorityInputId}:{})});
     }
     async pause(input:{source:CommunicationSource;verb:'status'|'all'|'resume';action_id?:string;session_ids?:string[]}) {
         this.actor(input.source);
@@ -1563,7 +1602,7 @@ export class SessionCommunicationCoordinator {
         routeMessageId?:string;
         /** A session a new one should consult for context; its address is put in the first input. */
         consult?:string;
-        saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean};
+        saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;daily?:{time:string;timeZone:string};quietOnly?:boolean};
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting requests.');
@@ -1910,7 +1949,7 @@ export class SessionCommunicationCoordinator {
                     payload:firstInput,sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),requestId:id}).input;
                 const queued=enqueueSessionInput(admitted.id);
                 if(queued.turn_id===null)throw new Error('Scheduled input could not be queued.');
-                saveQueuedTurn(queued.turn_id,input.saved.kind,input.saved.atMs,input.saved.expiresAtMs,input.saved.repeatEveryMs,undefined,requestedRole,input.saved.quietOnly);
+                saveQueuedTurn(queued.turn_id,input.saved.kind,input.saved.atMs,input.saved.expiresAtMs,input.saved.repeatEveryMs,undefined,requestedRole,input.saved.quietOnly,input.saved.daily);
             }
             if(consultation) {
                 const created=this.dependencies.owner!.createRequestConsultation(consultation,{sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,firstInput});
@@ -1959,7 +1998,7 @@ export class SessionCommunicationCoordinator {
         return this.receipt(this.row(id));
     }
     private scheduleOwnRole(actor:{session:number;turn:number;inputId?:string|null},
-        saved:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean},
+        saved:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;daily?:{time:string;timeZone:string};quietOnly?:boolean},
         role:string,actionId:string,text:string,digest:string) {
         const inputId=`saved-self:${hash(`${actor.inputId}:${actionId}`)}`;
         const existing=getAcceptedSessionInput(inputId);
@@ -1973,7 +2012,7 @@ export class SessionCommunicationCoordinator {
                 kind:'input',origin:'agent',payload:{text,digest},sourceInputId:actor.inputId!,sourceRunId:nativeRunId(actor.turn)}).input;
             const queued=enqueueSessionInput(retained.id);
             if(queued.turn_id===null)throw new Error('Scheduled input could not be queued.');
-            saveQueuedTurn(queued.turn_id,saved.kind,saved.atMs,saved.expiresAtMs,saved.repeatEveryMs,undefined,role,saved.quietOnly);
+            saveQueuedTurn(queued.turn_id,saved.kind,saved.atMs,saved.expiresAtMs,saved.repeatEveryMs,undefined,role,saved.quietOnly,saved.daily);
             return queued.turn_id;
         })();
         this.wake();

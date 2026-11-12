@@ -1,5 +1,36 @@
 # Router action helper
 
+## Per-session Pause and Continue
+
+An admitted native agent run with work authority can control one exact native session
+on its own Concierge instance:
+
+```bash
+router-actions.sh sessions control pause '<discovered-session-address>' --source-input '<input-id>' --source-run '<run-id>' --action-id '<stable-action-id>'
+router-actions.sh sessions control continue '<discovered-session-address>' --source-input '<input-id>' --source-run '<run-id>' --action-id '<different-stable-action-id>'
+```
+
+Copy the address from discovery; catalogue IDs and peer addresses are refused. A Mac
+controller uses the installed command on the Mac with its own admitted source pair.
+This does not forward remote controls or change global Pause. Informational-only and
+consultation-only callers cannot use it; the existing work-authority check applies.
+Imported evidence, Canvas observation records, superseded bindings and withdrawn
+handoff successors are refused.
+
+The command uses the same owner action as Thinkering's Pause/Continue, with agent
+origin, exact source input/run, acting session and target binding retained. The source
+and action ID identify a retry; changing its target or action conflicts. The retained
+control and event commit together. The original human route still records human origin
+and continues to reject agent-injected author fields.
+
+Pause saves deliberate suspension and discards queued automatic continuations using
+the existing policy. It does not promise to interrupt a provider already running, nor
+does it acquire an automatic release time. Continue clears that suspension, admits
+held ordinary inputs through the existing queue and wakes normal execution. A receipt
+proves the choice was saved; observe the exact provider run separately. A delayed retry
+of an earlier control does not reverse a later saved choice. Usage holds remain separate
+from deliberate Pause; this entrance adds no recovery policy.
+
 ## Outside agents
 
 An agent launched outside Concierge has no accepted Concierge input/run pair. On the
@@ -174,6 +205,8 @@ long numbers and codes he forwarded), which errs toward hiding.
 
 ## Current native routing
 
+`sessions snooze --until <ISO time, at most six hours ahead> --reason "<why this can wait>" <source-flags> --action-id A` lets an agent on a crowded machine (the Mac, when it told the agent so at turn start) wake itself later: it queues a scheduled continuation of the same session, shows "Snoozed until <time>: <reason>", and keeps every open request open with its due time moved past the wake. Refused for his direct messages and the Inbox router, when the machine is not crowded, and beyond six hours; end the turn after it. See [turn lifecycle](../architecture/TURN-LIFECYCLE.md#paced-starts).
+
 For resource-heavy phone work that Tejas authorized only while he sleeps, create a new banked coding session with `sessions bank --quiet-only` and the usual project, session name, summary, source pair and action ID. The saved-work quiet hours and time zone in thnkr.ing Settings govern the window. Concierge refuses a claim outside that band or during its last five minutes, and asks an active run to stop at that early cutoff; a continuation keeps the same choice. Inside the band it starts whenever an account has room above the reserve, even while other agents run. Each night it does not start, you are woken with why; `sessions saved list` shows the current reason as `waitingBecause`. Ordinary `sessions bank` retains its allowance-reset behavior. `sessions cancel <request-id>` withdraws a queued saved turn; `sessions saved cancel <turn-id>` remains the direct saved-work control. Check `sessions saved list` after cancellation. See [session ownership](../architecture/SESSION-OWNER.md#one-execution-owner).
 
 ### Standing agents
@@ -218,6 +251,9 @@ queued turn; on a repeating schedule it also prevents another firing from being 
 scheduled turns in the same session remain queued. `sessions schedule --project` remains available for
 registered projects. The read caps repeating schedules at 32, watches per role at 20, and host
 timers at 128; its coverage field says when a cap was reached.
+
+For a daily wall-clock delivery, use `sessions schedule --daily-at HH:MM --time-zone America/New_York` with the same project or role, provider, title, summary, source and action fields. Concierge computes the next local date and retains the IANA zone on the repeat; it recomputes each later firing from that date, so daylight saving changes do not move the displayed local hour. `--daily-at` is exclusive with `--at` and `--every-ms`. A spring gap fires at the first valid minute after the requested time; a fall repeated hour fires at its first occurrence, once for that local date. `sessions saved list` and the agent view expose `dailyLocal` and the next UTC instant; the daily interval remains in the compatibility field so existing clients still identify the schedule as repeating. To migrate a queued repeat in place, use `sessions saved daily <exact queued turn ID> --time HH:MM --time-zone <IANA zone> <source-flags> --action-id A`. This changes its root recurrence and one queued firing atomically without creating or replaying a session input. It refuses a historical firing, a manually started firing or an ended repeat. The same action ID returns the same result.
+The existing Saved work time control keeps working after migration: choosing a new next run also changes that repeat's wall time in its stored zone, while retaining its expiry. The saved UTC instant remains the next firing the user selected.
 On a runner, the role's declared workspace-relative folder (such as `agents/concierge-repair`)
 must resolve to that runner's registered project at that exact folder before a wake is saved.
 The returned project identity belongs to the existing bound session; a nested agent folder does
@@ -489,6 +525,7 @@ with the run's source pair and a stable `--action-id` opens the link in his brow
 session; queued while the Mac sleeps, with one service result when it later opens or expires. See
 [peer instances](PEER-INSTANCES.md#opening-a-link-on-his-mac-without-a-session).
 
+<a id="discussing-in-the-lab"></a>
 **Discussing in the Lab.** `sessions board read|thread|post|claim|reveal|close|product|cite|link …` with the
 run's source pair (and a stable `--action-id` for changes) reads and writes the lab record in thnkr.ing (/lab):
 threads, and the findings, decisions, skills and designs they produce, each with a lasting address (`lab:<handle>`,

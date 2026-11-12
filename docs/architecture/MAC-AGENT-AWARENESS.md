@@ -6,9 +6,22 @@ explicit human Mac need. A pre-tool hook also refuses common browser and foregro
 commands in Claude and Codex turns, including server SSH commands aimed at the Mac. It allows
 background Simulator command-line automation only with a native iOS need on that accepted
 turn. Codex Computer Use also requires a recorded desktop-capable need, and Claude in
-Chrome remains refused because it controls his personal browser. Concierge's own
+Chrome remains refused because it controls his personal browser. A Concierge
+session reply command may carry browser or Computer Use diagnostics as quoted report
+text: the hook parses one standalone reply command before applying Mac action rules to
+its arguments. The exception requires exact shell text; escaped JavaScript wrappers,
+shell substitutions, and chained actions that cannot be proven inert are refused.
+The shell scanner treats only ASCII space, tab, and newline as separators, so other
+whitespace remains literal text and cannot stall the hook or hide a later action.
+This lets an agent faithfully close a request after a browser refusal without granting
+browser or desktop access.
+Concierge's own
 provider sign-in repair request is the only Computer Use exception for the saved
 Chrome account; the Mac owner checks the retained repair request before admitting it.
+An authenticated peer repair may carry several owner-generated notices in one input.
+The private provider-renewal need is valid for that batch when the fixed sign-in
+worker is its target; an ordinary agent request cannot claim it. See the
+[batched renewal failure record](../incidents/2026-11-06-batched-signin-repair-refused-by-mac.md).
 That admission remains available while the exact renewal request is open in the
 worker's running turn, even if a later budget or progress input joins the turn.
 The guard checks request custody again for each Computer Use call; an ordinary

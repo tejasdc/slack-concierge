@@ -1,5 +1,7 @@
 import { providerDisplayName } from "./aliases";
 import { isModelCapacityRefusal } from "./model-capacity-refusal";
+import { holdIsStartPace, startPaceStatus } from "./start-pace";
+import { snoozeReason } from "./snooze";
 /** One explanation policy for the live owner and the read-only presentation worker.
  * All changing facts are supplied by the caller; this module never opens the ledger. */
 export type InputStatusDetail={code:string;message:string;clearsAt:string|null;automaticRetry:boolean};
@@ -80,6 +82,9 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
     if(wait.after)return {code:'WAITING_FOR_DEPENDENCY',message:'This accepted request is waiting for an earlier request to settle before provider submission.',clearsAt:null,automaticRetry:true};
     return {code:'INPUT_HELD',message:'This accepted input has not been submitted to a provider.',clearsAt:null,automaticRetry:false};
   }
+  const snoozed=snoozeReason(turn.dispatch_hold);
+  if(snoozed!==null&&turn.status==='queued'&&turn.dispatch_next_attempt_ms)return {code:'SNOOZED',message:`Snoozed until ${context.formatTime(turn.dispatch_next_attempt_ms)}: ${snoozed}. Every open request stays open; it wakes by itself.`,
+    clearsAt:new Date(turn.dispatch_next_attempt_ms).toISOString(),automaticRetry:true};
   const deliberate=context.savedTurn(turn.id);
   const scheduledAt=deliberate?.saved_kind==='scheduled'&&deliberate.dispatch_failure_class!=='backoff'
     ?deliberate.dispatch_next_attempt_ms:null;
@@ -94,6 +99,7 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
     const next=turn.dispatch_next_attempt_ms>context.now()?new Date(turn.dispatch_next_attempt_ms).toISOString():null;
     const when=next?context.formatTime(turn.dispatch_next_attempt_ms):null;
     const product=providerDisplayName(context.session(input.session_id).providerId)??String(context.session(input.session_id).providerId);
+    if(holdIsStartPace(turn.dispatch_hold))return {code:'START_PACED',message:startPaceStatus(turn.dispatch_hold,when,waitingWork)!,clearsAt:next,automaticRetry:true};
     if(turn.dispatch_hold==='release_pace')return {code:'RETRY_SCHEDULED',message:when
       ?`${product} can take work again. Held work restarts a few sessions at a time so the server is not swamped; ${waitingWork.toLowerCase()} starts at ${when}.`
       :`${product} can take work again, and ${waitingWork.toLowerCase()} is starting now.`,clearsAt:next,automaticRetry:true};

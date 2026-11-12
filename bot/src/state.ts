@@ -1,3 +1,4 @@
+import {renumberWaitingStarts,START_ORDER_SQL,decideStart,deferStart,ensureStartPaceTables,recordStart,slotWaitingStarts,startIsExempt,startPaceConfig,type StartPaceConfig} from './start-pace';
 import { initializeSessionOwnerSchema } from "./session-schema";
 import {threadOnlyReturnInputSql} from './inbox-request-root';
 import { randomUUID } from "node:crypto";
@@ -780,6 +781,8 @@ CREATE INDEX IF NOT EXISTS executions_open ON executions(turn_id) WHERE state IN
 -- Joins from a turn to its execution attempt; without it SQLite built a temporary index over every
 -- execution on each ghost-turn sweep (2026-11-04).
 CREATE INDEX IF NOT EXISTS executions_turn ON executions(turn_id,dispatch_attempt);`);
+// The parked-run sweep's way to a Codex turn released when it parked (executions.ts, 2026-11-12).
+db.exec("CREATE INDEX IF NOT EXISTS executions_released_codex ON executions(updated_at_ms) WHERE supervisor='codex-daemon' AND state='released'");
 addColumn('executions','adopted_live','adopted_live INTEGER NOT NULL DEFAULT 0');
 addColumn('executions','host_digest','host_digest TEXT');
 addColumn('pending_sign_ins','runner_name','runner_name TEXT');
@@ -966,6 +969,8 @@ addColumn("turns", "saved_wait_reason", "saved_wait_reason TEXT");
 addColumn("turns", "saved_yield_reason", "saved_yield_reason TEXT");
 db.exec("CREATE INDEX IF NOT EXISTS banked_yields_awaiting ON turns(id) WHERE saved_yield_reason IS NOT NULL AND status='cancelled'");
 addColumn("turns", "saved_repeat_ms", "saved_repeat_ms INTEGER");
+addColumn("turns", "saved_daily_time", "saved_daily_time TEXT");
+addColumn("turns", "saved_time_zone", "saved_time_zone TEXT");
 addColumn("turns", "saved_root_id", "saved_root_id INTEGER");
 addColumn("turns", "saved_sequence", "saved_sequence INTEGER");
 // A firing's own scheduled instant. The claim clears dispatch_next_attempt_ms, so without this a
@@ -978,6 +983,7 @@ if (!columns("turns").has("saved_fire_at_ms")) {
 // allowance. The status under his message read it from the error's wording, and when the wording
 // changed it told him "the last attempt failed" during a usage hold (2026-10-08, 6:06 AM).
 addColumn("turns", "dispatch_hold", "dispatch_hold TEXT");
+ensureStartPaceTables(db);
 db.exec("UPDATE turns SET dispatch_failure_class=NULL WHERE saved_kind='banked' AND status='queued' AND dispatch_failure_class='retryable'");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS saved_turn_firing ON turns(saved_root_id,saved_sequence) WHERE saved_root_id IS NOT NULL");
 // The clock inspects one root per repeating schedule, then seeks its latest firing through
@@ -5668,6 +5674,7 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
   const started = performance.now();
   let survivabilityMs = 0, candidateMs = 0, dependencyMs = 0, mutationMs = 0, projectionMs = 0;
   let outcome: 'empty' | 'claimed' | 'archived' | 'declined' | 'error' = 'error';
+  let paceWaiting = false;
   try { return db.transaction(() => {
     // While an update is being installed, only runs that are proven to survive the coordinator's
     // restart start; everything else waits for the install, as before. A model reply is never
@@ -5676,6 +5683,12 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
     const survivable = currentClaimSurvivability();
     survivabilityMs += performance.now() - phase;
     if (survivable && !survivable.providers.length) { outcome='declined'; return null; }
+    // A paced machine (the Mac) admits new provider-process starts at a bounded rate, whatever
+    // released them; unpaced machines run exactly the query and claim below.
+    const pace = startPaceConfig();
+    const orderBy = pace ? `ORDER BY ${START_ORDER_SQL}` : 'ORDER BY turn.id';
+    let paceDeferred = false;
+    const settlePace = () => { if (pace && paceDeferred) { slotWaitingStarts(db, nowMs, pace); paceWaiting = true; } };
     while (true) {
       phase = performance.now();
       const candidate = db.query(`
@@ -5684,11 +5697,11 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
         JOIN sessions session ON session.id=turn.session_id
         WHERE ${CLAIMABLE_QUEUED_TURN_WHERE}
           AND turn.id NOT IN (SELECT value FROM json_each(?))
-        ORDER BY turn.id
+        ${orderBy}
         LIMIT 1
       `).get(...claimableQueuedTurnParameters(nowMs,activeSessionIds,survivable),JSON.stringify(activeTurnIds)) as { turn_id: number; session_id: number; session_status: string } | null;
       candidateMs += performance.now() - phase;
-      if (!candidate) { outcome='empty'; return null; }
+      if (!candidate) { settlePace(); outcome='empty'; return null; }
 
       phase = performance.now();
       settleSelectedTurnDependencies(candidate.turn_id);
@@ -5716,6 +5729,10 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
         continue;
       }
 
+      if (pace) {
+        const decision = decideStart(db, { turnId: candidate.turn_id, exempt: startIsExempt(db, candidate.turn_id) }, nowMs, pace);
+        if (!decision.admit) { deferStart(db, candidate.turn_id, decision); if (decision.hold.startsWith('start_pace')) paceDeferred = true; else paceWaiting = true; continue; }
+      }
       phase = performance.now();
       const claimed = db.query(`
         UPDATE turns
@@ -5755,7 +5772,8 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
           )
       `).run(ownerInstanceId, candidate.turn_id);
       mutationMs += performance.now() - phase;
-      if (claimed.changes !== 1) { outcome='declined'; return null; }
+      if (claimed.changes !== 1) { settlePace(); outcome='declined'; return null; }
+      if (pace) { recordStart(db, candidate.turn_id, nowMs); settlePace(); if (renumberWaitingStarts(db)) paceWaiting = true; }
       phase = performance.now();
       restoreRetriedTurnProgressMessage(candidate.turn_id, ownerInstanceId);
       requestTurnWaitingReaction(candidate.turn_id, false);
@@ -5768,6 +5786,8 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
     }
   })(); }
   finally {
+    // Held starts change what his sessions say about them, and the agent orders them off the claim path.
+    if (paceWaiting) executionChanged();
     const totalMs = performance.now() - started;
     if (totalMs >= 100) log('warn','session_turn_claim_slow',{
       duration_ms:Math.round(totalMs),outcome,

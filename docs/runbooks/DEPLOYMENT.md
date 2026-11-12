@@ -348,6 +348,10 @@ user work until explicit operator recovery establishes health and releases them.
 
 ## Ordinary delivery
 
+The release build also runs the undefined-name check across its bundled source.
+It refuses an unbound reference that `bun build` would leave to fail when that
+path first runs; see the [routed-message failure record](../incidents/2026-11-07-routed-message-projection-missing-import.md).
+
 Every proposed Concierge commit is pushed to a topic branch. GitHub runs the
 frozen `bot` build, including the candidate presentation release check, on that
 branch and on its proposed merge with `main`. The `Release check` result is
@@ -355,9 +359,38 @@ required by the default-branch ruleset, so a failed or absent check refuses the
 move to `main` and cannot trigger an update. A syntax error and a scratch-schema
 omission are both checked there. The deployment builder still repeats its own
 check on the exact archive before activation; GitHub's check is the early refusal,
-not runtime proof. Merge the checked branch through the normal GitHub path after
-the required result passes. No deployment-specific polling or success continuation
+not runtime proof. Merge the checked branch with `scripts/merge-pr.sh <number>`
+(the merge lane, below). No deployment-specific polling or success continuation
 is required after merge.
+
+### Merge lane
+
+The ruleset also requires a branch to be up to date with `main` before it merges
+(`strict_required_status_checks_policy`). That is what makes the required check
+mean something: the check ran on exactly the tree `main` becomes, so two fixes that
+each pass alone cannot combine into a broken `main` that the update webhook then
+tries to install. Its cost appears when several agents merge at once: every merge
+makes every other checked branch stale. On 2026-11-12 the reviewed repair in PR 797
+passed its checks five times and was refused each time because PRs 674, 688, 796,
+690 and 799 had merged first.
+
+GitHub's native answer, the merge queue, is refused for this repository: the
+ruleset API rejects a `merge_queue` rule (`Invalid rule 'merge_queue'`, probed
+2026-11-12) because GitHub offers merge queues only to organisation-owned
+repositories. GitHub auto-merge does not help on its own: with the up-to-date rule it
+waits for someone to bring the branch current, and it is off (`allow_auto_merge`
+false) only because it was never enabled. Neither setting is changed.
+
+`scripts/merge-pr.sh <number>` serialises merges instead. It takes the machine-wide
+lock `/run/lock/merge-lane-<owner>-<repo>.lock` (waiting up to 90 minutes; the
+holder is named in the `.holder` file beside it), then repeats until merged: if the
+branch is behind, GitHub merges `main` into it with an ordinary merge commit
+(nothing is rewritten); it waits for every `Release check` run on that exact head
+commit; and it merges only that head (`--match-head-commit`). Because only the
+holder merges, its fresh check is never invalidated. A merge made outside the lane,
+or from the Mac, still lands; the holder just brings its branch current again, at
+the cost of one more check. A conflict, a failed check or a closed pull request
+stops the lane for that PR and releases the lock for the next one.
 
 The check runs on GitHub's fresh Linux worker with frozen dependencies and no
 production ledger configuration. A local pre-push build would provide faster

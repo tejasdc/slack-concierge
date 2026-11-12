@@ -95,6 +95,47 @@ const probe: RepositoryProbe = {
   },
 };
 
+/**
+ * "Concierge did not answer" is not "this request has no Mac need". On 2026-11-12 the Mac's
+ * Spotify session (mac:323) held an accepted mac-app need and was clicking through the app when
+ * Concierge on the Mac restarted for an update (20:00:32 to 20:00:45); its next two Computer Use
+ * calls asked once, got no answer within three seconds, were told they had no accepted need, and
+ * the agent gave up a second before the owner came back. So the guard keeps asking while the owner
+ * is unreachable (an observed restart takes about 13 seconds), inside the providers' 20-second
+ * hook limit, and a still-missing owner gets a refusal that says to retry rather than one that
+ * denies the request's need. A real answer, including "no need", is final at once.
+ */
+const OWNER_WAIT_MS = 15_000;
+const OWNER_UNREACHABLE_REFUSAL = 'Concierge on this Mac did not answer for 15 seconds (it is most likely restarting for an update), so this request’s Mac need could not be checked. Your request’s permission is unchanged: retry the same call in a few seconds.';
+type OwnerNeed = { kind: string; why: string; humanInputId: string; effectScope: string; updateAuthorization: boolean; focusAuthorization: boolean };
+async function askOwnerForMacNeed(providerSessionId: string): Promise<{ answered: true; need: OwnerNeed | null } | { answered: false }> {
+  const deadline = Date.now() + OWNER_WAIT_MS;
+  const socket = join(userInfo().homedir, 'Library', 'Application Support', 'concierge', 'requests.sock');
+  for (;;) {
+    const remaining = deadline - Date.now();
+    const answer = await fetch('http://localhost/session-communication/mac-need', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider_session_id: providerSessionId }),
+      unix: socket, signal: AbortSignal.timeout(Math.max(500, Math.min(3000, remaining))),
+    } as RequestInit & { unix: string })
+      // A 4xx is the owner answering (no grant); only a missing reply or a 5xx means it is not there yet.
+      // Every failure, including a body cut off mid-restart, stays inside this loop: a throw would reach
+      // the outer catch, which lets non-Computer-Use helper calls through.
+      .then(response => response.ok ? response.json() : response.status < 500 ? {} : undefined)
+      .catch(() => undefined);
+    if (answer && typeof answer === 'object') {
+      const a = answer as any;
+      return { answered: true, need: typeof a.kind === 'string' ? {
+        kind: a.kind, why: typeof a.why === 'string' ? a.why : '', humanInputId: typeof a.humanInputId === 'string' ? a.humanInputId : '',
+        effectScope: typeof a.effectScope === 'string' ? a.effectScope : '', updateAuthorization: a.updateAuthorization === true,
+        focusAuthorization: a.focusAuthorization === true,
+      } : null };
+    }
+    if (Date.now() + 500 >= deadline) return { answered: false };
+    await Bun.sleep(500);
+  }
+}
+
 let hook: any = {};
 try { hook = JSON.parse((await Bun.stdin.text()) || '{}'); } catch { process.exit(0); }
 let reason: string | null = null;
@@ -111,21 +152,20 @@ try {
   // The environment can be empty (Codex's shared App Server) or older than a need steered in later.
   // Computer Use always checks the active owner's record, including when the environment claims a need:
   // a direct Mac process must not unlock desktop control by setting an environment variable. The Codex
-  // hook gets no Concierge environment, so the socket is the Mac owner's fixed one. One attempt takes at
-  // most three seconds; a missing answer keeps Computer Use refused.
+  // hook gets no Concierge environment, so the socket is the Mac owner's fixed one. An absent owner is
+  // asked again for up to 15 seconds (askOwnerForMacNeed); a missing answer keeps Computer Use refused.
   const computerUse=!refusedMessages&&macComputerUseAttempt;
   const nativeUpdate=process.platform==='darwin'&&((command??'')+' '+String(input.code??'')).includes('mac-update-ax.swift');
   const nativeFocus=process.platform==='darwin'&&((command??'')+' '+String(input.code??'')).includes('mac-focus-ax.swift');
   const liftable=reason&&!refusedMessages&&process.platform==='darwin'&&typeof hook.session_id==='string'&&hook.session_id
     &&(nativeUpdate||nativeFocus||macSurfaceRefusal({...surface,need:'ios-native'})!==reason);
   if((liftable||computerUse||nativeUpdate||nativeFocus)&&typeof hook.session_id==='string'&&hook.session_id){
-    const recorded=await fetch('http://localhost/session-communication/mac-need',{method:'POST',headers:{'content-type':'application/json'},
-      body:JSON.stringify({provider_session_id:hook.session_id}),
-      unix:join(userInfo().homedir,'Library','Application Support','concierge','requests.sock'),signal:AbortSignal.timeout(3000),
-    } as RequestInit & {unix:string}).then(response=>response.ok?response.json():null).then((answer:any)=>typeof answer?.kind==='string'?{kind:answer.kind,why:typeof answer.why==='string'?answer.why:'',humanInputId:typeof answer.humanInputId==='string'?answer.humanInputId:'',effectScope:typeof answer.effectScope==='string'?answer.effectScope:'',updateAuthorization:answer.updateAuthorization===true,focusAuthorization:answer.focusAuthorization===true}:null,()=>null);
+    const owner=await askOwnerForMacNeed(hook.session_id);
+    const recorded=owner.answered?owner.need:null;
     // The environment carries only a need category. A native app action must
     // use the owner's current source-bound grant even when that category matches.
-    if(computerUse||nativeUpdate||nativeFocus)reason=macSurfaceRefusal({...surface,need:recorded??''});
+    if((computerUse||nativeUpdate||nativeFocus)&&!owner.answered)reason=OWNER_UNREACHABLE_REFUSAL;
+    else if(computerUse||nativeUpdate||nativeFocus)reason=macSurfaceRefusal({...surface,need:recorded??''});
     else if(recorded&&recorded.kind!==(process.env.CONCIERGE_MAC_NEED??''))reason=macSurfaceRefusal({...surface,need:recorded});
   }
   if(computerUse&&(!hook.session_id||typeof hook.session_id!=='string'))reason=macSurfaceRefusal({...surface,need:''});

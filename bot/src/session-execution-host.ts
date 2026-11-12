@@ -101,6 +101,7 @@ import {ProviderHistoryPageClient} from './provider-history-page-client';
 import {ATTENTION_INSTRUCTION,releaseFocusForPost,settleExitedProcessReport,topicPromptContext} from './session-topics';
 import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,reservePendingRunnerSignIn,clearPendingSignIn,pendingRunnerSignIn} from './state';
 import {log,errorFields} from './log';
+import {crowdingConfig,crowdingNotice,readCrowding,workIsHisToWaitOn} from './crowding';
 import {attachedRecordingWords,transcriptionPrompt} from './transcription';
 import {ProviderLoginManager} from './auth-login';
 import {codexSignInState,codexAccountInUse} from './codex-device-login';
@@ -120,7 +121,7 @@ import {storedUsage,withResetAdvice,accountAvailability} from './provider-usage-
 import {budgetBriefWithProviderRoom} from './provider-start-choice';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 import {MANAGED_CODEX,activateCredentials,claudeAccountWorks,claudeCredentialsAnswer,runningCodexTurns,type ActivationReport} from './provider-activation';
-import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork,observeExecutionChanges} from './state';
+import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork,observeExecutionChanges,executionChanged} from './state';
 import {activateRunnerCodexAccount} from './runner-provider-account-owner';
 import {noticeTime,publishProviderFreeNotice} from './provider-free-notice';
 import {accountHome,setRunnerAccountInUse} from './provider-accounts';
@@ -1508,12 +1509,16 @@ export class SessionExecutionHost {
         const runId=nativeRunId(claim.turn_id);
         // His meanings for his own terms in these words, so no agent guesses at one (thesaurus-context.ts).
         const thesaurus=await (this.options.thesaurusContext??thesaurusTurnContext)(prompt);
+        // On a machine configured for it (the Mac), a start while the machine is crowded says so, unless
+        // the work is one he is waiting on. The notice comes at turn start; running turns are never steered.
+        const crowdConfig=crowdingConfig(),crowding=crowdConfig?readCrowding(db,crowdConfig):null;
+        const crowdNotice=crowding?.crowded&&!workIsHisToWaitOn(db,claim.turn_id)?crowdingNotice(crowding):null;
         canvasApplicationContext=canvasSpeechApplicationContext(input,runId,session.id);
         if(canvasApplicationContext)canvasApplicationContext=`${canvasApplicationContext}\n\n${thesaurus}`;
         else {
           const turnContext=sessionTurnContext(input,runId,{unnamed:!metadata.title?.trim(),thesaurus,
             budget:session.provider_id==='codex'?budgetBriefWithProviderRoom('codex',Date.now()):null,
-            notice:saved?.saved_kind==='banked'?'This work was banked to use spare allowance. Follow the same delivery and approval rules as daytime work. In your final answer, say what shipped and what remains. This run may stop at its allowance or a deployment boundary and resume later.':null});
+            notice:[crowdNotice,saved?.saved_kind==='banked'?'This work was banked to use spare allowance. Follow the same delivery and approval rules as daytime work. In your final answer, say what shipped and what remains. This run may stop at its allowance or a deployment boundary and resume later.':null].filter(Boolean).join('\n\n')||null});
           prompt=sessionInputEnvelope(input,runId,[prompt,turnContext].filter(Boolean).join('\n\n'));
         }
       }

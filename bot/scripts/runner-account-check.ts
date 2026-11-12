@@ -8,6 +8,7 @@ import {assertRunnerGoogleCreditPolicy} from '../src/runner-google-policy';
 import {providerAccountHomeForPlacement} from '../src/provider-account-home';
 import {CodexAdmissionHolds} from '../src/codex-admission-holds';
 import {withCodexRestartLock} from '../src/codex-restart-lock';
+import {claudeConsultationEnvironment} from '../src/claude-consultation-environment';
 
 if (process.env.RUNNER_ACCOUNT_CHECK_CHILD !== "1") {
   const isolatedHome = mkdtempSync(join(tmpdir(), "runner-account-check-"));
@@ -25,6 +26,22 @@ if (process.env.RUNNER_ACCOUNT_CHECK_CHILD !== "1") {
 } else {
 
 const root = homedir();
+const ambientRouting={provider:process.env.CONCIERGE_PROVIDER_ID,account:process.env.CONCIERGE_PROVIDER_ACCOUNT};
+process.env.CONCIERGE_PROVIDER_ID='wrong-provider';
+process.env.CONCIERGE_PROVIDER_ACCOUNT='wrong-ambient@example.com';
+const consultationEnvironment=claudeConsultationEnvironment({CONCIERGE_PROVIDER_ID:'claude-code',
+  CONCIERGE_PROVIDER_ACCOUNT:'writer@example.com',CONCIERGE_RUN_TOKEN:'must-not-leave-owner',
+  ANTHROPIC_API_KEY:'must-not-leave-owner'});
+assert.equal(consultationEnvironment.CONCIERGE_PROVIDER_ID,'claude-code', 'a restricted consultation must retain its provider for runner account resolution');
+assert.equal(consultationEnvironment.CONCIERGE_PROVIDER_ACCOUNT,'writer@example.com', 'a restricted consultation must retain the selected account instead of using the default login');
+assert.equal(consultationEnvironment.CONCIERGE_RUN_TOKEN,undefined);
+assert.equal(consultationEnvironment.ANTHROPIC_API_KEY,undefined);
+assert.equal(consultationEnvironment.CLAUDE_CODE_SAFE_MODE,'1');
+assert.equal(claudeConsultationEnvironment().CONCIERGE_PROVIDER_ACCOUNT,undefined,'the owner ambient account is not a selected consultation identity');
+assert.equal(claudeConsultationEnvironment().CONCIERGE_PROVIDER_ID,undefined);
+assert.equal(claudeConsultationEnvironment({CLAUDE_CONFIG_DIR:'/selected/local-home'}).CLAUDE_CONFIG_DIR,'/selected/local-home');
+if(ambientRouting.provider===undefined)delete process.env.CONCIERGE_PROVIDER_ID;else process.env.CONCIERGE_PROVIDER_ID=ambientRouting.provider;
+if(ambientRouting.account===undefined)delete process.env.CONCIERGE_PROVIDER_ACCOUNT;else process.env.CONCIERGE_PROVIDER_ACCOUNT=ambientRouting.account;
 assert.equal(providerAccountHomeForPlacement(null,'writer@example.com','/owner/.claude-accounts/writer'),'/owner/.claude-accounts/writer',
   'a local Claude turn must receive its actual local account home even when runner dispatch is configured globally');
 assert.equal(providerAccountHomeForPlacement('ax41','writer@example.com','/owner/.claude-accounts/writer'),'runner-account:writer@example.com',
@@ -89,6 +106,10 @@ try {
   writeFileSync(join(root,".claude","settings.json"),JSON.stringify({permissions:{allow:["Read"]}}));
 
   const accounts = await import("../src/runner-provider-accounts");
+  assert.equal(accounts.runnerAccountHome('claude-code',consultationEnvironment.CONCIERGE_PROVIDER_ACCOUNT!),claude,
+    'the restricted consultation identity resolves to its chosen runner home despite a different default login');
+  assert.equal(accounts.runnerAccountHome('claude-code','missing@example.com'),null,
+    'an unavailable consultation account cannot resolve to the default login');
   const {samePhysicalFile,serveRunnerAside}=await import("../src/runner-asides");
   const stampedCodexId="01a1b3f6-75e3-78f1-b56c-92ba4f27fe4e";
   const stampedCodexFile=join(root,".codex","sessions","2026","11","07",`rollout-2026-11-07T03-00-00-${stampedCodexId}.jsonl`);

@@ -2,7 +2,7 @@ import {acceptedInputAuthor,sessionAuthor,withCurrentAuthors} from './session-me
 import {questionDisplay} from './topic-display-rules';
 import {topicReplyTargets,type ReplyTargets} from './reply-target-rules';
 import {answerLine,fragmentReason} from './answer-line';
-import {consumeThreadNotification,hasPendingThreadNotification,messageAlreadyNotified,notifyAgentPost} from './thread-notifications';
+import {consumeThreadNotification,hasPendingThreadNotification,messageAlreadyNotified,notifyAgentPost,threadRangThisRun} from './thread-notifications';
 import {createHash,randomUUID} from 'node:crypto';
 import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
 import {db,getSessionById,type SessionRow} from './state';
@@ -571,6 +571,8 @@ function record(sessionId:number,inputId:string,turnId:number|null,change:Change
       if(!root)continue;
       const postId=question.sources.find(id=>db.query("SELECT 1 FROM session_owner_events WHERE event_id=? AND session_id=? AND kind IN ('post','result')").get(id,session.id))??null;
       if(postId&&messageAlreadyNotified(session.id,postId))continue;
+      // The same turn already rang him in this thread (its post with --notify, or another question).
+      if(threadRangThisRun(session.id,root,change.payload.by?.runId))continue;
       const author=typeof question.owner?.sessionId==='string'?sessionAuthor(question.owner.sessionId):null;
       const notificationInputId=postId?consumeThreadNotification(session.id,root,postId):null;
       const generation=session.id===sessionId?question.generation:raiseGeneration(session);
@@ -2857,6 +2859,23 @@ const conciergeSessionNumber=(address:unknown):number|null=>{
  * reading cadence (every three minutes), so a reminder lands within that of its time.
  */
 /**
+ * The same check, started by a screen he opens but never awaited by it. Awaiting it made every
+ * Threads, Questions, sessions-list and session-view read wait on thnkr.ing's to-do list; when that
+ * read hit its three-second socket timeout, each list page took 3.02 s (Nov 12, 20:19 UTC). The read
+ * answers from what is already stored; a question this settles leaves through the ordinary question
+ * change path, whose live event refreshes his screen. One check runs at a time per scope.
+ */
+const todoChecksInFlight=new Map<string,Promise<number>>();
+export function closeQuestionsAnsweredByTodosSoon(admit:Parameters<typeof closeQuestionsAnsweredByTodos>[0],
+  scope:'all'|'inbox'|number='all'):void {
+  const key=String(scope);
+  if(todoChecksInFlight.has(key))return;
+  const check=closeQuestionsAnsweredByTodos(admit,scope).catch(error=>{
+    log('warn','question_todo_check_failed',{scope:key,reason:error instanceof Error?error.message.slice(0,80):'failed'});return 0;})
+    .finally(()=>todoChecksInFlight.delete(key));
+  todoChecksInFlight.set(key,check);
+}
+/**
  * A question that names the to-do it asks him to do ends when he ticks that to-do off (or drops it):
  * his tick is his answer, so the question leaves Needs you and the agent that asked is told to carry
  * on. Runs on the owner's reading cadence; one read of his to-dos covers every linked question.
@@ -3330,119 +3349,6 @@ export function retireTimedRequestPosts(range?:{afterSequence:number;throughSequ
   })();
 }
 
-/** Retire duplicate presentation entries while keeping every request, reply and original post as evidence. */
-export function collapseDuplicateAnswerPosts(topicId:string,postIds:readonly string[]):number {
-  if(postIds.length<2||new Set(postIds).size!==postIds.length)throw new Error('Name distinct answer posts.');
-  const posts=postIds.map(id=>db.query("SELECT sequence,event_id,input_id,session_id,kind,payload_json FROM session_owner_events WHERE event_id=?").get(id) as
-    {sequence:number;event_id:string;input_id:string;session_id:number;kind:string;payload_json:string}|null);
-  if(posts.every(post=>!post))return 0;
-  if(posts.some(post=>!post))throw new Error('The duplicate answer set is incomplete.');
-  const ordered=posts.map(post=>post!).sort((left,right)=>left.sequence-right.sequence);
-  const first=ordered[0]!,original=JSON.parse(first.payload_json);
-  const closingLine=(post:typeof first)=>answerClosingLine(db,post.session_id,post.event_id,JSON.parse(post.payload_json).answersQuestion===true);
-  const sameAnswer=(post:typeof first)=>{
-    const payload=JSON.parse(post.payload_json);
-    const request=db.query('SELECT outcome,source_session_id,target_session_id FROM session_communication_requests WHERE request_id=?')
-      .get(payload.requestId) as {outcome:string|null;source_session_id:number;target_session_id:number}|null;
-    return post.kind==='post'&&post.session_id===first.session_id&&topicOfRoot(post.input_id)===topicId
-      &&payload.replyKind==='final'&&payload.workDisposition==='completed'&&payload.postedBySession===original.postedBySession
-      &&payload.answerGroup&&payload.answerGroup===original.answerGroup&&payload.text===original.text
-      &&JSON.stringify(payload.attachments??[])===JSON.stringify(original.attachments??[])
-      &&(payload.quiet??null)===(original.quiet??null)
-      &&(payload.messageThreadRootId??null)===(original.messageThreadRootId??null)
-      &&closingLine(post)===closingLine(first)
-      &&request?.outcome==='answered'&&request.source_session_id===first.session_id
-      &&`concierge:${request.target_session_id}`===payload.postedBySession;
-  };
-  if(!ordered.every(sameAnswer))throw new Error('The named posts are not one completed answer in this topic.');
-  const session=getSessionById(first.session_id);
-  if(!session||!sessionMetadata(session).inbox)throw new Error('The answer topic has no Inbox owner.');
-  return db.transaction(()=>{
-    let collapsed=0;
-    for(const post of ordered.slice(1)){
-      const eventId=`post:collapse:${post.event_id}`;
-      if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))continue;
-      recordSessionEvent({eventId,sessionId:session.id,inputId:post.input_id,kind:'post_collapse',
-        payload:{postId:post.event_id,keptPostId:first.event_id,topicId,reason:'One identical final answer closed several requests.'}});
-      collapsed++;
-    }
-    const duplicates=new Set(ordered.slice(1).map(post=>post.event_id));
-    const keptQuestion=topicQuestions(topicId).find(question=>question.kind==='reading'&&question.brief?.reads?.includes(first.event_id));
-    const questions=topicQuestions(topicId).filter(question=>question.kind==='reading'&&question.state==='open'
-      &&question.brief?.reads?.some((postId:string)=>duplicates.has(postId)))
-      .map(question=>({...question,state:'superseded' as QuestionState,replacedBy:keptQuestion?.questionId??null,
-        revision:question.revision+1,updatedAt:nowIso(),brief:{...question.brief,endedBecause:'The identical answer remains in this topic once.'}}));
-    if(questions.length){
-      const topic=bumped(topicRow(topicId));
-      const payload={change:'duplicate_answers_collapsed',topicId,topic,questions,by:{kind:'owner' as const},
-        reason:'One identical answer is visible; all request closures remain.',revision:topic.revision};
-      const eventId=`topic-collapse:answers:${first.event_id}`;
-      if(!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId)){
-        recordSessionEvent({eventId,sessionId:session.id,kind:'topic_question',payload});
-        applyTopicChange('topic_question',payload);
-      }
-    }
-    return collapsed;
-  })();
-}
-
-/** The six October 21 replies were byte-identical finals in six roots of one topic. */
-export function repairOctober21RepeatedAnswer():number {
-  return collapseDuplicateAnswerPosts('topic:c96e9f47-03f1-472b-b6ed-5f16dc7682d5',[
-    'post:forward:c9f50f17-8b9f-40d6-a16e-9a1b583f1b90',
-    'post:forward:f3eb3816-6ffc-4871-af3c-5c787c43ca39',
-    'post:forward:9e67ca1d-ad70-4e13-870a-1ef561edb9be',
-    'post:forward:7aa10aae-08c4-4d10-9c41-9530c9047309',
-    'post:forward:8e6c6a98-205b-4ebf-bace-91ef93fd798f',
-    'post:forward:9ade95ec-e8ed-4302-87c8-6257ee8c8574',
-  ]);
-}
-/** Repair one observed burst of repeated progress and stop notices without changing request history. */
-export function repairNovember4RepeatedThreadNotices():number {
-  const topicId='topic:2a4135fb-be59-4269-a593-859ce7523e65';
-  const groups=[
-    ['post:forward:98dda8ad-c741-4f6c-8db5-731d9eb8877c','post:forward:8902c2ca-11e6-4145-a2e9-ca952d5df5ce',
-      'post:forward:ba5cf0c1-4ed9-4724-a7da-c9f5ea548920','post:forward:4ae5e43f-b54a-4093-9cbd-43bee02c88d9'],
-    ['post:forward:85d8e7dc-eb77-4865-bb27-1cc910c92360','post:forward:2fc8204b-8e44-464c-ad65-17e0cbced446',
-      'post:forward:257b170a-2f85-40fd-8193-f3679f8679f2','post:forward:9086a441-a275-4329-9039-76a8efeedff3'],
-  ];
-  let collapsed=0;
-  for(const ids of groups){
-    const rows=ids.map(id=>db.query('SELECT event_id,input_id,session_id,kind,payload_json FROM session_owner_events WHERE event_id=?')
-      .get(id) as {event_id:string;input_id:string;session_id:number;kind:string;payload_json:string}|null);
-    if(rows.every(row=>!row))continue;
-    if(rows.some(row=>!row))throw new Error('The November 4 repeated notice set is incomplete.');
-    const first=rows[0]!,original=JSON.parse(first.payload_json),stalled=original.postedBy==='service';
-    const runs=new Set<string>(),turns=new Set<number>();
-    for(const row of rows){
-      const post=row!,payload=JSON.parse(post.payload_json);
-      const request=db.query('SELECT target_session_id,target_input_id FROM session_communication_requests WHERE request_id=?')
-        .get(payload.requestId) as {target_session_id:number;target_input_id:string}|null;
-      const event=db.query('SELECT kind,payload_json FROM session_communication_events WHERE event_id=?')
-        .get(post.event_id.slice('post:forward:'.length)) as {kind:string;payload_json:string}|null;
-      const target=request?db.query('SELECT turn_id FROM session_inputs WHERE id=?').get(request.target_input_id) as {turn_id:number|null}|null:null;
-      if(post.kind!=='post'||post.session_id!==first.session_id||topicOfRoot(post.input_id)!==topicId
-        ||payload.text!==original.text||payload.replyKind!=='partial'||payload.postedBy!==original.postedBy
-        ||request?.target_session_id!==8153||!event||event.kind!==(stalled?'overdue':'progress')||!target?.turn_id)
-        throw new Error('The November 4 posts are not one agent event in this topic.');
-      turns.add(target.turn_id);
-      const source=JSON.parse(event.payload_json).source;
-      if(!stalled){if(!source?.run_id)throw new Error('A repeated progress post has no agent run.');runs.add(source.run_id);}
-    }
-    if(turns.size!==1||runs.size>1)throw new Error('The November 4 posts came from different turns.');
-    const inbox=getSessionById(first.session_id);
-    if(!inbox||!sessionMetadata(inbox).inbox)throw new Error('The November 4 thread has no Inbox owner.');
-    for(const row of rows.slice(1)){
-      const eventId=`post:collapse:${row!.event_id}`;
-      if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))continue;
-      recordSessionEvent({eventId,sessionId:first.session_id,inputId:row!.input_id,kind:'post_collapse',
-        payload:{postId:row!.event_id,keptPostId:first.event_id,topicId,
-          reason:stalled?'One stopped turn has one visible notice.':'One agent update appears once in the thread.'}});
-      collapsed++;
-    }
-  }
-  return collapsed;
-}
 const headline=(value:string)=>answerLine(value);
 function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string;eventId:string;dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;text:string;summary?:string|null;quiet?:string|null;notify?:boolean;askedInRun?:string|null;todoId?:string|null}) {
   const session=getSessionById(answer.inboxSessionId);

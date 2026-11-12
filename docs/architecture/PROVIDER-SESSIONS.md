@@ -13,6 +13,15 @@ failure without substituting a different provider.
 
 ## Selection and binding
 
+Claude information-only consultations retain the selected account through their restricted
+environment. Local launches carry `CLAUDE_CONFIG_DIR`; runner launches carry only
+`CONCIERGE_PROVIDER_ID` and `CONCIERGE_PROVIDER_ACCOUNT`, which the runner resolves to its
+credential-verified local home before applying the no-inheritance policy. These two identity
+fields come only from the selected turn environment, never the owner's ambient account.
+Run capability tokens and competing API credentials remain excluded, and consultation tools
+remain disabled. The release's runner-account check guards this identity boundary. See the
+[consultation login failure](../incidents/2026-11-12-consultation-used-default-login.md).
+
 ### Antigravity sessions
 
 Each Concierge instance can run Google's Antigravity CLI as a third native agent provider. A new
@@ -811,6 +820,8 @@ every watch tick. Other admission failures remain visible and retryable.
 Once App Server accepts a turn, transport failure is not a terminal provider outcome. The controller reconnects, resumes the exact provider thread, and identifies the daemon-owned turn by provider turn ID or the stable user-message client ID. It pages turn summaries to establish the exact identity and terminal status. While the turn runs, it observes live notifications without assuming persisted item pages are complete. After a terminal status, it replays only that turn's persisted item pages in order and settles the outcome. This keeps earlier turns out of the owner's recovery response and avoids losing live output from paginated Codex conversations. An explicit reconciliation RPC error, including an unsupported history method, or a failed consultation-policy check parks the same turn as ambiguous. The saved failure includes the initiating error and failed reconciliation with their RPC method, message, and numeric code when supplied; start RPC failures are also logged with exact thread/client-input identity. Repeating an unsupported operation cannot establish the missing proof. The existing parked-turn FIFO fence blocks successors and replay without another owner or daemon change.
 
 A lost `thread/start` or `thread/resume` response before `turn/start` is a different boundary: no user input has been submitted, so the accepted Concierge turn safely retries. The October 16 lyrics build was parked after a 30-second `thread/start` timeout while the App Server was also timing out historical observer resumes during a restart. That timeout did not prove that the build had begun. The retry retains its input identity and does not replay an admitted turn.
+
+A lost connection before `turn/start` (while connecting, or while `thread/start` or `thread/resume` waits) is waited out on the same attempt, 1 s doubling to 30 s with Stop still ending the wait, and then the thread is asked for again. Only a transport loss counts: an answer carrying a JSON-RPC error code, a client Concierge closed, or an unanswered resume on a live connection keeps its counted retry. The wait spends no retry budget, so an App Server restart under many connecting turns cannot exhaust the provider's budget or park them. On 2026-11-12 a connect lost during an account switch escaped as a possible send and parked 36 unsent turns ([failure record](../incidents/2026-11-12-codex-connection-loss-parked-unsent-turns.md)). A parked uncertain Codex turn is then taken back by the minute parked-run sweep ([execution host](EXECUTION-HOST.md)). When its thread's full history still has no turn carrying its client message ID and it never received a provider turn ID, it never reached Codex and is retried; otherwise it is settled or followed from that history.
 
 Codex cancellation is registered before provider submission. A Stop before submission prevents model input; after submission, a missing provider turn ID or unconfirmed interrupt response remains an uncertain outcome, not a successful cancellation. Stop interrupts an exact known turn without waiting behind an in-flight recovery read. A confirmed terminal provider event still owns cancellation completion; an interrupt acknowledgement alone does not. Late recovery responses cannot attach provider identity, input acknowledgement, or results after the local controller has settled. Consultation restrictions and request/inactivity timeout budgets are unchanged.
 

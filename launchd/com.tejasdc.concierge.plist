@@ -40,6 +40,18 @@
     <key>CONCIERGE_CLAUDE_CODE_SKIP_PERMISSIONS</key><string>1</string>
     <key>CONCIERGE_CODEX_EXECUTABLE</key><string>@CODEX@</string>
     <key>CONCIERGE_NODE_BIN</key><string>@NODE@</string>
+    <!-- One shared Playwright server instead of a copy per Claude session; empty until it answers. -->
+    <key>CONCIERGE_SHARED_PLAYWRIGHT_URL</key><string>@SHARED_PLAYWRIGHT_URL@</string>
+    <!-- Paced starts: at most BUDGET new provider processes per WINDOW (ms), each wait lengthened by up
+         to JITTER (ms), and held back while macOS reports memory pressure. Unset = unpaced. -->
+    <key>CONCIERGE_START_PACE_BUDGET</key><string>@START_PACE_BUDGET@</string>
+    <key>CONCIERGE_START_PACE_WINDOW_MS</key><string>@START_PACE_WINDOW_MS@</string>
+    <key>CONCIERGE_START_PACE_JITTER_MS</key><string>@START_PACE_JITTER_MS@</string>
+    <!-- Crowded when more than SESSIONS provider sessions run, macOS reports memory pressure, or the
+         one-minute load exceeds LOAD_FACTOR x the processors: agents are then told at turn start and may
+         snooze themselves (sessions snooze); never his own direct messages. Unset = off. -->
+    <key>CONCIERGE_CROWD_SESSIONS</key><string>@CROWD_SESSIONS@</string>
+    <key>CONCIERGE_CROWD_LOAD_FACTOR</key><string>@CROWD_LOAD_FACTOR@</string>
     <!-- Each agent run's own launchd job starts through the same app (execution hosts). -->
     <key>CONCIERGE_AGENT_HOST_LAUNCHER</key><string>@HOST_LAUNCHER@</string>
     <!-- Agent helpers built for the installed commit; never changed under a running agent. -->

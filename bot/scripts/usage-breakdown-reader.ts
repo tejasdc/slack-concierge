@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import {Database} from 'bun:sqlite';
-import {createReadStream,existsSync,mkdirSync,readFileSync,readdirSync,statSync} from 'node:fs';
+import {createReadStream,existsSync,mkdirSync,readFileSync,readdirSync,realpathSync,statSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {basename,dirname,join,resolve} from 'node:path';
 import {createHash} from 'node:crypto';
@@ -333,7 +333,15 @@ function report(period:'today'|'week',since:number,zone:string){
   const callsByTurn=new Map<number,{turnId:number;sessionId:number;provider:string;account:string;status:string;raw:Counts;callCount:number;
     flaggedCallCount:number;unknownCauseCount:number}>();
   const previousByPath=new Map<string,{row:RecordRow;turn:Turn|null}>();
+  // Concierge mirrors each Claude conversation into every account home, so one
+  // provider response appears in several transcript files. A response belongs to
+  // its conversation, not to a file: count it once. Each copy still advances its
+  // own path's cache-cause chain so the counted copy keeps its predecessor.
+  const countedRecordIds=new Set<string>();
   for(const r of rows){
+    const recordKey=JSON.stringify([r.provider,r.conversation,r.record_id]);
+    const mirroredCopy=countedRecordIds.has(recordKey);
+    countedRecordIds.add(recordKey);
     const owningConversation=r.provider==='codex'?rootConversation(r.conversation):r.conversation;
     const isHelper=!!r.helper||owningConversation!==r.conversation;
     const helperId=isHelper?(r.provider==='codex'?r.conversation:basename(r.path,'.jsonl')):null;
@@ -386,7 +394,7 @@ function report(period:'today'|'week',since:number,zone:string){
     const largeUnexpected=largeMiss&&!!previous&&!expectedReason;
     const cause={status:!largeMiss?'not_applicable':expectedReason?'expected':reasons.length?'observed':'unknown',
       reasons:largeMiss?reasons:[],possibleReasons:largeMiss?possibleReasons:[]};
-    if(cause.status==='unknown')unknownEvidence.push({atMs:r.at_ms,provider:r.provider,
+    if(cause.status==='unknown'&&!mirroredCopy)unknownEvidence.push({atMs:r.at_ms,provider:r.provider,
       gapMs:previous?r.at_ms-previous.row.at_ms:null,
       instructions:previous?.turn?.systemInstructionsSha256&&turn?.systemInstructionsSha256
         ?previous.turn.systemInstructionsSha256===turn.systemInstructionsSha256?'same':'changed':'unavailable',
@@ -398,7 +406,7 @@ function report(period:'today'|'week',since:number,zone:string){
       cacheReadShare:context?r.cache_read/context:null,cause,
       flags:largeUnexpected?['large_unexplained_cache_miss']:[]};
     previousByPath.set(r.path,{row:r,turn});
-    if(r.at_ms<since)continue;
+    if(mirroredCopy||r.at_ms<since)continue;
     calls.push(call);
     addCall(overallMix,r.model,isHelper);
     if(turn){
@@ -472,7 +480,13 @@ function report(period:'today'|'week',since:number,zone:string){
     FROM edit_events WHERE at_ms>=? ORDER BY path,at_ms,record_id`).all(since) as {
       path:string;record_id:string;provider:string;conversation:string;helper:number;at_ms:number;model:string|null;provider_turn_id:string|null;tool_name:string}[];
   const providerRoots=configuredRoots().map(root=>({...root,prefix:join(root.home,root.provider==='claude-code'?'projects':'sessions')}));
+  // The same provider conversation can be mirrored under several account homes.
+  // A tool-use ID belongs to the conversation, not to a transcript file path.
+  const countedEditIds=new Set<string>();
   for(const edit of editRows){
+    const editId=JSON.stringify([edit.provider,edit.conversation,edit.record_id]);
+    if(countedEditIds.has(editId))continue;
+    countedEditIds.add(editId);
     const owning=edit.provider==='codex'?rootConversation(edit.conversation):edit.conversation;
     const helper=!!edit.helper||owning!==edit.conversation;
     addEdit(overallEditMix,edit.model,helper);
@@ -573,8 +587,19 @@ function decodeRunnerCursor(value:string):{snapshotMaxRowid:number;afterRowid:nu
   return parsed;
 }
 function encodeRunnerCursor(value:{snapshotMaxRowid:number;afterRowid:number;providers:string;roots:string;sinceMs:number}){return Buffer.from(JSON.stringify(value)).toString('base64url');}
+/** Account homes on the server link their transcript folder to one shared folder; read each real folder once. */
+function distinctTranscriptRoots(roots:ProviderRoot[]){
+  const seen=new Set<string>();
+  return roots.filter(root=>{
+    const folder=join(root.home,root.provider==='claude-code'?'projects':'sessions');
+    let real=folder;try{real=realpathSync(folder);}catch{}
+    const key=`${root.provider}\0${real}`;
+    if(seen.has(key))return false;
+    seen.add(key);return true;
+  });
+}
 async function scanRunnerProviderRoots(providers:string[],sinceMs:number,buildSequence:boolean,availableRoots=configuredRoots()){
-  const roots=availableRoots.filter(root=>providers.includes(root.provider));if(!roots.length)throw new Error('NO_PROVIDER_USAGE_HOMES');
+  const roots=distinctTranscriptRoots(availableRoots.filter(root=>providers.includes(root.provider)));if(!roots.length)throw new Error('NO_PROVIDER_USAGE_HOMES');
   activeUsageWindowStartMs=sinceMs;
   cache.exec('BEGIN IMMEDIATE');
   try{

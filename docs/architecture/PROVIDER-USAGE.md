@@ -1081,9 +1081,18 @@ The owner serves `GET /sessions/v1/usage/breakdown?period=today|week`; agents ge
 same read through `router-actions.sh sessions usage --by-session --period today|week`.
 The read now includes `callMix` for all calls, each account, and each session:
 total calls, helper and main calls, helper share, and each model's call share.
+Each provider response counts once. The reader scans each real transcript
+folder once, so account homes whose `projects/` or `sessions/` links to a
+shared folder do not repeat it, and the report counts a provider,
+conversation and response ID once when a genuine copy of a conversation sits
+under another home. Account attribution comes from the ledger's per-turn
+account, never from the home a transcript was found under. A forked
+conversation that copies parent responses into a new conversation ID is not
+merged; none appeared in the 2026-11-12 cache.
 It also includes `editMix` at those three levels: recognized code-editing tool
 calls split by model and helper versus main conversation. Claude transcript
-tool-use IDs and Codex completed-item IDs deduplicate repeated provider records;
+tool-use IDs and Codex completed-item IDs deduplicate repeated provider records
+across transcript copies in different account homes;
 Codex child conversations follow their root session. The edit count includes
 dedicated edit/write/file-change tools and recognized patch commands. It does
 not infer arbitrary writes from every shell command, so it is a lower bound on

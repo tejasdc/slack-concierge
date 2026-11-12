@@ -1,5 +1,5 @@
 import {Database} from 'bun:sqlite';
-import {mkdtemp,mkdir,rm,writeFile} from 'node:fs/promises';
+import {mkdtemp,mkdir,rm,symlink,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {captureUsageLedgerSnapshot,encodeUsageSnapshot} from '../src/usage-breakdown-ledger-snapshot';
@@ -22,11 +22,21 @@ try{
       usage:{input_tokens:17,cache_creation_input_tokens:0,
       cache_read_input_tokens:5,output_tokens:7}}})).join('\n')+'\n';
   await writeFile(join(projects,`${nativeId}.jsonl`),lines);
+  const mirroredProjects=join(home,'projects','-mirrored-usage-fixture');
+  await mkdir(mirroredProjects,{recursive:true});
+  await writeFile(join(mirroredProjects,`${nativeId}.jsonl`),JSON.stringify({type:'assistant',timestamp:at,
+    message:{id:'mirrored-record',model:'claude-opus-5-5',content:[{type:'tool_use',id:'edit-main',name:'Edit',input:{file_path:'example.ts'}}]}})+'\n');
   const helpers=join(projects,nativeId,'subagents');await mkdir(helpers,{recursive:true});
   await writeFile(join(helpers,'agent-fixture.jsonl'),JSON.stringify({type:'assistant',timestamp:at,
     message:{id:'helper-record',model:'claude-sonnet-5-5',content:[{type:'tool_use',id:'edit-helper',name:'Write',input:{file_path:'helper.ts'}}],
       usage:{input_tokens:3,cache_creation_input_tokens:0,cache_read_input_tokens:0,output_tokens:2}}})+'\n');
   await writeFile(join(secondProjects,`${secondNativeId}.jsonl`),lines.split('\n').slice(0,3).join('\n')+'\n');
+  // Server account homes link their transcript folder to one shared folder.
+  const linkedHome=join(root,'linked-home');await mkdir(linkedHome,{recursive:true});
+  await symlink(join(home,'projects'),join(linkedHome,'projects'));
+  // A real copy of one conversation under another folder of the same runner.
+  const copiedProjects=join(root,'copy-home','projects','-usage-fixture');await mkdir(copiedProjects,{recursive:true});
+  await writeFile(join(copiedProjects,`${nativeId}.jsonl`),lines.split('\n').slice(1,5).join('\n')+'\n');
   const db=new Database(':memory:');
   db.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,agent_session_uuid TEXT,provider_id TEXT,native_metadata_json TEXT,last_turn_at TEXT);
     CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,status TEXT,provider_turn_id TEXT,provider_started_at TEXT,ended_at TEXT,
@@ -53,7 +63,8 @@ try{
       calls++;
       if(method!=='provider-usage-breakdown.report')throw new Error(`raw record page requested: ${method}`);
       const selected=runner==='fixture'?{account:'fixture@example.test',home}:{account:'second@example.test',home:secondHome};
-      return serveProviderUsageBreakdownCall(method,params,join(root,runner),()=>[selected]);
+      return serveProviderUsageBreakdownCall(method,params,join(root,runner),()=>runner==='fixture'
+        ?[selected,{account:'linked@example.test',home:linkedHome},{account:'copy@example.test',home:join(root,'copy-home')}]:[selected]);
     });
   const account=result.week.accounts.find((value:any)=>value.account==='fixture@example.test');
   const other=result.week.accounts.find((value:any)=>value.account==='second@example.test');

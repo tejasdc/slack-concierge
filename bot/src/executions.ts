@@ -208,11 +208,18 @@ export function claimExecutionTurn(execution: ExecutionRow, previousOwner: strin
       : db.query(`UPDATE turns SET owner_instance_id=? WHERE id=? AND status='running' AND dispatch_attempt=? AND owner_instance_id IS ?`)
           .run(instanceId, execution.turn_id, execution.dispatch_attempt, previousOwner).changes === 1;
     if (changed && parked) db.query(`UPDATE sessions SET status='running' WHERE id=? AND status='idle'`).run(execution.session_id);
-    if (changed) db.query(`UPDATE executions SET coordinator_instance_id=?, adoptions=adoptions+1, updated_at_ms=? WHERE execution_id=?`)
+    // A Codex turn followed through the daemon is released when it parks; taking it back makes it live again.
+    if (changed) db.query(`UPDATE executions SET coordinator_instance_id=?, adoptions=adoptions+1, updated_at_ms=?,
+        state=CASE WHEN supervisor='codex-daemon' THEN 'live' ELSE state END WHERE execution_id=?`)
       .run(instanceId, Date.now(), execution.execution_id);
     return changed;
   })();
 }
+
+/** How long after parking a Codex turn is still taken back, how many times, and how many per sweep. */
+export const PARKED_CODEX_FOLLOW_WINDOW_MS = 24 * 60 * 60_000;
+export const PARKED_CODEX_FOLLOW_LIMIT = 3;
+export const PARKED_CODEX_PER_SWEEP = 2;
 
 export type HeldExecution = { execution: ExecutionRow; reason: "unresponsive" | "protocol" };
 
@@ -256,16 +263,29 @@ export async function claimAdoptableExecutions(input: { instanceId: string; only
       if (probe !== 'gone') await releaseExecution({...execution,state:'exited'});
     } catch (error) { log('error','superseded_parked_execution_stop_failed',{turn_id:execution.turn_id,execution_id:execution.execution_id,...errorFields(error)}); }
   }));
-  const open = db.query(`SELECT e.* FROM executions e JOIN turns t ON t.id=e.turn_id
-      JOIN sessions session ON session.id=t.session_id
-      WHERE e.state IN ('intended','live','exited') AND t.dispatch_attempt=e.dispatch_attempt
-        AND ((?=0 AND t.status='running') OR (t.status='parked' AND t.dispatch_failure_class='parked_ambiguous'
+  // A Codex turn that parked while this Concierge ran had its record released at once, so before
+  // 2026-11-12 nothing took it back: ten turns parked by a lost App Server connection waited 50
+  // minutes for an agent to notice. A recently parked one is followed again from its thread's history
+  // (finished, still running, or never landed and retried), a few times at most and a few per sweep.
+  // A turn he stopped is left parked: following it could only resend or swallow that Stop.
+  const parkedTurnFollowable = `t.status='parked' AND t.dispatch_failure_class='parked_ambiguous'
           AND t.turn_kind='native' AND session.status<>'archived'
           AND NOT EXISTS (SELECT 1 FROM turns later WHERE later.session_id=t.session_id AND later.id>t.id
             AND (later.provider_admission_intended_at IS NOT NULL OR later.provider_started_at IS NOT NULL
-              OR later.provider_input_acknowledged_at IS NOT NULL))))
-      ORDER BY e.created_at_ms`).all(input.onlyParked ? 1 : 0) as ExecutionRow[];
+              OR later.provider_input_acknowledged_at IS NOT NULL))`;
+  const open = (db.query(`SELECT e.* FROM executions e JOIN turns t ON t.id=e.turn_id
+      JOIN sessions session ON session.id=t.session_id
+      WHERE e.state IN ('intended','live','exited') AND t.dispatch_attempt=e.dispatch_attempt
+        AND ((?=0 AND t.status='running') OR (${parkedTurnFollowable}))
+      ORDER BY e.created_at_ms`).all(input.onlyParked ? 1 : 0) as ExecutionRow[]).concat(!input.onlyParked ? [] :
+    db.query(`SELECT e.* FROM executions e INDEXED BY executions_released_codex JOIN turns t ON t.id=e.turn_id
+      JOIN sessions session ON session.id=t.session_id
+      WHERE e.supervisor='codex-daemon' AND e.state='released' AND e.updated_at_ms>? AND e.adoptions<?
+        AND t.dispatch_attempt=e.dispatch_attempt AND t.stop_requested_at IS NULL AND ${parkedTurnFollowable}
+      ORDER BY e.created_at_ms`).all(Date.now() - PARKED_CODEX_FOLLOW_WINDOW_MS, PARKED_CODEX_FOLLOW_LIMIT) as ExecutionRow[]);
+  let parkedCodexTaken = 0;
   for (const execution of open) {
+    if (execution.state === "released" && parkedCodexTaken >= PARKED_CODEX_PER_SWEEP) continue;
     const turn = db.query("SELECT owner_instance_id,status FROM turns WHERE id=?").get(execution.turn_id) as { owner_instance_id: string | null; status: string } | null;
     if (!turn) continue;
     const parked = turn.status === "parked";
@@ -277,6 +297,7 @@ export async function claimAdoptableExecutions(input: { instanceId: string; only
       continue;
     }
     if (!claimExecutionTurn(execution, turn.owner_instance_id, input.instanceId, parked)) continue;
+    if (execution.state === "released") parkedCodexTaken++;
     const protocolKnown = ADOPTABLE_HOST_PROTOCOLS.includes(execution.host_protocol);
     if (probe === "unresponsive" || !protocolKnown) {
       // Containment, not success: the run stays this coordinator's, its agent keeps its process and

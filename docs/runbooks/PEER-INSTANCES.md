@@ -161,7 +161,10 @@ asks the Mac owner for the need of the run holding that conversation. The newest
 need wins, while an exact open provider renewal admitted to that run remains available
 after an unrelated budget or progress input. Codex turns all run on the
 shared App Server, so a per-turn environment never reaches Codex's hook; before 2026-11-03 a Codex
-session created with a mac-app need was refused as if it had none. The owner returns
+session created with a mac-app need was refused as if it had none. An owner that does not
+answer (a restart for an update) is not an answer of "no need": the guard keeps asking for up to
+15 seconds, and past that refuses with "retry shortly" rather than denying the need
+([failure record](../incidents/2026-11-12-mac-app-need-lost-during-owner-restart.md)). The owner returns
 the retained reason as well as the kind, so the hook can enforce an exact app target
 when Tejas authorizes a Safari web app. For the currently authorized thnkr.ing window,
 name both its bundle ID and page ID in the `mac-app:` reason. The agent selects that
@@ -291,6 +294,20 @@ The `~/.codex` sync job (`rsync-workspace-icloud`) must exclude `app-server-daem
 files had been mirrored onto the Mac, which made `codex` unrunnable there and the daemon
 believe it was already running. The excludes are in `sync-remote.yaml`; the mirrored
 files were moved to `~/.codex/synced-linux-state.stale-20260918/`.
+
+## Paced starts, shared Playwright and memory evidence on the Mac
+
+`scripts/install-mac.sh` also installs, before restarting Concierge: a pinned `@playwright/mcp` under
+`$STATE/playwright-mcp` run by its own launchd job `com.tejasdc.concierge-playwright` (loopback `:8931`,
+`--isolated --headless`), and sets `CONCIERGE_SHARED_PLAYWRIGHT_URL` for Concierge only once the server answers. Claude
+sessions Concierge launches then add that server with `--mcp-config` and turn the per-session
+`playwright@claude-plugins-official` plugin off in their `--settings` (`claudeAgentSettings` in `bot/src/claude-code.ts`);
+sessions started from elsewhere on the Mac keep the plugin. The same environment sets the start pace (3 per 120 s, jitter
+30 s; see [turn lifecycle](../architecture/TURN-LIFECYCLE.md#paced-starts)). On macOS the freeze records
+(`owner_unresponsive`, `owner_task_blocked`, `owner_task_still_blocked`) carry `mem_pressure_level`, `swap_used_mb`,
+`owner_compressed_mb` and `pageins_since_previous` from a sampler off the blocked path (`bot/src/mac-memory-evidence.ts`).
+The same environment sets the crowding thresholds for the agents' snooze offer (`CONCIERGE_CROWD_SESSIONS=10`, load factor 2).
+Plan: [2026-11-12](../plans/2026-11-12-mac-held-work-pacing.md).
 
 ## Durable project setup
 
