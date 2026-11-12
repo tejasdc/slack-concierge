@@ -14,15 +14,22 @@
  * handoff itself, and that thread is new to him. Concierge's own upkeep notices never count,
  * even as an opening message: the Inbox router files each recovery notice into the thread whose
  * request it concerns, which makes it a root there. On 2026-11-12 about thirty recovery notices
- * filed that way lifted a week of old threads to the top together (topic:ea98c6e2).
+ * filed that way lifted a week of old threads to the top together (topic:ea98c6e2). Under such a
+ * notice only a deliberate post or an agent's final answer counts: the router's own working output
+ * in the turn that handled the notice is filed under it too, and after the first fix it still
+ * lifted threads (topic:fb6aba45 at 20:30:10 the same day).
  */
 export type ThreadEntryKind='final'|'post'|'other';
 
 /** Inputs the owner itself sends the Inbox router about existing work: never news for him. */
 export const OWNER_UPKEEP_INPUT_PREFIXES=['thread-upkeep:','unfiled-wake:'] as const;
 
+const isOwnerUpkeep=(id:string)=>OWNER_UPKEEP_INPUT_PREFIXES.some(prefix=>id.startsWith(prefix));
+const upkeepSql=(column:string)=>`(${OWNER_UPKEEP_INPUT_PREFIXES.map(prefix=>`${column} LIKE '${prefix}%'`).join(' OR ')})`;
+
 export function movesThreadForHim(messageId:string,entryKind:ThreadEntryKind,root:string):boolean {
-  if(OWNER_UPKEEP_INPUT_PREFIXES.some(prefix=>messageId.startsWith(prefix)))return false;
+  if(isOwnerUpkeep(messageId))return false;
+  if(isOwnerUpkeep(root))return entryKind==='final'||entryKind==='post';
   if(messageId===root)return true;
   if(messageId.startsWith('request:'))return false;
   if(messageId.startsWith('return:')&&entryKind!=='final')return false;
@@ -30,5 +37,6 @@ export function movesThreadForHim(messageId:string,entryKind:ThreadEntryKind,roo
 }
 
 /** The same rule over the prepared message table's columns. */
-export const movesThreadForHimSql=`(NOT (${OWNER_UPKEEP_INPUT_PREFIXES.map(prefix=>`message_id LIKE '${prefix}%'`).join(' OR ')})
+export const movesThreadForHimSql=`(NOT ${upkeepSql('message_id')}
+  AND (NOT ${upkeepSql('root_input_id')} OR entry_kind IN ('final','post'))
   AND (message_id=root_input_id OR NOT (message_id LIKE 'request:%' OR (message_id LIKE 'return:%' AND entry_kind<>'final'))))`;
