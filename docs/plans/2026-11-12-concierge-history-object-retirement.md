@@ -150,9 +150,9 @@ the measured 0.30 GB Codex window unchanged for now rather than guessing.
 
 ## Cutover and falsifying checks
 
-Build the candidate in an isolated worktree. The importer first writes a new
-snapshot format with existing full rows and candidate references, preserving old
-snapshot readability. The comparator walks a complete old and new conversation:
+Build the candidate in an isolated worktree. The importer still writes full
+rows; a separate guarded conversion replaces only exact proven rows in one
+snapshot after import. The comparator walks a complete old and new conversation:
 newest page, older cursor pages, compaction boundaries, queued prompts, tool
 details, owner-event replacements, missing provider files, runner identity, and
 object corruption/missing cases. No sample-only comparison authorizes retirement.
@@ -166,7 +166,9 @@ conversation's parsed rows into the migration process. Duplicate UUIDs, oversize
 or incomplete lines, and any SDK/raw message mismatch keep full rows.
 
 After host install, one guarded migration can publish only verified reference
-rows atomically and retire only the superseded full-row payloads. A rollback
+rows atomically and retire only the superseded full-row payloads. The current
+converter is operator-only, so reimports still write full rows until a safe
+post-import conversion path is integrated and measured. A rollback
 reads the retained object and reconstructs the old snapshot before downgrading
 the application; object GC remains disabled. Concierge's ordinary deployment
 path, independent runtime review, and installed page/detail reads are required
