@@ -62,6 +62,9 @@ const CODEX_MODELS = {
 /** The models a start must justify with an escalation reason unless Tejas chose them. */
 export const TOP_MODEL_CHOICES = [CLAUDE_MODELS.fable, CODEX_MODELS.astra] as const;
 export type TopModelChoice = typeof TOP_MODEL_CHOICES[number];
+/** Exact current models whose explicit human choice exempts an implementation-edit prompt. */
+export const THINKING_MODEL_CHOICES = [CLAUDE_MODELS.opus,CLAUDE_MODELS.opus1m,CLAUDE_MODELS.fable,CODEX_MODELS.sol,CODEX_MODELS.astra,
+  'claude-opus-5','claude-fable-5-1','gpt-6-sol','gpt-5.6-sol'] as const;
 /** Current helper defaults, read here so no launcher names a model of its own. */
 export const DEFAULT_CLAUDE_SUBAGENT_MODEL = CLAUDE_MODELS.sonnet;
 export const SMALLEST_CLAUDE_MODEL = CLAUDE_MODELS.haiku;
@@ -157,6 +160,12 @@ const PROVIDER_LABELS: Record<ProviderId, string> = {
 /** A provider he can read; an unknown or missing provider is null, never another provider's name. */
 export function providerDisplayName(provider: string | null | undefined): string | null {
   return provider ? (PROVIDER_LABELS as Record<string, string>)[provider] ?? null : null;
+}
+
+/** Human provider directives may use the product name instead of the provider label. */
+export function providerSpokenNames(provider:string):string[] {
+  const label=providerDisplayName(provider);
+  return label?[label,...(provider==='antigravity'?['Google']:[])]:[];
 }
 
 /**

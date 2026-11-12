@@ -1079,6 +1079,11 @@ weekly allowance.
 
 The owner serves `GET /sessions/v1/usage/breakdown?period=today|week`; agents get the
 same read through `router-actions.sh sessions usage --by-session --period today|week`.
+The response also reports `implementation` handoffs, held turns and recorded
+reasons per session and in total; `researchRoutes` for declared research and
+design review by ChatGPT Pro versus alternate route and reason; direct top-model
+main-conversation web calls; and `escalations.unexplainedCalls` for Fable/Astra
+transcript calls without a matching recorded choice or escalation.
 The read now includes `callMix` for all calls, each account, and each session:
 total calls, helper and main calls, helper share, and each model's call share.
 Each provider response counts once. The reader scans each real transcript

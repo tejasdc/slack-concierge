@@ -22,6 +22,6 @@ export function isCodeEditTool(name:string|null|undefined,input?:unknown):boolea
   const normalized=name?.toLowerCase().replace(/[^a-z]/g,'')??'';
   if(['edit','multiedit','write','notebookedit','filechange','applypatch'].includes(normalized))return true;
   const command=typeof input==='string'?input:input&&typeof input==='object'
-    ?String((input as Record<string,unknown>).command??(input as Record<string,unknown>).cmd??''):'';
-  return !!command&&/\b(?:apply_patch|git apply|sed -i|perl -pi)\b/.test(command);
+    ?String((input as Record<string,unknown>).command??(input as Record<string,unknown>).cmd??(input as Record<string,unknown>).code??''):'';
+  return !!command&&/(?:\b(?:apply_patch|git apply|sed -i|perl -pi)\b|\btools\.apply_patch\s*\()/.test(command);
 }

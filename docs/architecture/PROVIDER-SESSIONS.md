@@ -647,14 +647,36 @@ and `sessions --help`. Repeating the same source and action key reuses the
 worktree. The worker's session metadata identifies that it is implementation
 work, so it does not receive a top-model edit reminder.
 
-For other top-model main turns, Concierge counts distinct recognized editing
-tool calls during the provider run. At five in one turn it steers one advisory
-message into the live turn with the implementation command. In a sample of 189
+For other top-model main turns, the owner counts distinct recognized editing
+tool calls before they run. It holds the fifth edit until the agent hands the
+fixed design to `sessions implement` or records one specific reason for staying
+on the thinking model with `sessions edit-reason`, then retries the edit. An
+implementation worker and a session using Tejas's explicit model choice are
+exempt. The owner records held turns and reasons for the usage report. In a sample of 189
 recent Opus/Fable turns with editing calls, the median was two, the 75th
 percentile four, and 35 turns (18.5%) had five or more. Five catches extended
-implementation while leaving short design edits alone. It never refuses an edit.
-The reminder is sent through the existing steering channel and recorded only
-after provider acknowledgement.
+implementation while leaving short design edits alone. Claude Code and Codex
+use their managed `PreToolUse` hooks to ask the owner before a recognized edit;
+Codex documents specialized tool paths that may bypass hooks, so its gate is a
+measured guardrail rather than a complete edit boundary. Both hooks refuse an
+edit when the owner cannot answer.
+
+A new ask declaring `--purpose research|design-critique|design-review` resolves
+to ChatGPT Pro on the asking machine before peer forwarding. An explicit other
+provider needs `--provider-reason`; the owner validates both fields and retains
+them with the request. Tejas's explicit provider, model or ChatGPT thinking-level
+choice is derived from the retained human source and carried over a peer hop.
+Existing addressed requests and implementation handoffs
+retain their own routes. The usage report counts declared routes and reasons,
+and direct web research in top-model main conversations. Purpose is a declared
+request field; free-text inference would misclassify ordinary work.
+
+The server installs a managed Codex prompt hook from the release. Before the
+first model request, it asks the owner whether a Concierge thread has a recorded
+Astra reason; a direct native run uses its stated `CODEX_ESCALATION_REASON`.
+It rejects an unexplained Astra prompt; the wrapper still checks command-line
+starts. The usage report flags transcript Fable/Astra calls that lack a matching
+record, including a newly discovered bypass.
 
 The rule lives in the catalog `model-selection` skill, which the global AGENTS.md
 points to; project AGENTS.md files point to it rather than restating it. In short:
