@@ -29,7 +29,7 @@ For every row, exactly one of these can serve its complete SDK value:
 1. A full stored row (the existing format). This is mandatory for synthetic,
    unmatched, ambiguous, or not-yet-proven rows.
 2. SDK metadata plus a span of one immutable host object, only when the raw line's
-   `type`, `uuid`, `sessionId`, and `message` match the SDK row exactly at import,
+   `type`, `uuid`, `sessionId`, and present `message` match the SDK row exactly at import,
    the complete object digest and length match, and that exact object has successful offsite
    restore/readback proof. The span holds byte offset, length, and line digest.
 

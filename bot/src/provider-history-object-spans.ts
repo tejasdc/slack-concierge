@@ -186,6 +186,8 @@ export async function matchingRawMessageSpans(
     seen.add(uuid);
     const sdk = rows[ordinal]!;
     if (raw.type === sdk.type && raw.sessionId === sdk.session_id
+      && Object.prototype.hasOwnProperty.call(raw, "message")
+      && Object.prototype.hasOwnProperty.call(sdk, "message")
       && isDeepStrictEqual(raw.message, sdk.message)) matches.set(ordinal, span);
   });
   // An unparsed oversized line might repeat a matched UUID. Keep all rows in

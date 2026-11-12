@@ -121,8 +121,12 @@ export async function migrateHistorySnapshot(sessionUuid: string, allowActiveOwn
           if (seen.get(raw.uuid)) { duplicate.run(raw.uuid); discard.run(rows[0]!.ordinal); return; }
           insertSeen.run(raw.uuid);
           const stored = JSON.parse(rows[0]!.json);
-          if (stored?.conciergeRawReference === 1 || raw.type !== stored?.type
-            || raw.sessionId !== stored?.session_id || !isDeepStrictEqual(raw.message, stored?.message)) return;
+          if (!stored || typeof stored !== "object" || stored.conciergeRawReference === 1
+            || raw.type !== stored.type
+            || raw.sessionId !== stored.session_id
+            || !Object.prototype.hasOwnProperty.call(raw, "message")
+            || !Object.prototype.hasOwnProperty.call(stored, "message")
+            || !isDeepStrictEqual(raw.message, stored.message)) return;
           const { message: _message, ...metadata } = stored;
           candidate.run(rows[0]!.ordinal, JSON.stringify(metadata), span.offset, span.length, span.sha256);
         });
