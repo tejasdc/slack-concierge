@@ -1,7 +1,7 @@
 ---
 failure: A job banked to run only in the quiet overnight hours sat queued through seven nights and past its expiry without starting, and nobody was told why.
 date: 2026-11-12
-fix_commits: []
+fix_commits: [9421a93e, 532147cb]
 cause_status: confirmed
 ---
 
