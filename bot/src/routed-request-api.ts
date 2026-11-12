@@ -138,6 +138,9 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'board') return Response.json(await sessions.board(input));
         if (operation === 'owed') return Response.json(sessions.owed(input));
         if (operation === 'mac-need') return Response.json(sessions.macNeed(input));
+        if (operation === 'edit-gate') return Response.json(sessions.editGate(input));
+        if (operation === 'model-start-gate') return Response.json(sessions.modelStartGate(input));
+        if (operation === 'edit-reason') return Response.json(sessions.editReason(input));
         if (operation === 'note') return Response.json(await sessions.note(input));
         if (operation === 'title') return Response.json(sessions.title(input));
         if (operation === 'move') return Response.json(await sessions.move(input));
