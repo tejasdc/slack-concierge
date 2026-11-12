@@ -3,7 +3,7 @@ import { strict as assert } from "node:assert";
 import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
-  readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+  readdirSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { HistoryCacheMaintenance, HostCacheRestic, type CacheRestic } from "../src/provider-history-cache-maintenance";
@@ -90,8 +90,18 @@ export function fixture() {
   const restic = new MemoryRestic();
   let stopped = true;
   const maintenance = new HistoryCacheMaintenance(state, restic, () => { if (!stopped) throw new Error("owner_running"); }, objects);
+  const cleanup=()=>{
+    // The release manager seals its artifact directories 0555. The disposable
+    // fixture owner must reopen ONLY its own directories before unlinking them.
+    // Never follow a fixture's symlink into shared dependencies or another root.
+    const writable=(path:string)=>{
+      chmodSync(path,0o700);
+      for(const entry of readdirSync(path,{withFileTypes:true}))if(entry.isDirectory()&&!entry.isSymbolicLink())writable(join(path,entry.name));
+    };
+    writable(state);rmSync(state,{recursive:true,force:true});
+  };
   return {state, session, source, path, rows, object, sha256, status, objects, restic, maintenance,
-    setStopped: (value: boolean) => { stopped = value; }, cleanup: () => rmSync(state, {recursive: true, force: true})};
+    setStopped: (value: boolean) => { stopped = value; }, cleanup};
 }
 
 export async function check(name: string, run: (f: ReturnType<typeof fixture>) => Promise<void>) {
@@ -105,6 +115,17 @@ export function rowsAt(f: ReturnType<typeof fixture>) {
   finally { db.close(); }
 }
 
+if (process.argv.includes("--cleanup-probe")) {
+  const f=fixture(),outside=mkdtempSync(join(tmpdir(),"history-cache-outside-")),sealed=join(f.state,"sealed");
+  try {
+    mkdirSync(sealed);writeFileSync(join(sealed,"payload"),"fixture");chmodSync(sealed,0o555);
+    chmodSync(outside,0o500);symlinkSync(outside,join(f.state,"external"));
+    f.cleanup();assert.equal(existsSync(f.state),false);
+    assert.equal(lstatSync(outside).mode&0o777,0o500,"cleanup must not follow a link outside its owned tree");
+    console.log(JSON.stringify({check:"sealed fixture cleanup as ordinary user without following symlinks",status:"passed",uid:process.getuid?.()}));
+  } finally {chmodSync(outside,0o700);rmSync(outside,{recursive:true,force:true});}
+  process.exit(0);
+}
 if (import.meta.main) {
 await check("exact backup, selective conversion, SDK readback, pin accounting and materialization", async f => {
   const before = readFileSync(f.path), sourceBefore = readFileSync(f.source), beforeInode = lstatSync(f.path).ino;

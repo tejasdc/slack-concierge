@@ -52,3 +52,10 @@ the same proven batch and subtracts retained staging blocks from net savings.
   causes exact old-cache recovery when that recovery can be proven.
 - **Replayable offline:** yes; `bot/scripts/history-cache-crash-fixture.ts`. These
   are process-exit checks, not a power-loss claim.
+
+When these fixtures entered CI, its ordinary user passed hybrid artifact checks
+but could not remove sealed 0555 directories afterwards; the local root run had
+masked cleanup failure. Fixture cleanup now restores write permission only within
+its own disposable tree and never follows symlinks. A separate probe run as UID
+65534 verifies sealed-tree removal and unchanged external target permissions.
+Production sealing is unchanged.
