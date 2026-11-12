@@ -2394,6 +2394,9 @@ export function topicsCommand(actor:TopicActor,body:any,listHead?:number) {
           request,requests:[closed],absorbed:copy.requestId,by,revision:next.revision}},result:{request,absorbed:copy.requestId}};
       });
       // Drift is noticed the moment it happens: the request that made the title stop fitting.
+      // The absorbed copy's thread may now hold nothing open: it closes itself like any ending.
+      const absorbedTopic=!added.duplicate&&(added as any).absorbed?requestRow((added as any).absorbed).topicId:null;
+      if(absorbedTopic)try{closeThreadIfFinished(absorbedTopic,'settled');}catch(error){log('error','inbox_absorbed_copy_close_failed',{topic_id:absorbedTopic,message:String(error)});}
       const drift=added.duplicate?null:titleDrift(added.request.topicId);
       return drift?{...added,titleDrift:{...drift,instruction:titleDriftInstruction(drift)}}:added;
     }
@@ -3627,7 +3630,9 @@ function automaticCopyElsewhere(inputIds:string[],topicId:string):StoredRequest|
     AND request.request_id LIKE 'req:forward:%' AND json_array_length(request.sources_json)=1
     AND json_extract(request.sources_json,'$[0].inputId') IN (SELECT value FROM json_each(?))
     ORDER BY request.created_at,request.request_id LIMIT 1`).get(topicId,JSON.stringify(inputIds)) as any|null;
-  return row?toStoredRequest(row):null;
+  const copy=row?toStoredRequest(row):null;
+  // A copy with a question still open for him is left for the router to merge by hand.
+  return copy&&!questionsOfRequest(copy.topicId,copy).some(question=>OPEN_QUESTION_STATES.includes(question.state))?copy:null;
 }
 /** Exact-message routing creates durable work without guessing from a shared thread. */
 export function linkInboxDispatchWork(input:{topicId:string;sourceMessageId:string;dispatchId:string;targetSessionId:string;summary:string;brief:string}) {
@@ -3659,6 +3664,7 @@ export function linkInboxDispatchWork(input:{topicId:string;sourceMessageId:stri
   const change=reopenedForNewWork({kind:'topic_request',payload:{change:'added',topicId:topic.topicId,topic:bumped(topic),request,by:OWNER_BY,...absorbed,
     reason:'Work sent from this Inbox thread must have a durable request.',revision:topic.revision+1}});
   recordOwnerTopicChange(topic.sessionId,`topic-request:routed:${input.dispatchId}`,'topic_request',change.payload);
+  if(copy)closeThreadIfFinished(copy.topicId,'settled');
   return request.requestId;
 }
 
@@ -3949,10 +3955,14 @@ function heldAttemptSince(work:Work):{sinceMs:number;hold:string}|null {
   if(!match||work.outcome!==null||work.stalled)return null;
   const sessionId=Number(match[1]);
   if(db.query(`SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering') LIMIT 1`).get(sessionId))return null;
-  const held=db.query(`SELECT started_at,dispatch_hold FROM turns WHERE session_id=? AND status='queued'
-    AND dispatch_hold IS NOT NULL AND saved_kind IS NULL ORDER BY id LIMIT 1`).get(sessionId) as {started_at:string;dispatch_hold:string}|null;
+  // Only an allowance hold: a paced release (RELEASE_PACE_HOLD) is work already coming back.
+  const held=db.query(`SELECT 1 FROM turns WHERE session_id=? AND status='queued'
+    AND dispatch_hold='usage' AND saved_kind IS NULL LIMIT 1`).get(sessionId);
   if(!held)return null;
-  return {sinceMs:Math.max(new Date(iso(held.started_at)!).getTime(),work.createdAtMs),hold:held.dispatch_hold};
+  // Measured from when this agent last ran anything (or the attempt arrived, if later), not from
+  // when a turn was queued: a turn queued long ago that ran recently is not a long hold.
+  const lastRan=db.query(`SELECT max(ended_at) AS at FROM turns WHERE session_id=? AND ended_at IS NOT NULL`).get(sessionId) as {at:string|null};
+  return {sinceMs:Math.max(lastRan.at?new Date(iso(lastRan.at)!).getTime():0,work.createdAtMs),hold:'usage'};
 }
 const heldTooLong=(held:{sinceMs:number}|null,now=Date.now())=>!!held&&now-held.sinceMs>=HELD_ATTEMPT_RECOVERY_MS;
 /**
@@ -3963,13 +3973,15 @@ const heldTooLong=(held:{sinceMs:number}|null,now=Date.now())=>!!held&&now-held.
  */
 function supersededWaitingAttempts(request:StoredRequest,works:Work[]):{requestId:string;replacedBy:string}[] {
   const latest=works.at(-1);
-  if(!latest)return [];
+  // The replacement must be real work elsewhere: live or answered, at another agent. His forwarded
+  // reply to the same held agent, or a failed or stalled newer attempt, replaces nothing.
+  if(!latest||latest.stalled||!(latest.outcome===null||latest.outcome==='answered'))return [];
   const out:{requestId:string;replacedBy:string}[]=[];
   for(const work of works.slice(0,-1)) {
-    if(work.outcome!==null||work.createdAtMs>=latest.createdAtMs||work.id===latest.id)continue;
-    // Only an attempt still waiting behind its agent's hold: a stalled one has no queued turn to
-    // revoke, and telling every old stalled worker at once would wake them all together.
-    if(!heldAttemptSince(work))continue;
+    if(work.outcome!==null||work.createdAtMs>=latest.createdAtMs||work.id===latest.id||work.target===latest.target)continue;
+    // Only an attempt held long enough that the router was told to replace it: a stalled one has
+    // no queued turn to revoke, and a young hold may be a deliberate wait or a parallel attempt.
+    if(!heldTooLong(heldAttemptSince(work)))continue;
     const sharers=(db.query(`SELECT * FROM inbox_requests WHERE state='open' AND request_id<>?
       AND EXISTS (SELECT 1 FROM json_each(dispatches_json) WHERE json_extract(value,'$.requestId')=?)`).all(request.requestId,work.id) as any[]).map(toStoredRequest);
     const stillCarries=sharers.some(other=>{
@@ -4166,8 +4178,13 @@ async function keepThreadsCurrentPass(admit?:(input:{sessionId:number;inputId:st
   }
   // A replaced attempt that was still waiting is withdrawn, so its agent does not redo the work
   // when its hold lifts. One attempt can be superseded in several threads; it is withdrawn once.
+  let withdrawn=0;
   if(withdraw)for(const item of new Map(superseded.map(entry=>[entry.requestId,entry])).values()) {
-    try{withdraw(item.requestId,item.replacedBy);}
+    if(withdrawn>=5)break;
+    // Rechecked at the moment of withdrawal: the pass yields, and a hold can lift meanwhile.
+    const work=workRow(item.requestId);
+    if(!work||!heldTooLong(heldAttemptSince(work)))continue;
+    try{if(withdraw(item.requestId,item.replacedBy))withdrawn++;}
     catch(error){log('error','inbox_superseded_withdraw_failed',{request_id:item.requestId,message:error instanceof Error?error.message:String(error)});}
     if(Date.now()>=nextYield){await yieldThreadUpkeep();nextYield=Date.now()+40;}
   }
