@@ -811,7 +811,7 @@ export class SessionCommunicationCoordinator {
         }
         return {kind:null};
     }
-    editGate(input:{providerSessionId:string;sourceRunId?:string;providerTurnId?:string;providerModel?:string;ownerTurnId?:number;toolId:string;toolName:string;toolInput?:unknown}) {
+    editGate(input:{providerSessionId:string;sourceRunId?:string;providerTurnId?:string;providerModel?:string;providerAgentId?:string;ownerTurnId?:number;toolId:string;toolName:string;toolInput?:unknown}) {
         return implementationEditDecision(input);
     }
     modelStartGate(input:{providerSessionId:string;model:string}) {

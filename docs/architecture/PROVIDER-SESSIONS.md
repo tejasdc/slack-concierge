@@ -658,7 +658,11 @@ Codex supplies the parent session ID, active model and execution turn to its
 edit hook: a different execution is recorded separately with its actual model,
 and cannot consume the parent turn's allowance. If the parent execution or
 helper model cannot be identified, the edit is held rather than attributed by
-guess. The owner records held turns and reasons for the usage report. In a sample of 189
+guess. Claude Code identifies a helper by its hook's agent ID; the owner records
+its edits against the parent turn separately without inventing a helper model,
+which the edit hook does not supply. If an accepted worker later fails or is
+canceled, the next edit is held again; repeated checks of the same hold are
+idempotent. The owner records held turns and reasons for the usage report. In a sample of 189
 recent Opus/Fable turns with editing calls, the median was two, the 75th
 percentile four, and 35 turns (18.5%) had five or more. Five catches extended
 implementation while leaving short design edits alone. Claude Code and Codex

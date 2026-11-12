@@ -4,7 +4,7 @@ import {isCodeEditTool,isThinkingModel} from './implementation-models';
 import {nativeRunId,recordSessionEvent,sessionMetadata} from './session-inputs';
 import {humanChoseThinkingModel} from './model-escalation-custody';
 
-type GateInput={providerSessionId:string;sourceRunId?:string;providerTurnId?:string;providerModel?:string;ownerTurnId?:number;toolId:string;toolName:string;toolInput?:unknown};
+type GateInput={providerSessionId:string;sourceRunId?:string;providerTurnId?:string;providerModel?:string;providerAgentId?:string;ownerTurnId?:number;toolId:string;toolName:string;toolInput?:unknown};
 type Running={id:number;session_id:number;accepted_input_id:string|null;provider_turn_id:string|null};
 const name=(value:unknown)=>typeof value==='string'&&value.length>0&&value.length<=256?value:null;
 const editEvent=(turnId:number,toolId:string)=>`implementation-edit:${turnId}:${createHash('sha256').update(toolId).digest('hex')}`;
@@ -41,6 +41,17 @@ export function implementationEditDecision(input:GateInput):{hold:boolean;messag
   }
   const turn=exact??(!input.providerTurnId?running.find(row=>input.ownerTurnId===row.id)??(running.length===1?running[0]:null):null);
   if(!turn)return {hold:true,message:'Concierge cannot identify the active turn for this code edit. Retry when its owner is available.'};
+  if(bound.provider_id==='claude-code'&&name(input.providerAgentId)){
+    if((input.ownerTurnId&&input.ownerTurnId!==turn.id)||(input.sourceRunId&&input.sourceRunId!==nativeRunId(turn.id)))
+      return {hold:true,message:'Concierge cannot identify the active turn for this Claude helper edit. Retry when its owner is available.'};
+    const key=`implementation-helper-edit:${createHash('sha256').update(JSON.stringify([session.id,turn.id,input.providerAgentId,input.toolId])).digest('hex')}`;
+    db.transaction(()=>{
+      if(!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(key))
+        recordSessionEvent({eventId:key,sessionId:session.id,inputId:turn.accepted_input_id,turnId:turn.id,
+          kind:'implementation_helper_edit',payload:{providerAgentId:input.providerAgentId,toolId:input.toolId}});
+    })();
+    return {hold:false,exempt:'claude-helper'};
+  }
   const meta=sessionMetadata(bound);
   const model=bound.provider_id==='claude-code'
     ?getClaudePreferredModel(session.id,turn.id)??meta.model:meta.model;
@@ -68,7 +79,8 @@ export function implementationEditDecision(input:GateInput):{hold:boolean;messag
     if(edits>=4&&!reason&&!handoff){
       const source=turn.accepted_input_id;
       const sourceFlags=source?`--source-input ${source} --source-run ${nativeRunId(turn.id)}`:'--source-input <this input> --source-run <this run>';
-      recordSessionEvent({eventId:`implementation-edit-hold:${turn.id}`,sessionId:session.id,inputId:source,turnId:turn.id,
+      const holdId=createHash('sha256').update(JSON.stringify([model,edits])).digest('hex');
+      recordSessionEvent({eventId:`implementation-edit-hold:${turn.id}:${holdId}`,sessionId:session.id,inputId:source,turnId:turn.id,
         kind:'implementation_edit_hold',payload:{model,afterEdits:edits}});
       return {hold:true,edits,message:`The fifth code edit is held. If the design is fixed, hand implementation to a cheaper session: router-actions.sh sessions implement --project <registered-project> --session-name "<task>" --summary "<acceptance criterion>" ${sourceFlags} --action-id <stable-id> -- <fixed design>. To continue here, state why this turn still needs ${model}: router-actions.sh sessions edit-reason --reason "<specific reason>" ${sourceFlags} --action-id top-edit-${turn.id}. Retry the edit after that command. The designer reviews the implementer's result.`};
     }
