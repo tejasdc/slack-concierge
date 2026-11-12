@@ -49,21 +49,16 @@ try{
   assert.ok(waiting[3]!.at-waiting[0]!.at<=config.windowMs+config.jitterMs,'jitter is bounded');
   assert.equal(nextQueuedTurnAttemptMs(T),waiting[0]!.at,'the existing wake clock is the scheduler');
 
-  // The agent's order replaces the oldest-first fallback.
-  const ids=pace.startsToOrder(db,config);
-  assert.equal(ids.length,5);
-  const reversed=[...ids].reverse().map(turnId=>({turnId,reason:'later work first'}));
-  db.transaction(()=>{pace.storeOrder(db,ids,reversed,T);pace.slotWaitingStarts(db,T,config);})();
-  assert.equal(pace.startsToOrder(db,config).length,0,'not asked again until new starts join');
-  assert.equal(row(held[7]!).dispatch_hold,'start_pace:1');
-  const at=row(held[7]!).at;
+  // The line's order is fixed: oldest first within a tier, so the second group is the next oldest three.
+  assert.equal(pace.waitingStarts(db).length,5);
+  const at=row(held[3]!).at;
   assert.equal(claimNextQueuedTurn(OWNER,at-1),null,'nothing starts before its slot');
   const second=[1,2,3,4].map(()=>claimNextQueuedTurn(OWNER,at+1)?.turn_id??null);
-  assert.deepEqual(second.slice(0,3),[held[7],held[6],held[5]],'the second group starts in the agent order');
+  assert.deepEqual(second.slice(0,3),[held[3],held[4],held[5]],'the second group starts in line order');
   assert.equal(second[3],null);
-  assert.deepEqual([held[4]!,held[3]!].map(id=>row(id).dispatch_hold),['start_pace:1','start_pace:2'],'those left move up in place');
+  assert.deepEqual([held[6]!,held[7]!].map(id=>row(id).dispatch_hold),['start_pace:1','start_pace:2'],'those left move up in place');
   const status=receiptStatusFromFacts({id:'i',session_id:1,kind:'input',request_id:null,origin:'agent'},
-    {turn:{id:held[4]!,status:'queued',agent_text:null,dispatch_failure_class:'backoff',dispatch_next_attempt_ms:Date.now()+60_000,dispatch_attempt:0,dispatch_hold:'start_pace:7'},steering:null,state:'queued'},{},
+    {turn:{id:held[6]!,status:'queued',agent_text:null,dispatch_failure_class:'backoff',dispatch_next_attempt_ms:Date.now()+60_000,dispatch_attempt:0,dispatch_hold:'start_pace:7'},steering:null,state:'queued'},{},
     {retry:()=>null,outage:()=>null,requestWait:()=>({after:false,held:null}),savedTurn:()=>null,continuationRefusal:()=>null,
       session:()=>({status:'idle',providerId:'codex',suspended:false,outside:false}),otherLiveTurn:()=>false,deploymentHold:()=>false,
       focusHold:()=>null,olderBlockingTurn:()=>null,dependencyPending:()=>false,now:()=>Date.now(),formatTime:()=>'3:12 PM'});
@@ -81,12 +76,29 @@ try{
   assert.equal(pace.decideStart(db,{turnId:1,exempt:true},Date.now()+10*60_000,config,2).admit,true,'warning does not hold his own message');
   assert.equal(pace.decideStart(db,{turnId:1,exempt:true},Date.now()+10*60_000,config,4).admit,false,'critical holds even his message');
 
-  // The agent's answer is only trusted when it names each waiting turn exactly once.
-  assert.equal(pace.parseOrder('[{"id":1,"reason":"a"},{"id":1,"reason":"b"}]',[1,2]),null);
-  assert.equal(pace.parseOrder('[{"id":1}]',[1,2]),null);
-  assert.deepEqual(pace.parseOrder('Sure:\n[{"id":2,"reason":"x"},{"id":1,"reason":"y"}]',[1,2]),[{turnId:2,reason:'x'},{turnId:1,reason:'y'}]);
   assert.equal(pace.startPaceConfig({CONCIERGE_START_PACE_BUDGET:'0'}),null);
   assert.equal(pace.ordinal(11),'11th');assert.equal(pace.ordinal(22),'22nd');
+  // Self-snooze: refused for his own work and on an uncrowded machine; recorded as a held status that keeps requests open.
+  const {crowdingConfig,readCrowding,crowdingNotice}=await import('../src/crowding');
+  const {checkSnooze,recordSnooze,SnoozeRefused}=await import('../src/snooze');
+  const crowdCfg=crowdingConfig({CONCIERGE_CROWD_SESSIONS:'100'})!;
+  assert.equal(crowdingConfig({}),null,'the server leaves it off');
+  assert.equal(readCrowding(db,crowdCfg,Date.now(),{load:0.5,cores:14,memoryLevel:1}).crowded,false);
+  const warnLevel=readCrowding(db,crowdCfg,Date.now(),{load:0.5,cores:14,memoryLevel:2});
+  assert.ok(warnLevel.crowded&&/memory pressure/.test(crowdingNotice(warnLevel))&&/must not snooze/.test(crowdingNotice(warnLevel)));
+  assert.ok(readCrowding(db,crowdCfg,Date.now(),{load:40,cores:14,memoryLevel:1}).crowded,'load above 2x the processors');
+  const calm={load:0.5,cores:14,memoryLevel:1};
+  const refusal=(f:()=>void)=>{try{f();return null;}catch(e){return e instanceof SnoozeRefused?e.code:'other';}};
+  const nowS=Date.now(),workTurn=queued('snooze-worker'),humanTurn=queued('snooze-human','human');
+  assert.equal(refusal(()=>checkSnooze(db,{turnId:workTurn,untilMs:nowS+3_600_000,reason:'r',nowMs:nowS},crowdCfg,calm)),'NOT_CROWDED','under the session threshold');
+  assert.equal(refusal(()=>checkSnooze(db,{turnId:humanTurn,untilMs:nowS+3_600_000,reason:'r',nowMs:nowS},crowdCfg,calm)),'HIS_WORK');
+  assert.equal(refusal(()=>checkSnooze(db,{turnId:workTurn,untilMs:nowS+7*3_600_000,reason:'r',nowMs:nowS},crowdCfg,calm)),'BAD_TIME');
+  assert.equal(refusal(()=>checkSnooze(db,{turnId:workTurn,untilMs:nowS+3_600_000,reason:' ',nowMs:nowS},crowdCfg,calm)),'NO_REASON');
+  const crowdedCfg={...crowdCfg,sessions:10}; // twelve turns are running here
+  assert.equal(refusal(()=>checkSnooze(db,{turnId:workTurn,untilMs:nowS+3_600_000,reason:'r',nowMs:nowS},crowdedCfg,calm)),null,'a crowded machine lets background work snooze');
+  const {snoozeReason}=await import('../src/snooze');
+  recordSnooze(db,{continuationTurnId:workTurn,sessionId:1,untilMs:nowS+3_600_000,reason:'background research'});
+  assert.equal(snoozeReason(row(workTurn).dispatch_hold),'background research');
   const {claudeAgentSettings,claudeCodeArgs,CLAUDE_AGENT_HOOK_SETTINGS}=await import('../src/claude-code');
   assert.equal(claudeAgentSettings({}),CLAUDE_AGENT_HOOK_SETTINGS,'without the setting a session launches as before');
   const shared=claudeAgentSettings({CONCIERGE_SHARED_PLAYWRIGHT_URL:'http://127.0.0.1:8931/mcp'});
@@ -98,7 +110,7 @@ try{
   assert.equal(JSON.parse(withShared[withShared.indexOf('--mcp-config')+1]!).mcpServers.playwright.url,'http://127.0.0.1:8931/mcp');
   assert.ok(withShared.indexOf('--mcp-config')<withShared.indexOf('--add-dir'),'variadic flags stay before the trailing ones');
   assert.ok(!claudeCodeArgs({prompt:'x',additionalDirs:[],sessionUUID:null,interactionPolicy:'consultation-only'}).join(' ').includes('8931'),'a restricted consultation never gets the browser');
-  console.log('start-pace-fixture: paced starts, agent order, places, exemptions and memory gate hold.');
+  console.log('start-pace-fixture: paced starts, fixed order, places, exemptions and memory gate hold.');
 }finally{
   rmSync(scratch,{recursive:true,force:true});
 }

@@ -6,6 +6,7 @@ import {readFileSync,realpathSync} from 'node:fs';
 import {join} from 'node:path';
 import {canceledRequestNotice,inboxRootResolver,sourceMessagePage} from './presentation-message-source';
 import {PreparedSearchIndex} from './prepared-search';
+import {installThreadText,writeThreadText,threadMessageText,backfillThreadText} from './prepared-thread-text';
 import {PreparedSearchUpkeep} from './prepared-search-upkeep';
 import {sessionCatalogueLabels} from './session-labels';
 import {preparedInboxDisplay} from './presentation-inbox-display';
@@ -132,6 +133,7 @@ const {search,cards,receipts,topics,areas,labRequests}=prepared.transaction(()=>
   prepared.exec(`CREATE INDEX IF NOT EXISTS presentation_messages_root_kind_latest
     ON presentation_messages(generation,root_input_id,entry_kind,event_sequence DESC);`);
   const search=new PreparedSearchIndex(prepared);
+  installThreadText(prepared);
   const cards=new PreparedSessionCards(source,prepared,(db,row)=>sessionCatalogueLabels(db,
     {...row,native_metadata_json:row.native_metadata_json??'{}'}));
   const receipts=new PreparedReceipts(source,prepared);
@@ -191,6 +193,8 @@ function writeDisplay(generation:number,sequence:number,sessionId:number,message
   const result=preparedInboxDisplay(source,sessionId,sequence,messageId);
   if(!result)return;
   insertDisplay.run(generation,sequence,JSON.stringify(result.preview));
+  // Thread search reads every word of the message, not the 1 KB preview a long one displays.
+  writeThreadText(prepared,generation,sequence,threadMessageText(result.detailJson?JSON.parse(result.detailJson):result.preview));
   prepared.query('DELETE FROM presentation_message_detail_chunks WHERE generation=? AND event_sequence=?').run(generation,sequence);
   if(result.detailJson){const digest=hash(result.detailJson);
     for(let index=0,part=0;index<result.detailJson.length;index+=4096,part++)
@@ -254,8 +258,9 @@ async function upgradeAnswerClosures(generation:number){
 }
 /** Thread time stopped counting agent upkeep (inbox-thread-time.ts); every prepared thread was
  * dated by its newest message of any kind, so each one is recomputed once, in bounded pages.
- * Version 2 also stops counting owner recovery notices filed as a thread's opening message. */
-const THREAD_TIME_VERSION=2;
+ * Version 2 also stops counting owner recovery notices filed as a thread's opening message;
+ * version 3 the router's working output under such a notice. */
+const THREAD_TIME_VERSION=3;
 async function upgradeThreadTime(generation:number){
   const version=(prepared.query('SELECT thread_time_version AS version FROM presentation_message_meta WHERE singleton=1')
     .get() as {version:number}).version;
@@ -938,7 +943,7 @@ const searchUpkeep=new PreparedSearchUpkeep(prepared,preparedPath,search,{
   sessionsAfter:(after,limit)=>(source.query('SELECT id FROM sessions WHERE id>? ORDER BY id LIMIT ?').all(after,limit) as {id:number}[]).map(row=>row.id),
   indexSession:writeSession,
 },keepLease,(event,fields)=>writeLogLine('info',JSON.stringify({event,...fields})));
-let checkedDisplay=false,lastTopicCollection=0,touchBackfilled=false,lastFailureDetailAt=0;
+let checkedDisplay=false,lastTopicCollection=0,touchBackfilled=false,lastFailureDetailAt=0,threadTextBackfilled=-1;
 while(true){
   try {if(claimLease()){
     observation.emit();
@@ -954,6 +959,12 @@ while(true){
     await catchUp();observation.succeeded();
     maintainSearchIfDue();
     searchUpkeep.step();
+    {
+      // Messages prepared before thread search read every word: indexed a page per pass.
+      const current=meta();
+      if(current.ready&&threadTextBackfilled!==current.generation&&prepared.transaction(()=>{keepLease();
+        return backfillThreadText(prepared,current.generation);})())threadTextBackfilled=current.generation;
+    }
     if(!touchBackfilled){
       const current=meta();
       if(current.ready)touchBackfilled=!prepared.transaction(()=>{keepLease();

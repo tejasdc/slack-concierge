@@ -3,7 +3,7 @@ import {getAcceptedSessionInput,sessionMetadata,updateSessionMetadata,nativeRunI
 import {inboxThreadRoot} from './session-inbox';
 import {questionsDeclaredByRun,readsForTurn,type ReadingText} from './session-topics';
 import {log} from './log';
-import {consumeThreadNotification,dispatchedFromInput,messageAlreadyNotified} from './thread-notifications';
+import {consumeThreadNotification,dispatchedFromInput,messageAlreadyNotified,threadRangThisRun} from './thread-notifications';
 import {sessionAuthor} from './session-message-author';
 import type {TurnOutcomeMark} from './turn-outcome-marker';
 import {hasOpenDirectChatGptOutcomeDuty,requireDirectChatGptOutcomeReady} from './chatgpt-obligations';
@@ -161,7 +161,8 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
       ?consumeThreadNotification(input.sessionId,inputId,answer.messageId):null;
     const alreadyNotified=returnedDecision||!!answer&&messageAlreadyNotified(input.sessionId,answer.messageId)
       ||!!runId&&!!db.query(`SELECT 1 FROM session_owner_events WHERE session_id=? AND json_extract(payload_json,'$.inputId')=? AND kind='needs_you'
-        AND json_extract(payload_json,'$.blockingNotification')=1 AND json_extract(payload_json,'$.runId')=? LIMIT 1`).get(input.sessionId,inputId,runId);
+        AND json_extract(payload_json,'$.blockingNotification')=1 AND json_extract(payload_json,'$.runId')=? LIMIT 1`).get(input.sessionId,inputId,runId)
+      ||threadRangThisRun(input.sessionId,inputId,runId);
     const author=sessionAuthor(`concierge:${input.sessionId}`);
     // The attention event is what a client lists: the question and the input (in the
     // Inbox, the thread) it opens.

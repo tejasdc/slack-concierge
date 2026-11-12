@@ -35,6 +35,11 @@ The account-choice entrance accepts every model in Concierge's Claude alias cata
 
 ## Wait, release, and withdrawal
 
+A runner account refusal before provider admission leaves the exact unsent turn
+retryable, including when the account reading is missing or its identity does
+not match. Recovery waits for a valid account reading; see the
+[dispatch failure record](../incidents/2026-11-06-provider-dispatch-error-unbound.md).
+
 - Only a live accepted turn can be held. A safe, confirmed zero-effect refusal leaves that same turn queued with its reason and next check. Uncertain execution stays explicit; it is never replayed from a guess. A hold's timestamp means **recheck eligibility**, not a promise that the provider will start at that instant.
 - A fresh account reading, a newly usable local account, a verified top-up/reset, or the recorded reset deadline wakes held work. The owner chooses again at dispatch; it may move an ordinary Claude turn to another local home with room. Each machine discovers Claude accounts observed by its peer even when its own accounts read successfully, retaining the source time and treating the peer's account label as discovery rather than credential proof. A refresh with live usage-held work checks those discovered accounts for a missing local login and asks the browser repair agent to establish it. If a new account exists only on the server while the session lives on the Mac, its server capacity is visible but it cannot execute the Mac session until the Mac has its own proven login. The repair agent reaches Tejas only if his browser sign-in itself needs him. Account credentials are not copied between machines.
 - Canceling an agent request durably records a revocation owed to its peer. The peer withdraws any unstarted target turn in the same transaction as closing that delivery, and withdraws the cancellation instruction when no worker ran. If delivery and cancellation cross in transit, the origin retries the revocation after the peer acknowledges acceptance. Reconciliation repairs older canceled deliveries that retained both turns. A running request follows the running cancellation path. Canceled turns remain in audit history but cannot be claimed at a reset.

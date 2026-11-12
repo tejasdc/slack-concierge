@@ -818,6 +818,12 @@ every thread's replies look delivered to the router (Tejas, 2026-11-05). Threads
 
 ### Routing handoffs on the source message
 
+When a later Inbox session files an answer under a routed thread root made by
+an earlier session, it resolves that root's accepted input through retained
+Inbox lineage. The thread root alone does not establish the current session's
+input anchor; see the
+[foreign-key failure record](../incidents/2026-11-12-final-answer-routed-root-foreign-key.md).
+
 The accepted human message owns the visible routing handoff. A session route, a route into
 another thread, and a direct reply forwarded to a working agent retain distinct delivery
 identities; the message projection gives each destination its kind, recipient, destination

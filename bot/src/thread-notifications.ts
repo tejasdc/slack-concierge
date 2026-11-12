@@ -38,6 +38,20 @@ export function messageAlreadyNotified(sessionId:number,messageId:string):boolea
     .get(sessionId,messageId);
 }
 
+/**
+ * One agent turn rings him at most once per thread. On 2026-11-12 the Inbox agent filed an
+ * approval question and, eight seconds later in the same turn, posted the same choice in plain
+ * words with --notify: two rings, one decision ("I literally got 2 different notifications").
+ * The first push of the turn stands; later ones from that turn stay in the thread unrung.
+ */
+export function threadRangThisRun(sessionId:number,root:string,runId:string|null|undefined):boolean {
+  if(!runId)return false;
+  return !!db.query(`SELECT 1 FROM session_owner_events WHERE input_id=? AND session_id=? AND kind='needs_you'
+    AND json_extract(payload_json,'$.runId')=?
+    AND (json_extract(payload_json,'$.requestedNotification')=1 OR json_extract(payload_json,'$.blockingNotification')=1) LIMIT 1`)
+    .get(root,sessionId,runId);
+}
+
 /** Consumes all pending requests in this topic. A later human request inserts a new arm. */
 export function consumeThreadNotification(sessionId:number,root:string,messageId:string):string|null {
   if(messageAlreadyNotified(sessionId,messageId))return null;
@@ -80,16 +94,18 @@ export function dispatchedFromInput(inputId:string):boolean {
 }
 
 /** An explicitly notified post carries its own words and consumes any open topic arm. */
-export function notifyAgentPost(sessionId:number,root:string,messageId:string,text:string,force=true):void {
+export function notifyAgentPost(sessionId:number,root:string,messageId:string,text:string,force=true,runId:string|null=null):void {
   if(!text.trim())throw new Error('--notify requires words in the message being posted.');
   if(agentMessage(sessionId,root,messageId)?.text!==text.trim())throw new Error('--notify requires the exact words of an existing agent post.');
   db.transaction(()=>{
     const eventId=`needs_you:requested:${messageId}`;
     if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))return;
     if(messageAlreadyNotified(sessionId,messageId))return;
+    // Checked before consuming: a skipped post must leave his own "notify me" for a later answer.
+    if(threadRangThisRun(sessionId,root,runId))return;
     const asking=consumeThreadNotification(sessionId,root,messageId);
     if(!force&&!asking)return;
     recordSessionEvent({eventId,sessionId,inputId:root,kind:'needs_you',payload:{outcome:'response',question:text.trim().slice(0,2000),
-      inputId:root,postId:messageId,requestedNotification:true,...(asking?{notificationInputId:asking}:{})}});
+      inputId:root,postId:messageId,requestedNotification:true,...(asking?{notificationInputId:asking}:{}),...(runId?{runId}:{})}});
   })();
 }
