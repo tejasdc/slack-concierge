@@ -284,6 +284,11 @@ sign-in repair for a held turn, but they do not prove a runnable local credentia
 Signing in through Accounts files a home but never adds it to claude-swap (adding copies the login,
 which dies the first time the original renews), so before 2026-11-03 such an account was missing from
 every reading: hey@tejas.nyc read as absent, and nothing that waits for room could see it.
+A provider runner's own reader (`runner-provider-account-readings.ts`, used once account custody moved
+to runners on 2026-11-05) follows the same rule: after claude-swap's list it reads every signed-in
+runner home it does not list from that home's own login, and shows "Usage could not be read." when
+that read fails; it still reads those homes when claude-swap is missing or fails. Until 2026-11-12 it
+skipped them, so hey@tejas.nyc vanished again (`docs/incidents/2026-11-12-runner-usage-reader-missed-account.md`).
 When a peer supplies newer usage for an account on both machines, the receiving machine keeps its
 own sign-in verdict. A server reading can fill the Mac's bars for a signed-out home, but cannot turn
 that Mac home into a signed-in profile. Dispatch rejects the local signed-out verdict before
