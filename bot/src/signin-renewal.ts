@@ -95,13 +95,13 @@ function renewalFailureKind(resultJson: string | null): RenewalFailureKind {
 /** Action names after this prefix sort below it plus "~", the highest character an action name can hold. */
 const actionRange = (prefix: string): [string, string] => [prefix, `${prefix}~`];
 
-/** Failed renewals under `prefix` answered within `AFTER_UNFINISHED_MS`, newest first. */
-function recentFailures(prefix: string): RenewalFailure[] {
+/** Failed renewals under `prefix` answered within `windowMs`, newest first. */
+function recentFailures(prefix: string, windowMs: number): RenewalFailure[] {
   db.run(`CREATE TABLE IF NOT EXISTS signin_renewal_failures (action_id TEXT PRIMARY KEY, seen_at_ms INTEGER NOT NULL)`);
   const now = Date.now();
   const [from, to] = actionRange(prefix);
   // Range comparisons, not LIKE, so the failed-by-action index (and the external requests'
-  // unique key) bound the read to this account's renewals instead of every request ever made.
+  // unique key) bound the read to renewals instead of every request ever made.
   const failed = db.query(`SELECT r.action_id,r.result_json,
       (SELECT max(e.created_at_ms) FROM session_peer_events e WHERE e.request_id=r.request_id AND e.kind='final') AS answered_at_ms
     FROM session_peer_requests r WHERE r.outcome='failed' AND r.action_id>=? AND r.action_id<?
@@ -112,7 +112,7 @@ function recentFailures(prefix: string): RenewalFailure[] {
   for (const { action_id, answered_at_ms } of failed)
     db.run(`INSERT OR IGNORE INTO signin_renewal_failures (action_id, seen_at_ms) VALUES (?, ?)`, [action_id, Math.min(answered_at_ms ?? now, now)]);
   const recentRows = db.query(`SELECT action_id,seen_at_ms FROM signin_renewal_failures WHERE action_id>=? AND action_id<? AND seen_at_ms>? ORDER BY seen_at_ms DESC`)
-    .all(from, to, now - AFTER_UNFINISHED_MS) as { action_id: string; seen_at_ms: number }[];
+    .all(from, to, now - windowMs) as { action_id: string; seen_at_ms: number }[];
   return recentRows.map(row => ({ actionId: row.action_id, seenAtMs: row.seen_at_ms,
     kind: renewalFailureKind(failed.find(item => item.action_id === row.action_id)?.result_json ?? null) }));
 }
@@ -121,16 +121,16 @@ function recentFailures(prefix: string): RenewalFailure[] {
 const WORKER_NOTICE_PATTERNS = Object.values(PREFIX).map(prefix => `${prefix}%`);
 const WORKER_ACTION_PREFIXES = Object.values(PREFIX).map(prefix => signInWorkerActionId(prefix));
 
-/** Whether any renewal was answered after `sinceMs` with something other than a pre-sign-in failure. */
-function passedAfter(sinceMs: number): boolean {
+/** Whether a renewal was answered after `sinceMs` by the provider or the worker, not by a pre-sign-in failure. */
+function answeredPastObstacleAfter(sinceMs: number, failures: RenewalFailure[]): boolean {
+  if (failures.some(failure => failure.kind === "other" && failure.seenAtMs > sinceMs)) return true;
   return WORKER_ACTION_PREFIXES.some(prefix => {
     const [from, to] = actionRange(prefix);
-    return !!db.query(`SELECT 1 FROM session_peer_requests r WHERE r.action_id>=? AND r.action_id<? AND r.outcome IS NOT NULL AND r.outcome<>'failed'
+    return !!db.query(`SELECT 1 FROM session_peer_requests r WHERE r.action_id>=? AND r.action_id<? AND r.outcome IS NOT NULL AND r.outcome NOT IN ('failed','canceled')
         AND EXISTS(SELECT 1 FROM session_peer_events e WHERE e.request_id=r.request_id AND e.kind='final' AND e.created_at_ms>?)
-      UNION ALL SELECT 1 FROM session_external_requests r WHERE r.agent_name='signin-renewal' AND r.action_id>=? AND r.action_id<? AND r.outcome IS NOT NULL AND r.outcome<>'failed'
+      UNION ALL SELECT 1 FROM session_external_requests r WHERE r.agent_name='signin-renewal' AND r.action_id>=? AND r.action_id<? AND r.outcome IS NOT NULL AND r.outcome NOT IN ('failed','canceled')
         AND EXISTS(SELECT 1 FROM session_external_replies x WHERE x.request_id=r.request_id AND x.final=1 AND x.created_at_ms>?) LIMIT 1`)
-      .get(from, to, sinceMs, from, to, sinceMs)
-      || recentFailures(prefix).some(failure => failure.kind === "other" && failure.seenAtMs > sinceMs);
+      .get(from, to, sinceMs, from, to, sinceMs);
   });
 }
 
@@ -140,21 +140,23 @@ function passedAfter(sinceMs: number): boolean {
  * changing under it while he uses the Mac) belongs to the Mac, not to an account: on 2026-11-12,
  * after two such failures for one Claude account, renewals for two other accounts reached the
  * Mac within six minutes. So those failures count across every account: one short retry after
- * two minutes per distinct obstacle, then six hours. A provider refusal stays with its account.
- * One renewal is with the Mac at a time, so two sign-ins never run together in his Chrome.
+ * two minutes per distinct obstacle, then six hours from the second, unless a renewal answered
+ * past the obstacle in between. A provider refusal stays with its account. One renewal is with
+ * the Mac at a time, so two sign-ins never run together in his Chrome.
  */
 function workerHold(actionPrefix: string): { hold: string | null; retry: boolean } {
   const now = Date.now();
   const held = (hold: string) => ({ hold, retry: false });
-  if (recentFailures(actionPrefix).some(failure => failure.kind === "other")) return held("account_failed");
-  // A renewal that got past the Mac's obstacle afterwards (any answer but a pre-sign-in failure)
-  // proves the Mac usable again, so that obstacle no longer counts against anyone.
-  const preauth = WORKER_ACTION_PREFIXES.flatMap(recentFailures)
-    .filter(failure => failure.kind !== "other" && !passedAfter(failure.seenAtMs))
+  // Two windows back, so a pair of failures straddling the window's edge still holds six hours from the second.
+  const failures = WORKER_ACTION_PREFIXES.flatMap(prefix => recentFailures(prefix, 2 * AFTER_UNFINISHED_MS))
     .sort((a, b) => b.seenAtMs - a.seenAtMs);
-  const latest = preauth[0];
+  if (failures.some(failure => failure.actionId.startsWith(actionPrefix) && failure.kind === "other"
+    && now - failure.seenAtMs < AFTER_UNFINISHED_MS)) return held("account_failed");
+  const obstacles = failures.filter(failure => failure.kind !== "other" && !answeredPastObstacleAfter(failure.seenAtMs, failures));
+  const latest = obstacles[0] && now - obstacles[0].seenAtMs < AFTER_UNFINISHED_MS ? obstacles[0] : undefined;
   if (latest) {
-    if (preauth.filter(failure => failure.kind === latest.kind).length >= 2) return held("mac_obstacle_repeated");
+    if (obstacles.filter(failure => failure.kind === latest.kind && latest.seenAtMs - failure.seenAtMs < AFTER_UNFINISHED_MS).length >= 2)
+      return held("mac_obstacle_repeated");
     if (now - latest.seenAtMs < PREAUTH_RETRY_MS) return held("mac_obstacle_retry_wait");
     const retried = WORKER_NOTICE_PATTERNS.some(pattern =>
       db.query(`SELECT 1 FROM repair_notices WHERE key LIKE ? AND created_at_ms>? LIMIT 1`).get(pattern, latest.seenAtMs));
@@ -163,6 +165,16 @@ function workerHold(actionPrefix: string): { hold: string | null; retry: boolean
   const pending = WORKER_NOTICE_PATTERNS.some(pattern =>
     db.query(`SELECT 1 FROM repair_notices WHERE key LIKE ? AND delivered_input_id IS NULL AND resolved_at_ms IS NULL LIMIT 1`).get(pattern));
   if (pending) return held("notice_pending");
+  // A delivered notice's request is created asynchronously; until its row exists (or the episode
+  // window passes after a send that failed), it is still the one renewal with the Mac.
+  const unsent = WORKER_NOTICE_PATTERNS.some(pattern =>
+    (db.query(`SELECT key FROM repair_notices WHERE key LIKE ? AND created_at_ms>? AND resolved_at_ms IS NULL`).all(pattern, now - SAME_EPISODE_MS) as { key: string }[])
+      .some(({ key }) => {
+        const actionId = signInWorkerActionId(key);
+        return !db.query(`SELECT 1 FROM session_peer_requests WHERE action_id=?
+          UNION ALL SELECT 1 FROM session_external_requests WHERE agent_name='signin-renewal' AND action_id=? LIMIT 1`).get(actionId, actionId);
+      }));
+  if (unsent) return held("notice_unsent");
   for (const prefix of WORKER_ACTION_PREFIXES) {
     const [from, to] = actionRange(prefix);
     const open = db.query(`SELECT 1 FROM session_peer_requests WHERE outcome IS NULL AND action_id>=? AND action_id<?
