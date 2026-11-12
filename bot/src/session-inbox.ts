@@ -17,6 +17,7 @@ import {unrequestedProgressPostSql} from './inbox-progress-post';
 import type {InboxProducerKind} from './inbox-producer-sources';
 import {answerClosingLine} from './answer-closing-line';
 import {inboxAttribution} from './inbox-attribution-read';
+import {activePostCollapseSql} from './inbox-collapse-visibility';
 
 export type InboxCapture = {
   source:{kind:InboxProducerKind;id:string;recordedAt:string;title?:string;metadata?:Record<string,unknown>};
@@ -116,8 +117,8 @@ const inboxRowsWhere=(closures:boolean,activity=false)=>` WHERE (${activity?"(ev
     -- than a sentence nobody wrote. A result that carries files is still a message.
     AND (event.kind<>'result' OR COALESCE(json_extract(event.payload_json,'$.text'), turn.agent_text, '')<>'' OR json_array_length(COALESCE(json_extract(event.payload_json,'$.attachments'),'[]'))>0)
     AND NOT EXISTS (SELECT 1 FROM session_owner_events collapsed
-      WHERE collapsed.event_id='post:collapse:' || CASE WHEN event.kind='answer_closure'
-        THEN json_extract(event.payload_json,'$.postId') ELSE event.event_id END)`;
+      WHERE ${activePostCollapseSql('collapsed',`CASE WHEN event.kind='answer_closure'
+        THEN json_extract(event.payload_json,'$.postId') ELSE event.event_id END`)})`;
 export const inboxRows=`${inboxRowsFrom}${inboxRowsWhere(false)}`;
 const inboxDeltaRows=`${inboxRowsFrom}${inboxRowsWhere(true)}`;
 const inboxActivityRows=(closures:boolean)=>`${inboxRowsFrom}${inboxRowsWhere(closures,true)}`;
@@ -527,28 +528,19 @@ export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:
         .get(answer.inboxSessionId,answer.requestId,answer.inboxSessionId,answer.requestId) as {event_id:string}|null;
       if(!earlier)throw new Error('A bodyless final has no prompt answer post for this request.');
       carriedBy=earlier.event_id;
-    } else if(answer.final&&!answer.stalled&&(answer.answerGroup||answer.answerSource)&&(text||answer.attachments.length)) {
+    } else if(answer.final&&!answer.stalled&&answer.answerGroup&&(text||answer.attachments.length)) {
       const topic=db.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(answer.root) as {topic_id:string}|null;
       const grouped=db.query(`SELECT post.event_id FROM session_owner_events post
         LEFT JOIN inbox_topic_roots roots ON roots.root_input_id=post.input_id
         WHERE post.session_id=? AND post.kind='post' AND ((? IS NOT NULL AND roots.topic_id=?) OR post.input_id=?)
-          AND NOT EXISTS (SELECT 1 FROM session_owner_events collapsed WHERE collapsed.event_id='post:collapse:' || post.event_id)
+          AND NOT EXISTS (SELECT 1 FROM session_owner_events collapsed WHERE ${activePostCollapseSql('collapsed','post.event_id')})
           AND json_extract(post.payload_json,'$.replyKind')='final'
           AND json_extract(post.payload_json,'$.postedBySession')=?
-          AND json_extract(post.payload_json,'$.text')=?
-          AND coalesce(json_extract(post.payload_json,'$.attachments'),'[]')=?
-          AND coalesce(json_extract(post.payload_json,'$.workDisposition'),'')=?
-          AND coalesce(json_extract(post.payload_json,'$.quiet'),'')=?
           AND coalesce(json_extract(post.payload_json,'$.messageThreadRootId'),'')=?
-          AND coalesce((SELECT json_extract(closure.payload_json,'$.closingLine') FROM session_owner_events closure
-            WHERE closure.event_id IN ('post:closure:' || substr(post.event_id,length('post:forward:')+1),
-              'post:closure:' || post.event_id) ORDER BY closure.sequence DESC LIMIT 1),'')=?
-          AND (json_extract(post.payload_json,'$.answerGroup')=? OR
-            json_extract(post.payload_json,'$.answerSource.runId')=?)
+          AND json_extract(post.payload_json,'$.answerGroup')=?
         ORDER BY post.sequence LIMIT 1`)
-        .get(answer.inboxSessionId,topic?.topic_id??null,topic?.topic_id??null,answer.root,answer.respondingSessionId,text,
-          JSON.stringify(answer.attachments),answer.workDisposition??'',answer.quiet??'',answer.messageThreadRootId??'',answer.closingLine??'',
-          answer.answerGroup??'',answer.answerSource?.runId??'') as {event_id:string}|null;
+        .get(answer.inboxSessionId,topic?.topic_id??null,topic?.topic_id??null,answer.root,answer.respondingSessionId,
+          answer.messageThreadRootId??'',answer.answerGroup) as {event_id:string}|null;
       if(grouped)carriedBy=grouped.event_id;
       else if(text||answer.attachments.length){
         recordSessionEvent({eventId:postId,sessionId:answer.inboxSessionId,inputId:answer.root,kind:'post',
@@ -562,26 +554,6 @@ export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:
         carriedBy=postId;
       }
     } else if(text||answer.attachments.length) {
-        const topic=db.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(answer.root) as {topic_id:string}|null;
-        const shared=answer.stalled?!!answer.noticeGroup:!!answer.answerSource?.runId;
-        const grouped=shared?db.query(`SELECT post.event_id FROM session_owner_events post
-          LEFT JOIN inbox_topic_roots roots ON roots.root_input_id=post.input_id
-          WHERE post.session_id=? AND post.kind='post' AND ((? IS NOT NULL AND roots.topic_id=?) OR post.input_id=?)
-            AND NOT EXISTS (SELECT 1 FROM session_owner_events collapsed WHERE collapsed.event_id='post:collapse:' || post.event_id)
-            AND json_extract(post.payload_json,'$.replyKind')='partial'
-            AND json_extract(post.payload_json,'$.postedBySession')=?
-            AND coalesce(json_extract(post.payload_json,'$.messageThreadRootId'),'')=?
-            AND ( (?=1 AND json_extract(post.payload_json,'$.noticeGroup')=?)
-              OR (?=0 AND json_extract(post.payload_json,'$.answerSource.runId')=?
-                AND json_extract(post.payload_json,'$.text')=?
-                AND coalesce(json_extract(post.payload_json,'$.attachments'),'[]')=?
-                AND coalesce(json_extract(post.payload_json,'$.answersQuestion'),0)=?) )
-          ORDER BY post.sequence LIMIT 1`)
-          .get(answer.inboxSessionId,topic?.topic_id??null,topic?.topic_id??null,answer.root,answer.respondingSessionId,
-            answer.messageThreadRootId??'',answer.stalled?1:0,answer.noticeGroup??'',answer.stalled?1:0,
-            answer.answerSource?.runId??'',text,JSON.stringify(answer.attachments),answersQuestion?1:0) as {event_id:string}|null:null;
-        if(grouped)carriedBy=grouped.event_id;
-        else {
         recordSessionEvent({eventId:postId,sessionId:answer.inboxSessionId,inputId:answer.root,kind:'post',
           payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${answer.inboxSessionId}`,messageId:answer.inboxInputId},requestId:answer.requestId,
             ...(answer.messageThreadRootId?{messageThreadRootId:answer.messageThreadRootId}:{}),
@@ -591,7 +563,6 @@ export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:
             ...(answer.final&&answer.workDisposition==='completed'&&answer.quiet?{quiet:answer.quiet}:{}),
             ...(answer.stalled?{postedBy:'service',postedBySession:answer.respondingSessionId}:{postedBy:'owner-forward',postedBySession:answer.respondingSessionId}),...(answer.attachments.length?{attachments:answer.attachments}:{})}});
         carriedBy=postId;
-        }
         if(!answer.final&&carriedBy&&!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`post:carry:${answer.eventId}`))
           recordSessionEvent({eventId:`post:carry:${answer.eventId}`,sessionId:answer.inboxSessionId,inputId:answer.root,kind:'answer_carry',
             payload:{postId:carriedBy,requestId:answer.requestId,answersQuestion}});
