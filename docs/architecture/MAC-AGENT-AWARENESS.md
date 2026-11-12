@@ -237,6 +237,11 @@ The native helper executes under the Mac's existing Accessibility identity;
 if that identity lacks access, the route refuses rather than requesting a
 new permission. The Mac release packages the helper in its immutable pinned
 control directory, so the guarded command resolves to the installed bytes.
+The Mac guard admits exact SHA-256 and executable-mode reads of that installed
+Focus helper through a Mac-file request. These reads do not grant Start,
+verify-start or End; those commands still require the source-bound Mac-app
+work request. This lets an installer verify the pinned bytes before any app
+action without borrowing the action grant.
 
 The question gate accepts a device-only claim when its question names one action on a
 physical device. The agent first uses its available device route. If that route reaches
