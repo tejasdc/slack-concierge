@@ -57,12 +57,29 @@ function authorizedFocusNeed(need:RecordedNeed,toolName:string):need is Exclude<
     &&COMPUTER_CONTROL.test(toolName);
 }
 
+function focusGrantActive(need:RecordedNeed):boolean {
+  return typeof need!=='string'&&need.kind==='mac-app'&&need.focusAuthorization===true
+    &&need.effectScope==='work'&&typeof need.why==='string'
+    &&need.why.includes(AUTHORIZED_WEB_APP)
+    &&need.why.includes('bounded Focus Start/End acceptance');
+}
+
 function authorizedNativeFocusCommand(need:RecordedNeed,command:string):boolean {
-  if(typeof need==='string'||need.kind!=='mac-app'||need.focusAuthorization!==true
-      ||need.effectScope!=='work'||typeof need.why!=='string'
-      ||!need.why.includes(AUTHORIZED_WEB_APP)
-      ||!need.why.includes('bounded Focus Start/End acceptance'))return false;
-  return command===FOCUS_START_COMMAND||command===FOCUS_VERIFY_START_COMMAND||command===FOCUS_END_COMMAND;
+  if(!focusGrantActive(need))return false;
+  // Merging stderr into the output changes nothing the helper does; agents add it by habit.
+  const exact=command.trim().replace(/\s+2>&1$/,'');
+  return exact===FOCUS_START_COMMAND||exact===FOCUS_VERIFY_START_COMMAND||exact===FOCUS_END_COMMAND;
+}
+
+/**
+ * Say which half failed. On 2026-11-12 a Mac session holding a valid Focus grant added
+ * " 2>&1" to Start and listed the helper inside compound commands; one message for both
+ * a missing grant and an inexact command left it reporting the grant as missing.
+ */
+function focusHelperRefusal(need:RecordedNeed):string {
+  return focusGrantActive(need)
+    ?`The Focus grant is active for this run, but only the fixed helper commands may name the helper. Run exactly one of these as the whole command (a trailing 2>&1 is allowed): ${FOCUS_START_COMMAND} | ${FOCUS_VERIFY_START_COMMAND} | ${FOCUS_END_COMMAND}. Any other command mentioning the helper file is refused; read its source with the Read tool and keep the file name out of reply text (use --text-file).`
+    :'This run holds no Focus grant: the request it is working on must be a live work delivery from the server that carries custody of the Focus request and names the exact thnkr.ing bundle and "bounded Focus Start/End acceptance". The fixed Start, verify-start and End commands are refused without it.';
 }
 
 function authorizedUpdateNeed(need:RecordedNeed,toolName:string):need is Exclude<RecordedNeed,string> {
@@ -234,8 +251,7 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
     return readOnlyUpdateHelperCommand(source)||authorizedNativeUpdateCommand(need,source)?null
       :'The current Thinkering update helper requires the exact attested work request and its fixed single-action command.';
   if(platform==='darwin'&&source.includes('mac-focus-ax.swift'))
-    return authorizedNativeFocusCommand(need,source)?null
-      :'The Focus helper requires the exact attested work request and its fixed Start, verify-start, or End command.';
+    return authorizedNativeFocusCommand(need,source)?null:focusHelperRefusal(need);
   if(/^(?:rg|grep|sed|cat|ls|head|tail|find|ps|stat|git\s+diff)\b/i.test(source.trim())
       && !/[;&|`\n]|\$\(/.test(source))return null;
   const remote=/\bssh\b[^\n]{0,400}\btejasdc@(?:100\.90\.183\.122|[\w.-]+)\b/i.test(source);
