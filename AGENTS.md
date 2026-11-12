@@ -25,6 +25,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [decision: agents-check-real-end-to-end-behavior]. The
   [agent test delivery](docs/runbooks/THINKERING-CAPTURE.md#agent-test-deliveries)
   is for capture paths; use a feature's own socket or route when appropriate.
+- Merge a checked pull request with `scripts/merge-pr.sh <number>`, which serialises
+  merges so concurrent fixes stop invalidating each other's required check; see
+  [merge lane](docs/runbooks/DEPLOYMENT.md#merge-lane).
 - Rebase dirty task worktrees with `scripts/rebase-worktree.sh`, which saves tracked
   changes under a ref private to that worktree and restores the exact saved object.
   It refuses branches already pushed to origin, preserving published history.
