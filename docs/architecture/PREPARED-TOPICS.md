@@ -74,7 +74,7 @@ A thread's time, unread mark and place in the Open list come from its newest mes
 changed something for Tejas: his own message, an answer, a question or a result. Agent upkeep
 shown in the conversation (an agent's handoff card, including every re-send of an old request,
 a progress-only partial reply, and stall or overdue notices on a request) stays visible there but moves none of them; housekeeping on
-the thread record never did. A thread's opening message counts, so an agent report is new to him; Concierge's own upkeep notices (`thread-upkeep:` recovery inputs and `unfiled-wake:` wakes) never count, even when the router files one into a thread as a root (2026-11-12: about thirty filed recovery notices lifted a week of old threads; that release recomputes every prepared thread once more). One rule in `bot/src/inbox-thread-time.ts` serves the prepared
+the thread record never did. A thread's opening message counts, so an agent report is new to him; Concierge's own upkeep notices (`thread-upkeep:` recovery inputs and `unfiled-wake:` wakes) never count, even when the router files one into a thread as a root; under such a root only a deliberate post or an agent's final answer counts, never the router's working output in the turn that handled it (2026-11-12: about thirty filed recovery notices lifted a week of old threads; each of the two releases recomputes every prepared thread once). One rule in `bot/src/inbox-thread-time.ts` serves the prepared
 list and the ledger fallback. The 2026-11-11 flood report (about thirty re-sends lifted old
 threads over his own) is why; the release that introduced it recomputes every prepared thread once.
 Management entries use the shared sentence formatter on selected scalar source fields;

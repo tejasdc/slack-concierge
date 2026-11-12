@@ -1,4 +1,4 @@
-import {readFile,stat} from 'node:fs/promises';
+import {DECISIONS_DIR,FAILURE_CASES_DIR,TASTE_PROFILE,decisions,failureCases,oneLine,tastePassages,type Decision,type FailureCase,type TastePassage} from './earlier-records';
 import {db} from './state';
 import {log} from './log';
 import {meaningIndex,type MeaningIndex} from './meaning-index';
@@ -23,7 +23,7 @@ import {meaningIndex,type MeaningIndex} from './meaning-index';
  */
 /** How an earlier session can be asked now, in the words a receiving agent acts on. */
 export type Answerability=(sessionId:number)=>string;
-export type EarlierWork={text:string;requests:number;sessions:number;cases:number;omissions:string[]};
+export type EarlierWork={text:string;requests:number;sessions:number;cases:number;decisions:number;taste:number;omissions:string[]};
 
 /**
  * One question embedding, at search priority, serves both comparisons. Measured on the server
@@ -35,12 +35,8 @@ const MEANING_WAIT_MS=10_000;
 const MIN_MEANING=0.55;
 const MAX_REQUESTS=8,MAX_SESSIONS=6,MAX_CASES=3;
 const CLAIM_CHARS=360;
-export const FAILURE_LEDGER=process.env.CONCIERGE_FAILURE_LEDGER||'/root/workspace/thinkering/docs/retrospectives/agent-failure-ledger.md';
+const MAX_DECISIONS=4,MAX_TASTE=3;
 
-const oneLine=(text:unknown,max:number)=>{
-  const words=String(text??'').replace(/\s+/g,' ').trim();
-  return words.length>max?`${words.slice(0,max).replace(/\s+\S*$/,'')}…`:words;
-};
 const day=(ms:number)=>new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'America/New_York'});
 const within=<T>(promise:Promise<T>,ms:number):Promise<T|'late'>=>
   Promise.race([promise,new Promise<'late'>(resolve=>setTimeout(()=>resolve('late'),ms).unref?.())]);
@@ -95,32 +91,22 @@ function closestSessions(index:MeaningIndex,vector:Float32Array):{found:{id:numb
   return {found:[...best.entries()].map(([id,score])=>({id,score})).sort((a,b)=>b.score-a.score),omission:null};
 }
 
-type FailureCase={id:string;date:string;text:string};
-let ledgerCache:{mtime:number;cases:FailureCase[]}|null=null;
-/** The failure ledger's cases: heading and opening words, re-read only when the file changes. */
-async function failureCases():Promise<FailureCase[]> {
-  const mtime=(await stat(FAILURE_LEDGER).catch(()=>null))?.mtimeMs;
-  if(mtime===undefined)return [];
-  if(ledgerCache?.mtime===mtime)return ledgerCache.cases;
-  const body=await readFile(FAILURE_LEDGER,'utf8');
-  const cases:FailureCase[]=[];
-  for(const section of body.split(/^### Failure-case: /m).slice(1)){
-    const heading=/^(\S+)\s*\(([^)]*)\)/.exec(section);
-    if(!heading)continue;
-    cases.push({id:heading[1]!,date:heading[2]!,text:oneLine(section.slice(heading[0].length).replace(/\*\*/g,''),700)});
-  }
-  ledgerCache={mtime,cases};
-  return cases;
-}
-
-async function closestCases(index:MeaningIndex,vector:Float32Array):Promise<{found:FailureCase[];omission:string|null}> {
-  const cases=await failureCases();
-  if(!cases.length)return {found:[],omission:`The failure ledger was not found at ${FAILURE_LEDGER}.`};
-  const vectors=await index.documentVectors(cases.map(item=>({key:`failure-case:${item.id}`,text:`${item.id}. ${item.text}`})));
+type Closest<T>={found:T[];omission:string|null};
+/** The written records closest in meaning to the request; each record's embedding is kept by its key and words. */
+async function closestRecords<T>(index:MeaningIndex,vector:Float32Array,items:T[],missing:string,max:number,doc:(item:T)=>{key:string;text:string}):Promise<Closest<T>> {
+  if(!items.length)return {found:[],omission:missing};
+  const docs=items.map(doc);
+  const vectors=await index.documentVectors(docs);
   const dot=(a:Float32Array,b:Float32Array)=>{let sum=0;for(let i=0;i<a.length;i++)sum+=a[i]!*b[i]!;return sum;};
-  const scored=cases.map(item=>{const other=vectors.get(`failure-case:${item.id}`);return {item,score:other?dot(vector!,other):0};});
-  return {found:scored.filter(entry=>entry.score>=MIN_MEANING).sort((a,b)=>b.score-a.score).slice(0,MAX_CASES).map(entry=>entry.item),omission:null};
+  return {found:items.map((item,at)=>{const other=vectors.get(docs[at]!.key);return {item,score:other?dot(vector,other):0};})
+    .filter(entry=>entry.score>=MIN_MEANING).sort((a,b)=>b.score-a.score).slice(0,max).map(entry=>entry.item),omission:null};
 }
+const closestCases=async(index:MeaningIndex,vector:Float32Array)=>closestRecords(index,vector,await failureCases(),
+  `No failure cases were found in ${FAILURE_CASES_DIR}.`,MAX_CASES,(item:FailureCase)=>({key:`failure-case:${item.id}`,text:`${item.id}. ${item.text}`}));
+const closestDecisions=async(index:MeaningIndex,vector:Float32Array)=>closestRecords(index,vector,await decisions(),
+  `His decision record was not found at ${DECISIONS_DIR}.`,MAX_DECISIONS,(item:Decision)=>({key:`decision:${item.id}`,text:`${item.decision}. ${item.scope}. ${item.words}`}));
+const closestTaste=async(index:MeaningIndex,vector:Float32Array)=>closestRecords(index,vector,await tastePassages(),
+  `His taste profile was not found at ${TASTE_PROFILE}.`,MAX_TASTE,(item:TastePassage)=>({key:item.key,text:`${item.principle}. ${item.text}`}));
 
 export async function earlierWorkFor(input:{
   /** The request's one-line summary and words: what the problem is. */
@@ -143,7 +129,7 @@ export async function earlierWorkFor(input:{
   } catch(error) {
     const reason=error instanceof Error?error.message:String(error);
     log('warn','request_history_failed',{elapsed_ms:Math.round(performance.now()-started),error:reason});
-    return {text:`What came before: Concierge's lookup of earlier work failed (${oneLine(reason,200)}); search for it yourself with router-actions.sh sessions search.`,requests:0,sessions:0,cases:0,omissions:[reason]};
+    return {text:`What came before: Concierge's lookup of earlier work failed (${oneLine(reason,200)}); search for it yourself with router-actions.sh sessions search.`,requests:0,sessions:0,cases:0,decisions:0,taste:0,omissions:[reason]};
   }
 }
 
@@ -157,20 +143,25 @@ async function lookUp(input:Parameters<typeof earlierWorkFor>[0]):Promise<Earlie
   const thread=input.topicRoot?threadRequests(input.topicRoot,input.nowMs,input.recipient,input.sendingTurn):[];
   const inThread=new Set(thread.map(row=>row.target_session_id));
   const query=oneLine(`${input.summary??''} ${input.text}`,600);
-  type Compared={sessions:ReturnType<typeof closestSessions>;cases:Awaited<ReturnType<typeof closestCases>>};
+  type Compared={sessions:ReturnType<typeof closestSessions>;cases:Closest<FailureCase>;decisions:Closest<Decision>;taste:Closest<TastePassage>};
   const compare=async():Promise<Compared|null>=>{
     const index=meaningIndex();
-    if(!index?.installed){omissions.push('Earlier sessions and the failure ledger were not compared: the meaning index is not installed on this machine.');return null;}
+    if(!index?.installed){omissions.push('Earlier sessions, failure cases, his decisions and his taste profile were not compared: the meaning index is not installed on this machine.');return null;}
     const vector=await index.questionVector(query);
-    // One index for the question and both comparisons, so they always share an embedding model.
-    return {sessions:closestSessions(index,vector!),cases:await closestCases(index,vector!)};
+    // One index for the question and every comparison, so they always share an embedding model.
+    const [cases,decisions,taste]=await Promise.all([closestCases(index,vector!),closestDecisions(index,vector!),closestTaste(index,vector!)]);
+    return {sessions:closestSessions(index,vector!),cases,decisions,taste};
   };
-  const compared=await within(compare(),MEANING_WAIT_MS).catch(error=>{omissions.push(`Earlier sessions and the failure ledger could not be compared: ${error instanceof Error?error.message:String(error)}.`);return null;});
-  if(compared==='late')omissions.push(`Earlier sessions and the failure ledger were not compared within ${MEANING_WAIT_MS/1000} s; search yourself with router-actions.sh sessions search and read ${FAILURE_LEDGER}.`);
+  const compared=await within(compare(),MEANING_WAIT_MS).catch(error=>{omissions.push(`Earlier sessions, failure cases, his decisions and his taste profile could not be compared: ${error instanceof Error?error.message:String(error)}.`);return null;});
+  if(compared==='late')omissions.push(`Earlier sessions, failure cases, his decisions and his taste profile were not compared within ${MEANING_WAIT_MS/1000} s; search yourself with router-actions.sh sessions search, node scripts/failure-case.mjs search in thnkr.ing, decision search, and his taste profile in the interface-decisions skill.`);
   const sessions=compared&&compared!=='late'?compared.sessions:null;
   const cases=compared&&compared!=='late'?compared.cases:null;
+  const decided=compared&&compared!=='late'?compared.decisions:null;
+  const tasted=compared&&compared!=='late'?compared.taste:null;
   if(sessions?.omission)omissions.push(sessions.omission);
   if(cases?.omission)omissions.push(cases.omission);
+  if(decided?.omission)omissions.push(decided.omission);
+  if(tasted?.omission)omissions.push(tasted.omission);
   const created=db.query("SELECT CAST(strftime('%s',created_at) AS INTEGER)*1000 AS ms FROM sessions WHERE id=?");
   // Through the recipient index, newest by time; only the chosen row's words are read.
   const times=db.query('SELECT request_id,created_at_ms FROM session_communication_requests WHERE target_session_id=? AND created_at_ms<?');
@@ -186,16 +177,24 @@ async function lookUp(input:Parameters<typeof earlierWorkFor>[0]):Promise<Earlie
     if(related.length>=MAX_SESSIONS)break;
   }
   const failures=cases?.found??[];
-  log('info','request_history_looked_up',{elapsed_ms:Math.round(performance.now()-started),thread_requests:thread.length,sessions:related.length,cases:failures.length,omissions:omissions.length});
-  if(!thread.length&&!related.length&&!failures.length)
-    return {text:omissions.length?`What came before: Concierge found no earlier work on this problem. Not consulted: ${omissions.join(' ')}`:'',requests:0,sessions:0,cases:0,omissions};
-  const parts=['WHAT CAME BEFORE, found by Concierge from the request ledger, session search and thnkr.ing\'s failure ledger. '
+  const rulings=decided?.found??[];
+  const tastes=tasted?.found??[];
+  log('info','request_history_looked_up',{elapsed_ms:Math.round(performance.now()-started),thread_requests:thread.length,sessions:related.length,cases:failures.length,decisions:rulings.length,taste:tastes.length,omissions:omissions.length});
+  if(!thread.length&&!related.length&&!failures.length&&!rulings.length&&!tastes.length)
+    return {text:omissions.length?`What came before: Concierge found no earlier work on this problem. Not consulted: ${omissions.join(' ')}`:'',requests:0,sessions:0,cases:0,decisions:0,taste:0,omissions};
+  const parts=['WHAT CAME BEFORE, found by Concierge from the request ledger, session search, his recorded requirements (taste profile and decision record) and thnkr.ing\'s failure cases. '
     +'Start from this: read what each earlier agent claimed and checked, ask the ones that can answer (router-actions.sh sessions ask <address> --requested-effect informational), '
     +'and do not repeat a fix that already failed. Your first reply to this request must say what came before and how your approach differs, with --before "<that>".'];
   if(thread.length)parts.push(`Earlier requests in this Inbox thread, newest first:\n${thread.map(row=>`- ${requestLine(row,input.titleOf,input.answerability)}`).join('\n')}`);
   if(related.length)parts.push(`Earlier sessions closest to this problem:\n${related.map(entry=>
     `- ${entry.at?`${day(entry.at)}, `:''}“${input.titleOf(entry.id)}” (${input.answerability(entry.id)})${entry.last?`. Its latest request: ${requestLine(entry.last,input.titleOf,input.answerability)}`:''}`).join('\n')}`);
-  if(failures.length)parts.push(`Diagnosed failures in thnkr.ing's failure ledger (${FAILURE_LEDGER}):\n${failures.map(item=>`- ${item.id} (${item.date}): ${oneLine(item.text,300)}`).join('\n')}`);
+  if(tastes.length)parts.push(`His requirements closest to this work, from his taste profile (${TASTE_PROFILE}; the interface-decisions skill). `
+    +'These are things he has already asked for: build to them, and say in your reply which ones you followed or why one does not apply:\n'
+    +tastes.map(item=>`- ${item.principle}: ${oneLine(item.text,420)}`).join('\n'));
+  if(rulings.length)parts.push(`His decisions closest to this work (decision record ${DECISIONS_DIR}; read one with decision show <id>). `
+    +'Build within them, cite [decision: <id>] where you rely on one, and say so in your reply if the work contradicts one:\n'
+    +rulings.map(item=>`- ${item.id} (${item.status}, ${item.date}): ${oneLine(item.decision,240)}${item.words?` His words: ${oneLine(item.words,240)}`:''}`).join('\n'));
+  if(failures.length)parts.push(`Diagnosed failures in thnkr.ing's failure cases (${FAILURE_CASES_DIR}; read one with node scripts/failure-case.mjs find <id>):\n${failures.map(item=>`- ${item.id} (${item.date}): ${oneLine(item.text,300)}`).join('\n')}`);
   if(omissions.length)parts.push(`Not consulted: ${omissions.join(' ')}`);
-  return {text:parts.join('\n\n'),requests:thread.length,sessions:related.length,cases:failures.length,omissions};
+  return {text:parts.join('\n\n'),requests:thread.length,sessions:related.length,cases:failures.length,decisions:rulings.length,taste:tastes.length,omissions};
 }
