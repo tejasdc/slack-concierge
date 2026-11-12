@@ -43,6 +43,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [agent security](docs/security/2026-10-07-agent-security-review.md).
 - Agent session commands use each machine's installed wrapper, which selects
   the current release; see [runner command paths](docs/architecture/RUNNERS.md#agent-session-commands).
+- Marked messages held by per-session Pause retain their original admission identity;
+  see [session recovery](docs/architecture/SESSION-OWNER.md#identity-and-admission).
 
 ## Session and Inbox obligations
 
