@@ -1364,9 +1364,9 @@ export class SessionExecutionHost {
         .get(turnId) as {session_id:number;accepted_input_id:string;native_run_id:string|null;agent_session_uuid:string|null;
           native_metadata_json:string|null;provider_id:string}|null;
       if(!row)throw new Error('Codex process audit intent has no turn.');
-      // A Codex refusal for capacity moves a new session's first turn to another provider and clears
-      // its Codex thread, so nothing here names a thread to check, and Codex refused before doing any
-      // work. Its intent is settled with that cause; before 2026-11-12 it failed every minute for days.
+      // A Codex refusal (model capacity or allowance) moves a new session's first turn to another
+      // provider and clears its Codex thread, so nothing here names a thread to check; both reroutes
+      // run only after an attempt with no tool use or output. Its intent is settled with that cause; before 2026-11-12 it failed every minute for days.
       if(row.provider_id!=='codex'){
         recordSessionEvent({eventId:`codex-process-audit-done:${turnId}`,sessionId:row.session_id,
           inputId:row.accepted_input_id,turnId,kind:'process_audit',payload:{reason:'session-left-codex',provider:row.provider_id}});
