@@ -22,6 +22,10 @@ try{
       usage:{input_tokens:17,cache_creation_input_tokens:0,
       cache_read_input_tokens:5,output_tokens:7}}})).join('\n')+'\n';
   await writeFile(join(projects,`${nativeId}.jsonl`),lines);
+  const mirroredProjects=join(home,'projects','-mirrored-usage-fixture');
+  await mkdir(mirroredProjects,{recursive:true});
+  await writeFile(join(mirroredProjects,`${nativeId}.jsonl`),JSON.stringify({type:'assistant',timestamp:at,
+    message:{id:'mirrored-record',model:'claude-opus-5-5',content:[{type:'tool_use',id:'edit-main',name:'Edit',input:{file_path:'example.ts'}}]}})+'\n');
   const helpers=join(projects,nativeId,'subagents');await mkdir(helpers,{recursive:true});
   await writeFile(join(helpers,'agent-fixture.jsonl'),JSON.stringify({type:'assistant',timestamp:at,
     message:{id:'helper-record',model:'claude-sonnet-5-5',content:[{type:'tool_use',id:'edit-helper',name:'Write',input:{file_path:'helper.ts'}}],
