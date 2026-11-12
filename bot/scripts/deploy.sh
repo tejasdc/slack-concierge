@@ -1289,6 +1289,13 @@ deploy() {
   record_deployment_phase verifying "{\"deployed_commit\":\"$DEPLOYED_COMMIT\"}"
   DEPLOY_FAILURE_REASON="The drained coordinator could not be stopped before schema migration."
   stop_unit "$SERVICE"
+  # A deliberate bounded operator batch only: prepare/queue proved its exact
+  # closed generation offsite while serving; conversion now uses this drain.
+  # A failed or stale batch leaves its pin and request intact and starts nothing.
+  if [ -f "$STATE_DIR/history-cache-maintenance/pending.json" ]; then
+    DEPLOY_FAILURE_REASON="The queued history cache conversion failed its exact-generation backup or readback gate."
+    CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$CANDIDATE_ARTIFACT_PATH/control/history-cache.js" apply-pending
+  fi
   DEPLOY_FAILURE_REASON="The ledger could not be moved onto its own filesystem."
   relocate_ledger_to_own_filesystem
   if [ -n "$DEPLOY_RUN_ID" ] && [ "$MIGRATION_DONE" != "1" ]; then

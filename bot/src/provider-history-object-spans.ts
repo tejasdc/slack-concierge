@@ -134,7 +134,7 @@ export function readSdkMessageFromRawSpan(
 }
 
 /** Both the legacy full row and a proven reference decode to the same SDK value. */
-export function decodeStoredSdkRow(json: string): SessionMessage {
+export function decodeStoredSdkRow(json: string, root = HOST_OBJECT_ROOT): SessionMessage {
   const row = JSON.parse(json);
   if (row?.conciergeRawReference !== 1) return row as SessionMessage;
   const ref = row as StoredSdkRowReference;
@@ -143,7 +143,7 @@ export function decodeStoredSdkRow(json: string): SessionMessage {
     || !HEX_SHA256.test(ref.span.sha256) || !ref.metadata
     || typeof ref.metadata !== "object" || "message" in ref.metadata)
     throw new Error("INVALID_HISTORY_OBJECT_REFERENCE");
-  const objectPath = join(HOST_OBJECT_ROOT, "sha256", ref.objectSha256.slice(0, 2), ref.objectSha256);
+  const objectPath = join(root, "sha256", ref.objectSha256.slice(0, 2), ref.objectSha256);
   let info;
   try { info = lstatSync(objectPath); }
   catch (error) {

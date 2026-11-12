@@ -23,8 +23,19 @@ case "${1:-}" in
     shift
     exec "$INSTALL_ROOT/bun" "$CONTROL_ROOT/recover-deployment.js" "$@"
     ;;
+  history-cache)
+    shift
+    # Like deploy, this is a host-owned operation, not a source command reading
+    # through an agent's deliberately hidden state mount. Pin the sealed release.
+    HISTORY_RELEASE=$(readlink -f "$RELEASE_ROOT/current")
+    exec systemd-run --wait --pipe --collect --unit="concierge-history-cache-$(date +%s%N)" \
+      --description="Concierge exact-generation history cache maintenance" \
+      --property=UMask=0077 --property=Nice=10 --property=Slice=agents.slice \
+      --setenv=HOME=/root --setenv=CONCIERGE_STATE_DIR=/root/.local/state/concierge \
+      "$INSTALL_ROOT/bun" "$HISTORY_RELEASE/control/history-cache.js" "$@"
+    ;;
   *)
-    echo "usage: $0 <deploy|repair|recover> [arguments]" >&2
+    echo "usage: $0 <deploy|repair|recover|history-cache> [arguments]" >&2
     exit 2
     ;;
 esac

@@ -36,6 +36,7 @@
     "control/migrate-deployment-repair.js": "bot/scripts/migrate-deployment-repair.ts",
     "control/deployment-repair.js": "bot/scripts/deployment-repair.ts",
     "control/recover-deployment.js": "bot/scripts/recover-deployment.ts",
+    "control/history-cache.js": "bot/src/provider-history-cache-maintenance.ts",
     "control/drain-status.js": "bot/scripts/drain-status.ts",
     "control/relocate-ledger.js": "bot/scripts/relocate-ledger.ts",
     "control/capture-drain-status.js": "bot/scripts/capture-drain-status.ts",

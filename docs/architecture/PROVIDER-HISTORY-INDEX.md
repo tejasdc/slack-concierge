@@ -14,6 +14,26 @@ Snapshots are prepared before anyone opens a conversation. The owner's history k
 
 The separate snapshot is derived data; the native transcript and owner event ledger remain authorities. Do not delete either as cache cleanup. Look for `provider_history_imported`, `provider_history_import_failed` and response `coverage` during investigation. A cold page's client must retry on `history_indexing` instead of presenting an empty conversation as complete.
 
+## Object-backed cache maintenance
+
+The importer continues to publish full SDK rows. The optional
+[deployment-owned maintenance entrance](../runbooks/DEPLOYMENT.md#history-cache-maintenance)
+can replace exact matching payloads with proven immutable object spans, after
+backing up the precise closed cache inode and its generation-keyed verifier
+sidecar to Restic and streaming back every byte. The sidecar is recorded inside
+the private backup manifest; the backup certificate never uses the live
+`.verified.json` filename. Old, synthetic, unmatched and ambiguous rows stay full.
+
+Conversion preserves source path, cwd, ordinals, message identities, tool names,
+and all SDK metadata. A fresh generation invalidates baseline cursors and detail
+keys once; a matching verifier checkpoint moves to that generation. Retained
+owner-event detail keys and overlays do not change. Before atomic publication,
+the converter decodes every old and new row and compares their complete values,
+metadata and both indexes. It keeps the old inode pinned until explicit release;
+an interruption retains that recovery generation. Restic readback and complete
+decoder equivalence are distinct from installed page/detail acceptance. The
+runner mirror and Codex window remain intact.
+
 ## Source history and archive evidence
 
 - Claude history reads resolve the bound provider UUID through the SDK across project

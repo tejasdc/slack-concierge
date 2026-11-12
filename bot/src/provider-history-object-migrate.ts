@@ -2,8 +2,7 @@
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, openSync, renameSync, statfsSync, unlinkSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
   decodeStoredSdkRow, provenHostTranscriptObject, scanRawMessageLines,
@@ -16,12 +15,6 @@ type CacheMeta = {
 };
 
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function snapshotPath(sessionUuid: string): string {
-  if (!SESSION_UUID.test(sessionUuid)) throw new Error("INVALID_HISTORY_REQUEST");
-  return join(process.env.CONCIERGE_STATE_DIR || join(homedir(), ".local", "state", "concierge"),
-    "provider-history-cache", `${sessionUuid}.sqlite`);
-}
 
 function fingerprint(path: string) {
   const file = lstatSync(path);
@@ -40,17 +33,62 @@ function syncParent(path: string) {
   try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
 }
 
-function requireQuiescentHost() {
-  for (const unit of ["concierge-bot.service", "remote-box-backup.service"]) {
-    const check = Bun.spawnSync(["systemctl", "is-active", "--quiet", unit], { stdout: "ignore", stderr: "ignore" });
-    if (check.exitCode === 0) throw new Error(`HISTORY_MIGRATION_REQUIRES_STOPPED_${unit.toUpperCase().replace(/[^A-Z]/g, "_")}`);
-    if (check.exitCode !== 3) throw new Error("HISTORY_MIGRATION_HOST_STATE_UNKNOWN");
+export function requireStoppedServices(units: string[]) {
+  for (const unit of units) {
+    const check = Bun.spawnSync(["systemctl", "show", unit, "-p", "LoadState", "-p", "ActiveState", "-p", "SubState", "-p", "MainPID", "-p", "ControlPID"], { stderr: "ignore" });
+    const state = Object.fromEntries(check.stdout.toString().trim().split("\n").map(line => line.split("=")));
+    if (check.exitCode !== 0 || state.LoadState !== "loaded" || !["inactive", "failed"].includes(state.ActiveState)
+      || !["dead", "failed"].includes(state.SubState) || state.MainPID !== "0" || state.ControlPID !== "0")
+      throw new Error(`HISTORY_MIGRATION_REQUIRES_STOPPED_${unit.toUpperCase().replace(/[^A-Z]/g, "_")}`);
   }
+}
+export function requireQuiescentHost() {
+  requireStoppedServices(["concierge-bot.service", "remote-box-backup.service"]);
+}
+
+export type ConversionGate = {
+  path: string;
+  quiescent: () => void;
+  validate: () => Promise<void>;
+  prove: typeof provenHostTranscriptObject;
+  decode: typeof decodeStoredSdkRow;
+  beforePublish?: (path: string) => Promise<void>;
+};
+
+async function compareSnapshots(path: string, next: string, decode: typeof decodeStoredSdkRow) {
+  const before = new Database(path, { readonly: true, strict: true });
+  const after = new Database(next, { readonly: true, strict: true });
+  try {
+    const left = before.query("SELECT * FROM meta").get() as any;
+    const right = after.query("SELECT * FROM meta").get() as any;
+    if (!left || !right || left.generation === right.generation) throw new Error("HISTORY_GENERATION_NOT_REPLACED");
+    delete left.generation; delete right.generation;
+    if (!isDeepStrictEqual(left, right)) throw new Error("HISTORY_METADATA_CHANGED");
+    for (const table of ["message_ids", "tool_names"]) {
+      const a = before.query(`SELECT * FROM ${table} ORDER BY 1`).iterate();
+      const b = after.query(`SELECT * FROM ${table} ORDER BY 1`).iterate();
+      for (;;) {
+        const x = a.next(), y = b.next();
+        if (!isDeepStrictEqual(x, y)) throw new Error("HISTORY_INDEX_CHANGED");
+        if (x.done) break;
+      }
+    }
+    const a = before.query("SELECT * FROM rows ORDER BY ordinal").iterate() as IterableIterator<any>;
+    const b = after.query("SELECT * FROM rows ORDER BY ordinal").iterate() as IterableIterator<any>;
+    for (;;) {
+      const x = a.next(), y = b.next();
+      if (x.done !== y.done) throw new Error("HISTORY_ROW_COUNT_CHANGED");
+      if (x.done) break;
+      if (x.value.ordinal !== y.value.ordinal || x.value.uuid !== y.value.uuid
+        || !isDeepStrictEqual(decode(x.value.json), decode(y.value.json))) throw new Error("HISTORY_ROW_CHANGED");
+    }
+  } finally { before.close(); after.close(); }
 }
 
 function withSnapshotCopy<T extends {changed: boolean}>(
-  path: string, run: (db: Database) => Promise<T>,
+  gate: ConversionGate, run: (db: Database) => Promise<T>,
 ): Promise<T> {
+  const path = gate.path;
   const before = fingerprint(path);
   const space = statfsSync(dirname(path));
   if (space.bavail * space.bsize < before.size * 2 + 1024 * 1024 * 1024)
@@ -64,12 +102,17 @@ function withSnapshotCopy<T extends {changed: boolean}>(
     if (existsSync(temporary)) unlinkSync(temporary);
     throw error;
   }
-  return run(db).then(result => {
+  return run(db).then(async result => {
     if (!result.changed) { db.close(); unlinkSync(temporary); return result; }
     const check = db.query("PRAGMA quick_check").get() as { quick_check: string } | null;
     if (check?.quick_check !== "ok") throw new Error("INVALID_HISTORY_SNAPSHOT_COPY");
     db.close();
-    requireQuiescentHost();
+    gate.quiescent();
+    if (!sameFingerprint(before, fingerprint(path))) throw new Error("HISTORY_SNAPSHOT_CHANGED");
+    await compareSnapshots(path, temporary, gate.decode);
+    await gate.validate();
+    await gate.beforePublish?.(temporary);
+    gate.quiescent();
     if (!sameFingerprint(before, fingerprint(path))) throw new Error("HISTORY_SNAPSHOT_CHANGED");
     const descriptor = openSync(temporary, "r");
     try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
@@ -83,9 +126,10 @@ function withSnapshotCopy<T extends {changed: boolean}>(
   });
 }
 
-async function migrateHistorySnapshot(sessionUuid: string) {
-  requireQuiescentHost();
-  const path = snapshotPath(sessionUuid);
+export async function migrateHistorySnapshot(sessionUuid: string, gate: ConversionGate) {
+  gate.quiescent();
+  await gate.validate();
+  const path = gate.path;
   const beforeAllocatedBytes = fingerprint(path).blocks * 512;
   const original = new Database(path, { readonly: true, strict: true });
   try {
@@ -96,7 +140,7 @@ async function migrateHistorySnapshot(sessionUuid: string) {
     const source = fingerprint(meta.source_path);
     if (source.size !== meta.source_size || source.mtimeMs !== meta.source_mtime_ms)
       throw new Error("HISTORY_SOURCE_CHANGED");
-    const result = await withSnapshotCopy(path, async db => {
+    const result = await withSnapshotCopy(gate, async db => {
       const existing = db.query("SELECT count(*) AS count FROM rows WHERE json LIKE '{\"conciergeRawReference\":1,%'")
         .get() as {count:number};
       if (existing.count === meta.row_count) return {changed:false,referenced:existing.count,
@@ -137,7 +181,7 @@ async function migrateHistorySnapshot(sessionUuid: string) {
       if (!sameFingerprint(source, fingerprint(meta.source_path))) throw new Error("HISTORY_SOURCE_CHANGED");
       if (scan.oversizedLine) return { changed: false, referenced: existing.count,
         full: meta.row_count - existing.count, reason: "oversized_line" };
-      if (!await provenHostTranscriptObject(scan.sourceSha256, scan.sourceBytes))
+      if (!await gate.prove(scan.sourceSha256, scan.sourceBytes))
         return { changed: false, referenced: existing.count,
           full: meta.row_count - existing.count, reason: "unproven_object" };
       const update = db.query("UPDATE rows SET json=? WHERE ordinal=?");
@@ -164,7 +208,10 @@ async function migrateHistorySnapshot(sessionUuid: string) {
         }
         db.exec("COMMIT");
       } catch (error) { db.exec("ROLLBACK"); throw error; }
-      if (referenced) db.exec("VACUUM");
+      if (referenced) {
+        db.query("UPDATE meta SET generation=?").run(`object-${randomUUID()}`);
+        db.exec("VACUUM");
+      }
       return { changed: referenced > 0, newlyReferenced: referenced,
         referenced: existing.count + referenced,
         full: meta.row_count - existing.count - referenced,
@@ -177,9 +224,10 @@ async function migrateHistorySnapshot(sessionUuid: string) {
   } finally { original.close(); }
 }
 
-async function materialize(sessionUuid: string) {
-  const path = snapshotPath(sessionUuid);
-  return withSnapshotCopy(path, async db => {
+export async function materializeHistorySnapshot(gate: ConversionGate) {
+  gate.quiescent();
+  await gate.validate();
+  return withSnapshotCopy(gate, async db => {
     const nextRef = db.query("SELECT ordinal,json FROM rows WHERE ordinal>? AND json LIKE '%\"conciergeRawReference\":1%' ORDER BY ordinal LIMIT 1");
     const update = db.query("UPDATE rows SET json=? WHERE ordinal=?");
     let restored = 0;
@@ -192,11 +240,12 @@ async function materialize(sessionUuid: string) {
         lastOrdinal = row.ordinal;
         const parsed = JSON.parse(row.json);
         if (parsed?.conciergeRawReference !== 1) continue;
-        update.run(JSON.stringify(decodeStoredSdkRow(row.json)), row.ordinal);
+        update.run(JSON.stringify(gate.decode(row.json)), row.ordinal);
         restored++;
       }
       db.exec("COMMIT");
     } catch (error) { db.exec("ROLLBACK"); throw error; }
+    if (restored) db.query("UPDATE meta SET generation=?").run(`materialized-${randomUUID()}`);
     return { changed: restored > 0, restored };
   });
 }
@@ -205,10 +254,5 @@ if (import.meta.main) {
   const [command, sessionUuid] = process.argv.slice(2);
   if (!sessionUuid || !SESSION_UUID.test(sessionUuid) || !["migrate", "materialize"].includes(command || ""))
     throw new Error("USAGE: provider-history-object-migrate.ts migrate|materialize <session-uuid>");
-  // The conversion procedure is staged, but no product-cache Restic receipt can be verified yet.
-  // Keep the irreversible entry point closed until the exact generation has independent readback.
-  if (command === "migrate") throw new Error("HISTORY_CACHE_BACKUP_NOT_PROVEN");
-  requireQuiescentHost();
-  const result = command === "migrate" ? await migrateHistorySnapshot(sessionUuid) : await materialize(sessionUuid);
-  process.stdout.write(JSON.stringify(result) + "\n");
+  throw new Error("USE_DEPLOYMENT_CONTROL_HISTORY_CACHE_MAINTENANCE");
 }

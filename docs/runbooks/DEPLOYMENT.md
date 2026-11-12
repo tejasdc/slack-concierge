@@ -871,6 +871,105 @@ Repair artifacts and Codex JSONL/final messages are under
 is terminal by design; diagnose its recorded reason before creating a new
 operator deployment.
 
+## History cache maintenance
+
+This optional operator path retires only exact Claude SDK payloads, one cache
+generation per batch. It creates no timer, persistent service, credential or
+machine-wide resource setting. It uses the existing host Restic wrapper and
+retained-object proof/restore interface in remote-box `docs/transcript-objects.md`.
+The raw runner mirror, Codex window, ledger and event overlay are untouched.
+Installation does not queue or convert a cache. Live rollout remains subject to
+the [cutover plan](../plans/2026-11-12-concierge-history-object-retirement.md)
+and its review and installed acceptance gates.
+
+Use the installed controller, never a source script with private state exposed:
+
+```bash
+/usr/local/lib/slack-concierge-deployment/control history-cache prepare <claude-session-uuid>
+/usr/local/lib/slack-concierge-deployment/control history-cache queue <returned-batch-uuid>
+```
+
+The controller pins the sealed current release and runs a bounded transient host
+job in the existing agents slice. A private advisory lock excludes concurrent
+maintenance commands. `prepare` requires the nightly backup service inactive;
+it does not stop the serving coordinator. It hard-links one closed cache inode,
+checks SQLite integrity, pins exact generation and source identity, and records
+the verifier sidecar's exact bytes or absence. References already in the cache
+and the current source's fully proven immutable object are the only candidate
+dependencies. It independently verifies host plan/proof bindings and object
+hashes. No catalogue-by-UUID or historical-path guessing is allowed.
+
+The private batch lives in `<state>/history-cache-maintenance/<batch>/`. Restic
+backs up its `cache.sqlite`, `manifest.json` (including verifier bytes), and exact
+object dependency paths under a unique tag. Exit 3 is a failure here, unlike the
+nightly best-effort backup. `receipt.json` is published only after a full snapshot
+ID is known and the complete offsite streams of every selected file match local
+digest and length. The cache stream is therefore exactly the already
+integrity-checked SQLite file, without allocating a second local payload copy.
+See [Restic's JSON backup contract](https://restic.readthedocs.io/en/stable/075_scripting.html).
+Preparation reports its batch ID before work, so an interrupted attempt's pin
+can be located; incomplete batches retain their pins and never authorize conversion.
+
+`queue` rechecks the exact live inode, generation, bytes and sidecar against that
+receipt and exclusively creates one pending batch. Run the ordinary deployment
+path afterwards; it invokes `apply-pending` from the sealed candidate only after
+the existing admission drain and coordinator stop. Both coordinator and nightly
+backup must be fully stopped. The conversion rechecks the backup pin, live
+identity and sidecar, verifies object dependencies and compares complete decoded
+SDK rows and indexes before atomic replacement. It mints a fresh cursor
+generation and preserves the matching verifier checkpoint. A replaced cache or
+changed sidecar skips the batch and preserves the old pin. Other failures leave
+the pending request and pin for investigation and fail that deployment step.
+
+`conversion.json` records the intended new digest before publication;
+`result.json` records completion and allocation counts afterwards. A crash between
+those steps is ambiguous, never a reason to replay conversion. The old pin and
+the intended digest support exact rollback. The report distinguishes live cache
+blocks, retained pin blocks and the unchanged mirror. Before pin release, apparent
+cache shrinkage is **not** reclaimed disk: the old inode still occupies its blocks.
+Metadata and offsite repository bytes are additional costs, not payload savings.
+
+After reviewed installation, compare every page, older cursor page and detail
+through the product entrance, including compaction, queued prompts and owner
+replacements. Check the expected once-only stale baseline cursor, stable owner
+detail keys, source disappearance and missing/corrupt-object refusal. Keep the
+pin until those checks pass. Then explicitly release it:
+
+```bash
+/usr/local/lib/slack-concierge-deployment/control history-cache release <batch-uuid>
+```
+
+Release requires the current converted digest still equal the completed result.
+It counts released old blocks only when the pin is its inode's last local link;
+another link produces zero released bytes. No automatic cache or object GC exists.
+The offsite batch remains the recovery copy.
+
+With the coordinator stopped through the deployment boundary, rollback uses:
+
+```bash
+/usr/local/lib/slack-concierge-deployment/control history-cache restore <batch-uuid>
+/usr/local/lib/slack-concierge-deployment/control history-cache materialize <claude-session-uuid>
+```
+
+`restore` requires the live target equal the recorded converted digest (or be
+absent), never a newer cache. It restores the old pin, or independently downloads
+and verifies the exact offsite cache when the pin has been released, checks
+SQLite and generation, then restores its verifier bytes. It needs no live provider
+file. `materialize` expands references into full SDK JSON, compares all decoded
+rows and indexes, and publishes a fresh generation before an older binary is
+installed. Missing objects first use the host's restore-by-digest command, which
+refuses corrupt existing inodes. If the host's original snapshot expired, restore
+the exact object from the batch's named later snapshot using the host command's
+`--snapshot` option, then retry materialization. Missing backup, ambiguous target,
+failed integrity/readback or failed object recovery never authorizes replacement.
+
+Focused disposable verification (including a local native Restic repository;
+this is not an offsite production proof):
+
+```bash
+bun run bot/scripts/private-code-command.ts -- bun run bot/scripts/history-cache-maintenance-fixture.ts
+```
+
 ## State migration and backups
 
 A normal update copies the ledger only when the release being installed would change its

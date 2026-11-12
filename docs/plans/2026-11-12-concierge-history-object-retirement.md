@@ -1,11 +1,14 @@
 # Concierge history payload retirement against retained transcript objects
 
 Status: reader, read-only allocation inventory, and stopped-service operator
-conversion procedure are committed. Its `migrate` entry point explicitly
-refuses until an exact product-cache backup proof can be verified. Automatic
+conversion procedure are committed. The exact-generation product backup and
+maintenance gate is implemented for review; see
+[operator procedure](../runbooks/DEPLOYMENT.md#history-cache-maintenance).
+The old direct `migrate` entry point refuses; the deployment-owned path requires
+the verified backup receipt. Automatic
 new-import conversion has been removed: it could replace a cache before a
 separately verified product backup existed. No
-live cache row or runner mirror has been retired. The host object store and
+live cache row or runner mirror has been retired by this implementation. The host object store and
 restore command are installed, but Concierge's private cache backup, owner-side
 measurement, and page/detail acceptance remain separate gates.
 
