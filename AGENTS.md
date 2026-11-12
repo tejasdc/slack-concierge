@@ -130,6 +130,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   carry the live syntax and enforcement. The [request and return contract](docs/architecture/SESSION-OWNER.md#requests-and-returns)
   and [prompt thread answers](docs/architecture/PROMPT-THREAD-ANSWERS.md)
   own return position, partial answers and final disposition.
+- Separately accepted Inbox replies stay visible even when their words match; only an
+  explicit multi-request reply shares one answer. See [prompt thread answers](docs/architecture/PROMPT-THREAD-ANSWERS.md)
+  [decision: fix-protocols-never-hide-duplicates].
 - Held final returns retry delivery to their asker while completed Inbox answer
   upkeep is retained once per exact event; the yielding open-thread sweep is
   described in [native Inbox](docs/contracts/native-inbox.md#owner-upkeep-under-held-returns).
