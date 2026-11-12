@@ -100,5 +100,23 @@ try{
     ||result.week.attributionBuckets.length!==4
     ||result.week.attributionBuckets.some((bucket:any)=>bucket.topicId!=='topic:shared'))
     throw new Error('bounded report lost account, session, call mix or cache diagnostics');
+  const codexHome=join(root,'codex-home'),codexSessions=join(codexHome,'sessions','2026','11','12');
+  const codexState=join(root,'codex-runner'),nativeCodex='0192a345-6789-7abc-8def-0123456789ae';
+  const otherCodex='0192a345-6789-7abc-8def-0123456789af';
+  await mkdir(codexSessions,{recursive:true});await mkdir(codexState,{recursive:true});
+  const time=(seconds:number)=>new Date(Date.now()+seconds*1000).toISOString();
+  const context=(model:string)=>JSON.stringify({type:'turn_context',timestamp:time(-60),payload:{model}});
+  const usage=(id:string,seconds:number)=>JSON.stringify({type:'token_usage_record',timestamp:time(seconds),payload:{response_id:id,usage:{input_tokens:5,output_tokens:1}}});
+  await writeFile(join(codexSessions,`${nativeCodex}.jsonl`),[context('gpt-6-astra'),usage('before',-50),usage('between',-30),usage('after',-5)].join('\n')+'\n');
+  await writeFile(join(codexSessions,`${otherCodex}.jsonl`),[context('gpt-6-astra'),usage('other',-5)].join('\n')+'\n');
+  await writeFile(join(codexState,'model-escalations.jsonl'),[
+    {at:time(-40),model:'gpt-6-astra',attemptId:'one'},
+    {at:time(-35),model:'gpt-6-astra',attemptId:'one',providerSessionId:nativeCodex},
+    {at:time(-10),model:'gpt-6-astra',attemptId:'one',providerSessionId:nativeCodex},
+  ].map(row=>JSON.stringify(row)).join('\n')+'\n');
+  const native=await collectRunnerUsageReports(new Map([['native',new Set(['codex' as const])]]),snapshot,
+    async(_runner,method,params)=>serveProviderUsageBreakdownCall(method,params,codexState,()=>[{account:'native@example.test',home:codexHome}]));
+  if(native.week.escalations.count!==2||native.week.escalations.unexplainedCalls!==2)
+    throw new Error(`native attempt must retain first authorization and exact session: ${JSON.stringify(native.week.escalations)}`);
   console.log(`two runner report calls returned ${count+4} attributed calls and split edit counts with bounded diagnostics`);
 }finally{await rm(root,{recursive:true,force:true});}
