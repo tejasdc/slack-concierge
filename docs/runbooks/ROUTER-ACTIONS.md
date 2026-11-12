@@ -205,6 +205,8 @@ long numbers and codes he forwarded), which errs toward hiding.
 
 ## Current native routing
 
+`sessions snooze --until <ISO time, at most six hours ahead> --reason "<why this can wait>" <source-flags> --action-id A` lets an agent on a crowded machine (the Mac, when it told the agent so at turn start) wake itself later: it queues a scheduled continuation of the same session, shows "Snoozed until <time>: <reason>", and keeps every open request open with its due time moved past the wake. Refused for his direct messages and the Inbox router, when the machine is not crowded, and beyond six hours; end the turn after it. See [turn lifecycle](../architecture/TURN-LIFECYCLE.md#paced-starts).
+
 For resource-heavy phone work that Tejas authorized only while he sleeps, create a new banked coding session with `sessions bank --quiet-only` and the usual project, session name, summary, source pair and action ID. The saved-work quiet hours and time zone in thnkr.ing Settings govern the window. Concierge refuses a claim outside that band or during its last five minutes, and asks an active run to stop at that early cutoff; a continuation keeps the same choice. Inside the band it starts whenever an account has room above the reserve, even while other agents run. Each night it does not start, you are woken with why; `sessions saved list` shows the current reason as `waitingBecause`. Ordinary `sessions bank` retains its allowance-reset behavior. `sessions cancel <request-id>` withdraws a queued saved turn; `sessions saved cancel <turn-id>` remains the direct saved-work control. Check `sessions saved list` after cancellation. See [session ownership](../architecture/SESSION-OWNER.md#one-execution-owner).
 
 ### Standing agents
