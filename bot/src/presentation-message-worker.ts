@@ -18,6 +18,7 @@ import {PreparedTopics} from './prepared-topics';
 import {PreparedAreas} from './prepared-areas';
 import {PreparedLabRequests} from './prepared-lab-requests';
 import {CURRENT_INBOX_ID_SQL} from './inbox-lineage-sql';
+import {postIsCollapsed} from './inbox-collapse-visibility';
 
 const directory=process.env.CONCIERGE_STATE_DIR;
 if(!directory)throw new Error('Presentation worker requires CONCIERGE_STATE_DIR.');
@@ -114,6 +115,10 @@ const {search,cards,receipts,topics,areas,labRequests}=prepared.transaction(()=>
     .some(column=>column.name==='routing_result_visibility_version');
   if(!hadRoutingResultVisibility)
     prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN routing_result_visibility_version INTEGER NOT NULL DEFAULT 0');
+  const hadDuplicateVisibility=(prepared.query('PRAGMA table_info(presentation_message_meta)').all() as {name:string}[])
+    .some(column=>column.name==='duplicate_visibility_version');
+  if(!hadDuplicateVisibility)
+    prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN duplicate_visibility_version INTEGER NOT NULL DEFAULT 0');
   const hadThreadTime=(prepared.query('PRAGMA table_info(presentation_message_meta)').all() as {name:string}[])
     .some(column=>column.name==='thread_time_version');
   if(!hadThreadTime)
@@ -163,8 +168,8 @@ const withoutHeader=(text:string)=>{
   const end=text.indexOf('\n\n');return end<0?'':text.slice(end+2);
 };
 
-const meta=()=>prepared.query('SELECT generation,event_watermark,source_head,ready,agent_request_visibility_version,routing_result_visibility_version FROM presentation_message_meta WHERE singleton=1')
-  .get() as {generation:number;event_watermark:number;source_head:number;ready:number;agent_request_visibility_version:number;routing_result_visibility_version:number};
+const meta=()=>prepared.query('SELECT generation,event_watermark,source_head,ready,agent_request_visibility_version,routing_result_visibility_version,duplicate_visibility_version FROM presentation_message_meta WHERE singleton=1')
+  .get() as {generation:number;event_watermark:number;source_head:number;ready:number;agent_request_visibility_version:number;routing_result_visibility_version:number;duplicate_visibility_version:number};
 const head=()=>Number((source.query('SELECT COALESCE(MAX(sequence),0) AS n FROM presentation_change_log').get() as {n:number}).n);
 const observation=new PresentationWorkerObservation(()=>({...meta(),target:head()}));
 let lastSearchMaintenance=0;
@@ -594,7 +599,7 @@ async function rebuild() {
     await rebuildAreaPages(generation);
     prepared.transaction(()=>{
       keepLease();
-      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=8,answer_closures_version=2,marked_reply_roots_version=1,agent_request_visibility_version=1,routing_result_visibility_version=2 WHERE singleton=1')
+      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=8,answer_closures_version=2,marked_reply_roots_version=1,agent_request_visibility_version=1,routing_result_visibility_version=2,duplicate_visibility_version=1 WHERE singleton=1')
         .run(generation,after,startHead);
       cards.activate(generation,startHead);
       receipts.activate(receiptGeneration,startHead,receiptProjectionRevision);
@@ -674,7 +679,7 @@ async function upgradeRoutingResultVisibility(generation:number){
 /** Changes to lineage request a new generation. New messages append without rereading history. */
 async function catchUp() {
   const current=meta();
-  if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)){await rebuild();return;}
+  if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)||!current.duplicate_visibility_version){await rebuild();return;}
   await advanceReceiptRebuild(current.source_head);
   const receiptGeneration=receipts.activeGeneration();
   if(!current.agent_request_visibility_version){await upgradeAgentRequestVisibility(current.generation);return;}
@@ -750,7 +755,7 @@ async function catchUp() {
       }
       if(row?.kind==='post_collapse'){
         const postId=JSON.parse(row.payload_json).postId;
-        if(typeof postId==='string')collapsedPosts.add(postId);
+        if(typeof postId==='string'&&postIsCollapsed(source,postId))collapsedPosts.add(postId);
       }
       if(row?.turn_id&&['post','turn_outcome','result_posted'].includes(row.kind))turnsToRefresh.add(row.turn_id);
     }

@@ -64,16 +64,14 @@ recorded questions showed no answer and an urgent safety answer read as unseen f
 (request 39914136). For a peer reply, the signal travels with the retained reply event; the
 origin, which holds the thread, drops it with a log line where it does not apply.
 The Mac sends the original final body and closing facts separately; the origin checks the same
-earlier signal before accepting a bodyless final. A final from one agent run can close several
-requests in one Inbox topic with one visible post when its text, attachments, disposition,
-quiet status and nested conversation match exactly. The owner retains each request's reply,
-outcome and topic closure separately. Grouping compares the closing facts recorded for the
-first reply, even though those facts have their own event for each request; different closing
-facts keep separate visible posts. An explicit `--also` still groups requester returns;
-the post rule also works when the agent closes the requests with separate commands. Answers
-from different runs remain separately visible, as do new words after a prompt-answer partial.
-The October 21 retained duplicate posts are hidden by append-only collapse events; their
-original posts and six request outcomes remain in the ledger.
+earlier signal before accepting a bodyless final. Each separately accepted reply stays
+visible under its own request, even when its words match another reply exactly. Only one
+explicit `--also` command shares a visible answer, using that command's retained identity;
+it still settles each named request. A bodyless final attaches closure facts to the exact
+request's earlier answer. The October 21 copy-matched collapses and November 4 agent-update
+collapses remain in the ledger as historical actions, but both direct and prepared Inbox
+readers show those accepted posts again. Timer notices remain out of the human conversation
+because they are agent-facing status, not agent answers.
 On the server, the installed command wrapper always uses the current release's session command
 parser. A running agent can retain an older bundled parser across a deployment; using it for a
 reply would reject `--answers-question` before the owner could record the answer.
