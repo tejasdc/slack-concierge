@@ -137,8 +137,8 @@ to `sessions context` for the predecessor's decisions, and references to worktre
 The predecessor still owns and can work on every obligation while the handoff is proposed.
 Only one proposal may be open per predecessor; the caller or predecessor can withdraw it.
 
-The inventory names open requests sent by and owed by the predecessor, queued inputs,
-active watches, open Lab roles where available, and referenced worktrees. Each item has
+The inventory names open requests sent by and owed by the predecessor, open ChatGPT
+answer duties, queued inputs, active watches, open Lab roles where available, and referenced worktrees. Each item has
 a stable kind and reference. Sent requests retain whether their target has acknowledged
 or started work; those and ChatGPT requests must not be dispatched again. A sent request (local or to a peer)
 that has already settled is still listed while its final return has not reached the
@@ -151,12 +151,18 @@ entries stay where they were and keep their original authors.
 
 Only a live successor run can accept with the inventory digest. The owner recomputes the
 inventory; a changed digest or an unsafe queued input refuses acceptance and returns the current inventory for
-acknowledgement. Acceptance transfers the open request return and reply ownership,
-safe never-started queued inputs, scheduled firings, and watches in one ledger transaction, recording each
+acknowledgement. An answer with no acknowledged return receipt also holds acceptance until
+that exact return settles. Acceptance transfers the open request return and reply ownership,
+ChatGPT answer handling and repair ownership, safe never-started queued inputs, scheduled firings,
+and watches in one ledger transaction, recording each
 moved item. An ordinary queued input's original acceptance and history stay with the predecessor;
 the successor receives a linked copy. A scheduled input instead changes session custody in place,
 so its accepted input and firing IDs remain stable. The request keeps its own ID. Sent request IDs
-and their targets do not change. An owed request's reply ownership moves to the
+and their targets do not change. The original ChatGPT request and answer event retain
+their IDs; the successor handles that exact answer after its return is acknowledged.
+Older accepted handoffs that moved the request but left its answer duty with the
+predecessor are reconciled on owner startup without another ChatGPT send.
+An owed request's reply ownership moves to the
 successor. An outside request retains its unique accepted input as the custody key
 until that exact queued input is safely copied; several outside requests never collapse
 onto the same handoff brief. Repeating an outside ask after transfer returns its existing

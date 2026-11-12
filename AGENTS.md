@@ -132,7 +132,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   the [native Inbox thread contract](docs/contracts/native-inbox.md) keeps agent answers
   and ordinary service returns subject to their thread reply obligation.
 - ChatGPT questions carry an exact task and remain open through failed attempts,
-  return receipt, and explicit answer handling. See [ChatGPT answer obligations](docs/architecture/CHATGPT-ANSWER-OBLIGATIONS.md).
+  return receipt, and explicit answer handling; accepted handoffs move open answer
+  duties to the successor. See [ChatGPT answer obligations](docs/architecture/CHATGPT-ANSWER-OBLIGATIONS.md)
+  and [session handoff](docs/architecture/SESSION-OWNER.md#provider-change-handoff).
 - Preserve exact accepted input, run, action, source-message and target identity.
   An informational wake does not retire a delivered open work request; delegated
   work keeps its exact authority input and source run. See the [session owner wire contract](docs/contracts/session-owner-v1.md#forwarded-input-provenance).
