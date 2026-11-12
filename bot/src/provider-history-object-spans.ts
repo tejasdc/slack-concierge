@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream, closeSync, lstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { join } from "node:path";
-import { isDeepStrictEqual } from "node:util";
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 
 const MAX_REFERENCED_LINE_BYTES = 64 * 1024 * 1024;
@@ -17,12 +16,6 @@ export type StoredSdkRowReference = {
   span: RawMessageSpan;
   metadata: Omit<SessionMessage, "message">;
 };
-export type RawMessageSpanIndex = {
-  sourceSha256: string;
-  sourceBytes: number;
-  spansByOrdinal: Map<number, RawMessageSpan>;
-};
-
 export type RawLineScan = { sourceSha256: string; sourceBytes: number; oversizedLine: boolean };
 
 type HostObjectProof = {
@@ -155,43 +148,4 @@ export function decodeStoredSdkRow(json: string): SessionMessage {
   if (!info.isFile() || info.isSymbolicLink() || info.size !== ref.objectBytes
     || (info.mode & 0o777) !== 0o444) throw new Error("HISTORY_OBJECT_UNAVAILABLE");
   return readSdkMessageFromRawSpan(objectPath, ref.metadata, ref.span);
-}
-
-/**
- * Find SDK rows whose message payload is exactly recoverable from one raw line.
- * Call only on a host-published immutable object, then compare sourceSha256 and
- * sourceBytes with that object's verified receipt before replacing any payload.
- * Duplicate UUIDs and incomplete lines stay full rows.
- */
-export async function matchingRawMessageSpans(
-  path: string, rows: readonly SessionMessage[],
-): Promise<RawMessageSpanIndex> {
-  const requested = new Map<string, number>();
-  const ambiguous = new Set<string>();
-  for (let ordinal = 0; ordinal < rows.length; ordinal++) {
-    const uuid = rows[ordinal]?.uuid;
-    if (!uuid) continue;
-    if (requested.has(uuid)) ambiguous.add(uuid);
-    else requested.set(uuid, ordinal);
-  }
-  const seen = new Set<string>();
-  const matches = new Map<number, RawMessageSpan>();
-  const scan = await scanRawMessageLines(path, (line, span) => {
-    let raw: any;
-    try { raw = JSON.parse(line.toString("utf8")); } catch { raw = null; }
-    const uuid = raw?.uuid;
-    const ordinal = typeof uuid === "string" ? requested.get(uuid) : undefined;
-    if (ordinal === undefined || ambiguous.has(uuid)) return;
-    if (seen.has(uuid)) { ambiguous.add(uuid); matches.delete(ordinal); return; }
-    seen.add(uuid);
-    const sdk = rows[ordinal]!;
-    if (raw.type === sdk.type && raw.sessionId === sdk.session_id
-      && Object.prototype.hasOwnProperty.call(raw, "message")
-      && Object.prototype.hasOwnProperty.call(sdk, "message")
-      && isDeepStrictEqual(raw.message, sdk.message)) matches.set(ordinal, span);
-  });
-  // An unparsed oversized line might repeat a matched UUID. Keep all rows in
-  // their full form rather than claiming a unique source line without proof.
-  return { sourceSha256: scan.sourceSha256, sourceBytes: scan.sourceBytes,
-    spansByOrdinal: scan.oversizedLine ? new Map() : matches };
 }
