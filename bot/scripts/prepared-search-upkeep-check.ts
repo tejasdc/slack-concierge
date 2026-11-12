@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {PreparedSearchIndex} from '../src/prepared-search';
 import {PreparedSearchUpkeep} from '../src/prepared-search-upkeep';
-import {allocatedBytes} from '../src/sqlite-free-pages';
+import {allocatedBytes,releaseFreePages} from '../src/sqlite-free-pages';
 
 // A presentation file in the November 2026 layout: documents with a folded copy, a contentful
 // trigram index and a contentful short index. The upkeep must empty it, rebuild one copy of the
@@ -71,6 +71,20 @@ try {
  assert.equal(reader.search('unicycles zq',5).hits.length,0,'a short term beside a long one is checked');
  db.query("INSERT INTO search_text(search_text) VALUES('integrity-check')").run();
 
+ // A bounded release continues where it stopped instead of repeating its first ranges.
+ {
+  const scratch=new Database(join(dir,'scratch.db'),{create:true});scratch.exec('PRAGMA journal_mode=WAL');
+  scratch.exec('CREATE TABLE keep(x); CREATE TABLE gone(x)');
+  scratch.transaction(()=>{for(let i=0;i<600;i++){scratch.query('INSERT INTO keep VALUES(?)').run('k'.repeat(3000));scratch.query('INSERT INTO gone VALUES(?)').run('g'.repeat(3000));}})();
+  scratch.exec('DROP TABLE gone');
+  const first=releaseFreePages(scratch,join(dir,'scratch.db'),50) as {released:true;pages:number;more:boolean};
+  const second=releaseFreePages(scratch,join(dir,'scratch.db'),50) as {released:true;pages:number;more:boolean};
+  assert.ok(first.more&&second.pages>0,JSON.stringify({first,second}));
+  let calls=2,last=second;while(last.more&&calls<100){last=releaseFreePages(scratch,join(dir,'scratch.db'),50) as typeof last;calls++;}
+  assert.equal(last.more,false);
+  assert.equal((scratch.query('PRAGMA integrity_check').get() as {integrity_check:string}).integrity_check,'ok');
+  scratch.close();
+ }
  const size=logs.find(entry=>entry.event==='presentation_search_size')!.fields as any;
  assert.equal(size.release?.released,true,JSON.stringify(size));
  const after=allocatedBytes(path);
