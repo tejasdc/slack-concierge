@@ -47,6 +47,12 @@ The drain claim admitted any survivable native turn, including banked work that 
 at a deployment boundary. Unattended banked work and quiet-only work are now not claimed while a
 drain is in progress. They wait for the new owner.
 
+After that release, the same live check showed a smaller repeat. The new owner adopted the running
+continuation and paused it once more, about two seconds after it started. The cause was the
+previous owner's drain gate, which was still recorded until startup cleared it. The upkeep now
+treats only its own process's drain as a reason to pause. The request stayed open through both
+pauses, at 08:15 and 08:30 UTC: the continuation posted its progress to the same request.
+
 ## Acceptance scenario
 
 - **Seed:** a quiet-only banked turn claimed at night.
