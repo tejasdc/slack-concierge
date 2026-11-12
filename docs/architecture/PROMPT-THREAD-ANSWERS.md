@@ -68,7 +68,7 @@ earlier signal before accepting a bodyless final. Each separately accepted reply
 visible under its own request, even when its words match another reply exactly. Only one
 explicit `--also` command shares a visible answer, using that command's retained identity;
 it still settles each named request. A bodyless final attaches closure facts to the exact
-request's earlier answer. The October 21 copy-matched collapses and November 4 agent-update
+request's earlier answer [decision: fix-protocols-never-hide-duplicates]. The October 21 copy-matched collapses and November 4 agent-update
 collapses remain in the ledger as historical actions, but both direct and prepared Inbox
 readers show those accepted posts again. Timer notices remain out of the human conversation
 because they are agent-facing status, not agent answers.
