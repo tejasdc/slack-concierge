@@ -175,7 +175,7 @@ unproven conversion leaves full rows in service. Existing snapshots still need
 the stopped-service operator command. A rollback
 reads the retained object and reconstructs the old snapshot before downgrading
 the application; object GC remains disabled. Concierge's ordinary deployment
-path, independent runtime review, and installed page/detail reads are required
+path, owner self-review, and installed page/detail reads are required
 before reporting a user-visible or space result. The installed release and raw
 object restore proof are distinct evidence.
 
