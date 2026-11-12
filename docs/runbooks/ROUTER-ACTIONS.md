@@ -133,6 +133,17 @@ thnkr.ing logs each decision too. It runs only on the Mac; the server answers
 `MESSAGES_NOT_ON_THIS_MACHINE`. Checked 2026-10-07 on his real texts: an Amazon sign-in code was
 shown as an ordinary site and a T-Mobile code stayed hidden as his carrier.
 
+Pictures and files sent in texts: a shown text lists `attachments` as `{id, type, name, bytes,
+onThisMac}`. `router-actions.sh messages --attachment <id> --to <folder>` copies that one
+attachment into the named folder (created if missing), converting HEIC/HEIF photos to JPEG with
+`sips`, and answers `{exported: {path, type, convertedFrom, bytes}}`; agents then open the copy
+with their ordinary tools and never touch the Messages folder. The code rule extends to
+attachments: a text whose words look like a code, reset or sign-in link (even one thnkr.ing would
+show), or any text from an automated or short-code sender, lists no attachments and its
+attachment ids answer `ATTACHMENT_WITHHELD`. Pictures from a person's number or address, or ones
+Tejas sent, are ordinary. `ATTACHMENT_NOT_ON_THIS_MAC` means Messages has not downloaded the file
+(it may be in iCloud only). Every export and refusal is logged to the same diagnostics file.
+
 It is the sanctioned way in, not the only one. The pre-command guard refuses any call that names
 the Messages folder, chat.db or Notification Center's store, or a `mac-screenshot app Messages`,
 from either machine [decision: codes-hidden-only-for-money-and-identity]. That includes commands that only
