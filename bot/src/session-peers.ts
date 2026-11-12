@@ -1106,6 +1106,7 @@ export class SessionPeers {
         row=this.row(row.request_id);
       }
       let accepted:any;
+      let adoptedPeerCopy=false;
       try{
         const delivery=queuedDelivery;
         accepted=await client.request('POST',delivery.correctionOf?'/sessions/v1/peers/requests/corrected-attachment':'/sessions/v1/peers/requests',delivery);
@@ -1120,6 +1121,7 @@ export class SessionPeers {
         // monitor. Follow the copy the peer holds instead, through the ordinary status poll.
         if(error instanceof PeerError&&error.kind==='refused'&&error.status===409&&error.message.startsWith('Idempotency conflict')&&!queuedDelivery.correctionOf){
           if(!await this.adoptPeerHeldRequest(client,row,error.message))return;
+          adoptedPeerCopy=true;
           row=this.row(row.request_id);
         }
         // A rejected or interrupted HTTP exchange is not proof that the receiver did not
@@ -1133,7 +1135,7 @@ export class SessionPeers {
         }
         else return;
       }
-      if(accepted!==undefined){
+      if(!adoptedPeerCopy){
       if(typeof accepted?.sessionId!=='string'||typeof accepted.address!=='string'||typeof accepted.operationId!=='string')
         throw new Error('The peer did not return the exact accepted session and operation.');
       if(accepted.answerGuaranteeVersion!==1){
