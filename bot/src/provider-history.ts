@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { claudeQueuedMessages, withQueuedMessages } from "./claude-queued-messages";
 import { CLAUDE_HISTORY_FORMAT } from "./provider-history-format";
 import { claudeConfigDir, locateClaudeTranscript } from "./claude-transcript-watch";
-import { log } from "./log";
+import { errorFields, log } from "./log";
 import { db as ownerDb } from "./state";
 import { preparedOwnerMessageVersion } from "./presentation-message-reader";
 import type { RunResult } from "./codex";
@@ -564,7 +564,15 @@ function scheduleQuietRefresh(sessionUuid: string, cwd: string, source: {path:st
   observedVersions.set(sessionUuid, version);
   const old = pendingRefresh.get(sessionUuid);
   if (old) clearTimeout(old);
-  const timer = setTimeout(async () => {
+  const timer = setTimeout(() => { void refreshQuietly().catch(error => {
+    // A timer's rejection has no awaiting caller, so it reached the process's last-resort handler
+    // and restarted Concierge at 16:17 ET on 2026-11-12 (PROVIDER_TRANSCRIPT_CHANGED: a live
+    // transcript grew while the runner copy read it). A changed source is retried by its next
+    // change; anything else is logged, never fatal.
+    if(error instanceof Error&&error.message==='PROVIDER_TRANSCRIPT_CHANGED')return;
+    log('warn','provider_history_quiet_refresh_failed',{session_uuid:sessionUuid,...errorFields(error)});
+  }); }, 5_000);
+  async function refreshQuietly() {
     pendingRefresh.delete(sessionUuid);
     const current = await sourceVersion(sessionUuid, cwd,machine);
     if (!current) return;
@@ -578,7 +586,7 @@ function scheduleQuietRefresh(sessionUuid: string, cwd: string, source: {path:st
       || cache.meta.verified_source_mtime_ms!==current.mtimeMs;
     cache?.db.close();
     if(stillUncovered)queueCanonicalImport(sessionUuid, cwd, current.path, ownerSessionId,current.configDir);
-  }, 5_000);
+  }
   timer.unref?.();
   pendingRefresh.set(sessionUuid, timer);
 }
