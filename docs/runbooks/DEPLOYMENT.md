@@ -881,6 +881,12 @@ holds it; incidents record no closing, so the window stands in for one. The smal
 beside it stay. When the backup's last run did not finish successfully, or cannot be read,
 nothing is retired. restic's partial-success exit (some files unreadable) counts as success
 in remote-box's backup script.
+An agent may invoke that same installed retirement tool directly with the exact command
+`CONCIERGE_STATE_DIR=/root/.local/state/concierge /usr/local/lib/slack-concierge-deployment/bun run /var/lib/slack-concierge-deployment/current/control/migrate-deployment-repair.js --retire-captured`.
+The machine copy guard recognizes only that complete command, including the current-release
+link and sole mode flag; shell chaining, extra flags, alternate scripts and raw live-ledger
+copy commands remain refused. The migrator still decides eligibility from the finished
+off-box backup and each copy's last change time.
 A release whose migrator predates `--backup-if-needed` is copied unconditionally, as below.
 
 `bot/scripts/migrate-deployment-repair.ts --backup-only` opens the source read-only and
