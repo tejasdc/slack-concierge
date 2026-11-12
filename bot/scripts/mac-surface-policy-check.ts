@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {macSurfaceRefusal,RETIREMENT_FILE_MENU_PROGRAM,RETIREMENT_NEW_WINDOW_PROGRAM,UPDATE_BOUNDED_AX_PROGRAM,UPDATE_WORKSPACE_COMMAND,UPDATE_FIRST_TAP_COMMAND,FOCUS_START_COMMAND,FOCUS_VERIFY_START_COMMAND,FOCUS_END_COMMAND} from '../src/mac-surface-policy';
 import {acceptedMachineNeed,parseMachineNeed} from '../src/machine-need';
+import {parseShell} from '../src/history-rewrite-policy';
 import {deviceQuestionNamesPhysicalPrerequisite} from '../src/agent-reachable-app-question';
 
 const check=(command:string,need='',platform='darwin',toolName='Bash')=>
@@ -35,6 +36,33 @@ assert.equal(check('xcrun simctl boot ABC','ios-native'),null);
 assert.match(check('open -a Xcode')??'',/foreground/);
 assert.equal(check('open -g -a Xcode','mac-app'),null);
 assert.equal(check('rg -n Chrome docs'),null);
+const diagnosticReply='"$CONCIERGE_ROUTER_ACTIONS" sessions reply request-id --work-disposition failed --summary "Computer Use refused input" -- "The user changed Google Chrome. Re-query the latest state before sending more actions."';
+assert.equal(check(diagnosticReply),null);
+assert.equal(macSurfaceRefusal({command:null,need:'provider-renewal',platform:'darwin',toolName:'functions.exec',toolInput:{code:'text(await tools.exec_command({cmd:'+JSON.stringify(diagnosticReply)+'}));'}}),null);
+const originalRouterPath=process.env.CONCIERGE_ROUTER_ACTIONS;
+process.env.CONCIERGE_ROUTER_ACTIONS='/root/.local/bin/router-actions.sh';
+assert.equal(check('/root/.local/bin/router-actions.sh sessions reply request-id --summary "Safari diagnostic" -- "Google Chrome changed"'),null);
+if(originalRouterPath===undefined)delete process.env.CONCIERGE_ROUTER_ACTIONS;
+else process.env.CONCIERGE_ROUTER_ACTIONS=originalRouterPath;
+assert.match(check(diagnosticReply+'; open -a "Google Chrome" https://thnkr.ing')??'',/refused/);
+assert.match(check(diagnosticReply+' && agent-browser open https://thnkr.ing')??'',/server/);
+assert.match(check('"$CONCIERGE_ROUTER_ACTIONS" sessions reply request-id -- "$(open -a Google Chrome)"')??'',/refused/);
+assert.match(check('"$CONCIERGE_ROUTER_ACTIONS" sessions reply request-id -- "'+'`open -a "Google Chrome"`'+'"')??'',/refused/);
+assert.match(check(String.raw`"$CONCIERGE_ROUTER_ACTIONS" sessions reply request-id -- $'\'' ; open -a Safari ; echo $''`)??'',/refused/);
+assert.match(check('"$CONCIERGE_ROUTER_ACTIONS" sessions reply request-id -- <(open -a Safari)')??'',/refused/);
+for(const character of ['\u00a0','\f','\v','\u2028']) {
+  const command='"$CONCIERGE_ROUTER_ACTIONS" sessions reply rid -- x'+character+'# ; open -a Safari';
+  assert.equal(parseShell(command).length,2);
+  assert.match(check(command)??'',/refused|foreground/);
+}
+const wrappedReply=(literal:string)=>macSurfaceRefusal({command:null,need:'provider-renewal',platform:'darwin',toolName:'functions.exec',toolInput:{code:`text(await tools.exec_command({cmd:${literal}}));`}});
+for(const literal of [
+  String.raw`'"$CONCIERGE_ROUTER_ACTIONS" sessions reply rid --summary s -- x\nopen -a Safari'`,
+  String.raw`'"$CONCIERGE_ROUTER_ACTIONS" sessions reply rid --summary s -- "\u0060open -a Safari\u0060"'`,
+  String.raw`'"$CONCIERGE_ROUTER_ACTIONS" sessions reply rid --summary s -- "\x24(open -a Safari)"'`,
+  String.raw`"\"$CONCIERGE_ROUTER_ACTIONS\" sessions reply rid --summary s -- \"\x60open -a Safari\x60\""`,
+  '`'+String.raw`"$CONCIERGE_ROUTER_ACTIONS" sessions reply rid --summary s -- x\nopen -a Safari`+'`',
+])assert.match(wrappedReply(literal)??'',/refused/);
 assert.match(check('rg -n Chrome docs | agent-browser open https://thnkr.ing')??'',/server/);
 assert.equal(check('agent-browser open https://thnkr.ing','','linux'),null);
 assert.match(macSurfaceRefusal({command:null,need:'ios-native',platform:'darwin',toolName:'mcp__plugin_playwright_playwright__browser_run_code_unsafe',toolInput:{code:'async page => page.goto("https://thnkr.ing")'}})??'',/server/);

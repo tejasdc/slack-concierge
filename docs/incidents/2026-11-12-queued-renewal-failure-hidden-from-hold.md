@@ -59,3 +59,11 @@ stay with their account, and only one renewal is with the Mac at a time.
 - **Action:** Account B's sign-in is refused.
 - **Expected:** No renewal for B until six hours after A's second failure, unless a
 renewal answered in between other than with a pre-sign-in failure.
+
+## Third gap: one obstacle, two labels
+
+The `hey@tejas.nyc` retry at 19:55 UTC failed at 19:56:40 on the same page change,
+but the Mac worker labelled it `PREAUTH_BROWSER_UNAVAILABLE:` where the earlier
+ones said `PREAUTH_ENTRANCE_BLOCKED:`. A per-label retry would have allowed one more
+attempt. Any two pre-sign-in failures without a successful renewal between them now
+hold six hours from the second, whatever their labels.

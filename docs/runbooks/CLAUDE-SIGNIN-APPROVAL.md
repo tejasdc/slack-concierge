@@ -34,16 +34,15 @@ When **Journal to open today** covers the workspace, the palette's existing
 Accounts window opens above that hold. The worker leaves the journal and Tejas's
 emergency opening untouched. If this entrance remains blocked before any provider
 sign-in action, link, code or account switch, its failed reply begins
-`PREAUTH_ENTRANCE_BLOCKED:` and describes the obstruction. The owner permits one
-short retry for this distinct pre-authentication failure; a second such failure
-waits six hours. The retained November 7 journal-lock failure predates the marker
+`PREAUTH_ENTRANCE_BLOCKED:` and describes the obstruction. The retained November 7 journal-lock failure predates the marker
 and is recognized by its complete no-sign-in attestation.
 
 If Chrome control fails before the worker opens a task tab, sees a sign-in link or
 code, or switches an account, the worker's failed reply begins
-`PREAUTH_BROWSER_UNAVAILABLE:` and states what failed. Concierge permits one
-automatic retry after two minutes of this exact no-action failure. A second
-failure waits six hours. A Claude browser-verification rejection still waits
+`PREAUTH_BROWSER_UNAVAILABLE:` and states what failed. After either
+pre-authentication failure Concierge permits one automatic retry after two
+minutes; a second one of either label waits six hours, because on November 12 the
+same page change came back under both labels. A Claude browser-verification rejection still waits
 six hours immediately; it is never classified as a pre-authentication failure.
 Both pre-authentication failures belong to the Mac, not the account: they count
 across every Claude and Codex account, so after two such failures for one account
