@@ -38,6 +38,15 @@ on the turn said a continuation was coming.
 - After an owner restart between the pause and its continuation, the upkeep queues the missing
   continuation on its next pass.
 
+## Found during the live check: claimed and paused in a loop during an update
+
+The live check (turn 28699, request 52de5ef6-b53c-453b-bbab-dc3c0dfabe3c) kept its request open
+as intended. But during the update drain from 08:15:01 to 08:16:48 UTC, the queue claimed each new
+continuation, and the upkeep paused it again within six seconds: 19 provider starts in two minutes.
+The drain claim admitted any survivable native turn, including banked work that the upkeep yields
+at a deployment boundary. Unattended banked work and quiet-only work are now not claimed while a
+drain is in progress. They wait for the new owner.
+
 ## Acceptance scenario
 
 - **Seed:** a quiet-only banked turn claimed at night.

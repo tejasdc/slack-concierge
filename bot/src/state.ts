@@ -5544,6 +5544,10 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
   )
   AND (? = 0 OR (turn.turn_kind='native'
     AND COALESCE((SELECT kind FROM session_inputs WHERE id=turn.accepted_input_id), '')<>'fork'
+    -- Banked work that yields at a deployment boundary is never admitted during the drain:
+    -- banked-upkeep.ts cancels it at once and queues a continuation, which was claimed again,
+    -- 19 times in two minutes on 2026-11-12 (docs/incidents/2026-11-12-banked-pause-closed-its-request.md).
+    AND NOT (COALESCE(turn.saved_kind,'')='banked' AND (turn.saved_manual_start=0 OR turn.saved_quiet_only=1))
     AND session.provider_id IN (SELECT value FROM json_each(?))))
   AND NOT (session.provider_id='codex' AND ?=1)`;
 
