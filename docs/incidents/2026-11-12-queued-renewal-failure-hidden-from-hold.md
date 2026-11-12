@@ -45,3 +45,25 @@ the retry fail and check at 3.5 minutes, 10 minutes, 5 hours and 6 hours 1 minut
 - **Expected:** None at 44 seconds; exactly one retry after two minutes; none for six
 hours after the retry's failure; then one renewal.
 - **Replayable offline:** Yes, against a scratch ledger with the clock set.
+
+## Second gap, seen while checking the fix
+
+With the first fix installed, the Gmail account stayed held, but at 19:48:58 and
+19:52:07 UTC renewals for `tejas@chann.app` and `hey@tejas.nyc` went to the Mac.
+Each account had its own clean record, yet the obstacle (the page changing while he
+used the Mac) belongs to the Mac. Pre-sign-in failures now count across every
+account, a later renewal that gets past the obstacle clears it, provider refusals
+stay with their account, and only one renewal is with the Mac at a time.
+
+- **Seed:** Two `PREAUTH_ENTRANCE_BLOCKED:` failures for account A within six hours.
+- **Action:** Account B's sign-in is refused.
+- **Expected:** No renewal for B until six hours after A's second failure, unless a
+renewal answered in between other than with a pre-sign-in failure.
+
+## Third gap: one obstacle, two labels
+
+The `hey@tejas.nyc` retry at 19:55 UTC failed at 19:56:40 on the same page change,
+but the Mac worker labelled it `PREAUTH_BROWSER_UNAVAILABLE:` where the earlier
+ones said `PREAUTH_ENTRANCE_BLOCKED:`. A per-label retry would have allowed one more
+attempt. Any two pre-sign-in failures without a successful renewal between them now
+hold six hours from the second, whatever their labels.

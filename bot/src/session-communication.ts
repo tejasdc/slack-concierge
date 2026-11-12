@@ -1354,6 +1354,30 @@ export class SessionCommunicationCoordinator {
             tellWorkerCanceled(this.dependencies.owner!,{requestId:row.request_id,workerSessionId:row.target_session_id,targetInputId:row.target_input_id,requester:sessionLabel(row.source_session_id)});
         return this.receipt(this.row(row.request_id));
     }
+    /**
+     * The Inbox sent a request's remaining work to a newer attempt while this one was still
+     * waiting to run (its worker held for allowance or sign-in). Withdrawing it keeps the old
+     * worker from doing the same work when its hold lifts: on 2026-11-12 a Codex account switch
+     * released 37 turns held up to a week, and their agents woke onto work the router was already
+     * reassigning. A queued, never-started turn is revoked; a worker that already holds the
+     * request is told it was cancelled. The router's own `sessions cancel` takes the same path.
+     */
+    withdrawSupersededAttempt(requestId:string,replacedBy:string):boolean {
+        const row=db.query('SELECT * FROM session_communication_requests WHERE request_id=?').get(requestId) as RequestRow|null;
+        if(!row||row.outcome)return false;
+        let stoppedQueuedTarget=false;
+        db.transaction(()=>{
+            this.settle(row,'canceled',`Its work was sent to a newer attempt (${replacedBy}) while this one was still waiting to run.`);
+            if(this.row(requestId).outcome==='canceled'&&row.target_input_id)
+                stoppedQueuedTarget=cancelQueuedWithdrawnRequest(row.target_input_id);
+            if(stoppedQueuedTarget)withdrawUnstartedServiceInput(`canceled:${requestId}`,'The request was withdrawn before its worker began.');
+        })();
+        if(this.row(requestId).outcome!=='canceled')return false;
+        if(!stoppedQueuedTarget&&row.target_input_id)
+            tellWorkerCanceled(this.dependencies.owner!,{requestId,workerSessionId:row.target_session_id,targetInputId:row.target_input_id,requester:'the Inbox, which gave its work to a newer attempt'});
+        log('info','session_request_superseded_withdrawn',{request_id:requestId,replaced_by:replacedBy,queued_turn_revoked:stoppedQueuedTarget});
+        return true;
+    }
     private receipt(row: RequestRow, withTarget = true) {
         const recheck = this.healthyRechecks.get(row.request_id);
         const due = !row.outcome && row.overdue_at_ms === null && recheck?.storedDue === row.due_at_ms && recheck.nextCheck > this.now()
