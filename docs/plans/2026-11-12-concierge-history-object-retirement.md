@@ -129,6 +129,18 @@ tagged row. The cutover must supply and exercise an exact materialization path
 that restores full SDK JSON before downgrade; until then no tagged row may be
 written to live state.
 
+The isolated operator conversion copies one SQLite snapshot, requires both
+Concierge and the server backup service to be stopped, checks space for the copy,
+and scans only the unchanged local source version named by that snapshot. It
+queries SDK rows by UUID, rejects duplicate raw UUIDs and oversized lines,
+compares raw and SDK message values, and verifies the complete host object and
+plan-bound proof before replacing any row JSON. Unmatched rows stay full. A
+successful conversion checks the copied database and atomically replaces one
+snapshot; a no-match result leaves the original inode untouched. The inverse
+operator command expands every tagged row into complete SDK JSON before an
+older release is installed. Neither command is run during the active product
+backup or against a cache whose source changed.
+
 The Codex window is App Server output with provider timestamps and continuation
 markers. Its rows cannot use Claude's raw-line matcher. Keep that window until a
 separate Codex identity, page, timestamp, and detail equivalence proof establishes
