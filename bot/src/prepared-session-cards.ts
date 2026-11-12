@@ -176,7 +176,7 @@ export class PreparedSessionCards {
       savedWork:saved?{turnId:saved.id,kind:saved.saved_kind,status:saved.status,quietOnly:saved.saved_quiet_only===1,startsAt:savedStartAt(saved),
         savedAt:saved.saved_at_ms?new Date(saved.saved_at_ms).toISOString():null,
         expiresAt:saved.saved_expires_at_ms?new Date(saved.saved_expires_at_ms).toISOString():null,
-        account:saved.saved_account,window:saved.saved_window,repeatEveryMs:saved.saved_daily_time?null:saved.saved_repeat_ms,
+        account:saved.saved_account,window:saved.saved_window,repeatEveryMs:saved.saved_repeat_ms,
         dailyLocal:saved.saved_daily_time?{time:saved.saved_daily_time,timeZone:saved.saved_time_zone}:null,sequence:saved.saved_sequence}:null,
       model:presence.model?preview(presence.model,120).text:null,
       reasoningEffort:presence.reasoningEffort?preview(presence.reasoningEffort,80).text:null,

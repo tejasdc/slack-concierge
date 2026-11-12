@@ -38,7 +38,7 @@ function lastRun(db:Database,sessionId:number,rootId?:number) {
     summary:oneLine(declared?.summary??declared?.question??row.agent_text),status:row.status};
 }
 function schedule(row:ScheduleRow|null) {
-  return row?{turnId:row.repeat_turn_id,rootTurnId:row.saved_root_id,intervalMs:row.saved_daily_time?null:row.saved_repeat_ms,
+  return row?{turnId:row.repeat_turn_id,rootTurnId:row.saved_root_id,intervalMs:row.saved_repeat_ms,
     dailyLocal:row.saved_daily_time?{time:row.saved_daily_time,timeZone:row.saved_time_zone}:null,
     nextFiringAt:instant(row.saved_fire_at_ms??row.dispatch_next_attempt_ms)}:null;
 }

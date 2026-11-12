@@ -60,7 +60,7 @@ export function savedWorkListPage(source:Database,cursor:string|null=null){
     savedWork:{kind:turn.saved_kind,status:turn.status,quietOnly:turn.saved_quiet_only===1,startsAt:savedStartAt(turn),
       savedAt:new Date(turn.saved_at_ms).toISOString(),
       expiresAt:turn.saved_expires_at_ms?new Date(turn.saved_expires_at_ms).toISOString():null,
-      account:turn.saved_account,window:turn.saved_window,repeatEveryMs:turn.saved_daily_time?null:turn.saved_repeat_ms,
+      account:turn.saved_account,window:turn.saved_window,repeatEveryMs:turn.saved_repeat_ms,
       dailyLocal:turn.saved_daily_time?{time:turn.saved_daily_time,timeZone:turn.saved_time_zone}:null,sequence:turn.saved_sequence,
       ...(turn.saved_kind==='banked'?{waitingBecause:turn.saved_wait_reason??null}:{})}};
   }),nextCursor:page.nextCursor,coverage:{complete:true}};

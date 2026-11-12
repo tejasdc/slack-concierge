@@ -4,6 +4,7 @@ export type DailyWallClock={time:string;timeZone:string};
 
 export function validDailyWallClock(value:DailyWallClock):boolean {
   if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(value.time))return false;
+  if(!/^(UTC|[A-Za-z_]+(?:\/[A-Za-z0-9_+.-]+)+)$/.test(value.timeZone))return false;
   try {new Intl.DateTimeFormat('en-US',{timeZone:value.timeZone});return true;}
   catch {return false;}
 }
