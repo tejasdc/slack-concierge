@@ -23,6 +23,13 @@ export function deviceQuestionNamesPhysicalPrerequisite(question:string):boolean
   const device='(?:Mac|iPhone|iPad|phone|screen|laptop|device)';
   const physicalAction=new RegExp(`^(?:unlock\\s+(?:(?:the|your|my)\\s+)?(?:physical\\s+)?${device}|take\\s+(?:a\\s+)?photo(?:\\s+of\\s+[^?.!]+)?|photograph\\s+[^?.!]+|plug\\s+in\\s+(?:(?:the|a|your)\\s+)?(?:cable|device|phone|iPhone|iPad)|connect\\s+(?:(?:the|a|your)\\s+)?(?:cable|device|phone|iPhone|iPad)|press\\s+(?:(?:the|a)\\s+)?(?:physical|hardware)\\s+button|(?:bring|move|hold|hand\\s+over)\\s+(?:(?:the|your|my)\\s+)?${device})$`,'i');
   if(physicalAction.test(action))return true;
+  // One hand gesture on a device he names as his, such as dragging a macOS screenshot
+  // thumbnail or tapping a control on his iPhone, is physical work when the agent's
+  // route cannot make it (Mac agents may not take Accessibility control of his apps).
+  // The device must be named, so "click the button in the app" still stays with the agent.
+  const gesture=/^(?:tap|double[- ]tap|long[- ]press|press(?:\s+and\s+hold)?|hold\s+down|click|double[- ]click|right[- ]click|drag|swipe|pinch|scroll|plug\s+in|unplug|insert|eject|turn\s+(?:on|off)|restart|reboot|charge|wake)\b/i;
+  const hisDevice=/\b(?:on|in|from|to|into|onto|of|at)\s+(?:the\s+)?(?:your|my)\s+(?:physical\s+)?(?:Mac(?:Book(?:\s+(?:Air|Pro))?)?|iMac|iPhone|iPad|phone|laptop|computer|desktop|Apple\s+Watch|watch|Kindle|Echo|TV|keyboard|trackpad|mouse)(?:['’]s\b|\b)/iu;
+  if(gesture.test(action)&&hisDevice.test(action))return true;
   // A named instrument or controller is physical when the requested connection
   // names both the host device and the cable transport. The noun itself need not
   // belong to a product allowlist.
