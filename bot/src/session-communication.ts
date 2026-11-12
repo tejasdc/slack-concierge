@@ -1400,14 +1400,14 @@ export class SessionCommunicationCoordinator {
             events: (db.query('SELECT * FROM session_communication_events WHERE request_id=? ORDER BY rowid').all(row.request_id) as EventRow[])
                 .map(event => ({ event_id: event.event_id, kind: event.kind, status: event.status, error: event.error, payload: JSON.parse(event.payload_json), routed_request_id: event.routed_request_id })) };
     }
-    saved(input:{source:CommunicationSource;verb:'list'|'start'|'cancel';turn_id?:number;action_id?:string;cursor?:string}) {
+    saved(input:{source:CommunicationSource;verb:'list'|'start'|'cancel'|'daily';turn_id?:number;action_id?:string;cursor?:string;time?:string;timeZone?:string}) {
         const actor=this.actor(input.source);
         if(input.verb==='list')return this.dependencies.owner.savedWorkList(input.cursor??null);
-        if(input.verb!=='start'&&input.verb!=='cancel')throw new Error('Choose a saved work action.');
+        if(input.verb!=='start'&&input.verb!=='cancel'&&input.verb!=='daily')throw new Error('Choose a saved work action.');
         if(!input.action_id||!Number.isSafeInteger(input.turn_id)||input.turn_id!<1)throw new Error('Name a stable action and exact saved turn.');
         action(input.action_id);
-        return this.dependencies.owner.savedWorkControl(input.turn_id!,input.verb==='start'?'start':'drop',
-            {clientActionId:input.action_id,cancelingSessionId:actor.session,
+        return this.dependencies.owner.savedWorkControl(input.turn_id!,input.verb==='start'?'start':input.verb==='daily'?'daily':'drop',
+            {clientActionId:input.action_id,cancelingSessionId:actor.session,time:input.time,timeZone:input.timeZone,
                 cancelingInputId:actor.inputId,cancelingRunId:nativeRunId(actor.turn)});
     }
     async pause(input:{source:CommunicationSource;verb:'status'|'all'|'resume';action_id?:string;session_ids?:string[]}) {
@@ -1563,7 +1563,7 @@ export class SessionCommunicationCoordinator {
         routeMessageId?:string;
         /** A session a new one should consult for context; its address is put in the first input. */
         consult?:string;
-        saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean};
+        saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;daily?:{time:string;timeZone:string};quietOnly?:boolean};
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting requests.');
@@ -1910,7 +1910,7 @@ export class SessionCommunicationCoordinator {
                     payload:firstInput,sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),requestId:id}).input;
                 const queued=enqueueSessionInput(admitted.id);
                 if(queued.turn_id===null)throw new Error('Scheduled input could not be queued.');
-                saveQueuedTurn(queued.turn_id,input.saved.kind,input.saved.atMs,input.saved.expiresAtMs,input.saved.repeatEveryMs,undefined,requestedRole,input.saved.quietOnly);
+                saveQueuedTurn(queued.turn_id,input.saved.kind,input.saved.atMs,input.saved.expiresAtMs,input.saved.repeatEveryMs,undefined,requestedRole,input.saved.quietOnly,input.saved.daily);
             }
             if(consultation) {
                 const created=this.dependencies.owner!.createRequestConsultation(consultation,{sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,firstInput});
@@ -1959,7 +1959,7 @@ export class SessionCommunicationCoordinator {
         return this.receipt(this.row(id));
     }
     private scheduleOwnRole(actor:{session:number;turn:number;inputId?:string|null},
-        saved:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean},
+        saved:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;daily?:{time:string;timeZone:string};quietOnly?:boolean},
         role:string,actionId:string,text:string,digest:string) {
         const inputId=`saved-self:${hash(`${actor.inputId}:${actionId}`)}`;
         const existing=getAcceptedSessionInput(inputId);
@@ -1973,7 +1973,7 @@ export class SessionCommunicationCoordinator {
                 kind:'input',origin:'agent',payload:{text,digest},sourceInputId:actor.inputId!,sourceRunId:nativeRunId(actor.turn)}).input;
             const queued=enqueueSessionInput(retained.id);
             if(queued.turn_id===null)throw new Error('Scheduled input could not be queued.');
-            saveQueuedTurn(queued.turn_id,saved.kind,saved.atMs,saved.expiresAtMs,saved.repeatEveryMs,undefined,role,saved.quietOnly);
+            saveQueuedTurn(queued.turn_id,saved.kind,saved.atMs,saved.expiresAtMs,saved.repeatEveryMs,undefined,role,saved.quietOnly,saved.daily);
             return queued.turn_id;
         })();
         this.wake();

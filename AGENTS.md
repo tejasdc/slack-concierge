@@ -155,6 +155,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [human command custody](docs/architecture/HUMAN-COMMAND-INTAKE.md), and
   [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md) own those boundaries.
 - Banked phone work that Tejas permits only overnight uses the explicit quiet-only saved-work choice; request cancellation also revokes a queued saved turn. See [session ownership](docs/architecture/SESSION-OWNER.md#one-execution-owner) and [router actions](docs/runbooks/ROUTER-ACTIONS.md#current-native-routing).
+- Daily local repeats retain their wall time and IANA zone on Concierge's existing saved turn; migrate a live repeat by its exact queued turn instead of creating a second session. See [router actions](docs/runbooks/ROUTER-ACTIONS.md#standing-agents) and [session ownership](docs/architecture/SESSION-OWNER.md#one-execution-owner).
 - Saved-work cancellation names one turn and retains its cause; accepted handoff preserves an unfired scheduled turn's due time and firing identity. See [session ownership](docs/architecture/SESSION-OWNER.md#identity-and-admission) and [provider-change handoff](docs/architecture/SESSION-OWNER.md#provider-change-handoff).
 - A device question can ask for one hand gesture (tap, press, click, drag, plug-in) on a named
   device of his, name a physical instrument or controller in a USB connection
