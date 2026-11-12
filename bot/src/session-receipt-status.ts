@@ -1,5 +1,6 @@
 import { providerDisplayName } from "./aliases";
 import { isModelCapacityRefusal } from "./model-capacity-refusal";
+import { holdIsStartPace, startPaceStatus } from "./start-pace";
 /** One explanation policy for the live owner and the read-only presentation worker.
  * All changing facts are supplied by the caller; this module never opens the ledger. */
 export type InputStatusDetail={code:string;message:string;clearsAt:string|null;automaticRetry:boolean};
@@ -94,6 +95,7 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
     const next=turn.dispatch_next_attempt_ms>context.now()?new Date(turn.dispatch_next_attempt_ms).toISOString():null;
     const when=next?context.formatTime(turn.dispatch_next_attempt_ms):null;
     const product=providerDisplayName(context.session(input.session_id).providerId)??String(context.session(input.session_id).providerId);
+    if(holdIsStartPace(turn.dispatch_hold))return {code:'START_PACED',message:startPaceStatus(turn.dispatch_hold,when,waitingWork)!,clearsAt:next,automaticRetry:true};
     if(turn.dispatch_hold==='release_pace')return {code:'RETRY_SCHEDULED',message:when
       ?`${product} can take work again. Held work restarts a few sessions at a time so the server is not swamped; ${waitingWork.toLowerCase()} starts at ${when}.`
       :`${product} can take work again, and ${waitingWork.toLowerCase()} is starting now.`,clearsAt:next,automaticRetry:true};
