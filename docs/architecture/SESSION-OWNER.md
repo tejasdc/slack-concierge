@@ -173,6 +173,14 @@ same transaction, even if admission uncertainty makes the reminder unsafe to rep
 closed request's final receipt is authoritative; the reminder is not sent to the successor.
 If the request reopens before acceptance, the inventory changes and the handoff must be
 acknowledged again.
+A "no confirmed answer" reminder for a request the asker sent is admitted once under
+`request-reminder:<event>`; afterwards its delivery is read from the input carrying it now,
+following a handoff copy's `continuedAs`, and never admitted again under that identity
+(`request-reminder-carrier.ts`). When the asking session was handed off and its successor holds no
+copy, the successor gets one as `request-reminder:<event>:session:<successor>`; a reminder withdrawn
+on purpose is retired, not resent. Before 2026-11-12 re-admitting the predecessor's identity into
+the successor was refused about three times a minute, forever
+([failure record](../incidents/2026-11-12-handed-off-reminder-refused-forever.md)).
 A queued turn continuation on the predecessor is likewise retired in that same transaction.
 The handoff itself supersedes continuation on the predecessor, and the successor continues
 the conversation with its own brief and open obligations.
@@ -213,6 +221,20 @@ his open requests to go first, then the longest waiting. At most two moved sessi
 receiving provider's measured use reaches 75%, so the last account with room is not spent dry; the
 rest keeps waiting for its own reset. A proposal not accepted within 30 minutes, with nothing left
 running on its successor, is withdrawn and the predecessor resumes its wait.
+
+#### Paced release of held work
+
+Every bulk release of held turns (an account switch, a reading that finds an account with room,
+a cleared usage cache, a proven model check, a continuation hold, a sign-in hold ending, or a usage hold simply reaching its reset time before the next claim pass) marks
+the released turns with their own `release_pace` hold and gives each session a start time: two
+sessions every 15 seconds, sessions owing one of his open Inbox requests first, then the longest
+waiting (`paceReleasedWork` in `state.ts`). Each release re-ranks every still-waiting released
+session of that provider from now, so overlapping releases share one pace and a later reading's
+release never collapses it. A release of one or two sessions starts at once. The status line says
+the provider can take work again and when this item starts. Before 2026-11-12 a Codex account
+switch made 37 held turns runnable in one instant
+([failure record](../incidents/2026-11-12-account-switch-released-held-work-at-once.md)).
+
 The authenticated Thinkering owner API also accepts proposal, acknowledgement and withdrawal
 at `/sessions/v1/handoffs` and `/sessions/v1/handoffs/<id>/<accept|withdraw>`, using the
 same exact live source input, run identity and stable action identity as request actions.
