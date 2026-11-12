@@ -76,6 +76,12 @@ finishes any in-progress allowance check and takes a new one before selecting th
 time; the earlier check may predate the refusal. A post-refusal reading that still shows
 room files one `usage_reading_disagrees` repair notice per day. A small reported balance
 does not prove enough room for the next turn.
+Only a Google `tool` step counts as agent work; `error_message`, `system_message` and
+`checkpoint` steps are Google's bookkeeping. A quota refusal is a confirmed provider end at any
+point, so a refusal after work continues at the reset. Before launching, a turn whose model's
+allowance the fresh reading shows spent (Argon windows for Argon, the shared Gemini windows for
+Flash and Pro) is refused with that reset without calling Google, and takes the same
+move-or-wait path. See the [2026-11-12 record](../incidents/2026-11-12-google-quota-refusals-ended-for-good.md).
 The earlier Gemini
 3.1 Pro choice was removed from that live list, so its headless start returned a
 structured zero-turn model refusal before `init`; the provider now carries that

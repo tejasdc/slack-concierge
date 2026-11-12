@@ -35,6 +35,7 @@ import {
 import { errorFields, log } from "./log";
 import { noticeCodexResumeWait } from "./codex-resume-health";
 import {
+  isGoogleQuotaRefusal,
   isRefreshableAuthFailure,
   providerRefusalContinuationReason,
   providerInterruptionDetail,
@@ -1226,7 +1227,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     // release its held turns into the same refusal once a minute. Its refusal is remembered like
     // a model at capacity: automatic placement skips it and the reading cannot release it meanwhile.
     const googleQuotaRefusal=input.providerId==='antigravity'
-      &&/RESOURCE_EXHAUSTED|individual quota reached|quota exhausted/i.test(String(error));
+      &&isGoogleQuotaRefusal(String(error));
     if((structuredFailure?.modelAtCapacity||googleQuotaRefusal)&&capacityModel)
       rememberModelCapacityRefusal(input.providerId,capacityModel);
     const providerIdentityCompatible = !structuredFailure?.providerSessionId
@@ -1320,7 +1321,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // A zero-work Google quota refusal can have no readable reset. Hold it until a
       // later fresh allowance reading proves room; a guessed timer could replay it early.
       const googleUsageWait=replaySafe&&input.providerId==='antigravity'&&heldUntilMs===null
-        &&/RESOURCE_EXHAUSTED|individual quota reached|quota exhausted/i.test(message);
+        &&isGoogleQuotaRefusal(message);
       const runnerAccountReadingWait=replaySafe&&structuredFailure?.accountReadingWait===true;
       // A first turn the owner placed on this provider by itself, refused for allowance before any
       // work, goes to a provider with room instead of waiting for this one's reset. On 2026-10-31 his

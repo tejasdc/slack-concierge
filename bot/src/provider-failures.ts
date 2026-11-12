@@ -134,6 +134,11 @@ export function isRefreshableAuthFailure(message: string): boolean {
   return /authenticat|oauth|not logged in|\blog[ -]?in\b|unauthori[sz]ed|\b401\b|session expired|credential|token expired/.test(normalized);
 }
 
+/** Google's words when an allowance is spent ("Individual quota reached", HTTP RESOURCE_EXHAUSTED). */
+export function isGoogleQuotaRefusal(message:string):boolean {
+  return /RESOURCE_EXHAUSTED|individual quota reached|quota exhausted/i.test(message);
+}
+
 export type ProviderRefusalContinuationReason={kind:'provider_refused';refusal:'usage'|'rate_limit'|'sign_in';
   /** Another account of the same provider had room when this one refused, so nothing waits. */
   elsewhere?:boolean;
@@ -144,7 +149,7 @@ export function providerRefusalContinuationReason(message:string,clearsAtMs:numb
   failedAtMs:number,attempt:number):ProviderRefusalContinuationReason|null {
   const detail=message.slice(0,500);
   if(isRefreshableAuthFailure(message))return {kind:'provider_refused',refusal:'sign_in',detail};
-  if(isClaudeUsageExhaustion(message)||/usage.*exhaust|out of usage|you(?:'|’)ve hit your .*limit|usage credits/i.test(message))
+  if(isClaudeUsageExhaustion(message)||/usage.*exhaust|out of usage|you(?:'|’)ve hit your .*limit|usage credits/i.test(message)||isGoogleQuotaRefusal(message))
     return {kind:'provider_refused',refusal:'usage',detail,waitUntilMs:clearsAtMs};
   // A model at capacity is the same kind of wait as a rate limit: the provider will take the
   // work again soon and names no instant, so a worked-on turn continues after a short backoff.
@@ -161,7 +166,7 @@ export function providerRefusalContinuationReason(message:string,clearsAtMs:numb
 export function endedWorkInPlainWords(error:string|null|undefined,where=''):string {
   const message=String(error??'');
   const refusal=providerRefusalContinuationReason(message,null,0,0)?.refusal
-    ??(/individual quota reached|quota exhausted|RESOURCE_EXHAUSTED/i.test(message)?'usage':null);
+    ??(isGoogleQuotaRefusal(message)?'usage':null);
   const why=refusal==='usage'?'its AI account ran out of allowance'
     :refusal==='rate_limit'?'its AI provider turned the work away as too busy'
     :refusal==='sign_in'?'its AI account needs signing in again'
