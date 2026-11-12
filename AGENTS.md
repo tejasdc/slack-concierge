@@ -97,6 +97,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md#claude-code-started-by-an-agent).
 - Shared Codex turn recovery and its exact identity boundary follow
   [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#codex-provider-turn-reconciliation).
+- Confirmed Claude process death after a checkpoint uses the existing bounded continuation;
+  see [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md#confirmed-claude-process-death-after-work).
 - Antigravity follow-ups wait as durable separate turns; recovery of proven never-written
   legacy follow-ups follows [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#antigravity-sessions).
 - Runner account admission failures keep unsent turns retryable; the runtime error
