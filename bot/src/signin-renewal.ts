@@ -72,7 +72,7 @@ function spentUntil(provider: RenewableProvider, account: string): number | null
  * needs_decision asks him to fix Chrome's own sign-in, after which a renewal should follow at once.
  */
 type RenewalFailureKind = "preauth_browser_unavailable" | "preauth_entrance_blocked" | "other";
-type RenewalFailure = { kind: RenewalFailureKind; seenAtMs: number; sameKindAttempts: number };
+type RenewalFailure = { actionId: string; kind: RenewalFailureKind; seenAtMs: number };
 
 function renewalFailureKind(resultJson: string | null): RenewalFailureKind {
   if (!resultJson) return "other";
@@ -95,12 +95,13 @@ function renewalFailureKind(resultJson: string | null): RenewalFailureKind {
 /** Action names after this prefix sort below it plus "~", the highest character an action name can hold. */
 const actionRange = (prefix: string): [string, string] => [prefix, `${prefix}~`];
 
-function recentFailure(prefix: string): RenewalFailure | null {
+/** Failed renewals under `prefix` answered within `windowMs`, newest first. */
+function recentFailures(prefix: string, windowMs: number): RenewalFailure[] {
   db.run(`CREATE TABLE IF NOT EXISTS signin_renewal_failures (action_id TEXT PRIMARY KEY, seen_at_ms INTEGER NOT NULL)`);
   const now = Date.now();
   const [from, to] = actionRange(prefix);
   // Range comparisons, not LIKE, so the failed-by-action index (and the external requests'
-  // unique key) bound the read to this account's renewals instead of every request ever made.
+  // unique key) bound the read to renewals instead of every request ever made.
   const failed = db.query(`SELECT r.action_id,r.result_json,
       (SELECT max(e.created_at_ms) FROM session_peer_events e WHERE e.request_id=r.request_id AND e.kind='final') AS answered_at_ms
     FROM session_peer_requests r WHERE r.outcome='failed' AND r.action_id>=? AND r.action_id<?
@@ -111,13 +112,77 @@ function recentFailure(prefix: string): RenewalFailure | null {
   for (const { action_id, answered_at_ms } of failed)
     db.run(`INSERT OR IGNORE INTO signin_renewal_failures (action_id, seen_at_ms) VALUES (?, ?)`, [action_id, Math.min(answered_at_ms ?? now, now)]);
   const recentRows = db.query(`SELECT action_id,seen_at_ms FROM signin_renewal_failures WHERE action_id>=? AND action_id<? AND seen_at_ms>? ORDER BY seen_at_ms DESC`)
-    .all(from, to, now - AFTER_UNFINISHED_MS) as { action_id: string; seen_at_ms: number }[];
-  const recent = recentRows[0] ?? null;
-  if (!recent) return null;
-  const result = failed.find(row => row.action_id === recent.action_id);
-  const kind = renewalFailureKind(result?.result_json ?? null);
-  return { kind, seenAtMs: recent.seen_at_ms,
-    sameKindAttempts: recentRows.filter(row => renewalFailureKind(failed.find(item => item.action_id === row.action_id)?.result_json ?? null) === kind).length };
+    .all(from, to, now - windowMs) as { action_id: string; seen_at_ms: number }[];
+  return recentRows.map(row => ({ actionId: row.action_id, seenAtMs: row.seen_at_ms,
+    kind: renewalFailureKind(failed.find(item => item.action_id === row.action_id)?.result_json ?? null) }));
+}
+
+/** Every renewal the Mac's browser agent is asked to do, whatever the provider or account. */
+const WORKER_NOTICE_PATTERNS = Object.values(PREFIX).map(prefix => `${prefix}%`);
+const WORKER_ACTION_PREFIXES = Object.values(PREFIX).map(prefix => signInWorkerActionId(prefix));
+
+/** Whether a renewal was answered after `sinceMs` as completed or as needing him: the worker got past the Mac. Undelivered or cancelled outcomes prove nothing. */
+function answeredPastObstacleAfter(sinceMs: number, failures: RenewalFailure[]): boolean {
+  if (failures.some(failure => failure.kind === "other" && failure.seenAtMs > sinceMs)) return true;
+  return WORKER_ACTION_PREFIXES.some(prefix => {
+    const [from, to] = actionRange(prefix);
+    return !!db.query(`SELECT 1 FROM session_peer_requests r WHERE r.action_id>=? AND r.action_id<? AND r.outcome IN ('answered','decision_needed')
+        AND EXISTS(SELECT 1 FROM session_peer_events e WHERE e.request_id=r.request_id AND e.kind='final' AND e.created_at_ms>?)
+      UNION ALL SELECT 1 FROM session_external_requests r WHERE r.agent_name='signin-renewal' AND r.action_id>=? AND r.action_id<? AND r.outcome IN ('answered','decision_needed')
+        AND EXISTS(SELECT 1 FROM session_external_replies x WHERE x.request_id=r.request_id AND x.final=1 AND x.created_at_ms>?) LIMIT 1`)
+      .get(from, to, sinceMs, from, to, sinceMs);
+  });
+}
+
+/**
+ * Why the Mac's browser agent must not be asked to renew `actionPrefix`'s account now, or null.
+ * A pre-sign-in obstacle (Chrome control failing, the Accounts window blocked or the page
+ * changing under it while he uses the Mac) belongs to the Mac, not to an account: on 2026-11-12,
+ * after two such failures for one Claude account, renewals for two other accounts reached the
+ * Mac within six minutes. So those failures count across every account: one short retry after
+ * two minutes per distinct obstacle, then six hours from the second, unless a renewal answered
+ * past the obstacle in between. A provider refusal stays with its account. One renewal is with
+ * the Mac at a time, so two sign-ins never run together in his Chrome.
+ */
+function workerHold(actionPrefix: string): { hold: string | null; retry: boolean } {
+  const now = Date.now();
+  const held = (hold: string) => ({ hold, retry: false });
+  // Two windows back, so a pair of failures straddling the window's edge still holds six hours from the second.
+  const failures = WORKER_ACTION_PREFIXES.flatMap(prefix => recentFailures(prefix, 2 * AFTER_UNFINISHED_MS))
+    .sort((a, b) => b.seenAtMs - a.seenAtMs);
+  if (failures.some(failure => failure.actionId.startsWith(actionPrefix) && failure.kind === "other"
+    && now - failure.seenAtMs < AFTER_UNFINISHED_MS)) return held("account_failed");
+  const obstacles = failures.filter(failure => failure.kind !== "other" && !answeredPastObstacleAfter(failure.seenAtMs, failures));
+  const latest = obstacles[0] && now - obstacles[0].seenAtMs < AFTER_UNFINISHED_MS ? obstacles[0] : undefined;
+  if (latest) {
+    if (obstacles.filter(failure => failure.kind === latest.kind && latest.seenAtMs - failure.seenAtMs < AFTER_UNFINISHED_MS).length >= 2)
+      return held("mac_obstacle_repeated");
+    if (now - latest.seenAtMs < PREAUTH_RETRY_MS) return held("mac_obstacle_retry_wait");
+    const retried = WORKER_NOTICE_PATTERNS.some(pattern =>
+      db.query(`SELECT 1 FROM repair_notices WHERE key LIKE ? AND created_at_ms>? LIMIT 1`).get(pattern, latest.seenAtMs));
+    if (retried) return held("mac_obstacle_retried");
+  }
+  const pending = WORKER_NOTICE_PATTERNS.some(pattern =>
+    db.query(`SELECT 1 FROM repair_notices WHERE key LIKE ? AND delivered_input_id IS NULL AND resolved_at_ms IS NULL LIMIT 1`).get(pattern));
+  if (pending) return held("notice_pending");
+  // A delivered notice's request is created asynchronously; until its row exists (or the episode
+  // window passes after a send that failed), it is still the one renewal with the Mac.
+  const unsent = WORKER_NOTICE_PATTERNS.some(pattern =>
+    (db.query(`SELECT key FROM repair_notices WHERE key LIKE ? AND created_at_ms>? AND resolved_at_ms IS NULL`).all(pattern, now - SAME_EPISODE_MS) as { key: string }[])
+      .some(({ key }) => {
+        const actionId = signInWorkerActionId(key);
+        return !db.query(`SELECT 1 FROM session_peer_requests WHERE action_id=?
+          UNION ALL SELECT 1 FROM session_external_requests WHERE agent_name='signin-renewal' AND action_id=? LIMIT 1`).get(actionId, actionId);
+      }));
+  if (unsent) return held("notice_unsent");
+  for (const prefix of WORKER_ACTION_PREFIXES) {
+    const [from, to] = actionRange(prefix);
+    const open = db.query(`SELECT 1 FROM session_peer_requests WHERE outcome IS NULL AND action_id>=? AND action_id<?
+      UNION ALL SELECT 1 FROM session_external_requests WHERE agent_name='signin-renewal' AND outcome IS NULL AND action_id>=? AND action_id<? LIMIT 1`)
+      .get(from, to, from, to);
+    if (open) return held("renewal_open");
+  }
+  return { hold: null, retry: !!latest };
 }
 
 export function signInRenewalOf(notice: { key: string; kind: string }): { provider: RenewableProvider; account: string } | null {
@@ -144,21 +209,11 @@ export function needSignInRenewal(provider: RenewableProvider, account: string |
   try {
     ensureTable(db);
     const like = `${PREFIX[provider]}${account}:%`;
-    const sentPrefix = signInWorkerActionId(`${PREFIX[provider]}${account}:`);
-    const [sentFrom, sentTo] = actionRange(sentPrefix);
-    const failure = recentFailure(sentPrefix);
-    const retriedAfterFailure = failure && !!db.query(`SELECT 1 FROM repair_notices WHERE key LIKE ? AND created_at_ms>? LIMIT 1`)
-      .get(like, failure.seenAtMs);
-    const retryPreauth = failure?.kind !== "other" && failure?.sameKindAttempts === 1
-      && !retriedAfterFailure && Date.now() - failure.seenAtMs >= PREAUTH_RETRY_MS;
-    const recent = db.query(`SELECT 1 FROM repair_notices WHERE key LIKE ? AND (delivered_input_id IS NULL OR created_at_ms>?) LIMIT 1`)
-      .get(like, retryPreauth ? Date.now() - PREAUTH_RETRY_MS : Date.now() - SAME_EPISODE_MS);
+    const { hold, retry } = workerHold(signInWorkerActionId(`${PREFIX[provider]}${account}:`));
+    if (hold) return false;
+    const recent = db.query(`SELECT 1 FROM repair_notices WHERE key LIKE ? AND created_at_ms>? LIMIT 1`)
+      .get(like, Date.now() - (retry ? PREAUTH_RETRY_MS : SAME_EPISODE_MS));
     if (recent) return false;
-    const open = db.query(`SELECT 1 FROM session_peer_requests WHERE outcome IS NULL AND action_id>=? AND action_id<?
-      UNION ALL SELECT 1 FROM session_external_requests WHERE agent_name='signin-renewal' AND outcome IS NULL AND action_id>=? AND action_id<? LIMIT 1`)
-      .get(sentFrom, sentTo, sentFrom, sentTo);
-    if (open) return false;
-    if (failure && !retryPreauth) return false;
     if (spentUntil(provider, account) !== null) return false;
     const onWorkerMachine = process.platform === "darwin";
     const recorded = recordRepairNotice(db, { key: `${PREFIX[provider]}${account}:${Date.now()}`, kind: SIGNIN_RENEWAL_KINDS[provider],

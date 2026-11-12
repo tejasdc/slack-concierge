@@ -45,10 +45,15 @@ code, or switches an account, the worker's failed reply begins
 automatic retry after two minutes of this exact no-action failure. A second
 failure waits six hours. A Claude browser-verification rejection still waits
 six hours immediately; it is never classified as a pre-authentication failure.
-An open request or undelivered notice blocks every retry, so two sign-ins never
-run together. Each failure is dated from when its answer arrived, however long the
-request waited for the Mac, and every failed renewal for the account counts; a
-request queued for three days once escaped the hold
+Both pre-authentication failures belong to the Mac, not the account: they count
+across every Claude and Codex account, so after two such failures for one account
+no other account's renewal reaches the Mac either until six hours pass. Any later
+renewal answered other than with a pre-authentication failure proves the Mac usable
+and ends that hold. A provider rejection holds only its own account. One renewal
+is with the Mac at a time: an open request or undelivered notice for any account
+blocks every other, so two sign-ins never run together. Each failure is dated from
+when its answer arrived, however long the request waited for the Mac, and every
+failed renewal counts
 ([failure record](../incidents/2026-11-12-queued-renewal-failure-hidden-from-hold.md)). The November 7 first failure used a complete no-action attestation
 before the typed prefix existed; the owner recognizes that retained result once.
 
