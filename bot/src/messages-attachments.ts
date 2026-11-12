@@ -10,9 +10,9 @@
  * itself. A picture from a person's number or address, or one Tejas sent, is ordinary.
  */
 import { Database } from 'bun:sqlite';
-import { copyFileSync, existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, extname, isAbsolute, join, resolve, sep } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'node:path';
 import { isAutomatedSender, textWithholding } from './text-code-withholding';
 
 export type MessageAttachment = { id: string; type: string | null; name: string | null; bytes: number | null; onThisMac: boolean };
@@ -38,10 +38,20 @@ function openMessages(): Database {
 function attachmentFile(stored: string | null): string | null {
   if (!stored) return null;
   const path = stored.startsWith('~/') ? join(homedir(), stored.slice(2)) : stored;
-  if (!isAbsolute(path) || !existsSync(path)) return null;
-  const real = realpathSync(path);
-  const root = realpathSync(join(messagesFolder(), 'Attachments'));
-  return real.startsWith(root + sep) && statSync(real).isFile() ? real : null;
+  if (!isAbsolute(path)) return null;
+  try {
+    const real = realpathSync(path);
+    const root = realpathSync(join(messagesFolder(), 'Attachments'));
+    return real.startsWith(root + sep) && statSync(real).isFile() ? real : null;
+  } catch { return null; }
+}
+
+/** The path with symlinks resolved as far as it exists, so a link or letter case cannot disguise it. */
+function resolvedAsFarAsExists(path: string): string {
+  let existing = resolve(path);
+  const rest: string[] = [];
+  while (!existsSync(existing) && dirname(existing) !== existing) { rest.unshift(basename(existing)); existing = dirname(existing); }
+  return join(realpathSync(existing), ...rest);
 }
 
 type AttachmentRow = { guid: string; mime: string | null; uti: string | null; name: string | null; bytes: number | null; filename: string | null };
@@ -76,10 +86,15 @@ export type ExportResult =
 
 /** Copies one attachment, by the id the reader listed, into `folder`; HEIC becomes JPEG. */
 export function exportAttachment(id: string, folder: string): ExportResult {
+  try { return exportOne(id, folder); }
+  catch (error) { return { error: 'EXPORT_FAILED', message: String(error).slice(0, 300) }; }
+}
+
+function exportOne(id: string, folder: string): ExportResult {
   const database = openMessages();
-  let row: (AttachmentRow & { mine: number; handle: string | null; chatId: string | null; text: string | null; body: Uint8Array | null }) | null;
+  let rows: (AttachmentRow & { mine: number; handle: string | null; chatId: string | null; text: string | null; body: Uint8Array | null })[];
   try {
-    row = database.query(`SELECT ${ATTACHMENT_COLUMNS}, m.is_from_me AS mine, h.id AS handle, c.chat_identifier AS chatId,
+    rows = database.query(`SELECT ${ATTACHMENT_COLUMNS}, m.is_from_me AS mine, h.id AS handle, c.chat_identifier AS chatId,
         m.text AS text, m.attributedBody AS body
       FROM attachment a
       JOIN message_attachment_join maj ON maj.attachment_id = a.ROWID
@@ -87,25 +102,32 @@ export function exportAttachment(id: string, folder: string): ExportResult {
       LEFT JOIN handle h ON h.ROWID = m.handle_id
       LEFT JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
       LEFT JOIN chat c ON c.ROWID = cmj.chat_id
-      WHERE a.guid = ? LIMIT 1`).get(id) as typeof row;
+      WHERE a.guid = ?`).all(id) as typeof rows;
   } finally { database.close(); }
+  const row = rows[0];
   if (!row) return { error: 'ATTACHMENT_NOT_FOUND', message: 'Use an attachment id listed by a messages read on this Mac.' };
-  const refusal = attachmentRefusal({ mine: !!row.mine, handle: row.handle, chatId: row.chatId, words: messageWords(row.text, row.body) });
-  if (refusal) return { error: 'ATTACHMENT_WITHHELD', message: `Not exported: ${refusal}.` };
+  // An attachment shared by several messages is exported only if every one of them may show it.
+  for (const owner of rows) {
+    const refusal = attachmentRefusal({ mine: !!owner.mine, handle: owner.handle, chatId: owner.chatId, words: messageWords(owner.text, owner.body) });
+    if (refusal) return { error: 'ATTACHMENT_WITHHELD', message: `Not exported: ${refusal}.` };
+  }
   const source = attachmentFile(row.filename);
   if (!source) return { error: 'ATTACHMENT_NOT_ON_THIS_MAC', message: 'Messages has not downloaded this attachment to the Mac (it may still be in iCloud).' };
 
-  const target = resolve(folder);
-  if (target.startsWith(realpathSync(messagesFolder()) + sep) || target === realpathSync(messagesFolder())) {
+  const target = resolvedAsFarAsExists(folder);
+  const messages = realpathSync(messagesFolder()).toLowerCase();
+  if (target.toLowerCase() === messages || target.toLowerCase().startsWith(messages + sep)) {
     return { error: 'INVALID_DESTINATION', message: 'Name a folder of your own, outside the Messages folder.' };
   }
   mkdirSync(target, { recursive: true });
   const original = (row.name ?? basename(source)).replace(/[^\w .()-]/g, '_') || 'attachment';
-  const prefix = id.replace(/[^\w-]/g, '').slice(-8);
+  // The whole id: attachments of one message share all but their leading index.
+  const prefix = id.replace(/[^\w-]/g, '_');
   if (isHeic(row)) {
     const path = join(target, `${prefix}-${basename(original, extname(original))}.jpg`);
     const converted = Bun.spawnSync(['/usr/bin/sips', '-s', 'format', 'jpeg', source, '--out', path], { stdout: 'ignore', stderr: 'pipe' });
     if (converted.exitCode !== 0 || !existsSync(path)) {
+      rmSync(path, { force: true });
       return { error: 'CONVERSION_FAILED', message: `sips could not convert the HEIC photo: ${converted.stderr.toString().trim().slice(0, 300)}` };
     }
     return { exported: { id, path, type: 'image/jpeg', convertedFrom: row.mime ?? 'image/heic', bytes: statSync(path).size } };
