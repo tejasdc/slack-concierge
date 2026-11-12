@@ -526,6 +526,7 @@ function queueHistoryVerification(sessionUuid:string,ownerSessionId:number) {
 
 function queueCanonicalImport(sessionUuid: string, cwd: string, sourcePath: string, ownerSessionId?: number,sourceConfigDir?:string) {
   if (queuedImports.has(sessionUuid) || Date.now() < (retryImportAt.get(sessionUuid) || 0)) return;
+  let succeeded = false;
   const work = importLane.then(async () => {
     const cutoff = ownerSessionId ? (ownerDb.query("SELECT MAX(sequence) AS n FROM session_owner_events WHERE session_id=?")
       .get(ownerSessionId) as { n: number | null }).n || 0 : 0;
@@ -540,6 +541,7 @@ function queueCanonicalImport(sessionUuid: string, cwd: string, sourcePath: stri
     const timeout = setTimeout(() => child.kill(), 120_000);
     try {
       const code = await child.exited;
+      succeeded = code === 0;
       log(code === 0 ? "info" : "warn", code === 0 ? "provider_history_imported" : "provider_history_import_failed",
         { session_uuid: sessionUuid, exit_code: code });
     } finally { clearTimeout(timeout); activeImportChildren.delete(child); }

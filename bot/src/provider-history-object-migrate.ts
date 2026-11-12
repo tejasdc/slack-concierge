@@ -141,20 +141,26 @@ export async function migrateHistorySnapshot(sessionUuid: string) {
         return { changed: false, referenced: existing.count,
           full: meta.row_count - existing.count, reason: "unproven_object" };
       const update = db.query("UPDATE rows SET json=? WHERE ordinal=?");
-      const candidates = db.query("SELECT * FROM candidate ORDER BY ordinal");
+      const candidates = db.query("SELECT * FROM candidate WHERE ordinal>? ORDER BY ordinal LIMIT 100");
       let referenced = 0;
+      let lastOrdinal = -1;
       db.exec("BEGIN");
       try {
-        for (const row of candidates.iterate() as Iterable<{
-          ordinal:number;metadata_json:string;span_offset:number;span_length:number;span_sha256:string
-        }>) {
-          const reference: StoredSdkRowReference = {
-            conciergeRawReference: 1, objectSha256: scan.sourceSha256, objectBytes: scan.sourceBytes,
-            span: { offset: row.span_offset, length: row.span_length, sha256: row.span_sha256 },
-            metadata: JSON.parse(row.metadata_json),
-          };
-          update.run(JSON.stringify(reference), row.ordinal);
-          referenced++;
+        for (;;) {
+          const page = candidates.all(lastOrdinal) as Array<{
+            ordinal:number;metadata_json:string;span_offset:number;span_length:number;span_sha256:string
+          }>;
+          if (!page.length) break;
+          for (const row of page) {
+            const reference: StoredSdkRowReference = {
+              conciergeRawReference: 1, objectSha256: scan.sourceSha256, objectBytes: scan.sourceBytes,
+              span: { offset: row.span_offset, length: row.span_length, sha256: row.span_sha256 },
+              metadata: JSON.parse(row.metadata_json),
+            };
+            update.run(JSON.stringify(reference), row.ordinal);
+            referenced++;
+            lastOrdinal = row.ordinal;
+          }
         }
         db.exec("COMMIT");
       } catch (error) { db.exec("ROLLBACK"); throw error; }
