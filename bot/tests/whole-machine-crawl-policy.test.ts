@@ -50,3 +50,12 @@ describe('whole-machine crawl refusal', () => {
     expect(wholeMachineCrawlRefusal(null, 'Glob', { pattern: '**/*.ts', path: '/root/workspace/thinkering' })).toBeNull();
   });
 });
+
+describe('whole-journal scan refusal', () => {
+  test('refuses unscoped long journal reads, allows scoped or short ones', () => {
+    for (const command of ['journalctl --since 2026-11-05 -o cat', 'journalctl -o cat --since "7 days ago" --grep x', 'journalctl', 'journalctl --since -3days', 'timeout 60 journalctl --since yesterday | grep x'])
+      expect(wholeMachineCrawlRefusal(command, 'Bash', {}, '/root')).toContain('whole system journal');
+    for (const command of ['journalctl -u thinkering* --since "7 days ago" --grep x', 'journalctl --since -2h -o cat', 'journalctl -n 200', 'journalctl -t work-flow-supervisor.sh --since 03:30', 'journalctl _SYSTEMD_UNIT=x.service', 'journalctl -xeu foo.service', 'journalctl -f', 'journalctl --disk-usage'])
+      expect(wholeMachineCrawlRefusal(command, 'Bash', {}, '/root')).toBeNull();
+  });
+});
