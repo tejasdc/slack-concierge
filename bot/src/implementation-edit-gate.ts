@@ -4,7 +4,7 @@ import {isCodeEditTool,isThinkingModel} from './implementation-models';
 import {nativeRunId,recordSessionEvent,sessionMetadata} from './session-inputs';
 import {humanChoseThinkingModel} from './model-escalation-custody';
 
-type GateInput={providerSessionId:string;sourceRunId?:string;providerTurnId?:string;ownerTurnId?:number;toolId:string;toolName:string;toolInput?:unknown};
+type GateInput={providerSessionId:string;sourceRunId?:string;providerTurnId?:string;providerModel?:string;ownerTurnId?:number;toolId:string;toolName:string;toolInput?:unknown};
 type Running={id:number;session_id:number;accepted_input_id:string|null;provider_turn_id:string|null};
 const name=(value:unknown)=>typeof value==='string'&&value.length>0&&value.length<=256?value:null;
 const editEvent=(turnId:number,toolId:string)=>`implementation-edit:${turnId}:${createHash('sha256').update(toolId).digest('hex')}`;
@@ -24,10 +24,23 @@ export function implementationEditDecision(input:GateInput):{hold:boolean;messag
   if(!session)return {hold:false};
   const running=db.query(`SELECT id,session_id,accepted_input_id,provider_turn_id FROM turns
     WHERE session_id=? AND status IN ('running','delivering') ORDER BY id DESC LIMIT 2`).all(session.id) as Running[];
-  const turn=running.find(row=>input.ownerTurnId===row.id||input.providerTurnId&&input.providerTurnId===row.provider_turn_id)
-    ??(running.length===1?running[0]:null);
-  if(!turn)return {hold:true,message:'Concierge cannot identify the active turn for this code edit. Retry when its owner is available.'};
   const bound=getSessionById(session.id)!;
+  const exact=input.providerTurnId?running.find(row=>input.providerTurnId===row.provider_turn_id):undefined;
+  // Codex sends the parent's session ID with a helper's own turn and active model.
+  // Do not infer that a mismatched provider turn is the sole parent turn.
+  if(bound.provider_id==='codex'&&input.providerTurnId&&!exact){
+    const parent=running.find(row=>input.ownerTurnId===row.id);
+    if(!parent||!parent.provider_turn_id||!name(input.providerModel))return {hold:true,message:'Concierge cannot identify this Codex execution and model. Retry when its identity is available.'};
+    const key=`implementation-helper-edit:${createHash('sha256').update(JSON.stringify([session.id,input.providerTurnId,input.toolId])).digest('hex')}`;
+    db.transaction(()=>{
+      if(!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(key))
+        recordSessionEvent({eventId:key,sessionId:session.id,inputId:parent.accepted_input_id,turnId:parent.id,
+          kind:'implementation_helper_edit',payload:{providerTurnId:input.providerTurnId,toolId:input.toolId,model:input.providerModel}});
+    })();
+    return {hold:false,exempt:'codex-helper'};
+  }
+  const turn=exact??(!input.providerTurnId?running.find(row=>input.ownerTurnId===row.id)??(running.length===1?running[0]:null):null);
+  if(!turn)return {hold:true,message:'Concierge cannot identify the active turn for this code edit. Retry when its owner is available.'};
   const meta=sessionMetadata(bound);
   const model=bound.provider_id==='claude-code'
     ?getClaudePreferredModel(session.id,turn.id)??meta.model:meta.model;
@@ -44,7 +57,15 @@ export function implementationEditDecision(input:GateInput):{hold:boolean;messag
     const edits=(db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit'").get(turn.id) as {count:number}).count;
     const reason=db.query("SELECT json_extract(payload_json,'$.reason') AS reason FROM session_owner_events WHERE turn_id=? AND kind='implementation_top_model_reason' LIMIT 1")
       .get(turn.id) as {reason:string}|null;
-    if(edits>=4&&!reason){
+    const handoff=db.query(`SELECT 1 FROM session_communication_requests request
+      JOIN session_inputs target ON target.id=request.target_input_id AND target.session_id=request.target_session_id
+      JOIN turns execution ON execution.id=target.turn_id AND execution.session_id=request.target_session_id
+      WHERE request.source_turn_id=? AND request.source_session_id=?
+        AND json_extract(request.payload_json,'$.implementation')=1
+        AND request.status NOT IN ('failed','uncertain','canceled')
+        AND (request.outcome IS NULL OR request.outcome='answered')
+        AND execution.status NOT IN ('failed','cancelled') LIMIT 1`).get(turn.id,session.id);
+    if(edits>=4&&!reason&&!handoff){
       const source=turn.accepted_input_id;
       const sourceFlags=source?`--source-input ${source} --source-run ${nativeRunId(turn.id)}`:'--source-input <this input> --source-run <this run>';
       recordSessionEvent({eventId:`implementation-edit-hold:${turn.id}`,sessionId:session.id,inputId:source,turnId:turn.id,

@@ -1,0 +1,51 @@
+import assert from 'node:assert/strict';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION} from '../src/test-authorizations';
+
+const scratch=mkdtempSync(join(tmpdir(),'concierge-edit-gate-'));
+process.env.CONCIERGE_STATE_DIR=scratch;
+process.env.CONCIERGE_CAPTURE_STATE_DIR=join(scratch,'capture');
+process.env.CONCIERGE_TEST_MODE='1';
+process.env.CONCIERGE_TEST_AUTHORIZATION=IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION;
+const [{db,claimNextQueuedTurn},{createNativeSession,retainSessionInput,enqueueSessionInput},{implementationEditDecision}]=await Promise.all([
+  import('../src/state'),import('../src/session-inputs'),import('../src/implementation-edit-gate')]);
+try{
+  const parent=createNativeSession('codex',{title:'parent',summary:undefined,purpose:'develop',origin:'native',model:'gpt-6.1-sol'});
+  db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run('parent-thread',parent.id);
+  const source=retainSessionInput({id:'source',sessionId:parent.id,scope:'fixture',actionId:'source',kind:'input',origin:'agent',payload:{text:'design'}}).input;
+  enqueueSessionInput(source.id);
+  const turn=claimNextQueuedTurn('fixture')!.turn_id;
+  db.query('UPDATE turns SET provider_turn_id=? WHERE id=?').run('parent-turn',turn);
+  const edit=(toolId:string,extra:Record<string,unknown>={})=>implementationEditDecision({providerSessionId:'parent-thread',ownerTurnId:turn,providerTurnId:'parent-turn',toolId,toolName:'apply_patch',...extra});
+  for(let i=0;i<4;i++)assert.equal(edit(`parent-${i}`).hold,false);
+  assert.equal(edit('fifth').hold,true);
+  for(let i=0;i<5;i++)assert.equal(edit(`helper-${i}`,{providerTurnId:'helper-turn',providerModel:'gpt-6-luna'}).hold,false);
+  assert.equal(edit('fifth').hold,true,'helper work cannot release or consume parent edits');
+  const helpers=db.query("SELECT payload_json FROM session_owner_events WHERE kind='implementation_helper_edit'").all() as {payload_json:string}[];
+  assert.equal(helpers.length,5);
+  assert.deepEqual(JSON.parse(helpers[0]!.payload_json).model,'gpt-6-luna');
+  assert.deepEqual(JSON.parse(helpers[0]!.payload_json).providerTurnId,'helper-turn');
+  assert.equal(edit('missing-model',{providerTurnId:'other-turn'}).hold,true);
+  assert.equal(edit('unbound',{providerTurnId:'other-turn',providerModel:'gpt-6-luna',ownerTurnId:999999}).hold,true);
+
+  const child=createNativeSession('codex',{title:'worker',summary:undefined,purpose:'develop',origin:'native',model:'gpt-6-luna'});
+  const target=retainSessionInput({id:'request:fixture',sessionId:child.id,scope:'fixture',actionId:'target',kind:'input',origin:'agent',payload:{text:'implement'}}).input;
+  enqueueSessionInput(target.id);
+  const insert=db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,status,outcome) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  insert.run('handoff','channel','message',turn,parent.id,'root','handoff',child.id,'target','root',JSON.stringify({implementation:false}),'hash',0,0,source.id,target.id,'admitted',null);
+  assert.equal(edit('fifth').hold,true,'ordinary requests do not release the gate');
+  db.query("UPDATE session_communication_requests SET payload_json=?,status='failed' WHERE request_id='handoff'").run(JSON.stringify({implementation:true}));
+  assert.equal(edit('fifth').hold,true,'failed requests do not release the gate');
+  db.query("UPDATE session_communication_requests SET status='admitted' WHERE request_id='handoff'").run();
+  db.query("UPDATE turns SET status='cancelled' WHERE id=(SELECT turn_id FROM session_inputs WHERE id='request:fixture')").run();
+  assert.equal(edit('fifth').hold,true,'canceled target execution does not release the gate');
+  db.query("UPDATE turns SET status='queued' WHERE id=(SELECT turn_id FROM session_inputs WHERE id='request:fixture')").run();
+  db.query("UPDATE session_communication_requests SET source_turn_id=? WHERE request_id='handoff'").run((db.query("SELECT turn_id FROM session_inputs WHERE id='request:fixture'").get() as any).turn_id);
+  assert.equal(edit('fifth').hold,true,'a different originating turn does not release the gate');
+  db.query("UPDATE session_communication_requests SET source_turn_id=? WHERE request_id='handoff'").run(turn);
+  assert.equal(edit('fifth').hold,false,'accepted handoff releases the same held tool');
+  assert.equal(edit('fifth').exempt,'already-counted');
+  console.log('implementation edit gate: exact handoff releases retry; helper execution and model stay separate');
+}finally{db.close();rmSync(scratch,{recursive:true,force:true});}
