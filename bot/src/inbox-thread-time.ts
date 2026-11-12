@@ -1,0 +1,26 @@
+/**
+ * Which thread messages give an Inbox thread its time, its unread mark and its place in his
+ * Threads list. A thread rises when something changes for him: his own message, an answer, a
+ * question, a result. It never rises for agent upkeep on it: an agent handing the thread's work to
+ * another agent (the `request:` handoff card, including every re-send) or a progress-only partial
+ * reply (a `return:` that is not the worker's final answer; a partial that answers him is also
+ * posted, and the post counts).
+ *
+ * On 2026-11-11 the Inbox re-sent about thirty old requests and each re-send put its thread at the
+ * top of Threads, so he "couldn't find anything" (bug report topic:7375afd2). Housekeeping on the
+ * thread record (renames, links, flags, settling) already moved nothing; this closes the same gap
+ * for the agent-to-agent messages that are shown in the conversation. They stay visible there.
+ * A thread's opening message always counts: an agent's report to him opens its thread with the
+ * handoff itself, and that thread is new to him.
+ */
+export type ThreadEntryKind='final'|'post'|'other';
+
+export function movesThreadForHim(messageId:string,entryKind:ThreadEntryKind,root:string):boolean {
+  if(messageId===root)return true;
+  if(messageId.startsWith('request:'))return false;
+  if(messageId.startsWith('return:')&&entryKind!=='final')return false;
+  return true;
+}
+
+/** The same rule over the prepared message table's columns. */
+export const movesThreadForHimSql=`(message_id=root_input_id OR NOT (message_id LIKE 'request:%' OR (message_id LIKE 'return:%' AND entry_kind<>'final')))`;

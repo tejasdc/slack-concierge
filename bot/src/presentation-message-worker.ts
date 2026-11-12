@@ -112,6 +112,10 @@ const {search,cards,receipts,topics,areas,labRequests}=prepared.transaction(()=>
     .some(column=>column.name==='routing_result_visibility_version');
   if(!hadRoutingResultVisibility)
     prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN routing_result_visibility_version INTEGER NOT NULL DEFAULT 0');
+  const hadThreadTime=(prepared.query('PRAGMA table_info(presentation_message_meta)').all() as {name:string}[])
+    .some(column=>column.name==='thread_time_version');
+  if(!hadThreadTime)
+    prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN thread_time_version INTEGER NOT NULL DEFAULT 0');
   // A lineage upgrade builds into the next generation. Keep the complete active generation readable
   // until that shadow generation is atomically activated, including after an interrupted upgrade.
   const markedReplyState=prepared.query(`SELECT generation,ready,marked_reply_roots_version AS version
@@ -240,6 +244,17 @@ async function upgradeAnswerClosures(generation:number){
   prepared.transaction(()=>{keepLease();topics.apply(generation,[],changedRoots);})();
   while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
   prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET answer_closures_version=2 WHERE singleton=1').run();})();
+}
+/** Thread time stopped counting agent upkeep (inbox-thread-time.ts); every prepared thread was
+ * dated by its newest message of any kind, so each one is recomputed once, in bounded pages. */
+async function upgradeThreadTime(generation:number){
+  const version=(prepared.query('SELECT thread_time_version AS version FROM presentation_message_meta WHERE singleton=1')
+    .get() as {version:number}).version;
+  if(version>=1)return;
+  prepared.transaction(()=>{keepLease();prepared.query(`INSERT OR IGNORE INTO presentation_topic_dirty
+    SELECT generation,topic_id FROM presentation_topics WHERE generation=?`).run(generation);})();
+  while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
+  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET thread_time_version=1 WHERE singleton=1').run();})();
 }
 /** Reproject handoffs and attributed answers after their display changes. */
 async function upgradeRequestRoots(generation:number){
@@ -658,6 +673,7 @@ async function catchUp() {
   if(!areas.isReady(current.generation))await refreshAreaProjection(current.generation);
   await upgradeRequestRoots(current.generation);
   await upgradeAnswerClosures(current.generation);
+  await upgradeThreadTime(current.generation);
   const changes=source.query(`SELECT sequence,source_table,row_key,session_id,input_id,turn_id,request_id,topic_id,target_session_id,target_input_id FROM presentation_change_log
     WHERE sequence>? ORDER BY sequence LIMIT 500`).all(current.source_head) as
       {sequence:number;source_table:string;row_key:string;session_id:number|null;input_id:string|null;
