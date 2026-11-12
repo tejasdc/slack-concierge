@@ -117,7 +117,12 @@ async function askOwnerForMacNeed(providerSessionId: string): Promise<{ answered
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ provider_session_id: providerSessionId }),
       unix: socket, signal: AbortSignal.timeout(Math.max(500, Math.min(3000, remaining))),
-    } as RequestInit & { unix: string }).then(response => response.ok ? response.json() : undefined, () => undefined);
+    } as RequestInit & { unix: string })
+      // A 4xx is the owner answering (no grant); only a missing reply or a 5xx means it is not there yet.
+      // Every failure, including a body cut off mid-restart, stays inside this loop: a throw would reach
+      // the outer catch, which lets non-Computer-Use helper calls through.
+      .then(response => response.ok ? response.json() : response.status < 500 ? {} : undefined)
+      .catch(() => undefined);
     if (answer && typeof answer === 'object') {
       const a = answer as any;
       return { answered: true, need: typeof a.kind === 'string' ? {
@@ -147,8 +152,8 @@ try {
   // The environment can be empty (Codex's shared App Server) or older than a need steered in later.
   // Computer Use always checks the active owner's record, including when the environment claims a need:
   // a direct Mac process must not unlock desktop control by setting an environment variable. The Codex
-  // hook gets no Concierge environment, so the socket is the Mac owner's fixed one. One attempt takes at
-  // most three seconds; a missing answer keeps Computer Use refused.
+  // hook gets no Concierge environment, so the socket is the Mac owner's fixed one. An absent owner is
+  // asked again for up to 15 seconds (askOwnerForMacNeed); a missing answer keeps Computer Use refused.
   const computerUse=!refusedMessages&&macComputerUseAttempt;
   const nativeUpdate=process.platform==='darwin'&&((command??'')+' '+String(input.code??'')).includes('mac-update-ax.swift');
   const nativeFocus=process.platform==='darwin'&&((command??'')+' '+String(input.code??'')).includes('mac-focus-ax.swift');
