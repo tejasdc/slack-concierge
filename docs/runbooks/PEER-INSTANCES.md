@@ -161,7 +161,10 @@ asks the Mac owner for the need of the run holding that conversation. The newest
 need wins, while an exact open provider renewal admitted to that run remains available
 after an unrelated budget or progress input. Codex turns all run on the
 shared App Server, so a per-turn environment never reaches Codex's hook; before 2026-11-03 a Codex
-session created with a mac-app need was refused as if it had none. The owner returns
+session created with a mac-app need was refused as if it had none. An owner that does not
+answer (a restart for an update) is not an answer of "no need": the guard keeps asking for up to
+15 seconds, and past that refuses with "retry shortly" rather than denying the need
+([failure record](../incidents/2026-11-12-mac-app-need-lost-during-owner-restart.md)). The owner returns
 the retained reason as well as the kind, so the hook can enforce an exact app target
 when Tejas authorizes a Safari web app. For the currently authorized thnkr.ing window,
 name both its bundle ID and page ID in the `mac-app:` reason. The agent selects that
