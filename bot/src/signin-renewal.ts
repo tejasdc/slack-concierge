@@ -139,8 +139,9 @@ function answeredPastObstacleAfter(sinceMs: number, failures: RenewalFailure[]):
  * A pre-sign-in obstacle (Chrome control failing, the Accounts window blocked or the page
  * changing under it while he uses the Mac) belongs to the Mac, not to an account: on 2026-11-12,
  * after two such failures for one Claude account, renewals for two other accounts reached the
- * Mac within six minutes. So those failures count across every account: one short retry after
- * two minutes per distinct obstacle, then six hours from the second, unless a renewal answered
+ * Mac within six minutes, and the same page change came back labelled once as an Accounts block and
+ * once as a browser-control failure. So those failures count together across every account and
+ * label: one short retry after two minutes, then six hours from the second, unless a renewal answered
  * past the obstacle in between. A provider refusal stays with its account. One renewal is with
  * the Mac at a time, so two sign-ins never run together in his Chrome.
  */
@@ -155,7 +156,7 @@ function workerHold(actionPrefix: string): { hold: string | null; retry: boolean
   const obstacles = failures.filter(failure => failure.kind !== "other" && !answeredPastObstacleAfter(failure.seenAtMs, failures));
   const latest = obstacles[0] && now - obstacles[0].seenAtMs < AFTER_UNFINISHED_MS ? obstacles[0] : undefined;
   if (latest) {
-    if (obstacles.filter(failure => failure.kind === latest.kind && latest.seenAtMs - failure.seenAtMs < AFTER_UNFINISHED_MS).length >= 2)
+    if (obstacles.filter(failure => latest.seenAtMs - failure.seenAtMs < AFTER_UNFINISHED_MS).length >= 2)
       return held("mac_obstacle_repeated");
     if (now - latest.seenAtMs < PREAUTH_RETRY_MS) return held("mac_obstacle_retry_wait");
     const retried = WORKER_NOTICE_PATTERNS.some(pattern =>
@@ -262,5 +263,5 @@ export function signInWorkerText(provider: RenewableProvider, account: string, l
     + `If Chrome opens thnkr.ing but Journal to open today covers Settings, open the command palette with Command-Shift-K and choose Provider Accounts. `
     + `The Accounts window opens above the journal hold; do not use his emergency opening, alter the journal, or unlock his workspace. `
     + `If Accounts remains inaccessible before any provider sign-in action, link, code or account switch, reply failed beginning PREAUTH_ENTRANCE_BLOCKED: and describe the obstruction. `
-    + `Use either pre-auth prefix only when no sign-in action occurred; Concierge permits one short retry per distinct pre-auth obstruction, then waits hours if it fails again.`;
+    + `Use either pre-auth prefix only when no sign-in action occurred; Concierge permits one short retry after any pre-auth failure, then waits hours if another follows.`;
 }
