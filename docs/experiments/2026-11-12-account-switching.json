@@ -106,7 +106,8 @@
       "resume-chann-on-gmail.stdout.json",
       "/root/.claude/projects/-tmp-account-experiments-server-20261112/3ac01438-7b6b-4fb0-a301-7a98219cf2e6.jsonl",
       "/root/.claude/projects/-tmp-account-experiments-server-20261112/26032314-d2b0-4e38-b837-1570638047db.jsonl"
-    ]
+    ],
+    "durable_produced_trace": "2026-11-12-account-switching-server.jsonl"
   },
   "historical_request": {
     "request_id": "c46c3754-9264-4f40-8fcb-be2c93d65a87",
@@ -137,7 +138,13 @@
     "automatic_continuation_observed": false,
     "repair_request_id": "eaa06fab-8243-4039-a167-2b13cc5bc292",
     "repair_session": "concierge:9467",
-    "status": "outside repair owns the fix; no source or live service state changed by this evidence record"
+    "status": "outside repair owns the fix; no source or live service state changed by this evidence record",
+    "injected_at_epoch_seconds": 1794511588.6508236,
+    "provider_pid": 3326101,
+    "failure_event_id": "8282ba85-1442-4dfd-a722-40bfd50ec070",
+    "provider_error": "Error: Claude Code ended before producing a terminal result.",
+    "retained_request_status": "settled",
+    "retained_request_outcome": "failed"
   },
   "blocked_or_pending": [
     {
@@ -151,14 +158,9 @@
       "reason": "active-turn switch refusal was observed; this is a safety refusal, not a pass for completing a switch or preserving the controller"
     },
     {
-      "case": "Mac account-switch acceptance",
-      "status": "pending",
-      "reason": "no Mac evidence in this server trace"
-    },
-    {
-      "case": "fresh live crash recovery after repair is installed",
-      "status": "pending",
-      "reason": "outside repair request eaa06fab-8243-4039-a167-2b13cc5bc292 / session 9467 owns the fix; an independent fresh acceptance run is still required"
+      "case": "Mac Concierge automatic crash recovery",
+      "status": "not_checked",
+      "reason": "source shared; installed Mac revision and fresh native kill-and-recover acceptance still require proof"
     }
   ],
   "upstream_references": [
@@ -177,8 +179,16 @@
   "mac_request": {
     "request": "7f50bf52-8bb8-4e8c-869c-91e2b7da64e3",
     "session": "mac:314",
-    "observed_status": "admitted",
-    "evidence_status": "pending"
+    "observed_status": "completed",
+    "evidence_status": "inspected and independently audited",
+    "report": "2026-11-12-mac-account-experiments.md",
+    "receipts": "2026-11-12-mac-account-receipts.json",
+    "independent_audit": "tmp/reviews/account-experiments-mac-independent-verdict-20261112.md",
+    "concurrent_distinct_accounts": "pass",
+    "provider_overlap_ms": 903,
+    "saved_conversation_cross_home": "pass",
+    "manual_partial_response_continuation": "observed; provider cancellation acknowledgement not established",
+    "native_pause_proven": false
   },
   "machine_hostname": "cortex-docker-users",
   "native_unpinned_dispatch": {
@@ -195,5 +205,71 @@
     "receipt": "/tmp/account-experiments-native-route.json",
     "native_conversation": "71413915-fc5b-4986-8ae4-b724290e5dd6",
     "tool_evidence": "/root/.claude/projects/-root-workspace-slack-concierge/71413915-fc5b-4986-8ae4-b724290e5dd6.jsonl"
+  },
+  "installed_repair": {
+    "source_commit": "ae879cb92ac7715bf367fab74bff33cdb9889a42",
+    "merge_commit": "c6aaaffedebf6ff4747c64eef8266a82a9ba8409",
+    "artifact": "74433e42078f68d770a78b1bc1ebcdaf2ab7abc44fd7e8ce8c1fb30afac25e14",
+    "installed_at": "2026-11-12T19:46:41.462476+00:00",
+    "positive_acceptance": {
+      "verdict": "pass",
+      "source_turn": 28991,
+      "completion_turn": 29005,
+      "native_conversation": "fd3613cb-df78-47c4-9d62-e4ad2cc04bb4",
+      "remembered_fact": "RECOVERY-ORCHID-56291",
+      "barrier_invocations": 1,
+      "final_settlements": 1,
+      "service_continuation": "turn-continuation:28991",
+      "same_conversation": true,
+      "initial_request_resent": false,
+      "native_evidence": "/root/.claude/projects/-root-workspace-slack-concierge/fd3613cb-df78-47c4-9d62-e4ad2cc04bb4.jsonl",
+      "observed_continuation_records": [
+        {
+          "type": "user",
+          "at": "2026-11-12T19:47:16.571Z"
+        }
+      ],
+      "request_headers": 1,
+      "continuation_headers": 1
+    },
+    "cancellation_control": {
+      "verdict": "pass",
+      "request": "a54b5dc9-d658-4127-b778-adb7c95f7e34",
+      "outcome": "canceled",
+      "service_continuations": 0,
+      "pending": 0,
+      "active_run": null,
+      "native_conversation": "daa5eec7-bbea-4f5a-9862-ec7381ae4d4c",
+      "native_evidence": "/root/.claude/projects/-root-workspace-slack-concierge/daa5eec7-bbea-4f5a-9862-ec7381ae4d4c.jsonl",
+      "barrier_invocations": 1
+    },
+    "cancellation_then_crash_control": {
+      "verdict": "pass",
+      "request": "d41fa95e-e0aa-416e-8363-119f4d96ea36",
+      "outcome": "canceled",
+      "provider_execution": "failed after injected crash",
+      "continuations": 0,
+      "pending": 0,
+      "active_run": null,
+      "barrier_invocations": 1,
+      "native_conversation": "351fd29d-13b0-48c4-ab2e-cb9550f8659e",
+      "native_evidence": "/root/.claude/projects/-root-workspace-slack-concierge/351fd29d-13b0-48c4-ab2e-cb9550f8659e.jsonl",
+      "injection": {
+        "case": "canceled-crash",
+        "at": 1794513029.816628,
+        "pid": 3568570,
+        "execution": "e67bce510bd60d07",
+        "request": "d41fa95e-e0aa-416e-8363-119f4d96ea36",
+        "signal": "SIGKILL",
+        "scope": "exact verified disposable Claude process only"
+      }
+    },
+    "independent_live_verdict": "tmp/reviews/account-experiments-independent-live-verdict-20261112.md"
+  },
+  "mac_native_recovery_request": {
+    "request": "36e3daf6-0b8e-49fb-8485-30af5ebc12ac",
+    "session": "mac:314",
+    "status": "admitted; exact peer request observed running at 2026-11-12T20:00:48.906Z",
+    "scope": "native automatic Claude crash recovery and cancelled-before-crash control"
   }
 }
