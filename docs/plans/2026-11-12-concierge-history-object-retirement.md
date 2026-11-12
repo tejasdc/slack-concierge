@@ -1,6 +1,7 @@
 # Concierge history payload retirement against retained transcript objects
 
-Status: reader and guarded converter committed; no live cache row or runner
+Status: reader and guarded converter committed; new-import conversion is
+implemented behind an inactive deployment setting. No live cache row or runner
 mirror has been retired. The host object store and restore command are installed,
 but Concierge's private state and page/detail acceptance remain separate gates.
 
@@ -166,9 +167,12 @@ conversation's parsed rows into the migration process. Duplicate UUIDs, oversize
 or incomplete lines, and any SDK/raw message mismatch keep full rows.
 
 After host install, one guarded migration can publish only verified reference
-rows atomically and retire only the superseded full-row payloads. The current
-converter is operator-only, so reimports still write full rows until a safe
-post-import conversion path is integrated and measured. A rollback
+rows atomically and retire only the superseded full-row payloads. The importer
+first writes full rows. With the deployment setting enabled, the owner runs
+the same guarded conversion after its import child exits, while holding the
+serial import lane and outside the child's 120-second deadline. A failed or
+unproven conversion leaves full rows in service. Existing snapshots still need
+the stopped-service operator command. A rollback
 reads the retained object and reconstructs the old snapshot before downgrading
 the application; object GC remains disabled. Concierge's ordinary deployment
 path, independent runtime review, and installed page/detail reads are required

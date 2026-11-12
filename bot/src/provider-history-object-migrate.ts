@@ -40,15 +40,18 @@ function syncParent(path: string) {
   try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
 }
 
-function requireQuiescentHost() {
+function requireQuiescentHost(allowActiveOwner = false) {
   for (const unit of ["concierge-bot.service", "remote-box-backup.service"]) {
+    if (allowActiveOwner && unit === "concierge-bot.service") continue;
     const check = Bun.spawnSync(["systemctl", "is-active", "--quiet", unit], { stdout: "ignore", stderr: "ignore" });
     if (check.exitCode === 0) throw new Error(`HISTORY_MIGRATION_REQUIRES_STOPPED_${unit.toUpperCase().replace(/[^A-Z]/g, "_")}`);
     if (check.exitCode !== 3) throw new Error("HISTORY_MIGRATION_HOST_STATE_UNKNOWN");
   }
 }
 
-function withSnapshotCopy<T extends {changed: boolean}>(path: string, run: (db: Database) => Promise<T>): Promise<T> {
+function withSnapshotCopy<T extends {changed: boolean}>(
+  path: string, run: (db: Database) => Promise<T>, allowActiveOwner = false,
+): Promise<T> {
   const before = fingerprint(path);
   const space = statfsSync(dirname(path));
   if (space.bavail * space.bsize < before.size * 2 + 1024 * 1024 * 1024)
@@ -67,7 +70,7 @@ function withSnapshotCopy<T extends {changed: boolean}>(path: string, run: (db: 
     const check = db.query("PRAGMA quick_check").get() as { quick_check: string } | null;
     if (check?.quick_check !== "ok") throw new Error("INVALID_HISTORY_SNAPSHOT_COPY");
     db.close();
-    requireQuiescentHost();
+    requireQuiescentHost(allowActiveOwner);
     if (!sameFingerprint(before, fingerprint(path))) throw new Error("HISTORY_SNAPSHOT_CHANGED");
     const descriptor = openSync(temporary, "r");
     try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
@@ -81,7 +84,8 @@ function withSnapshotCopy<T extends {changed: boolean}>(path: string, run: (db: 
   });
 }
 
-async function migrate(sessionUuid: string) {
+export async function migrateHistorySnapshot(sessionUuid: string, allowActiveOwner = false) {
+  requireQuiescentHost(allowActiveOwner);
   const path = snapshotPath(sessionUuid);
   const beforeAllocatedBytes = fingerprint(path).blocks * 512;
   const original = new Database(path, { readonly: true, strict: true });
@@ -150,7 +154,7 @@ async function migrate(sessionUuid: string) {
       return { changed: referenced > 0, referenced,
         full: (db.query("SELECT count(*) AS count FROM rows").get() as {count:number}).count - referenced,
         object: scan.sourceSha256 };
-    });
+    }, allowActiveOwner);
     const afterAllocatedBytes = fingerprint(path).blocks * 512;
     return { ...result, allocatedBeforeBytes: beforeAllocatedBytes,
       allocatedAfterBytes: afterAllocatedBytes,
@@ -182,9 +186,11 @@ async function materialize(sessionUuid: string) {
   });
 }
 
-const [command, sessionUuid] = process.argv.slice(2);
-if (!sessionUuid || !SESSION_UUID.test(sessionUuid) || !["migrate", "materialize"].includes(command || ""))
-  throw new Error("USAGE: provider-history-object-migrate.ts migrate|materialize <session-uuid>");
-requireQuiescentHost();
-const result = command === "migrate" ? await migrate(sessionUuid) : await materialize(sessionUuid);
-process.stdout.write(JSON.stringify(result) + "\n");
+if (import.meta.main) {
+  const [command, sessionUuid] = process.argv.slice(2);
+  if (!sessionUuid || !SESSION_UUID.test(sessionUuid) || !["migrate", "materialize"].includes(command || ""))
+    throw new Error("USAGE: provider-history-object-migrate.ts migrate|materialize <session-uuid>");
+  requireQuiescentHost();
+  const result = command === "migrate" ? await migrateHistorySnapshot(sessionUuid) : await materialize(sessionUuid);
+  process.stdout.write(JSON.stringify(result) + "\n");
+}

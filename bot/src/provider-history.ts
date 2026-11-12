@@ -19,6 +19,7 @@ import { codexTranscriptTimestamps, codexTranscriptTimestampsAfter, type CodexTr
 import { LEGACY_STRUCTURED_OUTPUT_TOOL, legacyStructuredOutputMessage, splitTurnOutcomeMarker } from './turn-outcome-marker';
 import {readRunnerClaudeTranscriptChunk,readRunnerCodexTimestamps,statRunnerClaudeTranscript} from './runner-provider-history-client';
 import {decodeStoredSdkRow} from './provider-history-object-spans';
+import {migrateHistorySnapshot} from './provider-history-object-migrate';
 
 /**
  * The session a message came from, and who that agent is by the one presence rule
@@ -545,6 +546,16 @@ function queueCanonicalImport(sessionUuid: string, cwd: string, sourcePath: stri
       log(code === 0 ? "info" : "warn", code === 0 ? "provider_history_imported" : "provider_history_import_failed",
         { session_uuid: sessionUuid, exit_code: code });
     } finally { clearTimeout(timeout); activeImportChildren.delete(child); }
+    if (succeeded && process.env.CONCIERGE_HISTORY_OBJECT_REFERENCES === "1") {
+      try {
+        const converted = await migrateHistorySnapshot(sessionUuid, true);
+        log("info", "provider_history_object_conversion", { session_uuid: sessionUuid, ...converted });
+      } catch (error) {
+        log("warn", "provider_history_object_conversion_skipped", {
+          session_uuid: sessionUuid, reason: error instanceof Error ? error.message : "unknown",
+        });
+      }
+    }
   }).catch(error => log("warn", "provider_history_import_failed", {
     session_uuid: sessionUuid, reason: error instanceof Error ? error.name : "unknown" }));
   queuedImports.set(sessionUuid, work);
