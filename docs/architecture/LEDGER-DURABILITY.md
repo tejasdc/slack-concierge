@@ -268,6 +268,13 @@ rebuildable index) commits with `synchronous=OFF` and is rebuilt from the ledger
 opened after a crash; a power loss can leave it missing recent passages, which only narrows search
 until those passages are indexed again.
 
+Every ledger connection is opened through one wrapper that sets SQLite's lock wait before its
+first statement (five seconds; thirty for the service's pre-start recovery, which runs while
+nothing serves). A process that ends after a crash, or a retiring coordinator, can still hold
+the ledger for a few seconds; without the wait the next start failed at once with
+`database is locked` (2026-11-11: three failed starts after a crash, see
+`docs/incidents/2026-11-11-restart-after-crash-failed-on-ledger-lock.md`).
+
 ## Signals
 
 - `GET /supervisor/ping` → `ledgerDurability`: mode, sync count, slow syncs, slowest and last sync

@@ -135,6 +135,7 @@ import {pinCodexThreadHooks} from './hook-pins';
 import {HostedClaudeCodeTransport,HostUnavailableError,claudeExecutable,executionDirectory,executionHostsEnabled,newExecutionId,streamJournal} from './execution-host-client';
 import {RUNNER_SUPERVISOR,RunnerHostAccess} from './runner-host-access';
 import {agentRunEnvironment} from './agent-run-tokens';
+import {commitSessionIdentity} from './peer-identity';
 import {recordExecutionExited,recordExecutionLaunched,recordLiveAdoption,releaseExecution,retainExecutionIntent,type Adoption,type ExecutionRow} from './executions';
 
 export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex'|'antigravity';mode:'interactive'|'device'|'host-managed';pending:boolean;signInKeepsCurrent:true;pendingFor:string|null;pendingUrl:string|null;lastSignIn:{ok:boolean;detail:string|null}|null;message:string;signedIn?:boolean;checking?:boolean;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
@@ -1629,6 +1630,9 @@ export class SessionExecutionHost {
       interactionPolicy:metadata.interactionPolicy??'standard',
       ownerInstanceId:this.options.instanceId,dispatchAttempt:claim.dispatch_attempt,steeringController,closeSteering,cancellationController,
       providerEnvironment:{CONCIERGE_SOURCE_INPUT_ID:input.id,CONCIERGE_SOURCE_RUN_ID:nativeRunId(claim.turn_id),
+        // Commit provenance under names nothing else reads, so the Mac's SSH to the server
+        // can carry them and a commit made there still names its real session.
+        CONCIERGE_COMMIT_SESSION:commitSessionIdentity(session.id),CONCIERGE_COMMIT_INPUT:input.id,
         ...(onRunner?{CONCIERGE_PROVIDER_RUNNER:runnerTarget!}:{
           CONCIERGE_ROUTER_ACTIONS:installedRouterActionsPath(),
           CONCIERGE_CODEX_CLI:Bun.which('codex')||join(homedir(),'.local','bin','codex')}),
@@ -2106,8 +2110,9 @@ export function chooseTurnRunner(session:SessionRow,metadata=sessionMetadata(ses
     }
     return null;
   }
-  if(session.provider_id==='claude-code'&&!turnRunsOnRunner(metadata))return null;
-  if(session.provider_id==='antigravity'&&(process.env.CONCIERGE_TURN_RUNNERS?.trim()||'marked')==='off')return null;
+  // Claude and Google share one placement setting: a machine without runners (the Mac peer's
+  // default `marked`) runs unmarked work itself instead of refusing for a missing target.
+  if(!turnRunsOnRunner(metadata))return null;
   const selected=process.env.CONCIERGE_TURN_RUNNER?.trim()||codexRelayRunner();
   if(!selected)throw new Error(`${session.provider_id} runner placement is enabled, but no runner target is configured.`);
   return selected;

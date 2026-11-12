@@ -24,10 +24,9 @@ import {log,errorFields} from './log';
 import {startStuckWorkWatch} from './stuck-work-watch';
 import {startRepairNoticeDelivery} from './repair-notices';
 import {CodexSessionObserver} from './codex-session-observer';
-import {prepareSavedWorkForClaims,reconsiderBankedWork,inspectSavedWork,resumeBankedAfterYield,savedTurn,savedWorkSettings,quietOnlyCutoff} from './saved-work';
-import {quietOnlyAdmits} from './quiet-hours';
+import {prepareSavedWorkForClaims} from './saved-work';
+import {createBankedUpkeep} from './banked-upkeep';
 import {providerAccountUsage} from './provider-account-usage';
-import {savedWorkAccountRooms} from './provider-account-dispatch';
 import {startBackgroundJobWatch} from './background-waits';
 import {startUpdateWaitWatch} from './update-wait-notices';
 import {startMachineWatchWorker,wakeWatchWorker} from './watches';
@@ -35,6 +34,7 @@ import {claimAdoptableExecutions,hostedTurns,watchHeldExecution,type Adoption} f
 import {interruptOrphanedTurn} from './state';
 import {recoverExhaustedClaudeWork} from './provider-exhaustion-recovery';
 import {maybeStartInboxProviderFailover} from './inbox-provider-failover';
+import {moveHeldWork} from './held-work-failover';
 import {reconcileCoveredTasteRequest,recoverOctoberBudgetPauses} from './incident-budget-pause-recovery';
 import {startAreaFiling} from './area-filing';
 
@@ -46,49 +46,9 @@ export async function startSessionRuntime() {
   registerProcessInstance(instanceId,identity.pid,identity.bootId,identity.startTicks);
   let draining=false;
   const active=new Set<number>();
-  const yielding=new Map<number,'allowance_boundary'|'deployment_boundary'|'quiet_boundary'>();
-  let quietBoundaryTimer:ReturnType<typeof setTimeout>|null=null;
+  const banked=createBankedUpkeep({registry:()=>registry});
+  const inspectActiveBanked=banked.inspectActive;
   const registry=new ActiveTurnDispatchRegistry({onStarted:()=>queueMicrotask(inspectActiveBanked),onSettled:()=>queue.wake()});
-  const requestBankedYield=(turnId:number,reason:'allowance_boundary'|'deployment_boundary'|'quiet_boundary')=>{
-    if(yielding.has(turnId))return;
-    const row=savedTurn(turnId);
-    if(!row||row.saved_kind!=='banked'||row.saved_manual_start&&!row.saved_quiet_only)return;
-    const requested=registry.requestSessionCancellation(row.session_id,turnId);
-    if(!requested.matched)return;
-    yielding.set(turnId,reason);
-    void requested.completion.catch(error=>log('warn','banked_yield_failed',{turn_id:turnId,...errorFields(error)}));
-  };
-  const inspectActiveBanked=()=>{
-    if(quietBoundaryTimer){clearTimeout(quietBoundaryTimer);quietBoundaryTimer=null;}
-    const draining=!!db.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get();
-    const settings=savedWorkSettings(),reserve=settings.reserve_percent,now=Date.now();
-    let nextQuietBoundary=Infinity;
-    for(const turnId of active){
-      const row=savedTurn(turnId);if(!row||row.saved_kind!=='banked'||row.saved_manual_start&&!row.saved_quiet_only)continue;
-      if(yielding.has(turnId))continue;
-      if(draining){requestBankedYield(turnId,'deployment_boundary');continue;}
-      if(row.saved_quiet_only){
-        if(!quietOnlyAdmits(now,settings)){requestBankedYield(turnId,'quiet_boundary');continue;}
-        nextQuietBoundary=Math.min(nextQuietBoundary,quietOnlyCutoff(now,settings));
-      }
-      if(row.saved_manual_start)continue;
-      const session=db.query('SELECT provider_id FROM sessions WHERE id=?').get(row.session_id) as {provider_id:string}|null;
-      if(!session||!['codex','claude-code','antigravity'].includes(session.provider_id))continue;
-      const provider=session.provider_id as 'codex'|'claude-code'|'antigravity';
-      const usage=providerAccountUsage(provider);
-      const account=usage?.accounts.find(item=>item.label===row.saved_account);
-      const window=account?.windows.find(item=>item.name===row.saved_window);
-      const owningSession=provider==='claude-code'?getSessionById(row.session_id):null;
-      const model=provider==='claude-code'
-        ?getClaudePreferredModel(row.session_id,row.id)??(owningSession?sessionMetadata(owningSession).model:null)??null:undefined;
-      const room=usage?savedWorkAccountRooms(provider,usage,Date.now(),model).find(item=>item.account===row.saved_account):null;
-      if(row.saved_boundary_ms!==null&&row.saved_boundary_ms<=Date.now()||
-        !usage||!account||!room||room.problem||room.tightestUsedPercent===null||room.tightestUsedPercent>=100-reserve
-        ||!window||window.usedPercent>=100-reserve)
-        requestBankedYield(turnId,'allowance_boundary');
-    }
-    if(Number.isFinite(nextQuietBoundary))quietBoundaryTimer=setTimeout(()=>inspectActiveBanked(),Math.max(1,nextQuietBoundary-Date.now()));
-  };
   let codexSessionObserver:CodexSessionObserver|null=null;
   const host=new SessionExecutionHost({instanceId,registry,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>queue.wake(),providerSessionBound:uuid=>codexSessionObserver?.providerSessionBound(uuid)??Promise.resolve()});
   codexSessionObserver=new CodexSessionObserver();
@@ -116,9 +76,8 @@ export async function startSessionRuntime() {
     nextAttemptMs:()=>nextQueuedTurnAttemptMs(),
     onClaimError:(error,consecutiveFailures)=>log('error','session_turn_claim_failed',{...errorFields(error),consecutive_failures:consecutiveFailures}),
     run:async(claim:QueuedTurnClaimRow)=>{
-      active.add(claim.turn_id);
+      active.add(claim.turn_id);banked.started(claim.turn_id);
       try {
-        inspectActiveBanked();
         if(claim.turn_kind!=='native') {
           if(claim.turn_kind!=='slack_user'||!claim.slack_channel_id||!claim.slack_user_msg_ts)throw new Error('This queued adapter control requires its original surface.');
           const input=retainSlackInput(claim.slack_channel_id,claim.slack_user_msg_ts);
@@ -128,28 +87,19 @@ export async function startSessionRuntime() {
         }
         return await host.run(claim);
       } finally {
-        active.delete(claim.turn_id);
-        inspectActiveBanked();
-        const reason=yielding.get(claim.turn_id);
-        yielding.delete(claim.turn_id);
-        if(reason)resumeBankedAfterYield(claim.turn_id,reason);
+        active.delete(claim.turn_id);banked.settled(claim.turn_id);
       }
     },onError:(claim,error)=>{host.settleSetupFailure(claim,error);log('error','native_turn_setup_failed',{turn_id:claim.turn_id,...errorFields(error)});}});
   await host.owner.refreshGlobalPauseFromOwner(true);
   // Agents still running in their execution hosts are taken back before anything below reads
   // their turns as orphaned, and continue under the same run (design 2026-10-07 §3.1 step 4).
   const runAdopted=(adoption:Adoption)=>{
-    active.add(adoption.claim.turn_id);
-    inspectActiveBanked();
+    active.add(adoption.claim.turn_id);banked.started(adoption.claim.turn_id);
     void host.run(adoption.claim,adoption).catch(error=>{
       log('error','execution_adoption_failed',{turn_id:adoption.claim.turn_id,execution_id:adoption.execution.execution_id,...errorFields(error)});
       host.settleSetupFailure(adoption.claim,error);
     }).finally(()=>{
-      active.delete(adoption.claim.turn_id);
-      inspectActiveBanked();
-      const reason=yielding.get(adoption.claim.turn_id);
-      yielding.delete(adoption.claim.turn_id);
-      if(reason)resumeBankedAfterYield(adoption.claim.turn_id,reason);
+      active.delete(adoption.claim.turn_id);banked.settled(adoption.claim.turn_id);
       queue.wake();
     });
   };
@@ -190,14 +140,14 @@ export async function startSessionRuntime() {
   if(peering.listen)log('info','concierge_peer_listener_online',{instance:peering.self,hostname:peering.listen!.hostname,port:peering.listen!.port,peers:peering.peers.map(peer=>peer.name)});
   // Account usage is read here too. It used to be read on a timer only in the Slack-enabled
   // composition, so this runtime spent the same accounts while never watching them.
-  const stopUsageWatch=startProviderUsageWatch({stopped:()=>draining,urgent:()=>[...active].some(id=>{const saved=savedTurn(id);return saved?.saved_kind==='banked'&&!saved.saved_manual_start;}),
+  const stopUsageWatch=startProviderUsageWatch({stopped:()=>draining,urgent:banked.hasActiveUnattendedBanked,
     onReading:()=>{void keepThreadsCurrent(admission=>host.owner.admit(admission)).catch(error=>log('error','inbox_recovery_pass_failed',errorFields(error)));
-      reconsiderBankedWork();inspectSavedWork();inspectActiveBanked();reconcileCoveredTasteRequest();recoverOctoberBudgetPauses();recoverExhaustedClaudeWork();maybeStartInboxProviderFailover();wakeDeferredQuestions(Date.now(),admission=>host.owner.admit(admission));void closeQuestionsAnsweredByTodos(admission=>host.owner.admit(admission)).catch(()=>{});queue.wake();publishUsageForecastNotices(recordSessionEvent);publishExpiringResetNotices(recordSessionEvent);refreshUsageBreakdownIfStale();briefRunningSessions(admission=>host.owner.admit(admission));}});
+      banked.onReading();reconcileCoveredTasteRequest();recoverOctoberBudgetPauses();recoverExhaustedClaudeWork();maybeStartInboxProviderFailover();moveHeldWork();wakeDeferredQuestions(Date.now(),admission=>host.owner.admit(admission));void closeQuestionsAnsweredByTodos(admission=>host.owner.admit(admission)).catch(()=>{});queue.wake();publishUsageForecastNotices(recordSessionEvent);publishExpiringResetNotices(recordSessionEvent);refreshUsageBreakdownIfStale();briefRunningSessions(admission=>host.owner.admit(admission));}});
   const stopBackgroundJobWatch=startBackgroundJobWatch(admission=>host.owner.admit(admission));
   const stopUpdateWaitWatch=startUpdateWaitWatch({admit:admission=>host.owner.admit(admission),stateDir:process.env.CONCIERGE_STATE_DIR!});
   const stopWatchWorker=startMachineWatchWorker(admission=>host.owner.admit(admission),()=>draining);
   const stopAuthWatch=watchAuthHeldCredentials();
-  const detach=observeExecutionChanges(()=>{reconsiderBankedWork();inspectActiveBanked();recoverExhaustedClaudeWork();queue.wake();});
+  const detach=observeExecutionChanges(()=>{banked.onExecutionChange();recoverExhaustedClaudeWork();queue.wake();});
   const ghostSweep=setInterval(()=>{
     if(draining)return;
     try {
@@ -220,7 +170,7 @@ export async function startSessionRuntime() {
     draining=true;
     const codexSessionObserverStop=codexSessionObserver?.stop();
     if(codexSessionObserverStop)void codexSessionObserverStop.catch(()=>{});
-    if(quietBoundaryTimer)clearTimeout(quietBoundaryTimer);clearInterval(globalPauseReconcile);clearInterval(ghostSweep);stopProcessAuditSweep();clearInterval(parkedRecovery);clearSandboxReadyReceipt(runtime);stopUsageWatch();stopBackgroundJobWatch();stopUpdateWaitWatch();stopWatchWorker();stopAuthWatch();detach();detachProjection();queue.stop();host.beginDrain();await communication.stop();await codexSessionObserverStop;
+    banked.stop();clearInterval(globalPauseReconcile);clearInterval(ghostSweep);stopProcessAuditSweep();clearInterval(parkedRecovery);clearSandboxReadyReceipt(runtime);stopUsageWatch();stopBackgroundJobWatch();stopUpdateWaitWatch();stopWatchWorker();stopAuthWatch();detach();detachProjection();queue.stop();host.beginDrain();await communication.stop();await codexSessionObserverStop;
     // A hosted agent keeps working through this exit; the next coordinator takes it back.
     const hosted=hostedTurns(active);
     for(const turnId of active){

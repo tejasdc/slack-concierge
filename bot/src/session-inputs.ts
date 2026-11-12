@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { db, executionChanged, finishTurn, settleTurnDependencies, getSessionById, type ProviderId, type SessionRow } from './state';
 import {DEFAULT_CHATGPT_THINKING,DEFAULT_HIS_CHATGPT_THINKING,HIS_CHATGPT_PREFIX,isHisChatGpt,resolveProviderAlias,resolveProviderDefault} from './aliases';
 import {purposeLine} from './session-purpose';
-import {receiveSessionFromPeer} from './peer-identity';
+import {inputProvenance} from './input-provenance';
 import {notificationRequest} from './session-notification-request';
 import {armThreadNotification} from './thread-notifications';
 import {providerRefusalContinuationReason,type ProviderRefusalContinuationReason} from './provider-failures';
@@ -47,9 +47,13 @@ export type NativeSessionMetadata = {
   providerAccount?:string; providerRunner?:string|null;
   claudeCacheCall?:{account:string;conversation:string|null;callId:string;atMs:number;cacheable:boolean};
   claudeSelectionRevision?:number;
-  /** Only a zero-work refused first turn may change the provider selected by Automatic. */
+  /** Automatic picked this provider, not him: a zero-work refused first turn, and queued work its provider
+   * cannot start (held-work-failover.ts), may move to another provider. His model choice clears it. */
   automaticProviderChoice?:boolean;
   automaticSmallTask?:boolean;
+  /** Automatic provider failover tried this held session and found an input it could not move, or its
+   * successor did not accept; it is not proposed again before this instant (held-work-failover.ts). */
+  heldFailoverSkipUntil?:number;
   /** Retired 2026-09-29: nothing is said to him about accounts. Written null so old ones clear. */
   claudeAccountNotice?:null;
   /** Every turn runs as the Codex command line in its own unit, started and watched, never driven (outside-codex.ts). */
@@ -193,98 +197,20 @@ export function getAcceptedSessionInput(id:string) {
  * A request still waiting in the queue, including a scheduled one before its time, belongs to the
  * turn that will carry it. On 2026-11-04 the Inbox router's Stop hook listed a request scheduled
  * for 14:00 as owed during an unrelated 09:53 run, and the router answered it four hours early.
+ * A steered request is handed over only once its words reached the provider (or may have: an
+ * ambiguous send is treated as reaching it). Attaching it to the running turn happens first and
+ * preparing its text takes seconds; on 2026-11-09 concierge:3425's Stop hook demanded a verdict on
+ * a request in that gap, twice, and the request's text arrived just after the verdict.
  */
 export function handedToARun(id:string) {
   return !!db.query(`SELECT 1 FROM session_inputs input JOIN turns turn ON turn.id=input.turn_id
-    WHERE input.id=? AND turn.status<>'queued'`).get(id);
+    LEFT JOIN turn_steering_messages steering ON steering.id=input.steering_id
+    WHERE input.id=? AND turn.status<>'queued'
+      AND (input.steering_id IS NULL OR steering.status IN ('sent','ambiguous'))`).get(id);
 }
-/** Resolve retained delegation links, never actor/provenance claims inside message text. */
-/** A request a peer instance delivered here: its source lives in the peer's ledger, retained on the delivery row. */
-function peerDeliveryProvenance(input:AcceptedSessionInput) {
-  const delivery=db.query('SELECT peer,origin_session_id,origin_input_id,origin_run_id,requested_effect,origin_provenance_json FROM session_peer_deliveries WHERE target_input_id=?').get(input.id) as
-    {peer:string;origin_session_id:string;origin_input_id:string;origin_run_id:string;requested_effect:string;origin_provenance_json:string|null}|null;
-  if(!delivery)return null;
-  const retained=delivery.origin_provenance_json?JSON.parse(delivery.origin_provenance_json):{};
-  const effectScope:'informational'|'work'=retained.effectScope==='informational'||delivery.requested_effect!=='work'?'informational':'work';
-  // Identities arrive named by the sender; see peer-identity.ts for the rule.
-  const human=retained.originatingHuman&&typeof retained.originatingHuman.sessionId==='string'
-    ?{...retained.originatingHuman,sessionId:receiveSessionFromPeer(retained.originatingHuman.sessionId,delivery.peer)}:null;
-  const humanModelChoices=human&&Array.isArray(retained.humanModelChoices)
-    ?retained.humanModelChoices.filter((model:unknown):model is string=>model==='claude-fable-5-1'||model==='gpt-6-astra'):[];
-  return {source:{inputId:delivery.origin_input_id,runId:delivery.origin_run_id,sessionId:receiveSessionFromPeer(delivery.origin_session_id,delivery.peer),peer:delivery.peer},
-    requestId:input.request_id,effectScope,originatingHuman:human as {inputId:string;runId:string;sessionId:string;captureId?:string}|null,peer:delivery.peer,humanModelChoices};
-}
+/** The owner's full record of who stands behind an input; the receipt list calls the same walk. */
 export function sessionInputProvenance(input:AcceptedSessionInput) {
-  const routedHuman=(candidate:AcceptedSessionInput)=>{
-    const routedFrom=JSON.parse(candidate.payload_json)?.routedFrom;
-    if(routedFrom?.authorKind!=='human'||typeof routedFrom.messageId!=='string')return null;
-    const original=getAcceptedSessionInput(routedFrom.messageId);
-    if(!original||!humanAuthored(original))return null;
-    const originalPayload=JSON.parse(original.payload_json);
-    // A forwarded human reply can be accepted without ever owning a provider turn.
-    return {inputId:original.id,runId:original.turn_id?nativeRunId(original.turn_id):'',
-      sessionId:`concierge:${original.session_id}`,...(originalPayload.capture?.id?{captureId:originalPayload.capture.id}:{})};
-  };
-  const forwardedHuman=(candidate:AcceptedSessionInput)=>{
-    // A human Inbox reply can be forwarded before it owns a provider turn. The owner-retained
-    // forward request, not a missing source run or the agent-facing message, proves that edge.
-    if(!candidate.source_input_id||candidate.source_run_id)return null;
-    const forwarded=db.query(`SELECT request.source_input_id,request.source_session_id,request.payload_json FROM session_communication_requests request
-      JOIN turns source_turn ON source_turn.id=request.source_turn_id AND source_turn.session_id=request.source_session_id
-      WHERE request.target_input_id=? AND request.target_session_id=? AND request.source_input_id=?`)
-      .get(candidate.id,candidate.session_id,candidate.source_input_id) as {source_input_id:string;source_session_id:number;payload_json:string}|null;
-    const details=forwarded?JSON.parse(forwarded.payload_json):null;
-    const source=forwarded?getAcceptedSessionInput(forwarded.source_input_id):null;
-    if(!source||!humanAuthored(source)||source.session_id!==forwarded?.source_session_id
-      ||details?.forwardedReply?.inboxInputId!==source.id||details?.requestedEffect!=='work')return null;
-    return {inputId:source.id,runId:'',sessionId:`concierge:${source.session_id}`};
-  };
-  if(!input.source_input_id||!input.source_run_id){
-    const delivered=peerDeliveryProvenance(input);
-    const original=routedHuman(input);
-    if(delivered)return original?{...delivered,originatingHuman:original}:delivered;
-    const identity=forwardedHuman(input);
-    if(identity){
-      return {source:identity,requestId:input.request_id,effectScope:'work' as const,originatingHuman:identity,peer:undefined};
-    }
-    return null;
-  }
-  const seen=new Set<string>();
-  let current:AcceptedSessionInput|null=input;
-  let source:{inputId:string;runId:string;sessionId:string}|null=null;
-  let human:({inputId:string;runId:string;sessionId:string;captureId?:string})|null=routedHuman(input);
-  let effectScope:'informational'|'work'|null=null;
-  while(current?.source_input_id&&current.source_run_id&&!seen.has(current.id)) {
-    seen.add(current.id);
-    const parent=getAcceptedSessionInput(current.source_input_id);
-    const turn=parent?.turn_id?db.query('SELECT native_run_id FROM turns WHERE id=? AND session_id=?').get(parent.turn_id,parent.session_id) as {native_run_id:string|null}|null:null;
-    if(!parent||turn?.native_run_id!==current.source_run_id)break;
-    const identity={inputId:parent.id,runId:current.source_run_id,sessionId:`concierge:${parent.session_id}`};
-    source??=identity;
-    if(current.origin==='agent'&&['input','create','consultation','request'].includes(current.kind)) {
-      const request=db.query(`SELECT payload_json FROM session_communication_requests WHERE request_id=?
-        AND ((target_input_id=? AND target_session_id=?) OR (?='request' AND source_session_id=?))
-        AND source_input_id=? AND source_turn_id=?`).get(current.request_id,current.id,current.session_id,current.kind,current.session_id,parent.id,parent.turn_id) as {payload_json:string}|null;
-      const peer=request?null:current.kind==='request'?db.query('SELECT payload_json FROM session_peer_requests WHERE request_id=? AND source_session_id=? AND source_input_id=? AND source_turn_id=?')
-        .get(current.request_id,current.session_id,parent.id,parent.turn_id) as {payload_json:string}|null:null;
-      if(!request&&!peer)break;
-      const effect=JSON.parse((request??peer)!.payload_json).requestedEffect??'informational';
-      effectScope=effectScope==='informational'||effect!=='work'?'informational':'work';
-    }
-    const routedParent=routedHuman(parent);
-    if(routedParent){human=routedParent;break;}
-    if(humanAuthored(parent)) {
-      const payload=JSON.parse(parent.payload_json);
-      human??={...identity,...(payload.capture?.id?{captureId:payload.capture.id}:{})};
-      break;
-    }
-    current=parent;
-  }
-  // A chain that ends at a peer-delivered input continues in the peer's ledger; its retained provenance supplies the human.
-  if(!human&&current)human=forwardedHuman(current);
-  const delivered=!human&&current?peerDeliveryProvenance(current):null;
-  if(delivered){human=delivered.originatingHuman;effectScope=effectScope==='informational'||delivered.effectScope!=='work'?'informational':'work';}
-  return source?{source,requestId:input.request_id,effectScope,originatingHuman:human,...(delivered?{peer:delivered.peer,humanModelChoices:delivered.humanModelChoices}:{})}:null;
+  return inputProvenance(db,input,nativeRunId);
 }
 export function acceptedInputForTurn(turnId:number) {
   return db.query("SELECT * FROM session_inputs WHERE turn_id=? AND steering_id IS NULL AND kind IN ('input','create','consultation','comparison','fork') ORDER BY rowid LIMIT 1").get(turnId) as AcceptedSessionInput|null;
@@ -498,19 +424,28 @@ export type TurnContinuationReason =
  * closed as failed on 2026-11-02.
  */
 export function carryingTurn(turnId:number):{id:number;status:string}|null {
-  const turn=db.query('SELECT id,status FROM turns WHERE id=?').get(turnId) as {id:number;status:string}|null;
+  // A turn is carried on by its continuation when the provider refused it (error) or when it was
+  // stopped at a planned banked boundary (saved_yield_reason), the 2026-11-12 case where a
+  // paused quiet-only job's request was closed as cancelled while its continuation finished it.
+  const turn=db.query('SELECT id,status,saved_yield_reason FROM turns WHERE id=?').get(turnId) as {id:number;status:string;saved_yield_reason:string|null}|null;
   if(!turn)return null;
-  const continuationOf=(id:number)=>db.query("SELECT t.id,t.status FROM session_inputs i JOIN turns t ON t.id=i.turn_id WHERE i.id=?")
-    .get(`turn-continuation:${id}`) as {id:number;status:string}|null;
+  const continuationOf=(id:number)=>db.query("SELECT t.id,t.status,t.saved_yield_reason FROM session_inputs i JOIN turns t ON t.id=i.turn_id WHERE i.id=?")
+    .get(`turn-continuation:${id}`) as {id:number;status:string;saved_yield_reason:string|null}|null;
   let current=turn;
   const seen=new Set<number>([turn.id]);
-  while(current.status==='error'){
+  while(current.status==='error'||current.status==='cancelled'&&current.saved_yield_reason!==null){
     const next=continuationOf(current.id);
     if(!next||seen.has(next.id))break;
     seen.add(next.id);
     current=next;
   }
-  return current;
+  return {id:current.id,status:current.status};
+}
+
+/** A cancelled turn whose planned banked continuation has not been queued yet. */
+export function awaitingBankedContinuation(turnId:number):boolean {
+  return !!db.query(`SELECT 1 FROM turns t WHERE t.id=? AND t.status='cancelled' AND t.saved_yield_reason IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM session_inputs i WHERE i.id='turn-continuation:'||t.id)`).get(turnId);
 }
 
 /**

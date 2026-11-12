@@ -144,6 +144,17 @@ thnkr.ing logs each decision too. It runs only on the Mac; the server answers
 `MESSAGES_NOT_ON_THIS_MACHINE`. Checked 2026-10-07 on his real texts: an Amazon sign-in code was
 shown as an ordinary site and a T-Mobile code stayed hidden as his carrier.
 
+Pictures and files sent in texts: a shown text lists `attachments` as `{id, type, name, bytes,
+onThisMac}`. `router-actions.sh messages --attachment <id> --to <folder>` copies that one
+attachment into the named folder (created if missing), converting HEIC/HEIF photos to JPEG with
+`sips`, and answers `{exported: {path, type, convertedFrom, bytes}}`; agents then open the copy
+with their ordinary tools and never touch the Messages folder. The code rule extends to
+attachments: a text whose words look like a code, reset or sign-in link (even one thnkr.ing would
+show), or any text from an automated or short-code sender, lists no attachments and its
+attachment ids answer `ATTACHMENT_WITHHELD`. Pictures from a person's number or address, or ones
+Tejas sent, are ordinary. `ATTACHMENT_NOT_ON_THIS_MAC` means Messages has not downloaded the file
+(it may be in iCloud only). Every export and refusal is logged to the same diagnostics file.
+
 It is the sanctioned way in, not the only one. The pre-command guard refuses any call that names
 the Messages folder, chat.db or Notification Center's store, or a `mac-screenshot app Messages`,
 from either machine [decision: codes-hidden-only-for-money-and-identity]. That includes commands that only
@@ -163,7 +174,7 @@ long numbers and codes he forwarded), which errs toward hiding.
 
 ## Current native routing
 
-For resource-heavy phone work that Tejas authorized only while he sleeps, create a new banked coding session with `sessions bank --quiet-only` and the usual project, session name, summary, source pair and action ID. The saved-work quiet hours and time zone in thnkr.ing Settings govern the window. Concierge refuses a claim outside that band or during its last five minutes, and asks an active run to stop at that early cutoff; a continuation keeps the same choice. Ordinary `sessions bank` retains its allowance-reset behavior. `sessions cancel <request-id>` withdraws a queued saved turn; `sessions saved cancel <turn-id>` remains the direct saved-work control. Check `sessions saved list` after cancellation. See [session ownership](../architecture/SESSION-OWNER.md#one-execution-owner).
+For resource-heavy phone work that Tejas authorized only while he sleeps, create a new banked coding session with `sessions bank --quiet-only` and the usual project, session name, summary, source pair and action ID. The saved-work quiet hours and time zone in thnkr.ing Settings govern the window. Concierge refuses a claim outside that band or during its last five minutes, and asks an active run to stop at that early cutoff; a continuation keeps the same choice. Inside the band it starts whenever an account has room above the reserve, even while other agents run. Each night it does not start, you are woken with why; `sessions saved list` shows the current reason as `waitingBecause`. Ordinary `sessions bank` retains its allowance-reset behavior. `sessions cancel <request-id>` withdraws a queued saved turn; `sessions saved cancel <turn-id>` remains the direct saved-work control. Check `sessions saved list` after cancellation. See [session ownership](../architecture/SESSION-OWNER.md#one-execution-owner).
 
 ### Standing agents
 
@@ -202,7 +213,9 @@ an unproved user-role message reports unknown rather than Tejas.
 queues one firing in that bound session, or creates and binds the role's session first. The bound session may run it for its own role: its firing is then a plain scheduled input in itself, with no request to itself and nothing returned. A repeating
 schedule keeps firing there. While one repeating firing for the role is queued, another repeating
 schedule is refused with its exact turn ID; change its time in Thinkering Saved work or cancel it
-with `sessions saved cancel <turn-id>` before replacing it. `sessions schedule --project` remains available for
+with `sessions saved cancel <turn-id>` before replacing it. That control cancels only the named
+queued turn; on a repeating schedule it also prevents another firing from being booked. Other
+scheduled turns in the same session remain queued. `sessions schedule --project` remains available for
 registered projects. The read caps repeating schedules at 32, watches per role at 20, and host
 timers at 128; its coverage field says when a cap was reached.
 On a runner, the role's declared workspace-relative folder (such as `agents/concierge-repair`)
@@ -216,6 +229,11 @@ books no more; a firing already running finishes. The request names only the fir
 saved-work step that books each next firing checks whether the schedule was dropped or its request
 cancelled. Until 2026-11-06 a cancelled request left later firings running. `sessions saved list`
 shows each armed schedule's next firing, turn ID and interval.
+
+A repeating schedule created with `--expires` ends at that instant: the last firing due before it
+runs, no firing is booked at or after it, and every firing carries that same expiry. Until
+2026-11-11 each firing moved the expiry one interval later, so a schedule with an expiry never ended;
+a firing still queued from that time is withdrawn when it comes due past the original end.
 
 New repeating schedules and renewing file watches require both the requesting session and
 the scheduled session, where applicable, to belong to a registered project. Placement under
@@ -570,6 +588,13 @@ router-actions.sh sessions reply <request-id> <source-flags> --action-id A --wor
 His words are checked against the message that started the work and his other messages of the
 last thirty days in this ledger; work that began on the other machine is taken as given. A
 session in a writing project (the messaging agent) cannot send `--requested-effect work`.
+
+An `only-he-can device` question may ask for one physical action in its first sentence,
+including saying a named `Alexa, open …` launch phrase to an Echo. For example:
+`Please say “Alexa, open thinkering box” to your Echo.` The reason field explains why
+the agent route cannot perform this check. A server or simulator result does not establish
+what the Echo heard or whether a capture reached the Inbox. Keep the source request open
+until the physical attempt and its resulting capture or refusal are observed.
 
 ### Approval required by a permanent decision
 

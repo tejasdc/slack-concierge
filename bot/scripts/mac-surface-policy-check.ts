@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import {macSurfaceRefusal,RETIREMENT_FILE_MENU_PROGRAM,RETIREMENT_NEW_WINDOW_PROGRAM,UPDATE_BOUNDED_AX_PROGRAM,UPDATE_WORKSPACE_COMMAND,UPDATE_FIRST_TAP_COMMAND} from '../src/mac-surface-policy';
-import {parseMachineNeed} from '../src/machine-need';
+import {macSurfaceRefusal,RETIREMENT_FILE_MENU_PROGRAM,RETIREMENT_NEW_WINDOW_PROGRAM,UPDATE_BOUNDED_AX_PROGRAM,UPDATE_WORKSPACE_COMMAND,UPDATE_FIRST_TAP_COMMAND,FOCUS_START_COMMAND,FOCUS_VERIFY_START_COMMAND,FOCUS_END_COMMAND} from '../src/mac-surface-policy';
+import {acceptedMachineNeed,parseMachineNeed} from '../src/machine-need';
 import {deviceQuestionNamesPhysicalPrerequisite} from '../src/agent-reachable-app-question';
 
 const check=(command:string,need='',platform='darwin',toolName='Bash')=>
@@ -14,6 +14,14 @@ assert.equal(parseMachineNeed('browser-fallback:Server portal blocked after logi
   url:'https://bosse.managebuilding.com/Resident/portal/login',
   failure:'Observed a location-specific access refusal after the server sign-in completed.'
 }).serverAttempt?.url,'https://bosse.managebuilding.com');
+const fallbackNeed=parseMachineNeed('browser-fallback:Server portal blocked after login',{
+  url:'https://bosse.managebuilding.com',failure:'The server browser received an access refusal after sign-in.'
+});
+assert.deepEqual(acceptedMachineNeed('create',{firstInput:{machineNeed:fallbackNeed}}),fallbackNeed);
+assert.deepEqual(acceptedMachineNeed('input',{machineNeed:fallbackNeed}),fallbackNeed);
+assert.equal(acceptedMachineNeed('create',{machineNeed:fallbackNeed}),null);
+assert.equal(acceptedMachineNeed('input',{firstInput:{machineNeed:fallbackNeed}}),null);
+assert.equal(acceptedMachineNeed('service',{machineNeed:fallbackNeed}),null);
 assert.throws(()=>parseMachineNeed('browser-fallback:Server portal blocked after login',{
   url:'https://bosse.managebuilding.com',failure:'it failed'
 }));
@@ -37,6 +45,18 @@ assert.match(macSurfaceRefusal({command:null,need:'mac-file',platform:'darwin',t
 assert.equal(macSurfaceRefusal({command:null,need:'mac-app',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Voice Memos")'}}),null);
 const webAppNeed={kind:'mac-app',why:'Inspect the already-open thnkr.ing web app com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 page faf63877-6536-4ac6-86e9-5d63e03d3369, directly authorized by Tejas.',humanInputId:'f66f15dd-e251-4537-a9cd-347d0548434b',effectScope:'work'};
 const updateNeed={kind:'mac-app',why:'Inspect exact bundle com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 and install ready update safely',effectScope:'work',updateAuthorization:true};
+const focusNeed={kind:'mac-app',why:'Inspect com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 for bounded Focus Start/End acceptance',effectScope:'work',focusAuthorization:true};
+for(const command of [FOCUS_START_COMMAND,FOCUS_VERIFY_START_COMMAND,FOCUS_END_COMMAND]) {
+  assert.equal(macSurfaceRefusal({command,need:focusNeed,platform:'darwin',toolName:'exec_command',toolInput:{cmd:command}}),null);
+  for(const need of [{...focusNeed,focusAuthorization:false},{...focusNeed,effectScope:'informational'},
+    {...focusNeed,why:focusNeed.why.replace('bounded Focus Start/End acceptance','other task')}])
+    assert.ok(macSurfaceRefusal({command,need,platform:'darwin',toolName:'exec_command',toolInput:{cmd:command}}));
+  assert.ok(macSurfaceRefusal({command:command+'; /usr/bin/open -a Safari',need:focusNeed,platform:'darwin',toolName:'exec_command',toolInput:{cmd:command+'; /usr/bin/open -a Safari'}}));
+}
+const focusRead='var thnkrFocusInspectionApp = await cua.getApp("com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792"); await thnkrFocusInspectionApp.getAXStateAndScreenshot()';
+assert.equal(macSurfaceRefusal({command:null,need:focusNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:focusRead}}),null);
+assert.ok(macSurfaceRefusal({command:null,need:focusNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Safari")'}}));
+assert.ok(macSurfaceRefusal({command:null,need:focusNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await thnkrFocusInspectionApp.click(1)'}}));
 const currentUpdateNeed={kind:'mac-app',why:'Open Workspace menu in com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792',effectScope:'work',updateAuthorization:true};
 const acceptedWorkspaceNeed={...currentUpdateNeed,why:'Open Workspace once in bundle com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 for ready update'};
 const currentTapNeed={...currentUpdateNeed,why:currentUpdateNeed.why.replace('Open Workspace menu','Press Update now once')};
@@ -269,13 +289,18 @@ for(const question of ['Can you click the button in the app?','Can you open Safa
   'Can you unlock your Mac so I can inspect the app? Then can you click Save?',
   'Can you unlock the Mac so the agent can continue? Can you copy the eight notes?',
   'Can you open Safari on your Mac?', 'Can you open Gmail on your phone?',
-  'Can you launch Chrome on my laptop?', 'Can you start the deploy on the server?'])
+  'Can you launch Chrome on my laptop?', 'Can you start the deploy on the server?',
+  'Can you say Alexa, open thinkering box to your phone?',
+  'Can you say Alexa, open thinkering box to your Echo and open the app?',
+  'Can you say Alexa, end Alexa+ to your Echo?'])
   assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),false,question);
 for(const question of ['Can you unlock your Mac so the agent can continue?',
   'Can you unlock the Mac so the agent can read the app?',
   'Can you unlock your physical Mac?','Can you take a photo of the paper?',
   'Can you open KOReader once on your Kindle Oasis?',
   'Can you open KOReader on Kindle?',
+  'Please say “Alexa, open thinkering box” to your Echo.',
+  'Can you say Alexa, open thinkering box to your Echo?',
   'Could you start the companion app on the watch?',
   'Can you unlock your iPhone?','Please unlock your iPhone.',
   'Please unlock your iPhone. The device check reached it and reported that it is locked. I will handle the app inspection; the other repair work continues.'])

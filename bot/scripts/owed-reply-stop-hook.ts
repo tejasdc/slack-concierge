@@ -99,7 +99,10 @@ function closeRunBrowsers(runId: string | null) {
 }
 
 // The hook itself has 20 seconds (claude-code.ts), so a restart is waited out only within that.
-const ask = (extra: object) => requestApiResponse('/session-communication/owed', { provider, provider_session_id: conversation, ...extra }, RETRY_POLICIES.ownerRestartInHook);
+// Claude runs one process per Concierge run, so its environment names that run even before the
+// owner has learned a new conversation's id. Codex's shared App Server environment is not per run.
+const launchedRun = provider === 'claude-code' ? process.env.CONCIERGE_SOURCE_RUN_ID?.trim() || undefined : undefined;
+const ask = (extra: object) => requestApiResponse('/session-communication/owed', { provider, provider_session_id: conversation, ...(launchedRun ? { run_id: launchedRun } : {}), ...extra }, RETRY_POLICIES.ownerRestartInHook);
 
 try {
   const response = await ask(hook.stop_hook_active && !background ? { remind: true } : {});

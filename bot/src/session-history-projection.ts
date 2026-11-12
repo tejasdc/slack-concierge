@@ -1,6 +1,6 @@
 import {db,getSessionById} from './state';
 import {createHash} from 'node:crypto';
-import {sessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {getAcceptedSessionInput,sessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import type {ProviderHistoryMessage,ProviderHistoryPage} from './provider-history';
 import {sessionMessageMetadataProjection,type SessionMessageMetadataProjection} from './session-message-metadata';
 import {acceptedInputAuthor,authorSession,historicalInputAuthor} from './session-message-author';

@@ -14,6 +14,11 @@ const mutationPaths=[
  '/saved-work/settings','/saved-work/:id/start','/saved-work/:id/time','/saved-work/:id/schedule','/saved-work/:id/drop',
  '/projects/new','/projects/share','/projects/cancel','/projects/canvas-policy','/projects/:id/default','/projects/:id/todos','/canvas-projects/ensure',
  '/consultations','/resurrections','/resurrections/native',
+ '/peers/requests','/peers/requests/corrected-attachment','/peers/requests/:id/replies','/peers/requests/:id/notify','/peers/requests/:id/cancel',
+ '/peers/operations','/peers/operations/:id/outcome','/peers/links','/peers/lab','/peers/project-notices',
+ '/handoffs','/handoffs/:id/accept','/handoffs/:id/withdraw','/agent-report','/focus-hold','/focus-hold/release',
+ '/pause-all','/pause-all/resume','/pause-all/peer','/inbox/queue-actions','/inbox/areas','/inbox/areas/:id/actions',
+ '/journal/observations','/canvas-observations','/sessions/:id/canvas-observations','/sessions/:id/feature-requests','/mac-browser-fallback',
 ] as const;
 
 export function ownerRequestLabel(method:string,path:string):string{

@@ -5,11 +5,13 @@ import {basename,join} from 'node:path';
 import {PeerCatalogueSync} from './peer-catalogue-sync';
 import {peerCatalogueView} from './peer-catalogue-view';
 import {sessionProject} from './session-projects';
-import {parseProviderSelector,resolveProviderSelector} from './aliases';
+import {parseProviderSelector,resolveProviderSelector,TOP_MODEL_CHOICES,type TopModelChoice} from './aliases';
+import {topModel} from './model-escalation';
 import {humanChoseTopModel} from './model-escalation-custody';
 import {AWAITING_INSPECTION,PROMPT_ANSWER_REMINDER_MS,PROMPT_ANSWER_OVERDUE_MS,REMINDERS_SINCE_MS,STILL_WAITING_AFTER_MS,STILL_WAITING_MINUTES,updateDraining,replyCommand,stalledNotice,strandedStep,tellWorkerCanceled,cancelQueuedWithdrawnRequest,waitingOnDependency,type OwedRequest} from './request-liveness';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {OWNER_READ_RESPONSE_MS} from './owner-transport-policy';
+import {awaitingOutside} from './storage-observation';
 import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
 import {meaningIndex} from './meaning-index';
 import {acceptedInputForTurn,carryingTurn,enqueueSessionInput,getAcceptedSessionInput,handedToARun, withdrawUnstartedServiceInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
@@ -33,6 +35,7 @@ import {RETRY_POLICIES,PEER_REPLY_SCHEMA_MISMATCH_ATTEMPTS,PEER_REQUEST_ORPHAN_G
 import {ledgerDurable} from './ledger-durability-barrier';
 import {parseMachineNeed,type MachineNeed} from './machine-need';
 import {AUTHORIZED_PAGE,AUTHORIZED_WEB_APP,AUTHORIZING_HUMAN_INPUT,CANVAS_AUTHORIZING_HUMAN_INPUT} from './mac-surface-policy';
+import {MAC_FOCUS_PHRASE,MAC_FOCUS_REQUEST} from './mac-focus-source';
 import {endedWorkInPlainWords} from './provider-failures';
 
 /** Follow owner-recorded continuations back to the work request that forwarded a human reply. */
@@ -70,6 +73,22 @@ export function forwardedHumanWorkInput(actor:PeerActor,sourceInput:ReturnType<t
 }
 
 /** The original human grant survives a physical-device reply only within its recorded task. */
+/**
+ * Attest that the asking session currently holds the open outside Focus request, after any
+ * handoffs. Only a Mac-app work ask naming the exact app and the bounded acceptance phrase
+ * carries it; the Mac admits the Focus route only with this attestation on its delivery.
+ */
+function focusCustodyClaim(actor:PeerActor,input:{peer:string;machineNeed?:MachineNeed;requestedEffect?:string}) {
+  const need=input.machineNeed;
+  if(input.peer!=='mac'||input.requestedEffect!=='work'||need?.kind!=='mac-app'
+    ||!need.why.includes(AUTHORIZED_WEB_APP)||!need.why.includes(MAC_FOCUS_PHRASE))return null;
+  const held=db.query(`SELECT 1 FROM session_communication_requests WHERE request_id=? AND target_session_id=? AND outcome IS NULL
+      UNION ALL SELECT 1 FROM session_external_requests WHERE request_id=? AND target_session_id=? AND outcome IS NULL
+      UNION ALL SELECT 1 FROM session_peer_deliveries WHERE request_id=? AND target_session_id=? AND closed_at_ms IS NULL LIMIT 1`)
+    .get(MAC_FOCUS_REQUEST,actor.session,MAC_FOCUS_REQUEST,actor.session,MAC_FOCUS_REQUEST,actor.session);
+  return held?{requestId:MAC_FOCUS_REQUEST}:null;
+}
+
 function continuedWebAppAuthorization(actor:PeerActor,sourceInput:ReturnType<typeof getAcceptedSessionInput>,provenance:ReturnType<typeof sessionInputProvenance>,input:{peer:string;address?:string;machineNeed?:MachineNeed}) {
   const need=input.machineNeed;
   if(input.peer!=='mac'||!input.address||need?.kind!=='mac-app'||!need.why.includes(AUTHORIZED_WEB_APP)||!need.why.includes(AUTHORIZED_PAGE)
@@ -167,7 +186,10 @@ export class PeerClient {
     // A request to the peer carries ledger facts (its request, its answer); they reach the disk first.
     if(method==='POST')await ledgerDurable();
     try {
-      response=await fetch(this.url+path,{method,signal:signal?AbortSignal.any([signal,AbortSignal.timeout(timeoutMs)]):AbortSignal.timeout(timeoutMs),headers:{authorization:`Bearer ${this.token}`,accept:'application/json',...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})});
+      // The peer's answer is a wait on another machine, never owner time: on 2026-11-07 the Mac
+      // stopped answering and six reply reads of 20 s each, inside its notify requests, were
+      // counted as owner slowness (work-flow supervisor incident 474d66cd, reopened 15 times).
+      response=await awaitingOutside(()=>fetch(this.url+path,{method,signal:signal?AbortSignal.any([signal,AbortSignal.timeout(timeoutMs)]):AbortSignal.timeout(timeoutMs),headers:{authorization:`Bearer ${this.token}`,accept:'application/json',...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})}));
     } catch(error) {
       if(signal?.aborted)throw error;
       // A peer that sleeps is normal, so its unreachability is never a notice to Tejas: it
@@ -193,7 +215,7 @@ export class PeerClient {
     }
     this.refusedSince=null;
     let value:any=null;
-    try {value=await response.json();} catch {value=null;}
+    try {value=await awaitingOutside(()=>response.json());} catch {value=null;}
     if(response.status===401||response.status===403)throw new PeerError(`Peer ${this.name} refused this instance's token.`,'unauthorized',response.status,'PEER_UNAUTHORIZED');
     if(!response.ok){
       const message=typeof value?.error==='string'?value.error:value?.error?.message??`Peer ${this.name} answered ${response.status}.`;
@@ -585,7 +607,7 @@ export class SessionPeers {
   async ask(actor:PeerActor,input:{peer:string;action_id:string;address?:string;provider?:string;effort?:string;escalationReason?:string;project?:string;title?:string;summary?:string;text:string;
     forTask?:string;recoveryOf?:string;correctionOf?:string;
     machineNeed?:MachineNeed;
-    requestedEffect?:'informational'|'work';files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null;threadSourceMessageId?:string;returnToRequester?:boolean;
+    requestedEffect?:'informational'|'work';authorityInputId?:string;files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null;threadSourceMessageId?:string;returnToRequester?:boolean;
     routedFrom?:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'|'service'|'unknown';author?:import('./provider-history').MessageAuthor};
     /** The words the recipient reads instead of the standard agent-request framing (his thread reply), and the thread message it answers so its replies post there. */
     framing?:(id:string)=>string;forwardedReply?:{inboxInputId:string;topicId:string;authorKind?:'human'|'agent';messageThreadRootId?:string;messageThreadRequestId?:string}}) {
@@ -595,7 +617,7 @@ export class SessionPeers {
     const prior=()=>db.query('SELECT * FROM session_peer_requests WHERE source_input_id=? AND action_id=?').get(actor.inputId,input.action_id) as PeerRequestRow|null;
     const encode=(taskRef:ChatGptTask|null)=>JSON.stringify({peer:input.peer,answerGuaranteeVersion:1,...(input.provider?{provider:input.provider}:{address:input.address}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary}),text:input.text,
       ...(input.effort===undefined?{}:{effort:input.effort}),...(input.escalationReason===undefined?{}:{escalationReason:input.escalationReason}),...(input.project===undefined?{}:{project:input.project}),...(input.files===undefined?{}:{files:input.files}),
-      ...(input.captureId===undefined?{}:{captureId:input.captureId}),...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.machineNeed?{machineNeed:input.machineNeed}:{}),requestedEffect:effect,...(input.threadRoot?{thread:input.threadRoot}:{}),...(input.returnToRequester?{returnToRequester:true}:{}),
+      ...(input.captureId===undefined?{}:{captureId:input.captureId}),...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.machineNeed?{machineNeed:input.machineNeed}:{}),requestedEffect:effect,...(input.authorityInputId?{authorityInputId:input.authorityInputId}:{}),...(input.threadRoot?{thread:input.threadRoot}:{}),...(input.returnToRequester?{returnToRequester:true}:{}),
       ...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{}),...(input.routedFrom?{routedMessage:{sourceInputId:input.routedFrom.messageId},routedFrom:input.routedFrom}:{}),
       ...(taskRef?{taskRef}:{}),...(input.recoveryOf?{recoveryOf:input.recoveryOf}:{}),...(input.correctionOf?{correctionOf:input.correctionOf}:{})});
     const existingCorrection=input.correctionOf?prior():null;
@@ -659,28 +681,30 @@ export class SessionPeers {
     const files=[...(input.files??[]),...[...(input.attachments??[]),...captured].map(attachmentId=>owner.attachment(attachmentId))]
       .map(({name,contentType,base64})=>({name,contentType,base64}));
     const sourceInput=getAcceptedSessionInput(actor.inputId)!;
-    const provenance=sessionInputProvenance(sourceInput);
+    const authorityInput=input.authorityInputId?getAcceptedSessionInput(input.authorityInputId)!:sourceInput;
+    const provenance=sessionInputProvenance(authorityInput);
     const runId=nativeRunId(actor.turn);
     const continuedGrant=continuedWebAppAuthorization(actor,sourceInput,provenance,input);
+    const focusCustody=focusCustodyClaim(actor,input);
     // A human message asking directly is its own originating human; a local walk would find it as the parent.
     const routedOriginal=input.routedFrom?.authorKind==='human'?getAcceptedSessionInput(input.routedFrom.messageId):null;
     const known=routedOriginal&&humanAuthored(routedOriginal)
       ?{inputId:routedOriginal.id,runId:routedOriginal.turn_id?nativeRunId(routedOriginal.turn_id):'',sessionId:`concierge:${routedOriginal.session_id}`,
         ...(JSON.parse(routedOriginal.payload_json).capture?.id?{captureId:JSON.parse(routedOriginal.payload_json).capture.id}:{})}
-      :continuedGrant??provenance?.originatingHuman??(humanAuthored(sourceInput)
-      ?{inputId:sourceInput.id,runId,sessionId:`concierge:${actor.session}`,...(JSON.parse(sourceInput.payload_json).capture?.id?{captureId:JSON.parse(sourceInput.payload_json).capture.id}:{})}:null);
+      :continuedGrant??provenance?.originatingHuman??(humanAuthored(authorityInput)
+      ?{inputId:authorityInput.id,runId:authorityInput.turn_id?nativeRunId(authorityInput.turn_id):runId,sessionId:`concierge:${actor.session}`,...(JSON.parse(authorityInput.payload_json).capture?.id?{captureId:JSON.parse(authorityInput.payload_json).capture.id}:{})}:null);
     // Every identity leaving this instance is named by it (peer-identity.ts).
     const originatingHuman=known?{...known,sessionId:presentSessionForPeer(known.sessionId,this.self)}:null;
-    const humanModelChoices=known?(['claude-fable-5-1','gpt-6-astra'] as const).filter(model=>
+    const humanModelChoices=known?TOP_MODEL_CHOICES.filter(model=>
       humanChoseTopModel(known.inputId,model)
       ||(provenance?.originatingHuman?.inputId===known.inputId&&humanChoseTopModel(actor.inputId,model))):[];
     const providerSelector=parseProviderSelector(input.provider);
     const selectedModel=providerSelector?resolveProviderSelector(providerSelector).model:undefined;
-    const humanModelChoice=!!selectedModel&&humanModelChoices.includes(selectedModel as 'claude-fable-5-1'|'gpt-6-astra');
+    const humanModelChoice=!!selectedModel&&humanModelChoices.includes(selectedModel as TopModelChoice);
     const text=input.framing?input.framing(id):`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. ${input.routedFrom?`This carries the exact Inbox message ${input.routedFrom.messageId} into this session. Reply to this request; the answer appears under that message in its original thread.`:'This is agent-authored input within the originating human task, not a new human message.'} Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`;
     const delivery={requestId:id,answerGuaranteeVersion:1,
       ...(task?{answerObligation:{id:input.correctionOf??input.recoveryOf??id,task,attemptId:id}}:{}),
-      origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,originatingHuman,effectScope:provenance?.effectScope??null},
+      origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,originatingHuman,effectScope:input.authorityInputId?'work':provenance?.effectScope??null,...(focusCustody?{focusCustody}:{})},
       ...(humanModelChoices.length?{humanModelChoices}:{}),
       ...(input.provider?{provider:input.provider,...(input.effort===undefined?{}:{effort:input.effort}),...(input.escalationReason===undefined?{}:{escalationReason:input.escalationReason}),...(humanModelChoice?{humanModelChoice:selectedModel}:{}),...(input.project===undefined?{}:{project:input.project}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary})}:{address:input.address}),
       text,message:input.text,requestedEffect:effect,...(input.machineNeed?{machineNeed:input.machineNeed}:{}),...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{}),
@@ -786,6 +810,31 @@ export class SessionPeers {
       }
       log('warn','session_peer_cancel_unsent',{request_id:requestId,peer:row.peer,...errorFields(error)});
     }
+  }
+  /** The peer refused a repeat because it already holds this request ID with other bytes. */
+  private async adoptPeerHeldRequest(client:PeerClient,row:PeerRequestRow,conflict:string):Promise<boolean> {
+    let remote:any;
+    try{remote=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal);}
+    catch(error){
+      if(this.stopped)return false;
+      this.note(row.peer,error);
+      if(error instanceof PeerError&&error.kind==='refused'&&error.status===404)
+        this.settle(row,'failed',`${row.peer} refused this request as a changed repeat (${conflict}) but does not hold it; it was not sent again.`);
+      return false;
+    }
+    if(this.stopped)return false;
+    if(remote?.requestId!==row.request_id||typeof remote.sessionId!=='string'||typeof remote.address!=='string'){
+      this.settle(row,'failed',`${row.peer} refused this request as a changed repeat (${conflict}) and did not report the copy it holds; it was not sent again.`);
+      return false;
+    }
+    db.transaction(()=>{
+      db.query("UPDATE session_peer_requests SET remote_session_id=?,remote_address=?,remote_operation_id=coalesce(remote_operation_id,?),delivery_json=NULL,status='recorded' WHERE request_id=? AND status='queued_offline'")
+        .run(remote.sessionId,remote.address,typeof remote.operationId==='string'?remote.operationId:null,row.request_id);
+      this.event(row,'overdue',{text:`${row.peer} already held request ${row.request_id} with different content (${conflict}). Concierge now follows the copy ${row.peer} holds and does not send it again.`,
+        health:'peer request adopted after conflict',agentReminder:true},`peer-conflict-adopted:${row.request_id}`);
+    })();
+    log('warn','session_peer_request_conflict_adopted',{request_id:row.request_id,peer:row.peer,conflict});
+    return true;
   }
   private event(row:PeerRequestRow,kind:PeerEventRow['kind'],payload:unknown,eventId=randomUUID()) {
     if(db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(eventId))return eventId;
@@ -1057,6 +1106,7 @@ export class SessionPeers {
         row=this.row(row.request_id);
       }
       let accepted:any;
+      let adoptedPeerCopy=false;
       try{
         const delivery=queuedDelivery;
         accepted=await client.request('POST',delivery.correctionOf?'/sessions/v1/peers/requests/corrected-attachment':'/sessions/v1/peers/requests',delivery);
@@ -1065,16 +1115,37 @@ export class SessionPeers {
       }
       catch(error){
         this.note(row.peer,error);
+        // An idempotency conflict proves the peer already holds this request ID. Re-sending the
+        // same body can only be refused again: on 2026-11-11 seven Mac requests were re-sent
+        // about five times a second for days, enough owner log lines to blind the outside
+        // monitor. Follow the copy the peer holds instead, through the ordinary status poll.
+        if(error instanceof PeerError&&error.kind==='refused'&&error.status===409&&error.message.startsWith('Idempotency conflict')&&!queuedDelivery.correctionOf){
+          if(!await this.adoptPeerHeldRequest(client,row,error.message))return;
+          adoptedPeerCopy=true;
+          row=this.row(row.request_id);
+        }
         // A rejected or interrupted HTTP exchange is not proof that the receiver did not
         // retain this request. Keep its original ID and body for idempotent reconciliation.
-        if(error instanceof PeerError&&error.kind!=='unreachable'){
+        // A definite refusal (the peer validated this exact body and said no, before retaining it)
+        // gets the same answer on every resend. Seven Mac requests to server sessions that were
+        // no longer messageable were re-sent about five times a second for days (2026-11-11),
+        // flooding the owner log until the outside monitor went blind. End such a request and
+        // tell its sender, who can ask again or pick another session.
+        else if(error instanceof PeerError&&error.kind==='refused'&&[400,409,422].includes(error.status??0)&&!queuedDelivery.correctionOf){
+          this.settle(row,'failed',`${row.peer} refused this request and did not keep it: ${error.message} It was not sent again; ask again or choose another session.`);
+          log('warn','session_peer_request_refused_terminal',{request_id:row.request_id,peer:row.peer,status:error.status,code:error.code});
+          return;
+        }
+        else if(error instanceof PeerError&&error.kind!=='unreachable'){
           const eventId=`peer-admission-uncertain:${row.request_id}`;
           if(!db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(eventId))
             this.event(row,'overdue',{text:`The ${row.peer} admission for request ${row.request_id} returned an error. Its exact request is retained for reconciliation; no new request identity will be sent. ${error.message}`,
               health:'peer admission uncertain',agentReminder:true},eventId);
+          return;
         }
-        return;
+        else return;
       }
+      if(!adoptedPeerCopy){
       if(typeof accepted?.sessionId!=='string'||typeof accepted.address!=='string'||typeof accepted.operationId!=='string')
         throw new Error('The peer did not return the exact accepted session and operation.');
       if(accepted.answerGuaranteeVersion!==1){
@@ -1102,6 +1173,7 @@ export class SessionPeers {
       if(row.outcome==='canceled'){
         await this.revokeCanceledRemote(row.request_id);
         return;
+      }
       }
     }
     let remote:any;
@@ -1459,7 +1531,7 @@ export class SessionPeers {
       &&(typeof origin.originatingHuman?.inputId!=='string'||typeof origin.originatingHuman?.runId!=='string'||typeof origin.originatingHuman?.sessionId!=='string'))
       throw new SessionOwnerError('A peer human source needs its exact session, input and run.',400,'PEER_HUMAN_SOURCE_INVALID');
     if(input.humanModelChoices!==undefined&&(!Array.isArray(input.humanModelChoices)||input.humanModelChoices.length>2
-      ||input.humanModelChoices.some((model:unknown)=>model!=='claude-fable-5-1'&&model!=='gpt-6-astra')))
+      ||input.humanModelChoices.some((model:unknown)=>typeof model!=='string'||!topModel(model))))
       throw new SessionOwnerError('A peer model choice must name a supported top model.',400,'PEER_MODEL_CHOICE_INVALID');
     if(input.humanModelChoice!==undefined&&typeof input.humanModelChoice!=='string')
       throw new SessionOwnerError('A peer model choice must name its selected model.',400,'PEER_MODEL_CHOICE_INVALID');
@@ -1548,8 +1620,11 @@ export class SessionPeers {
         throw new SessionOwnerError('The corrected peer attachment must have changed bytes.',409,'PEER_CORRECTION_UNCHANGED');
     }
     // The sender's own words stay beside the delivery text its preamble wraps for the provider.
-    const humanModelChoices=origin.originatingHuman?Array.from(new Set([...(input.humanModelChoices??[]),input.humanModelChoice].filter((model:unknown)=>model==='claude-fable-5-1'||model==='gpt-6-astra'))):[];
+    const humanModelChoices=origin.originatingHuman?Array.from(new Set([...(input.humanModelChoices??[]),input.humanModelChoice].filter((model:unknown)=>typeof model==='string'&&!!topModel(model)))):[];
+    // Only the exact Focus request's custody attestation is retained; anything else is not a grant.
+    const focusCustody=origin.focusCustody?.requestId===MAC_FOCUS_REQUEST&&input.requestedEffect==='work'?{requestId:MAC_FOCUS_REQUEST}:null;
     const provenance={origin:{peer:origin.peer,sessionId:origin.sessionId,inputId:origin.inputId,runId:origin.runId},originatingHuman:origin.originatingHuman??null,effectScope:origin.effectScope??null,
+      ...(focusCustody?{focusCustody}:{}),
       ...(humanModelChoices.length?{humanModelChoices}:{}),
       ...(input.answerGuaranteeVersion===1?{answerGuaranteeVersion:1}:{}),...(input.answerObligation?{answerObligation:input.answerObligation}:{}),
       ...(correctionProof?{correctionOf:input.correctionOf,correctionPayloadHash:hash(JSON.stringify(input)),

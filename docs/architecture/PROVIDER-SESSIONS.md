@@ -71,8 +71,11 @@ Google's `/usage` reply keeps Gemini 4 Argon in its own allowance group (bucket 
 selected model's own buckets as extra windows, so an Argon limit makes Google ineligible for
 new work and gives a refused turn its real reset. Until 2026-11-01 only the shared group was
 read: Argon's weekly limit was spent for days while the reading showed 0.75% used, and small
-tasks kept being sent to Google and refused. A quota refusal while the reading shows room
-files one `usage_reading_disagrees` repair notice per day.
+tasks kept being sent to Google and refused. After a zero-turn quota refusal, Concierge
+finishes any in-progress allowance check and takes a new one before selecting the reset
+time; the earlier check may predate the refusal. A post-refusal reading that still shows
+room files one `usage_reading_disagrees` repair notice per day. A small reported balance
+does not prove enough room for the next turn.
 The earlier Gemini
 3.1 Pro choice was removed from that live list, so its headless start returned a
 structured zero-turn model refusal before `init`; the provider now carries that
@@ -142,13 +145,13 @@ Model aliases:
 | Alias | Provider | Model |
 | --- | --- | --- |
 | `cc`, `cc-opus` | Claude Code | `claude-opus-5-5` |
-| `cc-fable` | Claude Code | `claude-fable-5-1` |
+| `cc-fable` | Claude Code | `claude-fable-5-2` |
 | `cc-opus-1m` | Claude Code | `opus[1m]` (Claude Code's latest Opus with extended context) |
-| `cc-sonnet`, `cc-medium` | Claude Code | `claude-sonnet-5` |
-| `cc-haiku`, `cc-fast` | Claude Code | `claude-haiku-4-5-20251001` |
-| `cx`, `cx-sol` | Codex | `gpt-6-sol` |
+| `cc-sonnet`, `cc-medium` | Claude Code | `claude-sonnet-5-5` |
+| `cc-haiku`, `cc-fast` | Claude Code | `claude-haiku-5-5` |
+| `cx`, `cx-sol` | Codex | `gpt-6.1-sol` |
 | `cx-astra` | Codex | `gpt-6-astra` |
-| `cx-terra`, `cx-medium` | Codex | `gpt-5.6-terra` |
+| `cx-terra`, `cx-medium` | Codex | `gpt-6.1-terra` |
 | `cx-luna`, `cx-fast` | Codex | `gpt-6-luna` |
 | `google` | Antigravity | `gemini-4-argon-medium` |
 | `google-high` | Antigravity | `gemini-4-argon-high` |
@@ -167,13 +170,24 @@ their 5.6 counterparts at half the price. `cx-terra` stays on GPT-5.6 Terra
 because GPT-6 Terra does not exist — OpenAI shipped only Sol and Luna in that
 generation.
 
+**The 2026-11-11 move.** Fable 5.2 (cheaper than 5.1: $8/$40 against $10/$50 per
+million tokens), Sonnet 5.5 and Haiku 5.5 replaced Fable 5.1, Sonnet 5 and Haiku 4.5
+after each answered a live turn through the server's Claude Code 2.1.322. GPT-6.1 Sol
+and GPT-6.1 Terra replaced GPT-6 Sol and GPT-5.6 Terra, which Codex no longer
+recommends; both names were in the model catalogue Codex downloads for Tejas's accounts,
+but no live turn ran because both accounts' weekly allowance was spent that day. Claude's
+"Weekly · Fable only" cap is scoped to the Fable family rather than one version, so 5.2
+spends the same cap; Concierge treats every `claude-fable-*` name as Fable. Sessions
+already bound to an older name keep it, keep their readable name, and keep their place
+in the Claude usage fallback chain.
+
 Each side has a client-version floor, and below it the model is unreachable no
 matter what this table says:
 
 | Tool | Floor | What the old version did |
 | --- | --- | --- |
-| Claude Code | 2.1.280 | 2.1.278 refused `claude-opus-5-5` against its own catalog, and the API refused it too, naming the required version. |
-| Codex CLI | 0.156 | 0.153.4 refused every `gpt-6-*` name except Astra. |
+| Claude Code | 2.1.320 | Fable 5.2 support arrived in 2.1.320; 2.1.278 had refused `claude-opus-5-5` against its own catalog. |
+| Codex CLI | 0.159 | GPT-6.1 Terra requires 0.159; 0.153.4 refused every `gpt-6-*` name except Astra. |
 
 Codex's refusal text is worth knowing, because it lies about the cause: "The
 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account"
@@ -525,13 +539,13 @@ new Concierge session defaults to Automatic. On the server, an agent whose run p
 an update still uses the current installed request helper for a *new* outbound ask; its
 run hooks and recovery helpers remain pinned to their original release.
 
-For an independent helper requested by a Claude session, Automatic also sees the source
-session. When a fresh provider reading puts the selected Claude account at or above 90%
-in a named window and the signed-in Codex account has more launchable room,
-the owner starts that helper on Codex. The decision is repeated at request creation, so
-a previously started Claude run gets the current choice without a router message. A
-provider named by the agent remains explicit; the source session and its admitted work
-stay on Claude. Provider-native child tools still use their parent's provider.
+For independent work requested by a Claude or Codex session, Automatic also sees the
+source session. When a fresh provider reading puts its selected account at or above 90%
+in a lasting window and the other provider has more launchable room, the owner starts
+that work on the other provider. The decision is repeated at request creation, so a
+previously started run gets the current choice without changing its own binding. A
+provider named by the agent remains explicit. Provider-native child tools still use
+their parent's provider.
 
 The usage watch tells a running session about a provider-measured window only at
 or above 90% when that account's provider observation is at most one minute old. The brief names the machine, account, window, measured percentage and
@@ -540,10 +554,12 @@ that run, so a later selection change cannot relabel an older run. An unreadable
 reading, earlier provider refusal, or rate forecast cannot create a threshold brief.
 Dispatch still treats a prior refusal as an operational hold and rechecks account room
 when a helper is requested; its effective capacity is not displayed as a measured usage
-percentage. Under Claude pressure, the same room decision adds
-an instruction to delegate bounded implementation through a new session request, while
-the Claude agent keeps the approach and reviews the result. A change from no Codex
-delegation room to verified room creates one new brief in that allowance episode. New
+percentage. When the other provider has verified launchable room and the current
+provider has less, the brief tells the agent that independent work can start there
+through Automatic. This works in both directions: Claude to Codex and Codex to Claude.
+Provider-native helpers still inherit their parent, and the running agent chooses
+what to delegate while keeping its own work and model. A change from no verified
+other-provider room to verified room creates one new brief in that allowance episode. New
 turns receive the same brief in their opening context. These are service notices to
 the agent, not human Inbox alerts or a provider switch for an active run.
 
@@ -618,11 +634,11 @@ the session then codes from its findings itself. The big guns for second opinion
 deep research and building expertise are ChatGPT Pro on Tejas's own subscription,
 reached with `sessions ask --provider chatgpt --effort pro` and the evidence attached
 as files, because it spends no Claude or Codex allowance (October 9, 2026
-[decision: chatgpt-pro-is-the-big-guns]). GPT-6 Sol remains the read-only
+[decision: chatgpt-pro-is-the-big-guns]). GPT-6.1 Sol remains the read-only
 investigator when the second opinion must read the repository itself. GPT-6 Astra is
 brought in only when the same issue has come back three or more times and ChatGPT Pro
 is unavailable or its answer did not hold (Tejas, September 23, 2026, replacing his
-September 22 Astra-first rule). Fable 5.1 stands in only when the named model is
+September 22 Astra-first rule). Fable 5.2 stands in only when the named model is
 unavailable. Outside that repeat threshold, Astra still needs his explicit choice. Tonight's audit that motivated the escalation half is in
 [the incident note](../incidents/2026-09-22-no-escalation-audit.md).
 
@@ -631,9 +647,9 @@ Model roles for both directions:
 | Alias | Model | Role |
 | --- | --- | --- |
 | `cc-opus` | `claude-opus-5-5` | Default parent: judgment, design, diagnosis, and review of delegated output. |
-| `cc-fable` | `claude-fable-5-1` | Fallback investigator only when the named GPT model is unavailable, or Tejas explicitly chose it. |
-| `cx`, `cx-sol` | `gpt-6-sol` | Substantial but well-scoped implementation, at the default `medium` effort. |
-| `cx-medium` | `gpt-5.6-terra` | Balanced quality, latency, and cost. |
+| `cc-fable` | `claude-fable-5-2` | Fallback investigator only when the named GPT model is unavailable, or Tejas explicitly chose it. |
+| `cx`, `cx-sol` | `gpt-6.1-sol` | Substantial but well-scoped implementation, at the default `medium` effort. |
+| `cx-medium` | `gpt-6.1-terra` | Balanced quality, latency, and cost. |
 | `cx-fast` | `gpt-6-luna` | Mechanical edits, reproductions, and checking stated claims. |
 | `cx-astra` | `gpt-6-astra` | Read-only investigator after three reports or failed fixes and an unavailable or unhelpful ChatGPT Pro answer, or by Tejas's explicit choice. |
 
@@ -681,6 +697,9 @@ only carries the text. A lookup that fails or outlasts its bound (1.5 s here, 6 
 never holds the turn; it starts with a line saying the thesaurus could not be read.
 Native-turn focused tests supply fixed thesaurus context to the execution host, so their
 stub providers never read the live Thinkering capability entrance while prompts are built.
+Behind that, the test preload (`bot/tests/preload.ts`) points every Thinkering capability
+lookup at a scratch socket nothing listens on and removes the network entrance variables, so a
+test that forgets the fixed context gets the "could not be read" line, never his live entries.
 
 ### Resuming with a selected provider
 

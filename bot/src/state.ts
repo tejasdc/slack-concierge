@@ -959,6 +959,12 @@ addColumn("turns", "saved_boundary_ms", "saved_boundary_ms INTEGER");
 addColumn("turns", "saved_alerted_at_ms", "saved_alerted_at_ms INTEGER");
 addColumn("turns", "saved_manual_start", "saved_manual_start INTEGER NOT NULL DEFAULT 0");
 addColumn("turns", "saved_quiet_only", "saved_quiet_only INTEGER NOT NULL DEFAULT 0 CHECK(saved_quiet_only IN (0,1))");
+// Why a queued banked turn is not starting (saved-work.ts BankedWait), so a long wait names its cause.
+addColumn("turns", "saved_wait_reason", "saved_wait_reason TEXT");
+// Set before a planned banked yield cancels its run (banked-upkeep.ts): the cancellation is carried
+// on by a continuation, so the request it serves stays open (session-inputs.ts carryingTurn).
+addColumn("turns", "saved_yield_reason", "saved_yield_reason TEXT");
+db.exec("CREATE INDEX IF NOT EXISTS banked_yields_awaiting ON turns(id) WHERE saved_yield_reason IS NOT NULL AND status='cancelled'");
 addColumn("turns", "saved_repeat_ms", "saved_repeat_ms INTEGER");
 addColumn("turns", "saved_root_id", "saved_root_id INTEGER");
 addColumn("turns", "saved_sequence", "saved_sequence INTEGER");
@@ -5507,8 +5513,10 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
   AND (turn.saved_manual_start=1 OR turn.saved_kind IS NULL OR turn.saved_kind<>'banked' OR turn.saved_expires_at_ms>?)
   AND (turn.saved_manual_start=1 OR turn.saved_kind IS NULL OR turn.saved_kind='scheduled' OR
     (turn.saved_kind='banked' AND turn.saved_account IS NOT NULL AND turn.saved_boundary_ms>?
-      AND NOT EXISTS (SELECT 1 FROM turns other WHERE other.session_id<>turn.session_id
-        AND other.status IN ('queued','running','delivering') AND other.saved_kind IS NULL)
+      -- Only generic banking waits for an idle fleet; quiet-only work runs in his night whatever
+      -- standing agents are doing, protected by the reserve (saved-work.ts reconsiderBankedWork).
+      AND (turn.saved_quiet_only=1 OR NOT EXISTS (SELECT 1 FROM turns other WHERE other.session_id<>turn.session_id
+        AND other.status IN ('queued','running','delivering') AND other.saved_kind IS NULL))
       AND NOT EXISTS (SELECT 1 FROM turns other WHERE other.id<>turn.id
         AND other.status IN ('running','delivering') AND other.saved_kind='banked' AND other.saved_manual_start=0)))
   AND turn.session_id NOT IN (SELECT value FROM json_each(?))
@@ -5536,6 +5544,10 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
   )
   AND (? = 0 OR (turn.turn_kind='native'
     AND COALESCE((SELECT kind FROM session_inputs WHERE id=turn.accepted_input_id), '')<>'fork'
+    -- Banked work that yields at a deployment boundary is never admitted during the drain:
+    -- banked-upkeep.ts cancels it at once and queues a continuation, which was claimed again,
+    -- 19 times in two minutes on 2026-11-12 (docs/incidents/2026-11-12-banked-pause-closed-its-request.md).
+    AND NOT (COALESCE(turn.saved_kind,'')='banked' AND (turn.saved_manual_start=0 OR turn.saved_quiet_only=1))
     AND session.provider_id IN (SELECT value FROM json_each(?))))
   AND NOT (session.provider_id='codex' AND ?=1)`;
 

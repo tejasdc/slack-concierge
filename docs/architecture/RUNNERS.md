@@ -485,7 +485,7 @@ keeps admission held for inspection. The dispatcher also exposes
 `accounts.codex.resetCredit`; the runner validates a unique account home and runs the provider's
 own redemption protocol there.
 
-Google/Antigravity turns can target the configured turn runner. The owner stores the selected
+Google/Antigravity turns follow the same placement setting as Claude: with `CONCIERGE_TURN_RUNNERS=all` (the server) they target the configured turn runner; with the default `marked` (the Mac peer, which has no runner) an unmarked Google turn runs on the owner's own machine, still behind the local paid-credit check. The owner stores the selected
 runner and account label; the runner starts its own `agy` executable and checks its own
 `~/.gemini/antigravity-cli/settings.json` before launch. If the setting is unreadable or
 `useG1Credits` is true, dispatch refuses before starting the provider, so a runner cannot silently
@@ -570,6 +570,8 @@ or withdrawn execution intent cannot move the conversation or hide its earlier r
 If that launched execution was on a runner but its exact lease is missing, resume refuses
 to guess the machine; a handoff reports the omission instead of examining the owner's
 checkout. Handoffs resolve the recovered runner's project and read worktrees there.
+Turn dispatch, handoffs and the owner's project-location reads (registered-project checks,
+task creation, outage reruns) share this one rule in `session-runner-home.ts`.
 
 The Google paid-credit check and CLI lookup is `google.executable` (`runner-providers.ts`). It runs
 against the runner's Google settings and returns only the executable path. A missing or unreachable
