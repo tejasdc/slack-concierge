@@ -31,6 +31,12 @@ try{
     message:{id:'helper-record',model:'claude-sonnet-5-5',content:[{type:'tool_use',id:'edit-helper',name:'Write',input:{file_path:'helper.ts'}}],
       usage:{input_tokens:3,cache_creation_input_tokens:0,cache_read_input_tokens:0,output_tokens:2}}})+'\n');
   await writeFile(join(secondProjects,`${secondNativeId}.jsonl`),lines.split('\n').slice(0,3).join('\n')+'\n');
+  const web=(id:string)=>JSON.stringify({type:'assistant',timestamp:at,message:{id,model:'claude-opus-5-5',
+    content:[{type:'tool_use',id,name:'WebSearch',input:{}}]}})+'\n';
+  await writeFile(join(projects,`${nativeId}.jsonl`),lines+web('web-first'));
+  await writeFile(join(secondProjects,`${nativeId}.jsonl`),web('web-second'));
+  await writeFile(join(secondProjects,`${secondNativeId}.jsonl`),lines.split('\n').slice(0,3).join('\n')+'\n'+web('web-other'));
+  await writeFile(join(secondProjects,'0192a345-6789-7abc-8def-0123456789ad.jsonl'),web('web-unattributed'));
   // Server account homes link their transcript folder to one shared folder.
   const linkedHome=join(root,'linked-home');await mkdir(linkedHome,{recursive:true});
   await symlink(join(home,'projects'),join(linkedHome,'projects'));
@@ -75,6 +81,10 @@ try{
     ||account?.bySession?.[0]?.editMix?.totalEdits!==2
     ||account?.bySession?.[0]?.editMix?.byModel?.find((model:any)=>model.model==='claude-sonnet-5-5')?.helperEdits!==1
     ||other?.bySession?.[0]?.editMix?.mainEdits!==1
+    ||result.week.directTopModelWeb.total!==4
+    ||result.week.directTopModelWeb.bySession.length!==2
+    ||result.week.directTopModelWeb.bySession.find((row:any)=>row.sessionId===1)?.calls!==2
+    ||result.week.directTopModelWeb.bySession.find((row:any)=>row.sessionId===2)?.calls!==1
     ||result.week.cacheDiagnostics.calls.length>100||result.week.cacheDiagnostics.turns[0]?.turnId!==1
     ||result.week.attributionBuckets.length!==2
     ||result.week.attributionBuckets.some((bucket:any)=>bucket.topicId!=='topic:shared'))

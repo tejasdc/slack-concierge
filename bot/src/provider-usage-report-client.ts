@@ -80,12 +80,15 @@ function mergePeriod(parts:any[]){
   const calls=diagnostics.flatMap(value=>value.calls).sort((a,b)=>b.rewrittenInputTokens-a.rewrittenInputTokens).slice(0,100);
   const turns=diagnostics.flatMap(value=>value.turns).sort((a,b)=>b.rewrittenInputTokens-a.rewrittenInputTokens).slice(0,100)
     .map(value=>({...value,bug:bug(value.flaggedCallCount,value.callCount,value.provider)}));
+  const webSessions=new Map<number,number>();
+  for(const part of parts)for(const row of part.directTopModelWeb?.bySession??[])
+    webSessions.set(row.sessionId,(webSessions.get(row.sessionId)??0)+row.calls);
   return {...first,through:new Date().toISOString(),callMix:mix(parts.map(part=>part.callMix)),editMix:edits(parts.map(part=>part.editMix)),
     // Every runner receives the same owner snapshot; policy requests and turn reasons count once.
     implementation:first.implementation,
     directTopModelWeb:{total:sum(parts.map(part=>part.directTopModelWeb?.total)),
       byModel:countMap(parts.map(part=>part.directTopModelWeb?.byModel)),
-      bySession:parts.flatMap(part=>part.directTopModelWeb?.bySession??[])},
+      bySession:[...webSessions].map(([sessionId,calls])=>({sessionId,calls}))},
     researchRoutes:first.researchRoutes,
     escalations:{count:new Map(parts.flatMap(part=>part.escalations?.records??[]).map((row:any)=>[row.key,row])).size,
       byModel:Object.fromEntries([...new Set(parts.flatMap(part=>part.escalations?.records??[]).map((row:any)=>row.model))]
