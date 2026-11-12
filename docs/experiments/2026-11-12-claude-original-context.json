@@ -1,0 +1,615 @@
+{
+  "controller": {
+    "session": "concierge:9501",
+    "provider": "codex",
+    "model": "gpt-6.1-sol",
+    "machine": "server"
+  },
+  "originalContextCheck": {
+    "requestId": "429a4b46-8332-46c3-874e-33dd105aac9b",
+    "targetTurn": 29345,
+    "status": "settled",
+    "outcome": "answered",
+    "nativeEvidence": {
+      "original": {
+        "nativeUuid": "71413915-fc5b-4986-8ae4-b724290e5dd6",
+        "originalAuthUuid": "b9bd509d-8a6d-423a-b50e-236fc31639f1",
+        "originalAuthTimestamp": "2026-11-12T19:34:25.964Z",
+        "originalAccount": "tejas@chann.app",
+        "originalOrgId": "ce46f66c-c7aa-4dbb-b699-c796c358ea95",
+        "laterNewUserInputsContainingOriginalOrgId": []
+      },
+      "nativeUuid": "71413915-fc5b-4986-8ae4-b724290e5dd6",
+      "inputHeader": {
+        "type": "concierge-session-input",
+        "input": {
+          "id": "request:429a4b46-8332-46c3-874e-33dd105aac9b",
+          "runId": "ddf7e352-addf-412d-a316-7afd30d63bea",
+          "sessionId": "concierge:9470",
+          "origin": "agent",
+          "provenance": {
+            "source": {
+              "inputId": "return:c1229cdd-e801-46aa-a194-8e78530945ec",
+              "runId": "fbb1106d-c852-4eb7-9a89-325a65cba6a7",
+              "sessionId": "concierge:9501"
+            },
+            "requestId": "429a4b46-8332-46c3-874e-33dd105aac9b",
+            "effectScope": "work",
+            "originatingHuman": {
+              "inputId": "c3179fa5-049c-41b9-b3cd-d6d75246d285",
+              "runId": "3bfed436-f5fb-4a8d-8e60-44374a8dcc9d",
+              "sessionId": "concierge:3172"
+            }
+          }
+        }
+      },
+      "inputUuid": "4df07797-97f4-47e3-b065-4360f46f481d",
+      "inputTimestamp": "2026-11-12T22:05:31.362Z",
+      "completeAdmittedInputBytes": 7624,
+      "completeAdmittedInputSHA256": "71a2e26c2d354cf32b4458c2d9776c452ff576581b11f9dadb0898bf07528d0f",
+      "originalOrgIdAbsentFromAdmittedInput": true,
+      "matchingNativeAdmittedInputCount": 1,
+      "assistantAndToolSequence": [
+        {
+          "uuid": "09098317-7341-4e1b-aed9-3aeb89a6902e",
+          "timestamp": "2026-11-12T22:05:35.214Z",
+          "type": "text",
+          "text": "Remembered first-turn orgId: ce46f66c-c7aa-4dbb-b699-c796c358ea95 (recalled from retained context, before any tool call).",
+          "stopReason": "tool_use"
+        },
+        {
+          "uuid": "c8b6f1a4-410a-41fa-9feb-38428cc65d8a",
+          "timestamp": "2026-11-12T22:05:35.222Z",
+          "type": "tool_use",
+          "name": "Bash",
+          "input": {
+            "command": "claude auth status"
+          }
+        },
+        {
+          "uuid": "723ca083-54aa-4ff1-ba57-3c12f2457cd1",
+          "timestamp": "2026-11-12T22:05:35.820Z",
+          "type": "tool_result",
+          "auth": {
+            "loggedIn": true,
+            "authMethod": "claude.ai",
+            "configDirectory": "/root/.claude-accounts/hey-tejas-nyc",
+            "email": "hey@tejas.nyc",
+            "orgId": "7b2cfe7e-72b5-4f65-8962-f16ffdf95bc7"
+          }
+        },
+        {
+          "uuid": "309f535e-24b2-408c-8734-a2428a02bcba",
+          "timestamp": "2026-11-12T22:05:40.806Z",
+          "type": "tool_use",
+          "name": "Bash",
+          "input": {
+            "command": "\"$CONCIERGE_ROUTER_ACTIONS\" sessions reply 429a4b46-8332-46c3-874e-33dd105aac9b --work-disposition completed --all-done --nothing-changed \"Recalled first-turn orgId from conversation before any tool call; ran only claude auth status\" --summary \"Original orgId ce46f66c-...; current hey@tejas.nyc orgId 7b2cfe7e-...\" --before \"Earlier probe sessions did similar read-only memory and account checks; I did not consult them, only recalled from my own conversation and ran the one auth status command.\" --source-input request:429a4b46-8332-46c3-874e-33dd105aac9b --source-run ddf7e352-addf-412d-a316-7afd30d63bea --action-id reply-orgid-recall -- \"TL;DR: Remembered first-turn orgId: ce46f66c-c7aa-4dbb-b699-c796c358ea95 (stated before any tool call; first-turn email was tejas@chann.app). Current direct check: email hey@tejas.nyc, orgId 7b2cfe7e-72b5-4f65-8962-f16ffdf95bc7, configDirectory /root/.claude-accounts/hey-tejas-nyc. Context was retained across the already-observed account difference.\""
+          }
+        },
+        {
+          "uuid": "bbe51a0e-e551-4376-8712-82445e63b80a",
+          "timestamp": "2026-11-12T22:05:44.618Z",
+          "type": "text",
+          "text": "TL;DR: I recalled the first-turn orgId and compared it with a direct check now. The first-turn orgId is `ce46f66c-c7aa-4dbb-b699-c796c358ea95` (`tejas@chann.app`). The current `claude auth status` shows `hey@tejas.nyc`, orgId `7b2cfe7e-72b5-4f65-8962-f16ffdf95bc7`, configuration directory `/root/.claude-accounts/hey-tejas-nyc`.\n\nI stated the remembered orgId before running any tool, and I used no file, transcript or other session to get it. I replied once and closed the request as completed. The conversation context was retained across the account difference the controller had already observed.",
+          "stopReason": "end_turn"
+        }
+      ]
+    },
+    "ownerAccountEvents": {
+      "events": [
+        {
+          "cursor": "1779664",
+          "eventId": "claude-account:28963:1",
+          "sessionId": "concierge:9470",
+          "operationId": null,
+          "inputId": null,
+          "runId": "9658580f-bbc5-4701-b8a9-7474a8cc45d1",
+          "kind": "account",
+          "at": "2026-11-12T19:34:25.000Z",
+          "payload": {
+            "account": "tejas@chann.app",
+            "because": "stayed-on-its-account",
+            "expected": "tejas@chann.app"
+          }
+        },
+        {
+          "cursor": "1798401",
+          "eventId": "claude-account:29211:1",
+          "sessionId": "concierge:9470",
+          "operationId": null,
+          "inputId": null,
+          "runId": "67e87f55-4a8b-466b-8b05-30775a4188f4",
+          "kind": "account",
+          "at": "2026-11-12T20:49:25.000Z",
+          "payload": {
+            "account": "hey@tejas.nyc",
+            "because": "moved-for-room",
+            "expected": "tejas@chann.app"
+          }
+        },
+        {
+          "cursor": "1799760",
+          "eventId": "claude-account:29233:1",
+          "sessionId": "concierge:9470",
+          "operationId": null,
+          "inputId": null,
+          "runId": "bad3244e-772d-4ac6-ad52-32e8062d605e",
+          "kind": "account",
+          "at": "2026-11-12T20:58:02.000Z",
+          "payload": {
+            "account": "hey@tejas.nyc",
+            "because": "stayed-for-warm-cache",
+            "expected": "hey@tejas.nyc"
+          }
+        },
+        {
+          "cursor": "1808779",
+          "eventId": "claude-account:29328:1",
+          "sessionId": "concierge:9470",
+          "operationId": null,
+          "inputId": null,
+          "runId": "3b402757-95e4-4590-8c5d-50ece2ec19af",
+          "kind": "account",
+          "at": "2026-11-12T22:00:52.000Z",
+          "payload": {
+            "account": "hey@tejas.nyc",
+            "because": "stayed-on-its-account",
+            "expected": "hey@tejas.nyc"
+          }
+        },
+        {
+          "cursor": "1809838",
+          "eventId": "claude-account:29345:1",
+          "sessionId": "concierge:9470",
+          "operationId": null,
+          "inputId": null,
+          "runId": "ddf7e352-addf-412d-a316-7afd30d63bea",
+          "kind": "account",
+          "at": "2026-11-12T22:05:32.000Z",
+          "payload": {
+            "account": "hey@tejas.nyc",
+            "because": "stayed-for-warm-cache",
+            "expected": "hey@tejas.nyc"
+          }
+        }
+      ],
+      "nextCursor": "1809838",
+      "hasMore": false
+    },
+    "audit": "Independent GPT-6 Luna read-only audit supports original Chann context retained under later Hey account. All34 recorded API-message references(32unique) and system/tools shape resolved by canonical SHA256. Original organization ID occurs only in retained first auth-result message; none in new input, system/tools, or selected local metadata. Statement precedes auth tool; direct current account is Hey. This proves the recorded request construction and observed answer, not independent network capture.",
+    "apiRequestReconstruction": {
+      "nativeUuid": "71413915-fc5b-4986-8ae4-b724290e5dd6",
+      "apiRequestId": "b9238e26-c018-4530-9fed-b580a6b1c14a",
+      "timestamp": "2026-11-12T22:05:31.595Z",
+      "cliVersion": "2.1.322",
+      "shapeHash": "2f48e8cd09d18772eb5fd596c949e732ece26b6dd81e244e50d4d88f651ff353",
+      "computedShapeHash": "2f48e8cd09d18772eb5fd596c949e732ece26b6dd81e244e50d4d88f651ff353",
+      "requestDigest": "400299e8fd4a063ffca7fbe9663679781fc3964f83ceca3e8218f2a5c5156fa4",
+      "base": null,
+      "keep": 0,
+      "messageReferenceCount": 34,
+      "uniqueMessageReferenceCount": 32,
+      "allMessageReferencesResolvedByCanonicalSHA256": true,
+      "systemAndToolsContainOriginalOrgId": false,
+      "messages": [
+        {
+          "position": 0,
+          "hash": "43026521a90cff4361d444768787893e9a77a9b694cc8591f99b0948ad802987",
+          "recordType": "api-request-blob",
+          "nativeUuid": null,
+          "role": "user",
+          "bytes": 80928,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 1,
+          "hash": "5bf5d8695deb7b9eafa4230c26dbf234a5e926244723889ee5de0be74d0f0c0d",
+          "recordType": "api-request-blob",
+          "nativeUuid": null,
+          "role": "system",
+          "bytes": 36757,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 2,
+          "hash": "2c37e6be0f7eabf7463878deef16ce65b25fa0a8ebd5cecba6568feee5990734",
+          "recordType": "assistant",
+          "nativeUuid": "fe3f6f7f-90de-44a7-86af-1ca0da49d54f",
+          "role": "assistant",
+          "bytes": 187,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 3,
+          "hash": "18d45426b24a5564367d25f895393a8563079669dc97a35a94a44da130fa5adc",
+          "recordType": "user",
+          "nativeUuid": "b9bd509d-8a6d-423a-b50e-236fc31639f1",
+          "role": "user",
+          "bytes": 751,
+          "containsOriginalOrgId": true
+        },
+        {
+          "position": 4,
+          "hash": "40919be8dafcfcabfdaf121992ae585e787c9816fdf833532a9d9e8c8892d1ed",
+          "recordType": "api-request-blob",
+          "nativeUuid": null,
+          "role": "system",
+          "bytes": 4680,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 5,
+          "hash": "607156a47a9bc2fada9d906d998cccb048443468bef2f9975349844fe0d49feb",
+          "recordType": "assistant",
+          "nativeUuid": "5d01d76f-bbb2-46f8-9365-a8dac298a176",
+          "role": "assistant",
+          "bytes": 1175,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 6,
+          "hash": "8cb27a6d505277435310adbcfc649b0329a600375ffc912fec50f3ca6f40e5ae",
+          "recordType": "user",
+          "nativeUuid": "7f209db2-a3fe-4c20-bbb6-3acab6f58b88",
+          "role": "user",
+          "bytes": 7397,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 7,
+          "hash": "f1900f82685ae3d3e444678a2c7334f384b2906c14823128e602e66ea7503595",
+          "recordType": "assistant",
+          "nativeUuid": "5478dfd5-0178-4908-ba6a-75f2352524d9",
+          "role": "assistant",
+          "bytes": 676,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 8,
+          "hash": "8df11f63d74e71fcf03495fcd29f290aa54450d816c0bb3c26d84cf1e5dc9582",
+          "recordType": "api-request-blob",
+          "nativeUuid": null,
+          "role": "user",
+          "bytes": 82941,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 9,
+          "hash": "75b8a43f2f495ac4f01bae2fc3d1986eabf80e1a58331f5639ea23d38f36107d",
+          "recordType": "api-request-blob",
+          "nativeUuid": null,
+          "role": "system",
+          "bytes": 2961,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 10,
+          "hash": "1d37ceeb563a4ea006c554dcfca70945ec86979851062cad9628f13467e930f0",
+          "recordType": "assistant",
+          "nativeUuid": "1b680a5c-2659-4fd0-b8ab-e2c9195b2eea",
+          "role": "assistant",
+          "bytes": 172,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 11,
+          "hash": "236cb3cd570d076224eee87eb4b2e243af2f212a85504e4cda0d5e9a71b8f694",
+          "recordType": "user",
+          "nativeUuid": "c7401b4c-c7f4-4c48-ad3b-02500e67917c",
+          "role": "user",
+          "bytes": 689,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 12,
+          "hash": "3b7dcb9c9be8862a8fc35e9c8bf579c45855008eee0126fc31032d16fe9c4f02",
+          "recordType": "api-request-blob",
+          "nativeUuid": null,
+          "role": "system",
+          "bytes": 4428,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 13,
+          "hash": "cd89709acc46382adbc69cb4fda2754cdfcaa25c1e72dd6a9b470ffd28e044bc",
+          "recordType": "assistant",
+          "nativeUuid": "b3da8fca-5b80-4d7f-a724-e35b5828d5d2",
+          "role": "assistant",
+          "bytes": 1257,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 14,
+          "hash": "8beecfdde94a5dfa4e865438400020a9a547f3a5edb5cae12f319834e8f7370a",
+          "recordType": "user",
+          "nativeUuid": "295d4d4d-5790-495e-81f0-d7ca541ace0c",
+          "role": "user",
+          "bytes": 7772,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 15,
+          "hash": "1d043b450cdcf46ff3578fa9b4a748b25ed5e39666b758967574e5804ef57324",
+          "recordType": "assistant",
+          "nativeUuid": "f8c27aa7-1fc8-4d57-8aa3-8a7eabd9456d",
+          "role": "assistant",
+          "bytes": 704,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 16,
+          "hash": "33adf516c15cc632fcd32a36caf582ebba6f2d8096026949e7cecd28941d9e04",
+          "recordType": "api-request-blob",
+          "nativeUuid": null,
+          "role": "user",
+          "bytes": 59368,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 17,
+          "hash": "feff03be2a796a533e27044eada468dbae2bca3dc5deaf7d3a6719ac8a9b6251",
+          "recordType": "api-request-blob",
+          "nativeUuid": null,
+          "role": "system",
+          "bytes": 1941,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 18,
+          "hash": "9f275c6f2aded37942003bde02d4ad4e93e2554a49f4ed608c658442d385ab69",
+          "recordType": "assistant",
+          "nativeUuid": "af68b7e1-8dd9-44fa-bdc0-9bb99d57c3fa",
+          "role": "assistant",
+          "bytes": 172,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 19,
+          "hash": "280e60dd07c9edbb8c4e18d3a455058fd2155170138d6171be3ff60e552862c6",
+          "recordType": "user",
+          "nativeUuid": "ec8b6526-7ebd-429c-86ab-2f2f1fbfa21e",
+          "role": "user",
+          "bytes": 689,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 20,
+          "hash": "3b7dcb9c9be8862a8fc35e9c8bf579c45855008eee0126fc31032d16fe9c4f02",
+          "recordType": "api-request-blob",
+          "nativeUuid": null,
+          "role": "system",
+          "bytes": 4428,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 21,
+          "hash": "6940d042363d393ca12285315db12b7fddc3dd2f7ee143095397f6328185ecda",
+          "recordType": "assistant",
+          "nativeUuid": "88cd8eef-439a-4cab-9e39-d1ac27af340e",
+          "role": "assistant",
+          "bytes": 805,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 22,
+          "hash": "4820eca0f2175ac00cbdef978c4e123c0f7fce6750d694134c66b045c1d40a28",
+          "recordType": "user",
+          "nativeUuid": "885eee5e-dde6-4154-a660-ef8032c08e0a",
+          "role": "user",
+          "bytes": 5940,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 23,
+          "hash": "4215b99762ed5a036795fdb70d8cd7ffe16b868d202e8a58b9ab644a1bae98f0",
+          "recordType": "assistant",
+          "nativeUuid": "1c39d08a-d775-433c-9b4c-9c35f979dfc7",
+          "role": "assistant",
+          "bytes": 384,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 24,
+          "hash": "46830a6f6898d43f3486543f9e7ae11ac0f868396ec60259e214e7e29b2064a3",
+          "recordType": "user",
+          "nativeUuid": "9437c93a-4867-4152-8655-1430fc12b776",
+          "role": "user",
+          "bytes": 8093,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 25,
+          "hash": "ddddd5b521227f73c06127da65cc012b0d6edd40d806677dd54d22123a2ea3e3",
+          "recordType": "api-request-blob",
+          "nativeUuid": null,
+          "role": "system",
+          "bytes": 1941,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 26,
+          "hash": "5a67ec8d323a0482dbbcd1d3316f6dcffecdde6aaee6ef12d749bd49374b8655",
+          "recordType": "assistant",
+          "nativeUuid": "051d18b9-e09f-43a7-b1b6-9b03a13fc705",
+          "role": "assistant",
+          "bytes": 172,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 27,
+          "hash": "2690c46ff4c25fdbd7043c9256308e8fd0864612667a28e950353136c25bfef0",
+          "recordType": "user",
+          "nativeUuid": "b71091f1-6c33-4f67-a022-c7fad178de55",
+          "role": "user",
+          "bytes": 689,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 28,
+          "hash": "3b7dcb9c9be8862a8fc35e9c8bf579c45855008eee0126fc31032d16fe9c4f02",
+          "recordType": "api-request-blob",
+          "nativeUuid": null,
+          "role": "system",
+          "bytes": 4428,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 29,
+          "hash": "767ff09a3505198ceb566051b0053cb69d564b0e1e96507c7ca9a5a2580b262f",
+          "recordType": "assistant",
+          "nativeUuid": "c1fe6640-f0d0-4680-94fd-83251f0cd0b1",
+          "role": "assistant",
+          "bytes": 1028,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 30,
+          "hash": "e97d2e0a1709dc0364bc72e8ddfb532181f463b837529b36f791382b7d576900",
+          "recordType": "user",
+          "nativeUuid": "c9e02cac-a700-4f2f-ad71-913c088f924e",
+          "role": "user",
+          "bytes": 6856,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 31,
+          "hash": "61f180d8a9ff4dc9f959477e6cf0534a9dede2f85cf0de1063d286b3c56cf3b5",
+          "recordType": "assistant",
+          "nativeUuid": "9e84031f-b14e-4512-b3c3-d67ef4c0a88e",
+          "role": "assistant",
+          "bytes": 498,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 32,
+          "hash": "8a764953b991563ce519ff31977724ea7c4656bea4346b7e68278eb3510d6d5e",
+          "recordType": "user",
+          "nativeUuid": "4df07797-97f4-47e3-b065-4360f46f481d",
+          "role": "user",
+          "bytes": 7797,
+          "containsOriginalOrgId": false
+        },
+        {
+          "position": 33,
+          "hash": "faabe92cc9dbcda64e5d335fd9bb34113a072abf9ac86af2f525dcb8b129c08e",
+          "recordType": "api-request-blob",
+          "nativeUuid": null,
+          "role": "system",
+          "bytes": 1941,
+          "containsOriginalOrgId": false
+        }
+      ],
+      "originalOrgIdOccurrences": [
+        {
+          "position": 3,
+          "hash": "18d45426b24a5564367d25f895393a8563079669dc97a35a94a44da130fa5adc",
+          "recordType": "user",
+          "nativeUuid": "b9bd509d-8a6d-423a-b50e-236fc31639f1",
+          "role": "user",
+          "bytes": 751,
+          "containsOriginalOrgId": true
+        }
+      ],
+      "metadataBoundary": "credential_org attachments and session-owner records carry the original org in local transcript metadata; neither is a selected API message or system/tool shape. All selected references are resolved, with the original value only in the retained first auth tool-result message."
+    }
+  },
+  "idleSameAccountControl": {
+    "preconditions": {
+      "watchId": "a9e894eb155d",
+      "expiredAt": "2026-11-12T22:00:03.817Z",
+      "observationGaps": [
+        {
+          "from": "2026-11-12T21:45:19.482Z",
+          "to": "2026-11-12T21:45:43.474Z"
+        }
+      ],
+      "beforeFollowup": {
+        "checkedAt": "2026-11-12T22:00:29.999032Z",
+        "lastNativeUserOrAssistant": "2026-11-12T20:58:14.761Z",
+        "idleSeconds": 3735.238062,
+        "session": "concierge:9470",
+        "nativeUuid": "71413915-fc5b-4986-8ae4-b724290e5dd6",
+        "suspended": false,
+        "execution": "completed"
+      },
+      "followupRequest": "06cf2111-14c0-452f-9fd8-499eb8fe5e82",
+      "result": "Pending; no account-change or recall result claimed."
+    },
+    "nativeEvidence": {
+      "nativeUuid": "71413915-fc5b-4986-8ae4-b724290e5dd6",
+      "inputHeader": {
+        "type": "concierge-session-input",
+        "input": {
+          "id": "request:06cf2111-14c0-452f-9fd8-499eb8fe5e82",
+          "runId": "3b402757-95e4-4590-8c5d-50ece2ec19af",
+          "sessionId": "concierge:9470",
+          "origin": "agent",
+          "provenance": {
+            "source": {
+              "inputId": "watch:a9e894eb155d:expired",
+              "runId": "36f0c6c5-da8b-4b06-9c9d-40753600ebeb",
+              "sessionId": "concierge:9501"
+            },
+            "requestId": "06cf2111-14c0-452f-9fd8-499eb8fe5e82",
+            "effectScope": "work",
+            "originatingHuman": {
+              "inputId": "c3179fa5-049c-41b9-b3cd-d6d75246d285",
+              "runId": "3bfed436-f5fb-4a8d-8e60-44374a8dcc9d",
+              "sessionId": "concierge:3172"
+            }
+          }
+        }
+      },
+      "inputUuid": "9437c93a-4867-4152-8655-1430fc12b776",
+      "inputTimestamp": "2026-11-12T22:00:51.714Z",
+      "completeAdmittedInputBytes": 7927,
+      "completeAdmittedInputSHA256": "e1009887249f763893fe7153798b698ea391c4981f00acfc40b13d4d6a802bc1",
+      "expectedFactAbsentFromAdmittedInput": true,
+      "matchingNativeAdmittedInputCount": 1,
+      "toolUses": [
+        {
+          "uuid": "051d18b9-e09f-43a7-b1b6-9b03a13fc705",
+          "timestamp": "2026-11-12T22:00:57.919Z",
+          "name": "Bash",
+          "input": {
+            "command": "claude auth status"
+          }
+        },
+        {
+          "uuid": "c1fe6640-f0d0-4680-94fd-83251f0cd0b1",
+          "timestamp": "2026-11-12T22:01:03.544Z",
+          "name": "Bash",
+          "input": {
+            "command": "\"$CONCIERGE_ROUTER_ACTIONS\" sessions reply 06cf2111-14c0-452f-9fd8-499eb8fe5e82 --work-disposition completed --all-done --nothing-changed \"Recalled fact from conversation; ran only claude auth status\" --summary \"Recalled NEBULA-TULIP-739104-ORBIT; account hey@tejas.nyc\" --before \"Earlier probe sessions did similar read-only account and memory checks; I did not consult them, only recalled the fact from my own conversation and ran the one auth status command.\" --source-input request:06cf2111-14c0-452f-9fd8-499eb8fe5e82 --source-run 3b402757-95e4-4590-8c5d-50ece2ec19af --action-id reply-recall-fact -- \"TL;DR: Remembered fact: NEBULA-TULIP-739104-ORBIT. Current claude auth status: email hey@tejas.nyc, configDirectory /root/.claude-accounts/hey-tejas-nyc, loggedIn true. No account change is established by this check (previous turn showed the same account).\""
+          }
+        }
+      ],
+      "authResults": [
+        {
+          "uuid": "b71091f1-6c33-4f67-a022-c7fad178de55",
+          "timestamp": "2026-11-12T22:00:59.359Z",
+          "auth": {
+            "loggedIn": true,
+            "authMethod": "claude.ai",
+            "configDirectory": "/root/.claude-accounts/hey-tejas-nyc",
+            "email": "hey@tejas.nyc"
+          }
+        }
+      ],
+      "finalAnswers": [
+        {
+          "uuid": "9e84031f-b14e-4512-b3c3-d67ef4c0a88e",
+          "timestamp": "2026-11-12T22:01:07.342Z",
+          "text": "TL;DR: The remembered fact is NEBULA-TULIP-739104-ORBIT. `claude auth status` reports `hey@tejas.nyc` with configuration directory `/root/.claude-accounts/hey-tejas-nyc`, logged in. I replied once and closed the request as completed.\n\nThis check shows no account change: the previous turn reported the same account. I recalled the fact from this conversation and used no file, transcript or other session. I ran only the one auth command."
+        }
+      ]
+    },
+    "verdict": "Clean fact recall under unchanged Hey account; not cross-account memory evidence."
+  },
+  "limits": [
+    "Original email-recall check was contaminated and remains invalid.",
+    "This oracle compares original Chann context with a later verified Hey execution after the already-observed automatic move, not a fresh move on this follow-up.",
+    "No fresh exhaustion or Mac acceptance is established."
+  ]
+}
