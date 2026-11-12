@@ -173,7 +173,8 @@ conversion child runs after the import child exits, while the owner holds the
 serial import lane and keeps its event loop responsive. The conversion has its
 own lifetime outside the import child's 120-second deadline. A failed or
 unproven conversion leaves full rows in service. Existing snapshots still need
-the stopped-service operator command. A rollback
+the stopped-service operator command, packaged with the sealed release so it
+can materialize full rows before an older binary is installed. A rollback
 reads the retained object and reconstructs the old snapshot before downgrading
 the application; object GC remains disabled. Concierge's ordinary deployment
 path, owner self-review, and installed page/detail reads are required
