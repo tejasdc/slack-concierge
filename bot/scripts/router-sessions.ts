@@ -20,6 +20,7 @@ router-actions.sh projects canvas-bind <board-id> --title <canvas title> --exist
 router-actions.sh projects canvas-status <board-id>
 router-actions.sh sessions peers <source-flags>
 router-actions.sh sessions usage <source-flags> [--by-session] [--period today|week]
+router-actions.sh sessions history-storage claude|codex <source-flags> [--after <next filename>] [--limit 1..2000]
 router-actions.sh sessions auth switch codex <saved-profile-id> [--machine mac] <source-flags> --action-id A
 router-actions.sh sessions search <source-flags> [--limit N] [--peer <instance>] [--thread <message-id>] -- <concept...>
 router-actions.sh sessions context <address> <source-flags> [--thread <message-id>]
@@ -167,6 +168,7 @@ export type SessionCommunicationRequest =
   | { operation: "agent-bind"; body: { source: Source; action_id:string; role:string; address:string } }
   | { operation: "peers"; body: { source: Source } }
   | { operation: "usage"; body: { source: Source; by_session?:boolean; period?:'today'|'week' } }
+  | { operation: "history-storage"; body: { source: Source; kind:'claude'|'codex'; after?:string; limit?:number } }
   | { operation: "auth-switch"; body: { source: Source; action_id:string; profile_id:string; machine?:'mac' } }
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string; thread?: string } }
   | { operation: "context"; body: { source: Source; address: string; thread?: string } }
@@ -657,7 +659,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if(machine&&machine!=='mac')invalid('auth switch --machine accepts mac only; omit it for this machine.');
     return {operation:'auth-switch',body:{source,action_id,profile_id,...(machine?{machine:'mac' as const}:{})}};
   }
-  if (operation !== "projects" && operation !== "agents" && operation !== "peers" && operation !== "usage" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "answer" && operation !== "thread" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel") {
+  if (operation !== "projects" && operation !== "agents" && operation !== "peers" && operation !== "usage" && operation !== "history-storage" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "answer" && operation !== "thread" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel") {
     invalid("Choose a session command: thread, topics, projects, agents, peers, usage, search, context, ask, note, title, post, outcome, answer, reply, get, or cancel.");
   }
   const separator = args.indexOf("--");
@@ -771,6 +773,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     const allowed = flag === "--source-channel" || flag === "--source-ts" || flag === "--source-input" || flag === "--source-run"
       || (flag==='--period'&&operation==='usage')
       || (flag === "--limit" && operation === "search")
+      || ((flag === "--limit" || flag === "--after") && operation === "history-storage")
       || (flag === "--peer" && (operation === "search" || operation === "projects" || operation === "ask"))
       || (flag === "--resurrect" && operation === "ask")
       || (flag === "--action-id" && (operation === "ask" || operation === "reply" || operation === "note" || operation === "title" || operation === "post" || operation === "outcome" || operation === "answer" || operation === "thread" || operation === "cancel"))
@@ -854,6 +857,15 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if(period!==undefined&&!bySession)invalid('--period requires --by-session.');
     if(period!==undefined&&period!=='today'&&period!=='week')invalid('--period requires today or week.');
     return {operation,body:{source,...(bySession?{by_session:true,period:(period??'today') as 'today'|'week'}:{})}};
+  }
+  if (operation === 'history-storage') {
+    if (separator >= 0) invalid('history-storage does not accept text.');
+    if (identity !== 'claude' && identity !== 'codex') invalid('history-storage requires claude or codex.');
+    const limit = flags.get('--limit');
+    if (limit !== undefined && (!/^[1-9]\d*$/.test(limit) || Number(limit) > 2000))
+      invalid('--limit requires an integer from 1 to 2000.');
+    return {operation,body:{source,kind:identity as 'claude'|'codex',
+      ...(flags.has('--after')?{after:flags.get('--after')!}:{}),...(limit?{limit:Number(limit)}:{})}};
   }
   if (operation === "search") {
     if (separator < 0 || content.length < 1 || content.length > 8 || content.some(concept => !concept.trim())) {
