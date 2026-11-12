@@ -1639,8 +1639,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     let reconnectWaitMs = 1_000;
     const waitOutLostConnection = async (error: unknown) => {
       if (interruptionReason) throw interruptionReason;
-      if (!(error instanceof CodexAppServerClientError) || error.outcome !== "ambiguous"
-        || error instanceof CodexAppServerUnansweredError) throw error;
+      if (!isLostCodexConnection(error)) throw error;
       log("warn", "codex_connection_lost_before_submission", { ...errorFields(error),
         wait_ms: reconnectWaitMs, client_user_message_id: submissionClientId });
       await Promise.race([new Promise<void>((resolve) => setTimeout(resolve, reconnectWaitMs)), stoppedBeforeSubmission]);
@@ -1691,8 +1690,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       // resumed a thread before the response was lost, asking again cannot repeat
       // the requested work because turn/start has not been called yet. A lost
       // connection is the daemon's: wait it out and ask again on this attempt.
-      if (error instanceof CodexAppServerClientError && error.outcome === "ambiguous"
-        && !(error instanceof CodexAppServerUnansweredError)) {
+      if (isLostCodexConnection(error)) {
         await waitOutLostConnection(error);
         connectionGeneration = await connectBeforeSubmission();
         continue;
@@ -1800,6 +1798,18 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     ...(durationMs !== undefined ? { durationMs } : {}),
     ...(turnOutcome ? { turnOutcome } : {}),
   };
+}
+
+/**
+ * A connection that went away, as opposed to an answer: only a transport loss is waited out before
+ * turn/start. A JSON-RPC error carries the App Server's code and is its answer (a missing rollout
+ * would fail the same way forever); a closed client is Concierge stopping; an unanswered request on a
+ * live connection belongs to that one conversation. Those keep their counted retries.
+ */
+function isLostCodexConnection(error: unknown) {
+  return error instanceof CodexAppServerClientError && error.outcome === "ambiguous"
+    && !Number.isFinite(error.code) && !(error instanceof CodexAppServerUnansweredError)
+    && !/app-server (observer|client)( is)? closed\./.test(error.message);
 }
 
 export async function runCodexTurn(input: RunCodexTurnInput): Promise<RunResult> {

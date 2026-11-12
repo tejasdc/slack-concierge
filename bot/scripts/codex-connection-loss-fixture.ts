@@ -16,7 +16,7 @@ const { CodexAppServerClientError } = await import("../src/codex-app-server-clie
 const { ProviderDispatchError } = await import("../src/provider-failures");
 
 const closed = () => new CodexAppServerClientError("Codex app-server WebSocket closed.", "ambiguous");
-function fakeClient(script: { connectFailures: number; resumeFailures: number; turns?: any[] }) {
+function fakeClient(script: { connectFailures: number; resumeFailures: number; turns?: any[]; resumeError?: Error }) {
   const notifications = new Set<(event: any) => void>();
   const requests: string[] = [];
   let connects = 0;
@@ -26,7 +26,7 @@ function fakeClient(script: { connectFailures: number; resumeFailures: number; t
       requests.push(method);
       if (method === "config/read") return { config: {} };
       if (method === "thread/resume") {
-        if (script.resumeFailures-- > 0) throw closed();
+        if (script.resumeFailures-- > 0) throw script.resumeError ?? closed();
         return { thread: { id: params.threadId }, model: "gpt-fixture" };
       }
       if (method === "thread/turns/list") return { data: script.turns ?? [], nextCursor: null };
@@ -52,6 +52,17 @@ try {
   assert.equal(lost.requests.filter(method => method === "thread/resume").length, 2, "the lost resume is asked again");
   assert.ok(lost.connects >= 2, "the lost connect is tried again");
   console.log("codex connection loss fixture: a turn still connecting waited out two lost connections and finished");
+
+  // An answer is not a lost connection: a coded App Server error keeps its counted retry, never a silent loop.
+  const answered = fakeClient({ connectFailures: 0, resumeFailures: 1,
+    resumeError: new CodexAppServerClientError("Codex app-server thread/resume failed: no rollout found", "ambiguous", -32603) });
+  const refusal = await runCodexTurn({ prompt: "fixture", cwd: scratch, additionalDirs: [], sessionUUID: "fixture-thread",
+    appServerClient: answered.client as any, requestTimeoutMs: 1_000, clientUserMessageId: "slack-concierge:turn:9003:attempt:1" })
+    .then(() => null, error => error);
+  assert.ok(refusal instanceof ProviderDispatchError && refusal.failureClass === "retryable", `expected a counted retry, got ${refusal}`);
+  assert.equal(answered.requests.filter(method => method === "thread/resume").length, 1, "a coded answer is not asked again in place");
+  assert.equal(answered.requests.includes("turn/start"), false);
+  console.log("codex connection loss fixture: a coded App Server answer kept its counted retry");
 
   if (process.argv.includes("--adopted")) {
     const absent = fakeClient({ connectFailures: 0, resumeFailures: 0, turns: [] });

@@ -40,6 +40,8 @@ async function parkedCodexTurn(name:string){
 const sweep=()=>claimAdoptableExecutions({instanceId:'sweeper',isOwnerAlive:()=>false,onlyParked:true});
 
 try{
+  const stopped=await parkedCodexTurn('stopped');
+  db.query('UPDATE turns SET stop_requested_at=CURRENT_TIMESTAMP WHERE id=?').run(stopped.turnId);
   const parked=await Promise.all(['a','b','c'].map(parkedCodexTurn));
   const first=await sweep();
   assert.equal(PARKED_CODEX_PER_SWEEP,2);
@@ -50,6 +52,7 @@ try{
   }
   const second=await sweep();
   assert.deepEqual(second.adopted.map(a=>a.claim.turn_id),[parked[2]!.turnId],'the rest on the next sweep');
+  assert.equal((db.query('SELECT status FROM turns WHERE id=?').get(stopped.turnId) as any).status,'parked','a turn he stopped stays parked');
 
   // A turn that keeps parking is taken back only a few times, then stays visibly parked.
   const {turnId,executionId}=parked[0]!;

@@ -267,6 +267,7 @@ export async function claimAdoptableExecutions(input: { instanceId: string; only
   // 2026-11-12 nothing took it back: ten turns parked by a lost App Server connection waited 50
   // minutes for an agent to notice. A recently parked one is followed again from its thread's history
   // (finished, still running, or never landed and retried), a few times at most and a few per sweep.
+  // A turn he stopped is left parked: following it could only resend or swallow that Stop.
   const parkedTurnFollowable = `t.status='parked' AND t.dispatch_failure_class='parked_ambiguous'
           AND t.turn_kind='native' AND session.status<>'archived'
           AND NOT EXISTS (SELECT 1 FROM turns later WHERE later.session_id=t.session_id AND later.id>t.id
@@ -280,7 +281,7 @@ export async function claimAdoptableExecutions(input: { instanceId: string; only
     db.query(`SELECT e.* FROM executions e INDEXED BY executions_released_codex JOIN turns t ON t.id=e.turn_id
       JOIN sessions session ON session.id=t.session_id
       WHERE e.supervisor='codex-daemon' AND e.state='released' AND e.updated_at_ms>? AND e.adoptions<?
-        AND t.dispatch_attempt=e.dispatch_attempt AND ${parkedTurnFollowable}
+        AND t.dispatch_attempt=e.dispatch_attempt AND t.stop_requested_at IS NULL AND ${parkedTurnFollowable}
       ORDER BY e.created_at_ms`).all(Date.now() - PARKED_CODEX_FOLLOW_WINDOW_MS, PARKED_CODEX_FOLLOW_LIMIT) as ExecutionRow[]);
   let parkedCodexTaken = 0;
   for (const execution of open) {

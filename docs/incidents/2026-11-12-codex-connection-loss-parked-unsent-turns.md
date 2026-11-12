@@ -41,14 +41,19 @@ Two gaps, both confirmed in code.
 
 1. Before turn/start, a lost connection is waited out on the same attempt (1 s doubling to 30 s,
    Stop still ends the wait): the turn reconnects, asks for its thread again and sends its input
-   once. No retry budget is spent and nothing parks. An unanswered `thread/resume` on a live
-   connection keeps its existing per-conversation retry.
+   once. No retry budget is spent and nothing parks. Only a transport loss counts: an App Server
+   answer with a JSON-RPC error code, a client Concierge itself closed, and an unanswered
+   `thread/resume` on a live connection keep their existing counted retries, so a request that
+   fails the same way every time cannot loop silently.
 2. The minute sweep also takes back a Codex turn parked as uncertain in the last 24 hours whose
    record was released, provided no later turn in its session was sent. It follows the turn from its
    exact thread history: a finished turn is settled with its answer, a running one is followed live,
    and a turn the whole history never shows, with no provider turn id, comes back as a safe retry
-   (it never reached Codex, so sending it repeats nothing). Two turns per sweep, oldest first; a turn
-   is taken back at most three times and then stays visibly parked.
+   (it never reached Codex, so sending it repeats nothing). This relies on the same contract the
+   existing recovery already uses: Codex's turn summaries carry the user message's client ID. Two
+   turns per sweep, oldest first; a turn is taken back at most three times and then stays visibly
+   parked. A turn he stopped is never taken back, and a turn whose session never got a Codex thread
+   cannot be followed and still needs a resume.
 
 The account switch itself already waits until no Codex turn is running, so it does not cut running
 work; the turns it hit were the ones it had just released, still connecting.
