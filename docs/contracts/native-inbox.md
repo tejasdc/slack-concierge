@@ -418,6 +418,15 @@ human source cannot be checked, is refused. This lets a request such as “Open.
 object he meant while its original request remains open; it does not authorize an agent
 to open a guessed object.
 
+The quoted words are checked against, in order: the human message behind this work; every
+human message on the work's own source chain, at any age; every retained human input that an
+agent or service hop on that chain cites by exact ID (the owner reads the cited input from the
+ledger, never the citing text); and his messages from the last thirty days. The cited-ID step
+covers forwards that quoted his messages as records instead of linking them: on 2026-09-16 a
+usage-reset wake request carried seven of his failed messages that way, so the screenshot-drag
+work's human source became the wake message and, in November, upkeep's drag question quoting
+his September report was refused.
+
 ### Agent issue reports
 
 `router-actions.sh report --source-input <id> --source-run <id> --action-id <stable id> --title "<issue>" [--file <path> ...] -- <observation, expected behavior, impact>` sends a likely bug or concerning issue the agent noticed outside its task. The local owner verifies the reporting run. A Mac report crosses the authenticated Concierge peer link to the server Inbox; no Mac Inbox is created. The server gateway marks only authenticated peer traffic, and the owner requires that mark before accepting Mac attribution; a local caller cannot assert it in a request header. The server retains the exact text and files under the agent's authorship, and atomically creates an Inbox thread in Agent reports with one open request before admitting it to the router. The receipt names the capture, thread and request. Repeating the action ID with the same text returns the same receipt; changing the text under that ID is refused. The router dispatches work from the report's capture root and links the dispatch to the existing request. Its stop check refuses an Inbox turn that received a report whose open request still has no linked dispatch; the router must check for a prior unlinked dispatch before sending another, or explicitly resolve the report. A settled answer closes the request under the normal thread upkeep rules; an uncertain end leaves it open for the router to resolve. The report cannot be imported silently or attributed to Tejas. A peer connection loss before a receipt is ambiguous; the caller retries the same action ID, and the owner returns the one retained report if it arrived.
