@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createReadStream, closeSync, openSync, readSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
+
+const MAX_REFERENCED_LINE_BYTES = 64 * 1024 * 1024;
 
 export type RawMessageSpan = { offset: number; length: number; sha256: string };
 export type RawMessageSpanIndex = {
@@ -9,6 +11,32 @@ export type RawMessageSpanIndex = {
   sourceBytes: number;
   spansByOrdinal: Map<number, RawMessageSpan>;
 };
+
+export function readSdkMessageFromRawSpan(
+  objectPath: string, metadata: Omit<SessionMessage, "message">, span: RawMessageSpan,
+): SessionMessage {
+  if (!Number.isSafeInteger(span.offset) || span.offset < 0
+    || !Number.isSafeInteger(span.length) || span.length < 1 || span.length > MAX_REFERENCED_LINE_BYTES)
+    throw new Error("INVALID_HISTORY_OBJECT_SPAN");
+  const bytes = Buffer.alloc(span.length);
+  const descriptor = openSync(objectPath, "r");
+  try {
+    for (let length = 0; length < bytes.length;) {
+      const read = readSync(descriptor, bytes, length, bytes.length - length, span.offset + length);
+      if (!read) throw new Error("HISTORY_OBJECT_SPAN_SHORT");
+      length += read;
+    }
+  } finally { closeSync(descriptor); }
+  if (createHash("sha256").update(bytes).digest("hex") !== span.sha256)
+    throw new Error("HISTORY_OBJECT_SPAN_CHANGED");
+  let raw: any;
+  try { raw = JSON.parse(bytes.toString("utf8")); }
+  catch { throw new Error("HISTORY_OBJECT_SPAN_INVALID"); }
+  if (raw?.uuid !== metadata.uuid || raw?.type !== metadata.type
+    || raw?.sessionId !== metadata.session_id || !("message" in raw))
+    throw new Error("HISTORY_OBJECT_SPAN_IDENTITY_CHANGED");
+  return { ...metadata, message: raw.message };
+}
 
 /**
  * Find SDK rows whose message payload is exactly recoverable from one raw line.
@@ -30,17 +58,26 @@ export async function matchingRawMessageSpans(
   const matches = new Map<number, RawMessageSpan>();
   const digest = createHash("sha256");
   let position = 0;
-  let carry = Buffer.alloc(0);
+  let lineStart = 0;
+  let lineBytes = 0;
+  let lineParts: Buffer[] = [];
+  let oversized = false;
+  let hadOversizedLine = false;
+  const append = (part: Buffer) => {
+    lineBytes += part.length;
+    if (lineBytes > MAX_REFERENCED_LINE_BYTES) { oversized = true; hadOversizedLine = true; lineParts = []; }
+    else if (!oversized && part.length) lineParts.push(part);
+  };
   for await (const chunk of createReadStream(path, { highWaterMark: 1024 * 1024 })) {
     const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     digest.update(bytes);
-    const combined = carry.length ? Buffer.concat([carry, bytes]) : bytes;
-    const base = position - carry.length;
+    const chunkStart = position;
     position += bytes.length;
     let start = 0;
-    for (let end = combined.indexOf(10); end >= 0; start = end + 1, end = combined.indexOf(10, start)) {
-      const line = combined.subarray(start, end);
-      if (line.length) {
+    for (let end = bytes.indexOf(10); end >= 0; start = end + 1, end = bytes.indexOf(10, start)) {
+      append(bytes.subarray(start, end));
+      if (lineBytes && !oversized) {
+        const line = Buffer.concat(lineParts, lineBytes);
         let raw: any;
         try { raw = JSON.parse(line.toString("utf8")); } catch { raw = null; }
         const uuid = raw?.uuid;
@@ -53,7 +90,7 @@ export async function matchingRawMessageSpans(
             if (raw.type === sdk.type && raw.sessionId === sdk.session_id
               && isDeepStrictEqual(raw.message, sdk.message)) {
               matches.set(ordinal, {
-                offset: base + start,
+                offset: lineStart,
                 length: line.length,
                 sha256: createHash("sha256").update(line).digest("hex"),
               });
@@ -61,10 +98,17 @@ export async function matchingRawMessageSpans(
           }
         }
       }
+      lineStart = chunkStart + end + 1;
+      lineBytes = 0;
+      lineParts = [];
+      oversized = false;
     }
-    carry = combined.subarray(start);
+    append(bytes.subarray(start));
   }
   // A trailing partial line is not a stable transcript row, even though it is
   // included in the complete-file digest used for custody comparison.
-  return { sourceSha256: digest.digest("hex"), sourceBytes: position, spansByOrdinal: matches };
+  // An unparsed oversized line might repeat a matched UUID. Keep all rows in
+  // their full form rather than claiming a unique source line without proof.
+  return { sourceSha256: digest.digest("hex"), sourceBytes: position,
+    spansByOrdinal: hadOversizedLine ? new Map() : matches };
 }
