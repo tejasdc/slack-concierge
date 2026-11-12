@@ -3,6 +3,7 @@ import {ownerRequestLabel} from './owner-request-label';
 import {acceptedMachineNeed,parseMachineNeed} from './machine-need';
 import {askAsideOnce} from './session-asides';
 import {resolveRunnerProjectLocation} from './runner-project-location';
+import {serveProjectCall} from './runner-projects';
 import {restoreRunnerProviderTranscript} from './runner-provider-history-client';
 import {sessionTouch} from './prepared-session-cards';
 import {randomUUID,createHash} from 'node:crypto';
@@ -1380,7 +1381,7 @@ export class SessionOwner {
   }
   /** Called only inside the communication owner's source-validated request transaction. */
   /** A peer instance's request has no local source input; its scope names the peer and the remote input instead. */
-  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;escalationReason?:string;attestedHumanModel?:string;project?:string;projectLocation?:{name:string;path:string;cwd:string;runner:string|null};title?:string;summary?:string;smallTask?:boolean;outside?:boolean;onRunner?:boolean;standingRole?:StandingAgentRole;firstInput:{text:string;machineNeed?:import('./machine-need').MachineNeed;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean}}) {
+  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;escalationReason?:string;attestedHumanModel?:string;project?:string;projectLocation?:{name:string;path:string;cwd:string;runner:string|null};title?:string;summary?:string;smallTask?:boolean;outside?:boolean;onRunner?:boolean;standingRole?:StandingAgentRole;implementation?:boolean;firstInput:{text:string;machineNeed?:import('./machine-need').MachineNeed;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean}}) {
     const title=normalizeSessionTitle(input.title);
     const source=input.sourceInputId?getAcceptedSessionInput(input.sourceInputId):null;
     const sourceProvider=source&&getSessionById(source.session_id)?.provider_id;
@@ -1393,7 +1394,8 @@ export class SessionOwner {
     if(input.outside&&(selected.provider!=='codex'||input.saved))throw new SessionOwnerError('An outside request runs a new Codex session; choose a Codex alias.',400);
     // Only Claude Code turns run on runners today; another provider would silently stay on this machine.
     if(input.onRunner&&selected.provider!=='claude-code')throw new SessionOwnerError('--on-runner runs a Claude Code session; choose a Claude alias (Automatic chose '+selected.provider+').',400);
-    const {provider,...metadata}={...selected,...(input.outside?{outside:true}:{}),...(input.onRunner?{onRunner:true}:{})};
+    const {provider,...metadata}={...selected,...(input.outside?{outside:true}:{}),...(input.onRunner?{onRunner:true}:{}),
+      ...(input.implementation?{implementationFor:{requestId:input.requestId,sourceInputId:input.sourceInputId}}:{})};
     if(input.standingRole){
       assertStandingAgentPlacement(this.defaultCwd,input.standingRole,metadata as NativeSessionMetadata);
       if(standingAgentSession(this.defaultCwd,input.standingRole))throw new SessionOwnerError('This standing role was bound while the request was being prepared; retry against its current session.',409,'STANDING_AGENT_ALREADY_BOUND');
@@ -1538,6 +1540,18 @@ export class SessionOwner {
     const project=containingProject(this.defaultCwd,local.cwd);
     if(!project)throw new SessionOwnerError('This folder is outside a registered project.');
     return {name:project.name,path:relative(project.cwd,local.cwd),cwd:local.cwd,runner:null};
+  }
+  async prepareImplementationWorktree(project:string,sourceInputId:string,actionId:string) {
+    const selected=await this.locateProject(project);
+    if(selected.path)throw new SessionOwnerError('Implementation handoff needs the registered Git project root, not a nested folder.');
+    const key=createHash('sha256').update(sourceInputId).update('\0').update(actionId).digest('hex').slice(0,20);
+    const params={project:selected.name,key};
+    const created=selected.runner
+      ?await runnerMachineCall<{project:string;path:string;cwd:string}>(selected.runner,'projects.implementationWorktree',params,300_000)
+      :await serveProjectCall('projects.implementationWorktree',params) as {project:string;path:string;cwd:string};
+    if(created.project!==selected.name||created.path!==`.wt/impl-${key}`)
+      throw new SessionOwnerError('Implementation worktree did not match the requested project.');
+    return {name:created.project,path:created.path,cwd:created.cwd,runner:selected.runner};
   }
   private async runnerProjectCall<T>(method:string,params:Record<string,unknown>,runnerOverride?:string|null):Promise<T|null> {
     const runner=runnerOverride??this.configuredProjectRunner();if(!runner)return null;

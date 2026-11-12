@@ -10,6 +10,7 @@ import {closeRunnerMachineCalls} from '../src/runner-machine-calls';
 import {decodeUsageSnapshot,ledgerFromUsageSnapshot,captureUsageLedgerSnapshot,encodeUsageSnapshot} from '../src/usage-breakdown-ledger-snapshot';
 import {collectRunnerUsageReports} from '../src/provider-usage-report-client';
 import {attributeWeeklyAllowance,nameAllowanceRows,weeklyReadings} from '../src/weekly-allowance-attribution';
+import {isCodeEditTool} from '../src/implementation-models';
 
 type Counts={input:number;cacheWrite:number;cacheWrite1h:number;cacheRead:number;output:number};
 type FileRow={offset:number;size:number;mtime:number;total_json:string};
@@ -33,6 +34,10 @@ cache.exec(`PRAGMA journal_mode=WAL;
    cache_write_1h INTEGER NOT NULL,cache_read INTEGER NOT NULL,output INTEGER NOT NULL,source_account TEXT,parent_thread_id TEXT,
    first_usage INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(path,record_id));
  CREATE INDEX IF NOT EXISTS records_recent ON records(at_ms);
+ CREATE TABLE IF NOT EXISTS edit_events(path TEXT NOT NULL,record_id TEXT NOT NULL,provider TEXT NOT NULL,conversation TEXT NOT NULL,
+   helper INTEGER NOT NULL,at_ms INTEGER NOT NULL,model TEXT,provider_turn_id TEXT,tool_name TEXT NOT NULL,
+   PRIMARY KEY(path,record_id));
+ CREATE INDEX IF NOT EXISTS edit_events_recent ON edit_events(at_ms);
  CREATE TABLE IF NOT EXISTS provider_record_sequence(id INTEGER PRIMARY KEY AUTOINCREMENT,path TEXT NOT NULL,record_id TEXT NOT NULL,at_ms INTEGER NOT NULL,UNIQUE(path,record_id));
  CREATE INDEX IF NOT EXISTS provider_record_sequence_time ON provider_record_sequence(at_ms);
  CREATE TABLE IF NOT EXISTS cache_boundaries(path TEXT NOT NULL,at_ms INTEGER NOT NULL,kind TEXT NOT NULL,
@@ -90,29 +95,36 @@ function insert(path:string,id:string,provider:string,conversation:string,helper
     (path,record_id,provider,conversation,helper,at_ms,model,input,cache_write,cache_write_1h,cache_read,output,provider_turn_id,client_version,source_account,parent_thread_id,first_usage)
     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(path,id,provider,conversation,helper?1:0,at,model,c.input,c.cacheWrite,c.cacheWrite1h,c.cacheRead,c.output,providerTurnId,clientVersion,sourceAccount,parentThreadId,firstUsage?1:0);
 }
+function insertEdit(path:string,id:string,provider:string,conversation:string,helper:boolean,at:number,model:string|null,providerTurnId:string|null,toolName:string){
+  if(at<activeUsageWindowStartMs||at>Date.now()+60000)return;
+  cache.query(`INSERT OR IGNORE INTO edit_events(path,record_id,provider,conversation,helper,at_ms,model,provider_turn_id,tool_name)
+    VALUES(?,?,?,?,?,?,?,?,?)`).run(path,id,provider,conversation,helper?1:0,at,model,providerTurnId,toolName);
+}
 async function scan(path:string,provider:'claude-code'|'codex'){
   const stat=statSync(path), prior=cache.query('SELECT * FROM files WHERE path=?').get(path) as FileRow|null;
   if(prior&&prior.size===stat.size&&prior.mtime===stat.mtimeMs
-    &&(JSON.parse(prior.total_json) as {schemaVersion?:number}).schemaVersion===4)return;
+    &&(JSON.parse(prior.total_json) as {schemaVersion?:number}).schemaVersion===5)return;
   // An old file cannot add a row to the one-week report. Retire its old cursor
   // without rereading archived transcript bytes during the format upgrade.
   if(stat.mtimeMs<activeUsageWindowStartMs){
     if(prior){
       cache.query('DELETE FROM records WHERE path=?').run(path);
+      cache.query('DELETE FROM edit_events WHERE path=?').run(path);
       cache.query('DELETE FROM cache_boundaries WHERE path=?').run(path);
       cache.query('UPDATE files SET offset=?,size=?,mtime=?,total_json=? WHERE path=?')
         .run(prior.offset,stat.size,stat.mtimeMs,
-          JSON.stringify({...JSON.parse(prior.total_json),schemaVersion:4}),path);
+          JSON.stringify({...JSON.parse(prior.total_json),schemaVersion:5}),path);
     }
     return;
   }
   let offset=prior&&prior.size<=stat.size?prior.offset:0;
-  if(prior&&prior.size>stat.size){cache.query('DELETE FROM records WHERE path=?').run(path);cache.query('DELETE FROM cache_boundaries WHERE path=?').run(path);offset=0;}
+  if(prior&&prior.size>stat.size){cache.query('DELETE FROM records WHERE path=?').run(path);cache.query('DELETE FROM edit_events WHERE path=?').run(path);cache.query('DELETE FROM cache_boundaries WHERE path=?').run(path);offset=0;}
   let previous:any=prior&&offset?JSON.parse(prior.total_json):null;
   // Rebuild older cursors once: Claude needs the first response and compaction markers,
   // while Codex needs native per-response usage rather than cumulative event deltas.
-  if(previous?.schemaVersion!==4){
+  if(previous?.schemaVersion!==5){
     cache.query('DELETE FROM records WHERE path=?').run(path);
+    cache.query('DELETE FROM edit_events WHERE path=?').run(path);
     cache.query('DELETE FROM cache_boundaries WHERE path=?').run(path);
     offset=0;previous=null;
   }
@@ -134,9 +146,10 @@ async function scan(path:string,provider:'claude-code'|'codex'){
     const bytes=Buffer.byteLength(line)+1;
     if(atByte+bytes>stat.size)break;
     try{
-      if(provider==='claude-code'&&!line.includes('"usage"')&&!line.includes('"compact_boundary"')){atByte+=bytes;continue;}
+      if(provider==='claude-code'&&!line.includes('"usage"')&&!line.includes('"compact_boundary"')&&!line.includes('"tool_use"')){atByte+=bytes;continue;}
       if(provider==='codex'&&!line.includes('"token_count"')&&!line.includes('"token_usage_record"')
-        &&!line.includes('"turn_context"')&&!line.includes('"compacted"')&&!line.includes('"session_meta"')){atByte+=bytes;continue;}
+        &&!line.includes('"turn_context"')&&!line.includes('"compacted"')&&!line.includes('"session_meta"')
+        &&!line.includes('"item_completed"')){atByte+=bytes;continue;}
       const row=JSON.parse(line),at=stamp(row.timestamp);
       if(provider==='codex'&&row.type==='session_meta'){
         if(typeof row.payload?.cli_version==='string')codexClientVersion=row.payload.cli_version;
@@ -145,6 +158,16 @@ async function scan(path:string,provider:'claude-code'|'codex'){
       if(provider==='codex'&&row.type==='turn_context'){
         if(typeof row.payload?.model==='string')model=row.payload.model;
         if(typeof row.payload?.turn_id==='string')providerTurnId=row.payload.turn_id;
+      }
+      if(provider==='claude-code'&&row.type==='assistant'&&Array.isArray(row.message?.content))
+        for(const part of row.message.content)if(part?.type==='tool_use'&&typeof part.id==='string'
+          &&isCodeEditTool(part.name,part.input))
+          insertEdit(path,part.id,provider,conversation,helper,at,row.message.model??null,null,String(part.name));
+      if(provider==='codex'&&row.type==='event_msg'&&row.payload?.type==='item_completed'){
+        const item=row.payload.item;
+        if(item&&isCodeEditTool(item.type,item.command))
+          insertEdit(path,String(item.id??row.ordinal??atByte),provider,conversation,!!codexParentThreadId,at,model,
+            typeof row.payload.turn_id==='string'?row.payload.turn_id:providerTurnId,String(item.type));
       }
       if((provider==='claude-code'&&row.type==='system'&&row.subtype==='compact_boundary')
         ||(provider==='codex'&&row.type==='compacted'))
@@ -184,7 +207,7 @@ async function scan(path:string,provider:'claude-code'|'codex'){
     atByte+=bytes;
   }
   cache.query('INSERT INTO files VALUES(?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET offset=excluded.offset,size=excluded.size,mtime=excluded.mtime,total_json=excluded.total_json')
-    .run(path,Math.min(atByte,stat.size),stat.size,stat.mtimeMs,JSON.stringify({schemaVersion:4,counts:total,model,
+    .run(path,Math.min(atByte,stat.size),stat.size,stat.mtimeMs,JSON.stringify({schemaVersion:5,counts:total,model,
       providerTurnId,firstUsageId,nativeCodexUsageSeen,clientVersion:codexClientVersion,parentThreadId:codexParentThreadId}));
 }
 function midnight(zone:string,now=Date.now()){
@@ -225,6 +248,17 @@ type Turn={id:number;session_id:number;status:string;provider_turn_id:string|nul
 type ScheduledFiring={id:number;session_id:number;status:string;saved_root_id:number;saved_sequence:number;saved_fire_at_ms:number;
   provider_started_at:string|null;provider_duration_ms:number|null;ended_at:string|null};
 type CallMix={totalCalls:number;helperCalls:number;models:Map<string,{calls:number;helperCalls:number}>};
+type EditMix={totalEdits:number;helperEdits:number;models:Map<string,{edits:number;helperEdits:number}>};
+const newEditMix=():EditMix=>({totalEdits:0,helperEdits:0,models:new Map()});
+function addEdit(mix:EditMix,model:string|null,helper:boolean){
+  mix.totalEdits++;mix.helperEdits+=Number(helper);
+  const name=model??'unreported',prior=mix.models.get(name)??{edits:0,helperEdits:0};
+  prior.edits++;prior.helperEdits+=Number(helper);mix.models.set(name,prior);
+}
+function editMixView(mix:EditMix){return {totalEdits:mix.totalEdits,helperEdits:mix.helperEdits,
+  mainEdits:mix.totalEdits-mix.helperEdits,helperShare:mix.totalEdits?mix.helperEdits/mix.totalEdits:0,
+  byModel:[...mix.models].map(([model,value])=>({model,...value,mainEdits:value.edits-value.helperEdits,
+    share:mix.totalEdits?value.edits/mix.totalEdits:0})).sort((a,b)=>b.edits-a.edits)};}
 const newCallMix=():CallMix=>({totalCalls:0,helperCalls:0,models:new Map()});
 function addCall(mix:CallMix,model:string|null,helper:boolean){
   mix.totalCalls++;mix.helperCalls+=Number(helper);
@@ -294,6 +328,7 @@ function report(period:'today'|'week',since:number,zone:string){
     provider_turn_id,client_version,source_account,parent_thread_id,first_usage FROM records WHERE at_ms>=? ORDER BY path,at_ms,record_id`).all(oneWeekAgo) as RecordRow[];
   const calls:any[]=[];
   const overallMix=newCallMix();
+  const overallEditMix=newEditMix(),accountEdits=new Map<string,EditMix>(),sessionEdits=new Map<string,EditMix>();
   const unknownEvidence:{atMs:number;provider:string;gapMs:number|null;instructions:'same'|'changed'|'unavailable';accountKnown:boolean}[]=[];
   const callsByTurn=new Map<number,{turnId:number;sessionId:number;provider:string;account:string;status:string;raw:Counts;callCount:number;
     flaggedCallCount:number;unknownCauseCount:number}>();
@@ -433,6 +468,29 @@ function report(period:'today'|'week',since:number,zone:string){
     category.weighted+=weighted;category.raw.input+=r.input;category.raw.cacheWrite+=r.cache_write;
     category.raw.cacheWrite1h+=r.cache_write_1h;category.raw.cacheRead+=r.cache_read;category.raw.output+=r.output;
   }
+  const editRows=cache.query(`SELECT path,record_id,provider,conversation,helper,at_ms,model,provider_turn_id,tool_name
+    FROM edit_events WHERE at_ms>=? ORDER BY path,at_ms,record_id`).all(since) as {
+      path:string;record_id:string;provider:string;conversation:string;helper:number;at_ms:number;model:string|null;provider_turn_id:string|null;tool_name:string}[];
+  const providerRoots=configuredRoots().map(root=>({...root,prefix:join(root.home,root.provider==='claude-code'?'projects':'sessions')}));
+  for(const edit of editRows){
+    const owning=edit.provider==='codex'?rootConversation(edit.conversation):edit.conversation;
+    const helper=!!edit.helper||owning!==edit.conversation;
+    addEdit(overallEditMix,edit.model,helper);
+    const session=sessions.get(`${edit.provider}:${owning}`);
+    const candidates=session?turnsBySession.get(session.id)??[]:[];
+    const exact=edit.provider_turn_id?candidates.filter(turn=>turn.provider_turn_id===edit.provider_turn_id):[];
+    const matched=exact.length?exact:candidates.filter(turn=>edit.at_ms>=turn.startMs&&edit.at_ms<=turn.endMs);
+    const turn=matched.length===1?matched[0]!:null;
+    let account='unknown';
+    for(const event of session?accounts.get(session.id)??[]:[]){if(event.at<=edit.at_ms)account=event.name;else break;}
+    if(turn&&accountsByTurn.has(turn.id))account=accountsByTurn.get(turn.id)!;
+    if(edit.provider==='codex'&&account==='unknown')
+      account=providerRoots.find(root=>root.provider==='codex'&&(edit.path===root.prefix||edit.path.startsWith(`${root.prefix}/`)))?.account??'unknown Codex account';
+    const accountKey=`${edit.provider}:${account}`,sessionKey=session?String(session.id):`outside:${edit.conversation}`;
+    let mix=accountEdits.get(accountKey);if(!mix){mix=newEditMix();accountEdits.set(accountKey,mix);}addEdit(mix,edit.model,helper);
+    const key=`${accountKey}\0${sessionKey}`;
+    mix=sessionEdits.get(key);if(!mix){mix=newEditMix();sessionEdits.set(key,mix);}addEdit(mix,edit.model,helper);
+  }
   const ordinaryCallCount=calls.filter(call=>!call.cause.reasons.includes('first_call')).length;
   const ordinaryMissRate=calls.filter(call=>call.flags.length>0).length/Math.max(1,ordinaryCallCount);
   const providerRates=new Map<string,{calls:number;misses:number}>();
@@ -474,7 +532,7 @@ function report(period:'today'|'week',since:number,zone:string){
   };
   return {period,since:new Date(since).toISOString(),through:new Date().toISOString(),timeZone:zone,
     attributionBuckets:[...attributionBuckets.values()],
-    callMix:callMixView(overallMix),escalations:{count:escalations.length,byModel:Object.fromEntries(escalationModels)},
+    callMix:callMixView(overallMix),editMix:editMixView(overallEditMix),escalations:{count:escalations.length,byModel:Object.fromEntries(escalationModels)},
     measure:'Published API price equivalent in USD; a proxy for allowance share, not the provider subscription meter.',
     fallbackModels:[...fallbackModels].sort(),
     cacheDiagnostics:{meaning:'Cached input was read from the provider cache; rewritten input was sent as uncached input or cache creation. Cause reasons are coincident observed changes, not proof that a specific change invalidated the cache prefix. Possible reasons include submitted Claude instructions that its recorded prompt may have ignored.',
@@ -497,9 +555,11 @@ function report(period:'today'|'week',since:number,zone:string){
       apiPriceEquivalentUsd:t.usageRecords?t.weighted:null,rawTokens:t.usageRecords?t.raw:null})),
     weighting:pricing,pricingSources:['https://platform.claude.com/docs/en/about-claude/pricing','https://platform.openai.com/pricing'],
     accounts:[...groups.values()].map(g=>({provider:g.provider,account:g.account,totalWeighted:g.total,raw:g.raw,cache:g.cache,callMix:callMixView(g.mix),
+      editMix:editMixView(accountEdits.get(`${g.provider}:${g.account}`)??newEditMix()),
       byModel:[...g.byModel.values()].sort((a:any,b:any)=>b.weighted-a.weighted),
       cachedInputTokens:g.raw.cacheRead,rewrittenInputTokens:g.raw.input+g.raw.cacheWrite+g.raw.cacheWrite1h,
-      bySession:[...g.bySession.values()].map((x:any)=>({...x,mix:undefined,callMix:callMixView(x.mix),share:g.total?x.weighted/g.total:0,
+      bySession:[...g.bySession.values()].map((x:any)=>({...x,mix:undefined,callMix:callMixView(x.mix),
+        editMix:editMixView(sessionEdits.get(`${g.provider}:${g.account}\0${x.sessionId===null?`outside:${x.providerConversationId}`:String(x.sessionId)}`)??newEditMix()),share:g.total?x.weighted/g.total:0,
         byModel:[...x.byModel.values()].sort((a:any,b:any)=>b.weighted-a.weighted),
         byHelper:[...x.byHelper.values()].sort((a:any,b:any)=>b.weighted-a.weighted),
         cachedInputTokens:x.raw.cacheRead,rewrittenInputTokens:x.raw.input+x.raw.cacheWrite+x.raw.cacheWrite1h}))
@@ -524,15 +584,20 @@ async function scanRunnerProviderRoots(providers:string[],sinceMs:number,buildSe
     }
     for(const provider of providers){
       const allowed=roots.filter(root=>root.provider===provider).map(root=>join(root.home,provider==='claude-code'?'projects':'sessions'));
-      const known=cache.query('SELECT DISTINCT path FROM records WHERE provider=?').all(provider) as {path:string}[];
+      const known=[...new Map(([
+        ...cache.query('SELECT DISTINCT path FROM records WHERE provider=?').all(provider),
+        ...cache.query('SELECT DISTINCT path FROM edit_events WHERE provider=?').all(provider),
+      ] as {path:string}[]).map(row=>[row.path,row])).values()];
       for(const row of known)if(!allowed.some(root=>row.path===root||row.path.startsWith(`${root}/`))){
         cache.query('DELETE FROM records WHERE path=?').run(row.path);
+        cache.query('DELETE FROM edit_events WHERE path=?').run(row.path);
         cache.query('DELETE FROM cache_boundaries WHERE path=?').run(row.path);
         cache.query('DELETE FROM files WHERE path=?').run(row.path);
         cache.query('DELETE FROM provider_record_sequence WHERE path=?').run(row.path);
       }
     }
     cache.query('DELETE FROM records WHERE at_ms<?').run(activeUsageWindowStartMs);
+    cache.query('DELETE FROM edit_events WHERE at_ms<?').run(activeUsageWindowStartMs);
     cache.query('DELETE FROM cache_boundaries WHERE at_ms<?').run(activeUsageWindowStartMs);
     cache.query('DELETE FROM provider_record_sequence WHERE at_ms<?').run(activeUsageWindowStartMs);
     if(buildSequence)cache.query('INSERT OR IGNORE INTO provider_record_sequence(path,record_id,at_ms) SELECT path,record_id,at_ms FROM records WHERE at_ms>=?').run(activeUsageWindowStartMs);
