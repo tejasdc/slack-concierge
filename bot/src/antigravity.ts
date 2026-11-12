@@ -380,15 +380,9 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
     if (quotaRefusal) {
       // The error's prose may contain a duration, but only Google's fresh structured quota
       // reply can name a reset we may queue against.
-      const { scheduleProviderAccountUsageRefreshAfterCurrent, providerAccountUsage } = await import("./provider-account-usage");
+      const { scheduleProviderAccountUsageRefreshAfterCurrent } = await import("./provider-account-usage");
       await scheduleProviderAccountUsageRefreshAfterCurrent().catch(() => {});
-      const usage = providerAccountUsage("antigravity");
-      const account = usage?.accounts.find(item => item.current && !item.problem);
-      if (!usage?.problem && account) {
-        const spent = account.windows.filter(window => window.usedPercent >= 100)
-          .map(window => Date.parse(window.resetsAt ?? "")).filter(Number.isFinite);
-        if (spent.length) clearsAtMs = Math.max(...spent);
-      }
+      clearsAtMs = await googleAllowanceSpentUntil(input.model);
       // The refusal is the truth even if a post-refusal reading still shows a small residual
       // balance. The repair agent hears about that mismatch once per day.
       if (clearsAtMs === null) {
