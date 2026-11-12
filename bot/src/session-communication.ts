@@ -10,7 +10,7 @@ import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-requ
 import { INBOX_LINEAGE_SQL } from './inbox-lineage-sql';
 import { BUG_REPORT_OWN_THREAD, followForwardedReply, forwardedReplyFraming, isBugReportInput } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
-import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWithoutThread, hasOpenInboxWorkForSource, invalidateTopicRoots, linkForwardedReplyWork, linkInboxDispatchWork, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
+import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWithoutThread, hasOpenInboxWorkForSource, linkForwardedReplyWork, refreshRootMemo, linkInboxDispatchWork, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordRequesterDecisionReturn, recordTurnOutcome, turnDeclaredByAction, withdrawOpenNeed, type DeclaredTurnOutcome } from './session-turn-outcome';
 import {turnRoutedInput} from './inbox-routing-result';
@@ -966,8 +966,10 @@ export class SessionCommunicationCoordinator {
             if(saved.duplicate)return {threadLink:receipt,duplicate:true};
             recordSessionEvent({eventId:`thread-link:${saved.input.id}`,sessionId:session.id,inputId:target.id,...(router?{turnId:actor.turn}:{}),kind:'thread_link',
                 payload:{...receipt,routedBy:{kind:'agent',sessionId:`concierge:${actor.session}`,inputId:sourceInputId,runId:nativeRunId(actor.turn)}}});
-            // Which thread a message belongs to just changed; topic membership is resolved from it.
-            invalidateTopicRoots();
+            // Which thread a message belongs to just changed. The root memo follows the thread_link event
+            // just recorded and re-resolves only the threads it touched; discarding the whole entry index
+            // here made the next reader rebuild ~20,000 rows synchronously (10-20 s owner freeze).
+            refreshRootMemo();
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',threadLink:receipt}),saved.input.id);
             return {threadLink:receipt,duplicate:false};
         })();
