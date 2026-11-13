@@ -66,6 +66,32 @@ peer read deadline. The foreground request gateway still becomes unavailable at 
 so compare that timestamp with the final request-surface stop marker to measure the actual gap.
 
 The stable controller launcher resolves its control artifact once for each invocation.
+The installed `launch` and `control` commands are small executable dispatchers, without
+a release's subcommand vocabulary. Each invokes Bash on the corresponding sealed shell
+launcher beneath the atomic `control` pointer. This supports existing sealed launchers
+whose files are read-only but not executable. Control promotion, explicit control recovery,
+and full rollback therefore expose the matching command immediately; an application-only
+rollback deliberately retains the selected controller. Already-running invocations keep
+their pinned helpers. A controller selection verifies the complete digest-named artifact,
+its read-only seal and both launcher entries before changing either the stable dispatchers
+or the pointer. Runtime installation uses that verified selection, ignoring the invoking
+runner's older control-root environment, and refuses a missing controller instead of
+copying from a mutable checkout. The historical first cutover installs its Bun runtime
+after preparing and selecting the sealed controller, before changing the service unit.
+The service's file-only pre-start command installs these dispatchers from the sealed
+current release manager before the existing recovery command. It verifies the selected
+controller and does not open the ledger or copy Bun. This is necessary on the first
+correcting update: its deployment runner still uses the previous manager, which cannot
+install the new dispatchers at promotion. The old runner's ordinary control-pointer
+promotion then changes the already-installed dispatchers' destination. A failed startup
+retains the prior controller and its matching command vocabulary.
+This pre-start is conditional on a sealed capability marker next to that manager.
+Restored older artifacts lack the marker and skip the unsupported installer command;
+the invariant dispatchers already on disk continue following the retained controller.
+Old-commit preparation omits the marker when that source predates it.
+Run `bun bot/scripts/installed-control-command-fixture.ts` for disposable forward,
+rollback, control-recovery and refused-publication acceptance; no cache workload or
+real systemd operation is part of that fixture.
 Prepared candidates move into an unpublished `.preparing-<uuid>` sibling beneath
 the releases directory while writable, are sealed there, then become their digest
 name through a same-parent atomic rename. Linux requires directory write permission

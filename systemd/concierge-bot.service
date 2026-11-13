@@ -14,6 +14,12 @@ OnFailure=concierge-service-failure@%n.service
 Type=simple
 ExecStartPre=/usr/bin/test -x /usr/bin/node
 ExecStartPre=/usr/bin/test -x /usr/bin/python3
+# The previous controller runs the first update carrying this fix. Bootstrap the
+# version-independent entrance from the sealed current release before recovery;
+# later promotion by that old runner then switches commands with its control pointer.
+# An older application restored under this unit predates the installer. Its absent
+# capability marker skips this bootstrap; the already-installed dispatchers persist.
+ExecStartPre=/usr/bin/bash -ec 'if [ -f /var/lib/slack-concierge-deployment/current/control/deployment-runtime-launchers.json ]; then exec /usr/local/lib/slack-concierge-deployment/bun /var/lib/slack-concierge-deployment/current/control/release-manager.js install-launchers; fi'
 # The shared Codex App Server is the runner's (docs/architecture/RUNNERS.md): runner ax41 starts and
 # supervises it, so the owner starts nothing that agents use and needs no Codex on its machine.
 ExecStartPre=/usr/local/lib/slack-concierge-deployment/control recover
