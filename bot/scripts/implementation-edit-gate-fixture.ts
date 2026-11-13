@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {Database} from 'bun:sqlite';
 import {IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION} from '../src/test-authorizations';
 
 const scratch=mkdtempSync(join(tmpdir(),'concierge-edit-gate-'));
@@ -49,6 +50,7 @@ try{
   assert.equal(daemonEdit('luna-after',{providerModel:'gpt-6-luna'}).exempt,'codex-helper');
   assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit'").get(daemonTurn) as any).count,4);
   db.query("UPDATE turns SET status='done' WHERE id=?").run(daemonTurn);
+  assert.equal(daemonEdit('sol-fifth',{providerModel:'gpt-6-sol'},'unbound-sol-turn').hold,true,'completion cannot release a Sol hold without an existing original-turn reason');
   assert.equal(daemonEdit('none-running',{providerModel:'gpt-6-luna'},'never-bound-child').hold,true,'unbound child with no running turn holds');
   for(const id of ['daemon-two-a','daemon-two-b']){
     enqueueSessionInput(retainSessionInput({id,sessionId:daemon.id,scope:'fixture',actionId:id,kind:'input',origin:'agent',payload:{text:'x'}}).input.id);
@@ -83,11 +85,10 @@ try{
     'lower-tier helper receipt preserves the parent accepted input');
   assert.equal((db.query('EXPLAIN QUERY PLAN SELECT turn_id FROM session_owner_events WHERE event_id=?').get('implementation-codex-helper-binding:fixture') as any).detail.includes('event_id'),true,
     'binding identity resolves by the existing unique event ID index');
+  recordImplementationEditReason(lifecycleTurn,lifecycle.id,lifecycleInput.id,'This exact turn needs its thinking model to finish the fixed design.','fixture-reason');
   db.query("UPDATE turns SET status='done' WHERE id=?").run(lifecycleTurn);
   for(let i=0;i<4;i++)assert.equal(codexEdit('native-sol-child',`sol-${i}`,'gpt-6.1-sol').exempt,'already-counted','duplicate retries retain original receipt after completion');
-  assert.equal(codexEdit('native-sol-child','sol-fifth','gpt-6.1-sol').hold,true,'normal completion preserves the same child and parent hold');
-  recordImplementationEditReason(lifecycleTurn,lifecycle.id,lifecycleInput.id,'This exact turn needs its thinking model to finish the fixed design.','fixture-reason');
-  assert.equal(codexEdit('native-sol-child','sol-fifth','gpt-6.1-sol').hold,false,'original-turn reason releases the retained child edit');
+  assert.equal(codexEdit('native-sol-child','sol-fifth','gpt-6.1-sol').hold,false,'reason recorded while the parent was running permits its retained child edit');
   assert.equal(codexEdit('native-sol-child','sol-fifth','gpt-6-luna').hold,true,'a changed child model cannot inherit the binding');
   assert.equal(codexEdit('unseen-child','no-parent','gpt-6-luna').hold,true,'unknown child without a running parent remains refused');
   assert.equal(codexEdit('unseen-child','missing-model','').hold,true,'missing model evidence remains refused');
@@ -218,7 +219,12 @@ try{
   const statePath=new URL('../src/state.ts',import.meta.url).pathname;
   const reopened=Bun.spawnSync(['bun','-e',`const [{implementationEditDecision},{db}]=await Promise.all([import(${JSON.stringify(gatePath)}),import(${JSON.stringify(statePath)})]);
     const result=implementationEditDecision({providerSessionId:'lifecycle-thread',providerTurnId:'native-luna-child',providerModel:'gpt-6-luna',toolId:'luna-first',toolName:'apply_patch'});
-    if(result.hold||result.exempt!=='codex-helper')process.exitCode=1;db.close();`],{env:{...process.env,CONCIERGE_STATE_DIR:scratch}});
-  assert.equal(reopened.exitCode,0,'a fresh owner process resolves the durable helper binding and preserves the duplicate receipt');
+    const next=implementationEditDecision({providerSessionId:'lifecycle-thread',providerTurnId:'native-luna-child',providerModel:'gpt-6-luna',toolId:'luna-after-reopen',toolName:'apply_patch'});
+    if(result.hold||result.exempt!=='codex-helper'||next.hold||next.exempt!=='codex-helper')process.exitCode=1;db.close();`],{env:{...process.env,CONCIERGE_STATE_DIR:scratch}});
+  assert.equal(reopened.exitCode,0,'a fresh owner process preserves the duplicate receipt and admits a new edit from the same retained child');
+  const observer=new Database(join(scratch,'state.db'),{readonly:true});
+  try{
+    assert.equal((observer.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND input_id=? AND kind='implementation_helper_edit'").get(lifecycleTurn,lifecycleInput.id) as any).count,2,'a fresh reader sees reopened continuation retain its original parent and input');
+  }finally{observer.close();}
   console.log('implementation edit gate: exact handoff, helper separation, retained Codex child identity and human model-picker custody passed');
 }finally{db.close();rmSync(scratch,{recursive:true,force:true});}

@@ -48,9 +48,10 @@ admission remain refused. No transcript ancestry scan is used.
 
 - **Seed:** A disposable owner ledger has one running Sol parent and native Luna
   and Sol helper turns with distinct child provider-turn IDs.
-- **Action:** Edit under each child while the parent runs, complete the parent,
-  then retry the Sol fifth edit through a newly opened owner process before and
-  after recording a reason for the original turn.
+- **Action:** Edit under each child while the parent runs, record any Sol reason
+  before the parent ends, then complete the parent. Retry the Sol fifth edit
+  with and without that existing reason. Reopen the ledger in a fresh process
+  and make a new Luna edit from the same retained child execution.
 - **Expected:** Luna remains separately recorded; Sol stays held at the fifth
   edit until the original-turn reason is present; duplicates preserve receipts;
   a newer parent receives no old-child edits. Stop, error/cancel/uncertain/queued,
@@ -65,3 +66,8 @@ admission remain refused. No transcript ancestry scan is used.
 The offline fixture establishes the owner-ledger contract. A live native-helper
 check through the installed release is still required before claiming the
 original user-visible failure is resolved in production.
+
+A Sol hold after parent completion cannot be released by submitting an old
+source/run to `sessions edit-reason`: that command correctly requires a live
+parent turn. The retained identity does not change that restriction. A reason
+needed by delegated Sol work must already exist before its parent ends.
