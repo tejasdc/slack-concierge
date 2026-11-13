@@ -521,6 +521,10 @@ with its exact native source pair and stable action ID. This invokes the existin
 guarded Accounts operation: running Codex turns prevent the move, Codex proves the
 new login, and a failed proof rolls back. The command retains an agent-authored
 receipt; an uncertain operation is inspected, never replayed under the same ID.
+The immediate reply includes that retained operation ID and its normalized outcome;
+exact operation reads and receipt pages show the same terminal result, including an
+explicit guard refusal. Historical refusals are projected from their original saved
+reply, without replay or a new settlement record.
 See [provider usage](../architecture/PROVIDER-USAGE.md).
 
 `sessions history-storage claude|codex <source-flags> [--after <next filename>]

@@ -6,6 +6,7 @@ import {modelDisplayName} from './aliases';
 import {noticeTime} from './notice-time';
 import {inputProvenance,existingRunIdFor} from './input-provenance';
 import {receiptAttachmentProjection,type ReceiptAttachment} from './receipt-attachments';
+import {codexAccountSwitchProjection} from './codex-account-switch-receipt';
 
 type SourceInput={id:string;session_id:number;kind:string;origin:string;source_input_id:string|null;
   source_run_id:string|null;
@@ -50,13 +51,17 @@ const sourceProvenance=(source:Database,input:SourceInput)=>boundedObject(inputP
 export function compactReceiptFromFacts(input:SourceInput,turn:Turn|null,steering:Steering|null,
   conversation:Conversation,stopTurnStatus:string|null,dynamic:ReceiptDynamicFacts,nowMs=Date.now(),link:ThreadLink=null):PreparedReceipt {
   const payload=json(input.payload_json),saved=json(input.receipt_json);
+  const codexSwitch=input.kind==='action'&&payload.kind==='codex-account-switch';
+  const switchProjection=codexSwitch?codexAccountSwitchProjection(saved):null;
+  const switchOutcome=switchProjection?.outcome??null;
   const execution=inputExecutionFacts(turn,steering);
-  const state=receiptOperationState({kind:input.kind,savedState:saved.state,executionState:execution.state,
+  const state=switchOutcome??receiptOperationState({kind:input.kind,savedState:saved.state,executionState:execution.state,
     requestKnown:conversation.known,requestOutcome:conversation.outcome,stopTurnStatus});
   const control=['action','stop','reconcile','cancel','cancel-action','bind','fork','project-task','inbox-capture','resurrect',
     'resurrect-native','outage-choice'].includes(input.kind);
   const text=control?null:payload.text??payload.firstInput?.text??null;
-  const result=control?null:input.kind==='request'?conversation.resultPreview:turn?.agent_text??null;
+  const result=codexSwitch?switchProjection?.resultPreview??null
+    :control?null:input.kind==='request'?conversation.resultPreview:turn?.agent_text??null;
   const error=saved.error?.message??saved.error??steering?.error??(['failed','uncertain'].includes(execution.state)?turn?.agent_text:null);
   const detail=dynamic.statusDetail;
   const detailMessage=preview(detail?.message,384);

@@ -22,6 +22,7 @@ import {acceptedInputAuthor,sessionAuthor} from './session-message-author';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
 import {ProviderCapabilityUnavailableError} from './provider-policy';
+import {codexAccountSwitchReply} from './codex-account-switch-receipt';
 import { log } from './log';
 import { deliverRequestReminder } from './request-reminder-carrier';
 import { heldPrerequisite } from './request-prerequisite-hold';
@@ -1015,19 +1016,21 @@ export class SessionCommunicationCoordinator {
             sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn)};
         const saved=retainSessionInput(retained);
         if(saved.duplicate)return saved.input.receipt_json
-            ? {...JSON.parse(saved.input.receipt_json),duplicate:true}
-            : {status:'uncertain',detail:'The earlier account switch has no final receipt; inspect the account before another attempt.',duplicate:true};
+            ? {...codexAccountSwitchReply(saved.input.id,JSON.parse(saved.input.receipt_json)),duplicate:true}
+            : {...codexAccountSwitchReply(saved.input.id,{status:'uncertain',detail:'The earlier account switch has no final receipt; inspect the account before another attempt.'}),duplicate:true};
         try {
             const result=await this.dependencies.owner.switchAuthProfile('codex',input.profile_id,input.machine);
+            const reply=codexAccountSwitchReply(saved.input.id,result as Record<string,unknown>);
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
-                .run(JSON.stringify(result),saved.input.id);
-            return result;
+                .run(JSON.stringify(reply),saved.input.id);
+            return reply;
         } catch(error) {
             const result={status:error instanceof ProviderCapabilityUnavailableError?'failed':'uncertain',
                 detail:error instanceof Error?error.message:String(error)};
+            const reply=codexAccountSwitchReply(saved.input.id,result);
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
-                .run(JSON.stringify(result),saved.input.id);
-            return result;
+                .run(JSON.stringify(reply),saved.input.id);
+            return reply;
         }
     }
     /**
