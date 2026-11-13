@@ -98,6 +98,23 @@ starting `codex exec` by hand as a background job or through a launcher script w
 on its report. When Concierge cannot accept a request at all, the Codex command line on the
 server remains the way in. Design notes: `bot/src/outside-codex.ts`.
 
+## Exact Codex report-back recovery
+
+For an open work request whose service report-back ended with an empty Codex completion, use the exact recovery entrance from the currently admitted work run:
+
+```bash
+router-actions.sh sessions codex-recover '<original-request-id>' \
+  --source-input '<this accepted input ID>' \
+  --source-run '<this native run ID>' \
+  --action-id '<stable recovery action ID>'
+```
+
+The owner selects only the service input `report-back:<original-request-id>`. It never resends the original request. This path requires verified work authority for the asking run, the retained human model choice for the same existing conversation, an open work request, the exact provider thread and current send controls, and owner evidence for every selected provider attempt. It then reads each exact native turn and all of that turn's item pages; only a terminal empty turn with no acknowledgement, output, tools, later admission, host activity, or other effect can be reserved. A separate empty turn from another accepted input is not attributed to this report-back. Unknown or incomplete evidence leaves the input in custody.
+
+The accepted report-back ID is the durable deduplication key across action IDs. Reservation and requeue commit together. If the caller loses the receipt after reservation, retrying the same action returns its stored result; another action ID returns the same reservation. The original retained result remains unchanged, while a later execution attempt gets its own result identity and is surfaced by the existing result readers. This recovers only the report-back; its original request and any other obligations remain open until their own final receipts.
+
+The incident artifact records the exact parent-controlled recovery command and historical evidence: [Codex empty report-back recovery](../runbooks/CODEX-EMPTY-REPORT-BACK-RECOVERY-EVIDENCE.md). It is not itself current eligibility proof; the live owner rechecks every guard at execution time.
+
 ## Disposable native Codex tests
 
 Ordinary agent-created Codex sessions keep the shared daemon client and receive no fault control.

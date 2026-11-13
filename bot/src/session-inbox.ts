@@ -407,8 +407,8 @@ export async function backfillResultAnsweredByPost(stopped:()=>boolean):Promise<
     db.transaction(()=>{
       for(const row of rows){
         if(stopped())break;
-        const result=db.query('SELECT session_id AS sessionId,turn_id AS turnId,input_id AS inputId FROM session_owner_events WHERE event_id=? AND kind=\'result\'')
-          .get(`result:${row.turnId}`) as {sessionId:number;turnId:number;inputId:string}|null;
+        const result=db.query("SELECT session_id AS sessionId,turn_id AS turnId,input_id AS inputId FROM session_owner_events WHERE turn_id=? AND kind='result' ORDER BY sequence DESC LIMIT 1")
+          .get(row.turnId) as {sessionId:number;turnId:number;inputId:string}|null;
         if(result&&markResultAnsweredByPost(result))marked++;
       }
     }).immediate();

@@ -535,7 +535,6 @@ async function codexThreadParameters(
           ? { shell_environment_policy: { inherit: "all", set: shellEnvironment } } : {}) },
     }),
     ...(input.model ? { model: input.model } : {}),
-    ...(input.reasoning_effort ? { reasoningEffort: input.reasoning_effort } : {}),
   };
 }
 
@@ -1002,6 +1001,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
         threadId,
         input: textInput(prompt),
         clientUserMessageId: submissionClientId,
+        ...(input.reasoning_effort ? { effort: input.reasoning_effort } : {}),
         ...(input.interactionPolicy === "consultation-only" ? { environments: [] } : {}),
         ...turnAdditionalContext(input.applicationInstructions),
       });
@@ -1062,6 +1062,11 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   }
 
   const { text, mark: turnOutcome } = splitTurnOutcomeMarker((finalAnswerParts.length ? finalAnswerParts : messageParts).join("\n\n").trim());
+  if (!initialInputAcknowledged && !messageParts.some(part=>part.trim()) && !finalAnswerParts.some(part=>part.trim()) && toolsUsed.length === 0) {
+    throw new ProviderDispatchError({message: `CODEX_INPUT_NOT_ACKNOWLEDGED: Codex completed native turn ${activeTurnId ?? "unknown"} without acknowledging Concierge's accepted input or producing output. The original input is preserved; exact transcript proof is required before recovery.`,
+      failureClass:"parked_terminal",terminalConfirmed:true,toolsUsed,assistantOutput:false,
+      providerSessionId:extractedUUID,providerTurnId:activeTurnId});
+  }
   return {
     text,
     sessionUUID: extractedUUID,
@@ -1737,6 +1742,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         threadId,
         input: textInput(prompt),
         clientUserMessageId: submissionClientId,
+        ...(input.reasoning_effort ? { effort: input.reasoning_effort } : {}),
         ...(input.interactionPolicy === "consultation-only" ? { environments: [] } : {}),
         ...turnAdditionalContext(input.applicationInstructions),
       }).catch(error => {
@@ -1808,6 +1814,11 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   }
 
   const { text, mark: turnOutcome } = splitTurnOutcomeMarker((finalAnswerParts.length ? finalAnswerParts : messageParts).join("\n\n").trim());
+  if (!initialInputAcknowledged && !messageParts.some(part=>part.trim()) && !finalAnswerParts.some(part=>part.trim()) && toolsUsed.length === 0) {
+    throw new ProviderDispatchError({message: `CODEX_INPUT_NOT_ACKNOWLEDGED: Codex completed native turn ${activeTurnId ?? "unknown"} without acknowledging Concierge's accepted input or producing output. The original input is preserved; exact transcript proof is required before recovery.`,
+      failureClass:"parked_terminal",terminalConfirmed:true,toolsUsed,assistantOutput:false,
+      providerSessionId:extractedUUID,providerTurnId:activeTurnId});
+  }
   return {
     text,
     sessionUUID: extractedUUID,

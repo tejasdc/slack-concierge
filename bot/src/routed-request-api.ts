@@ -167,6 +167,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'answer') return Response.json(sessions.handleChatGptAnswer(input));
         if (operation === 'legacy-link') return Response.json(sessions.classifyLegacyChatGpt(input));
         if (operation === 'chatgpt-recover') return Response.json(await sessions.recoverChatGptNeverSent(input));
+        if (operation === 'codex-recover') return Response.json(await sessions.recoverCodexNeverAcknowledged(input));
         if (operation === 'attention-withdraw') return Response.json(sessions.withdrawAttention(input));
         if (operation === 'thread') return Response.json(sessions.thread(input));
         if (operation === 'topics') {

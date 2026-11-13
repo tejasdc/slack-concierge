@@ -3,7 +3,7 @@ import { historyStorageStatus, type HistoryStorageKind } from './history-storage
 import { createHash, randomUUID } from 'node:crypto';
 import {implementationAlias} from './implementation-models';
 import {implementationEditDecision,recordImplementationEditReason} from './implementation-edit-gate';
-import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, settleTurnDependencies, SETTLED_EXECUTION_SQL, type SessionRow } from './state';
+import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, settleTurnDependencies, SETTLED_EXECUTION_SQL, codexUnacknowledgedRecovery, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
 import { awaitingBankedContinuation, carryingTurn, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
@@ -879,9 +879,22 @@ export class SessionCommunicationCoordinator {
             return {known:true,allowed:false,message:'This prompt belongs to another Codex execution. Choose GPT-6.1 Sol or retry with its own turn.'};
         if(input.model!=='gpt-6-astra')return {known:true,allowed:true};
         const accepted=getAcceptedSessionInput(turn.accepted_input_id);
-        if(accepted&&humanAuthored(accepted)){
+        const serviceContinuation=accepted?.origin==='service'&&!!accepted.source_input_id&&!!accepted.source_run_id
+            &&(()=>{
+                const source=getAcceptedSessionInput(accepted.source_input_id!);
+                const sourceTurn=source?.turn_id?db.query('SELECT session_id,native_run_id FROM turns WHERE id=?').get(source.turn_id) as {session_id:number;native_run_id:string|null}|null:null;
+                const workRequest=accepted.request_id?db.query(`SELECT 1 FROM session_communication_requests
+                    WHERE request_id=? AND target_session_id=? AND outcome IS NULL
+                      AND json_extract(payload_json,'$.requestedEffect')='work' LIMIT 1`)
+                    .get(accepted.request_id,session.id):null;
+                return !!source&&source.session_id===session.id&&sourceTurn?.session_id===session.id
+                    &&sourceTurn.native_run_id===accepted.source_run_id&&!!workRequest
+                    &&(metadata.explicitThinkingModelChoice===input.model||humanChoseThinkingModel(accepted.id,input.model));
+            })();
+        if(accepted&&(humanAuthored(accepted)||serviceContinuation)){
             recordSessionEvent({eventId:`model-continuation:${turn.id}`,sessionId:session.id,inputId:accepted.id,turnId:turn.id,
-                kind:'model_escalation',payload:{model:input.model,reason:'explicit human model choice',sourceInputId:accepted.id,continuation:true}});
+                kind:'model_escalation',payload:{model:input.model,reason:'explicit human model choice',sourceInputId:accepted.id,continuation:true,
+                    ...(serviceContinuation?{serviceContinuation:true}:{})}});
             return {known:true,allowed:true};
         }
         const creation=db.query(`SELECT payload_json FROM session_owner_events WHERE session_id=? AND input_id=?
@@ -1318,6 +1331,80 @@ export class SessionCommunicationCoordinator {
             return {...retained,duplicate:false};
         })();
         this.wake();
+        return receipt;
+    }
+    /** Recover only the exact service report-back bound to an open work request. Its target input
+     * and action receipt stay separate from the already-acknowledged original work input. */
+    async recoverCodexNeverAcknowledged(input:{source:CommunicationSource;action_id:string;request_id:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const authority=this.authority(this.fenced(this.actor(input.source))),actor=authority.actor;action(input.action_id);
+        if(authority.scope!=='work')throw new Error('Codex recovery requires work authority from this exact live run.');
+        if(!actor.inputId)throw new Error('Codex recovery needs the asking session’s exact accepted input and live run.');
+        const scope=`communication:${actor.inputId}`;
+        const existing=db.query('SELECT receipt_json,payload_json FROM session_inputs WHERE session_id=? AND scope=? AND action_id=?')
+            .get(actor.session,scope,input.action_id) as {receipt_json:string|null;payload_json:string}|null;
+        if(existing){
+            const payload=JSON.parse(existing.payload_json);
+            if(payload.kind!=='codex-unacknowledged-recovery'||payload.requestId!==input.request_id)
+                throw new Error('This action ID already names a different operation.');
+            if(existing.receipt_json)return {...JSON.parse(existing.receipt_json),duplicate:true};
+            const reserved=codexUnacknowledgedRecovery(payload.targetInputId);
+            if(!reserved||reserved.request_id!==input.request_id)
+                throw new Error('This exact recovery action is retained without a target reservation; reconcile its custody before retrying.');
+            const proof=JSON.parse(reserved.proof_json) as {attempts?:Array<{providerTurnId:string}>};
+            const retained={requestId:input.request_id,targetInputId:payload.targetInputId,targetTurnId:reserved.turn_id,
+                status:'already_recovered',runId:nativeRunId(reserved.turn_id),providerTurnIds:(proof.attempts??[]).map(attempt=>attempt.providerTurnId)};
+            db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE session_id=? AND scope=? AND action_id=? AND receipt_json IS NULL')
+                .run(JSON.stringify(retained),actor.session,scope,input.action_id);
+            return {...retained,duplicate:true};
+        }
+        const request=this.row(input.request_id),requestPayload=JSON.parse(request.payload_json);
+        if(request.outcome!==null
+            ||requestPayload.requestedEffect!=='work'||!request.target_input_id)
+            throw new Error('Codex recovery requires the exact open work request and its retained target.');
+        const session=getSessionById(request.target_session_id);
+        const operation=getAcceptedSessionInput(`report-back:${input.request_id}`);
+        if(!session||session.provider_id!=='codex'||operation?.session_id!==session.id||operation.origin!=='service'
+            ||operation.request_id!==input.request_id||operation.turn_id===null||operation.id===request.target_input_id)
+            throw new Error('That open request has no exact service report-back input eligible for Codex recovery.');
+        const targetModel=sessionMetadata(session).model;
+        if(targetModel!=='gpt-6-astra'||!humanChoseThinkingModel(operation.id,targetModel))
+            throw new Error('This recovery requires the exact retained human Astra choice for this same work; an agent request cannot grant it.');
+        const targetReservation=codexUnacknowledgedRecovery(operation.id);
+        let result:{status:'requeued'|'already_recovered';runId:string;providerTurnIds:string[]};
+        if(targetReservation){
+            if(targetReservation.request_id!==input.request_id)throw new Error('This accepted report-back already has a reservation for another request.');
+            const proof=JSON.parse(targetReservation.proof_json) as {attempts?:Array<{providerTurnId:string}>};
+            result={status:'already_recovered',runId:nativeRunId(targetReservation.turn_id),providerTurnIds:(proof.attempts??[]).map(attempt=>attempt.providerTurnId)};
+        } else {
+        const turn=db.query('SELECT status,agent_text FROM turns WHERE id=? AND session_id=? AND accepted_input_id=?')
+            .get(operation.turn_id,session.id,operation.id) as {status:string;agent_text:string|null}|null;
+        if(!['parked','done'].includes(turn?.status??'')
+            ||(turn?.status==='parked'&&!String(turn.agent_text??'').startsWith('CODEX_INPUT_NOT_ACKNOWLEDGED:')))
+            throw new Error('The selected report-back is not a proven empty, unacknowledged Codex start.');
+        const validateSource=()=>{
+            const live=this.authority(this.fenced(this.actor({input_id:actor.inputId,run_id:nativeRunId(actor.turn)})));
+            const currentRequest=this.row(input.request_id),currentPayload=JSON.parse(currentRequest.payload_json);
+            if(live.scope!=='work'||currentRequest.outcome!==null||currentPayload.requestedEffect!=='work'
+                ||currentRequest.target_input_id!==request.target_input_id||currentRequest.target_session_id!==session.id)
+                throw new Error('The asking run lost work authority or the exact target request changed during native-history inspection.');
+        };
+        result=await this.dependencies.owner.requeueProvenUnacknowledgedCodex(session.id,operation.id,
+            {requestId:input.request_id,actionId:input.action_id,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),validateSource});
+        }
+        const currentAuthority=this.authority(this.fenced(this.actor({input_id:actor.inputId,run_id:nativeRunId(actor.turn)})));
+        if(currentAuthority.scope!=='work'||currentAuthority.actor.session!==actor.session)
+            throw new Error('The exact source run lost work authority during native-history inspection.');
+        const receipt=db.transaction(()=>{
+            const saved=retainSessionInput({sessionId:actor.session,scope,actionId:input.action_id,kind:'action',origin:'agent',
+                payload:{kind:'codex-unacknowledged-recovery',requestId:input.request_id,targetInputId:operation.id},
+                sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId:input.request_id});
+            if(saved.duplicate)return {...JSON.parse(saved.input.receipt_json??'{}'),duplicate:true};
+            const retained={requestId:input.request_id,targetInputId:operation.id,targetTurnId:operation.turn_id,...result};
+            db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(retained),saved.input.id);
+            return {...retained,duplicate:false};
+        })();
+        if(result.status==='requeued')this.wake();
         return receipt;
     }
     /** The asking session or Inbox router may retire one exact open needs_you, without redeclaring its turn. */

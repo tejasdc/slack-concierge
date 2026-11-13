@@ -87,6 +87,40 @@ the accepted work stays parked as uncertain under its original attempt. It is ne
 unsent input and never submitted again. Ordinary Stop before any provider submission still ends
 the wait without connecting or sending an RPC.
 
+### Empty Codex completion without input acknowledgement
+
+Codex `thread/start` and `thread/resume` establish the conversation. Requested reasoning effort
+belongs to each `turn/start` request, whose App Server schema accepts `effort`; thread parameters
+do not. The adapter records the exact owner dispatch attempt to native turn ID before interpreting
+its terminal result.
+
+If a native turn completes but its submitted `clientUserMessageId` never appears as a provider
+`userMessage`, and the turn has no assistant output or tool activity, Concierge parks the accepted
+turn with `CODEX_INPUT_NOT_ACKNOWLEDGED`. An empty completion is not a successful answer. The
+accepted input and its open communication stay in custody.
+
+The supported `sessions codex-recover <request-id>` entrance is narrower than ordinary resume. It
+selects the exact service `report-back:<request-id>` input, never the earlier work input named by
+the communication's `target_input_id`. The owner requires complete retained identity for each
+attempt of this exact accepted input and checks its exact native turn plus every page of that turn's
+items. A different empty turn in the conversation is not attributed to the selected input; its own
+accepted input and run remain separate. The selected turn must be terminal and empty, with no
+acknowledgement, output, tool, active host, changed conversation binding or controls, later provider
+admission, Stop, or other effect. Null acknowledgement or an empty summary is not proof. This also
+supports the historical completed-result shape: the original admission in the accepted-input
+receipt, retained attempt/result events, and per-turn xhigh prompt identity must all match. A
+durable reservation keyed by the accepted input and the queue transition commit together. A later
+action ID returns that reservation before checking the turn's changed queued state. Existing
+accepted input/run/request identities remain unchanged. The historical result stays immutable;
+each later execution attempt gets a distinct result event so existing readers can surface its
+answer without rewriting history.
+
+This recovers only the failed service report-back. It does not re-admit or overwrite the original
+human work, settle its request, or close any human obligation. A recovery receipt proves admission
+only; native acknowledgement, useful work and the supported final request outcome remain distinct
+facts. The exact incident and parent command are in [the empty report-back recovery record](../incidents/2026-11-13-codex-empty-report-back.md)
+and [its evidence artifact](../runbooks/CODEX-EMPTY-REPORT-BACK-RECOVERY-EVIDENCE.md).
+
 The source-bound native Codex acceptance controls use the same normal execution owner. A new
 session receives a dedicated client only when its exact create input carries the explicit
 disposable-test deadline; ordinary agent-created, human-created and outside-command sessions keep

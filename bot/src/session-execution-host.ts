@@ -9,7 +9,7 @@ import {thesaurusTurnContext} from './thesaurus-context';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {basename,join} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
-import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,requeueProvenUnsentNativeChatGptTurn,requeueOrphanedPreAdmissionTurn,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
+import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,requeueProvenUnsentNativeChatGptTurn,requeueOrphanedPreAdmissionTurn,reserveCodexUnacknowledgedRecovery,codexUnacknowledgedRecovery,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
 import {acceptedInputForTurn,adoptProviderConversationTitle,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,providerRunnerForSession,recordRecoveredResultAttention,recordSessionEvent,recordSessionInputAttention,recoverUnsentAntigravityInputs,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {lastLaunchedConversationHome} from './session-runner-home';
 import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
@@ -35,6 +35,8 @@ import {chooseClaudeDispatch} from './provider-account-dispatch';
 import {maybeStartInboxProviderFailover} from './inbox-provider-failover';
 import {CHATGPT_THINKING_LEVELS,HIS_CHATGPT_PREFIX,PROVIDER_ALIASES, providerDisplayName } from './aliases';
 import {recordRepairNotice} from './repair-notices';
+import {proveCodexInputNeverAcknowledged} from './codex-unacknowledged-proof';
+import {nativeResultEventId} from './native-result-identity';
 import type {HostRunnerFile} from './host-access';
 
 export function agentCreatedCodexTestInput(input:AcceptedSessionInput,session:SessionRow) {
@@ -321,6 +323,7 @@ export class SessionExecutionHost {
       bind:this.capabilityClient?((session,operation,reference)=>this.capabilityClient!.bind({operationId:operation.id,sessionId:`concierge:${session.id}`,bindingGeneration:session.binding_generation??1,reference})):undefined,
       fork:(_session,operation)=>{enqueueSessionInput(operation.id);},recover:(session,operation)=>this.recover(session,operation),
       requeueProvenUnsentChatGpt:(session,operation)=>this.requeueProvenUnsentChatGpt(session,operation),
+      requeueProvenUnacknowledgedCodex:(session,operation,input)=>this.requeueProvenUnacknowledgedCodex(session,operation,input),
       proveRejectedChatGptAttachment:(session,operation)=>this.proveRejectedChatGptAttachment(session,operation),
       auth:{ephemera:()=>this.authEphemera(),refreshEphemera:()=>this.refreshAuthEphemera(),status:(fresh?:boolean)=>this.providerAuthStatus(fresh===true),start:(provider,profileId)=>this.startProviderAuthRefresh(provider,profileId),complete:(provider,code)=>this.completeProviderAuthRefresh(provider,code),
         chooseClaudeLaunch:model=>chooseClaudeDispatch(null,0,undefined,model),
@@ -1258,10 +1261,16 @@ export class SessionExecutionHost {
     // waiting the busy timeout: the finished answer of turn 5924 failed retention and reached him
     // only after the next restart adopted it. Reserving the writer up front waits instead.
     db.transaction(()=>{
-      const eventId=`result:${result.turnId}`;
-      const payload={...result,runId:nativeRunId(result.turnId)};
+      const dispatchAttempt=(db.query('SELECT dispatch_attempt FROM turns WHERE id=?').get(result.turnId) as {dispatch_attempt:number}).dispatch_attempt;
+      const eventId=nativeResultEventId(result.turnId,dispatchAttempt);
+      const payload={...result,runId:nativeRunId(result.turnId),dispatchAttempt};
       const existed=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(eventId) as {payload_json:string}|null;
-      if(existed){if(stablePayload(JSON.parse(existed.payload_json))!==stablePayload(payload))throw new Error('Retained native result identity conflict.');}
+      if(existed){
+        const retained=JSON.parse(existed.payload_json);
+        const comparable={...payload};
+        if(dispatchAttempt===1&&retained.dispatchAttempt===undefined)delete comparable.dispatchAttempt;
+        if(stablePayload(retained)!==stablePayload(comparable))throw new Error('Retained native result identity conflict.');
+      }
       else {
         const attentionAdvanced=recordSessionInputAttention(result.inputId);
         if(!attentionAdvanced&&db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`terminal:${result.turnId}:${(db.query('SELECT dispatch_attempt FROM turns WHERE id=?').get(result.turnId) as {dispatch_attempt:number}).dispatch_attempt}`))
@@ -2007,6 +2016,127 @@ export class SessionExecutionHost {
       inputId:operation.id,turnId:turn.id,kind:'run',payload:{reason:'exact_provider_receipt_proved_no_send',runId:run.runId}});
     this.options.wake();
     return {status:'requeued',runId:run.runId};
+  }
+  private async requeueProvenUnacknowledgedCodex(session:SessionRow,operation:AcceptedSessionInput,input:{requestId:string;actionId:string;sourceInputId:string;sourceRunId:string;validateSource?:()=>void}):
+    Promise<{status:'requeued'|'already_recovered';runId:string;providerTurnIds:string[]}> {
+    const reserved=codexUnacknowledgedRecovery(operation.id);
+    if(reserved){
+      if(reserved.request_id!==input.requestId||reserved.turn_id!==operation.turn_id)
+        throw new Error('This accepted Codex input already has a recovery reservation for another request.');
+      const proof=JSON.parse(reserved.proof_json) as {attempts?:Array<{providerTurnId:string}>};
+      return {status:'already_recovered',runId:nativeRunId(reserved.turn_id),providerTurnIds:(proof.attempts??[]).map(attempt=>attempt.providerTurnId)};
+    }
+    const metadata=sessionMetadata(session),runner=providerRunnerForSession(session);
+    if(session.provider_id!=='codex'||!session.agent_session_uuid||operation.session_id!==session.id||operation.turn_id===null
+      ||operation.origin!=='service'||operation.request_id!==input.requestId
+      // Historical sessions can carry a null runner pin. The exact thread must still be
+      // found on this owner App Server below; a non-null foreign runner pin always refuses.
+      ||(runner.status==='bound'&&runner.runner!==null&&runner.runner!==codexRelayRunner())||metadata.outside===true
+      ||metadata.interactionPolicy==='consultation-only'||metadata.suspended||session.status==='archived')
+      throw new Error('Exact Codex recovery needs the same bound native conversation, machine, and active send controls.');
+    const turn=db.query(`SELECT id,session_id,status,native_run_id,dispatch_attempt,provider_admission_intended_at,
+      provider_started_at,provider_turn_id,provider_input_acknowledged_at,agent_text,outbound_text,stop_requested_at,owner_instance_id
+      FROM turns WHERE id=? AND session_id=? AND accepted_input_id=? AND turn_kind='native'`)
+      .get(operation.turn_id,session.id,operation.id) as any;
+    const historical=turn?.status==='done';
+    if(!turn||!['parked','done'].includes(turn.status)||!turn.native_run_id||turn.owner_instance_id!==null
+      ||turn.provider_input_acknowledged_at!==null||(!historical&&turn.provider_turn_id===null)
+      ||(!historical&&!String(turn.agent_text??'').startsWith('CODEX_INPUT_NOT_ACKNOWLEDGED:'))
+      ||turn.stop_requested_at!==null||turn.dispatch_attempt<1)
+      throw new Error('The selected failed continuation is not the exact completed empty-input Codex error.');
+    const attemptEvents=db.query(`SELECT event_id,input_id,session_id,payload_json,kind FROM session_owner_events
+      WHERE turn_id=? AND kind IN ('provider_turn_attempt','attention','result','prompt_cache_identity') ORDER BY sequence`)
+      .all(turn.id) as {event_id:string;input_id:string|null;session_id:number;payload_json:string;kind:string}[];
+    let attempts=attemptEvents.filter(event=>event.kind==='provider_turn_attempt').map(event=>JSON.parse(event.payload_json) as
+      {provider?:string;providerTurnId?:string;dispatchAttempt?:number});
+    if(!attempts.length&&historical){
+      const retainedResult=attemptEvents.find(event=>event.kind==='result'&&event.event_id===`result:${turn.id}`);
+      const retainedAttention=attemptEvents.find(event=>event.kind==='attention'&&event.input_id===operation.id);
+      const effortIdentity=attemptEvents.find(event=>event.kind==='prompt_cache_identity');
+      const result=retainedResult?JSON.parse(retainedResult.payload_json):null;
+      const attention=retainedAttention?JSON.parse(retainedAttention.payload_json):null;
+      const effort=effortIdentity?JSON.parse(effortIdentity.payload_json):null;
+      const expectedRun=nativeRunId(turn.id);
+      if(!retainedResult||!retainedAttention||retainedResult.input_id!==operation.id||retainedResult.session_id!==session.id
+        ||retainedAttention.session_id!==session.id
+        ||attention?.dispatchAttempt!==turn.dispatch_attempt||result?.inputId!==operation.id||result?.sessionId!==session.id
+        ||result?.turnId!==turn.id||result?.runId!==expectedRun||result?.sessionUUID!==session.agent_session_uuid
+        ||result?.providerTurnId!==turn.provider_turn_id
+        ||(result?.dispatchAttempt!==undefined&&result.dispatchAttempt!==attention?.dispatchAttempt)
+        ||result?.model!=='gpt-6-astra'||result?.text!==''||!Array.isArray(result?.toolsUsed)||result.toolsUsed.length!==0
+        ||typeof result?.providerTurnId!=='string'||!result.providerTurnId||effort?.effort!=='xhigh'
+        ||sessionMetadata(session).model!=='gpt-6-astra')
+        throw new Error('The retained historical attempt/result does not prove this exact Astra xhigh service input had an empty native result.');
+      const envelope=JSON.parse(turn.outbound_text??'null');
+      const {inputId:_inputId,sessionId:_sessionId,turnId:_turnId,runId:_runId,dispatchAttempt:_dispatchAttempt,...providerResult}=result;
+      if(envelope?.version!==1||stablePayload(envelope.result)!==stablePayload(providerResult))
+        throw new Error('The retained native delivery envelope does not exactly match the immutable empty provider result.');
+      attempts=[{provider:'codex',providerTurnId:result.providerTurnId,dispatchAttempt:attention.dispatchAttempt}];
+    }
+    if(attempts.length!==turn.dispatch_attempt||attempts.some((attempt,index)=>attempt.provider!=='codex'
+      ||attempt.dispatchAttempt!==index+1||typeof attempt.providerTurnId!=='string'||!attempt.providerTurnId))
+      throw new Error('The owner cannot map every provider attempt of this accepted continuation; it remains unrecoverable and in custody.');
+    if(db.query(`SELECT 1 FROM executions WHERE turn_id=? AND state IN ('intended','live','exited') LIMIT 1`).get(turn.id))
+      throw new Error('A prior Codex execution still has an open host record; reconcile it before recovery.');
+    const client=ownerCodexAppServerClient();
+    await client.connect();
+    let nativeTurns:any[]=[];let turnCursor:string|null=null;
+    do {
+      const page=await client.request('thread/turns/list',{threadId:session.agent_session_uuid,cursor:turnCursor,limit:50,
+        sortDirection:'desc',itemsView:'notLoaded'});
+      if(!Array.isArray(page?.data))throw new Error('Codex did not return a complete native turn list for exact recovery.');
+      nativeTurns.push(...page.data);
+      const next=typeof page.nextCursor==='string'?page.nextCursor:null;
+      if(next&&next===turnCursor)throw new Error('Codex repeated a native turn cursor during exact recovery.');
+      turnCursor=next;
+    } while(turnCursor);
+    const byId=new Map(nativeTurns.filter(turn=>typeof turn?.id==='string').map(turn=>[turn.id,turn]));
+    const selectedTurns:any[]=[];
+    for(const attempt of attempts){
+      const nativeTurn=byId.get(attempt.providerTurnId) as any;
+      if(!nativeTurn)throw new Error('Codex history does not contain the exact native turn retained for this attempt.');
+      const items:any[]=[];let itemCursor:string|null=null;
+      do {
+        const page=await client.request('thread/items/list',{threadId:session.agent_session_uuid,turnId:attempt.providerTurnId,
+          cursor:itemCursor,limit:100,sortDirection:'asc'});
+        if(!Array.isArray(page?.data)||page.data.some((entry:any)=>entry?.turnId!==attempt.providerTurnId))
+          throw new Error('Codex did not return the exact native attempt item page.');
+        items.push(...page.data.map((entry:any)=>entry.item));
+        const next=typeof page.nextCursor==='string'?page.nextCursor:null;
+        if(next&&next===itemCursor)throw new Error('Codex repeated an item cursor during exact recovery.');
+        itemCursor=next;
+      } while(itemCursor);
+      selectedTurns.push({...nativeTurn,items});
+    }
+    const native={thread:{id:session.agent_session_uuid,turns:selectedTurns}};
+    const proof=proveCodexInputNeverAcknowledged({thread:native,threadId:session.agent_session_uuid,
+      attempts:attempts.map(attempt=>({dispatchAttempt:attempt.dispatchAttempt!,providerTurnId:attempt.providerTurnId!}))});
+    if(!proof)throw new Error('The complete native transcript does not prove every attempt was empty, terminal, and unacknowledged; preserve the input and reconcile without replay.');
+    const current=getSessionById(session.id)!;
+    const currentRunner=providerRunnerForSession(current);
+    if(current.agent_session_uuid!==session.agent_session_uuid||current.binding_generation!==session.binding_generation
+      ||stablePayload(currentRunner)!==stablePayload(runner)
+      ||(currentRunner.status==='bound'&&currentRunner.runner!==null&&currentRunner.runner!==codexRelayRunner())
+      ||sessionMetadata(current).model!=='gpt-6-astra'||sessionMetadata(current).suspended||current.status==='archived')
+      throw new Error('The Codex conversation binding or send controls changed during exact-history inspection.');
+    input.validateSource?.();
+    const completeProof={provider:'codex',threadId:session.agent_session_uuid,ownerRunId:turn.native_run_id,
+      ownerTurnId:turn.id,acceptedInputId:operation.id,dispatchAttemptCount:turn.dispatch_attempt,
+      attempts:proof.attempts,unmappedEmptyTurns:proof.unmappedEmptyTurns,observedAt:new Date().toISOString()};
+    const requeued=reserveCodexUnacknowledgedRecovery({sessionId:session.id,inputId:operation.id,turnId:turn.id,
+      requestId:input.requestId,providerThreadId:session.agent_session_uuid,bindingGeneration:session.binding_generation,
+      proof:completeProof,actionId:input.actionId,sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,nowMs:Date.now()});
+    if(!requeued){
+      const raced=codexUnacknowledgedRecovery(operation.id);
+      if(raced?.request_id===input.requestId){const saved=JSON.parse(raced.proof_json) as {attempts?:Array<{providerTurnId:string}>};
+        return {status:'already_recovered',runId:turn.native_run_id,providerTurnIds:(saved.attempts??[]).map(attempt=>attempt.providerTurnId)};}
+      throw new Error('The exact Codex turn changed, later work was admitted, or another recovery reserved this input; no replay was queued.');
+    }
+    recordSessionEvent({eventId:`codex-unacknowledged-recovery:${turn.id}`,sessionId:session.id,inputId:operation.id,
+      turnId:turn.id,kind:'run',payload:{reason:'complete_native_evidence_proved_all_attempts_unacknowledged',requestId:input.requestId,
+        actionId:input.actionId,providerTurnIds:proof.attempts.map(attempt=>attempt.providerTurnId)}});
+    this.options.wake();
+    return {status:'requeued',runId:turn.native_run_id,providerTurnIds:proof.attempts.map(attempt=>attempt.providerTurnId)};
   }
   /** A corrected attachment is a new immutable input. Only the original provider receipt can
    * authorize linking that input to the unanswered question; a generic failed turn cannot. */

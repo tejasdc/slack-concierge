@@ -164,7 +164,8 @@ function readsFor(context:TopicContext,question:any,roots:Set<string>){
   if(values.length)return values;
   const result=source.query(`SELECT e.event_id,e.input_id,e.created_at,${context.boundedReads?"''":"COALESCE(json_extract(e.payload_json,'$.text'),t.agent_text,'')"} AS text
     FROM session_owner_events e LEFT JOIN turns t ON t.id=e.turn_id
-    WHERE e.session_id IN (${context.sessionIds.map(()=>'?').join(',')}) AND e.turn_id=? AND e.kind='result' LIMIT 1`).get(...context.sessionIds,turnId) as any;
+    WHERE e.session_id IN (${context.sessionIds.map(()=>'?').join(',')}) AND e.turn_id=? AND e.kind='result'
+    ORDER BY e.sequence DESC LIMIT 1`).get(...context.sessionIds,turnId) as any;
   if(result&&result.input_id&&roots.has(root(sessionId,result.input_id)??'')){
    const message=context.boundedReads?messageById(context,result.event_id):{content:String(result.text??''),at:iso(result.created_at)!,root:result.input_id};
    if(message&&(message.content.trim()||message.detailRef))return [readingValue(result.event_id,message)];
