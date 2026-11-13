@@ -961,6 +961,12 @@ turn records a `stuck_work` repair notice (`inbox-unfiled:<root>`) for the repai
 the router is then evidently unable to file; filing it resolves the notice.
 
 `/session-communication/owed` returns `unfiled` beside its existing reply obligations.
+For Inbox runs, its retained filing projection runs in the existing private read
+executor pool, including the current router's check of former routers. The
+canonical owner revalidates the exact running turn after the read before
+computing reply obligations and recording reminder offers. An unavailable read
+is an explicit failure, never an empty filing list or a synchronous fallback;
+see [native read execution](../architecture/NATIVE-READ-EXECUTION.md).
 The hook names every input, a short data-only preview, its resolved root and ready-to-fill
 `sessions topics place/create` commands with the current source pair and stable action IDs.
 There is no five-item display limit. Repeated `stop_hook_active`, background jobs and

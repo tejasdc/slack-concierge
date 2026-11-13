@@ -357,7 +357,7 @@ function entryIndex():EntryIndex {
   refreshRootMemo();
   const index=entryIndexState??={watermark:0,messages:new Map(),byRoot:new Map(),forHim:new Map(),finals:new Map(),posts:new Map()};
   entryIndexState=index;
-  extendEntryIndex(index,-1);
+  while(!extendEntryIndex(index,ENTRY_INDEX_WARM_BATCH).exhausted){}
   return index;
 }
 /**
@@ -368,7 +368,7 @@ function entryIndex():EntryIndex {
 export async function warmEntryIndex(options:{stopped?:()=>boolean;batch?:number}={}):Promise<{rows:number;steps:number;ms:number;complete:boolean}> {
   entryIndexWarming=true;
   try {
-  const batch=Math.max(1,options.batch??ENTRY_INDEX_WARM_BATCH);
+  const batch=Math.min(ENTRY_INDEX_WARM_BATCH,Math.max(1,options.batch??ENTRY_INDEX_WARM_BATCH));
   const started=performance.now();
   let rows=0,steps=0;
   for(;;) {
@@ -385,16 +385,26 @@ export async function warmEntryIndex(options:{stopped?:()=>boolean;batch?:number
 }
 const ENTRY_INDEX_WARM_BATCH=16;
 const ENTRY_INDEX_WARM_STEP_MS=12;
-/** Extends the index over the next rows past its watermark; `limit` bounds the read, -1 reads to the end. */
+/** Extends the index over a bounded page of Inbox event keys after its watermark. */
 function extendEntryIndex(index:EntryIndex,limit:number,deadline=Infinity):{rows:number;exhausted:boolean} {
-  const rows=db.query(`${inboxRows} AND event.sequence>? ORDER BY event.sequence LIMIT ?`).all(index.watermark,limit) as any[];
+  const candidateLimit=Math.min(ENTRY_INDEX_WARM_BATCH,Math.max(1,limit));
+  const candidates=db.query(`SELECT event.sequence FROM session_owner_events event
+    WHERE event.session_id IN (SELECT id FROM sessions WHERE json_extract(native_metadata_json,'$.inbox')=1)
+      AND event.kind IN ('result','inbox_capture','request','post','topic_route','accepted')
+      AND event.sequence>? ORDER BY event.sequence LIMIT ?`).all(index.watermark,candidateLimit) as {sequence:number}[];
+  if(!candidates.length)return {rows:0,exhausted:true};
+  const sequences=candidates.map(candidate=>candidate.sequence);
+  const placeholders=sequences.map(()=>'?').join(',');
+  const rows=db.query(`${inboxRows} AND event.sequence IN (${placeholders}) ORDER BY event.sequence`).all(...sequences) as any[];
   let processed=0;
   for(const row of rows) {
     indexEntryRow(index,row);
     processed++;
     if(performance.now()>=deadline)break;
   }
-  return {rows:processed,exhausted:processed===rows.length&&rows.length<limit};
+  const complete=processed===rows.length;
+  if(complete)index.watermark=sequences[sequences.length-1]!;
+  return {rows:processed,exhausted:complete&&candidates.length<candidateLimit};
 }
 function indexEntryRow(index:EntryIndex,row:any) {
   index.watermark=row.sequence;

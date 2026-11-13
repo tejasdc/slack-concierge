@@ -13,7 +13,8 @@ import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-requ
 import { INBOX_LINEAGE_SQL } from './inbox-lineage-sql';
 import { BUG_REPORT_OWN_THREAD, followForwardedReply, forwardedReplyFraming, isBugReportInput } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
-import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWithoutThread, hasOpenInboxWorkForSource, linkForwardedReplyWork, refreshRootMemo, linkInboxDispatchWork, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
+import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWithoutThread, hasOpenInboxWorkForSource, linkForwardedReplyWork, refreshRootMemo, linkInboxDispatchWork, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand } from './session-topics';
+import type {unfiledReceivedInputs} from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordRequesterDecisionReturn, recordTurnOutcome, turnDeclaredByAction, withdrawOpenNeed, type DeclaredTurnOutcome } from './session-turn-outcome';
 import {turnRoutedInput} from './inbox-routing-result';
@@ -209,6 +210,8 @@ function questionTodo(input:{only_he_can?:string;todo?:string;todo_checked?:Todo
     if(input.todo_checked&&input.todo_checked!=='unavailable'){const refusal=finishedTodoRefusal(input.todo_checked);if(refusal)throw new Error(refusal);}
     return id;
 }
+
+type OwedRunning={session_id:number;turn_id:number;accepted_input_id:string|null};
 
 export class SessionCommunicationCoordinator {
     private readonly tasks = new Map<string, Promise<void>>();
@@ -904,23 +907,23 @@ export class SessionCommunicationCoordinator {
             throw new Error('This turn has no held fifth edit; continue normally or use sessions implement for fixed work.');
         return recordImplementationEditReason(actor.turn,actor.session,actor.inputId,input.reason,input.action_id);
     }
-    owed(input:{provider:string;provider_session_id:string;run_id?:string;offer?:string[];remind?:boolean}) {
-        type Running={session_id:number;turn_id:number;accepted_input_id:string|null};
+    private owedRunning(input:{provider:string;provider_session_id:string;run_id?:string}):OwedRunning|null {
         // A new session's conversation id reaches the owner from the provider's output stream, which
         // can arrive after a fast first turn already stopped: on 2026-11-11 a one-second first turn
         // ended without a reply and its Stop hook found no session. Claude's hook also names the run
         // it was launched for, which the owner assigned before launch, so it is found either way.
-        const running=(db.query(`SELECT session.id AS session_id,turn.id AS turn_id,turn.accepted_input_id FROM sessions session
+        return (db.query(`SELECT session.id AS session_id,turn.id AS turn_id,turn.accepted_input_id FROM sessions session
             JOIN turns turn ON turn.session_id=session.id WHERE session.provider_id=? AND session.agent_session_uuid=?
-            AND turn.status IN ('running','delivering') ORDER BY turn.id DESC LIMIT 1`).get(input.provider,input.provider_session_id) as Running|null)
+            AND turn.status IN ('running','delivering') ORDER BY turn.id DESC LIMIT 1`).get(input.provider,input.provider_session_id) as OwedRunning|null)
             ?? (input.run_id ? db.query(`SELECT session.id AS session_id,turn.id AS turn_id,turn.accepted_input_id FROM turns turn
                 JOIN sessions session ON session.id=turn.session_id WHERE turn.native_run_id=? AND session.provider_id=?
                 AND (session.agent_session_uuid IS NULL OR session.agent_session_uuid='')
-                AND turn.status IN ('running','delivering') LIMIT 1`).get(input.run_id,input.provider) as Running|null : null);
-        if(!running?.accepted_input_id)return {owed:[] as OwedRequest[],unfiled:[],waiting:false,source:null};
+                AND turn.status IN ('running','delivering') LIMIT 1`).get(input.run_id,input.provider) as OwedRunning|null : null);
+    }
+    private owedForRunning(input:{offer?:string[];remind?:boolean},running:OwedRunning,unfiled:ReturnType<typeof unfiledReceivedInputs>) {
+        if(!running.accepted_input_id)return {owed:[] as OwedRequest[],unfiled,waiting:false,source:null};
         const runId=nativeRunId(running.turn_id);
         const source={input_id:running.accepted_input_id,run_id:runId};
-        const unfiled=unfiledReceivedInputs(running.session_id,running.turn_id);
         if(waitingOnLiveRequest(running.session_id))return {owed:[] as OwedRequest[],unfiled,waiting:true,source};
         const owed:OwedRequest[]=[];
         for(const request of db.query(`SELECT * FROM session_communication_requests WHERE target_session_id=? AND outcome IS NULL AND stalled_at_ms IS NULL
@@ -944,6 +947,32 @@ export class SessionCommunicationCoordinator {
                 requested_effect:request.requested_effect,command:replyCommand(request.request_id,request.requested_effect)});
         }
         return {owed,unfiled,waiting:false,source};
+    }
+    /** Resolve the live run on the owner, move only the readonly Inbox projection to a read executor,
+     * then revalidate that exact run before evaluating obligations or recording offer/reminder effects. */
+    async owed(input:{provider:string;provider_session_id:string;run_id?:string;offer?:string[];remind?:boolean},
+        readUnfiled:(sessionId:number,turnId:number,signal:AbortSignal)=>Promise<ReturnType<typeof unfiledReceivedInputs>>,
+        signal:AbortSignal) {
+        if(signal.aborted)return {ok:false as const,status:503,code:'READ_CANCELLED',message:'The owed read was cancelled before owner-side evaluation.'};
+        const running=this.owedRunning(input);
+        if(!running)return {ok:true as const,value:{owed:[] as OwedRequest[],unfiled:[],waiting:false,source:null}};
+        if(!running.accepted_input_id)return {ok:true as const,value:{owed:[] as OwedRequest[],unfiled:[],waiting:false,source:null}};
+        const runId=nativeRunId(running.turn_id);
+        const session=getSessionById(running.session_id);
+        const needsInboxRead=!!session&&sessionMetadata(session).inbox;
+        if(!needsInboxRead)return {ok:true as const,value:this.owedForRunning(input,running,[])};
+        let unfiled:ReturnType<typeof unfiledReceivedInputs>=[];
+        try {unfiled=await readUnfiled(running.session_id,running.turn_id,signal);}
+        catch(error) {return signal.aborted
+            ?{ok:false as const,status:503,code:'READ_CANCELLED',message:'The owed read was cancelled before owner-side evaluation.'}
+            :{ok:false as const,status:503,code:'UNFILED_READ_UNAVAILABLE',message:error instanceof Error?error.message:'The Inbox filing read is unavailable.'};}
+        if(signal.aborted)return {ok:false as const,status:503,code:'READ_CANCELLED',message:'The owed read was cancelled before owner-side evaluation.'};
+        const current=this.owedRunning(input);
+        if(!current||current.session_id!==running.session_id||current.turn_id!==running.turn_id
+            ||current.accepted_input_id!==running.accepted_input_id||nativeRunId(current.turn_id)!==runId)
+            return {ok:false as const,status:409,code:'RUN_CHANGED',message:'The run changed while its Inbox filing state was being read; no reminder was recorded.'};
+        if(signal.aborted)return {ok:false as const,status:503,code:'READ_CANCELLED',message:'The owed read was cancelled before owner-side evaluation.'};
+        return {ok:true as const,value:this.owedForRunning(input,current,unfiled)};
     }
     /**
      * How much allowance each provider has left on this machine, and when the account in
