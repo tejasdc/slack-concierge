@@ -78,6 +78,50 @@ try{
   assert.equal(reserveCodexUnacknowledgedRecovery({...reservation,actionId:'different-action',nowMs:2000}),false,
     'a different action ID cannot reserve the same accepted input twice');
   assert.equal(codexUnacknowledgedRecovery(report.id)!.action_id,'first-action');
+
+  const parkedSession=createNativeSession('codex',{title:'parked Astra work',summary:undefined,purpose:'verify parked recovery',origin:'native',
+    providerRunner:null,model:'gpt-6-astra'});
+  db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run('thread-parked',parkedSession.id);
+  const parkedRequestId='parked-work-request';
+  const parkedOriginal=retainSessionInput({id:'parked-human-work',sessionId:parkedSession.id,scope:'fixture',actionId:'parked-original',
+    kind:'request',origin:'human',payload:{text:'Do the parked work'}}).input;
+  enqueueSessionInput(parkedOriginal.id);
+  const parkedOriginalTurn=Number((db.query('SELECT turn_id FROM session_inputs WHERE id=?').get(parkedOriginal.id) as any).turn_id);
+  const parkedSourceRun=nativeRunId(parkedOriginalTurn);
+  db.query("UPDATE turns SET status='done',provider_input_acknowledged_at=CURRENT_TIMESTAMP,provider_turn_id='parked-parent' WHERE id=?")
+    .run(parkedOriginalTurn);
+  const parkedReport=retainSessionInput({id:`report-back:${parkedRequestId}`,sessionId:parkedSession.id,scope:'fixture',actionId:'parked-report',
+    kind:'request',origin:'service',requestId:parkedRequestId,sourceInputId:parkedOriginal.id,sourceRunId:parkedSourceRun,
+    payload:{text:'continue parked report'}}).input;
+  enqueueSessionInput(parkedReport.id);
+  const parkedTurn=Number((db.query('SELECT turn_id FROM session_inputs WHERE id=?').get(parkedReport.id) as any).turn_id);
+  const parkedRun=nativeRunId(parkedTurn);
+  const parkedAdmission=(effort?:string)=>({state:'completed',admission:{provider:'codex',inputId:parkedReport.id,
+    runId:parkedRun,bindingGeneration:parkedSession.binding_generation,model:'gpt-6-astra',...(effort?{reasoningEffort:effort}:{})}});
+  db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify(parkedAdmission()),parkedReport.id);
+  db.query(`UPDATE turns SET status='parked',dispatch_failure_class='parked_terminal',dispatch_attempt=1,
+    provider_admission_intended_at=CURRENT_TIMESTAMP,provider_started_at=CURRENT_TIMESTAMP,provider_turn_id='native-parked',
+    provider_input_acknowledged_at=NULL,agent_text='CODEX_INPUT_NOT_ACKNOWLEDGED: blocked before acknowledgement',outbound_text=NULL,
+    ended_at=CURRENT_TIMESTAMP WHERE id=?`).run(parkedTurn);
+  db.query("UPDATE sessions SET status='idle' WHERE id=?").run(parkedSession.id);
+  recordSessionEvent({eventId:`prompt-cache-identity:${parkedTurn}:1`,sessionId:parkedSession.id,turnId:parkedTurn,
+    kind:'prompt_cache_identity',payload:{effort:'xhigh'}});
+  recordSessionEvent({eventId:`provider-turn-attempt:${parkedTurn}:1`,sessionId:parkedSession.id,inputId:parkedReport.id,turnId:parkedTurn,
+    kind:'provider_turn_attempt',payload:{provider:'codex',providerTurnId:'native-parked',dispatchAttempt:1}});
+  db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,
+    source_root_ts,action_id,target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,
+    source_input_id,target_input_id,status,outcome) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(parkedRequestId,'fixture','parked-message',parkedOriginalTurn,parkedSession.id,'root','parked-request-action',parkedSession.id,
+      'fixture','root',JSON.stringify({requestedEffect:'work'}),'parked-hash',0,0,parkedOriginal.id,parkedOriginal.id,'admitted',null);
+  const parkedReservation={sessionId:parkedSession.id,inputId:parkedReport.id,turnId:parkedTurn,requestId:parkedRequestId,
+    providerThreadId:'thread-parked',bindingGeneration:parkedSession.binding_generation,proof:evidence,actionId:'parked-action',
+    sourceInputId:parkedOriginal.id,sourceRunId:parkedSourceRun,nowMs:3000};
+  db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify(parkedAdmission('high')),parkedReport.id);
+  assert.equal(reserveCodexUnacknowledgedRecovery(parkedReservation),false,
+    'a newly parked turn also refuses an explicitly conflicting effort despite prompt identity evidence');
+  db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify(parkedAdmission()),parkedReport.id);
+  assert.equal(reserveCodexUnacknowledgedRecovery(parkedReservation),true,
+    'a newly parked turn with omitted admission effort is eligible when its exact attempt prompt identity proves xhigh');
   assert.equal(getSessionById(session.id)?.provider_id,'codex');
-  console.log('Codex unacknowledged recovery state: legacy admission/result custody, preserved first result, distinct retry result and cross-action deduplication passed');
+  console.log('Codex unacknowledged recovery state: legacy/parked effort evidence, stale-envelope clearing, preserved result, and deduplication passed');
 }finally{db.close();rmSync(scratch,{recursive:true,force:true});}

@@ -4247,7 +4247,7 @@ export function reserveCodexUnacknowledgedRecovery(input:{sessionId:number;input
         AND json_extract(accepted.receipt_json,'$.admission.provider')='codex'
         AND json_extract(accepted.receipt_json,'$.admission.model')='gpt-6-astra'
         AND (json_extract(accepted.receipt_json,'$.admission.reasoningEffort')='xhigh'
-          OR turn.status='done' AND json_type(accepted.receipt_json,'$.admission.reasoningEffort') IS NULL
+          OR json_type(accepted.receipt_json,'$.admission.reasoningEffort') IS NULL
             AND EXISTS (SELECT 1 FROM session_owner_events effort
               WHERE effort.event_id='prompt-cache-identity:' || turn.id || ':' || turn.dispatch_attempt
                 AND effort.turn_id=turn.id AND effort.session_id=session.id AND effort.kind='prompt_cache_identity'
