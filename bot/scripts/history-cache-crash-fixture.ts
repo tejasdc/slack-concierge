@@ -177,16 +177,18 @@ await regression("sealed release activation and rollback refuse an incompatible 
   function seal(supports:boolean,control=supports) {
     const stage=join(f.state,`reader-${supports}-${control}`);mkdirSync(join(stage,"control"),{recursive:true});
     const files:Record<string,string>={};
-    for(const name of ["control/deploy.sh","control/deployment-repair.js","control/release-manager.js",...(supports?["control/history-cache-format.json"]:[]),
+    for(const name of ["control/deploy.sh","control/deployment-repair.js","control/release-manager.js",
+      "control/deployment-launcher.sh","control/deployment-control-launcher.sh",...(supports?["control/history-cache-format.json"]:[]),
       ...(control?["control/history-cache-control-format.json"]:[])]) {
       const text=name.endsWith(".json")?JSON.stringify(FORMAT):"sealed fixture";
-      writeFileSync(join(stage,name),text);files[name]=hash(text);
+      writeFileSync(join(stage,name),text,{mode:0o444});files[name]=hash(text);
     }
     const unsigned={format:2 as const,git_commit:"a".repeat(40),control_git_commit:"b".repeat(40),
       source_tree_digest:hash("source"),control_source_tree_digest:hash("control"),runtime_digest:releaseFileSetDigest(stage,Object.keys(files)),
       compatibility_digest:hash("compatibility"),files};
     const artifact_digest=hash(JSON.stringify(unsigned)),path=join(releaseRoot,"releases",artifact_digest);
-    writeFileSync(join(stage,"manifest.json"),JSON.stringify({...unsigned,artifact_digest}));renameSync(stage,path);return path;
+    writeFileSync(join(stage,"manifest.json"),JSON.stringify({...unsigned,artifact_digest}),{mode:0o444});
+    chmodSync(join(stage,"control"),0o555);chmodSync(stage,0o555);renameSync(stage,path);return path;
   }
   const compatible=seal(true),old=seal(false),manager=new TrustedRootReleaseManager({repositoryRoot:f.state,releaseRoot,
     installRoot:join(f.state,"install"),bunExecutable:process.execPath,historyCacheStateDirectory:f.state});

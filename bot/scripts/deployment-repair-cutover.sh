@@ -167,8 +167,6 @@ main() {
   hold_capture_gate
   record_deployment_phase updating "{\"initial_lkg\":\"$EXPECTED_LKG_COMMIT\",\"control_commit\":\"$CONTROL_COMMIT\"}"
 
-  CONCIERGE_REPO="$REPO" CONCIERGE_DEPLOYMENT_SOURCE_ROOT="$SOURCE_ROOT" \
-    CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" install-runtime
   prepared=$(CONCIERGE_RELEASE_OFFLINE=1 CONCIERGE_REPO="$REPO" CONCIERGE_STATE_DIR="$STATE_DIR" \
     "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" prepare \
     --run-id "$DEPLOY_RUN_ID" --commit "$EXPECTED_LKG_COMMIT" --control-commit "$CONTROL_COMMIT")
@@ -181,6 +179,8 @@ main() {
     --run-id "$DEPLOY_RUN_ID" --artifact "$artifact_path"
   CONCIERGE_REPO="$REPO" CONCIERGE_STATE_DIR="$STATE_DIR" \
     "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" set-control --artifact "$artifact_path"
+  CONCIERGE_REPO="$REPO" CONCIERGE_STATE_DIR="$STATE_DIR" \
+    "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" install-runtime
 
   install -d -m 0700 "$LEGACY_BACKUP_ROOT/unit"
   BOT_UNIT_BACKUP="$LEGACY_BACKUP_ROOT/unit/concierge-bot.service.$(date -u +%Y%m%dT%H%M%SZ)"
