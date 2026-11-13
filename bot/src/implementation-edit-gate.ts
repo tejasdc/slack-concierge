@@ -26,20 +26,23 @@ export function implementationEditDecision(input:GateInput):{hold:boolean;messag
     WHERE session_id=? AND status IN ('running','delivering') ORDER BY id DESC LIMIT 2`).all(session.id) as Running[];
   const bound=getSessionById(session.id)!;
   const exact=input.providerTurnId?running.find(row=>input.providerTurnId===row.provider_turn_id):undefined;
-  // Codex sends the parent's session ID with a helper's own turn and active model.
-  // Do not infer that a mismatched provider turn is the sole parent turn.
-  if(bound.provider_id==='codex'&&input.providerTurnId&&!exact){
-    const parent=running.find(row=>input.ownerTurnId===row.id);
-    if(!parent||!parent.provider_turn_id||!name(input.providerModel))return {hold:true,message:'Concierge cannot identify this Codex execution and model. Retry when its identity is available.'};
-    const key=`implementation-helper-edit:${createHash('sha256').update(JSON.stringify([session.id,input.providerTurnId,input.toolId])).digest('hex')}`;
-    db.transaction(()=>{
-      if(!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(key))
-        recordSessionEvent({eventId:key,sessionId:session.id,inputId:parent.accepted_input_id,turnId:parent.id,
-          kind:'implementation_helper_edit',payload:{providerTurnId:input.providerTurnId,toolId:input.toolId,model:input.providerModel}});
-    })();
-    return {hold:false,exempt:'codex-helper'};
+  // The reported model decides whether a mismatched Codex turn is exempt; turn identity is needed only to count it.
+  const mismatched=bound.provider_id==='codex'&&!!input.providerTurnId&&!exact;
+  const parent=mismatched?(input.ownerTurnId?running.find(row=>input.ownerTurnId===row.id):running.length===1?running[0]:undefined):undefined;
+  if(mismatched){
+    if(!parent)return {hold:true,message:'Concierge cannot identify this Codex execution and model. Retry when its identity is available.'};
+    const helperModel=name(input.providerModel);
+    if(helperModel&&!isThinkingModel(helperModel)){
+      const key=`implementation-helper-edit:${createHash('sha256').update(JSON.stringify([session.id,input.providerTurnId,input.toolId])).digest('hex')}`;
+      db.transaction(()=>{
+        if(!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(key))
+          recordSessionEvent({eventId:key,sessionId:session.id,inputId:parent.accepted_input_id,turnId:parent.id,
+            kind:'implementation_helper_edit',payload:{providerTurnId:input.providerTurnId,toolId:input.toolId,model:helperModel}});
+      })();
+      return {hold:false,exempt:'codex-helper'};
+    }
   }
-  const turn=exact??(!input.providerTurnId?running.find(row=>input.ownerTurnId===row.id)??(running.length===1?running[0]:null):null);
+  const turn=exact??parent??(!input.providerTurnId?running.find(row=>input.ownerTurnId===row.id)??(running.length===1?running[0]:null):null);
   if(!turn)return {hold:true,message:'Concierge cannot identify the active turn for this code edit. Retry when its owner is available.'};
   if(bound.provider_id==='claude-code'&&name(input.providerAgentId)){
     if((input.ownerTurnId&&input.ownerTurnId!==turn.id)||(input.sourceRunId&&input.sourceRunId!==nativeRunId(turn.id)))
