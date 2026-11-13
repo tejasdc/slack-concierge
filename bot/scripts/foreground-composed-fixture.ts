@@ -2,7 +2,7 @@
 import {strict as assert} from 'node:assert';
 import {randomUUID} from 'node:crypto';
 import {existsSync,writeFileSync} from 'node:fs';
-import {chmod,mkdir,mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
+import {chmod,mkdir,mkdtemp,readFile,rename,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {Database} from 'bun:sqlite';
@@ -74,8 +74,11 @@ async function ownerMode(root:string){
   const projectionCommand=[process.execPath,projectionEntry];
   const projection=Bun.spawn(process.platform==='linux'?['setpriv','--pdeathsig','KILL',...projectionCommand]:projectionCommand,
     {env:process.env,stdin:'ignore',stdout:'inherit',stderr:'inherit',ipc:()=>{}});
-  await writeFile(join(root,'owner-ready.json'),JSON.stringify({sessionId:`concierge:${session.id}`,topicId:topic,
+  const readyPath=join(root,'owner-ready.json');
+  const pendingPath=join(root,'owner-ready.pending');
+  await writeFile(pendingPath,JSON.stringify({sessionId:`concierge:${session.id}`,topicId:topic,
     attachmentId:attachment,captureId:capture.operation.id,pid:process.pid}),{mode:0o600});
+  await rename(pendingPath,readyPath);
   let stopping=false;
   const stop=()=>{if(stopping)return;stopping=true;
     void (async()=>{await server.stop(true);projection.kill('SIGTERM');await projection.exited;})()

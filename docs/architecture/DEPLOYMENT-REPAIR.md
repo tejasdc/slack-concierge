@@ -52,6 +52,14 @@ same check passed alone in under a second and the full gate passed in a later
 isolated run. Serializing this one startup removes the gate's own import burst;
 the remaining independent checks still run together within the same envelope.
 
+The foreground composition fixture publishes its owner readiness data by writing
+a pending file and renaming it into place in the same scratch directory. Its parent
+waits for the final name before parsing, so a slow or interrupted write cannot
+expose partial JSON as a ready owner. The November 13 candidate failed because the
+parent observed the old file as soon as creation began and parsed it before the
+owner finished writing. The release check and its deadlines remain intact; see the
+[failure record](../incidents/2026-11-13-foreground-fixture-readiness-race.md).
+
 In incident `9fef91cf-19bd-4725-b968-f84826c8a928` (October 16), candidate
 `9a5a2307e56e16a7257d2dd8c1547bff7f03ea4f` reached `owner-loaded` at 13,143 ms and
 `queued-with-journal` at 13,988 ms, then hit the 15,000 ms child deadline before
