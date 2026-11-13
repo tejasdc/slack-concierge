@@ -68,16 +68,25 @@ After a reviewed sealed release is installed:
 This uses the existing collected transient host unit, identity, UMask, slice and
 priority. A pure read skips the maintenance publication lock so it can observe
 maintenance, creating no folder, pin, receipt or ledger. Real maintenance retains
-its lock and every existing admission condition. The existing five-minute outer
-GNU timeout and two-second kill grace remain. Duration is required, 1..300000 ms;
-setup/final output consume that same lifetime, so timeout or missing final output
-is incomplete evidence. A request for all 300000 ms necessarily exhausts the outer
-lifetime before final output; accepting that argument promises no complete report.
-A lone fresh snapshot is available but has no valid observation span.
-This command cannot alone cover the worst-case seven-minute
-baseline/trial/post-exit envelope. Use a shorter fully covered exposure or obtain
-designer review of a separate host observation lifetime. Never silently extend
-the deadline or stitch missing intervals into a successful result.
+its lock, five-minute lifetime and every existing admission condition. Only this
+read-only observation has a separate product-owned lifetime. Duration is required,
+1..450000 ms: request 450000 for the nominal seven-minute baseline, guarded
+trial/cleanup and post-exit exposure. The additional 30 seconds of sample span
+allows phase alignment inside the first and last samples. The collector permits
+at most 480000 ms, reserving 30 seconds for read overhead and the final sample;
+the outer GNU timeout is 510000 ms, reserving another 30 seconds for native startup and final report
+delivery. These are finite observation bounds, not a host allocation or a quiet
+lease. The same execution priority and two-second kill grace remain.
+
+Coverage requires at least the requested duration between actual same-epoch
+owner samples, as well as reconciled, fresh, loss-free evidence. Initial read time
+does not consume the requested owner span. Collection reaching its deadline or
+exceeding it is explicitly incomplete, even if a final read eventually returns.
+The native timeout terminates the owned process group, escalating to KILL after
+the grace period, including when startup or final output stalls. A killed command,
+absent/truncated report or nonzero exit never establishes coverage. Kernel-blocked
+termination and physical writeback can outlast that grace; this promises no
+instantaneous quiescence. Never extend maintenance or stitch separate reports.
 
 Each fixed-path read has a two-second observation timeout and 256 KiB response
 cap. Reads are bracketed in observer monotonic/wall clocks. Ages and durations
@@ -90,6 +99,10 @@ One final JSON report retains at most 512 frames and 4,096 new terminal details.
 Coverage runs only from the first fresh owner snapshot through the last one;
 the host read brackets and time outside them are not silently included. Establish
 the first snapshot before exposure and retain the final one after post-exit work.
+Compare the actual phase boundaries with this single report's sample brackets;
+an exposure exceeding its covered span is incomplete, including cleanup that
+outlasts the nominal seven minutes. Neither the requested duration nor a valid
+report alone proves that the real experiment fit inside it.
 Every forwarded field is allowlisted. Reason bits: 1 not installed; 2 restart;
 4 stale/nonfresh; 8 instrumentation error; 16 unknown proof/start; 32 completion
 gap; 64 observer detail overflow; 128 failed read. Missing, restarted, inconsistent
@@ -112,6 +125,11 @@ private-field removal, the compiled read command without maintenance files, and
 real sync workers on a fixture-owned temporary WAL. The receipt-wrapper check
 holds durable coverage and proves its response cannot leave early. These checks
 never access production or run a cache trial.
+Fake monotonic clocks exercise the full seven-minute span plus alignment with read overhead,
+insufficient owner span and deadline overrun. An accelerated native timeout uses
+the production command shape and unchanged kill grace to stop a TERM-resistant
+disposable observer and its child; it does not wait the full native bound or touch live
+state. Report frame/detail bounds and maintenance limits remain checked.
 
 Source review and isolated checks do not establish installed observation. Keep
 live observation, another cache trial and conversion held for designer and host

@@ -2,6 +2,14 @@ import {join} from 'node:path';
 import {CACHE_BACKUP_POLICY} from './provider-history-cache-admission';
 import {DURABILITY_OBSERVATION,type ProtectedDurabilitySnapshot} from './protected-durability-observation';
 
+// Seven-minute exposure plus sample alignment, collection and launch/report headroom.
+// This is an observation lifetime, never a maintenance/admission extension.
+export const DURABILITY_OBSERVER_POLICY=Object.freeze({maxDurationMs:450000,collectionMaxMs:480000,commandMaxMs:510000});
+export function durabilityObservationCommand(executable:string,script:string,durationMs:number) {
+  return ['timeout',`--kill-after=${CACHE_BACKUP_POLICY.killGraceMs/1000}s`,`${DURABILITY_OBSERVER_POLICY.commandMaxMs/1000}s`,
+    'nice','-n',String(CACHE_BACKUP_POLICY.nice),executable,script,'--observe-durability-owned',String(durationMs)];
+}
+
 const LANES=['owner_receipt','provider_input'] as const;
 const TOP=['version','epoch','startedMs','sampledMs','sampledWallMs','installed','errors','unlabelled','detailLimit','outstandingLimit'] as const;
 const COUNTS=['entered','completed','failed','unknown','alreadyCovered','confirmedSync','synchronous','totalDurationMs',
@@ -60,10 +68,11 @@ export async function readProtectedDurability(state:string) {
 /** Missing reads invalidate evidence; they never call the foreground barrier or retry it. */
 export async function observeProtectedDurability(durationMs:number,read:()=>Promise<unknown>,
   clock=()=>performance.now(),sleep=(ms:number)=>Bun.sleep(ms)) {
-  if(!Number.isInteger(durationMs)||durationMs<1||durationMs>CACHE_BACKUP_POLICY.maxMs)
-    throw new Error('Observation duration must fit the existing five-minute command lifetime.');
+  if(!Number.isInteger(durationMs)||durationMs<1||durationMs>DURABILITY_OBSERVER_POLICY.maxDurationMs)
+    throw new Error('Observation duration exceeds the bounded observation policy.');
   const startedMs=clock(),frames:any[]=[],previous:Partial<Record<typeof LANES[number],number>>={};
   const initial:Partial<Record<typeof LANES[number],any>>={};
+  let first:any,coverageDeadline:number|undefined;
   let epoch:number|undefined,lastSampledMs=-1,lastErrors=0,valid=1,missing=0,dropped=0,details=0;
   do {
     const readStartedMs=clock(),readStartedWallMs=Date.now();let frame:any;
@@ -98,7 +107,12 @@ export async function observeProtectedDurability(durationMs:number,read:()=>Prom
       epoch=snapshot.epoch;lastSampledMs=snapshot.sampledMs;lastErrors=snapshot.errors;
     } catch {valid=0;missing++;frame={readStartedMs,readEndedMs:clock(),readStartedWallMs,readEndedWallMs:Date.now(),available:0,reasons:128};}
     if(frames.length>=512){valid=0;dropped++;break;}frames.push(frame);
-    const remaining=durationMs-(clock()-startedMs);if(remaining<=0)break;
+    coverageDeadline??=clock()+durationMs;
+    if(frame.available&&!first)first=frame;
+    const covered=first&&frame.available&&first.epoch===frame.epoch
+      &&frame.ownerSampledMs-first.ownerSampledMs>=durationMs;
+    if(clock()>=coverageDeadline&&(covered||!valid))break;
+    const remaining=startedMs+DURABILITY_OBSERVER_POLICY.collectionMaxMs-clock();if(remaining<=0)break;
     await sleep(Math.min(CACHE_BACKUP_POLICY.sampleMs,remaining));
   } while(true);
   const last=frames.filter(frame=>frame.available).at(-1),accounting:any={};
@@ -111,10 +125,11 @@ export async function observeProtectedDurability(durationMs:number,read:()=>Prom
         +end.failed-start.failed+end.unknown-start.unknown+end.outstanding)}:null;
     if(!accounting[lane]?.reconciled)valid=0;
   }
-  const first=frames.find(frame=>frame.available);
-  const spanValid=Number(!!first&&!!last&&first!==last&&first.epoch===last.epoch&&last.ownerSampledMs>first.ownerSampledMs);
-  if(!spanValid)valid=0;
-  return {version:1,coverageValid:valid,spanValid,startedMs,endedMs:clock(),durationMs,missing,dropped,
+  const endedMs=clock(),deadlineExceeded=Number(endedMs-startedMs>=DURABILITY_OBSERVER_POLICY.collectionMaxMs);
+  const coverageDurationMs=first&&last&&first.epoch===last.epoch?last.ownerSampledMs-first.ownerSampledMs:null;
+  const spanValid=Number(!!first&&!!last&&first!==last&&coverageDurationMs!==null&&coverageDurationMs>=durationMs);
+  if(!spanValid||deadlineExceeded)valid=0;
+  return {version:1,coverageValid:valid,spanValid,startedMs,endedMs,durationMs,coverageDurationMs,deadlineExceeded,missing,dropped,
     coverageStartOwnerMs:first?.ownerSampledMs??null,coverageEndOwnerMs:last?.ownerSampledMs??null,
     externalResponseLatencyMeasured:0,newWritesAttributable:0,accounting,frames};
 }

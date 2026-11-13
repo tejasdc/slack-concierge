@@ -1,15 +1,24 @@
 #!/usr/bin/env bun
 import {strict as assert} from 'node:assert';
-import {mkdtempSync,rmSync,readdirSync} from 'node:fs';
+import {mkdtempSync,rmSync,readdirSync,existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {ProtectedDurabilityObservation,protectedDurability} from '../src/protected-durability-observation';
-import {numericDurabilitySnapshot,observeProtectedDurability,readProtectedDurability} from '../src/provider-history-durability-observer';
+import {DURABILITY_OBSERVER_POLICY,durabilityObservationCommand,numericDurabilitySnapshot,observeProtectedDurability,readProtectedDurability} from '../src/provider-history-durability-observer';
+import {CACHE_BACKUP_POLICY} from '../src/provider-history-cache-admission';
 import {PROTECTED_DURABILITY_TEST_AUTHORIZATION} from '../src/test-authorizations';
 import {protectedOwnerReceipt} from '../src/protected-owner-receipt';
 import {installLedgerBarrier} from '../src/ledger-durability-barrier';
 
 const check=(name:string,run:()=>unknown)=>Promise.resolve().then(run).then(()=>console.log(JSON.stringify({check:name,status:'passed'})));
+if(process.argv[2]==='--blocked-observer'||process.argv[2]==='--blocked-observer-child'){
+  process.on('SIGTERM',()=>{});
+  if(process.argv[2]==='--blocked-observer'){
+    const child=Bun.spawn([process.execPath,import.meta.path,'--blocked-observer-child'],{stdout:'inherit',stderr:'inherit'});
+    console.log(JSON.stringify({parent:process.pid,child:child.pid}));
+  } else console.log(JSON.stringify({ready:process.pid}));
+  await new Promise(()=>{});
+}
 if(process.argv[2]==='--native-owner'){
   const {db}=await import('../src/state-database');
   const {startLedgerDurability,ledgerDurabilityCounters}=await import('../src/ledger-durability');
@@ -114,11 +123,46 @@ await check('outage, restart, stale snapshot and lost completion detail invalida
     assert.equal(meter.snapshot().lanes.provider_input.outstanding,0);
   }
 });
-await check('one fresh snapshot is not a completed observation interval',async()=>{
-  let now=1;const meter=new ProtectedDurabilityObservation(()=>now);meter.installed=1;
-  const report=await observeProtectedDurability(1,async()=>{now+=2;return meter.snapshot();},()=>now,async ms=>{now+=ms;});
-  assert.equal(report.frames.length,1);assert.equal(report.frames[0].available,1);
-  assert.equal(report.spanValid,0);assert.equal(report.coverageValid,0);
+await check('one report covers seven-minute exposure plus sample alignment and read overhead within fixed retention',async()=>{
+  let now=1,reads=0;const meter=new ProtectedDurabilityObservation(()=>now);meter.installed=1;
+  const report=await observeProtectedDurability(DURABILITY_OBSERVER_POLICY.maxDurationMs,async()=>{
+    now+=reads++===0?1900:25;return meter.snapshot();
+  },()=>now,async ms=>{now+=ms;});
+  assert.equal(report.coverageValid,1);assert.equal(report.spanValid,1);assert.equal(report.deadlineExceeded,0);
+  assert.ok(report.coverageDurationMs!>=DURABILITY_OBSERVER_POLICY.maxDurationMs);
+  assert.ok(report.coverageDurationMs!>=7*60*1000+30000);
+  assert.ok(report.frames.length<=512);assert.equal(report.dropped,0);
+  assert.ok(report.endedMs-report.startedMs<DURABILITY_OBSERVER_POLICY.collectionMaxMs);
+  assert.equal(CACHE_BACKUP_POLICY.maxMs,300000);assert.equal(CACHE_BACKUP_POLICY.maxDiskBusyPercent,50);
+  const command=durabilityObservationCommand('bun','fixture',DURABILITY_OBSERVER_POLICY.maxDurationMs);
+  assert.equal(command[2],`${DURABILITY_OBSERVER_POLICY.commandMaxMs/1000}s`);
+  await assert.rejects(observeProtectedDurability(DURABILITY_OBSERVER_POLICY.maxDurationMs+1,async()=>meter.snapshot()));
+});
+await check('insufficient owner span and collection deadline overrun fail closed',async()=>{
+  for(const overrun of [false,true]){
+    let now=1,ownerNow=1;const meter=new ProtectedDurabilityObservation(()=>ownerNow);meter.installed=1;
+    const report=await observeProtectedDurability(1000,async()=>{
+      if(now>1&&overrun)now+=DURABILITY_OBSERVER_POLICY.collectionMaxMs;
+      ownerNow+=0.001;return meter.snapshot();
+    },()=>now,async ms=>{now+=ms;});
+    assert.equal(report.spanValid,0);assert.equal(report.coverageValid,0);assert.equal(report.deadlineExceeded,1);
+    assert.ok(report.coverageDurationMs!<report.durationMs);
+  }
+});
+await check('native observation deadline reaps its TERM-resistant process group',async()=>{
+  const command=durabilityObservationCommand(process.execPath,import.meta.path,1);
+  // Accelerate only the disposable timer; exercise the production command/group shape and kill grace.
+  command[2]='0.5s';command.splice(-2,2,'--blocked-observer');
+  const child=Bun.spawn(command,{stdout:'pipe',stderr:'pipe'});
+  const stdout=new Response(child.stdout).text(),stderr=new Response(child.stderr).text();
+  assert.notEqual(await child.exited,0,await stderr);
+  const lines=(await stdout).trim().split('\n').map(line=>JSON.parse(line));
+  const pids=lines.find(line=>line.parent);assert.ok(pids);assert.ok(lines.some(line=>line.ready===pids.child));
+  // Reaped group children may briefly be zombies awaiting init; neither may still execute.
+  for(const pid of [pids.parent,pids.child]){
+    const stat=`/proc/${pid}/stat`;
+    if(existsSync(stat))assert.match(await Bun.file(stat).text(),/\) Z /);
+  }
 });
 await check('fixed private socket read and actual bounded command create no maintenance files or ledger',async()=>{
   const root=mkdtempSync(join(tmpdir(),'protected-durability-'));

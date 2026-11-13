@@ -54,7 +54,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   release-reader compatibility fence and product-owned small-cache backup admission
   are documented at that maintenance gate. Its diagnostic entrance records an
   observer-only baseline and one unchanged guarded trial; preserve the production
-  hold and coordinate host archive validation before any live observation. Read cache
+  hold and coordinate host archive validation before any live observation. The
+  [numeric durability observer](docs/architecture/PROTECTED-DURABILITY-OBSERVATION.md)
+  has a separate bounded lifetime; never extend maintenance to fit observation. Read cache
   allocation through [router actions](docs/runbooks/ROUTER-ACTIONS.md#agent-session-communication).
   The [protected durability observation](docs/architecture/PROTECTED-DURABILITY-OBSERVATION.md)
   defines the private host read, lane boundaries and coverage gaps; it changes no
