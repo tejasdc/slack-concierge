@@ -45,6 +45,7 @@ router-actions.sh sessions ask <peer-address|imported-address> <source-flags> --
 router-actions.sh sessions note <captureId | any message ID> <source-flags> --action-id A --summary-file <markdown-path> [--add-to <earlier captureId or message ID> | --person <name> | --journal entry|checkin]
 router-actions.sh sessions note <captureId | any message ID> <source-flags> --action-id A --journal entry --add-to <earlier captureId or message ID>
 Any message the owner retained can become a note: a capture, a thread reply, a post, a routed message or an agent's answer.
+With --add-to, --summary-file is the whole note as it should now read: read the note first (thnkr.ing /threads/<note>), weave the new capture into the right section and merge repeats. It replaces what agents wrote there; never send only the new part, and never a copy to stack. Lines he wrote himself stay, after your outline, so leave them out of your summary.
 router-actions.sh sessions title [--session <session-address>] <source-flags> --action-id A -- <title>
 router-actions.sh sessions move <session-address> --project <project or project/folder, e.g. agent-ecology/expertise/alan-kay> <source-flags> --action-id A
 Moves an idle session to another folder; its next turn resumes the same conversation there. --project on ask and create also accepts a folder inside a registered project.

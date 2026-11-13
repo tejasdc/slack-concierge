@@ -280,9 +280,13 @@ the existing Thinkering capability socket with `{captureId,text,title,capturedAt
 command) and becomes the note; the original bytes become its Source, which the agent cannot
 supply or change. A note he already edited keeps his words (`summary:"kept-edited-note"`).
 The summary is required (Tejas, 2026-10-01: "you should not dump my whole transcript here").
-`--add-to <earlier captureId>` makes a follow-up capture a new section of the note that earlier
-capture already has, keeping the follow-up as that section's Source, so a thread's follow-ups land
-in the one note he reads on his Timeline (`addTo` on `/captures/note`).
+`--add-to <earlier captureId>` revises the note that earlier capture already has: the summary is the
+whole note as it should now read, with the follow-up woven into the right section and repeats merged.
+thnkr.ing replaces the outline agents wrote there, keeps every line he wrote himself (after the
+outline), and pins the follow-up capture as one of the note's sources, listed in its Source window
+(`addTo` on `/captures/note`). It used to append a section, and an agent sending whole rewritten
+notes stacked 16 copies of one party-ideas note (Tejas, 2026-11-13: "I don't want a fucking
+append-only log. I want a synthesized thread of all of the fucking ideas I'm talking about").
 `--journal entry --add-to <earlier captureId>` omits `--summary-file` and forwards `{captureId,text,title,capturedAt,addTo,journal:"entry"}` so the capture's exact words, original recorded time and human source append to the earlier Journal entry; independent `--journal entry|checkin` notes still require `--summary-file`.
 `--person <name>` instead files the capture under that person's one note (`person` on
 `/captures/note`): thnkr.ing makes the note the first time anyone names the person, keyed by the
