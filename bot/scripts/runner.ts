@@ -162,9 +162,13 @@ async function runProbe(job:{jobId:string;attemptId:string;epoch:number;payload:
 async function runProjectJob(job:{jobId:string;attemptId:string;epoch:number;payload:any},
   event:string,work:(payload:any,signal:AbortSignal)=>Promise<any>) {
   const controller=new AbortController();let done=false,heartbeatError:unknown=null;
+  // The heartbeat's sleep ends the moment the work does. Awaiting a plain 15 s sleep held every
+  // finished project result back until the next beat, so a setup that failed in milliseconds
+  // answered the asker 16.8 s later and was counted as owner slowness (2026-11-13, incident 4b6c9a1f).
+  let workFinished!:()=>void;const finished=new Promise<void>(resolve=>{workFinished=resolve;});
   const heartbeat=(async()=>{
     while(!done){
-      await Bun.sleep(HEARTBEAT_MS);
+      await Promise.race([Bun.sleep(HEARTBEAT_MS),finished]);
       if(done)break;
       try{await call('heartbeat',{attemptId:job.attemptId,epoch:job.epoch});recordOwnerContact();}
       catch(error){if(lostCustody(error)){heartbeatError=error;controller.abort();break;}say(`${event}_heartbeat_retry`,{job:job.jobId,error:String(error)});}
@@ -173,13 +177,16 @@ async function runProjectJob(job:{jobId:string;attemptId:string;epoch:number;pay
   let result:any;
   try{result=await work(job.payload,controller.signal);}
   catch(error){result={state:'failed',failureClass:'permanent',reason:String(error).replace(/[\r\n]/g,' ').slice(0,400)};}
-  done=true;await heartbeat;
+  done=true;workFinished();await heartbeat;
   if(heartbeatError){say(`${event}_lost_custody`,{job:job.jobId,attemptId:job.attemptId});return;}
   for(;;){
     try{await call('finish',{attemptId:job.attemptId,epoch:job.epoch,operationId:`finish:${job.attemptId}`,result});break;}
     catch(error){if(lostCustody(error))break;say(`${event}_finish_retry`,{job:job.jobId,error:String(error)});await Bun.sleep(2_000);}
   }
-  say(`${event}_finished`,{jobId:job.jobId,attemptId:job.attemptId,state:result?.state??'failed'});
+  // The reason names why a setup was refused or failed; without it the 2026-11-13 failure could
+  // not be told apart from a wrong-runner, naming or GitHub problem. Reasons carry no credentials.
+  say(`${event}_finished`,{jobId:job.jobId,attemptId:job.attemptId,state:result?.state??'failed',
+    ...(result?.state==='done'||result?.state==='already_present'?{}:{failureClass:result?.failureClass??null,reason:String(result?.reason??'').slice(0,400)})});
 }
 
 /**

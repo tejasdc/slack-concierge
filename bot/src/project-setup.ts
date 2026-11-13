@@ -271,7 +271,8 @@ export class ProjectSetup {
         }
         if(job.state==='unconfirmed')throw new Error('Project setup has uncertain runner custody; retry the same project request to reconcile its durable job.');
         if(Date.now()>=deadline)throw new Error(`Project setup is still ${job.state} on runner ${targetRunner}; retry the same request to receive its recorded result.`);
-        await new Promise(resolve=>setTimeout(resolve,500));
+        // Waiting for the runner is awaited time, never owner slowness (incident 4b6c9a1f).
+        await awaitingOutside(()=>new Promise(resolve=>setTimeout(resolve,500)));
       }
     };
     let result=await enqueueAttempt();
@@ -300,7 +301,8 @@ export class ProjectSetup {
         }
         if(job.state==='unconfirmed')return null;
         if(Date.now()>=deadline)return null;
-        await new Promise(resolve=>setTimeout(resolve,500));
+        // Waiting for the runner is awaited time, never owner slowness (incident 4b6c9a1f).
+        await awaitingOutside(()=>new Promise(resolve=>setTimeout(resolve,500)));
       }
     }
     return {state:'failed',failureClass:'transient',reason:'The project runner could not confirm placement yet.'};
