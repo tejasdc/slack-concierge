@@ -104,6 +104,23 @@ export const LIVE_STORE_COPY_REFUSAL = 'Refused: this would copy a live Concierg
   + 'under the floor: `python3 /root/workspace/slack-concierge/scripts/diagnostic-sqlite-snapshot.py <source.db> '
   + '<private/new-path.db>` (docs/runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md).';
 
+// A path ending in `.sock`, the way agents name Concierge's request socket.
+const SOCKET_TOKEN = /[^\s'"`;&|()<>?]*\.sock(?![\w.-])/g;
+
+/** A Unix socket in the state directory is the owner's supported read entrance, not a database,
+ * and nothing can be copied out of it. The Lab nightly's preflight (2026-11-12) named
+ * requests.sock for its session reads and separately reserved its own feature-trail database
+ * with `BEGIN IMMEDIATE`; the socket path made that script look like a live ledger rehearsal.
+ * A token that is a real file other than a socket (a database renamed or hard-linked to end in
+ * `.sock`) still counts. */
+function withoutSocketPaths(text: string, cwd: string): string {
+  return text.replace(SOCKET_TOKEN, token => {
+    const raw = token.startsWith('~') ? homedir() + token.slice(1) : token.replace(/^file:/, '');
+    try { if (!statSync(resolve(cwd || '.', raw)).isSocket()) return token; } catch {}
+    return ' ';
+  });
+}
+
 // Absolute, home-relative and dot-relative paths, including SQLite `file:` URIs.
 const PATH_ARGUMENT = /(?:file:)?((?:~|\.{1,2})?\/[^\s'"`;&|()<>?]+)/g;
 
@@ -130,8 +147,8 @@ export function liveStoreCopyRefusal(command: string | null, cwd = '', stores = 
   { inspectScripts = true }: { inspectScripts?: boolean } = {}): string | null {
   if (!command) return null;
   if (standaloneRouterCall(command)) return null;
-  const inspected = inspectScripts && !committeeHelp(command, cwd)
-    ? command + mentionedScripts(command, cwd) : command;
+  const inspected = withoutSocketPaths(inspectScripts && !committeeHelp(command, cwd)
+    ? command + mentionedScripts(command, cwd) : command, cwd);
   let canonicalCwd = cwd;
   try { canonicalCwd = realpathSync(cwd); } catch {}
   const inLiveDirectory = STATE_DIR.test(canonicalCwd) || stores.directories.includes(canonicalCwd);
