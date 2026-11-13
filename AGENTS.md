@@ -28,6 +28,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - Stable runtime commands follow the verified sealed control selection through
   [deployment dispatchers](docs/runbooks/DEPLOYMENT.md); preserve application-only
   rollback's separate controller and the disposable installed-command acceptance.
+  Native release acceptance explicitly selects the host's GNU timeout dependency;
+  see [durability acceptance](docs/architecture/PROTECTED-DURABILITY-OBSERVATION.md#isolated-acceptance-and-live-gate).
 - Merge a checked pull request with `scripts/merge-pr.sh <number>`, which serialises
   merges so concurrent fixes stop invalidating each other's required check; see
   [merge lane](docs/runbooks/DEPLOYMENT.md#merge-lane).
@@ -54,8 +56,13 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   release-reader compatibility fence and product-owned small-cache backup admission
   are documented at that maintenance gate. Its diagnostic entrance records an
   observer-only baseline and one unchanged guarded trial; preserve the production
-  hold and coordinate host archive validation before any live observation. Read cache
+  hold and coordinate host archive validation before any live observation. The
+  [numeric durability observer](docs/architecture/PROTECTED-DURABILITY-OBSERVATION.md)
+  has a separate bounded lifetime; never extend maintenance to fit observation. Read cache
   allocation through [router actions](docs/runbooks/ROUTER-ACTIONS.md#agent-session-communication).
+  The [protected durability observation](docs/architecture/PROTECTED-DURABILITY-OBSERVATION.md)
+  defines the private host read, lane boundaries and coverage gaps; it changes no
+  admission policy and authorizes no additional live trial.
 - Marked messages held by per-session Pause retain their original admission identity;
   see [session recovery](docs/architecture/SESSION-OWNER.md#identity-and-admission).
 

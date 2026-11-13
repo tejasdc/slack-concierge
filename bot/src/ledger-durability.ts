@@ -5,6 +5,7 @@ import { db } from './state-database';
 import { installLedgerBarrier, type LedgerBarrierContext } from './ledger-durability-barrier';
 import { releaseWorkerPath } from './release-worker';
 import { log } from './log';
+import {protectedDurability,type DurabilityOutcome} from './protected-durability-observation';
 
 /** The accepting owner commits ledger rows without waiting for the disk, and nothing leaves the
  * process until those rows are on it. SQLite's default commit syncs the write-ahead log on the
@@ -53,15 +54,22 @@ function pump() {
  * order, so callers that write to one stream keep their order. It never rejects: while the disk
  * cannot confirm a sync, what depends on it waits. */
 function durable(context?: LedgerBarrierContext): Promise<void> {
+  const observation=context?.observation??protectedDurability.begin(context?.kind);
   return new Promise(resolve => {
+    const covered=(proof:DurabilityOutcome)=>{
+      observation.proof=proof;
+      // The receipt's wider timer ends in its response continuation. Provider input ends here.
+      if(!context?.observation)observation.finish(proof);
+      resolve();
+    };
     // Sample after the current synchronous task: a caller inside a transaction callback must
     // not count rows that are not committed yet.
     queueMicrotask(() => {
-      if (!deferred) { resolve(); return; }
+      if (!deferred) { covered(3); return; }
       const changes = totalChanges();
-      if (!waiters.length && changes <= synced) { resolve(); return; }
+      if (!waiters.length && changes <= synced) { covered(1); return; }
       const id = context?.id;
-      waiters.push({ changes, resolve, sampledAtMs: performance.timeOrigin + performance.now(),
+      waiters.push({ changes, resolve:()=>covered(2), sampledAtMs: performance.timeOrigin + performance.now(),
         precedingSyncId: inFlight && changes > inFlight.changes ? inFlight.id : null,
         context: context && (!id || /^[A-Za-z0-9:_-]{1,128}$/.test(id)) ? context : undefined });
       pump();
@@ -183,6 +191,7 @@ export function startLedgerDurability(stateDir: string): void {
   // The ledger may be a link to its own filesystem; SQLite keeps the log beside the real file.
   databasePath = realpathSync(join(stateDir, 'state.db'));
   installLedgerBarrier(durable);
+  protectedDurability.installed=1;
   startThreads();
   setInterval(() => {
     pump();

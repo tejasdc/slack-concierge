@@ -907,6 +907,16 @@ operator deployment.
 
 ## History cache maintenance
 
+For a passive numeric host measurement, see
+[protected durability observation](../architecture/PROTECTED-DURABILITY-OBSERVATION.md).
+The existing sealed `history-cache observe-durability <duration-ms>` command reads
+memory-only obligation facts without the publication lock or admission effects,
+and has a separate eight-and-a-half-minute outer deadline for up to seven and a
+half minutes of actual owner samples (including alignment margin) plus
+startup/final-report overhead. Maintenance retains its
+five-minute deadline and every existing veto. A late or incomplete observation
+is invalid evidence; this entrance does not authorize a live trial.
+
 This optional operator path retires only exact Claude SDK payloads, one cache
 generation per batch. It creates no timer, persistent service, credential or
 machine-wide resource setting. It uses the existing host Restic wrapper and

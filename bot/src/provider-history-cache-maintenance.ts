@@ -14,6 +14,7 @@ import {HISTORY_CACHE_READER_FORMAT,historyCacheRequirements,assertHistoryCacheR
 import {CACHE_BACKUP_POLICY, CacheBackupAdmission} from "./provider-history-cache-admission";
 import {logToStderr} from "./log";
 import {ledgerRows} from "./ledger-rows";
+import {DURABILITY_OBSERVER_POLICY,durabilityObservationCommand,observeProtectedDurability,readProtectedDurability} from "./provider-history-durability-observer";
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const SHA = /^[a-f0-9]{64}$/;
@@ -588,6 +589,21 @@ export class HistoryCacheMaintenance {
 if (import.meta.main) {
   const state = process.env.CONCIERGE_STATE_DIR || join(homedir(), ".local/state/concierge");
   const args = process.argv.slice(2);
+  // This pure read must coexist with maintenance without taking its publication lock.
+  // Observation has its own deadline; maintenance keeps its existing lifetime.
+  if(args[0]==="observe-durability") {
+    const duration=Number(args[1]);
+    if(args.length!==2||!Number.isInteger(duration)||duration<1||duration>DURABILITY_OBSERVER_POLICY.maxDurationMs)
+      throw new Error(`USAGE: history-cache observe-durability <duration-ms:1..${DURABILITY_OBSERVER_POLICY.maxDurationMs}>`);
+    const child=Bun.spawn(durabilityObservationCommand(process.execPath,process.argv[1]!,duration),
+      {stdout:"inherit",stderr:"inherit"});
+    process.exit(await child.exited);
+  }
+  if(args[0]==="--observe-durability-owned") {
+    if(args.length!==2)throw new Error("Invalid observation arguments");
+    const report=await observeProtectedDurability(Number(args[1]),()=>readProtectedDurability(state));
+    await Bun.write(Bun.stdout,JSON.stringify(report)+"\n");process.exit(report.coverageValid?0:1);
+  }
   if (args[0] !== "--locked") {
     const root = join(state, "history-cache-maintenance");
     mkdirSync(root, {recursive: true, mode: 0o700});
