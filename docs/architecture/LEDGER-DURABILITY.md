@@ -12,8 +12,21 @@ Provider tool updates and commentary are kept in a bounded owner-memory queue fo
 second, then written in one SQLite transaction. A queue also flushes at 512 events or 4 MiB,
 before an immediate provider message, and when a provider turn ends. Exact event IDs, versions,
 order and the accepted input to which each update belongs are captured before the wait; duplicate
-replays are ignored. A failed flush retains the queue and retries after one second; it is logged
-without holding an immediate provider answer or the final result behind optional progress. Accepted human
+replays are ignored. A flush reserves SQLite's writer up front (an immediate transaction), because
+each event reads before it writes: a deferred one was refused at once as "database is locked" when
+another connection committed in between, eleven seconds after the 2026-11-13 08:12 restart. A
+failed flush retains the queue and retries after one second; it is logged
+without holding an immediate provider answer or the final result behind optional progress.
+Every failed attempt logs `session_progress_batch_flush_failed` with the batch's event count,
+first and last event IDs, turn IDs and attempt number, and the attempt that finally saves it logs
+`session_progress_batch_recovered`. When the owner process exits on any path, a non-empty queue
+gets one more save; if the ledger still refuses, it is written atomically to
+`pending-progress-events.json` in the state directory (`session_progress_batch_spilled`). The next
+owner restores that file before projecting (`session_progress_batch_restored`), skips event IDs
+already in the ledger rather than replaying them, and deletes the file once its batch is saved.
+Only if both the save and the spill fail is a batch lost, and `session_progress_batch_dropped`
+names every event ID. A SIGKILL skips the exit path; queued progress lost that way is at most one
+second of tool updates and commentary, which an adopting run re-projects when it replays history. Accepted human
 input, requests, replies, final provider answers and run lifecycle changes are still written at
 their existing immediate durability boundaries. This chooses a short visibility delay for
 non-acknowledged activity in exchange for fewer WAL commits and repeated index-page writes;
