@@ -10,6 +10,7 @@ import {claudeConfigDir,locateClaudeTranscript} from '../src/claude-transcript-w
 import {latestClaudeBoundary,sideCopy} from '../src/aside-copy';
 import {MANAGED_CODEX} from '../src/codex-daemon-file-limit';
 import {samePhysicalFile} from '../src/runner-asides';
+import {CODEX_INVESTIGATOR_MODEL} from '../src/aliases';
 
 type Input={provider:'claude-code'|'codex';sessionUuid:string;cwd:string;model:string|null;boundary:string|null;prompt:string};
 const TIMEOUT_MS=180_000;
@@ -61,10 +62,11 @@ async function answer(input:Input){
   const directory=mkdtempSync(join(tmpdir(),'concierge-aside-')),out=join(directory,'answer.txt');
   try{
     const result=await run(MANAGED_CODEX,['exec','--ephemeral','-s','read-only','--skip-git-repo-check','-o',out,
+      '-m',input.model??CODEX_INVESTIGATOR_MODEL,
       'fork',fork,input.prompt],input.cwd);
     let text='';try{text=readFileSync(out,'utf8').trim();}catch{}
     if(!text)throw new Error(`Codex could not answer the side question (${result.code??'unknown'}).`);
-    return {answer:text,model:null,durationMs:Date.now()-started};
+    return {answer:text,model:input.model??CODEX_INVESTIGATOR_MODEL,durationMs:Date.now()-started};
   }finally{await rm(directory,{recursive:true,force:true});}
 }
 try{

@@ -27,6 +27,8 @@ import { splitTurnOutcomeMarker } from "./turn-outcome-marker";
 import { ProviderDispatchError, ProviderTurnCancelledError, isCodexThreadWriterConflict, isModelCapacityRefusal } from "./provider-failures";
 import { ProviderCapabilityUnavailableError } from "./provider-policy";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
+import { trustedCodexExecCommand } from "./trusted-codex-exec";
+import { CODEX_INVESTIGATOR_MODEL } from "./aliases";
 
 export type OutsideRun = Parameters<AgentProvider["run"]>[0] & {
   /** The execution host that owns the process; a launch writes the prompt file first. */
@@ -80,14 +82,15 @@ export async function runOutsideCodexTurn(input: OutsideRun): Promise<RunResult>
   }
   // `sh` hands the prompt file to Codex as its standard input, so the CLI reads its opening words to
   // the end and the host's own input pipe (which stays open for its whole life) is never needed.
-  const codexArgs = ["exec", "--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "-C", input.cwd,
+  const codexArgs = ["--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "-C", input.cwd,
     "-c", 'agents.default_subagent_model="gpt-6-luna"',
     "-c", 'agents.default_subagent_reasoning_effort="medium"',
-    ...(input.model ? ["-m", input.model] : []),
+    "-m", input.model ?? CODEX_INVESTIGATOR_MODEL,
     ...(input.reasoning_effort ? ["-c", `model_reasoning_effort="${input.reasoning_effort}"`] : []),
     ...input.additionalDirs.flatMap(directory => ["--add-dir", directory]),
     ...(input.sessionUUID ? ["resume", input.sessionUUID] : []), "-"];
-  const args = ["-c", 'exec "$@" < "$0"', input.promptFile, input.codexExecutable, ...codexArgs];
+  const args = ["-c", 'exec "$@" < "$0"', input.promptFile,
+    ...trustedCodexExecCommand(input.codexExecutable, codexArgs)];
 
   let buffer = "";
   let threadId = input.sessionUUID ?? null;

@@ -190,6 +190,9 @@ are command hooks in `--settings`, held by the unchanged process).
   An outside turn launched on a runner keeps that runner as its host location during adoption.
   Its finished journal and exit receipt are read through the runner even if the coordinator
   restarts; a local host socket is not a substitute for that retained custody.
+  Project trust is explicit when the host CLI supports it; the
+  [command-line trust contract](../runbooks/CODEX-APP-SERVER.md#project-trust-for-command-line-work)
+  preserves older CLI compatibility and intentionally isolated answer/probe paths.
 - **Every other new Codex turn** uses the shared Codex App Server daemon, which already outlives Concierge.
   Each such run is recorded as an execution with supervisor `codex-daemon` (no host, live at once).
   After a restart the next coordinator follows the turn by its exact thread (the session's bound

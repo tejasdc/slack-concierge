@@ -106,6 +106,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 | Exact thnkr.ing Mac web-app inspection, native AX update recovery, human authorization and direct Codex update proof | [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md), [peer instances](docs/runbooks/PEER-INSTANCES.md) |
 | Isolated headless Mac browser fallback and thnkr.ing's source-bound read ticket | [Peer instances](docs/runbooks/PEER-INSTANCES.md) |
 | Shared Codex App Server lifecycle, post-turn process audit and session observation | [Execution host](docs/architecture/EXECUTION-HOST.md), [Codex App Server](docs/runbooks/CODEX-APP-SERVER.md), [external Codex turns](docs/architecture/SESSION-OWNER.md#externally-submitted-codex-turns) |
+| Codex CLI project trust, 0.166/0.169 compatibility, and isolated launch exemptions | [Command-line project trust](docs/runbooks/CODEX-APP-SERVER.md#project-trust-for-command-line-work) |
 | Owner on its own app server, agents' network entrance and tokens, runner lease protocol | [Runners](docs/architecture/RUNNERS.md), [execution host](docs/architecture/EXECUTION-HOST.md) |
 | Runner reads of report source chains and bounded report windows | [Runners](docs/architecture/RUNNERS.md) |
 | Agent browser acceptance for one created provider session | [Agent browser acceptance](docs/architecture/AGENT-BROWSER-ACCEPTANCE.md) |

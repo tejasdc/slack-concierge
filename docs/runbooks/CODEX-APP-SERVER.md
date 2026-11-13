@@ -141,7 +141,7 @@ Repair an unmanaged listener once Concierge admission is idle (`turns` has no no
 2. `kill -KILL <app-server-pid> <code-mode-host-pid>`, then rename the orphaned socket to `app-server-control.sock.stale-<UTC timestamp>` as in the 2026-08-24 repair. Never delete it.
 3. `/root/.local/bin/codex app-server daemon start`; `daemon version` must then show `backend: pid` and matching `managedCodexVersion` / `appServerVersion`.
 4. Concierge's observer reconnects by itself: one `codex_remote_observer_disconnected` warning at the kill, then a burst of `codex_remote_thread_subscribed` events. No bot restart is needed.
-5. Probe with `codex exec` on the default model. The Mac app's next connection attaches to the managed daemon (observed 10 seconds after the 2026-09-07 start); its previous `codex app-server proxy` process pointed at the old release and is replaced by the new SSH session.
+5. From an OS temporary folder, probe with `codex -m gpt-6.1-sol -s read-only -a never exec --skip-git-repo-check "Reply with OK only."`. This availability check does not grant project trust. The Mac app's next connection attaches to the managed daemon (observed 10 seconds after the 2026-09-07 start); its previous `codex app-server proxy` process pointed at the old release and is replaced by the new SSH session.
 
 ## The Daemon Lives In Its Own Scope
 
@@ -344,3 +344,63 @@ Repair agent; the turn keeps waiting, and the wait's end resolves the notice or 
 To find the conversation behind a burst of resume timeouts, look for the thread whose
 `otel.name="thread/resume"` span in `~/.codex/logs_2.sqlite` began just before the burst, and
 compare its rollout size under `~/.codex/sessions`.
+
+## Project trust for command-line work
+
+The [0.169.0 release notes](https://learn.chatgpt.com/docs/changelog) say that
+`exec` leaves project configuration and MCP disabled in untrusted directories,
+including with `--sandbox workspace-write`. Trust and filesystem permissions are
+separate. The real 0.169 binary's `exec --help` and `exec resume --help` expose
+`--trust`: it saves trust for future chats, including MCP commands outside the
+sandbox, persists even with `--ephemeral`, and refuses an explicitly untrusted
+project. Installed 0.166 rejects that flag. Do not replace it with a command-line
+`projects.<path>.trust_level` override: that could defeat an explicit refusal.
+
+Concierge's project-work launches share `bot/src/trusted-codex-exec.ts`. A help-only
+probe runs on the actual execution host immediately before launch. When that
+executable advertises `--trust`, the launch adds it before the resume subcommand;
+otherwise it retains the legacy invocation. A failed help probe stops the launch.
+The host's existing stderr journal records `Concierge Codex project trust: explicit`
+or `legacy CLI`, without prompt content. Shell arguments remain separate values:
+the prompt, path, model, effort and exact resumed conversation are never expanded
+as shell text. This uses the CLI's native trust owner and existing execution host,
+with no trust store, background job, model call, or coordinator-side version guess.
+
+| Launch | Trust policy and model |
+| --- | --- |
+| Outside request, fresh or resumed (`bot/src/outside-codex.ts`) | Trusted project work through the compatibility helper, on the runner when applicable. The bound model wins; a missing model uses Concierge's Sol investigator default. |
+| Autonomous deployment repair, fresh or resumed (`bot/src/deployment-repair-agent.ts`) | Trusted repair work through the same helper. Explicit Sol investigator selection; existing deadline, process group, hook policy and structured result stay in force. |
+| Local side question (`bot/src/session-asides.ts`) | No trust grant. Ephemeral, read-only answer on a saved fork; explicitly select the bound model, or Sol only when absent. |
+| Runner side question (`bot/scripts/runner-aside-worker.ts`) | Same exemption and explicit model selection as the local side question. |
+| Outage-alternative probe (`bot/src/provider-outage.ts`) | No trust grant. OS temp directory, read-only, no approvals, explicit candidate model. |
+| Agent command wrapper (`bot/scripts/codex`, `agent-codex-launch.ts`) | Caller-owned arguments, including model and trust. Never infer trust globally: source-isolated fallbacks also call Codex. Escalation recording remains enforced. |
+| Ordinary sessions, forks, login, account and daemon commands | App Server or lifecycle commands, not `exec`; no command-line trust change. |
+
+No executable `codex review` launch exists in Concierge. Conceptual `exec` mentions
+in the outside-request, provider and execution-host docs refer to the two launchers
+above. Historical plans, incidents and archives retain the names and syntax they
+actually observed. The shared skills catalog owns manual project-work examples;
+its update is separate. The sibling twitter-timeline fallback remains source
+isolated in a scratch repository with its own tool restrictions; it is not
+authorized to grant trust through this helper.
+
+Run the native preflight from a task worktree on the server:
+
+```sh
+bun bot/scripts/codex-exec-trust-acceptance.ts /root/.codex/packages/standalone/current/bin/codex
+# Repeat with an unpacked official candidate binary; do not replace the installed CLI.
+bun bot/scripts/codex-exec-trust-acceptance.ts /absolute/path/to/candidate/codex
+```
+
+The command creates and removes only disposable Git projects and Codex homes. A
+deliberately malformed project config distinguishes loaded from ignored layers;
+an absent model provider stops execution before authentication or any model call.
+It checks raw isolation, trusted fresh/resumed launch, saved trust under
+`--ephemeral`, and explicit-untrusted preservation/refusal. On 0.166 the helper
+must reach the legacy preflight without an unsupported flag; on 0.169 fresh and
+resume must load the project layer and preserve an explicitly untrusted refusal.
+This establishes CLI/config compatibility, not a successful provider response.
+After installation, exercise a marked outside request through `sessions ask
+--outside` and inspect its actual return separately; never start a deployment
+incident just to test repair. Neither this change nor its preflight updates Codex
+or restarts the shared App Server.
