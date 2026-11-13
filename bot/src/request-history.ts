@@ -92,21 +92,28 @@ function closestSessions(index:MeaningIndex,vector:Float32Array):{found:{id:numb
 }
 
 type Closest<T>={found:T[];omission:string|null};
-/** The written records closest in meaning to the request; each record's embedding is kept by its key and words. */
-async function closestRecords<T>(index:MeaningIndex,vector:Float32Array,items:T[],missing:string,max:number,doc:(item:T)=>{key:string;text:string}):Promise<Closest<T>> {
+/**
+ * The written records closest in meaning to the request; each record's embedding is kept by its key and words.
+ * A failure case is handed out only when it is the same problem (at least MIN_MEANING, as for sessions).
+ * His requirements and decisions answer a different question, which of his rules apply here, and some
+ * always do, so the closest few are handed out by rank. Measured 2026-11-13 with the installed engine:
+ * the taste-profile passage on search scored 0.45 against the Threads search request and the notification
+ * passages 0.38-0.41 against his duplicate-notification complaint, so a 0.55 cutoff handed out none.
+ */
+async function closestRecords<T>(index:MeaningIndex,vector:Float32Array,items:T[],missing:string,max:number,sameProblemOnly:boolean,doc:(item:T)=>{key:string;text:string}):Promise<Closest<T>> {
   if(!items.length)return {found:[],omission:missing};
   const docs=items.map(doc);
   const vectors=await index.documentVectors(docs);
   const dot=(a:Float32Array,b:Float32Array)=>{let sum=0;for(let i=0;i<a.length;i++)sum+=a[i]!*b[i]!;return sum;};
-  return {found:items.map((item,at)=>{const other=vectors.get(docs[at]!.key);return {item,score:other?dot(vector,other):0};})
-    .filter(entry=>entry.score>=MIN_MEANING).sort((a,b)=>b.score-a.score).slice(0,max).map(entry=>entry.item),omission:null};
+  return {found:items.map((item,at)=>{const other=vectors.get(docs[at]!.key);return {item,score:other?dot(vector,other):Number.NEGATIVE_INFINITY};})
+    .filter(entry=>sameProblemOnly?entry.score>=MIN_MEANING:Number.isFinite(entry.score)).sort((a,b)=>b.score-a.score).slice(0,max).map(entry=>entry.item),omission:null};
 }
 const closestCases=async(index:MeaningIndex,vector:Float32Array)=>closestRecords(index,vector,await failureCases(),
-  `No failure cases were found in ${FAILURE_CASES_DIR}.`,MAX_CASES,(item:FailureCase)=>({key:`failure-case:${item.id}`,text:`${item.id}. ${item.text}`}));
+  `No failure cases were found in ${FAILURE_CASES_DIR}.`,MAX_CASES,true,(item:FailureCase)=>({key:`failure-case:${item.id}`,text:`${item.id}. ${item.text}`}));
 const closestDecisions=async(index:MeaningIndex,vector:Float32Array)=>closestRecords(index,vector,await decisions(),
-  `His decision record was not found at ${DECISIONS_DIR}.`,MAX_DECISIONS,(item:Decision)=>({key:`decision:${item.id}`,text:`${item.decision}. ${item.scope}. ${item.words}`}));
+  `His decision record was not found at ${DECISIONS_DIR}.`,MAX_DECISIONS,false,(item:Decision)=>({key:`decision:${item.id}`,text:`${item.decision}. ${item.scope}. ${item.words}`}));
 const closestTaste=async(index:MeaningIndex,vector:Float32Array)=>closestRecords(index,vector,await tastePassages(),
-  `His taste profile was not found at ${TASTE_PROFILE}.`,MAX_TASTE,(item:TastePassage)=>({key:item.key,text:`${item.principle}. ${item.text}`}));
+  `His taste profile was not found at ${TASTE_PROFILE}.`,MAX_TASTE,false,(item:TastePassage)=>({key:item.key,text:`${item.principle}. ${item.text}`}));
 
 export async function earlierWorkFor(input:{
   /** The request's one-line summary and words: what the problem is. */
