@@ -1176,6 +1176,60 @@ function expireOpen(questions:StoredQuestion[],reason:string,at:string):StoredQu
   return questions.filter(question=>OPEN_QUESTION_STATES.includes(question.state))
     .map(question=>({...question,state:'expired' as QuestionState,updatedAt:at,brief:{...question.brief,endedBecause:reason}}));
 }
+
+const canonical=(value:any):string=>Array.isArray(value)?`[${value.map(canonical).join(',')}]`
+  :value&&typeof value==='object'?`{${Object.keys(value).sort().map(key=>`${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`
+  :JSON.stringify(value);
+const canonicalQuestion=(question:StoredQuestion)=>canonical({...question,deferUntil:question.deferUntil??null});
+
+/** Restore only the exact unchanged snapshot from a retained, wrongly-scoped dispatch expiry. */
+function restoreDispatchExpiredQuestion(input:{questionId:string;dispatchId:string;expectedRevision:number}) {
+  const current=questionRow(input.questionId);
+  const topic=topicRow(current.topicId);
+  if(topic.state!=='open')throw new TopicError('A question cannot be restored in a closed topic.',409,'QUESTION_RESTORE_TOPIC_CLOSED');
+  if(current.revision!==input.expectedRevision)throw new TopicError('The question changed; reload it before restoring.',409,'QUESTION_REVISION_STALE');
+  if(current.state!=='expired'||current.answer||current.replacedBy)
+    throw new TopicError('Only an unanswered, unreplaced expired question can be restored.',409,'QUESTION_RESTORE_NOT_ELIGIBLE');
+  if(!current.owner?.dispatchRequestId||current.owner.dispatchRequestId===input.dispatchId)
+    throw new TopicError('This question is not proven to belong to a different explicit dispatch.',409,'QUESTION_RESTORE_SCOPE_INVALID');
+  const namedRequestId=current.owner.requestId;
+  const linked=topicRequests(topic.topicId).filter(request=>request.state==='open'&&request.closure===null
+    &&(namedRequestId===undefined||request.requestId===namedRequestId)
+    &&request.dispatches.some((dispatch:any)=>dispatch.requestId===current.owner.dispatchRequestId)
+    &&request.sources.some(source=>getAcceptedSessionInput(source.inputId)?.origin==='human'));
+  if(!linked.length)throw new TopicError('The question has no still-open human request linked to its own dispatch.',409,'QUESTION_RESTORE_REQUEST_CLOSED');
+
+  const expiryEventId=`topic-expire:reply:${input.dispatchId}:${topic.topicId}`;
+  const expiry=db.query("SELECT sequence,payload_json FROM session_owner_events WHERE event_id=? AND kind='topic_question'")
+    .get(expiryEventId) as {sequence:number;payload_json:string}|null;
+  if(!expiry)throw new TopicError('The exact retained dispatch-expiry event was not found.',409,'QUESTION_RESTORE_EVENT_MISSING');
+  const expiryPayload=JSON.parse(expiry.payload_json);
+  if(expiryPayload.change!=='settled'||expiryPayload.topicId!==topic.topicId)
+    throw new TopicError('The retained event is not this topic’s dispatch reply expiry.',409,'QUESTION_RESTORE_EVENT_WRONG');
+  const expired=(expiryPayload.questions??[]).find((question:StoredQuestion)=>question.questionId===current.questionId);
+  if(!expired||expired.state!=='expired'||canonicalQuestion(expired)!==canonicalQuestion(current))
+    throw new TopicError('The current question is not the unchanged snapshot from that expiry.',409,'QUESTION_RESTORE_SNAPSHOT_CHANGED');
+  if(typeof expired.brief?.endedBecause!=='string'||!expired.brief.endedBecause.startsWith('The agent finished the work it was for ('))
+    throw new TopicError('The retained question was not expired by a final reply.',409,'QUESTION_RESTORE_EVENT_WRONG');
+
+  const priorRow=db.query(`SELECT event_id,payload_json FROM session_owner_events INDEXED BY session_owner_events_question_relation
+    WHERE json_extract(payload_json,'$.topicId')=? AND kind='topic_question'
+      AND sequence<? AND EXISTS(SELECT 1 FROM json_each(payload_json,'$.questions') q WHERE json_extract(q.value,'$.questionId')=?)
+    ORDER BY sequence DESC LIMIT 1`).get(topic.topicId,expiry.sequence,current.questionId) as {event_id:string;payload_json:string}|null;
+  const priorPayload=priorRow?JSON.parse(priorRow.payload_json):null;
+  const prior=(priorPayload?.questions??[]).find((question:StoredQuestion)=>question.questionId===current.questionId);
+  if(!prior||!OPEN_QUESTION_STATES.includes(prior.state)||prior.answer||prior.replacedBy)
+    throw new TopicError('No retained open or partial question snapshot precedes this expiry.',409,'QUESTION_RESTORE_PRIOR_MISSING');
+  const expectedExpired={...prior,state:'expired',updatedAt:expired.updatedAt,
+    brief:{...prior.brief,endedBecause:expired.brief.endedBecause}};
+  if(canonicalQuestion(expectedExpired)!==canonicalQuestion(expired))
+    throw new TopicError('The expiry changed more than its state, timestamp and expiry reason.',409,'QUESTION_RESTORE_PRIOR_MISMATCH');
+
+  // Expiry did not change wording or exposure. Keep the exact original question revision and
+  // timestamp: they are also the pending-reply cutoff and the key for exposure/acknowledgment.
+  const restored:StoredQuestion={...prior};
+  return {restored,priorEventId:priorRow!.event_id,expiryEventId};
+}
 /**
  * The questions a thread's closure ended come back open when the thread reopens, so an Undo on a
  * one-tap close from the list loses nothing. Only questions this exact closure expired qualify
@@ -1211,8 +1265,10 @@ export function expireQuestionsForFinalReply(input:{workerSessionId:number|strin
     const request=toStoredRequest(row);
     if(!request.dispatches.some((dispatch:any)=>dispatch.requestId===input.requestId))continue;
     const topic=topicRow(request.topicId);
+    // A session can carry several independent dispatches. Its identity alone cannot prove which
+    // work a question belongs to; legacy and request-only questions end through their request.
     const open=topicQuestions(topic.topicId).filter(question=>OPEN_QUESTION_STATES.includes(question.state)
-      &&(question.owner?.dispatchRequestId===input.requestId||question.owner?.sessionId===address));
+      &&question.owner?.dispatchRequestId===input.requestId);
     if(!open.length)continue;
     const reason=`The agent finished the work it was for (${input.disposition}): ${input.reason}`;
     const questions=expireOpen(open,reason,at);
@@ -2582,6 +2638,23 @@ export function topicsCommand(actor:TopicActor,body:any,listHead?:number) {
         clearSettledLegacyNeeds(session,written);
         return {change:{kind:'topic_question',payload:{change:'settled',topicId:topic.topicId,topic:topicNext,questions:written,by,reason:why,revision:topicNext.revision}},
           result:{questions:written}};
+      });
+    }
+    case 'question.restore':{
+      assertInbox(session);
+      const questionId=text(body?.question_id,'question id',200);
+      const dispatchId=text(body?.dispatch,'--dispatch',200);
+      const expectedRevision=Number(body?.expected_revision);
+      if(!Number.isSafeInteger(expectedRevision)||expectedRevision<0)
+        throw new TopicError('--expected-revision is required and must be a whole number.');
+      const why=text(body?.reason,'reason',4000);
+      return agentMutation(actor,actionId(),{kind:'topic-question-restore',questionId,dispatchId,
+        expectedRevision,reason:why},()=>{
+        const {restored,priorEventId,expiryEventId}=restoreDispatchExpiredQuestion({questionId,dispatchId,expectedRevision});
+        const topic=topicRow(restored.topicId),topicNext=bumped(topic);
+        const payload={change:'restored',topicId:topic.topicId,topic:topicNext,questions:[restored],by,reason:why,
+          dispatchId,expiryEventId,priorEventId,restoredAt:nowIso(),revision:topicNext.revision};
+        return {change:{kind:'topic_question',payload},result:{question:restored,expiryEventId,priorEventId}};
       });
     }
     case 'answer':{

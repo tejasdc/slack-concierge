@@ -81,6 +81,9 @@ phase('reader-refusals');
 // the short child startup boundary on a busy production host.
 const dispatchClaim=await checkDispatchClaim();
 phase('dispatch-claim');
+const questionExpiry=await runFixtureChild({command:process.execPath,args:[join(import.meta.dir,'question-expiry-scope-fixture.ts')],
+  env:{...process.env},deadlineMs:30_000,fixture:'question-expiry-scope'});
+phase('question-expiry-scope');
 // Each lifecycle owns a distinct scratch directory and child process group.
 // Run their independent waits alongside growth checks, within the existing
 // 90-second release envelope rather than extending the deployment deadline.

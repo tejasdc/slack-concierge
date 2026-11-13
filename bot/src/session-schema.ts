@@ -353,6 +353,10 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
         CREATE INDEX IF NOT EXISTS session_owner_events_topic_relation
           ON session_owner_events(session_id,json_extract(payload_json,'$.topicId'),sequence)
           WHERE kind IN ('topic','topic_route');
+        -- A bounded question restoration looks up only one topic's retained question history.
+        CREATE INDEX IF NOT EXISTS session_owner_events_question_relation
+          ON session_owner_events(json_extract(payload_json,'$.topicId'),sequence)
+          WHERE kind='topic_question';
         -- Queued turns held for one reason (sign-in, backoff) are counted on every execution change.
         CREATE INDEX IF NOT EXISTS turns_queued_hold ON turns(dispatch_failure_class) WHERE status='queued';
         CREATE INDEX IF NOT EXISTS turns_session_latest ON turns(session_id,id DESC);
