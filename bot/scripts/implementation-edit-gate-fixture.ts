@@ -109,7 +109,7 @@ try{
   db.query("UPDATE sessions SET native_metadata_json=json_remove(native_metadata_json,'$.suspended') WHERE id=?").run(lifecycle.id);
   assert.equal(codexEdit('native-luna-child','luna-first','gpt-6-luna').exempt,'codex-helper');
   for(let i=0;i<4;i++)assert.equal(codexEdit('native-sol-child',`sol-${i}`,'gpt-6.1-sol').hold,false);
-  assert.equal(codexEdit('native-sol-child','sol-fifth','gpt-6.1-sol').hold,true,'Sol helper fifth edit uses parent turn budget');
+  assert.equal(codexEdit('native-sol-child','sol-fifth','gpt-6.1-sol').hold,true,'Sol helper fifth edit uses its own execution budget');
   const bindingCount=(db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE session_id=? AND kind='implementation_codex_helper_binding'").get(lifecycle.id) as any).count;
   assert.equal(bindingCount,2,'both Luna and Sol child turns retain exact parent bindings');
   assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE session_id=? AND kind='implementation_helper_edit' AND input_id=?").get(lifecycle.id,lifecycleInput.id) as any).count,5,
