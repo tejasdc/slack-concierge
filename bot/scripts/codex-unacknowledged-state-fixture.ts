@@ -10,8 +10,8 @@ process.env.CONCIERGE_CAPTURE_STATE_DIR=join(scratch,'capture');
 process.env.CONCIERGE_TEST_MODE='1';
 process.env.CONCIERGE_TEST_AUTHORIZATION=IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION;
 const [{db,getSessionById},{createNativeSession,retainSessionInput,enqueueSessionInput,nativeRunId,recordSessionEvent},
-  {reserveCodexUnacknowledgedRecovery,codexUnacknowledgedRecovery},{nativeResultEventId}]=await Promise.all([
-  import('../src/state'),import('../src/session-inputs'),import('../src/state'),import('../src/native-result-identity')]);
+  {reserveCodexUnacknowledgedRecovery,codexUnacknowledgedRecovery},{nativeResultEventId},{readRetainedNativeResult}]=await Promise.all([
+  import('../src/state'),import('../src/session-inputs'),import('../src/state'),import('../src/native-result-identity'),import('../src/turn-recovery')]);
 try{
   const session=createNativeSession('codex',{title:'recovery fixture',summary:undefined,purpose:'verify exact recovery',origin:'native',
     providerRunner:null,model:'gpt-6-astra'});
@@ -27,10 +27,10 @@ try{
   enqueueSessionInput(report.id);
   const reportTurn=Number((db.query('SELECT turn_id FROM session_inputs WHERE id=?').get(report.id) as any).turn_id),runId=nativeRunId(reportTurn);
   db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',admission:{provider:'codex',inputId:report.id,
-    runId,bindingGeneration:session.binding_generation,model:'gpt-6-astra',reasoningEffort:'xhigh'}}),report.id);
-  db.query(`UPDATE turns SET status='done',dispatch_attempt=1,dispatch_failure_class=NULL,
+    runId,bindingGeneration:session.binding_generation,model:'gpt-6-astra'}}),report.id);
+  db.query(`UPDATE turns SET status='done',dispatch_attempt=1,dispatch_failure_class=NULL,agent_text='',
     provider_admission_intended_at=CURRENT_TIMESTAMP,provider_started_at=CURRENT_TIMESTAMP,provider_turn_id='native-one',
-    provider_input_acknowledged_at=NULL,agent_text=NULL,outbound_text=NULL,ended_at=CURRENT_TIMESTAMP WHERE id=?`).run(reportTurn);
+    provider_input_acknowledged_at=NULL,outbound_text=NULL,ended_at=CURRENT_TIMESTAMP WHERE id=?`).run(reportTurn);
   db.query('UPDATE sessions SET status=? WHERE id=?').run('idle',session.id);
   recordSessionEvent({eventId:`attention:${report.id}:1`,sessionId:session.id,inputId:report.id,turnId:reportTurn,kind:'attention',payload:{dispatchAttempt:1}});
   recordSessionEvent({eventId:`prompt-cache-identity:${reportTurn}:1`,sessionId:session.id,turnId:reportTurn,
@@ -39,6 +39,8 @@ try{
     providerTurnId:'native-one',model:'gpt-6-astra',text:'',toolsUsed:[],dispatchAttempt:1};
   const {inputId:_inputId,sessionId:_sessionId,turnId:_turnId,runId:_runId,dispatchAttempt:_dispatchAttempt,...providerResult}=historicalResult;
   db.query('UPDATE turns SET outbound_text=? WHERE id=?').run(JSON.stringify({version:1,result:providerResult}),reportTurn);
+  assert.equal(readRetainedNativeResult(db.query('SELECT id,session_id,agent_text,outbound_text FROM turns WHERE id=?').get(reportTurn) as any).text,'',
+    'before reservation, restart reconciliation would consume the historical empty envelope');
   recordSessionEvent({eventId:nativeResultEventId(reportTurn,1),sessionId:session.id,inputId:report.id,turnId:reportTurn,
     kind:'result',payload:historicalResult});
   db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,
@@ -50,13 +52,20 @@ try{
     {dispatchAttempt:1,providerTurnId:'native-one',status:'completed',itemCount:0}],unmappedEmptyTurns:0};
   const reservation={sessionId:session.id,inputId:report.id,turnId:reportTurn,requestId,providerThreadId:'thread-exact',
     bindingGeneration:session.binding_generation,proof:evidence,actionId:'first-action',sourceInputId:original.id,sourceRunId:runId,nowMs:1000};
+  db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',admission:{provider:'codex',inputId:report.id,
+    runId,bindingGeneration:session.binding_generation,model:'gpt-6-astra',reasoningEffort:'high'}}),report.id);
+  assert.equal(reserveCodexUnacknowledgedRecovery(reservation),false,'a conflicting explicit admission effort cannot be overridden by prompt evidence');
+  db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',admission:{provider:'codex',inputId:report.id,
+    runId,bindingGeneration:session.binding_generation,model:'gpt-6-astra'}}),report.id);
   assert.equal(reserveCodexUnacknowledgedRecovery(reservation),true,'valid report-back gets one atomic reservation and queue transition');
   const saved=codexUnacknowledgedRecovery(report.id)!;
   assert.equal(saved.request_id,requestId);
   assert.equal(JSON.parse(saved.proof_json).attempts.length,1,'all historical attempt evidence remains durable');
-  const queued=db.query('SELECT status,provider_turn_id,provider_input_acknowledged_at,reasoning_effort FROM turns WHERE id=?').get(reportTurn) as any;
-  assert.deepEqual(queued,{status:'queued',provider_turn_id:null,provider_input_acknowledged_at:null,reasoning_effort:'xhigh'},
-    'recovery retains the exact admitted native effort for the same turn');
+  const queued=db.query('SELECT status,provider_turn_id,provider_input_acknowledged_at,reasoning_effort,outbound_text FROM turns WHERE id=?').get(reportTurn) as any;
+  assert.deepEqual(queued,{status:'queued',provider_turn_id:null,provider_input_acknowledged_at:null,reasoning_effort:'xhigh',outbound_text:null},
+    'recovery restores prompt-proven effort and clears the prior attempt delivery envelope before a new attempt');
+  assert.throws(()=>readRetainedNativeResult(db.query('SELECT id,session_id,agent_text,outbound_text FROM turns WHERE id=?').get(reportTurn) as any),
+    /no retained result envelope/,'after reservation, restart reconciliation cannot consume the historical empty envelope');
   const oldResult=db.query('SELECT event_id,payload_json FROM session_owner_events WHERE event_id=?').get(`result:${reportTurn}`) as any;
   assert.equal(JSON.parse(oldResult.payload_json).text,'','historical empty result identity and payload remain untouched');
   const secondResult={...historicalResult,providerTurnId:'native-recovery',text:'Recovered useful answer',dispatchAttempt:2};

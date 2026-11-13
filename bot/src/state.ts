@@ -4246,7 +4246,12 @@ export function reserveCodexUnacknowledgedRecovery(input:{sessionId:number;input
         AND json_extract(accepted.receipt_json,'$.admission.bindingGeneration')=session.binding_generation
         AND json_extract(accepted.receipt_json,'$.admission.provider')='codex'
         AND json_extract(accepted.receipt_json,'$.admission.model')='gpt-6-astra'
-        AND json_extract(accepted.receipt_json,'$.admission.reasoningEffort')='xhigh'
+        AND (json_extract(accepted.receipt_json,'$.admission.reasoningEffort')='xhigh'
+          OR turn.status='done' AND json_type(accepted.receipt_json,'$.admission.reasoningEffort') IS NULL
+            AND EXISTS (SELECT 1 FROM session_owner_events effort
+              WHERE effort.event_id='prompt-cache-identity:' || turn.id || ':' || turn.dispatch_attempt
+                AND effort.turn_id=turn.id AND effort.session_id=session.id AND effort.kind='prompt_cache_identity'
+                AND json_extract(effort.payload_json,'$.effort')='xhigh'))
         AND turn.native_run_id IS NOT NULL
         AND ((turn.status='parked' AND turn.dispatch_failure_class='parked_terminal'
               AND turn.agent_text LIKE 'CODEX_INPUT_NOT_ACKNOWLEDGED:%')
@@ -4275,7 +4280,8 @@ export function reserveCodexUnacknowledgedRecovery(input:{sessionId:number;input
                 AND attempt.kind='attention'
                 AND json_extract(attempt.payload_json,'$.dispatchAttempt')=turn.dispatch_attempt)
               AND EXISTS (SELECT 1 FROM session_owner_events identity
-                WHERE identity.turn_id=turn.id AND identity.session_id=session.id AND identity.kind='prompt_cache_identity'
+                WHERE identity.event_id='prompt-cache-identity:' || turn.id || ':' || turn.dispatch_attempt
+                  AND identity.turn_id=turn.id AND identity.session_id=session.id AND identity.kind='prompt_cache_identity'
                   AND json_extract(identity.payload_json,'$.effort')='xhigh')))
         AND turn.provider_input_acknowledged_at IS NULL
         AND ((turn.status='parked' AND turn.outbound_text IS NULL) OR turn.status='done')
@@ -4305,7 +4311,7 @@ export function reserveCodexUnacknowledgedRecovery(input:{sessionId:number;input
       if(String(error).includes('UNIQUE constraint failed'))return false;
       throw error;
     }
-    const changed=db.query(`UPDATE turns SET status='queued',owner_instance_id=NULL,agent_text=NULL,reasoning_effort='xhigh',
+    const changed=db.query(`UPDATE turns SET status='queued',owner_instance_id=NULL,agent_text=NULL,outbound_text=NULL,reasoning_effort='xhigh',
       ended_at=NULL,dispatch_failure_class='backoff',dispatch_next_attempt_ms=?,provider_admission_intended_at=NULL,
       provider_started_at=NULL,provider_turn_id=NULL,provider_input_acknowledged_at=NULL,
       status_desired_text=?,status_desired_revision=status_desired_revision+1,
