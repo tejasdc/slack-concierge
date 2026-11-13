@@ -40,6 +40,18 @@ async function parkedCodexTurn(name:string){
 const sweep=()=>claimAdoptableExecutions({instanceId:'sweeper',isOwnerAlive:()=>false,onlyParked:true});
 
 try{
+  // A retained Stop can arrive after the parked candidate was observed but before its atomic
+  // claim. Both the selection predicate and the claim itself must leave it parked.
+  const boundary=await parkedCodexTurn('stop-boundary');
+  db.query("UPDATE executions SET state='live' WHERE execution_id=?").run(boundary.executionId);
+  const boundaryExecution=db.query('SELECT * FROM executions WHERE execution_id=?').get(boundary.executionId) as any;
+  db.query('UPDATE turns SET stop_requested_at=CURRENT_TIMESTAMP WHERE id=?').run(boundary.turnId);
+  assert.equal((await sweep()).adopted.some(a=>a.claim.turn_id===boundary.turnId),false,'parked selection honors retained Stop');
+  assert.equal((db.query('SELECT status FROM turns WHERE id=?').get(boundary.turnId) as any).status,'parked');
+  const {claimExecutionTurn}=await import('../src/executions');
+  assert.equal(claimExecutionTurn(boundaryExecution,null,'racing-claimer',true),false,'atomic parked claim rechecks Stop');
+  assert.equal((db.query('SELECT status FROM turns WHERE id=?').get(boundary.turnId) as any).status,'parked');
+
   const stopped=await parkedCodexTurn('stopped');
   db.query('UPDATE turns SET stop_requested_at=CURRENT_TIMESTAMP WHERE id=?').run(stopped.turnId);
   const parked=await Promise.all(['a','b','c'].map(parkedCodexTurn));

@@ -6,4 +6,14 @@ The owner's `GET /sessions/v1/agent-test/sessions/<id>` family contains only `vi
 
 For the same test, the bridge injects those two headers on `POST /sessions/v1/attachments` and `POST /sessions/v1/sessions/<id>/inputs`. The owner requires the body agent source to equal the verified pair, checks the input target against the creation operation, and requires each submitted attachment to belong to that source. The original unmarked human and agent paths keep their existing contract. The agent uses a stable action ID; duplicate writes retain one operation receipt. The command sequencer and its command-status endpoint are owned by thnkr.ing and must check the same target/source/action binding there.
 
+The native Codex loss and Stop actions use the same private owner bridge and require a separate
+explicitly marked disposable create input with a finite future fault deadline. Ordinary agent
+creates do not acquire a dedicated client or fault controls. The owner binds controls to that
+create request, its exact source input/run, and the target's current native run; it rechecks Stop
+and the execution/attempt/connection generation immediately before a loss. Expiry disables only
+loss injection: the normal Stop and recovery path keeps custody of accepted work. A callback or
+bridge-disconnect acknowledgment does not prove provider termination; exact terminal provider
+history does. See the wire contract and native Codex acceptance runbook for the retained receipt
+and controller procedure.
+
 This authorizes an acceptance entrance, not a fabricated provider turn. The requesting agent starts a disposable real provider session after both products have installed the contract, then observes the second browser's live session view, the accepted input and attachment receipts, provider delivery, and visible reply separately. A source build or owner unit check is not that observation.

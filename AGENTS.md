@@ -86,6 +86,12 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [wire contract](docs/contracts/session-owner-v1.md),
   [human command custody](docs/architecture/HUMAN-COMMAND-INTAKE.md), and
   [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md).
+- A Stop on adopted Codex work follows the original provider turn through exact
+  history reconciliation; missing identity or terminal evidence stays uncertain
+  and never resubmits the accepted input. See
+  [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md#stop-while-taking-back-an-existing-codex-turn).
+  The one-time source-bound native recovery controls and post-release acceptance procedure are
+  documented in [the Codex recovery runbook](docs/runbooks/CODEX-NATIVE-RECOVERY-ACCEPTANCE.md).
 - Bug-button intake stays independent; later duplicate-report consolidation retains the
   human correction and acting agent, while scoped secondary routing keeps the original
   report in its primary topic. See [native Inbox](docs/contracts/native-inbox.md).
@@ -113,6 +119,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 | Owner on its own app server, agents' network entrance and tokens, runner lease protocol | [Runners](docs/architecture/RUNNERS.md), [execution host](docs/architecture/EXECUTION-HOST.md) |
 | Runner reads of report source chains and bounded report windows | [Runners](docs/architecture/RUNNERS.md) |
 | Agent browser acceptance for one created provider session | [Agent browser acceptance](docs/architecture/AGENT-BROWSER-ACCEPTANCE.md) |
+| Explicit disposable native Codex test selection, deadline and source-bound fault controls | [Router actions](docs/runbooks/ROUTER-ACTIONS.md#disposable-native-codex-tests), [session-owner wire contract](docs/contracts/session-owner-v1.md), [native Codex acceptance](docs/runbooks/CODEX-NATIVE-RECOVERY-ACCEPTANCE.md) |
 | Runner-resolved project folders, standing-agent schedule targets and bounded project file, TODO, worktree, Google and outside-run operations | [Runners](docs/architecture/RUNNERS.md#runner-machine-calls), [router actions](docs/runbooks/ROUTER-ACTIONS.md#standing-agents) |
 | Provider accounts, sign-in custody and account homes on runners | [Runners](docs/architecture/RUNNERS.md#provider-accounts-on-runners), [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md) |
 | Bounded reads, owner-block I/O evidence, SQLite ledger durability and diagnostic snapshots | [Storage observation](docs/architecture/STORAGE-OBSERVATION.md), [ledger durability](docs/architecture/LEDGER-DURABILITY.md), [native read execution](docs/architecture/NATIVE-READ-EXECUTION.md), [diagnostic snapshot](docs/runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md) |

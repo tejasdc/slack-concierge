@@ -3,7 +3,7 @@ import { requestApiResponse } from "./router-request-client";
 import {readFileSync} from 'node:fs';
 import {basename} from 'node:path';
 import {createHash} from 'node:crypto';
-import {parseProviderSelector,normalizeReasoningEffort,chatgptThinkingLevel,chatgptProject,CHATGPT_PROJECT_PREFIX,CHATGPT_GPT_RETIREMENT,CHATGPT_THINKING_LEVELS,DEFAULT_CHATGPT_THINKING,DEFAULT_HIS_CHATGPT_THINKING} from '../src/aliases';
+import {parseProviderSelector,normalizeReasoningEffort,chatgptThinkingLevel,chatgptProject,CHATGPT_PROJECT_PREFIX,CHATGPT_GPT_RETIREMENT,CHATGPT_THINKING_LEVELS,DEFAULT_CHATGPT_THINKING,DEFAULT_HIS_CHATGPT_THINKING,PROVIDER_ALIASES} from '../src/aliases';
 import {REQUEST_PROTOCOL} from '../src/request-protocol';
 import {nextDailyWallClock,validDailyWallClock} from '../src/daily-wall-clock';
 import {IMPLEMENTATION_ALIASES} from '../src/implementation-models';
@@ -22,11 +22,12 @@ router-actions.sh sessions peers <source-flags>
 router-actions.sh sessions usage <source-flags> [--by-session] [--period today|week]
 router-actions.sh sessions history-storage claude|codex <source-flags> [--after <next filename>] [--limit 1..2000]
 router-actions.sh sessions auth switch codex <saved-profile-id> [--machine mac] <source-flags> --action-id A
+router-actions.sh sessions codex-test stop|connection-loss concierge:<id> --create request:<id> --run <native-run-id> <source-input/run> --action-id A
 router-actions.sh sessions search <source-flags> [--limit N] [--peer <instance>] [--thread <message-id>] -- <concept...>
 router-actions.sh sessions context <address> <source-flags> [--thread <message-id>]
 router-actions.sh sessions ask <address> <source-flags> --action-id A [--escalation-reason "<model-selection trigger>" for an existing Astra session] [--thread <message-id> | --route-message <human-input-id>] [--return-to-requester] --summary "<one line>" [--answer-view summary|full] [--after-request <request-id> ...] [--after-settled <request-id> ...] -- <text>
 router-actions.sh sessions ask --role <standing-agent-role> <source-flags> --action-id A --summary "<one line>" [--session-name <title>] -- <text>
-router-actions.sh sessions ask --project <registered-project> [--provider auto|<alias>] [--small-task] [--effort <level>] --session-name <title> --summary "<one line>" [--consult <address>] <source-flags> --action-id A [--file <path> ...] [--capture-id <id>] -- <text>
+router-actions.sh sessions ask --project <registered-project> [--provider auto|<alias>] [--small-task] [--effort <level>] [--codex-native-test-until <ISO-8601-time>] --session-name <title> --summary "<one line>" [--consult <address>] <source-flags> --action-id A [--file <path> ...] [--capture-id <id>] -- <text>
 router-actions.sh sessions ask --purpose research|design-critique|design-review [--provider <alias> --provider-reason "<why ChatGPT Pro is not used>"] [--project <registered-project> (alternate coding provider only)] --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
 router-actions.sh sessions implement --project <registered-project> [--provider ${IMPLEMENTATION_ALIASES.join('|')}] --session-name <title> --summary "<fixed implementation goal>" <source-flags> --action-id A [--text-file F | -- <design and acceptance criteria>]
 router-actions.sh sessions ask <the frozen ask's exact flags, action ID and text> --resume-source-input <original input> --resume-source-run <original run> <this run's source-flags>
@@ -177,7 +178,7 @@ export type SessionCommunicationRequest =
   | { operation: "auth-switch"; body: { source: Source; action_id:string; profile_id:string; machine?:'mac' } }
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string; thread?: string } }
   | { operation: "context"; body: { source: Source; address: string; thread?: string } }
-  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; role?:string; provider?: string; purpose?:'research'|'design-critique'|'design-review';providerReason?:string; implementation?:boolean; smallTask?:boolean; effort?:string; escalationReason?:string; project?:string; title?: string; text: string; after?: string[]; pace?: string[]; summary?: string; answer_view?: 'summary'|'full'; return_to_requester?:boolean; for_task?:string; recovery_of?:string; correction_of?:string; resume_source?:{input_id:string;run_id:string}; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;daily?:{time:string;timeZone:string};quietOnly?:boolean} } }
+  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; role?:string; provider?: string; purpose?:'research'|'design-critique'|'design-review';providerReason?:string; implementation?:boolean; smallTask?:boolean; codexNativeTestFaultDeadlineMs?:number; effort?:string; escalationReason?:string; project?:string; title?: string; text: string; after?: string[]; pace?: string[]; summary?: string; answer_view?: 'summary'|'full'; return_to_requester?:boolean; for_task?:string; recovery_of?:string; correction_of?:string; resume_source?:{input_id:string;run_id:string}; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;daily?:{time:string;timeZone:string};quietOnly?:boolean} } }
   | {operation:'edit-reason';body:{source:Source;action_id:string;reason:string}}
   | { operation: "note"; body: { source: Source; action_id:string; captureId?:string; messageId?:string; summary?:string; addTo?:string; person?:string; journal?:"entry"|"checkin" } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string; address?:string } }
@@ -199,6 +200,7 @@ export type SessionCommunicationRequest =
   | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'|'daily'; turn_id?:number; action_id?:string;cursor?:string;time?:string;timeZone?:string } }
   | { operation: "pause"; body: { source: Source; verb:'status'|'all'|'resume'; action_id?:string; session_ids?:string[] } }
   | { operation: "control"; body: { source: Source; verb:'pause'|'continue'; address:string; action_id:string } }
+  | { operation: "codex-test-control"; body: { source: Source; verb:'stop'|'connection-loss'; session_id:string; create_input_id:string; run_id:string; action_id:string } }
   | { operation: "board"; body: { source?: Source; verb: string; [key: string]: unknown } };
 
 class SessionUsageError extends Error {}
@@ -434,6 +436,21 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     }
     if(!flags.get('--action-id'))invalid('chatgpt-recover needs a stable --action-id.');
     return {operation:'chatgpt-recover',body:{source:sourceFrom(flags),action_id:flags.get('--action-id')!,request_id:requestId}};
+  }
+  if(first==='codex-test'){
+    const verb=args.shift(),session_id=args.shift();
+    if((verb!=='stop'&&verb!=='connection-loss')||!/^concierge:[1-9]\d*$/.test(session_id??''))
+      invalid('codex-test needs stop or connection-loss and an exact concierge:<session-id> target.');
+    const flags=new Map<string,string>();
+    while(args.length){const flag=args.shift()!,value=args.shift();
+      if(!['--source-input','--source-run','--action-id','--create','--run'].includes(flag)||!value?.trim()||value.startsWith('--')||flags.has(flag))
+        invalid(`Invalid or repeated codex-test option ${flag}.`);
+      flags.set(flag,value);
+    }
+    const source=sourceFrom(flags);
+    if(!('input_id' in source)||!/^request:[0-9a-f-]{36}$/i.test(flags.get('--create')??'')||!flags.get('--run')||!flags.get('--action-id'))
+      invalid('codex-test needs exact source input/run, --create request:<uuid>, --run native-run-id and stable --action-id.');
+    return {operation:'codex-test-control',body:{source,verb,session_id,create_input_id:flags.get('--create')!,run_id:flags.get('--run')!,action_id:flags.get('--action-id')!}};
   }
   if(first==='legacy-link'){
     const requestId=args.shift();
@@ -801,6 +818,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === "--topic" && operation === "post")
       || (flag === "--promise-request" && operation === "post")
       || (flag === "--provider" && operation === "ask")
+      || (flag === "--codex-native-test-until" && operation === "ask")
       || (flag === "--role" && operation === "ask")
       || (flag === "--at" && savedKind==='scheduled')
       || (flag === "--expires" && savedKind==='scheduled')
@@ -1022,6 +1040,9 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(title!==undefined&&title.length>120)invalid('--session-name must contain 1–120 characters.');
   if(title!==undefined&&!provider&&!role)invalid('--session-name names a newly created session; use the session title action to rename an existing session.');
   const effort=flags.get('--effort'),project=flags.get('--project'),requestedEffect=flags.get('--requested-effect');
+  const codexNativeTestUntil=flags.get('--codex-native-test-until');
+  const codexNativeTestDeadlineMs=codexNativeTestUntil===undefined?undefined:Date.parse(codexNativeTestUntil);
+  const selectedProvider=provider&&provider!=='auto'?PROVIDER_ALIASES[parseProviderSelector(provider)?.alias??'cc'].provider:null;
   const providerReason=flags.get('--provider-reason')?.trim();
   if(declaredPurpose&&(!provider||identity||role||implementation||outside||savedKind||flags.has('--gpt')))
     invalid('A declared research or design-review purpose starts one new ordinary session.');
@@ -1068,6 +1089,9 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(smallTask&&(provider!=='auto'||peer||identity))invalid('--small-task requires a new local Automatic session.');
   if(outside&&(identity||peer||savedKind||provider==='chatgpt'||provider==='auto'||!project))
     invalid('--outside starts a new Codex session on this machine: give --project (and optionally a Codex --provider alias), not an address, --peer, ChatGPT, Automatic or saved work.');
+  if(codexNativeTestUntil!==undefined&&(!project||identity||role||peer||selectedProvider!=='codex'
+    ||outside||onRunner||savedKind||implementation||!Number.isSafeInteger(codexNativeTestDeadlineMs)||codexNativeTestDeadlineMs!<=Date.now()))
+    invalid('--codex-native-test-until requires a new local, unsaved Codex session and a finite future ISO-8601 deadline.');
   if(!provider&&!role&&(project||effort))invalid('--project and --effort require new session creation.');
   if(provider&&provider!=='chatgpt'&&!project)invalid(peer?'New coding sessions on a peer require --project from sessions projects --peer <instance>.':'New coding sessions require --project from sessions projects.');
   if(peer&&(after.length||pace.length))invalid('A peer request cannot wait on --after-request or --after-settled.');
@@ -1101,7 +1125,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       invalid('--every-ms requires an interval of at least one minute.');
   }
   return operation === "ask"
-    ? { operation, body: { source, action_id: actionId, ...(role?{role}:provider?{provider}:{address:identity!}), ...(declaredPurpose?{purpose:declaredPurpose}:{}),...(providerReason?{providerReason}:{}), ...(implementation?{implementation:true}:{}), ...(smallTask?{smallTask:true}:{}), ...(outside?{outside:true}:{}), ...(onRunner?{onRunner:true}:{}), ...(title===undefined?{}:{title}), text: content[0]??'', ...(after.length ? { after } : {}),...(pace.length ? { pace } : {}),...(identity?(hisChat?{hisChat:true}:{}):(hisChat?{effort:`tejas:${chatgptChoice??''}`}:chatgptChoice?{effort:chatgptChoice}:defaultPro&&provider==='chatgpt'?{effort:'pro'}:{})),...(flags.has("--escalation-reason")?{escalationReason:flags.get("--escalation-reason")!}:{}),...(project?{project}:{}),...attached,...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(flags.has('--route-message')?{routeMessageId:flags.get('--route-message')!}:{}),...(implementation||returnToRequester?{return_to_requester:true}:{}),...(flags.has('--for-task')?{for_task:flags.get('--for-task')!}:{}),...(flags.has('--recovery-of')?{recovery_of:flags.get('--recovery-of')!}:{}),...(flags.has('--correction-of')?{correction_of:flags.get('--correction-of')!}:{}),...(flags.has('--resume-source-input')?{resume_source:{input_id:flags.get('--resume-source-input')!,run_id:flags.get('--resume-source-run')!}}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(implementation?{requestedEffect:"work"}:requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(summary?{summary}:{}),...(answerView?{answer_view:answerView as 'summary'|'full'}:{}),...(flags.has('--machine-need')?{machine_need:flags.get('--machine-need')!}:{}),...(flags.has('--server-attempt-url')||flags.has('--server-attempt-failure')?{server_attempt:{url:flags.get('--server-attempt-url'),failure:flags.get('--server-attempt-failure')}}:{}),...(flags.has('--consult')?{consult:flags.get('--consult')!}:{}),...(resurrect?{resurrect:true}:{}),...(savedKind?{saved:{kind:savedKind,...(savedKind==='scheduled'?{atMs:scheduledAt}:{}),...(flags.has('--expires')?{expiresAtMs:Date.parse(flags.get('--expires')!)}:{}),...(flags.has('--every-ms')?{repeatEveryMs:Number(flags.get('--every-ms'))}:{}),...(daily?{repeatEveryMs:86_400_000,daily}:{}),...(quietOnly?{quietOnly:true}:{})}}:{}) } }
+    ? { operation, body: { source, action_id: actionId, ...(role?{role}:provider?{provider}:{address:identity!}), ...(declaredPurpose?{purpose:declaredPurpose}:{}),...(providerReason?{providerReason}:{}), ...(implementation?{implementation:true}:{}), ...(smallTask?{smallTask:true}:{}), ...(outside?{outside:true}:{}), ...(onRunner?{onRunner:true}:{}), ...(codexNativeTestDeadlineMs===undefined?{}:{codexNativeTestFaultDeadlineMs:codexNativeTestDeadlineMs}), ...(title===undefined?{}:{title}), text: content[0]??'', ...(after.length ? { after } : {}),...(pace.length ? { pace } : {}),...(identity?(hisChat?{hisChat:true}:{}):(hisChat?{effort:`tejas:${chatgptChoice??''}`}:chatgptChoice?{effort:chatgptChoice}:defaultPro&&provider==='chatgpt'?{effort:'pro'}:{})),...(flags.has("--escalation-reason")?{escalationReason:flags.get("--escalation-reason")!}:{}),...(project?{project}:{}),...attached,...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(flags.has('--route-message')?{routeMessageId:flags.get('--route-message')!}:{}),...(implementation||returnToRequester?{return_to_requester:true}:{}),...(flags.has('--for-task')?{for_task:flags.get('--for-task')!}:{}),...(flags.has('--recovery-of')?{recovery_of:flags.get('--recovery-of')!}:{}),...(flags.has('--correction-of')?{correction_of:flags.get('--correction-of')!}:{}),...(flags.has('--resume-source-input')?{resume_source:{input_id:flags.get('--resume-source-input')!,run_id:flags.get('--resume-source-run')!}}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(implementation?{requestedEffect:"work"}:requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(summary?{summary}:{}),...(answerView?{answer_view:answerView as 'summary'|'full'}:{}),...(flags.has('--machine-need')?{machine_need:flags.get('--machine-need')!}:{}),...(flags.has('--server-attempt-url')||flags.has('--server-attempt-failure')?{server_attempt:{url:flags.get('--server-attempt-url'),failure:flags.get('--server-attempt-failure')}}:{}),...(flags.has('--consult')?{consult:flags.get('--consult')!}:{}),...(resurrect?{resurrect:true}:{}),...(savedKind?{saved:{kind:savedKind,...(savedKind==='scheduled'?{atMs:scheduledAt}:{}),...(flags.has('--expires')?{expiresAtMs:Date.parse(flags.get('--expires')!)}:{}),...(flags.has('--every-ms')?{repeatEveryMs:Number(flags.get('--every-ms'))}:{}),...(daily?{repeatEveryMs:86_400_000,daily}:{}),...(quietOnly?{quietOnly:true}:{})}}:{}) } }
     : { operation, body: { source, action_id: actionId, request_id: identity!, text: message, final: !partial, ...(summary?{summary}:{}),...(notify?{notify:true}:{}),...(alsoMainThread?{also_main_thread:true}:{}),
         ...(answersQuestion?{answers_question:true}:{}),
         ...(flags.has('--waiting-on-watch')?{waiting_on_watch:flags.get('--waiting-on-watch')!}:{}),
@@ -1112,6 +1136,13 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
 }
 
 export async function runRouterSessions(request: SessionCommunicationRequest) {
+  if(request.operation==='codex-test-control'){
+    const {source,verb,session_id,create_input_id,run_id,action_id}=request.body;
+    if(!('input_id' in source))throw new Error('codex-test requires an exact agent source input/run pair.');
+    const path=`/sessions/v1/agent-test/sessions/${encodeURIComponent(session_id)}/${verb==='stop'?'stop':'connection-loss'}`;
+    return requestApiResponse(path,{clientActionId:action_id,runId:run_id,createInputId:create_input_id,
+      agentSource:{inputId:source.input_id,runId:source.run_id}});
+  }
   if(request.operation==='agents')return requestApiResponse('/sessions/v1/presentation/agents');
   if (request.operation !== 'reply' || !request.body.also?.length)
     return requestApiResponse(`/session-communication/${request.operation}`, request.body);

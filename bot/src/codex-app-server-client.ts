@@ -77,6 +77,7 @@ export interface CodexAppServerClientLike {
   onNotification(listener: NotificationListener): () => boolean;
   onDisconnect(listener: DisconnectListener): () => boolean;
   waitForDisconnect(generation: number): Promise<void>;
+  loseConnectionGeneration?(generation: number): Promise<"observed" | "stale">;
 }
 
 export function codexAppServerSocketPath() {
@@ -103,6 +104,8 @@ export class CodexAppServerClient {
       relayRunner?: string | null;
     } = {},
   ) {}
+
+  get activeGeneration() { return this.active?.generation ?? null; }
 
   connect(): Promise<number> {
     if (this.closed) {
@@ -176,6 +179,19 @@ export class CodexAppServerClient {
   waitForDisconnect(generation: number) {
     const connection = this.active;
     return connection?.generation === generation ? connection.disconnected : Promise.resolve();
+  }
+
+  /** Lose one captured bridge/socket generation while leaving this client reconnectable. */
+  async loseConnectionGeneration(generation: number): Promise<"observed" | "stale"> {
+    const connection = this.active;
+    if (!connection || connection.generation !== generation || this.closed) return "stale";
+    // SIGKILL is sent only to this client's owned bridge, whose bridge owns this socket. SIGTERM
+    // asks the bridge to perform a WebSocket close handshake, which can wait on an unresponsive
+    // server and leave this fault action ambiguous forever. The daemon and every other client are
+    // untouched; success still waits for the normal child-exit disconnect path.
+    connection.process.kill("SIGKILL");
+    await connection.disconnected;
+    return "observed";
   }
 
   async close(options: { immediate?: boolean } = {}) {

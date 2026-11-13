@@ -450,6 +450,8 @@ export type SessionOwnerRuntime = {
   wake():void;
   steer(input:AcceptedSessionInput):boolean;
   stop(sessionId:number,turnId:number):Promise<boolean>;
+  prepareCodexTestConnectionLoss?(sessionId:number,turnId:number):{executionId:string;dispatchAttempt:number;generation:number;faultDeadlineMs:number}|null;
+  codexTestConnectionLoss?(sessionId:number,turnId:number,binding:{executionId:string;dispatchAttempt:number;generation:number;faultDeadlineMs:number}):Promise<"observed"|"stale">;
   safeStop?(sessionId:number,turnId:number):Promise<boolean>;
   available(provider:ProviderId):boolean;
   peerForPath?(path:string):string|null;
@@ -1102,10 +1104,12 @@ export class SessionOwner {
   }
   private session(id:string) {const row=getSessionById(parseSessionId(id));if(!row)throw new SessionOwnerError('Unknown session.',404);return row;}
   private input(id:string) {const row=getAcceptedSessionInput(id);if(!row)throw new SessionOwnerError('Unknown operation.',404);return row;}
-  private agentBrowserBinding(request:Request,sessionId?:string) {
-    const marked=request.headers.get('x-concierge-verified-agent-source');
-    const createId=request.headers.get('x-concierge-agent-test-create');
-    if(!marked||!createId||!/^request:[0-9a-f-]{36}$/i.test(createId))
+  private agentBrowserBinding(request:Request,sessionId?:string,body?:Record<string,any>,requireCodexTestOptIn=false) {
+    const marked=request.headers.get('x-concierge-verified-agent-source')
+      ??(body?.agentSource&&typeof body.agentSource.inputId==='string'&&typeof body.agentSource.runId==='string'
+        ?`${body.agentSource.inputId} ${body.agentSource.runId}`:null);
+    const createId=request.headers.get('x-concierge-agent-test-create')??body?.createInputId;
+    if(!marked||typeof createId!=='string'||!/^request:[0-9a-f-]{36}$/i.test(createId))
       throw new SessionOwnerError('A verified agent source and exact creation request are required.',403,'AGENT_TEST_SCOPE_REQUIRED');
     const pair=/^(\S+) (\S+)$/.exec(marked);
     if(!pair)throw new SessionOwnerError('A verified agent source pair is required.',403,'AGENT_TEST_SCOPE_REQUIRED');
@@ -1114,6 +1118,12 @@ export class SessionOwner {
     if(!created||created.kind!=='create'||created.origin!=='agent'||created.source_input_id!==source.inputId||created.source_run_id!==source.runId
       ||created.request_id!==createId.slice('request:'.length)||sessionId&&`concierge:${created.session_id}`!==sessionId)
       throw new SessionOwnerError('This agent did not create the exact test session.',403,'AGENT_TEST_SCOPE_REFUSED');
+    if(requireCodexTestOptIn){
+      const payload=JSON.parse(created.payload_json) as {codexNativeTestFaultDeadlineMs?:unknown};
+      if(getSessionById(created.session_id)?.provider_id!=='codex'||typeof payload.codexNativeTestFaultDeadlineMs!=='number'
+        ||!Number.isSafeInteger(payload.codexNativeTestFaultDeadlineMs))
+        throw new SessionOwnerError('This session was not explicitly selected as disposable native Codex test work.',403,'AGENT_TEST_OPT_IN_REQUIRED');
+    }
     // The session's own replies and requests use its current input as their source.
     // A human or another agent may also write here; their words close this entrance.
     const foreign=db.query(`SELECT 1 FROM session_inputs AS candidate WHERE candidate.session_id=? AND
@@ -1433,12 +1443,20 @@ export class SessionOwner {
   }
   /** Called only inside the communication owner's source-validated request transaction. */
   /** A peer instance's request has no local source input; its scope names the peer and the remote input instead. */
-  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;escalationReason?:string;attestedHumanModel?:string;project?:string;projectLocation?:{name:string;path:string;cwd:string;runner:string|null};title?:string;summary?:string;smallTask?:boolean;outside?:boolean;onRunner?:boolean;standingRole?:StandingAgentRole;implementation?:boolean;firstInput:{text:string;machineNeed?:import('./machine-need').MachineNeed;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;daily?:{time:string;timeZone:string};quietOnly?:boolean}}) {
+  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;escalationReason?:string;attestedHumanModel?:string;project?:string;projectLocation?:{name:string;path:string;cwd:string;runner:string|null};title?:string;summary?:string;smallTask?:boolean;outside?:boolean;onRunner?:boolean;standingRole?:StandingAgentRole;implementation?:boolean;codexNativeTestFaultDeadlineMs?:number;firstInput:{text:string;machineNeed?:import('./machine-need').MachineNeed;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;daily?:{time:string;timeZone:string};quietOnly?:boolean}}) {
     const title=normalizeSessionTitle(input.title);
     const source=input.sourceInputId?getAcceptedSessionInput(input.sourceInputId):null;
     const sourceProvider=source&&getSessionById(source.session_id)?.provider_id;
     const delegatedFrom=sourceProvider==='claude-code'||sourceProvider==='codex'?sourceProvider:null;
     const selected=this.requestTarget({...input,choiceKey:input.requestId},delegatedFrom);
+    if(input.codexNativeTestFaultDeadlineMs!==undefined){
+      if(selected.provider!=='codex'||!Number.isSafeInteger(input.codexNativeTestFaultDeadlineMs)||input.codexNativeTestFaultDeadlineMs<=Date.now()
+        ||input.outside||input.onRunner||input.saved||input.standingRole||input.implementation||!input.sourceInputId||!input.sourceRunId)
+        throw new SessionOwnerError('Native Codex test selection requires a new local, unsaved Codex request and a finite future deadline.',400,'AGENT_TEST_OPT_IN_INVALID');
+      if(!source||source.origin!=='agent'||source.turn_id===null)throw new SessionOwnerError('Native Codex test selection requires its admitted agent source.',403,'AGENT_TEST_SOURCE_REQUIRED');
+      const sourceTurn=db.query('SELECT native_run_id FROM turns WHERE id=? AND session_id=?').get(source.turn_id,source.session_id) as {native_run_id:string|null}|null;
+      if(!sourceTurn||sourceTurn.native_run_id!==input.sourceRunId)throw new SessionOwnerError('Native Codex test source run does not match its accepted input.',403,'AGENT_TEST_SOURCE_MISMATCH');
+    }
     const humanThinkingChoice=!!selected.model&&(input.attestedHumanModel===selected.model||humanChoseThinkingModel(input.sourceInputId,selected.model));
     const humanChoice=!!selected.model&&!!topModel(selected.model)&&humanThinkingChoice;
     const refused=escalationReason(selected.model,input.escalationReason,humanChoice);
@@ -1459,7 +1477,8 @@ export class SessionOwner {
     if(input.standingRole)bindStandingAgentSession(this.defaultCwd,input.standingRole,session);
     this.validateAttachments(session,input.firstInput.attachments);
     const operation=retainSessionInput({id:`request:${input.requestId}`,sessionId:session.id,scope:input.scope??`session:${input.sourceInputId}`,actionId:`request:${input.requestId}`,kind:'create',origin:'agent',
-      payload:{...selected,...(title===undefined?{}:{title}),delivery:'queue',firstInput:input.firstInput},sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,requestId:input.requestId}).input;
+      payload:{...selected,...(title===undefined?{}:{title}),delivery:'queue',firstInput:input.firstInput,
+        ...(input.codexNativeTestFaultDeadlineMs===undefined?{}:{codexNativeTestFaultDeadlineMs:input.codexNativeTestFaultDeadlineMs})},sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,requestId:input.requestId}).input;
     this.recordCreation(session,operation,true);
     if(topModel(selected.model))recordSessionEvent({eventId:`model-escalation:${input.requestId}`,sessionId:session.id,inputId:operation.id,
       kind:'model_escalation',payload:{model:selected.model,reason:humanChoice?'explicit human model choice':input.escalationReason,sourceInputId:input.sourceInputId??null}});
@@ -3081,15 +3100,30 @@ export class SessionOwner {
     return {operation:this.receipt(operation),target:this.receipt(this.input(target.id))};
   }
   async stop(id:string,body:unknown) {
+    return this.stopExact(id,body);
+  }
+  private async stopExact(id:string,body:unknown,actor?:{inputId:string;runId:string;targetAddress:string;authorityInputId:string}) {
     const session=this.session(id),input=object(body);only(input,['clientActionId','runId']);
-    const prior=this.existingAction(session.id,'stop',input);
+    const scope=actor?`communication:${actor.inputId}`:'surface:thinkering';
+    const prior=actor
+      ?db.query('SELECT * FROM session_inputs WHERE scope=? AND action_id=?').get(scope,actionId(input)) as AcceptedSessionInput|null
+      :this.existingAction(session.id,'stop',input);
+    if(prior&&(prior.session_id!==session.id||prior.kind!=='stop'||stablePayload(JSON.parse(prior.payload_json))!==stablePayload(actor?{...input,actor}:input)))
+      throw new SessionOwnerError('Idempotency conflict.',409);
     if(prior)return {session:this.view(session),operation:this.receipt(prior)};
     if(typeof input.runId!=='string'||!input.runId)throw new SessionOwnerError('An exact run ID is required.');
     const turn=db.query('SELECT id,status,session_id FROM turns WHERE native_run_id=?').get(input.runId) as any;
     if(!turn||turn.session_id!==session.id)throw new SessionOwnerError('Stop must name this session’s exact run.',409);
     if(turn.status!=='running'||!this.view(session).capabilities.stop)throw new SessionOwnerError('Native Stop is unavailable for this exact execution.',409,'CAPABILITY_UNAVAILABLE');
+    if(actor){
+      const existing=db.query(`SELECT id,action_id,payload_json FROM session_inputs WHERE session_id=? AND kind='stop'
+        AND origin='agent' AND source_input_id=? AND source_run_id=? LIMIT 1`).get(session.id,actor.inputId,actor.runId) as
+        {id:string;action_id:string;payload_json:string}|null;
+      if(existing)throw new SessionOwnerError('This source already retained its one exact-run Stop action.',409,'AGENT_TEST_STOP_ALREADY_RETAINED');
+    }
     const operation=db.transaction(()=>{
-      const saved=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:actionId(input),kind:'stop',origin:'human',payload:input}).input;
+      const saved=retainSessionInput({sessionId:session.id,scope,actionId:actionId(input),kind:'stop',origin:actor?'agent':'human',payload:actor?{...input,actor}:input,
+        ...(actor?{sourceInputId:actor.inputId,sourceRunId:actor.runId}:{})}).input;
       db.query("UPDATE turns SET stop_requested_at=COALESCE(stop_requested_at,CURRENT_TIMESTAMP),stop_input_cutoff=COALESCE(stop_input_cutoff,(SELECT max(id) FROM turns)) WHERE id=? AND status='running'").run(turn.id);
       this.clearWaitingHumanInputs(session.id,'stop',turn.id);
       db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'running'}),saved.id);
@@ -3097,14 +3131,58 @@ export class SessionOwner {
     })();
     try {
       const confirmed=await this.runtime.stop(session.id,turn.id);
-      if(confirmed)withdrawChatGptTasksForStoppedTurnByTejas({turnId:turn.id,humanInputId:operation.id,
+      if(confirmed&&!actor)withdrawChatGptTasksForStoppedTurnByTejas({turnId:turn.id,humanInputId:operation.id,
         actionId:actionId(input),now:Date.now()});
       db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(confirmed?{state:'running'}:{state:'uncertain',error:{code:'STOP_UNCONFIRMED',message:'Stop intent is retained; provider cancellation is not confirmed.'}}),operation.id);
     } catch(error) {
       db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'uncertain',error:{code:'STOP_UNCONFIRMED',message:error instanceof Error?error.message:String(error)}}),operation.id);
     }
-    recordSessionEvent({eventId:`control:${operation.id}`,sessionId:session.id,inputId:operation.id,kind:'stop',payload:{runId:input.runId}});
+    recordSessionEvent({eventId:`control:${operation.id}`,sessionId:session.id,inputId:operation.id,kind:'stop',payload:{runId:input.runId,...(actor?{actor:'agent'}:{})}});
     return {session:this.view(getSessionById(session.id)!),operation:this.receipt(this.input(operation.id))};
+  }
+  private async agentTestConnectionLoss(id:string,body:unknown,source:{inputId:string;runId:string},createInputId:string) {
+    const session=this.session(id),input=object(body);only(input,['clientActionId','runId']);
+    if(session.provider_id!=='codex'||typeof input.runId!=='string'||!input.runId)
+      throw new SessionOwnerError('Connection loss requires this exact Codex run.',409,'AGENT_TEST_TARGET_REFUSED');
+    const scope=`communication:${source.inputId}`,action=actionId(input);
+    const prior=db.query('SELECT * FROM session_inputs WHERE scope=? AND action_id=?').get(scope,action) as AcceptedSessionInput|null;
+    const actor={inputId:source.inputId,runId:source.runId,targetAddress:`concierge:${session.id}`,authorityInputId:createInputId};
+    if(prior){
+      if(prior.session_id!==session.id||prior.kind!=='codex-test-connection-loss'||stablePayload(JSON.parse(prior.payload_json))!==stablePayload({...input,actor}))
+        throw new SessionOwnerError('Idempotency conflict.',409);
+      return {operation:this.receipt(prior)};
+    }
+    const turn=db.query('SELECT id,status,session_id,dispatch_attempt,stop_requested_at FROM turns WHERE native_run_id=?').get(input.runId) as
+      {id:number;status:string;session_id:number;dispatch_attempt:number;stop_requested_at:string|null}|null;
+    if(!turn||turn.session_id!==session.id||turn.status!=='running'||turn.stop_requested_at)
+      throw new SessionOwnerError('The named Codex run is not live and unstopped.',409,'AGENT_TEST_TARGET_STALE');
+    const created=this.input(createInputId),createPayload=JSON.parse(created.payload_json) as {codexNativeTestFaultDeadlineMs:number};
+    const deadlineMs=createPayload.codexNativeTestFaultDeadlineMs;
+    if(deadlineMs<=Date.now())throw new SessionOwnerError('The disposable connection-loss window expired; normal Stop and recovery remain available.',409,'AGENT_TEST_WINDOW_EXPIRED');
+    const priorCuts=db.query(`SELECT receipt_json FROM session_inputs WHERE session_id=? AND kind='codex-test-connection-loss'
+      AND source_input_id=? AND source_run_id=?`).all(session.id,source.inputId,source.runId) as {receipt_json:string|null}[];
+    if(priorCuts.some(row=>['intent','observed','uncertain'].includes((JSON.parse(row.receipt_json??'{}') as {state?:string}).state??'')))
+      throw new SessionOwnerError('This accepted source already used its one connection-loss action.',409,'AGENT_TEST_CUT_ALREADY_USED');
+    const binding=this.runtime.prepareCodexTestConnectionLoss?.(session.id,turn.id);
+    if(!binding||binding.faultDeadlineMs!==deadlineMs||binding.dispatchAttempt!==turn.dispatch_attempt)
+      throw new SessionOwnerError('No current owned disposable connection generation can be cut.',409,'AGENT_TEST_CONNECTION_STALE');
+    const operation=retainSessionInput({sessionId:session.id,scope,actionId:action,kind:'codex-test-connection-loss',origin:'agent',
+      payload:{...input,actor},sourceInputId:source.inputId,sourceRunId:source.runId}).input;
+    db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'intent',executionId:binding.executionId,
+      dispatchAttempt:binding.dispatchAttempt,generation:binding.generation,faultDeadlineMs:binding.faultDeadlineMs}),operation.id);
+    try {
+      const outcome=await this.runtime.codexTestConnectionLoss?.(session.id,turn.id,binding)??'stale';
+      db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(
+        {...binding,state:outcome==='observed'?'observed':'refused',...(outcome==='observed'?{generationLost:true}:
+          {error:{code:'TEST_CONNECTION_STALE',message:'The exact owned connection generation was no longer current.'}})}),operation.id);
+      recordSessionEvent({eventId:`control:${operation.id}`,sessionId:session.id,inputId:operation.id,turnId:turn.id,kind:'codex_test_connection_loss',payload:{runId:input.runId,outcome}});
+      return {operation:this.receipt(this.input(operation.id))};
+    } catch(error) {
+      db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({...binding,state:'uncertain',
+        error:{code:'TEST_CONNECTION_LOSS_UNCONFIRMED',message:error instanceof Error?error.message:String(error)}}),operation.id);
+      recordSessionEvent({eventId:`control:${operation.id}`,sessionId:session.id,inputId:operation.id,turnId:turn.id,kind:'codex_test_connection_loss',payload:{runId:input.runId,outcome:'uncertain'}});
+      return {operation:this.receipt(this.input(operation.id))};
+    }
   }
   /** A side question answered through a saved final-response copy; the question turn is unsaved. */
   async aside(id:string,body:unknown) {
@@ -4260,6 +4338,15 @@ export class SessionOwner {
       // was counted as owner slowness (work-flow supervisor incident a8216a4c). It is awaited time.
       const body=request.method==='POST'?await awaitingOutside(()=>request.json()):null;
       if(parts[0]==='agent-test'&&parts[1]==='sessions'){
+        if(request.method==='POST'&&parts.length===4&&['stop','connection-loss'].includes(parts[3]!)){
+          const input=object(body);
+          only(input,['clientActionId','runId','agentSource','createInputId']);
+          const {source,sessionId}=this.agentBrowserBinding(request,parts[2],input,true);
+          const control={clientActionId:input.clientActionId,runId:input.runId};
+          if(parts[3]==='stop')return ownerJson(await this.stopExact(sessionId,control,{inputId:source.inputId,runId:source.runId,
+            targetAddress:sessionId,authorityInputId:String(input.createInputId??request.headers.get('x-concierge-agent-test-create'))}));
+          return ownerJson(await this.agentTestConnectionLoss(sessionId,control,source,String(input.createInputId??request.headers.get('x-concierge-agent-test-create'))));
+        }
         if(request.method!=='GET'||parts.length<4)throw new SessionOwnerError('Unknown agent browser read.',404);
         const {source,sessionId}=this.agentBrowserBinding(request,parts[2]);
         const tail=parts.slice(3),child=tail[1];
