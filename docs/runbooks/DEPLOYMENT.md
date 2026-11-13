@@ -1156,6 +1156,19 @@ any drops are explicit and make the trace incomplete. There is no per-second dur
 log write. Report persistence and retrospective journal/version queries occur after
 the observed interval. A missing terminal report is unknown, never successful proof.
 
+The disposable report's `custody` retains original cache byte lengths and SHA-256
+digests captured before work and immediately before cleanup, plus an explicit failed
+after-read flag. It retains the exact accepted/adopted local snapshot identities,
+each returned full-stream readback digest/length, transport failure count, and the
+snapshot whose complete readback passed the existing maintenance comparisons and
+receipt publication. A missing verified marker remains unproved even when streams
+returned successfully (a mismatching digest is still a failed readback). These are
+disposable evidence only: no paths or payloads are added, no additional Restic call
+is made, and normal owned repository/cache cleanup is unchanged. Refusal before
+fixture creation leaves byte/snapshot evidence null; a missing final report after
+hard interruption remains unknown. This evidence does not certify production or
+offsite custody.
+
 Completed durable-response latency, oldest acknowledgement age and backlog are
 explicitly unavailable from the runner's private mount. The root-only supervisor
 socket is not bypassed, and no synthetic write is sent to user data. Journal slow-sync

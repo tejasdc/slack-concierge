@@ -1,6 +1,46 @@
 /** Read-only context for one explicit diagnostic run; never an admission substitute. */
 import {readFileSync} from "node:fs";
+import {createHash} from "node:crypto";
 import {CacheBackupTrace, CACHE_BACKUP_POLICY, readCacheLoad, requireBackupWindow} from "../src/provider-history-cache-admission";
+import type {CacheRestic} from "../src/provider-history-cache-maintenance";
+
+const byteIdentity = (bytes: Buffer) => ({bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex")});
+
+/** Retains only disposable byte identities and observed transport results, never payloads or paths. */
+export class DisposableCacheEvidence {
+  private evidence = {
+    original: {before: null as ReturnType<typeof byteIdentity> | null,
+      after: null as ReturnType<typeof byteIdentity> | null, afterReadFailed: false},
+    acceptedSnapshot: null as string | null, adoptedSnapshot: null as string | null,
+    fullReadbackVerifiedSnapshot: null as string | null,
+    readbacks: [] as Array<{snapshot: string; sha256: string; bytes: number}>, readbackFailures: 0,
+  };
+  captureOriginal(bytes: Buffer) {this.evidence.original.before = byteIdentity(bytes);}
+  captureAfter(read: () => Buffer) {
+    try {const bytes = read(); this.evidence.original.after = byteIdentity(bytes); return bytes;}
+    catch {this.evidence.original.afterReadFailed = true;}
+  }
+  // This marker is reached only after prepare's exact full-stream comparisons and receipt publication.
+  fullReadbackVerified(snapshot: string) {this.evidence.fullReadbackVerifiedSnapshot = snapshot;}
+  wrap(restic: CacheRestic): CacheRestic {
+    return {
+      backup: async (paths, tag) => {
+        const snapshot = await restic.backup(paths, tag);
+        if (this.evidence.acceptedSnapshot === null) this.evidence.acceptedSnapshot = snapshot;
+        else this.evidence.adoptedSnapshot = snapshot;
+        return snapshot;
+      },
+      readback: async (snapshot, path, target) => {
+        try {
+          const result = await restic.readback(snapshot, path, target);
+          this.evidence.readbacks.push({snapshot, sha256: result.sha256, bytes: result.bytes});
+          return result;
+        } catch (error) {this.evidence.readbackFailures++; throw error;}
+      },
+    };
+  }
+  summary() {return structuredClone(this.evidence);}
+}
 
 export function traceBackupWindow(trace: CacheBackupTrace) {
   const startedAt = performance.now(), units: unknown[] = [];

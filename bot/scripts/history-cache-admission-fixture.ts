@@ -4,7 +4,7 @@ import {existsSync,mkdtempSync,readFileSync,readdirSync,rmSync,writeFileSync} fr
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {CacheBackupAdmission,CacheBackupTrace,CACHE_BACKUP_POLICY,readCacheLoad,requireBackupWindow} from "../src/provider-history-cache-admission";
-import {cacheObservationContext,foregroundJournalEvidence,knownChildrenAfterCleanup,observeCacheInterval,traceBackupWindow} from "./cache-admission-observation";
+import {cacheObservationContext,DisposableCacheEvidence,foregroundJournalEvidence,knownChildrenAfterCleanup,observeCacheInterval,traceBackupWindow} from "./cache-admission-observation";
 import {HistoryCacheMaintenance,HostCacheRestic} from "../src/provider-history-cache-maintenance";
 import {check,fixture} from "./history-cache-maintenance-fixture";
 
@@ -105,6 +105,7 @@ trace.event("phase_start",{phase:"observation_workspace"});
 const observation=mkdtempSync(join(tmpdir(),"history-cache-observe-"));
 trace.event("phase_end",{phase:"observation_workspace"});
 let f:ReturnType<typeof fixture>|undefined,admission:CacheBackupAdmission|undefined,failure:unknown,report:unknown;
+const custody = new DisposableCacheEvidence();
 let original:Buffer|undefined,originalCachePreserved:boolean|null=null;
 try {
   trace.event("phase_start",{phase:"guarded_trial"});
@@ -113,6 +114,7 @@ try {
   trace.event("phase_start",{phase:"fixture_preparation"});
   f=fixture();
   original=readFileSync(f.path);
+  custody.captureOriginal(original);
   const repo=join(f.state,"restic"),password=join(f.state,"password");writeFileSync(password,"disposable-fixture-only");
   const command=["restic","-r",repo,"--password-file",password];
   trace.event("phase_end",{phase:"fixture_preparation"});
@@ -123,10 +125,11 @@ try {
   admission.ownNative(()=>{const sent=init.kill("SIGTERM");trace.event("native_signal",{operation:"init",pid:init.pid,signal:"SIGTERM",reason:"admission",sent});});
   try {const code=await exited;admission.check();assert.equal(code,0);}
   finally {const sent=init.kill("SIGTERM");trace.event("native_signal",{operation:"init",pid:init.pid,signal:"SIGTERM",reason:"finalizer",sent});await exited;admission.ownNative();trace.event("phase_end",{phase:"repository_init"});}
-  const restic=new HostCacheRestic(command,admission);
+  const restic=custody.wrap(new HostCacheRestic(command,admission));
   const maintenance=new HistoryCacheMaintenance(f.state,restic,()=>{},f.objects,undefined,admission);
   trace.event("phase_start",{phase:"prepare_backup_and_full_readback"});
   const before=readFileSync(f.path),prepared=await maintenance.prepare(f.session);
+  custody.fullReadbackVerified(prepared.snapshot);
   trace.event("phase_end",{phase:"prepare_backup_and_full_readback"});
   const folder=maintenance.batch(prepared.id);
   const snapshot=JSON.parse(readFileSync(join(folder,"backup.json"),"utf8")).snapshot;
@@ -144,7 +147,7 @@ try {
 } catch(error) {failure=error;trace.event("trial_refused",{error:String(error)});}
 finally {
   if(admission){report=admission.finish(failure);if(!reportPath)console.log(JSON.stringify({check:"actual host admission probe",status:"refused",report}));}
-  if(f&&original){try{originalCachePreserved=readFileSync(f.path).equals(original);}catch{originalCachePreserved=false;}}
+  if(f&&original){const after=custody.captureAfter(()=>readFileSync(f!.path));originalCachePreserved=!!after&&after.equals(original);}
   trace.event("phase_end",{phase:"guarded_trial",outcome:failure?"refused":"completed",originalCachePreserved});
   trace.event("phase_start",{phase:"fixture_cleanup"});
   try {f?.cleanup();rmSync(observation,{recursive:true,force:true});trace.event("phase_end",{phase:"fixture_cleanup"});}
@@ -156,7 +159,7 @@ if(reportPath){
   const endedAtMs=Date.now(),foreground=await foregroundJournalEvidence(startedAtMs,endedAtMs);
   const resticVersion=Bun.spawnSync(["timeout","5s","restic","version"],{stdout:"pipe",stderr:"ignore"});
   writeFileSync(reportPath,JSON.stringify({schema:1,policy:CACHE_BACKUP_POLICY,startedAtMs,endedAtMs,
-    outcome:failure?"refused_or_interrupted":"completed",error:failure?String(failure):null,originalCachePreserved,
+    outcome:failure?"refused_or_interrupted":"completed",error:failure?String(failure):null,originalCachePreserved,custody:custody.summary(),
     trial:report,trace:trace.summary(),contextBefore,contextAfter:cacheObservationContext(),
     resticVersion:resticVersion.exitCode===0?resticVersion.stdout.toString().trim():null,foreground,
     unavailable:{completedDurableResponseLatency:"No supported nonmutating durable-response probe from this runner; private supervisor mount is inaccessible.",
