@@ -96,6 +96,32 @@ that the scan cursor can advance without omitting a visible event.
 
 ## Evidence boundary
 
+### First installed route check caught a transport recursion
+
+The first installed release's private projection succeeded: the two cold read
+executors completed in 7,768 and 9,576 ms, a warm projection in 36 ms, and a
+concurrent non-Inbox owner request in 4 ms. These were reader and independent
+owner evidence, not proof of the complete Inbox route. The actual Inbox router
+then called its installed client with its own live source and received
+`503 UNFILED_READ_UNAVAILABLE` in 53 and 45 ms, with no corresponding reader log.
+
+The routed-request handler was a named function expression called `fetch`.
+Its new unqualified network call therefore invoked that handler recursively with
+a URL string, returning `Invalid URL` before any reader request. The existing
+agents-list hop had the same binding error. An independent Sol investigation
+expanded the exact handler with inert dependencies: unchanged source returned
+503 with zero network calls; changing only its handler name returned 200 with
+one network call. The installed bundle confirmed the same recursive binding.
+
+The correction gives the handler its own role name, leaving `fetch` to resolve
+to the network transport. The existing foreground-boundary release check now
+rejects an unqualified self-call inside a named `fetch` handler in this module.
+This is a source-level refusal for the proven construct; installed acceptance
+must still exercise the actual Inbox router request and correlate the worker's
+completion record. No reminder or offer effect is replayed by these checks.
+
+### Limits of the observations
+
 The original blocks and their stacks are retained production evidence. A
 schema-only query plan proves the access path, not production latency. An
 installed health check or one fast non-Inbox call cannot establish Inbox

@@ -43,5 +43,16 @@ function visit(file:string) {
   walk(source);
 }
 visit(resolve(root,'foreground-gateway-worker.ts'));
+// A named fetch handler binds its own name inside its body. A transport call there
+// re-enters the handler with a URL instead of contacting the private read executor.
+const ownerApi=ts.createSourceFile('routed-request-api.ts',readFileSync(resolve(root,'routed-request-api.ts'),'utf8'),ts.ScriptTarget.Latest,true);
+function checkHandlerTransport(node:ts.Node,fetchBound=false) {
+  const bindsFetch=(ts.isFunctionExpression(node)||ts.isFunctionDeclaration(node))&&node.name?.text==='fetch';
+  const bound=fetchBound||bindsFetch;
+  if(bound&&ts.isCallExpression(node)&&ts.isIdentifier(node.expression)&&node.expression.text==='fetch')
+    failures.push(`routed-request-api.ts:${ownerApi.getLineAndCharacterOfPosition(node.getStart(ownerApi)).line+1} fetch handler calls itself instead of the network transport`);
+  ts.forEachChild(node,child=>checkHandlerTransport(child,bound));
+}
+checkHandlerTransport(ownerApi);
 if(failures.length)throw new Error('Foreground isolation boundary failed:\n'+failures.join('\n'));
 console.log(JSON.stringify({check:'foreground-boundary',status:'passed',modules:seen.size}));

@@ -85,7 +85,7 @@ async function withTodoState(input:any):Promise<any>{
 }
 
 export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
-  return async function fetch(request: Request): Promise<Response> {
+  return async function handleRoutedRequest(request: Request): Promise<Response> {
     try {
       const url = new URL(request.url);
       const native=await owner?.handle(request);
