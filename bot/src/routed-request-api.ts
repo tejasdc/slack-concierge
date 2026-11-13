@@ -30,6 +30,7 @@ import {enrollNativePipelineContinuation,tickNativePipelineContinuation} from '.
 import {runnerRoutes} from './runner-routes';
 import {listReadHead} from './presentation-topic-reader';
 import {activeGrafanaAlerts,type GrafanaFiringEvidence,type GrafanaRecoveryEvidence} from './grafana-alerts';
+import type {unfiledReceivedInputs} from './session-topics';
 
 function requestFailure(request:Request,error:unknown):Response {
   const transient=isTransientDatabaseError(error);
@@ -138,7 +139,22 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'obligations') return Response.json(await sessions.obligations(input));
         if (operation === 'open') return Response.json(await sessions.openLink(input));
         if (operation === 'board') return Response.json(await sessions.board(input));
-        if (operation === 'owed') return Response.json(sessions.owed(input));
+        if (operation === 'owed') {
+          const stateDir=process.env.CONCIERGE_STATE_DB?dirname(process.env.CONCIERGE_STATE_DB)
+            :process.env.CONCIERGE_STATE_DIR||'/root/.local/state/concierge';
+          const result=await sessions.owed(input,async(sessionId,turnId,signal)=>{
+            const query=new URLSearchParams({sessionId:String(sessionId),turnId:String(turnId)});
+            const response=await fetch(`http://localhost/internal/owed-unfiled?${query}`,{
+              unix:join(stateDir,'requests.sock'),signal,
+            } as RequestInit);
+            if(!response.ok)throw new Error('The Inbox filing read is unavailable.');
+            const body=await response.json() as {unfiled?:unknown};
+            if(!Array.isArray(body.unfiled))throw new Error('The Inbox filing read returned an invalid result.');
+            return body.unfiled as ReturnType<typeof unfiledReceivedInputs>;
+          },request.signal);
+          if(!result.ok)return Response.json({error:{code:result.code,message:result.message}},{status:result.status});
+          return Response.json(result.value);
+        }
         if (operation === 'mac-need') return Response.json(sessions.macNeed(input));
         if (operation === 'edit-gate') return Response.json(sessions.editGate(input));
         if (operation === 'model-start-gate') return Response.json(sessions.modelStartGate(input));

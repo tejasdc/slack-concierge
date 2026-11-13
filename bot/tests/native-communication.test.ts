@@ -39,6 +39,12 @@ function run(){
   acknowledgeTurnProviderInput(claim.turn_id,'fixture-owner',claim.dispatch_attempt,[]);
   return {claim,source:{input_id:claim.accepted_input_id!,run_id:nativeRunId(claim.turn_id)}};
 }
+async function owed(input:{provider:string;provider_session_id:string;run_id?:string;offer?:string[];remind?:boolean}){
+  const result=await communication.owed(input,async()=>{throw new Error('Non-Inbox owed checks must not use the read executor.');},new AbortController().signal);
+  expect(result.ok).toBeTrue();
+  if(!result.ok)throw new Error(result.message);
+  return result.value;
+}
 test('a historical router post collapses its closing result while retaining both events',async()=>{
   const inbox=session(),inboxId=Number(inbox.session.id.slice(10));
   updateSessionMetadata(inboxId,{inbox:true});
@@ -273,12 +279,12 @@ test('a steered request is owed only once its text was sent to the running turn'
   await communication.idle();
   const steered=getAcceptedSessionInput('request:'+request.request_id)!;
   expect(steered.turn_id).toBe(worker.claim.turn_id);
-  const owed=()=>communication.owed({provider:'codex',provider_session_id:'owed-after-delivery'}).owed.map(one=>one.request_id);
-  expect(owed()).not.toContain(request.request_id);
+  const requests=async()=>(await owed({provider:'codex',provider_session_id:'owed-after-delivery'})).owed.map(one=>one.request_id);
+  expect(await requests()).not.toContain(request.request_id);
   markTurnSteeringMessageSending(steered.steering_id!);
-  expect(owed()).not.toContain(request.request_id);
+  expect(await requests()).not.toContain(request.request_id);
   markTurnSteeringMessageSent(steered.steering_id!);
-  expect(owed()).toContain(request.request_id);
+  expect(await requests()).toContain(request.request_id);
 });
 
 // A new session learns its provider conversation id from the output stream. On 2026-11-11 a
@@ -290,13 +296,13 @@ test('a first turn whose conversation id is not yet recorded is still held to it
   const request=await ask(requester.source,target,'first-turn-owed');
   await communication.idle();
   expect(db.query('SELECT agent_session_uuid AS uuid FROM sessions WHERE id=?').get(targetId)).toEqual({uuid:null});
-  const owed=(extra:object)=>communication.owed({provider:'codex',provider_session_id:'not-yet-recorded',...extra}).owed.map(one=>one.request_id);
-  expect(owed({})).toEqual([]);
-  expect(owed({run_id:worker.source.run_id})).toContain(request.request_id);
+  const requests=async(extra:object)=>(await owed({provider:'codex',provider_session_id:'not-yet-recorded',...extra})).owed.map(one=>one.request_id);
+  expect(await requests({})).toEqual([]);
+  expect(await requests({run_id:worker.source.run_id})).toContain(request.request_id);
   // Once the session has its own conversation, a run id alone no longer speaks for it.
   db.query("UPDATE sessions SET agent_session_uuid='the-real-conversation' WHERE id=?").run(targetId);
-  expect(owed({run_id:worker.source.run_id})).toEqual([]);
-  expect(communication.owed({provider:'codex',provider_session_id:'the-real-conversation'}).owed.map(one=>one.request_id)).toContain(request.request_id);
+  expect(await requests({run_id:worker.source.run_id})).toEqual([]);
+  expect((await owed({provider:'codex',provider_session_id:'the-real-conversation'})).owed.map(one=>one.request_id)).toContain(request.request_id);
 });
 
 // The Inbox sends one request per thread and they routinely steer into one recipient turn, so

@@ -18,6 +18,19 @@ consumer reconnects from its last received cursor. The page keeps the existing 2
 boundary and has no response byte cap, since a retained message can exceed the ordinary
 JSON event read's 2 MiB cap. Slow page logs report duration, event count, bytes and storage
 work without recording content.
+
+The owed-replies Stop check retains its command authority on the canonical owner.
+For an Inbox session only, the unfiled-input projection uses the same private
+gateway and read pool as retained stream pages. It runs in one physically
+read-only ledger transaction; its in-memory thread and entry indexes belong to
+that executor. The private entrance is unavailable on peer and agent network
+listeners. After awaiting it, the owner resolves the caller's current running
+turn again before assembling reply obligations or recording offers/reminders.
+Request cancellation, reader refusal and deadline failure do not trigger an
+owner-thread fallback or become an empty filing list. Non-Inbox checks need no
+executor hop. The retained-history projection occupies the pool's archive lane,
+leaving independent interactive read capacity available. See the
+[November 13 failure record](../incidents/2026-11-13-owed-check-rebuilt-inbox-history-on-owner.md).
 An unknown GET has no execution owner and is refused. The former Inbox topics and questions
 paths normalize to their prepared presentation paths before execution.
 
@@ -63,6 +76,13 @@ index stays in owner memory because thread commands use it, but its warm-up read
 rows and stops processing a step after twelve milliseconds before yielding to other owner work.
 An individual SQLite call can exceed that target under storage contention, so installed lag
 records remain the acceptance check.
+The entry index selects at most sixteen sequence keys through the existing
+session/kind covering index before hydrating those exact events through the full
+Inbox visibility predicate. Sorting therefore carries keys, not message content.
+Its cursor advances over inspected candidates even when none is visible, and
+advances only through processed messages when the step deadline interrupts a
+page. Synchronous catch-up also uses these bounded pages; the owed-replies path
+performs that catch-up in a read executor as described above.
 Search answers carry bounded evidence previews and a bounded encoded body; selecting a result
 uses the exact context read for full text. Slow searches log elapsed time for prepared words,
 historical routing, meaning, archive search and retention, plus final answer size. These phases

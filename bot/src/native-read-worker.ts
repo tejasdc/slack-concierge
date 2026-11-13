@@ -148,6 +148,36 @@ const server=Bun.serve({unix:socket,idleTimeout:0,async fetch(request){
   const admissionId=request.headers.get('x-concierge-admission-id');
   const url=new URL(request.url);
   if(request.method==='GET'&&url.pathname==='/internal/ready')return Response.json({ok:true,pid:process.pid,logging:logSinkCounters(),requests});
+  if(request.method==='GET'&&url.pathname==='/internal/owed-unfiled'){
+    const sessionId=Number(url.searchParams.get('sessionId'));
+    const turnId=Number(url.searchParams.get('turnId'));
+    if(!Number.isSafeInteger(sessionId)||sessionId<1||!Number.isSafeInteger(turnId)||turnId<1)
+      return failure(400,'OWED_READ_INVALID','The exact Inbox session and run are required.');
+    let work:StorageWork|null=null;
+    let response:Response;
+    let itemCount=0;
+    try {
+      const [{unfiledReceivedInputs},{db}]=await Promise.all([import('./session-topics'),import('./state')]);
+      const unfiled=await observeStorageOperation('/internal/owed-unfiled',
+        async()=>db.transaction(()=>unfiledReceivedInputs(sessionId,turnId))(),measured=>{work=measured;});
+      itemCount=unfiled.length;
+      response=Response.json({unfiled});
+    } catch {
+      response=failure(503,'OWED_READ_UNAVAILABLE','The Inbox filing read is unavailable.');
+    } finally {
+      const durationMs=Math.round(performance.now()-started);
+      requests.completed++;
+      requests.totalDurationMs+=durationMs;
+      requests.maxDurationMs=Math.max(requests.maxDurationMs,durationMs);
+      if(response!.status>=400)requests.failed++;
+      if(durationMs>=2000)requests.slow++;
+      log(response!.status>=400||durationMs>=2000?'warn':'info','owed_unfiled_read_completed',{
+        route:'/internal/owed-unfiled',status:response!.status,duration_ms:durationMs,session_id:sessionId,turn_id:turnId,
+        unfiled_count:itemCount,...(work??{}),
+      });
+    }
+    return response!;
+  }
   if(request.method==='GET'&&url.pathname==='/internal/event-stream-page'){
     const began=performance.now();
     const after=Number(url.searchParams.get('after'));

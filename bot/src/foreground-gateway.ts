@@ -33,6 +33,10 @@ export async function startForegroundGateway(config:{stateDir:string;ownerSocket
     const url=new URL(request.url);
     // Only the root-owned local socket reaches this entrance. The live stream stays
     // with the owner, while its retained page projection runs in a read executor.
+    // The owed hook's filing projection also stays private: peers and network agents
+    // are rejected at their listeners before they can reach this owner-local route.
+    if(url.pathname==='/internal/owed-unfiled')
+      return pool.request(request,'/internal/owed-unfiled',randomUUID(),'archive');
     if(url.pathname==='/internal/event-stream-page')
       return pool.request(request,'/internal/event-stream-page',randomUUID());
     // These are process control entrances, never authenticated product capabilities.
