@@ -13,3 +13,4 @@ export const CODEX_AUDIT_OFF_CODEX_TEST_AUTHORIZATION='codex-audit-off-codex-202
 export const FROZEN_ASK_RESUME_TEST_AUTHORIZATION='frozen-ask-resume-2026-11-12';
 export const PROTECTED_DURABILITY_TEST_AUTHORIZATION='protected-durability-92ed9a3d';
 export const NOTIFICATION_TOPIC_CORRECTION_TEST_AUTHORIZATION='notification-topic-correction-2026-11-13';
+export const CHATGPT_TOOL_READ_ACCEPTANCE_TEST_AUTHORIZATION='chatgpt-tool-read-acceptance-2026-11-13';

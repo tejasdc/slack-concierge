@@ -2,7 +2,7 @@
 
 This document describes the source contract. An admitted ChatGPT question remains owed until its answer reaches the asking session and the agent records how it handled it, or that same asker explicitly withdraws the question. An attempt result or a turn outcome is not the task's answer.
 
-State card: the exact question is the entity; the server or Mac Concierge session coordinator is its sole writer. Its original request ID survives retries and releases. A retained cancel input or a received answer event is the evidence for closure. Provider failure leaves the duty open for receipt repair. A duplicate action repeats the same disposition, and an unstarted queued repair is withdrawn when the duty closes. The operating profile is one person, two machines, and a small number of concurrent questions.
+State card: the exact question is the entity; the server or Mac Concierge session coordinator is its sole writer. Its original request ID survives retries and releases. A retained cancel input, or exact answer receipt plus explicit handling, is the evidence for closure. Provider failure leaves the duty open for receipt repair. A duplicate action repeats the same disposition, and an unstarted queued repair is withdrawn when the duty closes. The operating profile is one person, two machines, and a small number of concurrent questions.
 
 The requesting agent can cancel its own ChatGPT request, including one routed through a peer. A completed, retained cancel action from that exact session closes only the corresponding question as `resolved` with `withdrawn_by_asker` evidence; a failed attempt or timeout does not. The coordinator applies this in the cancel transaction, checks it again before admitting repair, and reconciles older completed cancels at startup. This prevents a canceled question from waking its asker after a release.
 
@@ -19,7 +19,7 @@ The task's final reply checks the unresolved obligation index. A completed reply
 
 ## Answer and repair
 
-The original provider attempt and request ID remain the recovery target. A failed or ambiguous attempt enters receipt reconciliation. The owner never treats a timeout, canceled turn, or stalled reminder as proof that the browser did not send the question, and it does not create a replacement browser send from them. An answered request enters return-pending; only an acknowledged return input advances it to handling-pending. Grouped returns retain a separate answer event for every question even when they share one accepted input.
+The original provider attempt and request ID remain the recovery target. A failed or ambiguous attempt enters receipt reconciliation. The owner never treats a timeout, canceled turn, or stalled reminder as proof that the browser did not send the question, and it does not create a replacement browser send from them. An answered request enters return-pending; an acknowledged return input advances it to handling-pending. A separate supported tool-read confirmation can resolve the exact answer as described below, without recording provider acknowledgement. Grouped returns retain a separate answer event for every question even when they share one accepted input.
 
 A provider's definitive `NOT_SENT` or `SEND_FAILED` evidence can requeue the same native turn with capped backoff. `NOT_SENT` is a transient pre-Send wait and does not spend the finite provider retry budget. `SEND_FAILED` can mean a persistent sign-in or account failure, so it spends that budget. Once repeated failures exhaust it, the original task remains open, the asking agent receives the failed attempt state, and receipt repair becomes due. An ambiguous dispatched operation remains reconciliation-only until its original receipt is known.
 
@@ -34,6 +34,24 @@ For an older failed request whose original native run is terminal, the asking ag
 If the request was already marked failed, the coordinator can restore its answer only when the original dedicated native turn has finished and retained ChatGPT evidence proves the same run, input, conversation, acknowledged send, provider turn, and exact answer text. Proof is a completed start or reconciliation receipt, or a retained start/reconciliation receipt paired with its completed result event. It supersedes the owner-generated failed final while retaining that event and its earlier return as history. A new final for the **same request and obligation** carries the answer to the original asking session; there is no replacement question or browser send. If the original request asked for work, its work disposition remains undetermined, while the confirmed answer satisfies the separate question obligation and still requires handling by the asker.
 
 The asking agent uses `sessions answer` with the exact obligation and answer event to declare that it used the answer, supplied missing context in an attached follow-up, or narrowed its conclusion with a concrete reason. This is a process attestation; the owner does not infer substantive answer quality from prose. A missing-context follow-up is a new, explicitly attached question in the same ChatGPT conversation after the prior answer reached the asker. It is not a retry of an ambiguous send.
+
+## Explicit confirmation after a supported tool read
+
+An active native asking run may read a local final ChatGPT answer through `sessions get <request-id> <source-flags>`. When that run holds the exact task, the response includes `tool_read_receipt.readReceiptId`, an opaque retained read receipt bound to its accepted source input and run, asking session, obligation, active request, exact final event and answer-payload digest. Background inspection and reads by the recipient or another task do not issue this receipt. Reading alone does not close the duty or claim that the response reached the provider.
+
+After reading the complete answer, the same run explicitly confirms its handling:
+
+```sh
+"$CONCIERGE_ROUTER_ACTIONS" sessions answer <obligation-id> <source-flags> \
+  --answer-event <exact-final-event-id> --read-receipt <receipt-id> \
+  --handling used --action-id <stable-id>
+```
+
+The existing answer owner checks current task custody, exact actor/input/run and unchanged final answer before resolving only that obligation. A scoped handling also carries its concrete reason. A wrong event, another run, another task, changed answer or changed retry conflicts. The read receipt uses the existing retained action ledger; it adds no worker, timer, browser operation or replacement question. Ordinary provider-acknowledged handling stays available without this option.
+
+The separate provider-return input, acknowledgement and communication-event delivery status remain unchanged. Queued returns and unrelated held work remain queued; the later native return cannot reopen the resolved duty. An action retry returns its retained result. This local receipt path does not imply support on an older release or a peer, and does not supply the received successor answer needed for supersession or the native receipt needed for a context follow-up.
+
+The native disposable acceptance runs as `bun scripts/chatgpt-tool-read-acceptance.ts` from `bot/`; the release build runs it as a required owner check. Its ChatGPT final is seeded as provider evidence, then the test exercises the supported get, explicit handling, queued-return preservation and completed task reply through Concierge.
 
 Failed attempts, missing return receipts, unhandled answers, and old-peer holds carry an indexed due action. The existing session coordinator admits a service repair input with the original obligation and request identities, advances its due time before dispatch, and wakes again if that repair turn settles without resolving the duty. A returned but unhandled answer produces a handling prompt, without asking the agent to inspect or resend the browser operation. After three settled repair turns with no new answer, return receipt, or proven original requeue, it posts one visible overdue event and stops admitting repair turns. The owner keeps a six-hour due check of the exact receipt and return; a new answer or explicit recovery action resumes handling. A paused or unavailable asking session leaves the due obligation retained. Existing provider and peer ledgers remain the evidence for safe reconciliation; the reminder does not authorize resending.
 
