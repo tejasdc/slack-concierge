@@ -1,8 +1,7 @@
 /** Account binding for fresh Claude CLI work launched from a Concierge agent shell. */
-import {accessSync,constants,createReadStream,existsSync,readdirSync,readFileSync,realpathSync,readlinkSync,watch} from 'node:fs';
+import {accessSync,closeSync,constants,existsSync,openSync,readdirSync,readFileSync,readSync,realpathSync,readlinkSync,watch} from 'node:fs';
 import {dirname,delimiter,isAbsolute,join,resolve,sep} from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
-import {createInterface} from 'node:readline';
 import {requestApiResponse} from './router-request-client';
 
 // When the owner places a launch on a runner, it names the account, not a path: the path is the
@@ -114,6 +113,7 @@ const exactResume=(()=>{
     const arg=args[i]!;
     if(arg==='--resume'||arg==='-r')values.push(args[++i]??'');
     else if(arg.startsWith('--resume='))values.push(arg.slice('--resume='.length));
+    else if(arg.startsWith('-r')&&arg.length>2)values.push(arg.slice(2));
   }
   const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if(values.length>1&&values.some(value=>uuid.test(value))&&process.env.CONCIERGE_CLAUDE_ACCOUNT_PIN!=='1'
@@ -123,7 +123,7 @@ const exactResume=(()=>{
 })();
 const passthrough=['auth','config','doctor','update','mcp','plugin','agents'].includes(firstCommandArg??'')
   || args.some(arg=>['--version','-v','--help','-h'].includes(arg))
-  || (!exactResume&&args.some(arg=>arg==='--resume'||arg==='-r'||arg.startsWith('--resume=')||arg==='--continue'||arg==='-c'||arg==='--fork-session'))
+  || (!exactResume&&args.some(arg=>arg==='--resume'||arg==='-r'||arg.startsWith('--resume=')||arg.startsWith('-r')||arg==='--continue'||arg==='-c'||arg==='--fork-session'))
   || args.some(arg=>arg==='--agent-id'||arg.startsWith('--agent-id='))
   || process.env.CONCIERGE_CLAUDE_ACCOUNT_PIN==='1';
 const model=(()=>{for(let i=0;i<args.length;i++){
@@ -152,22 +152,27 @@ if(!passthrough){
         try{paths.add(realpathSync(join(home,'projects',project,`${exactResume}.jsonl`)));}catch{}
       }
     }
-    let binding:{accountUuid:string;organizationUuid:string}|null=null;
     if(paths.size!==1)throw new Error(`Claude exact resume ${exactResume}: original transcript is ${paths.size?'ambiguous':'unavailable'}.`);
-    for(const path of paths){
-      const lines=createInterface({input:createReadStream(path),crlfDelay:Infinity});
-      for await(const line of lines){
-        let row:any;
-        try{row=JSON.parse(line);}catch{throw new Error(`Claude exact resume ${exactResume}: transcript identity is unreadable.`);}
-        if(row?.type!=='session-owner')continue;
-        if(row.sessionId!==exactResume||typeof row.accountUuid!=='string'||!row.accountUuid||typeof row.organizationUuid!=='string'||!row.organizationUuid)
-          throw new Error(`Claude exact resume ${exactResume}: original transcript binding is missing or mismatched.`);
-        if(binding&&(binding.accountUuid!==row.accountUuid||binding.organizationUuid!==row.organizationUuid))
-          throw new Error(`Claude exact resume ${exactResume}: original transcript binding is ambiguous.`);
-        binding={accountUuid:row.accountUuid,organizationUuid:row.organizationUuid};
+    // The first row is Claude's original owner header; later rows can name later logins.
+    // Its small fixed ceiling prevents a damaged or huge transcript from becoming a full scan.
+    const header=Buffer.alloc(64*1024);
+    let used=0, newline=-1;
+    const fd=openSync([...paths][0]!,'r');
+    try{
+      while(used<header.length&&newline<0){
+        const count=readSync(fd,header,used,header.length-used,null);
+        if(!count)break;
+        newline=header.indexOf(10,used); used+=count;
+        if(newline>=used)newline=-1;
       }
-    }
-    if(!binding)throw new Error(`Claude exact resume ${exactResume}: original transcript binding is missing.`);
+    }finally{closeSync(fd);}
+    if(newline<0)throw new Error(`Claude exact resume ${exactResume}: original transcript header is missing, incomplete or too large.`);
+    let binding:{accountUuid:string;organizationUuid:string};
+    try{
+      const row=JSON.parse(header.subarray(0,newline).toString('utf8'));
+      if(row?.type!=='session-owner'||row.sessionId!==exactResume||typeof row.accountUuid!=='string'||!row.accountUuid||typeof row.organizationUuid!=='string'||!row.organizationUuid)throw new Error('invalid header');
+      binding={accountUuid:row.accountUuid,organizationUuid:row.organizationUuid};
+    }catch{throw new Error(`Claude exact resume ${exactResume}: original transcript header binding is missing or malformed.`);}
     const matches:string[]=[];
     for(const home of homes){
       try{
