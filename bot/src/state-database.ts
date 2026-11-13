@@ -5,6 +5,7 @@ import { basename, resolve } from "node:path";
 import { observedDatabase } from './storage-observation';
 import { ledgerWriteResults } from './ledger-write-results';
 import { ledgerAccess } from './ledger-access-policy';
+import {PROTECTED_DURABILITY_TEST_AUTHORIZATION} from './test-authorizations';
 import {CODEX_AUDIT_OFF_CODEX_TEST_AUTHORIZATION,FROZEN_ASK_RESUME_TEST_AUTHORIZATION,IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION,PARKED_CODEX_FOLLOW_TEST_AUTHORIZATION,START_PACE_TEST_AUTHORIZATION,INBOX_HELD_DUPLICATE_TEST_AUTHORIZATION,HELD_RELEASE_PACING_TEST_AUTHORIZATION,HELD_WORK_MOVABILITY_TEST_AUTHORIZATION,INBOX_UNFILED_ACROSS_ROUTERS_TEST_AUTHORIZATION,INBOX_BOOKKEEPING_RECOVERY_TEST_AUTHORIZATION,LEGACY_TOPIC_COMPLETION_TEST_AUTHORIZATION} from './test-authorizations';
 
 // Opening the ledger is separate from initializing application schema so the
@@ -15,7 +16,7 @@ const testInvocation = process.env.CONCIERGE_TEST_MODE === "1"
 // The responsiveness implementation has its own explicit test authorization (Tejas's
 // f6e938aa investigation and b1eed622 implementation request); production-path checks stay below.
 // Tejas's phone-work repair (input e943db22) requires an isolated admission and cancellation check.
-const authorizedTest = ["native-attribution-5eaa0768", "responsive-system-b1eed622", "foreground-isolation-5804d389", "quiet-bank-e943db22", "drain-withdraw-unclaimed-2026-11-05",
+const authorizedTest = [PROTECTED_DURABILITY_TEST_AUTHORIZATION,"native-attribution-5eaa0768", "responsive-system-b1eed622", "foreground-isolation-5804d389", "quiet-bank-e943db22", "drain-withdraw-unclaimed-2026-11-05",
   "agent-attachment-attribution-ebced96a", LEGACY_TOPIC_COMPLETION_TEST_AUTHORIZATION,
   INBOX_BOOKKEEPING_RECOVERY_TEST_AUTHORIZATION, HELD_WORK_MOVABILITY_TEST_AUTHORIZATION, HELD_RELEASE_PACING_TEST_AUTHORIZATION, START_PACE_TEST_AUTHORIZATION, INBOX_HELD_DUPLICATE_TEST_AUTHORIZATION, INBOX_UNFILED_ACROSS_ROUTERS_TEST_AUTHORIZATION,
   PARKED_CODEX_FOLLOW_TEST_AUTHORIZATION, IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION, CODEX_AUDIT_OFF_CODEX_TEST_AUTHORIZATION, FROZEN_ASK_RESUME_TEST_AUTHORIZATION].includes(process.env.CONCIERGE_TEST_AUTHORIZATION ?? "");

@@ -277,6 +277,10 @@ the ledger for a few seconds; without the wait the next start failed at once wit
 
 ## Signals
 
+The [protected obligation observation](PROTECTED-DURABILITY-OBSERVATION.md) adds a
+bounded memory-only host view of receipt/provider barrier durations, outstanding
+ages and coverage. It is distinct from sync-worker timing and external response latency.
+
 - `GET /supervisor/ping` → `ledgerDurability`: mode, sync count, slow syncs, slowest and last sync
   time, last worker-queue, `fdatasync` and worker-to-owner delivery times, waiters, age of the sync
   in flight, unsynced changes, checkpoint counts. The owner and worker timestamp messages on a

@@ -56,6 +56,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   observer-only baseline and one unchanged guarded trial; preserve the production
   hold and coordinate host archive validation before any live observation. Read cache
   allocation through [router actions](docs/runbooks/ROUTER-ACTIONS.md#agent-session-communication).
+  The [protected durability observation](docs/architecture/PROTECTED-DURABILITY-OBSERVATION.md)
+  defines the private host read, lane boundaries and coverage gaps; it changes no
+  admission policy and authorizes no additional live trial.
 - Marked messages held by per-session Pause retain their original admission identity;
   see [session recovery](docs/architecture/SESSION-OWNER.md#identity-and-admission).
 

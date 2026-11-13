@@ -12,8 +12,9 @@ import {unopenableLinksWithReader} from './workspace-files';
 import {usageBreakdown} from './usage-breakdown';
 import {startPresentationWorker} from './presentation-worker-supervisor';
 import {log,logSinkCounters} from './log';
-import {ledgerDurable} from './ledger-durability-barrier';
+import {protectedOwnerReceipt} from './protected-owner-receipt';
 import {ledgerDurabilityCounters,startLedgerDurability} from './ledger-durability';
+import {protectedDurability} from './protected-durability-observation';
 import {isTransientDatabaseError} from './database-retry';
 import {BoardError} from './commons-board-service';
 import {getAcceptedSessionInput} from './session-inputs';
@@ -203,6 +204,8 @@ function localOwnerRequest(shared:(request:Request)=>Promise<Response>,sessions?
         return Response.json(await owner.refreshAuthEphemera());
       if(request.method==='GET'&&url.pathname==='/supervisor/ping')
         return Response.json({ok:true,pid:process.pid,startedAt,release,logging:logSinkCounters(),ledgerDurability:ledgerDurabilityCounters()});
+      if(request.method==='GET'&&url.pathname==='/supervisor/durability')
+        return Response.json(protectedDurability.snapshot());
       // The outside Grafana reconciler (remote-box) reads retained firing episodes and submits
       // recoveries and new episodes Grafana recorded but whose notification this receiver never accepted.
       if(url.pathname==='/grafana/v1/firing'||url.pathname==='/grafana/v1/recoveries'||url.pathname==='/grafana/v1/firings'){
@@ -336,9 +339,8 @@ export async function startRoutedRequestApi(stateDir: string, coordinator: Route
     // Reads answer at once: the supervisor's liveness ping must never wait for the disk.
     fetch: async request=>{
       try {
-        const response=await handle(request);
-        if(request.method!=='GET')await ledgerDurable({kind:'owner_receipt',id:request.headers.get('x-concierge-admission-id')??undefined});
-        return response;
+        return request.method==='GET'?await handle(request):await protectedOwnerReceipt(()=>handle(request),
+          request.headers.get('x-concierge-admission-id')??undefined);
       } catch(error) {return requestFailure(request,error);}
     },
   });
