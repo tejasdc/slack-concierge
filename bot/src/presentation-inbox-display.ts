@@ -39,12 +39,14 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
     const source=JSON.parse(original.payload_json),sourcePayload=source.firstInput??source;
     const ids=Array.isArray(sourcePayload.attachments)?sourcePayload.attachments.filter((id:unknown):id is string=>typeof id==='string'):[];
     const attachments=ids.map(id=>database.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
-    const author=inboxAttribution(database)({sourceSessionId:original.session_id,id:event.sourceMessageId,role:'user',content:String(sourcePayload.text??'')}).author;
-    const full={id:row.event_id,sourceSessionId:sessionId,role:author.kind==='agent'?'assistant':'user',content:String(sourcePayload.text??''),tool:null,phase:null,
+    const sideProjection=typeof event.sideScope==='string'&&!!event.sideScope.trim();
+    const author=sideProjection?{kind:'agent',session:authorSessionOf(database,event.by.sessionId),inputId:event.by.inputId,runId:event.by.runId}
+      :inboxAttribution(database)({sourceSessionId:original.session_id,id:event.sourceMessageId,role:'user',content:String(sourcePayload.text??'')}).author;
+    const full={id:row.event_id,sourceSessionId:sessionId,role:author.kind==='agent'?'assistant':'user',content:sideProjection?event.sideScope:String(sourcePayload.text??''),tool:null,phase:null,
       inputId:row.event_id,submissionId:event.sourceMessageId,attachments,
       author,
       routedFrom:{sessionId:`concierge:${original.session_id}`,topicId:event.sourceTopicId,root:event.sourceRoot,messageId:event.sourceMessageId,
-        title:routeTitle(database,event.sourceTopicId,null)},
+        title:routeTitle(database,event.sourceTopicId,null),...(sideProjection?{sideScope:event.sideScope}:{})},
       createdAt:stamp(original.created_at),timestampSource:'submitted'};
     if(Buffer.byteLength(JSON.stringify(full))<=8192)return {preview:full,detailJson:null};
     return {preview:{...full,content:bounded(full.content,1024).text,attachments:[],

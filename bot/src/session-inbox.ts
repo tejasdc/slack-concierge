@@ -68,8 +68,8 @@ export function capturePresentation(input:InboxCapture) {
 }
 
 /**
- * A capture from his bug button (or its shortcut) is always a thread of its own, never a
- * reply inside a work thread [decision: inbox-button-always-new-request]. The Thinkering
+ * A capture from his bug button (or its shortcut) first enters its own Inbox thread, never
+ * a reply inside a work thread [decision: inbox-button-always-new-request]. The Thinkering
  * bug-report door is the one producer that marks a capture this way.
  */
 export function isBugReportInput(inputId:string) {
@@ -78,7 +78,7 @@ export function isBugReportInput(inputId:string) {
   const source=JSON.parse(input.payload_json)?.capture?.source;
   return source?.kind==='thinkering'&&source.metadata?.client==='thinkering-bug-report';
 }
-export const BUG_REPORT_OWN_THREAD='A bug report is always its own Inbox thread (decision inbox-button-always-new-request). Give it a thread of its own with topics create --root <it> --from <related thread>, and send the work to its owner with sessions ask --route-message <it>.';
+export const BUG_REPORT_OWN_THREAD='A new bug report first needs independent Inbox intake (decision inbox-button-always-new-request). Give it its own thread with topics create --root <it> --from <related thread>, and send its work with sessions ask --route-message <it>. After independent filing, consolidate same-issue bug-report topics with topics merge <duplicate> --into <survivor> --reason <why> --correction-source <retained human correction in survivor>, or add a secondary topics route <destination> --message <original capture> --reason <why> --side-scope <only the related concern>, leaving its primary root intact. Do not place a fresh bug report inside an existing work thread.';
 
 // The Inbox uses its accepted dialogue, including imports that never enter a
 // provider transcript. Event sequence is the existing durable pagination key.
@@ -143,12 +143,17 @@ export function inboxMessage(row:any) {
     const original=source?JSON.parse(source.payload_json):{};
     const originalPayload=original.firstInput??original;
     const attachments=(originalPayload.attachments??[]).map((id:string)=>db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
-    const author=source?inboxAttribution(db)({sourceSessionId:source.session_id,id:source.id,role:'user',content:originalPayload.text??''}).author:{kind:'unknown'};
-    return {id:row.event_id,sourceSessionId:row.session_id,role:author.kind==='agent'?'assistant':'user',content:originalPayload.text??'',tool:null,phase:null,
+    const sideProjection=typeof route.sideScope==='string'&&!!route.sideScope.trim();
+    const sourceAuthor=source?inboxAttribution(db)({sourceSessionId:source.session_id,id:source.id,role:'user',content:originalPayload.text??''}).author:{kind:'unknown'};
+    // Scope is the routing agent's description, while the backlink and attachments retain
+    // the human report. Never present an agent's selection of work as Tejas's words.
+    const author=sideProjection?{kind:'agent',session:authorSessionOf(db,route.by.sessionId),inputId:route.by.inputId,runId:route.by.runId}:sourceAuthor;
+    return {id:row.event_id,sourceSessionId:row.session_id,role:author.kind==='agent'?'assistant':'user',
+      content:sideProjection?route.sideScope:originalPayload.text??'',tool:null,phase:null,
       inputId:row.event_id,submissionId:route.sourceMessageId,attachments,
       author,
       routedFrom:{sessionId:source?`concierge:${source.session_id}`:undefined,topicId:route.sourceTopicId,root:route.sourceRoot,messageId:route.sourceMessageId,
-        title:routeTitle(db,route.sourceTopicId,null)},
+        title:routeTitle(db,route.sourceTopicId,null),...(sideProjection?{sideScope:route.sideScope}:{})},
       createdAt:source?.created_at?(source.created_at.includes('T')?source.created_at:source.created_at.replace(' ','T')+'Z')
         :row.created_at.includes('T')?row.created_at:row.created_at+'Z',timestampSource:'submitted'};
   }
