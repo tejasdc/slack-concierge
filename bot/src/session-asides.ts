@@ -13,6 +13,7 @@ import {log} from './log';
 import {runnerMachineCall} from './runner-machine-calls';
 import {latestClaudeBoundary,sideCopy} from './aside-copy';
 import {samePhysicalFile} from './runner-asides';
+import {CODEX_INVESTIGATOR_MODEL} from './aliases';
 
 /**
  * A side question reads one saved native provider copy at the latest completed final response.
@@ -152,7 +153,8 @@ async function codexAside(input:AsideInput,prompt:string):Promise<AsideAnswer> {
   const out=join(mkdtempSync(join(tmpdir(),'concierge-aside-')),'answer.txt');
   // codex exec's own options precede the fork subcommand; --ephemeral writes no session file and
   // the read-only sandbox refuses any change the model might still attempt.
-  const args=['exec','--ephemeral','-s','read-only','--skip-git-repo-check','-o',out,'fork',fork,prompt];
+  const args=['exec','--ephemeral','-s','read-only','--skip-git-repo-check','-o',out,
+    '-m',input.model??CODEX_INVESTIGATOR_MODEL,'fork',fork,prompt];
   const result=await run(MANAGED_CODEX,args,{cwd:input.cwd,env:process.env});
   let answer='';
   try{answer=readFileSync(out,'utf8').trim();}catch{}
@@ -160,7 +162,7 @@ async function codexAside(input:AsideInput,prompt:string):Promise<AsideAnswer> {
     log('warn','session_aside_failed',{provider:'codex',code:result.code,stderr:result.stderr.slice(-300)});
     throw new Error('Codex could not answer the side question.');
   }
-  return {answer,model:null,durationMs:Date.now()-started};
+  return {answer,model:input.model??CODEX_INVESTIGATOR_MODEL,durationMs:Date.now()-started};
 }
 
 async function askAsideNow(input:AsideInput):Promise<AsideAnswer> {

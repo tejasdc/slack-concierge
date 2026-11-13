@@ -31,6 +31,10 @@ checkpoint is committed before `current` moves, so either path recognizes an
 interrupted candidate and restores LKG on the same run. The root systemd repair
 unit owns standalone CLI execution, diagnosis, Git integration, and retry. It is
 outside Concierge's managed provider queue and does not borrow a managed session.
+Its CLI launch explicitly selects the shared Sol investigator model and uses the
+[command-line trust contract](../runbooks/CODEX-APP-SERVER.md#project-trust-for-command-line-work)
+for fresh and resumed repair work; an explicit untrusted-project choice is never
+overridden by Concierge.
 On deployment success and each reconciliation, the owner parks a terminal failed repair whose
 recorded runner and supervisor are gone once a later run for the same target has
 succeeded. It keeps the failed run's original error and an audit event naming the
