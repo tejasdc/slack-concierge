@@ -2258,9 +2258,9 @@ export class SessionOwner {
   private noteSource(input:{captureId?:string;messageId?:string}) {
     if((input.captureId===undefined)===(input.messageId===undefined))throw new SessionOwnerError('Name one capture or one message.',400,'NOTE_SOURCE_REQUIRED');
     if(input.captureId!==undefined){
-      const body=JSON.parse(retainedInboxCapture(input.captureId).payload_json);
+      const row=retainedInboxCapture(input.captureId),body=JSON.parse(row.payload_json);
       const text=body.capture.originalTextAttachmentId?Buffer.from(this.attachment(body.capture.originalTextAttachmentId).base64,'base64').toString('utf8'):body.text;
-      return {noteId:input.captureId,text,title:body.capture.source.title??'Captured note',capturedAt:body.capture.source.recordedAt as string};
+      return {noteId:this.captureNoteKey(row),text,title:body.capture.source.title??'Captured note',capturedAt:body.capture.source.recordedAt as string};
     }
     const messageId=input.messageId!;
     // Owner rows are stamped "2026-11-02 02:46:39" in UTC.
@@ -2286,7 +2286,25 @@ export class SessionOwner {
   /** A follow-up joins the note an earlier capture or message made, under the same key. */
   private noteKey(id:string) {
     const raw=id.startsWith('capture:')?id.slice('capture:'.length):id;
-    return /^[0-9a-f]{64}$/.test(raw)||raw.startsWith('inbox-message-')?raw:`inbox-message-${id}`;
+    if(/^[0-9a-f]{64}$/.test(raw)){
+      const row=getAcceptedSessionInput(`capture:${raw}`);
+      return row?this.captureNoteKey(row):raw;
+    }
+    return raw.startsWith('inbox-message-')||raw.startsWith('agent-test-')?raw:`inbox-message-${id}`;
+  }
+  /**
+   * thnkr.ing keys a note on the capture id, and an `agent-test-` id is how it knows the words are
+   * an agent's own marked test (written as that agent, left out of his passages, removable with
+   * forget-test). A capture an agent sent through the marked test entrance (test-capture, recorded
+   * as origin agent with its run) is filed under that mark; every other capture keeps its plain id.
+   * Before this, `sessions note` sent the bare hash and a test note became his words (2026-11-13).
+   */
+  private captureNoteKey(row:{id:string;origin:string;payload_json:string}) {
+    const raw=row.id.slice('capture:'.length);
+    const source=JSON.parse(row.payload_json).capture?.source;
+    const marked=source?.metadata?.agentSource;
+    const markedTest=row.origin==='agent'&&source?.kind!=='agent-report'&&typeof marked?.inputId==='string'&&typeof marked?.runId==='string';
+    return markedTest?`agent-test-${raw}`:raw;
   }
   async saveInboxNote(input:{sourceInputId:string;sourceRunId:string;sourceSessionId:number;actionId:string;captureId?:string;messageId?:string;summary?:string;addTo?:string;person?:string;journal?:'entry'|'checkin'}) {
     if(!this.runtime.saveCaptureNote)throw new SessionOwnerError('Thinkering note capability unavailable.',409,'CAPABILITY_UNAVAILABLE');
