@@ -141,6 +141,8 @@ const RETIRED_MODEL_LABELS: Record<string, string> = {
 /** What he reads for a model id, including one no longer offered. Unknown ids keep their id. */
 export function modelDisplayName(model: string | null | undefined): string {
   if (!model) return "";
+  const projectThinking = chatgptProjectThinking(model);
+  if (projectThinking) return `ChatGPT · ${projectThinking.split('-').map(word => word[0]!.toUpperCase() + word.slice(1)).join(' ')}`;
   return (MODEL_LABELS as Record<string, string>)[model] ?? RETIRED_MODEL_LABELS[model] ?? model;
 }
 
