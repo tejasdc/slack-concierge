@@ -36,6 +36,36 @@ try{
   assert.equal(edit('missing-model',{providerTurnId:'other-turn'}).hold,true,'no model counts against the parent, already at four');
   assert.equal(edit('unbound',{providerTurnId:'other-turn',providerModel:'gpt-6-luna',ownerTurnId:999999}).hold,true);
 
+  const cheapParent=createNativeSession('codex',{title:'Luna parent',summary:undefined,purpose:'develop',origin:'native',model:'gpt-6-luna'});
+  db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run('luna-parent-thread',cheapParent.id);
+  const cheapSource=retainSessionInput({id:'luna-parent-source',sessionId:cheapParent.id,scope:'fixture',actionId:'luna-parent-source',kind:'input',origin:'agent',payload:{text:'Use a Sol helper for a bounded review.'}}).input;
+  enqueueSessionInput(cheapSource.id);
+  const cheapTurn=claimNextQueuedTurn('fixture')!.turn_id;
+  db.query('UPDATE turns SET provider_turn_id=? WHERE id=?').run('luna-parent-turn',cheapTurn);
+  const strongHelper=(toolId:string)=>implementationEditDecision({providerSessionId:'luna-parent-thread',ownerTurnId:cheapTurn,
+    providerTurnId:'sol-helper-turn',providerModel:'gpt-6.1-sol',providerAgentId:'sol-helper',toolId,toolName:'apply_patch'});
+  for(let i=0;i<4;i++)assert.equal(strongHelper(`sol-helper-${i}`).hold,false);
+  assert.equal(strongHelper('sol-helper-fifth').hold,true,'Sol helper under Luna parent holds its own fifth edit');
+  assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit'").get(cheapTurn) as any).count,0,
+    'Sol helper edits never consume the Luna parent main-turn allowance');
+  assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_helper_edit'").get(cheapTurn) as any).count,4,
+    'Sol helper edits retain their actual model and identity');
+  assert.equal(strongHelper('sol-helper-0').exempt,'codex-helper','the same provider tool call keeps its receipt');
+  recordImplementationEditReason(cheapTurn,cheapParent.id,cheapSource.id,'The helper still needs Sol to inspect this narrow regression.','cheap-parent-reason');
+  assert.equal(strongHelper('sol-helper-fifth').hold,false,'a stated reason releases this helper edit');
+  assert.equal(strongHelper('sol-helper-fifth').exempt,'codex-helper','the released retry counts once');
+  assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit'").get(cheapTurn) as any).count,0);
+
+  const chosenParent=createNativeSession('codex',{title:'human chosen helper',summary:undefined,purpose:'develop',origin:'native',model:'gpt-6-luna'});
+  db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run('chosen-parent-thread',chosenParent.id);
+  const chosenInput=retainSessionInput({id:'chosen-helper-source',sessionId:chosenParent.id,scope:'fixture',actionId:'chosen-helper',kind:'input',origin:'human',payload:{text:'Use GPT-6.1 Sol for the helper.'}}).input;
+  enqueueSessionInput(chosenInput.id);
+  const chosenTurn=claimNextQueuedTurn('fixture')!.turn_id;
+  db.query('UPDATE turns SET provider_turn_id=? WHERE id=?').run('chosen-parent-turn',chosenTurn);
+  for(let i=0;i<5;i++)assert.equal(implementationEditDecision({providerSessionId:'chosen-parent-thread',ownerTurnId:chosenTurn,
+    providerTurnId:'chosen-sol-helper',providerModel:'gpt-6.1-sol',toolId:`chosen-${i}`,toolName:'apply_patch'}).hold,false,
+    'a verified human model choice exempts the chosen helper');
+
   // Shared-daemon hooks carry no owner turn ID: the reported model decides, the single running turn is the parent.
   const daemon=createNativeSession('codex',{title:'daemon parent',summary:undefined,purpose:'develop',origin:'native',model:'gpt-6.1-sol'});
   db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run('daemon-thread',daemon.id);
@@ -48,7 +78,8 @@ try{
   for(let i=0;i<4;i++)assert.equal(daemonEdit(`sol-${i}`,{providerModel:'gpt-6-sol'},'unbound-sol-turn').hold,false);
   assert.equal(daemonEdit('sol-fifth',{providerModel:'gpt-6-sol'},'unbound-sol-turn').hold,true,'a top-model edit with a different turn ID is counted and held');
   assert.equal(daemonEdit('luna-after',{providerModel:'gpt-6-luna'}).exempt,'codex-helper');
-  assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit'").get(daemonTurn) as any).count,4);
+  assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit'").get(daemonTurn) as any).count,0,
+    'top-model helper edits keep an independent count even when the parent also uses Sol');
   db.query("UPDATE turns SET status='done' WHERE id=?").run(daemonTurn);
   assert.equal(daemonEdit('sol-fifth',{providerModel:'gpt-6-sol'},'unbound-sol-turn').hold,true,'completion cannot release a Sol hold without an existing original-turn reason');
   assert.equal(daemonEdit('none-running',{providerModel:'gpt-6-luna'},'never-bound-child').hold,true,'unbound child with no running turn holds');
@@ -81,13 +112,13 @@ try{
   assert.equal(codexEdit('native-sol-child','sol-fifth','gpt-6.1-sol').hold,true,'Sol helper fifth edit uses parent turn budget');
   const bindingCount=(db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE session_id=? AND kind='implementation_codex_helper_binding'").get(lifecycle.id) as any).count;
   assert.equal(bindingCount,2,'both Luna and Sol child turns retain exact parent bindings');
-  assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE session_id=? AND kind='implementation_helper_edit' AND input_id=?").get(lifecycle.id,lifecycleInput.id) as any).count,1,
-    'lower-tier helper receipt preserves the parent accepted input');
+  assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE session_id=? AND kind='implementation_helper_edit' AND input_id=?").get(lifecycle.id,lifecycleInput.id) as any).count,5,
+    'both helper models preserve the parent accepted input without using its main edit count');
   assert.equal((db.query('EXPLAIN QUERY PLAN SELECT turn_id FROM session_owner_events WHERE event_id=?').get('implementation-codex-helper-binding:fixture') as any).detail.includes('event_id'),true,
     'binding identity resolves by the existing unique event ID index');
   recordImplementationEditReason(lifecycleTurn,lifecycle.id,lifecycleInput.id,'This exact turn needs its thinking model to finish the fixed design.','fixture-reason');
   db.query("UPDATE turns SET status='done' WHERE id=?").run(lifecycleTurn);
-  for(let i=0;i<4;i++)assert.equal(codexEdit('native-sol-child',`sol-${i}`,'gpt-6.1-sol').exempt,'already-counted','duplicate retries retain original receipt after completion');
+  for(let i=0;i<4;i++)assert.equal(codexEdit('native-sol-child',`sol-${i}`,'gpt-6.1-sol').exempt,'codex-helper','duplicate retries retain original receipt after completion');
   assert.equal(codexEdit('native-sol-child','sol-fifth','gpt-6.1-sol').hold,false,'reason recorded while the parent was running permits its retained child edit');
   assert.equal(codexEdit('native-sol-child','sol-fifth','gpt-6-luna').hold,true,'a changed child model cannot inherit the binding');
   assert.equal(codexEdit('unseen-child','no-parent','gpt-6-luna').hold,true,'unknown child without a running parent remains refused');
@@ -112,7 +143,8 @@ try{
   enqueueSessionInput(newerInput.id);
   const newerTurn=claimNextQueuedTurn('fixture')!.turn_id;
   assert.equal(codexEdit('native-sol-child','old-child-stays-old','gpt-6.1-sol').hold,false,'new parent does not reassign known child');
-  assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit'").get(lifecycleTurn) as any).count,6);
+  assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_helper_edit' AND json_extract(payload_json,'$.providerTurnId')='native-sol-child'").get(lifecycleTurn) as any).count,6);
+  assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit'").get(lifecycleTurn) as any).count,0);
   assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit'").get(newerTurn) as any).count,0);
 
   const child=createNativeSession('codex',{title:'worker',summary:undefined,purpose:'develop',origin:'native',model:'gpt-6-luna'});
@@ -224,7 +256,7 @@ try{
   assert.equal(reopened.exitCode,0,'a fresh owner process preserves the duplicate receipt and admits a new edit from the same retained child');
   const observer=new Database(join(scratch,'state.db'),{readonly:true});
   try{
-    assert.equal((observer.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND input_id=? AND kind='implementation_helper_edit'").get(lifecycleTurn,lifecycleInput.id) as any).count,2,'a fresh reader sees reopened continuation retain its original parent and input');
+    assert.equal((observer.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND input_id=? AND kind='implementation_helper_edit'").get(lifecycleTurn,lifecycleInput.id) as any).count,8,'a fresh reader sees reopened continuation retain its original parent and input');
   }finally{observer.close();}
   console.log('implementation edit gate: exact handoff, helper separation, retained Codex child identity and human model-picker custody passed');
 }finally{db.close();rmSync(scratch,{recursive:true,force:true});}
