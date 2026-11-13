@@ -135,6 +135,15 @@ async function ownClaudeWindows(home: string): Promise<{ windows: UsageWindow[];
   ownClaudeReads.set(home, { version, nextAt: Date.now() + 5 * 60_000, windows, readAt });
   return windows && readAt ? { windows, readAt } : null;
 }
+/** Whether this home's own Claude login still holds a refresh token that has not expired. */
+function ownLoginRefreshable(home: string): boolean {
+  try {
+    const login = JSON.parse(readFileSync(join(home, ".credentials.json"), "utf8"))?.claudeAiOauth;
+    if (typeof login?.refreshToken !== "string" || !login.refreshToken) return false;
+    const until = Number(login.refreshTokenExpiresAt);
+    return !Number.isFinite(until) || until > Date.now();
+  } catch { return false; }
+}
 async function readClaude(): Promise<ProviderUsage> {
   const observedAt = new Date().toISOString();
   const homes = new Map(runnerAccountHomes("claude-code").map(account => [account.account, account.home]));
@@ -167,11 +176,13 @@ async function readClaudeSwapAccounts(homes: Map<string, string>): Promise<{ acc
       const home = homes.get(label);
       if (!home) continue;
       const own = status === "ok" ? null : await ownClaudeWindows(home);
-      // Only relogin_required means the refresh token is dead. token_expired is claude-swap saying the
-      // short-lived access token lapsed and its refresh was deferred this pass, to be retried: on
-      // 2026-11-13 that read as signed out four minutes after a routine expiry and sent the Mac's
-      // browser agent into his Chrome for a login whose refresh token was valid for three more weeks.
-      const signedOut = !own && status === "relogin_required";
+      // claude-swap's status describes its own copy of the login, which goes stale when the real one
+      // renews; token_expired only means a deferred refresh. The runner launches from its own home, so
+      // that home's refresh token decides: on 2026-11-13 a routine access-token expiry made the own
+      // read fail, claude-swap's stale copy said relogin_required, and the Mac's browser agent was sent
+      // to renew a login whose refresh token was valid for three more weeks. A refresh token the
+      // provider revoked early is caught by the refused turn that uses it.
+      const signedOut = !own && status === "relogin_required" && !ownLoginRefreshable(home);
       accounts.push({ label, plan: null, current: homes.get(label) === join(homedir(), ".claude"),
         windows: own?.windows ?? claudeWindows(usage), problem: own || status === "ok" ? null : signedOut
           ? "This account needs signing in again." : usage ? "Showing the last reading; the latest could not be taken." : "Usage could not be read.",

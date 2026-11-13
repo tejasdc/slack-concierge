@@ -28,15 +28,32 @@ which had expired, and then marked the account signed out for either
 
 ## Fix
 
+First part (installed 03:39 UTC):
+
 Only `relogin_required` marks a Claude account signed out; `token_expired` keeps the
-last reading with its ordinary could-not-read note. A dead refresh token still reports
-`relogin_required`, and a refused turn still raises a renewal through its own path.
+last reading with its ordinary could-not-read note.
+
+## What the first part missed
+
+After it installed, claude-swap reported `relogin_required`, not `token_expired`, for
+both `tejastej.dc@gmail.com` and `tejas@chann.app`. That status describes claude-swap's
+own copy of each login, which goes stale whenever the real login renews (see the
+[November 7 record](2026-11-07-runner-renewal-stayed-signed-out.md)). The runner already
+preferred its own home's reading, but that reading fails whenever the home's access
+token has just expired, so the stale copy decided.
+
+### Second part
+
+Signed out now also requires the runner home's own login to lack an unexpired refresh
+token. claude-swap's verdict alone no longer starts a renewal; a refresh token the
+provider revoked early is caught by the refused turn that uses it.
 
 ## Acceptance scenario
 
 - **Seed:** A runner Claude home whose access token expired minutes ago, refresh token
-valid, and claude-swap reporting `token_expired` for it.
+valid, and claude-swap reporting `token_expired` or `relogin_required` for its copy.
 - **Action:** The runner's next usage reading.
 - **Expected:** The account is not signed out and no renewal notice or Mac request is
-recorded; with `relogin_required` it is signed out and one renewal follows the hold rules.
+recorded; with the home's refresh token missing or expired and `relogin_required`, it is signed
+out and one renewal follows the hold rules.
 - **Replayable offline:** Yes, with a stubbed claude-swap list.
