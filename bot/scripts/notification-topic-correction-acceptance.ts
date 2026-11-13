@@ -82,8 +82,7 @@ try{
   const ordinaryTopic=topicsCommand(current.actor,{verb:'create',action_id:'ordinary-topic',title:'Unrelated work',roots:[ordinary],area_ids:[area.id]}).topic.topicId;
   topicsCommand(current.actor,{verb:'place',topic_id:ordinaryTopic,roots:[agentCorrection],action_id:'agent-correction-remove'});
   refuses({verb:'merge',topic_id:duplicate,into:keeper,action_id:'unrelated-correction',reason:'Same concern',correction_source_id:ordinary},'BUG_REPORT_CORRECTION_SOURCE_REQUIRED');
-  for(const [from,into] of [[duplicate,ordinaryTopic],[ordinaryTopic,keeper]])
-    refuses({verb:'merge',topic_id:from,into,action_id:`mixed-${from}`,reason:'Same concern',correction_source_id:correction},'BUG_REPORT_OWN_THREAD');
+  refuses({verb:'merge',topic_id:duplicate,into:ordinaryTopic,action_id:'bug-into-work',reason:'Same concern',correction_source_id:correction},'BUG_REPORT_OWN_THREAD');
   refuses({verb:'place',topic_id:keeper,roots:[second],action_id:'agent-place'},'BUG_REPORT_OWN_THREAD');
   const fresh=makeCapture('Fresh independent report',true);
   refuses({verb:'create',action_id:'shared-intake',title:'Wrong combined intake',roots:[fresh,makeCapture('Another unplaced request')],area_ids:[area.id]},'BUG_REPORT_OWN_THREAD');
@@ -153,9 +152,16 @@ try{
   const ordinaryRoutePayload=JSON.parse((db.query("SELECT payload_json FROM session_inputs WHERE scope=? AND action_id='ordinary-route'").get(`communication:${current.actor.inputId}`) as any).payload_json);
   assert.deepEqual(ordinaryRoutePayload,{kind:'topic-route',messageId:ordinary,destination:ordinaryDestination,reason:null},'ordinary action payload remains compatible with accepted pre-release retries');
   assert.equal(topicsCommand(current.actor,{verb:'merge',topic_id:ordinaryTopic,into:ordinaryDestination,action_id:'ordinary-merge',reason:'Ordinary organization'}).topic.topicId,ordinaryDestination);
+  const ordinaryRoots=readTopic(ordinaryDestination).topic.roots;
+  const ordinaryIntoBug={verb:'merge',topic_id:ordinaryDestination,into:keeper,action_id:'ordinary-into-bug-topic',reason:'Related ordinary captures join the existing notification concern'};
+  assert.equal(topicsCommand(current.actor,ordinaryIntoBug).topic.topicId,keeper,'ordinary-topic merging into a bug topic remains supported without a bug consolidation correction');
+  assert.equal(topicsCommand(current.actor,ordinaryIntoBug).duplicate,true);
+  assert.deepEqual(new Set(readTopic(keeper).topic.roots),new Set([...destination.topic.roots,...ordinaryRoots]));
+  assert.deepEqual(new Set(readTopic(keeper).requests.map((request:any)=>request.id)),new Set([requestA,requestB,repairRequest]));
+  assert.deepEqual(communication.inspect(sharedDispatch.request_id),dispatchBefore);
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({fixture:'notification-topic-correction-acceptance',agentMerge:true,correctionSourceRequired:true,
-    guardedDirectIntake:true,spotifySideRouted:true,originalSourcesRetained:true,requestsRetained:true,sharedDispatchPreserved:true,agentActionIdempotent:true}));
+    guardedDirectIntake:true,spotifySideRouted:true,originalSourcesRetained:true,requestsRetained:true,sharedDispatchPreserved:true,agentActionIdempotent:true,ordinaryTopicIntoBugTopic:true}));
 }finally{
   await communication.stop();
   rmSync(scratch,{recursive:true,force:true});

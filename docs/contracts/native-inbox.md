@@ -158,7 +158,7 @@ A new bug report (a capture from the bug button or its shortcut, marked by the T
 bug-report door) first gets a thread of its own [decision: inbox-button-always-new-request].
 The owner refuses, with `BUG_REPORT_OWN_THREAD`, an agent's `sessions thread` of a bug
 report, `topics place` of one into a topic that holds any other root, `topics create` with
-it beside other roots, and a merge between a bug-report topic and a non-bug work topic.
+it beside other roots, and a merge from a bug-report topic into a non-bug work topic.
 The router gives it its own topic (`topics create --root <it> --from
 <related topic>` links the related thread) and sends the work to the owning agent with
 `sessions ask --route-message`. The placement prompt and the Stop hook's filing commands
@@ -169,12 +169,16 @@ worker's answer into that worker's thread, and its instructions were the only gu
 Initial placement and later organization are separate owner operations. After two reports
 have their own topics, `topics merge <duplicate> --into <survivor> --reason <why>
 --correction-source <input>` may consolidate the same concern
-[decision: related-captures-share-one-thread]. Both topics must contain a bug-report root;
+[decision: related-captures-share-one-thread]. For a source holding a bug-report root,
+the destination must also hold one;
 the correction must be a retained, human-authored, non-bug message already in the surviving
 topic. The Inbox judges whether the reports concern the same issue; the owner checks source
 custody, records the exact pair, survivor, correction and reason under the acting agent's
 source/run/action, and retains every root, request, question and existing dispatch. No
 content matching, reason-string override, human impersonation or worker redispatch occurs.
+An ordinary source topic may still merge into a bug-report topic without a correction source,
+as before: this moves ordinary captures into their concern, not a new bug into a work thread.
+The bug-report consolidation checks apply when the source contains a bug-report root.
 
 `topics route <destination> --message <original bug capture> --reason <why>
 --side-scope <the concern to investigate>` adds a scoped secondary projection only after

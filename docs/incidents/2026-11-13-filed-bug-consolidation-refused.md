@@ -28,11 +28,18 @@ contract, so that evidence was rejected before release.
 ## Fix
 
 The existing agent merge now records the exact source topic, survivor, reason and retained
-human correction. Both topics must already hold bug reports; the correction is a human
+human correction. When the source holds a bug report, both topics must already hold bug
+reports; the correction is a human
 non-bug message in the survivor. Existing agent routing accepts a scoped secondary reference
 to an already-filed bug root, without moving or rewriting the source. The scope is attributed
 to the acting agent in both page and detail readers. Existing action custody and idempotency
 remain the enforcement boundary; there is no new store or bypass.
+
+Independent review caught an in-scope regression before release: the first candidate also
+refused an ordinary source topic merging into a bug-report destination, which the prior
+contract allowed. The correction confines the additional checks to bug-report sources and
+exercises the ordinary-to-bug direction as a successful, idempotent operation. It retains
+the bug-source-to-nonbug refusal and explicitly sourced bug-report consolidation.
 
 ## Acceptance scenario
 

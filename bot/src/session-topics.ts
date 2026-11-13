@@ -2326,8 +2326,8 @@ export function topicsCommand(actor:TopicActor,body:any,listHead?:number) {
         const sourceHasBugReport=topicRoots(from.topicId).some(isBugReportInput);
         const destinationHasBugReport=topicRoots(into.topicId).some(isBugReportInput);
         let correctionSourceId:string|null=null;
-        if(sourceHasBugReport||destinationHasBugReport){
-          if(!sourceHasBugReport||!destinationHasBugReport)
+        if(sourceHasBugReport){
+          if(!destinationHasBugReport)
             throw new TopicError(BUG_REPORT_OWN_THREAD,409,'BUG_REPORT_OWN_THREAD');
           if(typeof body?.correction_source_id!=='string'||!body.correction_source_id.trim())
             throw new TopicError('Consolidating filed bug-report topics needs the retained human correction as --correction-source.',409,'BUG_REPORT_CORRECTION_SOURCE_REQUIRED');
