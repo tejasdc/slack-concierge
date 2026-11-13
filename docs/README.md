@@ -83,6 +83,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 
 ## Incidents
 
+- [Codex empty service report-back (2026-11-13)](incidents/2026-11-13-codex-empty-report-back.md) — native effort routing, same-session authority, exact no-acknowledgement evidence, preserved result identity, and the parent-controlled recovery entrance.
 - [Agent workloads saturate the host and block the owner loop (2026-10-09)](incidents/2026-10-09-agent-workloads-saturate-the-host.md) — an Android emulator and a six-browser look gate started by two agent sessions at equal scheduler weight; commits waiting on disk and CPU; the status route's whole-table scan corrected; weighting and durability options left to their owners.
 - [Linked message rendered as thread context (2026-09-15)](incidents/2026-09-15-linked-message-subject.md) — exact wrong-subject incident, cross-provider exposure, historical audit, and permalink identity semantics.
 - [Cancelled audio input missing from native continuation (2026-09-15)](incidents/2026-09-15-cancelled-audio-input.md) — saved transcription, a Stop before native user-message acceptance, and the exact resume gap; corrects the later DM screenshot's mistaken incident identity.

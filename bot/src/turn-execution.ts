@@ -743,7 +743,12 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       },
       ...(input.boundAccount?{accountLabel:input.boundAccount.account}:claudeChoice?{accountLabel:claudeChoice.account}:{}),
       onProviderThreadStarted: (providerThreadId) => recordProviderSession(input, providerThreadId),
-      onProviderTurnStarted: (providerTurnId) => recordTurnProviderTurnId(input.turnId, providerTurnId),
+      onProviderTurnStarted: (providerTurnId) => {
+        recordTurnProviderTurnId(input.turnId, providerTurnId);
+        recordSessionEvent({eventId:`provider-turn-attempt:${input.turnId}:${dispatchAttempt}`,
+          sessionId:input.session.id,inputId:input.inputId,turnId:input.turnId,kind:'provider_turn_attempt',
+          payload:{provider:input.providerId,providerTurnId,dispatchAttempt}});
+      },
       onResumeUnanswered: (wait) => noticeCodexResumeWait(db, { sessionId: input.session.id, turnId: input.turnId }, wait),
       onInputAcknowledged: () => acknowledgeTurnProviderInput(
         input.turnId, input.ownerInstanceId, dispatchAttempt, preparedTurn.contextTurnIds,
@@ -1272,7 +1277,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         recordProviderSession(input, structuredFailure.providerSessionId);
       }
       if (structuredFailure?.providerTurnId) recordTurnProviderTurnId(input.turnId, structuredFailure.providerTurnId);
-      const message = String(error);
+      const message = error instanceof ProviderDispatchError&&error.message.startsWith('CODEX_INPUT_NOT_ACKNOWLEDGED:')
+        ?error.message:String(error);
       const replaySafe = !dispatchBoundary.unsafeSteering
         && (!dispatchBoundary.admissionIntended
           || Boolean(structuredFailure?.terminalConfirmed && providerIdentityCompatible));
@@ -1427,6 +1433,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
               ? `Status: parked - provider outcome is ambiguous; input preserved as turn ${input.turnId}, but replay is blocked until reconciled`
               : structuredFailure?.failureClass === "parked_access"
               ? undefined
+              : (error instanceof Error?error.message:String(error)).startsWith('CODEX_INPUT_NOT_ACKNOWLEDGED:')
+              ? `Status: parked - Codex completed without acknowledging this accepted input or producing work; the original input is preserved for exact transcript-verified recovery with sessions codex-recover <original-request-id>`
               : `Status: parked - provider dispatch failed; input preserved as turn ${input.turnId} until resumed`,
           });
       if (!preserved) throw new Error("Provider dispatch failure could not be durably preserved.");

@@ -781,6 +781,20 @@ CREATE INDEX IF NOT EXISTS executions_open ON executions(turn_id) WHERE state IN
 -- Joins from a turn to its execution attempt; without it SQLite built a temporary index over every
 -- execution on each ghost-turn sweep (2026-11-04).
 CREATE INDEX IF NOT EXISTS executions_turn ON executions(turn_id,dispatch_attempt);`);
+// One proof-backed recovery per exact Codex input. Keeping the full attempt proof beside
+// the atomic queue transition prevents a second action ID from replaying the same input.
+db.exec(`CREATE TABLE IF NOT EXISTS codex_unacknowledged_recoveries (
+  accepted_input_id TEXT PRIMARY KEY REFERENCES session_inputs(id),
+  request_id TEXT NOT NULL,
+  turn_id INTEGER NOT NULL REFERENCES turns(id),
+  provider_thread_id TEXT NOT NULL,
+  proof_json TEXT NOT NULL,
+  action_id TEXT NOT NULL,
+  source_input_id TEXT NOT NULL,
+  source_run_id TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS codex_unacknowledged_recoveries_request ON codex_unacknowledged_recoveries(request_id);`);
 // The parked-run sweep's way to a Codex turn released when it parked (executions.ts, 2026-11-12).
 db.exec("CREATE INDEX IF NOT EXISTS executions_released_codex ON executions(updated_at_ms) WHERE supervisor='codex-daemon' AND state='released'");
 addColumn('executions','adopted_live','adopted_live INTEGER NOT NULL DEFAULT 0');
@@ -4201,6 +4215,105 @@ export function requeueProvenUnsentNativeChatGptTurn(input: {
         input.nextAttemptMs,RETRYING_PROVIDER_TURN_STATUS_TEXT,input.turnId);
     if(changed.changes!==1)return false;
     db.query(`UPDATE sessions SET status='idle' WHERE id=? AND status='error'`).run(input.sessionId);
+    turnFactChanged(input.turnId,'queued');
+    return true;
+  })();
+}
+
+export interface CodexUnacknowledgedRecoveryRow {
+  accepted_input_id:string;request_id:string;turn_id:number;provider_thread_id:string;proof_json:string;
+  action_id:string;source_input_id:string;source_run_id:string;created_at_ms:number;
+}
+export function codexUnacknowledgedRecovery(inputId:string):CodexUnacknowledgedRecoveryRow|null {
+  return db.query('SELECT * FROM codex_unacknowledged_recoveries WHERE accepted_input_id=?').get(inputId) as CodexUnacknowledgedRecoveryRow|null;
+}
+
+/** Reserve and requeue the same failed report-back atomically after the caller proves every
+ * native attempt empty. The unique accepted input is the idempotency key, across action IDs. */
+export function reserveCodexUnacknowledgedRecovery(input:{sessionId:number;inputId:string;turnId:number;requestId:string;
+  providerThreadId:string;bindingGeneration:number;proof:unknown;actionId:string;sourceInputId:string;sourceRunId:string;nowMs:number}):boolean {
+  return db.transaction(()=>{
+    const valid=db.query(`SELECT 1 FROM turns turn JOIN sessions session ON session.id=turn.session_id
+      JOIN session_inputs accepted ON accepted.id=turn.accepted_input_id AND accepted.turn_id=turn.id
+      JOIN session_communication_requests request ON request.request_id=?
+        AND request.target_session_id=session.id AND request.outcome IS NULL
+      WHERE turn.id=? AND turn.session_id=? AND accepted.id=? AND turn.turn_kind='native'
+        AND accepted.kind IN ('input','create','request','consultation') AND accepted.steering_id IS NULL
+        AND accepted.origin='service' AND accepted.request_id=request.request_id AND accepted.id<>request.target_input_id
+        AND json_extract(request.payload_json,'$.requestedEffect')='work'
+        AND json_extract(accepted.receipt_json,'$.admission.inputId')=accepted.id
+        AND json_extract(accepted.receipt_json,'$.admission.runId')=turn.native_run_id
+        AND json_extract(accepted.receipt_json,'$.admission.bindingGeneration')=session.binding_generation
+        AND json_extract(accepted.receipt_json,'$.admission.provider')='codex'
+        AND json_extract(accepted.receipt_json,'$.admission.model')='gpt-6-astra'
+        AND json_extract(accepted.receipt_json,'$.admission.reasoningEffort')='xhigh'
+        AND turn.native_run_id IS NOT NULL
+        AND ((turn.status='parked' AND turn.dispatch_failure_class='parked_terminal'
+              AND turn.agent_text LIKE 'CODEX_INPUT_NOT_ACKNOWLEDGED:%')
+          OR (turn.status='done' AND EXISTS (SELECT 1 FROM session_owner_events historical
+              WHERE historical.event_id='result:' || turn.id AND historical.turn_id=turn.id
+                AND historical.input_id=accepted.id AND historical.session_id=session.id AND historical.kind='result'
+                AND json_extract(historical.payload_json,'$.text')=''
+                AND json_array_length(json_extract(historical.payload_json,'$.toolsUsed'))=0
+                AND json_valid(turn.outbound_text)
+                AND json_extract(turn.outbound_text,'$.version')=1
+                AND json_extract(turn.outbound_text,'$.result.sessionUUID')=json_extract(historical.payload_json,'$.sessionUUID')
+                AND json_extract(turn.outbound_text,'$.result.providerTurnId')=json_extract(historical.payload_json,'$.providerTurnId')
+                AND turn.provider_turn_id=json_extract(historical.payload_json,'$.providerTurnId')
+                AND json_extract(turn.outbound_text,'$.result.model')=json_extract(historical.payload_json,'$.model')
+                AND json_extract(turn.outbound_text,'$.result.text')=''
+                AND json_array_length(json_extract(turn.outbound_text,'$.result.toolsUsed'))=0
+                AND json(json_extract(turn.outbound_text,'$.result.toolsUsed'))=json(json_extract(historical.payload_json,'$.toolsUsed'))
+                AND json_extract(turn.outbound_text,'$.result.durationMs') IS json_extract(historical.payload_json,'$.durationMs'))))
+        AND turn.owner_instance_id IS NULL AND turn.stop_requested_at IS NULL
+        AND turn.dispatch_attempt>0
+        AND ((turn.status='parked' AND turn.provider_admission_intended_at IS NOT NULL
+              AND turn.provider_started_at IS NOT NULL AND turn.provider_turn_id IS NOT NULL)
+          OR (turn.status='done' AND turn.provider_admission_intended_at IS NOT NULL AND turn.provider_started_at IS NOT NULL
+              AND EXISTS (SELECT 1 FROM session_owner_events attempt
+              WHERE attempt.turn_id=turn.id AND attempt.session_id=session.id AND attempt.input_id=accepted.id
+                AND attempt.kind='attention'
+                AND json_extract(attempt.payload_json,'$.dispatchAttempt')=turn.dispatch_attempt)
+              AND EXISTS (SELECT 1 FROM session_owner_events identity
+                WHERE identity.turn_id=turn.id AND identity.session_id=session.id AND identity.kind='prompt_cache_identity'
+                  AND json_extract(identity.payload_json,'$.effort')='xhigh')))
+        AND turn.provider_input_acknowledged_at IS NULL
+        AND ((turn.status='parked' AND turn.outbound_text IS NULL) OR turn.status='done')
+        AND session.provider_id='codex' AND session.agent_session_uuid=?
+        AND session.binding_generation=? AND session.status IN ('idle','error')
+        AND json_extract(session.native_metadata_json,'$.model')='gpt-6-astra'
+        AND json_extract(session.native_metadata_json,'$.suspended') IS NOT 1
+        AND json_extract(session.native_metadata_json,'$.interactionPolicy') IS NOT 'consultation-only'
+        AND NOT EXISTS (SELECT 1 FROM turns active WHERE active.session_id=session.id
+          AND active.id<>turn.id AND active.status IN ('queued','running','delivering'))
+        AND NOT EXISTS (SELECT 1 FROM turn_steering_messages steering WHERE steering.turn_id=turn.id
+          AND steering.status IN ('sent','sending','ambiguous'))
+        AND NOT EXISTS (SELECT 1 FROM turn_artifact_deliveries artifact WHERE artifact.turn_id=turn.id)
+        AND NOT EXISTS (SELECT 1 FROM turn_artifact_batches batch WHERE batch.turn_id=turn.id AND batch.status<>'collecting')
+        AND NOT EXISTS (SELECT 1 FROM provider_recovery_inputs recovery WHERE recovery.source_turn_id=turn.id)
+        AND NOT EXISTS (SELECT 1 FROM turns later WHERE later.session_id=turn.session_id AND later.id>turn.id
+          AND (later.provider_admission_intended_at IS NOT NULL OR later.provider_started_at IS NOT NULL
+            OR later.provider_turn_id IS NOT NULL OR later.provider_input_acknowledged_at IS NOT NULL))
+      LIMIT 1`).get(input.requestId,input.turnId,input.sessionId,input.inputId,input.providerThreadId,input.bindingGeneration);
+    if(!valid)return false;
+    try {
+      db.query(`INSERT INTO codex_unacknowledged_recoveries(accepted_input_id,request_id,turn_id,provider_thread_id,
+        proof_json,action_id,source_input_id,source_run_id,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?)`)
+        .run(input.inputId,input.requestId,input.turnId,input.providerThreadId,JSON.stringify(input.proof),
+          input.actionId,input.sourceInputId,input.sourceRunId,input.nowMs);
+    } catch(error) {
+      if(String(error).includes('UNIQUE constraint failed'))return false;
+      throw error;
+    }
+    const changed=db.query(`UPDATE turns SET status='queued',owner_instance_id=NULL,agent_text=NULL,reasoning_effort='xhigh',
+      ended_at=NULL,dispatch_failure_class='backoff',dispatch_next_attempt_ms=?,provider_admission_intended_at=NULL,
+      provider_started_at=NULL,provider_turn_id=NULL,provider_input_acknowledged_at=NULL,
+      status_desired_text=?,status_desired_revision=status_desired_revision+1,
+      status_projection_status='not_needed',status_projection_attempts=0,status_projection_error=NULL,
+      status_projection_next_attempt_ms=0,status_projection_parked_at=NULL
+      WHERE id=? AND status IN ('parked','done') AND owner_instance_id IS NULL`).run(input.nowMs,RETRYING_PROVIDER_TURN_STATUS_TEXT,input.turnId);
+    if(changed.changes!==1)throw new Error('Codex recovery reservation lost its exact failed turn.');
+    db.query(`UPDATE sessions SET status='idle' WHERE id=? AND status IN ('idle','error')`).run(input.sessionId);
     turnFactChanged(input.turnId,'queued');
     return true;
   })();

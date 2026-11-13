@@ -127,6 +127,17 @@ try{
   const agentPrompt={providerSessionId:'human-astra-thread',model:'gpt-6-astra',providerTurnId:'agent-turn'};
   assert.equal(communication.modelStartGate(agentPrompt).allowed,false,'agent turn does not inherit the human continuation');
   db.query("UPDATE turns SET status='done' WHERE id=?").run(agentTurn);
+  const serviceInput=retainSessionInput({id:'service-astra-continuation',sessionId:humanId,scope:'fixture',actionId:'service-continuation',
+    kind:'input',origin:'service',requestId:'handoff',sourceInputId:humanInput.id,sourceRunId:nativeRunId(humanTurn),
+    payload:{text:'Continue the same admitted work.'}}).input;
+  db.query("UPDATE session_communication_requests SET target_session_id=?,target_input_id=?,payload_json=?,status='admitted',outcome=NULL WHERE request_id='handoff'")
+    .run(humanId,serviceInput.id,JSON.stringify({requestedEffect:'work'}));
+  enqueueSessionInput(serviceInput.id);
+  const serviceTurn=claimNextQueuedTurn('fixture')!.turn_id;
+  db.query('UPDATE turns SET provider_turn_id=? WHERE id=?').run('service-turn',serviceTurn);
+  assert.equal(communication.modelStartGate({providerSessionId:'human-astra-thread',model:'gpt-6-astra',providerTurnId:'service-turn'}).allowed,true,
+    'same-session service continuation inherits only the retained work request and verified session model choice');
+  db.query("UPDATE turns SET status='done' WHERE id=?").run(serviceTurn);
   const qualified='Third failed fix of the same issue; ChatGPT Pro answer failed to hold.';
   const reasonInput=retainSessionInput({id:'agent-astra-with-reason',sessionId:humanId,scope:'fixture',actionId:'agent-with-reason',kind:'input',origin:'agent',payload:{text:'Continue this conversation.',escalationReason:qualified}}).input;
   enqueueSessionInput(reasonInput.id);

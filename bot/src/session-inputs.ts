@@ -290,7 +290,8 @@ export function recordSessionInputAttention(inputId:string) {
     const attempt=turn?.dispatch_attempt??0,eventId=`attention:${input.id}:${attempt}`;
     if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))return false;
     // Older result events already advanced attention before attempt markers existed.
-    const resultNotified=input.turn_id!==null&&db.query('SELECT 1 FROM session_owner_events WHERE event_id=? AND input_id=? AND session_id=?').get(`result:${input.turn_id}`,input.id,input.session_id);
+    const resultNotified=input.turn_id!==null&&db.query("SELECT 1 FROM session_owner_events WHERE turn_id=? AND input_id=? AND session_id=? AND kind='result' LIMIT 1")
+      .get(input.turn_id,input.id,input.session_id);
     if(!resultNotified) {
       const session=getSessionById(input.session_id)!;
       updateSessionMetadata(session.id,{generation:(sessionMetadata(session).generation??0)+1});

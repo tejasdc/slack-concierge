@@ -11,6 +11,21 @@ binding; removing Slack does not remove a persisted provider session. Native
 provider policy preserves explicit ChatGPT intent and visible unavailable/start
 failure without substituting a different provider.
 
+## Codex model and effort on native starts
+
+The bound session model is sent when the App Server thread starts or resumes. Reasoning effort is
+per turn: Concierge sends the retained requested value as `turn/start.effort`; it does not send an
+unsupported effort field on `thread/start` or `thread/resume`. A service-authored continuation can
+keep the exact session's verified model only when the owner links it to its preceding run in that
+same conversation and to the same still-open work request. The service remains service-authored;
+the link carries existing authority and does not create a new human choice. Unrelated agent inputs
+and agent-supplied authority claims remain outside this path.
+
+An empty completed native turn with no matching input acknowledgement, assistant output or tool use
+parks the accepted input with a precise failure. The exact recovery contract and current boundary
+are documented in [turn lifecycle](TURN-LIFECYCLE.md#empty-codex-completion-without-input-acknowledgement)
+and [the November 13 incident](../incidents/2026-11-13-codex-empty-report-back.md).
+
 ## Selection and binding
 
 Claude information-only consultations retain the selected account through their restricted

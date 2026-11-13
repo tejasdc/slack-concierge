@@ -91,7 +91,7 @@ export function readsForTurn(sessionId:number,turnId:number,roots:ReadonlySet<st
   // turn can work for several threads, and another thread's answer is not his to read here.
   const result=db.query(`SELECT event.event_id,event.input_id,event.created_at,COALESCE(json_extract(event.payload_json,'$.text'),turn.agent_text,'') AS text
     FROM session_owner_events event LEFT JOIN turns turn ON turn.id=event.turn_id
-    WHERE event.session_id=? AND event.turn_id=? AND event.kind='result' LIMIT 1`).get(sessionId,turnId) as {event_id:string;input_id:string|null;created_at:string;text:string}|null;
+    WHERE event.session_id=? AND event.turn_id=? AND event.kind='result' ORDER BY event.sequence DESC LIMIT 1`).get(sessionId,turnId) as {event_id:string;input_id:string|null;created_at:string;text:string}|null;
   if(!result||!String(result.text).trim()||!result.input_id)return [];
   const root=inboxThreadRoot(sessionId,result.input_id);
   return root&&roots.has(root)?[{messageId:result.event_id,text:String(result.text),at:iso(result.created_at)!}]:[];

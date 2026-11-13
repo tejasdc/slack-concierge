@@ -464,6 +464,8 @@ export type SessionOwnerRuntime = {
   artifact?(session:SessionRow,id:string):Promise<unknown>;
   recover?(session:SessionRow,operation:AcceptedSessionInput):Promise<void>;
   requeueProvenUnsentChatGpt?(session:SessionRow,operation:AcceptedSessionInput):Promise<{status:'requeued'|'already_queued'|'already_running';runId:string}>;
+  requeueProvenUnacknowledgedCodex?(session:SessionRow,operation:AcceptedSessionInput,input:{requestId:string;actionId:string;sourceInputId:string;sourceRunId:string;validateSource?:()=>void}):
+    Promise<{status:'requeued'|'already_recovered';runId:string;providerTurnIds:string[]}>;
   proveRejectedChatGptAttachment?(session:SessionRow,operation:AcceptedSessionInput):Promise<{runId:string;reason:string;attachmentHashes:string[]}>;
   fork?(session:SessionRow,input:AcceptedSessionInput):void;
   bind?(session:SessionRow,operation:AcceptedSessionInput,reference:ChatGptBinding):Promise<{binding:ChatGptBinding}>;
@@ -3264,6 +3266,12 @@ export class SessionOwner {
     if(operation.session_id!==session.id||session.provider_id!=='chatgpt'||!this.runtime.requeueProvenUnsentChatGpt)
       throw new SessionOwnerError('The original ChatGPT operation is unavailable for exact recovery.',409,'CAPABILITY_UNAVAILABLE');
     return this.runtime.requeueProvenUnsentChatGpt(session,operation);
+  }
+  async requeueProvenUnacknowledgedCodex(sessionId:number,inputId:string,input:{requestId:string;actionId:string;sourceInputId:string;sourceRunId:string;validateSource?:()=>void}) {
+    const session=this.session(`concierge:${sessionId}`),operation=this.input(inputId);
+    if(operation.session_id!==session.id||session.provider_id!=='codex'||!this.runtime.requeueProvenUnacknowledgedCodex)
+      throw new SessionOwnerError('The original Codex continuation is unavailable for exact recovery.',409,'CAPABILITY_UNAVAILABLE');
+    return this.runtime.requeueProvenUnacknowledgedCodex(session,operation,input);
   }
   /** The caller separately verifies original request and obligation custody. */
   async proveRejectedChatGptAttachment(sessionId:number,inputId:string) {
