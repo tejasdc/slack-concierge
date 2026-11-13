@@ -38,7 +38,7 @@ import {askAsideOnce} from './session-asides';
 import {awaitingOutside} from './storage-observation';
 import {earlierWorkFor,type EarlierWork} from './request-history';
 import {withBefore} from './reply-before';
-import { isHisChatGpt,parseProviderSelector,resolveProviderSelector } from './aliases';
+import { isHisChatGpt,parseProviderSelector,resolveProviderSelector,chatgptProjectThinking } from './aliases';
 import {humanChoseChatGptEffort,humanChoseProvider,humanChoseThinkingModel} from './model-escalation-custody';
 import {escalationReason} from './model-escalation';
 import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindDirectChatGptTaskSource,chatGptAnswerCommand,chatGptObligationForAttempt,classifyLegacyChatGptAsk,holdUnmessageableChatGptAsker,migrateOpenLegacyChatGptAsks,openChatGptObligations,recordChatGptAttemptResult,recordChatGptOriginalRequeued,recordChatGptReturnReceipt,reconcileCanceledChatGptObligations,reconcileHandoffChatGptObligations,requireChatGptTaskDisposition,requireChatGptTaskResolved,resolveChatGptAnswer,resolveChatGptTask,resumeMessageableChatGptAsker,withdrawCanceledChatGptAttempt,type ChatGptObligationRow} from './chatgpt-obligations';
@@ -1751,20 +1751,21 @@ export class SessionCommunicationCoordinator {
         const actor = input.resume_source ? this.resumedActor(live, input.resume_source) : sender.actor;
         action(input.action_id);
         if(input.purpose!==undefined){
+            const thinking=chatgptProjectThinking(input.effort)??input.effort;
             if(!['research','design-critique','design-review'].includes(input.purpose)||input.address||input.role||input.implementation||input.saved||input.outside||input.resurrect)
                 throw new Error('A declared research or design-review purpose starts a new ordinary session.');
             if(!input.provider||input.provider==='auto'){
-                const humanEffort=input.effort&&input.effort!=='pro'&&humanChoseChatGptEffort(actor.inputId,input.effort);
-                if(input.effort&&input.effort!=='pro'&&!humanEffort)
+                const humanEffort=thinking&&thinking!=='pro'&&humanChoseChatGptEffort(actor.inputId,thinking);
+                if(thinking&&thinking!=='pro'&&!humanEffort)
                     throw new Error('Declared research and design review use ChatGPT Pro unless Tejas explicitly chose another ChatGPT thinking level.');
-                input={...input,provider:'chatgpt',effort:humanEffort?input.effort:'pro',
+                input={...input,provider:'chatgpt',effort:input.effort??'pro',
                     ...(humanEffort?{providerReason:'explicit human ChatGPT thinking level choice'}:{})};
             }
             else if(input.provider==='chatgpt'){
-                if(input.effort&&input.effort!=='pro'&&!humanChoseChatGptEffort(actor.inputId,input.effort))
+                if(thinking&&thinking!=='pro'&&!humanChoseChatGptEffort(actor.inputId,thinking))
                     throw new Error('Declared research and design review use ChatGPT Pro unless Tejas explicitly chose another ChatGPT thinking level.');
                 input={...input,effort:input.effort??'pro',
-                    ...(input.effort&&input.effort!=='pro'?{providerReason:'explicit human ChatGPT thinking level choice'}:{})};
+                    ...(thinking&&thinking!=='pro'?{providerReason:'explicit human ChatGPT thinking level choice'}:{})};
             }else if(typeof input.providerReason!=='string'||!input.providerReason.trim()){
                 const selector=parseProviderSelector(input.provider);
                 const selected=selector?resolveProviderSelector(selector):null;
@@ -2016,6 +2017,7 @@ export class SessionCommunicationCoordinator {
         }
         let target = input.provider?null:this.address(input.address!);
         const targetSession=target?getSessionById(target.session)!:null;
+        if(targetSession)this.dependencies.owner!.assertNewChatgptInput(targetSession);
         let correctionProof:{runId:string;reason:string;attachmentHashes:string[]}|null=null;
         if(input.correction_of){
             if(input.recovery_of||input.provider||!targetSession||targetSession.provider_id!=='chatgpt'
@@ -2235,6 +2237,7 @@ export class SessionCommunicationCoordinator {
         }
         const target=getSessionById(input.target.local!);
         if(!target||!this.dependencies.owner.canSend(target))throw new Error('That session cannot take a message right now.');
+        this.dependencies.owner.assertNewChatgptInput(target);
         const id=randomUUID(),now=this.now();
         const address=sessionAddress(target);
         const firstInput={text:forwardedReplyFraming(id,input.text,origin,input.target.topicId,input.inputId,input.target.messageThreadRootId,input.target.messageThreadRequestId),...(attachments.length?{attachments}:{})};

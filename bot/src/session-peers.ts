@@ -5,7 +5,7 @@ import {basename,join} from 'node:path';
 import {PeerCatalogueSync} from './peer-catalogue-sync';
 import {peerCatalogueView} from './peer-catalogue-view';
 import {sessionProject} from './session-projects';
-import {parseProviderSelector,resolveProviderSelector,CHATGPT_THINKING_LEVELS,THINKING_MODEL_CHOICES} from './aliases';
+import {parseProviderSelector,resolveProviderSelector,chatgptProjectThinking,CHATGPT_THINKING_LEVELS,THINKING_MODEL_CHOICES} from './aliases';
 import {humanChoseChatGptEffort,humanChoseProvider,humanChoseThinkingModel} from './model-escalation-custody';
 import {AWAITING_INSPECTION,PROMPT_ANSWER_REMINDER_MS,PROMPT_ANSWER_OVERDUE_MS,REMINDERS_SINCE_MS,STILL_WAITING_AFTER_MS,STILL_WAITING_MINUTES,updateDraining,replyCommand,stalledNotice,strandedStep,tellWorkerCanceled,cancelQueuedWithdrawnRequest,waitingOnDependency,type OwedRequest} from './request-liveness';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
@@ -1553,9 +1553,10 @@ export class SessionPeers {
     const targetProvider=typeof input.provider==='string'?input.provider
       :typeof input.address==='string'?resolveSessionAddress(input.address).provider_id:null;
     if(input.purpose!==undefined){
+      const thinking=chatgptProjectThinking(input.effort)??input.effort;
       if(!['research','design-critique','design-review'].includes(input.purpose)||typeof input.provider!=='string')
         throw new SessionOwnerError('A declared research or design-review purpose needs a new provider session.',400);
-      if(input.provider==='chatgpt'&&input.effort!=='pro'&&!(origin.originatingHuman&&input.humanChatGptEfforts?.includes(input.effort)))
+      if(input.provider==='chatgpt'&&thinking!=='pro'&&!(origin.originatingHuman&&input.humanChatGptEfforts?.includes(thinking)))
         throw new SessionOwnerError('Declared research and design review use ChatGPT Pro.',400);
       if(input.provider!=='chatgpt'&&(typeof input.providerReason!=='string'||!input.providerReason.trim()))
         throw new SessionOwnerError('Another research provider needs a stated reason.',400);
@@ -1668,6 +1669,7 @@ export class SessionPeers {
       } else {
         if(typeof input.address!=='string')throw new SessionOwnerError('Choose an exact session address or a provider for a new session.');
         const target=resolveSessionAddress(input.address);
+        owner.assertNewChatgptInput(target);
         if(sessionMetadata(target).interactionPolicy==='consultation-only'&&effect==='work')throw new SessionOwnerError('This session accepts consultation only — information, no actions.',409);
         if(!owner.canSend(target))throw new SessionOwnerError('The exact session is not currently messageable.',409,'CAPABILITY_UNAVAILABLE');
         owner.attachments(attachments);

@@ -38,7 +38,7 @@ import {noteOwnerStall,noteSlowOwnerRequest,startOwnerResponsivenessWatch} from 
 import {meaningIndex} from './meaning-index';
 import {retainedArchiveSearchSource} from './archive-search-source';
 import {presentSessionForPeer} from './peer-identity';
-import {providerDisplayName,CHATGPT_THINKING_LEVELS,DEFAULT_HIS_CHATGPT_THINKING,HIS_CHATGPT_PREFIX,chatgptSessionModel,parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderAlias,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES,AUTOMATIC_PROVIDER_ALIASES} from './aliases';
+import {providerDisplayName,CHATGPT_THINKING_LEVELS,DEFAULT_HIS_CHATGPT_THINKING,HIS_CHATGPT_PREFIX,chatgptSessionModel,isRetiredChatgptGpt,CHATGPT_GPT_RETIREMENT,parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderAlias,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES,AUTOMATIC_PROVIDER_ALIASES} from './aliases';
 import {releaseHistory,pendingUpdateSummary} from './release-history';
 import {automaticDeploymentStartsAtMs,getActiveDeploymentRun,getDeploymentDesiredState,getDeploymentRepairIncidentForRun,getLastKnownGoodRelease,type DeploymentRunRow} from './deployment-state';
 import {turnBackgroundWait} from './background-waits';
@@ -1159,6 +1159,10 @@ export class SessionOwner {
    * for every request it routes; building the whole view for that also built the Inbox's
    * attention and questions, and was the owner's largest steady cost (2026-10-07 profile).
    */
+  assertNewChatgptInput(session:SessionRow) {
+    if(session.provider_id==='chatgpt'&&isRetiredChatgptGpt(sessionMetadata(session).model))
+      throw new SessionOwnerError(CHATGPT_GPT_RETIREMENT,409,'CHATGPT_GPT_RETIRED');
+  }
   canSend(session:SessionRow) {
     const meta=sessionMetadata(session);
     return !meta.canvasObservation&&this.providerReachable(session,meta)&&session.status!=='archived'&&!meta.suspended&&!supersededBy(session.id)&&!withdrawnSuccessor(session.id);
@@ -2368,6 +2372,7 @@ export class SessionOwner {
       // The thinking level travels as the session's model, so the admission names it and the
       // browser sets it before sending; an agent that names none gets Pro.
       const thinking=chatgptSessionModel(input.effort);
+      if(isRetiredChatgptGpt(input.effort))throw new SessionOwnerError(CHATGPT_GPT_RETIREMENT,409,'CHATGPT_GPT_RETIRED');
       if(!thinking)throw new SessionOwnerError(`ChatGPT's thinking level is one of ${CHATGPT_THINKING_LEVELS.join(', ')}.`);
       return {provider:'chatgpt' as ProviderId,model:thinking,purpose:'chat',cwd:this.defaultCwd};
     }
@@ -2390,7 +2395,7 @@ export class SessionOwner {
       ...(input.provider==='auto'?{automaticProviderChoice:true,...(input.smallTask?{automaticSmallTask:true}:{})}:{})};
   }
   async create(body:unknown,projectLocationOverride?:{name:string;path:string;cwd:string;runner:string|null}) {
-    const input=object(body);only(input,['clientActionId','provider','purpose','title','workflowId','project','model','reasoningEffort','firstInput','door','savedWork']);
+    const input=object(body);only(input,['clientActionId','provider','purpose','title','workflowId','project','model','reasoningEffort','effort','firstInput','door','savedWork']);
     const savedWork=input.savedWork===undefined?null:object(input.savedWork);
     if(savedWork){only(savedWork,['kind','atMs','expiresAtMs','repeatEveryMs','daily','quietOnly']);if(!input.firstInput||!input.title||input.provider==='chatgpt'||!['scheduled','banked'].includes(savedWork.kind))
       throw new SessionOwnerError('Saved work needs a named new coding session and its first input.');}
@@ -2401,6 +2406,10 @@ export class SessionOwner {
     const action=actionId(input);
     if(!['codex','claude-code','antigravity','chatgpt','auto'].includes(input.provider))throw new SessionOwnerError('Select a supported provider or Automatic.');
     if(!['chat','develop','extract','transform'].includes(input.purpose))throw new SessionOwnerError('Invalid session purpose.');
+    if(input.provider==='chatgpt'&&(isRetiredChatgptGpt(input.model)||isRetiredChatgptGpt(input.effort)))throw new SessionOwnerError(CHATGPT_GPT_RETIREMENT,409,'CHATGPT_GPT_RETIRED');
+    if(input.effort!==undefined&&(input.provider!=='chatgpt'||typeof input.effort!=='string'))throw new SessionOwnerError('effort on native creation selects a ChatGPT destination and thinking level only.');
+    const chatgptModel=input.provider==='chatgpt'&&input.effort!==undefined?chatgptSessionModel(input.effort):null;
+    if(input.provider==='chatgpt'&&input.effort!==undefined&&!chatgptModel)throw new SessionOwnerError('Choose a valid ChatGPT thinking level or project:<g-p-id>:<thinking-level>.');
     if(input.provider==='chatgpt'&&(input.project!==undefined||input.model!==undefined||input.reasoningEffort!==undefined))throw new SessionOwnerError('ChatGPT sessions do not accept a code project, model, or reasoning effort.');
     if(input.provider==='auto'&&(input.model!==undefined||input.reasoningEffort!==undefined))throw new SessionOwnerError('Choose a provider before setting its model or effort.');
     if(input.purpose==='develop'&&input.project===undefined)throw new SessionOwnerError('Development sessions require an explicit project.');
@@ -2437,7 +2446,7 @@ export class SessionOwner {
       const defaults=input.provider!=='auto'&&selected?.provider===provider?{model:selected.model,reasoningEffort:selected.reasoning_effort}:{};
       if(savedWork&&!this.runtime.available(provider))throw new SessionOwnerError(`${provider} start unavailable; saved work was not created.`,409);
       const session=createNativeSession(provider,{title,summary:purposeFromFirstWords(input.firstInput?.text)??(title?undefined:'A conversation you started that has no message yet.'),purpose:input.purpose,workflowId:input.workflowId,cwd:project?.cwd??this.defaultCwd,
-        ...(input.provider==='auto'?{automaticProviderChoice:true}:{}),
+        ...(input.provider==='auto'?{automaticProviderChoice:true}:{}),...(chatgptModel?{model:chatgptModel}:{}),
         ...(providerDefault?{model:providerDefault.model,reasoningEffort:providerDefault.reasoning_effort}:{}),...(project?{project:project.cwd,projectName:project.name,projectPath:project.path,...(project.runner?{providerRunner:project.runner}:{})}:{}),...defaults,...(input.model?{model:input.model}:{}),...(input.reasoningEffort?{reasoningEffort:input.reasoningEffort}:{}),
         ...(input.model&&isThinkingModel(input.model)?{explicitThinkingModelChoice:input.model}:{})});
       this.validateAttachments(session,input.firstInput?.attachments);
@@ -2556,6 +2565,7 @@ export class SessionOwner {
         &&!(input.delivery===undefined&&stablePayload(automatic)===stablePayload(input))))throw new SessionOwnerError('Idempotency conflict.',409);
       this.recoverAcceptedInput(prior);
       return {operation:this.receipt(getAcceptedSessionInput(prior.id)!)};}
+    this.assertNewChatgptInput(session);
     this.validateAttachments(session,input.attachments);
     if(input.steerChosen===true) {
       const active=db.query("SELECT id,native_run_id,stop_requested_at FROM turns WHERE session_id=? AND status='running'").get(session.id) as {id:number;native_run_id:string;stop_requested_at:string|null}|null;
@@ -2726,6 +2736,7 @@ export class SessionOwner {
   admit(input:OwnerAdmission) {
     const target=getSessionById(input.sessionId);
     if(!target||sessionMetadata(target).canvasObservation)throw new SessionOwnerError('This canvas record accepts only on-device speech and observed action results.',409,'CANVAS_OBSERVATION_ONLY');
+    if(!getAcceptedSessionInput(input.inputId))this.assertNewChatgptInput(target);
     if(input.threadReplyNotRequired&&input.origin!=='service')throw new SessionOwnerError('Only a service input can waive its own thread reply.',400,'SERVICE_INPUT_REQUIRED');
     // A returned answer can carry the files it answered with. They are retained custody the
     // owner verifies here; the execution host writes them beside the turn like any attachment.

@@ -804,14 +804,25 @@ sending. `--file` attaches any file type. A Pro answer can take an hour; the req
 ChatGPT finishes. The browser is remote-box's always-running real Chrome
 (`docs/chatgpt-browser.md` there), which Thinkering keeps signed in.
 
-`--gpt <https://chatgpt.com/g/g-…|g-…>` (instead of `--effort`) starts the chat with that GPT, from
-the GPT Store or his own, the way he opens one himself: the browser opens the GPT's page, checks the
-GPT is selected in the composer by the name ChatGPT reports for it, and refuses to send otherwise
-(`CHATGPT_GPT_UNCONFIRMED`). The model value is `[tejas:]gpt:<g-…>`; a GPT runs on the model its
-maker chose, so it has no thinking level, and it is never filed in the Agents project. Find GPTs
-with `/root/workspace/agent-scripts/chatgpt-gpt-search.mjs "<words>"`, which lists the GPT Store's
-matches with their ratings and conversation counts. Added 2026-10-13 when Tejas asked for a
-dating-coach GPT rather than plain ChatGPT.
+`--chatgpt-project <https://chatgpt.com/g/g-p-<lowercase-alphanumeric>/project|g-p-id>`
+selects an exact native ChatGPT project, separately from the development `--project`.
+It accepts ordinary `--effort` (agent default `pro`, `--his-chat` default `extra-high`); its retained model is
+`[tejas:]project:<g-p-id>:<thinking-level>`. The browser confirms the selected project
+before sending. An explicit project overrides the default Agents project or ordinary chat
+destination without changing whose chat it is.
+
+`--gpt` refuses ahead of the December 11, 2026 custom GPT retirement and points to
+`--chatgpt-project`; the two flags cannot be combined. The canonical owner also refuses
+new GPT destinations from old/direct clients and new messages to retained GPT sessions.
+There is no silent ordinary-chat fallback. Historical GPT metadata, reads, receipts and
+recovery of acknowledged/dispatched runs remain intact; do not replay them to migrate.
+
+Native ChatGPT projects supply first-party instruction context on the existing browser
+channel, with an explicit destination and normal thinking levels. Doing nothing retains
+a retiring dependency; waiting for an unknown third-party plugin has no verified delivery
+date or instruction-custody guarantee. Projects do not recover private GPT configuration:
+the third-party Dating coach GPT (`g-R85Fq7o6n`) returned `instructions:null`, so its private
+instructions have not been migrated or reconstructed.
 
 The exact Slack source pair works too. The owner atomically creates one native
 ChatGPT session and agent-origin first input with the existing request/return

@@ -243,11 +243,24 @@ export const DEFAULT_CHATGPT_THINKING: ChatgptThinkingLevel = "pro";
 // latest model". The model value carries whose chat it is: "tejas:<level>" for his.
 export const DEFAULT_HIS_CHATGPT_THINKING: ChatgptThinkingLevel = "extra-high";
 export const HIS_CHATGPT_PREFIX = "tejas:";
-// A chat with one GPT (from the GPT Store or his own) is "gpt:<g-…>" after the owner prefix: the
+// Historical GPT metadata is "gpt:<g-…>" after the owner prefix: the
 // GPT runs on the model its maker chose, so it carries no thinking level. Tejas, 2026-10-13, asking
 // for a dating-coach GPT rather than plain ChatGPT: "I think they're called GPTs or something.
-// It's just a thing you can talk to." Thinkering's browser adapter reads the same shape.
+// It's just a thing you can talk to." Keep this parser for retained history and recovery only;
+// the canonical owner refuses new GPT admissions.
 export const CHATGPT_GPT_PREFIX = "gpt:";
+export const CHATGPT_PROJECT_PREFIX = "project:";
+export const CHATGPT_GPT_RETIREMENT = 'Custom GPT destinations are retired here ahead of OpenAI’s December 11, 2026 retirement. Start a new ChatGPT project chat with --chatgpt-project <https://chatgpt.com/g/g-p-…/project|g-p-id>; no ordinary-chat fallback is made. Existing history and acknowledged-run recovery remain available.';
+export function isRetiredChatgptGpt(model: string | null | undefined): boolean {
+  return /^(?:tejas:)?gpt:/.test(model ?? '');
+}
+/** Only an exact native project address or ID; never a development folder or GPT Store URL. */
+export function chatgptProject(input: string | null | undefined): string | null {
+  const value = input ?? '';
+  const match = /^(?:https:\/\/chatgpt\.com\/g\/)?(g-p-[a-z0-9]+)(?:\/project)?$/.exec(value);
+  if (!match || (value.startsWith('https:') && !value.endsWith('/project')) || (!value.startsWith('https:') && value.endsWith('/project'))) return null;
+  return match[1]!;
+}
 /** A GPT named by its address (https://chatgpt.com/g/g-…) or its g-… id; projects (g-p-…) are not GPTs. */
 export function chatgptGpt(input: string | null | undefined): string | null {
   const value = input?.trim().replace(/^https:\/\/chatgpt\.com\/g\/([^/?#]+).*$/, "$1") ?? "";
@@ -256,6 +269,11 @@ export function chatgptGpt(input: string | null | undefined): string | null {
 export function chatgptSessionModel(effort: string | null | undefined): string | null {
   const his = effort?.startsWith(HIS_CHATGPT_PREFIX) ?? false;
   const rest = his ? effort!.slice(HIS_CHATGPT_PREFIX.length) : effort;
+  if (rest?.startsWith(CHATGPT_PROJECT_PREFIX)) {
+    const [, project, thinking, ...extra] = rest.split(':');
+    const level = chatgptThinkingLevel(thinking);
+    return !extra.length && chatgptProject(project) && level ? `${his ? HIS_CHATGPT_PREFIX : ""}${CHATGPT_PROJECT_PREFIX}${project}:${level}` : null;
+  }
   if (rest?.startsWith(CHATGPT_GPT_PREFIX)) {
     const gpt = chatgptGpt(rest.slice(CHATGPT_GPT_PREFIX.length));
     return gpt ? `${his ? HIS_CHATGPT_PREFIX : ""}${CHATGPT_GPT_PREFIX}${gpt}` : null;
@@ -267,6 +285,11 @@ export function chatgptThinkingLevel(input: string | null | undefined): ChatgptT
   const value = input?.trim().toLowerCase().replace(/[\s_]+/g, "-");
   const level = value === "xhigh" || value === "extrahigh" ? "extra-high" : value;
   return (CHATGPT_THINKING_LEVELS as readonly string[]).includes(level ?? "") ? level as ChatgptThinkingLevel : null;
+}
+/** Read thinking policy separately from a project's destination and chat ownership. */
+export function chatgptProjectThinking(model: string | null | undefined): ChatgptThinkingLevel | null {
+  const normalized=chatgptSessionModel(model);
+  return normalized && /^(?:tejas:)?project:/.test(normalized) ? chatgptThinkingLevel(normalized.split(':').at(-1)) : null;
 }
 
 export function isHisChatGpt(options: {
