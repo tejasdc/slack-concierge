@@ -48,8 +48,17 @@ export function turnDeclared(turnId:number):boolean {
   return !!db.query("SELECT 1 FROM session_owner_events WHERE turn_id=? AND kind='turn_outcome' LIMIT 1").get(turnId);
 }
 
-export function turnDeclaredByAction(turnId:number):boolean {
-  return !!db.query("SELECT 1 FROM session_owner_events WHERE turn_id=? AND kind='turn_outcome' AND substr(event_id,1,20)='turn_outcome:action:' LIMIT 1").get(turnId);
+/**
+ * Whether an outcome action already declared this input's outcome in this turn. The identity is
+ * the turn and the input it answers, not the turn alone: a run that takes new work by steering
+ * answers several inputs, and each settles its own. Keyed on the turn alone, a needs_you on the
+ * first request refused the done for the steered work that replaced it, so the finished session
+ * kept its obsolete question (concierge:9581, 2026-11-13).
+ */
+export function turnDeclaredByAction(turnId:number,sessionId:number,inputId:string):boolean {
+  return !!db.query(`SELECT 1 FROM session_owner_events WHERE turn_id=? AND kind='turn_outcome'
+    AND substr(event_id,1,20)='turn_outcome:action:' AND json_extract(payload_json,'$.inputId')=? LIMIT 1`)
+    .get(turnId,outcomeInputFor(sessionId,inputId));
 }
 
 /** A worker's decision becomes the requester's own attention when its exact return is admitted. */
@@ -198,13 +207,13 @@ function answeredInput(turnId:number,openingInputId:string):string {
  * without a question on its line keeps the answer itself as the question.
  */
 export function recordResultTurnOutcome(result:{turnId:number;sessionId:number;inputId:string;text:string;turnOutcome?:TurnOutcomeMark}) {
-  if(turnDeclaredByAction(result.turnId))return;
   const session=getSessionById(result.sessionId);
   if(!session||sessionMetadata(session).interactionPolicy==='consultation-only')return;
-  const declared:{outcome:DeclaredTurnOutcome;question?:string;message:string}|undefined=session.provider_id==='chatgpt'?{outcome:'done',message:result.text}:result.turnOutcome;
-  if(!declared)return;
   // Recording the outcome must never fail delivery of the answer it came with.
   const inputId=answeredInput(result.turnId,result.inputId);
+  if(turnDeclaredByAction(result.turnId,session.id,inputId))return;
+  const declared:{outcome:DeclaredTurnOutcome;question?:string;message:string}|undefined=session.provider_id==='chatgpt'?{outcome:'done',message:result.text}:result.turnOutcome;
+  if(!declared)return;
   // A turn that answers his own message and ends `done` by marker, with no stated reason, is
   // raised to `response`: silence about his message needs the reason the action demands, and
   // a turn that has already ended cannot be refused, so it is told to him instead.

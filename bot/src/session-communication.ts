@@ -1197,8 +1197,8 @@ export class SessionCommunicationCoordinator {
                 kind:'action',origin:'agent',payload:{kind:'turn-outcome',outcome:input.outcome,text:content||null,...(quiet?{quiet}:{})},
                 sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn)});
             if(saved.duplicate)return {...JSON.parse(saved.input.receipt_json??'{}'),duplicate:true};
-            if(turnDeclaredByAction(actor.turn))
-                throw new Error('This turn already declared its outcome by action.');
+            if(turnDeclaredByAction(actor.turn,actor.session,actor.inputId))
+                throw new Error('This turn already declared the outcome for this input by action.');
             recordTurnOutcome({eventId:`turn_outcome:action:${saved.input.id}`,sessionId:actor.session,turnId:actor.turn,
                 inputId:actor.inputId,outcome:input.outcome,text:content||null,todoId,refuseUnreadable:true,quiet:quiet||null});
             const receipt={state:'completed',outcome:input.outcome,inputId:actor.inputId};
@@ -2588,7 +2588,7 @@ export class SessionCommunicationCoordinator {
                 // answer supersedes it. An unclassified work answer declares nothing.
                 const declared=input.workDisposition==='completed'?'done':input.workDisposition==='failed'?'failed'
                     :input.workDisposition==='needs_decision'?'needs_you':requestedEffect==='work'?null:'done';
-                if(declared&&!turnDeclaredByAction(actor.turn))recordTurnOutcome({eventId:`turn_outcome:reply:${id}`,sessionId:actor.session,turnId:actor.turn,
+                if(declared&&!turnDeclaredByAction(actor.turn,actor.session,request.target_input_id!))recordTurnOutcome({eventId:`turn_outcome:reply:${id}`,sessionId:actor.session,turnId:actor.turn,
                     inputId:request.target_input_id!,outcome:declared,text:input.text,todoId});
                 // The worker no longer needs the answers it asked for on this request's behalf; a
                 // needs_decision final keeps them, because that reply is the question.
