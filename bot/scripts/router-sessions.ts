@@ -126,6 +126,7 @@ router-actions.sh sessions topics request close <requestId> <source-flags> --act
 router-actions.sh sessions topics request reopen <requestId> <source-flags> --action-id A -- <reason>
 router-actions.sh sessions topics questions <topicId> <source-flags> --action-id A --json-file <file>
 router-actions.sh sessions topics question settle <questionId> <source-flags> --action-id A --state answered|declined|withdrawn|superseded|deferred [--answer <inputId>] [--replacement <questionId>] -- <reason>
+router-actions.sh sessions topics question restore <questionId> <source-flags> --action-id A --dispatch <erroneous finishing dispatch> --expected-revision N -- <reason>
 router-actions.sh sessions topics answer <inputId> <source-flags> --action-id A --json-file <file>
 router-actions.sh sessions topics acknowledge <topicId> <source-flags> --action-id A --item <questionId|messageId> [...] --source <inputId>
 router-actions.sh sessions topics file <topicId> <source-flags> --action-id A --need <attention entry id> [--reason R]
@@ -244,8 +245,8 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   }
   if (head === "question") {
     const sub = options.shift();
-    if (sub !== "settle") invalid("topics question takes settle.");
-    verb = "question.settle";
+    if (!sub || !["settle","restore"].includes(sub)) invalid("topics question takes settle or restore.");
+    verb = `question.${sub}`;
   }
   if(head==='area'){
     const sub=options.shift();
@@ -276,7 +277,7 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   const mutating = !["list","obligations","read","items","detail","resolve","message","questions-read","area.list","area.suggest"].includes(verb);
   const actionId = flags.get("--action-id");
   if (mutating && !actionId) invalid(`topics ${verb.replace(".", " ")} requires an explicit stable --action-id.`);
-  const takesText = ["rename","summary","close","reopen","request.add","request.amend","request.merge","request.close","request.reopen","question.settle","focus"].includes(verb);
+  const takesText = ["rename","summary","close","reopen","request.add","request.amend","request.merge","request.close","request.reopen","question.settle","question.restore","focus"].includes(verb);
   if (takesText && (separator < 0 || content.length !== 1 || !content[0]!.trim())) invalid(`topics ${verb.replace(".", " ")} requires exactly one nonempty text argument after --.`);
   if (!takesText && separator >= 0) invalid(`topics ${verb.replace(".", " ")} does not accept text after --.`);
   const body: Record<string, unknown> = { source, verb, ...(actionId ? { action_id: actionId } : {}) };
@@ -334,7 +335,7 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
     if (verb === "resolve" || verb === "message") body.message_id = identity;
     // `request add` opens a request inside a topic; the other request verbs name the request.
     else if (verb.startsWith("request.") && verb !== "request.add") body.request_id = identity;
-    else if (verb === "question.settle") body.question_id = identity;
+    else if (verb.startsWith("question.")) body.question_id = identity;
     else if (verb === "answer") body.input_id = identity;
     else if(verb.startsWith('area.'))body.area_id=identity;
     else body.topic_id = identity;

@@ -790,8 +790,23 @@ every open question in the thread with "Thread closed: <reason>"; his Close also
 the open requests named on its confirmation. `request close` ends only
 the questions whose `owner.requestId` or `owner.dispatchRequestId` names that request, and a
 worker's final reply with `completed` or `failed` ends the questions it declared for that
-request (a `needs_decision` final keeps them; that reply is the question). `brief.endedBecause`
-carries the reason and History shows it.
+dispatch (a `needs_decision` final keeps them; that reply is the question). Session identity does
+not establish task scope: request-only, thread-level and legacy questions without an explicit
+dispatch link remain open until their exact human request closes or the Inbox settles them.
+The owner never guesses from a worker session match. `brief.endedBecause` carries the reason and
+History shows it.
+
+If an older final-reply expiry swept a sibling dispatch's question, the Inbox can restore the same
+question with `topics question restore <questionId> --dispatch <erroneous finishing dispatch>
+--expected-revision <revision> --action-id <stable id> -- <reason>`. The owner accepts this only
+when the exact retained expiry event contains the unchanged expired snapshot, its immediately
+preceding topic question event proves the original open/partial record, and that question's own
+explicit dispatch still belongs to an open request. Answered, replaced, changed, closed-topic,
+closed-request, correctly scoped and unproven legacy questions are refused. The event records the
+restoration and both source events; replay restores the same identity without a new notification
+or generation. Its original revision and timestamp remain intact so exposure, acknowledgment and
+pending-reply comparisons keep their meaning. A retry with the same action ID returns its saved
+receipt.
 
 **An end-of-turn `needs_you`/`response` marker in the Inbox never files itself.** When the
 run declared or revised a question (`topics questions`), the marker adds nothing. Otherwise

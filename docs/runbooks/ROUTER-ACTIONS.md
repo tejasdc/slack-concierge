@@ -1135,6 +1135,23 @@ Lab comments share their discussion. To answer a specific comment, use `sessions
 
 On the server, the launcher sends Lab board commands to the installed current owner, including when the agent session started before a deployment. The older parser pinned to that session cannot know a new board option. Keep other session commands on their existing routing unless their contract specifically requires the current owner.
 
+## Question expiry recovery
+
+A `completed` or `failed` final reply expires only questions whose recorded dispatch ID matches
+that reply. A same-session question without that link stays open for its exact request or an
+explicit Inbox settlement. For an older sibling expiry, use the supported exact-record repair:
+
+```bash
+router-actions.sh sessions topics question restore '<question-id>' --dispatch '<erroneous-finishing-dispatch>' --expected-revision '<current-revision>' --source-input '<input-id>' --source-run '<run-id>' --action-id '<stable-action-id>' -- 'Why this exact sibling question is being restored'
+```
+
+The Inbox owner checks the retained expiry event, preceding question snapshot, current revision,
+open topic and the question's own open dispatch-linked request. This restores the same stored
+question silently and keeps its revision, timestamp, source and exposure identity. It refuses a
+stale or changed question, a human answer or replacement, a closed request/topic, a question
+correctly expired by that dispatch, or a request-only/thread-level/legacy question with no proven
+dispatch. See the [native Inbox contract](../contracts/native-inbox.md) for the full invariant.
+
 ## Inbox instruction ownership and project commands
 
 - Change the Inbox agent's standing behavior by asking the Inbox session itself
