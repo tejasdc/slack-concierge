@@ -39,7 +39,12 @@ and a recipient that already has a request in the same thread (a follow-up, not 
    (`thinkering/docs/retrospectives/failure-cases/*.md`, one file per case; later reports of one
    incident are left out), up to three.
 
-Items 3-5 are compared by meaning through the owner's meaning index; each record's vector is kept
+Items 3-5 are compared by meaning through the owner's meaning index. A failure case is included
+only at the same 0.55 meaning score as sessions (the same problem); his requirements and decisions
+are included as the closest few by rank, because some of his rules always apply and they score
+lower than a same-problem match (measured 2026-11-13: the search passage scored 0.45 against the
+Threads search request, the notification passages 0.38-0.41 against a duplicate-notification
+complaint, so a 0.55 cutoff handed out none). Each record's vector is kept
 by key and exact words, so only new or edited records are embedded. The folders are re-read only
 when a file is added, removed or edited. `bot/src/earlier-records.ts` reads them without touching
 the ledger. Paths can be moved with `CONCIERGE_TASTE_PROFILE`, `CONCIERGE_DECISIONS` and
