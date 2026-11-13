@@ -66,6 +66,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   defines the private host read, lane boundaries and coverage gaps; it changes no
   admission policy and authorizes no additional live trial.
 - Exact ChatGPT answer handling after a supported tool read preserves provider-return evidence; see [answer obligations](docs/architecture/CHATGPT-ANSWER-OBLIGATIONS.md#explicit-confirmation-after-a-supported-tool-read).
+- Managed native Codex helper edit identity and parent-turn retention follow [provider sessions](docs/architecture/PROVIDER-SESSIONS.md); the Nov 13 lifecycle failure and replay are [here](docs/incidents/2026-11-13-codex-helper-lifetime.md), preserving the earlier [Nov 12 attribution incident](docs/incidents/2026-11-12-codex-helper-edit-gate.md).
 - Marked messages held by per-session Pause retain their original admission identity;
   see [session recovery](docs/architecture/SESSION-OWNER.md#identity-and-admission).
 
