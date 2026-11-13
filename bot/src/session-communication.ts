@@ -328,7 +328,7 @@ export class SessionCommunicationCoordinator {
      * call; the ask is then deduplicated and, if never admitted, admitted under the original input,
      * run and action, so a retry after a crash or restart returns the one receipt instead of a
      * second request. The original run must have ended: while it lives it retries for itself.
-     * Authority is recomputed for the original input now, so a grant closed since is not revived.
+     * Authority comes from the live run (see ask), never from the original input.
      */
     private resumedActor(live: Actor, resume: {input_id?: string; run_id?: string}): Actor {
         if (!resume?.input_id || !resume.run_id || typeof resume.input_id !== 'string' || typeof resume.run_id !== 'string')
@@ -1716,8 +1716,10 @@ export class SessionCommunicationCoordinator {
         if (input.resume_source && (input.peer !== undefined || input.saved || input.correction_of || input.recovery_of || input.routeMessageId))
             throw new Error('Resuming a frozen ask covers ordinary local asks only.');
         const live = this.fenced(this.actor(input.source));
-        const sender = this.authority(input.resume_source ? this.resumedActor(live, input.resume_source) : live);
-        const actor = sender.actor;
+        // Authority and liveness always come from the live run; a resumed ask borrows only the
+        // original source identity, so an informational run cannot revive an old input's work grant.
+        const sender = this.authority(live);
+        const actor = input.resume_source ? this.resumedActor(live, input.resume_source) : sender.actor;
         action(input.action_id);
         if(input.purpose!==undefined){
             if(!['research','design-critique','design-review'].includes(input.purpose)||input.address||input.role||input.implementation||input.saved||input.outside||input.resurrect)
@@ -1885,7 +1887,7 @@ export class SessionCommunicationCoordinator {
             const sourceSession=getSessionById(actor.session)!;
             if(sourceSession.provider_id==='chatgpt')throw new Error('ChatGPT sessions cannot send outbound session requests.');
             if(sessionMetadata(sourceSession).interactionPolicy==='consultation-only')throw new Error('Consultation-only sessions cannot send requests or replies.');
-            const sourceTurn=db.query('SELECT status,provider_admission_intended_at FROM turns WHERE id=?').get(actor.turn) as any;
+            const sourceTurn=db.query('SELECT status,provider_admission_intended_at FROM turns WHERE id=?').get(live.turn) as any;
             if(sourceTurn?.status!=='running'||!sourceTurn.provider_admission_intended_at)throw new Error('Source must identify this admitted input and its exact live run.');
             if(!this.dependencies.owner)throw new Error('Native session owner is unavailable.');
         }
@@ -1921,7 +1923,7 @@ export class SessionCommunicationCoordinator {
                 if(history?.text)input={...input,text:`${history.text}\n\n${input.text}`};
             }
             if(input.requestedEffect==='work'){
-                const current=this.authority(actor);
+                const current=this.authority(live);
                 if(current.scope!=='work'||current.authorityInputId!==sender.authorityInputId)
                     throw new Error('The work request that authorized this ask is no longer open.');
             }
@@ -1956,8 +1958,9 @@ export class SessionCommunicationCoordinator {
         if(input.files!==undefined&&!Array.isArray(input.files))throw new Error('Files must contain named attachment bytes.');
         if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
         if(input.answer_view!==undefined&&!['summary','full'].includes(input.answer_view))throw new Error('--answer-view is summary or full.');
-        const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{}),...(input.purpose?{purpose:input.purpose}:{}),...(input.providerReason?{providerReason:input.providerReason}:{}),...(input.requestedEffect==='work'&&sender.authorityInputId?{authorityInputId:sender.authorityInputId}:{}),...(localMachineNeed?{machineNeed:localMachineNeed}:{}),...(routedFrom?{routedMessage:{sourceInputId:routedFrom.messageId},routedFrom}:{})};
-        const encoded = JSON.stringify({ ...(requestedRole?{role:requestedRole}:input.provider?{provider:input.provider}:{address:input.address}),
+        const extraWith=(authorityInputId:string|undefined)=>({...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{}),...(input.purpose?{purpose:input.purpose}:{}),...(input.providerReason?{providerReason:input.providerReason}:{}),...(input.requestedEffect==='work'&&authorityInputId?{authorityInputId}:{}),...(localMachineNeed?{machineNeed:localMachineNeed}:{}),...(routedFrom?{routedMessage:{sourceInputId:routedFrom.messageId},routedFrom}:{})});
+        const extra=extraWith(sender.authorityInputId);
+        const encodedWith=(extra:ReturnType<typeof extraWith>)=>JSON.stringify({ ...(requestedRole?{role:requestedRole}:input.provider?{provider:input.provider}:{address:input.address}),
             ...((requestedRole?requestedTitle:title)===undefined?{}:{title:requestedRole?requestedTitle:title}), text: input.text, after,...(pace.length?{pace}:{}),...extra,...(threadRoot?{thread:threadRoot}:{}),
             ...(input.for_task?{forTask:input.for_task}:{}),
             ...(input.recovery_of?{recoveryOf:input.recovery_of}:{}),
@@ -1969,13 +1972,16 @@ export class SessionCommunicationCoordinator {
             ...(input.effort===undefined?{}:{effort:input.effort}),...(input.escalationReason===undefined?{}:{escalationReason:input.escalationReason}),...(input.project===undefined?{}:{project:input.project}),
             ...(input.outside?{outside:true}:{}),...(input.onRunner?{onRunner:true}:{}),
             ...(input.files===undefined?{}:{files:input.files}),...(input.captureId===undefined?{}:{captureId:input.captureId}) });
-        const digest = hash(encoded);
+        const digest = hash(encodedWith(extra));
         const prior = () => actor.inputId
             ? db.query('SELECT * FROM session_communication_requests WHERE action_id=? AND (source_input_id=? OR (source_channel=? AND source_message_ts=?))').get(input.action_id,actor.inputId,actor.source.channel_id??null,actor.source.message_ts??null) as RequestRow | null
             : db.query('SELECT * FROM session_communication_requests WHERE source_channel=? AND source_message_ts=? AND action_id=?').get(actor.source.channel_id!, actor.source.message_ts!, input.action_id) as RequestRow | null;
         const previous = prior();
         if (previous) {
-            if (previous.payload_hash !== digest)
+            // A resumed ask is the same ask even when a different open grant authorizes the
+            // resuming run, so its fingerprint is compared with the grant the original recorded.
+            const stored = input.resume_source ? JSON.parse(previous.payload_json ?? '{}').authorityInputId : undefined;
+            if (previous.payload_hash !== digest && !(input.resume_source && previous.payload_hash === hash(encodedWith(extraWith(stored)))))
                 throw new Error('Idempotency conflict: this source/action already names a different request.');
             return this.receipt(previous);
         }
@@ -2041,14 +2047,14 @@ export class SessionCommunicationCoordinator {
         const now = this.now();
         db.transaction(() => {
             if(input.requestedEffect==='work'){
-                const current=this.authority(actor);
+                const current=this.authority(live);
                 if(current.scope!=='work'||current.authorityInputId!==sender.authorityInputId)
                     throw new Error('The work request that authorized this ask is no longer open.');
             }
             const sourceInput = actor.inputId!;
-            if(input.provider||consultation)this.actor({input_id:sourceInput!,run_id:nativeRunId(actor.turn)});
+            if(input.provider||consultation)this.actor(live.source);
             if(input.files?.length||input.captureId) {
-                this.actor({input_id:sourceInput!,run_id:nativeRunId(actor.turn)});
+                this.actor(live.source);
                 const captured=input.captureId?this.dependencies.owner!.inboxCaptureAttachments(input.captureId):[];
                 const attachments=[...(input.attachments??[]),...captured,...(input.files??[]).map((file,index)=>
                     this.dependencies.owner!.upload({...file,clientActionId:`request-file:${hash(sourceInput!+':'+input.action_id)}:${index}`}).attachment.id)];
@@ -2090,7 +2096,7 @@ export class SessionCommunicationCoordinator {
             }
             const selected=target!;
             const address=sessionAddress(getSessionById(selected.session)!);
-            const retainedBody=JSON.parse(encoded);
+            const retainedBody=JSON.parse(encodedWith(extra));
             if(input.files)retainedBody.files=input.files.map(({name,contentType,base64})=>({name,contentType,sha256:createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex')}));
             const retainedPayload=JSON.stringify({...retainedBody,...extra,address,...(input.smallTask?{smallTask:true}:{}),...(fitNote?{newTopic:true}:{}),...(history?{history:{requests:history.requests,sessions:history.sessions,cases:history.cases,omissions:history.omissions.length}}:{}),...(forwardedFrom?{forwardedFrom}:{}),...(consultation?{requestedAddress:input.address,consultation:{sourceId:consultation.source.id,sourceVersion:consultation.source.version,branch:consultation.source.branch,boundary:consultation.source.consultation.boundary}}:{})});
             db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,

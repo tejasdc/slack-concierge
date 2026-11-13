@@ -4,7 +4,7 @@
 // Requested by the Lab Night (request 3040f085, 2026-11-12).
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
-import {mkdtempSync,rmSync} from 'node:fs';
+import {mkdirSync,mkdtempSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {FROZEN_ASK_RESUME_TEST_AUTHORIZATION} from '../src/test-authorizations';
@@ -14,6 +14,8 @@ process.env.CONCIERGE_STATE_DIR=scratch;
 process.env.CONCIERGE_CAPTURE_STATE_DIR=join(scratch,'capture');
 process.env.CONCIERGE_TEST_MODE='1';
 process.env.CONCIERGE_TEST_AUTHORIZATION=FROZEN_ASK_RESUME_TEST_AUTHORIZATION;
+// A registered project in the scratch workspace for the new-session ask.
+mkdirSync(join(scratch,'lab-folder','.git'),{recursive:true});writeFileSync(join(scratch,'lab-folder','AGENTS.md'),'fixture');
 
 const [{db,claimNextQueuedTurn,markTurnProviderAdmissionIntended,acknowledgeTurnProviderInput},
   {SessionOwner,sessionAddress},{SessionCommunicationCoordinator},{nativeRunId,retainSessionInput,enqueueSessionInput},{getSessionById}]=await Promise.all([
@@ -24,13 +26,16 @@ const owner=new SessionOwner({available:()=>true,wake:()=>{},stop:async()=>false
 const communication=new SessionCommunicationCoordinator({owner,isOwnerAlive:()=>true,onError:error=>errors.push(error)});
 owner.communication=communication;
 
+const runs=new Map<number,{turnId:number;source:{input_id:string;run_id:string}}>();
 function claimFor(sessionId:number){
   for(;;){
     const claim=claimNextQueuedTurn('frozen-ask-fixture');
-    assert.ok(claim,'a queued turn for the session');
+    assert.ok(claim,`a queued turn for session ${sessionId}: ${JSON.stringify(db.query("SELECT id,session_id,status,dispatch_hold FROM turns").all())}`);
     assert.equal(markTurnProviderAdmissionIntended(claim.turn_id,'frozen-ask-fixture',claim.dispatch_attempt),true);
     acknowledgeTurnProviderInput(claim.turn_id,'frozen-ask-fixture',claim.dispatch_attempt,[]);
-    if(claim.session_id===sessionId)return {turnId:claim.turn_id,source:{input_id:claim.accepted_input_id!,run_id:nativeRunId(claim.turn_id)}};
+    const run={turnId:claim.turn_id,source:{input_id:claim.accepted_input_id!,run_id:nativeRunId(claim.turn_id)}};
+    runs.set(claim.session_id,run);
+    if(claim.session_id===sessionId)return run;
   }
 }
 const refused=async(action:()=>Promise<unknown>,pattern:RegExp,label:string)=>{
@@ -78,6 +83,25 @@ try{
   await refused(()=>ask(run2.source,'folder-c','Packet C',{input_id:target.session.id,run_id:run1.source.run_id}),/same session/,'another session\'s input is refused');
   await refused(()=>ask(run2.source,'folder-c','Packet C',{input_id:run1.source.input_id} as any),/resume-source/,'a half pair is refused');
   assert.equal(count(),2);
+
+  // A frozen ask that creates a new session is resumed through the same path.
+  const created=await communication.ask({source:run2.source,action_id:'folder-new',provider:'codex',project:'lab-folder',title:'Folder worker two',
+    text:'Packet N',summary:'Review one folder',requestedEffect:'work',resume_source:run1.source}) as {request_id:string};
+  assert.ok(created.request_id,'a new-session ask is admitted');
+  assert.equal((await communication.ask({source:run2.source,action_id:'folder-new',provider:'codex',project:'lab-folder',title:'Folder worker two',
+    text:'Packet N',summary:'Review one folder',requestedEffect:'work',resume_source:run1.source}) as {request_id:string}).request_id,created.request_id);
+  assert.equal(count(),3);
+
+  // An informational run cannot borrow the original input's work authority.
+  db.query("UPDATE turns SET status='done',owner_instance_id=NULL WHERE id=?").run(run2.turnId);
+  const targetId=Number(target.session.id.slice(10));
+  const targetRun=runs.get(targetId)??claimFor(targetId);
+  await communication.ask({source:targetRun.source,action_id:'question',address:sessionAddress(getSessionById(askerId)!),
+    text:'Just a question',summary:'A question',requestedEffect:'informational'});
+  await communication.idle();
+  const run3=claimFor(askerId);
+  await refused(()=>ask(run3.source,'folder-d','Packet D',run1.source),/informational|cannot delegate work/,'informational run cannot resume work');
+  assert.equal(count(),4,'only the informational question was added');
   assert.deepEqual(errors,[]);
   console.log('frozen ask resume fixture: one receipt for an admitted ask, one admission for an unadmitted one, mismatches refused');
 }finally{
