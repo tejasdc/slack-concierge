@@ -9,7 +9,7 @@ import {CodexAppServerClient} from '../src/codex-app-server-client';
 const scratch=mkdtempSync(join(tmpdir(),'concierge-codex-generation-loss-'));
 const bridge=join(scratch,'bridge.js');
 writeFileSync(bridge,`process.stdout.write(JSON.stringify({type:'ready'})+'\\n');process.stdin.resume();`);
-const client=new CodexAppServerClient('/unused','/usr/bin/node',{bridgePath:bridge,shutdownGraceMs:50});
+const client=new CodexAppServerClient('/unused',process.execPath,{bridgePath:bridge,shutdownGraceMs:50});
 try{
   const first=await client.connect();
   assert.equal(client.activeGeneration,first);
