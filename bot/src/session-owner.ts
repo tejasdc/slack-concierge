@@ -1173,6 +1173,25 @@ export class SessionOwner {
   private executionOf(session:SessionRow,meta:ReturnType<typeof sessionMetadata>) {
     return sessionExecution(db,session,meta);
   }
+  /** A historical conversation is consultable only when its retained pins can select the
+   * exact source and boundary that preparation will verify. Search and history remain available
+   * when this proof is absent. */
+  private consultationReadiness(meta:ReturnType<typeof sessionMetadata>) {
+    const source:any=meta.source;
+    const unavailable='This historical conversation remains searchable and readable, but cannot be consulted';
+    if(!source||typeof source.id!=='string'||!source.id||typeof source.version!=='string'||!/^[a-f0-9]{64}$/.test(source.version)
+      ||typeof source.branch!=='string'||!source.branch)
+      return {ready:false,reason:`${unavailable}: its retained source identity or branch is incomplete.`};
+    const pin=source.consultation;
+    if(!pin)return {ready:false,reason:`${unavailable}: it has no retained consultation boundary.`};
+    if(typeof pin!=='object'||Array.isArray(pin)||pin.sourceId!==source.id||pin.sourceVersion!==source.version)
+      return {ready:false,reason:`${unavailable}: its consultation pin does not match the retained source version.`};
+    if(typeof pin.boundary!=='string'||!pin.boundary.trim()||pin.packetVersion!=='dialogue-v1')
+      return {ready:false,reason:`${unavailable}: its consultation boundary or dialogue format is malformed.`};
+    if(typeof this.runtime.sources?.context!=='function')
+      return {ready:false,reason:`${unavailable}: the retained source reader is unavailable.`};
+    return {ready:true,reason:null};
+  }
   view(session:SessionRow) {
     const meta=sessionMetadata(session);
     // Who the agent is and what it is doing come from the one presence rule the sidebar card
@@ -1189,7 +1208,9 @@ export class SessionOwner {
     const attentionOpen=meta.inbox?preparedAttention!.needs:openNeeds(meta);
     const providerCaps=this.runtime.capabilities?.(session)??{};
     const modelExecution=!active||acceptedInputForTurn(active.id)?.kind!=='fork';
-    const consult=!meta.canvasObservation&&origin==='imported'&&session.provider_id!=='chatgpt'&&providerCaps.consultation===true&&this.runtime.available(session.provider_id)&&session.status!=='archived'&&!meta.suspended;
+    const consultationReadiness=origin==='imported'?this.consultationReadiness(meta):{ready:false,reason:null};
+    const consult=!meta.canvasObservation&&origin==='imported'&&session.provider_id!=='chatgpt'&&providerCaps.consultation===true&&consultationReadiness.ready&&this.runtime.available(session.provider_id)&&session.status!=='archived'&&!meta.suspended;
+    const consultationRefusal=origin==='imported'&&session.provider_id!=='chatgpt'&&!meta.canvasObservation&&!available&&!consultationReadiness.ready?consultationReadiness.reason:null;
     return {id:`concierge:${session.id}`,address:sessionAddress(session),bindingGeneration:session.binding_generation??1,provider:session.provider_id,origin,catalogueKind,
       timing:presence.timing,cancellation:presence.cancellation,agentName:presence.agentName,presenceRevision:presence.presenceRevision,
       runtimeThreadId:session.agent_session_uuid,activeRunId:active?nativeRunId(active.id):null,latestRunId:latest?nativeRunId(latest.id):null,
@@ -1221,7 +1242,7 @@ export class SessionOwner {
       continuedAs:origin==='imported'?(()=>{const row=db.query("SELECT receipt_json FROM session_inputs WHERE session_id=? AND kind='resurrect' AND receipt_json IS NOT NULL ORDER BY created_at DESC LIMIT 1").get(session.id) as {receipt_json:string}|null;return row?JSON.parse(row.receipt_json)?.result?.sessionId??null:null;})():null,
       fidelity:{mode:origin==='native'?'native':'evidence',dialogue:'preserved',branch:'verified',compaction:origin==='native'?'native':'historical-expansion',tools:origin==='native'?'native':'missing',attachments:'unknown',environment:'current',omissions:[]},
       interactionPolicy:policy??'standard',consultationSource:meta.source?.consultation??null,canvasObservation:meta.canvasObservation?{boardId:meta.canvasBoardId??''}:null,policyLabel:meta.canvasObservation?'Canvas voice record — observed speech and action outcomes; no provider turns':consultationOnly?'Consultation only — information, no actions':null,
-      capabilities:{send:this.canSend(session),resume:!meta.canvasObservation&&origin==='imported'&&catalogueKind==='historical-evidence'&&['claude-code','codex'].includes(session.provider_id)&&typeof meta.source?.nativeId==='string'&&/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(meta.source.nativeId),stop:!meta.canvasObservation&&!!active&&modelExecution&&providerCaps.stop!==false&&session.provider_id!=='chatgpt',steer:!meta.outside&&!meta.canvasObservation&&available&&!external&&modelExecution&&session.status!=='archived'&&!meta.suspended&&providerCaps.steer!==false&&session.provider_id!=='chatgpt',fork:!meta.canvasObservation&&available&&session.status!=='archived'&&!meta.suspended&&!!session.agent_session_uuid&&!!this.runtime.fork&&!consultationOnly&&providerCaps.fork===true,consult,recover:!meta.canvasObservation&&!external&&!!this.runtime.recover&&providerCaps.recover!==false&&execution==='uncertain',models:!meta.canvasObservation&&available&&session.status!=='archived'?providerCaps.models??[]:[],attachments:!meta.canvasObservation&&available&&session.status!=='archived'?providerCaps.attachments??[]:[],reason:meta.canvasObservation?'Canvas speech and action observations only.':!available?(origin==='imported'?(consult?'Takes no work: a conversation from outside Concierge. It answers questions through a consultation copy; ask it with --requested-effect informational.':'Archive evidence is read-only.'):'Provider unavailable.'):providerCaps.reason??(consultationOnly?'Consultation permits information only; native fork is unavailable.':answersQuestionsOnly(session,meta))}};
+      capabilities:{send:this.canSend(session),resume:!meta.canvasObservation&&origin==='imported'&&catalogueKind==='historical-evidence'&&['claude-code','codex'].includes(session.provider_id)&&typeof meta.source?.nativeId==='string'&&/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(meta.source.nativeId),stop:!meta.canvasObservation&&!!active&&modelExecution&&providerCaps.stop!==false&&session.provider_id!=='chatgpt',steer:!meta.outside&&!meta.canvasObservation&&available&&!external&&modelExecution&&session.status!=='archived'&&!meta.suspended&&providerCaps.steer!==false&&session.provider_id!=='chatgpt',fork:!meta.canvasObservation&&available&&session.status!=='archived'&&!meta.suspended&&!!session.agent_session_uuid&&!!this.runtime.fork&&!consultationOnly&&providerCaps.fork===true,consult,recover:!meta.canvasObservation&&!external&&!!this.runtime.recover&&providerCaps.recover!==false&&execution==='uncertain',models:!meta.canvasObservation&&available&&session.status!=='archived'?providerCaps.models??[]:[],attachments:!meta.canvasObservation&&available&&session.status!=='archived'?providerCaps.attachments??[]:[],reason:meta.canvasObservation?'Canvas speech and action observations only.':consultationRefusal??(!available?(origin==='imported'?(consult?'Takes no work: a conversation from outside Concierge. It answers questions through a consultation copy; ask it with --requested-effect informational.':'Archive evidence is read-only.'):'Provider unavailable.'):providerCaps.reason??(consultationOnly?'Consultation permits information only; native fork is unavailable.':answersQuestionsOnly(session,meta)))}};
   }
   /**
    * Re-homes a session in another folder. Every turn reads the session's folder when it starts, so
