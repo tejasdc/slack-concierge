@@ -154,17 +154,38 @@ split control is the `unthread` message action on the same surface, recorded as 
 detach. The Inbox agent decides placement, only for a thread where it asked and is still
 waiting; everything else stays a new row.
 
-A bug report (a capture from the bug button or its shortcut, marked by the Thinkering
-bug-report door) is always a thread of its own [decision: inbox-button-always-new-request].
+A new bug report (a capture from the bug button or its shortcut, marked by the Thinkering
+bug-report door) first gets a thread of its own [decision: inbox-button-always-new-request].
 The owner refuses, with `BUG_REPORT_OWN_THREAD`, an agent's `sessions thread` of a bug
 report, `topics place` of one into a topic that holds any other root, `topics create` with
-it beside other roots, `topics route` of it into another thread, and `topics merge` of a
-topic that holds one. The router gives it its own topic (`topics create --root <it> --from
+it beside other roots, and a merge between a bug-report topic and a non-bug work topic.
+The router gives it its own topic (`topics create --root <it> --from
 <related topic>` links the related thread) and sends the work to the owning agent with
 `sessions ask --route-message`. The placement prompt and the Stop hook's filing commands
 offer only that. Other captures may still join a bug report's thread, and Tejas's own moves
 are not restricted. Before this (Nov 5, 2026) the router placed his bug report about a
 worker's answer into that worker's thread, and its instructions were the only guard.
+
+Initial placement and later organization are separate owner operations. After two reports
+have their own topics, `topics merge <duplicate> --into <survivor> --reason <why>
+--correction-source <input>` may consolidate the same concern
+[decision: related-captures-share-one-thread]. Both topics must contain a bug-report root;
+the correction must be a retained, human-authored, non-bug message already in the surviving
+topic. The Inbox judges whether the reports concern the same issue; the owner checks source
+custody, records the exact pair, survivor, correction and reason under the acting agent's
+source/run/action, and retains every root, request, question and existing dispatch. No
+content matching, reason-string override, human impersonation or worker redispatch occurs.
+
+`topics route <destination> --message <original bug capture> --reason <why>
+--side-scope <the concern to investigate>` adds a scoped secondary projection only after
+the report is independently filed as its primary root. The original payload and attachments
+remain intact in its primary topic. The secondary message displays the routing agent's scope
+under that agent's authorship, with the exact source backlink and attachments; it does not
+present that scope as the human's words. Existing ordinary routes retain their full-message
+behavior. Both merge and route retain their existing source/action idempotency: replay returns
+the first receipt, while changed parameters conflict. The disposable
+`bot/scripts/notification-topic-correction-acceptance.ts` exercises these agent operations,
+initial-placement refusals, shared dispatch preservation, and page/detail attribution.
 
 Every Inbox message resolves to one thread root, and attention needs are keyed by it: a
 capture or request is its own root; a routed capture follows its link; his reply follows

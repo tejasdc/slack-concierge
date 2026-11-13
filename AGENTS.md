@@ -86,6 +86,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [wire contract](docs/contracts/session-owner-v1.md),
   [human command custody](docs/architecture/HUMAN-COMMAND-INTAKE.md), and
   [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md).
+- Bug-button intake stays independent; later duplicate-report consolidation retains the
+  human correction and acting agent, while scoped secondary routing keeps the original
+  report in its primary topic. See [native Inbox](docs/contracts/native-inbox.md).
 - The canonical owner enforces Inbox placement, attention and delivery. Unfiled
   human inputs prevent the Inbox router from ending its turn; human work
   requests close only on evidence for their exact obligation. See
