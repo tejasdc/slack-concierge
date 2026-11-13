@@ -13,6 +13,7 @@ export const STANDING_AGENTS = [
   {role:'journal-keeper',project:'journal-keeper',description:'Keep observations from saved journal entries.',wake:'A saved journal entry or check-in.'},
   {role:'messaging',project:'messaging-agent',description:'Draft and send Tejas’s messages.',wake:'Addressed writing and sending requests.'},
   {role:'thread-reader',project:'thread-reader',description:'Read and follow named threads.',wake:'Thread reading requests and watches.'},
+  {role:'thread-gardener',project:'agents/thread-gardener',description:'Garden Tejas’s thinking threads: weave each idea into the right thread and section.',wake:'Ideas and thread additions handed over by the Inbox.'},
   {role:'reader-parsing-repair',project:'agents/reader-parsing-repair',description:'Repair Reader parsing failures.',wake:'Reader parsing failures.'},
   {role:'reader-intake-sorting',project:'agents/reader-intake-sorting',description:'Sort incoming Reader items.',wake:'Reader intake requests.'},
   {role:'todo',project:'agents/todo-agent',description:'Manage Tejas’s to-dos.',wake:'To-do requests from the Inbox and other agents.'},
