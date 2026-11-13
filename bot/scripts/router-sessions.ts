@@ -22,6 +22,7 @@ router-actions.sh sessions peers <source-flags>
 router-actions.sh sessions usage <source-flags> [--by-session] [--period today|week]
 router-actions.sh sessions history-storage claude|codex <source-flags> [--after <next filename>] [--limit 1..2000]
 router-actions.sh sessions auth switch codex <saved-profile-id> [--machine mac] <source-flags> --action-id A
+router-actions.sh sessions codex-test stop|connection-loss concierge:<id> --create request:<id> --run <native-run-id> <source-input/run> --action-id A
 router-actions.sh sessions search <source-flags> [--limit N] [--peer <instance>] [--thread <message-id>] -- <concept...>
 router-actions.sh sessions context <address> <source-flags> [--thread <message-id>]
 router-actions.sh sessions ask <address> <source-flags> --action-id A [--escalation-reason "<model-selection trigger>" for an existing Astra session] [--thread <message-id> | --route-message <human-input-id>] [--return-to-requester] --summary "<one line>" [--answer-view summary|full] [--after-request <request-id> ...] [--after-settled <request-id> ...] -- <text>
@@ -199,6 +200,7 @@ export type SessionCommunicationRequest =
   | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'|'daily'; turn_id?:number; action_id?:string;cursor?:string;time?:string;timeZone?:string } }
   | { operation: "pause"; body: { source: Source; verb:'status'|'all'|'resume'; action_id?:string; session_ids?:string[] } }
   | { operation: "control"; body: { source: Source; verb:'pause'|'continue'; address:string; action_id:string } }
+  | { operation: "codex-test-control"; body: { source: Source; verb:'stop'|'connection-loss'; session_id:string; create_input_id:string; run_id:string; action_id:string } }
   | { operation: "board"; body: { source?: Source; verb: string; [key: string]: unknown } };
 
 class SessionUsageError extends Error {}
@@ -433,6 +435,21 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     }
     if(!flags.get('--action-id'))invalid('chatgpt-recover needs a stable --action-id.');
     return {operation:'chatgpt-recover',body:{source:sourceFrom(flags),action_id:flags.get('--action-id')!,request_id:requestId}};
+  }
+  if(first==='codex-test'){
+    const verb=args.shift(),session_id=args.shift();
+    if((verb!=='stop'&&verb!=='connection-loss')||!/^concierge:[1-9]\d*$/.test(session_id??''))
+      invalid('codex-test needs stop or connection-loss and an exact concierge:<session-id> target.');
+    const flags=new Map<string,string>();
+    while(args.length){const flag=args.shift()!,value=args.shift();
+      if(!['--source-input','--source-run','--action-id','--create','--run'].includes(flag)||!value?.trim()||value.startsWith('--')||flags.has(flag))
+        invalid(`Invalid or repeated codex-test option ${flag}.`);
+      flags.set(flag,value);
+    }
+    const source=sourceFrom(flags);
+    if(!('input_id' in source)||!/^request:[0-9a-f-]{36}$/i.test(flags.get('--create')??'')||!flags.get('--run')||!flags.get('--action-id'))
+      invalid('codex-test needs exact source input/run, --create request:<uuid>, --run native-run-id and stable --action-id.');
+    return {operation:'codex-test-control',body:{source,verb,session_id,create_input_id:flags.get('--create')!,run_id:flags.get('--run')!,action_id:flags.get('--action-id')!}};
   }
   if(first==='legacy-link'){
     const requestId=args.shift();
@@ -1111,6 +1128,13 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
 }
 
 export async function runRouterSessions(request: SessionCommunicationRequest) {
+  if(request.operation==='codex-test-control'){
+    const {source,verb,session_id,create_input_id,run_id,action_id}=request.body;
+    if(!('input_id' in source))throw new Error('codex-test requires an exact agent source input/run pair.');
+    const path=`/sessions/v1/agent-test/sessions/${encodeURIComponent(session_id)}/${verb==='stop'?'stop':'connection-loss'}`;
+    return requestApiResponse(path,{clientActionId:action_id,runId:run_id,createInputId:create_input_id,
+      agentSource:{inputId:source.input_id,runId:source.run_id}});
+  }
   if(request.operation==='agents')return requestApiResponse('/sessions/v1/presentation/agents');
   if (request.operation !== 'reply' || !request.body.also?.length)
     return requestApiResponse(`/session-communication/${request.operation}`, request.body);

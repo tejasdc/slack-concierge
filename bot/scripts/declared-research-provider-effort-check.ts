@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {parseRouterSessionsArgs} from './router-sessions';
+import {resendIsSafe} from './router-request-client';
 
 const sourceInput='research-human-input';
 const sourceRun='research-human-run';
@@ -47,4 +48,19 @@ const explicitChatGptEffort=ask(['--provider','chatgpt','--effort','high']);
 assert.equal(explicitChatGptEffort.effort,'high',
   'An explicit ChatGPT effort must remain unchanged for owner-side human-choice verification.');
 
-console.log('declared research keeps effort provider-specific and preserves request identity');
+const testControl=parseRouterSessionsArgs(['codex-test','connection-loss','concierge:42','--create',
+  'request:12345678-1234-4234-8234-123456789abc','--run','native-run-42','--source-input',sourceInput,
+  '--source-run',sourceRun,'--action-id','loss-once']);
+assert.equal(testControl.operation,'codex-test-control');
+if(testControl.operation!=='codex-test-control')throw new Error('Expected source-bound Codex test control.');
+assert.equal(testControl.body.source.input_id,sourceInput);
+assert.equal(testControl.body.source.run_id,sourceRun);
+assert.equal(testControl.body.create_input_id,'request:12345678-1234-4234-8234-123456789abc');
+assert.equal(testControl.body.run_id,'native-run-42');
+assert.equal(resendIsSafe('/sessions/v1/agent-test/sessions/concierge%3A42/connection-loss',
+  {clientActionId:'loss-once'}),true,'owner restart may replay only with the same durable operation key');
+assert.throws(()=>parseRouterSessionsArgs(['codex-test','stop','concierge:42','--create',
+  'request:12345678-1234-4234-8234-123456789abc','--run','native-run-42','--source-channel','C123',
+  '--source-ts','123.45','--action-id','stop-once']),/Invalid or repeated codex-test option/);
+
+console.log('research effort remains provider-specific; Codex test controls require exact source and preserve operation identity');

@@ -199,6 +199,7 @@ export function claimExecutionTurn(execution: ExecutionRow, previousOwner: strin
           agent_text=NULL, dispatch_failure_class=NULL
           WHERE id=? AND status='parked' AND dispatch_failure_class='parked_ambiguous'
             AND dispatch_attempt=? AND owner_instance_id IS NULL
+            AND stop_requested_at IS NULL
             AND EXISTS (SELECT 1 FROM sessions session WHERE session.id=? AND session.status<>'archived')
             AND NOT EXISTS (SELECT 1 FROM turns later WHERE later.session_id=? AND later.id>turns.id
               AND (later.provider_admission_intended_at IS NOT NULL OR later.provider_started_at IS NOT NULL
@@ -269,7 +270,7 @@ export async function claimAdoptableExecutions(input: { instanceId: string; only
   // (finished, still running, or never landed and retried), a few times at most and a few per sweep.
   // A turn he stopped is left parked: following it could only resend or swallow that Stop.
   const parkedTurnFollowable = `t.status='parked' AND t.dispatch_failure_class='parked_ambiguous'
-          AND t.turn_kind='native' AND session.status<>'archived'
+          AND t.turn_kind='native' AND t.stop_requested_at IS NULL AND session.status<>'archived'
           AND NOT EXISTS (SELECT 1 FROM turns later WHERE later.session_id=t.session_id AND later.id>t.id
             AND (later.provider_admission_intended_at IS NOT NULL OR later.provider_started_at IS NOT NULL
               OR later.provider_input_acknowledged_at IS NOT NULL))`;

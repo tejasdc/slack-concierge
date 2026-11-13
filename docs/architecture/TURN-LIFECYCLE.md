@@ -74,6 +74,36 @@ other cycle cannot trap the owner and stall unrelated sessions.
 - `bot/src/session-runtime.ts` composes the same owner, queue, registry and executor when Slack is disabled. `session-execution-host.ts` admits native inputs and controls; it does not own a second provider queue.
 - `bot/src/session-turn-queue.ts` owns process-local wakeup coalescing for durable ownerless queued turns. SQLite claim transitions in `bot/src/state.ts` remain the concurrency boundary.
 
+### Stop while taking back an existing Codex turn
+
+Adoption means Codex may already be executing the accepted input. The adapter establishes the
+retained thread identity before it registers the cancellation callback, because a Stop retained
+across restart is dispatched synchronously at registration. For adopted work, that callback enters
+the existing exact-history recovery path: it reconnects, finds the turn by the retained provider
+turn ID or the original client message ID, requests `turn/interrupt` for that exact thread and turn,
+and reads history again. The callback's successful return is not terminal evidence; only the
+provider's terminal history settles the turn. If exact identity or history cannot be confirmed,
+the accepted work stays parked as uncertain under its original attempt. It is never treated as an
+unsent input and never submitted again. Ordinary Stop before any provider submission still ends
+the wait without connecting or sending an RPC.
+
+The source-bound native Codex acceptance controls use the same normal execution owner. Only the
+initial creation input of an agent-created Codex session gets a dedicated client; human-created,
+outside-command and later unrelated work continue on the shared client. The client object remains
+in memory beside its live run and is never written into the execution record. Adoption creates a
+fresh dedicated client for the same daemon and exact retained provider turn. `sessions codex-test
+connection-loss` derives the live execution and current client generation from the retained session
+and run, records the operation before acting, and cuts only that client's bridge. Its receipt says
+`observed` only after the bridge's normal disconnect handler reports that generation gone; a stale
+generation cannot cut its replacement. `sessions codex-test stop` retains agent authorship and
+calls the same exact-run Stop path, including the durable cutoff and adapter cancellation. Human
+attribution and its ChatGPT-specific follow-up remain human-only. Both controls require the exact
+creation request and source input/run pair; the owner refuses other authorship, sessions, runs,
+shared-client work and repeated cuts.
+
+The finite post-release acceptance procedure is in
+[`CODEX-NATIVE-RECOVERY-ACCEPTANCE.md`](../runbooks/CODEX-NATIVE-RECOVERY-ACCEPTANCE.md).
+
 ### Queue wake bounds
 
 Each runtime runs the saved-work clock once at the start of a queue wake pass, before claiming. It places due repeating firings and settles expired schedules before any claim. The coordinator admits at most four claims per event-loop slice, then continues on a new event-loop turn. Wakes arriving during a drain are retained; after the current claim pass reaches an empty queue, another pass prepares the clock on a new event-loop turn. Stopping the coordinator cancels its pending continuation. The SQLite transaction still owns each claim and its ordering. A claim settles dependencies only for its selected turn; prerequisite completion already settles dependencies for its dependents. This avoids a ledger-wide writer sweep on every empty or busy claim. Slow claims report their candidate, dependency, mutation, projection, survivability, and transaction overhead times so a remaining pause can be assigned to the actual phase.

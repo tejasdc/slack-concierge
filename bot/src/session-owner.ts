@@ -450,6 +450,7 @@ export type SessionOwnerRuntime = {
   wake():void;
   steer(input:AcceptedSessionInput):boolean;
   stop(sessionId:number,turnId:number):Promise<boolean>;
+  codexTestConnectionLoss?(sessionId:number,turnId:number):Promise<"observed"|"stale">;
   safeStop?(sessionId:number,turnId:number):Promise<boolean>;
   available(provider:ProviderId):boolean;
   peerForPath?(path:string):string|null;
@@ -1102,10 +1103,12 @@ export class SessionOwner {
   }
   private session(id:string) {const row=getSessionById(parseSessionId(id));if(!row)throw new SessionOwnerError('Unknown session.',404);return row;}
   private input(id:string) {const row=getAcceptedSessionInput(id);if(!row)throw new SessionOwnerError('Unknown operation.',404);return row;}
-  private agentBrowserBinding(request:Request,sessionId?:string) {
-    const marked=request.headers.get('x-concierge-verified-agent-source');
-    const createId=request.headers.get('x-concierge-agent-test-create');
-    if(!marked||!createId||!/^request:[0-9a-f-]{36}$/i.test(createId))
+  private agentBrowserBinding(request:Request,sessionId?:string,body?:Record<string,any>) {
+    const marked=request.headers.get('x-concierge-verified-agent-source')
+      ??(body?.agentSource&&typeof body.agentSource.inputId==='string'&&typeof body.agentSource.runId==='string'
+        ?`${body.agentSource.inputId} ${body.agentSource.runId}`:null);
+    const createId=request.headers.get('x-concierge-agent-test-create')??body?.createInputId;
+    if(!marked||typeof createId!=='string'||!/^request:[0-9a-f-]{36}$/i.test(createId))
       throw new SessionOwnerError('A verified agent source and exact creation request are required.',403,'AGENT_TEST_SCOPE_REQUIRED');
     const pair=/^(\S+) (\S+)$/.exec(marked);
     if(!pair)throw new SessionOwnerError('A verified agent source pair is required.',403,'AGENT_TEST_SCOPE_REQUIRED');
@@ -3081,15 +3084,30 @@ export class SessionOwner {
     return {operation:this.receipt(operation),target:this.receipt(this.input(target.id))};
   }
   async stop(id:string,body:unknown) {
+    return this.stopExact(id,body);
+  }
+  private async stopExact(id:string,body:unknown,actor?:{inputId:string;runId:string;targetAddress:string;authorityInputId:string}) {
     const session=this.session(id),input=object(body);only(input,['clientActionId','runId']);
-    const prior=this.existingAction(session.id,'stop',input);
+    const scope=actor?`communication:${actor.inputId}`:'surface:thinkering';
+    const prior=actor
+      ?db.query('SELECT * FROM session_inputs WHERE scope=? AND action_id=?').get(scope,actionId(input)) as AcceptedSessionInput|null
+      :this.existingAction(session.id,'stop',input);
+    if(prior&&(prior.session_id!==session.id||prior.kind!=='stop'||stablePayload(JSON.parse(prior.payload_json))!==stablePayload(actor?{...input,actor}:input)))
+      throw new SessionOwnerError('Idempotency conflict.',409);
     if(prior)return {session:this.view(session),operation:this.receipt(prior)};
     if(typeof input.runId!=='string'||!input.runId)throw new SessionOwnerError('An exact run ID is required.');
     const turn=db.query('SELECT id,status,session_id FROM turns WHERE native_run_id=?').get(input.runId) as any;
     if(!turn||turn.session_id!==session.id)throw new SessionOwnerError('Stop must name this session’s exact run.',409);
     if(turn.status!=='running'||!this.view(session).capabilities.stop)throw new SessionOwnerError('Native Stop is unavailable for this exact execution.',409,'CAPABILITY_UNAVAILABLE');
+    if(actor){
+      const existing=db.query(`SELECT id,action_id,payload_json FROM session_inputs WHERE session_id=? AND kind='stop'
+        AND origin='agent' AND source_input_id=? AND source_run_id=? LIMIT 1`).get(session.id,actor.inputId,actor.runId) as
+        {id:string;action_id:string;payload_json:string}|null;
+      if(existing)throw new SessionOwnerError('This source already retained its one exact-run Stop action.',409,'AGENT_TEST_STOP_ALREADY_RETAINED');
+    }
     const operation=db.transaction(()=>{
-      const saved=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:actionId(input),kind:'stop',origin:'human',payload:input}).input;
+      const saved=retainSessionInput({sessionId:session.id,scope,actionId:actionId(input),kind:'stop',origin:actor?'agent':'human',payload:actor?{...input,actor}:input,
+        ...(actor?{sourceInputId:actor.inputId,sourceRunId:actor.runId}:{})}).input;
       db.query("UPDATE turns SET stop_requested_at=COALESCE(stop_requested_at,CURRENT_TIMESTAMP),stop_input_cutoff=COALESCE(stop_input_cutoff,(SELECT max(id) FROM turns)) WHERE id=? AND status='running'").run(turn.id);
       this.clearWaitingHumanInputs(session.id,'stop',turn.id);
       db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'running'}),saved.id);
@@ -3097,14 +3115,47 @@ export class SessionOwner {
     })();
     try {
       const confirmed=await this.runtime.stop(session.id,turn.id);
-      if(confirmed)withdrawChatGptTasksForStoppedTurnByTejas({turnId:turn.id,humanInputId:operation.id,
+      if(confirmed&&!actor)withdrawChatGptTasksForStoppedTurnByTejas({turnId:turn.id,humanInputId:operation.id,
         actionId:actionId(input),now:Date.now()});
       db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(confirmed?{state:'running'}:{state:'uncertain',error:{code:'STOP_UNCONFIRMED',message:'Stop intent is retained; provider cancellation is not confirmed.'}}),operation.id);
     } catch(error) {
       db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'uncertain',error:{code:'STOP_UNCONFIRMED',message:error instanceof Error?error.message:String(error)}}),operation.id);
     }
-    recordSessionEvent({eventId:`control:${operation.id}`,sessionId:session.id,inputId:operation.id,kind:'stop',payload:{runId:input.runId}});
+    recordSessionEvent({eventId:`control:${operation.id}`,sessionId:session.id,inputId:operation.id,kind:'stop',payload:{runId:input.runId,...(actor?{actor:'agent'}:{})}});
     return {session:this.view(getSessionById(session.id)!),operation:this.receipt(this.input(operation.id))};
+  }
+  private async agentTestConnectionLoss(id:string,body:unknown,source:{inputId:string;runId:string},createInputId:string) {
+    const session=this.session(id),input=object(body);only(input,['clientActionId','runId']);
+    if(session.provider_id!=='codex'||typeof input.runId!=='string'||!input.runId)
+      throw new SessionOwnerError('Connection loss requires this exact Codex run.',409,'AGENT_TEST_TARGET_REFUSED');
+    const turn=db.query('SELECT id,status,session_id,dispatch_attempt FROM turns WHERE native_run_id=?').get(input.runId) as
+      {id:number;status:string;session_id:number;dispatch_attempt:number}|null;
+    if(!turn||turn.session_id!==session.id||turn.status!=='running')throw new SessionOwnerError('The named Codex run is no longer live.',409,'AGENT_TEST_TARGET_STALE');
+    const scope=`communication:${source.inputId}`,action=actionId(input);
+    const prior=db.query('SELECT * FROM session_inputs WHERE scope=? AND action_id=?').get(scope,action) as AcceptedSessionInput|null;
+    const actor={inputId:source.inputId,runId:source.runId,targetAddress:`concierge:${session.id}`,authorityInputId:createInputId};
+    if(prior){
+      if(prior.session_id!==session.id||prior.kind!=='codex-test-connection-loss'||stablePayload(JSON.parse(prior.payload_json))!==stablePayload({...input,actor}))
+        throw new SessionOwnerError('Idempotency conflict.',409);
+      return {operation:this.receipt(prior)};
+    }
+    const priorCut=db.query(`SELECT id FROM session_inputs WHERE session_id=? AND kind='codex-test-connection-loss'
+      AND source_input_id=? AND source_run_id=? LIMIT 1`).get(session.id,source.inputId,source.runId);
+    if(priorCut)throw new SessionOwnerError('This accepted source already used its one connection-loss action.',409,'AGENT_TEST_CUT_ALREADY_USED');
+    const operation=retainSessionInput({sessionId:session.id,scope,actionId:action,kind:'codex-test-connection-loss',origin:'agent',
+      payload:{...input,actor},sourceInputId:source.inputId,sourceRunId:source.runId}).input;
+    db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'intent'}),operation.id);
+    try {
+      const outcome=await this.runtime.codexTestConnectionLoss?.(session.id,turn.id)??'stale';
+      db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(
+        outcome==='observed'?{state:'observed',generationLost:true}:{state:'refused',error:{code:'TEST_CONNECTION_STALE',message:'The exact owned connection generation was no longer current.'}}),operation.id);
+      recordSessionEvent({eventId:`control:${operation.id}`,sessionId:session.id,inputId:operation.id,turnId:turn.id,kind:'codex_test_connection_loss',payload:{runId:input.runId,outcome}});
+      return {operation:this.receipt(this.input(operation.id))};
+    } catch(error) {
+      db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'uncertain',error:{code:'TEST_CONNECTION_LOSS_UNCONFIRMED',message:error instanceof Error?error.message:String(error)}}),operation.id);
+      recordSessionEvent({eventId:`control:${operation.id}`,sessionId:session.id,inputId:operation.id,turnId:turn.id,kind:'codex_test_connection_loss',payload:{runId:input.runId,outcome:'uncertain'}});
+      return {operation:this.receipt(this.input(operation.id))};
+    }
   }
   /** A side question answered through a saved final-response copy; the question turn is unsaved. */
   async aside(id:string,body:unknown) {
@@ -4260,6 +4311,15 @@ export class SessionOwner {
       // was counted as owner slowness (work-flow supervisor incident a8216a4c). It is awaited time.
       const body=request.method==='POST'?await awaitingOutside(()=>request.json()):null;
       if(parts[0]==='agent-test'&&parts[1]==='sessions'){
+        if(request.method==='POST'&&parts.length===4&&['stop','connection-loss'].includes(parts[3]!)){
+          const input=object(body);
+          only(input,['clientActionId','runId','agentSource','createInputId']);
+          const {source,sessionId}=this.agentBrowserBinding(request,parts[2],input);
+          const control={clientActionId:input.clientActionId,runId:input.runId};
+          if(parts[3]==='stop')return ownerJson(await this.stopExact(sessionId,control,{inputId:source.inputId,runId:source.runId,
+            targetAddress:sessionId,authorityInputId:String(input.createInputId??request.headers.get('x-concierge-agent-test-create'))}));
+          return ownerJson(await this.agentTestConnectionLoss(sessionId,control,source,String(input.createInputId??request.headers.get('x-concierge-agent-test-create'))));
+        }
         if(request.method!=='GET'||parts.length<4)throw new SessionOwnerError('Unknown agent browser read.',404);
         const {source,sessionId}=this.agentBrowserBinding(request,parts[2]);
         const tail=parts.slice(3),child=tail[1];

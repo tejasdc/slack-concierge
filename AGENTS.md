@@ -86,6 +86,12 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [wire contract](docs/contracts/session-owner-v1.md),
   [human command custody](docs/architecture/HUMAN-COMMAND-INTAKE.md), and
   [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md).
+- A Stop on adopted Codex work follows the original provider turn through exact
+  history reconciliation; missing identity or terminal evidence stays uncertain
+  and never resubmits the accepted input. See
+  [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md#stop-while-taking-back-an-existing-codex-turn).
+  The one-time source-bound native recovery controls and post-release acceptance procedure are
+  documented in [the Codex recovery runbook](docs/runbooks/CODEX-NATIVE-RECOVERY-ACCEPTANCE.md).
 - The canonical owner enforces Inbox placement, attention and delivery. Unfiled
   human inputs prevent the Inbox router from ending its turn; human work
   requests close only on evidence for their exact obligation. See

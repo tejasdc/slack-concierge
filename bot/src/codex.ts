@@ -1488,6 +1488,12 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         } while (turnCursor);
         if (!turn) {
           if (--adoptedSearchesLeft <= 0) {
+            if (recoveryMustInterrupt) {
+              // Stop on adopted work is never proof that the daemon stopped. If its exact turn
+              // cannot be found by retained identity, keep the accepted work visibly uncertain.
+              parkUnconfirmedTurn(new Error("The stopped Codex turn is not confirmed in its thread's history."));
+              return;
+            }
             // Codex records a turn's user message when it accepts turn/start. A turn that never got
             // a provider turn id and that the thread's whole history still lacks after every search
             // never reached Codex, so sending it again repeats nothing: it is retried, not parked.
@@ -1615,11 +1621,25 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     // its own and is waited out below, so the turn's start is not failed here (2026-11-12).
   });
   try {
+    if (input.adoptTurn) {
+      // Adoption means the provider may already be acting. Establish its retained identity before
+      // registering cancellation, whose callback can run synchronously for a retained Stop.
+      activeThreadId = input.adoptTurn.threadId;
+      extractedUUID = input.adoptTurn.threadId;
+      turnSubmissionAttempted = true;
+      if (input.adoptTurn.turnId) acceptActiveTurnId(input.adoptTurn.turnId);
+    }
     input.onCancellationReady?.(async () => {
       if (unconfirmedFailure) throw unconfirmedFailure;
       if (turnSettled) return;
       interruptionReason = new ProviderTurnCancelledError();
       recoveryMustInterrupt = true;
+      if (input.adoptTurn) {
+        // Let exact-history recovery reconnect and discover a missing turn id by the retained
+        // client message identity. Callback completion alone does not prove provider termination.
+        await ensureRecovered(interruptionReason);
+        return;
+      }
       if (!turnSubmissionAttempted) { stopBeforeSubmission(interruptionReason); return; }
       if (!activeThreadId || !activeTurnId) {
         throw parkUnconfirmedTurn(new Error("Stop requested before Codex confirmed an exact provider turn; cancellation is not confirmed."));
@@ -1658,18 +1678,16 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         }
       }
     };
-    connectionGeneration = await connectBeforeSubmission();
     let threadId: string;
     if (input.adoptTurn) {
       // Taken back after a Concierge restart: the daemon kept the turn. Its exact history settles it
       // or shows it still running, and live notifications continue from there; nothing is resubmitted.
-      threadId = input.adoptTurn.threadId;
+      threadId = activeThreadId!;
       activeThreadId = threadId;
       extractedUUID = threadId;
-      turnSubmissionAttempted = true;
-      if (input.adoptTurn.turnId) acceptActiveTurnId(input.adoptTurn.turnId);
       await Promise.race([ensureRecovered(), turnCompletion]);
     } else {
+    connectionGeneration = await connectBeforeSubmission();
     let threadResponse: any;
     for (;;) try {
     if (interruptionReason) throw interruptionReason;
