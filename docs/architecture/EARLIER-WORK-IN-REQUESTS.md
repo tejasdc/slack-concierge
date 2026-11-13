@@ -81,7 +81,7 @@ otherwise, the same way completed work needs `--checked`. A hand-back is exempt.
 is folded into the reply's words as "What came before: …", so the requester, and Tejas in an
 Inbox thread, read it. Peer-delivered requests are not gated on the replying machine.
 
-## Every earlier session can answer a question
+## Earlier sessions show how they can answer
 
 - **Handed off** (provider-change handoff accepted): an ask to the predecessor's address is
   forwarded to the successor, following the chain; the request records `forwardedFrom`.
@@ -91,9 +91,10 @@ Inbox thread, read it. Peer-delivered requests are not gated on the replying mac
   the question turn is never saved, and the session is not woken). No request is opened; the answer is the command's result, and an
   answer that takes over 90 s is collected by repeating the same command and action ID. Such an
   ask cannot name a thread, a return or prerequisites, since nothing is delivered later.
-- **Conversations from outside Concierge** (imported Claude/Codex transcripts): already
-  answered questions through a consultation copy; their capability reason now says so instead
-  of only "Archive evidence is read-only".
+- **Conversations from outside Concierge** (imported Claude/Codex transcripts): answer through a
+  consultation copy only when the exact retained source version and branch boundary are pinned
+  and the retained-source reader is available. Otherwise they remain searchable and readable but
+  expose a read-only reason and are not suggested for consultation.
 
-The capability `reason` of each such session says how it answers, so search no longer reads as
-"cannot answer".
+The capability `reason` says whether a question can be answered and how. Search preserves the
+distinction between readable historical evidence and evidence that can be consulted.
