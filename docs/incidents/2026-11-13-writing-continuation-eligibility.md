@@ -123,6 +123,15 @@ preserve Medium all the way to `turn/start`, and permit one additional provider
 attempt durably. Both guard allow and refusal need attributable retained evidence.
 Empty or uncertain completion must not spend a second attempt automatically.
 
+The follow-up source correction now spends the additional-attempt allowance in
+the same immediate SQLite transaction that retains provider-admission intent.
+Only the next dispatch after the proven attempt count may consume it. Generic
+provider retry scheduling and the dispatcher both refuse a spent allowance.
+The marker survives process restart; legacy reservations also consult retained
+admission intent and immutable attempt/result events before granting anything.
+This corrects the reproduced budget defect without granting a continuation basis
+or relaxing the existing native-history and authorization barriers.
+
 The original writing owner reconciles its own current authorized obligations after
 acknowledgement. Delivery recovery and useful product work are separate acceptance
 states; neither reservation nor an empty completed native turn proves restoration.
@@ -164,7 +173,12 @@ inspection, actual guard refusal of the diagnostic candidate, persisted allow an
 refusal evidence, unknown effective effort, and audit-sink failure. The public
 route fixture also proves that inspection invokes no recovery host and that an
 informational caller cannot invoke it. These checks do not prove the still-missing
-receiver fence or one-attempt continuation execution.
+receiver fence or continuation execution. The state fixture additionally claims
+the real recovery queue entry, spends admission once, opens the retained database
+in a separate process, refuses repeated/next admission and automatic retry, and
+checks that the first admission and recovery proof remain unchanged. It also
+checks that a legacy reservation with an already-retained later result cannot
+receive a fresh allowance after migration.
 
 Source navigation used scoped `rg` references followed by direct reads of the
 public operation, owner delegation, host proof, atomic reservation, registry,

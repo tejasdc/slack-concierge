@@ -94,6 +94,7 @@ export function inspectCodexRecovery(input:{sessionId:number;inputId:string;requ
         earlierNonterminalTurnCount:predecessors.length,
         digest:digest({session,inputs,turns,steering,request,handoffs,events})},
       progress:{usefulWork:'not_assessed',...(reservation?{reserved:true,attempt:turn?.dispatch_attempt??null,
+        reservedDispatchAttempt:reservation.additional_dispatch_attempt??null,
         inputAcknowledged:!!turn?.provider_input_acknowledged_at,state:turn?.status??null}: {reserved:false})},
       reasons};
   })();

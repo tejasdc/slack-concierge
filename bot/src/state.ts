@@ -795,6 +795,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS codex_unacknowledged_recoveries (
   created_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS codex_unacknowledged_recoveries_request ON codex_unacknowledged_recoveries(request_id);`);
+addColumn('codex_unacknowledged_recoveries','additional_dispatch_attempt','additional_dispatch_attempt INTEGER');
 // The parked-run sweep's way to a Codex turn released when it parked (executions.ts, 2026-11-12).
 db.exec("CREATE INDEX IF NOT EXISTS executions_released_codex ON executions(updated_at_ms) WHERE supervisor='codex-daemon' AND state='released'");
 addColumn('executions','adopted_live','adopted_live INTEGER NOT NULL DEFAULT 0');
@@ -4064,11 +4065,24 @@ export function markTurnProviderAdmissionIntended(
   ownerInstanceId: string,
   dispatchAttempt: number,
 ): boolean {
-  return db.query(`
-    UPDATE turns
-    SET provider_admission_intended_at=COALESCE(provider_admission_intended_at, CURRENT_TIMESTAMP)
-    WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
-  `).run(turnId, ownerInstanceId, dispatchAttempt).changes === 1;
+  return db.transaction(()=>{
+    const turn=db.query("SELECT id FROM turns WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?")
+      .get(turnId,ownerInstanceId,dispatchAttempt);
+    if(!turn)return false;
+    const recovery=codexRecoveryForTurn(turnId);
+    if(recovery){
+      if(codexRecoveryAttemptBudgetSpent(turnId))return false;
+      const baseline=JSON.parse(recovery.proof_json).attempts.length;
+      if(dispatchAttempt!==baseline+1)return false;
+      const consumed=db.query(`UPDATE codex_unacknowledged_recoveries SET additional_dispatch_attempt=?
+        WHERE accepted_input_id=? AND additional_dispatch_attempt IS NULL RETURNING accepted_input_id`)
+        .get(dispatchAttempt,recovery.accepted_input_id);
+      if(!consumed)return false;
+    }
+    return !!db.query(`UPDATE turns SET provider_admission_intended_at=COALESCE(provider_admission_intended_at,CURRENT_TIMESTAMP)
+      WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=? RETURNING id`)
+      .get(turnId,ownerInstanceId,dispatchAttempt);
+  }).immediate();
 }
 
 export interface RunningTurnDispatchBoundary {
@@ -4127,6 +4141,7 @@ export function retryRunningTurnAfterProviderFailure(input: {
   usageResetUnknown?: boolean;
 }): boolean {
   return db.transaction(() => {
+    if(codexRecoveryAttemptBudgetSpent(input.turnId))return false;
     const boundary = getRunningTurnDispatchBoundary(
       input.turnId,
       input.ownerInstanceId,
@@ -4223,6 +4238,33 @@ export function requeueProvenUnsentNativeChatGptTurn(input: {
 export interface CodexUnacknowledgedRecoveryRow {
   accepted_input_id:string;request_id:string;turn_id:number;provider_thread_id:string;proof_json:string;
   action_id:string;source_input_id:string;source_run_id:string;created_at_ms:number;
+  additional_dispatch_attempt:number|null;
+}
+function codexRecoveryForTurn(turnId:number):CodexUnacknowledgedRecoveryRow|null {
+  return db.query(`SELECT recovery.* FROM turns turn JOIN codex_unacknowledged_recoveries recovery
+    ON recovery.accepted_input_id=turn.accepted_input_id WHERE turn.id=?`).get(turnId) as CodexUnacknowledgedRecoveryRow|null;
+}
+/** Admission spends the reservation before any native submission. Adoption can follow that
+ * exact attempt without calling admission again; another attempt cannot reuse the budget. */
+export function codexRecoveryAttemptBudgetSpent(turnId:number):boolean {
+  const recovery=codexRecoveryForTurn(turnId);
+  if(!recovery)return false;
+  if(recovery.additional_dispatch_attempt!==null)return true;
+  let proof:any;
+  try{proof=JSON.parse(recovery.proof_json);}catch{return true;}
+  const attempts=proof?.attempts;
+  if(!Array.isArray(attempts)||!attempts.length||attempts.some((attempt:any,index:number)=>attempt?.dispatchAttempt!==index+1))return true;
+  const baseline=attempts.length;
+  if(proof.dispatchAttemptCount!==undefined&&proof.dispatchAttemptCount!==baseline)return true;
+  // A reservation created before this column existed may already have spent its attempt.
+  // The immutable owner events and retained admission intent prevent migration from granting
+  // it a fresh allowance. Missing or conflicting history stays refused.
+  const turn=db.query('SELECT dispatch_attempt,provider_admission_intended_at FROM turns WHERE id=?').get(turnId) as any;
+  if(!turn||turn.dispatch_attempt<baseline)return true;
+  if(turn.dispatch_attempt>baseline&&turn.provider_admission_intended_at!==null)return true;
+  return !!db.query(`SELECT 1 FROM session_owner_events WHERE turn_id=?
+    AND kind IN ('provider_admission','provider_turn_attempt','result')
+    AND json_extract(payload_json,'$.dispatchAttempt')>? LIMIT 1`).get(turnId,baseline);
 }
 export function codexUnacknowledgedRecovery(inputId:string):CodexUnacknowledgedRecoveryRow|null {
   return db.query('SELECT * FROM codex_unacknowledged_recoveries WHERE accepted_input_id=?').get(inputId) as CodexUnacknowledgedRecoveryRow|null;

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {spawnSync} from 'node:child_process';
 import {IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION} from '../src/test-authorizations';
 
 const scratch=mkdtempSync(join(tmpdir(),'concierge-codex-recovery-state-'));
@@ -68,6 +69,23 @@ try{
     /no retained result envelope/,'after reservation, restart reconciliation cannot consume the historical empty envelope');
   const oldResult=db.query('SELECT event_id,payload_json FROM session_owner_events WHERE event_id=?').get(`result:${reportTurn}`) as any;
   assert.equal(JSON.parse(oldResult.payload_json).text,'','historical empty result identity and payload remain untouched');
+  const {claimNextQueuedTurn,markTurnProviderAdmissionIntended,retryRunningTurnAfterProviderFailure,codexRecoveryAttemptBudgetSpent}=await import('../src/state');
+  const recoveryClaim=claimNextQueuedTurn('budget-owner');
+  assert.equal(recoveryClaim?.turn_id,reportTurn,'the ordinary queue claims the exact retained report-back');
+  assert.equal(recoveryClaim?.dispatch_attempt,2);
+  assert.equal(markTurnProviderAdmissionIntended(reportTurn,'budget-owner',2),true,'one additional admission consumes the durable reservation');
+  assert.equal(codexUnacknowledgedRecovery(report.id)!.additional_dispatch_attempt,2);
+  assert.equal(codexUnacknowledgedRecovery(report.id)!.proof_json,saved.proof_json,'consuming the attempt preserves the original proof bytes');
+  const reopened=spawnSync(process.execPath,['-e',`const {db,codexRecoveryAttemptBudgetSpent}=await import(${JSON.stringify(join(import.meta.dir,'../src/state.ts'))});
+    if(!codexRecoveryAttemptBudgetSpent(${reportTurn}))process.exit(2);db.close();process.exit(0);`],{env:process.env,encoding:'utf8'});
+  assert.equal(reopened.status,0,`a fresh process retains the spent budget: ${reopened.stderr}`);
+  assert.equal(codexRecoveryAttemptBudgetSpent(reportTurn),true);
+  assert.equal(markTurnProviderAdmissionIntended(reportTurn,'budget-owner',2),false,'same-attempt relaunch cannot reuse consumed admission');
+  assert.equal(retryRunningTurnAfterProviderFailure({turnId:reportTurn,ownerInstanceId:'budget-owner',dispatchAttempt:2,
+    error:'retryable but recovery is spent',nextAttemptMs:4000}),false,'ordinary retry cannot spend another native attempt');
+  db.query("UPDATE turns SET status='running',provider_admission_intended_at=NULL,dispatch_attempt=3 WHERE id=?").run(reportTurn);
+  assert.equal(markTurnProviderAdmissionIntended(reportTurn,'budget-owner',3),false,'even a forced new claim cannot submit again');
+  db.query("UPDATE turns SET status='done',owner_instance_id=NULL WHERE id=?").run(reportTurn);
   const secondResult={...historicalResult,providerTurnId:'native-recovery',text:'Recovered useful answer',dispatchAttempt:2};
   recordSessionEvent({eventId:nativeResultEventId(reportTurn,2),sessionId:session.id,inputId:report.id,turnId:reportTurn,
     kind:'result',payload:secondResult});
@@ -75,6 +93,8 @@ try{
     .get(reportTurn) as any;
   assert.equal(latest.event_id,`result:${reportTurn}:attempt:2`,'recovery attempt retains a distinct result identity');
   assert.equal(JSON.parse(latest.payload_json).text,'Recovered useful answer','result readers can select the later useful answer');
+  db.query('UPDATE codex_unacknowledged_recoveries SET additional_dispatch_attempt=NULL WHERE accepted_input_id=?').run(report.id);
+  assert.equal(codexRecoveryAttemptBudgetSpent(reportTurn),true,'legacy reservation with later immutable result cannot gain a fresh budget');
   assert.equal(reserveCodexUnacknowledgedRecovery({...reservation,actionId:'different-action',nowMs:2000}),false,
     'a different action ID cannot reserve the same accepted input twice');
   assert.equal(codexUnacknowledgedRecovery(report.id)!.action_id,'first-action');

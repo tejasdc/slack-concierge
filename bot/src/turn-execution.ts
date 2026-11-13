@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { clearRetryBreaker, recordRetryFailure } from './retry-breaker';
+import {codexRecoveryAttemptBudgetSpent} from './state';
 import {currentAccount} from './provider-accounts';
 import {AUTOMATIC_PROVIDER_ALIASES,resolveProviderAlias} from './aliases';
 import {budgetBriefWithProviderRoom,chooseProviderForNewWork,newWorkCapacity,capacityCanStart} from './provider-start-choice';
@@ -1361,6 +1362,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         && error.evidence.code === 'CHATGPT_NOT_SENT';
       const localPrerequisiteWait = replaySafe && structuredFailure?.localPrerequisiteUnavailable === true;
       let retryable = replaySafe
+        && !codexRecoveryAttemptBudgetSpent(input.turnId)
         && (authWait || googleUsageWait || runnerAccountReadingWait || chatgptNeverSent || localPrerequisiteWait || structuredFailure?.failureClass === "retryable" ||
           structuredFailure?.modelAtCapacity === true || heldUntilMs !== null || switchClaudeAccount);
       let policyRetryAtMs: number | null = null;
