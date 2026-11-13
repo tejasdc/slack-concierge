@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {Database} from 'bun:sqlite';
 import {IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION} from '../src/test-authorizations';
 
 const scratch=mkdtempSync(join(tmpdir(),'concierge-edit-gate-'));
@@ -9,7 +10,7 @@ process.env.CONCIERGE_STATE_DIR=scratch;
 process.env.CONCIERGE_CAPTURE_STATE_DIR=join(scratch,'capture');
 process.env.CONCIERGE_TEST_MODE='1';
 process.env.CONCIERGE_TEST_AUTHORIZATION=IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION;
-const [{db,claimNextQueuedTurn},{createNativeSession,retainSessionInput,enqueueSessionInput,sessionMetadata,nativeRunId},{implementationEditDecision},{SessionOwner},{SessionCommunicationCoordinator},{isCodeEditTool}]=await Promise.all([
+const [{db,claimNextQueuedTurn},{createNativeSession,retainSessionInput,enqueueSessionInput,sessionMetadata,nativeRunId},{implementationEditDecision,recordImplementationEditReason},{SessionOwner},{SessionCommunicationCoordinator},{isCodeEditTool}]=await Promise.all([
   import('../src/state'),import('../src/session-inputs'),import('../src/implementation-edit-gate'),import('../src/session-owner'),import('../src/session-communication'),import('../src/implementation-models')]);
 try{
   assert.equal(isCodeEditTool('Bash',{command:"router-actions.sh report -- 'The apply_patch tool was refused'"}),false);
@@ -41,21 +42,78 @@ try{
   const daemonSource=retainSessionInput({id:'daemon-source',sessionId:daemon.id,scope:'fixture',actionId:'daemon-source',kind:'input',origin:'agent',payload:{text:'design'}}).input;
   enqueueSessionInput(daemonSource.id);
   const daemonTurn=claimNextQueuedTurn('fixture')!.turn_id;
-  const daemonEdit=(toolId:string,extra:Record<string,unknown>={})=>implementationEditDecision({providerSessionId:'daemon-thread',providerTurnId:'unbound-helper-turn',toolId,toolName:'apply_patch',...extra});
+  const daemonEdit=(toolId:string,extra:Record<string,unknown>={},childTurn='unbound-helper-turn')=>implementationEditDecision({providerSessionId:'daemon-thread',providerTurnId:childTurn,toolId,toolName:'apply_patch',...extra});
   for(let i=0;i<7;i++)assert.equal(daemonEdit(`luna-${i}`,{providerModel:'gpt-6-luna'}).exempt,'codex-helper');
   assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_helper_edit'").get(daemonTurn) as any).count,7);
-  for(let i=0;i<4;i++)assert.equal(daemonEdit(`sol-${i}`,{providerModel:'gpt-6-sol'}).hold,false);
-  assert.equal(daemonEdit('sol-fifth',{providerModel:'gpt-6-sol'}).hold,true,'a top-model edit with a different turn ID is counted and held');
+  for(let i=0;i<4;i++)assert.equal(daemonEdit(`sol-${i}`,{providerModel:'gpt-6-sol'},'unbound-sol-turn').hold,false);
+  assert.equal(daemonEdit('sol-fifth',{providerModel:'gpt-6-sol'},'unbound-sol-turn').hold,true,'a top-model edit with a different turn ID is counted and held');
   assert.equal(daemonEdit('luna-after',{providerModel:'gpt-6-luna'}).exempt,'codex-helper');
   assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit'").get(daemonTurn) as any).count,4);
   db.query("UPDATE turns SET status='done' WHERE id=?").run(daemonTurn);
-  assert.equal(daemonEdit('none-running',{providerModel:'gpt-6-luna'}).hold,true,'no running turn holds');
+  assert.equal(daemonEdit('sol-fifth',{providerModel:'gpt-6-sol'},'unbound-sol-turn').hold,true,'completion cannot release a Sol hold without an existing original-turn reason');
+  assert.equal(daemonEdit('none-running',{providerModel:'gpt-6-luna'},'never-bound-child').hold,true,'unbound child with no running turn holds');
   for(const id of ['daemon-two-a','daemon-two-b']){
     enqueueSessionInput(retainSessionInput({id,sessionId:daemon.id,scope:'fixture',actionId:id,kind:'input',origin:'agent',payload:{text:'x'}}).input.id);
   }
   db.query("UPDATE turns SET status='running' WHERE id IN (SELECT turn_id FROM session_inputs WHERE id IN ('daemon-two-a','daemon-two-b'))").run();
-  assert.equal(daemonEdit('two-running',{providerModel:'gpt-6-luna'}).hold,true,'two running turns without an owner turn ID hold');
+  assert.equal(daemonEdit('two-running',{providerModel:'gpt-6-luna'},'ambiguous-child').hold,true,'two running turns without an owner turn ID hold');
   db.query("UPDATE turns SET status='done' WHERE id IN (SELECT turn_id FROM session_inputs WHERE id IN ('daemon-two-a','daemon-two-b'))").run();
+
+  // A helper's first mismatched edit binds its exact child turn to the unique running parent.
+  const lifecycle=createNativeSession('codex',{title:'helper lifecycle',summary:undefined,purpose:'develop',origin:'native',model:'gpt-6.1-sol'});
+  db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run('lifecycle-thread',lifecycle.id);
+  const lifecycleInput=retainSessionInput({id:'lifecycle-input',sessionId:lifecycle.id,scope:'fixture',actionId:'lifecycle',kind:'input',origin:'agent',payload:{text:'design'}}).input;
+  enqueueSessionInput(lifecycleInput.id);
+  const lifecycleTurn=claimNextQueuedTurn('fixture')!.turn_id;
+  db.query('UPDATE turns SET provider_turn_id=? WHERE id=?').run('lifecycle-parent-turn',lifecycleTurn);
+  const codexEdit=(childTurn:string,toolId:string,model:string,ownerTurnId?:number)=>implementationEditDecision({providerSessionId:'lifecycle-thread',
+    ownerTurnId,providerTurnId:childTurn,providerModel:model,toolId,toolName:'apply_patch'});
+  db.query("UPDATE turns SET stop_requested_at=CURRENT_TIMESTAMP WHERE id=?").run(lifecycleTurn);
+  assert.equal(codexEdit('stopped-before-bind','early-stop','gpt-6-luna').hold,true,'Stop before first edit cannot create a binding');
+  db.query("UPDATE turns SET stop_requested_at=NULL WHERE id=?").run(lifecycleTurn);
+  db.query("UPDATE sessions SET status='archived' WHERE id=?").run(lifecycle.id);
+  assert.equal(codexEdit('archived-before-bind','early-archive','gpt-6-luna').hold,true,'archive before first edit cannot create a binding');
+  db.query("UPDATE sessions SET status='idle',native_metadata_json=json_set(native_metadata_json,'$.suspended',1) WHERE id=?").run(lifecycle.id);
+  assert.equal(codexEdit('paused-before-bind','early-pause','gpt-6-luna').hold,true,'pause before first edit cannot create a binding');
+  db.query("UPDATE sessions SET native_metadata_json=json_remove(native_metadata_json,'$.suspended') WHERE id=?").run(lifecycle.id);
+  assert.equal(codexEdit('native-luna-child','luna-first','gpt-6-luna').exempt,'codex-helper');
+  for(let i=0;i<4;i++)assert.equal(codexEdit('native-sol-child',`sol-${i}`,'gpt-6.1-sol').hold,false);
+  assert.equal(codexEdit('native-sol-child','sol-fifth','gpt-6.1-sol').hold,true,'Sol helper fifth edit uses parent turn budget');
+  const bindingCount=(db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE session_id=? AND kind='implementation_codex_helper_binding'").get(lifecycle.id) as any).count;
+  assert.equal(bindingCount,2,'both Luna and Sol child turns retain exact parent bindings');
+  assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE session_id=? AND kind='implementation_helper_edit' AND input_id=?").get(lifecycle.id,lifecycleInput.id) as any).count,1,
+    'lower-tier helper receipt preserves the parent accepted input');
+  assert.equal((db.query('EXPLAIN QUERY PLAN SELECT turn_id FROM session_owner_events WHERE event_id=?').get('implementation-codex-helper-binding:fixture') as any).detail.includes('event_id'),true,
+    'binding identity resolves by the existing unique event ID index');
+  recordImplementationEditReason(lifecycleTurn,lifecycle.id,lifecycleInput.id,'This exact turn needs its thinking model to finish the fixed design.','fixture-reason');
+  db.query("UPDATE turns SET status='done' WHERE id=?").run(lifecycleTurn);
+  for(let i=0;i<4;i++)assert.equal(codexEdit('native-sol-child',`sol-${i}`,'gpt-6.1-sol').exempt,'already-counted','duplicate retries retain original receipt after completion');
+  assert.equal(codexEdit('native-sol-child','sol-fifth','gpt-6.1-sol').hold,false,'reason recorded while the parent was running permits its retained child edit');
+  assert.equal(codexEdit('native-sol-child','sol-fifth','gpt-6-luna').hold,true,'a changed child model cannot inherit the binding');
+  assert.equal(codexEdit('unseen-child','no-parent','gpt-6-luna').hold,true,'unknown child without a running parent remains refused');
+  assert.equal(codexEdit('unseen-child','missing-model','').hold,true,'missing model evidence remains refused');
+  assert.equal(codexEdit('unseen-child','conflicting-hint','gpt-6-luna',999999).hold,true,'refused owner hint cannot create a binding');
+  assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE session_id=? AND kind='implementation_codex_helper_binding'").get(lifecycle.id) as any).count,2,
+    'refused unknown or conflicting identities do not acquire a binding');
+  for(const status of ['error','cancelled','uncertain','queued']){
+    db.query('UPDATE turns SET status=? WHERE id=?').run(status,lifecycleTurn);
+    assert.equal(codexEdit('native-luna-child',`late-${status}`,'gpt-6-luna').hold,true,`${status} parent refuses retained child`);
+    db.query("UPDATE turns SET status='done' WHERE id=?").run(lifecycleTurn);
+  }
+  db.query("UPDATE turns SET stop_requested_at=CURRENT_TIMESTAMP WHERE id=?").run(lifecycleTurn);
+  assert.equal(codexEdit('native-luna-child','late-stop','gpt-6-luna').hold,true,'human Stop refuses even after normal completion');
+  db.query("UPDATE turns SET stop_requested_at=NULL WHERE id=?").run(lifecycleTurn);
+  db.query("UPDATE sessions SET status='archived' WHERE id=?").run(lifecycle.id);
+  assert.equal(codexEdit('native-luna-child','late-archive','gpt-6-luna').hold,true,'archived parent session refuses retained child');
+  db.query("UPDATE sessions SET status='idle',native_metadata_json=json_set(native_metadata_json,'$.suspended',1) WHERE id=?").run(lifecycle.id);
+  assert.equal(codexEdit('native-luna-child','late-pause','gpt-6-luna').hold,true,'paused parent session refuses retained child');
+  db.query("UPDATE sessions SET native_metadata_json=json_remove(native_metadata_json,'$.suspended') WHERE id=?").run(lifecycle.id);
+  const newerInput=retainSessionInput({id:'lifecycle-new-input',sessionId:lifecycle.id,scope:'fixture',actionId:'new-turn',kind:'input',origin:'agent',payload:{text:'new'}}).input;
+  enqueueSessionInput(newerInput.id);
+  const newerTurn=claimNextQueuedTurn('fixture')!.turn_id;
+  assert.equal(codexEdit('native-sol-child','old-child-stays-old','gpt-6.1-sol').hold,false,'new parent does not reassign known child');
+  assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit'").get(lifecycleTurn) as any).count,6);
+  assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit'").get(newerTurn) as any).count,0);
 
   const child=createNativeSession('codex',{title:'worker',summary:undefined,purpose:'develop',origin:'native',model:'gpt-6-luna'});
   const target=retainSessionInput({id:'request:fixture',sessionId:child.id,scope:'fixture',actionId:'target',kind:'input',origin:'agent',payload:{text:'implement'}}).input;
@@ -157,5 +215,16 @@ try{
   assert.equal((db.query('SELECT provider_turn_id FROM turns WHERE id=?').get(outsideTurn) as any).provider_turn_id,'outside-provider-turn');
   for(let i=0;i<4;i++)assert.equal(implementationEditDecision({providerSessionId:'outside-thread',ownerTurnId:outsideTurn,providerTurnId:'outside-provider-turn',providerModel:'gpt-6.1-sol',toolId:`outside-${i}`,toolName:'apply_patch'}).hold,false);
   assert.equal(implementationEditDecision({providerSessionId:'outside-thread',ownerTurnId:outsideTurn,providerTurnId:'outside-provider-turn',providerModel:'gpt-6.1-sol',toolId:'outside-fifth',toolName:'apply_patch'}).hold,true);
-  console.log('implementation edit gate: exact handoff, helper separation and human model-picker custody passed');
+  const gatePath=new URL('../src/implementation-edit-gate.ts',import.meta.url).pathname;
+  const statePath=new URL('../src/state.ts',import.meta.url).pathname;
+  const reopened=Bun.spawnSync(['bun','-e',`const [{implementationEditDecision},{db}]=await Promise.all([import(${JSON.stringify(gatePath)}),import(${JSON.stringify(statePath)})]);
+    const result=implementationEditDecision({providerSessionId:'lifecycle-thread',providerTurnId:'native-luna-child',providerModel:'gpt-6-luna',toolId:'luna-first',toolName:'apply_patch'});
+    const next=implementationEditDecision({providerSessionId:'lifecycle-thread',providerTurnId:'native-luna-child',providerModel:'gpt-6-luna',toolId:'luna-after-reopen',toolName:'apply_patch'});
+    if(result.hold||result.exempt!=='codex-helper'||next.hold||next.exempt!=='codex-helper')process.exitCode=1;db.close();`],{env:{...process.env,CONCIERGE_STATE_DIR:scratch}});
+  assert.equal(reopened.exitCode,0,'a fresh owner process preserves the duplicate receipt and admits a new edit from the same retained child');
+  const observer=new Database(join(scratch,'state.db'),{readonly:true});
+  try{
+    assert.equal((observer.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND input_id=? AND kind='implementation_helper_edit'").get(lifecycleTurn,lifecycleInput.id) as any).count,2,'a fresh reader sees reopened continuation retain its original parent and input');
+  }finally{observer.close();}
+  console.log('implementation edit gate: exact handoff, helper separation, retained Codex child identity and human model-picker custody passed');
 }finally{db.close();rmSync(scratch,{recursive:true,force:true});}
