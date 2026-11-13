@@ -139,7 +139,8 @@ const LAYERS: Record<ProjectTemplate, Files[]> = {
 };
 
 export function projectTemplate(value: unknown): ProjectTemplate | undefined {
-  if (value === undefined) return undefined;
+  // The runner order carries a missing template as null (JSON has no undefined).
+  if (value === undefined || value === null) return undefined;
   if (typeof value !== 'string' || !(PROJECT_TEMPLATES as readonly string[]).includes(value))
     throw new Error(`Choose a template: ${PROJECT_TEMPLATES.join(', ')}.`);
   return value as ProjectTemplate;
