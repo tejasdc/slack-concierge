@@ -14,6 +14,7 @@
 import { join } from "node:path";
 import { realpathSync } from "node:fs";
 import { log } from "./log";
+import { awaitingOutside } from "./storage-observation";
 
 const CALL_TIMEOUT_MS = 15_000;
 type Pending = { resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> };
@@ -66,7 +67,9 @@ function channel(runner: string): Channel {
 export async function runnerMachineCall<T = any>(runner: string, method: string, params: Record<string, unknown>, timeoutMs = CALL_TIMEOUT_MS): Promise<T> {
   const current = channel(runner);
   const id = ++nextId;
-  return new Promise<T>((resolve, reject) => {
+  // The answer comes from another process, so the time is awaited, never owner slowness: a project
+  // request waiting on its runner was read as a 16.8 s slow owner read (incident 4b6c9a1f).
+  return awaitingOutside(() => new Promise<T>((resolve, reject) => {
     let expired = false;
     let sent = false;
     const timer = setTimeout(() => {
@@ -81,7 +84,7 @@ export async function runnerMachineCall<T = any>(runner: string, method: string,
       try { current.socket.send(JSON.stringify({ id, method, params })); sent=true; }
       catch (error) { current.pending.delete(id); clearTimeout(timer); reject(new RunnerUnreachableError(String(error))); }
     }, error => { clearTimeout(timer); reject(new RunnerCallNotSentError(String(error))); });
-  });
+  }));
 }
 
 /** Close every call channel (checks; the gateway's own stop also ends them). */
