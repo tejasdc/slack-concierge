@@ -328,6 +328,7 @@ export class TrustedRootReleaseManager {
         const root = resolve(this.environment.releaseRoot).replace(/'/g, "'\\''");
         writeFileSync(temporary, `#!/bin/sh\nset -eu\nRELEASE_ROOT=\${CONCIERGE_DEPLOYMENT_RELEASE_ROOT:-'${root}'}\nexec /usr/bin/bash "$RELEASE_ROOT/control/control/${source}" "$@"\n`,
           { mode: 0o555, flag: "wx" });
+        chmodSync(temporary, 0o555);
         renameSync(temporary, destination);
       } finally {
         rmSync(temporary, { force: true });

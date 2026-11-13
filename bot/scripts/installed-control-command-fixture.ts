@@ -11,6 +11,7 @@ import { TrustedRootReleaseManager, releaseFileSetDigest } from "../src/deployme
 // sealed application/helpers and an owned supervisor replace all production work.
 const repo = resolve(import.meta.dir, "../..");
 const root = mkdtempSync(join(tmpdir(), "installed-control-command-"));
+const priorUmask = process.umask(0o077);
 const releaseRoot = join(root, "deployment"), installRoot = join(root, "install");
 const fakeBin = join(root, "bin"), state = join(root, "state");
 mkdirSync(join(releaseRoot, "releases"), { recursive: true });
@@ -111,6 +112,8 @@ try {
     assert.equal(existsSync(join(state, "state.db")), false, "file-only pre-start must not open a ledger");
   });
   const wrappers = snapshot().commands;
+  for (const name of ["launch", "control"])
+    assert.equal(lstatSync(join(installRoot, name)).mode & 0o777, 0o555, "installed mode must survive the host's private umask");
   // The old manager's promotion is an atomic pointer change, without any
   // new install callback. This proves the first fixing release, not only later ones.
   check("predecessor promotion exposes modern commands without another installation", () => {
@@ -149,5 +152,5 @@ try {
   console.log(JSON.stringify({ fixture: "installed-control-command", status: "passed", productionStateOrCacheWorkload: false,
     substitutes: ["synthetic sealed application and helpers", "tiny Bun forwarding executable", "owned systemd-run forwarding executable"] }));
 } finally {
-  permissions(root, false); rmSync(root, { recursive: true, force: true });
+  process.umask(priorUmask); permissions(root, false); rmSync(root, { recursive: true, force: true });
 }
