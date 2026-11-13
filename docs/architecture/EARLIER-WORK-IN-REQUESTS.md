@@ -98,3 +98,10 @@ Inbox thread, read it. Peer-delivered requests are not gated on the replying mac
 
 The capability `reason` says whether a question can be answered and how. Search preserves the
 distinction between readable historical evidence and evidence that can be consulted.
+
+## The same matching for a change
+
+`GET /sessions/v1/requirements?text=<words>` returns the taste-profile passages, decisions and failure
+cases closest to any words, chosen exactly as a brief chooses them (`requirementsFor`). thnkr.ing's commit
+design check sends a change's message and file list and reads his rules from it, so the matching has one
+home. It runs in the owner, beside the meaning index.

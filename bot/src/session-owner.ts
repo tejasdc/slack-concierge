@@ -1,3 +1,4 @@
+import {requirementsFor} from './request-history';
 import {threadOnlyReturnInputSql} from "./inbox-request-root";
 import {ownerRequestLabel} from './owner-request-label';
 import {acceptedMachineNeed,parseMachineNeed} from './machine-need';
@@ -4346,6 +4347,7 @@ export class SessionOwner {
         result=url.searchParams.get('view')==='count'?openInboxObligationCount():openInboxObligations();
       else if(request.method==='POST'&&parts[0]==='mac-browser-fallback'&&parts.length===1)result=this.macBrowserFallback(body);
       else if(request.method==='GET'&&parts[0]==='focus-hold'&&parts.length===1)result=await this.focusHoldStatus();
+      else if(request.method==='GET'&&parts[0]==='requirements'&&parts.length===1)result=await requirementsFor((url.searchParams.get('text')??'').slice(0,4000));
       else if(request.method==='POST'&&parts[0]==='focus-hold'&&parts.length===1)result=await this.focusHoldControl(body);
       else if(request.method==='POST'&&parts[0]==='focus-hold'&&parts[1]==='release'&&parts.length===2)result=await this.releaseHeldCaptures(body);
       else if(request.method==='GET'&&parts[0]==='pause-all'&&parts.length===1)result=this.globalPauseStatus();
