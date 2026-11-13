@@ -323,6 +323,29 @@ export class SessionCommunicationCoordinator {
         return { ...this.actor({input_id:retained.id,run_id:nativeRunId(claim.turn_id)}),
             source: {channel_id:source.channel_id,message_ts:source.message_ts},root:claim.reply_thread_ts };
     }
+    /**
+     * A frozen ask resumed by a later run of the same session. The live run authenticates the
+     * call; the ask is then deduplicated and, if never admitted, admitted under the original input,
+     * run and action, so a retry after a crash or restart returns the one receipt instead of a
+     * second request. The original run must have ended: while it lives it retries for itself.
+     * Authority is recomputed for the original input now, so a grant closed since is not revived.
+     */
+    private resumedActor(live: Actor, resume: {input_id?: string; run_id?: string}): Actor {
+        if (!resume?.input_id || !resume.run_id || typeof resume.input_id !== 'string' || typeof resume.run_id !== 'string')
+            throw new Error('Resuming an ask needs the original --resume-source-input and --resume-source-run.');
+        const original = getAcceptedSessionInput(resume.input_id);
+        if (!original || original.session_id !== live.session)
+            throw new Error('The resumed source must be an accepted input of this same session.');
+        const observed = readInputExecution(original);
+        if (!observed.turn || nativeRunId(observed.turn.id) !== resume.run_id || observed.turn.session_id !== original.session_id
+            || !observed.turn.provider_admission_intended_at
+            || (observed.steering && !['sending','sent','ambiguous'].includes(observed.steering.status)))
+            throw new Error('The resumed source must name that input and the exact run it was admitted to.');
+        if (observed.turn.id === live.turn || (observed.turn.status === 'running' && !observed.turn.stop_requested_at))
+            throw new Error('The original run is still live; retry with its own source pair.');
+        return { source: { input_id: original.id, run_id: resume.run_id }, session: original.session_id, turn: observed.turn.id,
+            root: null, user: original.origin, inputId: original.id };
+    }
     private address(value: string, callable = false): Address {
         if (typeof value !== 'string' || !value.startsWith('session:'))
             throw new Error('Use an exact address returned by session discovery.');
@@ -1656,6 +1679,8 @@ export class SessionCommunicationCoordinator {
         text: string;
         /** Exact work task that needs this ChatGPT answer when this run holds several tasks. */
         for_task?:string;
+        /** The original source pair of a frozen ask whose run has ended; `source` is the live run resuming it. */
+        resume_source?: {input_id?: string; run_id?: string};
         /** Exact original obligation for a missing-context follow-up, never an ambiguous-send retry. */
         recovery_of?:string;
         /** Original request whose attachment was definitively rejected before Send. */
@@ -1688,7 +1713,10 @@ export class SessionCommunicationCoordinator {
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting requests.');
-        const sender = this.authority(this.fenced(this.actor(input.source)));
+        if (input.resume_source && (input.peer !== undefined || input.saved || input.correction_of || input.recovery_of || input.routeMessageId))
+            throw new Error('Resuming a frozen ask covers ordinary local asks only.');
+        const live = this.fenced(this.actor(input.source));
+        const sender = this.authority(input.resume_source ? this.resumedActor(live, input.resume_source) : live);
         const actor = sender.actor;
         action(input.action_id);
         if(input.purpose!==undefined){

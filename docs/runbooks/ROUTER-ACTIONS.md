@@ -489,6 +489,16 @@ This command reads file metadata only and never returns transcript content.
 The guarded cutover and its backup/readback gates are in the
 [history object plan](../plans/2026-11-12-concierge-history-object-retirement.md).
 
+### Resuming a frozen ask
+
+A run that persisted an ask (source pair, action ID, exact payload) and ended before knowing
+whether it was admitted can be resumed by a later run of the same session: repeat the identical
+`sessions ask` with this run's own `--source-input/--source-run` plus
+`--resume-source-input <original input> --resume-source-run <original run>`. Concierge returns
+the request already admitted under that original pair and action, or admits it once under the
+original identity. A changed payload is refused as an idempotency conflict; the original run must
+have ended, and the input must belong to this session. Local ordinary asks only.
+
 ### Provider-change handoff
 
 When Tejas asks that ongoing work continue on another provider or model, hand off the

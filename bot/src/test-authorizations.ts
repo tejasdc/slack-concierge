@@ -9,3 +9,4 @@ export const START_PACE_TEST_AUTHORIZATION='start-pace-2026-11-12';
 export const PARKED_CODEX_FOLLOW_TEST_AUTHORIZATION='parked-codex-follow-2026-11-12';
 export const IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION='implementation-edit-gate-2026-11-12';
 export const CODEX_AUDIT_OFF_CODEX_TEST_AUTHORIZATION='codex-audit-off-codex-2026-11-12';
+export const FROZEN_ASK_RESUME_TEST_AUTHORIZATION='frozen-ask-resume-2026-11-12';
