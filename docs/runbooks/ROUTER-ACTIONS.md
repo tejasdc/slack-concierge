@@ -98,6 +98,36 @@ starting `codex exec` by hand as a background job or through a launcher script w
 on its report. When Concierge cannot accept a request at all, the Codex command line on the
 server remains the way in. Design notes: `bot/src/outside-codex.ts`.
 
+## Disposable native Codex tests
+
+Ordinary agent-created Codex sessions keep the shared daemon client and receive no fault control.
+An admitted agent that needs one disposable acceptance target opts in at creation with a finite
+future deadline:
+
+```bash
+router-actions.sh sessions ask --provider cx-sol --project slack-concierge \
+  --session-name "Codex recovery target" --summary "Disposable native Codex recovery target" \
+  --codex-native-test-until '<finite future ISO-8601 time>' \
+  --source-input '<controller input>' --source-run '<controller run>' --action-id '<stable create action>' \
+  -- 'One bounded benign checkpoint prompt'
+```
+
+The owner retains that deadline on the exact create input. Only that input's native Codex execution
+uses a dedicated client to the existing daemon; the client object remains in host memory and is
+never serialized. The owner accepts the exact `sessions codex-test stop|connection-loss` command
+only for the marked create request and its source input/run pair. A connection-loss intent records
+the execution, dispatch attempt, and connection generation before the host rechecks them and
+retained Stop at the final cut boundary. Stop vetoes any later loss. A deadline disarms only loss
+injection; exact-run Stop and ordinary recovery remain available after it. A proven no-effect
+refusal does not spend the one-cut allowance. An ambiguous attempted loss does, and the same stable
+action ID later returns its saved receipt without cutting again.
+
+For a native account-switch acceptance, first keep the baseline continuation on its original
+thread and shared client so it observes the existing guarded switch. Dedicated positive-loss and
+matched Stop targets are separate, explicitly marked disposable creates; do not silently replace
+the baseline continuation with a new conversation. The local fixtures establish owner and bridge
+contracts only. They do not establish real daemon or provider behavior.
+
 ## Thread request returns
 
 `sessions ask --thread <message-id>` delivers replies and notices directly to that thread.

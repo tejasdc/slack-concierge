@@ -87,19 +87,23 @@ the accepted work stays parked as uncertain under its original attempt. It is ne
 unsent input and never submitted again. Ordinary Stop before any provider submission still ends
 the wait without connecting or sending an RPC.
 
-The source-bound native Codex acceptance controls use the same normal execution owner. Only the
-initial creation input of an agent-created Codex session gets a dedicated client; human-created,
-outside-command and later unrelated work continue on the shared client. The client object remains
-in memory beside its live run and is never written into the execution record. Adoption creates a
-fresh dedicated client for the same daemon and exact retained provider turn. `sessions codex-test
-connection-loss` derives the live execution and current client generation from the retained session
-and run, records the operation before acting, and cuts only that client's bridge. Its receipt says
-`observed` only after the bridge's normal disconnect handler reports that generation gone; a stale
-generation cannot cut its replacement. `sessions codex-test stop` retains agent authorship and
-calls the same exact-run Stop path, including the durable cutoff and adapter cancellation. Human
-attribution and its ChatGPT-specific follow-up remain human-only. Both controls require the exact
-creation request and source input/run pair; the owner refuses other authorship, sessions, runs,
-shared-client work and repeated cuts.
+The source-bound native Codex acceptance controls use the same normal execution owner. A new
+session receives a dedicated client only when its exact create input carries the explicit
+disposable-test deadline; ordinary agent-created, human-created and outside-command sessions keep
+the shared client. The client object remains in memory beside its live run and is never written
+into the execution record. Adoption creates a fresh dedicated client for the same daemon and exact
+retained provider turn, closing a replaced client while preserving provider work under the retained
+thread/run/attempt. `sessions codex-test connection-loss` derives and records the exact execution,
+attempt and connection generation before acting, then rechecks them and retained Stop at the host's
+final cut boundary. A Stop already retained, an expired deadline, or a stale generation refuses
+without cutting. The finite deadline disarms only fault injection; Stop, adoption and recovery stay
+available. The receipt says `observed` only after the bridge's normal disconnect handler reports
+that generation gone. A stable repeated loss action returns its retained receipt after settlement
+without cutting again; an uncertain attempted cut cannot be rearmed. `sessions codex-test stop`
+retains agent authorship and calls the same exact-run Stop path, including the durable cutoff and
+adapter cancellation. Human attribution and its ChatGPT-specific follow-up remain human-only.
+Both controls require the exact marked creation request and source input/run pair; the owner refuses
+ordinary work, other authorship, sessions, runs, shared-client work and repeated cuts.
 
 The finite post-release acceptance procedure is in
 [`CODEX-NATIVE-RECOVERY-ACCEPTANCE.md`](../runbooks/CODEX-NATIVE-RECOVERY-ACCEPTANCE.md).

@@ -1638,6 +1638,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         // Let exact-history recovery reconnect and discover a missing turn id by the retained
         // client message identity. Callback completion alone does not prove provider termination.
         await ensureRecovered(interruptionReason);
+        if (unconfirmedFailure) throw unconfirmedFailure;
         return;
       }
       if (!turnSubmissionAttempted) { stopBeforeSubmission(interruptionReason); return; }

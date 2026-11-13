@@ -37,13 +37,50 @@ import {CHATGPT_THINKING_LEVELS,HIS_CHATGPT_PREFIX,PROVIDER_ALIASES, providerDis
 import {recordRepairNotice} from './repair-notices';
 import type {HostRunnerFile} from './host-access';
 
-function agentCreatedCodexTestInput(input:AcceptedSessionInput,session:SessionRow) {
+export function agentCreatedCodexTestInput(input:AcceptedSessionInput,session:SessionRow) {
   if(input.kind!=='create'||input.origin!=='agent'||session.provider_id!=='codex'||sessionMetadata(session).outside===true
     ||!input.source_input_id||!input.source_run_id)return false;
+  const payload=JSON.parse(input.payload_json) as {codexNativeTestFaultDeadlineMs?:unknown};
+  if(typeof payload.codexNativeTestFaultDeadlineMs!=='number'||!Number.isSafeInteger(payload.codexNativeTestFaultDeadlineMs)
+    ||payload.codexNativeTestFaultDeadlineMs<=Date.now())return false;
   const source=getAcceptedSessionInput(input.source_input_id);
   if(!source||source.origin!=='agent'||source.turn_id===null)return false;
   const sourceTurn=db.query('SELECT native_run_id FROM turns WHERE id=? AND session_id=?').get(source.turn_id,source.session_id) as {native_run_id:string|null}|null;
   return !!sourceTurn&&sourceTurn.native_run_id===input.source_run_id;
+}
+
+type DedicatedCodexTestClient={executionId:string;dispatchAttempt:number;faultDeadlineMs:number;client:ReturnType<typeof ownerCodexAppServerClient>};
+export function codexTestFaultBindingMatches(expected:{executionId:string;dispatchAttempt:number;generation:number;faultDeadlineMs:number},
+  current:{executionId:string;dispatchAttempt:number;generation:number;faultDeadlineMs:number}|null) {
+  return !!current&&current.executionId===expected.executionId&&current.dispatchAttempt===expected.dispatchAttempt
+    &&current.generation===expected.generation&&current.faultDeadlineMs===expected.faultDeadlineMs;
+}
+export class DedicatedCodexTestClients {
+  private readonly clients=new Map<number,DedicatedCodexTestClient>();
+  private readonly retiring=new Map<number,Set<DedicatedCodexTestClient>>();
+  get(turnId:number){return this.clients.get(turnId);}
+  async replace(turnId:number,next:DedicatedCodexTestClient){
+    const prior=this.clients.get(turnId);
+    this.clients.set(turnId,next);
+    if(prior&&prior.client!==next.client)try{await prior.client.close();}catch(error){
+      const pending=this.retiring.get(turnId)??new Set<DedicatedCodexTestClient>();pending.add(prior);this.retiring.set(turnId,pending);throw error;
+    }
+  }
+  async closeIfTerminal(turnId:number,status:string|null){
+    const current=this.clients.get(turnId);
+    if(!current||!status||!['done','error','cancelled'].includes(status))return false;
+    const pending=this.retiring.get(turnId)??new Set<DedicatedCodexTestClient>();
+    const resources=new Set([...pending,current]);
+    let failure:unknown;
+    for(const resource of resources){
+      try{await resource.client.close();pending.delete(resource);}
+      catch(error){failure??=error;}
+    }
+    if(pending.size)this.retiring.set(turnId,pending);else this.retiring.delete(turnId);
+    if(this.clients.get(turnId)===current&&!failure)this.clients.delete(turnId);
+    if(failure)throw failure;
+    return true;
+  }
 }
 
 /**
@@ -220,7 +257,7 @@ export class SessionExecutionHost {
   readonly owner:SessionOwner;
   readonly capabilityClient:SessionCapabilityClient|null;
   private readonly providerLoginManager:ProviderLoginManager;
-  private readonly testCodexClients=new Map<number,{executionId:string;client:ReturnType<typeof ownerCodexAppServerClient>}>();
+  private readonly testCodexClients=new DedicatedCodexTestClients();
   private readonly codexLogin:CodexAccountLogin;
   private readonly claudeLogin:ClaudeAccountLogin;
   // One Codex switch at a time: two moves sharing one restart would undo in the wrong order.
@@ -269,7 +306,8 @@ export class SessionExecutionHost {
     // nothing here to activate — only parked work to release once the account is usable.
     this.owner=new SessionOwner({wake:options.wake,available:provider=>provider==='chatgpt'?!!this.capabilityClient:!!options.providers[provider]&&options.providers[provider]!.capabilities?.send!==false,
       steer:input=>this.steer(input),stop:async(session,turn)=>{const stopped=options.registry.requestSessionStop(session,turn);if(!stopped.matched)return false;await stopped.completion;return true;},
-      codexTestConnectionLoss:(session,turn)=>this.loseTestCodexConnection(session,turn),
+      prepareCodexTestConnectionLoss:(session,turn)=>this.prepareTestCodexConnectionLoss(session,turn),
+      codexTestConnectionLoss:(session,turn,binding)=>this.loseTestCodexConnection(session,turn,binding),
       safeStop:async(session,turn)=>{const stopped=options.registry.requestSafeSessionCancellation(session,turn);if(!stopped.matched)return false;await stopped.completion;return true;},
       capabilities:session=>this.capabilities(session),
       saveCaptureNote:this.capabilityClient?input=>this.capabilityClient!.saveCaptureNote(input):undefined,
@@ -293,17 +331,24 @@ export class SessionExecutionHost {
     // Each change to a Codex conversation's history tops up its kept window off the owner loop.
     this.stopCodexWindows=onCodexHistoryChanged((sessionId,thread)=>this.historyPages.prepareCodexWindow(sessionId,thread));
   }
-  private async loseTestCodexConnection(sessionId:number,turnId:number):Promise<"observed"|"stale"> {
-    const turn=db.query(`SELECT status,dispatch_attempt,owner_instance_id FROM turns WHERE id=? AND session_id=?`).get(turnId,sessionId) as
-      {status:string;dispatch_attempt:number;owner_instance_id:string|null}|null;
+  private prepareTestCodexConnectionLoss(sessionId:number,turnId:number) {
+    const turn=db.query(`SELECT status,dispatch_attempt,owner_instance_id,stop_requested_at FROM turns WHERE id=? AND session_id=?`).get(turnId,sessionId) as
+      {status:string;dispatch_attempt:number;owner_instance_id:string|null;stop_requested_at:string|null}|null;
     const execution=db.query(`SELECT execution_id FROM executions WHERE turn_id=? AND dispatch_attempt=?
       AND supervisor='codex-daemon' AND state IN ('intended','live') AND coordinator_instance_id=?
       ORDER BY created_at_ms DESC LIMIT 1`).get(turnId,turn?.dispatch_attempt??-1,this.options.instanceId) as {execution_id:string}|null;
     const tracked=this.testCodexClients.get(turnId);
     const generation=tracked?.client.activeGeneration;
-    if(!turn||turn.status!=='running'||turn.owner_instance_id!==this.options.instanceId||!execution||!tracked
-      ||tracked.executionId!==execution.execution_id||generation===null||generation===undefined)return "stale";
-    return tracked.client.loseConnectionGeneration(generation);
+    if(!turn||turn.status!=='running'||turn.stop_requested_at||turn.owner_instance_id!==this.options.instanceId||!execution||!tracked
+      ||tracked.executionId!==execution.execution_id||tracked.dispatchAttempt!==turn.dispatch_attempt||generation===null||generation===undefined
+      ||!Number.isSafeInteger(generation)||tracked.faultDeadlineMs<=Date.now())return null;
+    return {executionId:execution.execution_id,dispatchAttempt:turn.dispatch_attempt,generation,faultDeadlineMs:tracked.faultDeadlineMs};
+  }
+  private async loseTestCodexConnection(sessionId:number,turnId:number,binding:{executionId:string;dispatchAttempt:number;generation:number;faultDeadlineMs:number}):Promise<"observed"|"stale"> {
+    const current=this.prepareTestCodexConnectionLoss(sessionId,turnId);
+    if(!codexTestFaultBindingMatches(binding,current))return 'stale';
+    const tracked=this.testCodexClients.get(turnId)!;
+    return tracked.client.loseConnectionGeneration(binding.generation);
   }
   private runnerAuthTarget(provider:ProviderKey):string|null{
     return providerRunnerTarget(provider);
@@ -1269,10 +1314,8 @@ export class SessionExecutionHost {
         log('warn','codex_process_audit_failed',{turn_id:claim.turn_id,...errorFields(error)}));
       const ownedClient=this.testCodexClients.get(claim.turn_id);
       const terminal=db.query('SELECT status FROM turns WHERE id=?').get(claim.turn_id) as {status:string}|null;
-      if(ownedClient&&terminal&&['done','failed','cancelled','superseded'].includes(terminal.status)){
-        this.testCodexClients.delete(claim.turn_id);
-        await ownedClient.client.close().catch(error=>log('warn','codex_test_client_close_failed',{turn_id:claim.turn_id,...errorFields(error)}));
-      }
+      if(ownedClient&&terminal)await this.testCodexClients.closeIfTerminal(claim.turn_id,terminal.status).catch(error=>
+        log('warn','codex_test_client_close_failed',{turn_id:claim.turn_id,...errorFields(error)}));
     }
   }
   /**
@@ -1758,10 +1801,14 @@ export class SessionExecutionHost {
       onBackgroundWait,onBackgroundReportMissing,onBackgroundReleaseReady,onProviderRetry,onRetryRestartReady,onInputAcknowledged,onPreferredModel,onRateLimits,...data}=prepared as any;
     const executionId=newExecutionId();
     const testDedicated=agentCreatedCodexTestInput(input,session);
+    const createPayload=JSON.parse(input.payload_json) as {codexNativeTestFaultDeadlineMs?:number};
+    const faultDeadlineMs=createPayload.codexNativeTestFaultDeadlineMs;
     const appServerClient=testDedicated?ownerCodexAppServerClient():undefined;
     retainExecutionIntent({executionId,turnId:claim.turn_id,dispatchAttempt:claim.dispatch_attempt,sessionId:session.id,provider:'codex',
-      directory:'',coordinatorInstanceId:this.options.instanceId,supervisor:'codex-daemon',processor:{...kept,agentTestDedicatedCodex:testDedicated,run:data}});
-    if(appServerClient)this.testCodexClients.set(claim.turn_id,{executionId,client:appServerClient});
+      directory:'',coordinatorInstanceId:this.options.instanceId,supervisor:'codex-daemon',processor:{...kept,agentTestDedicatedCodex:testDedicated,
+        ...(testDedicated&&faultDeadlineMs?{agentTestFaultDeadlineMs:faultDeadlineMs}:{}),run:data}});
+    if(appServerClient&&faultDeadlineMs)void this.testCodexClients.replace(claim.turn_id,{executionId,dispatchAttempt:claim.dispatch_attempt,faultDeadlineMs,client:appServerClient})
+      .catch(error=>log('warn','codex_test_client_replace_close_failed',{turn_id:claim.turn_id,execution_id:executionId,...errorFields(error)}));
     // The daemon's hooks carry no run of their own: file this release's helpers under the Codex
     // conversation before its turn starts, so they stay the same if an update installs mid-turn.
     // Through a runner's relay the runner also pins its own helpers at the turn's start (runner.ts);
@@ -1806,7 +1853,9 @@ export class SessionExecutionHost {
     const sending=(db.query(`SELECT input.id FROM turn_steering_messages steering JOIN session_inputs input ON input.steering_id=steering.id
       WHERE steering.turn_id=? AND steering.status='sending'`).all(adoption.claim.turn_id) as {id:string}[]).map(row=>row.id);
     const appServerClient=adoption.processor.agentTestDedicatedCodex===true?ownerCodexAppServerClient():undefined;
-    if(appServerClient)this.testCodexClients.set(adoption.claim.turn_id,{executionId:adoption.execution.execution_id,client:appServerClient});
+    if(appServerClient)void this.testCodexClients.replace(adoption.claim.turn_id,{executionId:adoption.execution.execution_id,dispatchAttempt:adoption.claim.dispatch_attempt,
+      faultDeadlineMs:Number(adoption.processor.agentTestFaultDeadlineMs),client:appServerClient}).catch(error=>
+        log('warn','codex_test_client_replace_close_failed',{turn_id:adoption.claim.turn_id,execution_id:adoption.execution.execution_id,...errorFields(error)}));
     return {...prepared,...adoption.processor.run,...(appServerClient?{appServerClient}:{}),
       adoptTurn:{threadId:current.agent_session_uuid,turnId:turn?.provider_turn_id??null},
       recoveredSteeringClientIds:sending,

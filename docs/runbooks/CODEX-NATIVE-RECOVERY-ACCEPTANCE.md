@@ -26,10 +26,16 @@ If it refuses, keep the work and report the refusal.
    the room is correct, and the controller has its own independent connection.
 2. Confirm no other accepted work will be interrupted. Record a finite deadline before creating a
    target. The deadline is an observation boundary, not permission to settle or delete work.
-3. Have the controller create one disposable native Codex session through normal admission. Keep
-   its exact `concierge:<id>`, creation request ID, accepted run ID, source input/run pair, provider
-   thread ID and provider turn ID. The command below requires these retained identities.
-4. Use `router-actions.sh sessions codex-test connection-loss concierge:<id> --create
+3. Preserve the account-switch baseline separately: continue the original native thread through
+   the unchanged shared-client path, and verify its same UUID continues under the daemon account
+   selected by the guarded switch. Do not substitute a newly created conversation for this
+   baseline observation.
+4. For fault trials, have the controller create a separate disposable native Codex session through
+   normal admission using `sessions ask --provider <Codex alias> --project <registered-project>
+   --codex-native-test-until <finite future ISO-8601 time>`. Keep its exact `concierge:<id>`,
+   creation request ID, accepted run ID, source input/run pair, provider thread ID and provider turn
+   ID. Ordinary agent-created Codex sessions are not opted in and remain on the shared client.
+5. Use `router-actions.sh sessions codex-test connection-loss concierge:<id> --create
    request:<uuid> --run <native-run-id> --source-input <controller-input> --source-run
    <controller-run> --action-id <stable-id>` for exactly one loss on the positive target. The
    action is source-bound and one-time. Do not retry with a new action ID.

@@ -70,8 +70,8 @@ async function retainedStop(client: any, adopted?: { threadId: string; turnId: s
     onCancellationReady: (cancel) => cancellation.register(cancel),
   }).then((value) => ({ value, error: null as Error | null }),
     (error) => ({ value: null, error: error as Error }));
-  await ownerStopCompletion;
-  return result;
+  const stopError=await ownerStopCompletion.then(()=>null,(error)=>error as Error);
+  return {...result,stopError,client};
 }
 
 try {
@@ -123,8 +123,27 @@ try {
     "no interrupt is sent without an exact provider turn identity");
   assert.equal(uncertain.calls.some((call) => call.method === "turn/start"), false,
     "uncertain adopted work is never resubmitted");
+  assert.ok(uncertainResult.stopError instanceof ProviderDispatchError,
+    "the retained Stop callback carries uncertain provider outcome into the owner receipt");
 
-  console.log("codex adopted Stop fixture: exact and history-discovered turns were interrupted and terminally reconciled; unsent Stop and uncertain identity stayed safe");
+  // Empty history is distinct from a refused history RPC. Accelerate only the fixture's bounded
+  // history retry delays; long inactivity timers remain real and are cleared by settlement.
+  const nativeSetTimeout=globalThis.setTimeout;
+  (globalThis as any).setTimeout=(callback:()=>void,delay?:number,...args:unknown[])=>
+    typeof delay==='number'&&delay<=5_000?nativeSetTimeout(callback,0,...args as []):nativeSetTimeout(callback,delay,...args as []);
+  let emptyHistory;
+  try {
+    const empty=fakeClient({turn:null});
+    emptyHistory=await retainedStop(empty.client,{threadId:'retained-thread-fixture',turnId:null});
+    assert.ok(emptyHistory.error instanceof ProviderDispatchError);
+    assert.equal(emptyHistory.error.terminalConfirmed,false,'an empty history search does not prove the accepted turn was unsent');
+    assert.ok(emptyHistory.stopError instanceof ProviderDispatchError,'empty-history uncertainty reaches the retained Stop callback');
+    assert.equal(emptyHistory.stopError.terminalConfirmed,false);
+    assert.equal(empty.calls.some((call)=>call.method==='turn/start'),false);
+  } finally { globalThis.setTimeout=nativeSetTimeout; }
+  assert.equal((emptyHistory as any).value,null);
+
+  console.log("codex adopted Stop fixture: exact and history-discovered turns were interrupted and terminally reconciled; unsent Stop and empty/refused uncertain history stayed safe");
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
