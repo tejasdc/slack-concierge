@@ -1302,6 +1302,8 @@ export class SessionOwner {
    * pass: 2.8 s during which every other owner read waited (2026-09-22).
    */
   private settledReceipts=new Map<string,ReturnType<SessionOwner['buildReceipt']>>();
+  /** Admission changes are attempt-scoped even when the accepted-input receipt has settled. */
+  invalidateReceipt(inputId:string){this.settledReceipts.delete(inputId);}
   receipt(input:AcceptedSessionInput) {
     const cached=this.settledReceipts.get(input.id);
     // Author corrections can arrive after a receipt settles; never cache send authority.
@@ -1313,6 +1315,11 @@ export class SessionOwner {
   buildReceipt(input:AcceptedSessionInput) {
     const parsed=JSON.parse(input.payload_json),observed=readInputExecution(input);
     const saved=input.receipt_json?JSON.parse(input.receipt_json):{};
+    const admissionAttempts=db.query("SELECT payload_json FROM session_owner_events WHERE input_id=? AND kind='provider_admission' ORDER BY sequence")
+      .all(input.id) as {payload_json:string}[];
+    const admissionHistory=admissionAttempts.map(row=>JSON.parse(row.payload_json) as {dispatchAttempt:number|null;admission:unknown});
+    if(saved.admission&&!admissionHistory.some(entry=>stablePayload(entry.admission)===stablePayload(saved.admission)))
+      admissionHistory.unshift({dispatchAttempt:null,admission:saved.admission});
     const statusDetail=['input','create','consultation','comparison'].includes(input.kind)?inputStatusDetail(input,observed,saved):null;
     const unacknowledgedSteering=observed.steering?.status==='ambiguous'&&!observed.steering.provider_sent_at;
     const stopTurn=input.kind==='stop'?db.query('SELECT status FROM turns WHERE native_run_id=? AND session_id=?').get(parsed.runId,input.session_id) as {status:string}|null:null;
@@ -1346,7 +1353,8 @@ export class SessionOwner {
       ...(parsed.routedFrom?{routedFrom:parsed.routedFrom}:{}),
       ...(parsed.replyToMessage?{replyToMessage:parsed.replyToMessage}:(()=>{const link=input.origin==='human'?inboxThreadLink(input.session_id,input.id):null;
         return link?.attached?{replyToMessage:{kind:'message',sessionId:`concierge:${input.session_id}`,messageId:link.thread},routedBy:link.routedBy}:{};})()),createdAt:iso(input.created_at),updatedAt:iso(observed.turn?.ended_at??input.updated_at),
-      childSessionId:saved.childSessionId??null,result:control?null:input.kind==='request'?conversation?.result?.text??null:observed.turn?.agent_text??null,admission:input.kind==='fork'?null:saved.admission??null};
+      childSessionId:saved.childSessionId??null,result:control?null:input.kind==='request'?conversation?.result?.text??null:observed.turn?.agent_text??null,
+      admission:input.kind==='fork'?null:saved.admission??null,admissionHistory:input.kind==='fork'?[]:admissionHistory};
   }
   /**
    * Receipts carry their full retained request and result text, and the Inbox is the

@@ -2,6 +2,8 @@
 
 This artifact records the bounded evidence, source findings, offline checks, and parent handoff for the November 13 correction. It is not a production-ledger read, a deployment record, or proof that the historical guard cause was observed.
 
+The parent subsequently performed the authorized recovery after the first correction shipped; the exact Astra conversation is now usefully working. This artifact's recovery command below is historical procedure only and must not be run again for this already recovered input. The parent retained before/after operation snapshots outside this artifact. They showed the retry replaced the accepted-input admission's prompt hash while keeping its original timestamp. The follow-up records each attempt's admission immutably and keeps the legacy receipt field pointing to the first admission.
+
 ## Exact identities and obligations
 
 The original communication remains open: `11319298-53d9-4cca-9c7e-cc05bd56a4d3`.
@@ -36,6 +38,7 @@ Source evidence supplied with the parent request: `/tmp/recovery3012-events.json
 - `bun run scripts/codex-unacknowledged-contract-fixture.ts` — selected attempts must map to completed empty native turns; the distinct earlier empty watch remains independent; incomplete arrays, acknowledged/nonterminal turns, unknown selected attempts, wrong thread, and missing CLI action ID refuse.
 - `bun run scripts/codex-unacknowledged-state-fixture.ts` — historical and newly parked admission receipts with omitted effort are accepted only with same-attempt `xhigh` prompt proof; explicit conflicting effort refuses on both paths; restart reconciliation cannot consume the old empty delivery envelope after reservation, while its immutable result remains; duplicate recovery is refused.
 - `bun run scripts/codex-unacknowledged-route-fixture.ts` — the composed command follows exact human model custody and work scope, returns the durable reservation after a simulated lost action receipt, deduplicates a second action ID, and refuses an informational-only caller.
+- `bun scripts/provider-admission-history-fixture.ts` — invokes the actual admission method for two Codex attempts with different prompts; the first receipt admission remains unchanged, the operation exposes both attempt records, and a changed ChatGPT prepared admission is still refused.
 - `bun run scripts/implementation-edit-gate-fixture.ts` — exact same-session service continuation is allowed through the retained open work request and verified model choice; unrelated agent continuation remains refused.
 - `bun run scripts/codex-resume-notice-fixture.ts` and `bun run scripts/codex-connection-loss-fixture.ts` — existing wait and lost-connection behavior still passes with explicit accepted-input notifications.
 - `bun run scripts/undefined-name-check.ts` — all 14 bundle entry points pass.
@@ -45,7 +48,7 @@ These are scratch-ledger and fake-App-Server checks. No live provider, productio
 
 ## Parent recovery procedure after review and deployment
 
-Run from the parent's currently admitted work run with that run's exact source input and run ID:
+Historical only; already completed by the parent. Do not run this again for report-back `11319298-53d9-4cca-9c7e-cc05bd56a4d3`. For any future case, follow the current runbook only after a separate exact eligibility proof and review:
 
 ```sh
 router-actions.sh sessions codex-recover 11319298-53d9-4cca-9c7e-cc05bd56a4d3 \

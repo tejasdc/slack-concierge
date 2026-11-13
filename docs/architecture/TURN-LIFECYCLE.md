@@ -115,6 +115,23 @@ accepted input/run/request identities remain unchanged. The historical result st
 each later execution attempt gets a distinct result event so existing readers can surface its
 answer without rewriting history.
 
+Provider admission history follows the same attempt identity boundary. The accepted-input receipt's
+`admission` remains the first retained admission for compatibility and is never replaced by a retry.
+Each provider dispatch records its admission as an immutable `provider_admission` event keyed by the
+owner turn and `dispatch_attempt`. `GET /sessions/v1/operations/:operationId` keeps the existing
+`admission` field and adds `admissionHistory`, an ordered list of `{dispatchAttempt, admission}`
+records. A legacy receipt admission with no matching attempt event is included with
+`dispatchAttempt: null`; the owner does not infer its attempt, reconstruct a missing prompt hash,
+or invent a historical event. ChatGPT's immutable prepared-admission comparison remains in force.
+
+This preservation starts with the admission retained when the correction is installed. For the
+already-recovered `concierge:3012` report-back, the first admission (prompt hash beginning
+`3ff844`) survives in the exact preflight snapshot attached to repair request
+`864895dd-f565-469d-91ca-382f385c0d3b`; its receipt already holds the second attempt's admission
+(prompt hash beginning `a92e30`). Operation history presents that pre-existing receipt as a legacy
+entry with no inferred attempt number. Installing this correction does not reconstruct the first
+admission or manufacture an attempt event for the already-running recovery.
+
 This recovers only the failed service report-back. It does not re-admit or overwrite the original
 human work, settle its request, or close any human obligation. A recovery receipt proves admission
 only; native acknowledgement, useful work and the supported final request outcome remain distinct
