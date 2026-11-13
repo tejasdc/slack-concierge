@@ -28,6 +28,7 @@ import { executionHostsEnabled, hostProcessorSeconds, newExecutionId } from "./e
 import { localWatchMachine, ordinaryCommandEnvironment, runnerWatchMachine, type WatchMachine } from "./watch-machine";
 import { runnerMachineCall } from "./runner-machine-calls";
 import { releaseIncludesCommit } from "./release-watch-condition";
+import {initializeWatchCustody} from './watch-custody';
 
 export const WATCH_POLL_MS = 5_000;
 /** Three missed polls: a longer silence is a pause (a restart, a sleeping Mac) and is recorded as a gap. */
@@ -78,6 +79,7 @@ CREATE TABLE IF NOT EXISTS watches (
 );
 `);
 if (process.env.CONCIERGE_READ_WORKER !== "1") {
+  initializeWatchCustody(db);
   const columns = db.query("PRAGMA table_info(watches)").all() as { name: string }[];
   if (!columns.some(column => column.name === "renew_ms")) db.exec("ALTER TABLE watches ADD COLUMN renew_ms INTEGER");
   if (!columns.some(column => column.name === "series_id")) db.exec("ALTER TABLE watches ADD COLUMN series_id TEXT");

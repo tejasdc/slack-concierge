@@ -81,6 +81,8 @@ router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 
 router-actions.sh sessions watch command --cwd <dir> --until <ISO time | duration> <source-flags> --action-id A -- <argv...>
 router-actions.sh sessions watch list <source-flags>
 router-actions.sh sessions watch cancel <watch-id> <source-flags> --action-id A
+router-actions.sh sessions watch inspect-pair --old <watch-id> --new <watch-id> <source-flags>
+router-actions.sh sessions watch reconcile-pair --old <watch-id> --new <watch-id> --inspection <inspection> <source-flags> --action-id A
 
 The lab record (thnkr.ing /lab): threads where sessions discuss, and the findings, decisions and skills they produce, each with a lasting address (lab:<handle>, lab:<handle>/<entry>, .<paragraph>). Tejas reads and posts there too. Every thread has a kind and ends explicitly; mentions wake once with a notice.
 router-actions.sh sessions board read [--thread <handle> | --address <lab address>] <source-flags>   # --address lab:<design-handle> prints a design's sections with their states, his posts and the replies under each
@@ -198,7 +200,7 @@ export type SessionCommunicationRequest =
   | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string; reason?: string } }
   | { operation: "handoff"; body: { source: Source; verb: 'propose'|'accept'|'withdraw'; address?: string; provider?: string; model?: string; effort?: string; reason?: string; session_name?: string; action_id: string; handoff_id?: string; digest?: string } }
   | { operation: "obligations"; body: { source: Source; address?: string } }
-  | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'; action_id?: string; until?: string; renew?: boolean; requiredCommit?: string; path?: string; argv?: string[]; cwd?: string; watch_id?: string; runner?: string } }
+  | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'|'inspect-pair'|'reconcile-pair'; action_id?: string; until?: string; renew?: boolean; requiredCommit?: string; path?: string; argv?: string[]; cwd?: string; watch_id?: string; runner?: string; old_watch_id?:string; new_watch_id?:string; inspection?:string } }
   | { operation: "snooze"; body: { source: Source; action_id: string; until_ms: number; reason: string } }
   | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'|'daily'; turn_id?:number; action_id?:string;cursor?:string;time?:string;timeZone?:string } }
   | { operation: "pause"; body: { source: Source; verb:'status'|'all'|'resume'; action_id?:string; session_ids?:string[] } }
@@ -629,6 +631,17 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   }
   if(first==='watch') {
     const sub=args.shift();
+    if(sub==='inspect-pair'||sub==='reconcile-pair'){
+      const flags=new Map<string,string>();
+      while(args.length){const flag=args.shift()!,value=args.shift();
+        if(!['--source-input','--source-run','--old','--new',...(sub==='reconcile-pair'?['--inspection','--action-id']:[])].includes(flag)||!value?.trim()||flags.has(flag))invalid(`Invalid watch pair option ${flag}.`);
+        flags.set(flag,value);
+      }
+      if(!flags.has('--old')||!flags.has('--new'))invalid('Name the exact --old and --new watches.');
+      if(sub==='reconcile-pair'&&(!flags.has('--inspection')||!flags.has('--action-id')))invalid('Reconciliation needs --inspection and a stable --action-id.');
+      return {operation:'watch',body:{source:sourceFrom(flags),verb:sub,old_watch_id:flags.get('--old')!,new_watch_id:flags.get('--new')!,
+        ...(sub==='reconcile-pair'?{inspection:flags.get('--inspection')!,action_id:flags.get('--action-id')!}:{})}};
+    }
     if(sub!=='file'&&sub!=='command'&&sub!=='list'&&sub!=='cancel')invalid('watch takes file, command, list or cancel.');
     const separatorAt=args.indexOf('--');
     const options=separatorAt<0?[...args]:args.slice(0,separatorAt);
