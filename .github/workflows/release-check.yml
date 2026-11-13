@@ -28,6 +28,16 @@ jobs:
       - name: Install frozen dependencies
         working-directory: bot
         run: bun install --frozen-lockfile
+      - name: Select the host GNU timeout dependency
+        shell: bash
+        run: |
+          concierge_timeout=$(command -v gnutimeout || command -v timeout)
+          concierge_timeout_version=$("$concierge_timeout" --version)
+          printf '%s\n' "$concierge_timeout_version"
+          [[ "$concierge_timeout_version" == *"(GNU coreutils)"* ]]
+          mkdir -p "$RUNNER_TEMP/concierge-native-bin"
+          ln -s "$concierge_timeout" "$RUNNER_TEMP/concierge-native-bin/timeout"
+          echo "$RUNNER_TEMP/concierge-native-bin" >> "$GITHUB_PATH"
       - name: Build and check candidate
         working-directory: bot
         env:

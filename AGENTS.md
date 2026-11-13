@@ -28,6 +28,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - Stable runtime commands follow the verified sealed control selection through
   [deployment dispatchers](docs/runbooks/DEPLOYMENT.md); preserve application-only
   rollback's separate controller and the disposable installed-command acceptance.
+  Native release acceptance explicitly selects the host's GNU timeout dependency;
+  see [durability acceptance](docs/architecture/PROTECTED-DURABILITY-OBSERVATION.md#isolated-acceptance-and-live-gate).
 - Merge a checked pull request with `scripts/merge-pr.sh <number>`, which serialises
   merges so concurrent fixes stop invalidating each other's required check; see
   [merge lane](docs/runbooks/DEPLOYMENT.md#merge-lane).

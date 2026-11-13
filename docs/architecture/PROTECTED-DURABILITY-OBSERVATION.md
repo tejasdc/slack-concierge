@@ -130,6 +130,23 @@ insufficient owner span and deadline overrun. An accelerated native timeout uses
 the production command shape and unchanged kill grace to stop a TERM-resistant
 disposable observer and its child; it does not wait the full native bound or touch live
 state. Report frame/detail bounds and maintenance limits remain checked.
+The native case requires a real escalation result and both owned processes to
+stop, not merely a numeric exit137. Its mock independently expires after5s;
+fallback-expiry markers are rejected, so eventual self-expiry cannot pass as
+successful deadline termination. The
+exit/stream waits have an8s test bound, with PID/start-time custody and a cleanup
+finally block. An incompatible monitor therefore fails with owned cleanup rather
+than stranding the release check on inherited pipes.
+
+The host contract requires GNU timeout. Release CI retains its current Ubuntu
+image but explicitly selects Ubuntu's supported GNU-prefixed `gnutimeout` when
+available, otherwise the system `timeout`, and verifies the GNU version before
+placing only that command in a job-local PATH directory. This exercises the
+production dependency without changing host settings or replacing the CI
+machine's other utilities. Leaving the moving image default can select Rust
+timeout with different cleanup behavior; pinning the entire OS would discard
+unrelated current-image coverage. Neither alternative justifies weakening the
+cleanup assertion. See Ubuntu's [GNU utility entrance](https://documentation.ubuntu.com/release-notes/26.04/summary-for-lts-users/).
 
 Source review and isolated checks do not establish installed observation. Keep
 live observation, another cache trial and conversion held for designer and host

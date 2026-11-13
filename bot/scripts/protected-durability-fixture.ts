@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import {strict as assert} from 'node:assert';
-import {mkdtempSync,rmSync,readdirSync,existsSync} from 'node:fs';
+import {mkdtempSync,rmSync,readdirSync,existsSync,readFileSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {ProtectedDurabilityObservation,protectedDurability} from '../src/protected-durability-observation';
@@ -11,13 +11,29 @@ import {protectedOwnerReceipt} from '../src/protected-owner-receipt';
 import {installLedgerBarrier} from '../src/ledger-durability-barrier';
 
 const check=(name:string,run:()=>unknown)=>Promise.resolve().then(run).then(()=>console.log(JSON.stringify({check:name,status:'passed'})));
+const identity=(pid:number)=>{
+  try {const stat=readFileSync(`/proc/${pid}/stat`,'utf8'),fields=stat.slice(stat.lastIndexOf(')')+2).split(' ');
+    return {pid,start:fields[19],state:fields[0]};}catch{return null;}
+};
+const executing=(owned:NonNullable<ReturnType<typeof identity>>)=>{
+  const current=identity(owned.pid);return !!current&&current.start===owned.start&&current.state!=='Z';
+};
+async function bounded<T>(promise:Promise<T>,ms:number):Promise<T> {
+  let timer:ReturnType<typeof setTimeout>;
+  try {return await Promise.race([promise,new Promise<never>((_,reject)=>{
+    timer=setTimeout(()=>reject(new Error('Disposable native acceptance exceeded its bound')),ms);
+  })]);}finally{clearTimeout(timer!);}
+}
 if(process.argv[2]==='--blocked-observer'||process.argv[2]==='--blocked-observer-child'){
   process.on('SIGTERM',()=>{});
+  const root=process.argv[3]!,role=process.argv[2]==='--blocked-observer'?'parent':'child';
+  writeFileSync(join(root,`${role}.json`),JSON.stringify(identity(process.pid)));
   if(process.argv[2]==='--blocked-observer'){
-    const child=Bun.spawn([process.execPath,import.meta.path,'--blocked-observer-child'],{stdout:'inherit',stderr:'inherit'});
+    const child=Bun.spawn([process.execPath,import.meta.path,'--blocked-observer-child',root],{stdout:'inherit',stderr:'inherit'});
     console.log(JSON.stringify({parent:process.pid,child:child.pid}));
   } else console.log(JSON.stringify({ready:process.pid}));
-  await new Promise(()=>{});
+  // Keep a real timer alive and self-expire even if an incompatible monitor leaves us behind.
+  await Bun.sleep(5000);writeFileSync(join(root,`${role}.expired`),'1');process.exit(99);
 }
 if(process.argv[2]==='--native-owner'){
   const {db}=await import('../src/state-database');
@@ -149,19 +165,35 @@ await check('insufficient owner span and collection deadline overrun fail closed
     assert.ok(report.coverageDurationMs!<report.durationMs);
   }
 });
-await check('native observation deadline reaps its TERM-resistant process group',async()=>{
+await check('native observation deadline terminates its TERM-resistant process group',async()=>{
+  const startedMs=performance.now();
+  const root=mkdtempSync(join(tmpdir(),'protected-durability-timeout-'));
   const command=durabilityObservationCommand(process.execPath,import.meta.path,1);
   // Accelerate only the disposable timer; exercise the production command/group shape and kill grace.
-  command[2]='0.5s';command.splice(-2,2,'--blocked-observer');
+  command[2]='0.5s';command.splice(-2,2,'--blocked-observer',root);
   const child=Bun.spawn(command,{stdout:'pipe',stderr:'pipe'});
   const stdout=new Response(child.stdout).text(),stderr=new Response(child.stderr).text();
-  assert.notEqual(await child.exited,0,await stderr);
-  const lines=(await stdout).trim().split('\n').map(line=>JSON.parse(line));
-  const pids=lines.find(line=>line.parent);assert.ok(pids);assert.ok(lines.some(line=>line.ready===pids.child));
-  // Reaped group children may briefly be zombies awaiting init; neither may still execute.
-  for(const pid of [pids.parent,pids.child]){
-    const stat=`/proc/${pid}/stat`;
-    if(existsSync(stat))assert.match(await Bun.file(stat).text(),/\) Z /);
+  const owned=()=>['parent','child'].flatMap(role=>{
+    const path=join(root,`${role}.json`);return existsSync(path)?[JSON.parse(readFileSync(path,'utf8'))]:[];
+  });
+  try {
+    const [code,out,err]=await bounded(Promise.all([child.exited,stdout,stderr]),8000);
+    assert.equal(code,137,err);assert.equal(child.signalCode,'SIGKILL','Monitor must actually escalate, not merely return137');
+    assert.ok(!['parent','child'].some(role=>existsSync(join(root,`${role}.expired`))),
+      'Fallback expiry is failed group termination, even if the monitor died from SIGKILL');
+    const lines=out.trim().split('\n').map(line=>JSON.parse(line));
+    const pids=lines.find(line=>line.parent);assert.ok(pids);assert.ok(lines.some(line=>line.ready===pids.child));
+    assert.equal(owned().length,2);assert.ok(owned().every(process=>!executing(process)));
+  } finally {
+    if(child.exitCode===null)child.kill('SIGKILL');
+    for(const process of owned())if(executing(process))globalThis.process.kill(process.pid,'SIGKILL');
+    await bounded(Promise.all([child.exited,stdout,stderr]),2000);
+    for(let attempts=0;owned().some(executing)&&attempts<100;attempts++)await Bun.sleep(5);
+    const running=owned().filter(executing).length;
+    console.log(JSON.stringify({check:'native-timeout-owned-cleanup',owned:owned().length,executing:running,
+      expired:['parent','child'].filter(role=>existsSync(join(root,`${role}.expired`))).length,elapsedMs:performance.now()-startedMs}));
+    assert.equal(running,0,'Retain disposable custody records if cleanup fails');
+    rmSync(root,{recursive:true,force:true});
   }
 });
 await check('fixed private socket read and actual bounded command create no maintenance files or ledger',async()=>{
