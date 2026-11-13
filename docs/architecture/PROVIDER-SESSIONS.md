@@ -658,10 +658,17 @@ Codex supplies the parent session ID, active model and execution turn to its
 edit hook. An outside Codex CLI turn has no turn ID in its JSON event stream;
 its prompt hook binds the provider turn ID to the one owner turn named by its
 run-scoped environment before tool calls. A mismatched or unidentified outside
-execution is still refused. A different execution is recorded separately with its actual model,
-and cannot consume the parent turn's allowance. If the parent execution or
-helper model cannot be identified, the edit is held rather than attributed by
-guess. Claude Code identifies a helper by its hook's agent ID; the owner records
+execution is still refused. Hooks run by the shared Codex App Server carry no
+owner turn ID, so a helper's own turn ID cannot be matched to its parent by
+identity. The edit's reported model decides instead: a model that is not a
+thinking model (Luna, Terra and similar) is recorded as a helper edit against
+the session's single running turn and always allowed; a thinking model, or no
+reported model, is counted against that parent turn like a main-turn edit, so
+the fifth-edit hold, reasons and handoff release apply and a mismatched turn ID
+cannot skip the count. With no running turn, or several running turns and no
+owner turn ID to choose between them, the edit is held rather than attributed by
+guess. A run-scoped owner turn ID, when present, must name a running turn.
+Claude Code identifies a helper by its hook's agent ID; the owner records
 its edits against the parent turn separately without inventing a helper model,
 which the edit hook does not supply. If an accepted worker later fails or is
 canceled, the next edit is held again; repeated checks of the same hold are

@@ -32,8 +32,30 @@ try{
   assert.equal(helpers.length,5);
   assert.deepEqual(JSON.parse(helpers[0]!.payload_json).model,'gpt-6-luna');
   assert.deepEqual(JSON.parse(helpers[0]!.payload_json).providerTurnId,'helper-turn');
-  assert.equal(edit('missing-model',{providerTurnId:'other-turn'}).hold,true);
+  assert.equal(edit('missing-model',{providerTurnId:'other-turn'}).hold,true,'no model counts against the parent, already at four');
   assert.equal(edit('unbound',{providerTurnId:'other-turn',providerModel:'gpt-6-luna',ownerTurnId:999999}).hold,true);
+
+  // Shared-daemon hooks carry no owner turn ID: the reported model decides, the single running turn is the parent.
+  const daemon=createNativeSession('codex',{title:'daemon parent',summary:undefined,purpose:'develop',origin:'native',model:'gpt-6.1-sol'});
+  db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run('daemon-thread',daemon.id);
+  const daemonSource=retainSessionInput({id:'daemon-source',sessionId:daemon.id,scope:'fixture',actionId:'daemon-source',kind:'input',origin:'agent',payload:{text:'design'}}).input;
+  enqueueSessionInput(daemonSource.id);
+  const daemonTurn=claimNextQueuedTurn('fixture')!.turn_id;
+  const daemonEdit=(toolId:string,extra:Record<string,unknown>={})=>implementationEditDecision({providerSessionId:'daemon-thread',providerTurnId:'unbound-helper-turn',toolId,toolName:'apply_patch',...extra});
+  for(let i=0;i<7;i++)assert.equal(daemonEdit(`luna-${i}`,{providerModel:'gpt-6-luna'}).exempt,'codex-helper');
+  assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_helper_edit'").get(daemonTurn) as any).count,7);
+  for(let i=0;i<4;i++)assert.equal(daemonEdit(`sol-${i}`,{providerModel:'gpt-6-sol'}).hold,false);
+  assert.equal(daemonEdit('sol-fifth',{providerModel:'gpt-6-sol'}).hold,true,'a top-model edit with a different turn ID is counted and held');
+  assert.equal(daemonEdit('luna-after',{providerModel:'gpt-6-luna'}).exempt,'codex-helper');
+  assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit'").get(daemonTurn) as any).count,4);
+  db.query("UPDATE turns SET status='done' WHERE id=?").run(daemonTurn);
+  assert.equal(daemonEdit('none-running',{providerModel:'gpt-6-luna'}).hold,true,'no running turn holds');
+  for(const id of ['daemon-two-a','daemon-two-b']){
+    enqueueSessionInput(retainSessionInput({id,sessionId:daemon.id,scope:'fixture',actionId:id,kind:'input',origin:'agent',payload:{text:'x'}}).input.id);
+  }
+  db.query("UPDATE turns SET status='running' WHERE id IN (SELECT turn_id FROM session_inputs WHERE id IN ('daemon-two-a','daemon-two-b'))").run();
+  assert.equal(daemonEdit('two-running',{providerModel:'gpt-6-luna'}).hold,true,'two running turns without an owner turn ID hold');
+  db.query("UPDATE turns SET status='done' WHERE id IN (SELECT turn_id FROM session_inputs WHERE id IN ('daemon-two-a','daemon-two-b'))").run();
 
   const child=createNativeSession('codex',{title:'worker',summary:undefined,purpose:'develop',origin:'native',model:'gpt-6-luna'});
   const target=retainSessionInput({id:'request:fixture',sessionId:child.id,scope:'fixture',actionId:'target',kind:'input',origin:'agent',payload:{text:'implement'}}).input;
