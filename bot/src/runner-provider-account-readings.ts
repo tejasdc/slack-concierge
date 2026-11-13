@@ -167,7 +167,11 @@ async function readClaudeSwapAccounts(homes: Map<string, string>): Promise<{ acc
       const home = homes.get(label);
       if (!home) continue;
       const own = status === "ok" ? null : await ownClaudeWindows(home);
-      const signedOut = !own && (status === "relogin_required" || status === "token_expired");
+      // Only relogin_required means the refresh token is dead. token_expired is claude-swap saying the
+      // short-lived access token lapsed and its refresh was deferred this pass, to be retried: on
+      // 2026-11-13 that read as signed out four minutes after a routine expiry and sent the Mac's
+      // browser agent into his Chrome for a login whose refresh token was valid for three more weeks.
+      const signedOut = !own && status === "relogin_required";
       accounts.push({ label, plan: null, current: homes.get(label) === join(homedir(), ".claude"),
         windows: own?.windows ?? claudeWindows(usage), problem: own || status === "ok" ? null : signedOut
           ? "This account needs signing in again." : usage ? "Showing the last reading; the latest could not be taken." : "Usage could not be read.",

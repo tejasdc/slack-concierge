@@ -411,7 +411,7 @@ async function readClaude(force = false): Promise<ProviderUsage> {
       add(`Weekly · ${typeof window?.name === "string" && window.name ? `${window.name} only` : "one model"}`, window);
     const status = String(account?.usageStatus ?? "");
     let problem: string | null = status === "ok" ? null
-      : status === "relogin_required" || status === "token_expired" ? "This account needs signing in again."
+      : status === "relogin_required" ? "This account needs signing in again."
         : usage ? "Showing the last reading; the latest could not be taken." : "Usage could not be read.";
     // The address is the stable join between the login, its home and these readings.
     // A claude-swap alias is only a display name and can differ from the home name.

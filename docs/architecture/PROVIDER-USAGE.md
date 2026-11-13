@@ -139,6 +139,12 @@ until a Concierge restart's startup check ran it. Record:
 
 ## Sign-in holds
 
+A Claude usage reading marks an account signed out, and so starts a browser renewal on
+the Mac, only when claude-swap reports `relogin_required`: the refresh token itself was
+refused. Its `token_expired` means the hours-long access token lapsed and the refresh
+was deferred to a later pass; that keeps the last reading and is never a sign-in
+renewal ([failure record](../incidents/2026-11-13-expired-access-token-read-as-signed-out.md)).
+
 An authentication refusal is held without a guessed reset time when the provider confirmed
 the turn ended, and the adapter observed no assistant content or tool use. The existing
 dispatch safety checks still exclude unsafe steering, artifact activity and ambiguous
