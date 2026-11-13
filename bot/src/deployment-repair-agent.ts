@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import { closeSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { onJsonLines } from "./json-lines";
+import { trustedCodexExecCommand } from "./trusted-codex-exec";
+import { CODEX_INVESTIGATOR_MODEL } from "./aliases";
 
 export interface RepairAgentInput {
   kind: "repair";
@@ -59,7 +61,7 @@ export async function runRepairAgent(input: RepairAgentInput, repositoryRoot: st
   // Keep the immutable artifact filename: the previous LKG's builder owns the first rollout.
   const schema = join(process.env.CONCIERGE_DEPLOYMENT_CONTROL_ROOT || join(repositoryRoot, "bot/scripts"),
     "deployment-repair-review.schema.json");
-  const args = ["exec", ...(input.sessionUuid ? ["resume"] : []),
+  const args = [...(input.sessionUuid ? ["resume"] : []), "-m", CODEX_INVESTIGATOR_MODEL,
     "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust", "--json",
     ...(!input.sessionUuid ? ["-C", input.cwd] : []),
     "--output-schema", schema,
@@ -90,7 +92,8 @@ export async function runRepairAgent(input: RepairAgentInput, repositoryRoot: st
       "CONCIERGE_SOURCE_INPUT_ID", "CONCIERGE_SOURCE_RUN_ID", "CONCIERGE_TURN_ID",
       "CONCIERGE_SESSION_ID", "CONCIERGE_TURN_KIND", "CONCIERGE_OWNER_INSTANCE_ID",
       "CONCIERGE_ACCEPTED_INPUT_ID", "CONCIERGE_SLACK_CHANNEL_ID", "CONCIERGE_SLACK_THREAD_TS"]) delete environment[name];
-    child = spawn(executable, args, {
+    const [command, ...launchArgs] = trustedCodexExecCommand(executable, args);
+    child = spawn(command!, launchArgs, {
       cwd: input.cwd, env: environment,
       detached: true, stdio: ["ignore", "pipe", "pipe"],
     });
