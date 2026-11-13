@@ -809,7 +809,8 @@ selects an exact native ChatGPT project, separately from the development `--proj
 It accepts ordinary `--effort` (agent default `pro`, `--his-chat` default `extra-high`); its retained model is
 `[tejas:]project:<g-p-id>:<thinking-level>`. The browser confirms the selected project
 before sending. An explicit project overrides the default Agents project or ordinary chat
-destination without changing whose chat it is.
+destination without changing whose chat it is. Its displayed agent name is `ChatGPT · Pro`
+(or the selected thinking level), rather than the internal project destination.
 
 `--gpt` refuses ahead of the December 11, 2026 custom GPT retirement and points to
 `--chatgpt-project`; the two flags cannot be combined. The canonical owner also refuses
