@@ -57,3 +57,7 @@ while retaining the already-installed dispatchers.
   forwarder replace production work. The original unit can be supplied with
   `FIXTURE_SERVICE_UNIT` for the negative control. No production cache workload is
   exercised or claimed.
+  Both this fixture and the history crash fixture stage synthetic sealed releases
+  beside their final digest names. GitHub's ordinary-user run caught a synthetic
+  cross-parent sealed rename that a root-run crash check had permitted; the
+  regression is also replayed with the complete crash fixture as UID 65534.

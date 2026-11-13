@@ -175,7 +175,7 @@ await regression("sealed release activation and rollback refuse an incompatible 
   const releaseRoot=join(f.state,"release-root");mkdirSync(join(releaseRoot,"releases"),{recursive:true});
   const hash=(bytes:string|Buffer)=>createHash("sha256").update(bytes).digest("hex");
   function seal(supports:boolean,control=supports) {
-    const stage=join(f.state,`reader-${supports}-${control}`);mkdirSync(join(stage,"control"),{recursive:true});
+    const stage=join(releaseRoot,"releases",`.reader-${supports}-${control}`);mkdirSync(join(stage,"control"),{recursive:true});
     const files:Record<string,string>={};
     for(const name of ["control/deploy.sh","control/deployment-repair.js","control/release-manager.js",
       "control/deployment-launcher.sh","control/deployment-control-launcher.sh",...(supports?["control/history-cache-format.json"]:[]),
