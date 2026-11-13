@@ -3,6 +3,7 @@ import { historyStorageStatus, type HistoryStorageKind } from './history-storage
 import { createHash, randomUUID } from 'node:crypto';
 import {implementationAlias} from './implementation-models';
 import {implementationEditDecision,recordImplementationEditReason} from './implementation-edit-gate';
+import {inspectCodexRecovery} from './codex-recovery-inspection';
 import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, settleTurnDependencies, SETTLED_EXECUTION_SQL, codexUnacknowledgedRecovery, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
@@ -842,6 +843,35 @@ export class SessionCommunicationCoordinator {
         return implementationEditDecision(input);
     }
     modelStartGate(input:{providerSessionId:string;model:string;providerTurnId?:string;ownerTurnId?:number;sourceRunId?:string;providerAgentId?:string}) {
+        const decision=this.modelStartDecision(input);
+        if(decision.known){
+            const session=db.query("SELECT * FROM sessions WHERE provider_id='codex' AND agent_session_uuid=? LIMIT 1")
+                .get(input.providerSessionId) as SessionRow|null;
+            if(session){
+                const running=db.query("SELECT id,native_run_id,accepted_input_id,dispatch_attempt,provider_turn_id,reasoning_effort FROM turns WHERE session_id=? AND status IN ('running','delivering') ORDER BY id DESC LIMIT 2")
+                    .all(session.id) as any[];
+                const turn=running.length===1?running[0]:null;
+                const meta=sessionMetadata(session);
+                try { recordSessionEvent({eventId:`model-start-guard:${randomUUID()}`,sessionId:session.id,
+                    ...(turn?.accepted_input_id?{inputId:turn.accepted_input_id}:{}),...(turn?{turnId:turn.id}:{}),
+                    kind:'model_start_guard',payload:{policy:'codex-model-start-v1',allowed:decision.allowed===true,
+                        reason:decision.message??'existing model start policy allowed',
+                        inputId:turn?.accepted_input_id??null,runId:turn?.native_run_id??null,
+                        dispatchAttempt:turn?.dispatch_attempt??null,providerThreadId:input.providerSessionId,
+                        providerTurnId:input.providerTurnId??null,providerAgentId:input.providerAgentId??null,
+                        ownedProviderTurnId:turn?.provider_turn_id??null,hookSourceRunId:input.sourceRunId??null,
+                        bindingGeneration:session.binding_generation,model:input.model,boundModel:meta.model??null,
+                        requestedEffort:turn?.reasoning_effort??null,bindingEffort:meta.reasoningEffort??null,
+                        effectiveEffort:null,effortEvidence:'not_observed_by_hook',
+                        basis:'existing_model_start_policy',evidenceRefs:turn?.accepted_input_id?[turn.accepted_input_id]:[]}});
+                } catch {
+                    return {known:true,allowed:false,message:'Concierge could not retain its model-start decision; this attempt is refused.'};
+                }
+            }
+        }
+        return decision;
+    }
+    private modelStartDecision(input:{providerSessionId:string;model:string;providerTurnId?:string;ownerTurnId?:number;sourceRunId?:string;providerAgentId?:string}) {
         if(typeof input.providerSessionId!=='string'||!input.providerSessionId||input.providerSessionId.length>256)return {known:false};
         let session=db.query("SELECT id FROM sessions WHERE provider_id='codex' AND agent_session_uuid=? LIMIT 1")
             .get(input.providerSessionId) as {id:number}|null;
@@ -1338,11 +1368,16 @@ export class SessionCommunicationCoordinator {
     }
     /** Recover only the exact service report-back bound to an open work request. Its target input
      * and action receipt stay separate from the already-acknowledged original work input. */
-    async recoverCodexNeverAcknowledged(input:{source:CommunicationSource;action_id:string;request_id:string}) {
+    async recoverCodexNeverAcknowledged(input:{source:CommunicationSource;action_id:string;request_id:string;inspect?:boolean}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        if(input.inspect!==undefined&&typeof input.inspect!=='boolean')throw new Error('Codex recovery inspect must be a boolean.');
         const authority=this.authority(this.fenced(this.actor(input.source))),actor=authority.actor;action(input.action_id);
         if(authority.scope!=='work')throw new Error('Codex recovery requires work authority from this exact live run.');
         if(!actor.inputId)throw new Error('Codex recovery needs the asking session’s exact accepted input and live run.');
+        if(input.inspect===true){
+            const request=this.row(input.request_id);
+            return inspectCodexRecovery({sessionId:request.target_session_id,inputId:`report-back:${input.request_id}`,requestId:input.request_id});
+        }
         const scope=`communication:${actor.inputId}`;
         const existing=db.query('SELECT receipt_json,payload_json FROM session_inputs WHERE session_id=? AND scope=? AND action_id=?')
             .get(actor.session,scope,input.action_id) as {receipt_json:string|null;payload_json:string}|null;
