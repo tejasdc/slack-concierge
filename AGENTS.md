@@ -69,6 +69,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - Managed native Codex helper edit identity and parent-turn retention follow [provider sessions](docs/architecture/PROVIDER-SESSIONS.md); the Nov 13 lifecycle failure and replay are [here](docs/incidents/2026-11-13-codex-helper-lifetime.md), preserving the earlier [Nov 12 attribution incident](docs/incidents/2026-11-12-codex-helper-edit-gate.md).
 - Marked messages held by per-session Pause retain their original admission identity;
   see [session recovery](docs/architecture/SESSION-OWNER.md#identity-and-admission).
+- Exact predecessor/successor file-watch inspection and quiet retirement use retained recovery
+  and work-delegation custody, not cross-session list/cancel; see
+  [watch custody](docs/architecture/WATCHES.md#exact-pair-recovery-custody).
 
 ## Session and Inbox obligations
 

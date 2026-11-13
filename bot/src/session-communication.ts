@@ -32,6 +32,7 @@ import {saveQueuedTurn,savedTurn,savedWorkSettings} from './saved-work';
 import {crowdingConfig} from './crowding';
 import {checkSnooze,continuationText,recordSnooze} from './snooze';
 import {cancelWatch,listWatches,registerWatch} from './watches';
+import {inspectWatchPair,reconcileWatchPair} from './watch-custody';
 import {boardCommand,type BoardActor,type BoardInput} from './commons-board-service';
 import {notifyAgentPost} from './thread-notifications';
 import {acceptHandoff,handoffObligations,proposeHandoff,supersededAddress,supersededBy,withdrawHandoff,withdrawnSuccessor} from './session-handoff';
@@ -1774,11 +1775,18 @@ export class SessionCommunicationCoordinator {
         return links.open({source:{session:actor.session,input:actor.inputId!,run:nativeRunId(actor.turn)},actionId:input.action_id,url:input.url,
             ...(input.on===undefined?{}:{peer:input.on}),...(input.browser===undefined?{}:{browser:input.browser})});
     }
-    async watch(input:{source:CommunicationSource;verb:'file'|'command'|'list'|'cancel';action_id?:string;until?:string;renew?:boolean;requiredCommit?:string;path?:string;argv?:string[];cwd?:string;watch_id?:string;runner?:string}) {
+    async watch(input:{source:CommunicationSource;verb:'file'|'command'|'list'|'cancel'|'inspect-pair'|'reconcile-pair';action_id?:string;until?:string;renew?:boolean;requiredCommit?:string;path?:string;argv?:string[];cwd?:string;watch_id?:string;runner?:string;old_watch_id?:string;new_watch_id?:string;inspection?:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         if(!input.source?.input_id)throw new Error('A watch is registered from an admitted native run: use --source-input and --source-run.');
         const actor=this.actor(input.source),origin={originInputId:actor.inputId!,originRunId:nativeRunId(actor.turn)};
         if(input.verb==='list')return {watches:listWatches(actor.session)};
+        if(input.verb==='inspect-pair'||input.verb==='reconcile-pair'){
+            const source={sessionId:actor.session,inputId:actor.inputId!,runId:origin.originRunId};
+            const pair={oldWatchId:input.old_watch_id!,newWatchId:input.new_watch_id!};
+            if(input.verb==='inspect-pair')return inspectWatchPair(db,source,pair);
+            this.fenced(actor);action(input.action_id!);
+            return reconcileWatchPair(db,source,pair,input.action_id!,input.inspection!);
+        }
         this.fenced(actor);
         if(!input.action_id)throw new Error('A watch command needs a stable --action-id.');
         action(input.action_id);
