@@ -92,6 +92,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md#stop-while-taking-back-an-existing-codex-turn).
   The one-time source-bound native recovery controls and post-release acceptance procedure are
   documented in [the Codex recovery runbook](docs/runbooks/CODEX-NATIVE-RECOVERY-ACCEPTANCE.md).
+- Bug-button intake stays independent; later duplicate-report consolidation retains the
+  human correction and acting agent, while scoped secondary routing keeps the original
+  report in its primary topic. See [native Inbox](docs/contracts/native-inbox.md).
 - The canonical owner enforces Inbox placement, attention and delivery. Unfiled
   human inputs prevent the Inbox router from ending its turn; human work
   requests close only on evidence for their exact obligation. See

@@ -118,7 +118,7 @@ try {
     const filing = unfiled.flatMap(input => [
       `- Unfiled input ${input.input_id} (${input.at}): ${JSON.stringify(input.text)}`,
       ...(input.bug_report
-        ? [`  This is a bug report: it always gets a thread of its own (add --from '<related-topic-id>' to the create command below to link a related thread).`]
+        ? [`  This new bug report first gets independent Inbox intake in its own thread (add --from '<related-topic-id>' to the create command below to link a related thread). After filing, same-issue bug-report topics can be consolidated with topics merge <duplicate> --into <survivor> --correction-source '<retained-human-correction-in-survivor>' --reason '<why>'; a scoped secondary topics route <destination> --message '<original-capture>' --reason '<why>' --side-scope '<only-the-related-concern>' keeps its primary root intact.`]
         : [`  File in an existing topic: ${tool} sessions topics place '<topic-id>' --root ${quote(input.root_id)} ${identity} --action-id ${quote(`file-${input.root_id}`)}`]),
       `  Or find its area with ${tool} sessions areas suggest --title '<topic title>' ${identity}, then create its topic: ${tool} sessions topics create --title '<topic title>' --area '<area-id>' --root ${quote(input.root_id)} ${identity} --action-id ${quote(`create-${input.root_id}`)}`,
       `  If it is noise, create its own topic above, then explicitly close the returned topic: ${tool} sessions topics close '<returned-topic-id>' --scope ${quote(input.input_id)} ${identity} --action-id ${quote(`noise-${input.root_id}`)} -- 'Noise: <specific reason no work is needed>'`,

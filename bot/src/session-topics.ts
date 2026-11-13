@@ -2261,7 +2261,8 @@ export function topicsCommand(actor:TopicActor,body:any,listHead?:number) {
       assertInbox(session);
       const messageId=text(body?.message_id,'--message',500);
       const destination=text(body?.topic_id,'topic id',200);
-      return agentMutation(actor,actionId(),{kind:'topic-route',messageId,destination,reason:reason()},actionInputId=>{
+      return agentMutation(actor,actionId(),{kind:'topic-route',messageId,destination,reason:reason(),
+        ...(body?.side_scope!==undefined?{sideScope:body.side_scope}:{})},actionInputId=>{
         const source=getAcceptedSessionInput(messageId);
         if(!source||!sessionMetadata(getSessionById(source.session_id)!).inbox)
           throw new TopicError('Route one exact accepted Inbox message.',404,'ROUTE_MESSAGE_UNKNOWN');
@@ -2269,7 +2270,13 @@ export function topicsCommand(actor:TopicActor,body:any,listHead?:number) {
         const sourceTopicId=sourceRoot?topicOfRoot(sourceRoot):null;
         if(!sourceRoot||!sourceTopicId)throw new TopicError('Place the source conversation before routing its message.',409,'ROUTE_SOURCE_UNPLACED');
         if(sourceTopicId===destination)throw new TopicError('The destination is already this message’s topic.',409,'ROUTE_SAME_TOPIC');
-        if(isBugReportInput(messageId))throw new TopicError(BUG_REPORT_OWN_THREAD,409,'BUG_REPORT_OWN_THREAD');
+        const bugReport=isBugReportInput(messageId);
+        const sideScope=bugReport&&typeof body?.side_scope==='string'?body.side_scope.trim():null;
+        if(bugReport&&(sourceRoot!==messageId||sourceTopicId!==topicOfRoot(messageId)||!reason()||!sideScope))
+          throw new TopicError('A filed bug report can be routed only as a scoped secondary projection; its original root stays in its primary topic. Supply --reason and --side-scope.',409,'BUG_REPORT_SECONDARY_ROUTE_REQUIRED');
+        if(sideScope)text(sideScope,'--side-scope',4000);
+        if(!bugReport&&body?.side_scope!==undefined)
+          throw new TopicError('--side-scope is only for a secondary projection of an already-filed bug report.',400,'SIDE_SCOPE_WITHOUT_BUG_REPORT');
         const topic=topicFor(destination);
         // Match the partial route-source index's predicate exactly. SQLite cannot infer
         // that kind='topic_route' implies its two-kind predicate; that form scanned the
@@ -2282,8 +2289,8 @@ export function topicsCommand(actor:TopicActor,body:any,listHead?:number) {
         const destinationMessageId=`topic-change:${actionInputId}`;
         const by=byOf(actor),at=nowIso(),next=bumped(topic);
         const payload={change:'routed',topicId:destination,topic:next,destinationSessionId:`concierge:${session.id}`,sourceMessageId:messageId,
-          sourceRoot,sourceTopicId,destinationMessageId,by,reason:reason(),revision:next.revision,
-          roots:rootRecords(destination,[destinationMessageId],by,reason())};
+          sourceRoot,sourceTopicId,destinationMessageId,by,reason:reason(),...(sideScope?{sideScope}:{}),revision:next.revision,
+          roots:rootRecords(destination,[destinationMessageId],by,sideScope??reason())};
         return {change:{kind:'topic_route',payload},result:{route:{sourceMessageId:messageId,sourceRoot,sourceTopicId,
           destinationMessageId,destinationTopicId:destination}}};
       });
@@ -2312,12 +2319,29 @@ export function topicsCommand(actor:TopicActor,body:any,listHead?:number) {
     case 'merge':{
       assertInbox(session);
       const why=text(body?.reason,'--reason');
-      return agentMutation(actor,actionId(),{kind:'topic-merge',from:body?.topic_id,into:body?.into,reason:why},()=>{
+      return agentMutation(actor,actionId(),{kind:'topic-merge',from:body?.topic_id,into:body?.into,reason:why,
+        ...(body?.correction_source_id!==undefined?{correctionSourceId:body.correction_source_id}:{})},()=>{
         const from=topicFor(body?.topic_id),into=topicRow(text(body?.into,'--into',200));
         if(from.topicId===into.topicId)throw new TopicError('A topic cannot be merged into itself.');
-        if(topicRoots(from.topicId).some(isBugReportInput))throw new TopicError(BUG_REPORT_OWN_THREAD,409,'BUG_REPORT_OWN_THREAD');
+        const sourceHasBugReport=topicRoots(from.topicId).some(isBugReportInput);
+        const destinationHasBugReport=topicRoots(into.topicId).some(isBugReportInput);
+        let correctionSourceId:string|null=null;
+        if(sourceHasBugReport){
+          if(!destinationHasBugReport)
+            throw new TopicError(BUG_REPORT_OWN_THREAD,409,'BUG_REPORT_OWN_THREAD');
+          if(typeof body?.correction_source_id!=='string'||!body.correction_source_id.trim())
+            throw new TopicError('Consolidating filed bug-report topics needs the retained human correction as --correction-source.',409,'BUG_REPORT_CORRECTION_SOURCE_REQUIRED');
+          correctionSourceId=text(body.correction_source_id,'--correction-source',200);
+          const correction=getAcceptedSessionInput(correctionSourceId);
+          const correctionRoot=correction?inboxThreadRoot(correction.session_id,correctionSourceId):null;
+          if(!correction||!humanAuthored(correction)||isBugReportInput(correctionSourceId)||!correctionRoot||topicOfRoot(correctionRoot)!==into.topicId)
+            throw new TopicError('--correction-source must name a retained, non-bug human message already in the surviving bug-report topic.',409,'BUG_REPORT_CORRECTION_SOURCE_REQUIRED');
+        }else if(body?.correction_source_id!==undefined){
+          throw new TopicError('--correction-source is only used to consolidate already-filed bug-report topics.',400,'CORRECTION_SOURCE_WITHOUT_BUG_REPORTS');
+        }
         const merged=mergeChange(from,into,by,why);
-        return {change:merged.change,result:{topic:merged.destination,merged:merged.source}};
+        const change=correctionSourceId?{...merged.change,payload:{...merged.change.payload,correctionSourceId}}:merged.change;
+        return {change,result:{topic:merged.destination,merged:merged.source}};
       });
     }
     case 'close':{

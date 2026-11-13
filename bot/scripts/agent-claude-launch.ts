@@ -1,5 +1,5 @@
 /** Account binding for fresh Claude CLI work launched from a Concierge agent shell. */
-import {accessSync,constants,existsSync,readdirSync,readFileSync,realpathSync,readlinkSync,watch} from 'node:fs';
+import {accessSync,closeSync,constants,existsSync,openSync,readdirSync,readFileSync,readSync,realpathSync,readlinkSync,watch} from 'node:fs';
 import {dirname,delimiter,isAbsolute,join,resolve,sep} from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {requestApiResponse} from './router-request-client';
@@ -107,9 +107,24 @@ async function actualClaude():Promise<string> {
 }
 const executable=await actualClaude();
 const firstCommandArg=args.find(arg=>arg!=='--dangerously-skip-permissions');
+const exactResume=(()=>{
+  const values:string[]=[];
+  for(let i=0;i<args.length;i++){
+    const arg=args[i]!;
+    if(arg==='--resume'||arg==='-r')values.push(args[++i]??'');
+    else if(arg.startsWith('--resume='))values.push(arg.slice('--resume='.length));
+    else if(arg.startsWith('-r')&&arg.length>2)values.push(arg.slice(2));
+  }
+  const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if(values.length>1&&values.some(value=>uuid.test(value))&&process.env.CONCIERGE_CLAUDE_ACCOUNT_PIN!=='1'
+    &&!args.some(arg=>arg==='--agent-id'||arg.startsWith('--agent-id=')))throw new Error('Claude exact resume has multiple resume arguments; original binding is ambiguous.');
+  if(values.length!==1||!uuid.test(values[0]!))return null;
+  return values[0]!;
+})();
 const passthrough=['auth','config','doctor','update','mcp','plugin','agents'].includes(firstCommandArg??'')
   || args.some(arg=>['--version','-v','--help','-h'].includes(arg))
-  || args.some(arg=>arg==='--resume'||arg==='-r'||arg==='--continue'||arg==='-c'||arg==='--fork-session'||arg==='--agent-id')
+  || (!exactResume&&args.some(arg=>arg==='--resume'||arg==='-r'||arg.startsWith('--resume=')||arg.startsWith('-r')||arg==='--continue'||arg==='-c'||arg==='--fork-session'))
+  || args.some(arg=>arg==='--agent-id'||arg.startsWith('--agent-id='))
   || process.env.CONCIERGE_CLAUDE_ACCOUNT_PIN==='1';
 const model=(()=>{for(let i=0;i<args.length;i++){
   if(args[i]==='--model')return args[i+1]??null;
@@ -123,6 +138,63 @@ if(!passthrough){
   for(const name of ['ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','CLAUDE_CODE_OAUTH_TOKEN','CLAUDE_CODE_USE_BEDROCK','CLAUDE_CODE_USE_VERTEX','CLAUDE_CODE_USE_FOUNDRY']){
     if(environment[name])throw new Error(`Claude account selection refused a competing ${name} credential or provider setting. Explicitly pin an intentional route.`);
   }
+  if(exactResume){
+    const root=process.env.HOME??'';
+    const defaultHome=join(root,'.claude');
+    let names:string[]=[];
+    try{names=readdirSync(join(root,'.claude-accounts')).filter(name=>!name.startsWith('.'));}catch{}
+    const homes=[defaultHome,...names.map(name=>join(root,'.claude-accounts',name))];
+    const paths=new Set<string>();
+    for(const home of homes){
+      let projects:string[]=[];
+      try{projects=readdirSync(join(home,'projects'));}catch{}
+      for(const project of projects){
+        try{paths.add(realpathSync(join(home,'projects',project,`${exactResume}.jsonl`)));}catch{}
+      }
+    }
+    if(paths.size!==1)throw new Error(`Claude exact resume ${exactResume}: original transcript is ${paths.size?'ambiguous':'unavailable'}.`);
+    // The first row is Claude's original owner header; later rows can name later logins.
+    // Its small fixed ceiling prevents a damaged or huge transcript from becoming a full scan.
+    const header=Buffer.alloc(64*1024);
+    let used=0, newline=-1;
+    const fd=openSync([...paths][0]!,'r');
+    try{
+      while(used<header.length&&newline<0){
+        const count=readSync(fd,header,used,header.length-used,null);
+        if(!count)break;
+        newline=header.indexOf(10,used); used+=count;
+        if(newline>=used)newline=-1;
+      }
+    }finally{closeSync(fd);}
+    if(newline<0)throw new Error(`Claude exact resume ${exactResume}: original transcript header is missing, incomplete or too large.`);
+    let binding:{accountUuid:string;organizationUuid:string};
+    try{
+      const row=JSON.parse(header.subarray(0,newline).toString('utf8'));
+      if(row?.type!=='session-owner'||row.sessionId!==exactResume||typeof row.accountUuid!=='string'||!row.accountUuid||typeof row.organizationUuid!=='string'||!row.organizationUuid)throw new Error('invalid header');
+      binding={accountUuid:row.accountUuid,organizationUuid:row.organizationUuid};
+    }catch{throw new Error(`Claude exact resume ${exactResume}: original transcript header binding is missing or malformed.`);}
+    const matches:string[]=[];
+    for(const home of homes){
+      try{
+        const config=JSON.parse(readFileSync(home===defaultHome?join(root,'.claude.json'):join(home,'.claude.json'),'utf8'))?.oauthAccount;
+        if(config?.accountUuid!==binding.accountUuid||config?.organizationUuid!==binding.organizationUuid||typeof config.emailAddress!=='string')continue;
+        const label=join(home,'.account-email');
+        if(existsSync(label)&&readFileSync(label,'utf8').trim()!==config.emailAddress)continue;
+        // A selected home must expose this exact transcript, not merely the same account.
+        if(![...paths].some(path=>{try{return readdirSync(join(home,'projects')).some(project=>{try{return realpathSync(join(home,'projects',project,`${exactResume}.jsonl`))===path;}catch{return false;}});}catch{return false;}}))continue;
+        const env={...environment};
+        if(process.platform==='darwin'&&home===defaultHome)delete env.CLAUDE_CONFIG_DIR;
+        else env.CLAUDE_CONFIG_DIR=home;
+        const status=spawnSync(executable,['auth','status'],{env,encoding:'utf8',timeout:15_000});
+        const identity=JSON.parse(status.stdout??'');
+        if(status.status===0&&identity.loggedIn===true&&identity.authMethod==='claude.ai'&&identity.apiProvider==='firstParty'
+          &&identity.email===config.emailAddress&&typeof identity.configDirectory==='string'&&realpathSync(identity.configDirectory)===realpathSync(home))matches.push(home);
+      }catch{}
+    }
+    if(matches.length!==1)throw new Error(`Claude exact resume ${exactResume}: original account ${binding.accountUuid} organization ${binding.organizationUuid} has ${matches.length?'ambiguous working homes':'no working home'}.`);
+    if(process.platform==='darwin'&&matches[0]===defaultHome)delete environment.CLAUDE_CONFIG_DIR;
+    else environment.CLAUDE_CONFIG_DIR=matches[0];
+  }else{
   const response=await requestApiResponse(`/sessions/v1/auth/claude-launch-choice${model?`?model=${encodeURIComponent(model)}`:''}`);
   if(!response.ok){
     const refusal=response.result?.error;
@@ -147,6 +219,7 @@ if(!passthrough){
       ||realpathSync(identity.configDirectory)!==realpathSync(home??join(process.env.HOME??'', '.claude'))){
       throw new Error('Claude authenticated with a different account than Concierge selected.');
     }
+  }
   }
 }
 const child=spawn(executable,args,{env:environment,stdio:'inherit'});
