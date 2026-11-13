@@ -115,6 +115,22 @@ const closestDecisions=async(index:MeaningIndex,vector:Float32Array)=>closestRec
 const closestTaste=async(index:MeaningIndex,vector:Float32Array)=>closestRecords(index,vector,await tastePassages(),
   `His taste profile was not found at ${TASTE_PROFILE}.`,MAX_TASTE,false,(item:TastePassage)=>({key:item.key,text:`${item.principle}. ${item.text}`}));
 
+export type Requirements={available:boolean;taste:TastePassage[];decisions:Decision[];cases:FailureCase[];omissions:string[]};
+/**
+ * His recorded requirements closest to some words, chosen exactly as a work request's brief chooses
+ * them, for a check that judges a change rather than a request (thnkr.ing's commit design check reads
+ * this, so the matching has one home). Decision changes-are-checked-against-his-taste-profile,
+ * 2026-11-12: "every … feature … should do … an operational review … does this follow [the] taste
+ * [profile] … Changes can be get reviewed really quickly".
+ */
+export async function requirementsFor(words:string):Promise<Requirements> {
+  const index=meaningIndex();
+  if(!index?.installed)return {available:false,taste:[],decisions:[],cases:[],omissions:['The meaning index is not installed on this machine.']};
+  const vector=await index.questionVector(oneLine(words,600));
+  const [cases,ruled,taste]=await Promise.all([closestCases(index,vector),closestDecisions(index,vector),closestTaste(index,vector)]);
+  return {available:true,taste:taste.found,decisions:ruled.found,cases:cases.found,omissions:[cases,ruled,taste].flatMap(part=>part.omission?[part.omission]:[])};
+}
+
 export async function earlierWorkFor(input:{
   /** The request's one-line summary and words: what the problem is. */
   summary?:string;text:string;

@@ -26,6 +26,7 @@ export const OWNER_GET_EXCEPTIONS:readonly Route[]=[
  {path:'/releases',purpose:'release-control history; migration to a page remains due',maxResponseBytes:2*MiB,kind:'legacy'},
  {path:'/auth/providers',purpose:'provider sign-in/control state',maxResponseBytes:MiB,kind:'control'},
  {path:'/auth/claude-launch-choice',purpose:'account binding for one new agent-started Claude process',maxResponseBytes:MiB,kind:'control'},
+ {path:'/requirements',purpose:'his recorded requirements, decisions and failure cases closest to some words (read by the thnkr.ing commit design check)',maxResponseBytes:MiB,kind:'control'},
  {path:'/models',purpose:'provider model choices',maxResponseBytes:MiB,kind:'control'},
  {path:'/usage/breakdown',purpose:'two bounded accounting periods',maxResponseBytes:MiB,kind:'control'},
  {path:'/usage/allowance',purpose:'cached weekly allowance for up to 100 visible session and topic rows',maxResponseBytes:MiB,kind:'control'},
