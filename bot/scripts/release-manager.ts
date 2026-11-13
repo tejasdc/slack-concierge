@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 
 import { realpathSync } from "node:fs";
-import { join } from "node:path";
 import { defaultReleaseEnvironment, TrustedRootReleaseManager } from "../src/deployment-release";
 import { ledgerAccess } from "../src/ledger-access-policy";
 import { deploymentReactionTokensForCommitRange } from "../src/deployment-reaction-tokens";
@@ -59,18 +58,17 @@ try {
     return result;
   };
   const repositoryRoot = process.env.CONCIERGE_REPO || "/var/lib/slack-concierge-deployment/source";
-  const sourceRoot = process.env.CONCIERGE_DEPLOYMENT_SOURCE_ROOT || repositoryRoot;
-  const controlRoot = process.env.CONCIERGE_DEPLOYMENT_CONTROL_ROOT;
   const manager = new TrustedRootReleaseManager(defaultReleaseEnvironment(repositoryRoot));
   if (command?.startsWith("recovery-")) {
     const {handleControlRecovery}=await import('../src/deployment-control-recovery');
     finish(0, await handleControlRecovery(command, option, manager));
   }
   if (command === "install-runtime") {
-    manager.installRuntime(
-      controlRoot ? join(controlRoot, "deployment-launcher.sh") : join(sourceRoot, "bot/scripts/deployment-launcher.sh"),
-      controlRoot ? join(controlRoot, "deployment-control-launcher.sh") : join(sourceRoot, "bot/scripts/deployment-control-launcher.sh"),
-    );
+    manager.installRuntime();
+    finish(0, { status: "installed", install_root: manager.environment.installRoot });
+  }
+  if (command === "install-launchers") {
+    manager.installSelectedRuntimeLaunchers();
     finish(0, { status: "installed", install_root: manager.environment.installRoot });
   }
   if (command === "prepare") {
@@ -171,7 +169,7 @@ try {
     const { kept, removed } = manager.pruneReleases([release.artifact_path, ...inUse]);
     finish(0, { status: "pruned", kept, removed: removed.length });
   }
-  throw new Error("usage: release-manager.ts <install-runtime|prepare|activate|restore-lkg|promote|set-control|current|lkg|prune>");
+  throw new Error("usage: release-manager.ts <install-runtime|install-launchers|prepare|activate|restore-lkg|promote|set-control|current|lkg|prune>");
 } catch (error) {
   finish(1, { status: "error", error: error instanceof Error ? error.message : String(error) });
 }

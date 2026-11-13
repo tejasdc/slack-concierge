@@ -16,7 +16,7 @@ export function ledgerAccess(directory: string, main: string, readWorker: boolea
   const live = directory === canonical || sameFile(join(directory, 'state.db'), join(canonical, 'state.db'));
   const name = basename(main).replace(/\.[cm]?[jt]s$/, '');
   const readCommands: Record<string, readonly string[]> = {
-    'release-manager': ['lkg', 'current', 'install-runtime', 'restore-lkg', 'set-control'],
+    'release-manager': ['lkg', 'current', 'install-runtime', 'install-launchers', 'restore-lkg', 'set-control'],
     'deploy-state': ['show', 'desired', 'repair-show'],
   };
   // The installed release controller sends its pre-stop mutations to the serving owner.
@@ -34,7 +34,7 @@ export function ledgerAccess(directory: string, main: string, readWorker: boolea
   const forbidControllerLedgerOpen = live && process.platform === 'linux'
     && (ownerServedReleaseCommand || ownerServedDeploymentCommand
       || name === 'native-pipeline-continuation'
-      || (name === 'release-manager' && ['install-runtime', 'current', 'set-control'].includes(process.argv[2] ?? '')));
+      || (name === 'release-manager' && ['install-runtime', 'install-launchers', 'current', 'set-control'].includes(process.argv[2] ?? '')));
   const readonly = readWorker || ownerServedReleaseCommand || ownerServedDeploymentCommand
     || (readCommands[name]?.includes(process.argv[2] ?? '') ?? false);
   const command = new Set(['deploy-state', 'release-manager', 'deployment-repair', 'recover-deployment', 'session-turn-queue',

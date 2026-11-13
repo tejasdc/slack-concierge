@@ -303,23 +303,61 @@ export class TrustedRootReleaseManager {
     readonly services: ReleaseServices = defaultServices(),
   ) {}
 
-  installRuntime(launcherSource: string, controlLauncherSource: string) {
+  private verifyRuntimeLaunchers(artifactPath: string) {
+    const manifest = this.verify(artifactPath);
+    for (const path of ["control/deployment-launcher.sh", "control/deployment-control-launcher.sh"]) {
+      if (!manifest.files[path]) throw new Error(`Release is missing runtime launcher ${path}.`);
+    }
+    const sealed = (path: string) => {
+      const stat = lstatSync(path);
+      if (stat.mode & 0o222) throw new Error(`Runtime release is not sealed: ${path}.`);
+      if (stat.isDirectory()) for (const entry of readdirSync(path)) sealed(join(path, entry));
+    };
+    sealed(artifactPath);
+    return manifest;
+  }
+
+  private installRuntimeLaunchers() {
+    mkdirSync(this.environment.installRoot, { recursive: true, mode: 0o755 });
+    for (const [name, source] of [["launch", "deployment-launcher.sh"], ["control", "deployment-control-launcher.sh"]]) {
+      const destination = join(this.environment.installRoot, name);
+      const temporary = `${destination}.${randomUUID()}.tmp`;
+      try {
+        // Keep the installed entrypoint independent of a release's command vocabulary.
+        // Older sealed shell launchers are not executable, so invoke Bash explicitly.
+        const root = resolve(this.environment.releaseRoot).replace(/'/g, "'\\''");
+        writeFileSync(temporary, `#!/bin/sh\nset -eu\nRELEASE_ROOT=\${CONCIERGE_DEPLOYMENT_RELEASE_ROOT:-'${root}'}\nexec /usr/bin/bash "$RELEASE_ROOT/control/control/${source}" "$@"\n`,
+          { mode: 0o555, flag: "wx" });
+        chmodSync(temporary, 0o555);
+        renameSync(temporary, destination);
+      } finally {
+        rmSync(temporary, { force: true });
+      }
+    }
+  }
+
+  installRuntime() {
+    const artifact = this.controlArtifactPath();
+    if (!artifact) throw new Error("Cannot install runtime without a verified control release.");
+    this.verifyRuntimeLaunchers(artifact);
     mkdirSync(this.environment.installRoot, { recursive: true, mode: 0o755 });
     const bunDestination = join(this.environment.installRoot, "bun");
-    const launcherDestination = join(this.environment.installRoot, "launch");
-    const controlDestination = join(this.environment.installRoot, "control");
-    const temporaryBun = `${bunDestination}.${process.pid}.tmp`;
-    const temporaryLauncher = `${launcherDestination}.${process.pid}.tmp`;
-    const temporaryControl = `${controlDestination}.${process.pid}.tmp`;
-    copyFileSync(realpathSync(this.environment.bunExecutable), temporaryBun);
-    copyFileSync(launcherSource, temporaryLauncher);
-    copyFileSync(controlLauncherSource, temporaryControl);
-    chmodSync(temporaryBun, 0o555);
-    chmodSync(temporaryLauncher, 0o555);
-    chmodSync(temporaryControl, 0o555);
-    renameSync(temporaryBun, bunDestination);
-    renameSync(temporaryLauncher, launcherDestination);
-    renameSync(temporaryControl, controlDestination);
+    const temporaryBun = `${bunDestination}.${randomUUID()}.tmp`;
+    try {
+      copyFileSync(realpathSync(this.environment.bunExecutable), temporaryBun);
+      chmodSync(temporaryBun, 0o555);
+      renameSync(temporaryBun, bunDestination);
+      this.installRuntimeLaunchers();
+    } finally {
+      rmSync(temporaryBun, { force: true });
+    }
+  }
+
+  installSelectedRuntimeLaunchers() {
+    const artifact = this.controlArtifactPath();
+    if (!artifact) throw new Error("Cannot install runtime without a verified control release.");
+    this.verifyRuntimeLaunchers(artifact);
+    this.installRuntimeLaunchers();
   }
 
   async prepare(attemptId: string, gitCommit: string, controlGitCommit = gitCommit): Promise<PreparedRelease> {
@@ -388,6 +426,9 @@ export class TrustedRootReleaseManager {
       // always come from its application commit, never the independently upgraded control.
       const applicationPaths=new Set(applicationDeclaration.applicationBundles);
       const controlFiles={...controlDeclaration.controlFiles};
+      const launcherCapability = "control/deployment-runtime-launchers.json";
+      if (controlFiles[launcherCapability] && !existsSync(join(effectiveControlSourceRoot, controlFiles[launcherCapability])))
+        delete controlFiles[launcherCapability];
       const controllerCapability=controlFiles[HISTORY_CACHE_CONTROL_CAPABILITY_PATH];
       if(controllerCapability && !existsSync(join(effectiveControlSourceRoot,controllerCapability)))delete controlFiles[HISTORY_CACHE_CONTROL_CAPABILITY_PATH];
       // Reader capability belongs to the application commit, even in a hybrid
@@ -534,10 +575,11 @@ export class TrustedRootReleaseManager {
 
   activateControl(artifactPath: string) {
     const canonical = realpathSync(artifactPath);
-    const manifest = this.verify(canonical);
+    const manifest = this.verifyRuntimeLaunchers(canonical);
     if(this.environment.historyCacheStateDirectory)
       assertHistoryCacheActivation(this.environment.historyCacheStateDirectory,canonical,manifest.files,true);
     mkdirSync(this.environment.releaseRoot, { recursive: true, mode: 0o755 });
+    this.installRuntimeLaunchers();
     const temporary = join(this.environment.releaseRoot, `.control-${randomUUID()}`);
     symlinkSync(relative(this.environment.releaseRoot, canonical), temporary);
     renameSync(temporary, join(this.environment.releaseRoot, "control"));
@@ -561,6 +603,7 @@ export class TrustedRootReleaseManager {
   }
 
   restore(artifactPath: string) {
+    this.verifyRuntimeLaunchers(realpathSync(artifactPath));
     if(this.environment.historyCacheStateDirectory) {
       const canonical=realpathSync(artifactPath),manifest=this.verify(canonical);
       assertHistoryCacheActivation(this.environment.historyCacheStateDirectory,canonical,manifest.files,true);
