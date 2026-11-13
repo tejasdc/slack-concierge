@@ -102,6 +102,7 @@ import {selectedClaudeHome} from './provider-account-dispatch';
 import {sessionSpace,type SessionSpace} from './session-roles';
 import {preparedSessionWindow,preparedSessionChanges,preparedInboxAttention,preparedLabRequestIds} from './presentation-session-reader';
 import {preparedReceiptWindow,preparedReceiptChanges} from './presentation-receipt-reader';
+import {codexAccountSwitchProjection} from './codex-account-switch-receipt';
 import {receiptAttachmentProjection} from './receipt-attachments';
 import {TURN_STATE,inputExecutionFacts,receiptOperationState} from './session-receipt-state';
 import {receiptStatusFromFacts,type InputStatusDetail} from './session-receipt-status';
@@ -1320,6 +1321,8 @@ export class SessionOwner {
     const admissionHistory=admissionAttempts.map(row=>JSON.parse(row.payload_json) as {dispatchAttempt:number|null;admission:unknown});
     if(saved.admission&&!admissionHistory.some(entry=>stablePayload(entry.admission)===stablePayload(saved.admission)))
       admissionHistory.unshift({dispatchAttempt:null,admission:saved.admission});
+    const codexSwitch=input.kind==='action'&&parsed.kind==='codex-account-switch';
+    const switchState=codexSwitch?codexAccountSwitchProjection(saved).state:null;
     const statusDetail=['input','create','consultation','comparison'].includes(input.kind)?inputStatusDetail(input,observed,saved):null;
     const unacknowledgedSteering=observed.steering?.status==='ambiguous'&&!observed.steering.provider_sent_at;
     const stopTurn=input.kind==='stop'?db.query('SELECT status FROM turns WHERE native_run_id=? AND session_id=?').get(parsed.runId,input.session_id) as {status:string}|null:null;
@@ -1338,7 +1341,7 @@ export class SessionOwner {
     const steeringError=observed.state==='failed'?observed.turn?.agent_text:observed.state==='uncertain'?{code:statusDetail?.code,message:statusDetail?.message}:null;
     return {version:1,operationId:input.id,sessionId:`concierge:${input.session_id}`,humanAuthored:humanAuthored(input),...(provenance?{provenance}:{}),inputId:['input','create','consultation','comparison'].includes(input.kind)?input.id:['request','reply'].includes(input.kind)?input.source_input_id:null,
       requestId:input.request_id,runId:input.kind==='stop'?parsed.runId:control?null:observed.turn?nativeRunId(observed.turn.id):null,
-      kind:input.kind,origin:input.origin,state:stopState??requestState??saved.state??observed.state,acknowledgedAt:iso(observed.acknowledgedAt??(input.kind==='request'?conversation?.execution?.acknowledged_at:null)),settlement:conversation?.outcome?{outcome:conversation.outcome,result:conversation.result}:saved.settlement??null,
+      kind:input.kind,origin:input.origin,state:switchState??stopState??requestState??saved.state??observed.state,acknowledgedAt:iso(observed.acknowledgedAt??(input.kind==='request'?conversation?.execution?.acknowledged_at:null)),settlement:conversation?.outcome?{outcome:conversation.outcome,result:conversation.result}:saved.settlement??null,
       returnDelivery:conversation?conversation.events.map(event=>({eventId:event.event_id,kind:event.kind,state:event.status,error:event.error})):saved.returnDelivery??null,
       error:errorView(stopState?stopError:unacknowledgedSteering?steeringError:retainedError),
       statusDetail,
@@ -1353,7 +1356,7 @@ export class SessionOwner {
       ...(parsed.routedFrom?{routedFrom:parsed.routedFrom}:{}),
       ...(parsed.replyToMessage?{replyToMessage:parsed.replyToMessage}:(()=>{const link=input.origin==='human'?inboxThreadLink(input.session_id,input.id):null;
         return link?.attached?{replyToMessage:{kind:'message',sessionId:`concierge:${input.session_id}`,messageId:link.thread},routedBy:link.routedBy}:{};})()),createdAt:iso(input.created_at),updatedAt:iso(observed.turn?.ended_at??input.updated_at),
-      childSessionId:saved.childSessionId??null,result:control?null:input.kind==='request'?conversation?.result?.text??null:observed.turn?.agent_text??null,
+      childSessionId:saved.childSessionId??null,result:codexSwitch?saved:control?null:input.kind==='request'?conversation?.result?.text??null:observed.turn?.agent_text??null,
       admission:input.kind==='fork'?null:saved.admission??null,admissionHistory:input.kind==='fork'?[]:admissionHistory};
   }
   /**
