@@ -102,7 +102,15 @@ export class HostCacheRestic implements CacheRestic {
       "--limit-download", String(CACHE_BACKUP_POLICY.transferKiB), "--pack-size", String(CACHE_BACKUP_POLICY.packMiB),
       "-o", `sftp.connections=${CACHE_BACKUP_POLICY.sftpConnections}`, ...args],
       { stdout: "pipe", stderr: "ignore", env: {...process.env, TMPDIR:scratch,GOMAXPROCS: String(CACHE_BACKUP_POLICY.goProcessors)} });
-    this.admission?.ownNative(() => child.kill("SIGTERM"));
+    this.admission?.trace.event("native_start", {operation: args[0], pid: child.pid});
+    const exited = child.exited.then(code => {
+      this.admission?.trace.event("native_exit", {operation: args[0], pid: child.pid, exitCode: code, signal: child.signalCode});
+      return code;
+    });
+    this.admission?.ownNative(() => {
+      const sent = child.kill("SIGTERM");
+      this.admission?.trace.event("native_signal", {operation: args[0], pid: child.pid, signal: "SIGTERM", reason: "admission", sent});
+    });
     let bytes = 0, control = "";
     const hash = createHash("sha256");
     try {
@@ -124,14 +132,18 @@ export class HostCacheRestic implements CacheRestic {
           }
         }
       }
-      const exit = await child.exited;
+      const exit = await exited;
       this.admission?.check();
       if (exit !== 0) throw new Error(`HISTORY_RESTIC_FAILED_${args[0]}_EXIT_${exit}`);
       await destination?.sync();
       return { sha256: hash.digest("hex"), bytes, control };
     } finally {
-      child.kill("SIGTERM"); await child.exited; this.admission?.ownNative(); await destination?.close();
+      const sent = child.kill("SIGTERM");
+      this.admission?.trace.event("native_signal", {operation: args[0], pid: child.pid, signal: "SIGTERM", reason: "finalizer", sent});
+      await exited; this.admission?.ownNative(); await destination?.close();
+      this.admission?.trace.event("native_cleanup_start", {operation: args[0], pid: child.pid});
       rmSync(scratch,{recursive:true,force:true});
+      this.admission?.trace.event("native_cleanup_end", {operation: args[0], pid: child.pid});
     }
   }
   async backup(paths: string[], tag: string) {

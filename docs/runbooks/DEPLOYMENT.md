@@ -1096,7 +1096,7 @@ has the same external deadline, so a stalled optional conversion cannot extend
 the stopped deployment indefinitely. Successful readback, source/object identity
 and publication comparisons remain mandatory; no load failure authorizes conversion.
 These are [supported Restic controls](https://github.com/restic/restic/blob/v0.16.4/doc/man/restic-backup.1).
-Transfer limits bound network bytes, not uncompressed scratch or physical disk
+Transfer limits bound backend data streams, not uncompressed scratch or physical disk
 traffic; a pack target can be exceeded by a native blob. Nice does not establish
 a disk limit on this host. The existing agents slice is unchanged.
 Native temporary packs use a private per-command scratch directory, removed only
@@ -1109,12 +1109,53 @@ counters and this command's process tree before work and while running. Initial
 refusal thresholds are I/O pressure above 5%, any observed device busy above 50%
 over the sample interval, or available memory below 1 GiB. These are conservative
 trial abort conditions, not capacity or responsiveness guarantees. Private
-`load-<operation>.json` records retain first/last device and sampled process counters,
-RSS/process-count peaks, elapsed time, policy, outcome and refusal reason; the
+`load-<operation>.json` schema 2 records retain first/last device and sampled process counters,
+RSS/process-count peaks, elapsed time, policy, outcome and refusal reason, plus a
+bounded in-memory monotonic timeline of the actual raw samples and guard intervals,
+refusals, owned native signal attempts, wrapper exits and scratch cleanup. The
 bounded operational log names the same operation. Process peaks can miss short-lived
 children, and whole-device deltas include other work; do not call them attributable
 maintenance traffic. Query these files alongside batch receipts and deployment
 health instead of inferring success from a zero exit or a previous backup Result.
+
+For one causally reviewable diagnostic capture, coordinate a window with the host
+transcript archive session so it is not performing native validation, then run:
+
+```bash
+timeout --kill-after=2s 450s bun bot/scripts/history-cache-admission-fixture.ts --observe-host --diagnostic-report tmp/reviews/cache-admission-observation.json
+```
+
+The output must be a new private file; no automatic retry or production cache work
+is performed. A 60-second observer-only baseline precedes all fixture preparation
+and repository initialization. The same unchanged guarded local-Restic trial then
+runs once. Admission refusal still exits nonzero and is retained as refusal. Another
+60 seconds of read-only observation follows child exit and fixture cleanup, so later
+activity is distinguishable from work before stopping. These observer intervals are
+outside the unchanged five-minute trial budget; the explicit outer timeout bounds
+the diagnostic entrance but cannot guarantee prompt termination of kernel-blocked I/O.
+Scheduled-backup checks and load vetoes remain unchanged; no archive-session agreement
+is a machine-wide quiet lease or shared backup exclusion lock.
+
+The report retains raw selected physical-device diskstats lines (not summed with
+RAID), some/full PSI including cumulative totals, Dirty/Writeback, sampled process
+identities, exact phases and the same intervals used by the guard. A monotonic clock
+and wall-clock anchors join the trial to bounded numeric-only slow-sync/lag journal
+events. Existing cgroup I/O and memory snapshots are context for that shared scope,
+not a claim of trial attribution. The in-memory timeline caps at 2048 events/2 MiB;
+any drops are explicit and make the trace incomplete. There is no per-second durable
+log write. Report persistence and retrospective journal/version queries occur after
+the observed interval. A missing terminal report is unknown, never successful proof.
+
+Completed durable-response latency, oldest acknowledgement age and backlog are
+explicitly unavailable from the runner's private mount. The root-only supervisor
+socket is not bypassed, and no synthetic write is sent to user data. Journal slow-sync
+records cover delays of at least one second and may be absent without meaningful
+foreground traffic: their absence cannot establish safe coexistence. Wrapper exit
+and sampled known-child states do not prove physical quiescence or account for every
+short-lived descendant. Busy time records accounted activity rather than NVMe
+capacity; PSI totals support examination of short intervals ([kernel diskstats](https://www.kernel.org/doc/html/latest/admin-guide/iostats.html),
+[kernel PSI](https://www.kernel.org/doc/html/latest/accounting/psi.html)). No guard is
+relaxed by this diagnostic. Production prepare/conversion remains held for review.
 
 The first measured acceptance uses a disposable local Restic repository and a
 small synthetic cache, with actual host admission/process/device observation:
