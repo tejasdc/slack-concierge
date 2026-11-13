@@ -1897,16 +1897,23 @@ export class SessionExecutionHost {
     const owned=db.query("SELECT provider_admission_intended_at FROM turns WHERE id=? AND session_id=? AND owner_instance_id=? AND dispatch_attempt=? AND status='running' AND stop_requested_at IS NULL")
       .get(claim.turn_id,session.id,this.options.instanceId,claim.dispatch_attempt) as any;
     if(!owned?.provider_admission_intended_at||current.binding_generation!==session.binding_generation||current.status==='archived'||metadata.suspended)throw new ProviderCapabilityUnavailableError('send','The exact owner admission is no longer current.');
-    const saved=JSON.parse(getAcceptedSessionInput(input.id)!.receipt_json??'{}');
-    const admission={provider:session.provider_id,purpose:metadata.purpose??'chat',inputId:input.id,runId:nativeRunId(claim.turn_id),bindingGeneration:session.binding_generation??1,
+    const admission=db.transaction(()=>{
+      const saved=JSON.parse(getAcceptedSessionInput(input.id)!.receipt_json??'{}');
+      const value={provider:session.provider_id,purpose:metadata.purpose??'chat',inputId:input.id,runId:nativeRunId(claim.turn_id),bindingGeneration:session.binding_generation??1,
       admittedAt:saved.admission?.admittedAt??new Date().toISOString(),promptHash:createHash('sha256').update(actual.prompt).digest('hex'),model:actual.model??null,
       // A file's pin is its custody identity: id, name, type and digest. An audio transcript is the
       // owner's own derived text, not part of the file, and Thinkering's ChatGPT capability refuses
       // any field outside the pin, so every ChatGPT send with a file failed once transcripts were
       // added to attachment rows (found 2026-10-09).
       attachments:attachments.map(({base64,transcriptText,...pin})=>pin),policy:metadata.interactionPolicy??'standard',nativeBinding:metadata.nativeBinding??null};
-    if(session.provider_id==='chatgpt'&&saved.admission&&stablePayload(saved.admission)!==stablePayload(admission))throw new ProviderCapabilityUnavailableError('send','Prepared input changed from its immutable provider admission.');
-    db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({...saved,admission}),input.id);
+      if(session.provider_id==='chatgpt'&&saved.admission&&stablePayload(saved.admission)!==stablePayload(value))throw new ProviderCapabilityUnavailableError('send','Prepared input changed from its immutable provider admission.');
+      recordSessionEvent({eventId:`provider_admission:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'provider_admission',payload:{dispatchAttempt:claim.dispatch_attempt,admission:value}});
+      // Keep the established receipt field as the first immutable admission. Later Codex
+      // dispatches are retained by attempt identity above instead of replacing its custody.
+      if(!saved.admission)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({...saved,admission:value}),input.id);
+      return value;
+    })();
+    this.owner.invalidateReceipt(input.id);
     return admission;
   }
   private async runFork(claim:QueuedTurnClaimRow,operation:AcceptedSessionInput,session:SessionRow) {
