@@ -127,3 +127,47 @@ schema-only query plan proves the access path, not production latency. An
 installed health check or one fast non-Inbox call cannot establish Inbox
 performance. Keep the repair request open until deployment, live projection
 checks and the requested observation window have been inspected.
+
+### Installed acceptance and three-hour observation, 2026-11-13
+
+PRs #848 and #851 passed their required release checks and independent Claude
+reviews. Installed commit `662451f75984a33600bdff59582519b6008c008b`
+contained both repair commits. The actual Inbox router (`concierge:9326`, Claude
+Opus 5.5, server project `/root/workspace/slack-inbox`) called the public owed
+route through its installed Stop client, with its own current input/run pair
+and without offer or reminder effects. Two initial calls returned HTTP 200 in
+8,263 and 7,633 ms; each warmed a separate read executor. The third returned
+HTTP 200 in 105 ms. Each returned the exact current source, zero unfiled inputs
+and the router's actual open request. Matching reader records measured 8,195,
+7,587 and 57 ms; subsequent ordinary Stop reads measured 34 and 45 ms. A
+concurrent non-Inbox owner read during the earlier private cold-read acceptance
+took 4 ms; the corrected public non-Inbox route later answered in 2 ms. The
+existing agents-list transport also passed its installed check.
+
+The journal window from 09:36:00Z through 12:36:21Z contained one natural Inbox
+Stop projection, at 10:01:40.594Z for turn 29799. Its accepted input was an
+agent-origin capture, separate from the owed-route acceptance requests. It
+returned HTTP 200 in 46 ms with zero database
+errors. Across the window there were zero owed-related `owner_task_blocked`
+records, zero occurrences of the original statement fingerprint, and zero
+`foreground_read_failed` or `UNFILED_READ_UNAVAILABLE` records. This is a
+three-hour observation with light traffic, not sustained-load evidence. There
+were 26 other lag records and one 2,017 ms startup block; this repair does not
+claim that all owner lag disappeared.
+
+The native observation watch recorded a 19-second gap, 10:18:09.840Z through
+10:18:29.155Z. The service journal confirms a graceful stop and restart during
+that interval, including successful drain completion and a startup block.
+It is not counted as continuous service availability. The replacement installed
+commit `8a1895ab927dea27317fab063bb57196b71e9041` was verified to retain both
+repair commits. After the observation, the same Inbox router repeated the
+public acceptance against the new release: HTTP 200 in 7,715 ms cold and 75 ms
+warm, both with the exact current source and expected obligation counts. Reader
+records at 12:37:29Z measured 7,666 and 32 ms; the following ordinary Stop read
+measured 35 ms. None produced an owner-block record or a read failure.
+
+Cold retained-history reconstruction still costs roughly eight seconds per
+reader after a restart. It now runs away from the canonical owner; the repair
+does not claim an instant cold Stop response. The work request can close on the
+bounded-query evidence, exact-source installed acceptance, successful ordinary
+Stop reads and inspected observation window, with those limits retained.
