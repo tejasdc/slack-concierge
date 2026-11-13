@@ -1,4 +1,6 @@
 import {createHash} from 'node:crypto';
+import {closeSync,existsSync,fsyncSync,openSync,readFileSync,renameSync,rmSync,writeSync} from 'node:fs';
+import {join} from 'node:path';
 import {db,getSessionById,observeTurnFacts} from './state';
 import {nativeRunId,recordSessionEvent,recordSessionInputAttention,retainSlackInput,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import type {SessionOwner} from './session-owner';
@@ -21,34 +23,123 @@ setInterval(()=>{
   progressBatchCommits=0;progressBatchEvents=0;
 },60_000).unref();
 
+// Failed flush attempts since the queue was last saved. A failed batch stays queued and is retried;
+// every attempt and its eventual outcome is logged with the batch's exact event identities.
+let progressFlushFailures=0;
+// The queue's events also sit in the spill file restored at startup until a flush saves them.
+let progressSpillRestored=false;
+let progressExitHookInstalled=false;
+
+/** Exact identity of the queued batch for logs: which events, which turns, how many. */
+function progressBatchIdentity(events:readonly PendingProgressEvent[]=pendingProgressEvents) {
+  return {
+    events:events.length,
+    first_event_id:events[0]?.eventId??null,
+    last_event_id:events.at(-1)?.eventId??null,
+    turn_ids:[...new Set(events.map(event=>event.turnId))],
+  };
+}
+
 export function flushPendingProviderProgressEvents(){
   if(progressFlushTimer){clearTimeout(progressFlushTimer);progressFlushTimer=null;}
   if(!pendingProgressEvents.length)return;
   const rootCommit=!db.inTransaction;
   try {
+    // Immediate, because each recorded event reads before it writes. A deferred transaction takes
+    // its read snapshot first; when another connection commits in between, SQLite refuses the
+    // write at once as "database is locked" without waiting the busy timeout. That refused the
+    // progress batch at 08:12:21Z on 2026-11-13, eleven seconds after a restart. Reserving the
+    // writer up front waits instead. Inside an enclosing transaction this is a savepoint.
     db.transaction(()=>{
       for(const {versionKey:_versionKey,content:_content,bytes:_bytes,...event} of pendingProgressEvents)
         recordSessionEvent(event);
-    })();
+    }).immediate();
   } catch(error) {
+    progressFlushFailures++;
+    log('error','session_progress_batch_flush_failed',{
+      ...progressBatchIdentity(),attempt:progressFlushFailures,will_retry:true,...errorFields(error),
+    });
     scheduleProgressFlush();
     throw error;
   }
+  if(progressFlushFailures)
+    log('info','session_progress_batch_recovered',{...progressBatchIdentity(),failed_attempts:progressFlushFailures});
+  progressFlushFailures=0;
   if(rootCommit)progressBatchCommits++;
   progressBatchEvents+=pendingProgressEvents.length;
   pendingProgressEvents.length=0;
   pendingProgressBytes=0;
   pendingVersions.clear();
+  if(progressSpillRestored)clearProgressSpill();
 }
 
 function scheduleProgressFlush(){
   if(progressFlushTimer)return;
   progressFlushTimer=setTimeout(()=>{
     progressFlushTimer=null;
-    try {flushPendingProviderProgressEvents();}
-    catch(error){log('error','session_progress_batch_flush_failed',{...errorFields(error)});}
+    // The flush itself logs the failed batch and schedules the next attempt.
+    try {flushPendingProviderProgressEvents();} catch {}
   },1_000);
   progressFlushTimer.unref();
+}
+
+function progressSpillPath() {
+  const stateDir=process.env.CONCIERGE_STATE_DIR;
+  return stateDir?join(stateDir,'pending-progress-events.json'):null;
+}
+
+function clearProgressSpill() {
+  progressSpillRestored=false;
+  const path=progressSpillPath();
+  try {if(path)rmSync(path,{force:true});}
+  catch(error){log('error','session_progress_spill_clear_failed',{...errorFields(error)});}
+}
+
+/**
+ * Called as the owner process exits, on every path. Queued progress is accepted provider output
+ * that has not reached the ledger yet; it gets one more save, and if the ledger still refuses,
+ * it is written to a spill file beside the ledger that the next owner restores before projecting.
+ * Only when both fail is the batch dropped, and the log names its events.
+ */
+export function saveOrSpillProviderProgressEventsAtExit() {
+  if(!pendingProgressEvents.length)return;
+  try {flushPendingProviderProgressEvents();return;} catch {}
+  const path=progressSpillPath();
+  try {
+    if(!path)throw new Error('CONCIERGE_STATE_DIR is not set.');
+    const temporary=`${path}.${process.pid}.tmp`;
+    const fd=openSync(temporary,'w',0o600);
+    try {writeSync(fd,JSON.stringify({version:1,events:pendingProgressEvents}));fsyncSync(fd);}
+    finally {closeSync(fd);}
+    renameSync(temporary,path);
+    log('warn','session_progress_batch_spilled',{...progressBatchIdentity(),path});
+  } catch(error) {
+    log('error','session_progress_batch_dropped',{
+      ...progressBatchIdentity(),event_ids:pendingProgressEvents.map(event=>event.eventId),...errorFields(error),
+    });
+  }
+}
+
+/** Restores a spilled batch into the queue; the next successful flush saves it and removes the file. */
+function restoreSpilledProviderProgressEvents() {
+  const path=progressSpillPath();
+  if(!path||!existsSync(path))return;
+  let spilled:PendingProgressEvent[];
+  try {spilled=(JSON.parse(readFileSync(path,'utf8')) as {events:PendingProgressEvent[]}).events;}
+  catch(error){log('error','session_progress_spill_unreadable',{path,...errorFields(error)});return;}
+  // Events are records, not effects: an already-saved identity is skipped, never replayed.
+  const missing=spilled.filter(event=>!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(event.eventId));
+  for(const event of missing) {
+    pendingProgressEvents.push(event);
+    const versions=pendingVersions.get(event.versionKey)??new Set<string>();
+    versions.add(event.content);
+    pendingVersions.set(event.versionKey,versions);
+    pendingProgressBytes+=event.bytes;
+  }
+  progressSpillRestored=true;
+  log('info','session_progress_batch_restored',{...progressBatchIdentity(missing),already_saved:spilled.length-missing.length,path});
+  if(!pendingProgressEvents.length){clearProgressSpill();return;}
+  try {flushPendingProviderProgressEvents();} catch {}
 }
 
 export function projectSessionProviderMessage(turnId:number,message:ProviderHistoryMessage) {
@@ -107,6 +198,12 @@ function messageContent(message:ProviderHistoryMessage) {
 
 /** Projects existing turn facts; it neither admits input nor executes work. */
 export function installSessionProjection(owner:SessionOwner) {
+  // Only the projecting owner holds a progress queue, so only it saves or spills one at exit.
+  restoreSpilledProviderProgressEvents();
+  if(!progressExitHookInstalled){
+    progressExitHookInstalled=true;
+    process.on('exit',saveOrSpillProviderProgressEventsAtExit);
+  }
   for(const input of db.query(`SELECT input.id FROM session_inputs input LEFT JOIN turns turn ON turn.id=input.turn_id
     WHERE input.steering_id IS NULL AND input.kind IN ('create','input','consultation','fork')
       AND ((turn.turn_kind='native' AND turn.status IN ('error','parked','interrupted','delivery_parked'))
