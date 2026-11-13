@@ -45,11 +45,10 @@ export function implementationEditDecision(input:GateInput):{hold:boolean;messag
       ||binding.session_status==='archived'||sessionMetadata({native_metadata_json:binding.native_metadata_json} as any).suspended)
       return {hold:true,message:'Concierge cannot verify this Codex helper execution is still eligible. Retry when its identity is available.'};
     retainedParent={id:binding.turn_id,session_id:session.id,accepted_input_id:binding.accepted_input_id,provider_turn_id:binding.provider_turn_id};
-    if(!isThinkingModel(retainedModel))
-      return recordCodexHelperEdit(session.id,binding.turn_id,providerTurnId,input.toolId,retainedModel,binding.accepted_input_id);
+    return recordCodexHelperEdit(session.id,binding.turn_id,providerTurnId,input.toolId,retainedModel,binding.accepted_input_id);
   }
   const exact=input.providerTurnId?running.find(row=>input.providerTurnId===row.provider_turn_id):undefined;
-  // The reported model decides whether a mismatched Codex turn is exempt; turn identity is needed only to count it.
+  // A child execution keeps its reported model and its own edit count, independent of the parent model.
   const mismatched=bound.provider_id==='codex'&&!!input.providerTurnId&&!exact;
   const parent=mismatched?(retainedParent??(input.ownerTurnId?running.find(row=>input.ownerTurnId===row.id):running.length===1?running[0]:undefined)):undefined;
   if(mismatched&&!binding){
@@ -70,8 +69,7 @@ export function implementationEditDecision(input:GateInput):{hold:boolean;messag
         kind:'implementation_codex_helper_binding',payload:{providerTurnId:input.providerTurnId,model:helperModel}});
     })();
     retainedParent=parent;
-    if(!isThinkingModel(helperModel))
-      return recordCodexHelperEdit(session.id,parent.id,input.providerTurnId!,input.toolId,helperModel,parent.accepted_input_id);
+    return recordCodexHelperEdit(session.id,parent.id,input.providerTurnId!,input.toolId,helperModel,parent.accepted_input_id);
   }
   const turn=retainedParent??exact??parent??(!input.providerTurnId?running.find(row=>input.ownerTurnId===row.id)??(running.length===1?running[0]:null):null);
   if(!turn)return {hold:true,message:'Concierge cannot identify the active turn for this code edit. Retry when its owner is available.'};
@@ -125,15 +123,35 @@ export function implementationEditDecision(input:GateInput):{hold:boolean;messag
 }
 
 function recordCodexHelperEdit(sessionId:number,turnId:number,providerTurnId:string,toolId:string,model:string,inputId:string|null){
-  if(!isThinkingModel(model)){
-    const key=`implementation-helper-edit:${createHash('sha256').update(JSON.stringify([sessionId,providerTurnId,toolId])).digest('hex')}`;
-    db.transaction(()=>{
-      if(!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(key))
-        recordSessionEvent({eventId:key,sessionId,inputId,turnId,kind:'implementation_helper_edit',payload:{providerTurnId,toolId,model}});
-    })();
+  const key=`implementation-helper-edit:${createHash('sha256').update(JSON.stringify([sessionId,providerTurnId,toolId])).digest('hex')}`;
+  return db.transaction(()=>{
+    if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(key))return {hold:false,exempt:'codex-helper'};
+    const worker=sessionMetadata(getSessionById(sessionId)!).implementationFor;
+    if(isThinkingModel(model)&&!worker&&!humanChoseThinkingModel(inputId??undefined,model)){
+      const edits=(db.query(`SELECT COUNT(*) AS count FROM session_owner_events
+        WHERE turn_id=? AND kind='implementation_helper_edit'
+          AND json_extract(payload_json,'$.providerTurnId')=?`).get(turnId,providerTurnId) as {count:number}).count;
+      const reason=db.query("SELECT 1 FROM session_owner_events WHERE turn_id=? AND kind='implementation_top_model_reason' LIMIT 1").get(turnId);
+      const handoff=db.query(`SELECT 1 FROM session_communication_requests request
+        JOIN session_inputs target ON target.id=request.target_input_id AND target.session_id=request.target_session_id
+        JOIN turns execution ON execution.id=target.turn_id AND execution.session_id=request.target_session_id
+        WHERE request.source_turn_id=? AND request.source_session_id=?
+          AND json_extract(request.payload_json,'$.implementation')=1
+          AND request.status NOT IN ('failed','uncertain','canceled')
+          AND (request.outcome IS NULL OR request.outcome='answered')
+          AND execution.status NOT IN ('failed','cancelled') LIMIT 1`).get(turnId,sessionId);
+      if(edits>=4&&!reason&&!handoff){
+        const sourceFlags=inputId?`--source-input ${inputId} --source-run ${nativeRunId(turnId)}`:'--source-input <this input> --source-run <this run>';
+        const holdId=createHash('sha256').update(JSON.stringify([providerTurnId,model,edits])).digest('hex');
+        if(!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`implementation-edit-hold:${turnId}:${holdId}`))
+          recordSessionEvent({eventId:`implementation-edit-hold:${turnId}:${holdId}`,sessionId,inputId,turnId,
+            kind:'implementation_edit_hold',payload:{model,providerTurnId,afterEdits:edits}});
+        return {hold:true,edits,message:`This ${model} helper's fifth code edit is held. Hand fixed implementation down: router-actions.sh sessions implement --project <registered-project> --session-name "<task>" --summary "<acceptance criterion>" ${sourceFlags} --action-id <stable-id> -- <fixed design>. To continue here, record why this parent turn still needs ${model}: router-actions.sh sessions edit-reason --reason "<specific reason>" ${sourceFlags} --action-id top-helper-edit-${turnId}. Retry the edit after that command.`};
+      }
+    }
+    recordSessionEvent({eventId:key,sessionId,inputId,turnId,kind:'implementation_helper_edit',payload:{providerTurnId,toolId,model}});
     return {hold:false,exempt:'codex-helper'};
-  }
-  return {hold:true,message:'Concierge cannot identify the active turn for this code edit. Retry when its owner is available.'};
+  })();
 }
 
 export function recordImplementationEditReason(turnId:number,sessionId:number,inputId:string,reason:string,actionId:string){
