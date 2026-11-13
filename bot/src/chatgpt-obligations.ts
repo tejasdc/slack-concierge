@@ -1,6 +1,7 @@
 import {db,getSessionById} from './state';
-import {getAcceptedSessionInput,humanAuthored,withdrawUnstartedServiceInput} from './session-inputs';
+import {getAcceptedSessionInput,humanAuthored,retainSessionInput,withdrawUnstartedServiceInput} from './session-inputs';
 import {sessionAddress} from './session-address';
+import {createHash} from 'node:crypto';
 
 export type ChatGptTaskKind='local_request'|'peer_delivery'|'external_request'|'direct_input';
 export type ChatGptTask={kind:ChatGptTaskKind;id:string};
@@ -721,11 +722,75 @@ export function recordChatGptReturnReceipt(input:{eventId:string;returnInputId:s
     answerReturnInputId:input.returnInputId,evidence:{eventId:input.eventId,returnInputId:input.returnInputId}});
 }
 
+/** Prepare proof for the exact bytes supplied by a supported tool read. The asker must
+ * explicitly confirm it; issuance alone neither closes the duty nor acknowledges a provider. */
+export function recordChatGptToolRead(input:{obligationId:string;askerSessionId:number;sourceInputId:string;
+  sourceRunId:string;requestId:string;eventId:string;now:number}) {
+  const obligation=db.query('SELECT * FROM session_chatgpt_obligations WHERE obligation_id=?').get(input.obligationId) as ObligationRow|null;
+  if(!obligation||obligation.asker_session_id!==input.askerSessionId||obligation.active_request_id!==input.requestId
+    ||obligation.answer_event_id!==input.eventId||!['return_pending','resolution_pending'].includes(obligation.state))
+    throw new Error('This exact ChatGPT answer is not available for a tool-read receipt.');
+  const event=db.query(`SELECT event_id,request_id,kind,status,payload_json,superseded_by_event_id FROM session_communication_events
+    WHERE event_id=?`).get(input.eventId) as {event_id:string;request_id:string;kind:string;status:string;payload_json:string;
+      superseded_by_event_id:string|null}|null;
+  if(!event||event.request_id!==input.requestId||event.kind!=='final'||event.superseded_by_event_id)
+    throw new Error('The answer event is not the current final for this exact request.');
+  const digest=createHash('sha256').update(event.payload_json).digest('hex');
+  const source=getAcceptedSessionInput(input.sourceInputId);
+  if(!source||source.session_id!==input.askerSessionId)
+    throw new Error('A tool-read receipt needs this asker\'s exact accepted input and run.');
+  const taskBound=obligation.task_kind==='direct_input'
+    ?source.id===obligation.task_id||!!db.query('SELECT 1 FROM session_chatgpt_direct_task_inputs WHERE task_input_id=? AND source_input_id=?').get(obligation.task_id,source.id)
+    :source.request_id===obligation.task_id;
+  if(!taskBound||!chatGptTaskHeldBy(input.askerSessionId,{kind:obligation.task_kind,id:obligation.task_id}))
+    throw new Error('This accepted source input is not bound to the exact open task that owns the answer.');
+  const payload={kind:'chatgpt-answer-tool-read',obligationId:input.obligationId,requestId:input.requestId,
+    answerEventId:input.eventId,payloadSha256:digest,sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId};
+  const saved=retainSessionInput({sessionId:input.askerSessionId,scope:`communication:${input.sourceInputId}`,
+    actionId:`tool-read:${input.eventId}:${input.sourceRunId}`,kind:'action',origin:'agent',payload,sourceInputId:input.sourceInputId,
+    sourceRunId:input.sourceRunId,requestId:input.obligationId});
+  const receipt={state:'completed',kind:'tool-read-prepared',answerEventId:input.eventId,requestId:input.requestId,payloadSha256:digest};
+  if(!saved.input.receipt_json)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify(receipt),saved.input.id);
+  return {readReceiptId:saved.input.id,answerEventId:input.eventId,requestId:input.requestId,payloadSha256:digest};
+}
+
+export function validateChatGptToolRead(input:{receiptId:string;obligationId:string;answerEventId:string;
+  askerSessionId:number;sourceInputId:string;sourceRunId:string;handling:string;followUpRequestId?:string;
+  successorRequestId?:string}) {
+  if(input.handling==='context_supplied'||input.handling==='superseded')
+    throw new Error('A tool-read receipt only confirms direct handling; context_supplied and superseded require an acknowledged native return.');
+  const receipt=db.query(`SELECT id,session_id,payload_json,source_input_id,source_run_id FROM session_inputs WHERE id=?`)
+    .get(input.receiptId) as {id:string;session_id:number;payload_json:string;source_input_id:string;source_run_id:string}|null;
+  if(!receipt||receipt.session_id!==input.askerSessionId||receipt.source_input_id!==input.sourceInputId
+    ||receipt.source_run_id!==input.sourceRunId)throw new Error('The tool-read receipt belongs to another actor, input, or run.');
+  const source=getAcceptedSessionInput(input.sourceInputId);
+  if(!source||source.session_id!==input.askerSessionId)
+    throw new Error('Confirmation needs the same asker input and run that read the answer.');
+  const proof=JSON.parse(receipt.payload_json);
+  if(proof.kind!=='chatgpt-answer-tool-read'||proof.obligationId!==input.obligationId
+    ||proof.answerEventId!==input.answerEventId||proof.sourceInputId!==input.sourceInputId||proof.sourceRunId!==input.sourceRunId)
+    throw new Error('The tool-read receipt does not match this exact answer and source.');
+  const obligation=db.query('SELECT * FROM session_chatgpt_obligations WHERE obligation_id=?').get(input.obligationId) as ObligationRow|null;
+  const event=db.query(`SELECT request_id,kind,payload_json,superseded_by_event_id FROM session_communication_events WHERE event_id=?`)
+    .get(input.answerEventId) as {request_id:string;kind:string;payload_json:string;superseded_by_event_id:string|null}|null;
+  if(!obligation||obligation.asker_session_id!==input.askerSessionId||obligation.active_request_id!==proof.requestId
+    ||obligation.answer_event_id!==input.answerEventId||!['return_pending','resolution_pending'].includes(obligation.state)
+    ||!event||event.request_id!==proof.requestId||event.kind!=='final'||event.superseded_by_event_id
+    ||createHash('sha256').update(event.payload_json).digest('hex')!==proof.payloadSha256)
+    throw new Error('The retained answer or its exact task has changed since it was read.');
+  const taskBound=obligation.task_kind==='direct_input'
+    ?source.id===obligation.task_id||!!db.query('SELECT 1 FROM session_chatgpt_direct_task_inputs WHERE task_input_id=? AND source_input_id=?').get(obligation.task_id,source.id)
+    :source.request_id===obligation.task_id;
+  if(!taskBound||!chatGptTaskHeldBy(input.askerSessionId,{kind:obligation.task_kind,id:obligation.task_id}))
+    throw new Error('The confirming source input is not bound to the exact open task that owns the answer.');
+  return {obligationId:input.obligationId,answerEventId:input.answerEventId,requestId:proof.requestId};
+}
+
 /** The asker explicitly accounts for the answer it received. This records a process
  * disposition, not an assertion by the owner that ChatGPT's substantive answer is correct. */
 export function resolveChatGptAnswer(input:{obligationId:string;askerSessionId:number;answerEventId:string;
   actionId:string;handling:'used'|'context_supplied'|'scoped'|'superseded';reason?:string;followUpRequestId?:string;
-  successorRequestId?:string;sourceInputId:string;now:number}) {
+  successorRequestId?:string;sourceInputId:string;now:number;toolReadReceiptId?:string;toolReadSourceRunId?:string}) {
   db.transaction(()=>{
     const obligation=db.query('SELECT * FROM session_chatgpt_obligations WHERE obligation_id=?').get(input.obligationId) as ObligationRow|null;
     if(!obligation)throw new Error('This ChatGPT request has no recorded answer obligation. If it serves an open task, link that exact historical task first; sessions answer cannot handle an unlinked request.');
@@ -734,8 +799,11 @@ export function resolveChatGptAnswer(input:{obligationId:string;askerSessionId:n
       .get(input.obligationId,`handled:${input.actionId}`) as {evidence_json:string}|null;
     const disposition={answerEventId:input.answerEventId,handling:input.handling,reason:input.reason??null,
       followUpRequestId:input.followUpRequestId??null,successorRequestId:input.successorRequestId??null,
-      sourceInputId:input.sourceInputId};
+      sourceInputId:input.sourceInputId,...(input.toolReadReceiptId?{toolReadReceiptId:input.toolReadReceiptId,
+        toolReadSourceRunId:input.toolReadSourceRunId??null}:{})};
     if(prior){if(JSON.stringify(JSON.parse(prior.evidence_json))!==JSON.stringify(disposition))throw new Error('Idempotency conflict: handled answer changed.');return;}
+    if(input.toolReadReceiptId&&!['used','scoped'].includes(input.handling))
+      throw new Error('A tool-read receipt is only valid when handling the answer as used or scoped.');
     if(obligation.state==='resolved'||obligation.state==='withdrawn_by_tejas')
       throw new Error('This ChatGPT answer obligation has already closed.');
     if(input.handling==='superseded'){
@@ -761,6 +829,11 @@ export function resolveChatGptAnswer(input:{obligationId:string;askerSessionId:n
       const successorDuty=chatGptObligationForAttempt(input.successorRequestId);
       if(successorDuty&&(successorDuty.task_kind!==obligation.task_kind||successorDuty.task_id!==obligation.task_id))
         throw new Error('A successor answer belonging to a different task cannot close this question.');
+    }else if(input.toolReadReceiptId){
+      if(!input.toolReadSourceRunId)throw new Error('Tool-read handling needs the exact accepted source and run.');
+      validateChatGptToolRead({receiptId:input.toolReadReceiptId,obligationId:input.obligationId,answerEventId:input.answerEventId,
+        askerSessionId:input.askerSessionId,sourceInputId:input.sourceInputId,sourceRunId:input.toolReadSourceRunId,
+        handling:input.handling,followUpRequestId:input.followUpRequestId,successorRequestId:input.successorRequestId});
     }else if(obligation.state!=='resolution_pending'||obligation.answer_event_id!==input.answerEventId||!obligation.answer_return_input_id)
       throw new Error('The exact ChatGPT answer has not been acknowledged by the asking session.');
     if(input.handling==='scoped'&&!input.reason?.trim())throw new Error('A narrowed conclusion needs the concrete scope and reason.');

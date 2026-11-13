@@ -41,7 +41,7 @@ import {withBefore} from './reply-before';
 import { isHisChatGpt,parseProviderSelector,resolveProviderSelector,chatgptProjectThinking } from './aliases';
 import {humanChoseChatGptEffort,humanChoseProvider,humanChoseThinkingModel} from './model-escalation-custody';
 import {escalationReason} from './model-escalation';
-import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindDirectChatGptTaskSource,chatGptAnswerCommand,chatGptObligationForAttempt,classifyLegacyChatGptAsk,holdUnmessageableChatGptAsker,migrateOpenLegacyChatGptAsks,openChatGptObligations,recordChatGptAttemptResult,recordChatGptOriginalRequeued,recordChatGptReturnReceipt,reconcileCanceledChatGptObligations,reconcileHandoffChatGptObligations,requireChatGptTaskDisposition,requireChatGptTaskResolved,resolveChatGptAnswer,resolveChatGptTask,resumeMessageableChatGptAsker,withdrawCanceledChatGptAttempt,type ChatGptObligationRow} from './chatgpt-obligations';
+import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindDirectChatGptTaskSource,chatGptAnswerCommand,chatGptObligationForAttempt,classifyLegacyChatGptAsk,holdUnmessageableChatGptAsker,migrateOpenLegacyChatGptAsks,openChatGptObligations,recordChatGptAttemptResult,recordChatGptOriginalRequeued,recordChatGptReturnReceipt,recordChatGptToolRead,reconcileCanceledChatGptObligations,reconcileHandoffChatGptObligations,requireChatGptTaskDisposition,requireChatGptTaskResolved,resolveChatGptAnswer,resolveChatGptTask,resumeMessageableChatGptAsker,validateChatGptToolRead,withdrawCanceledChatGptAttempt,type ChatGptObligationRow} from './chatgpt-obligations';
 import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, reportBackNotice, strandedStep, stalledNotice, tellWorkerCanceled, cancelQueuedWithdrawnRequest, endRepeatingScheduleForInput, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, finalClosingLine, leadFirst, NEEDS_YOU_SUMMARY_REQUIRED, questionForTejas } from './answers-to-tejas';
@@ -1246,19 +1246,22 @@ export class SessionCommunicationCoordinator {
         })();
     }
     handleChatGptAnswer(input:{source:CommunicationSource;action_id:string;obligation_id:string;answer_event_id:string;
-        handling:'used'|'context_supplied'|'scoped'|'superseded';reason?:string;follow_up_request_id?:string;successor_request_id?:string}) {
+        handling:'used'|'context_supplied'|'scoped'|'superseded';reason?:string;follow_up_request_id?:string;successor_request_id?:string;read_receipt_id?:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.fenced(this.actor(input.source));action(input.action_id);
         if(!actor.inputId)throw new Error('Handling a ChatGPT answer needs the exact accepted source input and run.');
+        const currentRun=nativeRunId(actor.turn);
         const receipt={obligationId:input.obligation_id,answerEventId:input.answer_event_id,handling:input.handling};
         return db.transaction(()=>{
             const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
                 kind:'action',origin:'agent',payload:{kind:'chatgpt-answer-handled',...receipt,reason:input.reason??null,
-                    followUpRequestId:input.follow_up_request_id??null,successorRequestId:input.successor_request_id??null},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId:input.obligation_id});
+                    followUpRequestId:input.follow_up_request_id??null,successorRequestId:input.successor_request_id??null,
+                    ...(input.read_receipt_id?{readReceiptId:input.read_receipt_id}:{})},sourceInputId:actor.inputId,sourceRunId:currentRun,requestId:input.obligation_id});
             if(saved.duplicate)return {...JSON.parse(saved.input.receipt_json??'{}'),duplicate:true};
             resolveChatGptAnswer({obligationId:input.obligation_id,askerSessionId:actor.session,answerEventId:input.answer_event_id,
                 actionId:input.action_id,handling:input.handling,reason:input.reason,followUpRequestId:input.follow_up_request_id,
-                successorRequestId:input.successor_request_id,sourceInputId:actor.inputId,now:this.now()});
+                successorRequestId:input.successor_request_id,sourceInputId:actor.inputId,now:this.now(),toolReadReceiptId:input.read_receipt_id,
+                toolReadSourceRunId:currentRun});
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(receipt),saved.input.id);
             return {...receipt,duplicate:false};
         })();
@@ -1426,7 +1429,25 @@ export class SessionCommunicationCoordinator {
         const row = this.row(input.request_id);
         if (actor.session !== row.source_session_id && actor.session !== row.target_session_id)
             throw new Error('Request is outside this session.');
-        return this.receipt(row);
+        const receipt=this.receipt(row);
+        const obligation=db.query(`SELECT * FROM session_chatgpt_obligations WHERE active_request_id=? AND asker_session_id=?
+          AND state IN ('return_pending','resolution_pending')`).get(input.request_id,actor.session) as ChatGptObligationRow|null;
+        if(obligation&&actor.inputId){
+            const source=getAcceptedSessionInput(actor.inputId);
+            const currentRun=nativeRunId(actor.turn);
+            const taskBound=obligation.task_kind==='direct_input'
+                ?source?.id===obligation.task_id||!!db.query('SELECT 1 FROM session_chatgpt_direct_task_inputs WHERE task_input_id=? AND source_input_id=?').get(obligation.task_id,source?.id)
+                :source?.request_id===obligation.task_id;
+            const answerEvent=obligation.answer_event_id?db.query(`SELECT 1 FROM session_communication_events
+                WHERE event_id=? AND request_id=? AND kind='final' AND superseded_by_event_id IS NULL`)
+                .get(obligation.answer_event_id,input.request_id):null;
+            if(source?.session_id===actor.session&&taskBound&&answerEvent){
+                const read=recordChatGptToolRead({obligationId:obligation.obligation_id,askerSessionId:actor.session,
+                    sourceInputId:source.id,sourceRunId:currentRun,requestId:input.request_id,eventId:obligation.answer_event_id!,now:this.now()});
+                return {...receipt,tool_read_receipt:read};
+            }
+        }
+        return receipt;
     }
     private local(requestId:string) { return !!db.query('SELECT 1 FROM session_communication_requests WHERE request_id=?').get(requestId); }
     inspect(requestId:string) {
