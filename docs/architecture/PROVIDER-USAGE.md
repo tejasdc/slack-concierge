@@ -1,5 +1,52 @@
 # Provider usage reset cache
 
+## Google quota disagreement evidence
+
+Google may refuse a turn while the metadata-only CLI allowance reading reports room.
+The normal adapter refreshes after the refusal and uses the same existing meter/reset
+decision. If that decision supplies no usable reset, its existing once-per-day repair
+notice now preserves selected account/model/runner at dispatch, dispatch observation
+time, refusal time, and the post-refusal reading's account, runner, source/read times,
+all meter windows and problems. Dispatch identity and reading identity are separate;
+the owner selection is not a CLI-terminal attestation of the account.
+
+`bot/src/google-quota-disagreement.ts` only formats retained evidence. It distinguishes
+verified fresh room, exhausted allowance with no usable reset, and absent, unreadable,
+incomplete or stale readings. Unknown reset or missing reading is not evidence of room.
+The selected dispatch account must match the reading's account after normalization,
+the source runner must match, and the requested model family must be known before
+the formatter can describe matching room or exhaustion. Missing or different identity
+stays unavailable, with both identities preserved for investigation.
+The fixture `bun bot/scripts/google-quota-disagreement-fixture.ts` runs that pure formatter
+for all three cases, exact identity/time context and separate Gemini/Argon families;
+it also retains/renders evidence through real repair-notice functions in disposable
+SQLite, starts no provider work and touches no production state. Actual provider reads, admission,
+percentages, reset handling, hold release and notice deduplication stay unchanged.
+
+On November13 the same account's CLI output alternated between exhausted Gemini weekly
+with reset02:15:16Z and approximately1% used with a new weekly epoch. The native owner
+released held work at23:17:42Z. A bounded, tools-denied, paid-credits-disabled Flash
+health check then succeeded at approximately23:20Z (one turn,8755tokens), and native
+session work resumed. Therefore preserving the earlier exhausted window until its
+original reset would have imposed a false roughly three-hour hold on actual recovery.
+That unshipped policy was rejected. Fresh actual admission is stronger evidence of
+recovery than treating an earlier meter reset as a non-revocable promise.
+
+Decision case: the objective is to preserve exact cause evidence without delaying real
+recovery. Native recovery already worked. Retaining old full meters failed the live
+counterexample; adding another service or retry policy supplies no stronger evidence.
+The narrow correction closes the notice's evidence gap while preserving native behavior.
+Upstream cause remains unknown: quota refresh cancellation appeared with both exhausted
+and room outputs. Google's [native documentation](https://antigravity.google/docs/cli/commands/usage/)
+says usage refreshes backend/disk data; those cancellation logs do not prove a cache race.
+
+Evidence ownership: the existing adapter observes the actual refusal, the existing reader
+owns the post-refusal snapshot, and the existing repair-notice store retains their context
+under the existing daily key. No new state, identity authority or lifecycle exists.
+Older readers still receive ordinary notice text. Formatter fixtures establish local
+classification only; installed notice formatting and actual provider admission are separate
+proof layers. The November13 live admission proves recovery, not this formatter's deployment.
+
 The [current provider state flow](PROVIDER-STATE-FLOW.md) joins this evidence and the session owner into one operator map. Historical notice descriptions below are corrected at the affected sections for the November 3 incident.
 
 Concierge remembers an actual usage refusal and its provider-reported reset instant
