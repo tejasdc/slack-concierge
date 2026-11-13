@@ -54,6 +54,19 @@ try {
   assert(existsSync(ledgerRead));
   assert.equal(liveStoreCopyRefusal(`python3 ${ledgerRead} --database /root/.local/state/concierge/state.db "SELECT count(*) FROM inbox_topics"`), null);
   assert(liveStoreCopyRefusal(`python3 ${ledgerRead} --database /root/.local/state/concierge/state.db "VACUUM INTO '/tmp/x.db'"`));
+  // The Lab nightly reads sessions over the owner's socket and reserves its own feature-trail
+  // database read-write with BEGIN IMMEDIATE (2026-11-12). The socket is not a database.
+  const labNightly = join(root, 'expertise-nightly.py');
+  writeFileSync(labNightly, 'import sqlite3, socket\ntrail=sqlite3.connect("file:/root/workspace/agent-ecology/state/feature-trail.db?mode=rw", uri=True)\n'
+    + 'trail.execute("BEGIN IMMEDIATE")\ntrail.rollback()\ns=socket.socket(socket.AF_UNIX)\ns.connect("/root/.local/state/concierge/requests.sock")\n');
+  assert.equal(liveStoreCopyRefusal(`python3 ${labNightly} preflight --source-input a --source-run b`), null);
+  // Naming a live database beside the socket keeps every refusal.
+  const labWithLedger = join(root, 'lab-with-ledger.py');
+  writeFileSync(labWithLedger, 'import sqlite3\nsock="/root/.local/state/concierge/requests.sock"\n'
+    + 'db=sqlite3.connect("/root/.local/state/concierge/state.db")\ndb.execute("BEGIN IMMEDIATE")\n');
+  assert(liveStoreCopyRefusal(`python3 ${labWithLedger}`));
+  assert(liveStoreCopyRefusal('cp /root/.local/state/concierge/state.db /tmp/x.sock'));
+  assert(liveStoreCopyRefusal('sqlite3 /root/.local/state/concierge/state.db ".backup /tmp/copy.sock"'));
   // A ledger moved to its own filesystem is found through the state directory's link, at any
   // path that reaches the same file (2026-10-15: a `.backup` of the new home was not refused).
   const stateDir = join(root, 'relocated-state'), ledgerHome = join(root, 'ledger-home');
@@ -73,6 +86,9 @@ try {
   assert(liveStoreCopyRefusal('sqlite3 state.db ".backup /tmp/copy.db"', ledgerHome, stores));
   assert.equal(liveStoreCopyRefusal(`sqlite3 -readonly "file:${ledgerHome}/state.db?mode=ro" "select 1"`, root, stores), null);
   assert.equal(liveStoreCopyRefusal(`cp ${root}/source.db /tmp/copy.db`, root, stores), null);
+  // A live database disguised with a socket's name is still the same file.
+  linkSync(join(ledgerHome, 'state.db'), join(root, 'disguised.sock'));
+  assert(liveStoreCopyRefusal(`cp ${root}/disguised.sock /tmp/copy.db`, root, stores));
 
   // Real command import with another connection holding the writer. Before this fix, lkg
   // reran schema UPDATEs and exhausted busy_timeout despite being a read-only operation.
