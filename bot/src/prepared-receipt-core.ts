@@ -53,9 +53,9 @@ export function compactReceiptFromFacts(input:SourceInput,turn:Turn|null,steerin
   const payload=json(input.payload_json),saved=json(input.receipt_json);
   const codexSwitch=input.kind==='action'&&payload.kind==='codex-account-switch';
   const switchProjection=codexSwitch?codexAccountSwitchProjection(saved):null;
-  const switchOutcome=switchProjection?.outcome??null;
+  const switchState=switchProjection?.state??null;
   const execution=inputExecutionFacts(turn,steering);
-  const state=switchOutcome??receiptOperationState({kind:input.kind,savedState:saved.state,executionState:execution.state,
+  const state=switchState??receiptOperationState({kind:input.kind,savedState:saved.state,executionState:execution.state,
     requestKnown:conversation.known,requestOutcome:conversation.outcome,stopTurnStatus});
   const control=['action','stop','reconcile','cancel','cancel-action','bind','fork','project-task','inbox-capture','resurrect',
     'resurrect-native','outage-choice'].includes(input.kind);

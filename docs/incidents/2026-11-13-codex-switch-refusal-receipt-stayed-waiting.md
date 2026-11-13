@@ -24,15 +24,18 @@ the useful result.
 
 ## Fix
 
-The immediate reply now includes its retained operation ID and normalized outcome while
-keeping existing reply fields. The exact operation and compact receipt projections read
-the same retained result for this one action type. Historical explicit refusal details
-are classified from their saved replies; nothing is replayed or synthetically settled.
-Account movement, guards, activation reconciliation and admission holds are unchanged.
+The immediate reply now includes its retained operation ID while keeping the switch's
+existing `status` and `detail`. The exact operation and compact receipt readers derive
+their existing operation state from that structured status: a refused activation is
+`failed`, an applied activation is `completed`, and an unconfirmed result is `uncertain`.
+No second outcome field or English-message classifier is used. Historical receipts are
+read from their original saved result; nothing is replayed, migrated or synthetically
+settled. Account movement, guards, activation reconciliation and admission holds are
+unchanged.
 
 ## Acceptance scenario
 
-- **Seed:** An exact agent-authored switch operation with a retained failed reply that explicitly says the active-work guard left the runner alone.
-- **Action:** Read its exact operation and compact receipt, without issuing another switch.
-- **Expected:** Both views report `refused`; the exact result preserves the original reply and the operation identity and source remain unchanged. Applied, failed and uncertain saved results keep their respective outcomes.
-- **Replayable offline:** yes; the standalone projection fixture checks retained replies without calling the switch or touching account state.
+- **Seed:** An admitted agent work input in disposable state. The normal routed command calls the guarded switch entrypoint replaced by a deterministic no-provider refusal, then reads the resulting operation through the canonical owner and compact receipt readers. A second scenario seeds an old status/detail receipt as-is.
+- **Action:** Invoke the same source/action once more and read both retained receipts. The fixture counts switch-entry calls and never starts a provider or changes an account.
+- **Expected:** Direct reply, duplicate reply, exact receipt and compact receipt share the retained operation ID and structured result. Receipt state is `failed`; status/detail and agent source stay intact. Historical receipts also render `failed` without replay or migration.
+- **Replayable offline:** yes; `bot/scripts/codex-account-switch-receipt-fixture.ts` runs the admitted route and canonical owner read against a disposable database with a deterministic refusal.

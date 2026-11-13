@@ -382,7 +382,6 @@ function openAttention(session:SessionRow) {
 }
 function receiptSettled(receipt:any) {
   if(receipt.returnDelivery?.some((delivery:any)=>!SETTLED_DELIVERY.has(delivery.state)))return false;
-  if(receipt.kind==='action'&&receipt.outcome==='refused')return true;
   if(receipt.kind==='request')return SETTLED_REQUEST_OUTCOMES.has(receipt.settlement?.outcome);
   if(!['completed','failed','canceled'].includes(receipt.state))return false;
   return !receipt.statusDetail||(!receipt.statusDetail.automaticRetry&&!OPEN_STATUS_CODES.has(receipt.statusDetail.code));
@@ -1323,7 +1322,7 @@ export class SessionOwner {
     if(saved.admission&&!admissionHistory.some(entry=>stablePayload(entry.admission)===stablePayload(saved.admission)))
       admissionHistory.unshift({dispatchAttempt:null,admission:saved.admission});
     const codexSwitch=input.kind==='action'&&parsed.kind==='codex-account-switch';
-    const switchOutcome=codexSwitch?codexAccountSwitchProjection(saved).outcome:null;
+    const switchState=codexSwitch?codexAccountSwitchProjection(saved).state:null;
     const statusDetail=['input','create','consultation','comparison'].includes(input.kind)?inputStatusDetail(input,observed,saved):null;
     const unacknowledgedSteering=observed.steering?.status==='ambiguous'&&!observed.steering.provider_sent_at;
     const stopTurn=input.kind==='stop'?db.query('SELECT status FROM turns WHERE native_run_id=? AND session_id=?').get(parsed.runId,input.session_id) as {status:string}|null:null;
@@ -1342,8 +1341,7 @@ export class SessionOwner {
     const steeringError=observed.state==='failed'?observed.turn?.agent_text:observed.state==='uncertain'?{code:statusDetail?.code,message:statusDetail?.message}:null;
     return {version:1,operationId:input.id,sessionId:`concierge:${input.session_id}`,humanAuthored:humanAuthored(input),...(provenance?{provenance}:{}),inputId:['input','create','consultation','comparison'].includes(input.kind)?input.id:['request','reply'].includes(input.kind)?input.source_input_id:null,
       requestId:input.request_id,runId:input.kind==='stop'?parsed.runId:control?null:observed.turn?nativeRunId(observed.turn.id):null,
-      kind:input.kind,origin:input.origin,state:switchOutcome??stopState??requestState??saved.state??observed.state,
-      ...(codexSwitch?{outcome:switchOutcome}:{}),acknowledgedAt:iso(observed.acknowledgedAt??(input.kind==='request'?conversation?.execution?.acknowledged_at:null)),settlement:conversation?.outcome?{outcome:conversation.outcome,result:conversation.result}:saved.settlement??null,
+      kind:input.kind,origin:input.origin,state:switchState??stopState??requestState??saved.state??observed.state,acknowledgedAt:iso(observed.acknowledgedAt??(input.kind==='request'?conversation?.execution?.acknowledged_at:null)),settlement:conversation?.outcome?{outcome:conversation.outcome,result:conversation.result}:saved.settlement??null,
       returnDelivery:conversation?conversation.events.map(event=>({eventId:event.event_id,kind:event.kind,state:event.status,error:event.error})):saved.returnDelivery??null,
       error:errorView(stopState?stopError:unacknowledgedSteering?steeringError:retainedError),
       statusDetail,
