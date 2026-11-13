@@ -680,9 +680,13 @@ from the exact parent session and child provider turn to the uniquely resolved
 running parent turn, including the reported model, before applying the model
 policy. Later edits from that same child execution continue to use the original
 parent turn after normal completion and across owner restarts. A new parent
-turn never takes over an existing child binding. Luna and other non-thinking
-helpers are recorded separately against that parent; thinking-model helpers
-use that parent's fifth-edit count, reason and handoff rules. Missing or changed
+turn never takes over an existing child binding. Every Codex helper edit is
+recorded against that parent with the helper's active model and child execution
+identity. A thinking-model helper has its own fifth-edit count, so its edits
+neither consume the parent's main-turn allowance nor inherit a cheap parent's
+exemption. The parent can release a held helper edit with its turn's accepted
+implementation handoff or one stated reason. An explicit human choice of that
+helper model and an implementation worker retain their exemptions. Missing or changed
 model evidence, conflicting owner hints, unknown child turns, and first edits
 without one valid running parent remain held. A Stop marker, failed or uncertain
 execution, paused session or archived session refuses both first binding and
