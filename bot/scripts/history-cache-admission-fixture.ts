@@ -3,7 +3,8 @@ import {strict as assert} from "node:assert";
 import {existsSync,mkdtempSync,readFileSync,readdirSync,rmSync,writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
-import {CacheBackupAdmission,CACHE_BACKUP_POLICY,requireBackupWindow} from "../src/provider-history-cache-admission";
+import {CacheBackupAdmission,CacheBackupTrace,CACHE_BACKUP_POLICY,readCacheLoad,requireBackupWindow} from "../src/provider-history-cache-admission";
+import {cacheObservationContext,foregroundJournalEvidence,knownChildrenAfterCleanup,observeCacheInterval,traceBackupWindow} from "./cache-admission-observation";
 import {HistoryCacheMaintenance,HostCacheRestic} from "../src/provider-history-cache-maintenance";
 import {check,fixture} from "./history-cache-maintenance-fixture";
 
@@ -96,35 +97,72 @@ await check("both scheduled backups and unknown timer coverage refuse the window
 // native Restic and a disposable local repository, never production credentials.
 // A busy/unknown host returns a failed check rather than silently bypassing admission.
 if(process.argv.includes("--observe-host")) {
+const reportIndex=process.argv.indexOf("--diagnostic-report"),reportPath=reportIndex<0?undefined:process.argv[reportIndex+1];
+if(reportIndex>=0&&(!reportPath||existsSync(reportPath)))throw new Error("Diagnostic output requires a new explicit file path.");
+const trace=new CacheBackupTrace(),startedAtMs=Date.now(),contextBefore=reportPath?cacheObservationContext():undefined;
+if(reportPath)await observeCacheInterval(trace,"observer_baseline",60_000);
+trace.event("phase_start",{phase:"observation_workspace"});
 const observation=mkdtempSync(join(tmpdir(),"history-cache-observe-"));
-let f:ReturnType<typeof fixture>|undefined,admission:CacheBackupAdmission|undefined,failure:unknown;
+trace.event("phase_end",{phase:"observation_workspace"});
+let f:ReturnType<typeof fixture>|undefined,admission:CacheBackupAdmission|undefined,failure:unknown,report:unknown;
+let original:Buffer|undefined,originalCachePreserved:boolean|null=null;
 try {
-  admission=new CacheBackupAdmission(observation);
+  trace.event("phase_start",{phase:"guarded_trial"});
+  admission=new CacheBackupAdmission(observation,()=>traceBackupWindow(trace),readCacheLoad,trace);
   await admission.start();
+  trace.event("phase_start",{phase:"fixture_preparation"});
   f=fixture();
+  original=readFileSync(f.path);
   const repo=join(f.state,"restic"),password=join(f.state,"password");writeFileSync(password,"disposable-fixture-only");
   const command=["restic","-r",repo,"--password-file",password];
+  trace.event("phase_end",{phase:"fixture_preparation"});
+  trace.event("phase_start",{phase:"repository_init",command:["timeout","--kill-after=2s","30s","restic","-r","<disposable-local-repository>","--password-file","<disposable-password-file>","init"]});
   const init=Bun.spawn(["timeout","--kill-after=2s","30s",...command,"init"],{stdout:"ignore",stderr:"inherit"});
-  admission.ownNative(()=>init.kill("SIGTERM"));
-  try {const code=await init.exited;admission.check();assert.equal(code,0);} finally {init.kill("SIGTERM");await init.exited;admission.ownNative();}
+  trace.event("native_start",{operation:"init",pid:init.pid});
+  const exited=init.exited.then(code=>{trace.event("native_exit",{operation:"init",pid:init.pid,exitCode:code,signal:init.signalCode});return code;});
+  admission.ownNative(()=>{const sent=init.kill("SIGTERM");trace.event("native_signal",{operation:"init",pid:init.pid,signal:"SIGTERM",reason:"admission",sent});});
+  try {const code=await exited;admission.check();assert.equal(code,0);}
+  finally {const sent=init.kill("SIGTERM");trace.event("native_signal",{operation:"init",pid:init.pid,signal:"SIGTERM",reason:"finalizer",sent});await exited;admission.ownNative();trace.event("phase_end",{phase:"repository_init"});}
   const restic=new HostCacheRestic(command,admission);
   const maintenance=new HistoryCacheMaintenance(f.state,restic,()=>{},f.objects,undefined,admission);
+  trace.event("phase_start",{phase:"prepare_backup_and_full_readback"});
   const before=readFileSync(f.path),prepared=await maintenance.prepare(f.session);
+  trace.event("phase_end",{phase:"prepare_backup_and_full_readback"});
   const folder=maintenance.batch(prepared.id);
   const snapshot=JSON.parse(readFileSync(join(folder,"backup.json"),"utf8")).snapshot;
   // Reconcile a lost product backup receipt by unique tag, rather than backing up again.
+  trace.event("phase_start",{phase:"accepted_snapshot_adoption_check"});
   const adopted=await restic.backup([join(folder,"cache.sqlite"),join(folder,"manifest.json"),f.object],`concierge-history-cache:${prepared.id}`);
   assert.equal(adopted,snapshot);
   assert.deepEqual(readFileSync(f.path),before);
+  trace.event("phase_end",{phase:"accepted_snapshot_adoption_check"});
   admission.check();
-  const report=admission.finish();admission=undefined;
-  assert.ok(report.samples>=2);assert.equal(report.status,"completed");
-  console.log(JSON.stringify({check:"bounded native local Restic proof with actual host/process/device observation",status:"passed",prepared,report}));
+  const completed=admission.finish();report=completed;admission=undefined;
+  assert.ok(completed.samples>=2);assert.equal(completed.status,"completed");
+  if(!reportPath)console.log(JSON.stringify({check:"bounded native local Restic proof with actual host/process/device observation",status:"passed",prepared,report:completed}));
   requireBackupWindow();
-} catch(error) {failure=error;throw error;}
+} catch(error) {failure=error;trace.event("trial_refused",{error:String(error)});}
 finally {
-  if(admission)console.log(JSON.stringify({check:"actual host admission probe",status:"refused",report:admission.finish(failure)}));
-  f?.cleanup();rmSync(observation,{recursive:true,force:true});
+  if(admission){report=admission.finish(failure);if(!reportPath)console.log(JSON.stringify({check:"actual host admission probe",status:"refused",report}));}
+  if(f&&original){try{originalCachePreserved=readFileSync(f.path).equals(original);}catch{originalCachePreserved=false;}}
+  trace.event("phase_end",{phase:"guarded_trial",outcome:failure?"refused":"completed",originalCachePreserved});
+  trace.event("phase_start",{phase:"fixture_cleanup"});
+  try {f?.cleanup();rmSync(observation,{recursive:true,force:true});trace.event("phase_end",{phase:"fixture_cleanup"});}
+  catch(error){failure??=error;trace.event("cleanup_failed",{error:String(error)});}
 }
+if(reportPath){
+  trace.event("known_children_after_cleanup",{children:knownChildrenAfterCleanup(trace),scope:"Sampled identities only; missed descendants and physical quiescence remain unknown."});
+  await observeCacheInterval(trace,"post_exit_observation",60_000);
+  const endedAtMs=Date.now(),foreground=await foregroundJournalEvidence(startedAtMs,endedAtMs);
+  const resticVersion=Bun.spawnSync(["timeout","5s","restic","version"],{stdout:"pipe",stderr:"ignore"});
+  writeFileSync(reportPath,JSON.stringify({schema:1,policy:CACHE_BACKUP_POLICY,startedAtMs,endedAtMs,
+    outcome:failure?"refused_or_interrupted":"completed",error:failure?String(failure):null,originalCachePreserved,
+    trial:report,trace:trace.summary(),contextBefore,contextAfter:cacheObservationContext(),
+    resticVersion:resticVersion.exitCode===0?resticVersion.stdout.toString().trim():null,foreground,
+    unavailable:{completedDurableResponseLatency:"No supported nonmutating durable-response probe from this runner; private supervisor mount is inaccessible.",
+      oldestAcknowledgementAge:"unavailable",durableBacklog:"unavailable",foregroundLatencyBudget:"not established by this diagnostic",
+      physicalQuiescence:"not proven by child exit or post-exit observation",causalAttribution:"whole-device counters and sampled process tree do not prove which writer caused activity"}},null,2)+"\n",{flag:"wx",mode:0o600});
+}
+if(failure)throw failure;
 }
 console.log("history cache admission fixture passed");
