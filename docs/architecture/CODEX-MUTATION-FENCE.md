@@ -177,26 +177,61 @@ source prefix is byte-identical with exactly one newline-terminated
 `thread_settings_applied` record for the bound thread/model/effort and the complete
 prior settings snapshot. Relevant context and settings must preserve their full
 authoritative prior baselines, including permissions, working directory, roots,
-plugins and unknown fields. A world-state full record or patch needs a known full
-baseline and must reconstruct the identical state. Missing baselines and changed
+plugins and every supported field. Unknown native fields refuse. A world-state
+patch needs a current full baseline and must reconstruct the identical state. Missing baselines and changed
 or unassessed output usage refuse; cumulative usage from earlier product work is
 not a new effect. Raw baseline payloads stay in worker memory and source custody;
 the retained witness contains their hashes. Positive output in a later independent
 compaction requires exact native response IDs from its `Compacted` record,
 matching per-response/turn usage totals and typed `ContextCompaction` completion
 inside the fully mapped effect-free span. Selected compaction or output refuses.
-Opaque retained context, guardian, resource-origin and resume sidecars still refuse;
+Unproven retained context, guardian, resource-origin and resume sidecars refuse;
 the fixture does not certify arbitrary compaction bodies. The worker
 returns refreshed custody privately; the canonical owner stores it in the
 dedicated immutable source-checkpoint ledger, never an event, audit or public
-reply. The bounded gate passed twelve isolated custody fixtures, including these
-source/checkpoint contracts. The target's
-original source history remains unobserved and activation keeps its independent
-refusal. Plain
+reply. The bounded gate covers eighteen disposable custody fixtures, including these
+source/checkpoint contracts. Actual target compatibility and installed eligibility
+remain the designing session's separate observations. Plain
 compaction can preserve prior projected items; no target effect is inferred from
 a replacement-context user record. See the pinned
 [materializer](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/thread-store/src/local/thread_history_materialization.rs)
 and [canonical projection](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/app-server-protocol/src/protocol/thread_history_projection.rs).
+
+The original-source decoder is pinned to rust-v0.162.0 commit
+`c1382380de69521303b416720a52f42d51af6248`. Its witness binds the decoder/reducer
+interpretation and event catalogue digest, separately from the unchanged digest
+primitive. Source revalidation and owned-resume refresh reject older interpretations.
+The catalogue recognizes all twelve rollout kinds, the response variants and alias,
+and all event wire names. Known native forms with unsupported proof semantics have
+specific refusals; recognition alone is never a neutral-effects allow.
+
+Earlier known effects are preserved with original envelope and baseline references.
+Communication markers pair only with the next physical AgentMessage; either trigger
+value in the relevant interval refuses. Compaction clears world/context baselines,
+and the witness identifies the reset and full/context records that re-establish them.
+Multiple context records are valid when each preserves the frozen settings. Absent
+replacement history is a legacy transformation, distinct from an empty replacement,
+and remains unsupported in the relevant interval. Latest-reachable usage may belong
+to earlier work; missing usage still proves nothing about effects.
+
+Replacement payload equality cannot strip delivery/source/order metadata. Only
+native absent/default harness equivalence is normalized. Exact historical envelopes
+or unchanged static-configuration restamping need earlier source references; new
+system/developer instructions refuse in either direct or replacement history.
+Earlier nonempty retained checkpoints can be copied exactly; newly introduced or
+changed verified facts still require original provenance. Producer compatibility
+is separate from Astra/Medium: the current reader positively supports matching
+recorded producer/consumer hashes and precisely refuses unproved compatibility.
+Authoritative optional resume metadata is retained as state, never filled from a
+future binding; unsupported relevant transitions refuse.
+
+A semantic failure blocks proof permanently for that read but decoding/inventory
+continues through the stable captured EOF, returning only known-kind counts, record
+references and hashes. This is diagnostic coverage, not recovery permission. The
+[decoder incident](../incidents/2026-11-14-native-history-decoder-boundary.md) records
+the original failure and remaining evidence boundaries. Durable rollout coverage
+cannot establish absence of transient unpersisted effects; owner and fence proofs
+remain independently required.
 
 Authorization binds that reservation and one extra dispatch. Provider-admission
 intent spends the attempt budget before forwarding. Only a hash of the ephemeral

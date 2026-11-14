@@ -4,6 +4,7 @@ import {openSync,closeSync,fstatSync,statSync,realpathSync} from 'node:fs';
 import {isAbsolute,relative,sep} from 'node:path';
 import type {Database} from 'bun:sqlite';
 import {acceptedBindingSnapshotDigest,type ContinuationBinding} from './codex-accepted-binding-continuation';
+import {CODEX_HISTORY_INTERPRETATION,decodeNativeHistoryRecord,decodeResponse,nativeHistoryInventoryKey,NativeHistoryDecodeError} from './codex-native-history-decoder';
 
 const digest=acceptedBindingSnapshotDigest;
 const object=(v:any)=>v!==null&&typeof v==='object'&&!Array.isArray(v);
@@ -19,6 +20,9 @@ type Span={providerTurnId:string;inputId:string;dispatchAttempt:number;startByte
   records:number;contextRecords:number;generatedContextRecords:number;compactions:number;
   compactionCompletionRecords:number;responseUsageRecords:number;recordsDigest:string;classification:'empty'|'independent_compaction'};
 export type CodexOriginalHistoryWitness={policy:'codex_original_history_v1';threadId:string;bindingDigest:string;
+  interpretation:typeof CODEX_HISTORY_INTERPRETATION;inventory:Record<string,number>;
+  baselineTransitions:{record:number;kind:string;sourceRecord:number|null;stateDigest:string|null}[];
+  selectedBaselineDigest:string;
   sourceSessionId:string|null;
   selectedInputId:string;attemptsDigest:string;sourceIdentity:string;pathDigest:string;sourceRevisionDigest:string;
   prefixDigest:string;prefixBytes:number;recordCount:number;historyMode:'legacy'|'paginated';lastOrdinal:number|null;
@@ -54,6 +58,8 @@ function validateInput(i:CodexOriginalHistoryCoverageInput){
 }
 
 class RecordCoverage {
+  inventory:Record<string,number>=Object.create(null);issues:{code:string;evidence:string[]}[]=[];blocked=false;
+  baselineTransitions:CodexOriginalHistoryWitness['baselineTransitions']=[];selectedBaselineDigest='';
   count=0;prior=0;mode:'legacy'|'paginated'='legacy';lastOrdinal:number|null=null;
   sourceSessionId:string|null=null;neutralOutsideTurnRecords:CodexOriginalHistoryWitness['neutralOutsideTurnRecords']=[];
   relevant=false;active:string|null=null;seen=new Set<string>();order:string[]=[];
@@ -61,8 +67,13 @@ class RecordCoverage {
   current:{id:string;start:number;records:number;contexts:number;generated:number;compactions:number;typedCompactions:number;
     compactedRecords:number;completionIds:Set<string>;responseIds:Set<string>;usageRecords:any[];tokenCounts:any[];hash:ReturnType<typeof createHash>}|null=null;
   priorAcceptedUsers=new Map<number,string>();
-  priorResponseItems=new Set<string>();
-  priorEnvelopes=new Map<string,{metadataDigest:string;supported:boolean}>();
+  priorEnvelopes=new Map<string,Map<string,{record:number;supported:boolean}>>();
+  configurationEnvelopes=new Map<string,number>();
+  retainedCheckpoints=new Map<string,number>();
+  pendingCommunication:{record:number;owner:string|null}|null=null;
+  backendControls:Record<string,{record:number;recordDigest:string}>=Object.create(null);
+  latestUsage:any=null;latestUsageRecord=0;resumeState:any=null;resumeRecord=0;
+  resetRecord:number|null=null;comparisonContextDigest:string|null=null;comparisonWorldDigest:string|null=null;
   priorRetainedSources=new Map<string,{payloadDigest:string;textDigest:string|null;phase:any;origin:string;order:number;record:number}>();
   priorMcpAttributions=new Set<string>();
   lastContext:any=null;lastStartedTurnId:string|null=null;lastAttribution:any=null;
@@ -81,13 +92,28 @@ class RecordCoverage {
   }
   line(bytes:Buffer,start:number,end:number){
     let row:any;
-    try{row=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}
-    catch{refuse('ORIGINAL_HISTORY_RECORD_DECODE_FAILED',`record:${this.count+1}`);}
     this.count++;
+    try{row=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}
+    catch{refuse('ORIGINAL_HISTORY_RECORD_DECODE_FAILED',`record:${this.count}`);}
     this.recordStart=start;this.recordEnd=end;
     const ref=`record:${this.count}`;
-    if(!object(row)||!nonempty(row.type)||!object(row.payload)||!nonempty(row.timestamp)
-      ||!Number.isFinite(Date.parse(row.timestamp)))refuse('ORIGINAL_HISTORY_RECORD_SHAPE_INVALID',ref);
+    const inventoryKey=nativeHistoryInventoryKey(row);
+    this.inventory[inventoryKey]=(this.inventory[inventoryKey]??0)+1;
+    try{decodeNativeHistoryRecord(row);}catch(error){
+      if(error instanceof NativeHistoryDecodeError)refuse(error.code,ref);throw error;
+    }
+    // Once reconstruction fails, keep decoding the complete physical suffix but
+    // never let a later checkpoint convert uncertainty into a successful proof.
+    if(this.blocked)return;
+    if(this.pendingCommunication){
+      const pending=this.pendingCommunication;this.pendingCommunication=null;
+      if(row.type!=='response_item'||row.payload.type!=='agent_message')
+        refuse('ORIGINAL_HISTORY_COMMUNICATION_PAIR_UNPROVEN',`record:${pending.record}`,ref);
+      const owned=row.payload.internal_chat_message_metadata_passthrough?.turn_id??this.active;
+      if(pending.owner!==null&&owned!==pending.owner)
+        refuse('ORIGINAL_HISTORY_COMMUNICATION_OWNER_UNPROVEN',`record:${pending.record}`,ref);
+      this.baselineTransitions.push({record:this.count,kind:'communication_pair',sourceRecord:pending.record,stateDigest:digest(row)});
+    }
     if(this.count===1){
       if(row.type!=='session_meta'||row.payload.id!==this.input.binding.threadId
         ||Object.hasOwn(row.payload,'session_id')&&!nonempty(row.payload.session_id))
@@ -119,9 +145,20 @@ class RecordCoverage {
       this.lastStartedTurnId=p.turn_id;
       this.lastStartedRecord=this.count;
       if(p.turn_attribution!=null){this.lastAttribution=p.turn_attribution;this.lastAttributionRecord=this.count;}
+      if(this.resumeState){this.resumeState.last_started_turn_id=p.turn_id;
+        if(p.turn_attribution!=null)this.resumeState.turn_attribution=p.turn_attribution;}
       if(this.expected.includes(p.turn_id)||this.relevant){
         if(!this.relevant&&!this.settingsBaseline)refuse('ORIGINAL_HISTORY_SETTINGS_BASELINE_MISSING',ref);
         if(!this.relevant&&!this.turnContextBaseline)refuse('ORIGINAL_HISTORY_TURN_SETTINGS_BASELINE_MISSING',ref);
+        if(!this.relevant){
+          this.selectedBaselineDigest=digest({settings:this.settingsBaseline,context:this.turnContextBaseline,
+            world:this.worldStateBaseline,resume:this.resumeState,resumeRecord:this.resumeRecord,
+            backendControls:this.backendControls,
+            latestUsageRecord:this.latestUsageRecord,
+            lastStartedRecord:this.lastStartedRecord,lastAttributionRecord:this.lastAttributionRecord});
+          this.comparisonContextDigest=this.turnContextBaseline!.settingsDigest;
+          this.comparisonWorldDigest=this.worldStateBaseline?.stateDigest??null;
+        }
         this.relevant=true;
         if(p.turn_id!==this.expected[this.order.length])refuse('ORIGINAL_HISTORY_NATIVE_ORDER_OR_SUFFIX_CONFLICT',ref);
         this.order.push(p.turn_id);
@@ -143,7 +180,7 @@ class RecordCoverage {
       if(this.current){
         if(!['task_complete','turn_complete'].includes(p.type)||p.error!=null||p.last_agent_message!=null&&p.last_agent_message!=='')
           refuse('ORIGINAL_HISTORY_TERMINAL_EFFECT_OR_FAILURE',ref);
-        if(this.current.contexts!==1)refuse('ORIGINAL_HISTORY_EXACT_TURN_CONTEXT_MISSING',ref);
+        if(this.current.contexts<1||!this.turnContextBaseline)refuse('ORIGINAL_HISTORY_EXACT_TURN_CONTEXT_MISSING',ref);
         const owner=this.input.attempts.find(a=>a.providerTurnId===this.current!.id)!;
         if(owner.inputId===this.input.selectedInputId&&this.current.compactions>0)refuse('ORIGINAL_HISTORY_SELECTED_COMPACTION_PRESENT',ref);
         if(this.current.typedCompactions>0&&this.current.compactedRecords===0)
@@ -169,7 +206,18 @@ class RecordCoverage {
         this.current=null;
       }
       this.active=null;
+      if(this.lastContext&&this.lastContext.turn_id===p.turn_id){
+        this.resumeState??=normalizeResume({multi_agent_version:this.lastContext.multi_agent_version,
+          last_started_turn_id:this.lastStartedTurnId,turn_attribution:this.lastAttribution,previous_turn_settings:null});
+        this.resumeState.previous_turn_settings=previousSettings(this.lastContext);
+      }
     }
+  }
+  rememberEnvelope(p:any,metadata:any){
+    const key=digest(p),envelopes=this.priorEnvelopes.get(key)??new Map();
+    envelopes.set(digest(canonicalMetadata(metadata)),{record:this.count,supported:true});this.priorEnvelopes.set(key,envelopes);
+    const config=configurationIdentity(p,metadata);
+    if(config!==null)this.configurationEnvelopes.set(config,this.count);
   }
   neutralMetadata(metadata:any,allowed:readonly string[]=[]):boolean{
     if(metadata==null)return true;
@@ -186,6 +234,11 @@ class RecordCoverage {
       ||typeof value.incomplete!=='boolean'||typeof value.user_messages_incomplete!=='boolean'
       ||typeof value.assistant_messages_incomplete!=='boolean'||!uint(value.next_order))
       refuse('ORIGINAL_HISTORY_COMPACTION_SIDECAR_UNCLASSIFIED',ref);
+    const checkpointRecord=this.retainedCheckpoints.get(digest(value));
+    if(checkpointRecord!==undefined){
+      classes.historicalRetainedCheckpoint=(classes.historicalRetainedCheckpoint??0)+1;
+      return [{record:checkpointRecord,sourceDigest:digest(value),payloadDigest:digest(value)}];
+    }
     if(value.verified_answers.length||value.sender_deliveries!=null&&(!Array.isArray(value.sender_deliveries)||value.sender_deliveries.length))
       refuse('ORIGINAL_HISTORY_RETAINED_CONTEXT_EVENT_PROVENANCE_UNSUPPORTED',ref);
     const identities=new Set<string>(),orders=new Set<number>(),refs:{record:number;sourceDigest:string;payloadDigest:string}[]=[];
@@ -211,22 +264,25 @@ class RecordCoverage {
     const context=this.lastContext,settings=value?.previous_turn_settings;
     if(!closed(value,['multi_agent_version','last_started_turn_id','turn_attribution','previous_turn_settings'])
       ||!Object.hasOwn(value,'multi_agent_version')||!Object.hasOwn(value,'last_started_turn_id')
-      ||!Object.hasOwn(value,'previous_turn_settings')||!context
+      ||!Object.hasOwn(value,'previous_turn_settings')
       ||!optional(value.multi_agent_version,v=>['disabled','v1','v2'].includes(v))
-      ||value.last_started_turn_id!==this.lastStartedTurnId
+      ||!optional(value.last_started_turn_id,id=>nonempty(id)&&this.seen.has(id))
       ||!optional(value.turn_attribution,v=>closed(v,['turn_id','turn_trigger','parent_turn_id','initiating_agent_path','root_turn_id'])
         &&nonempty(v.turn_id)&&this.seen.has(v.turn_id)
         &&['turn_trigger','parent_turn_id','initiating_agent_path','root_turn_id'].every(key=>optional(v[key],t=>typeof t==='string')))
-      ||digest(value.turn_attribution??null)!==digest(this.lastAttribution)
-      ||(value.multi_agent_version??null)!==(context.multi_agent_version??null)
-      ||!closed(settings,['model','cyber_access_program','comp_hash','realtime_active'])
-      ||!Object.hasOwn(settings,'comp_hash')||!Object.hasOwn(settings,'realtime_active')
-      ||!optional(settings.comp_hash,v=>typeof v==='string')||!optional(settings.realtime_active,v=>typeof v==='boolean')
-      ||!optional(settings.cyber_access_program,v=>['standard','daybreak_blue','daybreak_red'].includes(v))
-      ||settings.model!==context.model||(settings.comp_hash??null)!==(context.comp_hash??null)
-      ||(settings.realtime_active??null)!==(context.realtime_active??null)
-      ||(settings.cyber_access_program??null)!==(context.cyber_access_program??null))
+      ||!optional(settings,v=>closed(v,['model','cyber_access_program','comp_hash','realtime_active'])
+        &&Object.hasOwn(v,'comp_hash')&&Object.hasOwn(v,'realtime_active')&&nonempty(v.model)
+        &&optional(v.comp_hash,x=>typeof x==='string')&&optional(v.realtime_active,x=>typeof x==='boolean')
+        &&optional(v.cyber_access_program,x=>['standard','daybreak_blue','daybreak_red'].includes(x))))
       refuse('ORIGINAL_HISTORY_COMPACTION_RESUME_STATE_UNPROVEN',ref);
+    // A checkpoint is authoritative, including None. In the relevant interval
+    // it must preserve the reconstructed state, not inherit the next selection.
+    const expected=this.resumeState??{multi_agent_version:context?.multi_agent_version??null,
+      last_started_turn_id:this.lastStartedTurnId,turn_attribution:this.lastAttribution,
+      previous_turn_settings:context?previousSettings(context):null};
+    if(this.relevant&&digest(normalizeResume(value))!==digest(normalizeResume(expected)))
+      refuse('ORIGINAL_HISTORY_COMPACTION_RESUME_STATE_UNPROVEN',ref);
+    this.resumeState=normalizeResume(value);this.resumeRecord=this.count;
     return {startedRecord:this.lastStartedRecord,contextRecord:this.lastContextRecord,attributionRecord:this.lastAttributionRecord};
   }
   opaqueCompaction(entry:any,metadata:any,checkpoint:any):boolean{
@@ -237,7 +293,9 @@ class RecordCoverage {
         &&optional(v.content_item_kinds,k=>Array.isArray(k)&&k.every((kind:any)=>typeof kind==='string')))
       &&closed(metadata,['client_authored','mcp_attribution','compaction_model_hash'])&&metadata.client_authored!==true
       &&Object.hasOwn(metadata,'compaction_model_hash')&&nonempty(metadata.compaction_model_hash)
-      &&metadata.compaction_model_hash===this.lastContext?.comp_hash
+      // Producer compatibility is distinct from the selected model. This
+      // implementation supports the positively matched consumer baseline only.
+      &&metadata.compaction_model_hash===(this.lastContext?.comp_hash??this.resumeState?.previous_turn_settings?.comp_hash)
       &&nonempty(checkpoint.compaction_response_id)&&this.current!==null
       &&this.current.usageRecords.some(usage=>usage.response_id===checkpoint.compaction_response_id)
       &&this.neutralMetadata({client_authored:metadata.client_authored,mcp_attribution:metadata.mcp_attribution});
@@ -245,33 +303,51 @@ class RecordCoverage {
   classify(row:any,ref:string){
     const p=row.payload;
     if(row.type==='session_meta')return;
+    if(row.type==='inter_agent_communication_metadata'){
+      if(this.relevant)refuse('ORIGINAL_HISTORY_INTERVAL_COMMUNICATION_PRESENT',ref);
+      this.pendingCommunication={record:this.count,owner:this.active};return;
+    }
+    if(row.type==='inter_agent_communication'){
+      if(this.relevant)refuse('ORIGINAL_HISTORY_INTERVAL_COMMUNICATION_PRESENT',ref);
+      this.baselineTransitions.push({record:this.count,kind:'historical_communication',sourceRecord:null,stateDigest:digest(row)});return;
+    }
+    if(['retained_context','security_risk_score','realtime_item'].includes(row.type)){
+      if(this.relevant)refuse(row.type==='retained_context'?'ORIGINAL_HISTORY_INTERVAL_RETAINED_EFFECT_PRESENT':
+        row.type==='realtime_item'?'ORIGINAL_HISTORY_INTERVAL_REALTIME_EFFECT_PRESENT':'ORIGINAL_HISTORY_INTERVAL_RISK_PROVENANCE_UNSUPPORTED',ref);
+      this.baselineTransitions.push({record:this.count,kind:`historical_${row.type}`,sourceRecord:null,stateDigest:digest(row)});return;
+    }
     if(row.type==='turn_context'){
       if(this.current){
         if(p.model!==this.input.binding.model||p.effort!==this.input.binding.effort)
           refuse('ORIGINAL_HISTORY_CONTEXT_BINDING_CONFLICT',ref);
-        if(!this.turnContextBaseline)refuse('ORIGINAL_HISTORY_TURN_SETTINGS_BASELINE_MISSING',ref);
-        if(digest(contextSettings(p))!==this.turnContextBaseline.settingsDigest)
+        if(digest(contextSettings(p))!==this.comparisonContextDigest)
           refuse('ORIGINAL_HISTORY_TURN_SETTINGS_CHANGED',ref);
         if(!contextMatchesSettings(p,this.settingsSnapshot))refuse('ORIGINAL_HISTORY_SETTINGS_BASELINES_CONFLICT',ref);
         this.current.contexts++;
       }else if(!this.relevant){
         if(!object(p)||!nonempty(p.cwd)||!Object.hasOwn(p,'approval_policy')||!object(p.sandbox_policy))
           refuse('ORIGINAL_HISTORY_TURN_SETTINGS_BASELINE_INCOMPLETE',ref);
-        this.turnContextBaseline={record:this.count,settingsDigest:digest(contextSettings(p))};
       }
+      this.turnContextBaseline={record:this.count,settingsDigest:digest(contextSettings(p))};
+      this.baselineTransitions.push({record:this.count,kind:'context_established',sourceRecord:this.resetRecord,
+        stateDigest:this.turnContextBaseline.settingsDigest});
+      if(this.resumeState)this.resumeState.multi_agent_version=p.multi_agent_version??null;
       this.lastContext=p;this.lastContextRecord=this.count;return;
     }
     if(row.type==='world_state'){
       if(typeof p.full!=='boolean'||!object(p.state)||Object.keys(p).some(key=>!['full','state'].includes(key)))
         refuse('ORIGINAL_HISTORY_WORLD_STATE_SHAPE_INVALID',ref);
-      if(!p.full&&this.worldState===null)refuse('ORIGINAL_HISTORY_WORLD_STATE_BASELINE_MISSING',ref);
+      if(!p.full&&this.worldState===null){
+        if(this.relevant)refuse('ORIGINAL_HISTORY_WORLD_STATE_BASELINE_MISSING',ref);
+        this.baselineTransitions.push({record:this.count,kind:'unbased_historical_world_patch',sourceRecord:this.resetRecord,stateDigest:null});return;
+      }
       const next=p.full?p.state:mergeWorldState(this.worldState,p.state);
       if(this.relevant){
-        if(!this.worldStateBaseline)refuse('ORIGINAL_HISTORY_WORLD_STATE_BASELINE_MISSING',ref);
-        if(digest(next)!==this.worldStateBaseline.stateDigest)refuse('ORIGINAL_HISTORY_WORLD_STATE_CHANGED',ref);
-      }else{
-        this.worldState=next;this.worldStateBaseline={record:this.count,stateDigest:digest(next)};
+        if(this.comparisonWorldDigest===null)refuse('ORIGINAL_HISTORY_WORLD_STATE_BASELINE_MISSING',ref);
+        if(digest(next)!==this.comparisonWorldDigest)refuse('ORIGINAL_HISTORY_WORLD_STATE_CHANGED',ref);
       }
+      this.worldState=next;this.worldStateBaseline={record:this.count,stateDigest:digest(next)};
+      this.baselineTransitions.push({record:this.count,kind:p.full?'world_full':'world_patch',sourceRecord:this.resetRecord,stateDigest:digest(next)});
       return;
     }
     if(row.type==='compacted'){
@@ -282,6 +358,8 @@ class RecordCoverage {
         'compaction_response_id','latest_token_usage_record','resume_metadata'].includes(key)))
         refuse('ORIGINAL_HISTORY_COMPACTION_SIDECAR_UNCLASSIFIED',ref);
       const history=p.replacement_history??[];
+      if(p.replacement_history==null&&p.replacement_history_metadata!=null)refuse('ORIGINAL_HISTORY_COMPACTION_SHAPE_INVALID',ref);
+      if(this.relevant&&p.replacement_history==null)refuse('ORIGINAL_HISTORY_LEGACY_COMPACTION_TRANSFORMATION_UNSUPPORTED',ref);
       if(p.replacement_history_metadata!=null&&(!Array.isArray(p.replacement_history_metadata)
         ||p.replacement_history_metadata.length!==history.length))refuse('ORIGINAL_HISTORY_COMPACTION_SHAPE_INVALID',ref);
       const classes:Record<string,number>={};
@@ -296,11 +374,10 @@ class RecordCoverage {
         if(p.retained_context!=null)retainedSourceRefs=this.retainedCheckpoint(p.retained_context,ref,classes);
         if(p.resume_metadata!=null)resumeSourceRefs=this.resumeCheckpoint(p.resume_metadata,ref);
       }
-      if(this.relevant&&p.latest_token_usage_record!=null&&(!this.current?.usageRecords.length
-        ||digest(p.latest_token_usage_record)!==digest(this.current.usageRecords.at(-1))))
+      if(p.latest_token_usage_record!=null&&this.relevant&&digest(p.latest_token_usage_record)!==digest(this.latestUsage))
         refuse('ORIGINAL_HISTORY_COMPACTION_USAGE_CHECKPOINT_UNPROVEN',ref);
       for(const [index,entry] of history.entries()){
-        if(!object(entry)||!nonempty(entry.type))refuse('ORIGINAL_HISTORY_REPLACEMENT_ITEM_INVALID',ref);
+        try{decodeResponse(entry);}catch(error){if(error instanceof NativeHistoryDecodeError)refuse(error.code,ref);throw error;}
         if(entry.type==='message'&&!['system','developer','user','assistant'].includes(entry.role))
           refuse('ORIGINAL_HISTORY_REPLACEMENT_ITEM_INVALID',ref);
         const c=entry.type==='message'?`message:${entry.role}`:entry.type;
@@ -308,29 +385,28 @@ class RecordCoverage {
         if(this.relevant){
           const metadata=p.replacement_history_metadata?.[index];
           if(metadata!=null&&!object(metadata))refuse('ORIGINAL_HISTORY_COMPACTION_SHAPE_INVALID',ref);
-          const original=this.priorEnvelopes.get(digest(entry));
+          const original=this.priorEnvelopes.get(digest(entry))?.get(digest(canonicalMetadata(metadata)));
           // Cloned originals preserve all provenance; a shortened or rewritten copy
           // cannot borrow a retained-source identity from another native payload.
-          const cloned=original?.supported===true&&knownHarnessMetadata(metadata)&&digest(metadata??null)===original.metadataDigest;
-          const opaque=['compaction','context_compaction'].includes(entry.type)&&this.opaqueCompaction(entry,metadata,p);
+          const cloned=original?.supported===true;
+          const opaque=['compaction','context_compaction','compaction_summary'].includes(entry.type)&&this.opaqueCompaction(entry,metadata,p);
+          if(['compaction','context_compaction','compaction_summary'].includes(entry.type)&&nonempty(metadata?.compaction_model_hash)
+            &&metadata.compaction_model_hash!==(this.lastContext?.comp_hash??this.resumeState?.previous_turn_settings?.comp_hash))
+            refuse('ORIGINAL_HISTORY_COMPACTION_PRODUCER_CONSUMER_COMPATIBILITY_UNPROVEN',ref);
           if(!cloned&&!opaque&&!this.neutralMetadata(metadata,['user_input_order']))
             refuse('ORIGINAL_HISTORY_REPLACEMENT_METADATA_UNCLASSIFIED',ref);
           if(opaque){classes.opaqueCompactionContext=(classes.opaqueCompactionContext??0)+1;continue;}
-          if(entry.type==='message'&&entry.role==='user'){
-            const order=metadata?.user_input_order;
-            if(Number.isSafeInteger(order)&&order>=0&&this.priorAcceptedUsers.get(order)===digest(entry)){
-              classes.historicalAcceptedUser=(classes.historicalAcceptedUser??0)+1;continue;
-            }
-            if(order==null&&generatedStaticContext(entry)){
-              classes.generatedStaticContext=(classes.generatedStaticContext??0)+1;continue;
-            }
-            refuse('ORIGINAL_HISTORY_REPLACEMENT_USER_PROVENANCE_UNPROVEN',ref);
+          if(cloned){
+            const name=entry.type==='message'&&entry.role==='user'&&metadata?.user_input_order!=null?
+              'historicalAcceptedUser':'historicalRetainedEffect';classes[name]=(classes[name]??0)+1;continue;
           }
-          if(this.priorResponseItems.has(digest(entry))){
-            classes.historicalRetainedEffect=(classes.historicalRetainedEffect??0)+1;continue;
+          const config=configurationIdentity(entry,metadata);
+          if(config!==null&&this.configurationEnvelopes.has(config)){
+            classes.provenConfigurationRestamp=(classes.provenConfigurationRestamp??0)+1;continue;
           }
-          if(entry.type!=='message'||!['system','developer'].includes(entry.role))
-            refuse('ORIGINAL_HISTORY_REPLACEMENT_EFFECT_PROVENANCE_UNPROVEN',ref);
+          refuse(entry.type==='message'&&entry.role==='user'?'ORIGINAL_HISTORY_REPLACEMENT_USER_PROVENANCE_UNPROVEN':
+            entry.type==='message'&&['system','developer'].includes(entry.role)?'ORIGINAL_HISTORY_CONFIGURATION_PROVENANCE_UNPROVEN':
+            'ORIGINAL_HISTORY_REPLACEMENT_EFFECT_PROVENANCE_UNPROVEN',ref);
         }
       }
       if(this.current){this.current.compactions++;this.current.compactedRecords++;}
@@ -340,17 +416,31 @@ class RecordCoverage {
       }
       this.compactions.push({providerTurnId:this.active??'',record:this.count,replacementCount:history.length,
         replacementDigest:digest({history,metadata:p.replacement_history_metadata??null}),replacementClassifications:classes,recordDigest:digest(row),retainedSourceRefs,resumeSourceRefs});
+      if(!this.relevant){
+        this.backendControls=Object.create(null);
+        for(const [index,entry] of history.entries())this.rememberEnvelope(entry,p.replacement_history_metadata?.[index]);
+        for(const entry of history)if(['configuration_update','additional_tools'].includes(entry.type))
+          this.backendControls[entry.type]={record:this.count,recordDigest:digest(row)};
+        if(p.retained_context!=null)this.retainedCheckpoints.set(digest(p.retained_context),this.count);
+        if(p.resume_metadata!=null)this.resumeCheckpoint(p.resume_metadata,ref);
+        if(p.latest_token_usage_record!=null){this.latestUsage=p.latest_token_usage_record;this.latestUsageRecord=this.count;}
+      }
+      // Native reconstruction invalidates these independently of history contents.
+      this.resetRecord=this.count;this.worldState=null;this.worldStateBaseline=null;
+      this.turnContextBaseline=null;this.lastContext=null;
+      this.baselineTransitions.push({record:this.count,kind:p.replacement_history==null?'legacy_compaction_reset':'compaction_reset',
+        sourceRecord:null,stateDigest:null});
       return;
     }
     if(row.type==='response_item'){
       if(!nonempty(p.type))refuse('ORIGINAL_HISTORY_RESPONSE_ITEM_INVALID',ref);
-      const known=['message','reasoning','function_call','function_call_output','custom_tool_call','custom_tool_call_output',
-        'local_shell_call','web_search_call','image_generation_call','compaction','computer_call','computer_call_output'];
-      if(!known.includes(p.type))refuse('ORIGINAL_HISTORY_UNKNOWN_RESPONSE_ITEM',ref);
       if(p.type==='message'&&!['system','developer','user','assistant'].includes(p.role))refuse('ORIGINAL_HISTORY_UNKNOWN_MESSAGE_ROLE',ref);
       if(!this.relevant){
-        this.priorResponseItems.add(digest(p));this.priorEnvelopes.set(digest(p),
-          {metadataDigest:digest(row.metadata??null),supported:knownHarnessMetadata(row.metadata)});
+        this.rememberEnvelope(p,row.metadata);
+        if(['additional_tools','configuration_update'].includes(p.type)){
+          this.backendControls[p.type]={record:this.count,recordDigest:digest(row)};
+          this.baselineTransitions.push({record:this.count,kind:`historical_${p.type}`,sourceRecord:null,stateDigest:digest(row)});
+        }
         if(validMcpAttribution(row.metadata?.mcp_attribution))this.priorMcpAttributions.add(digest(row.metadata.mcp_attribution));
         const source=row.metadata?.retained_source,order=row.metadata?.user_input_order;
         if(knownHarnessMetadata(row.metadata)&&validRetainedSource(source)&&p.type==='message'&&source.id.message_id===p.id&&source.id.role===p.role
@@ -376,6 +466,8 @@ class RecordCoverage {
       if(this.relevant){
         if(!this.neutralMetadata(row.metadata))refuse('ORIGINAL_HISTORY_RESPONSE_METADATA_UNCLASSIFIED',ref);
         if(p.type==='message'&&p.role==='user'&&generatedStaticContext(p)){
+          const config=configurationIdentity(p,row.metadata);
+          if(config===null||!this.configurationEnvelopes.has(config))refuse('ORIGINAL_HISTORY_CONFIGURATION_PROVENANCE_UNPROVEN',ref);
           if(this.current)this.current.generated++;return;
         }
         if(p.type==='message'&&p.role==='user')refuse('ORIGINAL_HISTORY_USER_PROVENANCE_UNPROVEN',ref);
@@ -387,6 +479,8 @@ class RecordCoverage {
     }
     if(row.type==='event_msg'){
       if(p.type==='thread_settings_applied'){
+        if(this.relevant&&object(p.thread_settings)&&this.settingsBaseline
+          &&digest(p.thread_settings)!==this.settingsBaseline.snapshotDigest)refuse('ORIGINAL_HISTORY_NATIVE_SETTINGS_CHANGED',ref);
         if(p.thread_id!==this.input.binding.threadId||!completeSettings(p.thread_settings))
           refuse('ORIGINAL_HISTORY_SETTINGS_SNAPSHOT_INCOMPLETE',ref);
         const snapshotDigest=digest(p.thread_settings);
@@ -419,16 +513,21 @@ class RecordCoverage {
             ||p.info.model_context_window!==null&&(!Number.isSafeInteger(p.info.model_context_window)||p.info.model_context_window<0)))
           refuse('ORIGINAL_HISTORY_TOKEN_METADATA_UNCLASSIFIED',ref);
         if(this.relevant&&p.info&&(p.info.last_token_usage.output_tokens>0||p.info.last_token_usage.reasoning_output_tokens>0)){
+          if(this.latestUsage&&this.latestUsage.turn_id!==this.active
+            &&digest(p.info.last_token_usage)===digest(this.latestUsage.usage)
+            &&digest(p.info.total_token_usage)===digest(this.latestUsage.thread_token_usage))return;
           if(!this.current)refuse('ORIGINAL_HISTORY_TOKEN_USAGE_EFFECT_UNASSESSED',ref);
           this.current.tokenCounts.push(p.info.last_token_usage);
         }
         return;
       }
       if(p.type==='item_completed'&&p.item?.type==='ContextCompaction'){
-        if(!this.current||p.thread_id!==this.input.binding.threadId||p.turn_id!==this.active||!nonempty(p.item.id)
+        if(p.thread_id!==this.input.binding.threadId||p.turn_id!==this.active||!nonempty(p.item.id)
           ||Object.keys(p.item).some(key=>!['type','id'].includes(key))
           ||Object.keys(p).some(key=>!['type','thread_id','turn_id','item','started_at_ms','completed_at_ms'].includes(key)))
           refuse('ORIGINAL_HISTORY_COMPACTION_ITEM_IDENTITY_UNPROVEN',ref);
+        if(!this.relevant)return;
+        if(!this.current)refuse('ORIGINAL_HISTORY_COMPACTION_ITEM_IDENTITY_UNPROVEN',ref);
         if(this.current.completionIds.has(p.item.id))refuse('ORIGINAL_HISTORY_COMPACTION_ITEM_IDENTITY_UNPROVEN',ref);
         this.current.completionIds.add(p.item.id);this.current.typedCompactions++;this.current.compactions++;return;
       }
@@ -437,13 +536,12 @@ class RecordCoverage {
         if(this.current)this.current.compactions++;
         return;
       }
-      const effects=['user_message','agent_message','agent_reasoning','agent_reasoning_raw_content','exec_command_begin',
-        'exec_command_end','apply_patch_begin','apply_patch_end','web_search_begin','web_search_end','item_completed'];
-      if(effects.includes(p.type)){
+      // All remaining decoded events are known effects or unsupported proof
+      // semantics. Their earlier existence is preserved, never declared neutral.
+      {
         if(this.relevant)refuse(p.type==='user_message'?'ORIGINAL_HISTORY_ACCEPTED_USER_EVENT_PRESENT':'ORIGINAL_HISTORY_CONVERSATIONAL_OR_TOOL_EFFECT',ref);
         return;
       }
-      refuse('ORIGINAL_HISTORY_UNKNOWN_OR_UNCLASSIFIED_EVENT',ref);
     }
     if(row.type==='token_usage_record'){
       if(!validUsage(p.usage)||!validUsage(p.turn_token_usage)||!validUsage(p.thread_token_usage)
@@ -451,6 +549,7 @@ class RecordCoverage {
         ||Object.keys(p).some(key=>!['thread_id','turn_id','session_id','root_turn_id','response_id','usage','turn_token_usage','thread_token_usage'].includes(key)))
         refuse('ORIGINAL_HISTORY_TOKEN_USAGE_SHAPE_INVALID',ref);
       if(p.session_id!==this.sourceSessionId)refuse('ORIGINAL_HISTORY_TOKEN_SESSION_IDENTITY_CONFLICT',ref);
+      this.latestUsage=p;this.latestUsageRecord=this.count;
       if(this.relevant){
         if(!this.current||p.turn_id!==this.active||this.current.usageRecords.some(item=>item.response_id===p.response_id))
           refuse('ORIGINAL_HISTORY_TOKEN_USAGE_EFFECT_UNASSESSED',ref);
@@ -461,6 +560,7 @@ class RecordCoverage {
     refuse('ORIGINAL_HISTORY_UNKNOWN_OR_UNCLASSIFIED_RECORD',ref);
   }
   finish(){
+    if(this.pendingCommunication)refuse('ORIGINAL_HISTORY_COMMUNICATION_PAIR_UNPROVEN',`record:${this.pendingCommunication.record}`);
     if(this.active!==null||this.current)refuse('ORIGINAL_HISTORY_TURN_NOT_TERMINAL');
     if(this.order.length!==this.expected.length||this.spans.length!==this.expected.length)refuse('ORIGINAL_HISTORY_ATTEMPT_COVERAGE_INCOMPLETE');
   }
@@ -474,6 +574,37 @@ function generatedStaticContext(item:any):boolean{
     &&kinds.every((kind:any,index:number)=>['agents_md.instructions','environments.environment_context'].includes(kind)
       &&item.content[index]?.type==='input_text'&&typeof item.content[index].text==='string');
 }
+
+// Native serialization materializes default harness fields when a replacement
+// has mixed envelopes. Only source-defined absent/default equivalence is used;
+// meaningful delivery, source, order and inherited metadata remain in the key.
+function canonicalMetadata(value:any){
+  const result={...(value??{})};
+  for(const [key,v] of Object.entries(result)){
+    if(v==null||['client_authored','guardian_source_order_guidance','harness_authored_configuration','compaction_output',
+      'inherited_user_message'].includes(key)&&v===false
+      ||['guardian_sources','guardian_review_ids'].includes(key)&&Array.isArray(v)&&v.length===0)delete result[key];
+  }
+  return result;
+}
+function configurationIdentity(item:any,metadata:any):string|null{
+  const {mcp_attribution,...rest}=metadata??{};
+  if(item?.type!=='message'||!neutralHarnessMetadata(rest)
+    ||mcp_attribution!=null&&(!validMcpAttribution(mcp_attribution)||mcp_attribution.status!=='none')
+    ||!(generatedStaticContext(item)||['system','developer'].includes(item.role)))return null;
+  const m=item.internal_chat_message_metadata_passthrough;
+  if(m!=null&&(!closed(m,['turn_id','create_time','content_item_kinds'])||m.content_item_kinds!=null&&!Array.isArray(m.content_item_kinds)))return null;
+  // Native stamps turn/id/time when recording freshly assembled static context.
+  // Everything conveying instructions, role, phase, source kinds and harness
+  // provenance must still equal the earlier original envelope.
+  const {id:_id,internal_chat_message_metadata_passthrough:_metadata,...payload}=item;
+  return digest({payload,kinds:m?.content_item_kinds??null,metadata:canonicalMetadata(metadata)});
+}
+function previousSettings(context:any){return {model:context.model,cyber_access_program:context.cyber_access_program??null,
+  comp_hash:context.comp_hash??null,realtime_active:context.realtime_active??null};}
+function normalizeResume(value:any){return {multi_agent_version:value.multi_agent_version??null,
+  last_started_turn_id:value.last_started_turn_id??null,turn_attribution:value.turn_attribution??null,
+  previous_turn_settings:value.previous_turn_settings==null?null:previousSettings(value.previous_turn_settings)};}
 
 function contextSettings(context:any){
   // These two fields identify the turn/root, not the effective settings. Every
@@ -493,7 +624,9 @@ function contextMatchesSettings(context:any,settings:any):boolean{
     &&digest(context.sandbox_policy)===digest({type:'danger-full-access'});
 }
 function completeSettings(p:any):boolean{
-  if(!object(p)||!nonempty(p.model)||!nonempty(p.model_provider_id)||!nonempty(p.cwd)||!isAbsolute(p.cwd)
+  if(!closed(p,['model','model_provider_id','service_tier','approval_policy','approvals_reviewer','permission_profile',
+    'active_permission_profile','cwd','runtime_workspace_roots','reasoning_effort','reasoning_summary','personality',
+    'collaboration_mode','disabled_plugin_ids'])||!nonempty(p.model)||!nonempty(p.model_provider_id)||!nonempty(p.cwd)||!isAbsolute(p.cwd)
     ||!nonempty(p.reasoning_effort)||!['user','auto_review','guardian_subagent'].includes(p.approvals_reviewer)
     ||!Array.isArray(p.disabled_plugin_ids)||p.disabled_plugin_ids.some((id:any)=>!nonempty(id))
     ||!object(p.collaboration_mode)||!['default','plan'].includes(p.collaboration_mode.mode)
@@ -602,18 +735,30 @@ export async function readCodexOriginalHistoryCoverage(input:CodexOriginalHistor
       while((newline=bytes.indexOf(10,start))!==-1){
         const piece=bytes.subarray(start,newline),line=pendingBytes?Buffer.concat([...pending,piece]):piece;
         const end=offset+newline+1;
-        coverage.line(line,lineStart,end);lineStart=end;pending=[];pendingBytes=0;start=newline+1;
+        try{coverage.line(line,lineStart,end);}catch(error){
+          if(!(error instanceof CoverageRefusal))throw error;
+          coverage.issues.push({code:error.code,evidence:error.evidence});coverage.blocked=true;
+        }
+        lineStart=end;pending=[];pendingBytes=0;start=newline+1;
       }
       if(start<bytes.length){const rest=bytes.subarray(start);pending.push(rest);pendingBytes+=rest.length;}
       offset+=bytesRead;
     }
     if(pendingBytes!==0||lineStart!==size)refuse('ORIGINAL_HISTORY_PARTIAL_FINAL_RECORD');
-    coverage.finish();
+    if(!coverage.blocked)try{coverage.finish();}catch(error){
+      if(!(error instanceof CoverageRefusal))throw error;
+      coverage.issues.push({code:error.code,evidence:error.evidence});coverage.blocked=true;
+    }
     if(digest(revision(await handle.stat({bigint:true})))!==digest(rev)
       ||digest(revision(await stat(path,{bigint:true})))!==digest(rev)
       ||await realpath(response.thread.path)!==path)refuse('ORIGINAL_HISTORY_SOURCE_CHANGED');
     const prefixDigest=hash.digest('hex');
+    if(coverage.blocked)return {proven:false as const,reasons:coverage.issues,
+      diagnostic:{interpretation:CODEX_HISTORY_INTERPRETATION,inventory:coverage.inventory,proofBlocked:true,
+        prefixDigest,prefixBytes:size,recordCount:coverage.count,completeCapturedEof:true}};
     const summary={policy:'codex_original_history_v1' as const,threadId:input.binding.threadId,sourceSessionId:coverage.sourceSessionId,bindingDigest:digest(input.binding),
+      interpretation:CODEX_HISTORY_INTERPRETATION,inventory:coverage.inventory,baselineTransitions:coverage.baselineTransitions,
+      selectedBaselineDigest:coverage.selectedBaselineDigest,
       selectedInputId:input.selectedInputId,attemptsDigest:digest(input.attempts),sourceIdentity:digest({dev:rev.dev,ino:rev.ino}),
       pathDigest:digest(path),sourceRevisionDigest:digest(rev),prefixDigest,prefixBytes:size,recordCount:coverage.count,
       historyMode:coverage.mode,lastOrdinal:coverage.lastOrdinal,nativeTurnOrder:coverage.order,
@@ -638,6 +783,7 @@ export function revalidateCodexOriginalHistorySource(custody:CodexOriginalHistor
   try{
     const {witnessDigest,...summary}=witness;
     if(digest(summary)!==witnessDigest||custody.witnessDigest!==witnessDigest||custody.threadId!==witness.threadId
+      ||digest(witness.interpretation)!==digest(CODEX_HISTORY_INTERPRETATION)
       ||custody.prefixDigest!==witness.prefixDigest||digest(custody.revision)!==witness.sourceRevisionDigest
       ||digest(custody.path)!==witness.pathDigest||Number(custody.revision.size)!==witness.prefixBytes)
       return {valid:false,reason:'ORIGINAL_HISTORY_WITNESS_CONFLICT'};
@@ -662,6 +808,7 @@ export async function refreshCodexOriginalHistoryAfterOwnedResume(input:{db:Data
   try{
     const {db,witness:w,custody:c}=input,{witnessDigest,...originalSummary}=w;
     if(w.ownedResumeCheckpoint||digest(originalSummary)!==witnessDigest||c.witnessDigest!==witnessDigest
+      ||digest(w.interpretation)!==digest(CODEX_HISTORY_INTERPRETATION)
       ||c.prefixDigest!==w.prefixDigest||digest(c.revision)!==w.sourceRevisionDigest||digest(c.path)!==w.pathDigest
       ||c.threadId!==w.threadId||Number(c.revision.size)!==w.prefixBytes)refuse('ORIGINAL_HISTORY_WITNESS_CONFLICT');
     const intent=db.query('SELECT * FROM codex_mutation_intents WHERE intent_id=?').get(input.intentId) as any;

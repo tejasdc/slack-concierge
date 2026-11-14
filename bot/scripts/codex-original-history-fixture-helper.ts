@@ -41,7 +41,7 @@ export async function createFixtureOriginalHistory(input:{root:string;binding:Co
         assistant_messages:[],assistant_messages_incomplete:false,next_order:2},
       resume_metadata:{multi_agent_version:'v1',last_started_turn_id:id,
         previous_turn_settings:{model:input.binding.model,comp_hash:'fixture-native-compatibility',realtime_active:false}}}),
-      row('event_msg',{type:'item_completed',thread_id:input.binding.threadId,turn_id:id,item:{type:'ContextCompaction',id:`fixture-compaction:${id}`}}));
+      context(id),row('event_msg',{type:'item_completed',thread_id:input.binding.threadId,turn_id:id,item:{type:'ContextCompaction',id:`fixture-compaction:${id}`}}));
     records.push(end(id));
   }
   writeFileSync(sourcePath,records.map(record=>JSON.stringify(record)).join('\n')+'\n');

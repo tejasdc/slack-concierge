@@ -6,6 +6,9 @@ import {join} from 'node:path';
 import {readCodexOriginalHistoryCoverage,revalidateCodexOriginalHistorySource,refreshCodexOriginalHistoryAfterOwnedResume,
   type CodexOriginalHistoryCoverageInput} from '../src/codex-original-history-coverage';
 import {fixtureNativeSettings} from './codex-original-history-fixture-helper';
+import {CODEX_HISTORY_INTERPRETATION,decodeNativeHistoryRecord,decodeResponse,rolloutKinds,responseKinds,
+  turnItemKinds,NativeHistoryDecodeError} from '../src/codex-native-history-decoder';
+import eventCatalogue from '../src/codex-native-event-catalogue.json';
 
 const scratch=mkdtempSync(join(tmpdir(),'codex-original-source-')),home=join(scratch,'codex-home');mkdirSync(home);
 const path=join(home,'rollout-original.jsonl'),threadId='019a7181-0000-7000-8000-000000000001';
@@ -28,11 +31,11 @@ function records():any[]{return structuredClone([row('session_meta',{id:threadId
   row('event_msg',{type:'user_message',client_id:'prior-client',message:'prior preserved request',local_images:[]}),
   row('response_item',{type:'function_call',name:'some-tool',call_id:'prior-call',arguments:'{"private":"preserved"}'}),
   row('response_item',{type:'function_call_output',call_id:'prior-call',output:'earlier successful effect'}),
-  row('event_msg',{type:'agent_message',message:'earlier product reply'}),end('prior-T'),
+  row('response_item',generated),end('prior-T'),
   row('event_msg',{type:'thread_settings_applied',thread_id:threadId,thread_settings:fixtureNativeSettings(binding)}),
   begin('selected-T'),row('response_item',generated),context('selected-T'),end('selected-T'),
   begin('compaction-T'),context('compaction-T'),row('compacted',{message:'model context summary',replacement_history:[user,generated],
-    replacement_history_metadata:[{user_input_order:7},{}]}),row('event_msg',{type:'context_compacted'}),end('compaction-T'),
+    replacement_history_metadata:[{user_input_order:7},{}]}),context('compaction-T'),end('compaction-T'),
   begin('empty-T'),context('empty-T'),row('event_msg',{type:'token_count',info:null,rate_limits:null}),end('empty-T')]);}
 const serialize=(rows:any[])=>rows.map(r=>JSON.stringify(r)).join('\n')+'\n';
 const write=(rows=records())=>writeFileSync(path,serialize(rows));
@@ -54,6 +57,79 @@ assert.equal(result.witness.priorRecordCount,10);
 assert.equal(revalidateCodexOriginalHistorySource(result.custody,result.witness).valid,true);
 assert.ok(!JSON.stringify(result.witness).includes(path)&&!JSON.stringify(result.witness).includes('earlier successful effect'));
 const original=readFileSync(path);
+assert.equal(result.witness.interpretation.upstreamCommit,'c1382380de69521303b416720a52f42d51af6248');
+assert.equal(rolloutKinds.length,12);
+assert.deepEqual(responseKinds,['additional_tools','message','agent_message','reasoning','local_shell_call',
+  'function_call','tool_search_call','function_call_output','custom_tool_call','custom_tool_call_output','tool_search_output',
+  'web_search_call','image_generation_call','compaction','context_compaction','configuration_update','compaction_trigger']);
+assert.equal(Object.keys(eventCatalogue.events).length,85);
+assert.equal(turnItemKinds.length,19);
+// A decoder catalogue is recognition, not a neutral-effects allowlist.
+for(const [kind,payload] of Object.entries({additional_tools:{role:'system',tools:[]},
+  agent_message:{author:'root',recipient:'root/child',content:[{type:'input_text',text:'historical communication'}]},
+  tool_search_call:{execution:'server',arguments:{query:'opaque historical argument'}},
+  tool_search_output:{execution:'server',status:'completed',tools:[]},configuration_update:{reasoning:{effort:'medium'}},
+  context_compaction:{},compaction_summary:{encrypted_content:'opaque historical compaction'}})){
+  assert.ok(decodeResponse({type:kind,...payload}));
+}
+assert.throws(()=>decodeResponse({type:'computer_call'}),NativeHistoryDecodeError);
+assert.throws(()=>decodeNativeHistoryRecord({...row('response_item',user),metadata:{future_authority:true}}),NativeHistoryDecodeError);
+const historicalPair=records();historicalPair.splice(4,0,row('inter_agent_communication_metadata',{trigger_turn:true}),
+  row('response_item',{type:'agent_message',id:'comm-item',author:'root/child',recipient:'root',
+    content:[{type:'input_text',text:'earlier child reply'}],internal_chat_message_metadata_passthrough:{turn_id:'prior-T'}}));
+write(historicalPair);const paired=await read();assert.equal(paired.proven,true,JSON.stringify(paired));
+if(paired.proven)assert.ok(paired.witness.baselineTransitions.some(t=>t.kind==='communication_pair'));
+const interruptedPair=structuredClone(historicalPair);interruptedPair.splice(5,0,row('event_msg',{type:'token_count',info:null,rate_limits:null}));
+write(interruptedPair);const brokenPair=await read();assert.equal(brokenPair.proven,false);
+if(!brokenPair.proven)assert.equal(brokenPair.reasons[0]?.code,'ORIGINAL_HISTORY_COMMUNICATION_PAIR_UNPROVEN');
+for(const trigger_turn of [false,true])await refuses('ORIGINAL_HISTORY_INTERVAL_COMMUNICATION_PRESENT',rows=>{
+  rows.splice(12,0,row('inter_agent_communication_metadata',{trigger_turn}),historicalPair[5]);});
+const historicalCompletion=records();historicalCompletion.splice(8,0,row('event_msg',{type:'item_completed',
+  thread_id:threadId,turn_id:'prior-T',item:{type:'ContextCompaction',id:'prior-compaction-completion'}}));
+write(historicalCompletion);assert.equal((await read()).proven,true,'prior completion is preserved rather than subjected to interval counters');
+for(const kind of ['retained_context','security_risk_score','realtime_item']){
+  const payload=kind==='retained_context'?{type:'verified_answer',turn_id:'prior-T',call_id:'prior-question',
+    questions:[{question:'earlier question',answer:'earlier answer'}],acceptance_order:9}:
+    kind==='security_risk_score'?{scores:{risk:0.2},call_id:'prior-call'}:
+    {id:'realtime-item',realtime_session_id:'prior-realtime',type:'transcript_segment',role:'assistant',text:'earlier speech'};
+  const rows=records();rows.splice(8,0,row(kind,payload));write(rows);
+  assert.equal((await read()).proven,true,`${kind} prior fact is preserved`);
+  rows.splice(8,1);rows.splice(12,0,row(kind,payload));write(rows);assert.equal((await read()).proven,false,`${kind} relevant effect refuses`);
+}
+const allProblems=records();allProblems.splice(4,0,row('unknown_future_record',{}));
+allProblems.push(row('event_msg',{type:'another_future_event'}));write(allProblems);const inventory=await read();
+assert.equal(inventory.proven,false);if(!inventory.proven){
+  assert.equal(inventory.reasons.length,2);assert.equal(inventory.diagnostic?.completeCapturedEof,true);
+  assert.equal(inventory.diagnostic?.recordCount,allProblems.length);
+  assert.equal(inventory.diagnostic?.inventory.unknown_record,1);
+  assert.equal(inventory.diagnostic?.inventory['event_msg:unknown'],1);
+}
+write();
+const resetAndReestablish=records();
+resetAndReestablish.splice(8,0,row('world_state',{full:true,state:{stable:'before-compaction'}}),
+  row('compacted',{message:'earlier preserved model summary',replacement_history:[],resume_metadata:{
+    multi_agent_version:null,last_started_turn_id:null,previous_turn_settings:null}}),
+  row('world_state',{full:false,state:{ignored:'without full snapshot'}}),
+  row('world_state',{full:true,state:{stable:'reestablished'}}),context('prior-T'));
+write(resetAndReestablish);const reconstructed=await read();assert.equal(reconstructed.proven,true,JSON.stringify(reconstructed));
+if(reconstructed.proven){
+  const reset=reconstructed.witness.baselineTransitions.find(t=>t.kind==='compaction_reset')!;
+  assert.ok(reconstructed.witness.baselineTransitions.some(t=>t.kind==='world_full'&&t.sourceRecord===reset.record));
+  assert.ok(reconstructed.witness.baselineTransitions.some(t=>t.kind==='context_established'&&t.sourceRecord===reset.record));
+}
+const missingReestablishment=records();missingReestablishment.splice(17,1);write(missingReestablishment);
+assert.equal((await read()).proven,false,'a pre-compaction context cannot certify a post-compaction baseline');
+const legacyCompaction=records();delete legacyCompaction[16].payload.replacement_history;
+delete legacyCompaction[16].payload.replacement_history_metadata;write(legacyCompaction);
+const legacyRefusal=await read();assert.equal(legacyRefusal.proven,false);
+if(!legacyRefusal.proven)assert.equal(legacyRefusal.reasons[0]?.code,'ORIGINAL_HISTORY_LEGACY_COMPACTION_TRANSFORMATION_UNSUPPORTED');
+const forgedConfiguration=records();forgedConfiguration[16].payload.replacement_history.push({type:'message',role:'developer',
+  content:[{type:'input_text',text:'new instructions'}]});forgedConfiguration[16].payload.replacement_history_metadata.push({});
+write(forgedConfiguration);const configRefusal=await read();assert.equal(configRefusal.proven,false);
+if(!configRefusal.proven)assert.equal(configRefusal.reasons[0]?.code,'ORIGINAL_HISTORY_CONFIGURATION_PROVENANCE_UNPROVEN');
+const strippedEnvelope=records();strippedEnvelope[16].payload.replacement_history_metadata[0]={};write(strippedEnvelope);
+assert.equal((await read()).proven,false,'payload equality cannot erase original acceptance order');
+write();
 appendFileSync(path,serialize([row('event_msg',{type:'token_count'})]));
 assert.equal(revalidateCodexOriginalHistorySource(result.custody,result.witness).valid,false,'append is a source change');
 writeFileSync(path,original);assert.equal(revalidateCodexOriginalHistorySource(result.custody,result.witness).valid,false,'restoring bytes does not restore source revision');
@@ -78,7 +154,7 @@ await refuses('ORIGINAL_HISTORY_COMPACTION_SHAPE_INVALID',rows=>{rows[16].payloa
 await refuses('ORIGINAL_HISTORY_COMPACTION_SIDECAR_UNCLASSIFIED',rows=>{rows[16].payload.retained_context={unknown:'not projected'};});
 await refuses('ORIGINAL_HISTORY_COMPACTION_SIDECAR_UNCLASSIFIED',rows=>{rows[16].payload.future_effect_sidecar={unknown:'not projected'};});
 await refuses('ORIGINAL_HISTORY_RESPONSE_METADATA_UNCLASSIFIED',rows=>{rows[11].metadata={delivered_assistant_message:'confirmed elsewhere'};});
-await refuses('ORIGINAL_HISTORY_REPLACEMENT_METADATA_UNCLASSIFIED',rows=>{rows[16].payload.replacement_history_metadata[1]={unknown_future_provenance:1};});
+await refuses('ORIGINAL_HISTORY_ENVELOPE_FIELD_UNKNOWN',rows=>{rows[16].payload.replacement_history_metadata[1]={unknown_future_provenance:1};});
 await refuses('ORIGINAL_HISTORY_ROLLBACK_UNSUPPORTED',rows=>{rows.splice(4,0,row('event_msg',{type:'thread_rolled_back',num_turns:1}));});
 for(const key of ['history_base','subagent_history_start_ordinal','forked_from_id','forked_from_ordinal_exclusive','parent_thread_id'])
   await refuses('ORIGINAL_HISTORY_INHERITED_LINEAGE_UNSUPPORTED',rows=>{rows[0].payload[key]=key==='history_base'?{thread_id:threadId,end_ordinal_exclusive:1}:1;});
@@ -114,13 +190,19 @@ await refuses('ORIGINAL_HISTORY_TOKEN_USAGE_EFFECT_UNASSESSED',rows=>{rows.splic
 const priorTotals=records();priorTotals.splice(12,0,row('event_msg',{type:'token_count',info:{
   total_token_usage:{...usage,output_tokens:100,total_tokens:110},last_token_usage:usage,model_context_window:258400},rate_limits:null}));write(priorTotals);
 assert.equal((await read()).proven,true,'cumulative prior output alone does not assert selected work');
-await refuses('ORIGINAL_HISTORY_BOUNDARY_SIDECAR_UNKNOWN',rows=>{rows[10].payload.user_message='unclassified future sidecar';});
-await refuses('ORIGINAL_HISTORY_BOUNDARY_SIDECAR_UNKNOWN',rows=>{rows[13].payload.tool_effect={unknown:true};});
-await refuses('ORIGINAL_HISTORY_BOUNDARY_SIDECAR_UNKNOWN',rows=>{rows[17].payload.extra_effect='unknown';});
+await refuses('ORIGINAL_HISTORY_EVENT_FIELD_UNKNOWN',rows=>{rows[10].payload.user_message='unclassified future sidecar';});
+await refuses('ORIGINAL_HISTORY_EVENT_FIELD_UNKNOWN',rows=>{rows[13].payload.tool_effect={unknown:true};});
+await refuses('ORIGINAL_HISTORY_CONTEXT_FIELD_UNKNOWN',rows=>{rows[17].payload.extra_effect='unknown';});
 const attribution=records();attribution[10].payload.turn_attribution={turn_id:'selected-T',turn_trigger:null,parent_turn_id:null,
   initiating_agent_path:null,root_turn_id:'selected-T'};write(attribution);
 assert.equal((await read()).proven,true,'native attribution is causal identity, not accepted input');
 const compactUsage={...usage,output_tokens:5,total_tokens:15};
+const oldUsage={thread_id:threadId,turn_id:'prior-T',session_id:threadId,root_turn_id:'prior-T',response_id:'prior-response',
+  usage:compactUsage,turn_token_usage:compactUsage,thread_token_usage:compactUsage};
+const inheritedUsage=records();inheritedUsage.splice(8,0,row('token_usage_record',oldUsage));
+inheritedUsage.find(r=>r.type==='compacted').payload.latest_token_usage_record=structuredClone(oldUsage);
+inheritedUsage.at(-2).payload.info={total_token_usage:compactUsage,last_token_usage:compactUsage,model_context_window:258400};
+write(inheritedUsage);assert.equal((await read()).proven,true,'compaction keeps the latest reachable usage even when no response replaces it');
 function compactionResponseSource(){const rows=records(),compacted=rows[16];compacted.payload.compaction_response_id='exact-compaction-response';
   const start=rows.findIndex(r=>r.payload.type==='task_started'&&r.payload.turn_id==='compaction-T'),
     finish=rows.findIndex(r=>r.payload.type==='task_complete'&&r.payload.turn_id==='compaction-T');
@@ -155,6 +237,8 @@ for(const change of [(q:any)=>{q.unknown_setting=true;},(q:any)=>{q.primary.futu
 }
 function checkpointSource(){
   const rows=compactionResponseSource();
+  for(const r of rows)if(r.type==='response_item'&&r.payload.id===generated.id)
+    r.metadata={client_authored:false,mcp_attribution:{status:'none'}};
   const attribution={turn_id:'selected-T',turn_trigger:null,parent_turn_id:null,initiating_agent_path:null,root_turn_id:'selected-T'};
   rows.find(r=>r.payload.type==='task_started'&&r.payload.turn_id==='selected-T').payload.turn_attribution=attribution;
   for(const r of rows)if(r.type==='turn_context')Object.assign(r.payload,{comp_hash:'native-model-compatibility',realtime_active:false,multi_agent_version:'v1'});
@@ -191,6 +275,15 @@ if(checkpointProof.proven){
   assert.ok(checkpointProof.witness.compactionRecords[0].resumeSourceRefs?.attributionRecord);
   assert.ok(!JSON.stringify(checkpointProof.witness).includes('earlier preserved assistant answer'));
 }
+const earlierRetained=records(),retainedFacts={verified_answers:[{revision:'answer-revision',order:6,turn_id:'prior-T',call_id:'prior-answer',
+  questions:[{question:'earlier question',answer:'earlier verified reply'}]}],incomplete:false,
+  user_messages:[],user_messages_incomplete:false,assistant_messages:[],assistant_messages_incomplete:false,next_order:7,sender_deliveries:[]};
+earlierRetained.splice(8,0,row('compacted',{message:'prior checkpoint',replacement_history:[],retained_context:retainedFacts}),context('prior-T'));
+earlierRetained.find((r,index)=>index>10&&r.type==='compacted').payload.retained_context=structuredClone(retainedFacts);
+write(earlierRetained);const retainedCopy=await read();assert.equal(retainedCopy.proven,true,JSON.stringify(retainedCopy));
+if(retainedCopy.proven)assert.equal(retainedCopy.witness.compactionRecords.at(-1)?.replacementClassifications.historicalRetainedCheckpoint,1);
+const newFacts=structuredClone(earlierRetained);newFacts.find((r,index)=>index>10&&r.type==='compacted').payload.retained_context.verified_answers[0].questions[0].answer='new unproved grant';
+write(newFacts);assert.equal((await read()).proven,false,'a copied earlier family cannot launder a changed verified answer');
 for(const [code,change] of [
   ['ORIGINAL_HISTORY_RETAINED_CONTEXT_SOURCE_UNPROVEN',(p:any)=>{p.retained_context.user_messages[0].revision='borrowed-revision';}],
   ['ORIGINAL_HISTORY_RETAINED_CONTEXT_SOURCE_UNPROVEN',(p:any)=>{p.retained_context.user_messages[0].turn_id='selected-T';}],
@@ -198,12 +291,12 @@ for(const [code,change] of [
   ['ORIGINAL_HISTORY_RETAINED_CONTEXT_SOURCE_UNPROVEN',(p:any)=>{p.retained_context.user_messages[0].order=8;}],
   ['ORIGINAL_HISTORY_RETAINED_CONTEXT_PAYLOAD_UNPROVEN',(p:any)=>{p.retained_context.user_messages[0].text='new instruction';}],
   ['ORIGINAL_HISTORY_COMPACTION_SIDECAR_UNCLASSIFIED',(p:any)=>{p.retained_context.hidden_acknowledgement=true;}],
-  ['ORIGINAL_HISTORY_RETAINED_CONTEXT_EVENT_PROVENANCE_UNSUPPORTED',(p:any)=>{p.retained_context.verified_answers=[{turn_id:'selected-T'}];}],
+  ['ORIGINAL_HISTORY_RETAINED_EVENT_INVALID',(p:any)=>{p.retained_context.verified_answers=[{turn_id:'selected-T'}];}],
   ['ORIGINAL_HISTORY_COMPACTION_RESUME_STATE_UNPROVEN',(p:any)=>{p.resume_metadata.last_started_turn_id='unseen-T';}],
   ['ORIGINAL_HISTORY_COMPACTION_RESUME_STATE_UNPROVEN',(p:any)=>{p.resume_metadata.previous_turn_settings.realtime_active=true;}],
   ['ORIGINAL_HISTORY_COMPACTION_RESUME_STATE_UNPROVEN',(p:any)=>{p.resume_metadata.turn_attribution={turn_id:'unseen-T'};}],
-  ['ORIGINAL_HISTORY_REPLACEMENT_METADATA_UNCLASSIFIED',(p:any)=>{p.replacement_history_metadata[3].compaction_model_hash='unproven-model';}],
-  ['ORIGINAL_HISTORY_REPLACEMENT_METADATA_UNCLASSIFIED',(p:any)=>{p.replacement_history_metadata[1].unknown_future_provenance=null;}],
+  ['ORIGINAL_HISTORY_COMPACTION_PRODUCER_CONSUMER_COMPATIBILITY_UNPROVEN',(p:any)=>{p.replacement_history_metadata[3].compaction_model_hash='unproven-model';}],
+  ['ORIGINAL_HISTORY_ENVELOPE_FIELD_UNKNOWN',(p:any)=>{p.replacement_history_metadata[1].unknown_future_provenance=null;}],
 ] as [string,(p:any)=>void][]){
   const rows=checkpointSource();change(rows.find(r=>r.type==='compacted').payload);write(rows);const proof=await read();
   assert.equal(proof.proven,false,code);if(!proof.proven)assert.equal(proof.reasons[0]?.code,code,JSON.stringify(proof));
