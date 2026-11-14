@@ -226,11 +226,19 @@ try {
   assert.equal(managedCodexInvocation(['--version']).kind,'read');
   assert.equal(managedCodexInvocation(['resume','latest']).threadId,null);
   assert.equal(managedCodexInvocation(['resume','picker']).threadId,null);
-  assert.equal(managedCodexInvocation(['-c','model="gpt-6.1-sol"','resume','00000000-0000-0000-0000-000000000001']).threadId,
+  assert.equal(managedCodexInvocation(['-c','model="gpt-6.1-sol"','resume','00000000-0000-0000-0000-000000000001']).threadId,null);
+  assert.equal(managedCodexInvocation(['fork','00000000-0000-0000-0000-000000000001']).threadId,null);
+  assert.equal(managedCodexInvocation(['exec','fork','00000000-0000-0000-0000-000000000001']).threadId,null);
+  assert.equal(managedCodexInvocation(['archive','00000000-0000-0000-0000-000000000001']).threadId,null);
+  assert.equal(managedCodexInvocation(['exec','resume','00000000-0000-0000-0000-000000000001']).threadId,
     '00000000-0000-0000-0000-000000000001');
 
   const startFence=acquireCodexThreadMutationFence(db,{threadId:'thread-protected',fenceId:'fence-fixture',...owner,nowMs:1});
   assert.equal(startFence.acquired,true);
+  const interactiveMarker=join(root,'interactive-child.json');
+  const interactive=run(['resume','00000000-0000-0000-0000-000000000099'],{CODEX_FIXTURE_MARKER:interactiveMarker});
+  assert.notEqual(await interactive.exited,0,'interactive resume conflicts even when its initial UUID is unrelated');
+  assert.equal(existsSync(interactiveMarker),false,'thread-switching TUI is refused before native child creation');
   const first=await bridgeClient(),second=await bridgeClient();
   const ask=(client:any,frame:any)=>client.child.stdin.write(JSON.stringify({type:'request',id:frame.id,method:frame.method,params:frame.params})+'\n');
   const read=(client:any,method:string,params:any)=>ask(client,protocol(method,params));
@@ -298,7 +306,7 @@ try {
   // Direct CLI lifetime intent precedes child execution. Observed exit reconciles;
   // killing the launcher while its child remains alive leaves durable uncertainty.
   const completedMarker=join(root,'completed-child.json');
-  const completed=run(['resume','00000000-0000-0000-0000-000000000099'],{CODEX_FIXTURE_MARKER:completedMarker,CODEX_FIXTURE_WAIT_REGISTER:'1'});
+  const completed=run(['exec','resume','00000000-0000-0000-0000-000000000099'],{CODEX_FIXTURE_MARKER:completedMarker,CODEX_FIXTURE_WAIT_REGISTER:'1'});
   assert.equal(await completed.exited,0,await completed.stderr.text());
   const completedData=JSON.parse(await Bun.file(completedMarker).text());
   ownedChildPids.push(completedData.pid);
@@ -316,7 +324,7 @@ try {
   assert.equal(completedRows.length,1);
   assert.equal(completedRows[0].state,'reconciled_applied','only observed owned-child exit resolves lifetime');
   const heldMarker=join(root,'held-child.json');
-  const held=run(['resume','00000000-0000-0000-0000-000000000098'],{CODEX_FIXTURE_MARKER:heldMarker,CODEX_FIXTURE_HOLD:'1',CODEX_FIXTURE_WAIT_REGISTER:'1'});
+  const held=run(['exec','resume','00000000-0000-0000-0000-000000000098'],{CODEX_FIXTURE_MARKER:heldMarker,CODEX_FIXTURE_HOLD:'1',CODEX_FIXTURE_WAIT_REGISTER:'1'});
   for(let i=0;i<200&&!existsSync(heldMarker);i++)await Bun.sleep(10);
   assert.ok(existsSync(heldMarker),'owned native child started');
   const heldData=JSON.parse(await Bun.file(heldMarker).text());

@@ -99,7 +99,7 @@ try {
   const cliRegistration = { connectionId: 'cli-connection', permitId: lifetimePermit, intentId: lifetimeIntent,
     kind: 'cli' as const, threadScope: threadA, mediated: false, lifetimeIntentConsumed: true,
     evidenceIds: ['input-1', 'run-1', lifetimePermit, lifetimeIntent] };
-  helperParent(202, ['resume', threadA], ['resume', threadA]);
+  helperParent(202, ['exec','resume', threadA], ['exec','resume', threadA]);
   assert.equal(registerManagedCodexChild({ db: independent, registration: cliRegistration, pid: 202, nowMs: 5, proc, releaseRoot }).registered, true);
   const targetCli = assessManagedCodexWriterCoverage({ db, threadId: threadA, socketPath: '/run/codex.sock', proc });
   assert.equal(targetCli.covered, true);

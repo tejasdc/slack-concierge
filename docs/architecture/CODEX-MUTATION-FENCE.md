@@ -48,7 +48,9 @@ and [turn processor](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs
 | Local owner native client | App Server bridge and common owner permits | Installed bridge/native behavior |
 | Runner client | Owner runner relay before remote forwarding | Remote process coverage; accepted-binding recovery refuses remote execution |
 | Desktop SSH `codex app-server proxy` | Stable wrapper, sealed helper, decoded WebSocket gate | Existing unmediated connections and previously issued handlers |
-| Root TUI/picker, resume, exec resume/fork, direct CLI commands | Durable exact-thread or global lifetime intent before native child creation | Unresolved lifetime blocks conflicting recovery; direct CLI is not assumed to use a universal relay |
+| Root TUI/picker, interactive resume/fork | Durable global lifetime intent before native child creation | Startup UUID does not constrain later in-process thread selection |
+| Noninteractive exec resume with an explicit UUID | Durable exact-thread lifetime intent before native child creation | Fixed one-shot target; unresolved lifetime blocks conflicting recovery |
+| Exec fork and other direct CLI commands | Durable global lifetime intent before native child creation | Fork creates another thread; unproven command scope stays global |
 | Managed local account activation/replacement | Global lifecycle intent in the same mutation ledger before restart/stop/replacement | Only actual verified managed-daemon health settles it; failures remain outstanding |
 | Runner account activation/re-home | Actual owner relay gates the lifecycle call before buffering or forwarding | Explicit terminal handler results settle it; error, unknown result and lost receipt hold it |
 | Help/version and wrapper capability read | Side-effect-free handling | Capability support does not prove connection drainage |
@@ -66,6 +68,13 @@ proxy. That proxy is unmediated. Closing it or observing idle cannot prove that
 started native handlers finished. No reviewed supported drain witness is yet
 implemented. Neither a helper capability response nor a current process inventory
 replaces that missing proof.
+
+Interactive TUI scope is global even with an explicit startup UUID: native 0.166
+supports attaching another saved thread through `/resume` and the Agents picker
+without process exit. See the pinned [in-process picker](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/tui/src/app/session_picker.rs).
+Only the inspected noninteractive `exec resume` path with an explicit UUID uses
+narrower custody. `exec fork` creates another thread and remains global; see the
+pinned [one-shot command implementation](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/exec/src/lib.rs).
 
 Lifecycle and thread admission are mutually exclusive in the same immediate
 transactions. A queued recovery fence is sufficient to defer restart; a running

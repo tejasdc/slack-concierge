@@ -254,6 +254,16 @@ These are source checks, not installed activation or provider acceptance. Both
 explicit activation refusals remain enforced; the old Desktop connection and
 current native hook reconstruction remain parent-owned unresolved prerequisites.
 
+The final direct-writer audit found that an interactive `resume UUID` can attach
+another conversation through the in-process picker. Startup identity therefore
+does not bound lifetime scope. The shared classifier now keeps all interactive
+commands, fork and other unproven direct commands global. Only the inspected
+one-shot `exec resume` path with an explicit UUID receives exact-thread custody.
+The real launcher fixture refuses an unrelated-startup-UUID interactive resume
+before creating its native child when any recovery fence is active. This replaces
+the earlier source candidate's overly narrow interactive lifetime classification;
+neither candidate was activated.
+
 Source navigation used scoped `rg` references followed by direct reads of the
 public operation, owner delegation, host proof, atomic reservation, registry,
 observer, model guard, retry transaction and actual native start. No LSP tool was

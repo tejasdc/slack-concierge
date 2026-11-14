@@ -27,7 +27,10 @@ export function managedCodexInvocation(argv:string[]):ManagedCodexInvocation{
   if(!uncertain&&words[0]?.value==='app-server'&&words[1]?.value==='proxy')
     return {kind:'proxy',proxyIndex:words[1].index};
   const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  const resume=['resume','queue','archive','delete','unarchive','fork'].includes(words[0]?.value??'')?words[1]:
-    ['exec','e'].includes(words[0]?.value??'')&&['resume','fork'].includes(words[1]?.value??'')?words[2]:null;
+  // Interactive resume/fork selects only the initial thread: the running TUI can
+  // attach another thread through /resume or its Agents picker. Its lifetime is global.
+  // The one-shot exec resume path resolves one explicit UUID. Exec fork creates
+  // another thread; all other direct command scopes remain conservatively global.
+  const resume=['exec','e'].includes(words[0]?.value??'')&&words[1]?.value==='resume'?words[2]:null;
   return {kind:'lifetime',threadId:!uncertain&&resume&&uuid.test(resume.value)?resume.value:null};
 }
