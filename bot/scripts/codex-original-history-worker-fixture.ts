@@ -16,6 +16,10 @@ process.env.CONCIERGE_STATE_DIR=state;process.env.CONCIERGE_CAPTURE_STATE_DIR=jo
 process.env.CONCIERGE_TEST_MODE='1';process.env.CONCIERGE_TEST_AUTHORIZATION='implementation-edit-gate-2026-11-12';
 process.env.CONCIERGE_CODEX_APP_SERVER_SOCKET=socket;process.env.CODEX_HOME=codexHome;
 process.env.CODEX_SYSTEM_DIR=systemDir;
+const nodeExecutable=process.env.CONCIERGE_NODE_BIN?.trim()||Bun.which('node');
+assert.ok(nodeExecutable,'The isolated native bridge fixture requires a selected Node runtime.');
+process.env.CONCIERGE_NODE_BIN=nodeExecutable;
+delete process.env.CONCIERGE_CODEX_RUNNER;
 
 const threadId='019a7181-0000-7000-8000-000000000001';
 const nativeTurnId='native-turn-selected';

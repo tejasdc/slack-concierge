@@ -187,6 +187,12 @@ host callbacks are now stubbed only in the fixture bootstrap, and attempted daem
 auto-start throws. Earlier fixture runs invoked the callbacks; their actual host
 effects were not retained, so absence of those effects is not claimed. Parent
 owns any live-host reconciliation; this lane performs no production probe.
+The retained CI error then established the concrete transport dependency failure:
+`posix_spawn '/usr/bin/node'` returned ENOENT. The worker fixture had relied on
+the production server's literal Node path, while the existing relay fixture
+selects the execution host's discovered Node. The worker fixture now selects that
+same dependency explicitly and clears any inherited remote-runner redirect so
+its socket remains the owned stand-in. Production executable policy is unchanged.
 
 The omitted-boundary source audit also found that account activation and managed
 daemon replacement use running-turn checks, which do not exclude a queued
