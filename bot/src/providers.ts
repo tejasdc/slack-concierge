@@ -52,7 +52,7 @@ export interface AgentProvider {
     model?: string;
     reasoning_effort?: string;
     /** Private owner capability; stripped at the mandatory native forwarding boundary. */
-    codexRecovery?: {authorizationId:string;capability?:string;model:string;effort:string;preparedPromptDigest?:string};
+    codexRecovery?: {authorizationId:string;capability?:string;model:string;effort:string;preparedPromptDigest?:string;beforeStart?:()=>Promise<void>};
     onSteeringReady?: (sender: SteeringSender) => void;
     onCancellationReady?: (cancel: () => Promise<void>) => void;
     onProviderTerminal?: (evidence?:{providerThreadId:string|null;providerTurnId:string|null;status:string}) => void;

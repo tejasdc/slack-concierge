@@ -1,7 +1,8 @@
 import {db,executionChanged,codexUnacknowledgedRecovery} from './state';
 import {inspectAcceptedBindingContinuation} from './codex-accepted-binding-snapshot';
 import {acceptedBindingSnapshotDigest} from './codex-accepted-binding-continuation';
-import {proveCodexContinuationNativeInterval,type CodexHistoryReadClient} from './codex-continuation-native-interval';
+import {proveCodexContinuationNativeInterval,bindCodexOriginalHistoryCoverage,type CodexHistoryReadClient} from './codex-continuation-native-interval';
+import {revalidateCodexOriginalHistorySource,type readCodexOriginalHistoryCoverage} from './codex-original-history-coverage';
 import {acquireCodexThreadMutationFence} from './codex-mutation-fence';
 import {grantCodexRecoveryAuthorization} from './codex-recovery-dispatch-authorization';
 import {assessManagedCodexWriterCoverage} from './codex-managed-process-registry';
@@ -11,6 +12,8 @@ import {RETRYING_PROVIDER_TURN_STATUS_TEXT} from './text';
  * a caller's claim that writers are covered. Production uses the real host. */
 export interface CodexRecoveryHostDependencies {
   writerProc?:Parameters<typeof assessManagedCodexWriterCoverage>[0]['proc'];
+  readOriginalHistory?:(input:{sessionId:number;inputId:string;requestId:string;runId:string;fenceId:string;
+    expectedDecisionDigest:string;expectedNativeDigest:string})=>Promise<Awaited<ReturnType<typeof readCodexOriginalHistoryCoverage>>>;
 }
 
 /** The owner supplies only its already-authorized request identity and read-only
@@ -44,8 +47,14 @@ export async function recoverAcceptedBindingCodex(input:{sessionId:number;inputI
     return {id:thread.id,model:thread.model,effort:thread.reasoningEffort,historyMode:thread.historyMode,status:thread.status.type};
   };
   const cold=await readThread();
-  const native=await proveCodexContinuationNativeInterval({snapshot,client:input.client});
-  if(!native.proven)throw new Error(`Complete native interval refuses: ${native.reasons.map(reason=>reason.code).join(', ')}.`);
+  const projected=await proveCodexContinuationNativeInterval({snapshot,client:input.client});
+  if(!projected.proven)throw new Error(`Projected native interval refuses: ${projected.reasons.map(reason=>reason.code).join(', ')}.`);
+  if(!dependencies.readOriginalHistory)throw new Error('NATIVE_ORIGINAL_EFFECT_HISTORY_COVERAGE_UNPROVEN: original source reader is unavailable.');
+  const original=await dependencies.readOriginalHistory({sessionId:input.sessionId,inputId:input.inputId,requestId:input.requestId,
+    runId:snapshot.selected.turn.native_run_id!,fenceId,expectedDecisionDigest:inspection.decisionDigest,expectedNativeDigest:projected.nativeDigest});
+  const native=bindCodexOriginalHistoryCoverage(projected,original);
+  if(!native.proven)throw new Error(`Original native history coverage refuses: ${native.reasons.map(reason=>reason.code).join(', ')}.`);
+  if(!('originalHistory'in native))throw new Error('NATIVE_ORIGINAL_EFFECT_HISTORY_COVERAGE_UNPROVEN');
   if(acceptedBindingSnapshotDigest(await readThread())!==acceptedBindingSnapshotDigest(cold))
     throw new Error('Native cold-resume eligibility changed during inspection.');
   const selectedAttempts=native.attempts.filter(attempt=>attempt.inputId===input.inputId);
@@ -63,6 +72,8 @@ export async function recoverAcceptedBindingCodex(input:{sessionId:number;inputI
       throw new Error('Accepted input watermark, source custody, controls, binding or attempts changed before atomic reservation.');
     const currentWriters=assessManagedCodexWriterCoverage({db,threadId:binding.threadId,socketPath:input.socketPath,proc:dependencies.writerProc});
     if(!currentWriters.covered)throw new Error('Managed writer coverage changed before atomic reservation.');
+    if(!revalidateCodexOriginalHistorySource(native.originalHistory.custody,native.originalHistory.witness).valid)
+      throw new Error('NATIVE_ORIGINAL_EFFECT_HISTORY_SOURCE_CHANGED before atomic reservation.');
     db.query(`INSERT INTO codex_unacknowledged_recoveries(accepted_input_id,request_id,turn_id,provider_thread_id,
       proof_json,action_id,source_input_id,source_run_id,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?)`)
       .run(input.inputId,input.requestId,snapshot.selected.turn.id,binding.threadId,JSON.stringify(proof),

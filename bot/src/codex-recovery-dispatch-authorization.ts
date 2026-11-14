@@ -4,6 +4,7 @@ import {acceptedBindingSnapshotDigest as digest} from './codex-accepted-binding-
 import {getCodexThreadMutationFence,grantCodexMutationPermit,consumeCodexMutationPermit,
   recordCodexMutationResponse,reconcileCodexMutationIntent,stopCodexThreadMutationFence} from './codex-mutation-fence';
 import {EARLIER_TURN_BLOCKS_SQL,queuePrecedesSql} from './state';
+import {revalidateCodexOriginalHistorySource} from './codex-original-history-coverage';
 
 const parse=(json:string|null):any=>{try{return json===null?null:JSON.parse(json);}catch{return null;}};
 const hash=(value:string)=>createHash('sha256').update(value,'utf8').digest('hex');
@@ -45,6 +46,14 @@ export function initializeCodexRecoveryAuthorizationSchema(db:Database){
       BEGIN SELECT RAISE(ABORT,'recovery terminal settlement is immutable'); END;
     CREATE TRIGGER IF NOT EXISTS codex_recovery_terminal_no_delete BEFORE DELETE ON codex_recovery_terminal_settlements
       BEGIN SELECT RAISE(ABORT,'recovery terminal settlement is immutable'); END;
+    CREATE TABLE IF NOT EXISTS codex_recovery_source_checkpoints (
+      authorization_id TEXT PRIMARY KEY,original_witness_digest TEXT NOT NULL,resume_intent_id TEXT NOT NULL UNIQUE,
+      witness_json TEXT NOT NULL,custody_json TEXT NOT NULL,checkpoint_digest TEXT NOT NULL,created_at_ms INTEGER NOT NULL,
+      FOREIGN KEY(authorization_id) REFERENCES codex_recovery_dispatch_authorizations(authorization_id));
+    CREATE TRIGGER IF NOT EXISTS codex_recovery_source_checkpoint_no_update BEFORE UPDATE ON codex_recovery_source_checkpoints
+      BEGIN SELECT RAISE(ABORT,'recovery source checkpoint is immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS codex_recovery_source_checkpoint_no_delete BEFORE DELETE ON codex_recovery_source_checkpoints
+      BEGIN SELECT RAISE(ABORT,'recovery source checkpoint is immutable'); END;
     CREATE TRIGGER IF NOT EXISTS codex_recovery_audit_no_update BEFORE UPDATE ON codex_recovery_authorization_audit
       BEGIN SELECT RAISE(ABORT,'recovery authorization audit is immutable'); END;
     CREATE TRIGGER IF NOT EXISTS codex_recovery_audit_no_delete BEFORE DELETE ON codex_recovery_authorization_audit
@@ -184,6 +193,69 @@ function current(db:Database,row:any){
   requireProof(fence?.fenceId===row.fence_id&&fence.acceptedInputId===row.accepted_input_id&&fence.runId===row.run_id
     &&fence.dispatchAttempt===row.dispatch_attempt&&fence.bindingDigest===digest(parse(row.binding_json)),'RECOVERY_THREAD_FENCE_CHANGED');
 }
+function originalSource(db:Database,row:any){
+  const reservation=db.query('SELECT proof_json FROM codex_unacknowledged_recoveries WHERE accepted_input_id=?')
+    .get(row.accepted_input_id) as any;
+  const proof=parse(reservation?.proof_json),original=proof?.native?.originalHistory;
+  requireProof(original?.witness?.policy==='codex_original_history_v1'&&original.custody
+    &&original.witness.bindingDigest===digest(parse(row.binding_json))&&original.witness.selectedInputId===row.accepted_input_id
+    &&original.witness.attemptsDigest===digest(proof.native.attempts)
+    &&digest(original.witness.nativeTurnOrder)===digest(proof.native.coverage.map((item:any)=>item.providerTurnId)),
+    'NATIVE_ORIGINAL_EFFECT_HISTORY_COVERAGE_UNPROVEN');
+  return original;
+}
+function requireCurrentOriginalSource(db:Database,row:any,afterResume=false){
+  const original=originalSource(db,row);
+  let selected=original;
+  if(afterResume){
+    const saved=db.query('SELECT * FROM codex_recovery_source_checkpoints WHERE authorization_id=?').get(row.authorization_id) as any;
+    requireProof(saved,'OWNED_RESUME_SOURCE_CHECKPOINT_MISSING');
+    selected={witness:parse(saved.witness_json),custody:parse(saved.custody_json)};
+    const checkpoint=selected.witness?.ownedResumeCheckpoint;
+    const intent=db.query('SELECT * FROM codex_mutation_intents WHERE permit_id=?').get(row.resume_permit_id) as any;
+    requireProof(saved.original_witness_digest===original.witness.witnessDigest&&checkpoint
+      &&checkpoint.previousWitnessDigest===original.witness.witnessDigest&&checkpoint.previousPrefixDigest===original.witness.prefixDigest
+      &&intent?.intent_id===saved.resume_intent_id&&checkpoint.intentId===intent.intent_id&&checkpoint.permitId===row.resume_permit_id
+      &&intent.state==='reconciled_applied'&&intent.response_kind==='accepted'&&checkpoint.responseDigest===intent.response_digest
+      &&saved.checkpoint_digest===digest({authorizationId:row.authorization_id,originalWitnessDigest:saved.original_witness_digest,
+        resumeIntentId:saved.resume_intent_id,...selected}),'OWNED_RESUME_SOURCE_CHECKPOINT_CONFLICT');
+  }
+  const revision=revalidateCodexOriginalHistorySource(selected.custody,selected.witness);
+  requireProof(revision.valid,'NATIVE_ORIGINAL_EFFECT_HISTORY_SOURCE_CHANGED');
+  return selected;
+}
+
+/** Private worker evidence enters the same owner's immutable custody, never the
+ * product event/audit stream. Its paths and source bytes are not public fields. */
+export function retainCodexRecoverySourceCheckpoint(db:Database,input:{authorizationId:string;result:any;nowMs:number}){
+  return operation(db,input.authorizationId,'source-checkpoint',input.nowMs,row=>{
+    current(db,row);running(db,row);
+    const original=originalSource(db,row),result=input.result,checkpoint=result?.witness?.ownedResumeCheckpoint;
+    const coverageReason=result?.reasons?.[0]?.code;
+    requireProof(result?.proven===true,typeof coverageReason==='string'&&/^[A-Z][A-Z0-9_]{1,120}$/.test(coverageReason)
+      ?coverageReason:'OWNED_RESUME_SOURCE_CHECKPOINT_UNPROVEN');
+    const intent=db.query('SELECT * FROM codex_mutation_intents WHERE permit_id=?').get(row.resume_permit_id) as any;
+    requireProof(result.custody&&checkpoint
+      &&intent?.intent_id===result.intentId&&intent.permit_id===result.permitId&&intent.method==='thread/resume'
+      &&intent.fence_id===row.fence_id&&intent.accepted_input_id===row.accepted_input_id&&intent.run_id===row.run_id
+      &&intent.dispatch_attempt===row.dispatch_attempt&&intent.state==='reconciled_applied'&&intent.response_kind==='accepted'
+      &&checkpoint.intentId===intent.intent_id&&checkpoint.permitId===intent.permit_id&&checkpoint.responseDigest===intent.response_digest
+      &&checkpoint.previousWitnessDigest===original.witness.witnessDigest&&checkpoint.previousPrefixDigest===original.witness.prefixDigest
+      &&result.witness.bindingDigest===original.witness.bindingDigest&&result.witness.threadId===row.thread_id
+      &&result.witness.selectedInputId===row.accepted_input_id&&result.witness.attemptsDigest===original.witness.attemptsDigest,
+      'OWNED_RESUME_SOURCE_CHECKPOINT_UNPROVEN');
+    requireProof(revalidateCodexOriginalHistorySource(result.custody,result.witness).valid,'NATIVE_ORIGINAL_EFFECT_HISTORY_SOURCE_CHANGED');
+    const value={authorizationId:row.authorization_id,originalWitnessDigest:original.witness.witnessDigest,
+      resumeIntentId:intent.intent_id,witness:result.witness,custody:result.custody},checkpointDigest=digest(value);
+    const prior=db.query('SELECT checkpoint_digest FROM codex_recovery_source_checkpoints WHERE authorization_id=?').get(row.authorization_id) as any;
+    requireProof(!prior||prior.checkpoint_digest===checkpointDigest,'OWNED_RESUME_SOURCE_CHECKPOINT_CONFLICT');
+    if(!prior)db.query(`INSERT INTO codex_recovery_source_checkpoints(authorization_id,original_witness_digest,resume_intent_id,
+      witness_json,custody_json,checkpoint_digest,created_at_ms) VALUES(?,?,?,?,?,?,?)`).run(row.authorization_id,
+        original.witness.witnessDigest,intent.intent_id,JSON.stringify(result.witness),JSON.stringify(result.custody),checkpointDigest,input.nowMs);
+    requireCurrentOriginalSource(db,row,true);
+    return {allowed:true as const,checkpointDigest,duplicate:!!prior};
+  });
+}
 function authenticate(row:any,capability:string){
   const actual=typeof capability==='string'?hash(capability):'';
   requireProof(isDigest(row.capability_hash)&&isDigest(actual)
@@ -214,7 +286,7 @@ export function grantCodexRecoveryAuthorization(db:Database,input:{acceptedInput
       requireProof(digest({policy:c.policy,basis:c.basis,identity,snapshotDigest:c.snapshotDigest,evidenceRefs:c.evidenceRefs,reasons:c.reasons})===c.decisionDigest,
         'CONTINUATION_DECISION_DIGEST_INVALID');
       const nativeEvidence={threadId:n.threadId,continuationDecisionDigest:n.continuationDecisionDigest,ownerSnapshotDigest:n.ownerSnapshotDigest,
-        attempts:n.attempts,coverage:n.coverage,nativeTurnOrder:n.nativeTurnOrder,nativeWatermark:n.nativeWatermark};
+        attempts:n.attempts,coverage:n.coverage,nativeTurnOrder:n.nativeTurnOrder,nativeWatermark:n.nativeWatermark,originalHistory:n.originalHistory};
       requireProof(digest(nativeEvidence)===n.nativeDigest&&n.threadId===identity.binding.threadId,'NATIVE_DECISION_DIGEST_INVALID');
       requireProof(Array.isArray(proof.attempts)&&proof.attempts.length>0&&proof.dispatchAttemptCount===proof.attempts.length
         &&identity.dispatchAttempt===proof.attempts.length&&proof.attempts.every((a:any,index:number)=>a.dispatchAttempt===index+1
@@ -231,6 +303,7 @@ export function grantCodexRecoveryAuthorization(db:Database,input:{acceptedInput
         evidence_refs_json:JSON.stringify(c.evidenceRefs)};
       row.source_fingerprint=codexRecoverySourceFingerprint(db,row);
       current(db,row);
+      requireCurrentOriginalSource(db,row);
       const turn=db.query('SELECT status,dispatch_attempt,provider_input_acknowledged_at FROM turns WHERE id=?').get(row.turn_id) as any;
       requireProof(turn?.status==='queued'&&turn.dispatch_attempt===proof.attempts.length&&turn.provider_input_acknowledged_at===null
         &&reservation.additional_dispatch_attempt===null,'EXACT_RECOVERY_RESERVATION_NOT_UNUSED');
@@ -265,6 +338,7 @@ export function prepareCodexRecoveryMutation(db:Database,input:{authorizationId:
     authenticate(row,input.capability);current(db,row);running(db,row);
     const binding=parse(row.binding_json),isResume=input.method==='thread/resume',isStart=input.method==='turn/start';
     requireProof(isResume||isStart,'RECOVERY_MUTATION_METHOD_FORBIDDEN');
+    requireCurrentOriginalSource(db,row,isStart);
     requireProof(input.params?.threadId===row.thread_id&&input.params.model===binding.model,'ACTUAL_RECOVERY_MODEL_OR_THREAD_MISMATCH');
     if(isResume){
       const allowedKeys=['threadId','cwd','runtimeWorkspaceRoots','approvalPolicy','sandbox','config','model','excludeTurns'];
@@ -309,6 +383,7 @@ export function consumeCodexRecoveryMutation(db:Database,input:{authorizationId:
     requireProof(row.start_permit_id===input.permitId||row.resume_permit_id===input.permitId,'RECOVERY_PERMIT_IDENTITY_CONFLICT');
     const permit=db.query('SELECT * FROM codex_mutation_permits WHERE permit_id=?').get(input.permitId) as any;
     requireProof(permit?.params_digest===digest(input.params),'ACTUAL_RECOVERY_PARAMETERS_CHANGED');
+    requireCurrentOriginalSource(db,row,permit.method==='turn/start');
     if(permit.method==='turn/start'){
       const reservation=db.query('SELECT additional_dispatch_attempt FROM codex_unacknowledged_recoveries WHERE accepted_input_id=?').get(row.accepted_input_id) as any;
       const turn=db.query('SELECT provider_admission_intended_at FROM turns WHERE id=?').get(row.turn_id) as any;

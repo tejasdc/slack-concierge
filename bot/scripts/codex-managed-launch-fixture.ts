@@ -71,6 +71,9 @@ initializeManagedCodexProcessRegistrySchema(db);
 const owner={acceptedInputId:'fixture-input',runId:'fixture-run',dispatchAttempt:1,bindingDigest:'fixture-binding'};
 const nativeSeen:any[]=[];
 const gateSeen:any[]=[];
+let receiptObserved!:()=>void,releaseReceipt!:()=>void;
+const receiptAtOwner=new Promise<void>(resolve=>{receiptObserved=resolve;});
+const receiptMayComplete=new Promise<void>(resolve=>{releaseReceipt=resolve;});
 const startedMarkers:string[]=[];
 const launchInputs=new Map<string,string[]>();
 const helperBytes=Buffer.from('sealed managed launcher fixture');
@@ -157,8 +160,11 @@ const gate=async(body:any)=>{
   }
   if(body.phase==='consume')return consumeCodexMutationPermit(db,{permitId:body.permitId,intentId:body.intentId,
     paramsDigest:body.paramsDigest,nowMs:Date.now()});
-  if(body.phase==='response')return recordCodexMutationResponse(db,{intentId:body.intentId,
-    kind:body.nativeError?'rpc_error':'accepted',responseDigest:body.responseDigest,providerTurnId:body.providerTurnId,nowMs:Date.now()});
+  if(body.phase==='response'){
+    if(body.method==='thread/name/set'){receiptObserved();await receiptMayComplete;}
+    return recordCodexMutationResponse(db,{intentId:body.intentId,
+      kind:body.nativeError?'rpc_error':'accepted',responseDigest:body.responseDigest,providerTurnId:body.providerTurnId,nowMs:Date.now()});
+  }
   return {allowed:false,forward:false,reason:'unknown_phase'};
 };
 
@@ -182,6 +188,7 @@ nativeHttp.on('upgrade',(request,socket,head)=>nativeWs.handleUpgrade(request,so
 nativeWs.on('connection',(peer:WebSocket)=>peer.on('message',data=>{
   const frame=JSON.parse(data.toString());nativeSeen.push(frame);
   if(Object.hasOwn(frame,'id')&&frame.method==='initialize')peer.send(JSON.stringify({id:frame.id,result:{ready:true}}));
+  else if(Object.hasOwn(frame,'id')&&frame.method==='thread/name/set')peer.send(JSON.stringify({id:frame.id,result:{}}));
   else if(Object.hasOwn(frame,'id')&&frame.method==='test/request')peer.send(JSON.stringify({id:frame.id,result:{echo:frame.params}}));
   else if(Object.hasOwn(frame,'id')&&frame.method==='test/server-request')peer.send(JSON.stringify({id:'server-question',method:'server/ask',params:{question:'native?'}}));
   else if(Object.hasOwn(frame,'id')&&frame.method==='test/server-response')peer.send(JSON.stringify({id:frame.id,result:{ok:true}}));
@@ -257,6 +264,16 @@ try {
   assert.ok(nativeSeen.some(frame=>frame.method==='thread/read'&&frame.params.threadId==='thread-protected'),JSON.stringify(nativeSeen));
   assert.ok(nativeSeen.some(frame=>frame.method==='thread/archive'&&frame.params.threadId==='thread-unrelated'),JSON.stringify({nativeSeen,gateSeen}));
   assert.equal(barrierCount,2,'two independent bridge clients reached the owner gate before either decision proceeded');
+  const receiptClient=await bridgeClient(),receiptRequest=protocol('thread/name/set',{threadId:'receipt-thread',name:'fixture-only'});
+  ask(receiptClient,receiptRequest);
+  await receiptAtOwner;
+  let delivered=false;
+  const retainedReply=readLine(receiptClient.reader,receiptClient.pending).then(reply=>{delivered=true;return reply;});
+  await Bun.sleep(25);
+  assert.equal(delivered,false,'native success cannot reach its client before the owned receipt audit completes');
+  releaseReceipt();
+  assert.equal((await retainedReply).id,receiptRequest.id);
+  receiptClient.child.stdin.write(JSON.stringify({type:'close'})+'\n');receiptClient.child.kill();
   for(const method of ['thread/start','config/value/write','thread/compact','future/unknownNotification'])
     assert.ok(gateSeen.some(entry=>entry.phase==='prepare'&&entry.method===method&&
       (entry.threadId==='thread-protected'||entry.params?.threadId==='thread-protected')),

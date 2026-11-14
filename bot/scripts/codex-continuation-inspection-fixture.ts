@@ -56,7 +56,8 @@ try {
   assert.equal(first.continuation.authorized,false);
   assert.equal(first.eligible,false,'owner witnesses alone never authorize native execution');
   assert.deepEqual(first.reasons.map(reason=>reason.code),['NATIVE_INTERVAL_NOT_PROVEN','NATIVE_ACTIVITY_BOUNDARY_NOT_FENCED',
-    'LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN','COLD_RESUME_HOOK_CONFIGURATION_UNPROVEN']);
+    'LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN','COLD_RESUME_HOOK_CONFIGURATION_UNPROVEN',
+    'NATIVE_ORIGINAL_EFFECT_HISTORY_COVERAGE_UNPROVEN']);
   assert.equal(first.interval.acceptedWithoutTurnCount,1);
   assert.equal(inspect().interval.digest,first.interval.digest,'unchanged snapshot has a stable digest');
   retainSessionInput({sessionId:target.id,scope:'fixture',actionId:'control',kind:'action',origin:'human',payload:{action:'pause'}});

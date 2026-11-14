@@ -38,7 +38,9 @@ import {recordRepairNotice} from './repair-notices';
 import {proveCodexInputNeverAcknowledged} from './codex-unacknowledged-proof';
 import {recoverAcceptedBindingCodex} from './codex-accepted-binding-recovery';
 import {requireCodexContinuationActivation} from './codex-continuation-activation';
-import {getCodexRecoveryAuthorizationForInput,claimCodexRecoveryDispatchCapability,reconcileCodexRecoveryNativeTerminal} from './codex-recovery-dispatch-authorization';
+import {getCodexRecoveryAuthorizationForInput,claimCodexRecoveryDispatchCapability,reconcileCodexRecoveryNativeTerminal,
+  retainCodexRecoverySourceCheckpoint} from './codex-recovery-dispatch-authorization';
+import type {readCodexOriginalHistoryCoverage} from './codex-original-history-coverage';
 import {reconcileManagedCodexNativeTerminal,reconcileManagedCodexMutationFromRetainedTerminal} from './codex-managed-native-terminal';
 import {nativeResultEventId} from './native-result-identity';
 import type {HostRunnerFile} from './host-access';
@@ -1672,7 +1674,12 @@ export class SessionExecutionHost {
             }
             prepared={...prepared,model:recovery.model,reasoning_effort:recovery.effort,
               codexRecovery:{authorizationId:recovery.authorizationId,model:recovery.model,effort:recovery.effort,
-                ...(capability?{capability}:{}),preparedPromptDigest:createHash('sha256').update(prepared.prompt,'utf8').digest('hex')}};
+                ...(capability?{capability}:{}),preparedPromptDigest:createHash('sha256').update(prepared.prompt,'utf8').digest('hex'),
+                beforeStart:async()=>{
+                  const result=await this.historyPages.refreshOriginalCodexHistoryAfterResume(recovery.authorizationId);
+                  const retained=retainCodexRecoverySourceCheckpoint(db,{authorizationId:recovery.authorizationId,result,nowMs:Date.now()});
+                  if(!retained.allowed)throw new Error(`Original native source checkpoint refuses: ${retained.reason}.`);
+                }}};
           }
           if(session.provider_id==='codex'){
             const terminal=prepared.onProviderTerminal;
@@ -2108,7 +2115,8 @@ export class SessionExecutionHost {
       const result=await recoverAcceptedBindingCodex({sessionId:session.id,inputId:operation.id,
         requestId:input.requestId,actionId:input.actionId,sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,
         socketPath:codexAppServerSocketPath(),client:ownerCodexAppServerClient(),
-        validateSource:()=>input.validateSource?.(),expectedDecisionDigest:input.continuationDecisionDigest});
+        validateSource:()=>input.validateSource?.(),expectedDecisionDigest:input.continuationDecisionDigest},
+        {readOriginalHistory:async work=>await this.historyPages.readOriginalCodexRecoveryCoverage(work) as Awaited<ReturnType<typeof readCodexOriginalHistoryCoverage>>});
       this.options.wake();return result;
     }
     const turn=db.query(`SELECT id,session_id,status,native_run_id,dispatch_attempt,provider_admission_intended_at,

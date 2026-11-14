@@ -1,10 +1,14 @@
 # Managed Codex mutation custody
 
 This describes the source candidate, not an installed release. Accepted-binding
-continuation activation is **held**. The execution host refuses
-`LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN` and
-`COLD_RESUME_HOOK_CONFIGURATION_UNPROVEN` before reservation or submission.
-The designer owns those prerequisites, coordinated release and live acceptance.
+continuation activation is **held**. The source now has a private original-history
+reader and owned-resume checkpoint path, exercised against disposable state and an
+App Server stand-in. The exact target has not been observed, so readiness still
+refuses `LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN`,
+`COLD_RESUME_HOOK_CONFIGURATION_UNPROVEN` and
+`NATIVE_ORIGINAL_EFFECT_HISTORY_COVERAGE_UNPROVEN`. The legacy receiver cut and
+cold hook configuration are independent unresolved holds; local source fixtures
+remove none of them.
 
 ## Common forwarding boundary
 
@@ -69,6 +73,37 @@ started native handlers finished. No reviewed supported drain witness is yet
 implemented. Neither a helper capability response nor a current process inventory
 replaces that missing proof.
 
+### Legacy connection reconciliation
+
+Future-path mediation and legacy retirement are separate phases. The old native
+connection is not retroactively enrolled by a wrapper change. The required chain
+is positive receiver gate closure for the exact daemon incarnation/connection,
+then enqueue a canonical `thread/read` for the exact thread, then its successful
+response. Native `Thread` serialization is shared across connections. That read
+orders earlier same-key handlers, including one surviving cleanup timeout. It
+does not finish native tasks those handlers admitted. Paginated item/turn lists
+are concurrent and provide no handler barrier. Path-only resume uses a different
+`ThreadPath` queue and requires separate coverage; successful full handler drain
+is an alternative stronger witness for started handlers. See the pinned
+[request scope mapping](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/app-server-protocol/src/protocol/common.rs).
+
+The inspected already-running native receiver has no established externally
+supported positive gate-close or successful-drain receipt. Its transport close
+event is not acknowledged after processing; cleanup can time out, and a missing
+timeout warning proves nothing. No source-only log addition can supply that fact
+for an old running daemon. Native-assigned connection identity for the retained
+old proxy also remains unknown. These are exact missing retirement facts, not
+claims that canonical read is unavailable.
+
+Retirement additionally preserves relevant sent/queued Desktop input custody,
+differently keyed operations and still-active native work. The native queue can
+drop closed-gate queued requests without creating an accepted-input record;
+therefore empty later history cannot reconstruct or dismiss uncertain words.
+The parent's exact-lifetime process watch wakes reconciliation only. No forced
+disconnect, reset or restart is authorized. Until a supported positive cut and
+custody witness exists, this phase refuses and no barrier is submitted. The
+managed fence, original source input, all obligations and child lanes remain held.
+
 Interactive TUI scope is global even with an explicit startup UUID: native 0.166
 supports attaching another saved thread through `/resume` and the Agents picker
 without process exit. See the pinned [in-process picker](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/tui/src/app/session_picker.rs).
@@ -99,6 +134,52 @@ the owner snapshot atomically with reservation. Independently mapped compaction
 can be neutral only with complete coverage. Acknowledgement, output, tools and
 uncertain effects refuse. Later bytes and immutable results remain unchanged.
 
+The paginated native proof covers projected rows only. Pinned native
+materialization can skip malformed, unknown or missing-ordinal records while
+advancing its checkpoint; general response records and replacement model history
+need not produce item rows. A terminal cursor is therefore insufficient original
+acknowledgement/effect coverage. The source candidate now complements that
+projection with a private source-prefix witness: after acquiring the exact-thread
+fence, the isolated history worker re-derives the accepted snapshot and fence,
+repeats projected native coverage through the real host App Server client, and
+asks that App Server to `thread/read` the bound thread. It resolves the returned
+JSONL path under the configured local Codex home, reads the complete newline-
+terminated prefix, validates native turn boundaries/order/context and all records,
+then rechecks owner controls, fence, native watermark and source revision before
+returning. Only hashes, counts, exact native identities and spans enter the safe
+witness; source path and physical custody remain private to the host.
+
+The reader refuses remote runners and paths outside the configured Codex home;
+legacy mode is not eligible for accepted-binding recovery, and inherited/forked
+history lineage, rollback, malformed or partial lines, unknown records/events,
+unmapped ordinals, unclassified metadata/sidecars, accepted user/tool/configuration
+effects and incomplete native suffix coverage refuse. An owned resume can extend
+the witness only when its retained accepted intent and active fence match and the
+source prefix is byte-identical with exactly one newline-terminated
+`thread_settings_applied` record for the bound thread/model/effort and the complete
+prior settings snapshot. Relevant context and settings must preserve their full
+authoritative prior baselines, including permissions, working directory, roots,
+plugins and unknown fields. A world-state full record or patch needs a known full
+baseline and must reconstruct the identical state. Missing baselines and changed
+or unassessed output usage refuse; cumulative usage from earlier product work is
+not a new effect. Raw baseline payloads stay in worker memory and source custody;
+the retained witness contains their hashes. Positive output in a later independent
+compaction requires exact native response IDs from its `Compacted` record,
+matching per-response/turn usage totals and typed `ContextCompaction` completion
+inside the fully mapped effect-free span. Selected compaction or output refuses.
+Opaque retained context, guardian, resource-origin and resume sidecars still refuse;
+the fixture does not certify arbitrary compaction bodies. The worker
+returns refreshed custody privately; the canonical owner stores it in the
+dedicated immutable source-checkpoint ledger, never an event, audit or public
+reply. The bounded gate passed twelve isolated custody fixtures, including these
+source/checkpoint contracts. The target's
+original source history remains unobserved and activation keeps its independent
+refusal. Plain
+compaction can preserve prior projected items; no target effect is inferred from
+a replacement-context user record. See the pinned
+[materializer](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/thread-store/src/local/thread_history_materialization.rs)
+and [canonical projection](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/app-server-protocol/src/protocol/thread_history_projection.rs).
+
 Authorization binds that reservation and one extra dispatch. Provider-admission
 intent spends the attempt budget before forwarding. Only a hash of the ephemeral
 dispatch capability is retained. Owned resume/start preserve exact model and
@@ -117,6 +198,15 @@ On-disk registration and helper pinning do not prove warm runtime activation.
 The internal native proof refuses warm state without activation evidence; current
 cold reconstruction/config proof is separately missing. Historical `notLoaded`
 is not current eligibility.
+
+Pinned native cold construction calls `Hooks::new` before `SessionConfigured` and
+waits for that event before returning a successful resume. This permits proof by
+construction when the exact cold request, enabled effective hook feature and
+required managed handler/configuration are bound to that success. No new native
+hook acknowledgement is intrinsically required. Separate cwd config/hooks reads
+alone do not bind those inputs; a disabled hook feature even clears required-hook
+load errors, and a warm resume reuses its existing runtime. The current candidate
+has not established that exact construction binding and retains its refusal.
 
 ## Stop and progress
 
@@ -146,9 +236,12 @@ obligations. Recovery never closes, transfers, cancels or replays them or childr
 ## Verification boundary
 
 Focused fixtures compose real SQLite owner/permit/queue paths, actual bridge,
-runner relay and raw WebSocket helper with independent clients and barriers.
+runner relay and raw WebSocket helper with independent clients and barriers. The
+bounded continuation contract gate now includes original-source parsing and the
+actual history worker, including a source-control change during a read. All twelve fixtures passed after source and fixture integration.
 These prove source contracts. They do not prove installed selection, old native
-handler drainage, current hook activation, live delivery or useful work. The
-production accepted-binding entry remains guarded until both missing supported
-capabilities are implemented and reviewed. See the
+handler drainage, current hook activation, target history custody, live delivery
+or useful work. The production accepted-binding entry remains guarded until the
+legacy positive receiver cut, cold hook configuration and target source witness
+are all established for the installed machine. See the
 [incident](../incidents/2026-11-13-writing-continuation-eligibility.md).

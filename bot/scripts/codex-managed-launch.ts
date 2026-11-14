@@ -75,7 +75,9 @@ async function proxy(native:string,argv:string[],proxyIndex:number){
     client.on('message',data=>{incoming=incoming.then(async()=>{await registered;await opened;await channel.forward(JSON.parse(data.toString()));})
       .catch(()=>{channel.close();client.close(1011,'Invalid or unconfirmed mutation');upstream.close();});});
     upstream.on('message',data=>{
-      try{void channel.response(JSON.parse(data.toString())).catch(()=>client.close(1011,'Mutation receipt unconfirmed'));client.send(data.toString());}
+      try{void channel.response(JSON.parse(data.toString())).then(()=>{
+        if(client.readyState===WebSocket.OPEN)client.send(data.toString());
+      }).catch(()=>client.close(1011,'Mutation receipt unconfirmed'));}
       catch{client.close(1011,'Invalid native frame');}
     });
     for(const [source,peer] of [[client,upstream],[upstream,client]]){

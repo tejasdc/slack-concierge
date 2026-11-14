@@ -442,7 +442,7 @@ export interface RunCodexTurnInput {
   sessionUUID: string | null;
   model?: string;
   reasoning_effort?: string;
-  codexRecovery?: {authorizationId:string;capability?:string;model:string;effort:string;preparedPromptDigest?:string};
+  codexRecovery?: {authorizationId:string;capability?:string;model:string;effort:string;preparedPromptDigest?:string;beforeStart?:()=>Promise<void>};
   applicationInstructions?: string;
   clientUserMessageId?: string;
   environment?: Record<string, string>;
@@ -1715,6 +1715,9 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         : await request("thread/start", threadParams);
       break;
     } catch (error) {
+      if(input.codexRecovery&&error instanceof CodexAppServerClientError&&error.outcome==='ambiguous')
+        throw new ProviderDispatchError({message:'Exact recovery native preparation is unconfirmed; it will not be submitted again.',
+          terminalConfirmed:false,toolsUsed,providerSessionId:sessionUUID});
       // Neither operation sends the user's input. Even if the App Server created or
       // resumed a thread before the response was lost, asking again cannot repeat
       // the requested work because turn/start has not been called yet. A lost
@@ -1740,6 +1743,12 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     extractedUUID = threadId;
     input.onProviderThreadStarted?.(threadId);
     if (interruptionReason) throw interruptionReason;
+
+    if(input.codexRecovery){
+      if(!input.codexRecovery.beforeStart)throw new Error('Exact recovery original-source checkpoint reader is unavailable.');
+      await input.codexRecovery.beforeStart();
+      if(interruptionReason)throw interruptionReason;
+    }
 
     turnSubmissionAttempted = true;
     try {

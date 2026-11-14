@@ -140,8 +140,10 @@ live recovery or change to any original writing obligation.
 The source candidate also composes accepted-binding continuation, complete native
 interval proof, common forwarding permits and a one-attempt dispatcher budget.
 Its production entrance remains held for two missing supported capabilities:
-`LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN` and
-`COLD_RESUME_HOOK_CONFIGURATION_UNPROVEN`. Process absence, idle, historical
+`LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN`,
+`COLD_RESUME_HOOK_CONFIGURATION_UNPROVEN` and
+`NATIVE_ORIGINAL_EFFECT_HISTORY_COVERAGE_UNPROVEN`. Complete projected pagination,
+process absence, idle, historical
 `notLoaded`, an installed script or capability response cannot waive these.
 The [managed mutation contract](../architecture/CODEX-MUTATION-FENCE.md) owns the
 writer inventory, Stop/terminal reconciliation and activation boundary. Internal

@@ -102,7 +102,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   for read-only continuation inspection and owned model-start guard evidence, and
   [the incident evidence](docs/runbooks/CODEX-EMPTY-REPORT-BACK-RECOVERY-EVIDENCE.md).
   The [managed mutation fence](docs/architecture/CODEX-MUTATION-FENCE.md) owns
-  forwarding permits, writer lifetime, exact-input guards and the explicit
+  forwarding permits, writer lifetime, private original-history proof, exact-input guards and the explicit
   accepted-binding activation hold; source fixtures do not lift it.
 - Final replies expire only questions linked to that dispatch; repair an older
   sibling expiry through the exact-event restoration described in the

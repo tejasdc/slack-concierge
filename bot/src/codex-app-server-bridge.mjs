@@ -67,8 +67,10 @@ appServer.on("message", (data) => {
     return;
   }
   if (Object.prototype.hasOwnProperty.call(message, "id") && ("result" in message || "error" in message)) {
-    void mutations?.response(message).catch(()=>{disconnect(new Error('Native mutation receipt is unconfirmed.'));appServer.close();});
-    write({ type: "response", id: message.id, result: message.result, error: message.error });
+    const deliver=()=>write({ type: "response", id: message.id, result: message.result, error: message.error });
+    if(mutations)void mutations.response(message).then(deliver).catch(()=>{
+      disconnect(new Error('Native mutation receipt is unconfirmed.'));appServer.close();});
+    else deliver();
     return;
   }
   if (Object.prototype.hasOwnProperty.call(message, "id") && message.method) {

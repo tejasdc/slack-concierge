@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION} from '../src/test-authorizations';
+import {createFixtureOriginalHistory} from './codex-original-history-fixture-helper';
 const scratch=mkdtempSync(join(tmpdir(),'concierge-binding-recovery-composed-'));
 process.env.CONCIERGE_STATE_DIR=join(scratch,'state');process.env.CONCIERGE_CAPTURE_STATE_DIR=join(scratch,'capture');
 const releaseRoot=join(scratch,'sealed-release');process.env.CONCIERGE_DEPLOYMENT_RELEASE_ROOT=releaseRoot;
@@ -85,9 +86,23 @@ function seed(){
     }
     throw new Error(`Native mutation forbidden by fixture: ${method}`);
   }});
+  let originalSource:ReturnType<typeof createFixtureOriginalHistory>|undefined;
+  const readOriginalHistory=async()=>{
+    if(!originalSource)originalSource=(async()=>{
+      const current=inspectAcceptedBindingContinuation({sessionId:session.id,inputId:report.id,requestId,includeSnapshot:true});
+      if(!current.proven||!('snapshot'in current)||!current.snapshot)throw new Error('CURRENT_ACCEPTED_BINDING_OR_CONTROLS_REFUSE');
+      const {proveCodexContinuationNativeInterval}=await import('../src/codex-continuation-native-interval');
+      const projected=await proveCodexContinuationNativeInterval({snapshot:current.snapshot,client:client()});
+      if(!projected.proven)throw new Error('Fixture projected interval changed.');
+      const sourceRoot=join(scratch,`original-source-${suffix}`);mkdirSync(sourceRoot);
+      return createFixtureOriginalHistory({root:sourceRoot,binding:current.snapshot.binding,
+        selectedInputId:report.id,nativeProof:projected});
+    })();
+    return {proven:true as const,...(await originalSource).originalHistory};
+  };
   const recovery=(nativeClient=client(),extra:any={})=>recoverAcceptedBindingCodex({sessionId:session.id,inputId:report.id,requestId,
     actionId:`recover:${suffix}`,sourceInputId:source.id,sourceRunId:nativeRunId(sourceTurn),socketPath,client:nativeClient,
-    validateSource:()=>{validations++;},expectedDecisionDigest:inspection.decisionDigest,...extra},{writerProc:proc});
+    validateSource:()=>{validations++;},expectedDecisionDigest:inspection.decisionDigest,...extra},{writerProc:proc,readOriginalHistory});
   const retained=()=>JSON.stringify({source:db.query('SELECT * FROM session_inputs WHERE id=?').get(source.id),
     creation:db.query('SELECT * FROM session_inputs WHERE id=?').get(create.id),
     firstAdmission:db.query('SELECT receipt_json FROM session_inputs WHERE id=?').get(report.id),
@@ -98,7 +113,8 @@ function seed(){
 try {
   const activationBefore=db.query('SELECT COUNT(*) AS count FROM codex_unacknowledged_recoveries').get() as any;
   assert.deepEqual(activation.codexContinuationActivationReadiness().reasons.map(reason=>reason.code),
-    ['LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN','COLD_RESUME_HOOK_CONFIGURATION_UNPROVEN']);
+    ['LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN','COLD_RESUME_HOOK_CONFIGURATION_UNPROVEN',
+      'NATIVE_ORIGINAL_EFFECT_HISTORY_COVERAGE_UNPROVEN']);
   assert.throws(()=>activation.requireCodexContinuationActivation(),/LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN.*COLD_RESUME_HOOK_CONFIGURATION_UNPROVEN/);
   assert.deepEqual(db.query('SELECT COUNT(*) AS count FROM codex_unacknowledged_recoveries').get(),activationBefore,
     'default production activation refusal creates no reservation');
@@ -140,7 +156,7 @@ try {
   const stale=seed();let changed=false;
   await assert.rejects(()=>stale.recovery(stale.client(()=>{
     if(!changed){changed=true;stale.save('composed-held-pause','action','human',{action:'pause'});}
-  })),/watermark, source custody, controls, binding or attempts changed/);
+  })),/watermark, source custody, controls, binding or attempts changed|CURRENT_ACCEPTED_BINDING_OR_CONTROLS_REFUSE/);
   assert.equal(codexUnacknowledgedRecovery(stale.report.id),null,'never-admitted control accepted during read prevents atomic reservation');
   assert.equal((db.query('SELECT status FROM turns WHERE id=?').get(stale.reportTurn) as any).status,'done');
   const writerChanged=seed();let newWriter=false;

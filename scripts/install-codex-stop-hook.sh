@@ -182,7 +182,7 @@ if [ -e "$model_guard" ] && ! grep -Fq "$marker" "$model_guard"; then
   echo "$model_guard exists and was not written by this installer; refusing to replace it." >&2
   exit 1
 fi
-write_wrapper "$model_guard" codex-model-start-hook "Codex refuses a native Astra start without a recorded escalation reason." "CONCIERGE_STATE_DIR='$state' " ""
+write_wrapper "$model_guard" codex-model-start-hook "Codex checks owned prompt custody and the applicable model authority before native input." "CONCIERGE_STATE_DIR='$state' " ""
 edit_guard="$etc/hooks/concierge-implementation-edit"
 if [ -e "$edit_guard" ] && ! grep -Fq "$marker" "$edit_guard"; then
   echo "$edit_guard exists and was not written by this installer; refusing to replace it." >&2

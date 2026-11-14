@@ -6,7 +6,8 @@ const fixtures=['codex-mutation-fence-fixture.ts','codex-recovery-dispatch-autho
   'codex-accepted-binding-recovery-fixture.ts','codex-managed-launch-fixture.ts',
   'codex-mutation-owner-policy-fixture.ts','codex-daemon-lifecycle-fixture.ts',
   'codex-managed-native-terminal-fixture.ts','provider-activation-lifecycle-fixture.ts','codex-runner-relay-lifecycle-fixture.ts',
-  'codex-session-control-fence-fixture.ts'];
+  'codex-session-control-fence-fixture.ts','codex-original-history-coverage-fixture.ts',
+  'codex-original-history-worker-fixture.ts'];
 for(const fixture of fixtures){
   const child=Bun.spawn([process.execPath,resolve(import.meta.dir,fixture)],{
     cwd:resolve(import.meta.dir,'..'),env:process.env,stdout:'pipe',stderr:'pipe'});

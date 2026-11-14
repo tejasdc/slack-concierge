@@ -133,7 +133,7 @@ This corrects the reproduced budget defect without granting a continuation basis
 or relaxing the existing native-history and authorization barriers.
 
 The subsequent integrated source composes the factual accepted-binding decision,
-complete paginated native interval, atomic reservation, exact model/effort queue
+complete paginated native projection, atomic reservation, exact model/effort queue
 and actual resume/start, ephemeral one-dispatch capability, prompt invocation and
 digest matching, and retained guard audits. The common owner mediates local
 bridge, runner relay and versioned raw Desktop proxy writes. Direct CLI/TUI uses
@@ -153,10 +153,12 @@ asynchronous work. An uncertain lifecycle response remains a durable blocker.
 **Activation remains refused before reservation.** Parent review has not supplied
 a supported witness that previously issued handlers from the old unmediated
 Desktop connection drained. Separately, no supported current cold-reconstruction
-configuration witness establishes the managed hook. These are enforced as
-`LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN` and
-`COLD_RESUME_HOOK_CONFIGURATION_UNPROVEN`, not waived by idle/process absence,
-historical `notLoaded`, helper pinning or a capability response. This is an
+configuration witness establishes the managed hook. The final history audit also
+found that pagination does not certify lossless original effect history. These
+are enforced as `LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN`,
+`COLD_RESUME_HOOK_CONFIGURATION_UNPROVEN` and
+`NATIVE_ORIGINAL_EFFECT_HISTORY_COVERAGE_UNPROVEN`, not waived by idle/process
+absence, projected terminal cursors, historical `notLoaded`, helper pinning or a capability response. This is an
 incomplete activation prerequisite, not a completed live recovery or evidence
 that Astra caused the incident. Parent retains the same prerequisite review;
 no alternate controller, diagnostic provider input or native reset was started.
@@ -230,29 +232,70 @@ receive a fresh allowance after migration.
 
 ### Integrated source checks
 
-The normal build now includes `codex-continuation-contract-check.ts`. Its ten
+The normal build now includes `codex-continuation-contract-check.ts`. Its twelve
 isolated fixtures passed after integration: durable mutation permits, exact
 dispatch/hook authorization, composed accepted-binding recovery, real raw
 WebSocket launcher transport, owner mutation policy, global daemon lifecycle,
 native-terminal reconciliation, actual local activation, actual runner relay
-lifecycle forwarding, and canonical SessionOwner controls. Two independent
-clients and explicit barriers cover delayed old permits, competing writes,
-ambiguous replies, Stop, unrelated threads and duplicate invocation. All state
-and native endpoints in these checks are disposable; no target input was sent.
+lifecycle forwarding, canonical SessionOwner controls, strict original-history
+source parsing and checkpoint validation, and the actual history worker over its
+App Server bridge. Two independent clients and explicit barriers cover delayed
+old permits, competing writes, ambiguous replies, Stop, unrelated threads,
+duplicate invocation, stale fences and a control change during source reading.
+The worker fixture also accepts only an exact retained owned-resume response and
+one matching settings append before the owner stores the private checkpoint. All
+state, files and native endpoints in these checks are disposable; no target input
+was sent.
 
 Additional focused checks passed: accepted-binding proof and snapshot fixtures,
-complete native interval, managed process registration/lineage, mutation channel,
+projected native interval, managed process registration/lineage, mutation channel,
 the existing contract/state/route recovery fixtures, real runner relay socket
 check, installed-control command selection, human model-choice custody,
 inspection/audit, and the existing Stop/control/account-switch receipt fixtures.
 The undefined-name check passed for fourteen bundle entry points; bounded-logging
-source guard passed for 462 server source files. The changed owner, runtime,
-foreground gateway, model-start hook and managed launcher entry points bundled
-successfully together. `git diff --check` passed.
+source guard passed for 465 server source files. The six changed owner, runtime,
+foreground gateway, history worker, model-start hook and managed launcher entry
+points bundled successfully together (802 modules). `git diff --check` and the
+installer shell syntax check passed after the source and documentation edits.
 
-These are source checks, not installed activation or provider acceptance. Both
+These are source checks, not installed activation or provider acceptance. All
 explicit activation refusals remain enforced; the old Desktop connection and
 current native hook reconstruction remain parent-owned unresolved prerequisites.
+
+The implementation now adds a private source-prefix proof alongside projected
+pagination. Under the exact thread fence, the isolated host history worker derives
+the current accepted binding and source identity, repeats the native turn/item
+watermark, reads the exact thread through the App Server, then parses every
+newline-terminated record in the local source file and rechecks the file revision,
+owner controls and fence. It retains only a safe witness of hashes, counts,
+spans and native identities in the recovery proof; source paths and physical
+custody stay private. After a real accepted owned resume, the worker permits one
+append only when the retained intent and fence match, the original prefix remains
+byte-identical, and the single record preserves the exact thread/model/effort
+and complete prior settings snapshot. The source audit caught and corrected an
+intermediate model/effort-only comparison: permissions, working directory, roots,
+plugins and unknown fields now participate in full settings/context equality.
+World-state patches require a known full baseline and unchanged reconstructed
+state. Missing baselines and unassessed output usage refuse. Only hashes of these
+baselines are retained; raw settings/configuration are not logged. The
+canonical owner stores that derived witness and custody in its private immutable
+checkpoint ledger.
+
+The reader still refuses unsupported remotes and paths outside the configured
+Codex home, legacy recovery mode, inherited/forked history, rollback, malformed
+or partial source, unknown or unclassified rows/metadata, missing ordinals,
+unproven accepted user/tool/configuration effects, or any non-exact resume
+append. These conditions keep activation closed when source coverage cannot be
+established. Plain compaction may preserve prior projected items, but the
+materializer can omit original effects while advancing its projection checkpoint;
+therefore pagination remains a separate and insufficient witness. The two other
+activation holds remain independent: no positive native cut/drain receipt exists
+for the old Desktop receiver, and no current cold hook configuration witness
+exists for the exact target. The exact target's original source history, installed
+worker path and activation behavior remain unobserved. No local witness or caller
+assertion clears those holds. See the pinned
+[materializer](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/thread-store/src/local/thread_history_materialization.rs)
+and [projection](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/app-server-protocol/src/protocol/thread_history_projection.rs).
 
 The final direct-writer audit found that an interactive `resume UUID` can attach
 another conversation through the in-process picker. Startup identity therefore

@@ -128,7 +128,9 @@ export class RunnerRelay {
       const pair=this.pairs.get(data.id);
       if(!pair)return;
       if(data.role==='accept'){
-        if(pair.mutations){try{void pair.mutations.response(JSON.parse(message.toString())).catch(()=>this.end(pair,'native mutation receipt is unconfirmed'));}catch{this.end(pair,'invalid native frame');return;}}
+        if(pair.mutations){try{void pair.mutations.response(JSON.parse(message.toString())).then(()=>{
+          if(this.pairs.get(pair.id)===pair)this.forward(pair,pair.local,message);
+        }).catch(()=>this.end(pair,'native mutation receipt is unconfirmed'));}catch{this.end(pair,'invalid native frame');}return;}
         this.forward(pair,pair.local,message);return;
       }
       if(pair.mutations){try{void pair.mutations.forward(JSON.parse(message.toString())).catch(()=>this.end(pair,'mutation forwarding failed'));}catch{this.end(pair,'invalid owner frame');}return;}

@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {chmodSync,mkdtempSync,rmSync} from 'node:fs';
+import {chmodSync,mkdtempSync,rmSync,appendFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION} from '../src/test-authorizations';
+import {createFixtureOriginalHistory} from './codex-original-history-fixture-helper';
 
 const scratch=mkdtempSync(join(tmpdir(),'codex-mutation-owner-policy-'));
 process.env.CONCIERGE_STATE_DIR=scratch;
@@ -61,12 +62,14 @@ async function seed(){
     inspectAcceptedBindingContinuation({sessionId:session.id,inputId:report.id,requestId,includeSnapshot:true}));
   assert.equal(inspection.proven,true,JSON.stringify(inspection.reasons));
   if(!('snapshot'in inspection)||!inspection.snapshot)throw new Error('fixture accepted-binding snapshot missing');
-  const native=await import('../src/codex-continuation-native-interval').then(({proveCodexContinuationNativeInterval})=>
+  const projectedNative=await import('../src/codex-continuation-native-interval').then(({proveCodexContinuationNativeInterval})=>
     proveCodexContinuationNativeInterval({snapshot:inspection.snapshot,client:{async request(method:string){
       return method==='thread/turns/list'?{data:[{id:`native:${turnId}:1`,status:'completed',error:null}],nextCursor:null}:{data:[],nextCursor:null};
     }}}));
-  assert.equal(native.proven,true,JSON.stringify(native.reasons));
-  if(!native.proven)throw new Error('fixture native interval proof missing');
+  assert.equal(projectedNative.proven,true,JSON.stringify(projectedNative.reasons));
+  if(!projectedNative.proven)throw new Error('fixture native interval proof missing');
+  const history=await createFixtureOriginalHistory({root:scratch,binding:inspection.identity.binding,selectedInputId:report.id,nativeProof:projectedNative});
+  const native=history.nativeWithOriginalHistory;
   const {snapshot:_snapshot,...continuation}=inspection;
   const proof={attempts:native.attempts.filter(attempt=>attempt.inputId===report.id)
     .map(attempt=>({dispatchAttempt:attempt.dispatchAttempt,providerTurnId:attempt.providerTurnId})),dispatchAttemptCount:1,continuation,native};
@@ -90,12 +93,28 @@ async function seed(){
     clientUserMessageId:`slack-concierge:turn:${turnId}:attempt:2`};
   db.query('UPDATE codex_unacknowledged_recoveries SET additional_dispatch_attempt=2 WHERE accepted_input_id=?').run(report.id);
   db.query('UPDATE turns SET provider_admission_intended_at=CURRENT_TIMESTAMP WHERE id=?').run(turnId);
-  return {suffix,session,report,turnId,threadId,runId,fenceId,authorizationId,capability,preparedPromptDigest,startParams};
+  const resumeChannel=mediated(`owned-resume-${suffix}`);
+  await resumeChannel.channel.forward({id:`owned-resume-${suffix}`,method:'thread/resume',params:{threadId,model:'gpt-6-astra',
+    excludeTurns:true,config:{model_reasoning_effort:'medium'},__conciergeRecovery:{authorizationId,capability,preparedPromptDigest}}});
+  assert.equal(resumeChannel.sent.length,1,JSON.stringify(resumeChannel.refused));
+  const resumeIntent=db.query("SELECT * FROM codex_mutation_intents WHERE thread_id=? AND method='thread/resume'").get(threadId) as any;
+  assert.ok(resumeIntent);
+  history.appendResumeSettings();
+  await resumeChannel.channel.response({id:`owned-resume-${suffix}`,result:{thread:{id:threadId},model:'gpt-6-astra',reasoningEffort:'medium'}});
+  const checkpoint=await history.refreshAfterResume(db,resumeIntent.intent_id,resumeIntent.permit_id);
+  const saved=authorizations.retainCodexRecoverySourceCheckpoint(db,{authorizationId,result:checkpoint,nowMs:4});
+  assert.equal(saved.allowed,true,JSON.stringify(saved));
+  return {suffix,session,report,turnId,threadId,runId,fenceId,authorizationId,capability,preparedPromptDigest,startParams,history,checkpoint};
 }
 
-function mediated(connectionId:string){
+function mediated(connectionId:string,afterPrepare?:(input:any,result:any)=>void){
   const sent:any[]=[],refused:any[]=[];
-  const channel=new CodexMutationChannel({connectionId,gate:(input:any)=>Promise.resolve(codexMutationGate(input)),
+  const channel=new CodexMutationChannel({connectionId,gate:async(input:any)=>{
+    // Real owner requests cross JSON transport; model that boundary here too.
+    const request=JSON.parse(JSON.stringify(input)),result=await codexMutationGate(request);
+    if(request.phase==='prepare'&&(result as any).allowed)afterPrepare?.(request,result);
+    return result;
+  },
     send:(frame:any)=>sent.push(frame),reject:(frame:any,reason:string,ambiguous:boolean)=>refused.push({frame,reason,ambiguous})});
   return {channel,sent,refused};
 }
@@ -224,6 +243,21 @@ try {
   assert.equal((db.query('SELECT state FROM codex_mutation_intents WHERE intent_id=?').get(adoptedInterruptId) as any).state,'reconciled_applied');
   assert.equal((db.query('SELECT state FROM codex_mutation_intents WHERE intent_id=?').get(adoptedStartIntent.intent_id) as any).state,'reconciled_applied');
 
+  const changed=await seed(),changedChannel=mediated('source-change-between-gates',request=>{
+    if(request.method==='turn/start')appendFileSync(changed.history.sourcePath,'unexpected source append\n');
+  });
+  await changedChannel.channel.forward({id:'changed-start',method:'turn/start',params:{...changed.startParams,
+    __conciergeRecovery:{authorizationId:changed.authorizationId,capability:changed.capability,preparedPromptDigest:changed.preparedPromptDigest}}});
+  assert.equal(changedChannel.sent.length,0,'physical source change after preparation refuses actual channel forward');
+  assert.equal(changedChannel.refused[0]?.reason,'NATIVE_ORIGINAL_EFFECT_HISTORY_SOURCE_CHANGED');
+  assert.equal(db.query("SELECT * FROM codex_mutation_intents WHERE thread_id=? AND method='turn/start'").get(changed.threadId),null);
+  fences.stopCodexThreadMutationFence(db,{fenceId:changed.fenceId,stopActionId:'fixture-explicit-stop-after-pre-forward-refusal',nowMs:40});
+  assert.throws(()=>db.query('UPDATE codex_recovery_source_checkpoints SET created_at_ms=0 WHERE authorization_id=?').run(live.authorizationId),/immutable/);
+  const publicEvidence=JSON.stringify({audit:db.query('SELECT * FROM codex_recovery_authorization_audit').all(),
+    events:db.query('SELECT * FROM session_owner_events').all()});
+  for(const target of [live,adopted,changed])assert.ok(!publicEvidence.includes(target.history.sourcePath),
+    'private physical source path never enters audit/session events');
+
   const unprotectedChannel=mediated('unprotected-methodless');
   await unprotectedChannel.channel.forward({id:'methodless-global',result:{accepted:true}});
   assert.equal(unprotectedChannel.sent.length,1,'a methodless native server response crosses the ordinary global gate');
@@ -256,7 +290,7 @@ try {
   assert.equal((db.query('SELECT state FROM codex_mutation_intents WHERE intent_id=?').get('ordinary-setup:4') as any).state,
     'response_received','an asynchronous settings submission receipt is not completion evidence');
 
-  console.log('codex mutation owner policy fixture: actual state DB/channel, live/adopted interruption, exact hook, native response correlation, synchronous setup and uncertain async writes: PASS');
+  console.log('codex mutation owner policy fixture: actual state DB/channel, original source/checkpoint, source-change refusal, live/adopted interruption, exact hook and native response correlation: PASS');
 } finally {
   db.close();rmSync(scratch,{recursive:true,force:true});
 }

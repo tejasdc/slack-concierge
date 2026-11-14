@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import {mkdtempSync,rmSync} from 'node:fs';
+import {mkdtempSync,rmSync,appendFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {Database} from 'bun:sqlite';
 import {IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION} from '../src/test-authorizations';
+import {createFixtureOriginalHistory} from './codex-original-history-fixture-helper';
 const scratch=mkdtempSync(join(tmpdir(),'concierge-recovery-authorization-'));
 process.env.CONCIERGE_STATE_DIR=scratch;process.env.CONCIERGE_CAPTURE_STATE_DIR=join(scratch,'capture');
 process.env.CONCIERGE_TEST_MODE='1';process.env.CONCIERGE_TEST_AUTHORIZATION=IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION;
@@ -49,12 +50,14 @@ async function seed(){
   const inspection=inspectAcceptedBindingContinuation({sessionId:session.id,inputId:report.id,requestId,includeSnapshot:true});
   assert.equal(inspection.proven,true,JSON.stringify(inspection.reasons));
   assert.ok('snapshot' in inspection&&inspection.snapshot);
-  const native=await proveCodexContinuationNativeInterval({snapshot:inspection.snapshot,client:{async request(method,params){
+  const projectedNative=await proveCodexContinuationNativeInterval({snapshot:inspection.snapshot,client:{async request(method,params){
     return method==='thread/turns/list'?{data:[{id:`native:${reportTurn}:1`,status:'completed',error:null}],nextCursor:null}
       :{data:[],nextCursor:null};
   }}});
-  assert.equal(native.proven,true,JSON.stringify(native.reasons));
-  if(!native.proven)throw new Error('fixture native proof missing');
+  assert.equal(projectedNative.proven,true,JSON.stringify(projectedNative.reasons));
+  if(!projectedNative.proven)throw new Error('fixture native proof missing');
+  const history=await createFixtureOriginalHistory({root:scratch,binding:inspection.identity.binding,selectedInputId:report.id,nativeProof:projectedNative});
+  const native=history.nativeWithOriginalHistory;
   const {snapshot:_private,...continuation}=inspection;
   const proof={attempts:native.attempts.filter(attempt=>attempt.inputId===report.id).map(attempt=>({dispatchAttempt:attempt.dispatchAttempt,providerTurnId:attempt.providerTurnId})),
     dispatchAttemptCount:1,continuation,native};
@@ -87,8 +90,20 @@ async function seed(){
   };
   const hook=(patch:any={})=>auth.codexRecoveryPromptGate(db,{providerSessionId:threadId,providerTurnId:`native:${reportTurn}:2`,
     invocationId:`hook:${suffix}`,promptDigest:preparedPromptDigest,model:'gpt-6-astra',nowMs:7,...patch});
+  const checkpointAfterResume=async()=>{
+    history.appendResumeSettings();const checkpoint=await history.refreshAfterResume(db,resumePermit);
+    const retained=auth.retainCodexRecoverySourceCheckpoint(db,{authorizationId,result:checkpoint,nowMs:6});
+    assert.equal(retained.allowed,true,JSON.stringify(retained));return checkpoint;
+  };
+  const resume=async()=>{
+    assert.equal(prepare('thread/resume',resumeParams,resumePermit).allowed,true);
+    assert.equal(consume(resumeParams,resumePermit).allowed,true);
+    assert.equal(auth.recordCodexRecoveryMutationResponse(db,{authorizationId,intentId:resumePermit,
+      response:{thread:{id:threadId},model:'gpt-6-astra',reasoningEffort:'medium'},nowMs:6}).allowed,true);
+    return checkpointAfterResume();
+  };
   return {suffix,session,report,reportTurn,runId,threadId,requestId,fenceId,authorizationId,capability,privatePrompt,preparedPromptDigest,
-    startParams,resumeParams,startPermit,resumePermit,prepare,consume,hook,spend};
+    startParams,resumeParams,startPermit,resumePermit,prepare,consume,hook,spend,history,resume,checkpointAfterResume};
 }
 function denied(value:any,reason:string){assert.equal(value.allowed,false,JSON.stringify(value));assert.equal(value.reason,reason);}
 try {
@@ -107,6 +122,9 @@ try {
   assert.equal(a.consume(a.resumeParams,a.resumePermit).allowed,true);
   assert.equal(auth.recordCodexRecoveryMutationResponse(db,{authorizationId:a.authorizationId,intentId:a.resumePermit,
     response:{thread:{id:a.threadId},model:'gpt-6-astra',reasoningEffort:'medium'},nowMs:6}).allowed,true);
+  const aCheckpoint=await a.checkpointAfterResume();
+  assert.equal(auth.retainCodexRecoverySourceCheckpoint(db,{authorizationId:a.authorizationId,result:aCheckpoint,nowMs:6}).allowed,true);
+  assert.throws(()=>db.query('UPDATE codex_recovery_source_checkpoints SET created_at_ms=0 WHERE authorization_id=?').run(a.authorizationId),/immutable/);
   denied(a.prepare('turn/steer',a.startParams,'forbidden'),'RECOVERY_MUTATION_METHOD_FORBIDDEN');
   denied(a.prepare('turn/start',{...a.startParams,effort:undefined},a.startPermit),'ACTUAL_RECOVERY_EFFECTIVE_EFFORT_MISSING_OR_CHANGED');
   denied(a.prepare('turn/start',{...a.startParams,model:'gpt-6-luna'},a.startPermit),'ACTUAL_RECOVERY_MODEL_OR_THREAD_MISMATCH');
@@ -161,6 +179,7 @@ try {
     audit:db.query('SELECT * FROM codex_recovery_authorization_audit').all(),permits:db.query('SELECT * FROM codex_mutation_permits').all()});
   assert.ok(!stored.includes(a.capability)&&!stored.includes(a.privatePrompt),'storage and audit contain neither plaintext token nor prompt');
   const b=await seed();
+  await b.resume();
   assert.equal(b.prepare('turn/start',b.startParams,b.startPermit).allowed,true);
   retainSessionInput({sessionId:b.session.id,scope:'fixture',actionId:'later-never-admitted',kind:'action',origin:'human',payload:{action:'pause'}});
   denied(b.consume(b.startParams,b.startPermit),'SOURCE_FINGERPRINT_CHANGED');
@@ -173,7 +192,7 @@ try {
   const e=await seed();
   db.query("UPDATE sessions SET native_metadata_json=json_set(native_metadata_json,'$.reasoningEffort','xhigh') WHERE id=?").run(e.session.id);
   denied(e.prepare('turn/start',e.startParams,e.startPermit),'CURRENT_BINDING_CHANGED');
-  const f=await seed();f.spend();
+  const f=await seed();await f.resume();f.spend();
   assert.equal(f.prepare('turn/start',f.startParams,f.startPermit).allowed,true);
   assert.equal(f.consume(f.startParams,f.startPermit).allowed,true);
   assert.equal(auth.recordCodexRecoveryMutationResponse(db,{authorizationId:f.authorizationId,intentId:f.startPermit,
@@ -202,7 +221,7 @@ try {
       inputId:a.report.id,runId:a.runId,dispatchAttempt:2,observedTerminal:true,status:'completed'}});
   assert.equal(auth.reconcileCodexRecoveryNativeTerminal(db,{acceptedInputId:a.report.id,nowMs:19}).allowed,true);
   assert.equal((db.query('SELECT state FROM codex_mutation_intents WHERE intent_id=?').get('interrupt:canonical') as any).state,'reconciled_applied');
-  const g=await seed();g.spend();
+  const g=await seed();await g.resume();g.spend();
   assert.equal(g.prepare('turn/start',g.startParams,g.startPermit).allowed,true);
   assert.equal(g.consume(g.startParams,g.startPermit).allowed,true);
   denied(auth.reconcileCodexRecoveryNativeTerminal(db,{acceptedInputId:g.report.id,nowMs:20}),'EXACT_PROVIDER_TERMINAL_WITNESS_MISSING');
@@ -234,5 +253,22 @@ try {
   const terminalAudit=db.query("SELECT * FROM codex_recovery_authorization_audit WHERE authorization_id=? AND phase='native-terminal' AND allowed=1 LIMIT 1")
     .get(g.authorizationId) as any;
   assert.ok(JSON.parse(terminalAudit.evidence_refs_json).includes(terminalEventId));
+  const missingCheckpoint=await seed();
+  denied(missingCheckpoint.prepare('turn/start',missingCheckpoint.startParams,missingCheckpoint.startPermit),'OWNED_RESUME_SOURCE_CHECKPOINT_MISSING');
+  assert.equal(missingCheckpoint.prepare('thread/resume',missingCheckpoint.resumeParams,missingCheckpoint.resumePermit).allowed,true);
+  appendFileSync(missingCheckpoint.history.sourcePath,'source changed after prepare\n');
+  denied(missingCheckpoint.consume(missingCheckpoint.resumeParams,missingCheckpoint.resumePermit),'NATIVE_ORIGINAL_EFFECT_HISTORY_SOURCE_CHANGED');
+  const changedBeforeStart=await seed();await changedBeforeStart.resume();changedBeforeStart.spend();
+  assert.equal(changedBeforeStart.prepare('turn/start',changedBeforeStart.startParams,changedBeforeStart.startPermit).allowed,true);
+  appendFileSync(changedBeforeStart.history.sourcePath,JSON.stringify({timestamp:'2026-11-13T00:00:00.000Z',
+    type:'event_msg',payload:{type:'token_count',info:null}})+'\n');
+  denied(changedBeforeStart.consume(changedBeforeStart.startParams,changedBeforeStart.startPermit),'NATIVE_ORIGINAL_EFFECT_HISTORY_SOURCE_CHANGED');
+  assert.equal(db.query('SELECT * FROM codex_mutation_intents WHERE permit_id=?').get(changedBeforeStart.startPermit),null,
+    'source changed between prepare and consume never creates a start intent');
+  assert.throws(()=>db.query('DELETE FROM codex_recovery_source_checkpoints WHERE authorization_id=?').run(a.authorizationId),/immutable/);
+  const publicEvidence=JSON.stringify({audit:db.query('SELECT * FROM codex_recovery_authorization_audit').all(),
+    events:db.query('SELECT * FROM session_owner_events').all()});
+  for(const target of [a,b,f,g,changedBeforeStart])assert.ok(!publicEvidence.includes(target.history.sourcePath),
+    'private source paths stay outside audit and session events');
   console.log('Recovery dispatch authorization: real legacy Medium proof, one durable capability/start, restart/replay, exact hook invocation, Stop/current-source and immutable private audit passed');
 } finally {db.close();rmSync(scratch,{recursive:true,force:true});}

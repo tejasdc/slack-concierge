@@ -3,11 +3,15 @@ import {releaseWorkerPath} from './release-worker';
 import {log,errorFields} from './log';
 
 type Work={operation:'page'|'delta'|'prepare';sessionId:string;cwd:string;cursor:string|null;limit:number;after:string|null;
-  want?:{dialogue:number;untilInput:boolean};thread?:string};
+  want?:{dialogue:number;untilInput:boolean};thread?:string}|
+  {operation:'original-recovery-coverage';sessionId:number;inputId:string;requestId:string;runId:string;fenceId:string;
+    expectedDecisionDigest:string;expectedNativeDigest:string}|
+  {operation:'original-recovery-refresh-after-resume';authorizationId:string};
 type Reply={id:number;result?:unknown;error?:{message:string;status:number}};
 
 // A window is collected inside the worker under the owner's own four-second budget.
 const HISTORY_WINDOW_WAIT_MS=6000;
+const ORIGINAL_HISTORY_COVERAGE_WAIT_MS=30_000;
 
 /** One persistent worker keeps the cold Claude import alive between requests. */
 export class ProviderHistoryPageClient {
@@ -40,16 +44,27 @@ export class ProviderHistoryPageClient {
   }
   /** Loads the worker before the first open asks for a page, instead of during it. */
   warm(){this.ensure();}
+  /** Source-bound, private evidence read for the exact fenced Codex continuation. */
+  readOriginalCodexRecoveryCoverage(input:{sessionId:number;inputId:string;requestId:string;runId:string;fenceId:string;
+    expectedDecisionDigest:string;expectedNativeDigest:string}){
+    return this.request({operation:'original-recovery-coverage',...input});
+  }
+  /** Refresh the private local source witness only after the exact owned resume response. */
+  refreshOriginalCodexHistoryAfterResume(authorizationId:string){
+    return this.request({operation:'original-recovery-refresh-after-resume',authorizationId});
+  }
   request(work:Work):Promise<unknown>{
     const worker=this.ensure(),id=this.nextId++;
     return new Promise((resolve,reject)=>{
       const timer=setTimeout(()=>{
         const item=this.pending.get(id);if(!item)return;
         this.pending.delete(id);
-        item.reject(new Error('HISTORY_PAGE_STILL_PREPARING'));
+        item.reject(new Error(work.operation==='original-recovery-coverage'||work.operation==='original-recovery-refresh-after-resume'
+          ?'ORIGINAL_HISTORY_COVERAGE_STILL_READING':'HISTORY_PAGE_STILL_PREPARING'));
         // An import already under way must finish and warm the worker. Killing it here
         // would make every retry start the same expensive cold read from zero.
-      },work.want||work.operation==='prepare'?HISTORY_WINDOW_WAIT_MS:5000);
+      },work.operation==='original-recovery-coverage'||work.operation==='original-recovery-refresh-after-resume'?ORIGINAL_HISTORY_COVERAGE_WAIT_MS:
+        work.want||work.operation==='prepare'?HISTORY_WINDOW_WAIT_MS:5000);
       timer.unref?.();
       this.pending.set(id,{resolve,reject,timer});
       worker.postMessage({id,...work});

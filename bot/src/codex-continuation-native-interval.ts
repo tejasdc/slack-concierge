@@ -1,6 +1,7 @@
 import {acceptedBindingSnapshotDigest,proveAcceptedBindingContinuation,
   type AcceptedBindingContinuationSnapshot,type ContinuationInput} from './codex-accepted-binding-continuation';
 import {nativeResultEventId} from './native-result-identity';
+import {revalidateCodexOriginalHistorySource,type CodexOriginalHistoryWitness,type CodexOriginalHistoryCustody} from './codex-original-history-coverage';
 
 export interface CodexHistoryReadClient {
   request(method:'thread/turns/list'|'thread/items/list',params:Record<string,unknown>):Promise<any>;
@@ -131,9 +132,12 @@ async function pages(client:CodexHistoryReadClient,method:'thread/turns/list'|'t
   return rows;
 }
 
-/** Read complete persisted turn/item pages under a caller-held native thread
+/** Read complete projected turn/item pages under a caller-held native thread
  * fence. This module performs no resume, start, compaction, unload or mutation.
- * The returned digest must be reserved and dispatched under that same fence. */
+ * This projection is not a lossless original-effect history certificate: native
+ * migration/materialization can omit records. Activation independently refuses
+ * NATIVE_ORIGINAL_EFFECT_HISTORY_COVERAGE_UNPROVEN until an owned source witness
+ * fills that predicate. The returned digest also requires that same held fence. */
 export async function proveCodexContinuationNativeInterval(input:{snapshot:AcceptedBindingContinuationSnapshot;client:CodexHistoryReadClient}) {
   const continuation=proveAcceptedBindingContinuation(input.snapshot);
   try {
@@ -191,4 +195,22 @@ export async function proveCodexContinuationNativeInterval(input:{snapshot:Accep
       requiresHeldThreadFence:true as const,continuationDecisionDigest:continuation.decisionDigest,
       ownerSnapshotDigest:continuation.snapshotDigest,reasons:[{code:refusal.code,evidence:refusal.evidence}]};
   }
+}
+
+/** Join the owner-worker's original-record witness to the projected native
+ * identity proof. A caller cannot replace either with a completeness boolean. */
+export function bindCodexOriginalHistoryCoverage(projected:Awaited<ReturnType<typeof proveCodexContinuationNativeInterval>>,
+  original:{proven:true;witness:CodexOriginalHistoryWitness;custody:CodexOriginalHistoryCustody}|{proven:false;reasons:Array<{code:string}>}){
+  if(!projected.proven)return projected;
+  if(!original.proven)throw new Error(`Original native history refuses: ${original.reasons.map(reason=>reason.code).join(', ')}.`);
+  const {witness,custody}=original;
+  if(witness.threadId!==projected.threadId||witness.attemptsDigest!==acceptedBindingSnapshotDigest(projected.attempts)
+    ||acceptedBindingSnapshotDigest(witness.nativeTurnOrder)!==acceptedBindingSnapshotDigest(projected.coverage.map(item=>item.providerTurnId))
+    ||!revalidateCodexOriginalHistorySource(custody,witness).valid)
+    throw new Error('Original native source and projected attempt interval do not match the same unchanged source.');
+  const originalHistory={witness,custody};
+  const evidence={threadId:projected.threadId,continuationDecisionDigest:projected.continuationDecisionDigest,
+    ownerSnapshotDigest:projected.ownerSnapshotDigest,attempts:projected.attempts,coverage:projected.coverage,
+    nativeTurnOrder:projected.nativeTurnOrder,nativeWatermark:projected.nativeWatermark,originalHistory};
+  return {...projected,originalHistory,nativeDigest:acceptedBindingSnapshotDigest(evidence)};
 }

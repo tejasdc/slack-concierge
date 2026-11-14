@@ -1,0 +1,219 @@
+import assert from 'node:assert/strict';
+import {mkdtempSync,mkdirSync,writeFileSync,appendFileSync,renameSync,truncateSync,readFileSync,symlinkSync,rmSync} from 'node:fs';
+import {Database} from 'bun:sqlite';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {readCodexOriginalHistoryCoverage,revalidateCodexOriginalHistorySource,refreshCodexOriginalHistoryAfterOwnedResume,
+  type CodexOriginalHistoryCoverageInput} from '../src/codex-original-history-coverage';
+import {fixtureNativeSettings} from './codex-original-history-fixture-helper';
+
+const scratch=mkdtempSync(join(tmpdir(),'codex-original-source-')),home=join(scratch,'codex-home');mkdirSync(home);
+const path=join(home,'rollout-original.jsonl'),threadId='019a7181-0000-7000-8000-000000000001';
+const binding={sessionId:90,provider:'codex',threadId,generation:1,model:'gpt-6-astra',effort:'medium',runner:null};
+const attempts=[{inputId:'selected',turnId:30,runId:'run:30',dispatchAttempt:1,providerTurnId:'selected-T',evidenceRefs:['provider-turn-attempt:30:1']},
+  {inputId:'closed-info',turnId:31,runId:'run:31',dispatchAttempt:1,providerTurnId:'compaction-T',evidenceRefs:['result:31']},
+  {inputId:'later-empty',turnId:32,runId:'run:32',dispatchAttempt:1,providerTurnId:'empty-T',evidenceRefs:['provider-turn-attempt:32:1']}];
+const row=(type:string,payload:any,metadata?:any)=>({timestamp:'2026-11-13T00:00:00.000Z',type,payload,...metadata?{metadata}:{}});
+const begin=(id:string)=>row('event_msg',{type:'task_started',turn_id:id,model_context_window:258400,collaboration_mode_kind:'default'});
+const context=(id:string)=>row('turn_context',{turn_id:id,cwd:'/fixture',approval_policy:'never',sandbox_policy:{type:'danger-full-access'},
+  model:'gpt-6-astra',effort:'medium',summary:'none'});
+const end=(id:string)=>row('event_msg',{type:'task_complete',turn_id:id,last_agent_message:null});
+const user={type:'message',id:'prior-native-item',role:'user',content:[{type:'input_text',text:'prior preserved request'}]};
+const generated={type:'message',id:'static-context',role:'user',content:[{type:'input_text',text:'arbitrary static instructions'},
+  {type:'input_text',text:'arbitrary environment'}],internal_chat_message_metadata_passthrough:{
+  content_item_kinds:['agents_md.instructions','environments.environment_context']}};
+function records():any[]{return structuredClone([row('session_meta',{id:threadId,session_id:threadId,timestamp:'2026-11-13T00:00:00.000Z',
+    originator:'codex_cli_rs',cli_version:'0.162.0',cwd:'/fixture',source:'cli',history_mode:'legacy'}),
+  begin('prior-T'),context('prior-T'),row('response_item',user,{user_input_order:7}),
+  row('event_msg',{type:'user_message',client_id:'prior-client',message:'prior preserved request',local_images:[]}),
+  row('response_item',{type:'function_call',name:'some-tool',call_id:'prior-call',arguments:'{"private":"preserved"}'}),
+  row('response_item',{type:'function_call_output',call_id:'prior-call',output:'earlier successful effect'}),
+  row('event_msg',{type:'agent_message',message:'earlier product reply'}),end('prior-T'),
+  row('event_msg',{type:'thread_settings_applied',thread_id:threadId,thread_settings:fixtureNativeSettings(binding)}),
+  begin('selected-T'),row('response_item',generated),context('selected-T'),end('selected-T'),
+  begin('compaction-T'),context('compaction-T'),row('compacted',{message:'model context summary',replacement_history:[user,generated],
+    replacement_history_metadata:[{user_input_order:7},{}]}),row('event_msg',{type:'context_compacted'}),end('compaction-T'),
+  begin('empty-T'),context('empty-T'),row('event_msg',{type:'token_count',info:null,rate_limits:null}),end('empty-T')]);}
+const serialize=(rows:any[])=>rows.map(r=>JSON.stringify(r)).join('\n')+'\n';
+const write=(rows=records())=>writeFileSync(path,serialize(rows));
+const input:CodexOriginalHistoryCoverageInput={binding,selectedInputId:'selected',attempts,
+  nativeTurnOrder:['prior-T','selected-T','compaction-T','empty-T'],codexHome:home,
+  client:{async request(method,params){assert.equal(method,'thread/read');assert.equal(params.includeTurns,false);
+    return {thread:{id:threadId,path}};}}};
+const read=()=>readCodexOriginalHistoryCoverage(input);
+async function refuses(code:string,change:(rows:any[])=>void){const rows=records();change(rows);write(rows);
+  const result=await read();assert.equal(result.proven,false,code);
+  if(!result.proven)assert.equal(result.reasons[0]?.code,code,JSON.stringify(result));}
+write();
+const result=await read();assert.equal(result.proven,true,JSON.stringify(result));
+if(!result.proven)throw new Error('fixture source proof failed');
+assert.deepEqual(result.witness.spans.map(s=>s.classification),['empty','independent_compaction','empty']);
+assert.equal(result.witness.spans[0]?.generatedContextRecords,1);
+assert.equal(result.witness.compactionRecords[0]?.replacementClassifications.historicalAcceptedUser,1);
+assert.equal(result.witness.priorRecordCount,10);
+assert.equal(revalidateCodexOriginalHistorySource(result.custody,result.witness).valid,true);
+assert.ok(!JSON.stringify(result.witness).includes(path)&&!JSON.stringify(result.witness).includes('earlier successful effect'));
+const original=readFileSync(path);
+appendFileSync(path,serialize([row('event_msg',{type:'token_count'})]));
+assert.equal(revalidateCodexOriginalHistorySource(result.custody,result.witness).valid,false,'append is a source change');
+writeFileSync(path,original);assert.equal(revalidateCodexOriginalHistorySource(result.custody,result.witness).valid,false,'restoring bytes does not restore source revision');
+const fresh=await read();assert.equal(fresh.proven,true);if(!fresh.proven)throw new Error('fixture');
+renameSync(path,path+'.old');writeFileSync(path,original);
+assert.equal(revalidateCodexOriginalHistorySource(fresh.custody,fresh.witness).valid,false,'replacement inode refuses');
+const truncation=await read();assert.equal(truncation.proven,true);if(!truncation.proven)throw new Error('fixture');
+truncateSync(path,original.length-10);assert.equal(revalidateCodexOriginalHistorySource(truncation.custody,truncation.witness).valid,false);
+await refuses('ORIGINAL_HISTORY_RECORD_SHAPE_INVALID',rows=>{rows[13]={...rows[13],timestamp:'invalid'};});
+await refuses('ORIGINAL_HISTORY_UNKNOWN_OR_UNCLASSIFIED_RECORD',rows=>{rows.splice(12,0,row('future_raw_type',{}));});
+await refuses('ORIGINAL_HISTORY_UNKNOWN_OR_UNCLASSIFIED_EVENT',rows=>{rows.splice(12,0,row('event_msg',{type:'future_effect'}));});
+await refuses('ORIGINAL_HISTORY_ACCEPTED_USER_EVENT_PRESENT',rows=>{rows.splice(12,0,row('event_msg',{type:'user_message',message:'accepted'}));});
+await refuses('ORIGINAL_HISTORY_CONVERSATIONAL_OR_TOOL_EFFECT',rows=>{rows.splice(12,0,row('response_item',{
+  type:'function_call',call_id:'hidden-effect',name:'tool',arguments:'{}'}));});
+await refuses('ORIGINAL_HISTORY_ACCEPTED_USER_PROVENANCE_PRESENT',rows=>{rows.splice(12,0,row('response_item',user,{user_input_order:8}));});
+await refuses('ORIGINAL_HISTORY_USER_PROVENANCE_UNPROVEN',rows=>{rows[11].payload.internal_chat_message_metadata_passthrough.content_item_kinds.pop();});
+await refuses('ORIGINAL_HISTORY_USER_PROVENANCE_UNPROVEN',rows=>{rows[11].payload.internal_chat_message_metadata_passthrough.content_item_kinds[1]='unknown.source';});
+await refuses('ORIGINAL_HISTORY_USER_PROVENANCE_UNPROVEN',rows=>{delete rows[11].payload.internal_chat_message_metadata_passthrough;});
+await refuses('ORIGINAL_HISTORY_REPLACEMENT_USER_PROVENANCE_UNPROVEN',rows=>{delete rows[16].payload.replacement_history_metadata;});
+await refuses('ORIGINAL_HISTORY_REPLACEMENT_USER_PROVENANCE_UNPROVEN',rows=>{rows[16].payload.replacement_history_metadata[0].user_input_order=999;});
+await refuses('ORIGINAL_HISTORY_COMPACTION_SHAPE_INVALID',rows=>{rows[16].payload.replacement_history_metadata.pop();});
+await refuses('ORIGINAL_HISTORY_COMPACTION_SIDECAR_UNCLASSIFIED',rows=>{rows[16].payload.retained_context={unknown:'not projected'};});
+await refuses('ORIGINAL_HISTORY_COMPACTION_SIDECAR_UNCLASSIFIED',rows=>{rows[16].payload.future_effect_sidecar={unknown:'not projected'};});
+await refuses('ORIGINAL_HISTORY_RESPONSE_METADATA_UNCLASSIFIED',rows=>{rows[11].metadata={delivered_assistant_message:'confirmed elsewhere'};});
+await refuses('ORIGINAL_HISTORY_REPLACEMENT_METADATA_UNCLASSIFIED',rows=>{rows[16].payload.replacement_history_metadata[1]={unknown_future_provenance:1};});
+await refuses('ORIGINAL_HISTORY_ROLLBACK_UNSUPPORTED',rows=>{rows.splice(4,0,row('event_msg',{type:'thread_rolled_back',num_turns:1}));});
+for(const key of ['history_base','subagent_history_start_ordinal','forked_from_id','forked_from_ordinal_exclusive','parent_thread_id'])
+  await refuses('ORIGINAL_HISTORY_INHERITED_LINEAGE_UNSUPPORTED',rows=>{rows[0].payload[key]=key==='history_base'?{thread_id:threadId,end_ordinal_exclusive:1}:1;});
+await refuses('ORIGINAL_HISTORY_CONTEXT_BINDING_CONFLICT',rows=>{rows[12].payload.effort='high';});
+await refuses('ORIGINAL_HISTORY_EXACT_TURN_CONTEXT_MISSING',rows=>{rows.splice(12,1);});
+await refuses('ORIGINAL_HISTORY_SETTINGS_BASELINE_MISSING',rows=>{rows.splice(9,1);});
+await refuses('ORIGINAL_HISTORY_SETTINGS_SNAPSHOT_INCOMPLETE',rows=>{delete rows[9].payload.thread_settings.approval_policy;});
+await refuses('ORIGINAL_HISTORY_TURN_SETTINGS_CHANGED',rows=>{rows[12].payload.cwd='/unrelated-directory';});
+await refuses('ORIGINAL_HISTORY_TURN_SETTINGS_CHANGED',rows=>{rows[12].payload.approval_policy='on-request';});
+await refuses('ORIGINAL_HISTORY_TURN_SETTINGS_CHANGED',rows=>{rows[12].payload.sandbox_policy={type:'read-only'};});
+for(const [key,value] of Object.entries({approval_policy:'on-request',cwd:'/unrelated',permission_profile:{type:'external',network:'enabled'},
+  runtime_workspace_roots:['/new'],disabled_plugin_ids:['new-plugin'],service_tier:'priority',personality:'friendly',
+  unknown_future_setting:'unowned-change'}))
+  await refuses('ORIGINAL_HISTORY_NATIVE_SETTINGS_CHANGED',rows=>{const snapshot=fixtureNativeSettings(binding) as any;snapshot[key]=value;
+    rows.splice(16,0,row('event_msg',{type:'thread_settings_applied',thread_id:threadId,thread_settings:snapshot}));});
+const unchanged=records();unchanged.splice(16,0,row('event_msg',{type:'thread_settings_applied',thread_id:threadId,
+  thread_settings:fixtureNativeSettings(binding)}));write(unchanged);
+assert.equal((await read()).proven,true,'complete identical settings checkpoint is neutral');
+await refuses('ORIGINAL_HISTORY_WORLD_STATE_BASELINE_MISSING',rows=>{rows.splice(16,0,row('world_state',{full:true,state:{environment:{cwd:'/fixture'}}}));});
+const state={environment:{cwd:'/fixture',approval:'never'},privateContext:{retained:'unchanged'}};
+const stableWorld=records();stableWorld.splice(16,0,row('world_state',{full:true,state}));stableWorld.splice(9,0,row('world_state',{full:true,state}));write(stableWorld);
+assert.equal((await read()).proven,true,'source-backed full world-state baseline equality');
+const stablePatch=records();stablePatch.splice(16,0,row('world_state',{full:false,state:{environment:{cwd:'/fixture'}}}));
+stablePatch.splice(9,0,row('world_state',{full:true,state}));write(stablePatch);
+assert.equal((await read()).proven,true,'recursive merge patch with identical effective state is neutral');
+await refuses('ORIGINAL_HISTORY_WORLD_STATE_CHANGED',rows=>{rows.splice(16,0,row('world_state',{full:false,state:{environment:{cwd:'/new'}}}));
+  rows.splice(9,0,row('world_state',{full:true,state}));});
+const usage={input_tokens:10,cached_input_tokens:0,output_tokens:0,reasoning_output_tokens:0,total_tokens:10};
+await refuses('ORIGINAL_HISTORY_TOKEN_USAGE_EFFECT_UNASSESSED',rows=>{rows.splice(12,0,row('event_msg',{type:'token_count',
+  info:{total_token_usage:{...usage,output_tokens:10,total_tokens:20},last_token_usage:{...usage,output_tokens:1,total_tokens:11},model_context_window:258400},rate_limits:null}));});
+await refuses('ORIGINAL_HISTORY_TOKEN_USAGE_EFFECT_UNASSESSED',rows=>{rows.splice(12,0,row('event_msg',{type:'token_count',
+  info:{total_token_usage:{...usage,reasoning_output_tokens:10,total_tokens:20},last_token_usage:{...usage,reasoning_output_tokens:1,total_tokens:11},model_context_window:258400},rate_limits:null}));});
+const priorTotals=records();priorTotals.splice(12,0,row('event_msg',{type:'token_count',info:{
+  total_token_usage:{...usage,output_tokens:100,total_tokens:110},last_token_usage:usage,model_context_window:258400},rate_limits:null}));write(priorTotals);
+assert.equal((await read()).proven,true,'cumulative prior output alone does not assert selected work');
+await refuses('ORIGINAL_HISTORY_BOUNDARY_SIDECAR_UNKNOWN',rows=>{rows[10].payload.user_message='unclassified future sidecar';});
+await refuses('ORIGINAL_HISTORY_BOUNDARY_SIDECAR_UNKNOWN',rows=>{rows[13].payload.tool_effect={unknown:true};});
+await refuses('ORIGINAL_HISTORY_BOUNDARY_SIDECAR_UNKNOWN',rows=>{rows[17].payload.extra_effect='unknown';});
+const attribution=records();attribution[10].payload.turn_attribution={turn_id:'selected-T',turn_trigger:null,parent_turn_id:null,
+  initiating_agent_path:null,root_turn_id:'selected-T'};write(attribution);
+assert.equal((await read()).proven,true,'native attribution is causal identity, not accepted input');
+const compactUsage={...usage,output_tokens:5,total_tokens:15};
+function compactionResponseSource(){const rows=records(),compacted=rows[16];compacted.payload.compaction_response_id='exact-compaction-response';
+  const start=rows.findIndex(r=>r.payload.type==='task_started'&&r.payload.turn_id==='compaction-T'),
+    finish=rows.findIndex(r=>r.payload.type==='task_complete'&&r.payload.turn_id==='compaction-T');
+  rows.splice(start,finish-start+1,begin('compaction-T'),
+    row('token_usage_record',{thread_id:threadId,turn_id:'compaction-T',session_id:threadId,root_turn_id:'compaction-T',
+      response_id:'exact-compaction-response',usage:compactUsage,turn_token_usage:compactUsage,thread_token_usage:compactUsage}),
+    compacted,row('world_state',{full:true,state}),context('compaction-T'),
+    row('event_msg',{type:'thread_settings_applied',thread_id:threadId,thread_settings:fixtureNativeSettings(binding)}),
+    row('event_msg',{type:'token_count',info:{total_token_usage:compactUsage,last_token_usage:compactUsage,model_context_window:258400},rate_limits:null}),
+    row('event_msg',{type:'item_completed',thread_id:threadId,turn_id:'compaction-T',
+      item:{type:'ContextCompaction',id:'exact-native-compaction-item'},completed_at_ms:1}),end('compaction-T'));
+  rows.splice(9,0,row('world_state',{full:true,state}));
+  return rows;}
+write(compactionResponseSource());const accounted=await read();assert.equal(accounted.proven,true,JSON.stringify(accounted));
+if(accounted.proven){assert.equal(accounted.witness.spans[1]?.compactionCompletionRecords,1);assert.equal(accounted.witness.spans[1]?.responseUsageRecords,1);}
+const wrongUsage=compactionResponseSource();wrongUsage.find(r=>r.type==='token_usage_record')!.payload.response_id='unrelated-response';write(wrongUsage);
+const wrongUsageProof=await read();assert.equal(wrongUsageProof.proven,false);if(!wrongUsageProof.proven)assert.equal(wrongUsageProof.reasons[0]?.code,'ORIGINAL_HISTORY_TOKEN_USAGE_EFFECT_UNASSESSED');
+const missingCompletion=compactionResponseSource().filter(r=>r.payload.type!=='item_completed');write(missingCompletion);
+const missingCompletionProof=await read();assert.equal(missingCompletionProof.proven,false);
+const uncounted=compactionResponseSource();uncounted.find(r=>r.type==='token_usage_record')!.payload.turn_token_usage={...compactUsage,output_tokens:6};write(uncounted);
+const uncountedProof=await read();assert.equal(uncountedProof.proven,false);if(!uncountedProof.proven)assert.equal(uncountedProof.reasons[0]?.code,'ORIGINAL_HISTORY_TOKEN_USAGE_RESPONSE_COVERAGE_UNPROVEN');
+const hiddenTool=compactionResponseSource();hiddenTool.splice(16,0,row('response_item',{type:'function_call',name:'hidden',call_id:'call',arguments:'{}'}));write(hiddenTool);
+assert.equal((await read()).proven,false,'compaction usage identity cannot mask another tool effect');
+await refuses('ORIGINAL_HISTORY_SELECTED_COMPACTION_PRESENT',rows=>{rows.splice(13,0,row('event_msg',{type:'item_completed',
+  thread_id:threadId,turn_id:'selected-T',item:{type:'ContextCompaction',id:'selected-typed-only'},completed_at_ms:1}));});
+const wrongSession=compactionResponseSource();wrongSession.find(r=>r.type==='token_usage_record')!.payload.session_id='different-runtime-session';write(wrongSession);
+const wrongSessionProof=await read();assert.equal(wrongSessionProof.proven,false);if(!wrongSessionProof.proven)assert.equal(wrongSessionProof.reasons[0]?.code,'ORIGINAL_HISTORY_TOKEN_SESSION_IDENTITY_CONFLICT');
+const legacySession=compactionResponseSource();delete legacySession[0].payload.session_id;write(legacySession);
+assert.equal((await read()).proven,true,'pinned omitted session_id fallback retains exact thread identity');
+const coherent=records();coherent[2].payload.approval_policy='on-request';coherent[12].payload.approval_policy='on-request';write(coherent);
+const coherentProof=await read();assert.equal(coherentProof.proven,false);if(!coherentProof.proven)assert.equal(coherentProof.reasons[0]?.code,'ORIGINAL_HISTORY_SETTINGS_BASELINES_CONFLICT');
+await refuses('ORIGINAL_HISTORY_NATIVE_ORDER_OR_SUFFIX_CONFLICT',rows=>{rows.push(begin('unmapped-T'),context('unmapped-T'),end('unmapped-T'));});
+write();writeFileSync(path,Buffer.concat([readFileSync(path).subarray(0,-1),Buffer.from([0xff,10])]));
+assert.equal((await read()).proven,false,'strict invalid UTF-8 refuses');
+writeFileSync(path,serialize(records())+'{"type": broken}\n');
+const malformed=await read();assert.equal(malformed.proven,false);if(!malformed.proven)assert.equal(malformed.reasons[0]?.code,'ORIGINAL_HISTORY_RECORD_DECODE_FAILED');
+writeFileSync(path,serialize(records()).slice(0,-1));
+const partial=await read();assert.equal(partial.proven,false);if(!partial.proven)assert.equal(partial.reasons[0]?.code,'ORIGINAL_HISTORY_PARTIAL_FINAL_RECORD');
+const paginated=records().map((r,index)=>({...r,ordinal:index}));paginated[0].payload.history_mode='paginated';write(paginated);
+const ordinalProof=await read();assert.equal(ordinalProof.proven,true,JSON.stringify(ordinalProof));
+paginated[12].ordinal=999;write(paginated);const gap=await read();assert.equal(gap.proven,false);if(!gap.proven)assert.equal(gap.reasons[0]?.code,'ORIGINAL_HISTORY_ORDINAL_COVERAGE_INVALID');
+const distinct=records();distinct[0].payload.session_id='distinct-runtime-session';distinct.push(row('event_msg',{type:'token_count',info:null,rate_limits:null}));write(distinct);
+const neutral=await read();assert.equal(neutral.proven,true,JSON.stringify(neutral));
+if(neutral.proven){assert.equal(neutral.witness.sourceSessionId,'distinct-runtime-session');assert.equal(neutral.witness.neutralOutsideTurnRecords.length,1);}
+const high=records();for(const r of high){if(r.type==='turn_context')r.payload.effort='high';if(r.payload.type==='thread_settings_applied')r.payload.thread_settings=fixtureNativeSettings({...binding,effort:'high'});}write(high);
+assert.equal((await readCodexOriginalHistoryCoverage({...input,binding:{...binding,effort:'high'}})).proven,true,'exact supported effort is preserved generically');
+const outside=join(scratch,'outside.jsonl');writeFileSync(outside,serialize(records()));
+const badPath=await readCodexOriginalHistoryCoverage({...input,client:{async request(){return {thread:{id:threadId,path:outside}};}}});
+assert.equal(badPath.proven,false);if(!badPath.proven)assert.equal(badPath.reasons[0]?.code,'ORIGINAL_HISTORY_SOURCE_PATH_UNSUPPORTED');
+write();const alias=join(home,'authoritative-alias.jsonl');symlinkSync(path,alias);
+const aliased=await readCodexOriginalHistoryCoverage({...input,client:{async request(){return {thread:{id:threadId,path:alias}};}}});
+assert.equal(aliased.proven,true);if(!aliased.proven)throw new Error('fixture');
+rmSync(alias);symlinkSync(outside,alias);
+assert.equal(revalidateCodexOriginalHistorySource(aliased.custody,aliased.witness).valid,false,'authoritative symlink re-target refuses');
+write();const competingRead=read();
+await new Promise<void>(resolve=>setTimeout(()=>{appendFileSync(path,serialize([row('unknown_concurrent_record',{})]));resolve();},0));
+const competed=await competingRead;
+assert.ok(!competed.proven||!revalidateCodexOriginalHistorySource(competed.custody,competed.witness).valid,
+  'concurrent physical append cannot leave a reusable source witness');
+
+// The same existing permit/intent ledger and a retained owned resume receipt
+// establish append authority; caller assertions cannot substitute for these rows.
+const db=new Database(':memory:');
+db.exec(`CREATE TABLE codex_mutation_intents(intent_id TEXT,permit_id TEXT,method TEXT,response_kind TEXT,response_digest TEXT,state TEXT,
+ thread_id TEXT,fence_id TEXT,accepted_input_id TEXT,run_id TEXT,dispatch_attempt INTEGER);
+ CREATE TABLE codex_mutation_permits(permit_id TEXT,purpose TEXT);
+ CREATE TABLE codex_recovery_dispatch_authorizations(resume_permit_id TEXT,fence_id TEXT,binding_json TEXT,
+ accepted_input_id TEXT,run_id TEXT,dispatch_attempt INTEGER,thread_id TEXT);
+ CREATE TABLE codex_thread_mutation_fences(fence_id TEXT,state TEXT,thread_id TEXT,accepted_input_id TEXT,run_id TEXT,dispatch_attempt INTEGER);`);
+db.query('INSERT INTO codex_mutation_intents VALUES(?,?,?,?,?,?,?,?,?,?,?)').run('resume-intent','resume-permit','thread/resume','accepted','actual-resume-reply','reconciled_applied',threadId,'fence','selected','run:30',2);
+db.query('INSERT INTO codex_mutation_permits VALUES(?,?)').run('resume-permit','fenced_recovery');
+db.query('INSERT INTO codex_recovery_dispatch_authorizations VALUES(?,?,?,?,?,?,?)').run('resume-permit','fence',JSON.stringify(binding),'selected','run:30',2,threadId);
+db.query('INSERT INTO codex_thread_mutation_fences VALUES(?,?,?,?,?,?)').run('fence','active',threadId,'selected','run:30',2);
+const checkpoint=()=>row('event_msg',{type:'thread_settings_applied',thread_id:threadId,thread_settings:fixtureNativeSettings(binding)});
+async function resumeCase(extra:any[],expected?:string,change?:()=>void){write();const original=await read();assert.equal(original.proven,true);if(!original.proven)throw new Error('fixture');
+  appendFileSync(path,serialize(extra));change?.();
+  const refreshed=await refreshCodexOriginalHistoryAfterOwnedResume({db,intentId:'resume-intent',witness:original.witness,custody:original.custody});
+  assert.equal(refreshed.proven,!expected,JSON.stringify(refreshed));
+  if(!refreshed.proven)assert.equal(refreshed.reasons[0]?.code,expected);
+  else {assert.equal(refreshed.witness.ownedResumeCheckpoint?.previousWitnessDigest,original.witness.witnessDigest);
+    assert.equal(revalidateCodexOriginalHistorySource(refreshed.custody,refreshed.witness).valid,true);
+    assert.equal(revalidateCodexOriginalHistorySource(original.custody,original.witness).valid,false);}
+}
+await resumeCase([checkpoint()]);
+await resumeCase([checkpoint(),row('event_msg',{type:'token_count'})],'ORIGINAL_HISTORY_OWNED_RESUME_APPEND_NOT_EXACT');
+const wrong=checkpoint();wrong.payload.thread_settings.reasoning_effort='high';await resumeCase([wrong],'ORIGINAL_HISTORY_OWNED_RESUME_SETTINGS_CONFLICT');
+for(const [key,value] of Object.entries({approval_policy:'on-request',cwd:'/other',permission_profile:{type:'external',network:'enabled'},
+  runtime_workspace_roots:['/other'],disabled_plugin_ids:['unexpected'],unknown_future_setting:{changed:true}})){
+  const changed=checkpoint();(changed.payload.thread_settings as any)[key]=value;
+  await resumeCase([changed],'ORIGINAL_HISTORY_OWNED_RESUME_SETTINGS_CONFLICT');
+}
+await resumeCase([checkpoint()],'ORIGINAL_HISTORY_OWNED_RESUME_RECEIPT_UNPROVEN',()=>db.query("UPDATE codex_mutation_intents SET response_kind='rpc_error'").run());
+db.query("UPDATE codex_mutation_intents SET response_kind='accepted'").run();
+await resumeCase([checkpoint()],'ORIGINAL_HISTORY_OWNED_RESUME_PREFIX_CHANGED',()=>{const bytes=readFileSync(path);bytes[bytes.indexOf('prior preserved request')]=88;writeFileSync(path,bytes);});
+db.close();rmSync(scratch,{recursive:true,force:true});
+console.log('Codex original history coverage: real files, legacy Medium, preserved prior effects, exact generated context and compaction provenance, strict source/record faults and owned-resume append passed');

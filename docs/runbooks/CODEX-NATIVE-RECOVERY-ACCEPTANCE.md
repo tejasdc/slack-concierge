@@ -4,6 +4,23 @@ This is the finite live procedure for the source-bound native Codex controls. It
 fixture and must wait for a reviewed release installed on the machine being checked. Do not run it
 from this candidate worktree.
 
+The source candidate now includes a private original-history proof path. Under the exact mutation
+fence, the history worker derives the accepted owner snapshot, repeats native projected coverage,
+reads the bound thread through the actual App Server, validates the complete local JSONL prefix,
+and rechecks the source and controls. A successful owned resume may extend that prefix only with
+one exact settings record backed by its retained resume intent; the host stores the resulting
+witness and local file custody in a private immutable checkpoint. The twelve-fixture
+continuation gate passed, including the source reader and disposable App Server worker. No target history has
+been read or accepted on an installed machine. Remote paths, history outside the configured Codex home, legacy recovery mode,
+forked/inherited history, rollback, malformed/unknown/unclassified records, missing ordinals,
+unproven user/tool/configuration effects, or anything beyond the one exact resume append refuse.
+
+This proof does not clear the two independent activation holds: the old Desktop receiver still
+lacks a positive native admission cut or successful handler-drain witness, and the current cold
+hook configuration has not been observed for the exact target. Keep accepted-binding recovery
+held until the reviewed installed release proves those facts and the exact target source witness.
+The local fixtures are not substitutes for any of them.
+
 ## Controller and authority
 
 Use a live Claude Code session or finite Claude host job as the controller. It remains the live
