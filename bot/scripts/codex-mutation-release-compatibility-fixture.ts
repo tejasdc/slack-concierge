@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {chmodSync,existsSync,mkdirSync,mkdtempSync,readFileSync,renameSync,rmSync,symlinkSync,writeFileSync} from 'node:fs';
+import {chmodSync,existsSync,lstatSync,mkdirSync,mkdtempSync,readFileSync,readdirSync,renameSync,rmSync,symlinkSync,writeFileSync} from 'node:fs';
 import {join,dirname,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {Database} from 'bun:sqlite';
@@ -13,6 +13,12 @@ import {CODEX_MUTATION_APPLICATION_CAPABILITY_PATH as APP,CODEX_MUTATION_CONTROL
   requireCodexMutationReleaseProtection} from '../src/codex-mutation-release-compatibility';
 
 const root=mkdtempSync(join(tmpdir(),'codex-release-compatibility-')),state=join(root,'state'),releaseRoot=join(root,'releases-root'),install=join(root,'install');
+function unsealFixtureDirectories(path:string){
+  const stat=lstatSync(path);
+  if(stat.isSymbolicLink()||!stat.isDirectory())return;
+  chmodSync(path,0o700);
+  for(const name of readdirSync(path))unsealFixtureDirectories(join(path,name));
+}
 mkdirSync(state);mkdirSync(join(releaseRoot,'releases'),{recursive:true});mkdirSync(install);symlinkSync(process.execPath,join(install,'bun'));
 const source=resolve(import.meta.dir,'..'),repo=resolve(source,'..'),hash=(v:string|Uint8Array)=>createHash('sha256').update(v).digest('hex');
 const db=new Database(join(state,'state.db'));initializeCodexMutationFenceSchema(db);
@@ -153,4 +159,4 @@ try{
   const preparedModern=await hybridManager.prepare('hybrid-protocol-source',modernCommit,modernCommit);
   hybridManager.activate(preparedModern.artifactPath);assert.equal(hybridManager.currentArtifactPath(),preparedModern.artifactPath);
   console.log('Codex release compatibility: actual sealed app/control selection, rollback and startup; read-only first-protection/deploy/wrapper refusal; retained publication; old helper and source checkout refusals: PASS');
-}finally{db.close();rmSync(root,{recursive:true,force:true});}
+}finally{db.close();unsealFixtureDirectories(root);rmSync(root,{recursive:true,force:true});}

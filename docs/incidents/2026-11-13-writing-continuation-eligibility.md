@@ -162,6 +162,11 @@ host being privileged. They now supply a controlled process source through the
 existing classifier dependency; the composed worker uses a fixture-only worker
 bootstrap. Actual process classification and unknown-scope refusal remain in
 production, and separate fixtures exercise old/unreadable installer blockers.
+CI subsequently completed the sealed-release assertions but failed their cleanup:
+the fixture tried to remove its sealed read-only directories as an ordinary user.
+Cleanup now restores write permission only on directories under that fixture's
+temporary root, skipping symlinks, before removing them. This follows the existing
+installed-control fixture pattern and changes no release permission or authority.
 
 The omitted-boundary source audit also found that account activation and managed
 daemon replacement use running-turn checks, which do not exclude a queued
