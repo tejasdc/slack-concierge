@@ -158,7 +158,9 @@ await import(${JSON.stringify(actualWorkerEntry)});
     threadReadWaiter=new Promise(resolve=>{threadReadReached=resolve;});
     const inFlight=client.readOriginalCodexRecoveryCoverage({sessionId:session.id,inputId:report.id,requestId,runId,fenceId,
       expectedDecisionDigest:inspection.decisionDigest,expectedNativeDigest:native.nativeDigest}) as Promise<any>;
-    await threadReadWaiter;
+    await Promise.race([threadReadWaiter,inFlight.then(result=>{
+      throw new Error(`Fixture operation completed before its native-read barrier: ${JSON.stringify(result)}`);
+    })]);
     const originalMetadata=(db.query('SELECT native_metadata_json FROM sessions WHERE id=?').get(session.id) as any).native_metadata_json;
     const changedMetadata={...JSON.parse(originalMetadata),suspended:true};
     db.query('UPDATE sessions SET native_metadata_json=? WHERE id=?').run(JSON.stringify(changedMetadata),session.id);

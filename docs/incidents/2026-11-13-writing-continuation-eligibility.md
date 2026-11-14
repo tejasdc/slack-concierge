@@ -173,6 +173,12 @@ names each fixture before starting it and enforces the requested two-minute
 overall budget, including an inherited output pipe. This is a test-process
 deadline, never provider recovery/retry or authority. The stalled duplicate was
 cancelled only to retain its partial CI log; no live provider was involved.
+The instrumented run identified the original-history worker fixture. Its race
+setup waited only for an observed native-read barrier, ignoring an operation
+that could finish or refuse before reaching that barrier. The fixture now races
+the observation against operation completion so an early result is reported
+instead of becoming an indefinite test wait. This does not classify the early
+runtime result as safe or change its authority.
 
 The omitted-boundary source audit also found that account activation and managed
 daemon replacement use running-turn checks, which do not exclude a queued
