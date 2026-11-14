@@ -53,7 +53,9 @@ start, unresolved dependency, steering, artifact, peer-delivery or continuation.
 Claude recovery sweep also leaves a predecessor alone while a SAME handoff is proposed, so the
 existing paths cannot create competing successors. Acceptance remains a guarded ledger transaction:
 until its exact inventory digest is accepted, the accepted input and original turn stay with the
-predecessor. A restart or refreshed usage reading does not accept or move the handoff.
+predecessor. Its generated history now says only that the work continued in another agent session;
+it no longer asserts that the input never reached a provider. A restart or refreshed usage reading
+does not accept or move the handoff.
 
 ## Acceptance scenario
 
