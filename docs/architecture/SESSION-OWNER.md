@@ -169,7 +169,8 @@ Only a live successor run can accept with the inventory digest. The owner recomp
 inventory; a changed digest or an unsafe queued input refuses acceptance and returns the current inventory for
 acknowledgement. An answer with no acknowledged return receipt also holds acceptance until
 that exact return settles. Acceptance transfers the open request return and reply ownership,
-ChatGPT answer handling and repair ownership, safe never-started queued inputs, scheduled firings,
+ChatGPT answer handling and repair ownership, safe never-started queued inputs and inputs held by a
+terminal zero-work usage refusal, scheduled firings,
 and watches in one ledger transaction, recording each
 moved item. An ordinary queued input's original acceptance and history stay with the predecessor;
 the successor receives a linked copy. A scheduled input instead changes session custody in place,
@@ -216,12 +217,17 @@ as an explicit cancel-or-ask-again decision.
 `sessions cancel --reason provider-change` refuses with the handoff command. See
 [the router procedure](../runbooks/ROUTER-ACTIONS.md#provider-change-handoff).
 
-A queued input is safe to move when nothing reached its provider: no provider start, turn or
-acknowledgement, and either no admission intent or a replay-safe usage hold (the owner's own
-cached-usage refusal records one). A receipt's admission must name the session's own provider;
-a capture's `admissionIntent: live` marker is not a provider fact. Until 2026-11-11 the rule
-demanded a Claude admission, so no claimed Codex input could ever move
+A queued input is safe to move when its accepted identity and provider receipt are valid, it has
+no unresolved dependency, steering, artifact, peer-delivery or continuation veto, and either no
+provider admission evidence or an owner-recorded replay-safe usage hold for that exact turn. The
+terminal zero-work hold can supersede earlier acknowledgement and provider-start history: both
+remain on the predecessor while the successor receives a linked copy of the accepted work. An
+acknowledgement or start without that exact usage hold stays ambiguous and blocks movement. A
+capture's `admissionIntent: live` marker is not a provider fact.
+Until 2026-11-11 the rule demanded a Claude admission, so no claimed Codex input could ever move
 ([failure record](../incidents/2026-11-11-codex-held-work-could-not-move.md)).
+The terminal usage-hold acknowledgement exception and custody between the proposed handoff and
+automatic Claude recovery are recorded in the [2026-11-14 follow-up](../incidents/2026-11-14-acknowledged-usage-hold-could-not-move.md).
 
 #### Automatic failover of held work
 

@@ -22,8 +22,12 @@ function waitingTurns(sessionId:number):WaitingTurn[] {
 
 export function safeTurn(turn:WaitingTurn,input:AcceptedSessionInput):boolean {
   if(turn.status!=='queued'||turn.saved_kind!==null||input.turn_id!==turn.id||input.session_id!==turn.session_id
-    ||!['input','create','inbox-capture'].includes(input.kind)||input.steering_id!==null
-    ||turn.provider_input_acknowledged_at!==null)return false;
+    ||!['input','create','inbox-capture'].includes(input.kind)||input.steering_id!==null)return false;
+  // The owner's terminal zero-work usage hold can supersede a retained provider acknowledgement.
+  // The hold is written only after replaySafe classification; preserve the acknowledgement
+  // itself and keep every other provider-effect veto below.
+  const terminalZeroWorkUsageHold=turn.dispatch_hold==='usage';
+  if(turn.provider_input_acknowledged_at!==null&&!terminalZeroWorkUsageHold)return false;
   const receipt=input.receipt_json?JSON.parse(input.receipt_json):{};
   // The admission a receipt records is the owner preparing a send on the session's own provider; the
   // hold and turn columns below say whether anything reached it. Until 2026-11-11 this demanded a
@@ -72,9 +76,12 @@ function contextPrompt(sourceAddress:string,sourceInputId:string,original:string
     `Do not repeat effects already recorded in that conversation. The exact original accepted message follows:\n\n${original}`;
 }
 
-function transferSession(sessionId:number):number {
+export function transferSession(sessionId:number):number {
   const source=getSessionById(sessionId);
   if(!source||source.provider_id!=='claude-code'||source.status==='archived')return 0;
+  // A proposed provider-change handoff is the source's active custody path. The automatic
+  // usage recovery sweep must not create a competing successor before that proposal settles.
+  if(db.query("SELECT 1 FROM session_handoffs WHERE predecessor_session_id=? AND state='proposed' LIMIT 1").get(sessionId))return 0;
   const meta=sessionMetadata(source);
   if(meta.inbox||meta.suspended||meta.repairAgent||meta.interactionPolicy==='consultation-only')return 0;
   const turns=waitingTurns(sessionId);
