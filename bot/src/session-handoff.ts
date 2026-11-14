@@ -410,7 +410,7 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
           record(item.kind,item.ref);
           continue;
         }
-        finishTurn(turn.id,'cancelled','Continued in another agent session before provider admission.');
+        finishTurn(turn.id,'cancelled','Continued in another agent session.');
         settleTurnDependencies(turn.id);
         const originalPayload=JSON.parse(original.payload_json);
         const cloned=retainSessionInput({id:`handoff-input:${state.id}:${original.id}`,sessionId:to,scope:`handoff:${state.id}`,actionId:original.id,

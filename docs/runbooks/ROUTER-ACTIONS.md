@@ -576,8 +576,9 @@ keeps its obligations and can keep working; `sessions handoff withdraw <handoff-
 <source-flags> --action-id A` ends an unaccepted proposal. The successor must read the
 predecessor's context, inspect the exact inventory and acknowledge its digest. If
 acceptance returns a changed inventory, inspect the returned items and accept its new
-digest. On acceptance the owner moves open return and reply obligations, watches and
-safe never-started queued inputs together. Existing child requests keep their IDs and
+digest. On acceptance the owner moves open return and reply obligations, watches, safe
+never-started queued inputs and inputs held by a terminal zero-work usage refusal together.
+Existing child requests keep their IDs and
 continue in place; worktrees are referenced and untouched. `sessions obligations
 [<address>]` shows the outstanding items, lineage and current holder on either side.
 The superseded session can read and close its current turn, but further owner writes are
