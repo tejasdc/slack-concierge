@@ -57,6 +57,7 @@ and [turn processor](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs
 | Exec fork and other direct CLI commands | Durable global lifetime intent before native child creation | Fork creates another thread; unproven command scope stays global |
 | Managed local account activation/replacement | Global lifecycle intent in the same mutation ledger before restart/stop/replacement | Only actual verified managed-daemon health settles it; failures remain outstanding |
 | Runner account activation/re-home | Actual owner relay gates the lifecycle call before buffering or forwarding | Explicit terminal handler results settle it; error, unknown result and lost receipt hold it |
+| Managed hook requirements/helper installation | Existing deployment and Mac installer write hook configuration directly | Hook-relevant writes are not bound to the native frame fence; exact cold construction stays unproved |
 | Help/version and wrapper capability read | Side-effect-free handling | Capability support does not prove connection drainage |
 
 The Linux owner checks native executable, PID/start identity and managed
@@ -207,6 +208,13 @@ hook acknowledgement is intrinsically required. Separate cwd config/hooks reads
 alone do not bind those inputs; a disabled hook feature even clears required-hook
 load errors, and a warm resume reuses its existing runtime. The current candidate
 has not established that exact construction binding and retains its refusal.
+The supported installer writes the managed requirements and hook wrappers before
+service restart. That is an actual configuration producer, not an administrator
+bypass to dismiss. The requirements API has no generation token binding its read
+to the later native config load. Construction proof therefore needs the existing
+configuration writer brought under common-owner exclusion or another supported
+content-bound config witness. Neither a generic read nor a caller boolean lifts
+the hold.
 
 ## Stop and progress
 
