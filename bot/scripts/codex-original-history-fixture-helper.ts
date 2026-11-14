@@ -7,6 +7,7 @@ import {acceptedBindingSnapshotDigest as digest,type ContinuationBinding} from '
 import {readCodexOriginalHistoryCoverage,refreshCodexOriginalHistoryAfterOwnedResume} from '../src/codex-original-history-coverage';
 import type {Database} from 'bun:sqlite';
 import {resolveOwnerContextDiagnosticEvidence,ownerContextRawSha256,renderOwnerApplicationContext,type OwnerContextCandidate} from '../src/codex-owner-context-diagnostic';
+import {guardianOriginalMessageCapture} from '../src/codex-retained-message-capture';
 
 /** Complete pinned native snapshot shape, confined to disposable source fixtures. */
 export function fixtureNativeSettings(binding:Pick<ContinuationBinding,'model'|'effort'>){
@@ -53,6 +54,34 @@ export function fixtureOwnerContextEvidence(binding:ContinuationBinding,selected
   return {snapshot,candidate,attempts:mapped,resolve,message:{type:'message',role:'developer',id:'fixture-owner-context',
     content:[{type:'input_text',text:renderOwnerApplicationContext(value)}],internal_chat_message_metadata_passthrough:{
       turn_id:attempt.providerTurnId,create_time:12.25,content_item_kinds:['additional_content.slack-concierge']}}};
+}
+
+export function fixtureRetainedCaptureRows(rows:any[],turnId:string,threadId:string,binding:Pick<ContinuationBinding,'model'|'effort'>){
+  const row=(type:string,payload:any)=>({timestamp:'2026-11-13T00:00:00.000Z',type,payload});
+  const index=rows.findIndex(r=>r.type==='response_item'&&r.payload.role==='user'&&r.metadata?.user_input_order!=null);
+  const original=rows[index],p=original.payload,m=original.metadata;
+  const priorTurn=rows.slice(0,index).filter(r=>r.payload.type==='task_started').at(-1).payload.turn_id;
+  const text='a'.repeat(2500)+'m'.repeat(3500)+'z'.repeat(2500);
+  p.content=[{type:'input_text',text}];p.internal_chat_message_metadata_passthrough={turn_id:priorTurn,content_item_kinds:['user.text']};
+  m.retained_source={id:{message_id:p.id,turn_id:priorTurn,role:'user'},revision:'fixture-opaque-retained-revision',complete:false};
+  const snapshot={verified_answers:[],incomplete:false,user_messages:[{revision:m.retained_source.revision,order:m.user_input_order,
+    turn_id:priorTurn,message_id:p.id,text:guardianOriginalMessageCapture(text).text,complete:false}],
+    user_messages_incomplete:true,assistant_messages:[],assistant_messages_incomplete:true,next_order:m.user_input_order+15};
+  let compacted=rows.find(r=>r.type==='compacted');
+  if(!compacted){
+    const end=rows.findIndex(r=>r.payload.type==='task_complete'&&r.payload.turn_id===turnId);
+    const context=rows.find(r=>r.type==='turn_context'&&r.payload.turn_id===turnId);
+    compacted=row('compacted',{message:'fixture retained capture',replacement_history:[],retained_context:snapshot});
+    rows.splice(end,0,compacted,structuredClone(context));
+  }
+  compacted.payload.retained_context=snapshot;
+  for(const [i,entry] of compacted.payload.replacement_history.entries())if(entry.id===p.id){
+    compacted.payload.replacement_history[i]=structuredClone(p);
+    (compacted.payload.replacement_history_metadata??=[])[i]=structuredClone(m);
+  }
+  rows.splice(rows.indexOf(compacted),0,row('event_msg',{type:'thread_settings_applied',thread_id:threadId,
+    thread_settings:{...fixtureNativeSettings(binding),runtime_workspace_roots:['/fixture-private-capture-root']}}));
+  return {original,compacted,snapshot,text};
 }
 
 export async function createFixtureOriginalHistory(input:{root:string;binding:ContinuationBinding;selectedInputId:string;nativeProof:any}){

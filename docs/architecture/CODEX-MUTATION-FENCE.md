@@ -312,6 +312,44 @@ Missing candidate bytes or owner commitment remain precise refusals; today's
 generated instructions never substitute for retained bytes. No public read API
 or arbitrary private-file entrance is added.
 
+Ordinary retained-message captures have a separate diagnostic interpretation
+(`observed_suffix_retained_capture_v4`, capture policy
+`native_0162_ordinary_original_capture_v1`). Original registration preserves the
+full payload, metadata, raw record reference, native source ID/opaque revision
+and local order. The reader additionally derives the pinned Original capture:
+typed user-authorization eligibility or ordinary assistant role, content-order
+text join with newlines, known nontext omissions, phase, typed origin and
+calculated completeness. Guardian's 900 approximate-token/four-byte budget
+includes its XML omission marker and respects UTF-8 boundaries. No excerpt
+length, marker-looking prose or supplied comparison boolean selects that policy.
+
+The native serialized `RetainedUserMessage` bound is checked using its exact
+field/default shape. If the 16,384-byte bound would clear text and shorten IDs,
+the relation refuses that unsupported transformation; it never pretends the
+shortened IDs establish the full source join. Local inherited, unsequenced and
+delivered-assistant-call paths remain explicit unsupported cases. Complete empty
+assistant messages are not retained. Commentary and final phases are preserved.
+Native family count/byte bounds are checked, while actual incompleteness flags
+and `next_order` are retained without claiming full membership or no omissions.
+
+Checkpoint entries must match the independently registered original source,
+revision, order, phase, origin, completeness and one derived capture. Full-original
+conflicts remain conflicts even when the bounded excerpts agree. Saved sidecar
+copying never creates an original: the diagnostic does not use the strict
+reader's historical checkpoint-digest shortcut. Replacement-history copies are
+not passed through Original capture registration. An existing incomplete capture
+therefore cannot be promoted through repeated copies or short text.
+
+`retainedCaptureRelations` contains body-free original and checkpoint identities,
+separate full-text/capture digests, policy, calculated completeness and recorded
+family flags. These are entry-level subsections, not a retained-family state
+engine or execution witness. Verified relations may survive a later refusal
+within the same compaction, marked `compactionRecordValidated:false`; diagnostic
+state remains frozen before that record. Only the existing complete compaction
+handlers can commit its observed state. Replacement history, metadata, resume,
+usage and other sidecars retain every existing check. This relation alone never
+establishes later semantic coverage or lifts strict settings failure.
+
 The separately typed result binds source identity/revision, captured EOF and
 decoder/diagnostic interpretations. It carries only references, counts and digests,
 has no witness/custody, and explicitly forbids provider start. Semantic completion

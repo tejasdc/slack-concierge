@@ -6,7 +6,8 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {readCodexOriginalHistoryCoverage,revalidateCodexOriginalHistorySource,refreshCodexOriginalHistoryAfterOwnedResume,
   type CodexOriginalHistoryCoverageInput} from '../src/codex-original-history-coverage';
-import {fixtureNativeSettings,fixtureAdjacentContextRecords,fixtureOwnerContextEvidence} from './codex-original-history-fixture-helper';
+import {fixtureNativeSettings,fixtureAdjacentContextRecords,fixtureOwnerContextEvidence,fixtureRetainedCaptureRows} from './codex-original-history-fixture-helper';
+import {guardianOriginalMessageCapture,deriveOrdinaryOriginalCapture,nativeRetainedMessageRecord} from '../src/codex-retained-message-capture';
 import {renderOwnerApplicationContext,ownerContextRawSha256} from '../src/codex-owner-context-diagnostic';
 import {renderAdjacentContextTransition,nativeRustLines} from '../src/codex-diagnostic-context-transition';
 import {CODEX_HISTORY_INTERPRETATION,decodeNativeHistoryRecord,decodeResponse,rolloutKinds,responseKinds,
@@ -602,6 +603,138 @@ if(checkpointProof.proven){
   assert.ok(checkpointProof.witness.compactionRecords[0].resumeSourceRefs?.attributionRecord);
   assert.ok(!JSON.stringify(checkpointProof.witness).includes('earlier preserved assistant answer'));
 }
+// Guardian capture is a derived representation, never the original identity.
+const captureText='a'.repeat(2500)+'m'.repeat(3500)+'z'.repeat(2500);
+assert.deepEqual(guardianOriginalMessageCapture('literal <truncated omitted_approx_tokens="99" />'),
+  {text:'literal <truncated omitted_approx_tokens="99" />',truncated:false});
+assert.equal(guardianOriginalMessageCapture(captureText).text,
+  'a'.repeat(1779)+'<truncated omitted_approx_tokens="1225" />'+'z'.repeat(1779));
+assert.equal(guardianOriginalMessageCapture('😀'.repeat(1000)).text,
+  '😀'.repeat(444)+'<truncated omitted_approx_tokens="100" />'+'😀'.repeat(445));
+assert.equal(guardianOriginalMessageCapture('\ufeffé\r\ne\u0301').text,'\ufeffé\r\ne\u0301');
+const captureRows=checkpointSource(),captureFixture=fixtureRetainedCaptureRows(captureRows,'compaction-T',threadId,binding);
+write(captureRows);const captureResult=await read();
+assert.equal(captureResult.proven,false);if(captureResult.proven||!captureResult.diagnostic)throw new Error('capture diagnostic missing');
+const captureDiagnostic=captureResult.diagnostic;
+assert.equal(captureResult.reasons[0].code,'ORIGINAL_HISTORY_NATIVE_SETTINGS_CHANGED');
+assert.equal(captureDiagnostic.semanticComplete,true,JSON.stringify(captureDiagnostic.findings));
+assert.equal(captureDiagnostic.retainedCaptureRelations.length,1);
+const captureRelation=captureDiagnostic.retainedCaptureRelations[0];
+assert.equal(captureRelation.capture.originalTextBytes,8500);assert.equal(captureRelation.capture.captureBytes,3600);
+assert.equal(captureRelation.capture.complete,false);assert.equal(captureRelation.retainedSource.complete,false);
+assert.notEqual(captureRelation.capture.originalTextSha256,captureRelation.capture.captureSha256);
+assert.equal(captureRelation.familyMembership,'not_established');assert.equal(captureRelation.subsectionOnly,true);
+assert.equal(captureRelation.compactionRecordValidated,true);
+assert.equal(revalidateCodexOriginalHistorySource(result.custody,captureDiagnostic as any).valid,false);
+assert.throws(()=>bindCodexOriginalHistoryCoverage({proven:true} as any,captureResult));
+assert.deepEqual(captureRelation.familyFlags,{incomplete:false,user_messages_incomplete:true,assistant_messages_incomplete:true,next_order:22});
+assert.ok(!JSON.stringify(captureDiagnostic).includes('a'.repeat(40))&&!JSON.stringify(captureDiagnostic).includes('/fixture-private-capture-root'));
+const synthetic=structuredClone(captureFixture.original);
+synthetic.payload.content=[{type:'input_text',text:'first'},{type:'output_text',text:'second'}];
+synthetic.payload.internal_chat_message_metadata_passthrough.content_item_kinds=['user.text','user.text'];
+synthetic.metadata.retained_source.complete=true;
+assert.equal(deriveOrdinaryOriginalCapture(synthetic.payload,synthetic.metadata).text,'first\nsecond');
+assert.equal(deriveOrdinaryOriginalCapture(synthetic.payload,synthetic.metadata).complete,true);
+synthetic.payload.content.push({type:'input_image',image_url:'fixture'});
+synthetic.payload.internal_chat_message_metadata_passthrough.content_item_kinds.push('user.image');
+assert.equal(deriveOrdinaryOriginalCapture(synthetic.payload,synthetic.metadata).text,'first\nsecond');
+assert.equal(deriveOrdinaryOriginalCapture(synthetic.payload,synthetic.metadata).complete,false);
+synthetic.payload.content=[{type:'input_text',text:'short'}];
+for(const kinds of [undefined,[],['unknown'],['user.goal.omitted'],['user.text','user.text']]){
+  synthetic.payload.internal_chat_message_metadata_passthrough.content_item_kinds=kinds;
+  assert.equal(deriveOrdinaryOriginalCapture(synthetic.payload,synthetic.metadata).complete,false);
+}
+synthetic.payload.internal_chat_message_metadata_passthrough.content_item_kinds=['agents_md.instructions'];
+assert.throws(()=>deriveOrdinaryOriginalCapture(synthetic.payload,synthetic.metadata),/NOT_USER_AUTHORIZATION/);
+synthetic.payload.internal_chat_message_metadata_passthrough.content_item_kinds=['user.heartbeat'];
+assert.equal(deriveOrdinaryOriginalCapture(synthetic.payload,synthetic.metadata).origin,'heartbeat');
+synthetic.payload.role='assistant';synthetic.payload.phase='commentary';
+assert.equal(deriveOrdinaryOriginalCapture(synthetic.payload,synthetic.metadata).phase,'commentary');
+assert.equal(deriveOrdinaryOriginalCapture(synthetic.payload,synthetic.metadata).complete,true);
+synthetic.payload.content[0].text='';assert.throws(()=>deriveOrdinaryOriginalCapture(synthetic.payload,synthetic.metadata),/EMPTY_ASSISTANT/);
+synthetic.payload.content[0].text='x';delete synthetic.metadata.user_input_order;
+assert.throws(()=>deriveOrdinaryOriginalCapture(synthetic.payload,synthetic.metadata),/LOCAL_ORDER_UNPROVEN/);
+synthetic.metadata.user_input_order=7;synthetic.metadata.inherited_user_message=true;
+assert.throws(()=>deriveOrdinaryOriginalCapture(synthetic.payload,synthetic.metadata),/INHERITED_UNSUPPORTED/);
+delete synthetic.metadata.inherited_user_message;synthetic.metadata.delivered_assistant_message='host-delivered';
+assert.throws(()=>deriveOrdinaryOriginalCapture(synthetic.payload,synthetic.metadata),/DELIVERED_UNSUPPORTED/);
+delete synthetic.metadata.delivered_assistant_message;synthetic.metadata.compaction_output=true;
+assert.throws(()=>deriveOrdinaryOriginalCapture(synthetic.payload,synthetic.metadata),/COMPACTION_OUTPUT_EXCLUDED/);
+delete synthetic.metadata.compaction_output;synthetic.payload.content[0].text='\u0000'.repeat(3600);
+assert.throws(()=>deriveOrdinaryOriginalCapture(synthetic.payload,synthetic.metadata),/SERIALIZED_RECORD_BOUND_UNSUPPORTED/);
+synthetic.payload.content[0].text='x';synthetic.payload.id='long'.repeat(4500);
+assert.throws(()=>deriveOrdinaryOriginalCapture(synthetic.payload,synthetic.metadata),/SERIALIZED_RECORD_BOUND_UNSUPPORTED/);
+const record={turn_id:'t',message_id:'m',text:'',complete:true};
+const overhead=Buffer.byteLength(JSON.stringify(nativeRetainedMessageRecord(record)));
+synthetic.payload.id='m';synthetic.payload.internal_chat_message_metadata_passthrough.turn_id='t';delete synthetic.payload.phase;
+synthetic.payload.content[0].text='x'.repeat(3600);
+assert.equal(deriveOrdinaryOriginalCapture(synthetic.payload,synthetic.metadata).nativeRecordBytes,overhead+3600);
+synthetic.payload.content[0].text='x';synthetic.payload.id='i'.repeat(16384-overhead);
+assert.equal(deriveOrdinaryOriginalCapture(synthetic.payload,synthetic.metadata).nativeRecordBytes,16384);
+synthetic.payload.id+='i';assert.throws(()=>deriveOrdinaryOriginalCapture(synthetic.payload,synthetic.metadata),/SERIALIZED_RECORD_BOUND_UNSUPPORTED/);
+for(const [label,change] of Object.entries({
+  badCapture:(f:any)=>f.snapshot.user_messages[0].text+='unproved',
+  badRevision:(f:any)=>f.snapshot.user_messages[0].revision='another-revision',
+  badCompleteness:(f:any)=>f.snapshot.user_messages[0].complete=true,
+  calculatedCompleteness:(f:any)=>{f.original.metadata.retained_source.complete=true;f.snapshot.user_messages[0].complete=true;},
+  badPhase:(f:any)=>f.snapshot.user_messages[0].phase='commentary',
+  badOrigin:(f:any)=>f.snapshot.user_messages[0].origin='heartbeat',
+  nullOrigin:(f:any)=>f.snapshot.user_messages[0].origin=null,
+  nullInherited:(f:any)=>f.snapshot.user_messages[0].inherited=null,
+  nullDeliveries:(f:any)=>f.snapshot.sender_deliveries=null,
+  inherited:(f:any)=>f.snapshot.user_messages[0].inherited=true,
+  unknown:(f:any)=>f.snapshot.user_messages[0].unknown=true,
+  wrongOrder:(f:any)=>f.snapshot.user_messages[0].order++,
+  nextOrder:(f:any)=>f.snapshot.next_order=f.snapshot.user_messages[0].order,
+  replacement:(f:any)=>{f.compacted.payload.replacement_history.push({type:'function_call',name:'new',call_id:'new',arguments:'unproven'});
+    f.compacted.payload.replacement_history_metadata.push({});},
+  laterSidecar:(f:any)=>f.compacted.payload.mcp_resource_origins={origins:[{new:true}],turns:[],current_turn_id:null},
+})){const rows=checkpointSource(),f=fixtureRetainedCaptureRows(rows,'compaction-T',threadId,binding);change(f);write(rows);
+  const bad=await read();assert.equal(bad.proven,false);if(bad.proven||!bad.diagnostic)throw new Error(label);
+  assert.equal(bad.diagnostic.semanticComplete,false,label);
+  assert.equal(bad.diagnostic.transitions.some(t=>t.kind==='compaction_reset'),false,'cannot revive '+label);
+  assert.ok(bad.diagnostic.retainedCaptureRelations.every(r=>r.compactionRecordValidated===false));
+  if(label==='replacement')assert.equal(bad.diagnostic.retainedCaptureRelations.length,1,
+    'verified entry subsection survives failure of replacement history without committing state');
+}
+const conflictingRows=checkpointSource(),conflictingFixture=fixtureRetainedCaptureRows(conflictingRows,'compaction-T',threadId,binding);
+const conflictingOriginal=structuredClone(conflictingFixture.original);
+conflictingOriginal.payload.content[0].text=conflictingOriginal.payload.content[0].text.replace('m','M');
+assert.equal(guardianOriginalMessageCapture(conflictingOriginal.payload.content[0].text).text,
+  guardianOriginalMessageCapture(conflictingFixture.text).text);
+conflictingRows.splice(conflictingRows.indexOf(conflictingFixture.original)+1,0,conflictingOriginal);
+write(conflictingRows);const conflictResult=await read();assert.equal(conflictResult.proven,false);
+if(conflictResult.proven||!conflictResult.diagnostic)throw new Error('full conflict');
+assert.equal(conflictResult.diagnostic.findings.at(-1)?.code,'ORIGINAL_HISTORY_RETAINED_SOURCE_IDENTITY_CONFLICT');
+assert.equal(conflictResult.diagnostic.retainedCaptureRelations.length,0,'same excerpt never replaces full original conflict');
+const authoredRows=checkpointSource(),authored=fixtureRetainedCaptureRows(authoredRows,'compaction-T',threadId,binding);
+authored.original.metadata.client_authored=true;
+authored.compacted.payload.replacement_history_metadata[0].client_authored=true;
+write(authoredRows);const authoredCapture=await read();assert.equal(authoredCapture.proven,false);
+if(authoredCapture.proven||!authoredCapture.diagnostic)throw new Error('authored');
+assert.equal(authoredCapture.diagnostic.semanticComplete,true,JSON.stringify(authoredCapture.diagnostic.findings));
+assert.equal(authoredCapture.diagnostic.retainedCaptureRelations[0].capture.sourceFlags.clientAuthored,true);
+const copiedRows=structuredClone(captureRows),copiedCheckpoint=structuredClone(copiedRows.find(r=>r.type==='compacted'));
+copiedCheckpoint.payload.compaction_response_id='later-independent-compaction';
+copiedCheckpoint.payload.replacement_history=[];copiedCheckpoint.payload.replacement_history_metadata=[];
+copiedCheckpoint.payload.resume_metadata.last_started_turn_id='empty-T';
+const emptyEnd=copiedRows.findIndex(r=>r.payload.type==='task_complete'&&r.payload.turn_id==='empty-T');
+const emptyContext=structuredClone(copiedRows.find(r=>r.type==='turn_context'&&r.payload.turn_id==='empty-T'));
+copiedRows.splice(emptyEnd,0,copiedCheckpoint,row('world_state',{full:true,state}),emptyContext);
+write(copiedRows);const copiedCaptures=await read();assert.equal(copiedCaptures.proven,false);
+if(copiedCaptures.proven||!copiedCaptures.diagnostic)throw new Error('copied captures');
+assert.equal(copiedCaptures.diagnostic.semanticComplete,true,JSON.stringify(copiedCaptures.diagnostic.findings));
+assert.equal(copiedCaptures.diagnostic.retainedCaptureRelations.length,2);
+assert.ok(copiedCaptures.diagnostic.retainedCaptureRelations.every(r=>r.capture.complete===false&&r.familyFlags.user_messages_incomplete));
+assert.equal(copiedCaptures.diagnostic.retainedCaptureRelations[0].original.record,copiedCaptures.diagnostic.retainedCaptureRelations[1].original.record);
+const replacementOnlyRows=structuredClone(captureRows),replacementOnlyOriginal=replacementOnlyRows.find(r=>r.type==='response_item'&&r.metadata?.retained_source?.revision==='fixture-opaque-retained-revision');
+const originalIndex=replacementOnlyRows.indexOf(replacementOnlyOriginal);
+replacementOnlyRows.splice(originalIndex,1,row('compacted',{message:'earlier copy only',replacement_history:[replacementOnlyOriginal.payload],
+  replacement_history_metadata:[replacementOnlyOriginal.metadata],retained_context:structuredClone(captureFixture.snapshot)}),context('prior-T'));
+write(replacementOnlyRows);const copiedUnknown=await read();assert.equal(copiedUnknown.proven,false);
+if(copiedUnknown.proven||!copiedUnknown.diagnostic)throw new Error('copy provenance');
+assert.equal(copiedUnknown.diagnostic.semanticComplete,false);assert.equal(copiedUnknown.diagnostic.retainedCaptureRelations.length,0,
+  'equal saved snapshot and recaptured checkpoint item cannot manufacture an original');
 const earlierRetained=records(),retainedFacts={verified_answers:[{revision:'answer-revision',order:6,turn_id:'prior-T',call_id:'prior-answer',
   questions:[{question:'earlier question',answer:'earlier verified reply'}]}],incomplete:false,
   user_messages:[],user_messages_incomplete:false,assistant_messages:[],assistant_messages_incomplete:false,next_order:7,sender_deliveries:[]};
@@ -686,6 +819,10 @@ const ownerRefresh=await refreshCodexOriginalHistoryAfterOwnedResume({db,intentI
   witness:ownerDiagnostic as any,custody:result.custody});
 assert.equal(ownerRefresh.proven,false);
 if(!ownerRefresh.proven)assert.equal(ownerRefresh.reasons[0]?.code,'ORIGINAL_HISTORY_WITNESS_CONFLICT');
+const captureRefresh=await refreshCodexOriginalHistoryAfterOwnedResume({db,intentId:'never-authorized',
+  witness:captureDiagnostic as any,custody:result.custody});
+assert.equal(captureRefresh.proven,false);
+if(!captureRefresh.proven)assert.equal(captureRefresh.reasons[0]?.code,'ORIGINAL_HISTORY_WITNESS_CONFLICT');
 db.exec(`CREATE TABLE codex_mutation_intents(intent_id TEXT,permit_id TEXT,method TEXT,response_kind TEXT,response_digest TEXT,state TEXT,
  thread_id TEXT,fence_id TEXT,accepted_input_id TEXT,run_id TEXT,dispatch_attempt INTEGER);
  CREATE TABLE codex_mutation_permits(permit_id TEXT,purpose TEXT);

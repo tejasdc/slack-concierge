@@ -8,6 +8,7 @@ import {CODEX_HISTORY_INTERPRETATION,decodeNativeHistoryRecord,decodeResponse,na
 import {parseNativeSourceRecord,nativeSourceValueDigest as sourceDigest,nativeSourceShadow,nativeSourceWithoutKeys,nativeSourceIntegerAt} from './codex-native-source-values';
 import {CONTEXT_TRANSITION_INTERPRETATION,ContextTransitionRefusal,renderAdjacentContextTransition} from './codex-diagnostic-context-transition';
 import {OwnerContextRefusal,verifyOwnerContextOccurrence,type OwnerContextDiagnosticEvidence} from './codex-owner-context-diagnostic';
+import {deriveOrdinaryOriginalCapture,RetainedCaptureRefusal,nativeRetainedFamilyBytes} from './codex-retained-message-capture';
 
 const digest=acceptedBindingSnapshotDigest;
 const object=(v:any)=>v!==null&&typeof v==='object'&&!Array.isArray(v);
@@ -56,6 +57,14 @@ type DiagnosticReference={record:number;snapshotDigest?:string;settingsDigest?:s
 type DiagnosticFinding={kind:'observed_drift'|'strict_effect'|'invalidated';code:string;evidence:string[];
   record:number;startByte:number;endByte:number;recordDigest:string;before?:DiagnosticReference;after?:DiagnosticReference};
 type SourceRecordReference={record:number;startByte:number;endByte:number;recordDigest:string};
+type DiagnosticRetainedOriginal={source:SourceRecordReference;payloadDigest:string;envelopeDigest:string;metadataDigest:string;
+  order:number|null;capture?:ReturnType<typeof deriveOrdinaryOriginalCapture>;refusal?:string};
+type RetainedCaptureRelation={original:SourceRecordReference;checkpoint:SourceRecordReference;sourceDigest:string;
+  retainedSource:{id:{message_id:string;turn_id:string;role:string};revision:string;complete:boolean};
+  payloadDigest:string;envelopeDigest:string;metadataDigest:string;order:number;role:string;
+  capture:Omit<ReturnType<typeof deriveOrdinaryOriginalCapture>,'text'>;snapshotDigest:string;
+  familyFlags:{incomplete:boolean;user_messages_incomplete:boolean;assistant_messages_incomplete:boolean;next_order:number};
+  subsectionOnly:true;familyMembership:'not_established';compactionRecordValidated:boolean};
 type ContextWorldTransition=Omit<ReturnType<typeof renderAdjacentContextTransition>,'fragments'>&{
   interpretation:typeof CONTEXT_TRANSITION_INTERPRETATION;message:SourceRecordReference;patch:SourceRecordReference;
   turnDigest:string;metadataDigest:string;beforeWorldDigest:string;afterWorldDigest:string;
@@ -65,7 +74,7 @@ type ContextWorldTransition=Omit<ReturnType<typeof renderAdjacentContextTransiti
  * It describes observations under a permanently failed strict proof. */
 export type CodexOriginalHistorySuffixDiagnostic={policy:'codex_original_history_diagnostic_v1';
   diagnosticOnly:true;authorizesProviderStart:false;proofBlocked:true;
-  interpretation:typeof CODEX_HISTORY_INTERPRETATION;diagnosticInterpretation:'observed_suffix_owner_context_v3';
+  interpretation:typeof CODEX_HISTORY_INTERPRETATION;diagnosticInterpretation:'observed_suffix_retained_capture_v4';
   bindingDigest:string;selectedInputId:string;sourceIdentity:string;sourceRevisionDigest:string;pathDigest:string;
   prefixDigest:string;prefixBytes:number;recordCount:number;completeCapturedEof:true;inventory:Record<string,number>;
   strictFailures:{code:string;evidence:string[]}[];findings:DiagnosticFinding[];
@@ -73,7 +82,8 @@ export type CodexOriginalHistorySuffixDiagnostic={policy:'codex_original_history
   semanticThroughRecord:number;semanticComplete:boolean;
   invalidatedDependencies:string[];unassessedRange:{firstRecord:number;lastRecord:number}|null;
   transitions:CodexOriginalHistoryWitness['baselineTransitions'];contextWorldTransitions:ContextWorldTransition[];
-  ownerContextOccurrences:(ReturnType<typeof verifyOwnerContextOccurrence>&{source:SourceRecordReference;envelopeDigest:string})[]};
+  ownerContextOccurrences:(ReturnType<typeof verifyOwnerContextOccurrence>&{source:SourceRecordReference;envelopeDigest:string})[];
+  retainedCaptureRelations:RetainedCaptureRelation[]};
 
 class SuffixAnalysis {
   findings:DiagnosticFinding[]=[];selectedBaseline:DiagnosticState|null=null;lastObservedState:DiagnosticState|null=null;
@@ -81,6 +91,9 @@ class SuffixAnalysis {
   contextWorldTransitions:ContextWorldTransition[]=[];pendingContextTransition:ContextWorldTransition|null=null;
   ownerContextOccurrences:CodexOriginalHistorySuffixDiagnostic['ownerContextOccurrences']=[];
   pendingOwnerContext:CodexOriginalHistorySuffixDiagnostic['ownerContextOccurrences'][number]|null=null;
+  // Verified entry relations are independent subsections. They survive a later
+  // failure in the same compaction, without committing reconstruction state.
+  retainedCaptureRelations:RetainedCaptureRelation[]=[];
   semanticThroughRecord=0;invalidatedAt:number|null=null;
   transitions:CodexOriginalHistoryWitness['baselineTransitions']=[];private transitionCount=0;
   record=0;startByte=0;endByte=0;recordDigest='';
@@ -108,6 +121,8 @@ class SuffixAnalysis {
     // Called only after a whole record succeeded. A thrown reducer is discarded,
     // so none of its partially updated state can appear as a committed baseline.
     this.semanticThroughRecord=coverage.count;this.lastObservedState=this.state(coverage);
+    for(const relation of this.retainedCaptureRelations)if(relation.checkpoint.record===coverage.count)
+      relation.compactionRecordValidated=true;
     this.findings.push(...this.pendingFindings);this.pendingFindings=[];
     if(this.pendingContextTransition){this.contextWorldTransitions.push(this.pendingContextTransition);this.pendingContextTransition=null;}
     if(this.pendingOwnerContext){
@@ -151,6 +166,8 @@ class RecordCoverage {
   latestUsage:any=null;latestUsageRecord=0;resumeState:any=null;resumeRecord=0;
   resetRecord:number|null=null;comparisonContextDigest:string|null=null;comparisonWorldDigest:string|null=null;
   priorRetainedSources=new Map<string,{payloadDigest:string;textDigest:string|null;phase:any;origin:string;order:number;record:number}>();
+  diagnosticRetainedSources=new Map<string,DiagnosticRetainedOriginal>();
+  diagnosticRetainedIdentities=new Map<string,DiagnosticRetainedOriginal>();
   priorMcpAttributions=new Set<string>();
   lastContext:any=null;lastStartedTurnId:string|null=null;lastAttribution:any=null;
   lastContextRecord=0;lastStartedRecord=0;lastAttributionRecord:number|null=null;
@@ -321,6 +338,36 @@ class RecordCoverage {
       ||validMcpAttribution(mcp_attribution)&&(mcp_attribution.status==='none'
         ||this.priorMcpAttributions.has(digest(mcp_attribution))));
   }
+  registerDiagnosticRetainedOriginal(row:any){
+    if(!this.diagnostic)return;
+    const p=row.payload,m=row.metadata,source=m?.retained_source;
+    if(!validRetainedSource(source)||p.type!=='message')return;
+    const original:DiagnosticRetainedOriginal={source:{record:this.count,startByte:this.recordStart,endByte:this.recordEnd,
+      recordDigest:this.diagnostic.recordDigest},payloadDigest:sourceDigest(p),envelopeDigest:sourceDigest(row),
+      metadataDigest:sourceDigest(m),order:Number.isSafeInteger(m.user_input_order)?m.user_input_order:null};
+    const key=digest(source),identity=digest({id:source.id,revision:source.revision}),existing=this.diagnosticRetainedIdentities.get(identity);
+    if(existing&&(existing.payloadDigest!==original.payloadDigest||existing.metadataDigest!==original.metadataDigest))
+      refuse('ORIGINAL_HISTORY_RETAINED_SOURCE_IDENTITY_CONFLICT',`record:${existing.source.record}`,`record:${this.count}`);
+    try{
+      if(Buffer.from(source.revision,'utf8').toString('utf8')!==source.revision)
+        throw new RetainedCaptureRefusal('RETAINED_CAPTURE_SOURCE_ID_UNSUPPORTED');
+      if(source.id.message_id!==p.id||source.id.role!==p.role||source.id.turn_id!==this.active
+        ||p.internal_chat_message_metadata_passthrough?.turn_id!==this.active)
+        refuse('ORIGINAL_HISTORY_RETAINED_CONTEXT_SOURCE_UNPROVEN');
+      if(m.inherited_user_message===true)throw new RetainedCaptureRefusal('RETAINED_CAPTURE_INHERITED_UNSUPPORTED');
+      if(m.delivered_assistant_message!=null)throw new RetainedCaptureRefusal('RETAINED_CAPTURE_DELIVERED_UNSUPPORTED');
+      if(m.compaction_output===true)throw new RetainedCaptureRefusal('RETAINED_CAPTURE_COMPACTION_OUTPUT_EXCLUDED');
+      const {client_authored,...otherMetadata}=m;
+      if(client_authored!=null&&typeof client_authored!=='boolean'||!knownHarnessMetadata(otherMetadata))
+        refuse('ORIGINAL_HISTORY_RETAINED_CONTEXT_SOURCE_UNPROVEN');
+      if(!nativeSourceIntegerAt(m,'user_input_order'))throw new RetainedCaptureRefusal('RETAINED_CAPTURE_LOCAL_ORDER_UNPROVEN');
+      original.capture=deriveOrdinaryOriginalCapture(p,m);
+      if(original.capture.complete!==source.complete)throw new RetainedCaptureRefusal('RETAINED_CAPTURE_COMPLETENESS_CONFLICT');
+    }catch(error){
+      if(error instanceof RetainedCaptureRefusal||error instanceof CoverageRefusal)original.refusal=error.code;else throw error;
+    }
+    if(!existing){this.diagnosticRetainedIdentities.set(identity,original);this.diagnosticRetainedSources.set(key,original);}
+  }
   retainedCheckpoint(value:any,ref:string,classes:Record<string,number>){
     if(!closed(value,['verified_answers','incomplete','user_messages','user_messages_incomplete',
       'assistant_messages','assistant_messages_incomplete','next_order','sender_deliveries'])
@@ -328,8 +375,11 @@ class RecordCoverage {
       ||typeof value.incomplete!=='boolean'||typeof value.user_messages_incomplete!=='boolean'
       ||typeof value.assistant_messages_incomplete!=='boolean'||!uint(value.next_order))
       refuse('ORIGINAL_HISTORY_COMPACTION_SIDECAR_UNCLASSIFIED',ref);
+    if(this.diagnostic&&(!nativeSourceIntegerAt(value,'next_order')
+      ||Object.hasOwn(value,'sender_deliveries')&&!Array.isArray(value.sender_deliveries)))
+      refuse('ORIGINAL_HISTORY_COMPACTION_SIDECAR_UNCLASSIFIED',ref);
     const checkpointRecord=this.retainedCheckpoints.get(digest(value));
-    if(checkpointRecord!==undefined){
+    if(checkpointRecord!==undefined&&!this.diagnostic){
       classes.historicalRetainedCheckpoint=(classes.historicalRetainedCheckpoint??0)+1;
       return [{record:checkpointRecord,sourceDigest:digest(value),payloadDigest:digest(value)}];
     }
@@ -341,17 +391,43 @@ class RecordCoverage {
         ||!nonempty(entry.revision)||!nonempty(entry.turn_id)||!nonempty(entry.message_id)||!uint(entry.order)
         ||typeof entry.text!=='string'||typeof entry.complete!=='boolean'||entry.inherited!=null&&entry.inherited!==false)
         refuse('ORIGINAL_HISTORY_RETAINED_CONTEXT_SOURCE_UNPROVEN',ref);
-      const source={id:{message_id:entry.message_id,turn_id:entry.turn_id,role},revision:entry.revision,complete:entry.complete};
-      const key=digest(source),original=this.priorRetainedSources.get(key);
-      if(!original||original.order!==entry.order||entry.order>=value.next_order||identities.has(key)||orders.has(entry.order))
+      if(this.diagnostic&&(Object.hasOwn(entry,'origin')&&!['user','heartbeat'].includes(entry.origin)
+        ||Object.hasOwn(entry,'inherited')&&typeof entry.inherited!=='boolean'))
         refuse('ORIGINAL_HISTORY_RETAINED_CONTEXT_SOURCE_UNPROVEN',ref);
-      if(original.textDigest===null||original.textDigest!==digest(entry.text)||original.phase!==(entry.phase??null))
-        refuse('ORIGINAL_HISTORY_RETAINED_CONTEXT_PAYLOAD_UNPROVEN',ref);
-      if((entry.origin??'user')!==original.origin)refuse('ORIGINAL_HISTORY_RETAINED_CONTEXT_SOURCE_UNPROVEN',ref);
+      const source={id:{message_id:entry.message_id,turn_id:entry.turn_id,role},revision:entry.revision,complete:entry.complete};
+      const key=digest(source),original=this.priorRetainedSources.get(key),observed=this.diagnosticRetainedSources.get(key);
+      if(this.diagnostic&&observed?.refusal)refuse(observed.refusal,ref);
+      const order=this.diagnostic?observed?.order:original?.order;
+      if(order!==entry.order||entry.order>=value.next_order||identities.has(key)||orders.has(entry.order))
+        refuse('ORIGINAL_HISTORY_RETAINED_CONTEXT_SOURCE_UNPROVEN',ref);
+      if(this.diagnostic){
+        const capture=observed?.capture;
+        if(!observed||!capture)refuse('ORIGINAL_HISTORY_RETAINED_CONTEXT_SOURCE_UNPROVEN',ref);
+        if(capture.text!==entry.text||capture.phase!==(entry.phase??null))refuse('ORIGINAL_HISTORY_RETAINED_CONTEXT_PAYLOAD_UNPROVEN',ref);
+        if(capture.complete!==entry.complete||(entry.origin??'user')!==capture.origin)
+          refuse('ORIGINAL_HISTORY_RETAINED_CONTEXT_SOURCE_UNPROVEN',ref);
+        if(!nativeSourceIntegerAt(entry,'order')||!nativeSourceIntegerAt(value,'next_order'))
+          refuse('ORIGINAL_HISTORY_RETAINED_CONTEXT_SOURCE_UNPROVEN',ref);
+        const {text:_private,...summary}=capture;
+        this.diagnostic.retainedCaptureRelations.push({original:observed.source,
+          checkpoint:{record:this.count,startByte:this.recordStart,endByte:this.recordEnd,recordDigest:this.diagnostic.recordDigest},
+          sourceDigest:key,retainedSource:source,payloadDigest:observed.payloadDigest,envelopeDigest:observed.envelopeDigest,metadataDigest:observed.metadataDigest,
+          order:entry.order,role,capture:summary,snapshotDigest:sourceDigest(value),
+          familyFlags:{incomplete:value.incomplete,user_messages_incomplete:value.user_messages_incomplete,
+            assistant_messages_incomplete:value.assistant_messages_incomplete,next_order:value.next_order},
+          subsectionOnly:true,familyMembership:'not_established',compactionRecordValidated:false});
+      }else{
+        if(!original||original.textDigest===null||original.textDigest!==digest(entry.text)||original.phase!==(entry.phase??null))
+          refuse('ORIGINAL_HISTORY_RETAINED_CONTEXT_PAYLOAD_UNPROVEN',ref);
+        if((entry.origin??'user')!==original.origin)refuse('ORIGINAL_HISTORY_RETAINED_CONTEXT_SOURCE_UNPROVEN',ref);
+      }
       identities.add(key);orders.add(entry.order);
-      refs.push({record:original.record,sourceDigest:key,payloadDigest:original.payloadDigest});
+      refs.push({record:this.diagnostic?observed!.source.record:original!.record,sourceDigest:key,
+        payloadDigest:this.diagnostic?observed!.payloadDigest:original!.payloadDigest});
       classes.historicalRetainedSource=(classes.historicalRetainedSource??0)+1;
     }
+    if(this.diagnostic&&['user','assistant'].some(role=>value[`${role}_messages`].length>8
+      ||nativeRetainedFamilyBytes(value[`${role}_messages`])>65536))refuse('RETAINED_CAPTURE_FAMILY_BOUND_INVALID',ref);
     return refs;
   }
   resumeCheckpoint(value:any,ref:string){
@@ -559,6 +635,7 @@ class RecordCoverage {
     if(row.type==='response_item'){
       if(!nonempty(p.type))refuse('ORIGINAL_HISTORY_RESPONSE_ITEM_INVALID',ref);
       if(p.type==='message'&&!['system','developer','user','assistant'].includes(p.role))refuse('ORIGINAL_HISTORY_UNKNOWN_MESSAGE_ROLE',ref);
+      this.registerDiagnosticRetainedOriginal(row);
       if(!this.relevant){
         this.rememberEnvelope(p,row.metadata);
         if(['additional_tools','configuration_update'].includes(p.type)){
@@ -944,7 +1021,7 @@ export async function readCodexOriginalHistoryCoverage(input:CodexOriginalHistor
     if(coverage.blocked){
       const diagnostic:CodexOriginalHistorySuffixDiagnostic={policy:'codex_original_history_diagnostic_v1',
         diagnosticOnly:true,authorizesProviderStart:false,proofBlocked:true,
-        interpretation:CODEX_HISTORY_INTERPRETATION,diagnosticInterpretation:'observed_suffix_owner_context_v3',
+        interpretation:CODEX_HISTORY_INTERPRETATION,diagnosticInterpretation:'observed_suffix_retained_capture_v4',
         bindingDigest:digest(input.binding),selectedInputId:input.selectedInputId,
         sourceIdentity:digest({dev:rev.dev,ino:rev.ino}),sourceRevisionDigest:digest(rev),pathDigest:digest(path),
         inventory:coverage.inventory,prefixDigest,prefixBytes:size,recordCount:coverage.count,completeCapturedEof:true,
@@ -953,7 +1030,8 @@ export async function readCodexOriginalHistoryCoverage(input:CodexOriginalHistor
         semanticComplete:observed!==null,invalidatedDependencies:observed?[]:
           ['lineage','turn_order','settings','context','world','history_provenance','resume','usage'],
         unassessedRange:analysis.invalidatedAt===null?null:{firstRecord:analysis.invalidatedAt,lastRecord:coverage.count},
-        transitions:analysis.transitions,contextWorldTransitions:analysis.contextWorldTransitions,ownerContextOccurrences:analysis.ownerContextOccurrences};
+        transitions:analysis.transitions,contextWorldTransitions:analysis.contextWorldTransitions,ownerContextOccurrences:analysis.ownerContextOccurrences,
+        retainedCaptureRelations:analysis.retainedCaptureRelations};
       return {proven:false as const,reasons:coverage.issues,diagnostic};
     }
     const summary={policy:'codex_original_history_v1' as const,threadId:input.binding.threadId,sourceSessionId:coverage.sourceSessionId,bindingDigest:digest(input.binding),

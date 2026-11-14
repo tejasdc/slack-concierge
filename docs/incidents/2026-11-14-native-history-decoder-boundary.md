@@ -83,6 +83,41 @@ execution fence remain independently necessary. [decision: preserve-pushed-histo
 
 ## Acceptance scenario
 
+### Ordinary original message versus retained capture
+
+Parent's next retained comparison identified a concrete representation mismatch:
+original registration preserved the full joined text, while native retained
+context intentionally stores a bounded Guardian capture. Comparing the sidecar
+directly with the full-text digest falsely refused this ordinary native form.
+The pinned capture producer, replay/revision restoration and retained-record
+bound confirm a deterministic relation; parent comparison booleans, sample
+orders and excerpt sizes are not authority.
+
+The diagnostic now derives that relation from reader-owned original envelopes,
+keeping full payload/provenance and opaque revision independent of the capture.
+It verifies typed eligibility, original source/local order, content join, known
+nontext incompleteness, Guardian rendering, phase/origin, completeness and a
+nonbinding native serialized-record bound. Exceeding the record bound, inherited
+or delivered-assistant paths and missing local order refuse precisely. The
+source literal determines marker size: a four-digit count has a 42-byte marker;
+the review's 40-byte arithmetic example is not the implementation contract.
+
+Entry matches preserve actual family flags and next order without proving
+membership or no omissions. Copied sidecars and replacement items do not become
+original sources, and identical excerpts cannot conceal conflicting originals.
+Verified entry subsections survive later compaction failures as partial evidence;
+reconstruction state remains uncommitted and cannot revive at a checkpoint.
+Every other compaction check and every execution-policy refusal stays intact.
+
+Disposable acceptance covers raw/captured identity, UTF-8 and marker/count,
+nontext and incomplete sources, phases/origin, native record limits, local scope,
+copied/unproven snapshots, unchanged incomplete flags, full-original conflicts
+with equal excerpts, later replacement failure, and actual authorization rejection
+under a recomputed wrapper. Parent alone runs the actual source discriminator
+and whole review. T10 is the producer-derived invariant and replayable refusal;
+T8 is composed acceptance within the authorized source-only scope. Both
+operational activation holds remain. [decision: agents-check-real-end-to-end-behavior]
+
 ### Owner application-context construction preimage
 
 The adjacent transition correction left a distinct developer-context occurrence
