@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { forgetAccountFiles } from "./account-files-memo";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, watch, type FSWatcher } from "node:fs";
@@ -25,6 +25,8 @@ import { isClaudeUsageExhaustion } from "./provider-failures";
 import {providerRunnerTarget} from './provider-runner-target';
 import {RunnerCallNotSentError,runnerMachineCall} from './runner-machine-calls';
 import {withCodexRestartLock} from './codex-restart-lock';
+import { beginCodexDaemonLifecycle } from './codex-daemon-lifecycle';
+import { recordCodexMutationResponse, reconcileCodexMutationIntent } from './codex-mutation-fence';
 
 // Making a credential change take effect on the provider runtime that is
 // already running.
@@ -108,6 +110,24 @@ function run(command: string, args: string[], timeoutMs: number, environment:Nod
 const LOCAL_CODEX_ACTIVATION_HOLD='codex:local-account-activation';
 function oneCodexRestartAtATime<T>(work: () => Promise<T>): Promise<T> { return withCodexRestartLock(work); }
 
+type DaemonLifecycleTicket = { permitId:string; intentId:string };
+function digestDaemonLifecycle(value:string):string { return createHash('sha256').update(value).digest('hex'); }
+function beginLocalDaemonLifecycle(operation:string) {
+  const operationId=randomUUID();
+  const result=beginCodexDaemonLifecycle(db,{operationId,paramsDigest:digestDaemonLifecycle(`managed-codex-daemon:${operation}:v1`),nowMs:Date.now()});
+  return result.forward ? {ticket:{permitId:result.permitId,intentId:result.intentId} as DaemonLifecycleTicket} : {blocked:result};
+}
+function recordLocalDaemonLifecycleResponse(ticket:DaemonLifecycleTicket,result:{code:number|null;timedOut?:boolean}) {
+  const kind=result.timedOut||result.code===null?'transport_ambiguous':result.code===0?'accepted':'rpc_error';
+  const responseDigest=digestDaemonLifecycle(`${ticket.intentId}:${kind}:${result.code===null?'null':result.code}:${result.timedOut===true}`);
+  recordCodexMutationResponse(db,{intentId:ticket.intentId,kind,responseDigest,nowMs:Date.now()});
+  return responseDigest;
+}
+function reconcileHealthyLocalDaemon(ticket:DaemonLifecycleTicket,responseDigest:string,versionOutput:string) {
+  reconcileCodexMutationIntent(db,{intentId:ticket.intentId,outcome:'applied',
+    evidenceDigest:digestDaemonLifecycle(`${ticket.intentId}:healthy-backend-pid:${digestDaemonLifecycle(versionOutput)}:${responseDigest}`),nowMs:Date.now()});
+}
+
 function activateCodex(): Promise<ActivationReport> { return oneCodexRestartAtATime(activateCodexNow); }
 async function activateCodexNow(): Promise<ActivationReport> {
   // New Codex work is held for the few seconds of the restart, and only then is running work
@@ -139,7 +159,20 @@ async function activateCodexNow(): Promise<ActivationReport> {
       return { status: "failed", restartFailed: true,
         detail: "Codex's background service on this machine was started outside its manager, so it could not be restarted onto the new account. Your sign-in is kept; nothing was switched." };
     }
-    const restart = unmanaged ? await replaceUnmanagedServer() : await run(MANAGED_CODEX, ["app-server", "daemon", "restart"], 90_000);
+    let lifecycle:DaemonLifecycleTicket|undefined;
+    let restart:{code:number|null;output:string;timedOut?:boolean;blocked?:boolean};
+    if(unmanaged){
+      const replaced=await replaceUnmanagedServer();
+      restart=replaced;
+      lifecycle=replaced.lifecycle;
+      if(replaced.blocked)return {status:"deferred",detail:"Codex's daemon lifecycle is held by another in-flight native change, so it was left running. Your sign-in is kept."};
+    }else{
+      const begun=beginLocalDaemonLifecycle('account-activation-restart');
+      if(!begun.ticket)return {status:"deferred",detail:"Codex's daemon lifecycle is held by another in-flight native change, so it was left running. Your sign-in is kept."};
+      lifecycle=begun.ticket;
+      restart=await run(MANAGED_CODEX, ["app-server", "daemon", "restart"], 90_000);
+      recordLocalDaemonLifecycleResponse(lifecycle,restart);
+    }
     if (restart.code !== 0) {
       log("error", "provider_activation_failed", { provider: "codex", exit_code: restart.code, unmanaged, output: restart.output.slice(0, 500) });
       return { status: "failed", restartFailed: true,
@@ -147,6 +180,12 @@ async function activateCodexNow(): Promise<ActivationReport> {
     }
     const version = await run(MANAGED_CODEX, ["app-server", "daemon", "version"], 20_000);
     const healthy = version.code === 0 && version.output.includes("\"backend\":\"pid\"");
+    if(healthy&&lifecycle){
+      const responseDigest=unmanaged
+        ? digestDaemonLifecycle(`${lifecycle.intentId}:accepted:0:false`)
+        : digestDaemonLifecycle(`${lifecycle.intentId}:accepted:${restart.code}:${restart.timedOut===true}`);
+      reconcileHealthyLocalDaemon(lifecycle,responseDigest,version.output);
+    }
     log("info", "provider_activation_applied", { provider: "codex", healthy, replaced_unmanaged: unmanaged });
     return healthy
       ? { status: "applied", detail: "Done. This machine is using the new account now." }
@@ -187,10 +226,13 @@ function socketAnswers(path: string): Promise<boolean> {
  * managed server in its own scope. Concierge's own start-when-absent is held meanwhile so it cannot
  * bind a socket this then moves aside; if anything else brought a server up first, it is kept.
  */
-async function replaceUnmanagedServer(): Promise<{ code: number | null; output: string }> {
+async function replaceUnmanagedServer(): Promise<{ code: number | null; output: string; timedOut?:boolean; lifecycle?:DaemonLifecycleTicket; blocked?:boolean }> {
   const servers = controlSocketListeners(CONTROL_SOCKET);
   if (!servers.length) return { code: 1, output: "No process holds the Codex control socket." };
   const helpers = childrenOf(servers);
+  const begun=beginLocalDaemonLifecycle('unmanaged-server-replacement');
+  if(!begun.ticket)return {code:1,output:"A prior Codex daemon lifecycle mutation or reservation is still outstanding.",blocked:true};
+  const lifecycle=begun.ticket;
   log("warn", "codex_unmanaged_server_replacing", { servers, helpers });
   holdCodexDaemonAutoStart(true);
   try {
@@ -201,11 +243,17 @@ async function replaceUnmanagedServer(): Promise<{ code: number | null; output: 
     // A killed listener can still accept for a moment; probe only once it is gone.
     const gone = Date.now() + 5_000;
     while (servers.some(alive) && Date.now() < gone) await new Promise(resolve => setTimeout(resolve, 100));
-    if (await socketAnswers(CONTROL_SOCKET)) return { code: 0, output: "Another start already brought a server up." };
+    if (await socketAnswers(CONTROL_SOCKET)) {
+      const result={code:0,output:"Another start already brought a server up."};
+      recordLocalDaemonLifecycleResponse(lifecycle,result);
+      return {...result,lifecycle};
+    }
     // lstat, not exists: the control path is a link, and its target may already be gone.
     let present = false; try { lstatSync(CONTROL_SOCKET); present = true; } catch { /* absent */ }
     if (present) renameSync(CONTROL_SOCKET, `${CONTROL_SOCKET}.stale-${new Date().toISOString().replace(/[:.]/g, "-")}`);
-    return await startCodexDaemonInOwnScope();
+    const result=await startCodexDaemonInOwnScope();
+    recordLocalDaemonLifecycleResponse(lifecycle,result);
+    return {...result,lifecycle};
   } finally {
     holdCodexDaemonAutoStart(false);
   }
@@ -302,7 +350,15 @@ function repairUnmanagedCodexServer(): Promise<void> {
       const running = runningCodexTurns(), external = externallyRunningCodexTurns();
       if (running !== 0 || external !== 0) { log("info", "codex_unmanaged_server_repair_waiting", { running, external }); return; }
       const result = await replaceUnmanagedServer();
-      const healthy = !(await codexServerUnmanaged()) && result.code === 0;
+      if(result.blocked){log('info','codex_unmanaged_server_repair_waiting',{reason:'daemon_lifecycle_mutation_or_fence'});return;}
+      const version = result.lifecycle
+        ? await run(MANAGED_CODEX,["app-server","daemon","version"],20_000)
+        : {code:null,output:""};
+      const healthy = result.code === 0 && version.code === 0 && version.output.includes("\"backend\":\"pid\"");
+      if(healthy&&result.lifecycle){
+        const responseDigest=digestDaemonLifecycle(`${result.lifecycle.intentId}:accepted:${result.code}:${result.timedOut===true}`);
+        reconcileHealthyLocalDaemon(result.lifecycle,responseDigest,version.output);
+      }
       log(healthy ? "warn" : "error", healthy ? "codex_unmanaged_server_replaced" : "codex_unmanaged_server_repair_failed",
         { code: result.code, output: result.output.slice(0, 300) });
       // A failed replacement is not retried by itself: each attempt stops a server. The next start of

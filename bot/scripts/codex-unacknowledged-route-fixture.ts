@@ -64,6 +64,12 @@ try{
   (coordinator as any).stopped=false;
   (coordinator as any).wake=()=>{};
   const sourceAuth={input_id:actorInput.id,run_id:actorRun};
+  const retainedBeforeInspection=JSON.stringify(db.query('SELECT * FROM session_inputs ORDER BY rowid').all());
+  const inspection=await coordinator.recoverCodexNeverAcknowledged({source:sourceAuth,action_id:'inspect-action',request_id:requestId,inspect:true});
+  assert.equal(inspection.status,'ineligible');
+  assert.equal(ownerReservations,0,'read-only inspection never invokes the provider recovery host');
+  assert.equal(JSON.stringify(db.query('SELECT * FROM session_inputs ORDER BY rowid').all()),retainedBeforeInspection,
+    'public inspection preserves every accepted input and its receipt');
   const first=await coordinator.recoverCodexNeverAcknowledged({source:sourceAuth,action_id:'recover-action-one',request_id:requestId});
   assert.equal(first.status,'requeued');
   assert.equal(ownerReservations,1,'first route call makes one reservation');
@@ -95,6 +101,8 @@ try{
       JSON.stringify({requestedEffect:'informational'}),'info-hash',0,0,infoParent.id,infoChild.id,'admitted',null);
   await assert.rejects(()=>coordinator.recoverCodexNeverAcknowledged({source:{input_id:infoChild.id,run_id:infoRun},
     action_id:'unauthorized-info-recovery',request_id:requestId}),/requires work authority/);
+  await assert.rejects(()=>coordinator.recoverCodexNeverAcknowledged({source:{input_id:infoChild.id,run_id:infoRun},
+    action_id:'unauthorized-info-inspection',request_id:requestId,inspect:true}),/requires work authority/);
   assert.equal(ownerReservations,1,'informational authority cannot invoke the executable recovery route');
   console.log('Codex unacknowledged recovery route: exact human model custody, work authority, lost-receipt retry and cross-action deduplication passed');
 }finally{(await import('../src/state')).db.close();rmSync(scratch,{recursive:true,force:true});}

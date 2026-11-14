@@ -1,6 +1,8 @@
 {
   "format": 1,
   "controlBundles": {
+    "control/codex-mutation-release-check.js": "bot/scripts/codex-mutation-release-check.ts",
+    "control/codex-managed-launch.js": "bot/scripts/codex-managed-launch.ts",
     "control/bot/scripts/router-sessions.js": "bot/scripts/router-sessions.ts",
     "control/bot/scripts/router-reports.js": "bot/scripts/router-reports.ts",
     "control/bot/scripts/mac-browser-fallback.js": "bot/scripts/mac-browser-fallback.ts",
@@ -17,6 +19,7 @@
     "control/bot/scripts/agent-test-capture.js": "bot/scripts/agent-test-capture.ts",
     "control/bot/scripts/router-agent-report.js": "bot/scripts/router-agent-report.ts",
     "control/bot/scripts/owed-reply-stop-hook.js": "bot/scripts/owed-reply-stop-hook.ts",
+    "control/bot/scripts/codex-managed-hook-install.js": "bot/scripts/codex-managed-hook-install.ts",
     "control/bot/scripts/install-codex-browser-policy.js": "bot/scripts/install-codex-browser-policy.ts",
     "control/bot/scripts/history-guard.js": "bot/scripts/history-guard.ts",
     "control/bot/scripts/codex-model-start-hook.js": "bot/scripts/codex-model-start-hook.ts",
@@ -58,6 +61,8 @@
     "control/application/owner-task-watchdog-worker.js": "bot/src/owner-task-watchdog-worker.ts"
   },
   "controlFiles": {
+    "control/codex-mutation-application-format.json": "bot/src/codex-mutation-release-format.json",
+    "control/codex-mutation-control-format.json": "bot/src/codex-mutation-release-format.json",
     "control/history-cache-format.json": "bot/src/provider-history-cache-format.json",
     "control/history-cache-control-format.json": "bot/src/provider-history-cache-format.json",
     "control/bot/scripts/mac-browser-fallback.sh": "bot/scripts/mac-browser-fallback.sh",
@@ -67,6 +72,7 @@
     "control/bot/scripts/codex": "bot/scripts/codex",
     "control/bot/scripts/thinkering": "bot/scripts/thinkering",
     "control/install-codex-stop-hook.sh": "scripts/install-codex-stop-hook.sh",
+    "control/install-codex-stop-hook-body.sh": "scripts/install-codex-stop-hook-body.sh",
     "control/install-git-history-guard.sh": "scripts/install-git-history-guard.sh",
     "control/git-hooks/dispatch": "scripts/git-hooks/dispatch",
     "control/git-hooks/refuse-history-rewrite": "scripts/git-hooks/refuse-history-rewrite",

@@ -109,6 +109,51 @@ router-actions.sh sessions codex-recover '<original-request-id>' \
   --action-id '<stable recovery action ID>'
 ```
 
+Add `--inspect` for a read-only diagnostic under the same live work-authority
+fence. It returns the exact selected service input and acknowledged source,
+creation model/effort witnesses, current binding and controls, and a snapshot
+digest covering the complete later accepted-input suffix (including held inputs
+without turns), steering, owner events and current selected-request custody.
+It exports counts and evidence references, never input text, another session's
+obligation inventory or a replay capability. It writes no receipt, reservation or
+queue state. The diagnostic always distinguishes unproved native interval coverage
+and the missing native activity fence; its digest is not proof that a future
+native start remains eligible. `continuation.authorized` remains false. A retained
+reservation's status and input acknowledgement are reported separately from useful
+work, which the inspector does not assess. The original execution entrance retains
+its existing stricter guards; `--inspect` does not relax them.
+
+The owned model-start guard records both allow and refusal decisions as
+`model_start_guard` owner events, correlated by input, owner run/attempt, hook and
+owned native turn, binding generation, model and policy. Requested turn effort,
+binding effort and observed effort are separate: missing effective effort stays
+null instead of being inferred from the binding. Failure to retain a known
+conversation's guard decision refuses that prompt. No prompt or secret bytes are
+logged. This evidence diagnoses this guard only; it does not attribute another
+hook's result, provider cancellation or the historical stopping cause.
+
+The [writing continuation diagnosis](../incidents/2026-11-13-writing-continuation-eligibility.md)
+records the Medium legacy shapes, independent compaction evidence, reproduced
+attempt-budget gap and remaining receiver-boundary prerequisite. It authorizes no
+live recovery or change to any original writing obligation.
+
+The source candidate also composes accepted-binding continuation, complete native
+interval proof, common forwarding permits and a one-attempt dispatcher budget.
+Its production entrance remains held on
+`LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN` and
+`FIRST_PROTECTION_WRITER_EXCLUSION_UNPROVEN`. Original-source history and cold
+construction are now source-owned per-operation checks, not unconditional
+readiness flags. The common mutation ledger excludes supported managed hook
+installation across the exact cold/configuration read and actual resume. Complete
+projected pagination, process absence, idle, historical `notLoaded`, an installed
+script or capability response cannot supply the missing native admission cut.
+Nor can requirement publication prove exclusion of old application requests,
+pinned helpers and configuration writers across first protection. Operational
+preflight refuses that separate transition before any protected authority.
+The [managed mutation contract](../architecture/CODEX-MUTATION-FENCE.md) owns the
+writer inventory, Stop/terminal reconciliation and activation boundary. Internal
+fixture success is not permission to recover a live conversation.
+
 The owner selects only the service input `report-back:<original-request-id>`. It never resends the original request. This path requires verified work authority for the asking run, the retained human model choice for the same existing conversation, an open work request, the exact provider thread and current send controls, and owner evidence for every selected provider attempt. It then reads each exact native turn and all of that turn's item pages; only a terminal empty turn with no acknowledgement, output, tools, later admission, host activity, or other effect can be reserved. A separate empty turn from another accepted input is not attributed to this report-back. Unknown or incomplete evidence leaves the input in custody.
 
 The accepted report-back ID is the durable deduplication key across action IDs. Reservation and requeue commit together. If the caller loses the receipt after reservation, retrying the same action returns its stored result; another action ID returns the same reservation. The original retained result remains unchanged, while a later execution attempt gets its own result identity and is surfaced by the existing result readers. This recovers only the report-back; its original request and any other obligations remain open until their own final receipts.

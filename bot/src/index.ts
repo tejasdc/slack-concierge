@@ -1,3 +1,4 @@
+import './codex-mutation-startup-install';
 import {closeModuleLoadStorage} from './owner-task-labels-install';
 import { App, LogLevel } from "@slack/bolt";
 import { recordModuleLoadStep, runStartupPhase, runStartupStep } from './startup-phase';

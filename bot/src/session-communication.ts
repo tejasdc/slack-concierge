@@ -1,8 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { historyStorageStatus, type HistoryStorageKind } from './history-storage-status';
 import { createHash, randomUUID } from 'node:crypto';
+import {codexRecoveryPromptGate} from './codex-recovery-dispatch-authorization';
+import {inspectAcceptedBindingContinuation} from './codex-accepted-binding-snapshot';
 import {implementationAlias} from './implementation-models';
 import {implementationEditDecision,recordImplementationEditReason} from './implementation-edit-gate';
+import {inspectCodexRecovery} from './codex-recovery-inspection';
 import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, settleTurnDependencies, SETTLED_EXECUTION_SQL, codexUnacknowledgedRecovery, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
@@ -842,7 +845,53 @@ export class SessionCommunicationCoordinator {
     editGate(input:{providerSessionId:string;sourceRunId?:string;providerTurnId?:string;providerModel?:string;providerAgentId?:string;ownerTurnId?:number;toolId:string;toolName:string;toolInput?:unknown}) {
         return implementationEditDecision(input);
     }
-    modelStartGate(input:{providerSessionId:string;model:string;providerTurnId?:string;ownerTurnId?:number;sourceRunId?:string;providerAgentId?:string}) {
+    modelStartGate(input:{providerSessionId:string;model:string;providerTurnId?:string;ownerTurnId?:number;sourceRunId?:string;providerAgentId?:string;invocationId?:string;promptDigest?:string|null}) {
+        const protectedThread=typeof input.providerSessionId==='string'?db.query(`SELECT fence_id FROM codex_thread_mutation_fences
+          WHERE thread_id=? AND (state='active' OR EXISTS (SELECT 1 FROM codex_mutation_intents intent
+            WHERE intent.fence_id=codex_thread_mutation_fences.fence_id AND intent.state IN ('forwarding','response_received','ambiguous'))) LIMIT 1`)
+          .get(input.providerSessionId):null;
+        const recovery=codexRecoveryPromptGate(db,{...input,providerTurnId:input.providerTurnId??'',
+          invocationId:input.invocationId??'',promptDigest:input.promptDigest??null,nowMs:Date.now()});
+        const decision=recovery.known?{...recovery,message:'reason' in recovery?recovery.reason:undefined}:
+          protectedThread?{known:true,allowed:false,message:'This protected continuation has no matching owned prompt permission.'}:this.modelStartDecision(input);
+        if(decision.known){
+            const session=db.query("SELECT * FROM sessions WHERE provider_id='codex' AND agent_session_uuid=? LIMIT 1")
+                .get(input.providerSessionId) as SessionRow|null;
+            if(session){
+                const running=db.query("SELECT id,native_run_id,accepted_input_id,dispatch_attempt,provider_turn_id,reasoning_effort FROM turns WHERE session_id=? AND status IN ('running','delivering') ORDER BY id DESC LIMIT 2")
+                    .all(session.id) as any[];
+                const turn=running.length===1?running[0]:null;
+                const meta=sessionMetadata(session);
+                const invocationId=typeof input.invocationId==='string'&&/^[0-9a-f-]{36}$/.test(input.invocationId)?input.invocationId:null;
+                const promptDigest=typeof input.promptDigest==='string'&&/^[0-9a-f]{64}$/.test(input.promptDigest)?input.promptDigest:null;
+                const payload={policy:'codex-model-start-v1',allowed:decision.allowed===true,
+                        reason:decision.message??'existing model start policy allowed',
+                        inputId:turn?.accepted_input_id??null,runId:turn?.native_run_id??null,
+                        dispatchAttempt:turn?.dispatch_attempt??null,providerThreadId:input.providerSessionId,
+                        providerTurnId:input.providerTurnId??null,providerAgentId:input.providerAgentId??null,
+                        ownedProviderTurnId:turn?.provider_turn_id??null,hookSourceRunId:input.sourceRunId??null,
+                        invocationId,promptDigest,
+                        bindingGeneration:session.binding_generation,model:input.model,boundModel:meta.model??null,
+                        requestedEffort:turn?.reasoning_effort??null,bindingEffort:meta.reasoningEffort??null,
+                        effectiveEffort:null,effortEvidence:'not_observed_by_hook',
+                        basis:recovery.known?'accepted_binding_continuation':'existing_model_start_policy',
+                        evidenceRefs:[...(turn?.accepted_input_id?[turn.accepted_input_id]:[]),
+                          ...('decisionDigest' in recovery?[recovery.decisionDigest]:[])]};
+                // A transport retry of the same invocation/decision is idempotent.
+                // A Stop or changed binding retains a separate refusal witness rather
+                // than overwriting an earlier allow or returning a cached allowance.
+                const decisionDigest=createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+                try { recordSessionEvent({eventId:`model-start-guard:${invocationId??randomUUID()}:${decisionDigest}`,sessionId:session.id,
+                    ...(turn?.accepted_input_id?{inputId:turn.accepted_input_id}:{}),...(turn?{turnId:turn.id}:{}),
+                    kind:'model_start_guard',payload});
+                } catch {
+                    return {known:true,allowed:false,message:'Concierge could not retain its model-start decision; this attempt is refused.'};
+                }
+            }
+        }
+        return decision;
+    }
+    private modelStartDecision(input:{providerSessionId:string;model:string;providerTurnId?:string;ownerTurnId?:number;sourceRunId?:string;providerAgentId?:string}) {
         if(typeof input.providerSessionId!=='string'||!input.providerSessionId||input.providerSessionId.length>256)return {known:false};
         let session=db.query("SELECT id FROM sessions WHERE provider_id='codex' AND agent_session_uuid=? LIMIT 1")
             .get(input.providerSessionId) as {id:number}|null;
@@ -1339,11 +1388,16 @@ export class SessionCommunicationCoordinator {
     }
     /** Recover only the exact service report-back bound to an open work request. Its target input
      * and action receipt stay separate from the already-acknowledged original work input. */
-    async recoverCodexNeverAcknowledged(input:{source:CommunicationSource;action_id:string;request_id:string}) {
+    async recoverCodexNeverAcknowledged(input:{source:CommunicationSource;action_id:string;request_id:string;inspect?:boolean}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        if(input.inspect!==undefined&&typeof input.inspect!=='boolean')throw new Error('Codex recovery inspect must be a boolean.');
         const authority=this.authority(this.fenced(this.actor(input.source))),actor=authority.actor;action(input.action_id);
         if(authority.scope!=='work')throw new Error('Codex recovery requires work authority from this exact live run.');
         if(!actor.inputId)throw new Error('Codex recovery needs the asking session’s exact accepted input and live run.');
+        if(input.inspect===true){
+            const request=this.row(input.request_id);
+            return inspectCodexRecovery({sessionId:request.target_session_id,inputId:`report-back:${input.request_id}`,requestId:input.request_id});
+        }
         const scope=`communication:${actor.inputId}`;
         const existing=db.query('SELECT receipt_json,payload_json FROM session_inputs WHERE session_id=? AND scope=? AND action_id=?')
             .get(actor.session,scope,input.action_id) as {receipt_json:string|null;payload_json:string}|null;
@@ -1372,9 +1426,15 @@ export class SessionCommunicationCoordinator {
             ||operation.request_id!==input.request_id||operation.turn_id===null||operation.id===request.target_input_id)
             throw new Error('That open request has no exact service report-back input eligible for Codex recovery.');
         const targetModel=sessionMetadata(session).model;
-        if(targetModel!=='gpt-6-astra'||!humanChoseThinkingModel(operation.id,targetModel))
-            throw new Error('This recovery requires the exact retained human Astra choice for this same work; an agent request cannot grant it.');
         const targetReservation=codexUnacknowledgedRecovery(operation.id);
+        let continuationDecisionDigest:string|undefined;
+        if(targetModel!=='gpt-6-astra')throw new Error('This recovery cannot change the accepted model binding.');
+        if(!targetReservation&&!humanChoseThinkingModel(operation.id,targetModel)){
+            const continuation=inspectAcceptedBindingContinuation({sessionId:session.id,inputId:operation.id,requestId:input.request_id});
+            if(!continuation.proven||!('decisionDigest'in continuation))
+                throw new Error(`Accepted binding continuation refuses: ${continuation.reasons.map(reason=>reason.code).join(', ')}.`);
+            continuationDecisionDigest=continuation.decisionDigest;
+        }
         let result:{status:'requeued'|'already_recovered';runId:string;providerTurnIds:string[]};
         if(targetReservation){
             if(targetReservation.request_id!==input.request_id)throw new Error('This accepted report-back already has a reservation for another request.');
@@ -1394,7 +1454,8 @@ export class SessionCommunicationCoordinator {
                 throw new Error('The asking run lost work authority or the exact target request changed during native-history inspection.');
         };
         result=await this.dependencies.owner.requeueProvenUnacknowledgedCodex(session.id,operation.id,
-            {requestId:input.request_id,actionId:input.action_id,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),validateSource});
+            {requestId:input.request_id,actionId:input.action_id,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),validateSource,
+              ...(continuationDecisionDigest?{continuationDecisionDigest}:{})});
         }
         const currentAuthority=this.authority(this.fenced(this.actor({input_id:actor.inputId,run_id:nativeRunId(actor.turn)})));
         if(currentAuthority.scope!=='work'||currentAuthority.actor.session!==actor.session)

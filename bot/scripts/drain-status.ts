@@ -8,6 +8,7 @@ import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION } from "../src/executio
 import { provenRunKinds, turnContinuesThroughRestart } from "../src/execution-survival";
 import {checkReleaseApplication} from '../src/deployment-application-check';
 import { ledgerWriteResults } from '../src/ledger-write-results';
+import {codexMutationFirstProtectionReadiness,CODEX_MUTATION_APPLICATION_CAPABILITY_PATH} from '../src/codex-mutation-release-compatibility';
 
 function finish(code: number, payload: Record<string, unknown>): never {
   console.log(JSON.stringify(payload));
@@ -62,6 +63,11 @@ try {
   if(command==='application-check'||command==='adoptable-check'&&!flag('--candidate-contract')){
     const artifact=resolve(import.meta.dir,'..');
     if(existsSync(join(artifact,'manifest.json'))){
+      // An older controller reaches this candidate-owned check before pointer
+      // activation/stop. Refuse before the later hook installer can publish a
+      // requirement that would make its older rollback application ineligible.
+      if(command==='adoptable-check'&&existsSync(join(artifact,CODEX_MUTATION_APPLICATION_CAPABILITY_PATH)))
+        finish(75,codexMutationFirstProtectionReadiness());
       const proof=checkReleaseApplication(artifact,process.env.CONCIERGE_REPO||'/var/lib/slack-concierge-deployment/source',dirname(dirname(artifact)));
       if(command==='application-check')finish(0,proof);
       console.error(JSON.stringify({event:'candidate_application_checked',...proof}));

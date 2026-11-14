@@ -4,6 +4,28 @@ This is the finite live procedure for the source-bound native Codex controls. It
 fixture and must wait for a reviewed release installed on the machine being checked. Do not run it
 from this candidate worktree.
 
+The source candidate now includes a private original-history proof path. Under the exact mutation
+fence, the history worker derives the accepted owner snapshot, repeats native projected coverage,
+reads the bound thread through the actual App Server, validates the complete local JSONL prefix,
+and rechecks the source and controls. A successful owned resume may extend that prefix only with
+one exact settings record backed by its retained resume intent; the host stores the resulting
+witness and local file custody in a private immutable checkpoint. The focused
+continuation gate covers the source reader and disposable App Server worker. This candidate's
+installed proof path has not read or accepted target history. Remote paths, history outside the configured Codex home, legacy recovery mode,
+forked/inherited history, rollback, malformed/unknown/unclassified records, missing ordinals,
+unproven user/tool/configuration effects, or anything beyond the one exact resume append refuse.
+
+The source now excludes managed configuration installation through the existing mutation
+ledger and binds cold reads, actual resume parameters and its accepted result to immutable
+construction evidence before start. Original history and cold configuration still require
+current per-operation observation on the installed machine. The remaining unconditional
+activation refusals are the old Desktop receiver's missing positive native admission cut or
+successful handler-drain witness and the first release-protection transition's missing
+exclusion of old application requests, pinned helpers and config writers. Retained release
+requirements protect compatible selection; they do not establish that first exclusion.
+Keep recovery held until both facts are established; then the reviewed installed path must prove every exact target predicate. Local
+fixtures substitute for none of those observations.
+
 ## Controller and authority
 
 Use a live Claude Code session or finite Claude host job as the controller. It remains the live

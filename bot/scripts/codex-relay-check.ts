@@ -14,6 +14,12 @@ import {chmod,mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {existsSync,readFileSync} from 'node:fs';
 import {homedir,tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
+import {Database} from 'bun:sqlite';
+import {
+  acquireCodexThreadMutationFence,consumeCodexMutationPermit,grantCodexMutationPermit,
+  initializeCodexMutationFenceSchema,listCodexThreadMutationIntents,reconcileCodexMutationIntent,
+  recordCodexMutationResponse,stopCodexThreadMutationFence,
+} from '../src/codex-mutation-fence';
 
 if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
   const server=Bun.serve({unix:process.env.CONCIERGE_READ_SOCKET,idleTimeout:0,fetch:()=>Response.json({ok:true,pid:process.pid})});
@@ -28,8 +34,32 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
   const {startForegroundGateway}=await import('../src/foreground-gateway');
   const {CodexAppServerClient}=await import('../src/codex-app-server-client');
   const seen:string[]=[];
+  const nativeFrames:any[]=[];
   const ownerSocket=join(root,'request-owner.sock');
-  const owner=Bun.serve({unix:ownerSocket,idleTimeout:0,fetch:request=>{seen.push(new URL(request.url).pathname);return Response.json({ok:true,job:null});}});
+  const mutationDb=new Database(join(root,'mutation-ledger.sqlite'));
+  mutationDb.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=10000');
+  initializeCodexMutationFenceSchema(mutationDb);
+  const mutationOwner={acceptedInputId:'codex-relay-fixture',runId:'codex-relay-fixture-run',dispatchAttempt:1,bindingDigest:'fixture-binding'};
+  const mutationGate=(input:any)=>{
+    if(input.phase==='prepare'){
+      const result=grantCodexMutationPermit(mutationDb,{permitId:input.permitId,threadId:input.threadId??'*',owner:mutationOwner,
+        method:input.method,paramsDigest:input.paramsDigest,purpose:'ordinary',nowMs:Date.now()});
+      return {allowed:result.granted,reason:result.reason};
+    }
+    if(input.phase==='consume')return consumeCodexMutationPermit(mutationDb,{permitId:input.permitId,intentId:input.intentId,
+      paramsDigest:input.paramsDigest,nowMs:Date.now()});
+    if(input.phase==='response')return recordCodexMutationResponse(mutationDb,{intentId:input.intentId,
+      kind:input.nativeError?'rpc_error':'accepted',responseDigest:input.responseDigest,providerTurnId:input.providerTurnId,nowMs:Date.now()});
+    return {allowed:false,forward:false,reason:'unknown_fixture_gate_phase'};
+  };
+  const owner=Bun.serve({unix:ownerSocket,idleTimeout:0,fetch:async request=>{
+    const path=new URL(request.url).pathname;seen.push(path);
+    if(path==='/session-communication/codex-mutation-gate'){
+      try{return Response.json(mutationGate(await request.json()));}catch{return Response.json({error:'invalid fixture request'},{status:400});}
+    }
+    // Runner jobs remain a stand-in; only mutation authority is backed by this SQLite gate.
+    return Response.json({ok:true,job:null});
+  }});
 
   // A stand-in App Server: the same WebSocket-on-a-socket protocol the bridge speaks.
   const appSocket=join(root,'app-server-control.sock');
@@ -37,10 +67,14 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
   const appServer=Bun.serve({unix:appSocket,fetch:(request,server)=>server.upgrade(request)?undefined:new Response('ws only',{status:400}),
     websocket:{open(){appConnections++;},message(socket,message){
       const request=JSON.parse(String(message));
+      nativeFrames.push(request);
       if(request.method==='initialize')socket.send(JSON.stringify({id:request.id,result:{userAgent:'stand-in'}}));
       else if(request.method==='model/list')socket.send(JSON.stringify({id:request.id,result:{data:[{id:'stand-in-model'}],connection:appConnections}}));
       else if(request.method==='thread/start')socket.send(JSON.stringify({id:request.id,result:{thread:{id:'019a-relay-check'},received:request.params}}));
       else if(request.method==='turn/start')socket.send(JSON.stringify({id:request.id,result:{turn:{id:'turn-1'}}}));
+      else if(request.method==='thread/read')socket.send(JSON.stringify({id:request.id,result:{thread:{id:request.params.threadId}}}));
+      else if(request.method==='thread/archive'||request.method==='thread/compact'||request.method==='config/value/write')
+        socket.send(JSON.stringify({id:request.id,result:{accepted:true}}));
       else if(request.method==='test/drop')socket.close();
     }}});
 
@@ -98,6 +132,32 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
     await until(()=>existsSync(join(runnerState,'hook-pins','codex','019a-relay-check')),'the runner to pin the thread');
     assert.equal(readFileSync(join(runnerState,'hook-pins','codex','019a-relay-check'),'utf8').split('\n')[0],resolve(import.meta.dir,'..'));
     assert.deepEqual(readRunnerConnection({CONCIERGE_RUNNER_STATE:runnerState}),{ownerUrl:`http://127.0.0.1:${port}`,tokenFile});
+
+    // Reserve the native thread after reconciling the setup writes. Competing
+    // protected mutations must stop at the actual owner-side RunnerRelay gate;
+    // a read on that thread and a write to a different thread still cross it.
+    for(const threadId of ['*','019a-relay-check'])for(const intent of listCodexThreadMutationIntents(mutationDb,threadId)){
+      if(['forwarding','response_received','ambiguous'].includes(intent.state))
+        reconcileCodexMutationIntent(mutationDb,{intentId:intent.intent_id,outcome:'applied',evidenceDigest:`fixture-terminal:${intent.intent_id}`,nowMs:Date.now()});
+    }
+    assert.equal(acquireCodexThreadMutationFence(mutationDb,{threadId:'019a-relay-check',fenceId:'runner-relay-protected',
+      ...mutationOwner,nowMs:Date.now()}).acquired,true);
+    const nativeBefore= nativeFrames.length;
+    const blocked=await Promise.allSettled([
+      client.request('thread/compact',{threadId:'019a-relay-check'},{requestTimeoutMs:3_000}),
+      client.request('config/value/write',{threadId:'019a-relay-check',key:'model',value:'blocked'},{requestTimeoutMs:3_000}),
+      client.request('turn/start',{threadId:'019a-relay-check',input:[]},{requestTimeoutMs:3_000}),
+    ]);
+    assert.ok(blocked.every(result=>result.status==='rejected'),'every competing protected mutation is refused');
+    assert.equal(nativeFrames.length,nativeBefore,'protected frames never reach the runner native stand-in');
+    const protectedRead=await client.request('thread/read',{threadId:'019a-relay-check'},{requestTimeoutMs:10_000});
+    assert.equal(protectedRead.thread.id,'019a-relay-check');
+    const unrelated=await client.request('thread/archive',{threadId:'thread-unrelated'},{requestTimeoutMs:10_000});
+    assert.equal(unrelated.accepted,true);
+    assert.ok(nativeFrames.some(frame=>frame.method==='thread/read'&&frame.params.threadId==='019a-relay-check'));
+    assert.ok(nativeFrames.some(frame=>frame.method==='thread/archive'&&frame.params.threadId==='thread-unrelated'));
+    assert.ok(seen.includes('/session-communication/codex-mutation-gate'),'real mutation-gate endpoint handled relay decisions');
+    assert.equal(stopCodexThreadMutationFence(mutationDb,{fenceId:'runner-relay-protected',stopActionId:'fixture-stop',nowMs:Date.now()}).stopped,true);
 
     // The owner's calls on the runner's machine ride the same channel (runner-machine-calls.ts): a
     // watch reads a path there, and a host record outside the runner's own folder is refused.
@@ -168,7 +228,7 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
     runner.kill();
     await client.close().catch(()=>{});
     await gateway.stop(true);
-    owner.stop(true);appServer.stop(true);
+    owner.stop(true);appServer.stop(true);mutationDb.close();
     await rm(root,{recursive:true,force:true});
   }
 }

@@ -6,6 +6,7 @@ import { ledgerAccess } from "../src/ledger-access-policy";
 import { deploymentReactionTokensForCommitRange } from "../src/deployment-reaction-tokens";
 import { notifyDeploymentWorker } from "../src/deployment-worker-wake";
 import { deploymentOwnerFetch as ownerFetch } from "../src/deployment-owner-fetch";
+import {assertCodexMutationReleaseActivation} from '../src/codex-mutation-release-compatibility';
 
 function option(name: string) {
   const index = process.argv.indexOf(name);
@@ -137,6 +138,11 @@ try {
     const artifactDigest = required("--artifact-digest");
     const release = manager.verify(required("--artifact"));
     if (release.artifact_digest !== artifactDigest) throw new Error("Promoted artifact path and digest disagree.");
+    const compatibilityState=manager.environment.historyCacheStateDirectory;
+    if(compatibilityState){
+      assertCodexMutationReleaseActivation(compatibilityState,required('--artifact'),release.files);
+      assertCodexMutationReleaseActivation(compatibilityState,required('--artifact'),release.files,true);
+    }
     const promoted = await releaseMutation('promote',{runId,artifactDigest},
       () => promoteDeploymentRelease(runId,artifactDigest));
     manager.activateControl(required("--artifact"));

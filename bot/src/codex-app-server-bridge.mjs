@@ -1,6 +1,8 @@
 import { createConnection } from "node:net";
 import { createInterface } from "node:readline";
 import WebSocket from "ws-node";
+import {CodexMutationChannel} from './codex-mutation-channel.mjs';
+import {codexMutationOwnerGate} from './codex-mutation-owner.mjs';
 
 const socketPath = process.argv[2];
 // A path names the owner's relay to a runner's App Server (docs/architecture/RUNNERS.md); the
@@ -25,6 +27,15 @@ const appServer = new WebSocket(`ws://localhost${relayPath}`, {
   createConnection: () => createConnection(socketPath),
   perMessageDeflate: false,
 });
+// Relayed connections are mediated at the common owner's relay before crossing
+// the runner boundary. A local native connection has this same boundary here.
+const mutations=relayPath==='/'?new CodexMutationChannel({gate:codexMutationOwnerGate,
+  send:frame=>appServer.send(JSON.stringify(frame)),
+  reject:(frame,reason,ambiguous)=>{
+    if(ambiguous){disconnect(new Error(reason));appServer.close();return;}
+    if(Object.hasOwn(frame,'id'))write({type:'response',id:frame.id,error:{code:-32001,message:reason}});
+    else{disconnect(new Error(reason));appServer.close();}
+  }}):null;
 
 appServer.on("open", () => {
   appServer.send(JSON.stringify({
@@ -56,14 +67,18 @@ appServer.on("message", (data) => {
     return;
   }
   if (Object.prototype.hasOwnProperty.call(message, "id") && ("result" in message || "error" in message)) {
-    write({ type: "response", id: message.id, result: message.result, error: message.error });
+    const deliver=()=>write({ type: "response", id: message.id, result: message.result, error: message.error });
+    if(mutations)void mutations.response(message).then(deliver).catch(()=>{
+      disconnect(new Error('Native mutation receipt is unconfirmed.'));appServer.close();});
+    else deliver();
     return;
   }
   if (Object.prototype.hasOwnProperty.call(message, "id") && message.method) {
-    appServer.send(JSON.stringify({
+    const frame={
       id: message.id,
       error: { code: -32601, message: `Slack Concierge cannot answer server request ${message.method}.` },
-    }));
+    };
+    if(mutations)void mutations.forward(frame).catch(disconnect);else appServer.send(JSON.stringify(frame));
     return;
   }
   if (message.method) write({ type: "event", event: message });
@@ -71,6 +86,7 @@ appServer.on("message", (data) => {
 
 appServer.on("error", disconnect);
 appServer.on("close", () => {
+  mutations?.close();
   disconnect(new Error("Codex app-server WebSocket closed."));
   input.close();
   process.exit(ready ? 0 : 1);
@@ -90,9 +106,11 @@ input.on("line", (line) => {
   }
   if (appServer.readyState !== WebSocket.OPEN || !ready) return;
   if (message.type === "request") {
-    appServer.send(JSON.stringify({ id: message.id, method: message.method, params: message.params }));
+    const frame={id:message.id,method:message.method,params:message.params};
+    if(mutations)void mutations.forward(frame).catch(disconnect);else appServer.send(JSON.stringify(frame));
   } else if (message.type === "notification") {
-    appServer.send(JSON.stringify({ method: message.method, params: message.params }));
+    const frame={method:message.method,params:message.params};
+    if(mutations)void mutations.forward(frame).catch(disconnect);else appServer.send(JSON.stringify(frame));
   }
 });
 

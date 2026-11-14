@@ -1,3 +1,4 @@
+import type {CodexRecoveryHistoryPolicy} from "./codex-state-preserving-recovery";
 import { forkCodexSession, ProgressCb, runCodexTurn, RunResult, type CodexResumeWait } from "./codex";
 import { forkClaudeCodeSession, runClaudeCodeTurn, type BackgroundReportMissing, type ClaudeBackgroundWait, type ClaudeProviderRetry } from "./claude-code";
 import { providerSelectionFromText } from "./aliases";
@@ -51,9 +52,11 @@ export interface AgentProvider {
     interactionPolicy?: ProviderInteractionPolicy;
     model?: string;
     reasoning_effort?: string;
+    /** Private owner capability; stripped at the mandatory native forwarding boundary. */
+    codexRecovery?: {historyPolicy?:CodexRecoveryHistoryPolicy;authorizationId:string;capability?:string;model:string;effort:string;preparedPromptDigest?:string;beforeResume?:(params:Record<string,unknown>)=>Promise<void>;beforeStart?:(input:{params:Record<string,unknown>;responseResult:unknown})=>Promise<void>};
     onSteeringReady?: (sender: SteeringSender) => void;
     onCancellationReady?: (cancel: () => Promise<void>) => void;
-    onProviderTerminal?: () => void;
+    onProviderTerminal?: (evidence?:{providerThreadId:string|null;providerTurnId:string|null;status:string}) => void;
     onBackgroundWait?: (wait: ClaudeBackgroundWait | null) => void;
     onBackgroundReportMissing?: (task: BackgroundReportMissing) => void;
     onBackgroundReleaseReady?: (release: (() => boolean) | null) => void;

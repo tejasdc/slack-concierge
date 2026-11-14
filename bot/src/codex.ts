@@ -1,4 +1,6 @@
+import {requireRecoveryHistoryPolicy,type CodexRecoveryHistoryPolicy} from "./codex-state-preserving-recovery";
 import { randomUUID } from "node:crypto";
+import { CODEX_OWNER_CONTEXT_KEY } from "./codex-owner-context-diagnostic";
 import { spawn } from "node:child_process";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
 import { withoutMachinePaths } from "./runner-machine";
@@ -214,7 +216,7 @@ function turnAdditionalContext(applicationInstructions: string | undefined) {
   return applicationInstructions
     ? {
         additionalContext: {
-          "slack-concierge": {
+          [CODEX_OWNER_CONTEXT_KEY]: {
             value: applicationInstructions,
             kind: "application",
           },
@@ -442,6 +444,7 @@ export interface RunCodexTurnInput {
   sessionUUID: string | null;
   model?: string;
   reasoning_effort?: string;
+  codexRecovery?: {historyPolicy?:CodexRecoveryHistoryPolicy;authorizationId:string;capability?:string;model:string;effort:string;preparedPromptDigest?:string;beforeResume?:(params:Record<string,unknown>)=>Promise<void>;beforeStart?:(input:{params:Record<string,unknown>;responseResult:unknown})=>Promise<void>};
   applicationInstructions?: string;
   clientUserMessageId?: string;
   environment?: Record<string, string>;
@@ -452,7 +455,7 @@ export interface RunCodexTurnInput {
   onProviderMessage?: ProviderMessageCallback;
   onSteeringReady?: (sender: SteeringSender) => void;
   onCancellationReady?: (cancel: () => Promise<void>) => void;
-  onProviderTerminal?: () => void;
+  onProviderTerminal?: (evidence?:{providerThreadId:string|null;providerTurnId:string|null;status:string}) => void;
   onInputAcknowledged?: () => void;
   onProviderThreadStarted?: (providerThreadId: string) => void;
   onProviderTurnStarted?: (providerTurnId: string) => void;
@@ -515,6 +518,7 @@ async function codexThreadParameters(
   request: (method: string, params: unknown) => Promise<any>,
   threadEnvironment?: Record<string, string>,
 ) {
+  requireRecoveryHistoryPolicy(input.codexRecovery?.historyPolicy);
   const consultation = input.interactionPolicy === "consultation-only";
   const { CONCIERGE_COMMIT_PROVENANCE: _turnProvenance, ...shellEnvironment } = threadEnvironment || {};
   return {
@@ -531,6 +535,7 @@ async function codexThreadParameters(
     } : {
       sandbox: "danger-full-access",
       config: { agents: { default_subagent_model: "gpt-6-luna", default_subagent_reasoning_effort: "medium" },
+        ...(input.codexRecovery?{model_reasoning_effort:input.codexRecovery.effort,features:{hooks:true}}:{}),
         ...(Object.keys(shellEnvironment).length > 0
           ? { shell_environment_policy: { inherit: "all", set: shellEnvironment } } : {}) },
     }),
@@ -1152,6 +1157,8 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     inactivityTimeout = null;
   };
   let resetInactivityTimeout = () => {};
+  const recoveryParams=(method:string,params:unknown)=>input.codexRecovery&&['thread/resume','turn/start','turn/interrupt'].includes(method)
+    ?{...(params as Record<string,unknown>),__conciergeRecovery:input.codexRecovery}:params;
   const request = async (
     method: string,
     params: unknown,
@@ -1160,7 +1167,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     // Turn and steering rows reach the disk before Codex is told, and before the answer timer
     // starts; the barrier releases in call order, so requests keep theirs.
     await ledgerDurable();
-    const result = await client.request(method, params, { requestTimeoutMs, onAccepted });
+    const result = await client.request(method, recoveryParams(method,params), { requestTimeoutMs, onAccepted });
     resetInactivityTimeout();
     return result;
   };
@@ -1205,7 +1212,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     const endWatch = watchResume(threadId);
     try {
       const result = await Promise.race([
-        client.request("thread/resume", params, { untilDisconnect: true }),
+        client.request("thread/resume", recoveryParams('thread/resume',params), { untilDisconnect: true }),
         stoppedBeforeSubmission,
       ]);
       resetInactivityTimeout();
@@ -1216,10 +1223,10 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   };
   const textInput = (text: string) => [{ type: "text", text, text_elements: [] }];
 
-  const reportProviderTerminal = () => {
+  const reportProviderTerminal = (status:string) => {
     if (terminalReported) return;
     terminalReported = true;
-    input.onProviderTerminal?.();
+    input.onProviderTerminal?.({providerThreadId:activeThreadId,providerTurnId:activeTurnId,status});
   };
   const describeFailure = (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -1320,7 +1327,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     if (!itemsRecorded) for (const item of Array.isArray(turn?.items) ? turn.items : []) recordCompletedItem(item);
     if (!turn?.status || turn.status === "inProgress") return;
     durationMs = codexTurnDurationMs(turn);
-    reportProviderTerminal();
+    reportProviderTerminal(turn.status);
     turnSettled = true;
     if (interruptionReason) {
       rejectTurn(interruptionReason);
@@ -1466,13 +1473,14 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         if (turnSettled || controllerClosed) return;
         // Recovery retries this loop until it settles, so a deadline here only stacked cold loads.
         const endWatch = watchResume(activeThreadId);
-        const resumed = await client.request("thread/resume", {
+        const resumed = input.codexRecovery?null:await client.request("thread/resume", {
           threadId: activeThreadId,
           ...recoveredParams,
           excludeTurns: true,
         }, { untilDisconnect: true }).finally(endWatch);
+        if(input.codexRecovery)endWatch();
         if (turnSettled || controllerClosed) return;
-        verifyCodexConsultationPolicy(input, resumed);
+        if(resumed)verifyCodexConsultationPolicy(input, resumed);
         // Full thread hydration can materialize hundreds of megabytes for every adopted run.
         // Find the exact turn in summary pages; only a terminal turn's persisted item pages
         // can prove a complete replay across both legacy and paginated history modes.
@@ -1549,10 +1557,10 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         if (turnSettled) return;
         if (recoveryMustInterrupt && activeTurnId) {
           try {
-            await client.request("turn/interrupt", {
+            await client.request("turn/interrupt", recoveryParams('turn/interrupt',{
               threadId: activeThreadId,
               turnId: activeTurnId,
-            }, { requestTimeoutMs });
+            }), { requestTimeoutMs });
           } catch {
             // The interrupt response is non-atomic with the daemon state. The
             // next exact history read, not the transport outcome, is decisive.
@@ -1695,6 +1703,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     } else {
     connectionGeneration = await connectBeforeSubmission();
     let threadResponse: any;
+    let recoveryResumeParams:Record<string,unknown>|undefined;
     for (;;) try {
     if (interruptionReason) throw interruptionReason;
     const threadParams = await codexThreadParameters(input, request, threadEnvironment);
@@ -1705,11 +1714,21 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       // deadline and asking again only stacked more loads and ended in a refused turn, so the
       // turn waits for this answer while the connection lives; Stop ends it, and a lost
       // connection is waited out and the answer asked for again.
+      const resumeParams={threadId:sessionUUID,...threadParams,excludeTurns:true};
+      if(input.codexRecovery){
+        if(!sessionUUID||!input.codexRecovery.beforeResume)throw new Error("Exact recovery cold-construction reader is unavailable.");
+        await input.codexRecovery.beforeResume(resumeParams);
+        recoveryResumeParams=resumeParams;
+        if(interruptionReason)throw interruptionReason;
+      }
       threadResponse = sessionUUID
-        ? await resumeUntilAnswered(sessionUUID, { threadId: sessionUUID, ...threadParams, excludeTurns: true })
+        ? await resumeUntilAnswered(sessionUUID, resumeParams)
         : await request("thread/start", threadParams);
       break;
     } catch (error) {
+      if(input.codexRecovery&&error instanceof CodexAppServerClientError&&error.outcome==='ambiguous')
+        throw new ProviderDispatchError({message:'Exact recovery native preparation is unconfirmed; it will not be submitted again.',
+          terminalConfirmed:false,toolsUsed,providerSessionId:sessionUUID});
       // Neither operation sends the user's input. Even if the App Server created or
       // resumed a thread before the response was lost, asking again cannot repeat
       // the requested work because turn/start has not been called yet. A lost
@@ -1736,11 +1755,19 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     input.onProviderThreadStarted?.(threadId);
     if (interruptionReason) throw interruptionReason;
 
+    if(input.codexRecovery){
+      if(!input.codexRecovery.beforeStart)throw new Error('Exact recovery original-source checkpoint reader is unavailable.');
+      if(!recoveryResumeParams)throw new Error("Exact recovery resume parameters are missing.");
+      await input.codexRecovery.beforeStart({params:recoveryResumeParams,responseResult:threadResponse});
+      if(interruptionReason)throw interruptionReason;
+    }
+
     turnSubmissionAttempted = true;
     try {
       const starting = request("turn/start", {
         threadId,
         input: textInput(prompt),
+        ...(input.codexRecovery?{model:input.codexRecovery.model}:{}),
         clientUserMessageId: submissionClientId,
         ...(input.reasoning_effort ? { effort: input.reasoning_effort } : {}),
         ...(input.interactionPolicy === "consultation-only" ? { environments: [] } : {}),
@@ -1843,6 +1870,7 @@ function isLostCodexConnection(error: unknown) {
 }
 
 export async function runCodexTurn(input: RunCodexTurnInput): Promise<RunResult> {
+  requireRecoveryHistoryPolicy(input.codexRecovery?.historyPolicy);
   assertProviderInteractionPolicy(input.interactionPolicy);
   const attempt = usageAttempt("codex", undefined, input.accountLabel);
   // A turn being taken back is already the daemon's; refusing it on usage would abandon it running.
