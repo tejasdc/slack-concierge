@@ -1,6 +1,8 @@
 import {randomUUID} from 'node:crypto';
 import type {Server,ServerWebSocket,WebSocketHandler} from 'bun';
 import {log} from './log';
+import {CodexMutationChannel,mutationDigest} from './codex-mutation-channel.mjs';
+import {CODEX_DAEMON_LIFECYCLE_METHOD,RUNNER_CODEX_LIFECYCLE_METHODS} from './codex-daemon-lifecycle';
 
 /**
  * Live connections to a service that runs on a runner, piped through the owner's front door
@@ -14,9 +16,12 @@ import {log} from './log';
  *    order, both ways. Messages sent before the pair forms wait here (bounded).
  * 4. Either side closing closes the other. Nothing is stored: a relay is a connection, and its
  *    users already treat a dropped connection as ambiguous and reconnect (a new relay).
+ *    Codex writes and managed daemon lifecycle calls retain common-owner permits;
+ *    losing a relay never settles those issued effects.
  *
  * Only a runner token may listen or accept, and only for its own name; only the root-private local
- * socket may connect. No owner state or ledger is touched, so this runs inside the gateway.
+ * socket may connect. The gateway asks the private owner for mutation authority;
+ * it never opens the owner's ledger itself.
  */
 /** `runner-machine` is the owner's call channel to the runner itself (runner-machine-calls.ts). */
 export const RELAY_TARGETS=new Set(['codex-app-server','runner-machine']);
@@ -29,9 +34,10 @@ export type RelaySocketData=
   |{role:'local';runner:string;id:string;target:string}
   |{role:'accept';runner:string;id:string};
 type Pair={id:string;runner:string;target:string;local:ServerWebSocket<RelaySocketData>;remote:ServerWebSocket<RelaySocketData>|null;
-  waiting:Message[];waitingBytes:number;timer:ReturnType<typeof setTimeout>|null};
+  waiting:Message[];waitingBytes:number;timer:ReturnType<typeof setTimeout>|null;mutations?:CodexMutationChannel};
 
 export class RunnerRelay {
+  constructor(private readonly mutationGate?:(body:unknown)=>Promise<unknown>){}
   private readonly listeners=new Map<string,ServerWebSocket<RelaySocketData>>();
   private readonly pairs=new Map<string,Pair>();
 
@@ -90,6 +96,21 @@ export class RunnerRelay {
         const pair:Pair={id:data.id,runner:data.runner,target:data.target,local:socket,remote:null,waiting:[],waitingBytes:0,
           timer:setTimeout(()=>this.end(pair,'the runner did not accept the relay in time'),ACCEPT_DEADLINE_MS)};
         this.pairs.set(data.id,pair);
+        const lifecycleParams=(frame:any)=>({runner:pair.runner,method:frame.method,params:frame.params??{}});
+        pair.mutations=new CodexMutationChannel({
+          ...(pair.target==='runner-machine'?{
+            describe:(frame:any)=>RUNNER_CODEX_LIFECYCLE_METHODS.has(frame?.method)?{
+              method:CODEX_DAEMON_LIFECYCLE_METHOD,threadId:null,paramsDigest:mutationDigest(lifecycleParams(frame))}:null,
+            parameters:lifecycleParams}:{}),
+          connectionId:pair.id,gate:async(body:unknown)=>{
+            if(!this.mutationGate)throw new Error('Codex mutation authority is unavailable.');
+            return this.mutationGate(body);
+          },send:(frame:unknown)=>this.deliverOwnerFrame(pair,JSON.stringify(frame)),
+          reject:(frame:any,reason:string,ambiguous:boolean)=>{
+            if(!ambiguous&&Object.hasOwn(frame,'id'))this.forward(pair,pair.local,JSON.stringify({id:frame.id,
+              error:pair.target==='runner-machine'?reason:{code:-32001,message:reason}}));
+            else this.end(pair,'Codex mutation authority is unconfirmed');
+          }});
         listener.send(JSON.stringify({op:'open',id:data.id,target:data.target}));
         return;
       }
@@ -106,11 +127,12 @@ export class RunnerRelay {
       if(data.role==='listen')return; // the runner's channel carries nothing to the owner
       const pair=this.pairs.get(data.id);
       if(!pair)return;
-      if(data.role==='accept'){this.forward(pair,pair.local,message);return;}
-      if(pair.remote){this.forward(pair,pair.remote,message);return;}
-      pair.waitingBytes+=typeof message==='string'?Buffer.byteLength(message):message.length;
-      if(pair.waitingBytes>BUFFER_LIMIT){this.end(pair,'too much waited for the runner');return;}
-      pair.waiting.push(message);
+      if(data.role==='accept'){
+        if(pair.mutations){try{void pair.mutations.response(JSON.parse(message.toString())).catch(()=>this.end(pair,'native mutation receipt is unconfirmed'));}catch{this.end(pair,'invalid native frame');return;}}
+        this.forward(pair,pair.local,message);return;
+      }
+      if(pair.mutations){try{void pair.mutations.forward(JSON.parse(message.toString())).catch(()=>this.end(pair,'mutation forwarding failed'));}catch{this.end(pair,'invalid owner frame');}return;}
+      this.deliverOwnerFrame(pair,message);
     },
     close:(socket,code,reason)=>{
       const data=socket.data;
@@ -123,6 +145,14 @@ export class RunnerRelay {
       if(pair)this.end(pair,`${data.role==='local'?'owner':'runner'} side closed (${code}${reason?` ${reason}`:''})`);
     },
   };
+
+  private deliverOwnerFrame(pair:Pair,message:Message){
+    if(!this.pairs.has(pair.id))throw new Error('Relay closed before native forwarding.');
+    if(pair.remote){if(!this.forward(pair,pair.remote,message))throw new Error('Relay send unconfirmed.');return;}
+    pair.waitingBytes+=typeof message==='string'?Buffer.byteLength(message):message.length;
+    if(pair.waitingBytes>BUFFER_LIMIT){this.end(pair,'too much waited for the runner');throw new Error('Relay send unconfirmed.');}
+    pair.waiting.push(message);
+  }
 
   /** Bun's send answers 0 when it dropped the message: the relay ends instead of losing it silently. */
   private forward(pair:Pair,to:ServerWebSocket<RelaySocketData>,message:Message):boolean {
@@ -140,6 +170,7 @@ export class RunnerRelay {
 
   private end(pair:Pair,why:string) {
     if(!this.pairs.delete(pair.id))return;
+    pair.mutations?.close();
     if(pair.timer)clearTimeout(pair.timer);
     log('info','runner_relay_closed',{runner:pair.runner,target:pair.target,relay:pair.id,why});
     // 1011 tells each side the relay, not the service, ended it.

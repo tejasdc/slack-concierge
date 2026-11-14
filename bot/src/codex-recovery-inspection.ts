@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
 import {db,getSessionById} from './state';
 import {getAcceptedSessionInput,providerRunnerForSession,sessionMetadata,stablePayload} from './session-inputs';
+import {inspectAcceptedBindingContinuation} from './codex-accepted-binding-snapshot';
 
 const digest=(value:unknown)=>createHash('sha256').update(stablePayload(value)).digest('hex');
 
@@ -81,21 +82,29 @@ export function inspectCodexRecovery(input:{sessionId:number;inputId:string;requ
       'Complete exact attempt-to-native-item coverage, including independently identified compaction.');
     refuse('NATIVE_ACTIVITY_BOUNDARY_NOT_FENCED',[accepted.id],
       'A receiver-side boundary that remains valid through reservation and the actual native start.');
+    const activation=codexContinuationActivationReadiness();
+    for(const reason of activation.reasons)refuse(reason.code,[accepted.id],reason.detail);
     const reservation=db.query('SELECT * FROM codex_unacknowledged_recoveries WHERE accepted_input_id=?').get(accepted.id) as any;
+    const continuation=inspectAcceptedBindingContinuation(input);
+    const fence=db.query('SELECT fence_id,state FROM codex_thread_mutation_fences WHERE accepted_input_id=? ORDER BY created_at_ms DESC LIMIT 1')
+      .get(accepted.id) as any;
     return {status:'ineligible' as const,eligible:false as const,diagnosticOnly:true as const,requestId:input.requestId,
       acceptedInputId:accepted.id,runId:turn?.native_run_id??null,turnId:turn?.id??null,
       binding:{sessionId:session.id,threadId:session.agent_session_uuid,generation:session.binding_generation,
         model:metadata.model??null,effort:metadata.reasoningEffort??null,runner:providerRunnerForSession(session)},
       continuation:{basis:'accepted_binding_continuation' as const,authorized:false as const,
+        proven:continuation.proven,decisionDigest:'decisionDigest'in continuation?continuation.decisionDigest:null,
+        reasons:continuation.reasons,
         creationInputId:creation?.id??null,sourceInputId:accepted.source_input_id,sourceRunId:accepted.source_run_id,
         creationModelEffortMatches,effortEvidenceId:effortEvent?.event_id??null},
       interval:{acceptedWatermark:inputs.at(-1)?.ordinal??selectedOrdinal,eventWatermark,inputCount:inputs.length,
         acceptedWithoutTurnCount:inputs.filter(row=>row.turn_id===null&&row.steering_id===null).length,
         earlierNonterminalTurnCount:predecessors.length,
         digest:digest({session,inputs,turns,steering,request,handoffs,events})},
-      progress:{usefulWork:'not_assessed',...(reservation?{reserved:true,attempt:turn?.dispatch_attempt??null,
+      progress:{usefulWork:'not_assessed',fence:fence?{id:fence.fence_id,state:fence.state}:null,...(reservation?{reserved:true,attempt:turn?.dispatch_attempt??null,
         reservedDispatchAttempt:reservation.additional_dispatch_attempt??null,
         inputAcknowledged:!!turn?.provider_input_acknowledged_at,state:turn?.status??null}: {reserved:false})},
       reasons};
   })();
 }
+import {codexContinuationActivationReadiness} from './codex-continuation-activation';

@@ -11,6 +11,10 @@ export CONCIERGE_DEPLOYMENT_CONTROL_ROOT="$CONTROL_ROOT"
 export CONCIERGE_DEPLOY_COMMAND="$INSTALL_ROOT/control"
 
 case "${1:-}" in
+  codex-launch|codex-proxy)
+    shift
+    exec "$INSTALL_ROOT/bun" "$CONTROL_ROOT/codex-managed-launch.js" "$@"
+    ;;
   deploy)
     shift
     exec /usr/bin/bash "$CONTROL_ROOT/deploy.sh" "$@"
@@ -35,7 +39,7 @@ case "${1:-}" in
       "$INSTALL_ROOT/bun" "$HISTORY_RELEASE/control/history-cache.js" "$@"
     ;;
   *)
-    echo "usage: $0 <deploy|repair|recover|history-cache> [arguments]" >&2
+    echo "usage: $0 <deploy|repair|recover|history-cache|codex-launch|codex-proxy> [arguments]" >&2
     exit 2
     ;;
 esac

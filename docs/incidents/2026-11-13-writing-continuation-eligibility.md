@@ -107,7 +107,7 @@ or children, including `concierge:8866`.
 
 ## Fix
 
-The source candidate adds a read-only `codex-recover --inspect` path and retained
+The first source commit adds a read-only `codex-recover --inspect` path and retained
 owned model-guard decisions. Inspection uses the same live work authority as
 recovery, reads a consistent owner snapshot, and never reserves or queues work.
 Its continuation witnesses are explicitly diagnostic and unauthorized. Both
@@ -115,8 +115,8 @@ unproved native interval coverage and the absent receiver fence remain visible
 refusal reasons. The normal model policy remains in force; an inability to retain
 its own decision now refuses the prompt rather than silently allowing it.
 
-No recovery permission is activated by this candidate. A coherent
-implementation must resolve the missing boundary before relaxing any public,
+No recovery permission is activated by this candidate. The implementation must
+resolve the missing boundary before relaxing any public,
 historical-effort, native-proof or reservation check. The same owner-verified
 `accepted_binding_continuation` decision must then reach the real start guard,
 preserve Medium all the way to `turn/start`, and permit one additional provider
@@ -131,6 +131,35 @@ The marker survives process restart; legacy reservations also consult retained
 admission intent and immutable attempt/result events before granting anything.
 This corrects the reproduced budget defect without granting a continuation basis
 or relaxing the existing native-history and authorization barriers.
+
+The subsequent integrated source composes the factual accepted-binding decision,
+complete paginated native interval, atomic reservation, exact model/effort queue
+and actual resume/start, ephemeral one-dispatch capability, prompt invocation and
+digest matching, and retained guard audits. The common owner mediates local
+bridge, runner relay and versioned raw Desktop proxy writes. Direct CLI/TUI uses
+durable lifetime custody. Exact native-terminal callbacks reconcile issued starts
+and owned interruptions; RPC replies and process exits do not impersonate that
+witness. The [current source contract](../architecture/CODEX-MUTATION-FENCE.md)
+records the writer inventory and trust boundary.
+
+The omitted-boundary source audit also found that account activation and managed
+daemon replacement use running-turn checks, which do not exclude a queued
+recovery fence. Global lifecycle intents now serialize those local operations and
+the actual runner-machine forwarding entrance with thread permits. Verified
+successful setup receipts and exact owned native-terminal witnesses reconcile
+normal managed writes; ordinary response acceptance alone is not used for
+asynchronous work. An uncertain lifecycle response remains a durable blocker.
+
+**Activation remains refused before reservation.** Parent review has not supplied
+a supported witness that previously issued handlers from the old unmediated
+Desktop connection drained. Separately, no supported current cold-reconstruction
+configuration witness establishes the managed hook. These are enforced as
+`LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN` and
+`COLD_RESUME_HOOK_CONFIGURATION_UNPROVEN`, not waived by idle/process absence,
+historical `notLoaded`, helper pinning or a capability response. This is an
+incomplete activation prerequisite, not a completed live recovery or evidence
+that Astra caused the incident. Parent retains the same prerequisite review;
+no alternate controller, diagnostic provider input or native reset was started.
 
 The original writing owner reconciles its own current authorized obligations after
 acknowledgement. Delivery recovery and useful product work are separate acceptance
@@ -159,12 +188,31 @@ states; neither reservation nor an empty completed native turn proves restoratio
 
 ## Verification boundary
 
+### Requirement review
+
+- T10: repeated failure gets executable guards: durable forwarding permits,
+  dispatch budget, exact prompt identity and activation refusal. The normal build
+  includes a bounded custody fixture gate. This extends the existing owner,
+  recovery command and execution lane rather than adding a parallel controller.
+- T8: source fixtures are explicitly insufficient for real acceptance. Parent
+  owns installed release, target delivery acknowledgement and useful-work proof;
+  this source-only assignment authorizes none of those live actions.
+- The software-owning implementation session builds this correction; the writing
+  conversation receives no implementation work [decision: writing-agents-do-not-build].
+  Sol implements the bounded cross-boundary repair without changing any running
+  binding [decision: escalate-stuck-work-to-sol]. The Inbox router is unchanged
+  [decision: inbox-remains-claude-while-work-recovers]. The explicit exact-session
+  continuation request fits the recorded exception to the temporary exhausted-credit
+  routing preference [decision: do-not-resume-codex-sessions-for-now]. No policy
+  manufactures an explicit human Astra choice.
+
 The existing contract, state and route fixtures all exited zero on November 13:
 `bun run scripts/codex-unacknowledged-contract-fixture.ts`,
 `bun run scripts/codex-unacknowledged-state-fixture.ts`, and
 `bun run scripts/codex-unacknowledged-route-fixture.ts`, from `bot/`. These preserve
-the existing exact recovery behavior; they do not cover the proposed continuation
-extension. No broad local suite or model/provider experiment was run.
+the existing exact recovery behavior. The integrated continuation extension has
+separate focused checks below. No broad local suite or model/provider experiment
+was run.
 
 The new `codex-continuation-inspection-fixture.ts` exercises exact legacy omitted
 effort/null-native-binding shapes at Medium, acknowledged source custody, held and
@@ -172,13 +220,39 @@ control inputs in the watermark/digest, conflicting effort refusal, no writes on
 inspection, actual guard refusal of the diagnostic candidate, persisted allow and
 refusal evidence, unknown effective effort, and audit-sink failure. The public
 route fixture also proves that inspection invokes no recovery host and that an
-informational caller cannot invoke it. These checks do not prove the still-missing
-receiver fence or continuation execution. The state fixture additionally claims
+informational caller cannot invoke it. These inspection checks do not prove
+continuation execution. The state fixture additionally claims
 the real recovery queue entry, spends admission once, opens the retained database
 in a separate process, refuses repeated/next admission and automatic retry, and
 checks that the first admission and recovery proof remain unchanged. It also
 checks that a legacy reservation with an already-retained later result cannot
 receive a fresh allowance after migration.
+
+### Integrated source checks
+
+The normal build now includes `codex-continuation-contract-check.ts`. Its ten
+isolated fixtures passed after integration: durable mutation permits, exact
+dispatch/hook authorization, composed accepted-binding recovery, real raw
+WebSocket launcher transport, owner mutation policy, global daemon lifecycle,
+native-terminal reconciliation, actual local activation, actual runner relay
+lifecycle forwarding, and canonical SessionOwner controls. Two independent
+clients and explicit barriers cover delayed old permits, competing writes,
+ambiguous replies, Stop, unrelated threads and duplicate invocation. All state
+and native endpoints in these checks are disposable; no target input was sent.
+
+Additional focused checks passed: accepted-binding proof and snapshot fixtures,
+complete native interval, managed process registration/lineage, mutation channel,
+the existing contract/state/route recovery fixtures, real runner relay socket
+check, installed-control command selection, human model-choice custody,
+inspection/audit, and the existing Stop/control/account-switch receipt fixtures.
+The undefined-name check passed for fourteen bundle entry points; bounded-logging
+source guard passed for 462 server source files. The changed owner, runtime,
+foreground gateway, model-start hook and managed launcher entry points bundled
+successfully together. `git diff --check` passed.
+
+These are source checks, not installed activation or provider acceptance. Both
+explicit activation refusals remain enforced; the old Desktop connection and
+current native hook reconstruction remain parent-owned unresolved prerequisites.
 
 Source navigation used scoped `rg` references followed by direct reads of the
 public operation, owner delegation, host proof, atomic reservation, registry,

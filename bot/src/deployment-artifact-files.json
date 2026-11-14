@@ -1,6 +1,7 @@
 {
   "format": 1,
   "controlBundles": {
+    "control/codex-managed-launch.js": "bot/scripts/codex-managed-launch.ts",
     "control/bot/scripts/router-sessions.js": "bot/scripts/router-sessions.ts",
     "control/bot/scripts/router-reports.js": "bot/scripts/router-reports.ts",
     "control/bot/scripts/mac-browser-fallback.js": "bot/scripts/mac-browser-fallback.ts",

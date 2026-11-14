@@ -21,12 +21,18 @@ import { quietOnlyAdmits } from './quiet-hours';
 import { OWNER_DRAIN_WITHDRAWAL_REASON } from './runner-leases';
 import {CLAUDE_ALLOWANCE_HOLD_UNTIL_MS} from './claude-allowance-hold';
 import {CodexAdmissionHolds} from './codex-admission-holds';
+import {initializeCodexMutationFenceSchema} from './codex-mutation-fence';
+import {initializeCodexRecoveryAuthorizationSchema} from './codex-recovery-dispatch-authorization';
+import {initializeManagedCodexProcessRegistrySchema} from './codex-managed-process-registry';
 
 // Only the canonical writer owns schema upgrades. Read executors open a physically read-only
 // connection and must never run migration code during module initialization.
 // These early control tables precede the base schema batch below. Commit their schema and
 // seed rows together too, rather than paying eleven disk syncs on a fresh ledger.
 if (initializeLedgerSchema) db.transaction(() => {
+initializeCodexMutationFenceSchema(db);
+initializeCodexRecoveryAuthorizationSchema(db);
+initializeManagedCodexProcessRegistrySchema(db);
 db.exec(`CREATE TABLE IF NOT EXISTS provider_usage_cache (
   provider TEXT PRIMARY KEY CHECK (provider IN ('codex', 'claude-code')),
   generation INTEGER NOT NULL DEFAULT 0,

@@ -51,9 +51,11 @@ export interface AgentProvider {
     interactionPolicy?: ProviderInteractionPolicy;
     model?: string;
     reasoning_effort?: string;
+    /** Private owner capability; stripped at the mandatory native forwarding boundary. */
+    codexRecovery?: {authorizationId:string;capability?:string;model:string;effort:string;preparedPromptDigest?:string};
     onSteeringReady?: (sender: SteeringSender) => void;
     onCancellationReady?: (cancel: () => Promise<void>) => void;
-    onProviderTerminal?: () => void;
+    onProviderTerminal?: (evidence?:{providerThreadId:string|null;providerTurnId:string|null;status:string}) => void;
     onBackgroundWait?: (wait: ClaudeBackgroundWait | null) => void;
     onBackgroundReportMissing?: (task: BackgroundReportMissing) => void;
     onBackgroundReleaseReady?: (release: (() => boolean) | null) => void;

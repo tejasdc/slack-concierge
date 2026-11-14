@@ -2,22 +2,26 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import {createHash,randomUUID} from 'node:crypto';
 import { escalationReason } from '../src/model-escalation';
 import {requestApiResponse} from './router-request-client';
 import {RETRY_POLICIES} from '../src/retry-policies';
 
-type Start = {model?: unknown;session_id?: unknown;turn_id?:unknown;agent_id?:unknown};
+type Start = {model?: unknown;session_id?: unknown;turn_id?:unknown;agent_id?:unknown;prompt?:unknown};
 let start: Start = {};
 try { start = JSON.parse((await Bun.stdin.text()) || '{}'); } catch { /* A malformed hook input cannot prove an Astra start. */ }
 
 const state = process.env.CONCIERGE_STATE_DIR || join(homedir(), '.local/state/concierge');
 const model=typeof start.model==='string'?start.model:'';
 const outside=process.env.CONCIERGE_OUTSIDE_RUN==='1';
-if(model!=='gpt-6-astra'&&!outside)process.exit(0);
+// A protected conversation cannot bypass its owned prompt gate by naming a
+// cheaper model. One invocation ID survives the owner's transport retries.
+const invocationId=randomUUID();
+const promptDigest=typeof start.prompt==='string'?createHash('sha256').update(start.prompt,'utf8').digest('hex'):null;
 const providerSession = typeof start.session_id === 'string' ? start.session_id : '';
 const ownerTurnId=Number(process.env.CONCIERGE_TURN_ID??'');
 const owner=providerSession?await requestApiResponse('/session-communication/model-start-gate',
-  {providerSessionId:providerSession,model,
+  {providerSessionId:providerSession,model,invocationId,promptDigest,
     ...(typeof start.turn_id==='string'?{providerTurnId:start.turn_id}:{}),
     ...(typeof start.agent_id==='string'?{providerAgentId:start.agent_id}:{}),
     ...(Number.isSafeInteger(ownerTurnId)&&ownerTurnId>0?{ownerTurnId}:{}),
@@ -27,6 +31,7 @@ if(owner?.ok&&owner.result?.known){
   if(!owner.result.allowed)deny(String(owner.result.message??'This Codex prompt needs its bound execution and model. Choose gpt-6.1-sol.'));
   process.exit(0);
 }
+if(!owner?.ok)deny('Concierge cannot confirm this prompt while its owner is unavailable. The input remains unconfirmed.');
 if(outside&&model==='gpt-6-astra')deny('Concierge cannot confirm this outside Astra prompt. Choose gpt-6.1-sol or retry when its owner answers.');
 if (start.model !== 'gpt-6-astra') process.exit(0);
 const reason = process.env.CODEX_ESCALATION_REASON?.trim() || '';

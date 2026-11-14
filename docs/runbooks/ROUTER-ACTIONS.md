@@ -137,6 +137,16 @@ records the Medium legacy shapes, independent compaction evidence, reproduced
 attempt-budget gap and remaining receiver-boundary prerequisite. It authorizes no
 live recovery or change to any original writing obligation.
 
+The source candidate also composes accepted-binding continuation, complete native
+interval proof, common forwarding permits and a one-attempt dispatcher budget.
+Its production entrance remains held for two missing supported capabilities:
+`LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN` and
+`COLD_RESUME_HOOK_CONFIGURATION_UNPROVEN`. Process absence, idle, historical
+`notLoaded`, an installed script or capability response cannot waive these.
+The [managed mutation contract](../architecture/CODEX-MUTATION-FENCE.md) owns the
+writer inventory, Stop/terminal reconciliation and activation boundary. Internal
+fixture success is not permission to recover a live conversation.
+
 The owner selects only the service input `report-back:<original-request-id>`. It never resends the original request. This path requires verified work authority for the asking run, the retained human model choice for the same existing conversation, an open work request, the exact provider thread and current send controls, and owner evidence for every selected provider attempt. It then reads each exact native turn and all of that turn's item pages; only a terminal empty turn with no acknowledgement, output, tools, later admission, host activity, or other effect can be reserved. A separate empty turn from another accepted input is not attributed to this report-back. Unknown or incomplete evidence leaves the input in custody.
 
 The accepted report-back ID is the durable deduplication key across action IDs. Reservation and requeue commit together. If the caller loses the receipt after reservation, retrying the same action returns its stored result; another action ID returns the same reservation. The original retained result remains unchanged, while a later execution attempt gets its own result identity and is surfaced by the existing result readers. This recovers only the report-back; its original request and any other obligations remain open until their own final receipts.

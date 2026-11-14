@@ -70,6 +70,7 @@ import {humanAuthored,sessionInputProvenance} from './session-inputs';
 import {withdrawChatGptTasksForStoppedTurnByTejas} from './chatgpt-obligations';
 import {noticeTime} from './provider-free-notice';
 import {movedToCodex} from './provider-exhaustion-recovery';
+import {stopCodexThreadMutationFence} from './codex-mutation-fence';
 import {SIGNIN_WORKER,signInRenewalOf,signInWorkerActionId,signInWorkerText} from './signin-renewal';
 import {markRepairNoticesDelivered,pendingRepairNotices,repairNoticeText,REPAIR_AGENT_PROVIDER,REPAIR_AGENT_TITLE} from './repair-notices';
 import {standingAgent,standingAgentForSession,standingAgentSession,assertStandingAgentPlacement,bindStandingAgentSession,unboundJournalKeeperSession,unboundRepairAgentSession,canOwnStandingWork,STANDING_WORK_REFUSAL,type StandingAgentRole} from './standing-agents';
@@ -465,7 +466,7 @@ export type SessionOwnerRuntime = {
   artifact?(session:SessionRow,id:string):Promise<unknown>;
   recover?(session:SessionRow,operation:AcceptedSessionInput):Promise<void>;
   requeueProvenUnsentChatGpt?(session:SessionRow,operation:AcceptedSessionInput):Promise<{status:'requeued'|'already_queued'|'already_running';runId:string}>;
-  requeueProvenUnacknowledgedCodex?(session:SessionRow,operation:AcceptedSessionInput,input:{requestId:string;actionId:string;sourceInputId:string;sourceRunId:string;validateSource?:()=>void}):
+  requeueProvenUnacknowledgedCodex?(session:SessionRow,operation:AcceptedSessionInput,input:{requestId:string;actionId:string;sourceInputId:string;sourceRunId:string;validateSource?:()=>void;continuationDecisionDigest?:string}):
     Promise<{status:'requeued'|'already_recovered';runId:string;providerTurnIds:string[]}>;
   proveRejectedChatGptAttachment?(session:SessionRow,operation:AcceptedSessionInput):Promise<{runId:string;reason:string;attachmentHashes:string[]}>;
   fork?(session:SessionRow,input:AcceptedSessionInput):void;
@@ -834,6 +835,7 @@ export class SessionOwner {
             .run(nextGeneration,machine,Number(number));
         }
       }
+      if(paused)this.stopActiveCodexMutationFencesForGlobalPause(nextGeneration,clientActionId);
       return globalPauseState();
     })();
     executionChanged();this.runtime.wake();if(!paused||peerContinue.length)wakeWatchWorker();
@@ -1158,6 +1160,28 @@ export class SessionOwner {
       }
       return getAcceptedSessionInput(saved.input.id)!;
     })();
+  }
+  /** Stop only active Codex reservations invalidated by this already-retained control.
+   * The fence helper revokes unused grants while preserving every issued intent as a blocker. */
+  private stopCodexMutationFencesForSession(sessionId:number,controlActionId:string) {
+    const fences=db.query(`SELECT fence.fence_id FROM codex_thread_mutation_fences fence
+      JOIN session_inputs input ON input.id=fence.accepted_input_id
+      WHERE input.session_id=? AND fence.state='active' ORDER BY fence.fence_id`).all(sessionId) as Array<{fence_id:string}>;
+    for(const fence of fences)stopCodexThreadMutationFence(db,{fenceId:fence.fence_id,
+      stopActionId:`${controlActionId}:codex-fence:${fence.fence_id}`,nowMs:Date.now()});
+  }
+  private stopActiveCodexMutationFencesForGlobalPause(generation:number,controlActionId:string) {
+    const fences=db.query(`SELECT fence.fence_id FROM codex_thread_mutation_fences fence
+      JOIN session_inputs input ON input.id=fence.accepted_input_id
+      JOIN sessions session ON session.id=input.session_id
+      WHERE fence.state='active' AND session.provider_id='codex'
+        AND COALESCE(json_extract(session.native_metadata_json,'$.inboxRole'),'')<>'project-router'
+        AND COALESCE(json_extract(session.native_metadata_json,'$.outside'),0)=0
+        AND NOT EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=?
+          AND allowed.machine=? AND allowed.session_id=session.id)
+      ORDER BY fence.fence_id`).all(generation,this.selfMachine) as Array<{fence_id:string}>;
+    for(const fence of fences)stopCodexThreadMutationFence(db,{fenceId:fence.fence_id,
+      stopActionId:`${controlActionId}:codex-fence:${fence.fence_id}`,nowMs:Date.now()});
   }
   /** Catalogue labels without the run history a full view reads, so search can match every session cheaply. */
   catalogueLabels(session:SessionRow) {
@@ -2847,6 +2871,7 @@ export class SessionOwner {
       throw new SessionOwnerError('Usage limits are managed by the account hold; a session Pause has no automatic release.',409,'BUDGET_PAUSE_REFUSED');
     const operation=this.saveControl(session,'action',input,()=>{
       const meta=sessionMetadata(session);
+      if(['model','pause','archive'].includes(action.kind))this.stopCodexMutationFencesForSession(session.id,actionId(input));
       if(['title','summary','model'].includes(action.kind)) {
         if(typeof action.value!=='string'||(action.kind!=='summary'&&!action.value.trim()))throw new SessionOwnerError('Action value must be text.');
         if(action.kind==='model'&&!this.view(session).capabilities.models.includes(action.value.trim()))throw new SessionOwnerError('This provider does not advertise the selected model.',409,'CAPABILITY_UNAVAILABLE');
@@ -3138,6 +3163,7 @@ export class SessionOwner {
       const saved=retainSessionInput({sessionId:session.id,scope,actionId:actionId(input),kind:'stop',origin:actor?'agent':'human',payload:actor?{...input,actor}:input,
         ...(actor?{sourceInputId:actor.inputId,sourceRunId:actor.runId}:{})}).input;
       db.query("UPDATE turns SET stop_requested_at=COALESCE(stop_requested_at,CURRENT_TIMESTAMP),stop_input_cutoff=COALESCE(stop_input_cutoff,(SELECT max(id) FROM turns)) WHERE id=? AND status='running'").run(turn.id);
+      this.stopCodexMutationFencesForSession(session.id,actionId(input));
       this.clearWaitingHumanInputs(session.id,'stop',turn.id);
       db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'running'}),saved.id);
       return saved;
@@ -3278,7 +3304,7 @@ export class SessionOwner {
       throw new SessionOwnerError('The original ChatGPT operation is unavailable for exact recovery.',409,'CAPABILITY_UNAVAILABLE');
     return this.runtime.requeueProvenUnsentChatGpt(session,operation);
   }
-  async requeueProvenUnacknowledgedCodex(sessionId:number,inputId:string,input:{requestId:string;actionId:string;sourceInputId:string;sourceRunId:string;validateSource?:()=>void}) {
+  async requeueProvenUnacknowledgedCodex(sessionId:number,inputId:string,input:{requestId:string;actionId:string;sourceInputId:string;sourceRunId:string;validateSource?:()=>void;continuationDecisionDigest?:string}) {
     const session=this.session(`concierge:${sessionId}`),operation=this.input(inputId);
     if(operation.session_id!==session.id||session.provider_id!=='codex'||!this.runtime.requeueProvenUnacknowledgedCodex)
       throw new SessionOwnerError('The original Codex continuation is unavailable for exact recovery.',409,'CAPABILITY_UNAVAILABLE');

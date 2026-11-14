@@ -1,5 +1,5 @@
 import {onCodexHistoryChanged} from './codex-session-observer';
-import { codexAppServerReady, codexRelayRunner, ownerCodexAppServerClient, waitForCodexAppServerOrDrain } from "./codex-app-server-client";
+import { codexAppServerReady, codexAppServerSocketPath, codexRelayRunner, ownerCodexAppServerClient, waitForCodexAppServerOrDrain } from "./codex-app-server-client";
 import {CODEX_PROCESS_REPORT_GRACE_MS,codexLeftoverProcesses,codexProcessStillRunning,type CodexLeftoverProcess} from './codex-leftover-processes';
 import {runnerMachineCall,RunnerUnreachableError} from './runner-machine-calls';
 import {resolveRunnerProjectLocation} from './runner-project-location';
@@ -36,6 +36,10 @@ import {maybeStartInboxProviderFailover} from './inbox-provider-failover';
 import {CHATGPT_THINKING_LEVELS,HIS_CHATGPT_PREFIX,PROVIDER_ALIASES, providerDisplayName } from './aliases';
 import {recordRepairNotice} from './repair-notices';
 import {proveCodexInputNeverAcknowledged} from './codex-unacknowledged-proof';
+import {recoverAcceptedBindingCodex} from './codex-accepted-binding-recovery';
+import {requireCodexContinuationActivation} from './codex-continuation-activation';
+import {getCodexRecoveryAuthorizationForInput,claimCodexRecoveryDispatchCapability,reconcileCodexRecoveryNativeTerminal} from './codex-recovery-dispatch-authorization';
+import {reconcileManagedCodexNativeTerminal,reconcileManagedCodexMutationFromRetainedTerminal} from './codex-managed-native-terminal';
 import {nativeResultEventId} from './native-result-identity';
 import type {HostRunnerFile} from './host-access';
 
@@ -1304,6 +1308,10 @@ export class SessionExecutionHost {
           if(session.provider_id==='antigravity')this.recoverAntigravityUnsentInputs();
         }
         const outcome=await this.runModel(claim,input,session,steeringController,closeSteering,cancellationController,adoption);
+        if(session.provider_id==='codex'&&getCodexRecoveryAuthorizationForInput(db,input.id))
+          reconcileCodexRecoveryNativeTerminal(db,{acceptedInputId:input.id,nowMs:Date.now()});
+        else if(session.provider_id==='codex')reconcileManagedCodexNativeTerminal(db,{
+          eventId:`codex-native-terminal:${claim.turn_id}:${claim.dispatch_attempt}`,nowMs:Date.now()});
         // Only here is the run's outcome durably settled; a crash before this leaves the host's
         // record for the next coordinator to settle from.
         await this.releaseExecutions(claim.turn_id).catch(error=>log('warn','execution_release_failed',{turn_id:claim.turn_id,...errorFields(error)}));
@@ -1343,6 +1351,23 @@ export class SessionExecutionHost {
   }
   /** An intent survives a coordinator restart; an unfinished check is retried by the sweep above. */
   async reconcileCodexProcessAudits() {
+    // Restart reconciliation consumes only retained exact native terminal callbacks.
+    // Missing callbacks leave issued sends outstanding; process exit is insufficient.
+    const recoveries=db.query(`SELECT a.accepted_input_id FROM codex_recovery_dispatch_authorizations a
+      JOIN session_owner_events e ON e.event_id='codex-recovery-native-terminal:'||a.turn_id||':'||a.dispatch_attempt
+      WHERE NOT EXISTS (SELECT 1 FROM codex_recovery_terminal_settlements s WHERE s.accepted_input_id=a.accepted_input_id)`)
+      .all() as {accepted_input_id:string}[];
+    for(const recovery of recoveries)reconcileCodexRecoveryNativeTerminal(db,{acceptedInputId:recovery.accepted_input_id,nowMs:Date.now()});
+    const nativeIntents=db.query(`SELECT i.intent_id FROM codex_mutation_intents i
+      JOIN codex_mutation_permits p ON p.permit_id=i.permit_id
+      WHERE p.purpose='ordinary' AND i.fence_id IS NULL AND i.method IN ('turn/start','turn/steer','turn/interrupt')
+        AND i.state IN ('forwarding','response_received','ambiguous')
+        AND (i.provider_turn_id IS NOT NULL OR i.target_native_turn_id IS NOT NULL)
+        AND EXISTS (SELECT 1 FROM session_owner_events e WHERE e.kind='codex_native_terminal'
+          AND json_extract(e.payload_json,'$.providerThreadId')=i.thread_id
+          AND json_extract(e.payload_json,'$.providerTurnId')=COALESCE(i.provider_turn_id,i.target_native_turn_id))
+      ORDER BY i.thread_revision LIMIT 50`).all() as {intent_id:string}[];
+    for(const intent of nativeIntents)reconcileManagedCodexMutationFromRetainedTerminal(db,{intentId:intent.intent_id,nowMs:Date.now()});
     const pending=db.query(`SELECT intent.turn_id FROM session_owner_events intent
       JOIN turns turn ON turn.id=intent.turn_id AND turn.status IN ('done','error','cancelled')
       WHERE intent.event_id>='codex-process-audit-intent:' AND intent.event_id<'codex-process-audit-intent;'
@@ -1633,6 +1658,36 @@ export class SessionExecutionHost {
           // The claimed turn, its execution record and its input are on disk before any provider
           // (Claude, Codex or ChatGPT) is started or told anything.
           await ledgerDurable({kind:'provider_input',id:input.id});
+          const recovery=session.provider_id==='codex'?getCodexRecoveryAuthorizationForInput(db,input.id):null;
+          if(recovery){
+            let capability:string|undefined;
+            if(!adoption){
+              const grant=claimCodexRecoveryDispatchCapability(db,{authorizationId:recovery.authorizationId,
+                turnId:claim.turn_id,runId:nativeRunId(claim.turn_id),dispatchAttempt:claim.dispatch_attempt,nowMs:Date.now()});
+              if(!grant.allowed)throw new ProviderDispatchError({message:`Recovery dispatch refuses: ${grant.reason}.`,
+                terminalConfirmed:true,failureClass:'parked_terminal'});
+              capability=grant.capability;
+            }
+            prepared={...prepared,model:recovery.model,reasoning_effort:recovery.effort,
+              codexRecovery:{authorizationId:recovery.authorizationId,model:recovery.model,effort:recovery.effort,
+                ...(capability?{capability}:{}),preparedPromptDigest:createHash('sha256').update(prepared.prompt,'utf8').digest('hex')}};
+          }
+          if(session.provider_id==='codex'){
+            const terminal=prepared.onProviderTerminal;
+            prepared={...prepared,onProviderTerminal:evidence=>{
+              const currentBinding=db.query("SELECT agent_session_uuid FROM sessions WHERE id=? AND provider_id='codex'").get(session.id) as any;
+              if(evidence?.providerThreadId&&evidence.providerThreadId===currentBinding?.agent_session_uuid&&evidence.providerTurnId
+                &&['completed','failed','interrupted'].includes(evidence.status)){
+                const turn=db.query('SELECT provider_turn_id FROM turns WHERE id=? AND accepted_input_id=? AND native_run_id=? AND dispatch_attempt=?')
+                  .get(claim.turn_id,input.id,nativeRunId(claim.turn_id),claim.dispatch_attempt) as any;
+                if(turn?.provider_turn_id===evidence.providerTurnId)recordSessionEvent({
+                  eventId:`${recovery?'codex-recovery-native-terminal':'codex-native-terminal'}:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,
+                  inputId:input.id,turnId:claim.turn_id,kind:recovery?'codex_recovery_native_terminal':'codex_native_terminal',payload:{...evidence,
+                    inputId:input.id,runId:nativeRunId(claim.turn_id),dispatchAttempt:claim.dispatch_attempt,observedTerminal:true}});
+              }
+              terminal?.(evidence);
+            }};
+          }
           // A run taken back after a restart takes messages again only once its history is rebuilt;
           // what the restart returned to the queue meanwhile goes into it then.
           if(adoption&&prepared.onSteeringReady){
@@ -1807,7 +1862,10 @@ export class SessionExecutionHost {
   private trackedCodexRun(prepared:Parameters<AgentProvider['run']>[0],claim:QueuedTurnClaimRow,session:SessionRow,
     kept:{replayPrompt:string;runAdditionalDirs:string[];staging:string|null;account:{account:string;home:string|null}|null},input:AcceptedSessionInput):Parameters<AgentProvider['run']>[0] {
     const {onProgress,onProviderMessage,onProviderThreadStarted,onProviderTurnStarted,onSteeringReady,onCancellationReady,onProviderTerminal,
-      onBackgroundWait,onBackgroundReportMissing,onBackgroundReleaseReady,onProviderRetry,onRetryRestartReady,onInputAcknowledged,onPreferredModel,onRateLimits,...data}=prepared as any;
+      onBackgroundWait,onBackgroundReportMissing,onBackgroundReleaseReady,onProviderRetry,onRetryRestartReady,onInputAcknowledged,onPreferredModel,onRateLimits,
+      codexRecovery,...data}=prepared as any;
+    const retainedRecovery=codexRecovery?{authorizationId:codexRecovery.authorizationId,model:codexRecovery.model,
+      effort:codexRecovery.effort,preparedPromptDigest:codexRecovery.preparedPromptDigest}:undefined;
     const executionId=newExecutionId();
     const testDedicated=agentCreatedCodexTestInput(input,session);
     const createPayload=JSON.parse(input.payload_json) as {codexNativeTestFaultDeadlineMs?:number};
@@ -1815,7 +1873,8 @@ export class SessionExecutionHost {
     const appServerClient=testDedicated?ownerCodexAppServerClient():undefined;
     retainExecutionIntent({executionId,turnId:claim.turn_id,dispatchAttempt:claim.dispatch_attempt,sessionId:session.id,provider:'codex',
       directory:'',coordinatorInstanceId:this.options.instanceId,supervisor:'codex-daemon',processor:{...kept,agentTestDedicatedCodex:testDedicated,
-        ...(testDedicated&&faultDeadlineMs?{agentTestFaultDeadlineMs:faultDeadlineMs}:{}),run:data}});
+        ...(testDedicated&&faultDeadlineMs?{agentTestFaultDeadlineMs:faultDeadlineMs}:{}),run:{...data,
+          ...(retainedRecovery?{codexRecovery:retainedRecovery}:{})}}});
     if(appServerClient&&faultDeadlineMs)void this.testCodexClients.replace(claim.turn_id,{executionId,dispatchAttempt:claim.dispatch_attempt,faultDeadlineMs,client:appServerClient})
       .catch(error=>log('warn','codex_test_client_replace_close_failed',{turn_id:claim.turn_id,execution_id:executionId,...errorFields(error)}));
     // The daemon's hooks carry no run of their own: file this release's helpers under the Codex
@@ -2024,7 +2083,7 @@ export class SessionExecutionHost {
     this.options.wake();
     return {status:'requeued',runId:run.runId};
   }
-  private async requeueProvenUnacknowledgedCodex(session:SessionRow,operation:AcceptedSessionInput,input:{requestId:string;actionId:string;sourceInputId:string;sourceRunId:string;validateSource?:()=>void}):
+  private async requeueProvenUnacknowledgedCodex(session:SessionRow,operation:AcceptedSessionInput,input:{requestId:string;actionId:string;sourceInputId:string;sourceRunId:string;validateSource?:()=>void;continuationDecisionDigest?:string}):
     Promise<{status:'requeued'|'already_recovered';runId:string;providerTurnIds:string[]}> {
     const reserved=codexUnacknowledgedRecovery(operation.id);
     if(reserved){
@@ -2041,6 +2100,15 @@ export class SessionExecutionHost {
       ||(runner.status==='bound'&&runner.runner!==null&&runner.runner!==codexRelayRunner())||metadata.outside===true
       ||metadata.interactionPolicy==='consultation-only'||metadata.suspended||session.status==='archived')
       throw new Error('Exact Codex recovery needs the same bound native conversation, machine, and active send controls.');
+    if(input.continuationDecisionDigest){
+      requireCodexContinuationActivation();
+      if(codexRelayRunner()!==null)throw new Error('Accepted-binding recovery requires authoritative writer coverage from its execution host; remote coverage is not established.');
+      const result=await recoverAcceptedBindingCodex({sessionId:session.id,inputId:operation.id,
+        requestId:input.requestId,actionId:input.actionId,sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,
+        socketPath:codexAppServerSocketPath(),client:ownerCodexAppServerClient(),
+        validateSource:()=>input.validateSource?.(),expectedDecisionDigest:input.continuationDecisionDigest});
+      this.options.wake();return result;
+    }
     const turn=db.query(`SELECT id,session_id,status,native_run_id,dispatch_attempt,provider_admission_intended_at,
       provider_started_at,provider_turn_id,provider_input_acknowledged_at,agent_text,outbound_text,stop_requested_at,owner_instance_id
       FROM turns WHERE id=? AND session_id=? AND accepted_input_id=? AND turn_kind='native'`)

@@ -442,6 +442,7 @@ export interface RunCodexTurnInput {
   sessionUUID: string | null;
   model?: string;
   reasoning_effort?: string;
+  codexRecovery?: {authorizationId:string;capability?:string;model:string;effort:string;preparedPromptDigest?:string};
   applicationInstructions?: string;
   clientUserMessageId?: string;
   environment?: Record<string, string>;
@@ -452,7 +453,7 @@ export interface RunCodexTurnInput {
   onProviderMessage?: ProviderMessageCallback;
   onSteeringReady?: (sender: SteeringSender) => void;
   onCancellationReady?: (cancel: () => Promise<void>) => void;
-  onProviderTerminal?: () => void;
+  onProviderTerminal?: (evidence?:{providerThreadId:string|null;providerTurnId:string|null;status:string}) => void;
   onInputAcknowledged?: () => void;
   onProviderThreadStarted?: (providerThreadId: string) => void;
   onProviderTurnStarted?: (providerTurnId: string) => void;
@@ -531,6 +532,7 @@ async function codexThreadParameters(
     } : {
       sandbox: "danger-full-access",
       config: { agents: { default_subagent_model: "gpt-6-luna", default_subagent_reasoning_effort: "medium" },
+        ...(input.codexRecovery?{model_reasoning_effort:input.codexRecovery.effort}:{}),
         ...(Object.keys(shellEnvironment).length > 0
           ? { shell_environment_policy: { inherit: "all", set: shellEnvironment } } : {}) },
     }),
@@ -1152,6 +1154,8 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     inactivityTimeout = null;
   };
   let resetInactivityTimeout = () => {};
+  const recoveryParams=(method:string,params:unknown)=>input.codexRecovery&&['thread/resume','turn/start','turn/interrupt'].includes(method)
+    ?{...(params as Record<string,unknown>),__conciergeRecovery:input.codexRecovery}:params;
   const request = async (
     method: string,
     params: unknown,
@@ -1160,7 +1164,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     // Turn and steering rows reach the disk before Codex is told, and before the answer timer
     // starts; the barrier releases in call order, so requests keep theirs.
     await ledgerDurable();
-    const result = await client.request(method, params, { requestTimeoutMs, onAccepted });
+    const result = await client.request(method, recoveryParams(method,params), { requestTimeoutMs, onAccepted });
     resetInactivityTimeout();
     return result;
   };
@@ -1205,7 +1209,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     const endWatch = watchResume(threadId);
     try {
       const result = await Promise.race([
-        client.request("thread/resume", params, { untilDisconnect: true }),
+        client.request("thread/resume", recoveryParams('thread/resume',params), { untilDisconnect: true }),
         stoppedBeforeSubmission,
       ]);
       resetInactivityTimeout();
@@ -1216,10 +1220,10 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   };
   const textInput = (text: string) => [{ type: "text", text, text_elements: [] }];
 
-  const reportProviderTerminal = () => {
+  const reportProviderTerminal = (status:string) => {
     if (terminalReported) return;
     terminalReported = true;
-    input.onProviderTerminal?.();
+    input.onProviderTerminal?.({providerThreadId:activeThreadId,providerTurnId:activeTurnId,status});
   };
   const describeFailure = (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -1320,7 +1324,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     if (!itemsRecorded) for (const item of Array.isArray(turn?.items) ? turn.items : []) recordCompletedItem(item);
     if (!turn?.status || turn.status === "inProgress") return;
     durationMs = codexTurnDurationMs(turn);
-    reportProviderTerminal();
+    reportProviderTerminal(turn.status);
     turnSettled = true;
     if (interruptionReason) {
       rejectTurn(interruptionReason);
@@ -1466,13 +1470,14 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         if (turnSettled || controllerClosed) return;
         // Recovery retries this loop until it settles, so a deadline here only stacked cold loads.
         const endWatch = watchResume(activeThreadId);
-        const resumed = await client.request("thread/resume", {
+        const resumed = input.codexRecovery?null:await client.request("thread/resume", {
           threadId: activeThreadId,
           ...recoveredParams,
           excludeTurns: true,
         }, { untilDisconnect: true }).finally(endWatch);
+        if(input.codexRecovery)endWatch();
         if (turnSettled || controllerClosed) return;
-        verifyCodexConsultationPolicy(input, resumed);
+        if(resumed)verifyCodexConsultationPolicy(input, resumed);
         // Full thread hydration can materialize hundreds of megabytes for every adopted run.
         // Find the exact turn in summary pages; only a terminal turn's persisted item pages
         // can prove a complete replay across both legacy and paginated history modes.
@@ -1549,10 +1554,10 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         if (turnSettled) return;
         if (recoveryMustInterrupt && activeTurnId) {
           try {
-            await client.request("turn/interrupt", {
+            await client.request("turn/interrupt", recoveryParams('turn/interrupt',{
               threadId: activeThreadId,
               turnId: activeTurnId,
-            }, { requestTimeoutMs });
+            }), { requestTimeoutMs });
           } catch {
             // The interrupt response is non-atomic with the daemon state. The
             // next exact history read, not the transport outcome, is decisive.
@@ -1741,6 +1746,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       const starting = request("turn/start", {
         threadId,
         input: textInput(prompt),
+        ...(input.codexRecovery?{model:input.codexRecovery.model}:{}),
         clientUserMessageId: submissionClientId,
         ...(input.reasoning_effort ? { effort: input.reasoning_effort } : {}),
         ...(input.interactionPolicy === "consultation-only" ? { environments: [] } : {}),

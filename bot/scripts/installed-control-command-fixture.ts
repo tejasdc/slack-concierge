@@ -57,6 +57,7 @@ function artifact(name: string, modern = true, missing = false) {
     "control/history-cache.js": 'console.log(JSON.stringify({status:"fixture-status",path:import.meta.dir,args:process.argv.slice(2)}))',
     "bot/src/index.js": `console.log("fixture-application-${name}")`,
   };
+  if(modern)files['control/codex-managed-launch.js']='console.log(JSON.stringify({helper:"managed-codex",path:import.meta.dir,args:process.argv.slice(2)}))';
   if (!missing) files["control/deployment-control-launcher.sh"] = modern
     ? readFileSync(join(repo, "bot/scripts/deployment-control-launcher.sh"))
     : '#!/bin/sh\ncase "${1:-}" in deploy|repair|recover) echo fixture-old-control;; *) echo "usage: <deploy|repair|recover>" >&2; exit 2;; esac\n';
@@ -80,6 +81,16 @@ function status(expectedPath?: string) {
   assert.equal(result.exitCode, 0, result.stderr.toString());
   assert.deepEqual(JSON.parse(result.stdout.toString()), { status: "fixture-status", path: join(expectedPath, "control"), args: ["status"] });
 }
+function codexControl(expectedPath?:string){
+  const args=['--native','/fixture/native/codex','--','-c','literal=`$()`','app-server','proxy'];
+  const result=run([stable,'codex-launch',...args]);
+  if(!expectedPath){assert.equal(result.exitCode,2);return;}
+  assert.equal(result.exitCode,0,result.stderr.toString());
+  assert.deepEqual(JSON.parse(result.stdout.toString()),{helper:'managed-codex',path:join(expectedPath,'control'),args});
+  const capability=run([stable,'codex-launch','--capabilities']);
+  assert.equal(capability.exitCode,0,capability.stderr.toString());
+  assert.deepEqual(JSON.parse(capability.stdout.toString()).args,['--capabilities']);
+}
 function snapshot() {
   return { current: manager.currentArtifactPath(), control: manager.controlArtifactPath(),
     commands: ["launch", "control"].map(name => readFileSync(join(installRoot, name), "utf8")) };
@@ -97,7 +108,7 @@ try {
   symlinkSync(old, join(releaseRoot, "control"));
   executable(stable, readFileSync(join(old, "control/deployment-control-launcher.sh"), "utf8"));
   executable(join(installRoot, "bun"), readFileSync(runtime, "utf8"));
-  check("predecessor copied entrance rejects the installed maintenance command", () => status());
+  check("predecessor copied entrance rejects the installed maintenance command", () => {status();codexControl();});
 
   manager.activate(modern);
   const unit = readFileSync(process.env.FIXTURE_SERVICE_UNIT || join(repo, "systemd/concierge-bot.service"), "utf8");
@@ -118,17 +129,17 @@ try {
   // new install callback. This proves the first fixing release, not only later ones.
   check("predecessor promotion exposes modern commands without another installation", () => {
     const next = join(releaseRoot, ".old-manager-promotion"); symlinkSync(modern, next); renameSync(next, join(releaseRoot, "control"));
-    status(modern); assert.deepEqual(snapshot().commands, wrappers);
+    status(modern);codexControl(modern); assert.deepEqual(snapshot().commands, wrappers);
   });
   check("full rollback selects old command and application", () => {
-    manager.restore(old); status();
+    manager.restore(old); status();codexControl();
     assert.equal(manager.currentArtifactPath(), old); assert.equal(manager.controlArtifactPath(), old);
     const result = run(["/usr/bin/bash", "-ec", command]);
     assert.equal(result.exitCode, 0, "a restored old application skips unsupported bootstrap"); status();
   });
   check("forward activation and application-only rollback preserve the selected controller", () => {
     manager.activate(modern); manager.activateControl(modern); status(modern);
-    manager.activate(old); assert.equal(manager.controlArtifactPath(), modern); status(old);
+    manager.activate(old); assert.equal(manager.controlArtifactPath(), modern); status(old);codexControl(modern);
     const launch = run([join(installRoot, "launch")]); assert.equal(launch.exitCode, 0, launch.stderr.toString());
     assert.match(launch.stdout.toString(), /fixture-application-old/);
   });
