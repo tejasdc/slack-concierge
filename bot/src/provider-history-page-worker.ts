@@ -12,6 +12,7 @@ import {proveCodexContinuationNativeInterval} from './codex-continuation-native-
 import {readCodexOriginalHistoryCoverage,revalidateCodexOriginalHistorySource,
   refreshCodexOriginalHistoryAfterOwnedResume} from './codex-original-history-coverage';
 import {getCodexThreadMutationFence} from './codex-mutation-fence';
+import {resolveOwnerContextDiagnosticEvidence,OwnerContextRefusal,type OwnerContextCandidate} from './codex-owner-context-diagnostic';
 import {codexRecoverySourceFingerprint} from './codex-recovery-dispatch-authorization';
 import {readCodexColdConstructionWitness,compareCodexColdConstructionWitnesses,validateCodexColdResumeParameters,validateCodexColdResume} from './codex-cold-construction';
 import {homedir} from 'node:os';
@@ -20,7 +21,7 @@ import {join} from 'node:path';
 type Work={id:number;operation:'page'|'delta'|'prepare';sessionId:string;cwd:string;cursor:string|null;limit:number;after:string|null;
   want?:{dialogue:number;untilInput:boolean};thread?:string}|
   {id:number;operation:'original-recovery-coverage';sessionId:number;inputId:string;requestId:string;runId:string;fenceId:string;
-    expectedDecisionDigest:string;expectedNativeDigest:string}|
+    expectedDecisionDigest:string;expectedNativeDigest:string;diagnosticContextCandidates?:readonly OwnerContextCandidate[]}|
   {id:number;operation:'original-recovery-cold-before-resume';authorizationId:string;params:Record<string,unknown>}|
   {id:number;operation:'original-recovery-refresh-after-resume';authorizationId:string;params:Record<string,unknown>;responseResult:unknown};
 if(!parentPort)throw new Error('HISTORY_PAGE_WORKER_PARENT_REQUIRED');
@@ -62,11 +63,16 @@ async function originalRecoveryCoverage(input:Extract<Work,{operation:'original-
   if(!native.proven)return {proven:false as const,reasons:native.reasons};
   if(native.nativeDigest!==input.expectedNativeDigest)return refuseCoverage('EXPECTED_NATIVE_DIGEST_CHANGED');
   const codexHome=process.env.CODEX_HOME?.trim()||join(homedir(),'.codex');
+  let ownerContextEvidence;
+  if(input.diagnosticContextCandidates!==undefined){
+    try{ownerContextEvidence=resolveOwnerContextDiagnosticEvidence({snapshot,attempts:native.attempts,
+      candidates:input.diagnosticContextCandidates,status:'owner_snapshot'});}
+    catch(error){if(error instanceof OwnerContextRefusal)return refuseCoverage(error.code);throw error;}
+  }
   const result=await readCodexOriginalHistoryCoverage({binding:snapshot.binding,selectedInputId:input.inputId,
-    attempts:native.attempts,nativeTurnOrder:native.nativeTurnOrder,codexHome,client});
-  if(!result.proven)return result;
-  const custody=result.custody,witness=result.witness;
-  if(!revalidateCodexOriginalHistorySource(custody,witness).valid)
+    attempts:native.attempts,nativeTurnOrder:native.nativeTurnOrder,codexHome,client,ownerContextEvidence});
+  if(!result.proven&&!('diagnostic'in result))return result;
+  if(result.proven&&!revalidateCodexOriginalHistorySource(result.custody,result.witness).valid)
     return refuseCoverage('ORIGINAL_HISTORY_SOURCE_CHANGED');
   // Re-read the entire owner/native basis after I/O. A stable digest is the exact
   // snapshot comparison; it does not upgrade the browser's or caller's assertion.
@@ -84,6 +90,8 @@ async function originalRecoveryCoverage(input:Extract<Work,{operation:'original-
   const afterNative=await proveCodexContinuationNativeInterval({snapshot:after.snapshot,client});
   if(!afterNative.proven)return {proven:false as const,reasons:afterNative.reasons};
   if(afterNative.nativeDigest!==input.expectedNativeDigest)return refuseCoverage('NATIVE_INTERVAL_CHANGED_DURING_READ');
+  if(!result.proven)return result;
+  const custody=result.custody,witness=result.witness;
   if(!revalidateCodexOriginalHistorySource(custody,witness).valid)
     return refuseCoverage('ORIGINAL_HISTORY_SOURCE_CHANGED_DURING_READ');
   const construction=await readCodexColdConstructionWitness({db,owner:after.fence!,binding:after.snapshot.binding,client:sharedCodexAppServerClient()});

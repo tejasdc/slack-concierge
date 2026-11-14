@@ -6,6 +6,7 @@ import {join} from 'node:path';
 import {acceptedBindingSnapshotDigest as digest,type ContinuationBinding} from '../src/codex-accepted-binding-continuation';
 import {readCodexOriginalHistoryCoverage,refreshCodexOriginalHistoryAfterOwnedResume} from '../src/codex-original-history-coverage';
 import type {Database} from 'bun:sqlite';
+import {resolveOwnerContextDiagnosticEvidence,ownerContextRawSha256,renderOwnerApplicationContext,type OwnerContextCandidate} from '../src/codex-owner-context-diagnostic';
 
 /** Complete pinned native snapshot shape, confined to disposable source fixtures. */
 export function fixtureNativeSettings(binding:Pick<ContinuationBinding,'model'|'effort'>){
@@ -36,6 +37,22 @@ export function fixtureAdjacentContextRecords(rows:any[],turnId:string,threadId:
     message,row('world_state',{full:false,state:patch}));
   for(let i=rows.length-1;i>=0;i--)if(rows[i].type==='compacted')rows.splice(i+1,0,row('world_state',{full:true,state:after}));
   return {messageIndex:index+1,patchIndex:index+2,before,after,patch};
+}
+
+export function fixtureOwnerContextEvidence(binding:ContinuationBinding,selectedInputId:string,attempts:any[],value:string){
+  const attempt=attempts[0],eventId=`prompt-cache-identity:${attempt.turnId}:${attempt.dispatchAttempt}`;
+  const candidate:OwnerContextCandidate={inputId:attempt.inputId,turnId:attempt.turnId,runId:attempt.runId,
+    dispatchAttempt:attempt.dispatchAttempt,providerTurnId:attempt.providerTurnId,value};
+  const snapshot:any={binding,selected:{input:{id:selectedInputId}},ownerSnapshot:{turns:attempts.map(a=>({
+    id:a.turnId,session_id:binding.sessionId,accepted_input_id:a.inputId,native_run_id:a.runId,dispatch_attempt:a.dispatchAttempt}))},
+    interval:{inputs:attempts.map(a=>({id:a.inputId,session_id:binding.sessionId,turn_id:a.turnId}))},
+    events:[{event_id:eventId,session_id:binding.sessionId,turn_id:attempt.turnId,input_id:null,kind:'prompt_cache_identity',
+      payload_json:JSON.stringify({effort:binding.effort,systemInstructionsSha256:ownerContextRawSha256(value)})}]};
+  const mapped=attempts.map(a=>({...a,evidenceRefs:a.evidenceRefs.includes(eventId)?a.evidenceRefs:[...a.evidenceRefs,eventId]}));
+  const resolve=()=>resolveOwnerContextDiagnosticEvidence({snapshot,attempts:mapped,candidates:[candidate],status:'conditional_retained_adapter'});
+  return {snapshot,candidate,attempts:mapped,resolve,message:{type:'message',role:'developer',id:'fixture-owner-context',
+    content:[{type:'input_text',text:renderOwnerApplicationContext(value)}],internal_chat_message_metadata_passthrough:{
+      turn_id:attempt.providerTurnId,create_time:12.25,content_item_kinds:['additional_content.slack-concierge']}}};
 }
 
 export async function createFixtureOriginalHistory(input:{root:string;binding:ContinuationBinding;selectedInputId:string;nativeProof:any}){

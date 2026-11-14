@@ -7,6 +7,7 @@ import {acceptedBindingSnapshotDigest,type ContinuationBinding} from './codex-ac
 import {CODEX_HISTORY_INTERPRETATION,decodeNativeHistoryRecord,decodeResponse,nativeHistoryInventoryKey,NativeHistoryDecodeError} from './codex-native-history-decoder';
 import {parseNativeSourceRecord,nativeSourceValueDigest as sourceDigest,nativeSourceShadow,nativeSourceWithoutKeys,nativeSourceIntegerAt} from './codex-native-source-values';
 import {CONTEXT_TRANSITION_INTERPRETATION,ContextTransitionRefusal,renderAdjacentContextTransition} from './codex-diagnostic-context-transition';
+import {OwnerContextRefusal,verifyOwnerContextOccurrence,type OwnerContextDiagnosticEvidence} from './codex-owner-context-diagnostic';
 
 const digest=acceptedBindingSnapshotDigest;
 const object=(v:any)=>v!==null&&typeof v==='object'&&!Array.isArray(v);
@@ -44,6 +45,7 @@ export type CodexOriginalHistoryCustody={path:string;home:string;authoritativePa
   threadId:string;prefixDigest:string;witnessDigest:string};
 export type CodexOriginalHistoryCoverageInput={binding:ContinuationBinding;selectedInputId:string;
   attempts:readonly CodexOriginalHistoryAttempt[];nativeTurnOrder:readonly string[];codexHome:string;
+  ownerContextEvidence?:OwnerContextDiagnosticEvidence;
   client:{request(method:'thread/read',params:Record<string,unknown>):Promise<any>}};
 
 type DiagnosticState={settings:CodexOriginalHistoryWitness['settingsBaseline'];
@@ -63,19 +65,22 @@ type ContextWorldTransition=Omit<ReturnType<typeof renderAdjacentContextTransiti
  * It describes observations under a permanently failed strict proof. */
 export type CodexOriginalHistorySuffixDiagnostic={policy:'codex_original_history_diagnostic_v1';
   diagnosticOnly:true;authorizesProviderStart:false;proofBlocked:true;
-  interpretation:typeof CODEX_HISTORY_INTERPRETATION;diagnosticInterpretation:'observed_suffix_adjacent_v2';
+  interpretation:typeof CODEX_HISTORY_INTERPRETATION;diagnosticInterpretation:'observed_suffix_owner_context_v3';
   bindingDigest:string;selectedInputId:string;sourceIdentity:string;sourceRevisionDigest:string;pathDigest:string;
   prefixDigest:string;prefixBytes:number;recordCount:number;completeCapturedEof:true;inventory:Record<string,number>;
   strictFailures:{code:string;evidence:string[]}[];findings:DiagnosticFinding[];
   selectedBaseline:DiagnosticState|null;lastObservedState:DiagnosticState|null;
   semanticThroughRecord:number;semanticComplete:boolean;
   invalidatedDependencies:string[];unassessedRange:{firstRecord:number;lastRecord:number}|null;
-  transitions:CodexOriginalHistoryWitness['baselineTransitions'];contextWorldTransitions:ContextWorldTransition[]};
+  transitions:CodexOriginalHistoryWitness['baselineTransitions'];contextWorldTransitions:ContextWorldTransition[];
+  ownerContextOccurrences:(ReturnType<typeof verifyOwnerContextOccurrence>&{source:SourceRecordReference;envelopeDigest:string})[]};
 
 class SuffixAnalysis {
   findings:DiagnosticFinding[]=[];selectedBaseline:DiagnosticState|null=null;lastObservedState:DiagnosticState|null=null;
   private pendingFindings:DiagnosticFinding[]=[];
   contextWorldTransitions:ContextWorldTransition[]=[];pendingContextTransition:ContextWorldTransition|null=null;
+  ownerContextOccurrences:CodexOriginalHistorySuffixDiagnostic['ownerContextOccurrences']=[];
+  pendingOwnerContext:CodexOriginalHistorySuffixDiagnostic['ownerContextOccurrences'][number]|null=null;
   semanticThroughRecord=0;invalidatedAt:number|null=null;
   transitions:CodexOriginalHistoryWitness['baselineTransitions']=[];private transitionCount=0;
   record=0;startByte=0;endByte=0;recordDigest='';
@@ -90,6 +95,7 @@ class SuffixAnalysis {
   }
   invalidate(error:CoverageRefusal,firstRecord=this.record){
     this.pendingContextTransition=null;
+    this.pendingOwnerContext=null;
     this.pendingFindings=[];this.finding('invalidated',error.code,error.evidence);
     this.findings.push(...this.pendingFindings);this.pendingFindings=[];this.invalidatedAt=firstRecord;
   }
@@ -104,6 +110,11 @@ class SuffixAnalysis {
     this.semanticThroughRecord=coverage.count;this.lastObservedState=this.state(coverage);
     this.findings.push(...this.pendingFindings);this.pendingFindings=[];
     if(this.pendingContextTransition){this.contextWorldTransitions.push(this.pendingContextTransition);this.pendingContextTransition=null;}
+    if(this.pendingOwnerContext){
+      if(!this.ownerContextOccurrences.some(o=>o.source.record===this.pendingOwnerContext!.source.record))
+        this.ownerContextOccurrences.push(this.pendingOwnerContext);
+      this.pendingOwnerContext=null;
+    }
     if(coverage.relevant)this.transitions.push(...coverage.baselineTransitions.slice(this.transitionCount));
     this.transitionCount=coverage.baselineTransitions.length;
   }
@@ -578,6 +589,17 @@ class RecordCoverage {
       }
       if(this.relevant){
         if(!this.neutralMetadata(row.metadata))refuse('ORIGINAL_HISTORY_RESPONSE_METADATA_UNCLASSIFIED',ref);
+        if(this.diagnostic&&this.input.ownerContextEvidence&&p.type==='message'&&p.role==='developer'){
+          if(!this.current||this.active===null)refuse('OWNER_CONTEXT_NATIVE_ASSOCIATION_MISSING',ref);
+          try{
+            const occurrence=verifyOwnerContextOccurrence({evidence:this.input.ownerContextEvidence,binding:this.input.binding,
+              selectedInputId:this.input.selectedInputId,attempts:this.input.attempts,nativeTurnId:this.active,payload:p,metadata:row.metadata});
+            this.diagnostic.pendingOwnerContext={...occurrence,source:{record:this.count,startByte:this.recordStart,endByte:this.recordEnd,
+              recordDigest:this.diagnostic.recordDigest},envelopeDigest:sourceDigest(row)};
+          }catch(error){if(error instanceof OwnerContextRefusal)refuse(error.code,ref);throw error;}
+          this.diagnostic.finding('strict_effect','ORIGINAL_HISTORY_OWNER_APPLICATION_CONTEXT_OBSERVED',[ref]);
+          this.rememberEnvelope(p,row.metadata);return;
+        }
         if(p.type==='message'&&p.role==='user'&&generatedStaticContext(p)){
           const config=configurationIdentity(p,row.metadata);
           if(config===null||!this.configurationEnvelopes.has(config)){
@@ -922,7 +944,7 @@ export async function readCodexOriginalHistoryCoverage(input:CodexOriginalHistor
     if(coverage.blocked){
       const diagnostic:CodexOriginalHistorySuffixDiagnostic={policy:'codex_original_history_diagnostic_v1',
         diagnosticOnly:true,authorizesProviderStart:false,proofBlocked:true,
-        interpretation:CODEX_HISTORY_INTERPRETATION,diagnosticInterpretation:'observed_suffix_adjacent_v2',
+        interpretation:CODEX_HISTORY_INTERPRETATION,diagnosticInterpretation:'observed_suffix_owner_context_v3',
         bindingDigest:digest(input.binding),selectedInputId:input.selectedInputId,
         sourceIdentity:digest({dev:rev.dev,ino:rev.ino}),sourceRevisionDigest:digest(rev),pathDigest:digest(path),
         inventory:coverage.inventory,prefixDigest,prefixBytes:size,recordCount:coverage.count,completeCapturedEof:true,
@@ -931,7 +953,7 @@ export async function readCodexOriginalHistoryCoverage(input:CodexOriginalHistor
         semanticComplete:observed!==null,invalidatedDependencies:observed?[]:
           ['lineage','turn_order','settings','context','world','history_provenance','resume','usage'],
         unassessedRange:analysis.invalidatedAt===null?null:{firstRecord:analysis.invalidatedAt,lastRecord:coverage.count},
-        transitions:analysis.transitions,contextWorldTransitions:analysis.contextWorldTransitions};
+        transitions:analysis.transitions,contextWorldTransitions:analysis.contextWorldTransitions,ownerContextOccurrences:analysis.ownerContextOccurrences};
       return {proven:false as const,reasons:coverage.issues,diagnostic};
     }
     const summary={policy:'codex_original_history_v1' as const,threadId:input.binding.threadId,sourceSessionId:coverage.sourceSessionId,bindingDigest:digest(input.binding),

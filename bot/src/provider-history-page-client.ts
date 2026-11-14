@@ -1,11 +1,12 @@
 import {Worker} from 'node:worker_threads';
 import {releaseWorkerPath} from './release-worker';
 import {log,errorFields} from './log';
+import type {OwnerContextCandidate} from './codex-owner-context-diagnostic';
 
 type Work={operation:'page'|'delta'|'prepare';sessionId:string;cwd:string;cursor:string|null;limit:number;after:string|null;
   want?:{dialogue:number;untilInput:boolean};thread?:string}|
   {operation:'original-recovery-coverage';sessionId:number;inputId:string;requestId:string;runId:string;fenceId:string;
-    expectedDecisionDigest:string;expectedNativeDigest:string}|
+    expectedDecisionDigest:string;expectedNativeDigest:string;diagnosticContextCandidates?:readonly OwnerContextCandidate[]}|
   {operation:'original-recovery-cold-before-resume';authorizationId:string;params:Record<string,unknown>}|
   {operation:'original-recovery-refresh-after-resume';authorizationId:string;params:Record<string,unknown>;responseResult:unknown};
 type Reply={id:number;result?:unknown;error?:{message:string;status:number}};
@@ -49,7 +50,7 @@ export class ProviderHistoryPageClient {
   warm(){this.ensure();}
   /** Source-bound, private evidence read for the exact fenced Codex continuation. */
   readOriginalCodexRecoveryCoverage(input:{sessionId:number;inputId:string;requestId:string;runId:string;fenceId:string;
-    expectedDecisionDigest:string;expectedNativeDigest:string}){
+    expectedDecisionDigest:string;expectedNativeDigest:string;diagnosticContextCandidates?:readonly OwnerContextCandidate[]}){
     return this.request({operation:'original-recovery-coverage',...input});
   }
   /** Refresh the private local source witness only after the exact owned resume response. */

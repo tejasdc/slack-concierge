@@ -6,7 +6,8 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {readCodexOriginalHistoryCoverage,revalidateCodexOriginalHistorySource,refreshCodexOriginalHistoryAfterOwnedResume,
   type CodexOriginalHistoryCoverageInput} from '../src/codex-original-history-coverage';
-import {fixtureNativeSettings,fixtureAdjacentContextRecords} from './codex-original-history-fixture-helper';
+import {fixtureNativeSettings,fixtureAdjacentContextRecords,fixtureOwnerContextEvidence} from './codex-original-history-fixture-helper';
+import {renderOwnerApplicationContext,ownerContextRawSha256} from '../src/codex-owner-context-diagnostic';
 import {renderAdjacentContextTransition,nativeRustLines} from '../src/codex-diagnostic-context-transition';
 import {CODEX_HISTORY_INTERPRETATION,decodeNativeHistoryRecord,decodeResponse,rolloutKinds,responseKinds,
   turnItemKinds,NativeHistoryDecodeError} from '../src/codex-native-history-decoder';
@@ -92,7 +93,7 @@ const input:CodexOriginalHistoryCoverageInput={binding,selectedInputId:'selected
   nativeTurnOrder:['prior-T','selected-T','compaction-T','empty-T'],codexHome:home,
   client:{async request(method,params){assert.equal(method,'thread/read');assert.equal(params.includeTurns,false);
     return {thread:{id:threadId,path}};}}};
-const read=()=>readCodexOriginalHistoryCoverage(input);
+const read=(overrides:Partial<CodexOriginalHistoryCoverageInput>={})=>readCodexOriginalHistoryCoverage({...input,...overrides});
 async function refuses(code:string,change:(rows:any[])=>void){const rows=records();change(rows);write(rows);
   const result=await read();assert.equal(result.proven,false,code);
   if(!result.proven)assert.equal(result.reasons[0]?.code,code,JSON.stringify(result));}
@@ -106,6 +107,86 @@ assert.equal(result.witness.priorRecordCount,10);
 assert.equal(revalidateCodexOriginalHistorySource(result.custody,result.witness).valid,true);
 assert.ok(!JSON.stringify(result.witness).includes(path)&&!JSON.stringify(result.witness).includes('earlier successful effect'));
 const original=readFileSync(path);
+assert.equal(renderOwnerApplicationContext('a<&\r\n'),'<'+'slack-concierge>a<&\r\n</slack-concierge>');
+assert.equal(renderOwnerApplicationContext('a'.repeat(4000)),`<slack-concierge>${'a'.repeat(4000)}</slack-concierge>`);
+assert.equal(renderOwnerApplicationContext('a'.repeat(4001)),`<slack-concierge>${'a'.repeat(2000)}…1 tokens truncated…${'a'.repeat(2000)}</slack-concierge>`);
+const utf8='a'.repeat(1999)+'😀'+'m'.repeat(7)+'😀'+'z'.repeat(1999);
+assert.equal(renderOwnerApplicationContext(utf8),`<slack-concierge>${'a'.repeat(1999)}…4 tokens truncated…${'z'.repeat(1999)}</slack-concierge>`);
+const privateContext='prefix'.repeat(500)+'private changed middle'+'suffix'.repeat(500);
+const owner=fixtureOwnerContextEvidence(binding,'selected',attempts,privateContext);
+const ownerRows=records(),ownerIndex=ownerRows.findIndex(r=>r.type==='turn_context'&&r.payload.turn_id==='selected-T')+1;
+ownerRows.splice(ownerIndex,0,row('event_msg',{type:'thread_settings_applied',thread_id:threadId,
+  thread_settings:{...fixtureNativeSettings(binding),runtime_workspace_roots:['/private-root']}}),row('response_item',owner.message),
+  row('response_item',owner.message));
+const copy=ownerRows.find(r=>r.type==='compacted').payload;
+copy.replacement_history.push(owner.message);copy.replacement_history_metadata.push({});
+write(ownerRows);
+const ownerRead=()=>read({attempts:owner.attempts,ownerContextEvidence:owner.resolve()});
+const ownerResult=await ownerRead();assert.equal(ownerResult.proven,false);
+if(ownerResult.proven||!ownerResult.diagnostic)throw new Error('owner context missing');
+const ownerDiagnostic=ownerResult.diagnostic;
+assert.equal(ownerDiagnostic.semanticComplete,true,JSON.stringify(ownerDiagnostic.findings));
+assert.equal(ownerResult.reasons[0].code,'ORIGINAL_HISTORY_NATIVE_SETTINGS_CHANGED');
+assert.equal(ownerDiagnostic.ownerContextOccurrences.length,2,'separate occurrences remain visible, compaction is not another admission');
+assert.equal(ownerDiagnostic.ownerContextOccurrences[0].preimageBytes,Buffer.byteLength(privateContext));
+assert.equal(ownerDiagnostic.ownerContextOccurrences[0].evidenceStatus,'conditional_retained_adapter');
+assert.equal(ownerDiagnostic.ownerContextOccurrences[0].materiality,'unassessed');
+assert.ok(!JSON.stringify(ownerDiagnostic).includes('private changed middle')&&!JSON.stringify(ownerDiagnostic).includes('/private-root'));
+const reread=await ownerRead();if(reread.proven||!reread.diagnostic)throw new Error('reread');
+assert.deepEqual(reread.diagnostic.ownerContextOccurrences,ownerDiagnostic.ownerContextOccurrences,'same immutable source occurrence is idempotent');
+assert.equal(revalidateCodexOriginalHistorySource(result.custody,ownerDiagnostic as any).valid,false);
+assert.throws(()=>bindCodexOriginalHistoryCoverage({proven:true} as any,ownerResult));
+const altered=privateContext.replace('changed middle','CHANGED MIDDLE');
+assert.equal(renderOwnerApplicationContext(altered),renderOwnerApplicationContext(privateContext));
+assert.notEqual(ownerContextRawSha256(altered),ownerContextRawSha256(privateContext));
+owner.candidate.value=altered;
+const wrongMiddle=await ownerRead();assert.equal(wrongMiddle.proven,false);
+if(wrongMiddle.proven||!wrongMiddle.diagnostic)throw new Error('wrong middle');
+assert.equal(wrongMiddle.diagnostic.findings.at(-1)?.code,'OWNER_CONTEXT_FULL_PREIMAGE_MISMATCH');
+owner.candidate.value=privateContext;
+for(const [label,change] of Object.entries({
+  session:(o:any)=>o.snapshot.events[0].session_id++,
+  eventTurn:(o:any)=>o.snapshot.events[0].turn_id=null,
+  eventInput:(o:any)=>o.snapshot.events[0].input_id='different',
+  eventKind:(o:any)=>o.snapshot.events[0].kind='result',
+  eventId:(o:any)=>o.snapshot.events[0].event_id='different',
+  missingEvent:(o:any)=>o.snapshot.events=[],
+  duplicate:(o:any)=>o.snapshot.events.push({...o.snapshot.events[0]}),
+  conflicting:(o:any)=>o.snapshot.events.push({...o.snapshot.events[0],event_id:'conflicting-cache-event'}),
+  wrongOwner:(o:any)=>o.snapshot.ownerSnapshot.turns[0].session_id++,
+  nullRun:(o:any)=>o.snapshot.ownerSnapshot.turns[0].native_run_id=null,
+  projectedNullRun:(o:any)=>o.snapshot.events[0].runId=null,
+  run:(o:any)=>o.candidate.runId='different',
+  attempt:(o:any)=>o.candidate.dispatchAttempt++,
+  native:(o:any)=>o.candidate.providerTurnId='different',
+  input:(o:any)=>o.candidate.inputId='different',
+  candidateHash:(o:any)=>o.candidate.expectedSha256=ownerContextRawSha256(o.candidate.value),
+  candidatePath:(o:any)=>o.candidate.path='/private/arbitrary',
+  empty:(o:any)=>o.candidate.value='',
+  invalidUtf8:(o:any)=>o.candidate.value='\ud800',
+  unknownPayload:(o:any)=>o.snapshot.events[0].payload_json=JSON.stringify({effort:'medium',systemInstructionsSha256:ownerContextRawSha256(privateContext),unknown:true}),
+})){const bad=fixtureOwnerContextEvidence(binding,'selected',attempts,privateContext);change(bad);assert.throws(bad.resolve,undefined,label);}
+for(const [label,change] of Object.entries({
+  key:(p:any)=>p.internal_chat_message_metadata_passthrough.content_item_kinds=['additional_content.other'],
+  role:(p:any)=>p.role='user',
+  turn:(p:any)=>p.internal_chat_message_metadata_passthrough.turn_id='compaction-T',
+  content:(p:any)=>p.content.push({type:'input_text',text:'extra'}),
+  sidecar:(p:any)=>p.internal_chat_message_metadata_passthrough.cell_id='extra',
+  unknown:(p:any)=>p.meaningful_unknown=true,
+  renderer:(p:any)=>p.content[0].text+='changed',
+})){const rows=structuredClone(ownerRows);change(rows[ownerIndex+1].payload);write(rows);
+  const bad=await ownerRead();assert.equal(bad.proven,false);if(bad.proven||!bad.diagnostic)throw new Error(label);
+  assert.equal(bad.diagnostic.semanticComplete,false,label);assert.equal(bad.diagnostic.ownerContextOccurrences.length,0,label);
+}
+const metadataRows=structuredClone(ownerRows);metadataRows[ownerIndex+1].metadata={client_authored:false};write(metadataRows);
+const metadataResult=await ownerRead();assert.equal(metadataResult.proven,false);
+if(metadataResult.proven||!metadataResult.diagnostic)throw new Error('metadata');
+assert.equal(metadataResult.diagnostic.findings.at(-1)?.code,'OWNER_CONTEXT_NATIVE_ENVELOPE_UNSUPPORTED');
+const crossAttempt=structuredClone(ownerRows),crossIndex=crossAttempt.findIndex(r=>r.type==='turn_context'&&r.payload.turn_id==='compaction-T')+1;
+const crossMessage=structuredClone(owner.message);crossMessage.internal_chat_message_metadata_passthrough.turn_id='compaction-T';
+crossAttempt.splice(crossIndex,0,row('response_item',crossMessage));write(crossAttempt);
+const crossResult=await ownerRead();assert.equal(crossResult.proven,false);if(crossResult.proven||!crossResult.diagnostic)throw new Error('cross attempt');
+assert.equal(crossResult.diagnostic.findings.at(-1)?.code,'OWNER_CONTEXT_COMMITMENT_MISSING_OR_CONFLICTING');
 // The diagnostic alone can recognize one producer-defined physical pair.
 const pairRows=records(),pair=fixtureAdjacentContextRecords(pairRows,'selected-T',threadId,binding);
 write(pairRows);const pairResult=await read();
@@ -597,6 +678,10 @@ const diagnosticRefresh=await refreshCodexOriginalHistoryAfterOwnedResume({db,in
   witness:diagnostic as any,custody:result.custody});
 assert.equal(diagnosticRefresh.proven,false);
 if(!diagnosticRefresh.proven)assert.equal(diagnosticRefresh.reasons[0]?.code,'ORIGINAL_HISTORY_WITNESS_CONFLICT');
+const ownerRefresh=await refreshCodexOriginalHistoryAfterOwnedResume({db,intentId:'never-authorized',
+  witness:ownerDiagnostic as any,custody:result.custody});
+assert.equal(ownerRefresh.proven,false);
+if(!ownerRefresh.proven)assert.equal(ownerRefresh.reasons[0]?.code,'ORIGINAL_HISTORY_WITNESS_CONFLICT');
 db.exec(`CREATE TABLE codex_mutation_intents(intent_id TEXT,permit_id TEXT,method TEXT,response_kind TEXT,response_digest TEXT,state TEXT,
  thread_id TEXT,fence_id TEXT,accepted_input_id TEXT,run_id TEXT,dispatch_attempt INTEGER);
  CREATE TABLE codex_mutation_permits(permit_id TEXT,purpose TEXT);

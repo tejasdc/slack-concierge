@@ -275,6 +275,43 @@ they are never runtime allowlists or recovery authority. Renderer consistency
 establishes an observed succession, not harmlessness, invocation causality or
 resource continuity. The strict reducer is unchanged and still refuses drift.
 
+The diagnostic also verifies an owner-attempt application-context construction
+preimage (`native_0162_owner_application_preimage_v1`, diagnostic interpretation
+`observed_suffix_owner_context_v3`). The existing private history request accepts
+only candidate instruction values with exact input/turn/run/attempt/native identity;
+no path, expected hash, verified flag or arbitrary event object is accepted. The
+worker first obtains its fresh owner snapshot and proven admission/result/native
+attempt associations, derives the unique `prompt-cache-identity` event, and checks
+session, owner turn, input association, event kind/payload, effective effort and
+all retained conflicting identities. A legacy null event input is accepted only
+with the exact mandatory owner-turn/run/input join; it never matches an arbitrary
+input. Raw owner events have no separate run column: run identity comes from that
+exact owner turn. Non-null projected identities must agree.
+
+The worker hands private comparison inputs to the existing original reader,
+which independently recomputes full raw UTF-8 SHA256 (no trimming, normalization
+or JSON hashing), pinned Application developer rendering and exact original
+envelope equality. The integration key is shared with the actual Codex producer.
+The native renderer preserves both UTF-8 ends of its 1000 approximate-token,
+four-bytes-per-token content budget; its marker and wrapper are outside that
+budget. The supported envelope has exactly one developer input-text item, one
+aligned owner-context kind, the mapped native turn, classified passthrough and
+absent/null harness metadata. Other metadata domains and meaningful sidecars refuse.
+
+An observed occurrence retains only event/preimage/render/envelope identities,
+byte lengths and original record positions. Rechecking the same record is
+idempotent, separate occurrences remain visible, and compaction can reference the
+classified original envelope. No historical event is spent or ledger state
+changed. A static adapter must use `conditional_retained_adapter`; production
+resolves `owner_snapshot` inside the worker and rechecks owner/native basis after
+I/O even when returning a failed-proof diagnostic. Both statuses remain
+nonauthorizing and source-bound through the enclosing captured-source diagnostic.
+No complete additional-context map, emission cause, historical wire arguments,
+visibility of the omitted middle, unchanged instructions or materiality is inferred.
+Missing candidate bytes or owner commitment remain precise refusals; today's
+generated instructions never substitute for retained bytes. No public read API
+or arbitrary private-file entrance is added.
+
 The separately typed result binds source identity/revision, captured EOF and
 decoder/diagnostic interpretations. It carries only references, counts and digests,
 has no witness/custody, and explicitly forbids provider start. Semantic completion

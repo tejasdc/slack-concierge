@@ -7,13 +7,15 @@ import {acquireCodexThreadMutationFence} from './codex-mutation-fence';
 import {grantCodexRecoveryAuthorization} from './codex-recovery-dispatch-authorization';
 import {assessManagedCodexWriterCoverage} from './codex-managed-process-registry';
 import {RETRYING_PROVIDER_TURN_STATUS_TEXT} from './text';
+import type {OwnerContextCandidate} from './codex-owner-context-diagnostic';
 
 /** Owner-internal host evidence adapter. Tests supply process identities, never
  * a caller's claim that writers are covered. Production uses the real host. */
 export interface CodexRecoveryHostDependencies {
   writerProc?:Parameters<typeof assessManagedCodexWriterCoverage>[0]['proc'];
+  diagnosticContextCandidates?:readonly OwnerContextCandidate[];
   readOriginalHistory?:(input:{sessionId:number;inputId:string;requestId:string;runId:string;fenceId:string;
-    expectedDecisionDigest:string;expectedNativeDigest:string})=>Promise<Awaited<ReturnType<typeof readCodexOriginalHistoryCoverage>> &
+    expectedDecisionDigest:string;expectedNativeDigest:string;diagnosticContextCandidates?:readonly OwnerContextCandidate[]})=>Promise<Awaited<ReturnType<typeof readCodexOriginalHistoryCoverage>> &
       {coldConstruction?:import('./codex-cold-construction').CodexColdConstructionWitness}>;
 }
 
@@ -52,7 +54,8 @@ export async function recoverAcceptedBindingCodex(input:{sessionId:number;inputI
   if(!projected.proven)throw new Error(`Projected native interval refuses: ${projected.reasons.map(reason=>reason.code).join(', ')}.`);
   if(!dependencies.readOriginalHistory)throw new Error('NATIVE_ORIGINAL_EFFECT_HISTORY_COVERAGE_UNPROVEN: original source reader is unavailable.');
   const original=await dependencies.readOriginalHistory({sessionId:input.sessionId,inputId:input.inputId,requestId:input.requestId,
-    runId:snapshot.selected.turn.native_run_id!,fenceId,expectedDecisionDigest:inspection.decisionDigest,expectedNativeDigest:projected.nativeDigest});
+    runId:snapshot.selected.turn.native_run_id!,fenceId,expectedDecisionDigest:inspection.decisionDigest,expectedNativeDigest:projected.nativeDigest,
+    ...(dependencies.diagnosticContextCandidates?{diagnosticContextCandidates:dependencies.diagnosticContextCandidates}:{})});
   const native=bindCodexOriginalHistoryCoverage(projected,original);
   if(!native.proven)throw new Error(`Original native history coverage refuses: ${native.reasons.map(reason=>reason.code).join(', ')}.`);
   if(!('originalHistory'in native))throw new Error('NATIVE_ORIGINAL_EFFECT_HISTORY_COVERAGE_UNPROVEN');

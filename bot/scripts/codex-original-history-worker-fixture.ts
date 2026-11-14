@@ -6,6 +6,7 @@ import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {fixtureNativeSettings} from './codex-original-history-fixture-helper';
 import {releaseWorkerPath} from '../src/release-worker';
+import {ownerContextRawSha256,renderOwnerApplicationContext} from '../src/codex-owner-context-diagnostic';
 
 // Both the owner worker and its App Server bridge inherit these isolated paths.
 const scratch=await mkdtemp(join(tmpdir(),'codex-original-worker-'));
@@ -23,6 +24,7 @@ delete process.env.CONCIERGE_CODEX_RUNNER;
 
 const threadId='019a7181-0000-7000-8000-000000000001';
 const nativeTurnId='native-turn-selected';
+const privateOwnerHeader='fixture private owner commitment\n'+('captured instructions 😀\n'.repeat(300));
 const originalPath=join(codexHome,'original.jsonl');
 const line=(type:string,payload:any)=>JSON.stringify({timestamp:'2026-11-13T12:00:00.000Z',type,payload});
 const settings=fixtureNativeSettings({model:'gpt-6-astra',effort:'medium'});
@@ -104,7 +106,8 @@ try{
     recordSessionEvent({eventId:`result:${turn}`,sessionId:session.id,inputId:input.id,turnId:turn,kind:'result',
       payload:{...result,runId:nativeRunId(turn),turnId:turn,sessionId:session.id,inputId:input.id}});
     recordSessionEvent({eventId:`attention:${input.id}:1`,sessionId:session.id,inputId:input.id,turnId:turn,kind:'attention',payload:{dispatchAttempt:1}});
-    recordSessionEvent({eventId:`prompt-cache-identity:${turn}:1`,sessionId:session.id,turnId:turn,kind:'prompt_cache_identity',payload:{effort:'medium'}});
+    recordSessionEvent({eventId:`prompt-cache-identity:${turn}:1`,sessionId:session.id,turnId:turn,kind:'prompt_cache_identity',
+      payload:{effort:'medium',systemInstructionsSha256:ownerContextRawSha256(privateOwnerHeader)}});
   }
   db.query('UPDATE turns SET provider_input_acknowledged_at=CURRENT_TIMESTAMP WHERE id IN (?,?)').run(createTurn,sourceTurn);
   db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,
@@ -162,6 +165,31 @@ await import(${JSON.stringify(actualWorkerEntry)});
     return new Worker(fixtureWorkerEntry);
   });
   try{
+    const candidate={inputId:report.id,turnId:reportTurn,runId,dispatchAttempt:1,providerTurnId:nativeTurnId,value:privateOwnerHeader};
+    const diagnosticRows=original.trimEnd().split('\n').map(text=>JSON.parse(text));
+    diagnosticRows.splice(diagnosticRows.length-1,0,JSON.parse(line('response_item',{type:'message',role:'developer',
+      content:[{type:'input_text',text:renderOwnerApplicationContext(privateOwnerHeader)}],
+      internal_chat_message_metadata_passthrough:{turn_id:nativeTurnId,create_time:12.5,content_item_kinds:['additional_content.slack-concierge']}})));
+    await writeFile(originalPath,diagnosticRows.map(row=>JSON.stringify(row)).join('\n')+'\n');
+    const eventCount=(db.query('SELECT count(*) AS count FROM session_owner_events').get() as any).count;
+    const diagnosticRequest={sessionId:session.id,inputId:report.id,requestId,runId,fenceId,
+      expectedDecisionDigest:inspection.decisionDigest,expectedNativeDigest:native.nativeDigest,diagnosticContextCandidates:[candidate]};
+    const observed=await client.readOriginalCodexRecoveryCoverage(diagnosticRequest) as any;
+    assert.equal(observed.proven,false,JSON.stringify(observed));assert.equal(observed.diagnostic.semanticComplete,true);
+    assert.equal(observed.diagnostic.ownerContextOccurrences.length,1);
+    assert.equal(observed.diagnostic.ownerContextOccurrences[0].evidenceStatus,'owner_snapshot');
+    assert.ok(!JSON.stringify(observed).includes(privateOwnerHeader)&&!JSON.stringify(observed).includes(originalPath));
+    const again=await client.readOriginalCodexRecoveryCoverage(diagnosticRequest) as any;
+    assert.deepEqual(again.diagnostic.ownerContextOccurrences,observed.diagnostic.ownerContextOccurrences);
+    assert.equal((db.query('SELECT count(*) AS count FROM session_owner_events').get() as any).count,eventCount,
+      'read-side evidence use never spends a historical event or attempt');
+    const poisoned=await client.readOriginalCodexRecoveryCoverage({...diagnosticRequest,
+      diagnosticContextCandidates:[{...candidate,expectedSha256:ownerContextRawSha256('different')}] as any}) as any;
+    assert.equal(poisoned.proven,false);assert.equal(poisoned.reasons[0].code,'OWNER_CONTEXT_CANDIDATE_INVALID');
+    const mismatch=await client.readOriginalCodexRecoveryCoverage({...diagnosticRequest,
+      diagnosticContextCandidates:[{...candidate,value:privateOwnerHeader+'changed'}]}) as any;
+    assert.equal(mismatch.proven,false);assert.equal(mismatch.diagnostic.findings.at(-1).code,'OWNER_CONTEXT_FULL_PREIMAGE_MISMATCH');
+    await writeFile(originalPath,original);
     const noFenceReads=threadReadCalls;
     const staleFence=await client.readOriginalCodexRecoveryCoverage({sessionId:session.id,inputId:report.id,requestId,runId,
       fenceId:'wrong-fence',expectedDecisionDigest:inspection.decisionDigest,expectedNativeDigest:native.nativeDigest}) as any;

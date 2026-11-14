@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { CODEX_OWNER_CONTEXT_KEY } from "./codex-owner-context-diagnostic";
 import { spawn } from "node:child_process";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
 import { withoutMachinePaths } from "./runner-machine";
@@ -214,7 +215,7 @@ function turnAdditionalContext(applicationInstructions: string | undefined) {
   return applicationInstructions
     ? {
         additionalContext: {
-          "slack-concierge": {
+          [CODEX_OWNER_CONTEXT_KEY]: {
             value: applicationInstructions,
             kind: "application",
           },

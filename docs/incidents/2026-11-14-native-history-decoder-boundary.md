@@ -83,6 +83,38 @@ execution fence remain independently necessary. [decision: preserve-pushed-histo
 
 ## Acceptance scenario
 
+### Owner application-context construction preimage
+
+The adjacent transition correction left a distinct developer-context occurrence
+unexplained. Parent retained a complete instruction candidate whose raw UTF-8
+hash equals the mapped owner attempt's instruction commitment and whose pinned
+Application rendering equals the original native item. The prior diagnostic
+required an already known configuration envelope and had no route for this
+independently committed construction relation. Neither a context key nor visible
+truncated text can prove the relation: different omitted middles can render alike.
+
+The narrow correction carries candidate data through the existing private
+owner/history request. The worker independently resolves the expected unique
+event and exact owner/native attempt from fresh owner records; candidate data
+cannot select an expected hash, assert verification or request a file read. The
+reader recomputes the full raw hash and pinned UTF-8 middle-truncation rendering,
+then checks the complete original developer envelope. Occurrence evidence is
+read-side association, not event spending or another provider admission. Earlier
+instructions and actual drift remain preserved. No instruction neutrality,
+complete context map or historical RPC receipt is inferred.
+
+Disposable tests cover UTF-8 boundaries/native count, identical truncated ends
+with a different full preimage, identity/event/shape conflicts, legacy null
+bindings, repeated occurrences, compaction reference and privacy. The real
+SQLite/history-worker boundary independently resolves owner commitments and
+rejects caller-supplied expected hashes; actual execution authorization rejects
+even completed diagnostics with recomputed wrappers. Parent retains original
+source observation and whole review. Both operational holds remain; this source
+correction is not the human recovery. T8 is composed acceptance within the
+authorized source-only scope; T6 retains a truthful update note and installed
+status boundary. No screen or typing path changes, so screen/typing acceptance
+does not apply. [decision: typing-gate-only-for-app-changes]
+
 ### Adjacent generated context and world update
 
 The first suffix diagnostic correctly retained the strict settings failure but

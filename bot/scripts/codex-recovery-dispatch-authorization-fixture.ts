@@ -5,7 +5,7 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {Database} from 'bun:sqlite';
 import {IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION} from '../src/test-authorizations';
-import {createFixtureOriginalHistory,fixtureNativeSettings,fixtureAdjacentContextRecords} from './codex-original-history-fixture-helper';
+import {createFixtureOriginalHistory,fixtureNativeSettings,fixtureAdjacentContextRecords,fixtureOwnerContextEvidence} from './codex-original-history-fixture-helper';
 import {readCodexOriginalHistoryCoverage} from '../src/codex-original-history-coverage';
 import {fixtureColdConstruction} from './codex-cold-construction-fixture-helper';
 import {validateCodexColdResume} from '../src/codex-cold-construction';
@@ -19,7 +19,7 @@ const [{db},inputs,{inspectAcceptedBindingContinuation},{proveCodexContinuationN
 const {createNativeSession,retainSessionInput,enqueueSessionInput,nativeRunId,recordSessionEvent}=inputs;
 fences.initializeCodexMutationFenceSchema(db);auth.initializeCodexRecoveryAuthorizationSchema(db);
 let serial=0;
-async function seed(options:{retainColdInputs?:boolean;diagnosticAsWitness?:boolean|'adjacent'}={}){
+async function seed(options:{retainColdInputs?:boolean;diagnosticAsWitness?:boolean|'adjacent'|'owner'}={}){
   const suffix=++serial,session=createNativeSession('codex',{title:'exact retained work',purpose:'recovery fixture',origin:'native',
     model:'gpt-6-astra',reasoningEffort:'medium',providerRunner:null} as any),threadId=`thread:${suffix}`;
   db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run(threadId,session.id);
@@ -62,6 +62,14 @@ async function seed(options:{retainColdInputs?:boolean;diagnosticAsWitness?:bool
   const history=await createFixtureOriginalHistory({root:scratch,binding:inspection.identity.binding,selectedInputId:report.id,nativeProof:projectedNative});
   const native=history.nativeWithOriginalHistory;
   if(options.diagnosticAsWitness){
+    let ownerContextEvidence;
+    if(options.diagnosticAsWitness==='owner'){
+      const owner=fixtureOwnerContextEvidence(inspection.identity.binding,report.id,native.attempts,'fixture committed private owner context');
+      const rows=readFileSync(history.sourcePath,'utf8').trimEnd().split('\n').map(line=>JSON.parse(line));
+      rows.splice(rows.length-1,0,{timestamp:'2026-11-13T00:00:00.000Z',type:'response_item',payload:owner.message});
+      writeFileSync(history.sourcePath,rows.map(row=>JSON.stringify(row)).join('\n')+'\n');
+      ownerContextEvidence=owner.resolve();
+    }
     if(options.diagnosticAsWitness==='adjacent'){
       const rows=readFileSync(history.sourcePath,'utf8').trimEnd().split('\n').map(line=>JSON.parse(line));
       fixtureAdjacentContextRecords(rows,`native:${reportTurn}:1`,threadId,inspection.identity.binding);
@@ -71,13 +79,17 @@ async function seed(options:{retainColdInputs?:boolean;diagnosticAsWitness?:bool
       payload:{type:'thread_settings_applied',thread_id:threadId,
         thread_settings:{...fixtureNativeSettings(inspection.identity.binding),runtime_workspace_roots:['/different-fixture-root']}}})+'\n');
     const diagnosticResult=await readCodexOriginalHistoryCoverage({binding:inspection.identity.binding,selectedInputId:report.id,
-      attempts:native.attempts,nativeTurnOrder:native.nativeTurnOrder,codexHome:history.home,
+      attempts:native.attempts,nativeTurnOrder:native.nativeTurnOrder,codexHome:history.home,ownerContextEvidence,
       client:{async request(){return {thread:{id:threadId,path:history.sourcePath}};}}});
     assert.equal(diagnosticResult.proven,false);
     if(diagnosticResult.proven||!diagnosticResult.diagnostic)throw new Error('fixture diagnostic missing');
     if(options.diagnosticAsWitness==='adjacent'){
       assert.equal(diagnosticResult.diagnostic.semanticComplete,true);
       assert.equal(diagnosticResult.diagnostic.contextWorldTransitions.length,1);
+    }
+    if(options.diagnosticAsWitness==='owner'){
+      assert.equal(diagnosticResult.diagnostic.semanticComplete,true);
+      assert.equal(diagnosticResult.diagnostic.ownerContextOccurrences.length,1);
     }
     native.originalHistory.witness=diagnosticResult.diagnostic as any;
     native.nativeDigest=digest({threadId:native.threadId,continuationDecisionDigest:native.continuationDecisionDigest,
@@ -154,6 +166,8 @@ try {
     'even an internally wrapped diagnostic with a recomputed evidence digest cannot grant dispatch authority');
   await assert.rejects(()=>seed({diagnosticAsWitness:'adjacent'}),/NATIVE_ORIGINAL_EFFECT_HISTORY_COVERAGE_UNPROVEN/,
     'a complete adjacent transition diagnostic with a recomputed wrapper cannot grant dispatch authority');
+  await assert.rejects(()=>seed({diagnosticAsWitness:'owner'}),/NATIVE_ORIGINAL_EFFECT_HISTORY_COVERAGE_UNPROVEN/,
+    'a complete owner context diagnostic with a recomputed wrapper cannot grant dispatch authority');
   const a=await seed();
   const lookup=auth.getCodexRecoveryAuthorizationForInput(db,a.report.id);
   assert.equal(lookup?.effort,'medium');assert.ok(!JSON.stringify(lookup).includes(a.capability));
