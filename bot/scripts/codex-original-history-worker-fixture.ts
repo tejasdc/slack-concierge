@@ -1,9 +1,11 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,writeFile,appendFile,rm} from 'node:fs/promises';
+import {Worker} from 'node:worker_threads';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join,resolve} from 'node:path';
 import {fixtureNativeSettings} from './codex-original-history-fixture-helper';
+import {releaseWorkerPath} from '../src/release-worker';
 
 // Both the owner worker and its App Server bridge inherit these isolated paths.
 const scratch=await mkdtemp(join(tmpdir(),'codex-original-worker-'));
@@ -127,7 +129,23 @@ try{
   assert.equal(postFenceInspection.proven,true,JSON.stringify(postFenceInspection.reasons));
   if(!postFenceInspection.proven)throw new Error('post-fence snapshot missing');
   assert.equal(postFenceInspection.decisionDigest,inspection.decisionDigest,'acquiring the exact reservation fence must not alter continuation identity');
-  const client=new workerClientModule.ProviderHistoryPageClient();
+  const managedConfigPath=resolve(import.meta.dir,'../src/codex-managed-hook-config.ts');
+  const actualWorkerEntry=resolve(import.meta.dir,'../src/provider-history-page-worker.ts');
+  const fixtureWorkerEntry=join(scratch,'provider-history-page-fixture-worker.ts');
+  await writeFile(fixtureWorkerEntry,`import {mock} from 'bun:test';
+const modulePath=${JSON.stringify(managedConfigPath)};
+const actual=await import(modulePath);
+const assessCoverage=actual.assessManagedHookInstallerCoverage;
+const fixtureProcesses={listPids:()=>[],identity:()=>null,parentPid:()=>null,commandLine:()=>null};
+mock.module(modulePath,()=>({...actual,assessManagedHookInstallerCoverage:(input:any)=>
+  assessCoverage({...input,processes:fixtureProcesses})}));
+await import(${JSON.stringify(actualWorkerEntry)});
+`);
+  const productionWorkerEntry=releaseWorkerPath('provider-history-page-worker');
+  const client=new workerClientModule.ProviderHistoryPageClient(entry=>{
+    assert.equal(entry,productionWorkerEntry,'fixture factory only substitutes the worker entry');
+    return new Worker(fixtureWorkerEntry);
+  });
   try{
     const noFenceReads=threadReadCalls;
     const staleFence=await client.readOriginalCodexRecoveryCoverage({sessionId:session.id,inputId:report.id,requestId,runId,

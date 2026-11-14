@@ -80,6 +80,13 @@ try{
       pid===98765?['/bin/bash','/old/install-codex-stop-hook.sh']:null}});
   assert.equal(oldProcess.covered,false,'a supported pre-gate installer with no retained enrollment blocks coverage');
   assert.equal(oldProcess.blockers[0]?.code,'UNMANAGED_HOOK_CONFIG_INSTALLER');
+  for(const identity of [()=>({pid:98765,bootId:'fixture-boot',startTicks:'900',executablePath:'/fixture/bash'}),
+    ()=>{throw Object.assign(new Error('unreadable fixture identity'),{code:'EACCES'});}]){
+    const unknown=assessManagedHookInstallerCoverage({db:second,processes:{
+      listPids:()=>[98765],identity,parentPid:()=>null,commandLine:()=>null}});
+    assert.equal(unknown.covered,false,'unreadable shell or unknown identity cannot prove installer exclusion');
+    assert.equal(unknown.blockers[0]?.code,'HOOK_INSTALL_PROCESS_SCOPE_UNKNOWN');
+  }
   const enrolled=assessManagedHookInstallerCoverage({db:second,processes:{
     listPids:()=>[process.pid],identity:()=>helperIdentity,parentPid:()=>null,
     commandLine:()=>['/fixture/bun','/sealed/bot/scripts/codex-managed-hook-install.js']}});

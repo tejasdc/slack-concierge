@@ -63,6 +63,11 @@ try{
   const read=()=>readCodexColdConstructionWitness({...fixtureInput,client:validClient});
   const cold=await read();assert.equal(cold.proven,true,JSON.stringify(cold));
   if(!cold.proven)throw new Error('cold witness missing');
+  const unreadableProcess=await readCodexColdConstructionWitness({...fixtureInput,client:client(),installerProcesses:{
+    listPids:()=>[98765],identity:()=>{throw Object.assign(new Error('unreadable fixture identity'),{code:'EACCES'});},
+    parentPid:()=>null,commandLine:()=>null}});
+  assert.equal(unreadableProcess.proven,false,'the cold path retains strict unreadable process refusal');
+  if(!unreadableProcess.proven)assert.equal(unreadableProcess.reasons[0]?.code,'COLD_HOOK_INSTALL_PROCESS_COVERAGE_INCOMPLETE');
   assert.equal(cold.witness.policy,'codex_cold_resume_construction_v1');
   assert.equal(cold.witness.effort,'medium');assert.equal(cold.witness.bindingDigest,bindingDigest);
   assert.equal(cold.witness.cwdDigest,digest(resolve(cwd)));

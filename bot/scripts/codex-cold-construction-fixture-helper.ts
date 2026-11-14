@@ -9,6 +9,8 @@ export async function fixtureColdConstruction(input:{db:Database;owner:CodexCold
   binding:ContinuationBinding;sourcePath:string;loaded?:string[];configSecret?:string}){
   const managedDir=resolve(process.env.CODEX_SYSTEM_DIR||'/etc/codex','hooks');
   const result=await readCodexColdConstructionWitness({db:input.db,owner:input.owner,binding:input.binding,
+    // This fixture owns synthetic native/configuration state, not the host's process inventory.
+    installerProcesses:{listPids:()=>[],identity:()=>null,parentPid:()=>null,commandLine:()=>null},
     client:{async request(method,params){
       if(method==='thread/read'){
         assert.deepEqual(params,{threadId:input.binding.threadId,includeTurns:false});

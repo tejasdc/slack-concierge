@@ -155,6 +155,13 @@ fixture databases because their exact sites were not registered. Those temporary
 roots and child-worker paths are now explicitly registered in the existing
 fixture-only list, with exact constructor counts; production enforcement and the
 missing-registration refusal remain unchanged.
+The next CI pass reached cold-construction acceptance and correctly refused
+unreadable identities in the shared CI host's process inventory. The synthetic
+cold/configuration fixtures had accidentally depended on the implementation
+host being privileged. They now supply a controlled process source through the
+existing classifier dependency; the composed worker uses a fixture-only worker
+bootstrap. Actual process classification and unknown-scope refusal remain in
+production, and separate fixtures exercise old/unreadable installer blockers.
 
 The omitted-boundary source audit also found that account activation and managed
 daemon replacement use running-turn checks, which do not exclude a queued

@@ -19,9 +19,11 @@ export class ProviderHistoryPageClient {
   private worker:Worker|null=null;
   private nextId=1;
   private pending=new Map<number,{resolve:(value:unknown)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
+  constructor(private readonly workerFactory?:(entry:string)=>Worker){}
   private ensure(){
     if(this.worker)return this.worker;
-    const worker=new Worker(releaseWorkerPath('provider-history-page-worker'));
+    const entry=releaseWorkerPath('provider-history-page-worker');
+    const worker=this.workerFactory?this.workerFactory(entry):new Worker(entry);
     worker.unref();
     worker.on('message',(reply:Reply)=>{
       const item=this.pending.get(reply.id);if(!item)return;
