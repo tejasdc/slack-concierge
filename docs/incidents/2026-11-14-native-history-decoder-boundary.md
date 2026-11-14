@@ -212,3 +212,23 @@ complete implementation review. This source correction is not live recovery.
 - **Action:** Read the complete source with the pinned decoder and reconstruct the baseline before applying interval policy.
 - **Expected:** Earlier known effects retain their envelopes and source references; a valid later independent compaction resets/re-establishes baselines. New selected/suffix effects, stripped metadata, unknown fields and missing provenance refuse. A refusal inventories later records without restoring proof.
 - **Replayable offline:** yes; `bun run scripts/codex-original-history-coverage-fixture.ts` and the composed continuation contract gate from `bot/`.
+
+## Owner reply status prerequisite for a separate preservation basis
+
+The reviewed preservation design identifies current logical-effect status as a
+separate premise. Parent's supported request receipt reported an open request,
+received progress and no final, but did not expose outgoing reply intents or
+ambiguity. Source examination confirms that the local reply producer commits
+reply event, retained reply operation and final disposition together, before
+delivery. A narrow exact-request projection can therefore distinguish a truly
+outstanding logical reply from a committed but undelivered reply without granting
+outside-session request access or exporting raw owner data.
+
+Disposable acceptance uses the real reply admission transaction with unrelated
+coordinator reconciliation disabled. A lost delivery remains unproved; received
+prior progress remains preserved; null source joins, orphaned reply operations
+and superseded finals cannot become absence. The projection seals every retained
+row privately and publishes only digests/references. It supplies neither native
+history proof nor acknowledged-work resource closure. A state-preserving basis
+is still separate work; no diagnostic promotion or strict reservation change is
+made by this prerequisite. Both activation holds remain.

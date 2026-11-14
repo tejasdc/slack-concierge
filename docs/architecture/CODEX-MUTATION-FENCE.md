@@ -450,6 +450,18 @@ obligations. Recovery never closes, transfers, cancels or replays them or childr
 
 ## Verification boundary
 
+The existing exact recovery inspection includes a private owner-derived logical
+reply projection. It reads the selected report-back's exact local request, all
+reply events (including superseded finals), retained reply operations and linked
+return delivery in one SQLite snapshot. Local reply admission commits event,
+operation and final disposition before delivery. An outstanding request alone is
+not evidence of no reply: unresolved delivery, orphaned operations, missing source
+identity and previous final effects remain explicit refusals. Public inspection
+returns only identities, counts, reasons and a snapshot digest; no reply bodies,
+resource paths or raw rows. This projection is diagnostic and cannot authorize a
+provider start or replace native effect/resource evidence. Existing strict
+reservations and their fingerprints retain their interpretation.
+
 Focused fixtures compose real SQLite owner/permit/queue paths, actual bridge,
 runner relay and raw WebSocket helper with independent clients and barriers. The
 bounded continuation contract gate now includes original-source parsing and the

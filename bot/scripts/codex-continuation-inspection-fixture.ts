@@ -13,6 +13,7 @@ const [{db},{createNativeSession,retainSessionInput,enqueueSessionInput,nativeRu
   {inspectCodexRecovery},{SessionCommunicationCoordinator},{parseRouterSessionsArgs}]=await Promise.all([
   import('../src/state'),import('../src/session-inputs'),import('../src/codex-recovery-inspection'),
   import('../src/session-communication'),import('./router-sessions')]);
+let stopReplyAdmission:(()=>Promise<void>)|undefined;
 try {
   const target=createNativeSession('codex',{title:'retained writing',purpose:'continue accepted work',origin:'native',
     model:'gpt-6-astra',reasoningEffort:'medium',providerRunner:null});
@@ -55,6 +56,8 @@ try {
   assert.equal(first.binding.effort,'medium');
   assert.equal(first.continuation.authorized,false);
   assert.equal(first.eligible,false,'owner witnesses alone never authorize native execution');
+  assert.equal(first.logicalEffects.state,'outstanding');
+  assert.equal(first.logicalEffects.authorizesProviderStart,false);
   assert.deepEqual(first.reasons.map(reason=>reason.code),['NATIVE_INTERVAL_NOT_PROVEN','NATIVE_ACTIVITY_BOUNDARY_NOT_FENCED',
     'LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN','FIRST_PROTECTION_WRITER_EXCLUSION_UNPROVEN']);
   assert.equal(first.interval.acceptedWithoutTurnCount,1);
@@ -101,5 +104,56 @@ try {
   if(command.operation==='codex-recover')assert.equal(command.body.inspect,true);
   assert.throws(()=>parseRouterSessionsArgs(['codex-recover',requestId,'--inspect','--inspect']));
   assert.equal(db.query('SELECT COUNT(*) AS count FROM codex_unacknowledged_recoveries').get().count,0);
+  const {SessionOwner}=await import('../src/session-owner');
+  const {readCodexRecoveryLogicalEffects}=await import('../src/codex-recovery-logical-effects');
+  const owner=new SessionOwner({available:()=>false,wake:()=>{},stop:async()=>false,steer:()=>false},scratch);
+  class ReplyAdmissionOnly extends SessionCommunicationCoordinator {override wake(){}}
+  const replies=new ReplyAdmissionOnly({owner,isOwnerAlive:()=>true,onError:error=>{throw error;}});
+  owner.communication=replies;
+  stopReplyAdmission=()=>replies.stop();
+  replies.start();
+  // Exercise the real reply admission transaction, without starting coordinator
+  // reconciliation, host maintenance, native transport or any provider.
+  db.query("UPDATE turns SET status='running',provider_admission_intended_at=CURRENT_TIMESTAMP WHERE id=?").run(sourceTurn);
+  const logical=()=>readCodexRecoveryLogicalEffects(db,{sessionId:target.id,inputId:report.id,requestId});
+  const beforeReply=logical();
+  replies.reply({source:{input_id:source.id,run_id:sourceRun},action_id:'retained-partial',request_id:requestId,
+    text:'private existing work remains retained',final:false});
+  const partial=logical();
+  assert.notEqual(partial.snapshotDigest,beforeReply.snapshotDigest,'partial reply admission changes the exact-request snapshot');
+  assert.equal(partial.eventCount,1);assert.equal(partial.replyOperationCount,1);
+  assert.ok(partial.reasons.includes('LOGICAL_REPLY_DELIVERY_UNRECONCILED'),'a committed reply without delivery is not absence');
+  db.query("UPDATE session_communication_events SET status='received',error=NULL WHERE request_id=?").run(requestId);
+  const received=logical();assert.equal(received.state,'outstanding','received earlier progress is preserved without replay');
+  assert.notEqual(received.snapshotDigest,partial.snapshotDigest,'delivery reconciliation has its own retained revision');
+  const event=db.query('SELECT * FROM session_communication_events WHERE request_id=?').get(requestId) as any;
+  const unrelatedReturn=retainSessionInput({sessionId:ordinary.id,scope:'fixture',actionId:'unrelated-return',kind:'input',origin:'service',
+    payload:{text:'private unrelated delivery'}}).input;
+  db.query('UPDATE session_communication_events SET accepted_input_id=? WHERE event_id=?').run(unrelatedReturn.id,event.event_id);
+  assert.ok(logical().reasons.includes('LOGICAL_REPLY_DELIVERY_IDENTITY_CONFLICT'));
+  assert.ok(logical().reasons.includes('LOGICAL_GROUPED_RETURN_RECONCILIATION_UNPROVED'));
+  db.query('UPDATE session_communication_events SET accepted_input_id=NULL WHERE event_id=?').run(event.event_id);
+  const eventPayload=JSON.parse(event.payload_json);
+  db.query('UPDATE session_communication_events SET payload_json=? WHERE event_id=?')
+    .run(JSON.stringify({...eventPayload,source:{...eventPayload.source,run_id:null}}),event.event_id);
+  assert.ok(logical().reasons.includes('LOGICAL_REPLY_SOURCE_IDENTITY_UNPROVED'),'null source run is not a wildcard');
+  db.query('UPDATE session_communication_events SET payload_json=? WHERE event_id=?').run(event.payload_json,event.event_id);
+  const wrongScope=readCodexRecoveryLogicalEffects(db,{sessionId:ordinary.id,inputId:report.id,requestId});
+  assert.deepEqual(wrongScope.eventIds,[],'wrong owner context cannot export another request event inventory');
+  assert.ok(wrongScope.reasons.includes('LOGICAL_EFFECT_EXACT_REQUEST_CUSTODY_UNPROVED'));
+  retainSessionInput({sessionId:target.id,scope:'fixture',actionId:'orphan-reply',kind:'reply',origin:'agent',requestId,
+    sourceInputId:source.id,sourceRunId:sourceRun,payload:{text:'private orphan reply',kind:'partial',sourceInputId:source.id,sourceRunId:sourceRun}});
+  assert.ok(logical().reasons.includes('LOGICAL_REPLY_OPERATION_UNRECONCILED'),'a reply operation without its committed event/receipt is not absence');
+  replies.reply({source:{input_id:source.id,run_id:sourceRun},action_id:'retained-final',request_id:requestId,
+    text:'The earlier work cannot yet be completed.',final:true,workDisposition:'failed'});
+  const final=logical();assert.ok(final.reasons.includes('LOGICAL_REPLY_FINAL_EFFECT_PRESENT'));
+  assert.ok(final.reasons.includes('LOGICAL_REQUEST_NOT_OUTSTANDING'));
+  // A later supersession cannot erase the earlier logical effect from evidence.
+  db.query("UPDATE session_communication_events SET superseded_by_event_id='fixture-superseding-event' WHERE request_id=? AND kind='final'").run(requestId);
+  db.query("UPDATE session_communication_requests SET outcome=NULL,result_json=NULL,status='admitted' WHERE request_id=?").run(requestId);
+  assert.ok(logical().reasons.includes('LOGICAL_REPLY_FINAL_EFFECT_PRESENT'));
+  const safe=JSON.stringify(logical());assert.ok(!safe.includes('private existing work'));
+  assert.ok(!safe.includes('/fixture/writing'),'private paths and reply bodies do not leave the projection');
+  assert.equal(logical().authorizesProviderStart,false);
   console.log('Codex continuation inspection: legacy Medium witnesses, held/control interval, immutable custody, refusal and owned guard audit passed');
-} finally {db.close();rmSync(scratch,{recursive:true,force:true});}
+} finally {await stopReplyAdmission?.();db.close();rmSync(scratch,{recursive:true,force:true});}
