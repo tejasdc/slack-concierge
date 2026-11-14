@@ -50,7 +50,16 @@ The CLI emits structured `init`, `step_update`, and terminal `result` events. It
 `conversation_id` is the provider session binding. Each later turn starts a new
 headless process with `--conversation` and that exact ID, so it resumes the right
 Google conversation without using the CLI's mutable most-recent conversation.
-Only a `SUCCESS` result with the bound ID completes work. Stop sends `SIGINT`
+The terminal result can retain errors from earlier turns in that conversation. The
+owner binds each accepted input to its completed `user_input` step and uses only
+the steps after that boundary to judge the current input. A current `error_message`
+step remains a failure, even if tools ran or a later answer appeared. Otherwise a
+completed final response counts only when its indexed response step is `DONE`, no
+tool remains active, and the accumulated response exactly matches the terminal
+response. This also permits recovery of an adopted stream without sending the input
+again. An aggregate terminal error with no matching current completion is reported
+as unconfirmed; its historical error text is not used for quota classification.
+Stop sends `SIGINT`
 through the durable host; a result that confirms cancellation or interruption
 closes it as stopped. A success that raced Stop remains a success, and an exit
 without a final result stays unconfirmed. A `SUCCESS` result with no final reply

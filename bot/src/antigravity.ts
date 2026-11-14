@@ -52,7 +52,7 @@ type AntigravityEvent = {
   event?: string;
   conversation_id?: string;
   init?: { cwd?: string; permission_mode?: string };
-  step_update?: { step_index?: number; step_type?: string; state?: string; text_delta?: string;
+  step_update?: { step_index?: number; step_type?: string; state?: string; text_delta?: string; conversation_id?: string;
     tool_name?: string; tool_info?: { error?: { type?: string; message?: string } } };
   result?: {
     conversation_id?: string;
@@ -132,6 +132,16 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
   let buffer = "";
   let conversationId = input.sessionUUID ?? null;
   let terminal: NonNullable<AntigravityEvent["result"]> | null = null;
+  // The CLI's terminal result is conversation-wide. Attribute it to the latest accepted
+  // user_input step before trusting its status or error text.
+  let currentInputStep: number | null = null;
+  let currentLatestWork: { stepIndex: number; stepType: string; state: string } | null = null;
+  let currentErrorStep: { stepIndex: number; text: string } | null = null;
+  let currentActiveTools = new Set<number>();
+  let currentResponses = new Map<number, string>();
+  let currentTerminalBelongsToInput = false;
+  let currentTerminalInputCompleted = false;
+  let firstCurrentFailure: { terminal: NonNullable<AntigravityEvent["result"]>; errorStep: { stepIndex: number; text: string } | null } | null = null;
   let observedOutput = false;
   let acknowledged = false;
   let cancelRequested = false;
@@ -239,7 +249,36 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
     }
     if (event.event === "step_update" && event.step_update) {
       const step = event.step_update;
-      if (step.step_type === "user_input" && step.state === "DONE") pickedUp();
+      if (step.conversation_id) bind(step.conversation_id);
+      if (event.conversation_id) bind(event.conversation_id);
+      if (step.step_type === "user_input" && step.state === "DONE") {
+        pickedUp();
+        const stepConversationId = step.conversation_id ?? event.conversation_id;
+        currentInputStep = Number.isSafeInteger(step.step_index)
+          && (!stepConversationId || stepConversationId === conversationId) ? step.step_index! : null;
+        currentLatestWork = null;
+        currentErrorStep = null;
+        currentTerminalBelongsToInput = false;
+        currentTerminalInputCompleted = false;
+        currentActiveTools = new Set();
+        currentResponses = new Map();
+      } else if (currentInputStep !== null && Number.isSafeInteger(step.step_index)
+        && step.step_index! > currentInputStep
+        && (!step.conversation_id || step.conversation_id === conversationId)) {
+        const stepIndex = step.step_index!;
+        if (["agent_response", "tool", "error_message"].includes(step.step_type ?? "")) {
+          if (!currentLatestWork || stepIndex >= currentLatestWork.stepIndex)
+            currentLatestWork = { stepIndex, stepType: step.step_type!, state: step.state ?? "" };
+        }
+        if (step.step_type === "error_message") {
+          currentErrorStep ??= { stepIndex, text: step.text_delta ?? "" };
+        } else if (step.step_type === "agent_response" && step.text_delta) {
+          currentResponses.set(stepIndex, (currentResponses.get(stepIndex) ?? "") + step.text_delta);
+        } else if (step.step_type === "tool") {
+          if (step.state === "DONE") currentActiveTools.delete(stepIndex);
+          else currentActiveTools.add(stepIndex);
+        }
+      }
       // Only a `tool` step is the agent acting. Google also writes its own bookkeeping as steps
       // (`error_message`, `system_message`, `checkpoint`), and counting those as work made quota
       // refusals look like worked-on turns, so the request ended instead of waiting or moving:
@@ -266,12 +305,26 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
     if (event.event === "result" && event.result) {
       bind(event.result.conversation_id);
       terminal = event.result;
+      const currentResponse = [...currentResponses.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([, text]) => text).join("");
+      currentTerminalBelongsToInput = currentInputStep !== null;
+      currentTerminalInputCompleted = currentInputStep !== null && !currentErrorStep
+        && currentActiveTools.size === 0
+        && currentLatestWork?.stepType === "agent_response" && currentLatestWork.state === "DONE"
+        && !!event.result.response && currentResponse === event.result.response;
+      const currentError = currentInputStep !== null ? currentErrorStep : null;
+      const resultCanComplete = currentTerminalInputCompleted && (event.result.status === "SUCCESS"
+        || (event.result.status === "ERROR" && !currentError));
+      if (!firstCurrentFailure && currentInputStep !== null && (!resultCanComplete || currentError))
+        firstCurrentFailure = { terminal: event.result, errorStep: currentError };
       if (Number.isSafeInteger(event.result.num_turns) && event.result.num_turns! > 0)
         input.onProviderTurnStarted?.(String(event.result.num_turns));
       if (event.result.status === "SUCCESS") acknowledge();
       // An answer followed by a steered message's turn is shown as its own message now; the run's
       // final result is the last answer.
-      if (written.length && conversationId && event.result.response?.trim()) {
+      if (written.length && conversationId && event.result.response?.trim()
+        && currentTerminalInputCompleted && resultCanComplete && !currentError) {
         const answer = splitTurnOutcomeMarker(event.result.response).text;
         if (answer.trim()) input.onProviderMessage?.({ id: `${conversationId}:${event.result.num_turns ?? createHash("sha256").update(answer).digest("hex").slice(0, 16)}:assistant`,
           turnId: String(event.result.num_turns ?? ""), role: "assistant", content: answer, tool: null, phase: null,
@@ -367,17 +420,23 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
       assistantOutput: observedOutput, providerSessionId: conversationId,
       toolsUsed: [...toolsUsed] });
   }
+  const currentInputCompleted = currentTerminalBelongsToInput && currentTerminalInputCompleted;
+  const currentError = firstCurrentFailure?.errorStep ?? null;
+  const acceptedCurrentResult = currentInputCompleted && !firstCurrentFailure
+    && (terminal.status === "SUCCESS" || terminal.status === "ERROR");
   // The CLI's terminal result is the turn outcome. Closing its streaming stdin can make the
   // host stop an otherwise idle process after that result; its later process code is not a
   // second verdict on work the provider already marked successful.
-  if (terminal.status !== "SUCCESS") {
+  if (!acceptedCurrentResult) {
     // ERROR says the run ended, not that it had no effects. Only zero-turn refusals are
     // replay-safe; an error after Google began a turn stays unconfirmed for inspection.
     // Zero tokens is the proof: a quota refusal reports `num_turns: 1` for its own error step
     // while no model call happened.
-    const beforeTurn = terminal.usage?.total_tokens === 0
+    const failureTerminal = firstCurrentFailure?.terminal ?? terminal;
+    const beforeTurn = (!!currentError || refusedBeforeStart) && failureTerminal.usage?.total_tokens === 0
       && !observedOutput && toolsUsed.size === 0;
-    const quotaRefusal = isGoogleQuotaRefusal(terminal.error ?? "");
+    const quotaRefusal = (!!currentError || refusedBeforeStart)
+      && isGoogleQuotaRefusal(currentError?.text || failureTerminal.error || "");
     let clearsAtMs: number | null = null;
     // A quota refusal is Google confirming the run ended: before any work it waits or moves, and
     // after work (the Inbox router on 2026-11-12, 43 million tokens in) it continues at the reset
@@ -397,14 +456,16 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
           const [{providerAccountUsage},{googleQuotaDisagreement}]=await Promise.all([
             import('./provider-account-usage'),import('./google-quota-disagreement')]);
           const notice=googleQuotaDisagreement({model:input.model??null,account:dispatchAccount,runner:dispatchRunner,
-            dispatchObservedAt,refusalAt,error:terminal.error??'',reading:providerAccountUsage('antigravity')});
+            dispatchObservedAt,refusalAt,error:failureTerminal.error??'',reading:providerAccountUsage('antigravity')});
           publishProviderFreeNotice(db, { key: `usage-reading-disagrees:antigravity:${new Date().toISOString().slice(0, 10)}`,
             kind: "usage_reading_disagrees",
             text: notice.text });
         } catch {}
       }
     }
-    throw new ProviderDispatchError({ message: (terminal.error || `Google ended with ${terminal.status ?? "unknown status"}.`).slice(0, MAX_ERROR_TEXT),
+    throw new ProviderDispatchError({ message: (currentError?.text || (currentError ? failureTerminal.error : "")
+      || (refusedBeforeStart ? failureTerminal.error : "")
+      || "Google's current input result is unconfirmed.").slice(0, MAX_ERROR_TEXT),
       terminalConfirmed: beforeTurn || quotaRefusal, assistantOutput: observedOutput, providerSessionId: conversationId,
       clearsAtMs, toolsUsed: [...toolsUsed] });
   }
