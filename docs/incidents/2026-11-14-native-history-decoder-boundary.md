@@ -103,6 +103,13 @@ read-side association, not event spending or another provider admission. Earlier
 instructions and actual drift remain preserved. No instruction neutrality,
 complete context map or historical RPC receipt is inferred.
 
+Final byte-domain review found that the JavaScript UTF-8 decoder's default BOM
+handling could reject a valid full preimage by stripping its leading BOM during
+round-trip validation. Validation explicitly preserves that byte-order mark;
+fixtures retain it and distinguish canonically equivalent Unicode spellings.
+No digest or rendering domain is normalized. This correction is a new commit,
+preserving the already pushed implementation history.
+
 Disposable tests cover UTF-8 boundaries/native count, identical truncated ends
 with a different full preimage, identity/event/shape conflicts, legacy null
 bindings, repeated occurrences, compaction reference and privacy. The real

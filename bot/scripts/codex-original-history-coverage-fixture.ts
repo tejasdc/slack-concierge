@@ -108,6 +108,10 @@ assert.equal(revalidateCodexOriginalHistorySource(result.custody,result.witness)
 assert.ok(!JSON.stringify(result.witness).includes(path)&&!JSON.stringify(result.witness).includes('earlier successful effect'));
 const original=readFileSync(path);
 assert.equal(renderOwnerApplicationContext('a<&\r\n'),'<'+'slack-concierge>a<&\r\n</slack-concierge>');
+assert.equal(renderOwnerApplicationContext('\ufeffe\u0301\r\n'),'<slack-concierge>\ufeffe\u0301\r\n</slack-concierge>');
+assert.equal(fixtureOwnerContextEvidence(binding,'selected',attempts,'\ufeffheader').resolve().commitments[0].expectedSha256,
+  createHash('sha256').update('\ufeffheader','utf8').digest('hex'),'valid UTF-8 BOM is preserved, never stripped');
+assert.notEqual(ownerContextRawSha256('é'),ownerContextRawSha256('e\u0301'),'no Unicode normalization');
 assert.equal(renderOwnerApplicationContext('a'.repeat(4000)),`<slack-concierge>${'a'.repeat(4000)}</slack-concierge>`);
 assert.equal(renderOwnerApplicationContext('a'.repeat(4001)),`<slack-concierge>${'a'.repeat(2000)}…1 tokens truncated…${'a'.repeat(2000)}</slack-concierge>`);
 const utf8='a'.repeat(1999)+'😀'+'m'.repeat(7)+'😀'+'z'.repeat(1999);

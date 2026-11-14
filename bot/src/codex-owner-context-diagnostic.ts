@@ -31,7 +31,7 @@ export function resolveOwnerContextDiagnosticEvidence(input:{snapshot:AcceptedBi
   for(const candidate of candidates){
     if(!closed(candidate,['inputId','turnId','runId','dispatchAttempt','providerTurnId','value'])
       ||typeof candidate.value!=='string'||candidate.value.length===0
-      ||new TextDecoder('utf-8',{fatal:true}).decode(Buffer.from(candidate.value,'utf8'))!==candidate.value)
+      ||new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(Buffer.from(candidate.value,'utf8'))!==candidate.value)
       fail('OWNER_CONTEXT_CANDIDATE_INVALID');
     const matches=attempts.filter(a=>a.inputId===candidate.inputId&&a.turnId===candidate.turnId
       &&a.runId===candidate.runId&&a.dispatchAttempt===candidate.dispatchAttempt&&a.providerTurnId===candidate.providerTurnId);
