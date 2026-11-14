@@ -247,6 +247,8 @@ and the unassessed range extends through captured EOF. Later checkpoints cannot
 repair that state. Physical decoding/inventory still covers the entire source.
 The diagnostic currently supports complete disabled/external permission snapshots;
 complex managed filesystem policies refuse rather than advance on a shallow shape.
+Nested granular approval fields are checked against the pinned shape, including
+its optional booleans; unknown fields cannot advance diagnostic state.
 
 The separately typed result binds source identity/revision, captured EOF and
 decoder/diagnostic interpretations. It carries only references, counts and digests,

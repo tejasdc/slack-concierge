@@ -730,6 +730,10 @@ function diagnosticSettings(p:any):boolean{
   // Do not advance an observed state on a shallow shape check. Complex managed
   // filesystem policies are not reconstructed by this diagnostic contract.
   return completeSettings(p)&&optional(p.runtime_workspace_roots,v=>Array.isArray(v)&&v.every((root:any)=>nonempty(root)&&isAbsolute(root)))
+    &&(typeof p.approval_policy==='string'||closed(p.approval_policy,['granular'])
+      &&closed(p.approval_policy.granular,['sandbox_approval','rules','skill_approval','request_permissions','mcp_elicitations'])
+      &&['skill_approval','request_permissions'].every(key=>p.approval_policy.granular[key]===undefined
+        ||typeof p.approval_policy.granular[key]==='boolean'))
     &&optional(p.service_tier,v=>typeof v==='string')
     &&optional(p.reasoning_summary,v=>['auto','concise','detailed','none'].includes(v))
     &&optional(p.personality,v=>['none','friendly','pragmatic'].includes(v))

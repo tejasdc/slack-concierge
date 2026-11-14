@@ -149,6 +149,9 @@ for(const [label,bad] of [
   ['unknown',row('future_record',{private:'never export'})],
   ['malformed',row('event_msg',{type:'thread_settings_applied',thread_id:threadId,
     thread_settings:{...fixtureNativeSettings(binding),runtime_workspace_roots:42}})],
+  ['unknown nested setting',row('event_msg',{type:'thread_settings_applied',thread_id:threadId,
+    thread_settings:{...fixtureNativeSettings(binding),approval_policy:{granular:{
+      sandbox_approval:true,rules:false,mcp_elicitations:false,unknown_future_policy:true}}}})],
   ['provenance',row('response_item',{type:'message',role:'user',content:[{type:'input_text',text:'unproved configuration'}]})],
 ] as const){
   const rows=driftingSource(),index=rows.findIndex(r=>r.payload.type==='task_started'&&r.payload.turn_id==='compaction-T');
