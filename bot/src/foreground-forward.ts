@@ -15,3 +15,25 @@ export async function forwardPrivateRequest(request:Request,socket:string,signal
 export function unavailable(code:string,message:string) {
   return Response.json({error:{code,message}},{status:503,headers:{'cache-control':'no-store'}});
 }
+
+/** The gateway uses its existing private transport; Node bridge discovery stays outside it. */
+export async function forwardCodexMutationGate(body:unknown,socket:string):Promise<any> {
+  const response=await forwardPrivateRequest(new Request('http://localhost/session-communication/codex-mutation-gate',{
+    method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),
+  }),socket,AbortSignal.timeout(5000));
+  const reader=response.body?.getReader();
+  if(!reader)throw new Error('Mutation authority response is unconfirmed.');
+  const chunks:Uint8Array[]=[];
+  let length=0;
+  try {
+    while(true){
+      const {done,value}=await reader.read();
+      if(done)break;
+      length+=value.byteLength;
+      if(length>64*1024)throw new Error('Mutation authority response exceeded its contract.');
+      chunks.push(value);
+    }
+  } finally {await reader.cancel();reader.releaseLock();}
+  if(response.status!==200)throw new Error('Mutation authority refused the request.');
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}

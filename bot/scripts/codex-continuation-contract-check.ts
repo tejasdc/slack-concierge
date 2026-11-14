@@ -2,7 +2,7 @@ import {resolve} from 'node:path';
 
 // Source-only acceptance. Each child owns disposable state and never selects a
 // real native socket/provider. Keep this gate bounded to the custody boundaries.
-const fixtures=['codex-mutation-fence-fixture.ts','codex-recovery-dispatch-authorization-fixture.ts',
+const fixtures=['codex-gateway-mutation-transport-fixture.ts','codex-mutation-fence-fixture.ts','codex-recovery-dispatch-authorization-fixture.ts',
   'codex-accepted-binding-recovery-fixture.ts','codex-managed-launch-fixture.ts',
   'codex-mutation-owner-policy-fixture.ts','codex-daemon-lifecycle-fixture.ts',
   'codex-managed-native-terminal-fixture.ts','provider-activation-lifecycle-fixture.ts','codex-runner-relay-lifecycle-fixture.ts',

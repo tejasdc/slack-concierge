@@ -33,6 +33,11 @@ handshake/frames, not JSON lines. The helper terminates that WebSocket locally a
 gates decoded client messages before forwarding to the original native socket.
 Server requests and read responses remain available.
 
+The foreground runner relay contacts the common owner through the gateway's
+existing private asynchronous transport, with a bounded authority response and
+no retry. Node bridge endpoint discovery stays outside the storage-free gateway
+dependency graph; the normal gateway isolation check enforces that separation.
+
 Explicit reads pass through. Other methods, unknown notifications and client
 answers to native server requests obtain owner permits. Unknown scope is global.
 A permit is durably consumed before synchronous forwarding. A connection-local

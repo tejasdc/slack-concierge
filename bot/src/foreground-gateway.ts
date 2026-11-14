@@ -4,12 +4,11 @@ import {join} from 'node:path';
 import {removeUnboundSocket} from './private-api-socket';
 import {ForegroundReadPool} from './foreground-read-pool';
 import {OWNER_COMMAND_RESPONSE_MS,OWNER_READ_RESPONSE_MS} from './owner-transport-policy';
-import {forwardPrivateRequest,unavailable} from './foreground-forward';
+import {forwardPrivateRequest,forwardCodexMutationGate,unavailable} from './foreground-forward';
 import {classifyNativeReadRoute} from './native-read-routes';
 import {log,errorFields,logSinkCounters} from './log';
 import {agentPrincipalHeader,verifyAgentToken} from './agent-token-verify';
 import {RunnerRelay} from './runner-relay';
-import {codexMutationOwnerGate} from './codex-mutation-owner.mjs';
 
 /** No application owner, synchronous filesystem API, or database imports belong here. */
 export async function startForegroundGateway(config:{stateDir:string;ownerSocket:string;readWorkerEntry:string;
@@ -17,7 +16,7 @@ export async function startForegroundGateway(config:{stateDir:string;ownerSocket
   agent?:{hostname:string;port:number;keyHex:string}|null}) {
   const pool=new ForegroundReadPool(config.stateDir,config.ownerSocket,config.readWorkerEntry);
   // Live connections to services on runners (the Codex App Server), piped here; nothing stored.
-  const relay=new RunnerRelay(body=>codexMutationOwnerGate(body,config.ownerSocket));
+  const relay=new RunnerRelay(body=>forwardCodexMutationGate(body,config.ownerSocket));
   let local:ReturnType<typeof Bun.serve>|null=null,peer:ReturnType<typeof Bun.serve>|null=null,agent:ReturnType<typeof Bun.serve>|null=null;
   let closing:Promise<void>|null=null,listenersStopping:Promise<unknown>|null=null;
   // An owner drain first stops new connections but keeps open relays: a Codex turn's App Server

@@ -142,6 +142,15 @@ and owned interruptions; RPC replies and process exits do not impersonate that
 witness. The [current source contract](../architecture/CODEX-MUTATION-FENCE.md)
 records the writer inventory and trust boundary.
 
+The normal CI gateway isolation check caught a transport integration defect:
+the foreground gateway imported the Node bridge's HTTP/socket discovery helper,
+crossing its storage-free dependency boundary. The gateway now uses its existing
+asynchronous private forwarding transport with a bounded authority response and
+no retries. The standalone Node bridge retains its own endpoint discovery.
+The boundary check remains unchanged; a disposable socket fixture covers exact
+identity forwarding, refusal, malformed/oversized replies and unavailable owner,
+and the composed runner-relay fixture exercises the actual gateway path.
+
 The omitted-boundary source audit also found that account activation and managed
 daemon replacement use running-turn checks, which do not exclude a queued
 recovery fence. Global lifecycle intents now serialize those local operations and
