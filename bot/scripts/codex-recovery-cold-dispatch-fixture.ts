@@ -8,6 +8,12 @@ process.env.CONCIERGE_STATE_DIR=scratch;
 const {runCodexTurn}=await import('../src/codex');
 const {CodexAppServerClientError}=await import('../src/codex-app-server-client');
 try{
+  let unsupportedCalls=0;
+  await assert.rejects(()=>runCodexTurn({prompt:'selected reminder',cwd:'/fixture/project',additionalDirs:[],
+    sessionUUID:'same-thread',codexRecovery:{historyPolicy:'codex_state_preserving_recovery_v1',authorizationId:'unreachable',
+      model:'gpt-6-astra',effort:'medium'},appServerClient:{async connect(){unsupportedCalls++;throw new Error('not reached');},
+      async request(){unsupportedCalls++;throw new Error('not reached');}} as any}),/NATIVE_EXPLICIT_SELECTION_COLD_RESUME_UNAVAILABLE/);
+  assert.equal(unsupportedCalls,0,'actual constructor refuses before connect, generic resume, staging or start');
   for(const mode of ['accepted','cold-refused','construction-refused','ambiguous'] as const){
     const events:string[]=[],listeners=new Set<(event:any)=>void>();
     let boundParams:any;

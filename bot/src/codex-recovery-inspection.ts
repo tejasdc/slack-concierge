@@ -3,6 +3,7 @@ import {db,getSessionById} from './state';
 import {getAcceptedSessionInput,providerRunnerForSession,sessionMetadata,stablePayload} from './session-inputs';
 import {inspectAcceptedBindingContinuation} from './codex-accepted-binding-snapshot';
 import {readCodexRecoveryLogicalEffects} from './codex-recovery-logical-effects';
+import {statePreservingRecoveryAvailability} from './codex-state-preserving-recovery';
 
 const digest=(value:unknown)=>createHash('sha256').update(stablePayload(value)).digest('hex');
 
@@ -100,6 +101,7 @@ export function inspectCodexRecovery(input:{sessionId:number;inputId:string;requ
         creationInputId:creation?.id??null,sourceInputId:accepted.source_input_id,sourceRunId:accepted.source_run_id,
         creationModelEffortMatches,effortEvidenceId:effortEvent?.event_id??null},
       logicalEffects,
+      statePreserving:statePreservingRecoveryAvailability(),
       interval:{acceptedWatermark:inputs.at(-1)?.ordinal??selectedOrdinal,eventWatermark,inputCount:inputs.length,
         acceptedWithoutTurnCount:inputs.filter(row=>row.turn_id===null&&row.steering_id===null).length,
         earlierNonterminalTurnCount:predecessors.length,

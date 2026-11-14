@@ -1,3 +1,4 @@
+import {recoveryProofHistoryRefusal} from "./codex-state-preserving-recovery";
 import {renumberWaitingStarts,START_ORDER_SQL,decideStart,deferStart,ensureStartPaceTables,recordStart,slotWaitingStarts,startIsExempt,startPaceConfig,type StartPaceConfig} from './start-pace';
 import { initializeSessionOwnerSchema } from "./session-schema";
 import {threadOnlyReturnInputSql} from './inbox-request-root';
@@ -4077,6 +4078,9 @@ export function markTurnProviderAdmissionIntended(
     if(!turn)return false;
     const recovery=codexRecoveryForTurn(turnId);
     if(recovery){
+      let proof:unknown;
+      try{proof=JSON.parse(recovery.proof_json);}catch{return false;}
+      if(recoveryProofHistoryRefusal(proof))return false;
       if(codexRecoveryAttemptBudgetSpent(turnId))return false;
       const baseline=JSON.parse(recovery.proof_json).attempts.length;
       if(dispatchAttempt!==baseline+1)return false;
@@ -4246,7 +4250,7 @@ export interface CodexUnacknowledgedRecoveryRow {
   action_id:string;source_input_id:string;source_run_id:string;created_at_ms:number;
   additional_dispatch_attempt:number|null;
 }
-function codexRecoveryForTurn(turnId:number):CodexUnacknowledgedRecoveryRow|null {
+export function codexRecoveryForTurn(turnId:number):CodexUnacknowledgedRecoveryRow|null {
   return db.query(`SELECT recovery.* FROM turns turn JOIN codex_unacknowledged_recoveries recovery
     ON recovery.accepted_input_id=turn.accepted_input_id WHERE turn.id=?`).get(turnId) as CodexUnacknowledgedRecoveryRow|null;
 }
@@ -4280,6 +4284,8 @@ export function codexUnacknowledgedRecovery(inputId:string):CodexUnacknowledgedR
  * native attempt empty. The unique accepted input is the idempotency key, across action IDs. */
 export function reserveCodexUnacknowledgedRecovery(input:{sessionId:number;inputId:string;turnId:number;requestId:string;
   providerThreadId:string;bindingGeneration:number;proof:unknown;actionId:string;sourceInputId:string;sourceRunId:string;nowMs:number}):boolean {
+  const historyRefusal=recoveryProofHistoryRefusal(input.proof);
+  if(historyRefusal)throw new Error(historyRefusal);
   return db.transaction(()=>{
     const valid=db.query(`SELECT 1 FROM turns turn JOIN sessions session ON session.id=turn.session_id
       JOIN session_inputs accepted ON accepted.id=turn.accepted_input_id AND accepted.turn_id=turn.id

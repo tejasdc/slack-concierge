@@ -6,6 +6,9 @@ import {createHash} from 'node:crypto';
 import {IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION} from '../src/test-authorizations';
 import {createFixtureOriginalHistory} from './codex-original-history-fixture-helper';
 import {fixtureColdConstruction} from './codex-cold-construction-fixture-helper';
+import {compareConditionalPreservation,STATE_PRESERVING_HISTORY_POLICY,statePreservingRecoveryAvailability,
+  recoveryHistoryRefusal,recoveryProofHistoryRefusal} from '../src/codex-state-preserving-recovery';
+import {acceptedBindingSnapshotDigest as digest} from '../src/codex-accepted-binding-continuation';
 const scratch=mkdtempSync(join(tmpdir(),'concierge-binding-recovery-composed-'));
 process.env.CONCIERGE_STATE_DIR=join(scratch,'state');process.env.CONCIERGE_CAPTURE_STATE_DIR=join(scratch,'capture');
 const releaseRoot=join(scratch,'sealed-release');process.env.CONCIERGE_DEPLOYMENT_RELEASE_ROOT=releaseRoot;
@@ -38,7 +41,7 @@ const proc={listPids:()=>[...processRows.keys()],identity:(pid:number)=>processR
 registry.registerManagedCodexChild({db,registration:{connectionId:'composed-proxy',permitId:'composed-process',kind:'rawproxy',
   threadScope:'*',mediated:true,evidenceIds:['composed-proxy','composed-process']},pid:201,nowMs:1,proc,releaseRoot});
 let serial=0;
-function seed(){
+function seed(options:{zeroAttachments?:boolean}={}){
   const suffix=++serial,requestId=`composed-work:${suffix}`,threadId=`composed-native-thread:${suffix}`;
   const session=createNativeSession('codex',{title:'retained writing work',purpose:'same accepted work',origin:'native',model:'gpt-6-astra',
     reasoningEffort:'medium',providerRunner:null} as any);
@@ -48,7 +51,7 @@ function seed(){
   const create=save(`composed-create:${suffix}`,'create','agent',{provider:'codex',model:'gpt-6-astra',reasoningEffort:'medium',
     firstInput:{text:'original retained work'}}),createTurn=enqueueSessionInput(create.id).turn_id!;
   const source=save(`request:${requestId}`,'input','agent',{text:'preserve original writing obligations'},{requestId}),sourceTurn=enqueueSessionInput(source.id).turn_id!;
-  const report=save(`report-back:${requestId}`,'input','service',{text:'exact retained service reminder',attachments:['retained-attachment']},
+  const report=save(`report-back:${requestId}`,'input','service',{text:'exact retained service reminder',attachments:options.zeroAttachments?[]:['retained-attachment']},
     {requestId,sourceInputId:source.id,sourceRunId:nativeRunId(sourceTurn)}),reportTurn=enqueueSessionInput(report.id).turn_id!;
   const infoRequest=`closed-info:${suffix}`,info=save(`request:${infoRequest}`,'input','agent',{text:'closed informational question'},{requestId:infoRequest});
   const infoTurn=enqueueSessionInput(info.id).turn_id!;
@@ -118,6 +121,71 @@ function seed(){
   return {session,requestId,threadId,source,report,reportTurn,infoTurn,client,recovery,inspect,retained,counts:()=>({validations,nativeReads}),save};
 }
 try {
+  // Positive ONLY as a subordinate comparison of synthetic private premises.
+  // No fixture can install a native capability or produce an execution witness.
+  const roots=['/fixture/project','/fixture/preserved-resource'];
+  const capture={source:{threadId:'conditional-thread',sourceIdentity:'conditional-source',sourceRevisionDigest:digest('revision'),
+    prefixDigest:digest('original'),recordCount:12,bindingDigest:digest('binding'),selectedInputId:'report-back:conditional',
+    logicalInputDigest:digest('exact reminder'),attemptsDigest:digest('attempts')},
+    worldRecords:[3,5],contextRecord:8,nativeTurnId:'captured-step',producer:'ordinary_context_continuous_local_v0162' as const,
+    selection:[{environmentId:'local',status:'available' as const,cwdDigest:digest('/fixture/project'),rootsDigest:digest(roots)}]};
+  const premises={capture,boundary:{sourceDigest:digest(capture.source),captureDigest:digest(capture),fenceId:'conditional-fence',controlRevision:2,
+    operationId:'captured-step-settings',operationParamsDigest:digest('exact-construction'),operationReceiptDigest:digest('applied'),preparationDigest:'',
+    cause:{kind:'captured_turn_construction' as const,nativeTurnId:capture.nativeTurnId},savedSelection:capture.selection,
+    outstandingSelectionOperationIds:[]},preparation:{bindingDigest:capture.source.bindingDigest,selectedInputId:capture.source.selectedInputId,
+      logicalInputDigest:digest('exact reminder'),attachmentIds:[],preservedRoots:roots,prospectiveRoots:roots,scratchCleanupRoots:[],
+      accessConfigurationDigest:digest('concrete policy'),taskBoundaryDigest:digest('accepted task'),
+      startParams:{threadId:capture.source.threadId,input:[{type:'text' as const,text:'exact prepared reminder'}],
+        clientUserMessageId:'selected-submission',model:'gpt-6-astra',effort:'medium' as const}}};
+  premises.boundary.preparationDigest=digest(premises.preparation);
+  const relation=compareConditionalPreservation(premises);
+  assert.equal(relation.relation,'conditional_match',JSON.stringify(relation));
+  assert.equal(relation.proven,false);assert.equal(relation.authorizesProviderStart,false);
+  assert.equal(recoveryHistoryRefusal(relation),'NATIVE_EXPLICIT_SELECTION_COLD_RESUME_UNAVAILABLE');
+  assert.equal(recoveryHistoryRefusal({witness:{...relation,witnessDigest:digest(relation)},custody:{}}),
+    'NATIVE_EXPLICIT_SELECTION_COLD_RESUME_UNAVAILABLE');
+  assert.equal(recoveryProofHistoryRefusal({historyPolicy:'future_unreviewed_policy'}),'RECOVERY_HISTORY_POLICY_UNKNOWN');
+  assert.equal(recoveryHistoryRefusal({witness:{policy:'future_unreviewed_policy'},custody:{}}),'RECOVERY_HISTORY_POLICY_UNKNOWN');
+  assert.ok(compareConditionalPreservation({...premises,boundary:null}).reasons.includes('PRESERVED_FUTURE_SELECTION_BOUNDARY_UNPROVEN'));
+  // Deterministically construct task context, then publish equal-cwd future
+  // settings before task_started. Equal persisted settings do not encode IDs.
+  const persistedBefore={cwd:'/fixture/project',runtimeWorkspaceRoots:roots,model:'gpt-6-astra'};
+  const capturedTask=structuredClone(capture);
+  const future=[...capture.selection,{...capture.selection[0],environmentId:'registered-remote'}];
+  const persistedAfter=structuredClone(persistedBefore);
+  assert.equal(digest(persistedBefore),digest(persistedAfter));assert.equal(capturedTask.selection.length,1);
+  const changedFuture=compareConditionalPreservation({...premises,capture:capturedTask,boundary:{...premises.boundary,
+    cause:{kind:'standalone_future_settings'},savedSelection:future}});
+  assert.ok(changedFuture.reasons.includes('SAVED_FUTURE_SELECTION_DIFFERS_FROM_CAPTURE'));
+  assert.ok(changedFuture.reasons.includes('PRESERVED_FUTURE_SELECTION_BOUNDARY_UNPROVEN'));
+  for(const change of [
+    (v:any)=>{v.capture.source.prefixDigest=digest('different source');},
+    (v:any)=>{v.boundary.outstandingSelectionOperationIds=['accepted-pending-update'];},
+    (v:any)=>{v.preparation.prospectiveRoots=[roots[0]];},
+    (v:any)=>{v.preparation.logicalInputDigest=digest('different input');},
+    (v:any)=>{v.preparation.scratchCleanupRoots=[roots[1]];},
+    (v:any)=>{v.preparation.attachmentIds=['not-a-zero-attachment-reminder'];},
+    (v:any)=>{v.preparation.startParams.cwd='/fixture/project';},
+    (v:any)=>{v.preparation.startParams.threadId='other-thread';},
+    (v:any)=>{v.preparation.startParams.input[0].text='different prepared submission';},
+    (v:any)=>{v.capture.producer='caller-verified';},
+  ]){const v=structuredClone(premises);change(v);assert.equal(compareConditionalPreservation(v).relation,'unproved');}
+  assert.equal(compareConditionalPreservation(null as any).relation,'unproved');
+  assert.ok(!JSON.stringify(relation).includes('/fixture/'),'conditional output keeps private preimages out');
+  const unsupported=seed({zeroAttachments:true}),unsupportedBefore=unsupported.retained();
+  await assert.rejects(()=>unsupported.recovery(unsupported.client(),{historyPolicy:STATE_PRESERVING_HISTORY_POLICY}),
+    /NATIVE_EXPLICIT_SELECTION_COLD_RESUME_UNAVAILABLE/);
+  assert.equal(unsupported.counts().nativeReads,0);assert.equal(unsupported.counts().validations,0);
+  assert.equal(codexUnacknowledgedRecovery(unsupported.report.id),null);
+  assert.equal(fences.getCodexThreadMutationFence(db,unsupported.threadId),null);
+  assert.equal(unsupported.retained(),unsupportedBefore,'unsupported relation leaves all original custody/attempts untouched');
+  const {SessionOwner}=await import('../src/session-owner');let runtimeCalls=0;
+  const conditionalOwner=new SessionOwner({available:()=>false,wake:()=>{},stop:async()=>false,steer:()=>false,
+    requeueProvenUnacknowledgedCodex:async()=>{runtimeCalls++;throw new Error('must not reach runtime');}},scratch);
+  await assert.rejects(()=>conditionalOwner.requeueProvenUnacknowledgedCodex(unsupported.session.id,unsupported.report.id,
+    {requestId:unsupported.requestId,actionId:'conditional-owner',sourceInputId:unsupported.source.id,
+      sourceRunId:'conditional-run',historyPolicy:STATE_PRESERVING_HISTORY_POLICY}),/NATIVE_EXPLICIT_SELECTION_COLD_RESUME_UNAVAILABLE/);
+  assert.equal(runtimeCalls,0);assert.equal(statePreservingRecoveryAvailability().proven,false);
   const activationBefore=db.query('SELECT COUNT(*) AS count FROM codex_unacknowledged_recoveries').get() as any;
   assert.deepEqual(activation.codexContinuationActivationReadiness().reasons.map(reason=>reason.code),
     ['LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN','FIRST_PROTECTION_WRITER_EXCLUSION_UNPROVEN']);

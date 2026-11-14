@@ -12,7 +12,7 @@ import {validateCodexColdResume} from '../src/codex-cold-construction';
 const scratch=mkdtempSync(join(tmpdir(),'concierge-recovery-authorization-'));
 process.env.CONCIERGE_STATE_DIR=scratch;process.env.CONCIERGE_CAPTURE_STATE_DIR=join(scratch,'capture');
 process.env.CONCIERGE_TEST_MODE='1';process.env.CONCIERGE_TEST_AUTHORIZATION=IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION;
-const [{db},inputs,{inspectAcceptedBindingContinuation},{proveCodexContinuationNativeInterval},fences,auth,{acceptedBindingSnapshotDigest:digest}]=await Promise.all([
+const [{db,markTurnProviderAdmissionIntended},inputs,{inspectAcceptedBindingContinuation},{proveCodexContinuationNativeInterval},fences,auth,{acceptedBindingSnapshotDigest:digest}]=await Promise.all([
   import('../src/state'),import('../src/session-inputs'),import('../src/codex-accepted-binding-snapshot'),
   import('../src/codex-continuation-native-interval'),import('../src/codex-mutation-fence'),
   import('../src/codex-recovery-dispatch-authorization'),import('../src/codex-accepted-binding-continuation')]);
@@ -172,6 +172,62 @@ async function seed(options:{retainColdInputs?:boolean;diagnosticAsWitness?:bool
 }
 function denied(value:any,reason:string){assert.equal(value.allowed,false,JSON.stringify(value));assert.equal(value.reason,reason);}
 try {
+  const conditional=await seed();
+  const conditionalRow=db.query('SELECT proof_json FROM codex_unacknowledged_recoveries WHERE accepted_input_id=?').get(conditional.report.id) as any;
+  const conditionalProof=JSON.parse(conditionalRow.proof_json),native=conditionalProof.native;
+  native.originalHistory={witness:{policy:'codex_state_preserving_recovery_v1',relation:'conditional_match',
+    proven:false,diagnosticOnly:true,authorizesProviderStart:false},custody:{}};
+  native.nativeDigest=digest({threadId:native.threadId,continuationDecisionDigest:native.continuationDecisionDigest,
+    ownerSnapshotDigest:native.ownerSnapshotDigest,attempts:native.attempts,coverage:native.coverage,
+    nativeTurnOrder:native.nativeTurnOrder,nativeWatermark:native.nativeWatermark,originalHistory:native.originalHistory});
+  db.query('UPDATE codex_unacknowledged_recoveries SET proof_json=? WHERE accepted_input_id=?')
+    .run(JSON.stringify(conditionalProof),conditional.report.id);
+  const unavailable='NATIVE_EXPLICIT_SELECTION_COLD_RESUME_UNAVAILABLE';
+  denied(auth.grantCodexRecoveryAuthorization(db,{acceptedInputId:conditional.report.id,fenceId:conditional.fenceId,nowMs:4}),unavailable);
+  assert.throws(()=>auth.getCodexRecoveryAuthorizationForInput(db,conditional.report.id),new RegExp(unavailable));
+  assert.throws(()=>auth.codexRecoverySourceFingerprint(db,db.query('SELECT * FROM codex_recovery_dispatch_authorizations WHERE authorization_id=?')
+    .get(conditional.authorizationId)),new RegExp(unavailable));
+  denied(conditional.prepare('thread/resume',conditional.resumeParams,conditional.resumePermit),unavailable);
+  denied(conditional.consume(conditional.resumeParams,conditional.resumePermit),unavailable);
+  denied(conditional.hook(),unavailable);
+  denied(auth.retainCodexRecoveryColdInputs(db,{authorizationId:conditional.authorizationId,witness:conditional.recaptured,
+    paramsDigest:digest(conditional.resumeParams),nowMs:4}),unavailable);
+  denied(auth.retainCodexRecoverySourceCheckpoint(db,{authorizationId:conditional.authorizationId,result:{proven:true},nowMs:4}),unavailable);
+  denied(auth.recordCodexRecoveryMutationResponse(db,{authorizationId:conditional.authorizationId,intentId:'not-forwarded',response:{},nowMs:4}),unavailable);
+  assert.equal(markTurnProviderAdmissionIntended(conditional.reportTurn,'fixture-owner',2),false);
+  assert.equal((db.query('SELECT additional_dispatch_attempt FROM codex_unacknowledged_recoveries WHERE accepted_input_id=?')
+    .get(conditional.report.id) as any).additional_dispatch_attempt,null,'conditional wrapper never spends the attempt');
+  const {executeAgentTurn}=await import('../src/turn-execution');
+  await assert.rejects(()=>executeAgentTurn({turnId:conditional.reportTurn} as any),new RegExp(unavailable),
+    'actual preparation refuses before allocating a turn attachment root or invoking lifecycle callbacks');
+  const sibling=retainSessionInput({id:`conditional-sibling:${conditional.suffix}`,sessionId:conditional.session.id,
+    scope:'fixture',actionId:'later-sibling',kind:'input',origin:'agent',payload:{text:'later durable input',attachments:['must-not-materialize']}}).input;
+  enqueueSessionInput(sibling.id);
+  const siblingBefore=db.query('SELECT * FROM session_inputs WHERE id=?').get(sibling.id);
+  const {SessionExecutionHost}=await import('../src/session-execution-host');
+  // Invoke the actual host methods without constructing its unrelated lifecycle
+  // clients. The callback supplies only the already-selected local dispatch.
+  const host={owner:{view:()=>({capabilities:{steer:true}})},options:{registry:{
+    dispatchSessionSteering:(_id:number,work:any)=>({matched:true,value:work({turnId:conditional.reportTurn})})}}};
+  assert.equal((SessionExecutionHost.prototype as any).steer.call(host,sibling),false);
+  assert.deepEqual(db.query('SELECT * FROM session_inputs WHERE id=?').get(sibling.id),siblingBefore,
+    'other accepted input stays queued before steering placement or attachment preparation');
+  assert.equal(db.query('SELECT * FROM turn_steering_messages WHERE turn_id=?').all(conditional.reportTurn).length,0);
+  await assert.rejects(()=>(SessionExecutionHost.prototype as any).runModel.call({},
+    {turn_id:conditional.reportTurn},conditional.report,conditional.session),new RegExp(unavailable),
+    'actual host refuses before resource staging, current context lookup, lifecycle or provider selection');
+  const {bindCodexOriginalHistoryCoverage}=await import('../src/codex-continuation-native-interval');
+  assert.throws(()=>bindCodexOriginalHistoryCoverage(native,{proven:true,...native.originalHistory}),new RegExp(unavailable));
+  const {revalidateCodexOriginalHistorySource,refreshCodexOriginalHistoryAfterOwnedResume}=await import('../src/codex-original-history-coverage');
+  assert.equal(revalidateCodexOriginalHistorySource({} as any,native.originalHistory.witness).valid,false);
+  const refreshed=await refreshCodexOriginalHistoryAfterOwnedResume({db,intentId:'not-forwarded',...native.originalHistory});
+  assert.equal(refreshed.proven,false);
+  const {readCodexColdConstructionWitness}=await import('../src/codex-cold-construction');let nativeReads=0;
+  const cold=await readCodexColdConstructionWitness({db,owner:{} as any,binding:{} as any,
+    historyPolicy:'codex_state_preserving_recovery_v1',client:{async request(){nativeReads++;throw new Error('not reached');}}});
+  assert.equal(cold.proven,false);assert.equal(nativeReads,0);
+  assert.ok(!cold.proven&&cold.reasons.some(reason=>reason.code===unavailable));
+  assert.equal(db.query('SELECT * FROM codex_mutation_intents WHERE accepted_input_id=?').all(conditional.report.id).length,0);
   await assert.rejects(()=>seed({diagnosticAsWitness:true}),/NATIVE_ORIGINAL_EFFECT_HISTORY_COVERAGE_UNPROVEN/,
     'even an internally wrapped diagnostic with a recomputed evidence digest cannot grant dispatch authority');
   await assert.rejects(()=>seed({diagnosticAsWitness:'adjacent'}),/NATIVE_ORIGINAL_EFFECT_HISTORY_COVERAGE_UNPROVEN/,

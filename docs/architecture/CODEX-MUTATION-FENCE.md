@@ -462,10 +462,59 @@ resource paths or raw rows. This projection is diagnostic and cannot authorize a
 provider start or replace native effect/resource evidence. Existing strict
 reservations and their fingerprints retain their interpretation.
 
+## Conditional state-preserving relation
+
+`codex_state_preserving_recovery_v1` is a distinct, nonauthorizing conditional
+relation. It separates the original-source captured step selection from the saved
+future selection and the causal operation/exclusion boundary connecting them.
+Equal persisted settings, cwd or roots do not encode selection membership. A
+standalone equal-cwd settings update can save local plus remote while an already
+constructed task still captures local. An ordinary context record can extend an
+observed step only under the pinned continuous local-writer premise; it cannot
+turn that observation into a closed future-selection boundary.
+
+The subordinate private comparison checks source/binding/input references,
+causal construction, pending selection operations, preserved roots, cleanup
+ownership, zero attachments and the bounded start shape. Its output contains
+only a premises digest and findings. Even `conditional_match` has `proven:false`,
+`diagnosticOnly:true` and `authorizesProviderStart:false`; supplied premises are
+not independently resolved owner authority. This is neither a second historical
+interpreter nor a new journal/catalog of resource dependencies.
+
+Production has no constructor for a positive state-preserving witness. The
+public native cold-resume protocol cannot select environments before session
+initialization. Its capability result is fixed unavailable; no client-supplied
+field, version guess, test mode or dependency injection can grant it. The
+owner-internal policy selection refuses with
+`NATIVE_EXPLICIT_SELECTION_COLD_RESUME_UNAVAILABLE` before fence acquisition,
+native reads, preparation, reservation or spending the one additional attempt.
+Inspection separately reports `PRESERVED_FUTURE_SELECTION_BOUNDARY_UNPROVEN`.
+No ordinary-resume fallback or speculative native implementation exists.
+
+The shared discriminant also refuses conditional/diagnostic/unknown wrappers at
+the original-source binder, freshness/owned-resume refresh, private cold worker,
+reservation/admission, host preparation/steering, constructor, authorization
+fingerprint and dispatch operations. Those operations cover cold inputs,
+checkpoint/construction, capability claim, prepare, consume/forward, hook,
+response and terminal reconciliation. Other accepted inputs remain durable and
+are excluded before steering placement/materialization. No preserved root can
+become scratch cleanup for this unavailable arm. Generic cwd/root reconstruction
+is not a preservation constructor; ordinary starts continue to omit cwd, roots
+and environment reselection.
+
+Concrete owner-derived prospective policy/access and prepared-input construction,
+explicit-selection cold resume, its owned settings append and downstream positive
+consumption remain unreachable pending real boundary evidence and native support.
+The comparison does not substitute for those producers. Strict
+`codex_original_history_v1` reservations keep their representation, digest and
+semantics; no diagnostic or settings drift is promoted. Neither activation hold
+is lifted. Local-only environment info is inert in the pinned local branch, but
+does not establish future selection or access; remote info can connect/recover.
+
 Focused fixtures compose real SQLite owner/permit/queue paths, actual bridge,
 runner relay and raw WebSocket helper with independent clients and barriers. The
 bounded continuation contract gate now includes original-source parsing and the
-actual history worker, including a source-control change during a read. All twelve fixtures passed after source and fixture integration.
+actual history worker, including a source-control change during a read. The composed gate contains eighteen isolated fixtures.
 These prove source contracts. They do not prove installed selection, old native
 handler drainage, current hook activation, target history custody, live delivery
 or useful work. The production accepted-binding entry remains guarded until the

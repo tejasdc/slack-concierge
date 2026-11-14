@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { clearRetryBreaker, recordRetryFailure } from './retry-breaker';
-import {codexRecoveryAttemptBudgetSpent} from './state';
+import {codexRecoveryAttemptBudgetSpent,codexRecoveryForTurn} from './state';
+import {recoveryProofHistoryRefusal} from './codex-state-preserving-recovery';
 import {currentAccount} from './provider-accounts';
 import {AUTOMATIC_PROVIDER_ALIASES,resolveProviderAlias} from './aliases';
 import {budgetBriefWithProviderRoom,chooseProviderForNewWork,newWorkCapacity,capacityCanStart} from './provider-start-choice';
@@ -364,6 +365,9 @@ function moveAutomaticFirstTurnOffRefusingModel(input:TurnExecutionInput,dispatc
 }
 
 export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnExecutionOutcome> {
+  const recovery=codexRecoveryForTurn(input.turnId);
+  const historyRefusal=recovery?recoveryProofHistoryRefusal(JSON.parse(recovery.proof_json)):null;
+  if(historyRefusal)throw new Error(historyRefusal);
   const turnStart = Date.now();
   const dispatchAttempt = input.dispatchAttempt
     ?? getRunningTurnDispatchAttempt(input.turnId, input.ownerInstanceId)

@@ -56,6 +56,9 @@ try {
   assert.equal(first.binding.effort,'medium');
   assert.equal(first.continuation.authorized,false);
   assert.equal(first.eligible,false,'owner witnesses alone never authorize native execution');
+  assert.deepEqual(first.statePreserving.reasons,['NATIVE_EXPLICIT_SELECTION_COLD_RESUME_UNAVAILABLE',
+    'PRESERVED_FUTURE_SELECTION_BOUNDARY_UNPROVEN']);
+  assert.equal(first.statePreserving.authorizesProviderStart,false);
   assert.equal(first.logicalEffects.state,'outstanding');
   assert.equal(first.logicalEffects.authorizesProviderStart,false);
   assert.deepEqual(first.reasons.map(reason=>reason.code),['NATIVE_INTERVAL_NOT_PROVEN','NATIVE_ACTIVITY_BOUNDARY_NOT_FENCED',

@@ -232,3 +232,36 @@ row privately and publishes only digests/references. It supplies neither native
 history proof nor acknowledged-work resource closure. A state-preserving basis
 is still separate work; no diagnostic promotion or strict reservation change is
 made by this prerequisite. Both activation holds remain.
+# Conditional preservation correction after the environment review
+
+The source return at 4089a596 correctly refused an unestablished preservation
+premise but did not encode the conditional relation. The next complete Pro
+reviews fixed that bounded source contract. Captured local membership can extend
+to an ordinary captured step under the pinned producer/continuous-writer relation;
+it does not establish saved future membership. Public equal-cwd settings can
+reselect manager defaults for future work without changing the persisted settings
+projection while the running task retains its captured local selection. This is
+a supported counterexample, not a finding that the target performed it.
+
+The correction introduces one nonauthorizing conditional relation and a shared
+execution discriminant. It never constructs a positive production state-preserving
+witness. The actual public native cold-resume input lacks selection before
+initialization, so that policy refuses before reads/fence/preparation/reservation
+or attempt spending. Owner, constructor and dispatch fixtures exercise this refusal
+and reject wrapped conditional matches. Host methods refuse other inputs before
+steering placement/materialization and refuse the selected run before staging.
+Original strict proof/digests and the diagnostic strong watermark are unchanged.
+
+No closed historical dependency manifest is required. Completeness applies to
+the recovery's own footprint, preserving existing work, namespace, applicable
+access, references and custody. The earlier audit's blanket warning about
+environment info is narrowed: the reserved-local branch is inert; the remote
+branch can connect/recover. Neither supplies the absent boundary proof.
+
+Both operational activation holds remain unconditional. No target/provider/host
+observation, new input, native patch, alternate daemon, installation, recovery or
+obligation/child change was authorized or performed. The remaining positive
+prospective constructor, owned-resume append and prepared-input consumers cannot
+be implemented as executable state-preserving paths without the missing native
+construction support and independent owner boundary evidence. Their refusal is
+part of this source contract, not evidence of completed human repair.

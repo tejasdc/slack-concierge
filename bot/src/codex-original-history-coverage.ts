@@ -9,6 +9,7 @@ import {parseNativeSourceRecord,nativeSourceValueDigest as sourceDigest,nativeSo
 import {CONTEXT_TRANSITION_INTERPRETATION,ContextTransitionRefusal,renderAdjacentContextTransition} from './codex-diagnostic-context-transition';
 import {OwnerContextRefusal,verifyOwnerContextOccurrence,type OwnerContextDiagnosticEvidence} from './codex-owner-context-diagnostic';
 import {deriveOrdinaryOriginalCapture,RetainedCaptureRefusal,nativeRetainedFamilyBytes} from './codex-retained-message-capture';
+import {recoveryHistoryRefusal,STATE_PRESERVING_HISTORY_POLICY} from './codex-state-preserving-recovery';
 
 const digest=acceptedBindingSnapshotDigest;
 const object=(v:any)=>v!==null&&typeof v==='object'&&!Array.isArray(v);
@@ -1059,6 +1060,9 @@ export function revalidateCodexOriginalHistorySource(custody:CodexOriginalHistor
   {valid:true}|{valid:false;reason:string}{
   let fd:number|undefined;
   try{
+    const policyRefusal=recoveryHistoryRefusal({custody,witness});
+    if(policyRefusal)return {valid:false,reason:(witness as any)?.policy===STATE_PRESERVING_HISTORY_POLICY
+      ?policyRefusal:'ORIGINAL_HISTORY_WITNESS_CONFLICT'};
     const {witnessDigest,...summary}=witness;
     if(witness.policy!=='codex_original_history_v1'||digest(summary)!==witnessDigest||custody.witnessDigest!==witnessDigest||custody.threadId!==witness.threadId
       ||digest(witness.interpretation)!==digest(CODEX_HISTORY_INTERPRETATION)
@@ -1085,6 +1089,8 @@ export async function refreshCodexOriginalHistoryAfterOwnedResume(input:{db:Data
   let handle:Awaited<ReturnType<typeof open>>|undefined;
   try{
     const {db,witness:w,custody:c}=input,{witnessDigest,...originalSummary}=w;
+    const policyRefusal=recoveryHistoryRefusal({custody:c,witness:w});
+    if(policyRefusal)refuse((w as any)?.policy===STATE_PRESERVING_HISTORY_POLICY?policyRefusal:'ORIGINAL_HISTORY_WITNESS_CONFLICT');
     if(w.policy!=='codex_original_history_v1'||w.ownedResumeCheckpoint||digest(originalSummary)!==witnessDigest||c.witnessDigest!==witnessDigest
       ||digest(w.interpretation)!==digest(CODEX_HISTORY_INTERPRETATION)
       ||c.prefixDigest!==w.prefixDigest||digest(c.revision)!==w.sourceRevisionDigest||digest(c.path)!==w.pathDigest

@@ -5,6 +5,7 @@ import {getCodexThreadMutationFence,grantCodexMutationPermit,consumeCodexMutatio
   recordCodexMutationResponse,reconcileCodexMutationIntent,stopCodexThreadMutationFence} from './codex-mutation-fence';
 import {EARLIER_TURN_BLOCKS_SQL,queuePrecedesSql} from './state';
 import {revalidateCodexOriginalHistorySource} from './codex-original-history-coverage';
+import {recoveryProofHistoryRefusal} from './codex-state-preserving-recovery';
 import {compareCodexColdConstructionWitnesses,validateCodexColdResumeParameters,validateCodexColdResume,
   isCodexColdConstructionWitness,type CodexColdConstructionWitness} from './codex-cold-construction';
 export type CodexRecoveryColdConstructionReceipt=Extract<ReturnType<typeof validateCodexColdResume>,{allowed:true}>['receipt'];
@@ -100,6 +101,9 @@ const get=(db:Database,id:string)=>db.query('SELECT * FROM codex_recovery_dispat
 export function getCodexRecoveryAuthorizationForInput(db:Database,inputId:string){
   const row=db.query('SELECT * FROM codex_recovery_dispatch_authorizations WHERE accepted_input_id=?').get(inputId) as any;
   if(!row)return null;
+  const reservation=db.query('SELECT proof_json FROM codex_unacknowledged_recoveries WHERE accepted_input_id=?').get(inputId) as any;
+  const refusal=recoveryProofHistoryRefusal(parse(reservation?.proof_json??null));
+  if(refusal)throw new Error(refusal);
   const binding=parse(row.binding_json);
   return {authorizationId:row.authorization_id,model:binding.model,effort:binding.effort,
     status:row.start_permit_id?'start_bound':row.capability_hash?'claimed':'granted'};
@@ -123,6 +127,9 @@ function operation<T extends object>(db:Database,id:string,phase:string,nowMs:nu
     const row=get(db,id);
     try {
       requireProof(row,'RECOVERY_AUTHORIZATION_MISSING');
+      const reservation=db.query('SELECT proof_json FROM codex_unacknowledged_recoveries WHERE accepted_input_id=?').get(row.accepted_input_id) as any;
+      const refusal=recoveryProofHistoryRefusal(parse(reservation?.proof_json??null));
+      requireProof(!refusal,refusal??'RECOVERY_HISTORY_POLICY_UNKNOWN');
       const result=work(row);audit(db,get(db,id),phase,true,hook?.allowReason??'EXACT_RECOVERY_CONTINUATION',nowMs,hook);return result;
     }catch(error){
       if(!(error instanceof Refusal))throw error;
@@ -146,6 +153,8 @@ export function codexRecoverySourceFingerprint(db:Database,row:any){
   const reservation=db.query('SELECT * FROM codex_unacknowledged_recoveries WHERE accepted_input_id=?').get(row.accepted_input_id) as any;
   const binding=parse(row.binding_json),metadata=parse(session?.native_metadata_json),proof=parse(reservation?.proof_json);
   requireProof(session&&turn&&input&&reservation&&metadata&&binding,'SOURCE_ROWS_MISSING');
+  const historyRefusal=recoveryProofHistoryRefusal(proof);
+  requireProof(!historyRefusal,historyRefusal??'RECOVERY_HISTORY_POLICY_UNKNOWN');
   requireProof(session.provider_id==='codex'&&binding.provider==='codex'&&binding.model==='gpt-6-astra'
     &&session.agent_session_uuid===binding.threadId&&session.binding_generation===binding.generation
     &&metadata.model===binding.model&&metadata.reasoningEffort===binding.effort
@@ -369,6 +378,8 @@ export function grantCodexRecoveryAuthorization(db:Database,input:{acceptedInput
     try {
       requireProof(reservation,'PROVEN_RECOVERY_RESERVATION_MISSING');
       const proof=parse(reservation.proof_json),c=proof?.continuation,n=proof?.native,identity=c?.identity;
+      const historyRefusal=recoveryProofHistoryRefusal(proof);
+      requireProof(!historyRefusal,historyRefusal??'RECOVERY_HISTORY_POLICY_UNKNOWN');
       requireProof(c?.proven===true&&c.basis==='accepted_binding_continuation'&&c.policy==='codex-accepted-binding-continuation-v1'
         &&Array.isArray(c.reasons)&&c.reasons.length===0&&isDigest(c.decisionDigest)&&isDigest(c.snapshotDigest)
         &&Array.isArray(c.evidenceRefs)&&c.evidenceRefs.every(exists)

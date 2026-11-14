@@ -108,8 +108,8 @@ try{
   // Exercise the actual SQLite fence, permit, consumed intent and native response
   // reconciliation schemas. Authorization identity is fixture-seeded; no live
   // recovery is granted or dispatched.
-  db.exec('CREATE TABLE codex_unacknowledged_recoveries(accepted_input_id TEXT PRIMARY KEY)');
-  db.query('INSERT INTO codex_unacknowledged_recoveries(accepted_input_id) VALUES(?)').run(acceptedInputId);
+  db.exec('CREATE TABLE codex_unacknowledged_recoveries(accepted_input_id TEXT PRIMARY KEY,proof_json TEXT NOT NULL)');
+  db.query('INSERT INTO codex_unacknowledged_recoveries(accepted_input_id,proof_json) VALUES(?,?)').run(acceptedInputId,'{}');
   initializeCodexRecoveryAuthorizationSchema(db);
   const permitId='cold-resume-permit';
   const granted=grantCodexMutationPermit(db,{permitId,threadId,owner:{acceptedInputId,runId,dispatchAttempt:2,bindingDigest},

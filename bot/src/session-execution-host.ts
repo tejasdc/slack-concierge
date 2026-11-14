@@ -1,3 +1,4 @@
+import {requireRecoveryHistoryPolicy,recoveryProofHistoryRefusal,type CodexRecoveryHistoryPolicy} from "./codex-state-preserving-recovery";
 import {onCodexHistoryChanged} from './codex-session-observer';
 import { codexAppServerReady, codexAppServerSocketPath, codexRelayRunner, ownerCodexAppServerClient, waitForCodexAppServerOrDrain } from "./codex-app-server-client";
 import {CODEX_PROCESS_REPORT_GRACE_MS,codexLeftoverProcesses,codexProcessStillRunning,type CodexLeftoverProcess} from './codex-leftover-processes';
@@ -1171,6 +1172,8 @@ export class SessionExecutionHost {
     if(!session||sessionMetadata(session).outside||!closingHandoffNotice&&!this.owner.view(session).capabilities.steer)return false;
     if(sessionMetadata(session).interactionPolicy==='consultation-only'&&body.attachments?.length)return false;
     const matched=this.options.registry.dispatchSessionSteering(input.session_id,target=>{
+      const recovery=db.query("SELECT proof_json FROM codex_unacknowledged_recoveries WHERE turn_id=?").get(target.turnId) as any;
+      if(recovery&&recoveryProofHistoryRefusal(JSON.parse(recovery.proof_json)))return false;
       // Stop owns this run only. New communication waits in its session's FIFO.
       if(!db.query("SELECT 1 FROM turns WHERE id=? AND status='running' AND stop_requested_at IS NULL").get(target.turnId))return false;
       // A service return or notice without a pinned delivery choice joins whichever run is
@@ -1573,6 +1576,9 @@ export class SessionExecutionHost {
       turnId:row.turn_id,kind:'delivery',payload:{state:outcome==='acknowledged'?'sent':'ambiguous'}});
   }
   private async runModel(claim:QueuedTurnClaimRow,input:AcceptedSessionInput,session:SessionRow,steeringController:TurnSteeringController,closeSteering:(reason?:Error)=>void,cancellationController:TurnCancellationController,adoption?:Adoption) {
+    const recovery=codexUnacknowledgedRecovery(input.id);
+    const historyRefusal=recovery?recoveryProofHistoryRefusal(JSON.parse(recovery.proof_json)):null;
+    if(historyRefusal)throw new Error(historyRefusal);
     const saved=savedTurn(claim.turn_id);
     const metadata=sessionMetadata(session);
     const runnerTarget=chooseTurnRunner(session,metadata);
@@ -2105,8 +2111,9 @@ export class SessionExecutionHost {
     this.options.wake();
     return {status:'requeued',runId:run.runId};
   }
-  private async requeueProvenUnacknowledgedCodex(session:SessionRow,operation:AcceptedSessionInput,input:{requestId:string;actionId:string;sourceInputId:string;sourceRunId:string;validateSource?:()=>void;continuationDecisionDigest?:string}):
+  private async requeueProvenUnacknowledgedCodex(session:SessionRow,operation:AcceptedSessionInput,input:{requestId:string;actionId:string;sourceInputId:string;sourceRunId:string;validateSource?:()=>void;continuationDecisionDigest?:string;historyPolicy?:CodexRecoveryHistoryPolicy}):
     Promise<{status:'requeued'|'already_recovered';runId:string;providerTurnIds:string[]}> {
+    requireRecoveryHistoryPolicy(input.historyPolicy);
     const reserved=codexUnacknowledgedRecovery(operation.id);
     if(reserved){
       if(reserved.request_id!==input.requestId||reserved.turn_id!==operation.turn_id)

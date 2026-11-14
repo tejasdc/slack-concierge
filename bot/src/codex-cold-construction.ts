@@ -5,6 +5,8 @@ import {acceptedBindingSnapshotDigest as digest} from './codex-accepted-binding-
 import type {ContinuationBinding} from './codex-accepted-binding-continuation';
 import {getCodexThreadMutationFence,type CodexMutationFence} from './codex-mutation-fence';
 import {assessManagedHookInstallerCoverage,codexManagedHookConfigStatus} from './codex-managed-hook-config';
+import {requireRecoveryHistoryPolicy,STATE_PRESERVING_HISTORY_POLICY,statePreservingRecoveryAvailability,
+  type CodexRecoveryHistoryPolicy} from './codex-state-preserving-recovery';
 
 export interface CodexColdConstructionReadClient {
   request(method:'thread/read'|'thread/loaded/list'|'configRequirements/read'|'config/read',params:Record<string,unknown>):Promise<any>;
@@ -178,8 +180,10 @@ function makeWitness(owner:CodexColdConstructionOwner,observation:Awaited<Return
  * read RPCs do not provide a configuration generation token. No raw response,
  * path, settings, or requirements object is returned or logged. */
 export async function readCodexColdConstructionWitness(input:{db:Database;owner:CodexColdConstructionOwner;
-  binding:ContinuationBinding;client:CodexColdConstructionReadClient;installerProcesses?:ColdConstructionProcessSource}):Promise<WitnessResult>{
+  binding:ContinuationBinding;client:CodexColdConstructionReadClient;installerProcesses?:ColdConstructionProcessSource;
+  historyPolicy?:CodexRecoveryHistoryPolicy}):Promise<WitnessResult>{
   try{
+    try{requireRecoveryHistoryPolicy(input.historyPolicy);}catch(error){refuse((error as Error).message);}
     if(input.binding.provider!=='codex'||input.binding.threadId!==input.owner.threadId||input.binding.runner!==null
       ||input.binding.effort!=='medium'||!isText(input.binding.model)||digest(input.binding)!==input.owner.bindingDigest)
       refuse('COLD_BOUND_THREAD_BINDING_INVALID');
@@ -228,6 +232,8 @@ export function isCodexColdConstructionWitness(value:unknown):value is CodexCold
  * authorization/intent, exact params digest, and its terminal result digest. */
 export function validateCodexColdResumeParameters(input:{witness:CodexColdConstructionWitness;params:any}){
   const {witness,params}=input;
+  if((witness as any)?.policy===STATE_PRESERVING_HISTORY_POLICY)
+    return {allowed:false as const,reason:statePreservingRecoveryAvailability().reasons[0]};
   if(!isCodexColdConstructionWitness(witness))return {allowed:false as const,reason:'COLD_CONSTRUCTION_WITNESS_INVALID'};
   if(!isRecord(params)||params.threadId!==witness.threadId||params.model!==witness.model||params.excludeTurns!==true
     ||!isRecord(params.config)||params.config.model_reasoning_effort!=='medium'

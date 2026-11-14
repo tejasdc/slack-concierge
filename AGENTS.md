@@ -105,7 +105,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   forwarding permits, writer lifetime, managed configuration installation, private original-history
   decoder-pinned preserved-history/interval proofs with composed typed-shape validation and nonauthorizing suffix diagnostics
   (including pinned adjacent context/world transitions, owner-committed application-context preimages and ordinary retained captures),
-  exact-request diagnostic reply-custody snapshots, cold-construction proofs, release compatibility, exact-input guards and the explicit
+  exact-request diagnostic reply-custody snapshots, conditional preservation relations with unavailable native construction,
+  cold-construction proofs, release compatibility, exact-input guards and the explicit
   accepted-binding activation hold; source fixtures do not lift it.
 - Final replies expire only questions linked to that dispatch; repair an older
   sibling expiry through the exact-event restoration described in the

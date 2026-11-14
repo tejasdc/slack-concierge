@@ -1,3 +1,4 @@
+import {requireRecoveryHistoryPolicy,type CodexRecoveryHistoryPolicy} from "./codex-state-preserving-recovery";
 import {requirementsFor} from './request-history';
 import {threadOnlyReturnInputSql} from "./inbox-request-root";
 import {ownerRequestLabel} from './owner-request-label';
@@ -466,7 +467,7 @@ export type SessionOwnerRuntime = {
   artifact?(session:SessionRow,id:string):Promise<unknown>;
   recover?(session:SessionRow,operation:AcceptedSessionInput):Promise<void>;
   requeueProvenUnsentChatGpt?(session:SessionRow,operation:AcceptedSessionInput):Promise<{status:'requeued'|'already_queued'|'already_running';runId:string}>;
-  requeueProvenUnacknowledgedCodex?(session:SessionRow,operation:AcceptedSessionInput,input:{requestId:string;actionId:string;sourceInputId:string;sourceRunId:string;validateSource?:()=>void;continuationDecisionDigest?:string}):
+  requeueProvenUnacknowledgedCodex?(session:SessionRow,operation:AcceptedSessionInput,input:{requestId:string;actionId:string;sourceInputId:string;sourceRunId:string;validateSource?:()=>void;continuationDecisionDigest?:string;historyPolicy?:CodexRecoveryHistoryPolicy}):
     Promise<{status:'requeued'|'already_recovered';runId:string;providerTurnIds:string[]}>;
   proveRejectedChatGptAttachment?(session:SessionRow,operation:AcceptedSessionInput):Promise<{runId:string;reason:string;attachmentHashes:string[]}>;
   fork?(session:SessionRow,input:AcceptedSessionInput):void;
@@ -3304,7 +3305,8 @@ export class SessionOwner {
       throw new SessionOwnerError('The original ChatGPT operation is unavailable for exact recovery.',409,'CAPABILITY_UNAVAILABLE');
     return this.runtime.requeueProvenUnsentChatGpt(session,operation);
   }
-  async requeueProvenUnacknowledgedCodex(sessionId:number,inputId:string,input:{requestId:string;actionId:string;sourceInputId:string;sourceRunId:string;validateSource?:()=>void;continuationDecisionDigest?:string}) {
+  async requeueProvenUnacknowledgedCodex(sessionId:number,inputId:string,input:{requestId:string;actionId:string;sourceInputId:string;sourceRunId:string;validateSource?:()=>void;continuationDecisionDigest?:string;historyPolicy?:CodexRecoveryHistoryPolicy}) {
+    requireRecoveryHistoryPolicy(input.historyPolicy);
     const session=this.session(`concierge:${sessionId}`),operation=this.input(inputId);
     if(operation.session_id!==session.id||session.provider_id!=='codex'||!this.runtime.requeueProvenUnacknowledgedCodex)
       throw new SessionOwnerError('The original Codex continuation is unavailable for exact recovery.',409,'CAPABILITY_UNAVAILABLE');

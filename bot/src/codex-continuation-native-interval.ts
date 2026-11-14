@@ -1,6 +1,7 @@
 import {acceptedBindingSnapshotDigest,proveAcceptedBindingContinuation,
   type AcceptedBindingContinuationSnapshot,type ContinuationInput} from './codex-accepted-binding-continuation';
 import {nativeResultEventId} from './native-result-identity';
+import {recoveryHistoryRefusal} from './codex-state-preserving-recovery';
 import {revalidateCodexOriginalHistorySource,type CodexOriginalHistoryWitness,type CodexOriginalHistoryCustody} from './codex-original-history-coverage';
 
 export interface CodexHistoryReadClient {
@@ -204,6 +205,8 @@ export function bindCodexOriginalHistoryCoverage(projected:Awaited<ReturnType<ty
   if(!projected.proven)return projected;
   if(!original.proven)throw new Error(`Original native history refuses: ${original.reasons.map(reason=>reason.code).join(', ')}.`);
   const {witness,custody}=original;
+  const policyRefusal=recoveryHistoryRefusal({witness,custody});
+  if(policyRefusal)throw new Error(policyRefusal);
   if(witness.threadId!==projected.threadId||witness.attemptsDigest!==acceptedBindingSnapshotDigest(projected.attempts)
     ||acceptedBindingSnapshotDigest(witness.nativeTurnOrder)!==acceptedBindingSnapshotDigest(projected.coverage.map(item=>item.providerTurnId))
     ||!revalidateCodexOriginalHistorySource(custody,witness).valid)

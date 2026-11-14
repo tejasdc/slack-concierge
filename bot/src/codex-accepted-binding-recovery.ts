@@ -8,6 +8,7 @@ import {grantCodexRecoveryAuthorization} from './codex-recovery-dispatch-authori
 import {assessManagedCodexWriterCoverage} from './codex-managed-process-registry';
 import {RETRYING_PROVIDER_TURN_STATUS_TEXT} from './text';
 import type {OwnerContextCandidate} from './codex-owner-context-diagnostic';
+import {requireRecoveryHistoryPolicy,type CodexRecoveryHistoryPolicy} from './codex-state-preserving-recovery';
 
 /** Owner-internal host evidence adapter. Tests supply process identities, never
  * a caller's claim that writers are covered. Production uses the real host. */
@@ -24,7 +25,10 @@ export interface CodexRecoveryHostDependencies {
 export async function recoverAcceptedBindingCodex(input:{sessionId:number;inputId:string;requestId:string;
   actionId:string;sourceInputId:string;sourceRunId:string;socketPath:string;client:CodexHistoryReadClient&{
     request(method:string,params:Record<string,unknown>):Promise<any>};validateSource:()=>void;
-  expectedDecisionDigest:string},dependencies:CodexRecoveryHostDependencies={}){
+  expectedDecisionDigest:string;historyPolicy?:CodexRecoveryHistoryPolicy},dependencies:CodexRecoveryHostDependencies={}){
+  // Predictably unsupported construction must not acquire a fence, prepare
+  // staging, read a provider, reserve recovery or spend its unique attempt.
+  requireRecoveryHistoryPolicy(input.historyPolicy);
   const prior=codexUnacknowledgedRecovery(input.inputId);
   if(prior)return retained(prior);
   const inspection=inspectAcceptedBindingContinuation({...input,includeSnapshot:true});

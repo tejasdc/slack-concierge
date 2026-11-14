@@ -1,3 +1,4 @@
+import {recoveryProofHistoryRefusal} from './codex-state-preserving-recovery';
 /** Provider page projection belongs on a separate event loop from sends and page routing. */
 import {parentPort} from 'node:worker_threads';
 import {SessionOwner} from './session-owner';
@@ -104,6 +105,8 @@ async function coldBeforeResume(input:Extract<Work,{operation:'original-recovery
   let proof:any,binding:any;
   try{proof=JSON.parse((db.query('SELECT proof_json FROM codex_unacknowledged_recoveries WHERE accepted_input_id=?').get(auth.accepted_input_id) as any)?.proof_json);binding=JSON.parse(auth.binding_json);}
   catch{return refuseCoverage('RETAINED_RECOVERY_PROOF_INVALID');}
+  const historyRefusal=recoveryProofHistoryRefusal(proof);
+  if(historyRefusal)return refuseCoverage(historyRefusal);
   try{if(codexRecoverySourceFingerprint(db,auth)!==auth.source_fingerprint)return refuseCoverage('SOURCE_FINGERPRINT_CHANGED_BEFORE_COLD_RESUME');}
   catch{return refuseCoverage('SOURCE_CONTROLS_REFUSE_BEFORE_COLD_RESUME');}
   const fence=getCodexThreadMutationFence(db,auth.thread_id);
@@ -127,6 +130,8 @@ async function originalHistoryAfterOwnedResume(input:Extract<Work,{operation:'or
     .get(authorization.accepted_input_id) as any;
   let proof:any;
   try{proof=JSON.parse(reservation?.proof_json??'null');}catch{return refuseCoverage('RETAINED_RECOVERY_PROOF_INVALID');}
+  const historyRefusal=recoveryProofHistoryRefusal(proof);
+  if(historyRefusal)return refuseCoverage(historyRefusal);
   const original=proof?.native?.originalHistory;
   if(!reservation||!original?.witness||!original?.custody)
     return refuseCoverage('ORIGINAL_HISTORY_CUSTODY_NOT_RETAINED');

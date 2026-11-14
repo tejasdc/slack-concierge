@@ -1,3 +1,4 @@
+import {requireRecoveryHistoryPolicy,type CodexRecoveryHistoryPolicy} from "./codex-state-preserving-recovery";
 import { randomUUID } from "node:crypto";
 import { CODEX_OWNER_CONTEXT_KEY } from "./codex-owner-context-diagnostic";
 import { spawn } from "node:child_process";
@@ -443,7 +444,7 @@ export interface RunCodexTurnInput {
   sessionUUID: string | null;
   model?: string;
   reasoning_effort?: string;
-  codexRecovery?: {authorizationId:string;capability?:string;model:string;effort:string;preparedPromptDigest?:string;beforeResume?:(params:Record<string,unknown>)=>Promise<void>;beforeStart?:(input:{params:Record<string,unknown>;responseResult:unknown})=>Promise<void>};
+  codexRecovery?: {historyPolicy?:CodexRecoveryHistoryPolicy;authorizationId:string;capability?:string;model:string;effort:string;preparedPromptDigest?:string;beforeResume?:(params:Record<string,unknown>)=>Promise<void>;beforeStart?:(input:{params:Record<string,unknown>;responseResult:unknown})=>Promise<void>};
   applicationInstructions?: string;
   clientUserMessageId?: string;
   environment?: Record<string, string>;
@@ -517,6 +518,7 @@ async function codexThreadParameters(
   request: (method: string, params: unknown) => Promise<any>,
   threadEnvironment?: Record<string, string>,
 ) {
+  requireRecoveryHistoryPolicy(input.codexRecovery?.historyPolicy);
   const consultation = input.interactionPolicy === "consultation-only";
   const { CONCIERGE_COMMIT_PROVENANCE: _turnProvenance, ...shellEnvironment } = threadEnvironment || {};
   return {
@@ -1868,6 +1870,7 @@ function isLostCodexConnection(error: unknown) {
 }
 
 export async function runCodexTurn(input: RunCodexTurnInput): Promise<RunResult> {
+  requireRecoveryHistoryPolicy(input.codexRecovery?.historyPolicy);
   assertProviderInteractionPolicy(input.interactionPolicy);
   const attempt = usageAttempt("codex", undefined, input.accountLabel);
   // A turn being taken back is already the daemon's; refusing it on usage would abandon it running.
