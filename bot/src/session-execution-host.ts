@@ -24,7 +24,7 @@ import {runOutsideCodexTurn,type OutsideRun} from './outside-codex';
 import {outsideCodexPromptContent} from './outside-codex';
 import type {ProviderId} from './state';
 import {thinkeringConfigured} from './thinkering-capability-target';
-import {SessionCapabilityClient,chatGptCapabilities,type ChatGptAdmission,type CapabilityEvidence,type ChatGptReceipt} from './session-capability-client';
+import {SessionCapabilityClient,ChatGptDispatchError,chatGptCapabilities,type ChatGptAdmission,type CapabilityEvidence,type ChatGptReceipt} from './session-capability-client';
 import {completeNativeFork,readNativeForkPin,type NativeForkPin} from './native-session-controls';
 import {readRetainedNativeResult} from './turn-recovery';
 import {isProcessIdentityAlive} from './runtime-identity';
@@ -122,11 +122,13 @@ function noteChatgptChannelFailure(error:unknown,sessionId:number,dispatchAttemp
   // repair agent on 2026-11-03.
   if(dispatchAttempt<=1&&error instanceof ProviderDispatchError&&error.failureClass==='retryable')return;
   const text=error instanceof Error?error.message:String(error);
+  const suppressedCodes=['CHATGPT_RATE_LIMITED','CAPABILITY_OWNER_LOST','CAPABILITY_OBSERVATION_ABORTED','CHATGPT_OBSERVATION_STOPPED','CHATGPT_NOT_SENT'];
+  if(error instanceof ChatGptDispatchError&&suppressedCodes.includes(error.evidence.code))return;
   const code=/CHATGPT_[A-Z_]+|CAPABILITY_[A-Z_]+/.exec(text)?.[0]??'CHATGPT_FAILURE';
   // CHATGPT_NOT_SENT means Thinkering restarted while the request waited its turn: nothing reached
   // ChatGPT and the same run is sent again by itself, so it is a wait, not a channel fault. Eight
   // queued requests woke the repair agent at once after a release restart on 2026-10-13.
-  if(['CHATGPT_RATE_LIMITED','CAPABILITY_OWNER_LOST','CAPABILITY_OBSERVATION_ABORTED','CHATGPT_OBSERVATION_STOPPED','CHATGPT_NOT_SENT'].includes(code))return;
+  if(suppressedCodes.includes(code))return;
   // Only he can sign in to Google or pass a check the browser could not: tell him at once, with
   // its own Inbox thread and push, so nobody waits blind (Tejas, 2026-10-09: "I'm notified
   // immediately so the agents are like not waiting"). One notice per hour.

@@ -634,6 +634,14 @@ running meanwhile. One service input `watch:<id>:<fired|expired|failed|cancelled
 what was observed and any observation gap. Local to this machine. See
 [watches](../architecture/WATCHES.md).
 
+For an exact predecessor file watch and its already registered renewing recovery successor,
+use `sessions watch inspect-pair --old <id> --new <id>` and then
+`sessions watch reconcile-pair --old <id> --new <id> --inspection <returned-inspection> --action-id <stable-id>`,
+each with the current native source input/run. These commands prove retained work delegation
+and recovery custody, expose metadata only, and quietly retire only an active redundant old
+watch or its series successor. Terminal firings are preserved. Ordinary list/cancel do not
+gain cross-session authority. See [exact-pair recovery custody](../architecture/WATCHES.md#exact-pair-recovery-custody).
+
 **Opening a link on his Mac.** `sessions open <http(s)-link> [--on mac] [--browser chrome|safari|default]`
 with the run's source pair and a stable `--action-id` opens the link in his browser on the Mac with no
 session; queued while the Mac sleeps, with one service result when it later opens or expires. See

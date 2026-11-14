@@ -112,6 +112,11 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
       terminalConfirmed: true, assistantOutput: false, providerSessionId: input.sessionUUID ?? null,
       clearsAtMs: spentUntil, toolsUsed: [] });
   }
+  const dispatchAccount=input.accountLabel??(input.environment?.CONCIERGE_PROVIDER_ID==='antigravity'
+    ?input.environment.CONCIERGE_PROVIDER_ACCOUNT:undefined)
+    ??(await import('./provider-accounts')).currentAccount('antigravity')?.label??null;
+  const dispatchRunner=providerRunnerTarget('antigravity');
+  const dispatchObservedAt=new Date().toISOString();
 
   const args = ["--input-format", "stream-json", "--output-format", "stream-json",
     "--print-timeout", "0", "--dangerously-skip-permissions", "--disable-slash-commands"];
@@ -378,6 +383,7 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
     // after work (the Inbox router on 2026-11-12, 43 million tokens in) it continues at the reset
     // instead of ending his request for good.
     if (quotaRefusal) {
+      const refusalAt=new Date().toISOString();
       // The error's prose may contain a duration, but only Google's fresh structured quota
       // reply can name a reset we may queue against.
       const { scheduleProviderAccountUsageRefreshAfterCurrent } = await import("./provider-account-usage");
@@ -388,9 +394,13 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
       if (clearsAtMs === null) {
         try {
           const [{ db }, { publishProviderFreeNotice }] = await Promise.all([import("./state-database"), import("./provider-free-notice")]);
+          const [{providerAccountUsage},{googleQuotaDisagreement}]=await Promise.all([
+            import('./provider-account-usage'),import('./google-quota-disagreement')]);
+          const notice=googleQuotaDisagreement({model:input.model??null,account:dispatchAccount,runner:dispatchRunner,
+            dispatchObservedAt,refusalAt,error:terminal.error??'',reading:providerAccountUsage('antigravity')});
           publishProviderFreeNotice(db, { key: `usage-reading-disagrees:antigravity:${new Date().toISOString().slice(0, 10)}`,
             kind: "usage_reading_disagrees",
-            text: `Google refused a turn for quota ("${(terminal.error ?? "").slice(0, 200)}") while Concierge's own Google allowance reading shows room. Find which allowance Google is enforcing and make the reading show it.` });
+            text: notice.text });
         } catch {}
       }
     }

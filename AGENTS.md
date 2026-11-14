@@ -69,6 +69,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - Managed native Codex helper edit identity and parent-turn retention follow [provider sessions](docs/architecture/PROVIDER-SESSIONS.md); the Nov 13 lifecycle failure and replay are [here](docs/incidents/2026-11-13-codex-helper-lifetime.md), preserving the earlier [Nov 12 attribution incident](docs/incidents/2026-11-12-codex-helper-edit-gate.md).
 - Marked messages held by per-session Pause retain their original admission identity;
   see [session recovery](docs/architecture/SESSION-OWNER.md#identity-and-admission).
+- Exact predecessor/successor file-watch inspection and quiet retirement use retained recovery
+  and work-delegation custody, not cross-session list/cancel; see
+  [watch custody](docs/architecture/WATCHES.md#exact-pair-recovery-custody).
 
 ## Session and Inbox obligations
 
@@ -122,6 +125,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 | Outside agent asks and exact unstarted withdrawal | [Session owner wire contract](docs/contracts/session-owner-v1.md), [router actions](docs/runbooks/ROUTER-ACTIONS.md#outside-agents) |
 | Inbox topics, routing, areas, thread replies, attention and prepared-worker catch-up | [Native Inbox](docs/contracts/native-inbox.md), [areas](docs/architecture/AREAS-OF-INTEREST.md), [prompt answers](docs/architecture/PROMPT-THREAD-ANSWERS.md), [prepared topics](docs/architecture/PREPARED-TOPICS.md) |
 | Provider binding, accounts, usage, fresh Claude commands from agent shells, history and external workers | [Provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md), [provider sessions](docs/architecture/PROVIDER-SESSIONS.md), [usage](docs/architecture/PROVIDER-USAGE.md), [history index](docs/architecture/PROVIDER-HISTORY-INDEX.md), [execution host](docs/architecture/EXECUTION-HOST.md) |
+| Google quota disagreement evidence and recovered conflicting meter readings | [Google quota diagnostics](docs/architecture/PROVIDER-USAGE.md#google-quota-disagreement-evidence) |
 | Explicit ChatGPT projects, custom GPT retirement and retained-run recovery | [ChatGPT requests](docs/runbooks/ROUTER-ACTIONS.md#agent-session-communication), [wire contract](docs/contracts/session-owner-v1.md) |
 | Provider sign-in renewal through the Mac's saved browser account, including its bounded pre-auth browser retry | [Sign-in approval](docs/runbooks/CLAUDE-SIGNIN-APPROVAL.md), [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md) |
 | Exact thnkr.ing Mac web-app inspection, native AX update recovery, human authorization and direct Codex update proof | [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md), [peer instances](docs/runbooks/PEER-INSTANCES.md) |

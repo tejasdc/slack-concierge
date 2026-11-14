@@ -48,6 +48,7 @@ not match. Recovery waits for a valid account reading; see the
 ## Notices
 
 - Account movement, temporary holds, allowance forecasts, and automatic reset-credit use are recorded for diagnosis and shown in Accounts or the affected session. They do not create a phone outage push or Needs attention item [decision: provider-account-notices-only-when-action-needed]. A raw internal agent consult is never described as “your message.”
+- ChatGPT channel notices prefer a typed retained transient wait code over nested diagnostic prose; other failures keep the existing message-based classification so sign-in notices remain recognizable. The original error evidence stays available for diagnosis.
 - Concierge may ask Tejas to act when a real sign-in, explicit choice, or other decision only he can make blocks live work. That request names the affected work and the required action. A provider outage offer belongs to the specific live turn and must be rechecked before delivery; a withdrawn turn is ineligible.
 - An accepted message's receipt remains visible while it waits and changes when it resumes, fails, or is withdrawn. A stale notice is not evidence that work is still waiting. The sender and display must check the authoritative turn and request state before making a current-state claim.
 
