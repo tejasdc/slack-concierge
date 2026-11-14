@@ -10,6 +10,51 @@ import {CODEX_HISTORY_INTERPRETATION,decodeNativeHistoryRecord,decodeResponse,ro
   turnItemKinds,NativeHistoryDecodeError} from '../src/codex-native-history-decoder';
 import eventCatalogue from '../src/codex-native-event-catalogue.json';
 import {parseNativeSourceRecord,nativeSourceValueDigest} from '../src/codex-native-source-values';
+import {matchesNativeSchemaShape,matchesPinnedNativeResponse} from '../src/codex-native-response-shape';
+
+// Exercise native validity independently from complete-shape field coverage.
+const toolOutput=(content:any)=>({type:'custom_tool_call_output',call_id:'fixture',output:[content]});
+for(const content of [{type:'input_image',image_url:'https://example.invalid/image',detail:'auto'},
+  {type:'input_image',file_id:'fixture',detail:null},
+  {type:'input_image',image_url:'url',file_id:'fixture',detail:'original'},
+  {type:'input_text',text:'fixture'},{type:'input_audio',audio_url:'fixture'},
+  {type:'encrypted_content',encrypted_content:'fixture'}]){
+  assert.equal(matchesPinnedNativeResponse(toolOutput(content),'custom_tool_call_output'),true);
+  assert.equal(matchesPinnedNativeResponse(toolOutput({...content,unknown_meaningful:true}),'custom_tool_call_output'),false);
+}
+for(const content of [{type:'input_image',detail:'auto'},{type:'input_image',image_url:4},
+  {type:'input_image',file_id:'fixture',detail:'unknown'},
+  {type:'input_image',image_url:'url',file_id:4},
+  {type:'input_text',text:'fixture',image_url:'url'}])
+  assert.equal(matchesPinnedNativeResponse(toolOutput(content),'custom_tool_call_output'),false);
+const composed={type:'object',properties:{tag:{enum:['tag']}},required:['tag'],anyOf:[
+  {properties:{left:{type:'string'}},required:['left']},
+  {properties:{right:{type:'integer'}},required:['right']}]};
+assert.equal(matchesNativeSchemaShape({tag:'tag',left:'a',right:1},composed),true);
+assert.equal(matchesNativeSchemaShape({tag:'tag',left:'a',right:'invalid'},composed),false);
+assert.equal(matchesNativeSchemaShape({tag:'tag',left:'a',extra:1},composed),false);
+assert.equal(matchesNativeSchemaShape({tag:'tag',left:'a',right:1},{...composed,oneOf:composed.anyOf}),false);
+assert.equal(matchesNativeSchemaShape({tag:'wrong',left:'a'},composed),false);
+const refs={Pair:composed};
+assert.equal(matchesNativeSchemaShape({tag:'tag',left:'a',extra:1},
+  {$ref:'#/definitions/Pair',properties:{extra:{type:'integer'}}},refs),true);
+assert.equal(matchesNativeSchemaShape({tag:'tag',left:'a'},
+  {$ref:'#/definitions/Pair',required:['extra']},refs),false);
+assert.equal(matchesNativeSchemaShape({tag:'tag',left:'a'},
+  {...composed,additionalProperties:false}),false); // explicit local closure is not a union of sibling properties
+assert.equal(matchesNativeSchemaShape({known:'a',extra:1},
+  {type:'object',properties:{known:{type:'string'}},additionalProperties:{type:'integer'}}),true);
+assert.equal(matchesNativeSchemaShape({known:'a',extra:'bad'},
+  {type:'object',properties:{known:{type:'string'}},additionalProperties:{type:'integer'}}),false);
+assert.equal(matchesNativeSchemaShape({opaque:{unknown:{nested:true}}},
+  {type:'object',properties:{opaque:true}}),true);
+assert.equal(matchesNativeSchemaShape({known:1,extra:2},
+  {type:'object',properties:{known:{type:'integer'}},additionalProperties:true}),true);
+assert.equal(matchesNativeSchemaShape({n:1},{type:'object',properties:{n:{type:'integer'}}}),true);
+assert.equal(matchesNativeSchemaShape(parseNativeSourceRecord('{"n":1.0}'),
+  {type:'object',properties:{n:{type:'integer'}}}),false);
+assert.equal(matchesNativeSchemaShape(parseNativeSourceRecord('{"n":9007199254740993}'),
+  {type:'object',properties:{n:{type:'integer'}}}),false);
 
 const scratch=mkdtempSync(join(tmpdir(),'codex-original-source-')),home=join(scratch,'codex-home');mkdirSync(home);
 const path=join(home,'rollout-original.jsonl'),threadId='019a7181-0000-7000-8000-000000000001';
@@ -77,6 +122,15 @@ assert.throws(()=>decodeResponse({type:'computer_call'}),NativeHistoryDecodeErro
 assert.throws(()=>decodeResponse({type:'local_shell_call',status:'completed',action:{type:'exec',command:'invalid native vector'}}),NativeHistoryDecodeError);
 assert.throws(()=>decodeResponse({type:'function_call_output',output:[{type:'future_output',text:'unclassified'}]}),NativeHistoryDecodeError);
 assert.throws(()=>decodeResponse({type:'compaction_trigger'}),NativeHistoryDecodeError);
+const imageOutput=toolOutput({type:'input_image',image_url:'https://example.invalid/image',detail:'auto'});
+const priorImage=records();priorImage.splice(8,0,row('response_item',imageOutput));
+const imageCheckpoint=priorImage.find(r=>r.type==='compacted').payload;
+imageCheckpoint.replacement_history.push(imageOutput);imageCheckpoint.replacement_history_metadata.push({});
+write(priorImage);assert.equal((await read()).proven,true,
+  'composed native image shape preserves the original earlier effect through compaction');
+await refuses('ORIGINAL_HISTORY_CONVERSATIONAL_OR_TOOL_EFFECT',rows=>rows.splice(12,0,row('response_item',imageOutput)));
+await refuses('ORIGINAL_HISTORY_RESPONSE_NATIVE_SHAPE_INVALID',rows=>rows.splice(8,0,
+  row('response_item',toolOutput({...imageOutput.output[0],unknown_meaningful:true}))));
 const lexicalA=parseNativeSourceRecord('{"n":9007199254740992}'),lexicalB=parseNativeSourceRecord('{"n":9007199254740993}');
 assert.equal(lexicalA.n,lexicalB.n,'JavaScript alone collapses these distinct native JSON numbers');
 assert.notEqual(nativeSourceValueDigest(lexicalA),nativeSourceValueDigest(lexicalB),'source payload identity retains exact numeric evidence');

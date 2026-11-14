@@ -37,6 +37,19 @@ separate attribution too.
 
 ## Fix
 
+Parent's stable-EOF compatibility discriminator subsequently found 28 earlier
+image tool-output refusals in the candidate. The synthetic official-shape
+discriminator returned image false and text true. Source inspection confirmed a
+schema interpreter defect: implicit closure on each properties-bearing subschema
+rejected fields declared by sibling/union branches. This was a known native shape,
+not missing target provenance. The source correction separates native validity
+from complete typed-shape field coverage. Only native-valid union branches
+contribute fields; explicit additionalProperties remains local to its schema.
+Reference siblings and union siblings still constrain the value. Unknown typed
+fields, invalid branch values and numeric identity failures still refuse. The
+interpretation witness now binds the corrected interpreter version; the original
+digest primitive and physical source identity are unchanged.
+
 The correction keeps physical original bytes and the digest primitive. A pinned
 decoder recognizes wire vocabulary separately from the reducer. Earlier known
 effects are preserved with envelope references; interval effects still refuse.
