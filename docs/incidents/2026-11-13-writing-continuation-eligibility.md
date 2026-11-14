@@ -150,6 +150,11 @@ no retries. The standalone Node bridge retains its own endpoint discovery.
 The boundary check remains unchanged; a disposable socket fixture covers exact
 identity forwarding, refusal, malformed/oversized replies and unavailable owner,
 and the composed runner-relay fixture exercises the actual gateway path.
+CI then reached the writable-constructor guard and rejected the new disposable
+fixture databases because their exact sites were not registered. Those temporary
+roots and child-worker paths are now explicitly registered in the existing
+fixture-only list, with exact constructor counts; production enforcement and the
+missing-registration refusal remain unchanged.
 
 The omitted-boundary source audit also found that account activation and managed
 daemon replacement use running-turn checks, which do not exclude a queued

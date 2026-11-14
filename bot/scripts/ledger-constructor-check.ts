@@ -49,6 +49,22 @@ const FIXTURE_WRITERS: Readonly<Record<string, readonly string[]>> = {
   'scripts/topic-projection-fixture.ts': ["new Database(join(root,'presentation.db'))"],
   'scripts/owner-collection-growth-fixtures.ts': ["new Database(':memory:')", "new Database(':memory:')", "new Database(':memory:')"],
   'scripts/session-card-growth-fixtures.ts': ["new Database(':memory:')", "new Database(':memory:')"],
+  // Physical reservation/permit fixtures use mkdtemp-owned SQLite files, including their barrier workers.
+  'scripts/codex-mutation-fence-fixture.ts': ['new Database(databasePath)', 'new Database(databasePath)',
+    'new Database(databasePath)', 'new Database(databasePath)'],
+  'scripts/codex-daemon-lifecycle-fixture.ts': ['new Database(process.argv[3]!)', 'new Database(file)', 'new Database(file)'],
+  'scripts/codex-recovery-dispatch-authorization-fixture.ts': ['new Database(statePath)'],
+  'scripts/provider-activation-lifecycle-fixture.ts': ['new Database(databasePath)', 'new Database(databasePath)'],
+  'scripts/codex-relay-check.ts': ["new Database(join(root,'mutation-ledger.sqlite'))"],
+  'scripts/codex-managed-hook-config-fixture.ts': ['new Database(process.argv[3]!)', 'new Database(path)',
+    'new Database(path)', 'new Database(racePath)'],
+  'scripts/codex-cold-construction-fixture.ts': ["new Database(join(state,'state.sqlite'))"],
+  'scripts/codex-managed-hook-install-fixture.ts': ["new Database(join(heldState,'state.db'))"],
+  'scripts/codex-managed-process-registry-fixture.ts': ['new Database(path)', 'new Database(path)'],
+  'scripts/codex-original-history-coverage-fixture.ts': ["new Database(':memory:')"],
+  'scripts/codex-mutation-channel-fixture.ts': ['new Database(path)', 'new Database(path)', 'new Database(path)'],
+  'scripts/codex-managed-launch-fixture.ts': ["new Database(join(state,'state.db'))"],
+  'scripts/codex-mutation-release-compatibility-fixture.ts': ["new Database(join(state,'state.db'))"],
 };
 
 function sourceFiles(root: string): string[] {
