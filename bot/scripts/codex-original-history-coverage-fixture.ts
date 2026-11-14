@@ -97,6 +97,10 @@ const historicalPair=records();historicalPair.splice(4,0,row('inter_agent_commun
     content:[{type:'input_text',text:'earlier child reply'}],internal_chat_message_metadata_passthrough:{turn_id:'prior-T'}}));
 write(historicalPair);const paired=await read();assert.equal(paired.proven,true,JSON.stringify(paired));
 if(paired.proven)assert.ok(paired.witness.baselineTransitions.some(t=>t.kind==='communication_pair'));
+const separatelyAttributedPair=structuredClone(historicalPair);
+separatelyAttributedPair[5].payload.internal_chat_message_metadata_passthrough.turn_id='declared-communication-turn';
+write(separatelyAttributedPair);assert.equal((await read()).proven,true,
+  'the native communication instruction boundary is not inferred from the active task');
 const interruptedPair=structuredClone(historicalPair);interruptedPair.splice(5,0,row('event_msg',{type:'token_count',info:null,rate_limits:null}));
 write(interruptedPair);const brokenPair=await read();assert.equal(brokenPair.proven,false);
 if(!brokenPair.proven)assert.equal(brokenPair.reasons[0]?.code,'ORIGINAL_HISTORY_COMMUNICATION_PAIR_UNPROVEN');

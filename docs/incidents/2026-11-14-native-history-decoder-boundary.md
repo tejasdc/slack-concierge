@@ -30,6 +30,10 @@ The pinned migration consumer pairs communication metadata only with the next
 physical AgentMessage. Reconstruction resets world state at compaction; resume
 metadata has authoritative optional values. Neither boolean communication flags
 nor missing token usage prove effect neutrality.
+The pair's instruction boundary is established by that physical marker, not by
+equating its declared turn with the task active when delivery arrived. The pinned
+rollback planner carries these identities separately; the fixture exercises that
+separate attribution too.
 
 ## Fix
 

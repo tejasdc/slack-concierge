@@ -71,7 +71,7 @@ class RecordCoverage {
   priorEnvelopes=new Map<string,Map<string,{record:number;supported:boolean}>>();
   configurationEnvelopes=new Map<string,number>();
   retainedCheckpoints=new Map<string,number>();
-  pendingCommunication:{record:number;owner:string|null}|null=null;
+  pendingCommunication:{record:number}|null=null;
   backendControls:Record<string,{record:number;recordDigest:string}>=Object.create(null);
   latestUsage:any=null;latestUsageRecord=0;resumeState:any=null;resumeRecord=0;
   resetRecord:number|null=null;comparisonContextDigest:string|null=null;comparisonWorldDigest:string|null=null;
@@ -111,9 +111,9 @@ class RecordCoverage {
       const pending=this.pendingCommunication;this.pendingCommunication=null;
       if(row.type!=='response_item'||row.payload.type!=='agent_message')
         refuse('ORIGINAL_HISTORY_COMMUNICATION_PAIR_UNPROVEN',`record:${pending.record}`,ref);
-      const owned=row.payload.internal_chat_message_metadata_passthrough?.turn_id??this.active;
-      if(pending.owner!==null&&owned!==pending.owner)
-        refuse('ORIGINAL_HISTORY_COMMUNICATION_OWNER_UNPROVEN',`record:${pending.record}`,ref);
+      // Pinned RollbackPlanner starts a communication instruction boundary at
+      // the marker and pairs the next AgentMessage. It does not derive that
+      // boundary from the task that happened to be active when delivery arrived.
       this.baselineTransitions.push({record:this.count,kind:'communication_pair',sourceRecord:pending.record,stateDigest:sourceDigest(row)});
     }
     if(this.count===1){
@@ -307,7 +307,7 @@ class RecordCoverage {
     if(row.type==='session_meta')return;
     if(row.type==='inter_agent_communication_metadata'){
       if(this.relevant)refuse('ORIGINAL_HISTORY_INTERVAL_COMMUNICATION_PRESENT',ref);
-      this.pendingCommunication={record:this.count,owner:this.active};return;
+      this.pendingCommunication={record:this.count};return;
     }
     if(row.type==='inter_agent_communication'){
       if(this.relevant)refuse('ORIGINAL_HISTORY_INTERVAL_COMMUNICATION_PRESENT',ref);
