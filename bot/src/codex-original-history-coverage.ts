@@ -6,6 +6,7 @@ import type {Database} from 'bun:sqlite';
 import {acceptedBindingSnapshotDigest,type ContinuationBinding} from './codex-accepted-binding-continuation';
 import {CODEX_HISTORY_INTERPRETATION,decodeNativeHistoryRecord,decodeResponse,nativeHistoryInventoryKey,NativeHistoryDecodeError} from './codex-native-history-decoder';
 import {parseNativeSourceRecord,nativeSourceValueDigest as sourceDigest,nativeSourceShadow,nativeSourceWithoutKeys,nativeSourceIntegerAt} from './codex-native-source-values';
+import {CONTEXT_TRANSITION_INTERPRETATION,ContextTransitionRefusal,renderAdjacentContextTransition} from './codex-diagnostic-context-transition';
 
 const digest=acceptedBindingSnapshotDigest;
 const object=(v:any)=>v!==null&&typeof v==='object'&&!Array.isArray(v);
@@ -52,22 +53,29 @@ type DiagnosticReference={record:number;snapshotDigest?:string;settingsDigest?:s
   startByte?:number;endByte?:number;recordDigest?:string}|null;
 type DiagnosticFinding={kind:'observed_drift'|'strict_effect'|'invalidated';code:string;evidence:string[];
   record:number;startByte:number;endByte:number;recordDigest:string;before?:DiagnosticReference;after?:DiagnosticReference};
+type SourceRecordReference={record:number;startByte:number;endByte:number;recordDigest:string};
+type ContextWorldTransition=Omit<ReturnType<typeof renderAdjacentContextTransition>,'fragments'>&{
+  interpretation:typeof CONTEXT_TRANSITION_INTERPRETATION;message:SourceRecordReference;patch:SourceRecordReference;
+  turnDigest:string;metadataDigest:string;beforeWorldDigest:string;afterWorldDigest:string;
+  resetRecord:number|null;fullRecord:number;worldRecords:number[];
+  fragments:{index:number;kind:string;textDigest:string;textBytes:number}[]};
 /** Deliberately not a witness: no witnessDigest, custody, spans or execution policy.
  * It describes observations under a permanently failed strict proof. */
 export type CodexOriginalHistorySuffixDiagnostic={policy:'codex_original_history_diagnostic_v1';
   diagnosticOnly:true;authorizesProviderStart:false;proofBlocked:true;
-  interpretation:typeof CODEX_HISTORY_INTERPRETATION;diagnosticInterpretation:'observed_suffix_v1';
+  interpretation:typeof CODEX_HISTORY_INTERPRETATION;diagnosticInterpretation:'observed_suffix_adjacent_v2';
   bindingDigest:string;selectedInputId:string;sourceIdentity:string;sourceRevisionDigest:string;pathDigest:string;
   prefixDigest:string;prefixBytes:number;recordCount:number;completeCapturedEof:true;inventory:Record<string,number>;
   strictFailures:{code:string;evidence:string[]}[];findings:DiagnosticFinding[];
   selectedBaseline:DiagnosticState|null;lastObservedState:DiagnosticState|null;
   semanticThroughRecord:number;semanticComplete:boolean;
   invalidatedDependencies:string[];unassessedRange:{firstRecord:number;lastRecord:number}|null;
-  transitions:CodexOriginalHistoryWitness['baselineTransitions']};
+  transitions:CodexOriginalHistoryWitness['baselineTransitions'];contextWorldTransitions:ContextWorldTransition[]};
 
 class SuffixAnalysis {
   findings:DiagnosticFinding[]=[];selectedBaseline:DiagnosticState|null=null;lastObservedState:DiagnosticState|null=null;
   private pendingFindings:DiagnosticFinding[]=[];
+  contextWorldTransitions:ContextWorldTransition[]=[];pendingContextTransition:ContextWorldTransition|null=null;
   semanticThroughRecord=0;invalidatedAt:number|null=null;
   transitions:CodexOriginalHistoryWitness['baselineTransitions']=[];private transitionCount=0;
   record=0;startByte=0;endByte=0;recordDigest='';
@@ -80,19 +88,22 @@ class SuffixAnalysis {
     this.pendingFindings.push({kind,code,evidence,record:this.record,startByte:this.startByte,endByte:this.endByte,
       recordDigest:this.recordDigest,...(before===undefined?{}:{before}),...(after===undefined?{}:{after})});
   }
-  invalidate(error:CoverageRefusal){
+  invalidate(error:CoverageRefusal,firstRecord=this.record){
+    this.pendingContextTransition=null;
     this.pendingFindings=[];this.finding('invalidated',error.code,error.evidence);
-    this.findings.push(...this.pendingFindings);this.pendingFindings=[];this.invalidatedAt=this.record;
+    this.findings.push(...this.pendingFindings);this.pendingFindings=[];this.invalidatedAt=firstRecord;
   }
   state(coverage:RecordCoverage):DiagnosticState{
     return {settings:coverage.settingsBaseline,context:coverage.turnContextBaseline,world:coverage.worldStateBaseline,
       resetRecord:coverage.resetRecord,resumeRecord:coverage.resumeRecord};
   }
   commit(coverage:RecordCoverage){
+    if(coverage.pendingContext)return;
     // Called only after a whole record succeeded. A thrown reducer is discarded,
     // so none of its partially updated state can appear as a committed baseline.
     this.semanticThroughRecord=coverage.count;this.lastObservedState=this.state(coverage);
     this.findings.push(...this.pendingFindings);this.pendingFindings=[];
+    if(this.pendingContextTransition){this.contextWorldTransitions.push(this.pendingContextTransition);this.pendingContextTransition=null;}
     if(coverage.relevant)this.transitions.push(...coverage.baselineTransitions.slice(this.transitionCount));
     this.transitionCount=coverage.baselineTransitions.length;
   }
@@ -137,6 +148,8 @@ class RecordCoverage {
   worldStateBaseline:CodexOriginalHistoryWitness['worldStateBaseline']=null;
   worldState:any=null;settingsSnapshot:any=null;recordStart=0;recordEnd=0;
   worldStateShadow:any=null;
+  worldFullRecord:number|null=null;worldRecords:number[]=[];
+  pendingContext:{payload:any;metadata:any;source:SourceRecordReference}|null=null;
   expected:string[];
   constructor(readonly input:CodexOriginalHistoryCoverageInput,private readonly diagnostic?:SuffixAnalysis){
     const positions=input.attempts.filter(a=>a.inputId===input.selectedInputId).map(a=>input.nativeTurnOrder.indexOf(a.providerTurnId));
@@ -171,6 +184,8 @@ class RecordCoverage {
     // Once reconstruction fails, keep decoding the complete physical suffix but
     // never let a later checkpoint convert uncertainty into a successful proof.
     if(this.blocked)return;
+    if(this.pendingContext&&(this.count!==this.pendingContext.source.record+1||row.type!=='world_state'||row.payload.full!==false))
+      refuse('ORIGINAL_HISTORY_ADJACENT_CONTEXT_PATCH_MISSING',`record:${this.pendingContext.source.record}`,ref);
     if(this.pendingCommunication){
       const pending=this.pendingCommunication;this.pendingCommunication=null;
       if(row.type!=='response_item'||row.payload.type!=='agent_message')
@@ -281,11 +296,11 @@ class RecordCoverage {
       }
     }
   }
-  rememberEnvelope(p:any,metadata:any){
+  rememberEnvelope(p:any,metadata:any,record=this.count){
     const key=sourceDigest(p),envelopes=this.priorEnvelopes.get(key)??new Map();
-    envelopes.set(digest(canonicalMetadata(metadata)),{record:this.count,supported:true});this.priorEnvelopes.set(key,envelopes);
+    envelopes.set(digest(canonicalMetadata(metadata)),{record,supported:true});this.priorEnvelopes.set(key,envelopes);
     const config=configurationIdentity(p,metadata);
-    if(config!==null)this.configurationEnvelopes.set(config,this.count);
+    if(config!==null)this.configurationEnvelopes.set(config,record);
   }
   neutralMetadata(metadata:any,allowed:readonly string[]=[]):boolean{
     if(metadata==null)return true;
@@ -415,6 +430,27 @@ class RecordCoverage {
       }
       const next=p.full?p.state:mergeWorldState(this.worldState,p.state);
       const nextShadow=p.full?nativeSourceShadow(p.state):mergeWorldState(this.worldStateShadow,nativeSourceShadow(p.state));
+      if(this.pendingContext){
+        const pending=this.pendingContext;
+        let rendered:ReturnType<typeof renderAdjacentContextTransition>;
+        try{rendered=renderAdjacentContextTransition(this.worldState,next,p.state);}catch(error){
+          if(error instanceof ContextTransitionRefusal)refuse(error.code,`record:${pending.source.record}`,ref);throw error;
+        }
+        const message=pending.payload,kinds=message.internal_chat_message_metadata_passthrough.content_item_kinds;
+        if(rendered.fragments.length!==message.content.length||rendered.fragments.some((f,index)=>
+          f.kind!==kinds[index]||f.text!==message.content[index].text))
+          refuse('ORIGINAL_HISTORY_ADJACENT_CONTEXT_RENDER_MISMATCH',`record:${pending.source.record}`,ref);
+        const {fragments,...summary}=rendered;
+        this.diagnostic!.pendingContextTransition={...summary,interpretation:CONTEXT_TRANSITION_INTERPRETATION,
+          message:pending.source,patch:{record:this.count,startByte:this.recordStart,endByte:this.recordEnd,recordDigest:this.diagnostic!.recordDigest},
+          turnDigest:sourceDigest(this.active),metadataDigest:sourceDigest(pending.metadata),
+          beforeWorldDigest:sourceDigest(this.worldState,this.worldStateShadow),afterWorldDigest:sourceDigest(next,nextShadow),
+          resetRecord:this.resetRecord,fullRecord:this.worldFullRecord!,worldRecords:[...this.worldRecords],
+          fragments:fragments.map((f,index)=>({index,kind:f.kind,textDigest:sourceDigest(f.text),textBytes:Buffer.byteLength(f.text)}))};
+        this.rememberEnvelope(message,pending.metadata,pending.source.record);
+        if(this.current)this.current.generated++;
+        this.pendingContext=null;
+      }
       if(this.relevant){
         if(this.comparisonWorldDigest===null)refuse('ORIGINAL_HISTORY_WORLD_STATE_BASELINE_MISSING',ref);
         if(sourceDigest(next,nextShadow)!==this.comparisonWorldDigest)
@@ -422,6 +458,7 @@ class RecordCoverage {
             {record:this.count,stateDigest:sourceDigest(next,nextShadow)});
       }
       this.worldState=next;this.worldStateShadow=nextShadow;this.worldStateBaseline={record:this.count,stateDigest:sourceDigest(next,nextShadow)};
+      if(p.full){this.worldFullRecord=this.count;this.worldRecords=[];}this.worldRecords.push(this.count);
       this.baselineTransitions.push({record:this.count,kind:p.full?'world_full':'world_patch',sourceRecord:this.resetRecord,stateDigest:sourceDigest(next,nextShadow)});
       return;
     }
@@ -502,6 +539,7 @@ class RecordCoverage {
       }
       // Native reconstruction invalidates these independently of history contents.
       this.resetRecord=this.count;this.worldState=null;this.worldStateShadow=null;this.worldStateBaseline=null;
+      this.worldFullRecord=null;this.worldRecords=[];
       this.turnContextBaseline=null;this.lastContext=null;
       this.baselineTransitions.push({record:this.count,kind:p.replacement_history==null?'legacy_compaction_reset':'compaction_reset',
         sourceRecord:null,stateDigest:null});
@@ -542,7 +580,17 @@ class RecordCoverage {
         if(!this.neutralMetadata(row.metadata))refuse('ORIGINAL_HISTORY_RESPONSE_METADATA_UNCLASSIFIED',ref);
         if(p.type==='message'&&p.role==='user'&&generatedStaticContext(p)){
           const config=configurationIdentity(p,row.metadata);
-          if(config===null||!this.configurationEnvelopes.has(config))refuse('ORIGINAL_HISTORY_CONFIGURATION_PROVENANCE_UNPROVEN',ref);
+          if(config===null||!this.configurationEnvelopes.has(config)){
+            if(!this.diagnostic||config===null||!this.current||this.worldFullRecord===null||this.worldState===null
+              ||this.lastContext===null||this.turnContextBaseline===null
+              ||!closed(p,['type','id','role','content','phase','internal_chat_message_metadata_passthrough'])||p.phase!=null
+              ||p.content.some((c:any)=>!closed(c,['type','text']))
+              ||p.internal_chat_message_metadata_passthrough?.turn_id!==this.active
+              ||row.metadata?.client_authored!==false||row.metadata?.mcp_attribution?.status!=='none')
+              refuse('ORIGINAL_HISTORY_CONFIGURATION_PROVENANCE_UNPROVEN',ref);
+            this.pendingContext={payload:p,metadata:row.metadata,source:{record:this.count,startByte:this.recordStart,
+              endByte:this.recordEnd,recordDigest:this.diagnostic.recordDigest}};return;
+          }
           if(this.current)this.current.generated++;return;
         }
         if(p.type==='message'&&p.role==='user')refuse('ORIGINAL_HISTORY_USER_PROVENANCE_UNPROVEN',ref);
@@ -647,6 +695,7 @@ class RecordCoverage {
     refuse('ORIGINAL_HISTORY_UNKNOWN_OR_UNCLASSIFIED_RECORD',ref);
   }
   finish(){
+    if(this.pendingContext)refuse('ORIGINAL_HISTORY_ADJACENT_CONTEXT_PATCH_MISSING',`record:${this.pendingContext.source.record}`);
     if(this.pendingCommunication)refuse('ORIGINAL_HISTORY_COMMUNICATION_PAIR_UNPROVEN',`record:${this.pendingCommunication.record}`);
     if(this.comparisonWorldDigest!==null&&this.worldStateBaseline===null)
       refuse('ORIGINAL_HISTORY_WORLD_STATE_BASELINE_MISSING');
@@ -849,7 +898,7 @@ export async function readCodexOriginalHistoryCoverage(input:CodexOriginalHistor
           analysis.begin(line,coverage.count,lineStart,end);
           try{observed.line(line,lineStart,end,decoded);analysis.commit(observed);}catch(error){
             if(!(error instanceof CoverageRefusal))throw error;
-            analysis.invalidate(error);observed=null;
+            analysis.invalidate(error,observed.pendingContext?.source.record);observed=null;
           }
         }
         lineStart=end;pending=[];pendingBytes=0;start=newline+1;
@@ -864,7 +913,7 @@ export async function readCodexOriginalHistoryCoverage(input:CodexOriginalHistor
     }
     if(observed)try{observed.finish();}catch(error){
       if(!(error instanceof CoverageRefusal))throw error;
-      analysis.invalidate(error);observed=null;
+      analysis.invalidate(error,observed.pendingContext?.source.record);observed=null;
     }
     if(digest(revision(await handle.stat({bigint:true})))!==digest(rev)
       ||digest(revision(await stat(path,{bigint:true})))!==digest(rev)
@@ -873,7 +922,7 @@ export async function readCodexOriginalHistoryCoverage(input:CodexOriginalHistor
     if(coverage.blocked){
       const diagnostic:CodexOriginalHistorySuffixDiagnostic={policy:'codex_original_history_diagnostic_v1',
         diagnosticOnly:true,authorizesProviderStart:false,proofBlocked:true,
-        interpretation:CODEX_HISTORY_INTERPRETATION,diagnosticInterpretation:'observed_suffix_v1',
+        interpretation:CODEX_HISTORY_INTERPRETATION,diagnosticInterpretation:'observed_suffix_adjacent_v2',
         bindingDigest:digest(input.binding),selectedInputId:input.selectedInputId,
         sourceIdentity:digest({dev:rev.dev,ino:rev.ino}),sourceRevisionDigest:digest(rev),pathDigest:digest(path),
         inventory:coverage.inventory,prefixDigest,prefixBytes:size,recordCount:coverage.count,completeCapturedEof:true,
@@ -882,7 +931,7 @@ export async function readCodexOriginalHistoryCoverage(input:CodexOriginalHistor
         semanticComplete:observed!==null,invalidatedDependencies:observed?[]:
           ['lineage','turn_order','settings','context','world','history_provenance','resume','usage'],
         unassessedRange:analysis.invalidatedAt===null?null:{firstRecord:analysis.invalidatedAt,lastRecord:coverage.count},
-        transitions:analysis.transitions};
+        transitions:analysis.transitions,contextWorldTransitions:analysis.contextWorldTransitions};
       return {proven:false as const,reasons:coverage.issues,diagnostic};
     }
     const summary={policy:'codex_original_history_v1' as const,threadId:input.binding.threadId,sourceSessionId:coverage.sourceSessionId,bindingDigest:digest(input.binding),

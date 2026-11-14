@@ -15,6 +15,29 @@ export function fixtureNativeSettings(binding:Pick<ContinuationBinding,'model'|'
       reasoning_effort:binding.effort,developer_instructions:null}},disabled_plugin_ids:[]};
 }
 
+/** Independent, literal producer examples; no production renderer constructs the
+ * expected message. Callers keep every original row in their disposable source. */
+export function fixtureAdjacentContextRecords(rows:any[],turnId:string,threadId:string,binding:Pick<ContinuationBinding,'model'|'effort'>){
+  const row=(type:string,payload:any,metadata?:any)=>({timestamp:'2026-11-13T00:00:00.000Z',type,payload,...metadata?{metadata}:{}});
+  const before={agents_md:{directory:'/fixture',text:'earlier private instructions'},environments:{
+    environments:{local:{cwd:'/fixture',status:'available',shell:'/bin/sh'}},current_date:'2026-01-01',timezone:'UTC',
+    filesystem:'<filesystem>earlier</filesystem>'}};
+  const patch={agents_md:{text:'changed private instructions'},environments:{current_date:'2026-01-02',filesystem:'<filesystem>changed</filesystem>'}};
+  const after={agents_md:{...before.agents_md,...patch.agents_md},environments:{...before.environments,...patch.environments}};
+  rows.splice(rows.findIndex(r=>r.payload.type==='task_started'&&r.payload.turn_id===turnId),0,row('world_state',{full:true,state:before}));
+  const message=row('response_item',{type:'message',role:'user',content:[
+    {type:'input_text',text:'# AGENTS.md instructions for /fixture\n\n<INSTRUCTIONS>\nThese AGENTS.md instructions replace all previously provided AGENTS.md instructions.\n\nchanged private instructions\n</INSTRUCTIONS>'},
+    {type:'input_text',text:'<environment_context>\n  <current_date>2026-01-02</current_date>\n  <timezone>UTC</timezone>\n  <filesystem>changed</filesystem>\n</environment_context>'}],
+    internal_chat_message_metadata_passthrough:{turn_id:turnId,create_time:12.25,
+      content_item_kinds:['agents_md.instructions','environments.environment_context']}},{client_authored:false,mcp_attribution:{status:'none'}});
+  const index=rows.findIndex(r=>r.type==='turn_context'&&r.payload.turn_id===turnId)+1;
+  rows.splice(index,0,row('event_msg',{type:'thread_settings_applied',thread_id:threadId,
+    thread_settings:{...fixtureNativeSettings(binding),runtime_workspace_roots:['/private-observed-root']}}),
+    message,row('world_state',{full:false,state:patch}));
+  for(let i=rows.length-1;i>=0;i--)if(rows[i].type==='compacted')rows.splice(i+1,0,row('world_state',{full:true,state:after}));
+  return {messageIndex:index+1,patchIndex:index+2,before,after,patch};
+}
+
 export async function createFixtureOriginalHistory(input:{root:string;binding:ContinuationBinding;selectedInputId:string;nativeProof:any}){
   const home=mkdtempSync(join(input.root,'fixture-codex-home-')),directory=join(home,'sessions');mkdirSync(directory);
   const sourcePath=join(directory,'rollout-fixture.jsonl'),timestamp='2026-11-13T00:00:00.000Z';

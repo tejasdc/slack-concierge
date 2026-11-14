@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
-import {mkdtempSync,rmSync,appendFileSync} from 'node:fs';
+import {mkdtempSync,rmSync,appendFileSync,readFileSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {Database} from 'bun:sqlite';
 import {IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION} from '../src/test-authorizations';
-import {createFixtureOriginalHistory,fixtureNativeSettings} from './codex-original-history-fixture-helper';
+import {createFixtureOriginalHistory,fixtureNativeSettings,fixtureAdjacentContextRecords} from './codex-original-history-fixture-helper';
 import {readCodexOriginalHistoryCoverage} from '../src/codex-original-history-coverage';
 import {fixtureColdConstruction} from './codex-cold-construction-fixture-helper';
 import {validateCodexColdResume} from '../src/codex-cold-construction';
@@ -19,7 +19,7 @@ const [{db},inputs,{inspectAcceptedBindingContinuation},{proveCodexContinuationN
 const {createNativeSession,retainSessionInput,enqueueSessionInput,nativeRunId,recordSessionEvent}=inputs;
 fences.initializeCodexMutationFenceSchema(db);auth.initializeCodexRecoveryAuthorizationSchema(db);
 let serial=0;
-async function seed(options:{retainColdInputs?:boolean;diagnosticAsWitness?:boolean}={}){
+async function seed(options:{retainColdInputs?:boolean;diagnosticAsWitness?:boolean|'adjacent'}={}){
   const suffix=++serial,session=createNativeSession('codex',{title:'exact retained work',purpose:'recovery fixture',origin:'native',
     model:'gpt-6-astra',reasoningEffort:'medium',providerRunner:null} as any),threadId=`thread:${suffix}`;
   db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run(threadId,session.id);
@@ -62,6 +62,11 @@ async function seed(options:{retainColdInputs?:boolean;diagnosticAsWitness?:bool
   const history=await createFixtureOriginalHistory({root:scratch,binding:inspection.identity.binding,selectedInputId:report.id,nativeProof:projectedNative});
   const native=history.nativeWithOriginalHistory;
   if(options.diagnosticAsWitness){
+    if(options.diagnosticAsWitness==='adjacent'){
+      const rows=readFileSync(history.sourcePath,'utf8').trimEnd().split('\n').map(line=>JSON.parse(line));
+      fixtureAdjacentContextRecords(rows,`native:${reportTurn}:1`,threadId,inspection.identity.binding);
+      writeFileSync(history.sourcePath,rows.map(row=>JSON.stringify(row)).join('\n')+'\n');
+    }
     appendFileSync(history.sourcePath,JSON.stringify({timestamp:'2026-11-13T00:00:00.000Z',type:'event_msg',
       payload:{type:'thread_settings_applied',thread_id:threadId,
         thread_settings:{...fixtureNativeSettings(inspection.identity.binding),runtime_workspace_roots:['/different-fixture-root']}}})+'\n');
@@ -70,6 +75,10 @@ async function seed(options:{retainColdInputs?:boolean;diagnosticAsWitness?:bool
       client:{async request(){return {thread:{id:threadId,path:history.sourcePath}};}}});
     assert.equal(diagnosticResult.proven,false);
     if(diagnosticResult.proven||!diagnosticResult.diagnostic)throw new Error('fixture diagnostic missing');
+    if(options.diagnosticAsWitness==='adjacent'){
+      assert.equal(diagnosticResult.diagnostic.semanticComplete,true);
+      assert.equal(diagnosticResult.diagnostic.contextWorldTransitions.length,1);
+    }
     native.originalHistory.witness=diagnosticResult.diagnostic as any;
     native.nativeDigest=digest({threadId:native.threadId,continuationDecisionDigest:native.continuationDecisionDigest,
       ownerSnapshotDigest:native.ownerSnapshotDigest,attempts:native.attempts,coverage:native.coverage,
@@ -143,6 +152,8 @@ function denied(value:any,reason:string){assert.equal(value.allowed,false,JSON.s
 try {
   await assert.rejects(()=>seed({diagnosticAsWitness:true}),/NATIVE_ORIGINAL_EFFECT_HISTORY_COVERAGE_UNPROVEN/,
     'even an internally wrapped diagnostic with a recomputed evidence digest cannot grant dispatch authority');
+  await assert.rejects(()=>seed({diagnosticAsWitness:'adjacent'}),/NATIVE_ORIGINAL_EFFECT_HISTORY_COVERAGE_UNPROVEN/,
+    'a complete adjacent transition diagnostic with a recomputed wrapper cannot grant dispatch authority');
   const a=await seed();
   const lookup=auth.getCodexRecoveryAuthorizationForInput(db,a.report.id);
   assert.equal(lookup?.effort,'medium');assert.ok(!JSON.stringify(lookup).includes(a.capability));

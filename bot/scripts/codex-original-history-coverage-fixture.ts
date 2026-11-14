@@ -6,7 +6,8 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {readCodexOriginalHistoryCoverage,revalidateCodexOriginalHistorySource,refreshCodexOriginalHistoryAfterOwnedResume,
   type CodexOriginalHistoryCoverageInput} from '../src/codex-original-history-coverage';
-import {fixtureNativeSettings} from './codex-original-history-fixture-helper';
+import {fixtureNativeSettings,fixtureAdjacentContextRecords} from './codex-original-history-fixture-helper';
+import {renderAdjacentContextTransition,nativeRustLines} from '../src/codex-diagnostic-context-transition';
 import {CODEX_HISTORY_INTERPRETATION,decodeNativeHistoryRecord,decodeResponse,rolloutKinds,responseKinds,
   turnItemKinds,NativeHistoryDecodeError} from '../src/codex-native-history-decoder';
 import eventCatalogue from '../src/codex-native-event-catalogue.json';
@@ -105,6 +106,99 @@ assert.equal(result.witness.priorRecordCount,10);
 assert.equal(revalidateCodexOriginalHistorySource(result.custody,result.witness).valid,true);
 assert.ok(!JSON.stringify(result.witness).includes(path)&&!JSON.stringify(result.witness).includes('earlier successful effect'));
 const original=readFileSync(path);
+// The diagnostic alone can recognize one producer-defined physical pair.
+const pairRows=records(),pair=fixtureAdjacentContextRecords(pairRows,'selected-T',threadId,binding);
+write(pairRows);const pairResult=await read();
+assert.equal(pairResult.proven,false);if(pairResult.proven||!pairResult.diagnostic)throw new Error('pair diagnostic missing');
+const pairDiagnostic=pairResult.diagnostic;
+assert.equal(pairResult.reasons[0]?.code,'ORIGINAL_HISTORY_NATIVE_SETTINGS_CHANGED');
+assert.equal(pairDiagnostic.semanticComplete,true,JSON.stringify(pairDiagnostic.findings));
+assert.equal(pairDiagnostic.contextWorldTransitions.length,1);
+const relation=pairDiagnostic.contextWorldTransitions[0];
+assert.equal(relation.message.record,pair.messageIndex+1);assert.equal(relation.patch.record,pair.patchIndex+1);
+assert.equal(relation.agents.instructionTextChanged,true);assert.equal(relation.agents.materiality,'unassessed_including_cutoff');
+assert.deepEqual(relation.changedSections,['agents_md','environments']);
+assert.deepEqual(relation.changedEnvironmentFields,['current_date','filesystem']);
+assert.equal(relation.fragments.length,2);assert.ok(relation.fullRecord<relation.message.record);
+assert.equal(pairDiagnostic.transitions.filter(t=>t.record===relation.patch.record).length,1,'patch committed once');
+assert.ok(pairDiagnostic.transitions.some(t=>t.kind==='compaction_reset'&&t.record>relation.patch.record),'ordinary suffix handling resumes');
+assert.ok(!JSON.stringify(pairDiagnostic).includes('private instructions')&&!JSON.stringify(pairDiagnostic).includes('/private-observed-root'));
+assert.equal(revalidateCodexOriginalHistorySource(result.custody,pairDiagnostic as any).valid,false);
+assert.throws(()=>bindCodexOriginalHistoryCoverage({proven:true} as any,pairResult));
+assert.deepEqual(nativeRustLines('a\r\nb\nc\r\u2028d\n'),['a','b','c\r\u2028d']);
+assert.deepEqual(nativeRustLines(''),[]);assert.deepEqual(nativeRustLines('\n'),['']);
+// Optional fields/defaults and emission are pinned native behavior, not “all
+// changed fields emit”. A subagent-only delta persists without a fragment.
+const optionalBefore={environments:{environments:{local:{cwd:'/fixture',status:'available',shell:null}},
+  shell_version:'7',current_date:'old',timezone:'UTC',subagents:null}};
+const optionalAfter={environments:{environments:{local:{cwd:'/fixture',status:'available',shell:'/bin/new'}},
+  timezone:null,subagents:'one\r\ntwo\r\u2028three\n'}};
+const optional=renderAdjacentContextTransition(optionalBefore,optionalAfter,{environments:{environments:optionalAfter.environments.environments,
+  shell_version:null,current_date:null,timezone:null,subagents:optionalAfter.environments.subagents}});
+assert.equal(optional.fragments[0].text,'<environment_context>\n  <shell_version status="unavailable" />\n  <current_date status="unavailable" />\n  <subagents>\n    one\n    two\r\u2028three\n  </subagents>\n</environment_context>');
+const subagentsOnly=structuredClone(pair.before);subagentsOnly.environments.subagents='new' as any;
+assert.deepEqual(renderAdjacentContextTransition(pair.before,subagentsOnly,{environments:{subagents:'new'}}).fragments,[]);
+assert.deepEqual(renderAdjacentContextTransition({},{agents_md:{text:'initial'}},{agents_md:{text:'initial'}}).fragments,
+  [{kind:'agents_md.instructions',text:'# AGENTS.md instructions\n\n<INSTRUCTIONS>\ninitial\n</INSTRUCTIONS>'}]);
+assert.deepEqual(renderAdjacentContextTransition({agents_md:{text:'old'}},{},{agents_md:null}).fragments,
+  [{kind:'agents_md.instructions',text:'# AGENTS.md instructions\n\n<INSTRUCTIONS>\nThe previously provided AGENTS.md instructions no longer apply.\n</INSTRUCTIONS>'}]);
+for(const mode of ['agentsOnly','environmentOnly','initial','removal']){
+  const rows=records(),indices=fixtureAdjacentContextRecords(rows,'selected-T',threadId,binding),message=rows[indices.messageIndex].payload;
+  const patch=rows[indices.patchIndex].payload.state;
+  if(mode==='agentsOnly'){
+    patch.environments={subagents:'changed without native emission'};
+    message.content.pop();message.internal_chat_message_metadata_passthrough.content_item_kinds.pop();
+  }else if(mode==='environmentOnly'){
+    delete patch.agents_md;message.content.shift();message.internal_chat_message_metadata_passthrough.content_item_kinds.shift();
+  }else if(mode==='initial'){
+    delete rows.find(r=>r.type==='world_state').payload.state.agents_md;
+    message.content[0].text=message.content[0].text.replace('These AGENTS.md instructions replace all previously provided AGENTS.md instructions.\n\n','');
+    patch.agents_md.directory='/fixture';
+  }else{
+    patch.agents_md={directory:null,text:null};message.content[0].text='# AGENTS.md instructions\n\n<INSTRUCTIONS>\nThe previously provided AGENTS.md instructions no longer apply.\n</INSTRUCTIONS>';
+  }
+  write(rows);const observed=await read();assert.equal(observed.proven,false);
+  if(observed.proven||!observed.diagnostic)throw new Error(mode);
+  assert.equal(observed.diagnostic.semanticComplete,true,mode+JSON.stringify(observed.diagnostic.findings));
+  assert.equal(observed.diagnostic.contextWorldTransitions.length,1,mode);
+}
+for(const [label,change] of Object.entries({
+  adjacency:(rows:any[],i:number)=>rows.splice(i+1,0,row('event_msg',{type:'token_count',info:null,rate_limits:null})),
+  missing:(rows:any[],i:number)=>rows.splice(i+1,1),
+  full:(rows:any[],i:number)=>rows[i+1].payload.full=true,
+  authored:(rows:any[],i:number)=>rows[i].metadata.client_authored=true,
+  envelope:(rows:any[],i:number)=>rows[i].payload.unexplained=true,
+  timestamp:(rows:any[],i:number)=>rows[i].payload.internal_chat_message_metadata_passthrough.create_time='unknown',
+  attribution:(rows:any[],i:number)=>rows[i].metadata.mcp_attribution.extra=true,
+  count:(rows:any[],i:number)=>rows[i].payload.content.pop(),
+  kind:(rows:any[],i:number)=>rows[i].payload.internal_chat_message_metadata_passthrough.content_item_kinds.reverse(),
+  turn:(rows:any[],i:number)=>rows[i].payload.internal_chat_message_metadata_passthrough.turn_id='unrelated',
+  text:(rows:any[],i:number)=>rows[i].payload.content[0].text+='unexplained',
+  fullRendering:(rows:any[],i:number)=>rows[i].payload.content[1].text=rows[i].payload.content[1].text.replace('<environment_context>\n','<environment_context>\n  <cwd>/fixture</cwd>\n  <shell>/bin/sh</shell>\n'),
+  extraSection:(rows:any[],i:number)=>rows[i+1].payload.state.unknown_section={changed:true},
+  extraField:(rows:any[],i:number)=>rows[i+1].payload.state.environments.unknown_field='unknown',
+  erasedUnknownField:(rows:any[],i:number)=>rows[i+1].payload.state.environments.environments={local:{unknown_field:null}},
+  domain:(rows:any[],i:number)=>rows[i+1].payload.state.environments.environments={local:{status:'starting'}},
+  noEmission:(rows:any[],i:number)=>rows[i+1].payload.state={},
+  malformed:(rows:any[],i:number)=>rows[i+1].payload.full='false',
+  invalidBaseline:(rows:any[],i:number)=>rows.splice(rows.findIndex(r=>r.type==='world_state'),1),
+  priorInvalidation:(rows:any[],i:number)=>rows.splice(i,0,row('future_record',{private:'unknown'})),
+})){const rows=records(),indices=fixtureAdjacentContextRecords(rows,'selected-T',threadId,binding);
+  change(rows,indices.messageIndex);write(rows);const bad=await read();
+  assert.equal(bad.proven,false);if(bad.proven||!bad.diagnostic)throw new Error(label);
+  assert.equal(bad.diagnostic.semanticComplete,false,label);
+  assert.equal(bad.diagnostic.contextWorldTransitions.length,0,label);
+  assert.equal(bad.diagnostic.transitions.some(t=>t.kind==='compaction_reset'),false,'checkpoint cannot revive '+label);
+  if(['adjacency','missing','full','text','fullRendering','extraSection','extraField','domain','noEmission','malformed'].includes(label)){
+    assert.equal(bad.diagnostic.semanticThroughRecord,indices.messageIndex,label);
+    assert.equal(bad.diagnostic.unassessedRange?.firstRecord,indices.messageIndex+1,label);
+  }
+}
+const truncated=records(),truncatedPair=fixtureAdjacentContextRecords(truncated,'selected-T',threadId,binding);
+truncated.length=truncatedPair.messageIndex+1;write(truncated);const missingPatch=await read();
+assert.equal(missingPatch.proven,false);if(missingPatch.proven||!missingPatch.diagnostic)throw new Error('missing pair');
+assert.equal(missingPatch.diagnostic.semanticThroughRecord,truncatedPair.messageIndex);
+assert.equal(missingPatch.diagnostic.unassessedRange?.firstRecord,truncatedPair.messageIndex+1);
 // Strict failure is permanent; a separate reconstruction observes validated drift.
 function driftingSource(){
   const rows=records();

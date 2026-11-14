@@ -250,6 +250,31 @@ complex managed filesystem policies refuse rather than advance on a shallow shap
 Nested granular approval fields are checked against the pinned shape, including
 its optional booleans; unknown fields cannot advance diagnostic state.
 
+The diagnostic interpretation `observed_suffix_adjacent_v2` recognizes a bounded
+native producer relation at upstream commit
+`c1382380de69521303b416720a52f42d51af6248`: a fully classified generated user-context
+message followed by the immediately next physical incremental world-state record.
+It stages the message without committing diagnostic state. An established
+reset/full/patch lineage and context are required. Captured before-state plus
+native merge-patch semantics must reproduce every positional fragment exactly,
+using the pinned AGENTS and single available POSIX-environment renderers. All
+patch sections and fields are checked; other domains refuse. There is no forward
+search, full-snapshot substitute, live configuration read or later-state revival.
+An absent/malformed counterpart invalidates from the staged message, not from a
+partially processed patch. A valid pair commits the observed world once; subsequent
+context, resume and compaction records keep their existing independent handlers.
+
+The pair evidence retains original byte positions/digests, prior world lineage,
+turn/metadata digests, exact fragment indices/kinds/digests and before/after section
+identities. Native optional/default values, no-emission changes and Rust string
+line semantics are part of the renderer interpretation
+`native_0162_adjacent_context_v1`. Original record digests are unchanged. Observed
+instruction differences, including possible cutoff consequences, remain materiality
+unassessed. Independent Git/decision comparisons belong in incident evidence;
+they are never runtime allowlists or recovery authority. Renderer consistency
+establishes an observed succession, not harmlessness, invocation causality or
+resource continuity. The strict reducer is unchanged and still refuses drift.
+
 The separately typed result binds source identity/revision, captured EOF and
 decoder/diagnostic interpretations. It carries only references, counts and digests,
 has no witness/custody, and explicitly forbids provider start. Semantic completion

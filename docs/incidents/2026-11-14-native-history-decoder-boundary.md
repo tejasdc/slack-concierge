@@ -83,6 +83,39 @@ execution fence remain independently necessary. [decision: preserve-pushed-histo
 
 ## Acceptance scenario
 
+### Adjacent generated context and world update
+
+The first suffix diagnostic correctly retained the strict settings failure but
+stopped on changed generated configuration. Parent's independent retained
+comparison then established that the message and its immediate original world
+patch reproduce the pinned incremental AGENTS replacement and environment
+rendering. The source cause of the diagnostic gap was requiring an unchanged
+historical configuration envelope even after an explainable observed transition.
+This is distinct from establishing acceptable recovery state: the instructions,
+filesystem rendering and date actually changed, and cutoff materiality remains
+unassessed. The supplied Git-prefix and permanent-decision comparisons support
+this instance's source-content provenance only; no target values enter predicates.
+
+The bounded correction stages only fully typed, associated generated context in
+the existing diagnostic reducer, then requires its next physical original record
+to be a completely accounted incremental world patch. It verifies exact pinned
+rendering from established captured state, records private-safe identities and
+commits that world transition once. It does not manufacture a context/resume or
+acknowledgement. Unsupported domains, extra sections, mismatched metadata or
+fragments, malformed or missing counterparts and invalid baselines freeze analysis
+before the staged message. Later checkpoints cannot revive it. Ordinary suffix
+handlers resume only after a valid pair.
+
+Disposable fixtures exercise valid two/single-fragment transitions, initial and
+removed instructions, native optional/default/no-emission behavior and Rust string
+semantics; adjacency, shape, association, domain and lineage refusals; and the
+real authorization consumer rejecting even a completed pair diagnostic with a
+recomputed surrounding digest. This implements T10's source-backed reusable
+predicate and T8's meaningful composed acceptance within this source-only scope.
+Parent retains the actual-source discriminator, whole review and any live action.
+Neither operational activation hold changes. UI-state review does not apply to
+this private reader change. [decision: preserve-pushed-history]
+
 Parent's subsequent pure original-source discriminator found real settings drift
 at record 29898. That strict refusal is correct. The prior inventory continued
 decoding to stable EOF but stopped semantic reconstruction, leaving later changes
