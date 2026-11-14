@@ -179,6 +179,14 @@ that could finish or refuse before reaching that barrier. The fixture now races
 the observation against operation completion so an early result is reported
 instead of becoming an indefinite test wait. This does not classify the early
 runtime result as safe or change its authority.
+That early result was `NATIVE_HISTORY_READ_FAILED`. The fixture bootstrap now
+retains the underlying stand-in request error instead of losing it in the public
+eligibility refusal. The audit also found the local client calls daemon scope and
+file-limit maintenance even when pointed at a stand-in socket. Those unrelated
+host callbacks are now stubbed only in the fixture bootstrap, and attempted daemon
+auto-start throws. Earlier fixture runs invoked the callbacks; their actual host
+effects were not retained, so absence of those effects is not claimed. Parent
+owns any live-host reconciliation; this lane performs no production probe.
 
 The omitted-boundary source audit also found that account activation and managed
 daemon replacement use running-turn checks, which do not exclude a queued

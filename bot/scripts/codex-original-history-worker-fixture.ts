@@ -139,6 +139,17 @@ const assessCoverage=actual.assessManagedHookInstallerCoverage;
 const fixtureProcesses={listPids:()=>[],identity:()=>null,parentPid:()=>null,commandLine:()=>null};
 mock.module(modulePath,()=>({...actual,assessManagedHookInstallerCoverage:(input:any)=>
   assessCoverage({...input,processes:fixtureProcesses})}));
+const lifecyclePath=${JSON.stringify(resolve(import.meta.dir,'../src/codex-daemon-file-limit.ts'))};
+const lifecycle=await import(lifecyclePath);
+mock.module(lifecyclePath,()=>({...lifecycle,raiseCodexDaemonFileLimit:async()=>{},moveCodexDaemonToOwnScope:async()=>{},
+  startCodexDaemonWhenAbsent:()=>{throw new Error('Fixture must never start a real native daemon');}}));
+const nativeModule=await import(${JSON.stringify(resolve(import.meta.dir,'../src/codex-app-server-client.ts'))});
+const nativeClient=nativeModule.sharedCodexAppServerClient();
+const request=nativeClient.request.bind(nativeClient);
+nativeClient.request=async(method:any,...args:any[])=>{
+  try{return await request(method,...args);}
+  catch(error){console.error('Fixture native read failed',method,String(error));throw error;}
+};
 await import(${JSON.stringify(actualWorkerEntry)});
 `);
   const productionWorkerEntry=releaseWorkerPath('provider-history-page-worker');
