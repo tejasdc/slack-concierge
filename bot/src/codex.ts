@@ -516,7 +516,7 @@ async function codexThreadParameters(
   threadEnvironment?: Record<string, string>,
 ) {
   const consultation = input.interactionPolicy === "consultation-only";
-  const { CONCIERGE_COMMIT_PROVENANCE: _turnProvenance, ...shellEnvironment } = threadEnvironment || {};
+  const { CONCIERGE_COMMIT_PROVENANCE: _turnProvenance, CONCIERGE_COMMIT_INPUT: _turnInput, ...shellEnvironment } = threadEnvironment || {};
   return {
     cwd: input.cwd,
     runtimeWorkspaceRoots: consultation ? [input.cwd] : [...new Set([input.cwd, ...input.additionalDirs])],

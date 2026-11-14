@@ -65,7 +65,7 @@ import type {ProviderHistoryMessage,ProviderHistoryPage} from './provider-histor
 import {projectAcceptedInput,projectSessionHistory,projectSessionHistoryMessage,sessionMessageInputProjection} from './session-history-projection';
 import {sessionMessageMetadataProjection} from './session-message-metadata';
 import {acceptedInputAuthor,authorSession,sessionAuthor,withCurrentAuthors} from './session-message-author';
-import {localSessionNumber} from './peer-identity';
+import {commitSessionIdentity,localSessionNumber} from './peer-identity';
 import {humanAuthored,sessionInputProvenance} from './session-inputs';
 import {withdrawChatGptTasksForStoppedTurnByTejas} from './chatgpt-obligations';
 import {noticeTime} from './provider-free-notice';
@@ -2765,6 +2765,30 @@ export class SessionOwner {
     return {sessionId:chosen,local,peer:remote,title:choice.title,topicId,root,
       ...(nestedRoot?{messageThreadRootId:nestedRoot}:{}),...(nestedAuthor?.requestId?{messageThreadRequestId:nestedAuthor.requestId}:{})};
   }
+  /** Commit attribution is resolved now, never inherited from a durable provider shell. */
+  async commitIdentity(body:unknown):Promise<{session:string;input:string}|null> {
+    const input=object(body);only(input,["session","codexThread"]);
+    const named=typeof input.session==="string"?input.session:null;
+    if(named&&!/^[a-z][a-z0-9-]*:[1-9][0-9]*$/.test(named))throw new SessionOwnerError("Invalid commit session.");
+    const local=named?localSessionNumber(named):null;
+    if(named&&local===null){
+      const [peer,id]=named.split(":");
+      if(!this.peers)throw new SessionOwnerError("The committing machine is unavailable.",503);
+      return this.peers.commitIdentity(peer!,{session:`concierge:${id}`});
+    }
+    const thread=input.codexThread;
+    if(thread!==undefined&&(typeof thread!=="string"||! /^[0-9a-f-]{36}$/i.test(thread)))throw new SessionOwnerError("Invalid Codex conversation.");
+    if(!thread&&!local)throw new SessionOwnerError("A commit needs its provider conversation or session.");
+    const matches=db.query(`SELECT session.id AS session_id,turn.accepted_input_id FROM sessions session
+      JOIN turns turn ON turn.session_id=session.id
+      WHERE turn.status='running' AND turn.accepted_input_id IS NOT NULL
+      AND ${thread?"session.provider_id='codex' AND session.agent_session_uuid=?":"session.id=?"}
+      LIMIT 2`).all(thread??local) as {session_id:number;accepted_input_id:string}[];
+    if(matches.length!==1)throw new SessionOwnerError(matches.length?"Ambiguous running commit turn.":"No running commit turn was found.",409,"COMMIT_IDENTITY_UNRESOLVED");
+    const match=matches[0]!;
+    if(local&&match.session_id!==local)throw new SessionOwnerError("Commit session and provider conversation disagree.",409);
+    return {session:commitSessionIdentity(match.session_id),input:match.accepted_input_id};
+  }
   admit(input:OwnerAdmission) {
     const target=getSessionById(input.sessionId);
     if(!target||sessionMetadata(target).canvasObservation)throw new SessionOwnerError('This canvas record accepts only on-device speech and observed action results.',409,'CANVAS_OBSERVATION_ONLY');
@@ -4725,6 +4749,7 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='reconcile') result=await this.reconcile(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='operations'&&parts.length===3&&parts[2]==='cancel') result=this.cancel(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='search'&&parts.length===1)result=await this.search(body);
+      else if(request.method==='POST'&&parts[0]==='commit-identity'&&parts.length===1)result=await this.commitIdentity(body);
       else if(request.method==='POST'&&parts[0]==='context'&&parts.length===1)result=await this.context(body);
       else if(request.method==='POST'&&parts[0]==='imports'&&parts.length===1)result=await this.importSource(body);
       else if(request.method==='POST'&&parts[0]==='sources'&&parts[1]==='refresh'&&parts.length===2){
@@ -4830,7 +4855,7 @@ export class SessionOwner {
       }
       else throw new SessionOwnerError('Unknown session owner route.',404);
       if(!prior&&(result as any)?.operation?.kind==='bind'&&(result as any).operation.state==='failed')return ownerJson({error:(result as any).operation.error},{status:409});
-      const readOnly=['search','context','imports','attachments','sources'].includes(parts[0]!);
+      const readOnly=['commit-identity','search','context','imports','attachments','sources'].includes(parts[0]!);
       return ownerJson(result,{headers:answerHeaders,status:request.method==='POST'&&((parts[0]==='attachments'&&parts[2]==='transcription'&&parts[3]==='start')||(!readOnly&&!prior))?202:200});
     } catch(error) {
       if(error instanceof StorageReadBudgetError){

@@ -419,7 +419,7 @@ unavailable".
 
 Every native agent turn carries `CONCIERGE_COMMIT_SESSION` (thnkr.ing's name for the session:
 `concierge:<n>` on the server, `mac:<n>` on the Mac) and `CONCIERGE_COMMIT_INPUT`. thnkr.ing's
-commit hook stamps those, replacing any hand-written trailer. Mac agents often commit in a server
+commit hook resolves the session’s current running accepted input through `sessions commit-identity`, replacing any hand-written trailer. The exported input is a transport hint, never current-turn authority: resumed provider shells can retain an earlier value. A server commit naming a Mac session asks that Mac’s live owner for its current input over the existing authenticated peer channel. Missing, ambiguous or unavailable running-turn evidence refuses the commit instead of stamping an older request. Mac agents often commit in a server
 checkout over `ssh remote-box`; the Mac's SSH configuration sends both variables
 (`SendEnv CONCIERGE_COMMIT_*`) and the server's `sshd` accepts exactly those names
 (remote-box `config/sshd/60-concierge-commit-identity.conf`). Before 2026-11-12 nothing crossed
