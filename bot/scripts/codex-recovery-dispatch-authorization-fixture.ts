@@ -5,7 +5,8 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {Database} from 'bun:sqlite';
 import {IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION} from '../src/test-authorizations';
-import {createFixtureOriginalHistory} from './codex-original-history-fixture-helper';
+import {createFixtureOriginalHistory,fixtureNativeSettings} from './codex-original-history-fixture-helper';
+import {readCodexOriginalHistoryCoverage} from '../src/codex-original-history-coverage';
 import {fixtureColdConstruction} from './codex-cold-construction-fixture-helper';
 import {validateCodexColdResume} from '../src/codex-cold-construction';
 const scratch=mkdtempSync(join(tmpdir(),'concierge-recovery-authorization-'));
@@ -18,7 +19,7 @@ const [{db},inputs,{inspectAcceptedBindingContinuation},{proveCodexContinuationN
 const {createNativeSession,retainSessionInput,enqueueSessionInput,nativeRunId,recordSessionEvent}=inputs;
 fences.initializeCodexMutationFenceSchema(db);auth.initializeCodexRecoveryAuthorizationSchema(db);
 let serial=0;
-async function seed(options:{retainColdInputs?:boolean}={}){
+async function seed(options:{retainColdInputs?:boolean;diagnosticAsWitness?:boolean}={}){
   const suffix=++serial,session=createNativeSession('codex',{title:'exact retained work',purpose:'recovery fixture',origin:'native',
     model:'gpt-6-astra',reasoningEffort:'medium',providerRunner:null} as any),threadId=`thread:${suffix}`;
   db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run(threadId,session.id);
@@ -60,6 +61,20 @@ async function seed(options:{retainColdInputs?:boolean}={}){
   if(!projectedNative.proven)throw new Error('fixture native proof missing');
   const history=await createFixtureOriginalHistory({root:scratch,binding:inspection.identity.binding,selectedInputId:report.id,nativeProof:projectedNative});
   const native=history.nativeWithOriginalHistory;
+  if(options.diagnosticAsWitness){
+    appendFileSync(history.sourcePath,JSON.stringify({timestamp:'2026-11-13T00:00:00.000Z',type:'event_msg',
+      payload:{type:'thread_settings_applied',thread_id:threadId,
+        thread_settings:{...fixtureNativeSettings(inspection.identity.binding),runtime_workspace_roots:['/different-fixture-root']}}})+'\n');
+    const diagnosticResult=await readCodexOriginalHistoryCoverage({binding:inspection.identity.binding,selectedInputId:report.id,
+      attempts:native.attempts,nativeTurnOrder:native.nativeTurnOrder,codexHome:history.home,
+      client:{async request(){return {thread:{id:threadId,path:history.sourcePath}};}}});
+    assert.equal(diagnosticResult.proven,false);
+    if(diagnosticResult.proven||!diagnosticResult.diagnostic)throw new Error('fixture diagnostic missing');
+    native.originalHistory.witness=diagnosticResult.diagnostic as any;
+    native.nativeDigest=digest({threadId:native.threadId,continuationDecisionDigest:native.continuationDecisionDigest,
+      ownerSnapshotDigest:native.ownerSnapshotDigest,attempts:native.attempts,coverage:native.coverage,
+      nativeTurnOrder:native.nativeTurnOrder,nativeWatermark:native.nativeWatermark,originalHistory:native.originalHistory});
+  }
   const {snapshot:_private,...continuation}=inspection;
   const proof={attempts:native.attempts.filter(attempt=>attempt.inputId===report.id).map(attempt=>({dispatchAttempt:attempt.dispatchAttempt,providerTurnId:attempt.providerTurnId})),
     dispatchAttemptCount:1,continuation,native};
@@ -126,6 +141,8 @@ async function seed(options:{retainColdInputs?:boolean}={}){
 }
 function denied(value:any,reason:string){assert.equal(value.allowed,false,JSON.stringify(value));assert.equal(value.reason,reason);}
 try {
+  await assert.rejects(()=>seed({diagnosticAsWitness:true}),/NATIVE_ORIGINAL_EFFECT_HISTORY_COVERAGE_UNPROVEN/,
+    'even an internally wrapped diagnostic with a recomputed evidence digest cannot grant dispatch authority');
   const a=await seed();
   const lookup=auth.getCodexRecoveryAuthorizationForInput(db,a.report.id);
   assert.equal(lookup?.effort,'medium');assert.ok(!JSON.stringify(lookup).includes(a.capability));

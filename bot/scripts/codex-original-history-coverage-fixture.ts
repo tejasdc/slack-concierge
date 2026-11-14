@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {mkdtempSync,mkdirSync,writeFileSync,appendFileSync,renameSync,truncateSync,readFileSync,symlinkSync,rmSync} from 'node:fs';
 import {Database} from 'bun:sqlite';
 import {tmpdir} from 'node:os';
@@ -11,6 +12,7 @@ import {CODEX_HISTORY_INTERPRETATION,decodeNativeHistoryRecord,decodeResponse,ro
 import eventCatalogue from '../src/codex-native-event-catalogue.json';
 import {parseNativeSourceRecord,nativeSourceValueDigest} from '../src/codex-native-source-values';
 import {matchesNativeSchemaShape,matchesPinnedNativeResponse} from '../src/codex-native-response-shape';
+import {bindCodexOriginalHistoryCoverage} from '../src/codex-continuation-native-interval';
 
 // Exercise native validity independently from complete-shape field coverage.
 const toolOutput=(content:any)=>({type:'custom_tool_call_output',call_id:'fixture',output:[content]});
@@ -103,6 +105,66 @@ assert.equal(result.witness.priorRecordCount,10);
 assert.equal(revalidateCodexOriginalHistorySource(result.custody,result.witness).valid,true);
 assert.ok(!JSON.stringify(result.witness).includes(path)&&!JSON.stringify(result.witness).includes('earlier successful effect'));
 const original=readFileSync(path);
+// Strict failure is permanent; a separate reconstruction observes validated drift.
+function driftingSource(){
+  const rows=records();
+  rows.splice(rows.findIndex(r=>r.payload.type==='task_started'&&r.payload.turn_id==='selected-T'),0,
+    row('world_state',{full:true,state:{environment:{cwd:'/fixture'}}}));
+  const settings={...fixtureNativeSettings(binding),cwd:'/fixture-two',runtime_workspace_roots:['/fixture-private-root']};
+  const driftIndex=rows.findIndex(r=>r.payload.type==='task_started'&&r.payload.turn_id==='compaction-T');
+  rows.splice(driftIndex,0,row('event_msg',{type:'thread_settings_applied',thread_id:threadId,thread_settings:settings}),
+    row('world_state',{full:false,state:{environment:{cwd:'/fixture-two'}}}));
+  for(const r of rows)if(r.type==='turn_context'&&['compaction-T','empty-T'].includes(r.payload.turn_id))r.payload.cwd='/fixture-two';
+  rows.splice(rows.findIndex(r=>r.type==='compacted')+1,0,
+    row('world_state',{full:true,state:{environment:{cwd:'/fixture-two'}}}));
+  rows.splice(rows.length-1,0,row('response_item',{type:'function_call',name:'observed-tool',call_id:'call',arguments:'private tool body'}));
+  rows.push(row('event_msg',{type:'thread_settings_applied',thread_id:threadId,
+    thread_settings:{...settings,runtime_workspace_roots:[]}}));
+  return rows;
+}
+const driftRows=driftingSource();write(driftRows);const driftResult=await read();
+assert.equal(driftResult.proven,false);if(driftResult.proven||!driftResult.diagnostic)throw new Error('fixture diagnostic missing');
+const diagnostic=driftResult.diagnostic;
+assert.equal(driftResult.reasons[0]?.code,'ORIGINAL_HISTORY_NATIVE_SETTINGS_CHANGED');
+assert.equal(diagnostic.diagnosticOnly,true);assert.equal(diagnostic.authorizesProviderStart,false);
+assert.equal(diagnostic.proofBlocked,true);assert.equal(diagnostic.semanticComplete,true,JSON.stringify(diagnostic.findings));
+assert.equal(diagnostic.semanticThroughRecord,driftRows.length);assert.equal(diagnostic.unassessedRange,null);
+assert.notEqual(diagnostic.selectedBaseline?.settings?.snapshotDigest,diagnostic.lastObservedState?.settings?.snapshotDigest);
+assert.ok(diagnostic.findings.some(f=>f.kind==='observed_drift'&&f.code==='ORIGINAL_HISTORY_WORLD_STATE_CHANGED'));
+assert.ok(diagnostic.findings.some(f=>f.kind==='observed_drift'&&f.code==='ORIGINAL_HISTORY_TURN_SETTINGS_CHANGED'));
+assert.ok(diagnostic.findings.some(f=>f.kind==='strict_effect'&&f.code==='ORIGINAL_HISTORY_CONVERSATIONAL_OR_TOOL_EFFECT'));
+assert.equal(diagnostic.findings.filter(f=>f.code==='ORIGINAL_HISTORY_NATIVE_SETTINGS_CHANGED').length,2,
+  'both between-turn and after-turn settings transitions are observed');
+const reset=diagnostic.transitions.find(t=>t.kind==='compaction_reset')!;
+assert.ok(diagnostic.transitions.some(t=>t.kind==='world_full'&&t.sourceRecord===reset.record));
+assert.ok(diagnostic.transitions.some(t=>t.kind==='context_established'&&t.sourceRecord===reset.record));
+assert.equal(diagnostic.recordCount,driftRows.length);assert.equal(diagnostic.prefixBytes,readFileSync(path).length);
+assert.equal(diagnostic.prefixDigest,createHash('sha256').update(readFileSync(path)).digest('hex'));
+assert.ok(!JSON.stringify(diagnostic).includes('/fixture-private-root')&&!JSON.stringify(diagnostic).includes('private tool body'));
+assert.equal(revalidateCodexOriginalHistorySource(result.custody,diagnostic as any).valid,false);
+assert.throws(()=>bindCodexOriginalHistoryCoverage({proven:true} as any,driftResult),/Original native history refuses/);
+assert.throws(()=>bindCodexOriginalHistoryCoverage({proven:true,attempts:[],coverage:[]} as any,
+  {proven:true,witness:diagnostic,custody:result.custody} as any));
+for(const [label,bad] of [
+  ['unknown',row('future_record',{private:'never export'})],
+  ['malformed',row('event_msg',{type:'thread_settings_applied',thread_id:threadId,
+    thread_settings:{...fixtureNativeSettings(binding),runtime_workspace_roots:42}})],
+  ['provenance',row('response_item',{type:'message',role:'user',content:[{type:'input_text',text:'unproved configuration'}]})],
+] as const){
+  const rows=driftingSource(),index=rows.findIndex(r=>r.payload.type==='task_started'&&r.payload.turn_id==='compaction-T');
+  rows.splice(index,0,bad);write(rows);const failed=await read();
+  assert.equal(failed.proven,false);if(failed.proven||!failed.diagnostic)throw new Error('fixture');
+  const d=failed.diagnostic;
+  assert.equal(d.semanticComplete,false,label);assert.equal(d.semanticThroughRecord,index,label);
+  assert.deepEqual(d.unassessedRange,{firstRecord:index+1,lastRecord:rows.length});
+  assert.ok(d.invalidatedDependencies.includes('history_provenance'));
+  assert.equal(d.transitions.some(t=>t.kind==='compaction_reset'),false,'later checkpoint cannot silently repair invalid provenance');
+  assert.equal(d.lastObservedState?.settings?.record,diagnostic.findings[0].record,
+    'failed record cannot publish its partially changed state');
+  assert.equal(d.recordCount,rows.length);assert.equal(d.completeCapturedEof,true);
+  assert.equal(d.findings.filter(f=>f.kind==='invalidated').length,1);
+}
+write();
 assert.equal(result.witness.interpretation.upstreamCommit,'c1382380de69521303b416720a52f42d51af6248');
 assert.equal(rolloutKinds.length,12);
 assert.deepEqual(responseKinds,['additional_tools','message','agent_message','reasoning','local_shell_call',
@@ -434,6 +496,10 @@ assert.ok(!competed.proven||!revalidateCodexOriginalHistorySource(competed.custo
 // The same existing permit/intent ledger and a retained owned resume receipt
 // establish append authority; caller assertions cannot substitute for these rows.
 const db=new Database(':memory:');
+const diagnosticRefresh=await refreshCodexOriginalHistoryAfterOwnedResume({db,intentId:'never-authorized',
+  witness:diagnostic as any,custody:result.custody});
+assert.equal(diagnosticRefresh.proven,false);
+if(!diagnosticRefresh.proven)assert.equal(diagnosticRefresh.reasons[0]?.code,'ORIGINAL_HISTORY_WITNESS_CONFLICT');
 db.exec(`CREATE TABLE codex_mutation_intents(intent_id TEXT,permit_id TEXT,method TEXT,response_kind TEXT,response_digest TEXT,state TEXT,
  thread_id TEXT,fence_id TEXT,accepted_input_id TEXT,run_id TEXT,dispatch_attempt INTEGER);
  CREATE TABLE codex_mutation_permits(permit_id TEXT,purpose TEXT);

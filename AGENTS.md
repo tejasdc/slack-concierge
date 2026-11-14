@@ -103,7 +103,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [the incident evidence](docs/runbooks/CODEX-EMPTY-REPORT-BACK-RECOVERY-EVIDENCE.md).
   The [managed mutation fence](docs/architecture/CODEX-MUTATION-FENCE.md) owns
   forwarding permits, writer lifetime, managed configuration installation, private original-history
-  decoder-pinned preserved-history/interval proofs with composed typed-shape validation,
+  decoder-pinned preserved-history/interval proofs with composed typed-shape validation and nonauthorizing suffix diagnostics,
   cold-construction proofs, release compatibility, exact-input guards and the explicit
   accepted-binding activation hold; source fixtures do not lift it.
 - Final replies expire only questions linked to that dispatch; repair an older

@@ -83,6 +83,24 @@ execution fence remain independently necessary. [decision: preserve-pushed-histo
 
 ## Acceptance scenario
 
+Parent's subsequent pure original-source discriminator found real settings drift
+at record 29898. That strict refusal is correct. The prior inventory continued
+decoding to stable EOF but stopped semantic reconstruction, leaving later changes
+unassessed. Continuing the same failed instance would reuse partial state. The
+bounded correction runs a separate diagnostic instance of the existing reducer
+within the same source read. Known validated drift can advance observations;
+strict failure remains permanently latched. Unknown/malformed/provenance failures
+discard the diagnostic instance and report invalidated dependencies and the
+remaining semantic gap. Later checkpoints cannot restore it. No historical
+native-operation or resource-custody proof is invented, and neither operational
+activation hold is lifted.
+
+Disposable acceptance includes later effects after drift, world/context reset and
+re-establishment, unknown/malformed/missing provenance, no secret/path disclosure,
+and rejection by native-proof binding, witness revalidation, owned-resume refresh
+and actual dispatch authorization. Parent retains actual-source observation and
+complete implementation review. This source correction is not live recovery.
+
 - **Seed:** Disposable original JSONL with acknowledged prior effects, a physically paired communication, native checkpoint sidecars and exact selected/later attempt identities.
 - **Action:** Read the complete source with the pinned decoder and reconstruct the baseline before applying interval policy.
 - **Expected:** Earlier known effects retain their envelopes and source references; a valid later independent compaction resets/re-establishes baselines. New selected/suffix effects, stripped metadata, unknown fields and missing provenance refuse. A refusal inventories later records without restoring proof.

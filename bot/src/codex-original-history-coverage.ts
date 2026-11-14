@@ -45,6 +45,59 @@ export type CodexOriginalHistoryCoverageInput={binding:ContinuationBinding;selec
   attempts:readonly CodexOriginalHistoryAttempt[];nativeTurnOrder:readonly string[];codexHome:string;
   client:{request(method:'thread/read',params:Record<string,unknown>):Promise<any>}};
 
+type DiagnosticState={settings:CodexOriginalHistoryWitness['settingsBaseline'];
+  context:CodexOriginalHistoryWitness['turnContextBaseline'];world:CodexOriginalHistoryWitness['worldStateBaseline'];
+  resetRecord:number|null;resumeRecord:number};
+type DiagnosticReference={record:number;snapshotDigest?:string;settingsDigest?:string;stateDigest?:string;
+  startByte?:number;endByte?:number;recordDigest?:string}|null;
+type DiagnosticFinding={kind:'observed_drift'|'strict_effect'|'invalidated';code:string;evidence:string[];
+  record:number;startByte:number;endByte:number;recordDigest:string;before?:DiagnosticReference;after?:DiagnosticReference};
+/** Deliberately not a witness: no witnessDigest, custody, spans or execution policy.
+ * It describes observations under a permanently failed strict proof. */
+export type CodexOriginalHistorySuffixDiagnostic={policy:'codex_original_history_diagnostic_v1';
+  diagnosticOnly:true;authorizesProviderStart:false;proofBlocked:true;
+  interpretation:typeof CODEX_HISTORY_INTERPRETATION;diagnosticInterpretation:'observed_suffix_v1';
+  bindingDigest:string;selectedInputId:string;sourceIdentity:string;sourceRevisionDigest:string;pathDigest:string;
+  prefixDigest:string;prefixBytes:number;recordCount:number;completeCapturedEof:true;inventory:Record<string,number>;
+  strictFailures:{code:string;evidence:string[]}[];findings:DiagnosticFinding[];
+  selectedBaseline:DiagnosticState|null;lastObservedState:DiagnosticState|null;
+  semanticThroughRecord:number;semanticComplete:boolean;
+  invalidatedDependencies:string[];unassessedRange:{firstRecord:number;lastRecord:number}|null;
+  transitions:CodexOriginalHistoryWitness['baselineTransitions']};
+
+class SuffixAnalysis {
+  findings:DiagnosticFinding[]=[];selectedBaseline:DiagnosticState|null=null;lastObservedState:DiagnosticState|null=null;
+  private pendingFindings:DiagnosticFinding[]=[];
+  semanticThroughRecord=0;invalidatedAt:number|null=null;
+  transitions:CodexOriginalHistoryWitness['baselineTransitions']=[];private transitionCount=0;
+  record=0;startByte=0;endByte=0;recordDigest='';
+  begin(bytes:Buffer,record:number,startByte:number,endByte:number){
+    this.pendingFindings=[];
+    this.record=record;this.startByte=startByte;this.endByte=endByte;
+    this.recordDigest=createHash('sha256').update(bytes).digest('hex');
+  }
+  finding(kind:DiagnosticFinding['kind'],code:string,evidence:string[],before?:DiagnosticReference,after?:DiagnosticReference){
+    this.pendingFindings.push({kind,code,evidence,record:this.record,startByte:this.startByte,endByte:this.endByte,
+      recordDigest:this.recordDigest,...(before===undefined?{}:{before}),...(after===undefined?{}:{after})});
+  }
+  invalidate(error:CoverageRefusal){
+    this.pendingFindings=[];this.finding('invalidated',error.code,error.evidence);
+    this.findings.push(...this.pendingFindings);this.pendingFindings=[];this.invalidatedAt=this.record;
+  }
+  state(coverage:RecordCoverage):DiagnosticState{
+    return {settings:coverage.settingsBaseline,context:coverage.turnContextBaseline,world:coverage.worldStateBaseline,
+      resetRecord:coverage.resetRecord,resumeRecord:coverage.resumeRecord};
+  }
+  commit(coverage:RecordCoverage){
+    // Called only after a whole record succeeded. A thrown reducer is discarded,
+    // so none of its partially updated state can appear as a committed baseline.
+    this.semanticThroughRecord=coverage.count;this.lastObservedState=this.state(coverage);
+    this.findings.push(...this.pendingFindings);this.pendingFindings=[];
+    if(coverage.relevant)this.transitions.push(...coverage.baselineTransitions.slice(this.transitionCount));
+    this.transitionCount=coverage.baselineTransitions.length;
+  }
+}
+
 function within(home:string,path:string){const rel=relative(home,path);return rel!==''&&!rel.startsWith(`..${sep}`)&&rel!=='..'&&!isAbsolute(rel);}
 function validateInput(i:CodexOriginalHistoryCoverageInput){
   if(i.binding.provider!=='codex'||!nonempty(i.binding.threadId)||!nonempty(i.selectedInputId)
@@ -85,17 +138,28 @@ class RecordCoverage {
   worldState:any=null;settingsSnapshot:any=null;recordStart=0;recordEnd=0;
   worldStateShadow:any=null;
   expected:string[];
-  constructor(readonly input:CodexOriginalHistoryCoverageInput){
+  constructor(readonly input:CodexOriginalHistoryCoverageInput,private readonly diagnostic?:SuffixAnalysis){
     const positions=input.attempts.filter(a=>a.inputId===input.selectedInputId).map(a=>input.nativeTurnOrder.indexOf(a.providerTurnId));
     if(positions.some(p=>p<0))refuse('ORIGINAL_HISTORY_SELECTED_TURN_ABSENT');
     this.expected=input.nativeTurnOrder.slice(Math.min(...positions));
     if(this.expected.some(id=>!input.attempts.some(a=>a.providerTurnId===id))
       ||input.attempts.some(a=>!this.expected.includes(a.providerTurnId)))refuse('ORIGINAL_HISTORY_NATIVE_SUFFIX_MAPPING_INCOMPLETE');
   }
-  line(bytes:Buffer,start:number,end:number){
+  drift(code:string,ref:string,before:DiagnosticReference,after:DiagnosticReference){
+    if(!this.diagnostic)refuse(code,ref);
+    this.diagnostic.finding('observed_drift',code,[ref],before,after);
+  }
+  effect(code:string,ref:string){
+    if(!this.diagnostic)refuse(code,ref);
+    this.diagnostic.finding('strict_effect',code,[ref]);
+  }
+  line(bytes:Buffer,start:number,end:number,decoded:{row?:any}){
     let row:any;
     this.count++;
-    try{row=parseNativeSourceRecord(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}
+    try{
+      if(!Object.hasOwn(decoded,'row'))decoded.row=parseNativeSourceRecord(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
+      row=decoded.row;
+    }
     catch{refuse('ORIGINAL_HISTORY_RECORD_DECODE_FAILED',`record:${this.count}`);}
     this.recordStart=start;this.recordEnd=end;
     const ref=`record:${this.count}`;
@@ -153,6 +217,7 @@ class RecordCoverage {
         if(!this.relevant&&!this.settingsBaseline)refuse('ORIGINAL_HISTORY_SETTINGS_BASELINE_MISSING',ref);
         if(!this.relevant&&!this.turnContextBaseline)refuse('ORIGINAL_HISTORY_TURN_SETTINGS_BASELINE_MISSING',ref);
         if(!this.relevant){
+          if(this.diagnostic)this.diagnostic.selectedBaseline=this.diagnostic.state(this);
           this.selectedBaselineDigest=digest({settings:this.settingsBaseline,context:this.turnContextBaseline,
             world:this.worldStateBaseline,resume:this.resumeState,resumeRecord:this.resumeRecord,
             backendControls:this.backendControls,
@@ -180,11 +245,12 @@ class RecordCoverage {
     if(ends){
       if(!nonempty(p.turn_id)||p.turn_id!==this.active)refuse('ORIGINAL_HISTORY_TURN_BOUNDARY_INVALID',ref);
       if(this.current){
-        if(!['task_complete','turn_complete'].includes(p.type)||p.error!=null||p.last_agent_message!=null&&p.last_agent_message!=='')
-          refuse('ORIGINAL_HISTORY_TERMINAL_EFFECT_OR_FAILURE',ref);
+        if(!['task_complete','turn_complete'].includes(p.type))refuse('ORIGINAL_HISTORY_TERMINAL_EFFECT_OR_FAILURE',ref);
+        if(p.error!=null||p.last_agent_message!=null&&p.last_agent_message!=='')
+          this.effect('ORIGINAL_HISTORY_TERMINAL_EFFECT_OR_FAILURE',ref);
         if(this.current.contexts<1||!this.turnContextBaseline)refuse('ORIGINAL_HISTORY_EXACT_TURN_CONTEXT_MISSING',ref);
         const owner=this.input.attempts.find(a=>a.providerTurnId===this.current!.id)!;
-        if(owner.inputId===this.input.selectedInputId&&this.current.compactions>0)refuse('ORIGINAL_HISTORY_SELECTED_COMPACTION_PRESENT',ref);
+        if(owner.inputId===this.input.selectedInputId&&this.current.compactions>0)this.effect('ORIGINAL_HISTORY_SELECTED_COMPACTION_PRESENT',ref);
         if(this.current.typedCompactions>0&&this.current.compactedRecords===0)
           refuse('ORIGINAL_HISTORY_COMPACTION_RECORD_COVERAGE_UNPROVEN',ref);
         const usage=this.current.usageRecords,counts=this.current.tokenCounts;
@@ -322,8 +388,12 @@ class RecordCoverage {
       if(this.current){
         if(p.model!==this.input.binding.model||p.effort!==this.input.binding.effort)
           refuse('ORIGINAL_HISTORY_CONTEXT_BINDING_CONFLICT',ref);
+        // Diagnostic drift may advance only after validating the current
+        // settings relationship. It cannot waive a binding/provenance conflict.
+        if(this.diagnostic&&!contextMatchesSettings(p,this.settingsSnapshot))refuse('ORIGINAL_HISTORY_SETTINGS_BASELINES_CONFLICT',ref);
         if(nativeSourceWithoutKeys(p,['turn_id','root_turn_id'])!==this.comparisonContextDigest)
-          refuse('ORIGINAL_HISTORY_TURN_SETTINGS_CHANGED',ref);
+          this.drift('ORIGINAL_HISTORY_TURN_SETTINGS_CHANGED',ref,this.turnContextBaseline,
+            {record:this.count,settingsDigest:nativeSourceWithoutKeys(p,['turn_id','root_turn_id'])});
         if(!contextMatchesSettings(p,this.settingsSnapshot))refuse('ORIGINAL_HISTORY_SETTINGS_BASELINES_CONFLICT',ref);
         this.current.contexts++;
       }else if(!this.relevant){
@@ -347,7 +417,9 @@ class RecordCoverage {
       const nextShadow=p.full?nativeSourceShadow(p.state):mergeWorldState(this.worldStateShadow,nativeSourceShadow(p.state));
       if(this.relevant){
         if(this.comparisonWorldDigest===null)refuse('ORIGINAL_HISTORY_WORLD_STATE_BASELINE_MISSING',ref);
-        if(sourceDigest(next,nextShadow)!==this.comparisonWorldDigest)refuse('ORIGINAL_HISTORY_WORLD_STATE_CHANGED',ref);
+        if(sourceDigest(next,nextShadow)!==this.comparisonWorldDigest)
+          this.drift('ORIGINAL_HISTORY_WORLD_STATE_CHANGED',ref,this.worldStateBaseline,
+            {record:this.count,stateDigest:sourceDigest(next,nextShadow)});
       }
       this.worldState=next;this.worldStateShadow=nextShadow;this.worldStateBaseline={record:this.count,stateDigest:sourceDigest(next,nextShadow)};
       this.baselineTransitions.push({record:this.count,kind:p.full?'world_full':'world_patch',sourceRecord:this.resetRecord,stateDigest:sourceDigest(next,nextShadow)});
@@ -474,7 +546,12 @@ class RecordCoverage {
           if(this.current)this.current.generated++;return;
         }
         if(p.type==='message'&&p.role==='user')refuse('ORIGINAL_HISTORY_USER_PROVENANCE_UNPROVEN',ref);
-        if(p.type!=='message'||!['system','developer'].includes(p.role))refuse('ORIGINAL_HISTORY_CONVERSATIONAL_OR_TOOL_EFFECT',ref);
+        if(p.type!=='message'||!['system','developer'].includes(p.role)){
+          this.effect('ORIGINAL_HISTORY_CONVERSATIONAL_OR_TOOL_EFFECT',ref);
+          // This is an observed original envelope, not a neutral effect. Retain
+          // it only in diagnostic reconstruction for later clone provenance.
+          this.rememberEnvelope(p,row.metadata);return;
+        }
         // Runtime configuration messages may carry security or steering changes.
         refuse('ORIGINAL_HISTORY_CONFIGURATION_PROVENANCE_UNPROVEN',ref);
       }
@@ -482,14 +559,21 @@ class RecordCoverage {
     }
     if(row.type==='event_msg'){
       if(p.type==='thread_settings_applied'){
-        if(this.relevant&&object(p.thread_settings)&&this.settingsBaseline
+        if(!this.diagnostic&&this.relevant&&object(p.thread_settings)&&this.settingsBaseline
           &&sourceDigest(p.thread_settings)!==this.settingsBaseline.snapshotDigest)refuse('ORIGINAL_HISTORY_NATIVE_SETTINGS_CHANGED',ref);
         if(p.thread_id!==this.input.binding.threadId||!completeSettings(p.thread_settings))
           refuse('ORIGINAL_HISTORY_SETTINGS_SNAPSHOT_INCOMPLETE',ref);
+        if(this.diagnostic&&!diagnosticSettings(p.thread_settings))refuse('ORIGINAL_HISTORY_DIAGNOSTIC_SETTINGS_SHAPE_UNSUPPORTED',ref);
         const snapshotDigest=sourceDigest(p.thread_settings);
         if(this.relevant){
           if(!this.settingsBaseline)refuse('ORIGINAL_HISTORY_SETTINGS_BASELINE_MISSING',ref);
-          if(snapshotDigest!==this.settingsBaseline.snapshotDigest)refuse('ORIGINAL_HISTORY_NATIVE_SETTINGS_CHANGED',ref);
+          if(snapshotDigest!==this.settingsBaseline.snapshotDigest)
+            this.drift('ORIGINAL_HISTORY_NATIVE_SETTINGS_CHANGED',ref,this.settingsBaseline,
+              {record:this.count,startByte:this.recordStart,endByte:this.recordEnd,snapshotDigest,recordDigest:sourceDigest(row)});
+          if(this.diagnostic){
+            this.settingsSnapshot=p.thread_settings;
+            this.settingsBaseline={record:this.count,startByte:this.recordStart,endByte:this.recordEnd,snapshotDigest,recordDigest:sourceDigest(row)};
+          }
         }else{
           this.settingsSnapshot=p.thread_settings;
           this.settingsBaseline={record:this.count,startByte:this.recordStart,endByte:this.recordEnd,snapshotDigest,recordDigest:sourceDigest(row)};
@@ -542,7 +626,7 @@ class RecordCoverage {
       // All remaining decoded events are known effects or unsupported proof
       // semantics. Their earlier existence is preserved, never declared neutral.
       {
-        if(this.relevant)refuse(p.type==='user_message'?'ORIGINAL_HISTORY_ACCEPTED_USER_EVENT_PRESENT':'ORIGINAL_HISTORY_CONVERSATIONAL_OR_TOOL_EFFECT',ref);
+        if(this.relevant)this.effect(p.type==='user_message'?'ORIGINAL_HISTORY_ACCEPTED_USER_EVENT_PRESENT':'ORIGINAL_HISTORY_CONVERSATIONAL_OR_TOOL_EFFECT',ref);
         return;
       }
     }
@@ -642,6 +726,22 @@ function completeSettings(p:any):boolean{
   return profile.type==='external'||object(profile.file_system)
     &&(profile.file_system.type==='unrestricted'||profile.file_system.type==='restricted'&&Array.isArray(profile.file_system.entries));
 }
+function diagnosticSettings(p:any):boolean{
+  // Do not advance an observed state on a shallow shape check. Complex managed
+  // filesystem policies are not reconstructed by this diagnostic contract.
+  return completeSettings(p)&&optional(p.runtime_workspace_roots,v=>Array.isArray(v)&&v.every((root:any)=>nonempty(root)&&isAbsolute(root)))
+    &&optional(p.service_tier,v=>typeof v==='string')
+    &&optional(p.reasoning_summary,v=>['auto','concise','detailed','none'].includes(v))
+    &&optional(p.personality,v=>['none','friendly','pragmatic'].includes(v))
+    &&closed(p.collaboration_mode,['mode','settings'])
+    &&closed(p.collaboration_mode.settings,['model','reasoning_effort','developer_instructions'])
+    &&optional(p.collaboration_mode.settings.reasoning_effort,v=>typeof v==='string'&&v.length>0)
+    &&optional(p.collaboration_mode.settings.developer_instructions,v=>typeof v==='string')
+    &&optional(p.active_permission_profile,v=>closed(v,['id','extends'])&&nonempty(v.id)&&optional(v.extends,t=>typeof t==='string'))
+    &&(closed(p.permission_profile,['type'])&&p.permission_profile.type==='disabled'
+      ||closed(p.permission_profile,['type','network'])&&p.permission_profile.type==='external'
+        &&['enabled','restricted'].includes(p.permission_profile.network));
+}
 function mergeWorldState(target:any,patch:any):any{
   if(!object(patch))return structuredClone(patch);
   const result=object(target)?structuredClone(target):Object.create(null);
@@ -726,6 +826,7 @@ export async function readCodexOriginalHistoryCoverage(input:CodexOriginalHistor
     const before=await handle.stat({bigint:true}),rev=revision(before);
     if(!before.isFile()||before.size===0n||before.size>BigInt(Number.MAX_SAFE_INTEGER))refuse('ORIGINAL_HISTORY_SOURCE_SHAPE_INVALID');
     const size=Number(before.size),coverage=new RecordCoverage(input),hash=createHash('sha256');
+    const analysis=new SuffixAnalysis();let observed:RecordCoverage|null=new RecordCoverage(input,analysis);
     const chunk=Buffer.alloc(64*1024);let offset=0,lineStart=0,pending:Buffer[]=[],pendingBytes=0;
     while(offset<size){
       const {bytesRead}=await handle.read(chunk,0,Math.min(chunk.length,size-offset),offset);
@@ -735,9 +836,17 @@ export async function readCodexOriginalHistoryCoverage(input:CodexOriginalHistor
       while((newline=bytes.indexOf(10,start))!==-1){
         const piece=bytes.subarray(start,newline),line=pendingBytes?Buffer.concat([...pending,piece]):piece;
         const end=offset+newline+1;
-        try{coverage.line(line,lineStart,end);}catch(error){
+        const decoded:{row?:any}={};
+        try{coverage.line(line,lineStart,end,decoded);}catch(error){
           if(!(error instanceof CoverageRefusal))throw error;
           coverage.issues.push({code:error.code,evidence:error.evidence});coverage.blocked=true;
+        }
+        if(observed){
+          analysis.begin(line,coverage.count,lineStart,end);
+          try{observed.line(line,lineStart,end,decoded);analysis.commit(observed);}catch(error){
+            if(!(error instanceof CoverageRefusal))throw error;
+            analysis.invalidate(error);observed=null;
+          }
         }
         lineStart=end;pending=[];pendingBytes=0;start=newline+1;
       }
@@ -749,13 +858,29 @@ export async function readCodexOriginalHistoryCoverage(input:CodexOriginalHistor
       if(!(error instanceof CoverageRefusal))throw error;
       coverage.issues.push({code:error.code,evidence:error.evidence});coverage.blocked=true;
     }
+    if(observed)try{observed.finish();}catch(error){
+      if(!(error instanceof CoverageRefusal))throw error;
+      analysis.invalidate(error);observed=null;
+    }
     if(digest(revision(await handle.stat({bigint:true})))!==digest(rev)
       ||digest(revision(await stat(path,{bigint:true})))!==digest(rev)
       ||await realpath(response.thread.path)!==path)refuse('ORIGINAL_HISTORY_SOURCE_CHANGED');
     const prefixDigest=hash.digest('hex');
-    if(coverage.blocked)return {proven:false as const,reasons:coverage.issues,
-      diagnostic:{interpretation:CODEX_HISTORY_INTERPRETATION,inventory:coverage.inventory,proofBlocked:true,
-        prefixDigest,prefixBytes:size,recordCount:coverage.count,completeCapturedEof:true}};
+    if(coverage.blocked){
+      const diagnostic:CodexOriginalHistorySuffixDiagnostic={policy:'codex_original_history_diagnostic_v1',
+        diagnosticOnly:true,authorizesProviderStart:false,proofBlocked:true,
+        interpretation:CODEX_HISTORY_INTERPRETATION,diagnosticInterpretation:'observed_suffix_v1',
+        bindingDigest:digest(input.binding),selectedInputId:input.selectedInputId,
+        sourceIdentity:digest({dev:rev.dev,ino:rev.ino}),sourceRevisionDigest:digest(rev),pathDigest:digest(path),
+        inventory:coverage.inventory,prefixDigest,prefixBytes:size,recordCount:coverage.count,completeCapturedEof:true,
+        strictFailures:coverage.issues,findings:analysis.findings,selectedBaseline:analysis.selectedBaseline,
+        lastObservedState:analysis.lastObservedState,semanticThroughRecord:analysis.semanticThroughRecord,
+        semanticComplete:observed!==null,invalidatedDependencies:observed?[]:
+          ['lineage','turn_order','settings','context','world','history_provenance','resume','usage'],
+        unassessedRange:analysis.invalidatedAt===null?null:{firstRecord:analysis.invalidatedAt,lastRecord:coverage.count},
+        transitions:analysis.transitions};
+      return {proven:false as const,reasons:coverage.issues,diagnostic};
+    }
     const summary={policy:'codex_original_history_v1' as const,threadId:input.binding.threadId,sourceSessionId:coverage.sourceSessionId,bindingDigest:digest(input.binding),
       interpretation:CODEX_HISTORY_INTERPRETATION,inventory:coverage.inventory,baselineTransitions:coverage.baselineTransitions,
       selectedBaselineDigest:coverage.selectedBaselineDigest,
@@ -782,7 +907,7 @@ export function revalidateCodexOriginalHistorySource(custody:CodexOriginalHistor
   let fd:number|undefined;
   try{
     const {witnessDigest,...summary}=witness;
-    if(digest(summary)!==witnessDigest||custody.witnessDigest!==witnessDigest||custody.threadId!==witness.threadId
+    if(witness.policy!=='codex_original_history_v1'||digest(summary)!==witnessDigest||custody.witnessDigest!==witnessDigest||custody.threadId!==witness.threadId
       ||digest(witness.interpretation)!==digest(CODEX_HISTORY_INTERPRETATION)
       ||custody.prefixDigest!==witness.prefixDigest||digest(custody.revision)!==witness.sourceRevisionDigest
       ||digest(custody.path)!==witness.pathDigest||Number(custody.revision.size)!==witness.prefixBytes)
@@ -807,7 +932,7 @@ export async function refreshCodexOriginalHistoryAfterOwnedResume(input:{db:Data
   let handle:Awaited<ReturnType<typeof open>>|undefined;
   try{
     const {db,witness:w,custody:c}=input,{witnessDigest,...originalSummary}=w;
-    if(w.ownedResumeCheckpoint||digest(originalSummary)!==witnessDigest||c.witnessDigest!==witnessDigest
+    if(w.policy!=='codex_original_history_v1'||w.ownedResumeCheckpoint||digest(originalSummary)!==witnessDigest||c.witnessDigest!==witnessDigest
       ||digest(w.interpretation)!==digest(CODEX_HISTORY_INTERPRETATION)
       ||c.prefixDigest!==w.prefixDigest||digest(c.revision)!==w.sourceRevisionDigest||digest(c.path)!==w.pathDigest
       ||c.threadId!==w.threadId||Number(c.revision.size)!==w.prefixBytes)refuse('ORIGINAL_HISTORY_WITNESS_CONFLICT');

@@ -231,9 +231,30 @@ recorded producer/consumer hashes and precisely refuses unproved compatibility.
 Authoritative optional resume metadata is retained as state, never filled from a
 future binding; unsupported relevant transitions refuse.
 
-A semantic failure blocks proof permanently for that read but decoding/inventory
-continues through the stable captured EOF, returning only known-kind counts, record
-references and hashes. This is diagnostic coverage, not recovery permission. The
+A semantic failure blocks proof permanently for that read. The same physical read
+also runs an isolated diagnostic instance of the existing reducer. Fully validated
+known settings/context/world drift advances its observed state, with exact
+before/after record references and digests; known effects are listed separately.
+Compaction resets and subsequent re-establishment remain explicit. The diagnostic
+keeps the pre-selected baseline separate from its last successfully analyzed state.
+It never chooses intended roots or explains their owner/resource cause.
+
+Any unsupported shape, unknown record, missing provenance or inconsistent
+dependency discards the diagnostic reducer permanently. Its last whole-record
+commit remains visible; the failing record's partially updated state is never
+published. All shared reconstruction dependencies are conservatively invalidated,
+and the unassessed range extends through captured EOF. Later checkpoints cannot
+repair that state. Physical decoding/inventory still covers the entire source.
+The diagnostic currently supports complete disabled/external permission snapshots;
+complex managed filesystem policies refuse rather than advance on a shallow shape.
+
+The separately typed result binds source identity/revision, captured EOF and
+decoder/diagnostic interpretations. It carries only references, counts and digests,
+has no witness/custody, and explicitly forbids provider start. Semantic completion
+means diagnostic analysis reached EOF, including listed effects; it never means
+strict proof succeeded. Witness revalidation, owned-resume refresh and dispatch
+grant reject the diagnostic policy. There is no caller waiver or execution-consuming
+reconciliation mode. This is diagnostic coverage, not recovery permission. The
 [decoder incident](../incidents/2026-11-14-native-history-decoder-boundary.md) records
 the original failure and remaining evidence boundaries. Durable rollout coverage
 cannot establish absence of transient unpersisted effects; owner and fence proofs
