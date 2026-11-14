@@ -1,5 +1,7 @@
 import {routeLabel,withTaskLabel} from './owner-task-labels';
 import {codexMutationGate} from './codex-mutation-policy';
+import {db} from './state';
+import {requireCodexMutationReleaseProtection} from './codex-mutation-release-compatibility';
 import {readFileSync} from "node:fs";
 import { finishedTodoRefusal, namedTodo } from './question-todos';
 import {chmod} from "node:fs/promises";
@@ -159,7 +161,11 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'mac-need') return Response.json(sessions.macNeed(input));
         if (operation === 'edit-gate') return Response.json(sessions.editGate(input));
         if (operation === 'model-start-gate') return Response.json(sessions.modelStartGate(input));
-        if (operation === 'codex-mutation-gate') return Response.json(codexMutationGate(input));
+        if (operation === 'codex-mutation-gate') {
+          if(input.authority&&['prepare','consume'].includes(input.phase)&&['thread/resume','turn/start'].includes(input.method))
+            requireCodexMutationReleaseProtection(db);
+          return Response.json(codexMutationGate(input));
+        }
         if (operation === 'edit-reason') return Response.json(sessions.editReason(input));
         if (operation === 'note') return Response.json(await sessions.note(input));
         if (operation === 'title') return Response.json(sessions.title(input));

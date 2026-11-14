@@ -314,3 +314,53 @@ exposed in this session. Large files were read at those boundaries, not claimed 
 whole-file audits. Attached evidence bytes have a separate 13-file SHA-256 manifest
 retained for parent review. No production ledger or outside obligation inventory
 was read, and no installed or physical-device behavior is claimed.
+
+## Real-source compatibility correction before whole review
+
+Parent's bounded structural diagnostic demonstrated two candidate defects without
+granting recovery authority: an ordinary preselected token-count record carried a
+typed non-null quota snapshot, and the compaction checkpoint carried the pinned
+native retained-context and resume sidecars. Rejecting all such values made the
+candidate incompatible with supported native history. The diagnostic's earlier
+prefix was hashed, not parsed; its summaries are not payload preimages and do not
+certify current eligibility. No target transcript or provider read was performed
+by this implementation lane.
+
+The correction follows the pinned 0.162 protocol/history producers. Known typed
+quota telemetry is classified separately from acknowledgements and output effects.
+Retained messages and resume state require causal references to original native
+records, exact identities/revisions/order and matching content hashes. A matching
+replacement string alone provides no provenance. Unknown sidecars, shortened or
+unreconstructible retained content, missing source identities and conflicting
+settings still refuse. Focused fixtures include ordinary quota metadata and typed
+compaction checkpoints instead of omitting those real source shapes.
+
+The other confirmed source gap was construction binding: installed hook files and
+separate configuration reads did not bind a later cold resume. The source now
+integrates configuration-writer exclusion with the existing mutation ledger,
+recaptures cold/configuration evidence immediately before forwarding, and binds
+the actual resume parameters and terminal result digest to immutable private
+construction evidence. The actual legacy receiver admission cut remains separate;
+the running daemon cannot acquire that historical fact from a new log statement.
+This section records the diagnosis before the parent's whole implementation review.
+
+The final producer audit exposed a separate rollback boundary: retaining modern
+deployment control does not make an older restored application's mutation policy
+compatible. Parent directed reuse of the existing durable file-only release
+compatibility mechanism, with application-origin capability in hybrids and
+checks on activation, rollback, startup and explicit control recovery. Its
+requirement is monotonic, published before protected authority and never cleared
+by idle, terminality or rollback. Old incompatible LKG artifacts become ineligible;
+this availability change is explicit rather than a silent protection bypass.
+
+Publication alone cannot exclude old in-flight application requests, pinned
+helpers or configuration writers across first protection. No existing host
+authority proves that first transition under this lane's no-live-action boundary.
+The operational preflight therefore refuses
+`FIRST_PROTECTION_WRITER_EXCLUSION_UNPROVEN` without publishing a requirement or
+issuing protected database authority. Deployment checks before drain, pointer
+selection and service stop. Once a requirement has legitimately been published,
+failure retains it; no marker/SQLite atomic commit is claimed. The legacy native
+admission cut remains a second independent missing fact. This checked source
+candidate does not complete the human repair or establish current target
+eligibility, a compatible live rollback artifact, or installed Mac behavior.

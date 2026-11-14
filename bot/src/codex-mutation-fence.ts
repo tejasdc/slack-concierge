@@ -36,11 +36,23 @@ export type CodexMutationIntent = {
 
 const unresolved = "state IN ('forwarding','response_received','ambiguous')";
 export const CODEX_DAEMON_LIFECYCLE_METHOD='managed/daemon-lifecycle';
+/** Machine-wide managed hook/config writes share the mutation ledger with native writers. */
+export const CODEX_MANAGED_HOOK_CONFIG_METHOD='managed/codex-hook-config-install';
 
 function issuedDaemonLifecycle(db:Database){
   return db.query(`SELECT intent_id,state FROM codex_mutation_intents
     WHERE thread_id='*' AND method=? AND ${unresolved} ORDER BY thread_revision LIMIT 1`)
     .get(CODEX_DAEMON_LIFECYCLE_METHOD) as {intent_id:string;state:string}|null;
+}
+function issuedManagedHookConfig(db:Database){
+  return db.query(`SELECT intent_id,state FROM codex_mutation_intents
+    WHERE thread_id='*' AND method=? AND ${unresolved} ORDER BY thread_revision LIMIT 1`)
+    .get(CODEX_MANAGED_HOOK_CONFIG_METHOD) as {intent_id:string;state:string}|null;
+}
+function issuedGlobalNativeMutation(db:Database){
+  return db.query(`SELECT intent_id,state FROM codex_mutation_intents
+    WHERE thread_id='*' AND method NOT IN (?,?) AND ${unresolved} ORDER BY thread_revision LIMIT 1`)
+    .get(CODEX_DAEMON_LIFECYCLE_METHOD,CODEX_MANAGED_HOOK_CONFIG_METHOD) as {intent_id:string;state:string}|null;
 }
 function anyIssuedMutation(db:Database){
   return db.query(`SELECT intent_id,state FROM codex_mutation_intents WHERE ${unresolved} LIMIT 1`)
@@ -137,6 +149,37 @@ export function initializeCodexMutationFenceSchema(db: Database) {
       ON codex_mutation_intents(thread_id,state);
     CREATE INDEX IF NOT EXISTS codex_mutation_intents_state_thread
       ON codex_mutation_intents(state,thread_id);
+    CREATE TABLE IF NOT EXISTS codex_managed_hook_install_processes (
+      intent_id TEXT PRIMARY KEY REFERENCES codex_mutation_intents(intent_id),
+      pid INTEGER NOT NULL CHECK(pid > 0),
+      boot_id TEXT NOT NULL,
+      start_ticks TEXT NOT NULL,
+      executable_path TEXT NOT NULL,
+      parent_pid INTEGER NOT NULL CHECK(parent_pid > 0),
+      parent_boot_id TEXT NOT NULL,
+      parent_start_ticks TEXT NOT NULL,
+      helper_digest TEXT NOT NULL,
+      lineage_digest TEXT NOT NULL,
+      state TEXT NOT NULL CHECK(state IN ('active','observed_exit')),
+      registered_at_ms INTEGER NOT NULL,
+      exit_observed_at_ms INTEGER,
+      exit_code INTEGER,
+      exit_evidence_digest TEXT,
+      UNIQUE(pid,boot_id,start_ticks),
+      CHECK((state='active' AND exit_observed_at_ms IS NULL AND exit_code IS NULL AND exit_evidence_digest IS NULL) OR
+        (state='observed_exit' AND exit_observed_at_ms IS NOT NULL AND exit_evidence_digest IS NOT NULL))
+    );
+    CREATE TRIGGER IF NOT EXISTS codex_managed_hook_install_process_immutable
+      BEFORE UPDATE ON codex_managed_hook_install_processes
+      WHEN NEW.intent_id IS NOT OLD.intent_id OR NEW.pid IS NOT OLD.pid OR NEW.boot_id IS NOT OLD.boot_id
+        OR NEW.start_ticks IS NOT OLD.start_ticks OR NEW.executable_path IS NOT OLD.executable_path
+        OR NEW.parent_pid IS NOT OLD.parent_pid OR NEW.parent_boot_id IS NOT OLD.parent_boot_id
+        OR NEW.parent_start_ticks IS NOT OLD.parent_start_ticks OR NEW.helper_digest IS NOT OLD.helper_digest
+        OR NEW.lineage_digest IS NOT OLD.lineage_digest OR OLD.state='observed_exit'
+      BEGIN SELECT RAISE(ABORT,'managed hook install process identity is immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS codex_managed_hook_install_process_no_delete
+      BEFORE DELETE ON codex_managed_hook_install_processes
+      BEGIN SELECT RAISE(ABORT,'managed hook install process registrations are retained'); END;
   `);
 }
 
@@ -178,6 +221,18 @@ export function grantCodexMutationPermit(db: Database, input: {
   return db.transaction(() => {
     const lifecycle=issuedDaemonLifecycle(db);
     if(lifecycle)return {granted:false,reason:'daemon_lifecycle_outstanding' as const,intentId:lifecycle.intent_id};
+    const config=issuedManagedHookConfig(db);
+    if(config && input.method!==CODEX_MANAGED_HOOK_CONFIG_METHOD)
+      return {granted:false,reason:'managed_config_write_outstanding' as const,intentId:config.intent_id};
+    if(input.method===CODEX_MANAGED_HOOK_CONFIG_METHOD){
+      if(input.threadId!=='*'||input.purpose!=='ordinary'||input.fenceId||input.nativeTurnId)
+        return {granted:false,reason:'managed_config_scope_invalid' as const};
+      if(hasBlockingFence(db,'*'))return {granted:false,reason:'thread_fenced' as const};
+      const outstandingConfig=issuedManagedHookConfig(db);
+      if(outstandingConfig)return {granted:false,reason:'managed_config_write_outstanding' as const,intentId:outstandingConfig.intent_id};
+      const globalNative=issuedGlobalNativeMutation(db);
+      if(globalNative)return {granted:false,reason:'outstanding_mutation' as const,intentId:globalNative.intent_id};
+    }
     const isLifecycle=input.method===CODEX_DAEMON_LIFECYCLE_METHOD;
     if(isLifecycle){
       if(input.threadId!=='*'||input.purpose!=='ordinary'||input.fenceId||input.nativeTurnId)
@@ -228,6 +283,22 @@ export function consumeCodexMutationPermit(db: Database, input: {permitId:string
     if (permit.state!=='granted') return {forward:false as const,reason:permit.state as 'consumed'|'revoked'};
     const lifecycle=issuedDaemonLifecycle(db);
     if(lifecycle)return {forward:false as const,reason:'daemon_lifecycle_outstanding' as const,intentId:lifecycle.intent_id};
+    const config=issuedManagedHookConfig(db);
+    if(config && permit.method!==CODEX_MANAGED_HOOK_CONFIG_METHOD)
+      return {forward:false as const,reason:'managed_config_write_outstanding' as const,intentId:config.intent_id};
+    if(permit.method===CODEX_MANAGED_HOOK_CONFIG_METHOD){
+      if(permit.thread_id!=='*'||permit.purpose!=='ordinary'||permit.fence_id||permit.target_native_turn_id)
+        return {forward:false as const,reason:'managed_config_scope_invalid' as const};
+      if(hasBlockingFence(db,'*'))return {forward:false as const,reason:'thread_fenced' as const};
+      const outstandingConfig=issuedManagedHookConfig(db);
+      if(outstandingConfig)return {forward:false as const,reason:'managed_config_write_outstanding' as const,intentId:outstandingConfig.intent_id};
+      const globalNative=issuedGlobalNativeMutation(db);
+      if(globalNative)return {forward:false as const,reason:'outstanding_mutation' as const,intentId:globalNative.intent_id};
+      // Configuration refresh changes machine-wide hook/helper state. Do not let a sender
+      // carrying a grant from before this refresh cross its forwarding boundary afterward.
+      db.query("UPDATE codex_mutation_permits SET state='revoked',revoked_at_ms=? WHERE state='granted' AND permit_id<>?")
+        .run(input.nowMs,input.permitId);
+    }
     if(permit.method===CODEX_DAEMON_LIFECYCLE_METHOD){
       if(permit.thread_id!=='*'||permit.purpose!=='ordinary'||permit.fence_id||permit.target_native_turn_id)
         return {forward:false as const,reason:'daemon_lifecycle_scope_invalid' as const};
@@ -325,6 +396,8 @@ export function acquireCodexThreadMutationFence(db: Database, input:CodexMutatio
   return db.transaction(() => {
     const lifecycle=issuedDaemonLifecycle(db);
     if(lifecycle)return {acquired:false,reason:'daemon_lifecycle_outstanding' as const,intent:lifecycle};
+    const config=issuedManagedHookConfig(db);
+    if(config)return {acquired:false,reason:'managed_config_write_outstanding' as const,intent:config};
     const old = getFence(db,input.fenceId);
     if (old) {
       if (old.threadId!==input.threadId || !ownerMatches(old,input)) throw new Error('fence identity reused with another owner');

@@ -38,8 +38,9 @@ import {recordRepairNotice} from './repair-notices';
 import {proveCodexInputNeverAcknowledged} from './codex-unacknowledged-proof';
 import {recoverAcceptedBindingCodex} from './codex-accepted-binding-recovery';
 import {requireCodexContinuationActivation} from './codex-continuation-activation';
+import {requireCodexMutationReleaseProtection} from './codex-mutation-release-compatibility';
 import {getCodexRecoveryAuthorizationForInput,claimCodexRecoveryDispatchCapability,reconcileCodexRecoveryNativeTerminal,
-  retainCodexRecoverySourceCheckpoint} from './codex-recovery-dispatch-authorization';
+  retainCodexRecoverySourceCheckpoint,retainCodexRecoveryColdInputs,retainCodexRecoveryColdConstruction} from './codex-recovery-dispatch-authorization';
 import type {readCodexOriginalHistoryCoverage} from './codex-original-history-coverage';
 import {reconcileManagedCodexNativeTerminal,reconcileManagedCodexMutationFromRetainedTerminal} from './codex-managed-native-terminal';
 import {nativeResultEventId} from './native-result-identity';
@@ -1664,6 +1665,7 @@ export class SessionExecutionHost {
           await ledgerDurable({kind:'provider_input',id:input.id});
           const recovery=session.provider_id==='codex'?getCodexRecoveryAuthorizationForInput(db,input.id):null;
           if(recovery){
+            requireCodexMutationReleaseProtection(db);
             let capability:string|undefined;
             if(!adoption){
               const grant=claimCodexRecoveryDispatchCapability(db,{authorizationId:recovery.authorizationId,
@@ -1675,10 +1677,21 @@ export class SessionExecutionHost {
             prepared={...prepared,model:recovery.model,reasoning_effort:recovery.effort,
               codexRecovery:{authorizationId:recovery.authorizationId,model:recovery.model,effort:recovery.effort,
                 ...(capability?{capability}:{}),preparedPromptDigest:createHash('sha256').update(prepared.prompt,'utf8').digest('hex'),
-                beforeStart:async()=>{
-                  const result=await this.historyPages.refreshOriginalCodexHistoryAfterResume(recovery.authorizationId);
+                beforeResume:async params=>{
+                  const result:any=await this.historyPages.readCodexColdInputsBeforeResume(recovery.authorizationId,params);
+                  if(!result?.proven)throw new Error(`Cold construction refuses: ${result?.reasons?.map((r:any)=>r.code).join(', ')??'COLD_INPUT_READ_UNAVAILABLE'}.`);
+                  const retained=retainCodexRecoveryColdInputs(db,{authorizationId:recovery.authorizationId,witness:result.witness,
+                    paramsDigest:result.paramsDigest,nowMs:Date.now()});
+                  if(!retained.allowed)throw new Error(`Cold construction inputs refuse: ${retained.reason}.`);
+                },
+                beforeStart:async({params,responseResult})=>{
+                  const result:any=await this.historyPages.refreshOriginalCodexHistoryAfterResume(recovery.authorizationId,params,responseResult);
+                  if(!result?.proven)throw new Error(`Cold construction refuses: ${result?.reasons?.map((r:any)=>r.code).join(', ')??'COLD_CONSTRUCTION_UNAVAILABLE'}.`);
                   const retained=retainCodexRecoverySourceCheckpoint(db,{authorizationId:recovery.authorizationId,result,nowMs:Date.now()});
                   if(!retained.allowed)throw new Error(`Original native source checkpoint refuses: ${retained.reason}.`);
+                  const construction=retainCodexRecoveryColdConstruction(db,{authorizationId:recovery.authorizationId,
+                    receipt:result.construction,nowMs:Date.now()});
+                  if(!construction.allowed)throw new Error(`Cold construction receipt refuses: ${construction.reason}.`);
                 }}};
           }
           if(session.provider_id==='codex'){
@@ -2111,6 +2124,7 @@ export class SessionExecutionHost {
       throw new Error('Exact Codex recovery needs the same bound native conversation, machine, and active send controls.');
     if(input.continuationDecisionDigest){
       requireCodexContinuationActivation();
+      requireCodexMutationReleaseProtection(db);
       if(codexRelayRunner()!==null)throw new Error('Accepted-binding recovery requires authoritative writer coverage from its execution host; remote coverage is not established.');
       const result=await recoverAcceptedBindingCodex({sessionId:session.id,inputId:operation.id,
         requestId:input.requestId,actionId:input.actionId,sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,

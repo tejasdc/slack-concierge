@@ -6,7 +6,8 @@ type Work={operation:'page'|'delta'|'prepare';sessionId:string;cwd:string;cursor
   want?:{dialogue:number;untilInput:boolean};thread?:string}|
   {operation:'original-recovery-coverage';sessionId:number;inputId:string;requestId:string;runId:string;fenceId:string;
     expectedDecisionDigest:string;expectedNativeDigest:string}|
-  {operation:'original-recovery-refresh-after-resume';authorizationId:string};
+  {operation:'original-recovery-cold-before-resume';authorizationId:string;params:Record<string,unknown>}|
+  {operation:'original-recovery-refresh-after-resume';authorizationId:string;params:Record<string,unknown>;responseResult:unknown};
 type Reply={id:number;result?:unknown;error?:{message:string;status:number}};
 
 // A window is collected inside the worker under the owner's own four-second budget.
@@ -50,8 +51,11 @@ export class ProviderHistoryPageClient {
     return this.request({operation:'original-recovery-coverage',...input});
   }
   /** Refresh the private local source witness only after the exact owned resume response. */
-  refreshOriginalCodexHistoryAfterResume(authorizationId:string){
-    return this.request({operation:'original-recovery-refresh-after-resume',authorizationId});
+  readCodexColdInputsBeforeResume(authorizationId:string,params:Record<string,unknown>){
+    return this.request({operation:'original-recovery-cold-before-resume',authorizationId,params});
+  }
+  refreshOriginalCodexHistoryAfterResume(authorizationId:string,params:Record<string,unknown>,responseResult:unknown){
+    return this.request({operation:'original-recovery-refresh-after-resume',authorizationId,params,responseResult});
   }
   request(work:Work):Promise<unknown>{
     const worker=this.ensure(),id=this.nextId++;
@@ -59,11 +63,11 @@ export class ProviderHistoryPageClient {
       const timer=setTimeout(()=>{
         const item=this.pending.get(id);if(!item)return;
         this.pending.delete(id);
-        item.reject(new Error(work.operation==='original-recovery-coverage'||work.operation==='original-recovery-refresh-after-resume'
+        item.reject(new Error(work.operation==='original-recovery-cold-before-resume'||work.operation==='original-recovery-coverage'||work.operation==='original-recovery-refresh-after-resume'
           ?'ORIGINAL_HISTORY_COVERAGE_STILL_READING':'HISTORY_PAGE_STILL_PREPARING'));
         // An import already under way must finish and warm the worker. Killing it here
         // would make every retry start the same expensive cold read from zero.
-      },work.operation==='original-recovery-coverage'||work.operation==='original-recovery-refresh-after-resume'?ORIGINAL_HISTORY_COVERAGE_WAIT_MS:
+      },work.operation==='original-recovery-cold-before-resume'||work.operation==='original-recovery-coverage'||work.operation==='original-recovery-refresh-after-resume'?ORIGINAL_HISTORY_COVERAGE_WAIT_MS:
         work.want||work.operation==='prepare'?HISTORY_WINDOW_WAIT_MS:5000);
       timer.unref?.();
       this.pending.set(id,{resolve,reject,timer});

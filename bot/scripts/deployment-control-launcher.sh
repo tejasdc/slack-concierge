@@ -9,6 +9,17 @@ INSTALL_ROOT=${CONCIERGE_DEPLOYMENT_RUNTIME_DIR:-/usr/local/lib/slack-concierge-
 CONTROL_ROOT=$(readlink -f "$RELEASE_ROOT/control/control")
 export CONCIERGE_DEPLOYMENT_CONTROL_ROOT="$CONTROL_ROOT"
 export CONCIERGE_DEPLOY_COMMAND="$INSTALL_ROOT/control"
+STATE_ROOT=${CONCIERGE_STATE_DIR:-/root/.local/state/concierge}
+REQUIREMENT="$STATE_ROOT/codex-native-mutation/required-release-protocols/v1.json"
+if [ -e "$REQUIREMENT" ] || [ -L "$REQUIREMENT" ]; then
+  APPLICATION_ROOT=$(readlink -f "$RELEASE_ROOT/current")
+  CONTROL_ARTIFACT=$(dirname "$CONTROL_ROOT")
+  CHECKER="$CONTROL_ROOT/codex-mutation-release-check.js"
+  [ -f "$CHECKER" ] || { echo 'CODEX_MUTATION_CONTROL_PROTOCOL_NOT_PROVEN' >&2; exit 1; }
+  # Repair/control commands may roll forward the incompatible application. The
+  # actual application start checks both identities before executing any app.
+  "$INSTALL_ROOT/bun" "$CHECKER" control --control "$CONTROL_ARTIFACT" --state "$STATE_ROOT"
+fi
 
 case "${1:-}" in
   codex-launch|codex-proxy)

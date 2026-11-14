@@ -88,6 +88,7 @@ export class CodexMutationChannel {
     // Native errors may follow settings/history effects. They are never evidence
     // that nothing happened, and cannot release a fence or authorize another send.
     await this.gate({phase:'response',...identity,responseDigest:mutationDigest(frame),
+      ...('result'in frame?{responseResultDigest:mutationDigest(frame.result)}:{}),
       providerTurnId:typeof frame.result?.turn?.id==='string'?frame.result.turn.id:
         typeof frame.result?.turnId==='string'?frame.result.turnId:null,
       response:{id:frame.id,...(frame.error?{error:{code:frame.error.code}}:{}),

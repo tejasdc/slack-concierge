@@ -3,6 +3,7 @@ import { existsSync, lstatSync, readFileSync, readlinkSync, readdirSync, renameS
 import { join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import { TrustedRootReleaseManager } from "./deployment-release";
+import {assertCodexMutationReleaseActivation} from './codex-mutation-release-compatibility';
 import { claimControlRecovery, controlRecoveryEvent, failControlRecovery, getControlRecoveryIntent,
   getActiveDeploymentRun, getDeploymentDesiredState, getDeploymentRepairIncident, getDeploymentRun, getLastKnownGoodRelease,
   getLatestDeploymentRun, LKG_UNAVAILABLE_ERROR, listDeploymentRunEvents, prepareControlRecovery,
@@ -309,6 +310,10 @@ export async function handleControlRecovery(commandName: string, option: (name: 
     const manifest = manager.verify(intent.artifactPath);
     if (manifest.artifact_digest !== intent.artifactDigest || manifest.control_git_commit !== intent.controlCommit
       || manifest.git_commit !== intent.healthyCommit) throw new Error("Recovery artifact does not match durable intent.");
+    if(manager.environment.historyCacheStateDirectory){
+      assertCodexMutationReleaseActivation(manager.environment.historyCacheStateDirectory,intent.artifactPath,manifest.files);
+      assertCodexMutationReleaseActivation(manager.environment.historyCacheStateDirectory,intent.artifactPath,manifest.files,true);
+    }
     if (getDeploymentRun(runId)?.status === "succeeded") return { status: "succeeded", run_id: runId };
     const unit = `concierge-control-recovery-${runId.slice(0, 12)}`;
     recordControlRecoveryEvent(runId, "control_recovery_launch_intended", { unit, artifact_digest: intent.artifactDigest });

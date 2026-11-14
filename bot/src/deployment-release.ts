@@ -19,6 +19,7 @@ import {
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import BUILT_IN_DECLARATION from "./deployment-artifact-files.json";
 import {assertHistoryCacheActivation,HISTORY_CACHE_CAPABILITY_PATH,HISTORY_CACHE_CONTROL_CAPABILITY_PATH} from "./provider-history-cache-compatibility";
+import {assertCodexMutationReleaseActivation,CODEX_MUTATION_APPLICATION_CAPABILITY_PATH,CODEX_MUTATION_CONTROL_CAPABILITY_PATH} from './codex-mutation-release-compatibility';
 
 // Normal preparation took about 47 seconds; the same check passed in 52 seconds under
 // load after a 90-second deploy timeout. Three minutes leaves room for disk contention
@@ -340,6 +341,7 @@ export class TrustedRootReleaseManager {
     const artifact = this.controlArtifactPath();
     if (!artifact) throw new Error("Cannot install runtime without a verified control release.");
     this.verifyRuntimeLaunchers(artifact);
+    this.assertMutationSelection(artifact);
     mkdirSync(this.environment.installRoot, { recursive: true, mode: 0o755 });
     const bunDestination = join(this.environment.installRoot, "bun");
     const temporaryBun = `${bunDestination}.${randomUUID()}.tmp`;
@@ -357,7 +359,13 @@ export class TrustedRootReleaseManager {
     const artifact = this.controlArtifactPath();
     if (!artifact) throw new Error("Cannot install runtime without a verified control release.");
     this.verifyRuntimeLaunchers(artifact);
+    this.assertMutationSelection(artifact);
     this.installRuntimeLaunchers();
+  }
+  private assertMutationSelection(controlArtifact:string){
+    const state=this.environment.historyCacheStateDirectory;
+    if(!state)return;
+    assertCodexMutationReleaseActivation(state,controlArtifact,this.verify(controlArtifact).files,true);
   }
 
   async prepare(attemptId: string, gitCommit: string, controlGitCommit = gitCommit): Promise<PreparedRelease> {
@@ -436,6 +444,11 @@ export class TrustedRootReleaseManager {
       delete controlFiles[HISTORY_CACHE_CAPABILITY_PATH];
       const readerCapability=applicationDeclaration.controlFiles[HISTORY_CACHE_CAPABILITY_PATH];
       if(readerCapability && existsSync(join(sourceRoot,readerCapability)))controlFiles[HISTORY_CACHE_CAPABILITY_PATH]=readerCapability;
+      delete controlFiles[CODEX_MUTATION_APPLICATION_CAPABILITY_PATH];
+      const mutationApplication=applicationDeclaration.controlFiles[CODEX_MUTATION_APPLICATION_CAPABILITY_PATH];
+      if(mutationApplication&&existsSync(join(sourceRoot,mutationApplication)))controlFiles[CODEX_MUTATION_APPLICATION_CAPABILITY_PATH]=mutationApplication;
+      const mutationControl=controlFiles[CODEX_MUTATION_CONTROL_CAPABILITY_PATH];
+      if(mutationControl&&!existsSync(join(effectiveControlSourceRoot,mutationControl)))delete controlFiles[CODEX_MUTATION_CONTROL_CAPABILITY_PATH];
       const declaration={...controlDeclaration,controlFiles,controlBundles:{...controlDeclaration.controlBundles,
         ...Object.fromEntries([...applicationPaths].map(path=>[path,applicationDeclaration.controlBundles[path]!]))}};
       const runtimeFiles = runtimeFilesFor(declaration);
@@ -445,7 +458,7 @@ export class TrustedRootReleaseManager {
       }
       for (const [destination, source] of Object.entries(declaration.controlFiles)) {
         mkdirSync(dirname(join(outputRoot, destination)), { recursive: true, mode: 0o700 });
-        copyFileSync(join(destination===HISTORY_CACHE_CAPABILITY_PATH?sourceRoot:effectiveControlSourceRoot, source), join(outputRoot, destination));
+        copyFileSync(join([HISTORY_CACHE_CAPABILITY_PATH,CODEX_MUTATION_APPLICATION_CAPABILITY_PATH].includes(destination)?sourceRoot:effectiveControlSourceRoot, source), join(outputRoot, destination));
       }
       await this.services.build(
         join(effectiveControlSourceRoot, "bot/src/codex-app-server-bridge.mjs"),
@@ -578,6 +591,9 @@ export class TrustedRootReleaseManager {
     const manifest = this.verifyRuntimeLaunchers(canonical);
     if(this.environment.historyCacheStateDirectory)
       assertHistoryCacheActivation(this.environment.historyCacheStateDirectory,canonical,manifest.files,true);
+    if(this.environment.historyCacheStateDirectory){
+      assertCodexMutationReleaseActivation(this.environment.historyCacheStateDirectory,canonical,manifest.files,true);
+    }
     mkdirSync(this.environment.releaseRoot, { recursive: true, mode: 0o755 });
     this.installRuntimeLaunchers();
     const temporary = join(this.environment.releaseRoot, `.control-${randomUUID()}`);
@@ -593,6 +609,7 @@ export class TrustedRootReleaseManager {
     const manifest = this.verify(canonical);
     if(this.environment.historyCacheStateDirectory)
       assertHistoryCacheActivation(this.environment.historyCacheStateDirectory,canonical,manifest.files);
+    if(this.environment.historyCacheStateDirectory)assertCodexMutationReleaseActivation(this.environment.historyCacheStateDirectory,canonical,manifest.files);
     mkdirSync(this.environment.releaseRoot, { recursive: true, mode: 0o755 });
     const temporary = join(this.environment.releaseRoot, `.current-${randomUUID()}`);
     symlinkSync(relative(this.environment.releaseRoot, canonical), temporary);
@@ -607,6 +624,8 @@ export class TrustedRootReleaseManager {
     if(this.environment.historyCacheStateDirectory) {
       const canonical=realpathSync(artifactPath),manifest=this.verify(canonical);
       assertHistoryCacheActivation(this.environment.historyCacheStateDirectory,canonical,manifest.files,true);
+      assertCodexMutationReleaseActivation(this.environment.historyCacheStateDirectory,canonical,manifest.files,true);
+      assertCodexMutationReleaseActivation(this.environment.historyCacheStateDirectory,canonical,manifest.files);
     }
     const manifest = this.activate(artifactPath);
     this.activateControl(artifactPath);

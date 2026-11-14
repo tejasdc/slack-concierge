@@ -136,6 +136,80 @@ function compactionResponseSource(){const rows=records(),compacted=rows[16];comp
   return rows;}
 write(compactionResponseSource());const accounted=await read();assert.equal(accounted.proven,true,JSON.stringify(accounted));
 if(accounted.proven){assert.equal(accounted.witness.spans[1]?.compactionCompletionRecords,1);assert.equal(accounted.witness.spans[1]?.responseUsageRecords,1);}
+// Pinned quota telemetry describes the account; it does not change native settings
+// or acknowledge an accepted input. Cumulative prior output stays prior work.
+const quota={limit_id:'fixture-quota',limit_name:'ordinary quota',normal_model_slug:'quota-alias',
+  primary:{used_percent:25.5,window_minutes:300,resets_at:1794528000},secondary:null,
+  credits:{has_credits:true,unlimited:false,balance:'4.25'},
+  individual_limit:{limit:'100',used:'25',remaining_percent:75,resets_at:1794528000},
+  spend_control_reached:false,plan_type:'pro',rate_limit_reached_type:null};
+const priorQuota=records();priorQuota.splice(8,0,row('event_msg',{type:'token_count',info:{
+  total_token_usage:compactUsage,last_token_usage:compactUsage,model_context_window:258400},rate_limits:quota}));write(priorQuota);
+assert.equal((await read()).proven,true,'source-defined preselected quota telemetry preserves prior output');
+const suffixQuota=records();suffixQuota.at(-2).payload.rate_limits=quota;write(suffixQuota);
+assert.equal((await read()).proven,true,'typed quota telemetry alone is neutral in the covered suffix');
+for(const change of [(q:any)=>{q.unknown_setting=true;},(q:any)=>{q.primary.future_steering='hidden';},
+  (q:any)=>{q.credits.has_credits='true';},(q:any)=>{q.rate_limit_reached_type='future-policy';}]){
+  const rows=structuredClone(priorQuota);change(rows[8].payload.rate_limits);write(rows);const proof=await read();
+  assert.equal(proof.proven,false);if(!proof.proven)assert.equal(proof.reasons[0]?.code,'ORIGINAL_HISTORY_TOKEN_METADATA_UNCLASSIFIED');
+}
+function checkpointSource(){
+  const rows=compactionResponseSource();
+  const attribution={turn_id:'selected-T',turn_trigger:null,parent_turn_id:null,initiating_agent_path:null,root_turn_id:'selected-T'};
+  rows.find(r=>r.payload.type==='task_started'&&r.payload.turn_id==='selected-T').payload.turn_attribution=attribution;
+  for(const r of rows)if(r.type==='turn_context')Object.assign(r.payload,{comp_hash:'native-model-compatibility',realtime_active:false,multi_agent_version:'v1'});
+  const accepted=rows.find(r=>r.type==='response_item'&&r.payload.id==='prior-native-item');
+  accepted.payload.internal_chat_message_metadata_passthrough={turn_id:'prior-T',content_item_kinds:['user.text']};
+  const userSource={id:{message_id:'prior-native-item',turn_id:'prior-T',role:'user'},revision:'retained-user-revision',complete:true};
+  accepted.metadata={client_authored:false,user_input_order:7,retained_source:userSource,mcp_attribution:{status:'none'}};
+  const assistant={type:'message',id:'prior-assistant-item',role:'assistant',phase:'final_answer',
+    content:[{type:'output_text',text:'earlier preserved assistant answer'}],internal_chat_message_metadata_passthrough:{turn_id:'prior-T'}};
+  const assistantSource={id:{message_id:assistant.id,turn_id:'prior-T',role:'assistant'},revision:'retained-assistant-revision',complete:true};
+  const assistantMetadata={client_authored:false,user_input_order:8,retained_source:assistantSource,mcp_attribution:{status:'none'}};
+  rows.splice(rows.findIndex(r=>r.payload.type==='task_complete'&&r.payload.turn_id==='prior-T'),0,row('response_item',assistant,assistantMetadata));
+  const compacted=rows.find(r=>r.type==='compacted').payload;
+  compacted.replacement_history=[structuredClone(accepted.payload),generated,assistant,
+    {type:'compaction',id:'opaque-native-item',encrypted_content:'opaque fixture ciphertext',
+      internal_chat_message_metadata_passthrough:{turn_id:'compaction-T',create_time:1794528000}}];
+  compacted.replacement_history_metadata=[structuredClone(accepted.metadata),{client_authored:false,mcp_attribution:{status:'none'}},
+    assistantMetadata,{client_authored:false,compaction_model_hash:'native-model-compatibility',mcp_attribution:{status:'none'}}];
+  compacted.retained_context={verified_answers:[],incomplete:false,user_messages:[{revision:userSource.revision,order:7,
+    turn_id:'prior-T',message_id:userSource.id.message_id,text:accepted.payload.content[0].text,complete:true}],
+    user_messages_incomplete:false,assistant_messages:[{revision:assistantSource.revision,order:8,turn_id:'prior-T',
+      message_id:assistant.id,text:assistant.content[0].text,complete:true,phase:'final_answer'}],
+    assistant_messages_incomplete:false,next_order:9};
+  compacted.resume_metadata={multi_agent_version:'v1',last_started_turn_id:'compaction-T',
+    turn_attribution:attribution,previous_turn_settings:{model:binding.model,comp_hash:'native-model-compatibility',realtime_active:false}};
+  compacted.latest_token_usage_record=rows.find(r=>r.type==='token_usage_record').payload;
+  return rows;
+}
+write(checkpointSource());const checkpointProof=await read();assert.equal(checkpointProof.proven,true,JSON.stringify(checkpointProof));
+if(checkpointProof.proven){
+  assert.equal(checkpointProof.witness.compactionRecords[0].replacementClassifications.historicalRetainedSource,2);
+  assert.equal(checkpointProof.witness.compactionRecords[0].replacementClassifications.opaqueCompactionContext,1);
+  assert.equal(checkpointProof.witness.compactionRecords[0].retainedSourceRefs.length,2);
+  assert.ok(checkpointProof.witness.compactionRecords[0].resumeSourceRefs?.attributionRecord);
+  assert.ok(!JSON.stringify(checkpointProof.witness).includes('earlier preserved assistant answer'));
+}
+for(const [code,change] of [
+  ['ORIGINAL_HISTORY_RETAINED_CONTEXT_SOURCE_UNPROVEN',(p:any)=>{p.retained_context.user_messages[0].revision='borrowed-revision';}],
+  ['ORIGINAL_HISTORY_RETAINED_CONTEXT_SOURCE_UNPROVEN',(p:any)=>{p.retained_context.user_messages[0].turn_id='selected-T';}],
+  ['ORIGINAL_HISTORY_RETAINED_CONTEXT_SOURCE_UNPROVEN',(p:any)=>{p.retained_context.user_messages[0].inherited=true;}],
+  ['ORIGINAL_HISTORY_RETAINED_CONTEXT_SOURCE_UNPROVEN',(p:any)=>{p.retained_context.user_messages[0].order=8;}],
+  ['ORIGINAL_HISTORY_RETAINED_CONTEXT_PAYLOAD_UNPROVEN',(p:any)=>{p.retained_context.user_messages[0].text='new instruction';}],
+  ['ORIGINAL_HISTORY_COMPACTION_SIDECAR_UNCLASSIFIED',(p:any)=>{p.retained_context.hidden_acknowledgement=true;}],
+  ['ORIGINAL_HISTORY_RETAINED_CONTEXT_EVENT_PROVENANCE_UNSUPPORTED',(p:any)=>{p.retained_context.verified_answers=[{turn_id:'selected-T'}];}],
+  ['ORIGINAL_HISTORY_COMPACTION_RESUME_STATE_UNPROVEN',(p:any)=>{p.resume_metadata.last_started_turn_id='unseen-T';}],
+  ['ORIGINAL_HISTORY_COMPACTION_RESUME_STATE_UNPROVEN',(p:any)=>{p.resume_metadata.previous_turn_settings.realtime_active=true;}],
+  ['ORIGINAL_HISTORY_COMPACTION_RESUME_STATE_UNPROVEN',(p:any)=>{p.resume_metadata.turn_attribution={turn_id:'unseen-T'};}],
+  ['ORIGINAL_HISTORY_REPLACEMENT_METADATA_UNCLASSIFIED',(p:any)=>{p.replacement_history_metadata[3].compaction_model_hash='unproven-model';}],
+  ['ORIGINAL_HISTORY_REPLACEMENT_METADATA_UNCLASSIFIED',(p:any)=>{p.replacement_history_metadata[1].unknown_future_provenance=null;}],
+] as [string,(p:any)=>void][]){
+  const rows=checkpointSource();change(rows.find(r=>r.type==='compacted').payload);write(rows);const proof=await read();
+  assert.equal(proof.proven,false,code);if(!proof.proven)assert.equal(proof.reasons[0]?.code,code,JSON.stringify(proof));
+}
+const opaqueExtra=checkpointSource();opaqueExtra.find(r=>r.type==='compacted').payload.replacement_history[3].unknown_sidecar={tool:'hidden'};write(opaqueExtra);
+assert.equal((await read()).proven,false,'opaque native context cannot hide unknown item sidecars');
 const wrongUsage=compactionResponseSource();wrongUsage.find(r=>r.type==='token_usage_record')!.payload.response_id='unrelated-response';write(wrongUsage);
 const wrongUsageProof=await read();assert.equal(wrongUsageProof.proven,false);if(!wrongUsageProof.proven)assert.equal(wrongUsageProof.reasons[0]?.code,'ORIGINAL_HISTORY_TOKEN_USAGE_EFFECT_UNASSESSED');
 const missingCompletion=compactionResponseSource().filter(r=>r.payload.type!=='item_completed');write(missingCompletion);

@@ -139,12 +139,17 @@ live recovery or change to any original writing obligation.
 
 The source candidate also composes accepted-binding continuation, complete native
 interval proof, common forwarding permits and a one-attempt dispatcher budget.
-Its production entrance remains held for two missing supported capabilities:
-`LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN`,
-`COLD_RESUME_HOOK_CONFIGURATION_UNPROVEN` and
-`NATIVE_ORIGINAL_EFFECT_HISTORY_COVERAGE_UNPROVEN`. Complete projected pagination,
-process absence, idle, historical
-`notLoaded`, an installed script or capability response cannot waive these.
+Its production entrance remains held on
+`LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN` and
+`FIRST_PROTECTION_WRITER_EXCLUSION_UNPROVEN`. Original-source history and cold
+construction are now source-owned per-operation checks, not unconditional
+readiness flags. The common mutation ledger excludes supported managed hook
+installation across the exact cold/configuration read and actual resume. Complete
+projected pagination, process absence, idle, historical `notLoaded`, an installed
+script or capability response cannot supply the missing native admission cut.
+Nor can requirement publication prove exclusion of old application requests,
+pinned helpers and configuration writers across first protection. Operational
+preflight refuses that separate transition before any protected authority.
 The [managed mutation contract](../architecture/CODEX-MUTATION-FENCE.md) owns the
 writer inventory, Stop/terminal reconciliation and activation boundary. Internal
 fixture success is not permission to recover a live conversation.

@@ -1,6 +1,6 @@
 import {db} from './state';
 import {readFileSync} from 'node:fs';
-import {grantCodexMutationPermit,consumeCodexMutationPermit,recordCodexMutationResponse,reconcileCodexMutationIntent} from './codex-mutation-fence';
+import {grantCodexMutationPermit,consumeCodexMutationPermit,recordCodexMutationResponse,reconcileCodexMutationIntent,CODEX_MANAGED_HOOK_CONFIG_METHOD} from './codex-mutation-fence';
 import {prepareCodexRecoveryMutation,consumeCodexRecoveryMutation,recordCodexRecoveryMutationResponse,
   authorizeCodexRecoveryInterrupt,consumeCodexRecoveryInterrupt,recordCodexRecoveryInterruptResponse} from './codex-recovery-dispatch-authorization';
 import {registerManagedCodexChild,observeManagedCodexChildExit} from './codex-managed-process-registry';
@@ -11,6 +11,8 @@ import {reconcileManagedCodexMutationFromRetainedTerminal} from './codex-managed
 /** Private transport command. It never accepts a caller's claim that an Astra
  * continuation is authorized. Recovery capability admission is owned separately. */
 export function codexMutationGate(input:any){
+  if(input?.method===CODEX_MANAGED_HOOK_CONFIG_METHOD)
+    return {allowed:false,forward:false,reason:'managed_hook_config_requires_owned_installer'};
   const id=(value:unknown,max=256)=>typeof value==='string'&&value.length>0&&value.length<=max;
   const digest=(value:unknown)=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
   const processPhase=input?.phase==='register-process'||input?.phase==='observed-exit';
@@ -134,7 +136,7 @@ export function codexMutationGate(input:any){
       kind:input.nativeError?'rpc_error':'accepted',responseDigest:input.responseDigest,nowMs:Date.now()});
     if(input.nativeError){recordCodexMutationResponse(db,{intentId:input.intentId,kind:'rpc_error',responseDigest:input.responseDigest,nowMs:Date.now()});return {recorded:true};}
     return recordCodexRecoveryMutationResponse(db,{authorizationId:authorization.authorization_id,intentId:input.intentId,
-      response:input.response?.result,responseDigest:input.responseDigest,nowMs:Date.now()});
+      response:input.response?.result,responseDigest:input.responseDigest,responseResultDigest:input.responseResultDigest,nowMs:Date.now()});
   }
   recordCodexMutationResponse(db,{intentId:input.intentId,kind:input.nativeError?'rpc_error':'accepted',
     responseDigest:input.responseDigest,providerTurnId:typeof input.providerTurnId==='string'?input.providerTurnId:undefined,nowMs:Date.now()});

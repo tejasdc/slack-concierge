@@ -15,3 +15,4 @@ export const PROTECTED_DURABILITY_TEST_AUTHORIZATION='protected-durability-92ed9
 export const NOTIFICATION_TOPIC_CORRECTION_TEST_AUTHORIZATION='notification-topic-correction-2026-11-13';
 export const CHATGPT_TOOL_READ_ACCEPTANCE_TEST_AUTHORIZATION='chatgpt-tool-read-acceptance-2026-11-13';
 export const CODEX_SWITCH_RECEIPT_TEST_AUTHORIZATION='codex-switch-receipt-2026-11-13';
+export const CODEX_MANAGED_HOOK_CONFIG_TEST_AUTHORIZATION='codex-managed-hook-config-2026-11-13';

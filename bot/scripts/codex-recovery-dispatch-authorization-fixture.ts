@@ -6,6 +6,8 @@ import {createHash} from 'node:crypto';
 import {Database} from 'bun:sqlite';
 import {IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION} from '../src/test-authorizations';
 import {createFixtureOriginalHistory} from './codex-original-history-fixture-helper';
+import {fixtureColdConstruction} from './codex-cold-construction-fixture-helper';
+import {validateCodexColdResume} from '../src/codex-cold-construction';
 const scratch=mkdtempSync(join(tmpdir(),'concierge-recovery-authorization-'));
 process.env.CONCIERGE_STATE_DIR=scratch;process.env.CONCIERGE_CAPTURE_STATE_DIR=join(scratch,'capture');
 process.env.CONCIERGE_TEST_MODE='1';process.env.CONCIERGE_TEST_AUTHORIZATION=IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION;
@@ -16,7 +18,7 @@ const [{db},inputs,{inspectAcceptedBindingContinuation},{proveCodexContinuationN
 const {createNativeSession,retainSessionInput,enqueueSessionInput,nativeRunId,recordSessionEvent}=inputs;
 fences.initializeCodexMutationFenceSchema(db);auth.initializeCodexRecoveryAuthorizationSchema(db);
 let serial=0;
-async function seed(){
+async function seed(options:{retainColdInputs?:boolean}={}){
   const suffix=++serial,session=createNativeSession('codex',{title:'exact retained work',purpose:'recovery fixture',origin:'native',
     model:'gpt-6-astra',reasoningEffort:'medium',providerRunner:null} as any),threadId=`thread:${suffix}`;
   db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run(threadId,session.id);
@@ -64,9 +66,12 @@ async function seed(){
   const fenceId=`recovery-fence:${suffix}`,runId=nativeRunId(reportTurn);
   const fence=fences.acquireCodexThreadMutationFence(db,{fenceId,threadId,acceptedInputId:report.id,runId,dispatchAttempt:2,
     bindingDigest:digest(inspection.identity.binding),nowMs:1});assert.equal(fence.acquired,true);
+  const coldOwner={fenceId,threadId,acceptedInputId:report.id,runId,dispatchAttempt:2,bindingDigest:digest(inspection.identity.binding)};
+  const configSecret=`fixture-private-config-${suffix}`;
+  const construction=await fixtureColdConstruction({db,owner:coldOwner,binding:inspection.identity.binding,sourcePath:history.sourcePath,configSecret});
   db.query(`INSERT INTO codex_unacknowledged_recoveries(accepted_input_id,request_id,turn_id,provider_thread_id,
     proof_json,action_id,source_input_id,source_run_id,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?)`)
-    .run(report.id,requestId,reportTurn,threadId,JSON.stringify(proof),`reserve:${suffix}`,source.id,nativeRunId(sourceTurn),1);
+    .run(report.id,requestId,reportTurn,threadId,JSON.stringify({...proof,coldResume:{construction}}),`reserve:${suffix}`,source.id,nativeRunId(sourceTurn),1);
   db.query("UPDATE turns SET status='queued',provider_turn_id=NULL,outbound_text=NULL,reasoning_effort='medium' WHERE id=?").run(reportTurn);
   const granted=auth.grantCodexRecoveryAuthorization(db,{acceptedInputId:report.id,fenceId,nowMs:2});
   assert.equal(granted.allowed,true,JSON.stringify(granted));if(!granted.allowed||!('authorizationId' in granted))throw new Error('grant missing');
@@ -79,7 +84,13 @@ async function seed(){
   const privatePrompt=`prepared private prompt ${suffix}`,preparedPromptDigest=createHash('sha256').update(privatePrompt).digest('hex');
   const startParams={threadId,model:'gpt-6-astra',effort:'medium',input:[{type:'text',text:privatePrompt}],
     clientUserMessageId:`slack-concierge:turn:${reportTurn}:attempt:2`};
-  const resumeParams={threadId,model:'gpt-6-astra',excludeTurns:true,config:{model_reasoning_effort:'medium'}};
+  const resumeParams={threadId,cwd:'/fixture',model:'gpt-6-astra',excludeTurns:true,config:{model_reasoning_effort:'medium',features:{hooks:true}}};
+  const recaptured=await fixtureColdConstruction({db,owner:coldOwner,binding:inspection.identity.binding,sourcePath:history.sourcePath,
+    loaded:['unrelated-loaded-thread'],configSecret});
+  const retainColdInputs=()=>auth.retainCodexRecoveryColdInputs(db,{authorizationId,witness:recaptured,paramsDigest:digest(resumeParams),nowMs:4});
+  if(options.retainColdInputs!==false)assert.equal(retainColdInputs().allowed,true);
+  const resumeResponse={thread:{id:threadId,cwd:'/fixture',path:history.sourcePath,sessionId:threadId,historyMode:'legacy'},
+    model:'gpt-6-astra',reasoningEffort:'medium'};
   const prepare=(method:string,params:any,permitId:string)=>auth.prepareCodexRecoveryMutation(db,{authorizationId,capability,
     permitId,method,params,preparedPromptDigest,nowMs:4});
   const consume=(params:any,permitId:string)=>auth.consumeCodexRecoveryMutation(db,{authorizationId,capability,permitId,intentId:permitId,params,nowMs:5});
@@ -90,7 +101,13 @@ async function seed(){
   };
   const hook=(patch:any={})=>auth.codexRecoveryPromptGate(db,{providerSessionId:threadId,providerTurnId:`native:${reportTurn}:2`,
     invocationId:`hook:${suffix}`,promptDigest:preparedPromptDigest,model:'gpt-6-astra',nowMs:7,...patch});
-  const checkpointAfterResume=async()=>{
+  const constructionReceipt=()=>{
+    const validated=validateCodexColdResume({db,authorizationId,intentId:resumePermit,witness:recaptured,params:resumeParams,responseResult:resumeResponse});
+    assert.equal(validated.allowed,true,JSON.stringify(validated));if(!validated.allowed)throw new Error('fixture construction receipt missing');
+    return validated.receipt;
+  };
+  const checkpointAfterResume=async(options:{retainConstruction?:boolean}={})=>{
+    if(options.retainConstruction!==false)assert.equal(auth.retainCodexRecoveryColdConstruction(db,{authorizationId,receipt:constructionReceipt(),nowMs:6}).allowed,true);
     history.appendResumeSettings();const checkpoint=await history.refreshAfterResume(db,resumePermit);
     const retained=auth.retainCodexRecoverySourceCheckpoint(db,{authorizationId,result:checkpoint,nowMs:6});
     assert.equal(retained.allowed,true,JSON.stringify(retained));return checkpoint;
@@ -99,11 +116,13 @@ async function seed(){
     assert.equal(prepare('thread/resume',resumeParams,resumePermit).allowed,true);
     assert.equal(consume(resumeParams,resumePermit).allowed,true);
     assert.equal(auth.recordCodexRecoveryMutationResponse(db,{authorizationId,intentId:resumePermit,
-      response:{thread:{id:threadId},model:'gpt-6-astra',reasoningEffort:'medium'},nowMs:6}).allowed,true);
+      response:{thread:{id:threadId},model:resumeResponse.model,reasoningEffort:resumeResponse.reasoningEffort},
+      responseDigest:digest({id:`native-resume:${suffix}`,result:resumeResponse}),responseResultDigest:digest(resumeResponse),nowMs:6}).allowed,true);
     return checkpointAfterResume();
   };
   return {suffix,session,report,reportTurn,runId,threadId,requestId,fenceId,authorizationId,capability,privatePrompt,preparedPromptDigest,
-    startParams,resumeParams,startPermit,resumePermit,prepare,consume,hook,spend,history,resume,checkpointAfterResume};
+    startParams,resumeParams,startPermit,resumePermit,prepare,consume,hook,spend,history,resume,checkpointAfterResume,
+    recaptured,construction,retainColdInputs,configSecret,resumeResponse,constructionReceipt};
 }
 function denied(value:any,reason:string){assert.equal(value.allowed,false,JSON.stringify(value));assert.equal(value.reason,reason);}
 try {
@@ -121,8 +140,11 @@ try {
   assert.equal(a.prepare('thread/resume',a.resumeParams,a.resumePermit).allowed,true);
   assert.equal(a.consume(a.resumeParams,a.resumePermit).allowed,true);
   assert.equal(auth.recordCodexRecoveryMutationResponse(db,{authorizationId:a.authorizationId,intentId:a.resumePermit,
-    response:{thread:{id:a.threadId},model:'gpt-6-astra',reasoningEffort:'medium'},nowMs:6}).allowed,true);
+    response:a.resumeResponse,nowMs:6}).allowed,true);
   const aCheckpoint=await a.checkpointAfterResume();
+  assert.equal(a.retainColdInputs().allowed,false,'cold read facts cannot be recaptured after native resume changes the original source');
+  assert.throws(()=>db.query('UPDATE codex_recovery_cold_inputs SET created_at_ms=0 WHERE authorization_id=?').run(a.authorizationId),/immutable/);
+  assert.throws(()=>db.query('DELETE FROM codex_recovery_cold_constructions WHERE authorization_id=?').run(a.authorizationId),/immutable/);
   assert.equal(auth.retainCodexRecoverySourceCheckpoint(db,{authorizationId:a.authorizationId,result:aCheckpoint,nowMs:6}).allowed,true);
   assert.throws(()=>db.query('UPDATE codex_recovery_source_checkpoints SET created_at_ms=0 WHERE authorization_id=?').run(a.authorizationId),/immutable/);
   denied(a.prepare('turn/steer',a.startParams,'forbidden'),'RECOVERY_MUTATION_METHOD_FORBIDDEN');
@@ -180,6 +202,9 @@ try {
   assert.ok(!stored.includes(a.capability)&&!stored.includes(a.privatePrompt),'storage and audit contain neither plaintext token nor prompt');
   const b=await seed();
   await b.resume();
+  denied(auth.recordCodexRecoveryMutationResponse(db,{authorizationId:b.authorizationId,intentId:b.resumePermit,
+    response:{thread:{id:b.threadId},model:'gpt-6-astra',reasoningEffort:'medium'},
+    responseResultDigest:digest('conflicting real result'),nowMs:6}),'RECOVERY_NATIVE_RESPONSE_CONFLICT');
   assert.equal(b.prepare('turn/start',b.startParams,b.startPermit).allowed,true);
   retainSessionInput({sessionId:b.session.id,scope:'fixture',actionId:'later-never-admitted',kind:'action',origin:'human',payload:{action:'pause'}});
   denied(b.consume(b.startParams,b.startPermit),'SOURCE_FINGERPRINT_CHANGED');
@@ -258,6 +283,32 @@ try {
   assert.equal(missingCheckpoint.prepare('thread/resume',missingCheckpoint.resumeParams,missingCheckpoint.resumePermit).allowed,true);
   appendFileSync(missingCheckpoint.history.sourcePath,'source changed after prepare\n');
   denied(missingCheckpoint.consume(missingCheckpoint.resumeParams,missingCheckpoint.resumePermit),'NATIVE_ORIGINAL_EFFECT_HISTORY_SOURCE_CHANGED');
+  const missingCold=await seed({retainColdInputs:false});
+  denied(missingCold.prepare('thread/resume',missingCold.resumeParams,missingCold.resumePermit),'COLD_RESUME_INPUTS_NOT_RETAINED');
+  denied(auth.retainCodexRecoveryColdInputs(db,{authorizationId:missingCold.authorizationId,
+    witness:{...missingCold.recaptured,privateConfig:'must not enter storage'} as any,
+    paramsDigest:digest(missingCold.resumeParams),nowMs:4}),'COLD_CONSTRUCTION_WITNESS_INVALID');
+  assert.equal(missingCold.retainColdInputs().allowed,true);
+  assert.equal(missingCold.retainColdInputs().allowed,true,'exact immutable worker recapture is idempotent');
+  denied(auth.retainCodexRecoveryColdInputs(db,{authorizationId:missingCold.authorizationId,witness:missingCold.recaptured,
+    paramsDigest:digest({...missingCold.resumeParams,approvalPolicy:'on-request'}),nowMs:4}),'COLD_RESUME_INPUTS_CONFLICT');
+  denied(missingCold.prepare('thread/resume',{...missingCold.resumeParams,config:{model_reasoning_effort:'medium',features:{hooks:true,unknown:true}}},
+    missingCold.resumePermit),'RECOVERY_PREPARATION_SHAPE_INVALID');
+  denied(missingCold.prepare('thread/resume',{...missingCold.resumeParams,config:{model_reasoning_effort:'medium',features:{hooks:false}}},
+    missingCold.resumePermit),'RECOVERY_PREPARATION_SHAPE_INVALID');
+  const missingConstruction=await seed();
+  assert.equal(missingConstruction.prepare('thread/resume',missingConstruction.resumeParams,missingConstruction.resumePermit).allowed,true);
+  assert.equal(missingConstruction.consume(missingConstruction.resumeParams,missingConstruction.resumePermit).allowed,true);
+  assert.equal(auth.recordCodexRecoveryMutationResponse(db,{authorizationId:missingConstruction.authorizationId,
+    intentId:missingConstruction.resumePermit,response:missingConstruction.resumeResponse,nowMs:6}).allowed,true);
+  await missingConstruction.checkpointAfterResume({retainConstruction:false});
+  denied(missingConstruction.prepare('turn/start',missingConstruction.startParams,missingConstruction.startPermit),'COLD_RESUME_CONSTRUCTION_RECEIPT_MISSING');
+  const receipt=missingConstruction.constructionReceipt();
+  denied(auth.retainCodexRecoveryColdConstruction(db,{authorizationId:missingConstruction.authorizationId,
+    receipt:{...receipt,responseDigest:digest('unrelated native result')},nowMs:6}),'COLD_RESUME_CONSTRUCTION_RECEIPT_CONFLICT');
+  assert.equal(auth.retainCodexRecoveryColdConstruction(db,{authorizationId:missingConstruction.authorizationId,receipt,nowMs:6}).allowed,true);
+  assert.equal(auth.retainCodexRecoveryColdConstruction(db,{authorizationId:missingConstruction.authorizationId,receipt,nowMs:6}).allowed,true);
+  assert.equal(missingConstruction.prepare('turn/start',missingConstruction.startParams,missingConstruction.startPermit).allowed,true);
   const changedBeforeStart=await seed();await changedBeforeStart.resume();changedBeforeStart.spend();
   assert.equal(changedBeforeStart.prepare('turn/start',changedBeforeStart.startParams,changedBeforeStart.startPermit).allowed,true);
   appendFileSync(changedBeforeStart.history.sourcePath,JSON.stringify({timestamp:'2026-11-13T00:00:00.000Z',
@@ -270,5 +321,12 @@ try {
     events:db.query('SELECT * FROM session_owner_events').all()});
   for(const target of [a,b,f,g,changedBeforeStart])assert.ok(!publicEvidence.includes(target.history.sourcePath),
     'private source paths stay outside audit and session events');
+  const privateColdEvidence=JSON.stringify({inputs:db.query('SELECT * FROM codex_recovery_cold_inputs').all(),
+    constructions:db.query('SELECT * FROM codex_recovery_cold_constructions').all()});
+  for(const target of [a,b,f,g,changedBeforeStart,missingCold,missingConstruction]){
+    assert.ok(!privateColdEvidence.includes(target.configSecret),'cold configuration preimages stay outside private facts');
+    assert.ok(!privateColdEvidence.includes(target.history.sourcePath),'cold native source paths are hashed');
+    assert.ok(!publicEvidence.includes(target.configSecret),'cold configuration preimages stay outside public audit');
+  }
   console.log('Recovery dispatch authorization: real legacy Medium proof, one durable capability/start, restart/replay, exact hook invocation, Stop/current-source and immutable private audit passed');
 } finally {db.close();rmSync(scratch,{recursive:true,force:true});}

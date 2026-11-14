@@ -20,7 +20,7 @@ function run(command:string,args:string[],env:Record<string,string>={},stdin?:Bu
 }
 function check(condition:unknown,message:string):asserts condition {if(!condition)throw new Error(message);}
 try {
-  const installer=readFileSync(resolve(import.meta.dir,'../../scripts/install-codex-stop-hook.sh'),'utf8');
+  const installer=readFileSync(resolve(import.meta.dir,'../../scripts/install-codex-stop-hook-body.sh'),'utf8');
   const start=installer.indexOf('write_wrapper() {');
   const end=installer.indexOf('\n}\nwrite_wrapper "$hook"',start);
   check(start>=0&&end>start,'installer write_wrapper function not found');

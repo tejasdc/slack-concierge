@@ -24,7 +24,9 @@ export type CodexOriginalHistoryWitness={policy:'codex_original_history_v1';thre
   prefixDigest:string;prefixBytes:number;recordCount:number;historyMode:'legacy'|'paginated';lastOrdinal:number|null;
   nativeTurnOrder:string[];nativeWatermark:string;spans:Span[];
   compactionRecords:{providerTurnId:string;record:number;replacementCount:number;replacementDigest:string;
-    replacementClassifications:Record<string,number>;recordDigest:string}[];
+    replacementClassifications:Record<string,number>;recordDigest:string;
+    retainedSourceRefs:{record:number;sourceDigest:string;payloadDigest:string}[];
+    resumeSourceRefs:{startedRecord:number;contextRecord:number;attributionRecord:number|null}|null}[];
   priorRecordCount:number;neutralOutsideTurnRecords:{record:number;kind:string;recordDigest:string}[];
   settingsBaseline:{record:number;startByte:number;endByte:number;snapshotDigest:string;recordDigest:string}|null;
   turnContextBaseline:{record:number;settingsDigest:string}|null;worldStateBaseline:{record:number;stateDigest:string}|null;
@@ -60,6 +62,11 @@ class RecordCoverage {
     compactedRecords:number;completionIds:Set<string>;responseIds:Set<string>;usageRecords:any[];tokenCounts:any[];hash:ReturnType<typeof createHash>}|null=null;
   priorAcceptedUsers=new Map<number,string>();
   priorResponseItems=new Set<string>();
+  priorEnvelopes=new Map<string,{metadataDigest:string;supported:boolean}>();
+  priorRetainedSources=new Map<string,{payloadDigest:string;textDigest:string|null;phase:any;origin:string;order:number;record:number}>();
+  priorMcpAttributions=new Set<string>();
+  lastContext:any=null;lastStartedTurnId:string|null=null;lastAttribution:any=null;
+  lastContextRecord=0;lastStartedRecord=0;lastAttributionRecord:number|null=null;
   settingsBaseline:CodexOriginalHistoryWitness['settingsBaseline']=null;
   turnContextBaseline:CodexOriginalHistoryWitness['turnContextBaseline']=null;
   worldStateBaseline:CodexOriginalHistoryWitness['worldStateBaseline']=null;
@@ -109,6 +116,9 @@ class RecordCoverage {
     if(begins){
       if(!nonempty(p.turn_id)||this.active!==null||this.seen.has(p.turn_id))refuse('ORIGINAL_HISTORY_TURN_BOUNDARY_INVALID',ref);
       this.active=p.turn_id;this.seen.add(p.turn_id);
+      this.lastStartedTurnId=p.turn_id;
+      this.lastStartedRecord=this.count;
+      if(p.turn_attribution!=null){this.lastAttribution=p.turn_attribution;this.lastAttributionRecord=this.count;}
       if(this.expected.includes(p.turn_id)||this.relevant){
         if(!this.relevant&&!this.settingsBaseline)refuse('ORIGINAL_HISTORY_SETTINGS_BASELINE_MISSING',ref);
         if(!this.relevant&&!this.turnContextBaseline)refuse('ORIGINAL_HISTORY_TURN_SETTINGS_BASELINE_MISSING',ref);
@@ -161,6 +171,77 @@ class RecordCoverage {
       this.active=null;
     }
   }
+  neutralMetadata(metadata:any,allowed:readonly string[]=[]):boolean{
+    if(metadata==null)return true;
+    if(!object(metadata))return false;
+    const {mcp_attribution,...rest}=metadata;
+    return neutralHarnessMetadata(rest,allowed)&&(mcp_attribution==null
+      ||validMcpAttribution(mcp_attribution)&&(mcp_attribution.status==='none'
+        ||this.priorMcpAttributions.has(digest(mcp_attribution))));
+  }
+  retainedCheckpoint(value:any,ref:string,classes:Record<string,number>){
+    if(!closed(value,['verified_answers','incomplete','user_messages','user_messages_incomplete',
+      'assistant_messages','assistant_messages_incomplete','next_order','sender_deliveries'])
+      ||!Array.isArray(value.verified_answers)||!Array.isArray(value.user_messages)||!Array.isArray(value.assistant_messages)
+      ||typeof value.incomplete!=='boolean'||typeof value.user_messages_incomplete!=='boolean'
+      ||typeof value.assistant_messages_incomplete!=='boolean'||!uint(value.next_order))
+      refuse('ORIGINAL_HISTORY_COMPACTION_SIDECAR_UNCLASSIFIED',ref);
+    if(value.verified_answers.length||value.sender_deliveries!=null&&(!Array.isArray(value.sender_deliveries)||value.sender_deliveries.length))
+      refuse('ORIGINAL_HISTORY_RETAINED_CONTEXT_EVENT_PROVENANCE_UNSUPPORTED',ref);
+    const identities=new Set<string>(),orders=new Set<number>(),refs:{record:number;sourceDigest:string;payloadDigest:string}[]=[];
+    for(const role of ['user','assistant'])for(const entry of value[`${role}_messages`]){
+      if(!closed(entry,['revision','inherited','order','turn_id','message_id','text','complete','origin','phase'])
+        ||!nonempty(entry.revision)||!nonempty(entry.turn_id)||!nonempty(entry.message_id)||!uint(entry.order)
+        ||typeof entry.text!=='string'||typeof entry.complete!=='boolean'||entry.inherited!=null&&entry.inherited!==false)
+        refuse('ORIGINAL_HISTORY_RETAINED_CONTEXT_SOURCE_UNPROVEN',ref);
+      const source={id:{message_id:entry.message_id,turn_id:entry.turn_id,role},revision:entry.revision,complete:entry.complete};
+      const key=digest(source),original=this.priorRetainedSources.get(key);
+      if(!original||original.order!==entry.order||entry.order>=value.next_order||identities.has(key)||orders.has(entry.order))
+        refuse('ORIGINAL_HISTORY_RETAINED_CONTEXT_SOURCE_UNPROVEN',ref);
+      if(original.textDigest===null||original.textDigest!==digest(entry.text)||original.phase!==(entry.phase??null))
+        refuse('ORIGINAL_HISTORY_RETAINED_CONTEXT_PAYLOAD_UNPROVEN',ref);
+      if((entry.origin??'user')!==original.origin)refuse('ORIGINAL_HISTORY_RETAINED_CONTEXT_SOURCE_UNPROVEN',ref);
+      identities.add(key);orders.add(entry.order);
+      refs.push({record:original.record,sourceDigest:key,payloadDigest:original.payloadDigest});
+      classes.historicalRetainedSource=(classes.historicalRetainedSource??0)+1;
+    }
+    return refs;
+  }
+  resumeCheckpoint(value:any,ref:string){
+    const context=this.lastContext,settings=value?.previous_turn_settings;
+    if(!closed(value,['multi_agent_version','last_started_turn_id','turn_attribution','previous_turn_settings'])
+      ||!Object.hasOwn(value,'multi_agent_version')||!Object.hasOwn(value,'last_started_turn_id')
+      ||!Object.hasOwn(value,'previous_turn_settings')||!context
+      ||!optional(value.multi_agent_version,v=>['disabled','v1','v2'].includes(v))
+      ||value.last_started_turn_id!==this.lastStartedTurnId
+      ||!optional(value.turn_attribution,v=>closed(v,['turn_id','turn_trigger','parent_turn_id','initiating_agent_path','root_turn_id'])
+        &&nonempty(v.turn_id)&&this.seen.has(v.turn_id)
+        &&['turn_trigger','parent_turn_id','initiating_agent_path','root_turn_id'].every(key=>optional(v[key],t=>typeof t==='string')))
+      ||digest(value.turn_attribution??null)!==digest(this.lastAttribution)
+      ||(value.multi_agent_version??null)!==(context.multi_agent_version??null)
+      ||!closed(settings,['model','cyber_access_program','comp_hash','realtime_active'])
+      ||!Object.hasOwn(settings,'comp_hash')||!Object.hasOwn(settings,'realtime_active')
+      ||!optional(settings.comp_hash,v=>typeof v==='string')||!optional(settings.realtime_active,v=>typeof v==='boolean')
+      ||!optional(settings.cyber_access_program,v=>['standard','daybreak_blue','daybreak_red'].includes(v))
+      ||settings.model!==context.model||(settings.comp_hash??null)!==(context.comp_hash??null)
+      ||(settings.realtime_active??null)!==(context.realtime_active??null)
+      ||(settings.cyber_access_program??null)!==(context.cyber_access_program??null))
+      refuse('ORIGINAL_HISTORY_COMPACTION_RESUME_STATE_UNPROVEN',ref);
+    return {startedRecord:this.lastStartedRecord,contextRecord:this.lastContextRecord,attributionRecord:this.lastAttributionRecord};
+  }
+  opaqueCompaction(entry:any,metadata:any,checkpoint:any):boolean{
+    return closed(entry,['type','id','encrypted_content','internal_chat_message_metadata_passthrough'])
+      &&nonempty(entry.id)&&nonempty(entry.encrypted_content)
+      &&optional(entry.internal_chat_message_metadata_passthrough,v=>closed(v,['turn_id','create_time','content_item_kinds'])
+        &&optional(v.turn_id,id=>id===this.active)&&optional(v.create_time,t=>typeof t==='number'&&Number.isFinite(t))
+        &&optional(v.content_item_kinds,k=>Array.isArray(k)&&k.every((kind:any)=>typeof kind==='string')))
+      &&closed(metadata,['client_authored','mcp_attribution','compaction_model_hash'])&&metadata.client_authored!==true
+      &&Object.hasOwn(metadata,'compaction_model_hash')&&nonempty(metadata.compaction_model_hash)
+      &&metadata.compaction_model_hash===this.lastContext?.comp_hash
+      &&nonempty(checkpoint.compaction_response_id)&&this.current!==null
+      &&this.current.usageRecords.some(usage=>usage.response_id===checkpoint.compaction_response_id)
+      &&this.neutralMetadata({client_authored:metadata.client_authored,mcp_attribution:metadata.mcp_attribution});
+  }
   classify(row:any,ref:string){
     const p=row.payload;
     if(row.type==='session_meta')return;
@@ -178,7 +259,7 @@ class RecordCoverage {
           refuse('ORIGINAL_HISTORY_TURN_SETTINGS_BASELINE_INCOMPLETE',ref);
         this.turnContextBaseline={record:this.count,settingsDigest:digest(contextSettings(p))};
       }
-      return;
+      this.lastContext=p;this.lastContextRecord=this.count;return;
     }
     if(row.type==='world_state'){
       if(typeof p.full!=='boolean'||!object(p.state)||Object.keys(p).some(key=>!['full','state'].includes(key)))
@@ -204,8 +285,17 @@ class RecordCoverage {
       if(p.replacement_history_metadata!=null&&(!Array.isArray(p.replacement_history_metadata)
         ||p.replacement_history_metadata.length!==history.length))refuse('ORIGINAL_HISTORY_COMPACTION_SHAPE_INVALID',ref);
       const classes:Record<string,number>={};
-      if(this.relevant&&['guardian_history','retained_context','mcp_resource_origins','resume_metadata'].some(key=>p[key]!=null))
-        refuse('ORIGINAL_HISTORY_COMPACTION_SIDECAR_UNCLASSIFIED',ref);
+      let retainedSourceRefs:{record:number;sourceDigest:string;payloadDigest:string}[]=[];
+      let resumeSourceRefs:{startedRecord:number;contextRecord:number;attributionRecord:number|null}|null=null;
+      if(this.relevant){
+        if(p.guardian_history!=null&&(!Array.isArray(p.guardian_history)||p.guardian_history.length!==0)
+          ||p.mcp_resource_origins!=null&&(!closed(p.mcp_resource_origins,['origins','turns','current_turn_id'])
+            ||!Array.isArray(p.mcp_resource_origins.origins)||p.mcp_resource_origins.origins.length!==0
+            ||!Array.isArray(p.mcp_resource_origins.turns)||p.mcp_resource_origins.turns.length!==0
+            ||p.mcp_resource_origins.current_turn_id!=null))refuse('ORIGINAL_HISTORY_COMPACTION_SIDECAR_UNCLASSIFIED',ref);
+        if(p.retained_context!=null)retainedSourceRefs=this.retainedCheckpoint(p.retained_context,ref,classes);
+        if(p.resume_metadata!=null)resumeSourceRefs=this.resumeCheckpoint(p.resume_metadata,ref);
+      }
       if(this.relevant&&p.latest_token_usage_record!=null&&(!this.current?.usageRecords.length
         ||digest(p.latest_token_usage_record)!==digest(this.current.usageRecords.at(-1))))
         refuse('ORIGINAL_HISTORY_COMPACTION_USAGE_CHECKPOINT_UNPROVEN',ref);
@@ -218,7 +308,14 @@ class RecordCoverage {
         if(this.relevant){
           const metadata=p.replacement_history_metadata?.[index];
           if(metadata!=null&&!object(metadata))refuse('ORIGINAL_HISTORY_COMPACTION_SHAPE_INVALID',ref);
-          if(!neutralHarnessMetadata(metadata,['user_input_order']))refuse('ORIGINAL_HISTORY_REPLACEMENT_METADATA_UNCLASSIFIED',ref);
+          const original=this.priorEnvelopes.get(digest(entry));
+          // Cloned originals preserve all provenance; a shortened or rewritten copy
+          // cannot borrow a retained-source identity from another native payload.
+          const cloned=original?.supported===true&&knownHarnessMetadata(metadata)&&digest(metadata??null)===original.metadataDigest;
+          const opaque=['compaction','context_compaction'].includes(entry.type)&&this.opaqueCompaction(entry,metadata,p);
+          if(!cloned&&!opaque&&!this.neutralMetadata(metadata,['user_input_order']))
+            refuse('ORIGINAL_HISTORY_REPLACEMENT_METADATA_UNCLASSIFIED',ref);
+          if(opaque){classes.opaqueCompactionContext=(classes.opaqueCompactionContext??0)+1;continue;}
           if(entry.type==='message'&&entry.role==='user'){
             const order=metadata?.user_input_order;
             if(Number.isSafeInteger(order)&&order>=0&&this.priorAcceptedUsers.get(order)===digest(entry)){
@@ -242,7 +339,7 @@ class RecordCoverage {
         this.current.responseIds.add(p.compaction_response_id);
       }
       this.compactions.push({providerTurnId:this.active??'',record:this.count,replacementCount:history.length,
-        replacementDigest:digest({history,metadata:p.replacement_history_metadata??null}),replacementClassifications:classes,recordDigest:digest(row)});
+        replacementDigest:digest({history,metadata:p.replacement_history_metadata??null}),replacementClassifications:classes,recordDigest:digest(row),retainedSourceRefs,resumeSourceRefs});
       return;
     }
     if(row.type==='response_item'){
@@ -251,7 +348,23 @@ class RecordCoverage {
         'local_shell_call','web_search_call','image_generation_call','compaction','computer_call','computer_call_output'];
       if(!known.includes(p.type))refuse('ORIGINAL_HISTORY_UNKNOWN_RESPONSE_ITEM',ref);
       if(p.type==='message'&&!['system','developer','user','assistant'].includes(p.role))refuse('ORIGINAL_HISTORY_UNKNOWN_MESSAGE_ROLE',ref);
-      if(!this.relevant)this.priorResponseItems.add(digest(p));
+      if(!this.relevant){
+        this.priorResponseItems.add(digest(p));this.priorEnvelopes.set(digest(p),
+          {metadataDigest:digest(row.metadata??null),supported:knownHarnessMetadata(row.metadata)});
+        if(validMcpAttribution(row.metadata?.mcp_attribution))this.priorMcpAttributions.add(digest(row.metadata.mcp_attribution));
+        const source=row.metadata?.retained_source,order=row.metadata?.user_input_order;
+        if(knownHarnessMetadata(row.metadata)&&validRetainedSource(source)&&p.type==='message'&&source.id.message_id===p.id&&source.id.role===p.role
+          &&source.id.turn_id===this.active&&p.internal_chat_message_metadata_passthrough?.turn_id===this.active
+          &&Number.isSafeInteger(order)&&order>=0&&row.metadata.inherited_user_message!==true){
+          const key=digest(source),existing=this.priorRetainedSources.get(key);
+          if(existing&&(existing.payloadDigest!==digest(p)||existing.order!==order))refuse('ORIGINAL_HISTORY_RETAINED_SOURCE_IDENTITY_CONFLICT',ref);
+          const content=p.content,kinds=p.internal_chat_message_metadata_passthrough?.content_item_kinds;
+          const textDigest=Array.isArray(content)&&content.every((c:any)=>closed(c,['type','text'])
+            &&['input_text','output_text'].includes(c.type)&&typeof c.text==='string')?digest(content.map((c:any)=>c.text).join('\n')):null;
+          this.priorRetainedSources.set(key,{payloadDigest:digest(p),textDigest,phase:p.phase??null,
+            origin:p.role==='user'&&Array.isArray(kinds)&&kinds.length===1&&kinds[0]==='user.heartbeat'?'heartbeat':'user',order,record:this.count});
+        }
+      }
       if(p.type==='message'&&p.role==='user'&&row.metadata?.user_input_order!=null){
         const order=row.metadata.user_input_order;
         if(!Number.isSafeInteger(order)||order<0)refuse('ORIGINAL_HISTORY_ACCEPTANCE_ORDER_INVALID',ref);
@@ -261,7 +374,7 @@ class RecordCoverage {
         this.priorAcceptedUsers.set(order,digest(p));
       }
       if(this.relevant){
-        if(!neutralHarnessMetadata(row.metadata))refuse('ORIGINAL_HISTORY_RESPONSE_METADATA_UNCLASSIFIED',ref);
+        if(!this.neutralMetadata(row.metadata))refuse('ORIGINAL_HISTORY_RESPONSE_METADATA_UNCLASSIFIED',ref);
         if(p.type==='message'&&p.role==='user'&&generatedStaticContext(p)){
           if(this.current)this.current.generated++;return;
         }
@@ -299,7 +412,7 @@ class RecordCoverage {
         return;
       }
       if(p.type==='token_count'){
-        if(!Object.hasOwn(p,'info')||!Object.hasOwn(p,'rate_limits')||p.rate_limits!==null
+        if(!Object.hasOwn(p,'info')||!Object.hasOwn(p,'rate_limits')||!validRateLimits(p.rate_limits)
           ||Object.keys(p).some(key=>!['type','info','rate_limits'].includes(key))
           ||p.info!==null&&(!object(p.info)||!validUsage(p.info.total_token_usage)||!validUsage(p.info.last_token_usage)
             ||Object.keys(p.info).some(key=>!['total_token_usage','last_token_usage','model_context_window'].includes(key))
@@ -412,13 +525,57 @@ function validUsage(value:any):boolean{
     &&Object.keys(value).every(key=>[...required,'cache_write_input_tokens'].includes(key)
       &&Number.isSafeInteger(value[key])&&value[key]>=0);
 }
+const closed=(value:any,keys:readonly string[]):boolean=>object(value)&&Object.keys(value).every(key=>keys.includes(key));
+const uint=(value:any):boolean=>Number.isSafeInteger(value)&&value>=0;
+const optional=(value:any,check:(value:any)=>boolean)=>value==null||check(value);
+function validRateLimits(value:any):boolean{
+  if(value===null)return true;
+  const window=(v:any)=>closed(v,['used_percent','window_minutes','resets_at'])&&typeof v.used_percent==='number'
+    &&Number.isFinite(v.used_percent)&&optional(v.window_minutes,Number.isSafeInteger)&&optional(v.resets_at,Number.isSafeInteger);
+  return closed(value,['limit_id','limit_name','normal_model_slug','primary','secondary','credits','individual_limit',
+    'spend_control_reached','plan_type','rate_limit_reached_type'])
+    &&['limit_id','limit_name','normal_model_slug','plan_type'].every(key=>optional(value[key],v=>typeof v==='string'))
+    &&optional(value.primary,window)&&optional(value.secondary,window)
+    &&optional(value.spend_control_reached,v=>typeof v==='boolean')
+    &&optional(value.credits,v=>closed(v,['has_credits','unlimited','balance'])&&typeof v.has_credits==='boolean'
+      &&typeof v.unlimited==='boolean'&&optional(v.balance,b=>typeof b==='string'))
+    &&optional(value.individual_limit,v=>closed(v,['limit','used','remaining_percent','resets_at'])
+      &&typeof v.limit==='string'&&typeof v.used==='string'&&Number.isSafeInteger(v.remaining_percent)
+      &&v.remaining_percent>=-2147483648&&v.remaining_percent<=2147483647&&Number.isSafeInteger(v.resets_at))
+    &&optional(value.rate_limit_reached_type,v=>['rate_limit_reached','workspace_owner_credits_depleted',
+      'workspace_member_credits_depleted','workspace_owner_usage_limit_reached','workspace_member_usage_limit_reached'].includes(v));
+}
+function validRetainedSource(value:any):boolean{
+  return closed(value,['id','revision','complete'])&&closed(value.id,['message_id','turn_id','role'])
+    &&nonempty(value.id.message_id)&&nonempty(value.id.turn_id)&&['user','assistant'].includes(value.id.role)
+    &&nonempty(value.revision)&&typeof value.complete==='boolean';
+}
+function validMcpAttribution(value:any):boolean{
+  return closed(value,['status','sources','error_reason'])&&['none','complete'].includes(value.status)
+    &&value.error_reason==null&&(!Object.hasOwn(value,'sources')||Array.isArray(value.sources)&&value.sources.every((source:any)=>
+      closed(source,['connector_id','plugin_id','server_name','tool_name','first_turn_id'])
+      &&['server_name','tool_name','first_turn_id'].every(key=>nonempty(source[key]))
+      &&['connector_id','plugin_id'].every(key=>optional(source[key],nonempty))))
+    &&(value.status!=='none'||value.sources==null||value.sources.length===0);
+}
+function knownHarnessMetadata(value:any):boolean{
+  if(value==null)return true;
+  if(!object(value))return false;
+  const {retained_source,user_input_order,mcp_attribution,...rest}=value;
+  return neutralHarnessMetadata(rest)&&optional(retained_source,validRetainedSource)
+    &&optional(user_input_order,uint)&&optional(mcp_attribution,validMcpAttribution);
+}
 
 function neutralHarnessMetadata(metadata:any,allowed:readonly string[]=[]):boolean{
   if(metadata==null)return true;
   if(!object(metadata))return false;
-  return Object.entries(metadata).every(([key,value])=>allowed.includes(key)||value==null
-    ||['client_authored','harness_authored_configuration','guardian_source_order_guidance'].includes(key)&&value===false
-    ||['guardian_sources','guardian_review_ids'].includes(key)&&Array.isArray(value)&&value.length===0);
+  const keys=['guardian_sources','guardian_review_ids','guardian_source_order_guidance','guardian_retained_omissions',
+    'retained_source','client_authored','fallback_token_limit_override','delivered_assistant_message',
+    'harness_authored_configuration','compaction_model_hash','user_input_order','compaction_output',
+    'inherited_user_message','mcp_attribution','sender_user_messages'];
+  return Object.entries(metadata).every(([key,value])=>keys.includes(key)&&(allowed.includes(key)&&optional(value,uint)||value==null
+    ||['client_authored','harness_authored_configuration','guardian_source_order_guidance','compaction_output','inherited_user_message'].includes(key)&&value===false
+    ||['guardian_sources','guardian_review_ids'].includes(key)&&Array.isArray(value)&&value.length===0));
 }
 
 /** The caller supplies its actual host client and source binding. This performs

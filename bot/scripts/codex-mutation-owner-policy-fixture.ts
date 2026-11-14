@@ -5,6 +5,8 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION} from '../src/test-authorizations';
 import {createFixtureOriginalHistory} from './codex-original-history-fixture-helper';
+import {fixtureColdConstruction} from './codex-cold-construction-fixture-helper';
+import {validateCodexColdResume} from '../src/codex-cold-construction';
 
 const scratch=mkdtempSync(join(tmpdir(),'codex-mutation-owner-policy-'));
 process.env.CONCIERGE_STATE_DIR=scratch;
@@ -76,9 +78,11 @@ async function seed(){
   const fenceId=`owned-fence-${suffix}`,runId=nativeRunId(turnId);
   assert.equal(fences.acquireCodexThreadMutationFence(db,{threadId,fenceId,acceptedInputId:report.id,runId,
     dispatchAttempt:2,bindingDigest:acceptedBindingSnapshotDigest(inspection.identity.binding),nowMs:1}).acquired,true);
+  const coldOwner={threadId,fenceId,acceptedInputId:report.id,runId,dispatchAttempt:2,bindingDigest:acceptedBindingSnapshotDigest(inspection.identity.binding)};
+  const construction=await fixtureColdConstruction({db,owner:coldOwner,binding:inspection.identity.binding,sourcePath:history.sourcePath});
   db.query(`INSERT INTO codex_unacknowledged_recoveries(accepted_input_id,request_id,turn_id,provider_thread_id,
     proof_json,action_id,source_input_id,source_run_id,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?)`)
-    .run(report.id,requestId,turnId,threadId,JSON.stringify(proof),`reserve-${suffix}`,source.id,nativeRunId(sourceTurn),1);
+    .run(report.id,requestId,turnId,threadId,JSON.stringify({...proof,coldResume:{construction}}),`reserve-${suffix}`,source.id,nativeRunId(sourceTurn),1);
   db.query("UPDATE turns SET status='queued',provider_turn_id=NULL,outbound_text=NULL,reasoning_effort='medium' WHERE id=?").run(turnId);
   const granted=authorizations.grantCodexRecoveryAuthorization(db,{acceptedInputId:report.id,fenceId,nowMs:2});
   assert.equal(granted.allowed,true,JSON.stringify(granted));if(!granted.allowed||!('authorizationId'in granted))throw new Error('fixture authorization missing');
@@ -93,14 +97,22 @@ async function seed(){
     clientUserMessageId:`slack-concierge:turn:${turnId}:attempt:2`};
   db.query('UPDATE codex_unacknowledged_recoveries SET additional_dispatch_attempt=2 WHERE accepted_input_id=?').run(report.id);
   db.query('UPDATE turns SET provider_admission_intended_at=CURRENT_TIMESTAMP WHERE id=?').run(turnId);
+  const resumeParams={threadId,cwd:'/fixture',model:'gpt-6-astra',excludeTurns:true,config:{model_reasoning_effort:'medium',features:{hooks:true}}};
+  const recaptured=await fixtureColdConstruction({db,owner:coldOwner,binding:inspection.identity.binding,sourcePath:history.sourcePath});
+  assert.equal(authorizations.retainCodexRecoveryColdInputs(db,{authorizationId,witness:recaptured,paramsDigest:acceptedBindingSnapshotDigest(resumeParams),nowMs:3}).allowed,true);
   const resumeChannel=mediated(`owned-resume-${suffix}`);
-  await resumeChannel.channel.forward({id:`owned-resume-${suffix}`,method:'thread/resume',params:{threadId,model:'gpt-6-astra',
-    excludeTurns:true,config:{model_reasoning_effort:'medium'},__conciergeRecovery:{authorizationId,capability,preparedPromptDigest}}});
+  await resumeChannel.channel.forward({id:`owned-resume-${suffix}`,method:'thread/resume',params:{...resumeParams,
+    __conciergeRecovery:{authorizationId,capability,preparedPromptDigest}}});
   assert.equal(resumeChannel.sent.length,1,JSON.stringify(resumeChannel.refused));
   const resumeIntent=db.query("SELECT * FROM codex_mutation_intents WHERE thread_id=? AND method='thread/resume'").get(threadId) as any;
   assert.ok(resumeIntent);
   history.appendResumeSettings();
-  await resumeChannel.channel.response({id:`owned-resume-${suffix}`,result:{thread:{id:threadId},model:'gpt-6-astra',reasoningEffort:'medium'}});
+  const responseResult={thread:{id:threadId,cwd:'/fixture',path:history.sourcePath,sessionId:threadId,historyMode:'legacy'},
+    model:'gpt-6-astra',reasoningEffort:'medium'};
+  await resumeChannel.channel.response({id:`owned-resume-${suffix}`,result:responseResult});
+  const validated=validateCodexColdResume({db,authorizationId,intentId:resumeIntent.intent_id,witness:recaptured,params:resumeParams,responseResult});
+  assert.equal(validated.allowed,true,JSON.stringify(validated));if(!validated.allowed)throw new Error('fixture cold construction failed');
+  assert.equal(authorizations.retainCodexRecoveryColdConstruction(db,{authorizationId,receipt:validated.receipt,nowMs:4}).allowed,true);
   const checkpoint=await history.refreshAfterResume(db,resumeIntent.intent_id,resumeIntent.permit_id);
   const saved=authorizations.retainCodexRecoverySourceCheckpoint(db,{authorizationId,result:checkpoint,nowMs:4});
   assert.equal(saved.allowed,true,JSON.stringify(saved));
@@ -152,6 +164,11 @@ async function runNonAstraModelHook(target:any){
 }
 
 try {
+  const intentCount=(db.query('SELECT COUNT(*) AS n FROM codex_mutation_intents').get() as any).n;
+  assert.equal(codexMutationGate({phase:'prepare',method:fences.CODEX_MANAGED_HOOK_CONFIG_METHOD}).reason,
+    'managed_hook_config_requires_owned_installer');
+  assert.equal((db.query('SELECT COUNT(*) AS n FROM codex_mutation_intents').get() as any).n,intentCount,
+    'generic native transport cannot impersonate the source-owned hook installer');
   // Original live dispatcher: recovery authority rides privately on the mutation,
   // is stripped before native send, and the channel retains the owner's returned ID
   // for the exact response receipt.

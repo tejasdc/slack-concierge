@@ -1,5 +1,45 @@
 # Deployment and autonomous repair
 
+## Codex first protection and rollback compatibility
+
+The current source candidate refuses the first protected Codex recovery or managed
+hook installation with `FIRST_PROTECTION_WRITER_EXCLUSION_UNPROVEN`. No existing
+host authority proves that already-running older application requests and helpers
+have stopped writing. A stopped coordinator, deployment drain, cold native thread
+or compatible artifact does not establish that cut. This remains an explicit
+activation gap, not an operator override or a caller-supplied readiness flag.
+
+The managed installer preflight is read-only and runs before its SQLite import or
+child starts. Ordinary deployment runs the same preflight before claiming/draining,
+selecting a pointer or stopping the service. A candidate-owned compatibility check
+also refuses before an older controller can activate it and reach the later installer.
+These refusals publish no requirement and create no protected database authority;
+they do not strand a previously eligible rollback after stopping the service.
+
+For a future source-proven first transition, the existing file compatibility model
+has a durable, monotonic requirement at
+`codex-native-mutation/required-release-protocols/v1.json` under the actual owner state
+directory. Publication is file/directory-fsynced and must precede protected authority.
+It is never automatically removed after Stop, terminal reconciliation or rollback.
+The publisher alone proves no writer exclusion. Its crash-retention fixture is
+separate from operational first-protection eligibility.
+
+Once retained, activation and application rollback require the sealed application
+capability; control selection requires the sealed controller capability. A hybrid
+copies each from its own source commit, so a newer controller cannot certify an older
+application. Full restore and explicit full control recovery preflight both before
+changing pointers or launching recovery work; promotion checks before changing LKG.
+The sealed stable application launcher checks the actual application/controller before
+exec. A compatible controller may still run repair to select a compatible application.
+Direct checkout startup, including Mac launchd, refuses a retained requirement without
+exact sealed application/control proof. No release compatibility check opens SQLite.
+
+`bot/scripts/codex-mutation-release-compatibility-fixture.ts` exercises actual disposable
+sealed artifacts/startup, old application rollback, independent hybrid origins, retained
+publication, source checkout refusal and read-only first-protection/deploy/installer
+refusal with an older helper still running. These are local source contracts, not
+installed or live first-transition evidence.
+
 `origin/main` is the desired deployment state. Code moves through GitHub; never
 copy or edit project files on the service peer. A signed GitHub `push` webhook
 for `tejasdc/slack-concierge` `main` advances one durable desired-state record,
@@ -1621,6 +1661,14 @@ shared stack's current top, which can belong to another worktree.
   deleting this repository's main. Source: a session amended a pushed commit and force-pushed it
   on 2026-09-23, and nine deployments chased the vanished commit; Tejas: "Why are we like, you
   know, force pushing … add changes and just, like, not remove changes."
+  Managed hook installation now obtains a durable global configuration intent
+  before any installer writes. Normal server deployment invokes it after the
+  offline additive migration and before restarting the coordinator. It uses the
+  local ledger without a live-owner HTTP dependency; an active recovery fence or
+  an uncertain earlier configuration write holds installation. Failure does not
+  discard that intent or rerun the body automatically. The
+  [mutation contract](../architecture/CODEX-MUTATION-FENCE.md) owns process coverage,
+  cold-construction exclusion and reconciliation evidence.
   The same pre-command hook, when it refuses nothing, names a website's runbook to an agent about
   to open that site in a browser (`agent-browser open|goto|navigate`, or an MCP navigate call):
   `bot/src/site-runbook-notice.ts` asks the `website-runbooks` skill's `site-runbook --json`

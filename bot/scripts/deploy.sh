@@ -1113,7 +1113,18 @@ claim_run_and_enable_recovery() {
   recover_interrupted_candidate_if_needed
 }
 
+codex_first_protection_preflight() {
+  local checker="$CONTROL_DIR/codex-mutation-release-check.js"
+  [ -f "$checker" ] || checker="$CONTROL_DIR/codex-mutation-release-check.ts"
+  [ -f "$checker" ] || { echo 'FIRST_PROTECTION_WRITER_EXCLUSION_UNPROVEN' >&2; return 75; }
+  "$BUN_BIN" run "$checker" first-protection-preflight
+}
+
 deploy() {
+  # This install writes managed Codex settings later while Concierge is stopped.
+  # Missing first-protection authority must refuse before draining or selecting
+  # a candidate, so publishing the later compatibility requirement cannot strand LKG.
+  codex_first_protection_preflight || return $?
   trap wake_deployment_waiter USR1
   if [ -n "$DEPLOY_RUN_ID" ]; then
     claim_run_and_enable_recovery
@@ -1239,9 +1250,6 @@ deploy() {
     # The running control release may not know a credential introduced by this release.
     CONTROL_CONFIG_DIR="$CANDIDATE_ARTIFACT_PATH/control/config"
     CAPTURE_INSTALL_SCRIPT="$CANDIDATE_ARTIFACT_PATH/control/install-capture-ingress.js"
-    DEPLOY_FAILURE_REASON="The installed release hooks could not be enabled."
-    /usr/bin/bash "$CANDIDATE_ARTIFACT_PATH/control/install-codex-stop-hook.sh" \
-      --bun "$BUN_BIN" --release "${CONCIERGE_DEPLOYMENT_RELEASE_ROOT:-/var/lib/slack-concierge-deployment}/current" --state "$STATE_DIR"
   fi
 
   echo "=== install router action helper ==="
@@ -1326,6 +1334,13 @@ deploy() {
       "$CANDIDATE_ARTIFACT_PATH/control/migrate-deployment-repair.js" --schema-only \
       ${MIGRATION_BACKUP_PATH:+--backup-path "$MIGRATION_BACKUP_PATH"}
     MIGRATION_DONE=1
+  fi
+  if [ -n "$DEPLOY_RUN_ID" ]; then
+    # The managed hook installer takes its global config intent from the migrated common-owner
+    # ledger. Run only while the service is stopped and after the candidate schema exists.
+    DEPLOY_FAILURE_REASON="The installed release hooks could not be enabled under the managed config intent."
+    /usr/bin/bash "$CANDIDATE_ARTIFACT_PATH/control/install-codex-stop-hook.sh" \
+      --bun "$BUN_BIN" --release "${CONCIERGE_DEPLOYMENT_RELEASE_ROOT:-/var/lib/slack-concierge-deployment}/current" --state "$STATE_DIR"
   fi
   DEPLOY_FAILURE_REASON="The migrated coordinator could not start or adopt surviving agents."
   local candidate_failure="" candidate_failure_class=""

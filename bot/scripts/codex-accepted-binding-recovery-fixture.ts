@@ -5,6 +5,7 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION} from '../src/test-authorizations';
 import {createFixtureOriginalHistory} from './codex-original-history-fixture-helper';
+import {fixtureColdConstruction} from './codex-cold-construction-fixture-helper';
 const scratch=mkdtempSync(join(tmpdir(),'concierge-binding-recovery-composed-'));
 process.env.CONCIERGE_STATE_DIR=join(scratch,'state');process.env.CONCIERGE_CAPTURE_STATE_DIR=join(scratch,'capture');
 const releaseRoot=join(scratch,'sealed-release');process.env.CONCIERGE_DEPLOYMENT_RELEASE_ROOT=releaseRoot;
@@ -98,7 +99,13 @@ function seed(){
       return createFixtureOriginalHistory({root:sourceRoot,binding:current.snapshot.binding,
         selectedInputId:report.id,nativeProof:projected});
     })();
-    return {proven:true as const,...(await originalSource).originalHistory};
+    const original=await originalSource;
+    const current=inspectAcceptedBindingContinuation({sessionId:session.id,inputId:report.id,requestId,includeSnapshot:true});
+    if(!current.proven||!('snapshot'in current)||!current.snapshot)throw new Error('Fixture cold binding changed.');
+    const owner=fences.getCodexThreadMutationFence(db,threadId)!;
+    const coldConstruction=await fixtureColdConstruction({db,owner,binding:current.snapshot.binding,
+      sourcePath:original.originalHistory.custody.path});
+    return {proven:true as const,...original.originalHistory,coldConstruction};
   };
   const recovery=(nativeClient=client(),extra:any={})=>recoverAcceptedBindingCodex({sessionId:session.id,inputId:report.id,requestId,
     actionId:`recover:${suffix}`,sourceInputId:source.id,sourceRunId:nativeRunId(sourceTurn),socketPath,client:nativeClient,
@@ -113,9 +120,8 @@ function seed(){
 try {
   const activationBefore=db.query('SELECT COUNT(*) AS count FROM codex_unacknowledged_recoveries').get() as any;
   assert.deepEqual(activation.codexContinuationActivationReadiness().reasons.map(reason=>reason.code),
-    ['LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN','COLD_RESUME_HOOK_CONFIGURATION_UNPROVEN',
-      'NATIVE_ORIGINAL_EFFECT_HISTORY_COVERAGE_UNPROVEN']);
-  assert.throws(()=>activation.requireCodexContinuationActivation(),/LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN.*COLD_RESUME_HOOK_CONFIGURATION_UNPROVEN/);
+    ['LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN','FIRST_PROTECTION_WRITER_EXCLUSION_UNPROVEN']);
+  assert.throws(()=>activation.requireCodexContinuationActivation(),/LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN/);
   assert.deepEqual(db.query('SELECT COUNT(*) AS count FROM codex_unacknowledged_recoveries').get(),activationBefore,
     'default production activation refusal creates no reservation');
   const first=seed(),before=first.retained();

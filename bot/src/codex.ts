@@ -442,7 +442,7 @@ export interface RunCodexTurnInput {
   sessionUUID: string | null;
   model?: string;
   reasoning_effort?: string;
-  codexRecovery?: {authorizationId:string;capability?:string;model:string;effort:string;preparedPromptDigest?:string;beforeStart?:()=>Promise<void>};
+  codexRecovery?: {authorizationId:string;capability?:string;model:string;effort:string;preparedPromptDigest?:string;beforeResume?:(params:Record<string,unknown>)=>Promise<void>;beforeStart?:(input:{params:Record<string,unknown>;responseResult:unknown})=>Promise<void>};
   applicationInstructions?: string;
   clientUserMessageId?: string;
   environment?: Record<string, string>;
@@ -532,7 +532,7 @@ async function codexThreadParameters(
     } : {
       sandbox: "danger-full-access",
       config: { agents: { default_subagent_model: "gpt-6-luna", default_subagent_reasoning_effort: "medium" },
-        ...(input.codexRecovery?{model_reasoning_effort:input.codexRecovery.effort}:{}),
+        ...(input.codexRecovery?{model_reasoning_effort:input.codexRecovery.effort,features:{hooks:true}}:{}),
         ...(Object.keys(shellEnvironment).length > 0
           ? { shell_environment_policy: { inherit: "all", set: shellEnvironment } } : {}) },
     }),
@@ -1700,6 +1700,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     } else {
     connectionGeneration = await connectBeforeSubmission();
     let threadResponse: any;
+    let recoveryResumeParams:Record<string,unknown>|undefined;
     for (;;) try {
     if (interruptionReason) throw interruptionReason;
     const threadParams = await codexThreadParameters(input, request, threadEnvironment);
@@ -1710,8 +1711,15 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       // deadline and asking again only stacked more loads and ended in a refused turn, so the
       // turn waits for this answer while the connection lives; Stop ends it, and a lost
       // connection is waited out and the answer asked for again.
+      const resumeParams={threadId:sessionUUID,...threadParams,excludeTurns:true};
+      if(input.codexRecovery){
+        if(!sessionUUID||!input.codexRecovery.beforeResume)throw new Error("Exact recovery cold-construction reader is unavailable.");
+        await input.codexRecovery.beforeResume(resumeParams);
+        recoveryResumeParams=resumeParams;
+        if(interruptionReason)throw interruptionReason;
+      }
       threadResponse = sessionUUID
-        ? await resumeUntilAnswered(sessionUUID, { threadId: sessionUUID, ...threadParams, excludeTurns: true })
+        ? await resumeUntilAnswered(sessionUUID, resumeParams)
         : await request("thread/start", threadParams);
       break;
     } catch (error) {
@@ -1746,7 +1754,8 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
 
     if(input.codexRecovery){
       if(!input.codexRecovery.beforeStart)throw new Error('Exact recovery original-source checkpoint reader is unavailable.');
-      await input.codexRecovery.beforeStart();
+      if(!recoveryResumeParams)throw new Error("Exact recovery resume parameters are missing.");
+      await input.codexRecovery.beforeStart({params:recoveryResumeParams,responseResult:threadResponse});
       if(interruptionReason)throw interruptionReason;
     }
 

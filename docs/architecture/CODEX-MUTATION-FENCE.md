@@ -1,14 +1,26 @@
 # Managed Codex mutation custody
 
 This describes the source candidate, not an installed release. Accepted-binding
-continuation activation is **held**. The source now has a private original-history
-reader and owned-resume checkpoint path, exercised against disposable state and an
-App Server stand-in. The exact target has not been observed, so readiness still
-refuses `LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN`,
-`COLD_RESUME_HOOK_CONFIGURATION_UNPROVEN` and
-`NATIVE_ORIGINAL_EFFECT_HISTORY_COVERAGE_UNPROVEN`. The legacy receiver cut and
-cold hook configuration are independent unresolved holds; local source fixtures
-remove none of them.
+continuation activation is **held** on `LEGACY_NATIVE_ISSUED_SEND_DRAIN_UNPROVEN`
+and `FIRST_PROTECTION_WRITER_EXCLUSION_UNPROVEN`.
+The source has a private original-history reader, configuration-writer exclusion
+and an actual cold-resume construction binding, exercised against disposable
+state and an App Server stand-in. Original history and cold construction are
+per-operation evidence checks with precise refusals when their predicates fail.
+No current target eligibility, installed construction, invocation, delivery or
+useful work is claimed. Local fixtures cannot supply the legacy admission cut.
+
+The existing file-only release compatibility mechanism retains a monotonic
+requirement before protected authority. Activation, rollback, startup and control
+recovery require compatible sealed application and controller capabilities;
+modern control cannot certify an old application in a hybrid. The requirement is
+never automatically removed on idle, terminality or rollback. This changes old-LKG
+eligibility: incompatible artifacts refuse. Requirement publication is not atomic
+with SQLite and is not proof that old requests/helpers/configuration writers have
+been excluded. That first transition has no supported host witness here, so the
+operational path refuses precisely; early deployment preflight refuses before
+stopping the existing service. No compatible live rollback/recovery artifact has
+been selected or installed by this implementation lane.
 
 ## Common forwarding boundary
 
@@ -197,8 +209,8 @@ Native 0.162 hook timeout/error may fail open. The hook is an additional exact-i
 check and diagnostic; pre-forward authorization is independently required.
 On-disk registration and helper pinning do not prove warm runtime activation.
 The internal native proof refuses warm state without activation evidence; current
-cold reconstruction/config proof is separately missing. Historical `notLoaded`
-is not current eligibility.
+cold reconstruction/config evidence must be derived for the selected operation.
+Historical `notLoaded` is not current eligibility.
 
 Pinned native cold construction calls `Hooks::new` before `SessionConfigured` and
 waits for that event before returning a successful resume. This permits proof by
@@ -207,14 +219,40 @@ required managed handler/configuration are bound to that success. No new native
 hook acknowledgement is intrinsically required. Separate cwd config/hooks reads
 alone do not bind those inputs; a disabled hook feature even clears required-hook
 load errors, and a warm resume reuses its existing runtime. The current candidate
-has not established that exact construction binding and retains its refusal.
+now derives that binding as follows. The private history worker reads the exact
+unloaded thread and exhausted loaded-thread listing, managed requirements and cwd
+configuration twice under the exact fence. It requires the pinned required
+managed handler and hooks feature constraint. The native configuration read
+omits some stable features: absence of a hooks echo is not false. Actual resume
+parameters independently require exactly `features.hooks=true` and Medium;
+explicit contradictory configuration refuses. Immediately before forwarding the
+worker recaptures the same target/configuration basis, allowing unrelated loaded
+threads to change. The owner retains an immutable hash-only input fact bound to
+the actual resume parameters. Raw settings remain transient.
+
+The channel hashes the complete actual result before projecting safe response
+fields. After resume the worker matches that hash to the retained exact intent,
+validates returned thread/cwd/model/effort/source identities, and binds successful
+cold construction through `SessionConfigured` to this resume. The owner retains an
+immutable construction receipt and original-prefix settings checkpoint. Both are
+required before the single actual start. Missing response, construction,
+checkpoint or invocation cannot authorize another native attempt.
 The supported installer writes the managed requirements and hook wrappers before
 service restart. That is an actual configuration producer, not an administrator
 bypass to dismiss. The requirements API has no generation token binding its read
 to the later native config load. Construction proof therefore needs the existing
-configuration writer brought under common-owner exclusion or another supported
-content-bound config witness. Neither a generic read nor a caller boolean lifts
-the hold.
+configuration writer brought under common-owner exclusion. Every supported hook
+installer entry delegates to a supervisor that issues a global configuration
+intent in the existing mutation ledger before its writing body starts. Active
+fences and stopped fences with unresolved issued work conflict with that intent;
+the intent blocks new mutations and reservations until its exact child completes
+successfully. Failure/death does not release it in a trap or by expiry. Ordinary
+unrelated continuing turns retain their existing custody. The scanner separately
+refuses uncovered old installer and pending supported deployment producer
+lifetimes; absence of a current writing child is insufficient. Server hook
+installation follows offline additive migration while the service is stopped,
+avoiding a new live-owner control dependency. Mac and host callers retain their
+entry arguments. A generic read or caller boolean cannot supply this exclusion.
 
 ## Stop and progress
 

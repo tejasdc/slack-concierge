@@ -5,6 +5,9 @@ import {getCodexThreadMutationFence,grantCodexMutationPermit,consumeCodexMutatio
   recordCodexMutationResponse,reconcileCodexMutationIntent,stopCodexThreadMutationFence} from './codex-mutation-fence';
 import {EARLIER_TURN_BLOCKS_SQL,queuePrecedesSql} from './state';
 import {revalidateCodexOriginalHistorySource} from './codex-original-history-coverage';
+import {compareCodexColdConstructionWitnesses,validateCodexColdResumeParameters,validateCodexColdResume,
+  isCodexColdConstructionWitness,type CodexColdConstructionWitness} from './codex-cold-construction';
+export type CodexRecoveryColdConstructionReceipt=Extract<ReturnType<typeof validateCodexColdResume>,{allowed:true}>['receipt'];
 
 const parse=(json:string|null):any=>{try{return json===null?null:JSON.parse(json);}catch{return null;}};
 const hash=(value:string)=>createHash('sha256').update(value,'utf8').digest('hex');
@@ -54,6 +57,22 @@ export function initializeCodexRecoveryAuthorizationSchema(db:Database){
       BEGIN SELECT RAISE(ABORT,'recovery source checkpoint is immutable'); END;
     CREATE TRIGGER IF NOT EXISTS codex_recovery_source_checkpoint_no_delete BEFORE DELETE ON codex_recovery_source_checkpoints
       BEGIN SELECT RAISE(ABORT,'recovery source checkpoint is immutable'); END;
+    CREATE TABLE IF NOT EXISTS codex_recovery_cold_inputs (
+      authorization_id TEXT PRIMARY KEY,witness_json TEXT NOT NULL,params_digest TEXT NOT NULL,
+      inputs_digest TEXT NOT NULL,created_at_ms INTEGER NOT NULL,
+      FOREIGN KEY(authorization_id) REFERENCES codex_recovery_dispatch_authorizations(authorization_id));
+    CREATE TRIGGER IF NOT EXISTS codex_recovery_cold_inputs_no_update BEFORE UPDATE ON codex_recovery_cold_inputs
+      BEGIN SELECT RAISE(ABORT,'recovery cold inputs are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS codex_recovery_cold_inputs_no_delete BEFORE DELETE ON codex_recovery_cold_inputs
+      BEGIN SELECT RAISE(ABORT,'recovery cold inputs are immutable'); END;
+    CREATE TABLE IF NOT EXISTS codex_recovery_cold_constructions (
+      authorization_id TEXT PRIMARY KEY,receipt_json TEXT NOT NULL,receipt_digest TEXT NOT NULL,
+      created_at_ms INTEGER NOT NULL,
+      FOREIGN KEY(authorization_id) REFERENCES codex_recovery_dispatch_authorizations(authorization_id));
+    CREATE TRIGGER IF NOT EXISTS codex_recovery_cold_construction_no_update BEFORE UPDATE ON codex_recovery_cold_constructions
+      BEGIN SELECT RAISE(ABORT,'recovery cold construction is immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS codex_recovery_cold_construction_no_delete BEFORE DELETE ON codex_recovery_cold_constructions
+      BEGIN SELECT RAISE(ABORT,'recovery cold construction is immutable'); END;
     CREATE TRIGGER IF NOT EXISTS codex_recovery_audit_no_update BEFORE UPDATE ON codex_recovery_authorization_audit
       BEGIN SELECT RAISE(ABORT,'recovery authorization audit is immutable'); END;
     CREATE TRIGGER IF NOT EXISTS codex_recovery_audit_no_delete BEFORE DELETE ON codex_recovery_authorization_audit
@@ -256,6 +275,80 @@ export function retainCodexRecoverySourceCheckpoint(db:Database,input:{authoriza
     return {allowed:true as const,checkpointDigest,duplicate:!!prior};
   });
 }
+function coldWitness(db:Database,row:any,witness:any):CodexColdConstructionWitness{
+  requireProof(isCodexColdConstructionWitness(witness),'COLD_CONSTRUCTION_WITNESS_INVALID');
+  const reservation=db.query('SELECT proof_json FROM codex_unacknowledged_recoveries WHERE accepted_input_id=?').get(row.accepted_input_id) as any;
+  const expected=parse(reservation?.proof_json)?.coldResume?.construction,binding=parse(row.binding_json);
+  requireProof(expected,'COLD_CONSTRUCTION_RESERVATION_WITNESS_MISSING');
+  const compared=compareCodexColdConstructionWitnesses(expected,witness);
+  requireProof(compared.same,compared.same?'COLD_CONFIGURATION_OR_THREAD_CHANGED':compared.reason);
+  requireProof(witness.threadId===row.thread_id&&witness.fenceId===row.fence_id
+    &&witness.acceptedInputId===row.accepted_input_id&&witness.runId===row.run_id&&witness.dispatchAttempt===row.dispatch_attempt
+    &&witness.bindingDigest===digest(binding)&&witness.model===binding.model&&witness.effort===binding.effort,
+    'COLD_RECOVERY_OWNER_BINDING_CHANGED');
+  return witness;
+}
+function retainedColdInputs(db:Database,row:any,params?:any){
+  const saved=db.query('SELECT * FROM codex_recovery_cold_inputs WHERE authorization_id=?').get(row.authorization_id) as any;
+  requireProof(saved,'COLD_RESUME_INPUTS_NOT_RETAINED');
+  const witness=coldWitness(db,row,parse(saved.witness_json));
+  requireProof(isDigest(saved.params_digest)&&saved.inputs_digest===digest({authorizationId:row.authorization_id,witness,paramsDigest:saved.params_digest}),
+    'COLD_RESUME_INPUTS_CONFLICT');
+  if(params!==undefined){
+    const checked=validateCodexColdResumeParameters({witness,params});
+    requireProof(checked.allowed,checked.allowed?'COLD_RESUME_PARAMETERS_DO_NOT_MATCH_WITNESS':checked.reason);
+    requireProof(digest(params)===saved.params_digest,'COLD_RESUME_PARAMETERS_DO_NOT_MATCH_WITNESS');
+  }
+  return {saved,witness};
+}
+function checkedConstructionReceipt(db:Database,row:any,receipt:any){
+  const {saved,witness}=retainedColdInputs(db,row);
+  const intent=db.query('SELECT * FROM codex_mutation_intents WHERE permit_id=?').get(row.resume_permit_id) as any;
+  requireProof(intent?.method==='thread/resume'&&intent.state==='reconciled_applied'&&intent.response_kind==='accepted'
+    &&intent.fence_id===row.fence_id&&intent.thread_id===row.thread_id&&intent.accepted_input_id===row.accepted_input_id
+    &&intent.run_id===row.run_id&&intent.dispatch_attempt===row.dispatch_attempt&&intent.params_digest===saved.params_digest
+    &&isDigest(intent.terminal_evidence_digest),'COLD_RESUME_INTENT_NOT_ACCEPTED');
+  const basis={policy:'codex_cold_resume_accepted_v1',threadId:row.thread_id,fenceId:row.fence_id,
+    authorizationId:row.authorization_id,intentId:intent.intent_id,bindingDigest:witness.bindingDigest,
+    coldWitnessDigest:witness.witnessDigest,paramsDigest:saved.params_digest,responseDigest:intent.terminal_evidence_digest};
+  const expected={...basis,receiptDigest:digest(basis)};
+  requireProof(digest(receipt)===digest(expected),'COLD_RESUME_CONSTRUCTION_RECEIPT_CONFLICT');
+  return expected;
+}
+function requireColdConstruction(db:Database,row:any){
+  const saved=db.query('SELECT * FROM codex_recovery_cold_constructions WHERE authorization_id=?').get(row.authorization_id) as any;
+  requireProof(saved,'COLD_RESUME_CONSTRUCTION_RECEIPT_MISSING');
+  const receipt=checkedConstructionReceipt(db,row,parse(saved.receipt_json));
+  requireProof(saved.receipt_digest===receipt.receiptDigest,'COLD_RESUME_CONSTRUCTION_RECEIPT_CONFLICT');
+}
+/** Private worker read facts, not raw configuration or a caller readiness flag. */
+export function retainCodexRecoveryColdInputs(db:Database,input:{authorizationId:string;witness:CodexColdConstructionWitness;
+  paramsDigest:string;nowMs:number}){
+  return operation(db,input.authorizationId,'cold-inputs',input.nowMs,row=>{
+    current(db,row);running(db,row);requireCurrentOriginalSource(db,row);
+    const witness=coldWitness(db,row,input.witness);requireProof(isDigest(input.paramsDigest),'COLD_RESUME_PARAMETERS_DIGEST_INVALID');
+    const inputsDigest=digest({authorizationId:row.authorization_id,witness,paramsDigest:input.paramsDigest});
+    const prior=db.query('SELECT * FROM codex_recovery_cold_inputs WHERE authorization_id=?').get(row.authorization_id) as any;
+    requireProof(!prior||prior.inputs_digest===inputsDigest,'COLD_RESUME_INPUTS_CONFLICT');
+    requireProof(!row.resume_permit_id||!!prior,'COLD_RESUME_INPUTS_ALREADY_USED');
+    if(!prior)db.query(`INSERT INTO codex_recovery_cold_inputs(authorization_id,witness_json,params_digest,inputs_digest,created_at_ms)
+      VALUES(?,?,?,?,?)`).run(row.authorization_id,JSON.stringify(witness),input.paramsDigest,inputsDigest,input.nowMs);
+    return {allowed:true as const,inputsDigest,duplicate:!!prior};
+  });
+}
+/** Retains only the validated receipt's fixed hash/identity fields. */
+export function retainCodexRecoveryColdConstruction(db:Database,input:{authorizationId:string;
+  receipt:CodexRecoveryColdConstructionReceipt;nowMs:number}){
+  return operation(db,input.authorizationId,'cold-construction',input.nowMs,row=>{
+    current(db,row);running(db,row);
+    const receipt=checkedConstructionReceipt(db,row,input.receipt);
+    const prior=db.query('SELECT * FROM codex_recovery_cold_constructions WHERE authorization_id=?').get(row.authorization_id) as any;
+    requireProof(!prior||prior.receipt_digest===receipt.receiptDigest,'COLD_RESUME_CONSTRUCTION_RECEIPT_CONFLICT');
+    if(!prior)db.query(`INSERT INTO codex_recovery_cold_constructions(authorization_id,receipt_json,receipt_digest,created_at_ms)
+      VALUES(?,?,?,?)`).run(row.authorization_id,JSON.stringify(receipt),receipt.receiptDigest,input.nowMs);
+    return {allowed:true as const,receiptDigest:receipt.receiptDigest,duplicate:!!prior};
+  });
+}
 function authenticate(row:any,capability:string){
   const actual=typeof capability==='string'?hash(capability):'';
   requireProof(isDigest(row.capability_hash)&&isDigest(actual)
@@ -344,7 +437,9 @@ export function prepareCodexRecoveryMutation(db:Database,input:{authorizationId:
       const allowedKeys=['threadId','cwd','runtimeWorkspaceRoots','approvalPolicy','sandbox','config','model','excludeTurns'];
       const config=input.params.config;
       requireProof(input.params.excludeTurns===true&&Object.keys(input.params).every(key=>allowedKeys.includes(key))
-        &&config&&Object.keys(config).every(key=>['agents','shell_environment_policy','model_reasoning_effort'].includes(key))
+        &&config&&Object.keys(config).every(key=>['agents','shell_environment_policy','model_reasoning_effort','features'].includes(key))
+        &&config.features&&typeof config.features==='object'&&!Array.isArray(config.features)
+        &&Object.keys(config.features).length===1&&config.features.hooks===true
         &&config.model_reasoning_effort===binding.effort,'RECOVERY_PREPARATION_SHAPE_INVALID');
       if(config.agents)requireProof(Object.keys(config.agents).every(key=>['default_subagent_model','default_subagent_reasoning_effort'].includes(key))
         &&config.agents.default_subagent_model==='gpt-6-luna'&&config.agents.default_subagent_reasoning_effort==='medium','RECOVERY_PREPARATION_AGENT_CONFIG_CHANGED');
@@ -353,7 +448,9 @@ export function prepareCodexRecoveryMutation(db:Database,input:{authorizationId:
         &&config.shell_environment_policy.set&&Object.values(config.shell_environment_policy.set).every(value=>typeof value==='string'),
         'RECOVERY_PREPARATION_ENVIRONMENT_SHAPE_INVALID');
       requireProof(!row.start_permit_id&&(!row.resume_permit_id||row.resume_permit_id===input.permitId),'RECOVERY_PREPARATION_ALREADY_USED');
+      retainedColdInputs(db,row,input.params);
     }else{
+      requireColdConstruction(db,row);
       requireProof(input.params.effort===binding.effort,'ACTUAL_RECOVERY_EFFECTIVE_EFFORT_MISSING_OR_CHANGED');
       requireProof(isDigest(input.preparedPromptDigest),'PREPARED_PROMPT_DIGEST_MISSING');
       requireProof(Array.isArray(input.params.input)&&input.params.input.length===1&&input.params.input[0]?.type==='text'
@@ -384,6 +481,8 @@ export function consumeCodexRecoveryMutation(db:Database,input:{authorizationId:
     const permit=db.query('SELECT * FROM codex_mutation_permits WHERE permit_id=?').get(input.permitId) as any;
     requireProof(permit?.params_digest===digest(input.params),'ACTUAL_RECOVERY_PARAMETERS_CHANGED');
     requireCurrentOriginalSource(db,row,permit.method==='turn/start');
+    if(permit.method==='thread/resume')retainedColdInputs(db,row,input.params);
+    else requireColdConstruction(db,row);
     if(permit.method==='turn/start'){
       const reservation=db.query('SELECT additional_dispatch_attempt FROM codex_unacknowledged_recoveries WHERE accepted_input_id=?').get(row.accepted_input_id) as any;
       const turn=db.query('SELECT provider_admission_intended_at FROM turns WHERE id=?').get(row.turn_id) as any;
@@ -422,7 +521,8 @@ export function codexRecoveryPromptGate(db:Database,input:{providerSessionId:str
   },{...input,actualModel:input.model})};
 }
 
-export function recordCodexRecoveryMutationResponse(db:Database,input:{authorizationId:string;intentId:string;response:any;responseDigest?:string;nowMs:number}){
+export function recordCodexRecoveryMutationResponse(db:Database,input:{authorizationId:string;intentId:string;response:any;
+  responseDigest?:string;responseResultDigest?:string;nowMs:number}){
   return operation(db,input.authorizationId,'response',input.nowMs,row=>{
     const intent=db.query('SELECT * FROM codex_mutation_intents WHERE intent_id=?').get(input.intentId) as any;
     requireProof(intent&&intent.fence_id===row.fence_id&&[row.resume_permit_id,row.start_permit_id].includes(intent.permit_id),'RECOVERY_RESPONSE_INTENT_MISMATCH');
@@ -434,11 +534,15 @@ export function recordCodexRecoveryMutationResponse(db:Database,input:{authoriza
     requireProof(input.response?.reasoningEffort===undefined||input.response.reasoningEffort===null
       ||input.response.reasoningEffort===binding.effort,'RECOVERY_RESPONSE_EFFORT_CONFLICT');
     requireProof(input.responseDigest===undefined||isDigest(input.responseDigest),'RECOVERY_RESPONSE_DIGEST_INVALID');
+    requireProof(input.responseResultDigest===undefined||isDigest(input.responseResultDigest),'RECOVERY_RESPONSE_RESULT_DIGEST_INVALID');
+    const resultDigest=input.responseResultDigest??digest(input.response);
+    if(!isStart&&intent.terminal_evidence_digest!==null)
+      requireProof(intent.state==='reconciled_applied'&&intent.terminal_evidence_digest===resultDigest,'RECOVERY_NATIVE_RESPONSE_CONFLICT');
     // A response is retained even after Stop; it reconciles custody without
     // reviving execution permission or altering any previous guard decision.
     retainRecoveryResponse(db,{intentId:input.intentId,kind:'accepted',responseDigest:input.responseDigest??digest(input.response),providerTurnId:nativeTurnId,nowMs:input.nowMs});
     if(isStart)db.query('UPDATE codex_recovery_dispatch_authorizations SET provider_turn_id=? WHERE authorization_id=?').run(nativeTurnId,row.authorization_id);
-    else reconcileCodexMutationIntent(db,{intentId:input.intentId,outcome:'applied',evidenceDigest:digest(input.response),nowMs:input.nowMs});
+    else reconcileCodexMutationIntent(db,{intentId:input.intentId,outcome:'applied',evidenceDigest:resultDigest,nowMs:input.nowMs});
     return {allowed:true as const,recorded:true as const};
   },{actualModel:input.response?.model,observedEffort:input.response?.reasoningEffort});
 }

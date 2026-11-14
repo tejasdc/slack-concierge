@@ -7,11 +7,13 @@ import {fixtureNativeSettings} from './codex-original-history-fixture-helper';
 
 // Both the owner worker and its App Server bridge inherit these isolated paths.
 const scratch=await mkdtemp(join(tmpdir(),'codex-original-worker-'));
-const state=join(scratch,'state'),codexHome=join(scratch,'codex-home'),socket=join(scratch,'app-server.sock');
-await mkdir(state);await mkdir(codexHome);
+const state=join(scratch,'state'),codexHome=join(scratch,'codex-home'),socket=join(scratch,'app-server.sock'),
+  systemDir=join(scratch,'etc-codex'),nativeCwd=join(scratch,'project');
+await mkdir(state);await mkdir(codexHome);await mkdir(join(systemDir,'hooks'),{recursive:true});await mkdir(nativeCwd);
 process.env.CONCIERGE_STATE_DIR=state;process.env.CONCIERGE_CAPTURE_STATE_DIR=join(state,'capture');
 process.env.CONCIERGE_TEST_MODE='1';process.env.CONCIERGE_TEST_AUTHORIZATION='implementation-edit-gate-2026-11-12';
 process.env.CONCIERGE_CODEX_APP_SERVER_SOCKET=socket;process.env.CODEX_HOME=codexHome;
+process.env.CODEX_SYSTEM_DIR=systemDir;
 
 const threadId='019a7181-0000-7000-8000-000000000001';
 const nativeTurnId='native-turn-selected';
@@ -32,7 +34,8 @@ const original=[
 ].join('\n')+'\n';
 await writeFile(originalPath,original);
 
-let reads=0,threadReadCalls=0,holdThreadRead=false,releaseThreadRead!:()=>void,threadReadReached!:()=>void;
+let reads=0,threadReadCalls=0,loadedListCalls=0,requirementsAvailable=true,loadedTarget=false,configMarker='baseline',
+  holdThreadRead=false,releaseThreadRead!:()=>void,threadReadReached!:()=>void;
 let threadReadBlocked:Promise<void>|null=null,threadReadWaiter:Promise<void>|null=null;
 const appServer=Bun.serve({unix:socket,fetch:(request,server)=>server.upgrade(request)?undefined:new Response('websocket only',{status:400}),
   websocket:{async message(ws,message){
@@ -42,7 +45,16 @@ const appServer=Bun.serve({unix:socket,fetch:(request,server)=>server.upgrade(re
       if(holdThreadRead){threadReadReached();await threadReadBlocked;}
     }
     const result=request.method==='initialize'?{userAgent:'isolated-original-history-fixture'}
-      :request.method==='thread/read'?{thread:{id:threadId,path:originalPath}}
+      :request.method==='thread/read'?{thread:{id:threadId,path:originalPath,cwd:nativeCwd,status:{type:'notLoaded'},
+        sessionId:threadId,historyMode:'legacy',model:'gpt-6-astra',reasoningEffort:'medium',forkedFromId:null,parentThreadId:null}}
+      :request.method==='thread/loaded/list'?(loadedListCalls++,request.params?.cursor
+        ?{data:['loaded-unrelated-b'],nextCursor:null}
+        :{data:[...(loadedTarget?[threadId]:[]),'loaded-unrelated-a'],nextCursor:'worker-opaque-cursor'})
+      :request.method==='configRequirements/read'?requirementsAvailable?{supportsIndependentSpeedModes:true,requirements:{
+        featureRequirements:{hooks:true},hooks:{managedDir:join(systemDir,'hooks'),windowsManagedDir:null,
+          UserPromptSubmit:[{matcher:null,hooks:[{type:'command',command:join(systemDir,'hooks','concierge-model-start'),
+            async:false,timeoutSec:20,statusMessage:'Checking Astra escalation reason',commandWindows:null,additionalContextLimit:null}]}]}}}:{}
+      :request.method==='config/read'?{config:{notify:configMarker},origins:{},layers:[{name:{type:'user'},version:'fixture',config:{notify:configMarker}}]}
       :request.method==='thread/turns/list'?(reads++,{data:[{id:nativeTurnId,status:'completed',error:null}],nextCursor:null,hasMore:false})
       :request.method==='thread/items/list'?{data:[],nextCursor:null,hasMore:false}
       :{};
@@ -148,13 +160,15 @@ try{
     assert.ok(reads>=2,'worker used the actual App Server stand-in for native coverage');
 
     const {snapshot:_private,...continuation}=inspection;
-    const originalHistory={witness:coverage.witness,custody:coverage.custody};
+  assert.ok(coverage.coldConstruction?.witnessDigest,'initial source read also proved cold construction');
+  assert.ok(loadedListCalls>=4,'cold source collector exhausted opaque loaded-thread pagination on two observations');
+  const originalHistory={witness:coverage.witness,custody:coverage.custody};
     const proofNative={...native,originalHistory,nativeDigest:continuationDigest.acceptedBindingSnapshotDigest({
       threadId:native.threadId,continuationDecisionDigest:native.continuationDecisionDigest,ownerSnapshotDigest:native.ownerSnapshotDigest,
       attempts:native.attempts,coverage:native.coverage,nativeTurnOrder:native.nativeTurnOrder,nativeWatermark:native.nativeWatermark,
       originalHistory})};
     const proof={attempts:native.attempts.filter(a=>a.inputId===report.id).map(({dispatchAttempt,providerTurnId})=>({dispatchAttempt,providerTurnId})),
-      dispatchAttemptCount:1,continuation,native:proofNative};
+      dispatchAttemptCount:1,continuation,native:proofNative,coldResume:{construction:coverage.coldConstruction}};
     const persistedNative=JSON.parse(JSON.stringify(proof.native));
     assert.equal(continuationDigest.acceptedBindingSnapshotDigest({threadId:persistedNative.threadId,
       continuationDecisionDigest:persistedNative.continuationDecisionDigest,ownerSnapshotDigest:persistedNative.ownerSnapshotDigest,
@@ -170,29 +184,59 @@ try{
     const claimed=auth.claimCodexRecoveryDispatchCapability(db,{authorizationId:granted.authorizationId,turnId:reportTurn,
       runId,dispatchAttempt:2,nowMs:4});
     assert.equal(claimed.allowed,true,JSON.stringify(claimed));if(!claimed.allowed)throw new Error('dispatcher capability missing');
-    const resumePermit='resume-worker',resumeParams={threadId,model:'gpt-6-astra',excludeTurns:true,config:{model_reasoning_effort:'medium'}};
+    const resumePermit='resume-worker',resumeParams={threadId,model:'gpt-6-astra',excludeTurns:true,
+      cwd:nativeCwd,config:{features:{hooks:true},model_reasoning_effort:'medium'}};
+    const beforeResumeThreads=threadReadCalls;
+    requirementsAvailable=false;
+    const missingHooks=await client.readCodexColdInputsBeforeResume(granted.authorizationId,resumeParams) as any;
+    assert.equal(missingHooks.proven,false,JSON.stringify(missingHooks));
+    assert.ok(missingHooks.reasons.some((reason:any)=>reason.code==='COLD_CONFIGURATION_REQUIREMENTS_MISSING'));
+    assert.equal(threadReadCalls,beforeResumeThreads+1,'failed hook requirements stop before mutation permit preparation');
+    requirementsAvailable=true;
+    loadedTarget=true;
+    const loadedTargetRefusal=await client.readCodexColdInputsBeforeResume(granted.authorizationId,resumeParams) as any;
+    assert.equal(loadedTargetRefusal.proven,false,JSON.stringify(loadedTargetRefusal));
+    assert.ok(loadedTargetRefusal.reasons.some((reason:any)=>reason.code==='COLD_NATIVE_THREAD_PRESENT_IN_LOADED_LIST'));
+    loadedTarget=false;
+    configMarker='changed-after-reservation';
+    const changedConfig=await client.readCodexColdInputsBeforeResume(granted.authorizationId,resumeParams) as any;
+    assert.equal(changedConfig.proven,false,JSON.stringify(changedConfig));
+    assert.ok(changedConfig.reasons.some((reason:any)=>reason.code==='COLD_CONFIGURATION_OR_THREAD_CHANGED'));
+    configMarker='baseline';
+    const coldInputs=await client.readCodexColdInputsBeforeResume(granted.authorizationId,resumeParams) as any;
+    assert.equal(coldInputs.proven,true,JSON.stringify(coldInputs));
+    assert.equal(coldInputs.witness.witnessDigest,coverage.coldConstruction.witnessDigest);
+    const retainedCold=auth.retainCodexRecoveryColdInputs(db,{authorizationId:granted.authorizationId,witness:coldInputs.witness,
+      paramsDigest:coldInputs.paramsDigest,nowMs:5});
+    assert.equal(retainedCold.allowed,true,JSON.stringify(retainedCold));
     const prepared=auth.prepareCodexRecoveryMutation(db,{authorizationId:granted.authorizationId,capability:claimed.capability,
-      permitId:resumePermit,method:'thread/resume',params:resumeParams,nowMs:5});
+      permitId:resumePermit,method:'thread/resume',params:resumeParams,nowMs:6});
     assert.equal(prepared.allowed,true,JSON.stringify(prepared));
     const consumed=auth.consumeCodexRecoveryMutation(db,{authorizationId:granted.authorizationId,capability:claimed.capability,
-      permitId:resumePermit,intentId:resumePermit,params:resumeParams,nowMs:6});
+      permitId:resumePermit,intentId:resumePermit,params:resumeParams,nowMs:7});
     assert.equal(consumed.allowed,true,JSON.stringify(consumed));
+    const responseResult={thread:{id:threadId,cwd:nativeCwd,path:originalPath,sessionId:threadId,historyMode:'legacy'},
+      model:'gpt-6-astra',reasoningEffort:'medium'};
     const accepted=auth.recordCodexRecoveryMutationResponse(db,{authorizationId:granted.authorizationId,intentId:resumePermit,
-      response:{thread:{id:threadId},model:'gpt-6-astra',reasoningEffort:'medium'},nowMs:7});
+      response:responseResult,nowMs:8});
     assert.equal(accepted.allowed,true,JSON.stringify(accepted));
     assert.equal((db.query('SELECT state FROM codex_mutation_intents WHERE intent_id=?').get(resumePermit) as any).state,'reconciled_applied');
 
     const checkpoint=line('event_msg',{type:'thread_settings_applied',thread_id:threadId,
       thread_settings:settings})+'\n';
     await appendFile(originalPath,checkpoint);
-    const refreshed=await client.refreshOriginalCodexHistoryAfterResume(granted.authorizationId) as any;
+    const refreshed=await client.refreshOriginalCodexHistoryAfterResume(granted.authorizationId,resumeParams,responseResult) as any;
     assert.equal(refreshed.proven,true,JSON.stringify(refreshed));
     assert.equal(refreshed.witness.ownedResumeCheckpoint.intentId,resumePermit);
     assert.equal(refreshed.witness.ownedResumeCheckpoint.permitId,resumePermit);
     assert.equal(refreshed.witness.ownedResumeCheckpoint.recordCount,1);
     assert.equal(refreshed.witness.recordCount,coverage.witness.recordCount+1);
     assert.ok(!JSON.stringify(refreshed).includes('accepted original request'));
-    const retained=auth.retainCodexRecoverySourceCheckpoint(db,{authorizationId:granted.authorizationId,result:refreshed,nowMs:8});
+    assert.ok(refreshed.construction?.receiptDigest,'successful resume must return its source-derived construction receipt');
+    const retainedConstruction=auth.retainCodexRecoveryColdConstruction(db,{authorizationId:granted.authorizationId,
+      receipt:refreshed.construction,nowMs:9});
+    assert.equal(retainedConstruction.allowed,true,JSON.stringify(retainedConstruction));
+    const retained=auth.retainCodexRecoverySourceCheckpoint(db,{authorizationId:granted.authorizationId,result:refreshed,nowMs:10});
     assert.equal(retained.allowed,true,JSON.stringify(retained));
     const retainedPrivate=db.query('SELECT resume_intent_id,checkpoint_digest,witness_json,custody_json FROM codex_recovery_source_checkpoints WHERE authorization_id=?')
       .get(granted.authorizationId) as any;

@@ -13,7 +13,8 @@ import {RETRYING_PROVIDER_TURN_STATUS_TEXT} from './text';
 export interface CodexRecoveryHostDependencies {
   writerProc?:Parameters<typeof assessManagedCodexWriterCoverage>[0]['proc'];
   readOriginalHistory?:(input:{sessionId:number;inputId:string;requestId:string;runId:string;fenceId:string;
-    expectedDecisionDigest:string;expectedNativeDigest:string})=>Promise<Awaited<ReturnType<typeof readCodexOriginalHistoryCoverage>>>;
+    expectedDecisionDigest:string;expectedNativeDigest:string})=>Promise<Awaited<ReturnType<typeof readCodexOriginalHistoryCoverage>> &
+      {coldConstruction?:import('./codex-cold-construction').CodexColdConstructionWitness}>;
 }
 
 /** The owner supplies only its already-authorized request identity and read-only
@@ -57,12 +58,13 @@ export async function recoverAcceptedBindingCodex(input:{sessionId:number;inputI
   if(!('originalHistory'in native))throw new Error('NATIVE_ORIGINAL_EFFECT_HISTORY_COVERAGE_UNPROVEN');
   if(acceptedBindingSnapshotDigest(await readThread())!==acceptedBindingSnapshotDigest(cold))
     throw new Error('Native cold-resume eligibility changed during inspection.');
+  if(!original.proven||!original.coldConstruction)throw new Error('COLD_CONSTRUCTION_WITNESS_NOT_RETAINED');
   const selectedAttempts=native.attempts.filter(attempt=>attempt.inputId===input.inputId);
   const {snapshot:_privateSnapshot,...continuation}=inspection;
   const proof={provider:'codex',threadId:binding.threadId,ownerRunId:snapshot.selected.turn.native_run_id,
     ownerTurnId:snapshot.selected.turn.id,acceptedInputId:input.inputId,
     dispatchAttemptCount:snapshot.selected.turn.dispatch_attempt,attempts:selectedAttempts,
-    continuation,native,coldResume:cold,managedWriters:writers};
+    continuation,native,coldResume:{...cold,construction:original.coldConstruction},managedWriters:writers};
   const reservation=db.transaction(()=>{
     const raced=codexUnacknowledgedRecovery(input.inputId);
     if(raced)return {row:raced,created:false};

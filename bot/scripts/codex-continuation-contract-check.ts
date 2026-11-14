@@ -6,12 +6,16 @@ const fixtures=['codex-mutation-fence-fixture.ts','codex-recovery-dispatch-autho
   'codex-accepted-binding-recovery-fixture.ts','codex-managed-launch-fixture.ts',
   'codex-mutation-owner-policy-fixture.ts','codex-daemon-lifecycle-fixture.ts',
   'codex-managed-native-terminal-fixture.ts','provider-activation-lifecycle-fixture.ts','codex-runner-relay-lifecycle-fixture.ts',
+  'codex-managed-hook-config-fixture.ts','codex-managed-hook-install-fixture.ts',
+  'codex-cold-construction-fixture.ts','codex-recovery-cold-dispatch-fixture.ts',
+  'codex-mutation-release-compatibility-fixture.ts',
   'codex-session-control-fence-fixture.ts','codex-original-history-coverage-fixture.ts',
   'codex-original-history-worker-fixture.ts'];
+const started=performance.now();
 for(const fixture of fixtures){
   const child=Bun.spawn([process.execPath,resolve(import.meta.dir,fixture)],{
     cwd:resolve(import.meta.dir,'..'),env:process.env,stdout:'pipe',stderr:'pipe'});
   const [stdout,stderr,status]=await Promise.all([new Response(child.stdout).text(),new Response(child.stderr).text(),child.exited]);
   if(status!==0){process.stderr.write(`${fixture}: exit ${status}\n${stdout}${stderr}`);process.exit(status||1);}
 }
-console.log(`codex-continuation-contract-check: PASS (${fixtures.length} isolated custody fixtures; no live activation)`);
+console.log(`codex-continuation-contract-check: PASS (${fixtures.length} isolated custody fixtures; ${Math.round(performance.now()-started)}ms; no live activation)`);

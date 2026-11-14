@@ -21,18 +21,27 @@ export async function createFixtureOriginalHistory(input:{root:string;binding:Co
   const row=(type:string,payload:any)=>({timestamp,type,payload});
   const begin=(id:string)=>row('event_msg',{type:'task_started',turn_id:id,model_context_window:258400,collaboration_mode_kind:'default'});
   const context=(id:string)=>row('turn_context',{turn_id:id,cwd:'/fixture',approval_policy:'never',
-    sandbox_policy:{type:'danger-full-access'},model:input.binding.model,effort:input.binding.effort,summary:'none'});
+    sandbox_policy:{type:'danger-full-access'},model:input.binding.model,effort:input.binding.effort,summary:'none',
+    comp_hash:'fixture-native-compatibility',realtime_active:false,multi_agent_version:'v1'});
   const end=(id:string)=>row('event_msg',{type:'task_complete',turn_id:id,last_agent_message:null});
   const prior='fixture-prior-acknowledged';
   const records:any[]=[row('session_meta',{id:input.binding.threadId,session_id:input.binding.threadId,timestamp,
     cli_version:'0.162.0',cwd:'/fixture',source:'cli',history_mode:'legacy'}),begin(prior),context(prior),
     {...row('response_item',{type:'message',id:'prior-source-user',role:'user',content:[{type:'input_text',text:'prior accepted fixture work'}]}),
       metadata:{user_input_order:1}},
-    row('event_msg',{type:'agent_message',message:'earlier retained useful work'}),end(prior),
+    row('event_msg',{type:'agent_message',message:'earlier retained useful work'}),
+    row('event_msg',{type:'token_count',info:null,rate_limits:{limit_id:'fixture-quota',limit_name:null,
+      primary:{used_percent:25,window_minutes:300,resets_at:1794528000},secondary:null,credits:null,
+      individual_limit:null,spend_control_reached:false,plan_type:'pro',rate_limit_reached_type:null}}),end(prior),
     row('event_msg',{type:'thread_settings_applied',thread_id:input.binding.threadId,thread_settings:fixtureNativeSettings(input.binding)})];
   for(const covered of input.nativeProof.coverage){
     const id=covered.providerTurnId;records.push(begin(id),context(id));
-    if(covered.classification==='independent_compaction')records.push(row('compacted',{message:'fixture model context summary',replacement_history:[]}));
+    if(covered.classification==='independent_compaction')records.push(row('compacted',{message:'fixture model context summary',replacement_history:[],
+      retained_context:{verified_answers:[],incomplete:false,user_messages:[],user_messages_incomplete:true,
+        assistant_messages:[],assistant_messages_incomplete:false,next_order:2},
+      resume_metadata:{multi_agent_version:'v1',last_started_turn_id:id,
+        previous_turn_settings:{model:input.binding.model,comp_hash:'fixture-native-compatibility',realtime_active:false}}}),
+      row('event_msg',{type:'item_completed',thread_id:input.binding.threadId,turn_id:id,item:{type:'ContextCompaction',id:`fixture-compaction:${id}`}}));
     records.push(end(id));
   }
   writeFileSync(sourcePath,records.map(record=>JSON.stringify(record)).join('\n')+'\n');

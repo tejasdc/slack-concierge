@@ -13,6 +13,7 @@ import {readCodexOriginalHistoryCoverage,revalidateCodexOriginalHistorySource,
   refreshCodexOriginalHistoryAfterOwnedResume} from './codex-original-history-coverage';
 import {getCodexThreadMutationFence} from './codex-mutation-fence';
 import {codexRecoverySourceFingerprint} from './codex-recovery-dispatch-authorization';
+import {readCodexColdConstructionWitness,compareCodexColdConstructionWitnesses,validateCodexColdResumeParameters,validateCodexColdResume} from './codex-cold-construction';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 
@@ -20,7 +21,8 @@ type Work={id:number;operation:'page'|'delta'|'prepare';sessionId:string;cwd:str
   want?:{dialogue:number;untilInput:boolean};thread?:string}|
   {id:number;operation:'original-recovery-coverage';sessionId:number;inputId:string;requestId:string;runId:string;fenceId:string;
     expectedDecisionDigest:string;expectedNativeDigest:string}|
-  {id:number;operation:'original-recovery-refresh-after-resume';authorizationId:string};
+  {id:number;operation:'original-recovery-cold-before-resume';authorizationId:string;params:Record<string,unknown>}|
+  {id:number;operation:'original-recovery-refresh-after-resume';authorizationId:string;params:Record<string,unknown>;responseResult:unknown};
 if(!parentPort)throw new Error('HISTORY_PAGE_WORKER_PARENT_REQUIRED');
 // Connect to Codex's App Server when the worker starts, not inside the first history open:
 // after a restart the first open of each Codex conversation took 0.3-0.5 s against 0.05-0.25 s
@@ -84,7 +86,30 @@ async function originalRecoveryCoverage(input:Extract<Work,{operation:'original-
   if(afterNative.nativeDigest!==input.expectedNativeDigest)return refuseCoverage('NATIVE_INTERVAL_CHANGED_DURING_READ');
   if(!revalidateCodexOriginalHistorySource(custody,witness).valid)
     return refuseCoverage('ORIGINAL_HISTORY_SOURCE_CHANGED_DURING_READ');
-  return {proven:true as const,witness,custody};
+  const construction=await readCodexColdConstructionWitness({db,owner:after.fence!,binding:after.snapshot.binding,client:sharedCodexAppServerClient()});
+  if(!construction.proven)return construction;
+  return {proven:true as const,witness,custody,coldConstruction:construction.witness};
+}
+async function coldBeforeResume(input:Extract<Work,{operation:'original-recovery-cold-before-resume'}>){
+  const auth=db.query('SELECT * FROM codex_recovery_dispatch_authorizations WHERE authorization_id=?').get(input.authorizationId) as any;
+  if(!auth)return refuseCoverage('RECOVERY_AUTHORIZATION_NOT_FOUND');
+  let proof:any,binding:any;
+  try{proof=JSON.parse((db.query('SELECT proof_json FROM codex_unacknowledged_recoveries WHERE accepted_input_id=?').get(auth.accepted_input_id) as any)?.proof_json);binding=JSON.parse(auth.binding_json);}
+  catch{return refuseCoverage('RETAINED_RECOVERY_PROOF_INVALID');}
+  try{if(codexRecoverySourceFingerprint(db,auth)!==auth.source_fingerprint)return refuseCoverage('SOURCE_FINGERPRINT_CHANGED_BEFORE_COLD_RESUME');}
+  catch{return refuseCoverage('SOURCE_CONTROLS_REFUSE_BEFORE_COLD_RESUME');}
+  const fence=getCodexThreadMutationFence(db,auth.thread_id);
+  if(!fence||fence.fenceId!==auth.fence_id)return refuseCoverage('EXACT_ACTIVE_FENCE_CHANGED');
+  const current=await readCodexColdConstructionWitness({db,owner:fence,binding,client:sharedCodexAppServerClient()});
+  if(!current.proven)return current;
+  if(!proof?.coldResume?.construction)return refuseCoverage('COLD_CONSTRUCTION_WITNESS_NOT_RETAINED');
+  const same=compareCodexColdConstructionWitnesses(proof.coldResume.construction,current.witness);
+  if(!same.same)return refuseCoverage(same.reason);
+  const params=validateCodexColdResumeParameters({witness:current.witness,params:input.params});
+  if(!params.allowed)return refuseCoverage(params.reason);
+  if(!revalidateCodexOriginalHistorySource(proof.native.originalHistory.custody,proof.native.originalHistory.witness).valid)
+    return refuseCoverage('ORIGINAL_HISTORY_SOURCE_CHANGED_BEFORE_COLD_RESUME');
+  return {proven:true as const,witness:current.witness,paramsDigest:params.paramsDigest};
 }
 async function originalHistoryAfterOwnedResume(input:Extract<Work,{operation:'original-recovery-refresh-after-resume'}>){
   const authorization=db.query('SELECT * FROM codex_recovery_dispatch_authorizations WHERE authorization_id=?')
@@ -116,6 +141,12 @@ async function originalHistoryAfterOwnedResume(input:Extract<Work,{operation:'or
     ||!intent.response_digest||intent.method!=='thread/resume'
     ||intent.thread_id!==authorization.thread_id)
     return refuseCoverage('EXACT_OWNED_RESUME_RESPONSE_NOT_RETAINED');
+  const coldInputs=db.query('SELECT witness_json FROM codex_recovery_cold_inputs WHERE authorization_id=?').get(input.authorizationId) as any;
+  let coldWitness:any;try{coldWitness=JSON.parse(coldInputs?.witness_json??'null');}catch{}
+  if(!coldWitness)return refuseCoverage('COLD_CONSTRUCTION_INPUTS_NOT_RETAINED');
+  const constructed=validateCodexColdResume({db,authorizationId:input.authorizationId,intentId:intent.intent_id,
+    witness:coldWitness,params:input.params,responseResult:input.responseResult});
+  if(!constructed.allowed)return refuseCoverage(constructed.reason);
   const refreshed=await refreshCodexOriginalHistoryAfterOwnedResume({db,intentId:intent.intent_id,
     witness:original.witness,custody:original.custody});
   if(!refreshed.proven)return refreshed;
@@ -130,10 +161,13 @@ async function originalHistoryAfterOwnedResume(input:Extract<Work,{operation:'or
     ||afterFence.runId!==authorization.run_id||afterFence.dispatchAttempt!==authorization.dispatch_attempt)
     return refuseCoverage('EXACT_ACTIVE_FENCE_CHANGED_DURING_RESUME_CHECKPOINT');
   return {proven:true as const,witness:refreshed.witness,custody:refreshed.custody,
-    intentId:intent.intent_id,permitId};
+    intentId:intent.intent_id,permitId,construction:constructed.receipt};
 }
 parentPort.on('message',async(input:Work)=>{
   try {
+    if(input.operation==='original-recovery-cold-before-resume'){
+      parentPort!.postMessage({id:input.id,result:await coldBeforeResume(input)});return;
+    }
     if(input.operation==='original-recovery-refresh-after-resume'){
       if(!Number.isSafeInteger(input.id)||input.id<1||typeof input.authorizationId!=='string'
         ||input.authorizationId.length<1||input.authorizationId.length>200)
