@@ -12,10 +12,20 @@ const fixtures=['codex-gateway-mutation-transport-fixture.ts','codex-mutation-fe
   'codex-session-control-fence-fixture.ts','codex-original-history-coverage-fixture.ts',
   'codex-original-history-worker-fixture.ts'];
 const started=performance.now();
+let activeFixture='starting',activeChild:ReturnType<typeof Bun.spawn>|null=null;
+// The requested release-check budget is two minutes, including a stuck child or inherited pipe.
+const deadline=setTimeout(()=>{
+  process.stderr.write(`codex-continuation-contract-check: budget exceeded in ${activeFixture}\n`);
+  activeChild?.kill('SIGKILL');process.exit(1);
+},120_000);
 for(const fixture of fixtures){
+  activeFixture=fixture;
+  console.log(`codex-continuation-contract-check: running ${fixture}`);
   const child=Bun.spawn([process.execPath,resolve(import.meta.dir,fixture)],{
     cwd:resolve(import.meta.dir,'..'),env:process.env,stdout:'pipe',stderr:'pipe'});
+  activeChild=child;
   const [stdout,stderr,status]=await Promise.all([new Response(child.stdout).text(),new Response(child.stderr).text(),child.exited]);
   if(status!==0){process.stderr.write(`${fixture}: exit ${status}\n${stdout}${stderr}`);process.exit(status||1);}
 }
+clearTimeout(deadline);
 console.log(`codex-continuation-contract-check: PASS (${fixtures.length} isolated custody fixtures; ${Math.round(performance.now()-started)}ms; no live activation)`);

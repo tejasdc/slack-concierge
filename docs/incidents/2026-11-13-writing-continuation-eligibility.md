@@ -167,6 +167,12 @@ the fixture tried to remove its sealed read-only directories as an ordinary user
 Cleanup now restores write permission only on directories under that fixture's
 temporary root, skipping symlinks, before removing them. This follows the existing
 installed-control fixture pattern and changes no release permission or authority.
+The following CI run then stalled inside the aggregate fixture gate with child
+output suppressed; its exact stuck fixture was not observable. The gate now
+names each fixture before starting it and enforces the requested two-minute
+overall budget, including an inherited output pipe. This is a test-process
+deadline, never provider recovery/retry or authority. The stalled duplicate was
+cancelled only to retain its partial CI log; no live provider was involved.
 
 The omitted-boundary source audit also found that account activation and managed
 daemon replacement use running-turn checks, which do not exclude a queued
