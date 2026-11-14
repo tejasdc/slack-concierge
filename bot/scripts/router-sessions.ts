@@ -24,6 +24,7 @@ router-actions.sh sessions history-storage claude|codex <source-flags> [--after 
 router-actions.sh sessions auth switch codex <saved-profile-id> [--machine mac] <source-flags> --action-id A
 router-actions.sh sessions codex-test stop|connection-loss concierge:<id> --create request:<id> --run <native-run-id> <source-input/run> --action-id A
 router-actions.sh sessions search <source-flags> [--limit N] [--peer <instance>] [--thread <message-id>] -- <concept...>
+router-actions.sh sessions commit-identity <session-id> [Codex-thread-id]
 router-actions.sh sessions context <address> <source-flags> [--thread <message-id>]
 router-actions.sh sessions ask <address> <source-flags> --action-id A [--escalation-reason "<model-selection trigger>" for an existing Astra session] [--thread <message-id> | --route-message <human-input-id>] [--return-to-requester] --summary "<one line>" [--answer-view summary|full] [--after-request <request-id> ...] [--after-settled <request-id> ...] -- <text>
 router-actions.sh sessions ask --role <standing-agent-role> <source-flags> --action-id A --summary "<one line>" [--session-name <title>] -- <text>
@@ -171,6 +172,7 @@ Use sessions cancel <request-id> to withdraw your own request, for example one y
 
 type Source = { channel_id: string; message_ts: string } | { input_id: string; run_id: string };
 export type SessionCommunicationRequest =
+  | {operation: "commit-identity"; body: {source?:never;session?:string;codexThread?:string}}
   | { operation: "open"; body: { source: Source; action_id: string; url: string; on?: string; browser?: string } }
   | { operation: "move"; body: { source: Source; action_id: string; address: string; project: string } }
   | { operation: "projects"; body: { source: Source; peer?: string } }
@@ -429,6 +431,12 @@ function parseBoardArgs(args: string[]): SessionCommunicationRequest {
 
 export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationRequest {
   const [first, ...args] = argv;
+  if(first==='commit-identity'){
+    const [session,codexThread,...extra]=args;
+    if(extra.length||!session)invalid('commit-identity needs a session or - and optional Codex thread.');
+    return {operation:'commit-identity',body:{...(session==='-'?{}:{session}),...(codexThread?{codexThread}:{})}};
+  }
+
   if(first==='chatgpt-recover'){
     const requestId=args.shift();
     if(!requestId||requestId.startsWith('--'))invalid('chatgpt-recover needs the exact original request ID.');
@@ -1167,6 +1175,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
 }
 
 export async function runRouterSessions(request: SessionCommunicationRequest) {
+  if(request.operation==='commit-identity')return requestApiResponse('/sessions/v1/commit-identity',request.body);
   if(request.operation==='codex-test-control'){
     const {source,verb,session_id,create_input_id,run_id,action_id}=request.body;
     if(!('input_id' in source))throw new Error('codex-test requires an exact agent source input/run pair.');

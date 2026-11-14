@@ -426,6 +426,12 @@ export class SessionPeers {
     log('info','session_search_through_peer',{peer,results:results.length});
     return {...answer,results,coverage:{...answer.coverage,searchedOn:peer}};
   }
+  async commitIdentity(peer:string,input:{session:string}):Promise<{session:string;input:string}|null>{
+    const identity=await this.client(peer).request('POST','/sessions/v1/commit-identity',input,8_000);
+    const session=input.session.replace(/^concierge:/,`${peer}:`);
+    if(!identity||identity.session!==session||typeof identity.input!=='string')throw new Error('The committing machine returned no current input.');
+    return {session,input:identity.input};
+  }
   async context(peer:string,address:string):Promise<any>{return this.qualify(peer,await this.client(peer).request('POST','/sessions/v1/context',{address},8_000));}
   /** A peer's answer names its sessions as `<peer>:<n>` and its addresses as `<peer>/session:…`, so an agent can use them directly. */
   private qualify(peer:string,value:unknown):unknown {

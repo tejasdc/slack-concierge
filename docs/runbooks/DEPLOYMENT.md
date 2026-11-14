@@ -489,6 +489,8 @@ Git authentication comes from the root account's existing `gh` credential
 helper. Callers do not inject or copy tokens. Origin is tested before either
 admission gate is claimed.
 
+For thnkr.ing’s session/input update trailers, `router-actions.sh sessions commit-identity <session-id> [Codex-thread-id]` reads exactly one running accepted turn from its owner. A local Codex conversation takes precedence over inherited turn values; a remote Mac session is resolved through its live peer. Unknown, ambiguous and unreachable identities refuse attribution. The Codex thread policy does not retain the commit input.
+
 Every managed provider turn receives one opaque commit-provenance token. The
 tracked `.githooks/prepare-commit-msg` hook appends it as a
 `Concierge-Provenance` trailer, and SQLite maps it to the originating turn,
