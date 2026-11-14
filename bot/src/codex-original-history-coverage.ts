@@ -5,6 +5,7 @@ import {isAbsolute,relative,sep} from 'node:path';
 import type {Database} from 'bun:sqlite';
 import {acceptedBindingSnapshotDigest,type ContinuationBinding} from './codex-accepted-binding-continuation';
 import {CODEX_HISTORY_INTERPRETATION,decodeNativeHistoryRecord,decodeResponse,nativeHistoryInventoryKey,NativeHistoryDecodeError} from './codex-native-history-decoder';
+import {parseNativeSourceRecord,nativeSourceValueDigest as sourceDigest,nativeSourceShadow,nativeSourceWithoutKeys,nativeSourceIntegerAt} from './codex-native-source-values';
 
 const digest=acceptedBindingSnapshotDigest;
 const object=(v:any)=>v!==null&&typeof v==='object'&&!Array.isArray(v);
@@ -82,6 +83,7 @@ class RecordCoverage {
   turnContextBaseline:CodexOriginalHistoryWitness['turnContextBaseline']=null;
   worldStateBaseline:CodexOriginalHistoryWitness['worldStateBaseline']=null;
   worldState:any=null;settingsSnapshot:any=null;recordStart=0;recordEnd=0;
+  worldStateShadow:any=null;
   expected:string[];
   constructor(readonly input:CodexOriginalHistoryCoverageInput){
     const positions=input.attempts.filter(a=>a.inputId===input.selectedInputId).map(a=>input.nativeTurnOrder.indexOf(a.providerTurnId));
@@ -93,7 +95,7 @@ class RecordCoverage {
   line(bytes:Buffer,start:number,end:number){
     let row:any;
     this.count++;
-    try{row=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}
+    try{row=parseNativeSourceRecord(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}
     catch{refuse('ORIGINAL_HISTORY_RECORD_DECODE_FAILED',`record:${this.count}`);}
     this.recordStart=start;this.recordEnd=end;
     const ref=`record:${this.count}`;
@@ -112,7 +114,7 @@ class RecordCoverage {
       const owned=row.payload.internal_chat_message_metadata_passthrough?.turn_id??this.active;
       if(pending.owner!==null&&owned!==pending.owner)
         refuse('ORIGINAL_HISTORY_COMMUNICATION_OWNER_UNPROVEN',`record:${pending.record}`,ref);
-      this.baselineTransitions.push({record:this.count,kind:'communication_pair',sourceRecord:pending.record,stateDigest:digest(row)});
+      this.baselineTransitions.push({record:this.count,kind:'communication_pair',sourceRecord:pending.record,stateDigest:sourceDigest(row)});
     }
     if(this.count===1){
       if(row.type!=='session_meta'||row.payload.id!==this.input.binding.threadId
@@ -129,7 +131,7 @@ class RecordCoverage {
       this.mode=p.history_mode??'legacy';
     }else if(row.type==='session_meta')refuse('ORIGINAL_HISTORY_SESSION_METADATA_REPLACED',ref);
     if(this.mode==='paginated'){
-      if(!Number.isSafeInteger(row.ordinal)||row.ordinal!==(this.lastOrdinal===null?0:this.lastOrdinal+1))
+      if(!nativeSourceIntegerAt(row,'ordinal')||row.ordinal!==(this.lastOrdinal===null?0:this.lastOrdinal+1))
         refuse('ORIGINAL_HISTORY_ORDINAL_COVERAGE_INVALID',ref);
       this.lastOrdinal=row.ordinal;
     }else if(row.ordinal!=null)refuse('ORIGINAL_HISTORY_UNEXPECTED_ORDINAL',ref);
@@ -169,7 +171,7 @@ class RecordCoverage {
     if(!this.relevant)this.prior++;
     if(this.relevant&&row.type!=='session_meta'&&!this.active){
       if(['token_usage_record','world_state'].includes(row.type)||row.type==='event_msg'&&['token_count','thread_settings_applied'].includes(p.type))
-        this.neutralOutsideTurnRecords.push({record:this.count,kind:row.type==='event_msg'?p.type:row.type,recordDigest:digest(row)});
+        this.neutralOutsideTurnRecords.push({record:this.count,kind:row.type==='event_msg'?p.type:row.type,recordDigest:sourceDigest(row)});
       else refuse('ORIGINAL_HISTORY_UNOWNED_SUFFIX_RECORD',ref);
     }
     if(this.current){this.current.records++;this.current.hash.update(bytes);this.current.hash.update('\n');}
@@ -214,7 +216,7 @@ class RecordCoverage {
     }
   }
   rememberEnvelope(p:any,metadata:any){
-    const key=digest(p),envelopes=this.priorEnvelopes.get(key)??new Map();
+    const key=sourceDigest(p),envelopes=this.priorEnvelopes.get(key)??new Map();
     envelopes.set(digest(canonicalMetadata(metadata)),{record:this.count,supported:true});this.priorEnvelopes.set(key,envelopes);
     const config=configurationIdentity(p,metadata);
     if(config!==null)this.configurationEnvelopes.set(config,this.count);
@@ -309,18 +311,18 @@ class RecordCoverage {
     }
     if(row.type==='inter_agent_communication'){
       if(this.relevant)refuse('ORIGINAL_HISTORY_INTERVAL_COMMUNICATION_PRESENT',ref);
-      this.baselineTransitions.push({record:this.count,kind:'historical_communication',sourceRecord:null,stateDigest:digest(row)});return;
+      this.baselineTransitions.push({record:this.count,kind:'historical_communication',sourceRecord:null,stateDigest:sourceDigest(row)});return;
     }
     if(['retained_context','security_risk_score','realtime_item'].includes(row.type)){
       if(this.relevant)refuse(row.type==='retained_context'?'ORIGINAL_HISTORY_INTERVAL_RETAINED_EFFECT_PRESENT':
         row.type==='realtime_item'?'ORIGINAL_HISTORY_INTERVAL_REALTIME_EFFECT_PRESENT':'ORIGINAL_HISTORY_INTERVAL_RISK_PROVENANCE_UNSUPPORTED',ref);
-      this.baselineTransitions.push({record:this.count,kind:`historical_${row.type}`,sourceRecord:null,stateDigest:digest(row)});return;
+      this.baselineTransitions.push({record:this.count,kind:`historical_${row.type}`,sourceRecord:null,stateDigest:sourceDigest(row)});return;
     }
     if(row.type==='turn_context'){
       if(this.current){
         if(p.model!==this.input.binding.model||p.effort!==this.input.binding.effort)
           refuse('ORIGINAL_HISTORY_CONTEXT_BINDING_CONFLICT',ref);
-        if(digest(contextSettings(p))!==this.comparisonContextDigest)
+        if(nativeSourceWithoutKeys(p,['turn_id','root_turn_id'])!==this.comparisonContextDigest)
           refuse('ORIGINAL_HISTORY_TURN_SETTINGS_CHANGED',ref);
         if(!contextMatchesSettings(p,this.settingsSnapshot))refuse('ORIGINAL_HISTORY_SETTINGS_BASELINES_CONFLICT',ref);
         this.current.contexts++;
@@ -328,7 +330,7 @@ class RecordCoverage {
         if(!object(p)||!nonempty(p.cwd)||!Object.hasOwn(p,'approval_policy')||!object(p.sandbox_policy))
           refuse('ORIGINAL_HISTORY_TURN_SETTINGS_BASELINE_INCOMPLETE',ref);
       }
-      this.turnContextBaseline={record:this.count,settingsDigest:digest(contextSettings(p))};
+      this.turnContextBaseline={record:this.count,settingsDigest:nativeSourceWithoutKeys(p,['turn_id','root_turn_id'])};
       this.baselineTransitions.push({record:this.count,kind:'context_established',sourceRecord:this.resetRecord,
         stateDigest:this.turnContextBaseline.settingsDigest});
       if(this.resumeState)this.resumeState.multi_agent_version=p.multi_agent_version??null;
@@ -342,12 +344,13 @@ class RecordCoverage {
         this.baselineTransitions.push({record:this.count,kind:'unbased_historical_world_patch',sourceRecord:this.resetRecord,stateDigest:null});return;
       }
       const next=p.full?p.state:mergeWorldState(this.worldState,p.state);
+      const nextShadow=p.full?nativeSourceShadow(p.state):mergeWorldState(this.worldStateShadow,nativeSourceShadow(p.state));
       if(this.relevant){
         if(this.comparisonWorldDigest===null)refuse('ORIGINAL_HISTORY_WORLD_STATE_BASELINE_MISSING',ref);
-        if(digest(next)!==this.comparisonWorldDigest)refuse('ORIGINAL_HISTORY_WORLD_STATE_CHANGED',ref);
+        if(sourceDigest(next,nextShadow)!==this.comparisonWorldDigest)refuse('ORIGINAL_HISTORY_WORLD_STATE_CHANGED',ref);
       }
-      this.worldState=next;this.worldStateBaseline={record:this.count,stateDigest:digest(next)};
-      this.baselineTransitions.push({record:this.count,kind:p.full?'world_full':'world_patch',sourceRecord:this.resetRecord,stateDigest:digest(next)});
+      this.worldState=next;this.worldStateShadow=nextShadow;this.worldStateBaseline={record:this.count,stateDigest:sourceDigest(next,nextShadow)};
+      this.baselineTransitions.push({record:this.count,kind:p.full?'world_full':'world_patch',sourceRecord:this.resetRecord,stateDigest:sourceDigest(next,nextShadow)});
       return;
     }
     if(row.type==='compacted'){
@@ -385,7 +388,7 @@ class RecordCoverage {
         if(this.relevant){
           const metadata=p.replacement_history_metadata?.[index];
           if(metadata!=null&&!object(metadata))refuse('ORIGINAL_HISTORY_COMPACTION_SHAPE_INVALID',ref);
-          const original=this.priorEnvelopes.get(digest(entry))?.get(digest(canonicalMetadata(metadata)));
+          const original=this.priorEnvelopes.get(sourceDigest(entry))?.get(digest(canonicalMetadata(metadata)));
           // Cloned originals preserve all provenance; a shortened or rewritten copy
           // cannot borrow a retained-source identity from another native payload.
           const cloned=original?.supported===true;
@@ -415,18 +418,18 @@ class RecordCoverage {
         this.current.responseIds.add(p.compaction_response_id);
       }
       this.compactions.push({providerTurnId:this.active??'',record:this.count,replacementCount:history.length,
-        replacementDigest:digest({history,metadata:p.replacement_history_metadata??null}),replacementClassifications:classes,recordDigest:digest(row),retainedSourceRefs,resumeSourceRefs});
+        replacementDigest:sourceDigest({history,metadata:p.replacement_history_metadata??null}),replacementClassifications:classes,recordDigest:sourceDigest(row),retainedSourceRefs,resumeSourceRefs});
       if(!this.relevant){
         this.backendControls=Object.create(null);
         for(const [index,entry] of history.entries())this.rememberEnvelope(entry,p.replacement_history_metadata?.[index]);
         for(const entry of history)if(['configuration_update','additional_tools'].includes(entry.type))
-          this.backendControls[entry.type]={record:this.count,recordDigest:digest(row)};
+          this.backendControls[entry.type]={record:this.count,recordDigest:sourceDigest(row)};
         if(p.retained_context!=null)this.retainedCheckpoints.set(digest(p.retained_context),this.count);
         if(p.resume_metadata!=null)this.resumeCheckpoint(p.resume_metadata,ref);
         if(p.latest_token_usage_record!=null){this.latestUsage=p.latest_token_usage_record;this.latestUsageRecord=this.count;}
       }
       // Native reconstruction invalidates these independently of history contents.
-      this.resetRecord=this.count;this.worldState=null;this.worldStateBaseline=null;
+      this.resetRecord=this.count;this.worldState=null;this.worldStateShadow=null;this.worldStateBaseline=null;
       this.turnContextBaseline=null;this.lastContext=null;
       this.baselineTransitions.push({record:this.count,kind:p.replacement_history==null?'legacy_compaction_reset':'compaction_reset',
         sourceRecord:null,stateDigest:null});
@@ -438,8 +441,8 @@ class RecordCoverage {
       if(!this.relevant){
         this.rememberEnvelope(p,row.metadata);
         if(['additional_tools','configuration_update'].includes(p.type)){
-          this.backendControls[p.type]={record:this.count,recordDigest:digest(row)};
-          this.baselineTransitions.push({record:this.count,kind:`historical_${p.type}`,sourceRecord:null,stateDigest:digest(row)});
+          this.backendControls[p.type]={record:this.count,recordDigest:sourceDigest(row)};
+          this.baselineTransitions.push({record:this.count,kind:`historical_${p.type}`,sourceRecord:null,stateDigest:sourceDigest(row)});
         }
         if(validMcpAttribution(row.metadata?.mcp_attribution))this.priorMcpAttributions.add(digest(row.metadata.mcp_attribution));
         const source=row.metadata?.retained_source,order=row.metadata?.user_input_order;
@@ -447,11 +450,11 @@ class RecordCoverage {
           &&source.id.turn_id===this.active&&p.internal_chat_message_metadata_passthrough?.turn_id===this.active
           &&Number.isSafeInteger(order)&&order>=0&&row.metadata.inherited_user_message!==true){
           const key=digest(source),existing=this.priorRetainedSources.get(key);
-          if(existing&&(existing.payloadDigest!==digest(p)||existing.order!==order))refuse('ORIGINAL_HISTORY_RETAINED_SOURCE_IDENTITY_CONFLICT',ref);
+          if(existing&&(existing.payloadDigest!==sourceDigest(p)||existing.order!==order))refuse('ORIGINAL_HISTORY_RETAINED_SOURCE_IDENTITY_CONFLICT',ref);
           const content=p.content,kinds=p.internal_chat_message_metadata_passthrough?.content_item_kinds;
           const textDigest=Array.isArray(content)&&content.every((c:any)=>closed(c,['type','text'])
             &&['input_text','output_text'].includes(c.type)&&typeof c.text==='string')?digest(content.map((c:any)=>c.text).join('\n')):null;
-          this.priorRetainedSources.set(key,{payloadDigest:digest(p),textDigest,phase:p.phase??null,
+          this.priorRetainedSources.set(key,{payloadDigest:sourceDigest(p),textDigest,phase:p.phase??null,
             origin:p.role==='user'&&Array.isArray(kinds)&&kinds.length===1&&kinds[0]==='user.heartbeat'?'heartbeat':'user',order,record:this.count});
         }
       }
@@ -459,9 +462,9 @@ class RecordCoverage {
         const order=row.metadata.user_input_order;
         if(!Number.isSafeInteger(order)||order<0)refuse('ORIGINAL_HISTORY_ACCEPTANCE_ORDER_INVALID',ref);
         if(this.relevant)refuse('ORIGINAL_HISTORY_ACCEPTED_USER_PROVENANCE_PRESENT',ref);
-        if(this.priorAcceptedUsers.has(order)&&this.priorAcceptedUsers.get(order)!==digest(p))
+        if(this.priorAcceptedUsers.has(order)&&this.priorAcceptedUsers.get(order)!==sourceDigest(p))
           refuse('ORIGINAL_HISTORY_ACCEPTANCE_ORDER_CONFLICT',ref);
-        this.priorAcceptedUsers.set(order,digest(p));
+        this.priorAcceptedUsers.set(order,sourceDigest(p));
       }
       if(this.relevant){
         if(!this.neutralMetadata(row.metadata))refuse('ORIGINAL_HISTORY_RESPONSE_METADATA_UNCLASSIFIED',ref);
@@ -480,16 +483,16 @@ class RecordCoverage {
     if(row.type==='event_msg'){
       if(p.type==='thread_settings_applied'){
         if(this.relevant&&object(p.thread_settings)&&this.settingsBaseline
-          &&digest(p.thread_settings)!==this.settingsBaseline.snapshotDigest)refuse('ORIGINAL_HISTORY_NATIVE_SETTINGS_CHANGED',ref);
+          &&sourceDigest(p.thread_settings)!==this.settingsBaseline.snapshotDigest)refuse('ORIGINAL_HISTORY_NATIVE_SETTINGS_CHANGED',ref);
         if(p.thread_id!==this.input.binding.threadId||!completeSettings(p.thread_settings))
           refuse('ORIGINAL_HISTORY_SETTINGS_SNAPSHOT_INCOMPLETE',ref);
-        const snapshotDigest=digest(p.thread_settings);
+        const snapshotDigest=sourceDigest(p.thread_settings);
         if(this.relevant){
           if(!this.settingsBaseline)refuse('ORIGINAL_HISTORY_SETTINGS_BASELINE_MISSING',ref);
           if(snapshotDigest!==this.settingsBaseline.snapshotDigest)refuse('ORIGINAL_HISTORY_NATIVE_SETTINGS_CHANGED',ref);
         }else{
           this.settingsSnapshot=p.thread_settings;
-          this.settingsBaseline={record:this.count,startByte:this.recordStart,endByte:this.recordEnd,snapshotDigest,recordDigest:digest(row)};
+          this.settingsBaseline={record:this.count,startByte:this.recordStart,endByte:this.recordEnd,snapshotDigest,recordDigest:sourceDigest(row)};
         }
         return;
       }
@@ -561,6 +564,8 @@ class RecordCoverage {
   }
   finish(){
     if(this.pendingCommunication)refuse('ORIGINAL_HISTORY_COMMUNICATION_PAIR_UNPROVEN',`record:${this.pendingCommunication.record}`);
+    if(this.comparisonWorldDigest!==null&&this.worldStateBaseline===null)
+      refuse('ORIGINAL_HISTORY_WORLD_STATE_BASELINE_MISSING');
     if(this.active!==null||this.current)refuse('ORIGINAL_HISTORY_TURN_NOT_TERMINAL');
     if(this.order.length!==this.expected.length||this.spans.length!==this.expected.length)refuse('ORIGINAL_HISTORY_ATTEMPT_COVERAGE_INCOMPLETE');
   }
@@ -606,11 +611,6 @@ function normalizeResume(value:any){return {multi_agent_version:value.multi_agen
   last_started_turn_id:value.last_started_turn_id??null,turn_attribution:value.turn_attribution??null,
   previous_turn_settings:value.previous_turn_settings==null?null:previousSettings(value.previous_turn_settings)};}
 
-function contextSettings(context:any){
-  // These two fields identify the turn/root, not the effective settings. Every
-  // other persisted field, including future fields, participates in equality.
-  const {turn_id:_turn,root_turn_id:_root,...settings}=context;return settings;
-}
 function contextMatchesSettings(context:any,settings:any):boolean{
   if(!settings||context.cwd!==settings.cwd||context.model!==settings.model||context.effort!==settings.reasoning_effort
     ||digest(context.approval_policy)!==digest(settings.approval_policy))return false;
@@ -656,7 +656,7 @@ function validUsage(value:any):boolean{
   const required=['input_tokens','cached_input_tokens','output_tokens','reasoning_output_tokens','total_tokens'];
   return object(value)&&required.every(key=>Number.isSafeInteger(value[key])&&value[key]>=0)
     &&Object.keys(value).every(key=>[...required,'cache_write_input_tokens'].includes(key)
-      &&Number.isSafeInteger(value[key])&&value[key]>=0);
+      &&nativeSourceIntegerAt(value,key)&&value[key]>=0);
 }
 const closed=(value:any,keys:readonly string[]):boolean=>object(value)&&Object.keys(value).every(key=>keys.includes(key));
 const uint=(value:any):boolean=>Number.isSafeInteger(value)&&value>=0;
@@ -842,14 +842,14 @@ export async function refreshCodexOriginalHistoryAfterOwnedResume(input:{db:Data
     if(prefixHash.digest('hex')!==w.prefixDigest)refuse('ORIGINAL_HISTORY_OWNED_RESUME_PREFIX_CHANGED');
     const bytes=Buffer.concat(append);
     if(bytes.at(-1)!==10||bytes.subarray(0,-1).includes(10))refuse('ORIGINAL_HISTORY_OWNED_RESUME_APPEND_NOT_EXACT');
-    let row:any;try{row=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes.subarray(0,-1)));}
+    let row:any;try{row=parseNativeSourceRecord(new TextDecoder('utf-8',{fatal:true}).decode(bytes.subarray(0,-1)));}
     catch{refuse('ORIGINAL_HISTORY_OWNED_RESUME_APPEND_DECODE_FAILED');}
     const p=row?.payload,settings=p?.thread_settings;
     if(!w.settingsBaseline)refuse('ORIGINAL_HISTORY_OWNED_RESUME_SETTINGS_BASELINE_MISSING');
     if(!object(row)||row.type!=='event_msg'||!nonempty(row.timestamp)||!Number.isFinite(Date.parse(row.timestamp))
       ||p?.type!=='thread_settings_applied'||p.thread_id!==w.threadId||!completeSettings(settings)
       ||settings.model!==binding.model||settings.reasoning_effort!==binding.effort
-      ||digest(settings)!==w.settingsBaseline.snapshotDigest
+      ||sourceDigest(settings)!==w.settingsBaseline.snapshotDigest
       ||w.historyMode==='paginated'&&row.ordinal!==w.lastOrdinal!+1
       ||w.historyMode==='legacy'&&row.ordinal!=null)
       refuse('ORIGINAL_HISTORY_OWNED_RESUME_SETTINGS_CONFLICT');

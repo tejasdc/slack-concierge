@@ -9,6 +9,7 @@ import {fixtureNativeSettings} from './codex-original-history-fixture-helper';
 import {CODEX_HISTORY_INTERPRETATION,decodeNativeHistoryRecord,decodeResponse,rolloutKinds,responseKinds,
   turnItemKinds,NativeHistoryDecodeError} from '../src/codex-native-history-decoder';
 import eventCatalogue from '../src/codex-native-event-catalogue.json';
+import {parseNativeSourceRecord,nativeSourceValueDigest} from '../src/codex-native-source-values';
 
 const scratch=mkdtempSync(join(tmpdir(),'codex-original-source-')),home=join(scratch,'codex-home');mkdirSync(home);
 const path=join(home,'rollout-original.jsonl'),threadId='019a7181-0000-7000-8000-000000000001';
@@ -73,6 +74,23 @@ for(const [kind,payload] of Object.entries({additional_tools:{role:'system',tool
   assert.ok(decodeResponse({type:kind,...payload}));
 }
 assert.throws(()=>decodeResponse({type:'computer_call'}),NativeHistoryDecodeError);
+assert.throws(()=>decodeResponse({type:'local_shell_call',status:'completed',action:{type:'exec',command:'invalid native vector'}}),NativeHistoryDecodeError);
+assert.throws(()=>decodeResponse({type:'function_call_output',output:[{type:'future_output',text:'unclassified'}]}),NativeHistoryDecodeError);
+assert.throws(()=>decodeResponse({type:'compaction_trigger'}),NativeHistoryDecodeError);
+const lexicalA=parseNativeSourceRecord('{"n":9007199254740992}'),lexicalB=parseNativeSourceRecord('{"n":9007199254740993}');
+assert.equal(lexicalA.n,lexicalB.n,'JavaScript alone collapses these distinct native JSON numbers');
+assert.notEqual(nativeSourceValueDigest(lexicalA),nativeSourceValueDigest(lexicalB),'source payload identity retains exact numeric evidence');
+assert.throws(()=>decodeNativeHistoryRecord(parseNativeSourceRecord(JSON.stringify({...row('response_item',user),metadata:{user_input_order:1}})
+  .replace('"user_input_order":1','"user_input_order":1.0'))),NativeHistoryDecodeError);
+const originalSearch={type:'tool_search_call',id:'earlier-search',execution:'server',arguments:{n:'RAW_NUMBER_A'}};
+for(const same of [true,false]){
+  const rows=records();rows.splice(8,0,row('response_item',originalSearch));
+  const checkpoint=rows.find(r=>r.type==='compacted').payload;
+  checkpoint.replacement_history.push({...originalSearch,arguments:{n:same?'RAW_NUMBER_A':'RAW_NUMBER_B'}});
+  checkpoint.replacement_history_metadata.push({});
+  writeFileSync(path,serialize(rows).replaceAll('"RAW_NUMBER_A"','9007199254740992').replaceAll('"RAW_NUMBER_B"','9007199254740993'));
+  assert.equal((await read()).proven,same,'replacement effects require exact original numeric payload identity');
+}
 assert.throws(()=>decodeNativeHistoryRecord({...row('response_item',user),metadata:{future_authority:true}}),NativeHistoryDecodeError);
 const historicalPair=records();historicalPair.splice(4,0,row('inter_agent_communication_metadata',{trigger_turn:true}),
   row('response_item',{type:'agent_message',id:'comm-item',author:'root/child',recipient:'root',
@@ -111,12 +129,18 @@ resetAndReestablish.splice(8,0,row('world_state',{full:true,state:{stable:'befor
     multi_agent_version:null,last_started_turn_id:null,previous_turn_settings:null}}),
   row('world_state',{full:false,state:{ignored:'without full snapshot'}}),
   row('world_state',{full:true,state:{stable:'reestablished'}}),context('prior-T'));
+resetAndReestablish.splice(resetAndReestablish.findIndex((r,index)=>index>15&&r.type==='compacted')+1,0,
+  row('world_state',{full:true,state:{stable:'reestablished'}}));
 write(resetAndReestablish);const reconstructed=await read();assert.equal(reconstructed.proven,true,JSON.stringify(reconstructed));
 if(reconstructed.proven){
   const reset=reconstructed.witness.baselineTransitions.find(t=>t.kind==='compaction_reset')!;
   assert.ok(reconstructed.witness.baselineTransitions.some(t=>t.kind==='world_full'&&t.sourceRecord===reset.record));
   assert.ok(reconstructed.witness.baselineTransitions.some(t=>t.kind==='context_established'&&t.sourceRecord===reset.record));
 }
+const unbasedWorld=structuredClone(resetAndReestablish);
+const laterReset=unbasedWorld.findIndex((r,index)=>index>15&&r.type==='compacted');unbasedWorld.splice(laterReset+1,1);
+write(unbasedWorld);const noWorldBaseline=await read();assert.equal(noWorldBaseline.proven,false);
+if(!noWorldBaseline.proven)assert.equal(noWorldBaseline.reasons[0]?.code,'ORIGINAL_HISTORY_WORLD_STATE_BASELINE_MISSING');
 const missingReestablishment=records();missingReestablishment.splice(17,1);write(missingReestablishment);
 assert.equal((await read()).proven,false,'a pre-compaction context cannot certify a post-compaction baseline');
 const legacyCompaction=records();delete legacyCompaction[16].payload.replacement_history;
@@ -175,9 +199,10 @@ const unchanged=records();unchanged.splice(16,0,row('event_msg',{type:'thread_se
 assert.equal((await read()).proven,true,'complete identical settings checkpoint is neutral');
 await refuses('ORIGINAL_HISTORY_WORLD_STATE_BASELINE_MISSING',rows=>{rows.splice(16,0,row('world_state',{full:true,state:{environment:{cwd:'/fixture'}}}));});
 const state={environment:{cwd:'/fixture',approval:'never'},privateContext:{retained:'unchanged'}};
-const stableWorld=records();stableWorld.splice(16,0,row('world_state',{full:true,state}));stableWorld.splice(9,0,row('world_state',{full:true,state}));write(stableWorld);
+const stableWorld=records();stableWorld.splice(17,0,row('world_state',{full:true,state}));stableWorld.splice(9,0,row('world_state',{full:true,state}));write(stableWorld);
 assert.equal((await read()).proven,true,'source-backed full world-state baseline equality');
 const stablePatch=records();stablePatch.splice(16,0,row('world_state',{full:false,state:{environment:{cwd:'/fixture'}}}));
+stablePatch.splice(stablePatch.findIndex(r=>r.type==='compacted')+1,0,row('world_state',{full:true,state}));
 stablePatch.splice(9,0,row('world_state',{full:true,state}));write(stablePatch);
 assert.equal((await read()).proven,true,'recursive merge patch with identical effective state is neutral');
 await refuses('ORIGINAL_HISTORY_WORLD_STATE_CHANGED',rows=>{rows.splice(16,0,row('world_state',{full:false,state:{environment:{cwd:'/new'}}}));

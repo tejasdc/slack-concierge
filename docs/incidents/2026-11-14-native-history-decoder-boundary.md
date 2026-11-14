@@ -40,6 +40,22 @@ Unsupported native semantics, unknown fields, malformed shapes and missing
 provenance remain distinct failures. A failed proof still inventories the full
 captured source; subsequent records cannot repair the failed proof implicitly.
 
+Self-review also found that enum recognition alone did not validate every nested
+response shape. The decoder binds the official pinned ResponseItem schema and its
+fourteen transitive definitions, validates only the schema keywords actually in
+that closed fragment, and refuses new keywords. Native classification/warehouse
+passthrough fields omitted by Schemars are checked separately and remain part of
+original provenance. Tool/provider data is opaque only where the native schema
+declares unstructured JSON.
+
+Native rollout parsing preserves decimal JSON values. JavaScript can collapse
+distinct large numeric payloads before a payload-membership comparison. Source
+comparison now retains numeric lexemes alongside parsed values and fingerprints a
+typed source representation with the unchanged digest primitive. Replacement
+envelopes, settings and reconstructed world state cannot borrow identity through
+numeric rounding. Native integer fields also refuse fractional representations.
+This representation is deliberately stricter than unproved numeric rewriting.
+
 Acceptance uses disposable source files and the real reader/client composition,
 with unrelated daemon maintenance/start callbacks stubbed. It covers historical
 communications, envelope identity, reset/re-establishment and selected/suffix

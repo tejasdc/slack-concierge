@@ -201,6 +201,11 @@ The original-source decoder is pinned to rust-v0.162.0 commit
 `c1382380de69521303b416720a52f42d51af6248`. Its witness binds the decoder/reducer
 interpretation and event catalogue digest, separately from the unchanged digest
 primitive. Source revalidation and owned-resume refresh reject older interpretations.
+The interpretation also binds the official pinned response schema and the source
+numeric representation policy. Nested response shapes use the pinned schema;
+classification/warehouse fields omitted by that schema retain separate raw-shape
+checks. Typed source fingerprints preserve numeric lexemes so JavaScript rounding
+cannot equate distinct original/replacement payloads or world/settings states.
 The catalogue recognizes all twelve rollout kinds, the response variants and alias,
 and all event wire names. Known native forms with unsupported proof semantics have
 specific refusals; recognition alone is never a neutral-effects allow.

@@ -1,11 +1,13 @@
 import catalogue from './codex-native-event-catalogue.json';
 import {acceptedBindingSnapshotDigest as digest} from './codex-accepted-binding-continuation';
+import {matchesPinnedNativeResponse,nativeResponseSchemaIdentity} from './codex-native-response-shape';
+import {nativeSourceIntegerAt} from './codex-native-source-values';
 
 // Vocabulary is pinned, not inferred from the installed CLI or the first failing
 // record. Recognition never implies that an effect is admissible for recovery.
 export const CODEX_HISTORY_INTERPRETATION={upstreamCommit:catalogue.upstreamCommit,
   tag:catalogue.tag,decoder:'original_history_decoder_v2',reducer:'preserved_baseline_interval_v2',
-  catalogueDigest:digest(catalogue)} as const;
+  catalogueDigest:digest(catalogue),responseSchema:nativeResponseSchemaIdentity,sourceNumbers:'lexical_numeric_identity_v1'} as const;
 export const rolloutKinds=['session_meta','response_item','inter_agent_communication',
   'inter_agent_communication_metadata','compacted','turn_context','token_usage_record','world_state',
   'retained_context','security_risk_score','event_msg','realtime_item'] as const;
@@ -27,7 +29,7 @@ export function decodeHarnessMetadata(v:any){
   for(const k of ['client_authored','guardian_source_order_guidance','harness_authored_configuration','compaction_output','inherited_user_message'])
     if(Object.hasOwn(v,k)&&typeof v[k]!=='boolean')fail('ORIGINAL_HISTORY_ENVELOPE_SHAPE_INVALID');
   for(const k of ['compaction_model_hash','delivered_assistant_message'])if(!opt(v[k],str))fail('ORIGINAL_HISTORY_ENVELOPE_SHAPE_INVALID');
-  for(const k of ['user_input_order','fallback_token_limit_override'])if(!opt(v[k],uint))fail('ORIGINAL_HISTORY_ENVELOPE_SHAPE_INVALID');
+  for(const k of ['user_input_order','fallback_token_limit_override'])if(v[k]!=null&&(!uint(v[k])||!nativeSourceIntegerAt(v,k)))fail('ORIGINAL_HISTORY_ENVELOPE_SHAPE_INVALID');
   for(const k of ['guardian_sources','guardian_review_ids'])if(Object.hasOwn(v,k)&&!Array.isArray(v[k]))fail('ORIGINAL_HISTORY_ENVELOPE_SHAPE_INVALID');
   for(const k of ['retained_source','guardian_retained_omissions','mcp_attribution','sender_user_messages'])
     if(!opt(v[k],obj))fail('ORIGINAL_HISTORY_ENVELOPE_SHAPE_INVALID');
@@ -54,6 +56,7 @@ export function decodeRetainedCheckpoint(v:any){
   for(const key of ['user_messages_incomplete','assistant_messages_incomplete'])if(!opt(v[key],x=>typeof x==='boolean'))
     fail('ORIGINAL_HISTORY_COMPACTION_SIDECAR_UNCLASSIFIED');
   if(!opt(v.next_order,uint))fail('ORIGINAL_HISTORY_COMPACTION_SIDECAR_UNCLASSIFIED');
+  if(v.next_order!=null&&!nativeSourceIntegerAt(v,'next_order'))fail('ORIGINAL_HISTORY_COMPACTION_SIDECAR_UNCLASSIFIED');
   const families:Record<string,string[]>={verified_answers:['turn_id','call_id','questions'],
     user_messages:['turn_id','message_id','text','complete','origin','phase'],
     assistant_messages:['turn_id','message_id','text','complete','origin','phase'],
@@ -61,6 +64,7 @@ export function decodeRetainedCheckpoint(v:any){
   for(const [family,keys] of Object.entries(families))for(const e of v[family]??[]){
     if(!fields(e,['revision','inherited','order',...keys])||!opt(e.revision,str)||!opt(e.order,uint)
       ||!opt(e.inherited,x=>typeof x==='boolean'))fail('ORIGINAL_HISTORY_RETAINED_CONTEXT_SOURCE_UNPROVEN');
+    if(e.order!=null&&!nativeSourceIntegerAt(e,'order'))fail('ORIGINAL_HISTORY_RETAINED_CONTEXT_SOURCE_UNPROVEN');
     if(family==='verified_answers'){
       if(!str(e.turn_id)||!str(e.call_id)||!Array.isArray(e.questions)
         ||e.questions.some((q:any)=>!fields(q,['question','answer'])||!str(q.question)||!str(q.answer)))
@@ -131,6 +135,7 @@ export function decodeResponse(p:any){
       ||!opt(p.content,v=>Array.isArray(v)&&v.every(x=>textPart(x,['reasoning_text','text'])))
       ||!opt(p.encrypted_content,str))fail('ORIGINAL_HISTORY_REASONING_SHAPE_UNSUPPORTED');
   }
+  if(!matchesPinnedNativeResponse(p,kind))fail('ORIGINAL_HISTORY_RESPONSE_NATIVE_SHAPE_INVALID');
   return kind as string;
 }
 export type NativeDecodedRecord={kind:string;subtype:string|null;knownUnsupported:boolean};
@@ -180,6 +185,11 @@ export function decodeNativeHistoryRecord(row:any):NativeDecodedRecord{
     fail('ORIGINAL_HISTORY_CONTEXT_FIELD_UNKNOWN');
   if(row.type==='turn_context'&&(!str(p.model)||!str(p.cwd)||!obj(p.sandbox_policy)||p.approval_policy==null))
     fail('ORIGINAL_HISTORY_CONTEXT_SHAPE_INVALID');
+  if(row.type==='turn_context'&&(!opt(p.multi_agent_version,v=>['disabled','v1','v2'].includes(v))
+    ||!opt(p.effort,v=>['none','minimal','low','medium','high','xhigh'].includes(v))
+    ||!opt(p.realtime_active,v=>typeof v==='boolean')||!opt(p.comp_hash,str)
+    ||!opt(p.disabled_plugin_ids,v=>Array.isArray(v)&&v.every(str))
+    ||!opt(p.summary,v=>['auto','concise','detailed','none'].includes(v))))fail('ORIGINAL_HISTORY_CONTEXT_SHAPE_INVALID');
   if(row.type==='world_state'&&(!fields(p,['full','state'])||typeof p.full!=='boolean'||!obj(p.state)))
     fail('ORIGINAL_HISTORY_WORLD_STATE_SHAPE_INVALID');
   if(row.type==='token_usage_record'&&(!fields(p,['thread_id','turn_id','session_id','root_turn_id','response_id',
