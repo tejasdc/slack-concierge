@@ -358,7 +358,7 @@ import {installSessionProjection} from './session-projection';
 import {expireUnreadableReadingItems,fileServiceNotices,settleReadInboxAttention,keepThreadsCurrent,migrateInboxAttention,migrateInboxTopics,reconcileCarriedClosures,reconcileForwardedFinalAnswers,retireRecoveredBookkeepingRequests,retireTimedRequestPosts,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
 import {resolveRetryNotices} from './retry-breaker-notice';
 import {ownerEventMaxSequence,runStartupCatchUp,runStartupSweep,scheduleSessionPurposeRepair,startDeferredStartupRepairs} from './startup-repairs';
-import {CodexSessionObserver} from './codex-session-observer';
+import {bindCodexProviderSession,CodexSessionObserver} from './codex-session-observer';
 import {ensureSpeechWorker} from './speech-job-supervisor';
 
 recordModuleLoadStep(closeModuleLoadStorage());
@@ -538,7 +538,7 @@ const activeTurnDispatch = new ActiveTurnDispatchRegistry({
     }
   },
 });
-const sessionExecutionHost=new SessionExecutionHost({instanceId,registry:activeTurnDispatch,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>sessionTurnQueue?.wake(),providerSessionBound:uuid=>codexSessionObserver?.providerSessionBound(uuid)??Promise.resolve(),claudeAuthRefreshCommand:cfg.claude_code_auth_refresh_command});
+const sessionExecutionHost=new SessionExecutionHost({instanceId,registry:activeTurnDispatch,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>sessionTurnQueue?.wake(),providerSessionBound:uuid=>bindCodexProviderSession(codexSessionObserver,uuid),claudeAuthRefreshCommand:cfg.claude_code_auth_refresh_command});
 if(process.platform==='linux'){
   // Results are small spool artifacts. Only this owner commits them to the attachment ledger;
   // a bounded pass also catches a result produced while Concierge was restarting.
@@ -2486,8 +2486,7 @@ async function runClaimedTurn(input: ClaimedTurnInput): Promise<TurnRunOutcome> 
         ),
         scheduleTurnStatusProjection: scheduleSlackTurnStatusProjection,
         providerSessionBound: async (providerThreadUuid) => {
-          await codexSessionObserver?.providerSessionBound(providerThreadUuid);
-          await codexRemoteObserver?.providerSessionBound(providerThreadUuid);
+          await bindCodexProviderSession(codexSessionObserver, providerThreadUuid, codexRemoteObserver);
         },
         startAgentProgress: startSlackAgentProgress,
         appendAgentProgress: appendSlackAgentProgress,

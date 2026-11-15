@@ -1,8 +1,10 @@
 import type { CodexAppServerClientLike } from './codex-app-server-client';
+import type {CustodyNativeConnection} from './codex-custody-connection';
 
 /** Owner-derived construction facts. Persistence and eligibility remain with session-owner. */
 export interface CodexSuccessorPlan {
   readonly operationId: string;
+  readonly ownerSessionId?:number;
   readonly model: 'gpt-6-astra';
   readonly provider: string;
   readonly cwd: string;
@@ -13,6 +15,7 @@ export interface CodexSuccessorPlan {
   readonly sandbox: 'danger-full-access';
   readonly custodyCommitted: true;
   readonly predecessorExcluded: true;
+  readonly nativeConnection?:CustodyNativeConnection;
   readonly additionalContext?: Readonly<Record<string, { value: string; name?: string; kind: 'application'|'untrusted' }>>;
 }
 
@@ -61,6 +64,17 @@ const nonempty = (value: string, field: string) => {
   return value;
 };
 
+/** The adapter and last-byte owner guard use the same prospective native request. */
+export function successorThreadStartParams(plan:CodexSuccessorPlan) {
+  assertCommitted(plan);
+  const roots=normalizedRoots(plan);
+  return {model:plan.model,modelProvider:nonempty(plan.provider,'provider'),allowProviderModelFallback:false,
+    cwd:plan.cwd,runtimeWorkspaceRoots:roots,
+    environments:[{environmentId:nonempty(plan.environmentId,'environment id'),cwd:plan.cwd,runtimeWorkspaceRoots:roots}],
+    config:{...plan.config,model_reasoning_effort:'medium'},approvalPolicy:plan.approvalPolicy,sandbox:plan.sandbox,
+    ephemeral:false,...(plan.additionalContext?{developerInstructions:renderContext(plan.additionalContext)}:{})};
+}
+
 /**
  * Narrow native boundary for an owner-committed successor. It never starts the daemon,
  * resumes a thread, or retries an ambiguous construction/admission. The owner must persist
@@ -72,21 +86,8 @@ export class CodexSuccessorNativeAdapter {
   async construct(plan: CodexSuccessorPlan): Promise<CodexSuccessorConstruction> {
     assertCommitted(plan);
     const roots = normalizedRoots(plan);
-    const environment = [{ environmentId: nonempty(plan.environmentId, 'environment id'),
-      cwd: plan.cwd, runtimeWorkspaceRoots: roots }];
-    const response = await this.client.request('thread/start', {
-      model: plan.model,
-      modelProvider: nonempty(plan.provider, 'provider'),
-      allowProviderModelFallback: false,
-      cwd: plan.cwd,
-      runtimeWorkspaceRoots: roots,
-      environments: environment,
-      config: { ...plan.config, model_reasoning_effort: 'medium' },
-      approvalPolicy: plan.approvalPolicy,
-      sandbox: plan.sandbox,
-      ephemeral: false,
-      ...(plan.additionalContext ? { developerInstructions: renderContext(plan.additionalContext) } : {}),
-    }, { untilDisconnect: true });
+    const response = await this.client.request('thread/start', successorThreadStartParams(plan),
+      { untilDisconnect: true,custodyOwnerSessionId:plan.ownerSessionId });
     const thread = response?.thread;
     const threadId = typeof thread?.id === 'string' ? thread.id : '';
     if (!threadId) throw new Error('Native construction returned no durable thread identity; construction outcome requires reconciliation.');
@@ -121,7 +122,7 @@ export class CodexSuccessorNativeAdapter {
     if (!exactReminder) throw new Error('The exact selected reminder payload is required.');
     // A rejected/ambiguous call is returned to the owner as such. Never resend here.
     const response = await this.client.request('turn/start', successorTurnStartParams(plan, construction.threadId,
-      exactReminder, `custody-successor:${plan.operationId}`), { untilDisconnect: true });
+      exactReminder, `custody-successor:${plan.operationId}`), { untilDisconnect: true,custodyOwnerSessionId:plan.ownerSessionId });
     const turnId = typeof response?.turn?.id === 'string' ? response.turn.id : '';
     if (!turnId) throw new Error('Native admission returned no turn identity; admission outcome requires reconciliation.');
     return { operationId: plan.operationId, threadId: construction.threadId, turnId, response };

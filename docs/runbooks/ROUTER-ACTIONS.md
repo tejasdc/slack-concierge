@@ -117,6 +117,12 @@ The incident artifact records the exact parent-controlled recovery command and h
 
 ### Custody-successor recovery
 
+Source-review status: the corrected source implements a positive bounded managed-owner
+transport lane. Whole-feature review and actual target activation evidence remain
+separate. No original-requester restriction or new human approval applies. A terminal
+native snapshot, process absence, source fingerprint or connection identity alone does
+not establish exclusion of already-issued native preparation or external writers.
+
 An explicitly selected recovery mode can continue a retained Astra Medium service
 reminder in a new native conversation while keeping its original logical identity:
 
@@ -133,6 +139,15 @@ assessment boolean, native identity or workspace path. The native model-start ho
 recognizes the committed placement as preservation, and records that fact without
 labelling it human authorization. New Astra helper selections remain subject to
 ordinary escalation.
+
+The retained action binds its recovery kind, request, canonical reminder,
+predecessor/successor handoff, acting source/run and resolved work-authority input.
+An informational wake may use a separate retained work grant under the normal
+authority rules; that grant is recorded separately from the wake. Reusing an action
+for a different operation, canonical target or authority basis conflicts, while a
+new repair action can inspect the same canonical operation without a new allowance.
+The effective grant must remain the same across asynchronous preparation and the
+custody transaction. Broad cross-session agent authority remains unchanged.
 
 The current owner selects the canonical report-back of the named open work request,
 verifies its retained admission, maps every previous attempt to complete native
@@ -159,12 +174,55 @@ reminder is the unique recovery reservation across action IDs and successor IDs;
 historical recovery reservation and custody-successor reservation exclude each
 other. No acknowledged original request is requeued as fresh work.
 
+The proposed recovery handoff is a durable target hold before native eligibility
+reconciliation. Queue admission and the synchronous transport forwarding policy both
+honor it, including requests whose asynchronous preparation began before that hold.
+All covered managed sender objects are captured with their actual endpoint, target,
+owner and connection generation. The transport freezes further relevant sends,
+then requires a correlated successful `thread/read` on each captured old generation.
+This is a received-prefix and known-thread handler barrier, not a disconnect receipt.
+Successful barriers cover their actual literal thread keys and only preceding writes.
+Loss, replacement, rejected/timeout reads and known uncovered prior generations hold
+the operation. Relevant path/history overrides and unkeyed starts require a separate
+conclusive disposition; an RPC response alone is not full handler completion.
+Before canonical reservation, an ordinary proposal can still be withdrawn. Once
+the canonical recovery reservation exists, Pause and exact Stop control its work;
+ordinary handoff withdrawal cannot discard that reservation or reactivate the
+predecessor behind the retained native hold.
+
+Only after those barriers does the owner refresh selected-attempt history, original
+source/resources, native status, paginated queue and background-terminal state, goals
+and a fresh exact-thread process observation. Ongoing or unknown relevant effects
+hold custody. Children and disjoint productive work remain independently owned.
+The process observer validates the actual local endpoint's managed daemon scope and
+refuses unreadable live candidates. An unloaded thread's exact native not-found
+terminal-list response is recorded as unavailable, with the process check still
+required. A disabled-goals response is usable only for an unloaded thread; disabled
+inspection of a resident thread's goal remains a hold.
+
+The receipt states `coverage: managed-client-registry-only` and
+`externalCoverage: not-asserted`. It exposes the exact frozen senders/generations,
+barriers, native association and unresolved effects. These labels grant no authority
+over a process-external or inaccessible legacy sender. Before invoking construction
+for a real target, the parent must establish the actual finite transport population
+and dispositions of any relevant legacy/external traffic. A normal owner release
+losing client objects does not settle their native effects. No supported universal
+external-writer inventory or actuator is supplied by this mode; where required
+external coverage cannot be validated, real activation remains held. Potential
+unregistered writers are a scope limitation; evidenced uncontrolled target writers
+are a concrete hold. There is no caller `assessed` flag or operator certificate.
+
 Custody acceptance is an owner transition, not a fabricated successor-model
 acknowledgement. One immediate transaction transfers current request and return
 responsibilities, answer duties and watches, records referenced Lab/worktree
 resources, suspends the predecessor and commits recovery custody. Claim predicates
 also exclude accepted predecessors independently of their suspension metadata.
-The successor remains held if any later construction step fails.
+The successor remains held if any later construction step fails. Authority and the
+canonical selected facts are revalidated inside that transaction after asynchronous
+inventory/resource checks. Transferred obligations remain independent of the selected
+recovery attempt's outcome; an empty/error attempt cannot settle other owed duties.
+Recovery staging records its operation kind and canonical reminder, so it cannot
+reuse an ordinary handoff's queued bootstrap under a colliding action identity.
 
 After commitment, one durably recorded native construction intent authorizes
 `thread/start` with the stock explicit `local` environment, current approved cwd
@@ -174,12 +232,23 @@ Known preserved worktrees remain references rather than being unioned into nativ
 workspace roots. Native response settings must agree before the recorded thread
 identity is bound and the selected placement is released. A lost construction
 response stays held; another repair action does not construct again. A mismatched
-response retains its known native identity while withholding admission.
+response retains its known native identity while withholding admission. A successful
+construction response is persisted before further awaited resource validation, so a
+later ordinary failure also retains its observed identity and settings. Construction
+completion preserves a newer explicit Pause; Continue cannot bypass the passive
+construction hold.
 
 The construction connection stays with the execution host because native
 `thread/start` attaches its subscription and may unload idle work after the last
 subscriber leaves. The native adapter never manages, restarts or replaces the
-daemon. First selected `turn/start` repeats the explicit local selection, cwd,
+daemon. The owner plan retains the exact client, live connection generation and the
+actual endpoint/initialize response. Protected requests refuse before an implicit
+reconnect for consequential calls. Read-only reconciliation remains available after
+a transport change; construction, admission and other mutations remain held pending
+boundary revalidation.
+A configured runner route is incompatible with this local-only construction and
+is refused. This is connection association evidence, not native writer exclusion.
+First selected `turn/start` repeats the explicit local selection, cwd,
 roots, model and effort; transport staging never becomes the native context.
 Preparation supplies current source/run identity as application context while the
 logical reminder text remains exact. The existing execution, acknowledgement,
@@ -191,16 +260,20 @@ the native effect. A lost or rejected send never replenishes that allowance.
 
 Queue retries, parked resumption and the legacy recovery reservation cannot create
 another selected send. The same native thread remains protected for later distinct
-inputs without resetting the original allowance. Reconnect and owner adoption use
+inputs without resetting the original allowance. Reconciliation uses
 the recorded thread, turn/client identity and paginated observation; they never
 resume a cold thread, replace it or resend. Since turn-start and history reads do
 not attach a new native listener, protected reconciliation keeps observing an
 active turn until terminal evidence is available. Stop interrupts only that exact
-execution and verifies the resulting native history. Missing residency or identity
-is a hold. This is not a general safe cold-resume capability.
+execution and verifies the resulting native history. A connection change or owner
+restart holds protected mutations until its native boundary is re-established;
+adoption may still read the exact recorded attempt and settle observed results. Missing
+residency or identity is a hold. This is not a general safe cold-resume capability.
 
 The durable custody record exposes staging, committed custody, construction intent,
 constructed identity, spent attempt, native turn and acknowledgement separately.
+Forwarding-intent events reserve one send before bytes leave the client; those
+events are not provider acceptance or acknowledgement receipts.
 Held errors retain their operation identity. These records and the existing owner
 events are the diagnostic entrance; no additional watcher or service is introduced.
 Strict historical settings failure and diagnostic semantic-coverage records keep
@@ -210,7 +283,12 @@ in a caller's payload.
 Before staging, the owner publishes a durable reader requirement. Application and
 controller artifacts each carry a sealed custody capability. Release activation
 and rollback check them independently, including application-only rollback with
-its separately selected controller. A bounded `EXISTS` read through the sealed
+its separately selected controller. Hybrid artifacts additionally bind the
+application capability to the application source tree; an old builder copying the
+new controller's capability onto an old application is refused. First requirement
+publication and compatibility-check/pointer publication serialize through the
+serving owner's existing release operation. Offline production pointer commands
+require positively observed stopped-coordinator state. A bounded `EXISTS` read through the sealed
 ledger reader also detects retained custody rows after a restore that lost the
 marker directory. A pre-feature controller can bootstrap the first capable
 release using that verified candidate's sealed read entrance. There is no mutable
@@ -224,8 +302,12 @@ package build. They exercise real owner persistence, positive construction and
 selected admission, useful-result acknowledgement, refusal cases, adoption and Stop
 against typed native substitutes. The compiler's undefined-name gate reads both
 application build roots and the controller's sealed bundle declaration, so either
-kind of shipped TypeScript entry point must resolve its identifiers. These checks
+kind of shipped TypeScript entry point must resolve its identifiers. The production
+observer composition and its local/remote reconnect paths also preserve protected
+threads through read-only observation, avoiding an independent cold resume. These checks
 do not establish installed recovery.
+The native cutoff, current-effects, forward-policy, connection and production
+observer fixtures cover the bounded transport and callback contracts separately.
 Before real activation, the parent must verify the serving release and associated
 native incarnation/protocol, current exact selected-input eligibility and allowance,
 current exclusion/effect disposition, complete custody inventory, source/resource

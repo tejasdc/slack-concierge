@@ -22,7 +22,7 @@ import {undeliveredRequestState} from './request-prerequisite-hold';
 const run=promisify(execFile);
 type Item={id:string;kind:'sent'|'owed'|'answer'|'queued'|'watch'|'lab'|'worktree';ref:string;holder:string;[key:string]:unknown};
 type Inventory={items:Item[];omissions:string[];dispositions?:{kind:string;source:string;reason:string;preservedSourcePath:string;namespace:Record<string,unknown>;effect:string}[]};
-type HandoffRow={id:string;predecessor_session_id:number;successor_session_id:number;state:string;action_id:string;caller_session_id:number;requesting_input_id:string;inventory_json:string;inventory_digest:string};
+type HandoffRow={id:string;predecessor_session_id:number;successor_session_id:number;state:string;action_id:string;caller_session_id:number;requesting_input_id:string;inventory_json:string;inventory_digest:string;handoff_kind?:string;canonical_input_id?:string|null};
 const digest=(value:Inventory)=>createHash('sha256').update(stablePayload(value)).digest('hex');
 const RECOVERY_HANDOFF_AUTHORITY=Symbol('owner-validated-codex-recovery-handoff');
 const canonical=(id:number)=>`concierge:${id}`;
@@ -327,7 +327,7 @@ export async function proposeHandoff(input:{actorSession:number;inputId:string;r
   const snapshot=await inventory(source.id,{inputId:input.inputId,runId:input.runId});
   return db.transaction(()=>{
     const prior=db.query('SELECT * FROM session_handoffs WHERE requesting_input_id=? AND action_id=?').get(input.inputId,input.actionId) as HandoffRow|null;
-    if(prior){if(prior.predecessor_session_id!==source.id)throw new Error('Handoff action identity conflicts with another predecessor.');return {handoffId:prior.id,successor:canonical(prior.successor_session_id),inventory:JSON.parse(prior.inventory_json),digest:prior.inventory_digest,state:prior.state,duplicate:true};}
+    if(prior){if(prior.predecessor_session_id!==source.id||prior.handoff_kind!=='ordinary')throw new Error('Handoff action identity conflicts with another handoff kind or predecessor.');return {handoffId:prior.id,successor:canonical(prior.successor_session_id),inventory:JSON.parse(prior.inventory_json),digest:prior.inventory_digest,state:prior.state,duplicate:true};}
     if(supersededBy(source.id))throw new Error('The predecessor was superseded while preparing handoff.');
     const open=pending(source.id);if(open)throw new Error(`Handoff ${open.id} is already proposed for ${canonical(source.id)}.`);
     const now=inventoryLocalWithExternal(source.id,snapshot);
@@ -375,7 +375,17 @@ export async function stageRecoveryHandoff(input:{actorSession:number;inputId:st
   await assertRecoveryResources(source.id,input.preservedSourcePath,snapshot.items);
   return db.transaction(()=>{
     const prior=db.query('SELECT * FROM session_handoffs WHERE requesting_input_id=? AND action_id=?').get(input.inputId,input.actionId) as HandoffRow|null;
-    if(prior){if(prior.predecessor_session_id!==source.id)throw new Error('Recovery action identity conflicts with another predecessor.');return {
+    if(prior){
+      if(prior.predecessor_session_id!==source.id||prior.handoff_kind!=='codex-custody-successor'||prior.canonical_input_id!==selected.id)
+        throw new Error('Recovery action identity conflicts with another handoff kind, selected input or predecessor.');
+      const successor=getSessionById(prior.successor_session_id);
+      const linked=db.query('SELECT canonical_input_id,placement_input_id,placement_turn_id FROM codex_custody_successors WHERE handoff_id=?').get(prior.id) as any;
+      if(linked&&linked.canonical_input_id!==selected.id)throw new Error('Recovery handoff is bound to a different canonical input.');
+      if(!linked&&(!successor||!sessionMetadata(successor).suspended||successor.agent_session_uuid!==null
+        ||db.query('SELECT 1 FROM session_inputs WHERE session_id=? LIMIT 1').get(prior.successor_session_id)
+        ||db.query('SELECT 1 FROM turns WHERE session_id=? LIMIT 1').get(prior.successor_session_id)))
+        throw new Error('Unlinked recovery handoff is not a passive staging successor.');
+      return {
       handoffId:prior.id,successor:canonical(prior.successor_session_id),digest:prior.inventory_digest,
       inventory:JSON.parse(prior.inventory_json) as Inventory,state:prior.state,duplicate:true};}
     if(supersededBy(source.id)||pending(source.id))throw new Error('The predecessor already has a competing handoff.');
@@ -387,9 +397,9 @@ export async function stageRecoveryHandoff(input:{actorSession:number;inputId:st
       projectName:metadata.projectName,projectPath:metadata.projectPath,suspended:true,interactionPolicy:metadata.interactionPolicy,
       nativeBinding:metadata.nativeBinding});
     const human=sessionInputProvenance(sourceInput)?.originatingHuman??null;
-    db.query(`INSERT INTO session_handoffs(id,predecessor_session_id,successor_session_id,state,action_id,caller_session_id,reason,
+    db.query(`INSERT INTO session_handoffs(id,predecessor_session_id,successor_session_id,state,action_id,handoff_kind,canonical_input_id,caller_session_id,reason,
       requesting_input_id,requesting_run_id,originating_human_json,inventory_json,inventory_digest)
-      VALUES(?,?,?,'proposed',?,?,?,?,?,?,?,?)`).run(id,source.id,successor.id,input.actionId,input.actorSession,input.reason.trim(),input.inputId,input.runId,
+      VALUES(?,?,?,'proposed',?,'codex-custody-successor',?,?,?,?,?,?,?,?)`).run(id,source.id,successor.id,input.actionId,selected.id,input.actorSession,input.reason.trim(),input.inputId,input.runId,
         human?JSON.stringify(human):null,JSON.stringify(now),hash);
     executionChanged();
     return {handoffId:id,successor:canonical(successor.id),digest:hash,inventory:now,state:'proposed',duplicate:false};
@@ -398,13 +408,14 @@ export async function stageRecoveryHandoff(input:{actorSession:number;inputId:st
 
 /** Commit engine-owned recovery placement and the exact current obligation inventory together. */
 export async function commitRecoveryHandoff(input:{actorSession:number;inputId:string;runId:string;handoffId:string;digest:string;
-  placementInputId:string;placementTurnId:number}) {
-  const proposed=row(input.handoffId);if(!proposed||proposed.caller_session_id!==input.actorSession)
-    throw new Error('Recovery handoff is not owned by this exact engine actor.');
+  placementInputId:string;placementTurnId:number;validateAuthority:()=>void}) {
+  if(typeof input.validateAuthority!=='function')throw new Error('Recovery custody requires its current owner authority validator.');
+  const proposed=row(input.handoffId);if(!proposed||proposed.handoff_kind!=='codex-custody-successor')
+    throw new Error('Recovery handoff is not the exact engine-owned operation kind.');
   const relation=db.query(`SELECT canonical_input_id,predecessor_session_id,successor_session_id,placement_input_id,placement_turn_id,state,snapshot_json
     FROM codex_custody_successors WHERE handoff_id=? AND placement_input_id=? AND placement_turn_id=?`)
     .get(input.handoffId,input.placementInputId,input.placementTurnId) as any;
-  if(!relation||relation.predecessor_session_id!==proposed.predecessor_session_id
+  if(!relation||relation.canonical_input_id!==proposed.canonical_input_id||relation.predecessor_session_id!==proposed.predecessor_session_id
     ||relation.successor_session_id!==proposed.successor_session_id||relation.state!=='staged')
     throw new Error('Recovery placement is not bound to this staged custody successor.');
   const selected=getAcceptedSessionInput(relation.canonical_input_id);
@@ -414,7 +425,7 @@ export async function commitRecoveryHandoff(input:{actorSession:number;inputId:s
   if(typeof snapshot.path!=='string')throw new Error('Recovery source path is not retained by the owner.');
   await assertRecoveryResources(proposed.predecessor_session_id,snapshot.path);
   return acceptHandoffInternal(input,{placementInputId:input.placementInputId,placementTurnId:input.placementTurnId,
-    authority:RECOVERY_HANDOFF_AUTHORITY,preservedSourcePath:snapshot.path});
+    authority:RECOVERY_HANDOFF_AUTHORITY,preservedSourcePath:snapshot.path,validateAuthority:input.validateAuthority});
 }
 
 function inventoryLocalWithExternal(sessionId:number,snapshot:Inventory):Inventory {
@@ -427,7 +438,7 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
 }
 
 async function acceptHandoffInternal(input:{actorSession:number;inputId:string;runId:string;handoffId:string;digest:string},
-  recovery:{placementInputId:string;placementTurnId:number;authority:symbol;preservedSourcePath:string}|null) {
+  recovery:{placementInputId:string;placementTurnId:number;authority:symbol;preservedSourcePath:string;validateAuthority:()=>void}|null) {
   const proposed=row(input.handoffId);if(!proposed)throw new Error('Unknown handoff.');
   if(recovery?.authority!==RECOVERY_HANDOFF_AUTHORITY&&proposed.successor_session_id!==input.actorSession)
     throw new Error('Only the successor’s live run may accept this handoff.');
@@ -448,6 +459,7 @@ async function acceptHandoffInternal(input:{actorSession:number;inputId:string;r
   if(current.items.some(item=>item.kind==='queued'&&!item.movable&&!item.obsolete))
     return {accepted:false,handoffId:input.handoffId,inventory:current,digest:currentDigest,reason:'A queued input may have reached its provider or has dependencies. Let its exact outcome settle before accepting ownership.'};
   const result=db.transaction(()=>{
+    recovery?.validateAuthority();
     const state=row(input.handoffId);if(!state||state.state!=='proposed')throw new Error('This handoff changed while it was being accepted.');
     const verified=inventoryLocalWithExternal(state.predecessor_session_id,current),verifiedDigest=digest(verified);
     if(verifiedDigest!==input.digest)return {accepted:false,handoffId:input.handoffId,inventory:verified,digest:verifiedDigest,reason:'Ledger obligations changed; acknowledge this exact digest.'};
@@ -596,6 +608,9 @@ export function withdrawHandoff(input:{actorSession:number;handoffId:string}) {
     const current=row(input.handoffId);if(!current||current.state!=='proposed')throw new Error('This handoff is not proposed.');
     if(input.actorSession!==current.caller_session_id&&input.actorSession!==current.predecessor_session_id)
       throw new Error('Only the proposing caller or predecessor may withdraw this handoff.');
+    if(current.handoff_kind==='codex-custody-successor'
+      &&db.query('SELECT 1 FROM codex_custody_successors WHERE handoff_id=?').get(current.id))
+      throw new Error('This canonical recovery owns a retained native cutoff. Pause or Stop its work; ordinary handoff withdrawal cannot release that custody reservation.');
     db.query("UPDATE session_handoffs SET state='withdrawn',withdrawn_at=CURRENT_TIMESTAMP WHERE id=? AND state='proposed'").run(current.id);
     updateSessionMetadata(current.successor_session_id,{suspended:true});
     executionChanged();return {withdrawn:true,handoffId:current.id,predecessor:canonical(current.predecessor_session_id)};

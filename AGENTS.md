@@ -103,6 +103,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - Empty, unacknowledged service report-backs use a separate exact-input recovery with durable
   deduplication and immutable result history; see [router actions](docs/runbooks/ROUTER-ACTIONS.md#exact-codex-report-back-recovery)
   and [the incident evidence](docs/runbooks/CODEX-EMPTY-REPORT-BACK-RECOVERY-EVIDENCE.md).
+  The [custody-successor mode](docs/runbooks/ROUTER-ACTIONS.md#custody-successor-recovery)
+  preserves a separate canonical attempt allowance, control state and obligation custody;
+  its current source-review holds are not satisfied by disposable fixture success.
 - The explicit Astra Medium custody-successor mode preserves the original reminder and
   attempts, commits custody before native construction, and spends one shared allowance
   before admission. It has no cold-resume fallback; see the [custody-successor contract](docs/runbooks/ROUTER-ACTIONS.md#custody-successor-recovery).

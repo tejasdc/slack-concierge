@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,symlinkSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {resolve} from 'node:path';
+import {pathToFileURL} from 'node:url';
 import {spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION} from '../src/test-authorizations';
@@ -28,24 +30,35 @@ const thread='native-predecessor',sourceFile=join(scratch,'original-rollout.json
 writeFileSync(sourceFile,JSON.stringify({threadId:thread,worktree:workspace}));
 writeFileSync(join(process.env.CODEX_HOME,'sessions','2026','11','14',`rollout-2026-11-14T00-00-00-${thread}.jsonl`),JSON.stringify({text:workspace}));
 const key=join(scratch,'lab.key');writeFileSync(key,'fixture-key');
-const lab=Bun.serve({port:0,fetch:()=>Response.json({threads:[]})});
+let grantToCloseDuringLab:string|null=null;const lab=Bun.serve({port:0,fetch:request=>{
+ if(grantToCloseDuringLab&&new URL(request.url).pathname==='/api/lab'){
+   db.query("UPDATE session_communication_requests SET outcome='answered',status='answered' WHERE request_id=? AND outcome IS NULL").run(grantToCloseDuringLab);
+   grantToCloseDuringLab=null;
+ }
+ return Response.json({threads:[]});
+}});
 process.env.THINKERING_AGENT_TEST_KEY_FILE=key;process.env.THINKERING_ORIGIN_URL=`http://127.0.0.1:${lab.port}`;
-const {db,getSessionById,claimNextQueuedTurn}=await import('../src/state');
+const {db,getSessionById,claimNextQueuedTurn,markTurnProviderAdmissionIntended,recordTurnProviderTurnId,acknowledgeTurnProviderInput}=await import('../src/state');
  const {createNativeSession,retainSessionInput,enqueueSessionInput,nativeRunId,recordSessionEvent,sessionMetadata,updateSessionMetadata}=await import('../src/session-inputs');
 const {SessionCommunicationCoordinator}=await import('../src/session-communication');
-const {recoverCustodySuccessor,custodySuccessor,protectedCustodyRun}=await import('../src/codex-custody-successor');
+const {recoverCustodySuccessor:recoverWithProcessObservation,custodySuccessor,protectedCustodyRun}=await import('../src/codex-custody-successor');
+const recoverCustodySuccessor=(input:any,client:CodexAppServerClientLike)=>recoverWithProcessObservation(input,client,async()=>[]);
 const {SessionExecutionHost}=await import('../src/session-execution-host');
 const {ActiveTurnDispatchRegistry}=await import('../src/turn-dispatch-seams');
 const {runCodexTurn}=await import('../src/codex');
 let stopHost:(()=>Promise<void>)|null=null;
 
 let constructionCount=0,spentAtNativeSend:string|null=null,runModelGateDuringSend=()=>{},markNativeSent!:()=>void;
+let markConstructionStarted!:()=>void,releaseConstruction!:()=>void;
+const constructionStarted=new Promise<void>(resolve=>{markConstructionStarted=resolve;});
+const constructionGate=new Promise<void>(resolve=>{releaseConstruction=resolve;});
 let releaseNativeCompletion!:()=>void,markProviderTurnRecorded!:()=>void,nativeCompleted=false;
 const nativeSent=new Promise<void>(resolve=>{markNativeSent=resolve;});
 const nativeCompletion=new Promise<void>(resolve=>{releaseNativeCompletion=()=>{nativeCompleted=true;resolve();};});
 const providerTurnRecorded=new Promise<void>(resolve=>{markProviderTurnRecorded=resolve;});
 const nativeCalls:string[]=[];const listeners=new Set<(event:any)=>void>();
 const nativeClient:CodexAppServerClientLike & {close():Promise<void>}={
+  custodySenderId:'fixture-owner-native-client',nativeEndpoint:{socketPath:'/disposable',relayRunner:null,serverInfo:{fixture:true}},
   async connect(){return 1},async notify(){},onNotification(listener:(event:any)=>void){listeners.add(listener);return ()=>listeners.delete(listener);},onDisconnect(){return ()=>true},
   waitForDisconnect(){return new Promise<void>(()=>{})},
   async request(method:string,params:any){nativeCalls.push(method);
@@ -58,8 +71,10 @@ const nativeClient:CodexAppServerClientLike & {close():Promise<void>}={
       ?{data:[{turnId:'successor-native-turn',item:{type:'userMessage',clientId:'slack-concierge:turn:4:attempt:1'}},
         ...(nativeCompleted?[{turnId:'successor-native-turn',item:{type:'agentMessage',id:'successor-answer',text:'Useful writing continuation retained.'}}]:[])],nextCursor:null}
       :{data:[],nextCursor:null};
-    if(method==='thread/read')return {thread:{id:thread,path:sourceFile,modelProvider:'openai',model:'gpt-6-astra',reasoningEffort:'medium',cwd:workspace,runtimeWorkspaceRoots:[workspace]}};
-    if(method==='thread/start'){constructionCount++;return {thread:{id:'successor-native-thread',modelProvider:'openai',model:'gpt-6-astra',reasoningEffort:'medium',cwd:workspace,
+    if(method==='thread/read')return {thread:{id:thread,status:{type:'idle'},path:sourceFile,modelProvider:'openai',model:'gpt-6-astra',reasoningEffort:'medium',cwd:workspace,runtimeWorkspaceRoots:[workspace]}};
+    if(method==='thread/queue/list'||method==='thread/backgroundTerminals/list')return {data:[],nextCursor:null};
+    if(method==='thread/goal/get')return {goal:null};
+    if(method==='thread/start'){constructionCount++;markConstructionStarted();await constructionGate;return {thread:{id:'successor-native-thread',modelProvider:'openai',model:'gpt-6-astra',reasoningEffort:'medium',cwd:workspace,
       runtimeWorkspaceRoots:[workspace],environments:[{environmentId:'local',cwd:workspace,runtimeWorkspaceRoots:[workspace]}]},model:'gpt-6-astra',modelProvider:'openai',reasoningEffort:'medium',cwd:workspace,
       runtimeWorkspaceRoots:[workspace],approvalPolicy:'never',sandbox:{type:'dangerFullAccess'}};}
     if(method==='turn/start'){
@@ -83,6 +98,33 @@ const nativeClient:CodexAppServerClientLike & {close():Promise<void>}={
     throw new Error(`unexpected native request ${method}`);
   },async close(){},
 };
+let newCustodyClient:CodexAppServerClientLike & {close():Promise<void>}=nativeClient;
+const managedLegacySenders:{custodySenderId:string;activeGeneration:number|null;close(options?:{immediate?:boolean}):Promise<void>}[]=[];
+const cutoffBridge=join(scratch,'cutoff-bridge.js');
+const jsonLinesModule=pathToFileURL(resolve(import.meta.dir,'../src/json-lines.ts')).href;
+writeFileSync(cutoffBridge,`import {onJsonLines} from ${JSON.stringify(jsonLinesModule)};
+process.stdout.write(JSON.stringify({type:'ready'})+'\\n');
+onJsonLines(process.stdin,line=>{const call=JSON.parse(line);
+  if(call.type==='close')process.exit(0);
+  if(call.type==='request'){const result=call.method==='thread/read'?{thread:{id:call.params.threadId}}:{turn:{id:call.params.clientUserMessageId||'native-empty-attempt'}};
+   process.stdout.write(JSON.stringify({type:'response',id:call.id,result})+'\\n');}
+ });`);
+const {CodexAppServerClient,freezeManagedCodexTarget}=await import('../src/codex-app-server-client');
+async function registerLegacyPrefix(sessionId:number,threadId:string,sourcePath:string,bindingGeneration:number,providerTurnId:string){
+ const sender=new CodexAppServerClient('/disposable',process.execPath,{bridgePath:cutoffBridge,manageDaemon:false,shutdownGraceMs:50});
+ managedLegacySenders.push(sender);
+ await sender.request('turn/start',{threadId,clientUserMessageId:providerTurnId,input:[]},{custodyOwnerSessionId:sessionId});
+ const endpoint=sender.nativeEndpoint;
+ const cutoff=freezeManagedCodexTarget({ownerSessionId:sessionId,threadId,
+   endpoint:{socketPath:endpoint.socketPath,relayRunner:endpoint.relayRunner},sourcePath,bindingGeneration});
+ const receipt=await cutoff.reconcile();
+ assert.equal(receipt.captured.length,1,'the real disposable native sender is tied to this exact predecessor');
+ assert.equal(receipt.captured[0]?.senderId,sender.custodySenderId);
+ assert.equal(receipt.captured[0]?.generation,sender.activeGeneration);
+ assert.equal(receipt.barriers.length,1,'the old sender generation returns its exact read barrier');
+ assert.equal(cutoff.coverage,'managed-client-registry-only');assert.equal(cutoff.externalCoverage,'not-asserted');
+ return receipt;
+}
 
 try {
  const predecessor=createNativeSession('codex',{title:'Astra Medium writing',summary:'Continue writing',purpose:'writing',origin:'native',cwd:workspace,
@@ -114,18 +156,28 @@ try {
  db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
    target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,status,outcome)
    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)`).run(requestId,'fixture','request-message',actorTurn,requester.id,'root','request-action',predecessor.id,'fixture','root',
-   JSON.stringify({requestedEffect:'work'}),'payload-hash',0,0,actorInput.id,human.id,'admitted');
+   JSON.stringify({requestedEffect:'work',text:'Continue the selected writing work.',after:[]}),'payload-hash',0,0,actorInput.id,human.id,'admitted');
+ for(const [siblingId,suffix] of [['sibling-duty-one','one'],['sibling-duty-two','two']] as const){
+   db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
+     target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,status,outcome)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)`).run(siblingId,'fixture',`${suffix}-message`,actorTurn,requester.id,'root',`${suffix}-action`,predecessor.id,'fixture','root',
+       JSON.stringify({requestedEffect:'work',text:`Independent ${suffix} duty`,after:[]}),`${suffix}-hash`,0,0,actorInput.id,reminder.id,'admitted');
+ }
 
  process.env.CONCIERGE_EXECUTION_HOSTS='1';
  const host=new SessionExecutionHost({instanceId:'fixture-owner',registry:new ActiveTurnDispatchRegistry({onStarted:()=>{},onSettled:()=>{}}),providers:{codex:{id:'codex',
    run:(actual:any)=>{const onStarted=actual.onProviderTurnStarted;return runCodexTurn({...actual,
      onProviderTurnStarted:(id:string)=>{onStarted?.(id);markProviderTurnRecorded();},applicationInstructions:actual.systemPrompt});},
    fork:async()=>{throw new Error('fork is outside this fixture');}}},
-   defaultCwd:workspace,wake:()=>{},thesaurusContext:async()=>'',custodyClientFactory:()=>nativeClient});
+   defaultCwd:workspace,wake:()=>{},thesaurusContext:async()=>'',custodyClientFactory:()=>newCustodyClient,custodyObserveProcesses:async threadId=>{
+     assert.equal(typeof threadId,'string');return [];
+   }});
  stopHost=()=>host.stop();
  const owner=host.owner;
  const coordinator=new SessionCommunicationCoordinator({owner,isOwnerAlive:()=>true,onError:error=>{throw error;}} as any);
  (coordinator as any).stopped=false;(coordinator as any).wake=()=>{};
+ // This old provider-turn identity was observed in the selected immutable attempt row.
+ await registerLegacyPrefix(predecessor.id,thread,sourceFile,predecessor.binding_generation,'native-empty-attempt');
  runModelGateDuringSend=()=>{
    const providerTurnId='successor-native-turn';
    const preserved=coordinator.modelStartGate({providerSessionId:'successor-native-thread',model:'gpt-6-astra',providerTurnId,
@@ -145,7 +197,13 @@ try {
      ownerTurnId:claim.turn_id,sourceRunId:nativeRunId(claim.turn_id),providerAgentId:'new-astra-helper'});
    assert.equal(delegatedAstra.allowed,false,'a new Astra helper cannot inherit the accepted parent binding');
  };
- const result=await coordinator.recoverCodexNeverAcknowledged({source:{input_id:actorInput.id,run_id:actorRun},action_id:'recover-writing-once',request_id:requestId,custody_successor:true});
+ const recovery=coordinator.recoverCodexNeverAcknowledged({source:{input_id:actorInput.id,run_id:actorRun},action_id:'recover-writing-once',request_id:requestId,custody_successor:true});
+ await constructionStarted;
+ const constructing=custodySuccessor(reminder.id)!;
+ host.owner.action(`concierge:${constructing.successor_session_id}`,{clientActionId:'pause-during-native-construction',action:{kind:'pause'}});
+ assert.equal(sessionMetadata(getSessionById(constructing.successor_session_id)!).custodyUserPaused,true,'supported Pause records a newer explicit hold');
+ releaseConstruction();
+ const result=await recovery;
  assert.equal(result.state,'constructed');
  assert.equal(constructionCount,1);
  const custody=custodySuccessor(reminder.id)!;
@@ -156,7 +214,8 @@ try {
  assert.equal(db.query('SELECT turn_id FROM session_inputs WHERE id=?').get(reminder.id).turn_id,failedTurn,'original reminder/attempt stay immutable');
  assert.equal(db.query('SELECT provider_turn_id FROM turns WHERE id=?').get(failedTurn).provider_turn_id,'native-empty-attempt');
  const successor=getSessionById(custody.successor_session_id)!;
- assert.equal(sessionMetadata(successor).suspended,false);
+ assert.equal(sessionMetadata(successor).suspended,true,'construction completion preserves a Pause issued while native construction was pending');
+ assert.equal(sessionMetadata(successor).custodyUserPaused,true);
  assert.equal(successor.agent_session_uuid,'successor-native-thread');
  assert.equal(db.query('SELECT state FROM session_handoffs WHERE id=?').get(custody.handoff_id).state,'accepted');
  assert.equal(nativeCalls.filter(call=>call==='thread/start').length,1);
@@ -165,6 +224,10 @@ try {
  // The actual queue admits the successor placement only after construction. Its shared
  // allowance is committed before native send; normal turn acknowledgement/result consumers
  // then resolve the original work request from the placement's exact payload.
+ assert.equal(claimNextQueuedTurn('fixture-owner'),null,'passive recovery placement remains held after construction when the user paused it');
+ host.owner.action(`concierge:${successor.id}`,{clientActionId:'continue-after-construction',action:{kind:'continue'}});
+ assert.equal(sessionMetadata(getSessionById(successor.id)!).suspended,false,'Continue clears the explicit pause after construction is fully bound');
+ assert.equal(sessionMetadata(getSessionById(successor.id)!).custodyUserPaused,false);
  const claim=claimNextQueuedTurn('fixture-owner');assert.ok(claim);assert.equal(claim.session_id,custody.successor_session_id);
  assert.equal(claim.accepted_input_id,custody.placement_input_id,'the selected native turn is the exact transferred work placement');
  const protectedRun=protectedCustodyRun(claim.turn_id,'fixture-owner',claim.dispatch_attempt)!;
@@ -223,6 +286,65 @@ try {
  assert.equal(allowanceAfterNext.attempt_spent_at,spentAt,'unrelated work cannot reset the canonical recovery allowance');
  assert.equal(allowanceAfterNext.dispatch_attempt,claim.dispatch_attempt,'unrelated turn does not consume a second selected-input attempt');
 
+ // Reconcile a failed canonical placement through the real communication coordinator. Its
+ // failure is custody-attempt state, not a terminal disposition for every request transferred
+ // with that placement. Then prove one independent duty can still receive a scoped reply.
+ db.query("UPDATE turns SET status='error',agent_text='CODEX_INPUT_NOT_ACKNOWLEDGED: fixture refusal',ended_at=CURRENT_TIMESTAMP WHERE id=?").run(claim.turn_id);
+ for(const dutyId of [requestId,'sibling-duty-one','sibling-duty-two']){
+   const duty=db.query('SELECT * FROM session_communication_requests WHERE request_id=?').get(dutyId) as any;
+   await (coordinator as any).dispatch(duty);
+   assert.equal((db.query('SELECT outcome FROM session_communication_requests WHERE request_id=?').get(dutyId) as any).outcome,null,
+     `failed canonical attempt leaves transferred duty ${dutyId} open`);
+ }
+ assert.equal(custodySuccessor(reminder.id)?.state,'held','selected terminal failure is retained on canonical custody');
+ assert.equal((db.query("SELECT COUNT(*) AS n FROM session_owner_events WHERE event_id=?").get(`custody-attempt-failed:${reminder.id}:${claim.turn_id}`) as any).n,1,
+   'reconciliation records one exact canonical attempt failure');
+ const nextAttempt=nextClaim.dispatch_attempt;
+ assert.equal(markTurnProviderAdmissionIntended(nextClaim.turn_id,'fixture-owner',nextAttempt),true);
+ recordTurnProviderTurnId(nextClaim.turn_id,'unrelated-live-native-turn');
+ acknowledgeTurnProviderInput(nextClaim.turn_id,'fixture-owner',nextAttempt,[]);
+ await coordinator.reply({source:{input_id:unrelated.id,run_id:nativeRunId(nextClaim.turn_id)},action_id:'unrelated-duty-progress',request_id:'sibling-duty-one',
+   text:'The separate duty remains actionable after the selected attempt failed.',final:false});
+ const survivingProgress=db.query('SELECT request_id,kind FROM session_communication_events WHERE action_key=?')
+   .get(JSON.stringify(['input',unrelated.id,'unrelated-duty-progress'])) as any;
+ assert.equal(survivingProgress.request_id,'sibling-duty-one','another transferred duty still accepts its own exact source-bound reply');
+ assert.equal(survivingProgress.kind,'progress');
+ assert.equal((db.query('SELECT outcome FROM session_communication_requests WHERE request_id=?').get('sibling-duty-one') as any).outcome,null);
+
+ // A separately retained exact human Stop also belongs to the selected attempt. It must be
+ // recorded on custody without canceling the three independent duties that were on that run.
+ const stopSuccessor=createNativeSession('codex',{title:'Stopped custody fixture',summary:'fixture',purpose:'writing',origin:'native',cwd:workspace,
+   model:'gpt-6-astra',reasoningEffort:'medium'});
+ const stopHandoffId='fixture-stopped-handoff';
+ db.query(`INSERT INTO session_handoffs(id,predecessor_session_id,successor_session_id,state,action_id,handoff_kind,canonical_input_id,
+   caller_session_id,reason,requesting_input_id,requesting_run_id,inventory_json,inventory_digest)
+   VALUES(?,?,?,'accepted','fixture-stop','codex-custody-successor',?,?,?,?,?,'{}','fixture')`)
+   .run(stopHandoffId,predecessor.id,stopSuccessor.id,reminder.id,requester.id,'fixture',actorInput.id,actorRun);
+ const stopCanonical=retainSessionInput({id:'stop-canonical-duty',sessionId:predecessor.id,scope:'stop-fixture',actionId:'canonical',kind:'request',origin:'service',payload:{text:'canonical'}}).input;
+ const stopPlacement=retainSessionInput({id:'stop-placement',sessionId:stopSuccessor.id,scope:'stop-fixture',actionId:'placement',kind:'input',origin:'service',payload:{text:'selected stop attempt'}}).input;
+ enqueueSessionInput(stopPlacement.id);const stopTurn=Number((db.query('SELECT turn_id FROM session_inputs WHERE id=?').get(stopPlacement.id) as any).turn_id);
+ const stopRun=nativeRunId(stopTurn);
+ db.query("UPDATE turns SET status='cancelled',ended_at=CURRENT_TIMESTAMP,stop_requested_at=CURRENT_TIMESTAMP WHERE id=?").run(stopTurn);
+ const humanStop=retainSessionInput({id:'fixture-tejas-stop',sessionId:stopSuccessor.id,scope:'surface:thinkering',actionId:'fixture-stop',kind:'stop',origin:'human',payload:{runId:stopRun}}).input;
+ db.query(`INSERT INTO codex_custody_successors(canonical_input_id,predecessor_session_id,successor_session_id,handoff_id,placement_input_id,
+   placement_turn_id,request_id,source_input_id,source_run_id,state,plan_json,snapshot_json)
+   VALUES(?,?,?,?,?,?,? ,?,?,'acknowledged','{}','{}')`)
+   .run(stopCanonical.id,predecessor.id,stopSuccessor.id,stopHandoffId,stopPlacement.id,stopTurn,'stop-duty-one',actorInput.id,actorRun);
+ for(const [dutyId,suffix] of [['stop-duty-one','one'],['stop-duty-two','two'],['stop-duty-three','three']] as const){
+   db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
+     target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,status,outcome)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)`).run(dutyId,'fixture',`stop-${suffix}`,actorTurn,requester.id,'root',`stop-${suffix}`,stopSuccessor.id,'fixture','root',
+       JSON.stringify({requestedEffect:'work',text:`independent stopped duty ${suffix}`,after:[]}),`stop-${suffix}`,0,0,actorInput.id,stopPlacement.id,'admitted');
+   const duty=db.query('SELECT * FROM session_communication_requests WHERE request_id=?').get(dutyId) as any;
+   await (coordinator as any).dispatch(duty);
+   assert.equal((db.query('SELECT outcome FROM session_communication_requests WHERE request_id=?').get(dutyId) as any).outcome,null,
+     `Tejas Stop on the exact selected turn does not cancel independent duty ${dutyId}`);
+ }
+ const stoppedAttempt=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(`custody-attempt-failed:${stopCanonical.id}:${stopTurn}`) as any;
+ const stoppedPayload=JSON.parse(stoppedAttempt.payload_json);
+ assert.equal(stoppedPayload.terminalStatus,'cancelled');assert.equal(stoppedPayload.stoppedBy,'tejas');
+ assert.equal(stoppedPayload.stopInputId,humanStop.id,'attempt history retains the exact human Stop operation');
+
  const makeTarget=async(requestKey:string)=>{
    const target=createNativeSession('codex',{title:`${requestKey} Astra Medium`,summary:'Continue exact writing',purpose:'writing',origin:'native',cwd:workspace,
      model:'gpt-6-astra',reasoningEffort:'medium'});
@@ -248,21 +370,283 @@ try {
    db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
      target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,status,outcome)
      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)`).run(requestKey,'fixture',`message-${requestKey}`,actorTurn,requester.id,'root',`action-${requestKey}`,
-       target.id,'fixture','root',JSON.stringify({requestedEffect:'work'}),`hash-${requestKey}`,0,0,actorInput.id,human.id,'admitted');
+       target.id,'fixture','root',JSON.stringify({requestedEffect:'work',text:`Continue ${requestKey} work.`,after:[]}),`hash-${requestKey}`,0,0,actorInput.id,human.id,'admitted');
    return {target,threadId,rollout,report,turnId};
  };
- const makeNative=(threadId:string,rollout:string,start:()=>unknown)=>({
-   async connect(){return 1},async notify(){},onNotification(){return ()=>true},onDisconnect(){return ()=>true},waitForDisconnect(){return new Promise<void>(()=>{})},
+ const makeLiveHumanRepairer=async(prefix:string)=>{
+   const session=createNativeSession('codex',{title:`${prefix} repair source`,summary:'fixture work authority',purpose:'repair',origin:'native',cwd:workspace});
+   const input=retainSessionInput({id:`${prefix}-input`,sessionId:session.id,scope:prefix,actionId:'live-human-work',kind:'request',origin:'human',
+     payload:{text:'Repair the retained custody operation.'}}).input;enqueueSessionInput(input.id);
+   const turnId=Number((db.query('SELECT turn_id FROM session_inputs WHERE id=?').get(input.id) as any).turn_id);
+   db.query("UPDATE turns SET status='running',owner_instance_id='fixture-owner',provider_admission_intended_at=CURRENT_TIMESTAMP,provider_started_at=CURRENT_TIMESTAMP WHERE id=?").run(turnId);
+   return {session,input,turnId,runId:nativeRunId(turnId)};
+ };
+ const makeBorrowedAuthority=async(prefix:string)=>{
+   const grantor=createNativeSession('codex',{title:`${prefix} grantor`,summary:'fixture grant source',purpose:'writing',origin:'native',cwd:workspace});
+   const grantorInput=retainSessionInput({id:`${prefix}-grantor-input`,sessionId:grantor.id,scope:prefix,actionId:'source',kind:'input',origin:'human',payload:{text:'Assign the retained writing duty.'}}).input;
+   enqueueSessionInput(grantorInput.id);const grantorTurn=Number((db.query('SELECT turn_id FROM session_inputs WHERE id=?').get(grantorInput.id) as any).turn_id);
+   const grantorRun=nativeRunId(grantorTurn);db.query("UPDATE turns SET status='done',provider_input_acknowledged_at=CURRENT_TIMESTAMP WHERE id=?").run(grantorTurn);
+   const grantId=`${prefix}-work-grant`;
+   const grantInput=retainSessionInput({id:`${prefix}-work-input`,sessionId:requester.id,scope:`communication:${grantorInput.id}`,actionId:'work-grant',kind:'request',origin:'agent',
+     sourceInputId:grantorInput.id,sourceRunId:grantorRun,requestId:grantId,payload:{text:'Continue the assigned writing duty.'}}).input;
+   enqueueSessionInput(grantInput.id);const grantTurn=Number((db.query('SELECT turn_id FROM session_inputs WHERE id=?').get(grantInput.id) as any).turn_id);
+   db.query("UPDATE turns SET status='done',provider_input_acknowledged_at=CURRENT_TIMESTAMP WHERE id=?").run(grantTurn);
+   const insertRequest=(id:string,targetInputId:string,effect:'work'|'informational')=>db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,
+     source_session_id,source_root_ts,action_id,target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,status,outcome)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)`).run(id,'fixture',`${id}-message`,grantorTurn,grantor.id,'root',`${id}-action`,requester.id,'fixture','root',
+       JSON.stringify({requestedEffect:effect,text:`${effect} ${id}`,after:[]}),id,0,0,grantorInput.id,targetInputId,'admitted');
+   insertRequest(grantId,grantInput.id,'work');
+   const wakeId=`${prefix}-informational-wake`;
+   const wakeInput=retainSessionInput({id:`${prefix}-wake-input`,sessionId:requester.id,scope:`communication:${grantorInput.id}`,actionId:'wake',kind:'request',origin:'agent',
+     sourceInputId:grantorInput.id,sourceRunId:grantorRun,requestId:wakeId,payload:{text:'Ask an informational question.'}}).input;
+   enqueueSessionInput(wakeInput.id);const wakeTurn=Number((db.query('SELECT turn_id FROM session_inputs WHERE id=?').get(wakeInput.id) as any).turn_id);
+   const wakeRun=nativeRunId(wakeTurn);db.query("UPDATE turns SET status='running',owner_instance_id='fixture-owner',provider_admission_intended_at=CURRENT_TIMESTAMP,provider_started_at=CURRENT_TIMESTAMP WHERE id=?").run(wakeTurn);
+   insertRequest(wakeId,wakeInput.id,'informational');
+   return {grantId,grantInput,wakeInput,wakeRun};
+ };
+ const makeNative=(threadId:string,rollout:string,start:()=>unknown,onObserve?:()=>void,onConnect?:()=>void)=>({
+   custodySenderId:`fixture-owner-native-client-${threadId}`,nativeEndpoint:{socketPath:'/disposable',relayRunner:null,serverInfo:{fixture:true}},
+   async connect(){onConnect?.();return 1},async notify(){},onNotification(){return ()=>true},onDisconnect(){return ()=>true},waitForDisconnect(){return new Promise<void>(()=>{})},
    async request(method:string){
-     if(method==='thread/turns/list')return {data:[{id:`empty-${threadId.slice(7)}`,status:'completed',error:null}],nextCursor:null};
+     if(method==='thread/turns/list'){onObserve?.();const expected=(db.query(`SELECT turn.provider_turn_id FROM turns turn JOIN sessions session ON session.id=turn.session_id
+       WHERE session.agent_session_uuid=? AND turn.provider_turn_id IS NOT NULL ORDER BY turn.id DESC LIMIT 1`).get(threadId) as any)?.provider_turn_id;
+       return {data:[{id:expected??`empty-${threadId.slice(7)}`,status:'completed',error:null}],nextCursor:null};}
      if(method==='thread/items/list')return {data:[],nextCursor:null};
-     if(method==='thread/read')return {thread:{id:threadId,path:rollout,modelProvider:'openai',model:'gpt-6-astra',reasoningEffort:'medium',cwd:workspace,runtimeWorkspaceRoots:[workspace]}};
+     if(method==='thread/read')return {thread:{id:threadId,status:{type:'idle'},path:rollout,modelProvider:'openai',model:'gpt-6-astra',reasoningEffort:'medium',cwd:workspace,runtimeWorkspaceRoots:[workspace]}};
+     if(method==='thread/queue/list'||method==='thread/backgroundTerminals/list')return {data:[],nextCursor:null};
+     if(method==='thread/goal/get')return {goal:null};
      if(method==='thread/start')return start();throw new Error(`unexpected ${method}`);
    },async close(){},
  });
+ const emptyRun={sourceThread:'',sourceFile:'',successorThread:'',canonicalInputId:'',requestId:'',expectedPrompt:'',spentAtSend:null as string|null,
+   sends:0,finished:false,items:new Map<string,unknown[]>(),listeners:new Set<(event:any)=>void>()};
+ const emptyNativeClient:CodexAppServerClientLike & {close():Promise<void>}={
+   custodySenderId:'fixture-empty-native-client',nativeEndpoint:{socketPath:'/disposable',relayRunner:null,serverInfo:{fixture:true}},
+   async connect(){return 1},async notify(){},onNotification(listener){emptyRun.listeners.add(listener);return ()=>emptyRun.listeners.delete(listener);},
+   onDisconnect(){return ()=>true},waitForDisconnect(){return new Promise<void>(()=>{})},async close(){},
+   async request(method:string,params:any){
+     if(method==='thread/queue/list'||method==='thread/backgroundTerminals/list')return {data:[],nextCursor:null};
+     if(method==='thread/goal/get')return {goal:null};
+     if(method==='thread/turns/list'){
+       if(params.threadId===emptyRun.sourceThread){
+         const id=(db.query(`SELECT turn.provider_turn_id FROM turns turn JOIN sessions session ON session.id=turn.session_id
+           WHERE session.agent_session_uuid=? AND turn.provider_turn_id IS NOT NULL ORDER BY turn.id DESC LIMIT 1`).get(emptyRun.sourceThread) as any)?.provider_turn_id;
+         return {data:[{id,status:'completed',error:null,items:[]}],nextCursor:null};
+       }
+       if(params.threadId===emptyRun.successorThread)return {data:[...(emptyRun.sends?[{id:'empty-successor-turn',status:emptyRun.finished?'completed':'inProgress',error:null,
+         items:emptyRun.items.get('empty-successor-turn')??[]}]:[]),...(emptyRun.items.has('followup-native-turn')?[{id:'followup-native-turn',status:'completed',error:null,
+         items:emptyRun.items.get('followup-native-turn')??[]}]:[])],nextCursor:null};
+       return {data:[],nextCursor:null};
+     }
+     if(method==='thread/items/list')return {data:(emptyRun.items.get(params.turnId)??[]).map(item=>({turnId:params.turnId,item})),nextCursor:null};
+     if(method==='thread/read')return {thread:{id:params.threadId,status:{type:'idle'},path:emptyRun.sourceFile,modelProvider:'openai',model:'gpt-6-astra',
+       reasoningEffort:'medium',cwd:workspace,runtimeWorkspaceRoots:[workspace]}};
+     if(method==='thread/start')return {thread:{id:emptyRun.successorThread,modelProvider:'openai',model:'gpt-6-astra',reasoningEffort:'medium',cwd:workspace,
+       runtimeWorkspaceRoots:[workspace],environments:[{environmentId:'local',cwd:workspace,runtimeWorkspaceRoots:[workspace]}]},model:'gpt-6-astra',modelProvider:'openai',
+       reasoningEffort:'medium',cwd:workspace,runtimeWorkspaceRoots:[workspace],approvalPolicy:'never',sandbox:{type:'dangerFullAccess'}};
+     if(method==='turn/start'){
+       const isSelected=params.input?.[0]?.text===emptyRun.expectedPrompt;
+       const id=isSelected?'empty-successor-turn':'followup-native-turn';
+       if(isSelected){const row=custodySuccessor(emptyRun.canonicalInputId);assert.ok(row?.attempt_spent_at,'empty runner attempt spends canonical allowance before native send');
+         emptyRun.spentAtSend=row.attempt_spent_at;emptyRun.sends++;emptyRun.items.set(id,[]);}
+       else emptyRun.items.set(id,[{type:'userMessage',clientId:params.clientUserMessageId},{type:'agentMessage',id:'followup-answer',text:'The independent duty remains open and actionable.'}]);
+       queueMicrotask(()=>{
+         for(const listener of emptyRun.listeners)listener({method:'turn/started',params:{threadId:emptyRun.successorThread,turn:{id}}});
+         queueMicrotask(()=>{emptyRun.finished=true;for(const listener of emptyRun.listeners)listener({method:'turn/completed',params:{threadId:emptyRun.successorThread,
+           turn:{id,status:'completed',error:null,items:emptyRun.items.get(id)}}});});
+       });
+       return {turn:{id}};
+     }
+     throw new Error(`unexpected empty-route native request ${method}`);
+   },
+ };
+ const borrowed=await makeBorrowedAuthority('borrowed-authority-positive');
+ const borrowedAction='borrowed-authority-reentry';
+ const borrowedResult=await coordinator.recoverCodexNeverAcknowledged({source:{input_id:borrowed.wakeInput.id,run_id:borrowed.wakeRun},
+   action_id:borrowedAction,request_id:requestId,custody_successor:true});
+ assert.equal(borrowedResult.handoff_id,custody.handoff_id,'an informational wake borrows the existing live work grant for the same canonical operation');
+ const borrowedEventId=`custody-recovery-action:${createHash('sha256').update(JSON.stringify([borrowed.wakeInput.id,borrowedAction])).digest('hex')}`;
+ const borrowedEvent=db.query('SELECT input_id,payload_json FROM session_owner_events WHERE event_id=?').get(borrowedEventId) as any;
+ const borrowedPayload=JSON.parse(borrowedEvent.payload_json);
+ assert.equal(borrowedEvent.input_id,borrowed.wakeInput.id,'action provenance retains the actual informational wake as actor source');
+ assert.equal(borrowedPayload.authorityInputId,borrowed.grantInput.id,'borrowed work is attributed to the distinct retained grant input');
+ assert.equal(borrowedPayload.sourceRunId,borrowed.wakeRun);
+ db.query("UPDATE session_communication_requests SET outcome='answered',status='answered' WHERE request_id=?").run(borrowed.grantId);
+
+ const collisionTarget=await makeTarget('different-canonical-action');
+ const callsBeforeCollision=nativeCalls.length;
+ await assert.rejects(()=>coordinator.recoverCodexNeverAcknowledged({source:{input_id:actorInput.id,run_id:actorRun},
+   action_id:'recover-writing-once',request_id:collisionTarget.report.request_id!,custody_successor:true}),/another recovery operation or authority basis|different handoff kind or target/,
+   'one accepted source/action cannot be repurposed for a different canonical reminder');
+ await assert.rejects(()=>coordinator.recoverCodexNeverAcknowledged({source:{input_id:actorInput.id,run_id:actorRun},
+   action_id:'recover-writing-once',request_id:requestId,custody_successor:false}),/custody-successor recovery/,
+   'the legacy non-successor entrance cannot reinterpret an accepted custody action');
+ retainSessionInput({id:'legacy-action-conflict',sessionId:requester.id,scope:`communication:${actorInput.id}`,actionId:'preexisting-other-operation',
+   kind:'action',origin:'agent',sourceInputId:actorInput.id,sourceRunId:actorRun,payload:{kind:'unrelated-operation'}});
+ await assert.rejects(()=>coordinator.recoverCodexNeverAcknowledged({source:{input_id:actorInput.id,run_id:actorRun},
+   action_id:'preexisting-other-operation',request_id:requestId,custody_successor:false}),/different operation/,
+   'a preexisting communication action cannot be overwritten by legacy recovery');
+ assert.equal(nativeCalls.length,callsBeforeCollision,'action collision is refused before another native read or construction');
+ const allowanceBeforeFreshAction=custodySuccessor(reminder.id)!;
+ const sameCanonical=await coordinator.recoverCodexNeverAcknowledged({source:{input_id:actorInput.id,run_id:actorRun},
+   action_id:'fresh-action-same-canonical',request_id:requestId,custody_successor:true});
+ assert.equal(sameCanonical.handoff_id,custody.handoff_id,'a new action on the same canonical reminder returns the retained operation');
+ assert.equal(custodySuccessor(reminder.id)?.attempt_spent_at,allowanceBeforeFreshAction.attempt_spent_at,'a fresh action cannot reset the one shared allowance');
+ assert.equal(nativeCalls.filter(call=>call==='thread/start').length,1,'canonical re-entry cannot construct another native thread');
+
+ const authorityRace=await makeTarget('authority-race');const changingGrant=await makeBorrowedAuthority('authority-race-source');
+ let raceStarts=0;const raceNative=makeNative(authorityRace.threadId,authorityRace.rollout,()=>{raceStarts++;return {};});
+ grantToCloseDuringLab=changingGrant.grantId;
+ newCustodyClient=raceNative;
+ await assert.rejects(()=>coordinator.recoverCodexNeverAcknowledged({source:{input_id:changingGrant.wakeInput.id,run_id:changingGrant.wakeRun},
+   action_id:'authority-changes-during-stage',request_id:'authority-race',custody_successor:true}),/lost its exact live work authority/,
+   'the exact grant is re-resolved after asynchronous Lab staging before custody commitment');
+ assert.equal((db.query('SELECT outcome FROM session_communication_requests WHERE request_id=?').get(changingGrant.grantId) as any).outcome,'answered',
+   'the fake Lab read changes the effective work grant during staging');
+ assert.equal(custodySuccessor(authorityRace.report.id),null,'stale authority creates no canonical custody relation');
+ const heldStage=db.query('SELECT state,successor_session_id FROM session_handoffs WHERE requesting_input_id=? AND action_id=?')
+   .get(changingGrant.wakeInput.id,'authority-changes-during-stage') as any;
+ assert.equal(heldStage.state,'proposed','authority loss leaves only passive proposed staging, never committed custody');
+ assert.equal((db.query('SELECT agent_session_uuid FROM sessions WHERE id=?').get(heldStage.successor_session_id) as any).agent_session_uuid,null,
+   'authority loss before custody commitment cannot construct a native successor');
+ assert.equal(raceStarts,0);
+ newCustodyClient=nativeClient;
+
+ // The original repair source can end after the real handoff transaction commits custody but
+ // before construction intent. A different live work-authorized session must resume that exact
+ // canonical operation with a fresh connection witness, without minting another allowance.
+ const lateRetryTarget=await makeTarget('custody-retry-after-source-ended');
+ const oldSenderIndex=managedLegacySenders.length;
+ await registerLegacyPrefix(lateRetryTarget.target.id,lateRetryTarget.threadId,lateRetryTarget.rollout,
+   lateRetryTarget.target.binding_generation,'empty-custody-retry-after-source-ended');
+ const exactOldSender=managedLegacySenders[oldSenderIndex]!;
+ const endedRepairer=await makeLiveHumanRepairer('ended-repairer');
+ const replacementRepairer=await makeLiveHumanRepairer('replacement-repairer');
+ const firstLateAction='source-ends-after-custody-commit';
+ db.exec(`CREATE TRIGGER fixture_end_repairer_after_custody_commit AFTER UPDATE OF state ON session_handoffs
+   WHEN NEW.requesting_input_id='${endedRepairer.input.id}' AND NEW.action_id='${firstLateAction}' AND NEW.state='accepted'
+   BEGIN
+     UPDATE turns SET status='done',owner_instance_id=NULL,ended_at=CURRENT_TIMESTAMP WHERE id=${endedRepairer.turnId};
+     UPDATE sessions SET status='idle' WHERE id=${endedRepairer.session.id};
+   END`);
+ let lateInitialStarts=0;
+ newCustodyClient=makeNative(lateRetryTarget.threadId,lateRetryTarget.rollout,()=>{lateInitialStarts++;return {};});
+ await assert.rejects(()=>coordinator.recoverCodexNeverAcknowledged({source:{input_id:endedRepairer.input.id,run_id:endedRepairer.runId},
+   action_id:firstLateAction,request_id:'custody-retry-after-source-ended',custody_successor:true}),
+   /lost its exact live work authority|Source must identify this admitted input and its exact live run/,
+   'the original agent ends at the custody-commit boundary before construction intent');
+ db.exec('DROP TRIGGER fixture_end_repairer_after_custody_commit');
+ const committedWithoutConstruction=custodySuccessor(lateRetryTarget.report.id)!;
+ assert.equal(committedWithoutConstruction.state,'custody');
+ assert.equal(committedWithoutConstruction.construction_intended_at,null);
+ assert.equal(committedWithoutConstruction.native_thread_id,null);
+ assert.equal(committedWithoutConstruction.attempt_spent_at,null);
+ assert.equal(lateInitialStarts,0,
+   'losing the original repair source never reaches native construction');
+ let retryStarts=0;
+ const retryClient=makeNative(lateRetryTarget.threadId,lateRetryTarget.rollout,()=>{retryStarts++;return {thread:{id:'recovered-after-custody-commit',
+   modelProvider:'openai',model:'gpt-6-astra',reasoningEffort:'medium',cwd:workspace,runtimeWorkspaceRoots:[workspace],
+   environments:[{environmentId:'local',cwd:workspace,runtimeWorkspaceRoots:[workspace]}]},model:'gpt-6-astra',modelProvider:'openai',
+   reasoningEffort:'medium',cwd:workspace,runtimeWorkspaceRoots:[workspace],approvalPolicy:'never',sandbox:{type:'dangerFullAccess'}};});
+ newCustodyClient=retryClient;
+ const recoveredWithoutNewBudget=await coordinator.recoverCodexNeverAcknowledged({source:{input_id:replacementRepairer.input.id,run_id:replacementRepairer.runId},
+   action_id:'new-agent-resumes-committed-custody',request_id:'custody-retry-after-source-ended',custody_successor:true});
+ newCustodyClient=nativeClient;
+ assert.equal(recoveredWithoutNewBudget.state,'constructed');assert.equal(retryStarts,1);
+ host.owner.action(`concierge:${recoveredWithoutNewBudget.successor_session_id}`,{clientActionId:'hold-after-repairer-retry',action:{kind:'pause'}});
+ const afterRepairerRetry=custodySuccessor(lateRetryTarget.report.id)!;
+ assert.equal(afterRepairerRetry.handoff_id,committedWithoutConstruction.handoff_id,'the new agent resumes the same accepted handoff');
+ assert.equal(afterRepairerRetry.successor_session_id,committedWithoutConstruction.successor_session_id,'custody owner identity is stable');
+ assert.equal(afterRepairerRetry.attempt_spent_at,null,'custody recovery does not spend or reset the selected provider allowance');
+ const retrySnapshot=JSON.parse(afterRepairerRetry.snapshot_json),retainedBarrier=retrySnapshot.cutoff.barriers.find((row:any)=>row.senderId===exactOldSender.custodySenderId);
+ assert.equal(retainedBarrier?.generation,exactOldSender.activeGeneration,
+   'retry re-establishes the still-active original legacy sender generation barrier');
+ const retryPlan=JSON.parse(afterRepairerRetry.plan_json);
+ assert.notEqual(retryPlan.nativeConnection.clientId,JSON.parse(committedWithoutConstruction.plan_json).nativeConnection.clientId,
+   'the retry pins its distinct newly-created native connection client identity');
+ assert.equal(retryPlan.nativeConnection.endpoint.socketPath,'/disposable','retry persists its fresh construction-client endpoint witness');
+ assert.equal(retryPlan.nativeConnection.generation,1,'retry persists the replacement client generation before construction');
+ assert.equal(db.query('SELECT COUNT(*) AS n FROM codex_custody_successors WHERE canonical_input_id=?').get(lateRetryTarget.report.id).n,1,
+   'retry preserves one canonical recovery row');
+ assert.equal(db.query('SELECT COUNT(*) AS n FROM codex_unacknowledged_recoveries WHERE accepted_input_id=?').get(lateRetryTarget.report.id).n,0,
+   'no duplicate legacy recovery attempt is created');
+ assert.equal(lateInitialStarts,0,'the ended source never sent a construction request');
+ newCustodyClient=nativeClient;
+
+ // Pause can arrive after passive handoff staging but before the canonical custody relation
+ // exists. The proposed recovery handoff itself must therefore carry the Pause marker forward.
+ const preRelationTarget=await makeTarget('pause-before-custody-relation');let pauseRecorded=false;
+ await registerLegacyPrefix(preRelationTarget.target.id,preRelationTarget.threadId,preRelationTarget.rollout,
+   preRelationTarget.target.binding_generation,'empty-pause-before-custody-relation');
+ const preRelationAction='pause-before-custody-relation';
+ const preRelationClient=makeNative(preRelationTarget.threadId,preRelationTarget.rollout,()=>({thread:{id:'pause-before-relation-native-thread',
+   modelProvider:'openai',model:'gpt-6-astra',reasoningEffort:'medium',cwd:workspace,runtimeWorkspaceRoots:[workspace],
+   environments:[{environmentId:'local',cwd:workspace,runtimeWorkspaceRoots:[workspace]}]},model:'gpt-6-astra',modelProvider:'openai',
+   reasoningEffort:'medium',cwd:workspace,runtimeWorkspaceRoots:[workspace],approvalPolicy:'never',sandbox:{type:'dangerFullAccess'}}),undefined,()=>{
+   const staged=db.query("SELECT successor_session_id FROM session_handoffs WHERE action_id=? AND handoff_kind='codex-custody-successor' AND state='proposed'")
+     .get(preRelationAction) as {successor_session_id:number}|null;
+   if(staged&&!pauseRecorded&&!db.query('SELECT 1 FROM codex_custody_successors WHERE successor_session_id=?').get(staged.successor_session_id)){
+     host.owner.action(`concierge:${staged.successor_session_id}`,{clientActionId:'pause-before-relation',action:{kind:'pause'}});pauseRecorded=true;
+   }
+ });
+ newCustodyClient=preRelationClient;
+ const pausedBeforeRelation=await coordinator.recoverCodexNeverAcknowledged({source:{input_id:actorInput.id,run_id:actorRun},action_id:preRelationAction,
+   request_id:'pause-before-custody-relation',custody_successor:true});
+ newCustodyClient=nativeClient;
+ assert.equal(pausedBeforeRelation.state,'constructed');assert.equal(pauseRecorded,true,'the fixture pauses in the staged-handoff/pre-relation window');
+ const pausedPreRelationSession=getSessionById(pausedBeforeRelation.successor_session_id)!;
+ assert.equal(sessionMetadata(pausedPreRelationSession).custodyUserPaused,true,'pre-relation Pause is durably retained through custody relation creation');
+ assert.equal(sessionMetadata(pausedPreRelationSession).suspended,true,'construction cannot clear a Pause issued before the custody row existed');
+ assert.equal(claimNextQueuedTurn('fixture-owner'),null,'the paused pre-relation placement stays unadmitted');
+ host.owner.action(`concierge:${pausedPreRelationSession.id}`,{clientActionId:'continue-after-pre-relation-pause',action:{kind:'continue'}});
+ assert.equal(sessionMetadata(getSessionById(pausedPreRelationSession.id)!).suspended,false,'Continue releases the held constructed successor');
+ host.owner.action(`concierge:${pausedPreRelationSession.id}`,{clientActionId:'re-pause-after-pre-relation-proof',action:{kind:'pause'}});
+ assert.equal(claimNextQueuedTurn('fixture-owner'),null,'the fixture re-pauses its independent staged placement so later checks cannot admit it');
+
+ // Full failure chain: the protected Codex runner sends the consumed allowance once, receives
+ // terminal completion with no input acknowledgement and no output, and the real host persists
+ // CODEX_INPUT_NOT_ACKNOWLEDGED before communication reconciliation keeps every duty open.
+ const emptyTarget=await makeTarget('runner-empty-attempt');
+ await registerLegacyPrefix(emptyTarget.target.id,emptyTarget.threadId,emptyTarget.rollout,emptyTarget.target.binding_generation,
+   'empty-runner-empty-attempt');
+ for(const [dutyId,suffix] of [['runner-empty-sibling-one','one'],['runner-empty-sibling-two','two']] as const){
+   db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
+     target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,status,outcome)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)`).run(dutyId,'fixture',dutyId,actorTurn,requester.id,'root',dutyId,emptyTarget.target.id,'fixture','root',
+       JSON.stringify({requestedEffect:'work',text:`Independent runner-empty ${suffix} duty`,after:[]}),dutyId,0,0,actorInput.id,emptyTarget.report.id,'admitted');
+ }
+ emptyRun.sourceThread=emptyTarget.threadId;emptyRun.sourceFile=emptyTarget.rollout;emptyRun.successorThread='runner-empty-successor-thread';
+ emptyRun.canonicalInputId=emptyTarget.report.id;emptyRun.requestId='runner-empty-attempt';emptyRun.expectedPrompt='Continue runner-empty-attempt exactly.';
+ newCustodyClient=emptyNativeClient;
+ const emptyRecovery=await coordinator.recoverCodexNeverAcknowledged({source:{input_id:actorInput.id,run_id:actorRun},action_id:'recover-empty-runner-attempt',
+   request_id:emptyRun.requestId,custody_successor:true});
+ assert.equal(emptyRecovery.state,'constructed');assert.equal(emptyRun.sends,0,'construction does not spend/send the selected native attempt');
+ const emptyClaim=claimNextQueuedTurn('fixture-owner');assert.ok(emptyClaim);assert.equal(emptyClaim.session_id,emptyRecovery.successor_session_id);
+ const failedHostRun=host.run(emptyClaim);
+ while(emptyRun.sends===0)await new Promise(resolve=>setTimeout(resolve,1));
+ const failedOutcome=await failedHostRun;
+ assert.equal(failedOutcome.status,'error','host settles terminal native refusal through its normal error outcome path');
+ assert.equal(emptyRun.sends,1,'the one shared allowance produces exactly one native turn/start');
+ assert.ok(emptyRun.spentAtSend,'the fake native server observes durable canonical allowance before send');
+ const emptyRelation=custodySuccessor(emptyTarget.report.id)!;
+ assert.equal(emptyRelation.native_turn_id,'empty-successor-turn');assert.equal(emptyRelation.attempt_spent_at,emptyRun.spentAtSend);
+ const persistedEmpty=db.query('SELECT status,agent_text,provider_turn_id,provider_input_acknowledged_at FROM turns WHERE id=?').get(emptyClaim.turn_id) as any;
+ assert.equal(persistedEmpty.status,'error','the host persists the actual runner failure as a terminal error');
+ assert.match(persistedEmpty.agent_text,/CODEX_INPUT_NOT_ACKNOWLEDGED/);
+ assert.equal(persistedEmpty.provider_turn_id,'empty-successor-turn');assert.equal(persistedEmpty.provider_input_acknowledged_at,null);
+ for(const dutyId of [emptyRun.requestId,'runner-empty-sibling-one','runner-empty-sibling-two']){
+   const duty=db.query('SELECT * FROM session_communication_requests WHERE request_id=?').get(dutyId) as any;
+   await (coordinator as any).dispatch(duty);
+   assert.equal((db.query('SELECT outcome FROM session_communication_requests WHERE request_id=?').get(dutyId) as any).outcome,null,
+     `real runner-to-owner failure leaves ${dutyId} open for its own disposition`);
+ }
+ assert.equal(custodySuccessor(emptyTarget.report.id)?.state,'held','coordinator stores the real runner failure on canonical custody');
+ newCustodyClient=nativeClient;
+
  // A lost thread/start response is retained as uncertain. Re-entry returns that held operation
  // without asking the native service to construct another thread.
  const lost=await makeTarget('lost-construction');let lostStarts=0;
+ await registerLegacyPrefix(lost.target.id,lost.threadId,lost.rollout,lost.target.binding_generation,'empty-lost-construction');
  const lostNative=makeNative(lost.threadId,lost.rollout,()=>{lostStarts++;throw new Error('native construction response lost');});
  const lostRequest={actorSession:requester.id,sourceInputId:actorInput.id,sourceRunId:actorRun,requestId:'lost-construction',actionId:'lost-one',validateSource:()=>{}};
  await assert.rejects(()=>recoverCustodySuccessor(lostRequest,lostNative),/response lost/);
@@ -273,6 +657,7 @@ try {
  // A known native thread whose effective effort conflicts with the owner plan stays held,
  // retains that native identity for reconciliation, and never releases its queued placement.
  const mismatch=await makeTarget('wrong-settings');let mismatchStarts=0;
+ await registerLegacyPrefix(mismatch.target.id,mismatch.threadId,mismatch.rollout,mismatch.target.binding_generation,'empty-wrong-settings');
  const mismatchNative=makeNative(mismatch.threadId,mismatch.rollout,()=>{mismatchStarts++;return {thread:{id:'native-wrong-settings',modelProvider:'openai',
    model:'gpt-6-astra',reasoningEffort:'high',cwd:workspace,runtimeWorkspaceRoots:[workspace],environments:[{environmentId:'local',cwd:workspace,runtimeWorkspaceRoots:[workspace]}]},
    model:'gpt-6-astra',modelProvider:'openai',reasoningEffort:'high',cwd:workspace,runtimeWorkspaceRoots:[workspace],approvalPolicy:'never',sandbox:{type:'dangerFullAccess'}};});
@@ -284,6 +669,28 @@ try {
  assert.equal(claimNextQueuedTurn('fixture-owner'),null,'mismatched settings do not release successor work to the native queue');
  const mismatchRetry=await recoverCustodySuccessor({...mismatchRequest,actionId:'wrong-two'},mismatchNative);
  assert.equal(mismatchRetry.native_thread_id,'native-wrong-settings');assert.equal(mismatchStarts,1);
+
+ // The native identity is durably retained before postconstruction source verification can fail.
+ const replaced=await makeTarget('source-replaced-during-construction');let replacedStarts=0;
+ await registerLegacyPrefix(replaced.target.id,replaced.threadId,replaced.rollout,replaced.target.binding_generation,
+   'empty-source-replaced-during-construction');
+ const replacedNative=makeNative(replaced.threadId,replaced.rollout,()=>{
+   replacedStarts++;writeFileSync(replaced.rollout,'source changed after native construction returned');
+   return {thread:{id:'native-source-replaced',modelProvider:'openai',model:'gpt-6-astra',reasoningEffort:'medium',cwd:workspace,
+     runtimeWorkspaceRoots:[workspace],environments:[{environmentId:'local',cwd:workspace,runtimeWorkspaceRoots:[workspace]}]},
+     model:'gpt-6-astra',modelProvider:'openai',reasoningEffort:'medium',cwd:workspace,runtimeWorkspaceRoots:[workspace],
+     approvalPolicy:'never',sandbox:{type:'dangerFullAccess'}};
+ });
+ const replacedRequest={actorSession:requester.id,sourceInputId:actorInput.id,sourceRunId:actorRun,
+   requestId:'source-replaced-during-construction',actionId:'source-replaced',validateSource:()=>{}};
+ await assert.rejects(()=>recoverCustodySuccessor(replacedRequest,replacedNative),/Original source changed during successor preparation/);
+ const retainedConstruction=custodySuccessor(replaced.report.id)!;
+ assert.equal(retainedConstruction.state,'held');
+ assert.equal(retainedConstruction.native_thread_id,'native-source-replaced','ordinary postconstruction verification failure retains received native identity');
+ assert.equal(JSON.parse(retainedConstruction.construction_json!).threadId,'native-source-replaced','full effective construction response survives the later failure');
+ assert.equal((db.query('SELECT agent_session_uuid FROM sessions WHERE id=?').get(retainedConstruction.successor_session_id) as any).agent_session_uuid,null,
+   'held construction identity is not prematurely bound for admission');
+ assert.equal(replacedStarts,1);
 
  // An attached diagnostic claim cannot replace the owner-retained admission binding.
  const diagnostic=await makeTarget('diagnostic-only');
@@ -308,4 +715,4 @@ try {
  db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run('bad-thread',bad.id);
  assert.equal(nativeCalls.includes('thread/resume'),false);
  console.log('custody successor owner fixture passed: live work authority, complete prior-attempt observation, atomic custody, explicit Astra Medium construction, one persisted acknowledgement/useful result, canonical dedupe');
-} finally {await stopHost?.();lab.stop();db.close();rmSync(scratch,{recursive:true,force:true});}
+} finally {await stopHost?.();await Promise.all(managedLegacySenders.map(sender=>sender.close({immediate:true})));lab.stop();db.close();rmSync(scratch,{recursive:true,force:true});}

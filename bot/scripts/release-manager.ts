@@ -116,7 +116,9 @@ try {
         console.error(JSON.stringify({ event: "deployment_turn_reaction_discovery_failed", run_id: runId, error: message }));
       }
     }
-    const manifest = timed("activate_files", () => manager.activate(artifact));
+    const manifest = ownerServedReleaseCommand
+      ? await timedAsync("activate_files", () => ownerReleaseMutation('activate-files',{artifactPath:artifact}))
+      : timed("activate_files", () => manager.activate(artifact));
     await timedAsync("record_activated", () => releaseMutation('activated',{runId,artifactDigest:manifest.artifact_digest},
       () => recordDeploymentReleaseActivated(runId,manifest.artifact_digest)));
     notifyDeploymentWorker();
@@ -128,8 +130,11 @@ try {
     if (!release) throw new Error("No last-known-good release has been recorded.");
     if (process.argv.includes('--keep-control') && !manager.controlArtifactPath())
       throw new Error('Cannot retain a missing deployment controller.');
-    const manifest = process.argv.includes('--keep-control')
-      ? manager.activate(release.artifact_path) : manager.restore(release.artifact_path);
+    const manifest = ownerServedReleaseCommand
+      ? await ownerReleaseMutation(process.argv.includes('--keep-control')?'activate-files':'restore-files',
+        {artifactPath:release.artifact_path})
+      : process.argv.includes('--keep-control')
+        ? manager.activate(release.artifact_path) : manager.restore(release.artifact_path);
     finish(0, { status: "restored", artifact_path: release.artifact_path, ...manifest });
   }
   if (command === "promote") {
@@ -137,9 +142,11 @@ try {
     const artifactDigest = required("--artifact-digest");
     const release = manager.verify(required("--artifact"));
     if (release.artifact_digest !== artifactDigest) throw new Error("Promoted artifact path and digest disagree.");
-    const promoted = await releaseMutation('promote',{runId,artifactDigest},
-      () => promoteDeploymentRelease(runId,artifactDigest));
-    manager.activateControl(required("--artifact"));
+    const artifact=required('--artifact');
+    const promoted = ownerServedReleaseCommand
+      ? (await ownerReleaseMutation('promote-and-activate-control',{runId,artifactDigest,artifactPath:artifact})).promoted
+      : await releaseMutation('promote',{runId,artifactDigest},()=>promoteDeploymentRelease(runId,artifactDigest));
+    if(!ownerServedReleaseCommand)manager.activateControl(artifact);
     finish(0, { status: "promoted", artifact_digest: promoted.artifact_digest, git_commit: promoted.git_commit });
   }
   if (command === "current") {
@@ -154,7 +161,10 @@ try {
     finish(0, { status: "lkg", artifact_path: release.artifact_path, ...manifest });
   }
   if (command === "set-control") {
-    const manifest = manager.activateControl(required("--artifact"));
+    const artifact=required('--artifact');
+    const manifest = ownerServedReleaseCommand
+      ? await ownerReleaseMutation('activate-control-files',{artifactPath:artifact})
+      : manager.activateControl(artifact);
     finish(0, { status: "control-activated", ...manifest });
   }
   if (command === "prune") {

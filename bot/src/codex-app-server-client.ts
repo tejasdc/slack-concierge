@@ -6,9 +6,15 @@ import { errorFields, log } from "./log";
 import {releaseCodexBridgePath} from "./release-worker";
 import { moveCodexDaemonToOwnScope, raiseCodexDaemonFileLimit, startCodexDaemonWhenAbsent } from "./codex-daemon-file-limit";
 import { OwnerDrainBeforeProviderAdmissionError } from "./provider-failures";
+import { randomUUID } from "node:crypto";
+import {isCodexNativeObservation} from './codex-native-observations';
 
 const DEFAULT_SOCKET_PATH = join(homedir(), ".codex/app-server-control/app-server-control.sock");
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const custodyClients = new Set<CodexAppServerClient>();
+const frozenCustodyTargets = new Map<string,{ownerSessionId:number;threadId:string;endpoint:{socketPath:string;relayRunner:string|null}|undefined}>();
+const custodyBarrierGenerations = new Map<string,Map<number,Map<string,number>>>();
+function isCustodyMutation(method:string) { return !isCodexNativeObservation(method); }
 
 export class CodexAppServerClientError extends Error {
   constructor(
@@ -37,9 +43,11 @@ interface PendingRequest {
   reject(error: Error): void;
   timeout: ReturnType<typeof setTimeout> | undefined;
   onAccepted?(value: any): void;
+  onCompleted?():void;
 }
 
 interface ActiveConnection {
+  serverInfo?:unknown;
   generation: number;
   process: ChildProcessWithoutNullStreams;
   disconnected: Promise<void>;
@@ -56,6 +64,8 @@ type NotificationListener = (event: any) => void;
 type DisconnectListener = (error: Error, generation: number) => void;
 
 export interface CodexRequestOptions {
+  /** Refuse a protected operation if it would use another native connection. */
+  expectedConnectionGeneration?: number;
   requestTimeoutMs?: number;
   /**
    * Wait for the answer for as long as this connection lives. For a request the App Server
@@ -64,16 +74,48 @@ export interface CodexRequestOptions {
    */
   untilDisconnect?: boolean;
   onAccepted?: (value: any) => void;
+  /** Durable owner identity used by the custody forwarding policy. */
+  custodyOwnerSessionId?: number;
+}
+
+export type CodexCustodyForwardScope = {
+  senderId: string;
+  generation: number;
+  method: string;
+  params: unknown;
+  ownerSessionId: number | null;
+  threadId: string | null;
+  serializationKey:string|null;
+  classification: "known-thread" | "thread-path" | "unkeyed-thread" | "other";
+};
+export type CodexCustodyForwardRecord=Omit<CodexCustodyForwardScope,"params"> & {completed:boolean};
+
+let custodyForwardGuard: ((scope: CodexCustodyForwardScope) => void) | null = null;
+export function installCodexCustodyForwardGuard(guard: ((scope: CodexCustodyForwardScope) => void) | null) {
+  custodyForwardGuard = guard;
+}
+
+function forwardedScope(senderId:string,generation:number,method:string,params:unknown,ownerSessionId:number|null):CodexCustodyForwardScope {
+  const row=params&&typeof params==="object"?params as Record<string,unknown>:{};
+  const id=typeof row.threadId==="string"?row.threadId:null;
+  const path=(typeof row.path==="string"&&row.path.length>0)||row.history!==undefined&&row.history!==null;
+  const classification=method==="thread/start"?"unkeyed-thread":path?"thread-path":id?"known-thread":"other";
+  const serializationKey=method==="thread/start"?`unkeyed:${method}`:
+    (method==="thread/resume"||method==="thread/fork")&&(!id||id.length===0)?path?`thread-path:${String(row.path??row.history??"")}`:`thread:`:
+    id?`thread:${id}`:null;
+  return {senderId,generation,method,params,ownerSessionId,threadId:id,serializationKey,classification};
 }
 
 export interface CodexAppServerClientLike {
+  readonly custodySenderId?:string;
+  readonly nativeEndpoint?:{socketPath:string;relayRunner:string|null;serverInfo:unknown};
   connect(): Promise<number>;
   request(
     method: string,
     params: unknown,
     options?: CodexRequestOptions,
   ): Promise<any>;
-  notify(method: string, params?: unknown): Promise<void>;
+  notify(method: string, params?: unknown, options?:Pick<CodexRequestOptions,'expectedConnectionGeneration'|'custodyOwnerSessionId'>): Promise<void>;
   onNotification(listener: NotificationListener): () => boolean;
   onDisconnect(listener: DisconnectListener): () => boolean;
   waitForDisconnect(generation: number): Promise<void>;
@@ -85,6 +127,8 @@ export function codexAppServerSocketPath() {
 }
 
 export class CodexAppServerClient {
+  readonly custodySenderId=randomUUID();
+  readonly custodyForwardedScopes:CodexCustodyForwardRecord[] = [];
   private active: ActiveConnection | null = null;
   private connecting: Promise<number> | null = null;
   private generation = 0;
@@ -105,9 +149,10 @@ export class CodexAppServerClient {
       /** A protected recovery client must never start or tune a shared native daemon. */
       manageDaemon?: boolean;
     } = {},
-  ) {}
+  ) { custodyClients.add(this); }
 
   get activeGeneration() { return this.active?.generation ?? null; }
+  get nativeEndpoint(){return {socketPath:this.socketPath,relayRunner:this.options.relayRunner??null,serverInfo:this.active?.serverInfo??null};}
 
   connect(): Promise<number> {
     if (this.closed) {
@@ -129,9 +174,13 @@ export class CodexAppServerClient {
     params: unknown,
     options: CodexRequestOptions = {},
   ): Promise<any> {
+    if (options.expectedConnectionGeneration !== undefined
+      && this.active?.generation !== options.expectedConnectionGeneration)
+      throw new CodexAppServerClientError(`Native connection changed before ${method}; protected operation remains held.`, "rejected");
     const generation = await this.connect();
     const connection = this.active;
-    if (!connection || connection.generation !== generation) {
+    if (!connection || connection.generation !== generation
+      || options.expectedConnectionGeneration !== undefined && generation !== options.expectedConnectionGeneration) {
       throw new CodexAppServerClientError(`Codex app-server disconnected before ${method}.`, "ambiguous");
     }
     const id = ++this.requestId;
@@ -151,6 +200,17 @@ export class CodexAppServerClient {
         timeout,
         onAccepted: options.onAccepted,
       });
+      if (isCustodyMutation(method)) {
+        try {
+          const scope=forwardedScope(this.custodySenderId,connection.generation,method,params,options.custodyOwnerSessionId??null);
+          refuseFrozenCustodyTarget(scope);
+          custodyForwardGuard?.(scope);
+          const {params:_params,...metadata}=scope;
+          const recorded={...metadata,completed:false}; this.custodyForwardedScopes.push(recorded);
+          const pending=this.pending.get(id); if(pending) pending.onCompleted=()=>{recorded.completed=true;};
+        }
+        catch(error) { clearTimeout(timeout); this.pending.delete(id); reject(error as Error); return; }
+      }
       void this.send(connection, { type: "request", id, method, params }).catch((error) => {
         clearTimeout(timeout);
         this.pending.delete(id);
@@ -159,11 +219,24 @@ export class CodexAppServerClient {
     });
   }
 
-  async notify(method: string, params: unknown = {}) {
+  async notify(method: string, params: unknown = {},options:Pick<CodexRequestOptions,'expectedConnectionGeneration'|'custodyOwnerSessionId'>={}) {
+    if(options.expectedConnectionGeneration!==undefined&&this.active?.generation!==options.expectedConnectionGeneration)
+      throw new CodexAppServerClientError(`Native connection changed before ${method}; protected notification remains held.`, "rejected");
     const generation = await this.connect();
     const connection = this.active;
-    if (!connection || connection.generation !== generation) {
+    if (!connection || connection.generation !== generation
+      ||options.expectedConnectionGeneration!==undefined&&generation!==options.expectedConnectionGeneration) {
       throw new CodexAppServerClientError(`Codex app-server disconnected before ${method}.`, "ambiguous");
+    }
+    if (isCustodyMutation(method)) {
+      try {
+        const scope=forwardedScope(this.custodySenderId,connection.generation,method,params,options.custodyOwnerSessionId??null);
+        refuseFrozenCustodyTarget(scope);
+        custodyForwardGuard?.(scope);
+        const {params:_params,...metadata}=scope;
+        this.custodyForwardedScopes.push({...metadata,completed:false});
+      }
+      catch(error) { throw error; }
     }
     await this.send(connection, { type: "notification", method, params });
   }
@@ -344,6 +417,7 @@ export class CodexAppServerClient {
       return;
     }
     if (event.type === "ready") {
+      connection.serverInfo=event.serverInfo??null;
       connection.resolveReady();
       return;
     }
@@ -363,6 +437,7 @@ export class CodexAppServerClient {
       this.pending.delete(id);
       if (event.error) {
         const errorCode = Number(event.error.code);
+        pending.onCompleted?.();
         pending.reject(new CodexAppServerClientError(
           `Codex app-server ${pending.method} failed: ${event.error.message || JSON.stringify(event.error)}`,
           errorCode === -32602 || errorCode === -32001 ? "rejected" : "ambiguous",
@@ -373,6 +448,7 @@ export class CodexAppServerClient {
       }
       try {
         pending.onAccepted?.(event.result);
+        pending.onCompleted?.();
         pending.resolve(event.result);
       } catch (error) {
         pending.reject(error instanceof Error ? error : new Error(String(error)));
@@ -415,6 +491,99 @@ export class CodexAppServerClient {
       } catch {}
     }
   }
+}
+
+function refuseFrozenCustodyTarget(scope:CodexCustodyForwardScope) {
+  for(const target of frozenCustodyTargets.values()) {
+    const sender=[...custodyClients].find(client=>client.custodySenderId===scope.senderId);
+    const sameEndpoint=!target.endpoint||sender?.nativeEndpoint.socketPath===target.endpoint.socketPath&&sender.nativeEndpoint.relayRunner===target.endpoint.relayRunner;
+    if(scope.ownerSessionId===target.ownerSessionId||sameEndpoint&&(scope.threadId===target.threadId
+      ||scope.ownerSessionId===null&&(scope.classification==="thread-path"||scope.classification==="unkeyed-thread")))
+      throw new CodexAppServerClientError("Native sender is frozen for custody reconciliation; competing write remains held.","rejected");
+  }
+}
+
+export type ManagedCodexCustodyCutoff = {
+  ownerSessionId:number;
+  threadId:string;
+  endpoint:{socketPath:string;relayRunner:string|null}|null;
+  sourcePath:string|null;
+  bindingGeneration:number|null;
+  frozenAt:string;
+  captured:Array<{senderId:string;generation:number;endpoint:CodexAppServerClient["nativeEndpoint"]}>;
+  barriers:Array<{senderId:string;generation:number;threadId:string;completedAt:string}>;
+  unresolved:string[];
+  coverage:"managed-client-registry-only";
+  externalCoverage:"not-asserted";
+  assertCurrentHold():void;
+  reconcile():Promise<ManagedCodexCustodyCutoffReceipt>;
+};
+export type ManagedCodexCustodyCutoffReceipt=Omit<ManagedCodexCustodyCutoff,"assertCurrentHold"|"reconcile">;
+
+/** Install an in-process cutoff synchronously, then acknowledge the exact target on every
+ * captured live sender generation. This is not proof for senders outside this managed registry. */
+export function freezeManagedCodexTarget(input:{ownerSessionId:number;threadId:string;timeoutMs?:number;endpoint?:{socketPath:string;relayRunner:string|null};sourcePath?:string;bindingGeneration?:number}):ManagedCodexCustodyCutoff {
+  const key=`${input.ownerSessionId}:${input.threadId}`;
+  const priorHold=frozenCustodyTargets.get(key);
+  if(priorHold?.endpoint&&input.endpoint
+    &&(priorHold.endpoint.socketPath!==input.endpoint.socketPath||priorHold.endpoint.relayRunner!==input.endpoint.relayRunner))
+    throw new CodexAppServerClientError('The protected target already has a cutoff on another native endpoint; re-establish its association before use.','rejected');
+  if(priorHold?.endpoint&&!input.endpoint)
+    throw new CodexAppServerClientError('A protected target cannot discard its exact native endpoint association.','rejected');
+  frozenCustodyTargets.set(key,{ownerSessionId:input.ownerSessionId,threadId:input.threadId,endpoint:input.endpoint});
+  const captured=[...custodyClients].filter(c=>c.activeGeneration!==null&&(!input.endpoint
+    ||c.nativeEndpoint.socketPath===input.endpoint.socketPath&&c.nativeEndpoint.relayRunner===input.endpoint.relayRunner)
+    &&c.custodyForwardedScopes.some(scope=>scope.threadId===input.threadId||scope.ownerSessionId===input.ownerSessionId
+      ||scope.ownerSessionId===null&&(scope.classification==="thread-path"||scope.classification==="unkeyed-thread")))
+    .map(client=>({client,generation:client.activeGeneration!,senderId:client.custodySenderId,endpoint:client.nativeEndpoint}));
+  const incompatibleTargetWriters=[...custodyClients].filter(c=>c.activeGeneration!==null&&input.endpoint
+    &&(c.nativeEndpoint.socketPath!==input.endpoint.socketPath||c.nativeEndpoint.relayRunner!==input.endpoint.relayRunner)
+    &&c.custodyForwardedScopes.some(scope=>scope.threadId===input.threadId||scope.ownerSessionId===input.ownerSessionId));
+  const barriers:ManagedCodexCustodyCutoff["barriers"]=[];
+  const unresolved:string[]=[];
+  let reconciled=false;
+  const cutoff:ManagedCodexCustodyCutoff={ownerSessionId:input.ownerSessionId,threadId:input.threadId,endpoint:input.endpoint??null,sourcePath:input.sourcePath??null,bindingGeneration:input.bindingGeneration??null,frozenAt:new Date().toISOString(),captured:captured.map(({senderId,generation,endpoint})=>({senderId,generation,endpoint})),barriers,unresolved,coverage:"managed-client-registry-only",externalCoverage:"not-asserted",
+    assertCurrentHold(){
+      const held=frozenCustodyTargets.get(key);
+      if(!held||held.endpoint&&(held.endpoint.socketPath!==input.endpoint?.socketPath||held.endpoint.relayRunner!==input.endpoint?.relayRunner))
+        throw new Error("Managed native target cutoff no longer covers its exact endpoint.");
+    },
+    async reconcile(){
+      cutoff.assertCurrentHold();
+      if(reconciled)return JSON.parse(JSON.stringify(cutoff)) as ManagedCodexCustodyCutoffReceipt;
+      if(captured.length===0)unresolved.push("No managed active sender generation was captured; absence is not coverage.");
+      if(incompatibleTargetWriters.length) unresolved.push(`Matching target writes exist on ${incompatibleTargetWriters.length} incompatible native endpoint(s).`);
+      for(const client of custodyClients){
+        const relevant=client.custodyForwardedScopes.map((scope,index)=>({scope,index})).filter(({scope})=>scope.threadId===input.threadId||scope.ownerSessionId===input.ownerSessionId
+          ||scope.ownerSessionId===null&&(scope.classification==="thread-path"||scope.classification==="unkeyed-thread"));
+        const covered=custodyBarrierGenerations.get(client.custodySenderId)??new Map<number,Map<string,number>>();
+        for(const {scope,index} of relevant) if(client.activeGeneration!==scope.generation
+          &&((covered.get(scope.generation)?.get(scope.serializationKey??'unknown')??-1)<=index))
+          unresolved.push(`Sender ${client.custodySenderId} has relevant writes at/after the last barrier on ended generation ${scope.generation}.`);
+      }
+      for(const row of captured){
+        const prior=row.client.custodyForwardedScopes.filter(scope=>scope.generation===row.generation
+          && (scope.threadId===input.threadId || scope.ownerSessionId===input.ownerSessionId
+            ||scope.ownerSessionId===null&&(scope.classification==="thread-path"||scope.classification==="unkeyed-thread")));
+        for(const scope of prior) if(scope.classification==="thread-path"||scope.classification==="unkeyed-thread"
+          ||scope.serializationKey!==`thread:${input.threadId}`)
+          unresolved.push(`Sender ${row.senderId} has ${scope.classification} ${scope.method} on ${scope.serializationKey??'unknown key'}; the target thread/read cannot establish its complete disposition (RPC completed=${scope.completed}).`);
+        if(row.client.activeGeneration!==row.generation){unresolved.push(`Sender ${row.senderId} lost captured generation ${row.generation} before its same-generation barrier.`);continue;}
+        try {
+          const result=await row.client.request("thread/read",{threadId:input.threadId},{expectedConnectionGeneration:row.generation,requestTimeoutMs:input.timeoutMs??30_000});
+          const returned=result?.thread?.id;
+          if(returned!==input.threadId){unresolved.push(`Sender ${row.senderId} returned a nonmatching thread/read identity.`);continue;}
+          const covered=custodyBarrierGenerations.get(row.senderId)??new Map<number,Map<string,number>>();
+          const byKey=covered.get(row.generation)??new Map<string,number>();
+          byKey.set(`thread:${input.threadId}`,row.client.custodyForwardedScopes.length);
+          covered.set(row.generation,byKey);custodyBarrierGenerations.set(row.senderId,covered);
+          barriers.push({senderId:row.senderId,generation:row.generation,threadId:input.threadId,completedAt:new Date().toISOString()});
+        } catch(error) { unresolved.push(`Sender ${row.senderId} generation ${row.generation} barrier failed: ${error instanceof Error?error.message:String(error)}`); }
+      }
+      reconciled=true;
+      return JSON.parse(JSON.stringify(cutoff)) as ManagedCodexCustodyCutoffReceipt;
+    }};
+  return cutoff;
 }
 
 let sharedClient: CodexAppServerClient | null = null;

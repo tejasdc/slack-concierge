@@ -8,11 +8,28 @@ import CONTROLLER from './codex-custody-control-format.json';
 
 export const CUSTODY_APPLICATION_CAPABILITY_PATH='control/codex-custody-format.json';
 export const CUSTODY_CONTROL_CAPABILITY_PATH='control/codex-custody-control-format.json';
+export interface CustodyApplicationProvenance {
+  format:1;
+  applicationSourceTreeDigest:string;
+  applicationCapabilityDigest:string;
+}
+export interface CustodyReaderActivationProvenance {
+  applicationCommit:string;
+  controlCommit:string;
+  applicationSourceTreeDigest:string;
+  custodyApplicationProvenance?:unknown;
+}
 const requirementRoot=(state:string)=>join(state,'codex-custody-successors','required-readers');
 
 /** Call before passive successor staging. Once published, never clear automatically: retained
  * successors and future turns still depend on this owner interpretation. */
-export function requireCustodyReader(state:string) {
+export function requireCustodyReader(state:string,releaseRoot:string) {
+  // This synchronous check and the durable marker write run in the serving owner's event loop.
+  // Release pointer publication is routed through that same loop, with no await between its
+  // compatibility check and rename. Whichever operation enters first therefore determines the
+  // only safe outcome: an old controller publishes first and this call refuses, or this marker
+  // publishes first and old-controller activation refuses.
+  assertInstalledCustodyController(releaseRoot);
   const directory=requirementRoot(state);
   mkdirSync(directory,{recursive:true,mode:0o700});
   const stateFd=openSync(state,'r');try{fsyncSync(stateFd);}finally{closeSync(stateFd);}
@@ -62,15 +79,33 @@ export function assertInstalledCustodyController(releaseRoot:string):string {
   return selected;
 }
 
-export function assertCustodyReaderActivation(state:string,artifact:string,files:Record<string,string>,control=false,persistedSuccessors=false) {
+export function assertCustodyReaderActivation(state:string,artifact:string,files:Record<string,string>,control=false,persistedSuccessors=false,
+  provenance?:CustodyReaderActivationProvenance) {
+  const assertApplicationProvenance=()=>{
+    if(!provenance||provenance.applicationCommit===provenance.controlCommit)return;
+    const record=provenance.custodyApplicationProvenance as Partial<CustodyApplicationProvenance>|undefined;
+    if(!files[CUSTODY_APPLICATION_CAPABILITY_PATH]||record?.format!==1
+      ||record.applicationSourceTreeDigest!==provenance.applicationSourceTreeDigest
+      ||record.applicationCapabilityDigest!==files[CUSTODY_APPLICATION_CAPABILITY_PATH])
+      throw new Error('CODEX_CUSTODY_APPLICATION_PROVENANCE_NOT_PROVEN');
+  };
+  // Even before any successor is staged, a hybrid release cannot advertise application
+  // custody support based on bytes supplied by its independently selected controller.
+  if(files[CUSTODY_APPLICATION_CAPABILITY_PATH]&&provenance&&provenance.applicationCommit!==provenance.controlCommit){
+    assertCapability(artifact,files,false);
+    assertApplicationProvenance();
+  }
   const root=requirementRoot(state);let info;
   try{info=lstatSync(root);}catch(error){
     if((error as NodeJS.ErrnoException).code==='ENOENT'){
-      if(persistedSuccessors)assertCapability(artifact,files,control);
+      if(persistedSuccessors){assertCapability(artifact,files,control);if(!control)assertApplicationProvenance();}
       return;
     }
     throw error;
   }
   if(!info.isDirectory()||info.isSymbolicLink())throw new Error('CODEX_CUSTODY_REQUIREMENT_INVALID');
-  if(readdirSync(root).length||persistedSuccessors)assertCapability(artifact,files,control);
+  if(readdirSync(root).length||persistedSuccessors){
+    assertCapability(artifact,files,control);
+    if(!control)assertApplicationProvenance();
+  }
 }

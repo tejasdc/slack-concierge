@@ -465,6 +465,8 @@ export interface RunCodexTurnInput {
   inactivityTimeoutMs?: number;
   shutdownGraceMs?: number;
   appServerClient?: CodexAppServerClientLike;
+  /** Owner session identity attached to native sends for cutoff attribution. */
+  custodyOwnerSessionId?:number;
   onRateLimits?: (snapshot: unknown) => void;
   /**
    * This run's turn was started by an earlier coordinator and is still the daemon's: follow it by
@@ -1178,7 +1180,8 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     // starts; the barrier releases in call order, so requests keep theirs.
     await ledgerDurable();
     await beforeSend?.();
-    const result = await client.request(method, params, { requestTimeoutMs, onAccepted });
+    const result = await client.request(method, params, { requestTimeoutMs, onAccepted,
+      custodyOwnerSessionId:input.custodyOwnerSessionId??input.custodySuccessor?.plan.ownerSessionId });
     resetInactivityTimeout();
     return result;
   };
@@ -1223,7 +1226,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     const endWatch = watchResume(threadId);
     try {
       const result = await Promise.race([
-        client.request("thread/resume", params, { untilDisconnect: true }),
+        client.request("thread/resume", params, { untilDisconnect: true,custodyOwnerSessionId:input.custodyOwnerSessionId }),
         stoppedBeforeSubmission,
       ]);
       resetInactivityTimeout();

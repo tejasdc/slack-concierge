@@ -2904,7 +2904,14 @@ export class SessionOwner {
         db.query("UPDATE sessions SET status=CASE WHEN ?='archive' THEN 'archived' WHEN EXISTS(SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering')) THEN 'running' ELSE 'idle' END WHERE id=?").run(action.kind,session.id,session.id);
         if(action.kind==='archive')discardQueuedTurnContinuations(session.id,'archive');
       } else if(action.kind==='pause'||action.kind==='continue'){
-        updateSessionMetadata(session.id,{suspended:action.kind==='pause'});
+        const custody=db.query('SELECT state FROM codex_custody_successors WHERE successor_session_id=?').get(session.id) as {state:string}|null;
+        const handoff=db.query(`SELECT state FROM session_handoffs WHERE successor_session_id=? AND handoff_kind='codex-custody-successor'
+          ORDER BY created_at DESC LIMIT 1`).get(session.id) as {state:string}|null;
+        const recoveryStaged=!!custody||handoff?.state==='proposed';
+        const explicitPause=action.kind==='pause';
+        const constructionReady=!!custody&&['constructed','admitting','acknowledged'].includes(custody.state);
+        updateSessionMetadata(session.id,{suspended:explicitPause||recoveryStaged&&!constructionReady,
+          ...(recoveryStaged?{custodyUserPaused:explicitPause}:{})});
         if(action.kind==='pause')discardQueuedTurnContinuations(session.id,'pause');
       }
       else if(action.kind==='clear-queue')this.clearWaitingHumanInputs(session.id,'clear-queue');

@@ -19,7 +19,7 @@ import {
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import BUILT_IN_DECLARATION from "./deployment-artifact-files.json";
 import {assertHistoryCacheActivation,HISTORY_CACHE_CAPABILITY_PATH,HISTORY_CACHE_CONTROL_CAPABILITY_PATH} from "./provider-history-cache-compatibility";
-import {assertCustodyReaderActivation,CUSTODY_APPLICATION_CAPABILITY_PATH,CUSTODY_CONTROL_CAPABILITY_PATH} from './codex-custody-compatibility';
+import {assertCustodyReaderActivation,CUSTODY_APPLICATION_CAPABILITY_PATH,CUSTODY_CONTROL_CAPABILITY_PATH,type CustodyApplicationProvenance} from './codex-custody-compatibility';
 
 // Normal preparation took about 47 seconds; the same check passed in 52 seconds under
 // load after a 90-second deploy timeout. Three minutes leaves room for disk contention
@@ -104,6 +104,7 @@ export interface ReleaseManifest {
   artifact_digest: string;
   files: Record<string, string>;
   application_bundle_source_digest?: string;
+  custody_application_provenance?:CustodyApplicationProvenance;
 }
 
 export interface PreparedRelease {
@@ -339,9 +340,11 @@ export class TrustedRootReleaseManager {
     return row.required===1||row.required===true;
   }
 
-  private assertCustodyReader(artifact:string,files:Record<string,string>,control:boolean) {
+  private assertCustodyReader(artifact:string,manifest:ReleaseManifest,control:boolean) {
     if(this.environment.custodyStateDirectory)
-      assertCustodyReaderActivation(this.environment.custodyStateDirectory,artifact,files,control,this.custodyRowsExist(artifact,files));
+      assertCustodyReaderActivation(this.environment.custodyStateDirectory,artifact,manifest.files,control,this.custodyRowsExist(artifact,manifest.files),{
+        applicationCommit:manifest.git_commit,controlCommit:manifest.control_git_commit,
+        applicationSourceTreeDigest:manifest.source_tree_digest,custodyApplicationProvenance:manifest.custody_application_provenance});
   }
 
   private verifyRuntimeLaunchers(artifactPath: string) {
@@ -355,6 +358,15 @@ export class TrustedRootReleaseManager {
       if (stat.isDirectory()) for (const entry of readdirSync(path)) sealed(join(path, entry));
     };
     sealed(artifactPath);
+    return manifest;
+  }
+
+  /** Synchronous preflight for operations that must validate before recording an owner mutation. */
+  verifyControlActivation(artifactPath:string) {
+    const canonical=realpathSync(artifactPath),manifest=this.verifyRuntimeLaunchers(canonical);
+    if(this.environment.historyCacheStateDirectory)
+      assertHistoryCacheActivation(this.environment.historyCacheStateDirectory,canonical,manifest.files,true);
+    this.assertCustodyReader(canonical,manifest,true);
     return manifest;
   }
 
@@ -505,6 +517,9 @@ export class TrustedRootReleaseManager {
       const runtimeDigest = releaseFileSetDigest(outputRoot, runtimeFiles);
       const compatibilityDigest = releaseFileSetDigest(sourceRoot, COMPATIBILITY_FILES);
       const files = Object.fromEntries(runtimeFiles.map((path) => [path, digest(readFileSync(join(outputRoot, path)))]));
+      const applicationCapabilityDigest=files[CUSTODY_APPLICATION_CAPABILITY_PATH];
+      const custodyApplicationProvenance:CustodyApplicationProvenance|undefined=applicationCapabilityDigest?{
+        format:1,applicationSourceTreeDigest:sourceTreeDigest,applicationCapabilityDigest}:undefined;
       const unsigned = {
         format: 2 as const,
         git_commit: gitCommit,
@@ -515,6 +530,7 @@ export class TrustedRootReleaseManager {
         compatibility_digest: compatibilityDigest,
         files,
         ...(applicationPaths.size?{application_bundle_source_digest:sourceTreeDigest}:{}),
+        ...(custodyApplicationProvenance?{custody_application_provenance:custodyApplicationProvenance}:{}),
       };
       const artifactDigest = digest(JSON.stringify(unsigned));
       const manifest: ReleaseManifest = { ...unsigned, artifact_digest: artifactDigest };
@@ -621,10 +637,7 @@ export class TrustedRootReleaseManager {
 
   activateControl(artifactPath: string) {
     const canonical = realpathSync(artifactPath);
-    const manifest = this.verifyRuntimeLaunchers(canonical);
-    if(this.environment.historyCacheStateDirectory)
-      assertHistoryCacheActivation(this.environment.historyCacheStateDirectory,canonical,manifest.files,true);
-    this.assertCustodyReader(canonical,manifest.files,true);
+    const manifest = this.verifyControlActivation(canonical);
     mkdirSync(this.environment.releaseRoot, { recursive: true, mode: 0o755 });
     this.installRuntimeLaunchers();
     const temporary = join(this.environment.releaseRoot, `.control-${randomUUID()}`);
@@ -640,7 +653,7 @@ export class TrustedRootReleaseManager {
     const manifest = this.verify(canonical);
     if(this.environment.historyCacheStateDirectory)
       assertHistoryCacheActivation(this.environment.historyCacheStateDirectory,canonical,manifest.files);
-    this.assertCustodyReader(canonical,manifest.files,false);
+    this.assertCustodyReader(canonical,manifest,false);
     mkdirSync(this.environment.releaseRoot, { recursive: true, mode: 0o755 });
     const temporary = join(this.environment.releaseRoot, `.current-${randomUUID()}`);
     symlinkSync(relative(this.environment.releaseRoot, canonical), temporary);
@@ -656,7 +669,7 @@ export class TrustedRootReleaseManager {
       const canonical=realpathSync(artifactPath),manifest=this.verify(canonical);
       if(this.environment.historyCacheStateDirectory)
       assertHistoryCacheActivation(this.environment.historyCacheStateDirectory,canonical,manifest.files,true);
-      this.assertCustodyReader(canonical,manifest.files,true);
+      this.assertCustodyReader(canonical,manifest,true);
     }
     const manifest = this.activate(artifactPath);
     this.activateControl(artifactPath);

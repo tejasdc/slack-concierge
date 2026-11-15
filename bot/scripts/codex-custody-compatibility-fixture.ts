@@ -57,9 +57,9 @@ try{
     installRoot:join(state,'fresh-install'),bunExecutable:process.execPath,custodyStateDirectory:freshState});
   assert.equal((freshManager as any).custodyRowsExist(artifact,{}),false,'a fresh install with no database has no custody rows');
   assert.doesNotThrow(()=>assertCustodyReaderActivation(state,artifact,{}),'without successor state, older artifacts remain compatible');
-  requireCustodyReader(state);
+  requireCustodyReader(state,selectedController);
   const marker=join(state,'codex-custody-successors','required-readers','successor-custody-v1.json');
-  assert.doesNotThrow(()=>requireCustodyReader(state),'the durable requirement is idempotent');
+  assert.doesNotThrow(()=>requireCustodyReader(state,selectedController),'the durable requirement is idempotent');
   assert.throws(()=>assertCustodyReaderActivation(state,artifact,{},false,true),/CODEX_CUSTODY_READER_NOT_PROVEN/,'database evidence catches a lost marker');
   assert.throws(()=>assertCustodyReaderActivation(state,artifact,{}),/CODEX_CUSTODY_READER_NOT_PROVEN/,'application rollback lacking reader is refused');
   const appFiles={[CUSTODY_APPLICATION_CAPABILITY_PATH]:checksum(CUSTODY_APPLICATION_CAPABILITY_PATH)};

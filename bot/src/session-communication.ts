@@ -1362,15 +1362,20 @@ export class SessionCommunicationCoordinator {
         if(input.custody_successor===true){
             const recover=this.dependencies.owner.runtime.recoverCustodySuccessor;
             if(!recover)throw new Error('This owner cannot construct a custody successor.');
+            const authorityInputId=authority.authorityInputId??actor.inputId;
             const validateSource=()=>{
                 const live=this.authority(this.fenced(this.actor({input_id:actor.inputId,run_id:nativeRunId(actor.turn)})));
-                if(live.scope!=='work'||live.actor.session!==actor.session||this.row(input.request_id).outcome!==null)
+                if(live.scope!=='work'||live.actor.session!==actor.session
+                    ||(live.authorityInputId??live.actor.inputId)!==authorityInputId||this.row(input.request_id).outcome!==null)
                     throw new Error('Recovery lost its exact live work authority or its underlying request settled.');
             };
             const result=await recover({actorSession:actor.session,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),
-                requestId:input.request_id,actionId:input.action_id,validateSource});
+                requestId:input.request_id,actionId:input.action_id,authorityInputId,validateSource});
             this.wake();return result;
         }
+        if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?')
+            .get(`custody-recovery-action:${hash(JSON.stringify([actor.inputId,input.action_id]))}`))
+            throw new Error('This admitted action already names a custody-successor recovery.');
         const scope=`communication:${actor.inputId}`;
         const existing=db.query('SELECT receipt_json,payload_json FROM session_inputs WHERE session_id=? AND scope=? AND action_id=?')
             .get(actor.session,scope,input.action_id) as {receipt_json:string|null;payload_json:string}|null;
@@ -3151,6 +3156,31 @@ export class SessionCommunicationCoordinator {
             if (!['done', 'error', 'cancelled'].includes(next.status)) return;
             if (next.status === 'done') { this.chaseStranded(request, next.id, effect); return; }
             ended = next;
+        }
+        if(ended.status==='error'||ended.status==='cancelled'){
+            const custody=db.query(`SELECT canonical_input_id,request_id,placement_input_id,successor_session_id
+                FROM codex_custody_successors WHERE placement_turn_id=? AND successor_session_id=?`)
+                .get(ended.id,request.target_session_id) as {canonical_input_id:string;request_id:string;placement_input_id:string;successor_session_id:number}|null;
+            if(custody){
+                const stop=ended.status==='cancelled'?stoppedByTejas(ended.id):null;
+                const reason=ended.status==='error'?endedWorkInPlainWords(turn.agent_text):stop
+                    ?stoppedByTejasText(stop.atMs):'The selected custody attempt was canceled before it produced a result.';
+                db.transaction(()=>{
+                    db.query(`UPDATE codex_custody_successors SET state='held',error=?
+                        WHERE canonical_input_id=? AND placement_turn_id=? AND state IN ('admitting','admitted','acknowledged')`)
+                        .run(reason,custody.canonical_input_id,ended.id);
+                    const eventId=`custody-attempt-failed:${custody.canonical_input_id}:${ended.id}`;
+                    if(!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))
+                        recordSessionEvent({eventId,sessionId:custody.successor_session_id,inputId:custody.placement_input_id,turnId:ended.id,
+                            kind:'custody_successor_attempt',payload:{canonicalInputId:custody.canonical_input_id,requestId:custody.request_id,
+                                placementInputId:custody.placement_input_id,placementTurnId:ended.id,terminalStatus:ended.status,reason,
+                                ...(stop?{stoppedBy:'tejas',stoppedAtMs:stop.atMs,stopInputId:stop.inputId}:{}),
+                                ...(turn.agent_text?{providerError:String(turn.agent_text).slice(0,2000)}:{})}});
+                }).immediate();
+                // A failed or stopped selected attempt is recorded against its canonical custody
+                // relation. It does not settle any of the independent requests carried with it.
+                return;
+            }
         }
         if (ended.status === 'cancelled') {
             if(this.holdFailedChatGptRequest(request,'The original provider turn was canceled without an answer.'))return;

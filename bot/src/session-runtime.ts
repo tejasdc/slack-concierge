@@ -23,7 +23,7 @@ import {keepThreadsCurrent,migrateInboxTopics,reconcileCarriedClosures,reconcile
 import {log,errorFields} from './log';
 import {startStuckWorkWatch} from './stuck-work-watch';
 import {startRepairNoticeDelivery} from './repair-notices';
-import {CodexSessionObserver} from './codex-session-observer';
+import {bindCodexProviderSession,CodexSessionObserver} from './codex-session-observer';
 import {prepareSavedWorkForClaims} from './saved-work';
 import {createBankedUpkeep} from './banked-upkeep';
 import {providerAccountUsage} from './provider-account-usage';
@@ -50,7 +50,7 @@ export async function startSessionRuntime() {
   const inspectActiveBanked=banked.inspectActive;
   const registry=new ActiveTurnDispatchRegistry({onStarted:()=>queueMicrotask(inspectActiveBanked),onSettled:()=>queue.wake()});
   let codexSessionObserver:CodexSessionObserver|null=null;
-  const host=new SessionExecutionHost({instanceId,registry,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>queue.wake(),providerSessionBound:uuid=>codexSessionObserver?.providerSessionBound(uuid)??Promise.resolve()});
+  const host=new SessionExecutionHost({instanceId,registry,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>queue.wake(),providerSessionBound:uuid=>bindCodexProviderSession(codexSessionObserver,uuid)});
   codexSessionObserver=new CodexSessionObserver();
   startAreaFiling(admission=>host.owner.admit(admission),body=>host.owner.search(body));
   const unavailable=()=>{throw new Error('Slack adapter is disabled.');};

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import {nativeInputClientMessageId} from './native-result-identity';
 import { clearRetryBreaker, recordRetryFailure } from './retry-breaker';
 import {currentAccount} from './provider-accounts';
 import {AUTOMATIC_PROVIDER_ALIASES,resolveProviderAlias} from './aliases';
@@ -719,7 +720,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       model: input.providerId === "claude-code" ? claudeLaunchModel??undefined : input.model,
       onPreferredModel: (model) => recordTurnPreferredModel(input.turnId, input.ownerInstanceId, model),
       reasoning_effort: input.reasoningEffort,
-      clientUserMessageId: `slack-concierge:turn:${input.turnId}:attempt:${dispatchAttempt}`,
+      clientUserMessageId: nativeInputClientMessageId(input.turnId,dispatchAttempt),
       environment: {
         AGENT_BROWSER_IDLE_TIMEOUT_MS: String(AGENT_BROWSER_IDLE_MS),
         ...input.providerEnvironment,

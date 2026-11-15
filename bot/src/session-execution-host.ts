@@ -37,6 +37,8 @@ import {CHATGPT_THINKING_LEVELS,HIS_CHATGPT_PREFIX,PROVIDER_ALIASES, providerDis
 import {recordRepairNotice} from './repair-notices';
 import {proveCodexInputNeverAcknowledged} from './codex-unacknowledged-proof';
 import {recoverCustodySuccessor,custodySuccessor,custodyPlacement,custodySuccessorSession,protectedCustodyRun} from './codex-custody-successor';
+import {custodyConnection} from './codex-custody-connection';
+import {installCodexCustodyForwardPolicy} from './codex-custody-forward-guard';
 import {CodexAppServerClient,type CodexAppServerClientLike} from './codex-app-server-client';
 import {nativeResultEventId} from './native-result-identity';
 import type {HostRunnerFile} from './host-access';
@@ -277,7 +279,8 @@ export class SessionExecutionHost {
   // How the last sign-in that finished on its own ended, for the screen that waited on it.
   private readonly lastSignIn=new Map<ProviderKey,{ok:boolean;detail:string|null}>();
   private readonly runnerSignIns=new Map<ProviderKey,RunnerSignInState>();
-  constructor(readonly options:{instanceId:string;registry:ActiveTurnDispatchRegistry;providers:Partial<Record<ProviderId,AgentProvider>>;defaultCwd:string;wake():void;history?:SessionOwnerRuntime['history'];sources?:SessionOwnerRuntime['sources'];capabilitySocket?:string;capabilityClient?:SessionCapabilityClient;thesaurusContext?:(text:string)=>Promise<string>;findForks?(pin:NativeForkPin):Promise<string[]>;providerSessionBound?(providerThreadUuid:string):Promise<void>;claudeAuthRefreshCommand?:string;custodyClientFactory?:()=>CodexAppServerClientLike & {close():Promise<void>}}) {
+  constructor(readonly options:{instanceId:string;registry:ActiveTurnDispatchRegistry;providers:Partial<Record<ProviderId,AgentProvider>>;defaultCwd:string;wake():void;history?:SessionOwnerRuntime['history'];sources?:SessionOwnerRuntime['sources'];capabilitySocket?:string;capabilityClient?:SessionCapabilityClient;thesaurusContext?:(text:string)=>Promise<string>;findForks?(pin:NativeForkPin):Promise<string[]>;providerSessionBound?(providerThreadUuid:string):Promise<void>;claudeAuthRefreshCommand?:string;custodyClientFactory?:()=>CodexAppServerClientLike & {close():Promise<void>};custodyObserveProcesses?:(threadId:string)=>Promise<CodexLeftoverProcess[]>}) {
+    installCodexCustodyForwardPolicy();
     for(const provider of ['codex','claude-code'] as const)if(providerRunnerTarget(provider))setRunnerAccountInUse(provider,null);
     for(const provider of ['codex','claude-code'] as const){
       const pending=pendingRunnerSignIn(provider);
@@ -333,11 +336,11 @@ export class SessionExecutionHost {
       recoverCustodySuccessor:async input=>{
         const retained=custodySuccessor(`report-back:${input.requestId}`);
         const existing=retained?this.custodyCodexClients.get(retained.successor_session_id):null;
-        if(existing)return recoverCustodySuccessor(input,existing);
+        if(existing)return recoverCustodySuccessor(input,existing,this.options.custodyObserveProcesses);
         const client=this.custodyClient();
         let keep=false;
         try{
-          const result=await recoverCustodySuccessor(input,client);
+          const result=await recoverCustodySuccessor(input,client,this.options.custodyObserveProcesses);
           if(result.state==='constructed'&&retained?.construction_intended_at==null){this.custodyCodexClients.set(result.successor_session_id,client);keep=true;}
           return result;
         }finally{if(!keep)await client.close();}
@@ -353,7 +356,11 @@ export class SessionExecutionHost {
     // Each change to a Codex conversation's history tops up its kept window off the owner loop.
     this.stopCodexWindows=onCodexHistoryChanged((sessionId,thread)=>this.historyPages.prepareCodexWindow(sessionId,thread));
   }
-  private custodyClient(){return this.options.custodyClientFactory?.()??new CodexAppServerClient(undefined,undefined,{manageDaemon:false});}
+  private custodyClient(){
+    if(process.env.CONCIERGE_CODEX_RUNNER?.trim())
+      throw new Error('Local custody construction cannot use a runner-selected native endpoint.');
+    return custodyConnection(this.options.custodyClientFactory?.()??new CodexAppServerClient(undefined,undefined,{manageDaemon:false}));
+  }
   private prepareTestCodexConnectionLoss(sessionId:number,turnId:number) {
     const turn=db.query(`SELECT status,dispatch_attempt,owner_instance_id,stop_requested_at FROM turns WHERE id=? AND session_id=?`).get(turnId,sessionId) as
       {status:string;dispatch_attempt:number;owner_instance_id:string|null;stop_requested_at:string|null}|null;
@@ -1705,6 +1712,8 @@ export class SessionExecutionHost {
             const protectedRun=protectedCustodyRun(claim.turn_id,this.options.instanceId,claim.dispatch_attempt)!;
             let client=this.custodyCodexClients.get(session.id);
             if(!client){client=this.custodyClient();this.custodyCodexClients.set(session.id,client);}
+            custodyConnection(client).protect(protectedRun.plan.nativeConnection);
+            if(!adoption)await custodyConnection(client).assert(protectedRun.plan.nativeConnection);
             actual={...actual,...(custodyPlacement(claim.turn_id)?{prompt:JSON.parse(input.payload_json).text}:{}),cwd:protectedRun.plan.cwd,
               additionalDirs:[...protectedRun.plan.runtimeWorkspaceRoots].filter(path=>path!==protectedRun.plan.cwd),
               custodySuccessor:protectedRun,appServerClient:client};
@@ -1858,7 +1867,7 @@ export class SessionExecutionHost {
     // Through a runner's relay the runner also pins its own helpers at the turn's start (runner.ts);
     // an App Server started by this owner's unit (the AX41's until its next restart) reads these.
     const stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!),botDir=providerOwnerEnvironment().CONCIERGE_ROUTER_BOT_DIR;
-    return {...prepared,...(appServerClient?{appServerClient}:{}),onProviderThreadStarted:(threadId:string)=>{
+    return {...prepared,custodyOwnerSessionId:session.id,...(appServerClient?{appServerClient}:{}),onProviderThreadStarted:(threadId:string)=>{
       try{if(botDir)pinCodexThreadHooks(stateDir,threadId,executionId,botDir);}
       catch(error){
         if(custodySuccessorSession(session.id))throw error;
@@ -1903,7 +1912,7 @@ export class SessionExecutionHost {
     if(appServerClient)void this.testCodexClients.replace(adoption.claim.turn_id,{executionId:adoption.execution.execution_id,dispatchAttempt:adoption.claim.dispatch_attempt,
       faultDeadlineMs:Number(adoption.processor.agentTestFaultDeadlineMs),client:appServerClient}).catch(error=>
         log('warn','codex_test_client_replace_close_failed',{turn_id:adoption.claim.turn_id,execution_id:adoption.execution.execution_id,...errorFields(error)}));
-    return {...prepared,...adoption.processor.run,...(appServerClient?{appServerClient}:{}),
+    return {...prepared,...adoption.processor.run,custodyOwnerSessionId:session.id,...(appServerClient?{appServerClient}:{}),
       adoptTurn:{threadId:current.agent_session_uuid,turnId:turn?.provider_turn_id??null},
       recoveredSteeringClientIds:sending,
       onAdoptedLive:()=>recordLiveAdoption(adoption.execution.execution_id),

@@ -147,6 +147,8 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
           successor_session_id INTEGER NOT NULL UNIQUE REFERENCES sessions(id),
           state TEXT NOT NULL CHECK(state IN ('proposed','accepted','withdrawn')),
           action_id TEXT NOT NULL,
+          handoff_kind TEXT NOT NULL DEFAULT 'ordinary',
+          canonical_input_id TEXT,
           caller_session_id INTEGER NOT NULL REFERENCES sessions(id),
           reason TEXT NOT NULL,
           requesting_input_id TEXT NOT NULL,
@@ -663,6 +665,8 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
       `);
+      add('session_handoffs','handoff_kind',"handoff_kind TEXT NOT NULL DEFAULT 'ordinary'");
+      add('session_handoffs','canonical_input_id','canonical_input_id TEXT');
       add('canvas_project_ensures','title_clock','title_clock INTEGER NOT NULL DEFAULT 0');
       // Retain the speech text beside its original bytes so a later provider
       // dispatch and a retried client request use the same transcription.
