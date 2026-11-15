@@ -91,11 +91,12 @@ function successorGuard(scope:CodexCustodyForwardScope,relation:Relation) {
       throw new Error('The one native construction send was already attempted; reconcile its retained result.');
     return;
   }
+  // Pause withholds productive admission; it must not withhold an exact retained Stop.
+  if(scope.method==='turn/interrupt'){assertExactStop(scope,relation.successor_session_id);return;}
   if(JSON.parse(session.native_metadata_json??'{}').suspended)
     throw new Error('Protected successor writes remain held while its owner session is suspended.');
   if(scope.method==='thread/resume'||scope.method==='thread/fork'||scope.method==='thread/start')
     throw new Error('Protected successors cannot resume, fork or recreate their native conversation.');
-  if(scope.method==='turn/interrupt'){assertExactStop(scope,relation.successor_session_id);return;}
   if(plan.nativeConnection?.senderId!==scope.senderId||plan.nativeConnection?.generation!==scope.generation)
     throw new Error('Successor admission must use the exact sender generation committed by the native binding.');
   if(scope.method==='turn/steer'){

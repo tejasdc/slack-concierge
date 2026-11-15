@@ -94,7 +94,25 @@ try{
   assert.doesNotThrow(()=>codexCustodyForwardGuard(scope('turn/steer',steer,successor.id)));
   refused(()=>codexCustodyForwardGuard(scope('turn/steer',steer,successor.id)),/already forwarded/);
   refused(()=>codexCustodyForwardGuard(scope('turn/steer',{...steer,expectedTurnId:'wrong-native-turn'},successor.id)));
-  console.log('Custody forward guard fixture passed: proposed predecessor cutoff, passive reads, unrelated session traffic, exact one-shot construction/admission, and protected cold-resume/fork refusal.');
+  const stop={threadId:'successor-thread',turnId:'followup-native-turn'};
+  updateSessionMetadata(successor.id,{suspended:true});
+  refused(()=>codexCustodyForwardGuard(scope('turn/start',later,successor.id)),/suspended/);
+  refused(()=>codexCustodyForwardGuard(scope('turn/steer',steer,successor.id)),/suspended/);
+  refused(()=>codexCustodyForwardGuard(scope('turn/interrupt',stop,successor.id)),/owner-recorded Stop/);
+  db.query('UPDATE turns SET stop_requested_at=CURRENT_TIMESTAMP WHERE id=?').run(followupTurn);
+  refused(()=>codexCustodyForwardGuard(scope('turn/interrupt',stop,successor.id)),/retained Stop input/);
+  const stopRun=(db.query('SELECT native_run_id FROM turns WHERE id=?').get(followupTurn) as any).native_run_id;
+  retainSessionInput({id:'paused-successor-stop',sessionId:successor.id,scope:'fixture',actionId:'paused-stop',kind:'stop',origin:'human',payload:{runId:stopRun}});
+  refused(()=>codexCustodyForwardGuard(scope('turn/interrupt',{...stop,turnId:'wrong-native-turn'},successor.id)),/exact retained turn/);
+  refused(()=>codexCustodyForwardGuard(scope('turn/interrupt',stop,unrelated.id)),/owner-derived session identity/);
+  assert.doesNotThrow(()=>codexCustodyForwardGuard(scope('turn/interrupt',stop,successor.id)),
+    'an exact owner-recorded Stop must remain available while productive admission is paused');
+  const metadata=JSON.parse((db.query('SELECT native_metadata_json FROM sessions WHERE id=?').get(successor.id) as any).native_metadata_json);
+  assert.equal(metadata.suspended,true,'Stop forwarding must preserve Pause');
+  refused(()=>codexCustodyForwardGuard(scope('turn/start',later,successor.id)),/suspended/);
+  db.query("UPDATE turns SET status='done' WHERE id=?").run(followupTurn);
+  refused(()=>codexCustodyForwardGuard(scope('turn/interrupt',stop,successor.id)),/exact retained turn/);
+  console.log('Custody forward guard fixture passed: proposed predecessor cutoff, exact construction/admission, protected cold-resume/fork refusal, and exact paused Stop with productive writes and inexact controls held.');
 }finally{
   rmSync(root,{recursive:true,force:true});
 }

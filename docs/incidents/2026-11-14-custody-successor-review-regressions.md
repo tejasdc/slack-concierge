@@ -41,11 +41,22 @@ passivity. Hybrid release activation checks application-source capability proven
 Production binding and observer reconnect paths use protected read-only observation.
 The exact native connection is pinned, and protected sends refuse implicit reconnection;
 this association check does not claim native writer exclusion.
+The parent's later paused-successor reproduction found the suspension refusal ran
+before exact Stop validation. Stop now validates its retained active turn and Stop
+input before the productive-admission hold; it does not bypass connection custody
+or clear Pause.
 The existing child-bridge generation fixture also explicitly disables daemon
 management: selecting a fake bridge must not retain the production client's host
 tuning/start defaults during a disposable-only acceptance run.
 
 ## Acceptance scenario
+
+- **Seed:** A paused protected successor with an active followup and retained human Stop.
+- **Action:** Run `bun run scripts/codex-custody-forward-guard-fixture.ts` and
+  `bun run scripts/codex-custody-connection-fixture.ts` from `bot/`.
+- **Expected:** Exact Stop passes while Pause stays set; productive admission/steering,
+  missing or wrong Stop identity, terminal turns and replacement connections refuse.
+- **Replayable offline:** yes (isolated database and disposable bridge).
 
 - **Seed:** A terminal unacknowledged Astra Medium reminder, multiple already accepted open
   duties, passive successor construction, and a disposable native substitute.

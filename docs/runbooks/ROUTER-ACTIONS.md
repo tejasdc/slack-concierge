@@ -236,7 +236,9 @@ response retains its known native identity while withholding admission. A succes
 construction response is persisted before further awaited resource validation, so a
 later ordinary failure also retains its observed identity and settings. Construction
 completion preserves a newer explicit Pause; Continue cannot bypass the passive
-construction hold.
+construction hold. Pause withholds productive admission and steering, while an exact
+owner-recorded Stop can still interrupt its retained active native turn. Stop retains
+the protected connection checks and does not clear Pause.
 
 The construction connection stays with the execution host because native
 `thread/start` attaches its subscription and may unload idle work after the last

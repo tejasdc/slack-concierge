@@ -19,9 +19,12 @@ process.stdin.on('data',chunk=>{
 const raw=new CodexAppServerClient('/disposable',process.execPath,{bridgePath:bridge,manageDaemon:false,shutdownGraceMs:50});
 try{
   const protectedClient=custodyConnection(raw),witness=await protectedClient.witness();
+  protectedClient.protect(witness);
   assert.equal(custodyConnection(raw),protectedClient);
   assert.equal((await protectedClient.request('thread/start',{})).method,'thread/start');
   await protectedClient.assert(witness);
+  assert.equal((await protectedClient.request('turn/interrupt',{threadId:'retained',turnId:'active-turn'})).method,'turn/interrupt',
+    'the protected wrapper must forward Stop on the retained connection');
   await raw.loseConnectionGeneration(witness.generation);
   // A strict production request must refuse before creating a replacement connection.
   await assert.rejects(()=>raw.request('turn/start',{}, {expectedConnectionGeneration:witness.generation}),/connection changed/);
@@ -31,6 +34,7 @@ try{
   assert.equal((await protectedClient.request('thread/read',{threadId:'retained'})).method,'thread/read',
     'a changed transport may reconcile the same recorded attempt through reads');
   await assert.rejects(()=>protectedClient.request('turn/start',{}),/connection changed/);
+  await assert.rejects(()=>protectedClient.request('turn/interrupt',{threadId:'retained',turnId:'active-turn'}),/connection changed/);
   await assert.rejects(()=>protectedClient.assert(witness),/connection changed/);
   const other=new CodexAppServerClient('/disposable',process.execPath,{bridgePath:bridge,manageDaemon:false,shutdownGraceMs:50});
   try{
@@ -38,6 +42,7 @@ try{
     assert.equal((await adopted.request('thread/read',{threadId:'retained'})).method,'thread/read');
     await assert.rejects(()=>adopted.assert(witness),/another native connection/);
     await assert.rejects(()=>adopted.request('turn/start',{}),/another native connection/);
+    await assert.rejects(()=>adopted.request('turn/interrupt',{threadId:'retained',turnId:'active-turn'}),/another native connection/);
   }
   finally{await other.close({immediate:true});}
   console.log('Custody native connection fixture passed: positive same connection, no implicit reconnect on protected send, replacement and other-client refusal. This is association proof only.');
