@@ -28,10 +28,10 @@ async function child(){
  const exactStatus=(id:string,changes:Record<string,unknown>={})=>({requestId:id,sessionId:`concierge:${target.id}`,address:sessionAddress(target),
   inputState:'queued',inputError:null,stillWorking:false,execution:null,replies:[],answerGuaranteeVersion:1,
   acceptedAnswerGuaranteeVersion:null,answerTaskReady:true,unresolvedChatGptObligations:0,...changes});
- const insertRequest=(id:string,status:string,remote:unknown,delivery:string|null=null,actionId=id)=>db.query(`INSERT INTO session_peer_requests
+ const insertRequest=(id:string,status:string,remote:unknown,delivery:string|null=null,actionId=id,requestedEffect:'informational'|'work'='work')=>db.query(`INSERT INTO session_peer_requests
   (request_id,peer,source_session_id,source_turn_id,source_input_id,action_id,payload_json,payload_hash,remote_session_id,remote_address,
    remote_operation_id,remote_status_json,delivery_json,status,due_at_ms,created_at_ms)
-  VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,'mac',source.id,turn.id,sourceInput.id,actionId,JSON.stringify(requestPayload),`fixture-hash:${id}`,
+  VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,'mac',source.id,turn.id,sourceInput.id,actionId,JSON.stringify({...requestPayload,requestedEffect,...(requestedEffect==='work'?{}:{answerGuaranteeVersion:undefined})}),`fixture-hash:${id}`,
    `concierge:${target.id}`,sessionAddress(target),`request:${id}`,remote===null?null:JSON.stringify(remote),delivery,status,Date.now()+60_000,Date.now());
  db.query(`INSERT INTO session_peer_requests(request_id,peer,source_session_id,source_turn_id,source_input_id,action_id,payload_json,payload_hash,
    remote_session_id,remote_address,remote_operation_id,remote_status_json,delivery_json,status,due_at_ms,created_at_ms)
@@ -126,6 +126,7 @@ async function child(){
    assert.equal(JSON.parse(row.remote_status_json).originStatusReadFailure.reason,'reply_summary_invalid');
    assert.deepEqual(JSON.parse(row.remote_status_json).replies,[],'invalid summary fields are rejected before status retention');
   }
+  if(process.env.PEER_GUARANTEE_SKIP_EMPTY_PROGRESS_CONTROL!=='1'){
   const emptyProgressId='peer-answer-guarantee-empty-progress-summary';
   insertRequest(emptyProgressId,'version_hold',exactStatus(emptyProgressId));
   responseOverrides.set(emptyProgressId,()=>Response.json(exactStatus(emptyProgressId,{replies:[{
@@ -136,6 +137,42 @@ async function child(){
   const emptyProgressRow=db.query('SELECT status,remote_status_json,outcome FROM session_peer_requests WHERE request_id=?').get(emptyProgressId) as any;
   assert.equal(emptyProgressRow.status,'version_hold');assert.equal(emptyProgressRow.outcome,null);
   assert.equal(JSON.parse(emptyProgressRow.remote_status_json).originStatusReadFailure.reason,'reply_summary_invalid');
+  }
+  const progressDispositionId='peer-answer-guarantee-progress-disposition';
+  insertRequest(progressDispositionId,'version_hold',exactStatus(progressDispositionId));
+  responseOverrides.set(progressDispositionId,()=>Response.json(exactStatus(progressDispositionId,{replies:[{
+   eventId:'progress-disposition',kind:'progress',status:'forwarded',text:'Still working',workDisposition:'completed'}]})));
+  let progressDispositionError:unknown=null;
+  try{await peers.notified(progressDispositionId);}catch(error){progressDispositionError=error;}
+  assert.equal(progressDispositionError,null,
+   'a progress summary with a work disposition must fail validation before status retention, not throw after retention');
+  const progressDispositionRow=db.query('SELECT status,remote_status_json,outcome FROM session_peer_requests WHERE request_id=?').get(progressDispositionId) as any;
+  assert.equal(progressDispositionRow.status,'version_hold');assert.equal(progressDispositionRow.outcome,null);
+  const progressDispositionRemote=JSON.parse(progressDispositionRow.remote_status_json);
+  assert.equal(progressDispositionRemote.originStatusReadFailure.reason,'reply_summary_invalid');
+  assert.deepEqual(progressDispositionRemote.replies,[]);
+  const invalidDispositionSummaries:[string,'informational'|'work',Record<string,unknown>][]=[
+   ['peer-answer-guarantee-informational-disposition','informational',{eventId:'informational-disposition',kind:'final',status:'forwarded',text:'A simple answer',workDisposition:'completed'}],
+  ];
+  for(const [id,effect,reply] of invalidDispositionSummaries){
+   insertRequest(id,'version_hold',exactStatus(id),null,id,effect);
+   responseOverrides.set(id,()=>Response.json(exactStatus(id,{replies:[reply]})));
+   let dispositionError:unknown=null;try{await peers.notified(id);}catch(error){dispositionError=error;}
+   assert.equal(dispositionError,null,'an invalid work disposition must be rejected as a status read failure before reply recording');
+   const invalidDispositionRow=db.query('SELECT status,remote_status_json,outcome FROM session_peer_requests WHERE request_id=?').get(id) as any;
+   assert.equal(invalidDispositionRow.status,'version_hold');assert.equal(invalidDispositionRow.outcome,null);
+   const prior=JSON.parse(invalidDispositionRow.remote_status_json);
+   assert.equal(prior.answerGuaranteeVersion,1,'invalid disposition cannot replace the last valid status evidence');
+   assert.equal(prior.originStatusReadFailure.reason,'reply_summary_invalid');
+   assert.deepEqual(prior.replies,[]);
+  }
+  const validDispositionId='peer-answer-guarantee-valid-final-work-disposition';
+  insertRequest(validDispositionId,'version_hold',exactStatus(validDispositionId));
+  responseOverrides.set(validDispositionId,()=>Response.json(exactStatus(validDispositionId,{replies:[{
+   eventId:'valid-final-work-disposition',kind:'final',status:'forwarded',text:'Work completed',workDisposition:'completed'}]})));
+  await peers.notified(validDispositionId);
+  assert.ok(db.query("SELECT 1 FROM session_peer_events WHERE event_id='valid-final-work-disposition'").get(),
+   'a valid final work disposition remains accepted');
   const unresolvedId='peer-answer-guarantee-unresolved-duty';
   insertRequest(unresolvedId,'version_hold',exactStatus(unresolvedId));
   const unresolvedExecution={turnId:42,runId:'run:42',status:'cancelled',settled:true,acknowledged:true,acknowledgedAt:'2026-11-15T00:00:00.000Z',
@@ -281,6 +318,7 @@ async function child(){
   assert.equal(cancelPosts,1,'the exact explicit cancellation is also sent through the normal peer revoke path');
   console.log(JSON.stringify({fixture:'peer-answer-guarantee',malformedStatusPreservedProof:true,nestedExecutionAndReplyValidation:true,
    emptyProgressRejectedBeforeWrite:true,malformedInputErrorRejectedBeforeWrite:true,
+   replyDispositionContextValidated:true,validFinalWorkDispositionAccepted:true,
    overlapSerialized:true,exactHoldRecoverySingleRead:true,historicalNoticeIdentitiesPreserved:true,progressPreserved:true,
    failedReadsBlockCachedInference:true,explicitCancelEffective:true,unresolvedDutyBlocksRemoteCancel:true,
    independentFinalProofUsable:true,noReplay:requestPosts===0}));

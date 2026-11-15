@@ -268,8 +268,11 @@ type PeerRequestStatus=Record<string,any>&{requestId:string;sessionId:string;add
 type PeerStatusRead={status:PeerRequestStatus|null;reason:string|null};
 const hasPeerReplyContent=(input:{kind:string;text:string;fileCount:number;replyBody?:unknown})=>
   !!input.text.trim()||input.fileCount>0||input.kind==='final'&&input.replyBody==='';
+const peerReplyDispositionAllowed=(kind:string,disposition:unknown,requestedEffect:unknown)=>
+  disposition===null||disposition===undefined||kind==='final'&&requestedEffect==='work'
+    &&WORK_DISPOSITIONS.includes(disposition as WorkDisposition);
 const PEER_ANSWER_GUARANTEE_HEALTH='peer answer guarantee unconfirmed';
-const peerRequestStatus=(value:unknown,expected:{requestId:string;sessionId?:string;address?:string}):PeerStatusRead=>{
+const peerRequestStatus=(value:unknown,expected:{requestId:string;sessionId?:string;address?:string;requestedEffect?:string}):PeerStatusRead=>{
   if(!record(value))return {status:null,reason:'status_not_object'};
   if(value.requestId!==expected.requestId)return {status:null,reason:'request_id_mismatch'};
   if(typeof value.sessionId!=='string'||!value.sessionId)return {status:null,reason:'status_target_invalid'};
@@ -309,7 +312,7 @@ const peerRequestStatus=(value:unknown,expected:{requestId:string;sessionId?:str
       ||!hasPeerReplyContent({kind:reply.kind,text:reply.text,fileCount:reply.files??0,replyBody:reply.replyBody})
       ||reply.sourceInputId!==null&&reply.sourceInputId!==undefined&&typeof reply.sourceInputId!=='string'
       ||reply.sourceRunId!==null&&reply.sourceRunId!==undefined&&typeof reply.sourceRunId!=='string'
-      ||reply.workDisposition!==null&&reply.workDisposition!==undefined&&!WORK_DISPOSITIONS.includes(reply.workDisposition)
+      ||!peerReplyDispositionAllowed(reply.kind,reply.workDisposition,expected.requestedEffect)
       ||reply.turnOutcome!==null&&reply.turnOutcome!==undefined&&reply.turnOutcome!=='needs_you'
       ||['answersQuestion','notify','alsoMainThread'].some(key=>reply[key]!==undefined&&typeof reply[key]!=='boolean')
       ||reply.completionTurnId!==null&&reply.completionTurnId!==undefined
@@ -874,7 +877,7 @@ export class SessionPeers {
   }
   receipt(row:PeerRequestRow) {
     const remote=row.remote_status_json?JSON.parse(row.remote_status_json):null;
-    const remoteCheck=remote?peerRequestStatus(remote,{requestId:row.request_id,sessionId:row.remote_session_id,address:row.remote_address}):null;
+    const remoteCheck=remote?peerRequestStatus(remote,{requestId:row.request_id,sessionId:row.remote_session_id,address:row.remote_address,requestedEffect:JSON.parse(row.payload_json).requestedEffect}):null;
     const execution=remote?.execution;
     const queued=row.status==='queued_offline';
     return {request_id:row.request_id,status:row.status,outcome:row.outcome,peer:row.peer,source_session_id:`concierge:${row.source_session_id}`,
@@ -958,7 +961,7 @@ export class SessionPeers {
       return false;
     }
     if(this.stopped)return false;
-    const checked=peerRequestStatus(remote,{requestId:row.request_id});
+    const checked=peerRequestStatus(remote,{requestId:row.request_id,requestedEffect:JSON.parse(row.payload_json).requestedEffect});
     if(!checked.status){
       this.recordStatusReadFailure(row,checked.reason??'status_invalid');
       return false;
@@ -1111,7 +1114,7 @@ export class SessionPeers {
       input={...input,answersQuestion:false};
       answerMarkDropped=!final;
     }
-    if(disposition!==undefined&&(!final||requestedEffect!=='work'||!['completed','failed','needs_decision'].includes(disposition)))throw new SessionOwnerError('A work disposition requires a final reply to a work request.');
+    if(!peerReplyDispositionAllowed(input.kind,disposition,requestedEffect))throw new SessionOwnerError('A work disposition requires a final reply to a work request.');
     const result=db.transaction(():{recorded:'recorded'|'duplicate'|'refused';reason?:string}=>{
       if(db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(input.eventId))return {recorded:'duplicate'};
       // The owner's own inference from a finished turn is not the recipient's word: a recipient
@@ -1237,7 +1240,7 @@ export class SessionPeers {
         const raw=await client.request<unknown>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal,true);
         if(this.stopped)return;
         row=this.row(row.request_id);if(row.outcome)return;
-        const checked=peerRequestStatus(raw,{requestId:row.request_id,sessionId:row.remote_session_id,address:row.remote_address});
+        const checked=peerRequestStatus(raw,{requestId:row.request_id,sessionId:row.remote_session_id,address:row.remote_address,requestedEffect:JSON.parse(row.payload_json).requestedEffect});
         if(!checked.status){this.recordStatusReadFailure(row,checked.reason??'status_invalid');return;}
         const remote=checked.status;
         if(remote.answerGuaranteeVersion!==1){
@@ -1284,7 +1287,7 @@ export class SessionPeers {
           try{
             const remote=await client.request<unknown>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal,true);
             if(this.stopped)return;
-            const checked=peerRequestStatus(remote,{requestId:row.request_id});
+            const checked=peerRequestStatus(remote,{requestId:row.request_id,requestedEffect:JSON.parse(row.payload_json).requestedEffect});
             if(checked.status){const remote=checked.status;
               this.settle(row,'canceled','The original answer duty ended after this exact corrected request may have reached the peer.');
               db.query('UPDATE session_peer_requests SET remote_session_id=?,remote_address=?,remote_status_json=?,delivery_json=NULL WHERE request_id=?')
@@ -1387,7 +1390,7 @@ export class SessionPeers {
     }
     if(this.stopped)return;
     row=this.row(row.request_id);if(row.outcome)return;
-    const checked=peerRequestStatus(remote,{requestId:row.request_id,sessionId:row.remote_session_id,address:row.remote_address});
+    const checked=peerRequestStatus(remote,{requestId:row.request_id,sessionId:row.remote_session_id,address:row.remote_address,requestedEffect:JSON.parse(row.payload_json).requestedEffect});
     if(!checked.status){this.recordStatusReadFailure(row,checked.reason??'status_invalid');return;}
     remote={...checked.status,observedAt:new Date(this.now()).toISOString()};
     const priorRemote=row.remote_status_json?JSON.parse(row.remote_status_json):{};
