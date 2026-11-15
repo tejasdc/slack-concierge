@@ -6,6 +6,14 @@ Concierge owns one session catalogue and execution ledger. Thinkering provides t
 
 ## Identity and admission
 
+The exact `GET /operations/:id` receipt is built from current retained input, execution and
+admission history on every read. It authorizes cross-service provider checks and recovery;
+a failed operation can be reopened, so an earlier terminal projection is not current authority.
+Bulk receipt lists retain their existing settled-result cache. On November 15, two reader
+processes returned five versus six admissions for the same recovered ChatGPT operation because
+only the canonical process invalidated its own cache. The single-operation entrance now bypasses
+that process-local cache without changing the exact-admission guard or any stored receipt.
+
 The existing `sessions.id` is public as `concierge:<integer>`. An opaque address pins that row and its binding generation. Provider conversation IDs and original Slack roots remain exact bindings. A fork creates a distinct child with an exact boundary; a verified replacement binding advances the generation. Search ranking, a matching title, an import namespace or a provider UUID alone cannot establish ownership.
 
 Discovery matches current catalogue titles, summaries and project names alongside retained dialogue. A catalogue-only match has an empty dialogue evidence array and the exact current session view; it cannot fabricate a message or collapse equal titles. Context resolves the selected address before communication.
