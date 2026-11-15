@@ -29,7 +29,7 @@ import {noticeTime} from './provider-free-notice';
 import {answerNotice,requestLabel,unresolvedRequestReminder} from './session-notices';
 import {recordRequesterDecisionReturn} from './session-turn-outcome';
 import {sessionAuthor} from './session-message-author';
-import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindChatGptPeerTarget,bindDirectChatGptTaskSource,chatGptObligationForAttempt,holdChatGptPeerVersion,openChatGptObligations,recordChatGptAttemptResult,withdrawCanceledChatGptAttempt,
+import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindChatGptPeerTarget,bindDirectChatGptTaskSource,chatGptAttachmentCorrectionPending,chatGptObligationForAttempt,holdChatGptPeerVersion,openChatGptObligations,recordChatGptAttemptResult,withdrawCanceledChatGptAttempt,
   recordChatGptReturnReceipt,requireChatGptTaskDisposition,requireChatGptTaskResolved,resolveChatGptTask,parseChatGptTask,type ChatGptTask} from './chatgpt-obligations';
 import {RETRY_POLICIES,PEER_REPLY_SCHEMA_MISMATCH_ATTEMPTS,PEER_REQUEST_ORPHAN_GRACE_MS} from './retry-policies';
 import {ledgerDurable} from './ledger-durability-barrier';
@@ -668,9 +668,9 @@ export class SessionPeers {
       const obligation=chatGptObligationForAttempt(input.correctionOf);
       if(originalCorrection.peer!==input.peer||originalCorrection.source_session_id!==actor.session
         ||originalCorrection.remote_session_id!==addressedRemote||originalCorrection.remote_address!==input.address
-        ||originalCorrection.outcome!=='failed'||old.text!==input.text||old.taskRef?.kind!==task?.kind||old.taskRef?.id!==task?.id
+        ||old.text!==input.text||old.taskRef?.kind!==task?.kind||old.taskRef?.id!==task?.id
         ||obligation?.obligation_id!==input.correctionOf||obligation.active_request_id!==input.correctionOf
-        ||obligation.state!=='reconcile_receipt'||obligation.asker_session_id!==actor.session
+        ||!chatGptAttachmentCorrectionPending(obligation,originalCorrection.outcome)||obligation.asker_session_id!==actor.session
         ||obligation.target_session_id!==`${input.peer}/${addressedRemote}`||obligation.question_text!==input.text)
         throw new Error('The original peer request does not own this failed ChatGPT question, task and target.');
       const oldHashes=new Set((old.files??[]).map((file:any)=>file.sha256));
