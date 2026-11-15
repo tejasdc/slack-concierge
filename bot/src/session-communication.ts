@@ -881,6 +881,21 @@ export class SessionCommunicationCoordinator {
             return {known:true,allowed:false,message:'This prompt belongs to another Codex execution. Choose GPT-6.1 Sol or retry with its own turn.'};
         if(input.model!=='gpt-6-astra')return {known:true,allowed:true};
         const accepted=getAcceptedSessionInput(turn.accepted_input_id);
+        const custody=!input.providerAgentId&&db.query(`SELECT recovery.canonical_input_id,recovery.handoff_id
+          FROM codex_custody_successors recovery JOIN session_handoffs handoff ON handoff.id=recovery.handoff_id
+          JOIN session_inputs placement ON placement.id=recovery.placement_input_id
+          JOIN turns current ON current.session_id=recovery.successor_session_id AND current.accepted_input_id=?
+          WHERE recovery.successor_session_id=? AND current.id=?
+            AND recovery.native_thread_id=? AND recovery.attempt_spent_at IS NOT NULL
+            AND handoff.state='accepted' AND handoff.successor_session_id=recovery.successor_session_id
+            AND placement.source_input_id=recovery.canonical_input_id AND placement.turn_id=recovery.placement_turn_id`)
+          .get(accepted?.id??'',session.id,turn.id,input.providerSessionId) as {canonical_input_id:string;handoff_id:string}|null;
+        if(custody&&metadata.reasoningEffort==='medium'){
+            recordSessionEvent({eventId:`model-preservation:${turn.id}`,sessionId:session.id,inputId:accepted!.id,turnId:turn.id,
+              kind:'model_preservation',payload:{model:input.model,effort:'medium',basis:'codex_successor_custody_v1',
+                canonicalInputId:custody.canonical_input_id,handoffId:custody.handoff_id}});
+            return {known:true,allowed:true};
+        }
         const serviceContinuation=accepted?.origin==='service'&&!!accepted.source_input_id&&!!accepted.source_run_id
             &&(()=>{
                 const source=getAcceptedSessionInput(accepted.source_input_id!);
@@ -1339,11 +1354,23 @@ export class SessionCommunicationCoordinator {
     }
     /** Recover only the exact service report-back bound to an open work request. Its target input
      * and action receipt stay separate from the already-acknowledged original work input. */
-    async recoverCodexNeverAcknowledged(input:{source:CommunicationSource;action_id:string;request_id:string}) {
+    async recoverCodexNeverAcknowledged(input:{source:CommunicationSource;action_id:string;request_id:string;custody_successor?:boolean}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const authority=this.authority(this.fenced(this.actor(input.source))),actor=authority.actor;action(input.action_id);
         if(authority.scope!=='work')throw new Error('Codex recovery requires work authority from this exact live run.');
         if(!actor.inputId)throw new Error('Codex recovery needs the asking session’s exact accepted input and live run.');
+        if(input.custody_successor===true){
+            const recover=this.dependencies.owner.runtime.recoverCustodySuccessor;
+            if(!recover)throw new Error('This owner cannot construct a custody successor.');
+            const validateSource=()=>{
+                const live=this.authority(this.fenced(this.actor({input_id:actor.inputId,run_id:nativeRunId(actor.turn)})));
+                if(live.scope!=='work'||live.actor.session!==actor.session||this.row(input.request_id).outcome!==null)
+                    throw new Error('Recovery lost its exact live work authority or its underlying request settled.');
+            };
+            const result=await recover({actorSession:actor.session,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),
+                requestId:input.request_id,actionId:input.action_id,validateSource});
+            this.wake();return result;
+        }
         const scope=`communication:${actor.inputId}`;
         const existing=db.query('SELECT receipt_json,payload_json FROM session_inputs WHERE session_id=? AND scope=? AND action_id=?')
             .get(actor.session,scope,input.action_id) as {receipt_json:string|null;payload_json:string}|null;

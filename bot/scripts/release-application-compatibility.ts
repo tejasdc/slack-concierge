@@ -6,6 +6,7 @@ import {TrustedRootReleaseManager} from '../src/deployment-release';
 import {checkReleaseApplication,verifyApplicationProvenance} from '../src/deployment-application-check';
 import {releaseWorkerPath} from '../src/release-worker';
 import {Database} from 'bun:sqlite';
+import {CUSTODY_APPLICATION_CAPABILITY_PATH,CUSTODY_CONTROL_CAPABILITY_PATH} from '../src/codex-custody-compatibility';
 
 // No canonical ledger imports, supervisor calls, credential access, or live pointer changes.
 const source=resolve(import.meta.dir,'../..'),scratch=mkdtempSync(join(tmpdir(),'release-compatibility-'));
@@ -18,6 +19,7 @@ try{
   mkdirSync(dirname(join(repo,file)),{recursive:true});copyFileSync(join(source,file),join(repo,file));
  }
  run(['git','init','-q'],repo);run(['git','add','.'],repo);
+ run(['git','add','-f','bot/src/codex-custody-format.json','bot/src/codex-custody-control-format.json'],repo);
  run(['git','-c','user.name=Fixture','-c','user.email=fixture@invalid','-c','core.hooksPath=/dev/null','commit','-qm','Isolated candidate'],repo);
  const candidate=run(['git','rev-parse','HEAD'],repo).toString().trim();
  symlinkSync(join(source,'bot/node_modules'),join(repo,'bot/node_modules'),'dir');
@@ -26,11 +28,19 @@ try{
  const legacy=join(scratch,'legacy');mkdirSync(legacy);
  const installedArtifact=realpathSync('/var/lib/slack-concierge-deployment/current');
  const installed=JSON.parse(readFileSync(join(installedArtifact,'manifest.json'),'utf8'));
- for(const name of ['deployment-release.ts','deployment-artifact-files.json'])
+ for(const name of ['deployment-release.ts','deployment-artifact-files.json','private-database-command.ts','live-store-locations.ts',
+  'provider-history-cache-compatibility.ts','provider-history-cache-format.json'])
   writeFileSync(join(legacy,name),run(['git','show',`${installed.control_git_commit}:bot/src/${name}`]));
  const OldManager=(await import(join(legacy,'deployment-release.ts'))).TrustedRootReleaseManager;
  const environment={repositoryRoot:repo,releaseRoot:releases,installRoot:join(scratch,'install'),bunExecutable:process.execPath};
  const old=new OldManager(environment),modern=new TrustedRootReleaseManager(environment);
+ // This fixture isolates source ownership and artifact assembly. The full release gate runs
+ // presentation checks separately, so avoid repeating that long candidate suite per hybrid.
+ for(const manager of [old,modern]){
+  const spawn=manager.services.spawn.bind(manager.services);
+  manager.services.spawn=(command,options)=>command.some(part=>part.endsWith('/bot/scripts/presentation-release-check.ts'))
+   ?{exitCode:0,stdout:new Uint8Array(),stderr:new Uint8Array()}:spawn(command,options);
+ }
  const prepared=await old.prepare('old-control-fixture',candidate);
  modern.verify(prepared.artifactPath);
  const application=checkReleaseApplication(prepared.artifactPath,repo,releases);
@@ -75,6 +85,35 @@ try{
  writeFileSync(speechSource,readFileSync(speechSource,'utf8')+'\nexport const fixtureControlOnly="CONTROL_WORKER_MUST_NOT_REPLACE_APPLICATION";\n');
  run(['git','add','.'],repo);run(['git','-c','user.name=Fixture','-c','user.email=fixture@invalid','-c','core.hooksPath=/dev/null','commit','-qm','Isolated control change'],repo);
  const control=run(['git','rev-parse','HEAD'],repo).toString().trim();
+ // Synthesize the prior application/controller generation: its own declaration does not
+ // advertise custody-reader support, while its independent controller capability remains.
+ // Give its application capability path distinguishable bytes so a hybrid copy from the
+ // control source cannot accidentally pass by finding the same file at both roots.
+ const artifactDeclarationPath=join(repo,'bot/src/deployment-artifact-files.json');
+ const oldGeneration=JSON.parse(readFileSync(artifactDeclarationPath,'utf8'));
+ const oldApplicationCapabilitySource=oldGeneration.controlFiles[CUSTODY_APPLICATION_CAPABILITY_PATH] as string;
+ const newApplicationCapability=JSON.parse(readFileSync(join(repo,oldApplicationCapabilitySource),'utf8'));
+ const oldControllerCapabilitySource=oldGeneration.controlFiles[CUSTODY_CONTROL_CAPABILITY_PATH] as string;
+ const selectedOldControllerCapability=JSON.parse(readFileSync(join(repo,oldControllerCapabilitySource),'utf8'));
+ delete oldGeneration.controlFiles[CUSTODY_APPLICATION_CAPABILITY_PATH];
+ writeFileSync(artifactDeclarationPath,JSON.stringify(oldGeneration,null,2)+'\n');
+ writeFileSync(join(repo,oldApplicationCapabilitySource),'{"schema":1,"successorCustody":0}\n');
+ run(['git','add','.'],repo);run(['git','-c','user.name=Fixture','-c','user.email=fixture@invalid','-c','core.hooksPath=/dev/null','commit','-qm','Prior custody capability generation'],repo);
+ const oldCapabilityGeneration=run(['git','rev-parse','HEAD'],repo).toString().trim();
+ const oldApplicationNewControl=await modern.prepare('old-application-new-control-fixture',oldCapabilityGeneration,control);
+ modern.verify(oldApplicationNewControl.artifactPath);
+ assert.equal(oldApplicationNewControl.manifest.files[CUSTODY_APPLICATION_CAPABILITY_PATH],undefined,
+  'an old application cannot inherit the newer controller application capability');
+ assert.equal(oldApplicationNewControl.manifest.files[CUSTODY_CONTROL_CAPABILITY_PATH]!==undefined,true,
+  'the newer controller keeps its separate controller capability');
+ const newApplicationOldControl=await modern.prepare('new-application-old-control-fixture',control,oldCapabilityGeneration);
+ modern.verify(newApplicationOldControl.artifactPath);
+ assert.deepEqual(JSON.parse(readFileSync(join(newApplicationOldControl.artifactPath,CUSTODY_APPLICATION_CAPABILITY_PATH),'utf8')),
+  newApplicationCapability,
+  'the application capability bytes come from the new application commit');
+ assert.deepEqual(JSON.parse(readFileSync(join(newApplicationOldControl.artifactPath,CUSTODY_CONTROL_CAPABILITY_PATH),'utf8')),
+  selectedOldControllerCapability,
+  'the independent controller capability bytes come from the selected old controller commit');
  const hybrid=await modern.prepare('hybrid-fixture',candidate,control);
  assert.equal(readFileSync(join(hybrid.artifactPath,'control/application/speech-job-worker.js'),'utf8').includes('CONTROL_WORKER_MUST_NOT_REPLACE_APPLICATION'),false);
  assert.equal(checkReleaseApplication(hybrid.artifactPath,repo,releases).status,'passed');

@@ -9,6 +9,7 @@ import { forkClaudeHistory, readClaudeHistory, readClaudeHistoryDetail, readCode
 import type { ProviderMessageCallback } from "./provider-history";
 import {MANAGED_CODEX} from './provider-activation';
 import type {CodexAppServerClientLike} from './codex-app-server-client';
+import type { CodexSuccessorConstruction, CodexSuccessorPlan } from './codex-successor-native';
 import { antigravityInstalled, runAntigravityTurn } from "./antigravity";
 import { contractGaps, guaranteeMet } from "./provider-contract";
 
@@ -66,6 +67,7 @@ export interface AgentProvider {
     onResumeUnanswered?: (wait: CodexResumeWait) => void;
     /** Selected only for one source-bound disposable native Codex test execution. */
     appServerClient?: CodexAppServerClientLike;
+    custodySuccessor?: { plan: CodexSuccessorPlan; construction: CodexSuccessorConstruction; beforeAdmission: () => Promise<void> };
   }): Promise<RunResult>;
   fork(input: {
     cwd: string;

@@ -1363,6 +1363,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       let retryable = replaySafe
         && (authWait || googleUsageWait || runnerAccountReadingWait || chatgptNeverSent || localPrerequisiteWait || structuredFailure?.failureClass === "retryable" ||
           structuredFailure?.modelAtCapacity === true || heldUntilMs !== null || switchClaudeAccount);
+      if(db.query('SELECT 1 FROM codex_custody_successors WHERE placement_turn_id=? AND attempt_spent_at IS NOT NULL').get(input.turnId))retryable=false;
       let policyRetryAtMs: number | null = null;
       // A rejected model is a property of this session's binding, not of the Google
       // account. The request below fails with the provider's reason, but it must not

@@ -58,6 +58,9 @@
     "control/application/owner-task-watchdog-worker.js": "bot/src/owner-task-watchdog-worker.ts"
   },
   "controlFiles": {
+    "control/ledger-read.py": "scripts/ledger-read.py",
+    "control/codex-custody-format.json": "bot/src/codex-custody-format.json",
+    "control/codex-custody-control-format.json": "bot/src/codex-custody-control-format.json",
     "control/history-cache-format.json": "bot/src/provider-history-cache-format.json",
     "control/history-cache-control-format.json": "bot/src/provider-history-cache-format.json",
     "control/bot/scripts/mac-browser-fallback.sh": "bot/scripts/mac-browser-fallback.sh",

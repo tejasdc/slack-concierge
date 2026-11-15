@@ -102,6 +102,8 @@ export class CodexAppServerClient {
       shutdownGraceMs?: number;
       /** A runner whose App Server this client reaches through the owner's relay (socketPath is then the owner's requests.sock). */
       relayRunner?: string | null;
+      /** A protected recovery client must never start or tune a shared native daemon. */
+      manageDaemon?: boolean;
     } = {},
   ) {}
 
@@ -230,7 +232,7 @@ export class CodexAppServerClient {
     const generation = ++this.generation;
     const relay = this.options.relayRunner ?? null;
     // The daemon's limits and scope are this machine's business only when it runs here.
-    if (!relay) {
+    if (!relay && this.options.manageDaemon !== false) {
       void raiseCodexDaemonFileLimit();
       void moveCodexDaemonToOwnScope();
     }
@@ -396,7 +398,8 @@ export class CodexAppServerClient {
     this.active = null;
     // The bridge reports the socket's own refusal; only a socket nobody is listening on starts one.
     // Through a runner's relay the runner starts its own App Server; here nothing is started.
-    const absent = this.options.relayRunner ? null : /connect (ECONNREFUSED|ENOENT)/.exec(error.message);
+    const absent = this.options.relayRunner || this.options.manageDaemon === false
+      ? null : /connect (ECONNREFUSED|ENOENT)/.exec(error.message);
     if (absent) startCodexDaemonWhenAbsent(absent[1]!);
     connection.rejectReady(error);
     for (const [id, pending] of this.pending) {

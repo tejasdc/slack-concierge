@@ -23,6 +23,7 @@ import { macSurfaceActivity, type MacSurfaceActivity } from "./mac-surface-activ
 import {isCodeEditTool} from './implementation-models';
 import { assertProviderForkPolicy, assertProviderInteractionPolicy, codexConsultationConfig,
   CONSULTATION_PERMISSION_PROFILE, ProviderCapabilityUnavailableError, type ProviderInteractionPolicy } from "./provider-policy";
+import { successorTurnStartParams, type CodexSuccessorConstruction, type CodexSuccessorPlan } from './codex-successor-native';
 
 export type ProgressEvent =
   | { type: "started" }
@@ -479,6 +480,8 @@ export interface RunCodexTurnInput {
   onRecoveredSteering?: (clientMessageId: string, outcome: "acknowledged" | "unacknowledged") => void;
   /** The adopted turn was still running in the daemon when it was taken over (survival evidence). */
   onAdoptedLive?: () => void;
+  /** Owner-committed successor placement; never cold-resume or create its thread. */
+  custodySuccessor?: { plan: CodexSuccessorPlan; construction: CodexSuccessorConstruction; beforeAdmission: () => Promise<void> };
 }
 
 function codexMessageObserver(input: RunCodexTurnInput, submissionClientId: string, currentModel:()=>string|undefined) {
@@ -530,11 +533,20 @@ async function codexThreadParameters(
       ...(!input.sessionUUID ? { dynamicTools: [], environments: [] } : {}),
     } : {
       sandbox: "danger-full-access",
-      config: { agents: { default_subagent_model: "gpt-6-luna", default_subagent_reasoning_effort: "medium" },
-        ...(Object.keys(shellEnvironment).length > 0
-          ? { shell_environment_policy: { inherit: "all", set: shellEnvironment } } : {}) },
+      config: codexOwnedThreadConfig(shellEnvironment),
     }),
     ...(input.model ? { model: input.model } : {}),
+  };
+}
+
+/** Stable owner configuration for a durable productive Codex thread. Keep this shared by
+ * ordinary construction and custody successors so shell hooks, owner routing, and helper
+ * defaults do not silently disappear on a recovery-created thread. */
+export function codexOwnedThreadConfig(shellEnvironment: Record<string, string>) {
+  return {
+    agents: { default_subagent_model: "gpt-6-luna", default_subagent_reasoning_effort: "medium" },
+    ...(Object.keys(shellEnvironment).length > 0
+      ? { shell_environment_policy: { inherit: "all" as const, set: shellEnvironment } } : {}),
   };
 }
 
@@ -1083,6 +1095,9 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   let initialInputAcknowledged = false;
   const requestTimeoutMs = input.requestTimeoutMs ?? DEFAULT_CODEX_REQUEST_TIMEOUT_MS;
   const inactivityTimeoutMs = input.inactivityTimeoutMs ?? DEFAULT_CODEX_INACTIVITY_TIMEOUT_MS;
+  if (input.custodySuccessor && !input.appServerClient)
+    throw new ProviderDispatchError({ message: 'Committed Codex successor requires its protected no-daemon native client.',
+      terminalConfirmed: false, providerSessionId: input.custodySuccessor.construction.threadId });
   const client = input.appServerClient ?? sharedCodexAppServerClient();
   const submissionClientId = input.clientUserMessageId
     ?? `slack-concierge:ephemeral:${randomUUID()}`;
@@ -1107,6 +1122,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   let model: string | undefined;
   let extractedUUID: string | null = sessionUUID;
   let turnSubmissionAttempted = false;
+  let successorAdmissionSendStarted = false;
   let turnSettled = false;
   let adoptedTerminalObserved = false;
   let terminalReported = false;
@@ -1156,10 +1172,12 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     method: string,
     params: unknown,
     onAccepted?: (value: any) => void,
+    beforeSend?: () => Promise<void>,
   ) => {
     // Turn and steering rows reach the disk before Codex is told, and before the answer timer
     // starts; the barrier releases in call order, so requests keep theirs.
     await ledgerDurable();
+    await beforeSend?.();
     const result = await client.request(method, params, { requestTimeoutMs, onAccepted });
     resetInactivityTimeout();
     return result;
@@ -1460,19 +1478,18 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         if (!activeThreadId) throw new Error("Cannot reconcile a Codex turn without its thread id.");
         connectionGeneration = await client.connect();
         if (turnSettled || controllerClosed) return;
-        const recoveredInput = { ...input, sessionUUID: activeThreadId };
-        const recoveredParams = await codexThreadParameters(recoveredInput,
-          (method, params) => client.request(method, params, { requestTimeoutMs }), threadEnvironment);
-        if (turnSettled || controllerClosed) return;
-        // Recovery retries this loop until it settles, so a deadline here only stacked cold loads.
-        const endWatch = watchResume(activeThreadId);
-        const resumed = await client.request("thread/resume", {
-          threadId: activeThreadId,
-          ...recoveredParams,
-          excludeTurns: true,
-        }, { untilDisconnect: true }).finally(endWatch);
-        if (turnSettled || controllerClosed) return;
-        verifyCodexConsultationPolicy(input, resumed);
+        if (!input.custodySuccessor) {
+          const recoveredInput = { ...input, sessionUUID: activeThreadId };
+          const recoveredParams = await codexThreadParameters(recoveredInput,
+            (method, params) => client.request(method, params, { requestTimeoutMs }), threadEnvironment);
+          if (turnSettled || controllerClosed) return;
+          const endWatch = watchResume(activeThreadId);
+          const resumed = await client.request("thread/resume", {
+            threadId: activeThreadId, ...recoveredParams, excludeTurns: true,
+          }, { untilDisconnect: true }).finally(endWatch);
+          if (turnSettled || controllerClosed) return;
+          verifyCodexConsultationPolicy(input, resumed);
+        }
         // Full thread hydration can materialize hundreds of megabytes for every adopted run.
         // Find the exact turn in summary pages; only a terminal turn's persisted item pages
         // can prove a complete replay across both legacy and paginated history modes.
@@ -1493,6 +1510,10 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         } while (turnCursor);
         if (!turn) {
           if (--adoptedSearchesLeft <= 0) {
+            if (input.custodySuccessor) {
+              parkUnconfirmedTurn(new Error("The committed successor turn is absent from its recorded thread; it was not resent."));
+              return;
+            }
             if (recoveryMustInterrupt) {
               // Stop on adopted work is never proof that the daemon stopped. If its exact turn
               // cannot be found by retained identity, keep the accepted work visibly uncertain.
@@ -1513,6 +1534,10 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
               return;
             }
             parkUnconfirmedTurn(new Error("The Codex turn an earlier Concierge started is not in its thread's history."));
+            return;
+          }
+          if (input.custodySuccessor) {
+            parkUnconfirmedTurn(new Error("The committed successor turn is not yet observable; it was not resent."));
             return;
           }
           await waitForRecoveryRetry(retryMs);
@@ -1547,6 +1572,14 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         settleFromTurn(turn, true);
         if (input.adoptTurn && stillRunning && !adoptedLiveReported) { adoptedLiveReported = true; input.onAdoptedLive?.(); }
         if (turnSettled) return;
+        if (input.custodySuccessor && stillRunning && !recoveryMustInterrupt) {
+          // The protected thread was created on an earlier connection. Pinned v0.166
+          // turn/start does not attach a conversation listener, so a new/reconnected
+          // owner must continue observing the recorded turn until its terminal page.
+          await waitForRecoveryRetry(retryMs);
+          retryMs = Math.min(retryMs * 2, 5_000);
+          continue;
+        }
         if (recoveryMustInterrupt && activeTurnId) {
           try {
             await client.request("turn/interrupt", {
@@ -1676,7 +1709,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         try {
           // The shared App Server may still be unreachable after a restart; the turn waits for it
           // (Stop still ends the wait) rather than failing or being parked unsent.
-          if (!input.appServerClient) await Promise.race([codexAppServerReady(), stoppedBeforeSubmission]);
+          if (!input.appServerClient && !input.custodySuccessor) await Promise.race([codexAppServerReady(), stoppedBeforeSubmission]);
           if (interruptionReason) throw interruptionReason;
           return await Promise.race([client.connect(), stoppedBeforeSubmission]);
         } catch (error) {
@@ -1685,7 +1718,13 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       }
     };
     let threadId: string;
-    if (input.adoptTurn) {
+    if (input.custodySuccessor && input.adoptTurn) {
+      threadId = input.custodySuccessor.construction.threadId;
+      activeThreadId = threadId;
+      extractedUUID = threadId;
+      // Follow the owner-recorded placement and search its history. No resume or new thread.
+      await Promise.race([ensureRecovered(), turnCompletion]);
+    } else if (input.adoptTurn) {
       // Taken back after a Concierge restart: the daemon kept the turn. Its exact history settles it
       // or shows it still running, and live notifications continue from there; nothing is resubmitted.
       threadId = activeThreadId!;
@@ -1695,6 +1734,13 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     } else {
     connectionGeneration = await connectBeforeSubmission();
     let threadResponse: any;
+    if (input.custodySuccessor) {
+      threadId = input.custodySuccessor.construction.threadId;
+      activeThreadId = threadId;
+      extractedUUID = threadId;
+      model = input.custodySuccessor.plan.model;
+      if (!input.adoptTurn) input.onProviderThreadStarted?.(threadId);
+    } else {
     for (;;) try {
     if (interruptionReason) throw interruptionReason;
     const threadParams = await codexThreadParameters(input, request, threadEnvironment);
@@ -1735,6 +1781,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     extractedUUID = threadId;
     input.onProviderThreadStarted?.(threadId);
     if (interruptionReason) throw interruptionReason;
+    }
 
     turnSubmissionAttempted = true;
     try {
@@ -1742,10 +1789,14 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         threadId,
         input: textInput(prompt),
         clientUserMessageId: submissionClientId,
-        ...(input.reasoning_effort ? { effort: input.reasoning_effort } : {}),
+        ...(input.custodySuccessor ? successorTurnStartParams(input.custodySuccessor.plan,threadId,prompt,submissionClientId)
+          : input.reasoning_effort ? { effort: input.reasoning_effort } : {}),
         ...(input.interactionPolicy === "consultation-only" ? { environments: [] } : {}),
         ...turnAdditionalContext(input.applicationInstructions),
-      }).catch(error => {
+      }, undefined, input.custodySuccessor ? async () => {
+        await input.custodySuccessor!.beforeAdmission();
+        successorAdmissionSendStarted = true;
+      } : undefined).catch(error => {
         recoveryCause = error instanceof Error ? error : new Error(String(error));
         log("error", "codex_turn_start_failed", { ...errorFields(error),
           rpc_method: "turn/start", rpc_error_code: error instanceof CodexAppServerClientError ? error.code ?? null : null,
@@ -1757,8 +1808,15 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       if (!returnedTurnId) throw new Error("codex app-server did not return a turn id");
       acceptActiveTurnId(returnedTurnId);
       resetInactivityTimeout();
+      if (input.custodySuccessor) void ensureRecovered();
     } catch (error) {
       if (turnSettled) throw error;
+      if (input.custodySuccessor && !successorAdmissionSendStarted) {
+        // The durable allowance callback refused before the native side effect. Keep
+        // custody held; do not enter reconnect reconciliation or invoke it again.
+        throw new ProviderDispatchError({ message: `Successor admission was withheld before native send: ${error instanceof Error ? error.message : String(error)}`,
+          terminalConfirmed: false, providerSessionId: activeThreadId });
+      }
       if (error instanceof CodexAppServerClientError && error.outcome === "rejected") {
         const detail=error.data as {codex_error_info?:unknown;codexErrorInfo?:unknown}|null;
         throw new ProviderDispatchError({message:error.message,terminalConfirmed:true,
@@ -1843,6 +1901,8 @@ function isLostCodexConnection(error: unknown) {
 }
 
 export async function runCodexTurn(input: RunCodexTurnInput): Promise<RunResult> {
+  if(input.custodySuccessor&&input.executable)
+    throw new ProviderCapabilityUnavailableError('send','Custody successor execution requires its protected native client.');
   assertProviderInteractionPolicy(input.interactionPolicy);
   const attempt = usageAttempt("codex", undefined, input.accountLabel);
   // A turn being taken back is already the daemon's; refusing it on usage would abandon it running.

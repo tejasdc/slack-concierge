@@ -465,6 +465,7 @@ export type SessionOwnerRuntime = {
   artifact?(session:SessionRow,id:string):Promise<unknown>;
   recover?(session:SessionRow,operation:AcceptedSessionInput):Promise<void>;
   requeueProvenUnsentChatGpt?(session:SessionRow,operation:AcceptedSessionInput):Promise<{status:'requeued'|'already_queued'|'already_running';runId:string}>;
+  recoverCustodySuccessor?(input:import('./codex-custody-successor').CustodySuccessorRequest):Promise<import('./codex-custody-successor').CustodySuccessorRow>;
   requeueProvenUnacknowledgedCodex?(session:SessionRow,operation:AcceptedSessionInput,input:{requestId:string;actionId:string;sourceInputId:string;sourceRunId:string;validateSource?:()=>void}):
     Promise<{status:'requeued'|'already_recovered';runId:string;providerTurnIds:string[]}>;
   proveRejectedChatGptAttachment?(session:SessionRow,operation:AcceptedSessionInput):Promise<{runId:string;reason:string;attachmentHashes:string[]}>;

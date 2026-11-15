@@ -4034,6 +4034,8 @@ export function acknowledgeTurnProviderInput(
       WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
     `).run(turnId, ownerInstanceId, dispatchAttempt);
     if (changed.changes !== 1) throw new Error("Provider input acknowledgement lost turn ownership.");
+    db.query(`UPDATE codex_custody_successors SET acknowledged_at=COALESCE(acknowledged_at,CURRENT_TIMESTAMP),state='acknowledged'
+      WHERE placement_turn_id=? AND dispatch_attempt=? AND attempt_spent_at IS NOT NULL`).run(turnId,dispatchAttempt);
     for (const contextTurnId of contextTurnIds) {
       db.query(`
         UPDATE turns SET input_context_received_by_turn_id=?
@@ -4111,7 +4113,15 @@ export function getRunningTurnDispatchBoundary(
 
 export function recordTurnProviderTurnId(turnId: number, providerTurnId: string | null | undefined) {
   if (!providerTurnId) return;
-  db.query("UPDATE turns SET provider_turn_id=? WHERE id=?").run(providerTurnId, turnId);
+  db.transaction(()=>{
+    const custody=db.query('SELECT native_turn_id,attempt_spent_at FROM codex_custody_successors WHERE placement_turn_id=?')
+      .get(turnId) as {native_turn_id:string|null;attempt_spent_at:string|null}|null;
+    if(custody&&(!custody.attempt_spent_at||custody.native_turn_id!==null&&custody.native_turn_id!==providerTurnId))
+      throw new Error('Canonical successor native attempt identity is not replaceable.');
+    db.query("UPDATE turns SET provider_turn_id=? WHERE id=?").run(providerTurnId, turnId);
+    db.query(`UPDATE codex_custody_successors SET native_turn_id=?,state='admitted'
+      WHERE placement_turn_id=? AND attempt_spent_at IS NOT NULL AND native_turn_id IS NULL`).run(providerTurnId,turnId);
+  })();
 }
 
 export function retryRunningTurnAfterProviderFailure(input: {
@@ -4127,6 +4137,7 @@ export function retryRunningTurnAfterProviderFailure(input: {
   usageResetUnknown?: boolean;
 }): boolean {
   return db.transaction(() => {
+    if(db.query('SELECT 1 FROM codex_custody_successors WHERE placement_turn_id=? AND attempt_spent_at IS NOT NULL').get(input.turnId))return false;
     const boundary = getRunningTurnDispatchBoundary(
       input.turnId,
       input.ownerInstanceId,
@@ -4233,6 +4244,7 @@ export function codexUnacknowledgedRecovery(inputId:string):CodexUnacknowledgedR
 export function reserveCodexUnacknowledgedRecovery(input:{sessionId:number;inputId:string;turnId:number;requestId:string;
   providerThreadId:string;bindingGeneration:number;proof:unknown;actionId:string;sourceInputId:string;sourceRunId:string;nowMs:number}):boolean {
   return db.transaction(()=>{
+    if(db.query('SELECT 1 FROM codex_custody_successors WHERE canonical_input_id=? OR placement_input_id=?').get(input.inputId,input.inputId))return false;
     const valid=db.query(`SELECT 1 FROM turns turn JOIN sessions session ON session.id=turn.session_id
       JOIN session_inputs accepted ON accepted.id=turn.accepted_input_id AND accepted.turn_id=turn.id
       JOIN session_communication_requests request ON request.request_id=?
@@ -4503,6 +4515,7 @@ export type ResumeParkedTurnResult = "resumed" | "already_queued" | "not_parked"
 
 export function resumeParkedSessionTurn(turnId: number): ResumeParkedTurnResult {
   return db.transaction(() => {
+    if(db.query('SELECT 1 FROM codex_custody_successors WHERE placement_turn_id=? AND attempt_spent_at IS NOT NULL').get(turnId))return 'unsafe';
     const turn = db.query(`
       SELECT turn.status, turn.turn_kind, turn.dispatch_failure_class, turn.projection_mode,
              session.status AS session_status,
@@ -5672,6 +5685,11 @@ export function survivableRunKinds() { return survivableRunKindsIn(db); }
 
 const CLAIMABLE_QUEUED_TURN_WHERE = `
   turn.status='queued'
+  AND NOT EXISTS (SELECT 1 FROM codex_custody_successors recovery
+    WHERE recovery.placement_turn_id=turn.id AND (recovery.state<>'constructed' OR recovery.attempt_spent_at IS NOT NULL))
+  AND NOT EXISTS (SELECT 1 FROM codex_custody_successors recovery
+    WHERE recovery.successor_session_id=turn.session_id AND recovery.placement_turn_id<>turn.id AND recovery.acknowledged_at IS NULL)
+  AND NOT EXISTS (SELECT 1 FROM session_handoffs custody WHERE custody.predecessor_session_id=turn.session_id AND custody.state='accepted')
   AND NOT (session.provider_id='claude-code' AND ?<?
     AND COALESCE(json_extract(session.native_metadata_json,'$.inboxRole'),'')<>'project-router')
   AND NOT EXISTS (SELECT 1 FROM session_inputs input WHERE input.id=turn.accepted_input_id

@@ -115,6 +115,124 @@ The accepted report-back ID is the durable deduplication key across action IDs. 
 
 The incident artifact records the exact parent-controlled recovery command and historical evidence: [Codex empty report-back recovery](../runbooks/CODEX-EMPTY-REPORT-BACK-RECOVERY-EVIDENCE.md). It is not itself current eligibility proof; the live owner rechecks every guard at execution time.
 
+### Custody-successor recovery
+
+An explicitly selected recovery mode can continue a retained Astra Medium service
+reminder in a new native conversation while keeping its original logical identity:
+
+```bash
+router-actions.sh sessions codex-recover '<original-request-id>' --custody-successor \
+  --source-input '<current accepted repair input>' --source-run '<current repair run>' \
+  --action-id '<stable action ID>'
+```
+
+This is distinct from the historical same-conversation recovery above. It preserves
+an owner-retained binding; it does not assert a new human model choice or relax the
+ordinary escalation policy. It accepts no caller-supplied model, effort, proof basis,
+assessment boolean, native identity or workspace path. The native model-start hook
+recognizes the committed placement as preservation, and records that fact without
+labelling it human authorization. New Astra helper selections remain subject to
+ordinary escalation.
+
+The current owner selects the canonical report-back of the named open work request,
+verifies its retained admission, maps every previous attempt to complete native
+turn/item observation, and refuses any acknowledgement, nonempty selected attempt,
+unresolved execution or relevant steering effect. The owner streams a fingerprint
+of the original conversation source and checks the existing workspace identities.
+The supported handoff inventory supplies current duties and source-owned worktree
+references; unresolved inventory omissions prevent custody commitment. Preserved
+worktree references do not grant productive ownership over independently assigned
+work. The repair coordinator must settle any conflicting custody before activation.
+
+Transcript/Git discovery limits remain explicit dispositions when the separately
+owner-resolved original source and referenced directories are physically accessible
+and retained in the same namespace. That does not claim an exhaustive dependency
+manifest. Actual inaccessible resources and unavailable external-duty inventory
+remain blockers. The operation neither rewrites inherited resources nor adds
+discovered historical roots to the native selection.
+
+Staging creates a suspended application successor with no bootstrap message, native
+thread or model turn. A separate execution-placement input holds the exact reminder
+payload and points to its original input/run. The original input, original turn,
+native associations, receipts and result events remain unchanged. The canonical
+reminder is the unique recovery reservation across action IDs and successor IDs;
+historical recovery reservation and custody-successor reservation exclude each
+other. No acknowledged original request is requeued as fresh work.
+
+Custody acceptance is an owner transition, not a fabricated successor-model
+acknowledgement. One immediate transaction transfers current request and return
+responsibilities, answer duties and watches, records referenced Lab/worktree
+resources, suspends the predecessor and commits recovery custody. Claim predicates
+also exclude accepted predecessors independently of their suspension metadata.
+The successor remains held if any later construction step fails.
+
+After commitment, one durably recorded native construction intent authorizes
+`thread/start` with the stock explicit `local` environment, current approved cwd
+and runtime roots, Astra, Medium via configuration, disabled model fallback, owner
+instructions, custody context, and the established owner shell/helper configuration.
+Known preserved worktrees remain references rather than being unioned into native
+workspace roots. Native response settings must agree before the recorded thread
+identity is bound and the selected placement is released. A lost construction
+response stays held; another repair action does not construct again. A mismatched
+response retains its known native identity while withholding admission.
+
+The construction connection stays with the execution host because native
+`thread/start` attaches its subscription and may unload idle work after the last
+subscriber leaves. The native adapter never manages, restarts or replaces the
+daemon. First selected `turn/start` repeats the explicit local selection, cwd,
+roots, model and effort; transport staging never becomes the native context.
+Preparation supplies current source/run identity as application context while the
+logical reminder text remains exact. The existing execution, acknowledgement,
+result and Stop consumers act on the placement, and retained results identify its
+canonical reminder. Just before the possible send, an immediate transaction checks
+current custody, binding, payload/source/resource continuity and turn ownership,
+then spends the shared additional-attempt allowance. The durability barrier precedes
+the native effect. A lost or rejected send never replenishes that allowance.
+
+Queue retries, parked resumption and the legacy recovery reservation cannot create
+another selected send. The same native thread remains protected for later distinct
+inputs without resetting the original allowance. Reconnect and owner adoption use
+the recorded thread, turn/client identity and paginated observation; they never
+resume a cold thread, replace it or resend. Since turn-start and history reads do
+not attach a new native listener, protected reconciliation keeps observing an
+active turn until terminal evidence is available. Stop interrupts only that exact
+execution and verifies the resulting native history. Missing residency or identity
+is a hold. This is not a general safe cold-resume capability.
+
+The durable custody record exposes staging, committed custody, construction intent,
+constructed identity, spent attempt, native turn and acknowledgement separately.
+Held errors retain their operation identity. These records and the existing owner
+events are the diagnostic entrance; no additional watcher or service is introduced.
+Strict historical settings failure and diagnostic semantic-coverage records keep
+their original meaning. Neither can become the new custody basis by being placed
+in a caller's payload.
+
+Before staging, the owner publishes a durable reader requirement. Application and
+controller artifacts each carry a sealed custody capability. Release activation
+and rollback check them independently, including application-only rollback with
+its separately selected controller. A bounded `EXISTS` read through the sealed
+ledger reader also detects retained custody rows after a restore that lost the
+marker directory. A pre-feature controller can bootstrap the first capable
+release using that verified candidate's sealed read entrance. There is no mutable
+checkout fallback. The marker is not cleared automatically: later inputs in the
+same successor still need the protected interpretation.
+
+The disposable acceptance fixtures (`codex-successor-native`,
+`codex-successor-run`, `codex-custody-handoff`, `codex-custody-successor`,
+`codex-custody-compatibility`, `codex-custody-command`) run in the
+package build. They exercise real owner persistence, positive construction and
+selected admission, useful-result acknowledgement, refusal cases, adoption and Stop
+against typed native substitutes. The compiler's undefined-name gate reads both
+application build roots and the controller's sealed bundle declaration, so either
+kind of shipped TypeScript entry point must resolve its identifiers. These checks
+do not establish installed recovery.
+Before real activation, the parent must verify the serving release and associated
+native incarnation/protocol, current exact selected-input eligibility and allowance,
+current exclusion/effect disposition, complete custody inventory, source/resource
+continuity and prospective configuration. Actual persisted acknowledgement and
+useful work are separate live acceptance requirements. The original writing duties
+remain open until their own custodians finish and check them.
+
 ## Disposable native Codex tests
 
 Ordinary agent-created Codex sessions keep the shared daemon client and receive no fault control.
