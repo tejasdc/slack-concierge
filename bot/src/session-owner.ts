@@ -4721,7 +4721,9 @@ export class SessionOwner {
       }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='details'&&parts.length===4&&this.runtime.detail)result=await this.runtime.detail(this.session(parts[1]!),parts[3]!);
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='artifacts'&&parts.length===4&&this.runtime.artifact)result=await this.runtime.artifact(this.session(parts[1]!),parts[3]!);
-      else if(request.method==='GET'&&parts[0]==='operations'&&parts.length===2) result=this.receipt(this.input(parts[1]!));
+      // Exact operation reads authorize provider admission and recovery. A failed operation can be
+      // reopened, so another reader's settled cache is not authority for its current execution.
+      else if(request.method==='GET'&&parts[0]==='operations'&&parts.length===2) result=this.buildReceipt(this.input(parts[1]!));
       else if(request.method==='GET'&&parts[0]==='events'&&parts.length===1) {
         const page=this.eventPage(Number(url.searchParams.get('after'))||0,url.searchParams.get('sessionId'),url.searchParams.get('runId'),
           {kind:url.searchParams.get('kind'),limit:boundedLimit(url.searchParams.get('limit'),1000)});
