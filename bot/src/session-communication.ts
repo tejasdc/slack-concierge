@@ -43,7 +43,7 @@ import {withBefore} from './reply-before';
 import { isHisChatGpt,parseProviderSelector,resolveProviderSelector,chatgptProjectThinking } from './aliases';
 import {humanChoseChatGptEffort,humanChoseProvider,humanChoseThinkingModel} from './model-escalation-custody';
 import {escalationReason} from './model-escalation';
-import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindDirectChatGptTaskSource,chatGptAnswerCommand,chatGptObligationForAttempt,classifyLegacyChatGptAsk,holdUnmessageableChatGptAsker,migrateOpenLegacyChatGptAsks,openChatGptObligations,recordChatGptAttemptResult,recordChatGptOriginalRequeued,recordChatGptReturnReceipt,recordChatGptToolRead,reconcileCanceledChatGptObligations,reconcileHandoffChatGptObligations,requireChatGptTaskDisposition,requireChatGptTaskResolved,resolveChatGptAnswer,resolveChatGptTask,resumeMessageableChatGptAsker,validateChatGptToolRead,withdrawCanceledChatGptAttempt,type ChatGptObligationRow} from './chatgpt-obligations';
+import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindDirectChatGptTaskSource,chatGptAnswerCommand,chatGptAttachmentCorrectionPending,chatGptObligationForAttempt,classifyLegacyChatGptAsk,holdUnmessageableChatGptAsker,migrateOpenLegacyChatGptAsks,openChatGptObligations,recordChatGptAttemptResult,recordChatGptOriginalRequeued,recordChatGptReturnReceipt,recordChatGptToolRead,reconcileCanceledChatGptObligations,reconcileHandoffChatGptObligations,requireChatGptTaskDisposition,requireChatGptTaskResolved,resolveChatGptAnswer,resolveChatGptTask,resumeMessageableChatGptAsker,validateChatGptToolRead,withdrawCanceledChatGptAttempt,type ChatGptObligationRow} from './chatgpt-obligations';
 import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, reportBackNotice, strandedStep, stalledNotice, tellWorkerCanceled, cancelQueuedWithdrawnRequest, endRepeatingScheduleForInput, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, finalClosingLine, leadFirst, NEEDS_YOU_SUMMARY_REQUIRED, questionForTejas } from './answers-to-tejas';
@@ -2145,12 +2145,12 @@ export class SessionCommunicationCoordinator {
                 throw new Error('Attachment correction needs the original ChatGPT address, exact task, and a corrected --file.');
             const original=this.row(input.correction_of);
             const obligation=chatGptObligationForAttempt(input.correction_of);
-            if(!obligation||obligation.obligation_id!==input.correction_of||obligation.active_request_id!==input.correction_of
-                ||obligation.state!=='reconcile_receipt'||obligation.asker_session_id!==actor.session
+            if(!obligation||obligation.obligation_id!==input.correction_of||!chatGptAttachmentCorrectionPending(obligation,original.outcome)
+                ||obligation.asker_session_id!==actor.session
                 ||`${obligation.task_kind}:${obligation.task_id}`!==input.for_task
                 ||obligation.target_session_id!==`concierge:${targetSession.id}`||obligation.question_text!==input.text
                 ||original.source_session_id!==actor.session||original.target_session_id!==targetSession.id
-                ||original.outcome!=='failed'||!original.target_input_id)
+                ||!original.target_input_id)
                 throw new Error('The original failed ChatGPT request does not own this exact unanswered question, task, and target.');
             correctionProof=await this.dependencies.owner.proveRejectedChatGptAttachment(targetSession.id,original.target_input_id);
             const originalHashes=new Set(correctionProof.attachmentHashes);
