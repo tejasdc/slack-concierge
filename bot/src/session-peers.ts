@@ -266,6 +266,8 @@ type WorkDisposition=typeof WORK_DISPOSITIONS[number];
 type PeerRequestStatus=Record<string,any>&{requestId:string;sessionId:string;address:string;inputState:string;
   stillWorking:boolean;execution:Record<string,any>|null;replies:any[]};
 type PeerStatusRead={status:PeerRequestStatus|null;reason:string|null};
+const hasPeerReplyContent=(input:{kind:string;text:string;fileCount:number;replyBody?:unknown})=>
+  !!input.text.trim()||input.fileCount>0||input.kind==='final'&&input.replyBody==='';
 const PEER_ANSWER_GUARANTEE_HEALTH='peer answer guarantee unconfirmed';
 const peerRequestStatus=(value:unknown,expected:{requestId:string;sessionId?:string;address?:string}):PeerStatusRead=>{
   if(!record(value))return {status:null,reason:'status_not_object'};
@@ -277,6 +279,10 @@ const peerRequestStatus=(value:unknown,expected:{requestId:string;sessionId?:str
   if(typeof value.inputState!=='string'||typeof value.stillWorking!=='boolean'
     ||value.execution!==null&&!record(value.execution)||!Array.isArray(value.replies))
     return {status:null,reason:'status_shape_invalid'};
+  if(value.inputError!==undefined&&value.inputError!==null&&typeof value.inputError!=='string'
+    &&(!record(value.inputError)||typeof value.inputError.message!=='string'
+      ||value.inputError.code!==undefined&&value.inputError.code!==null&&typeof value.inputError.code!=='string'))
+    return {status:null,reason:'input_error_invalid'};
   if(value.execution!==null){
     const execution=value.execution;
     const executionState=typeof execution.status==='string'&&
@@ -300,6 +306,7 @@ const peerRequestStatus=(value:unknown,expected:{requestId:string;sessionId?:str
     if(!record(reply)||typeof reply.eventId!=='string'||!reply.eventId||!['progress','final'].includes(reply.kind)
       ||typeof reply.status!=='string'||!reply.status||typeof reply.text!=='string'
       ||reply.files!==undefined&&(!Number.isSafeInteger(reply.files)||reply.files<0)
+      ||!hasPeerReplyContent({kind:reply.kind,text:reply.text,fileCount:reply.files??0,replyBody:reply.replyBody})
       ||reply.sourceInputId!==null&&reply.sourceInputId!==undefined&&typeof reply.sourceInputId!=='string'
       ||reply.sourceRunId!==null&&reply.sourceRunId!==undefined&&typeof reply.sourceRunId!=='string'
       ||reply.workDisposition!==null&&reply.workDisposition!==undefined&&!WORK_DISPOSITIONS.includes(reply.workDisposition)
@@ -1055,7 +1062,9 @@ export class SessionPeers {
     }
     if(input.files!==undefined&&(!Array.isArray(input.files)||input.files.some((file:any)=>typeof file?.name!=='string'||typeof file?.contentType!=='string'||typeof file?.base64!=='string')))throw new SessionOwnerError('Files must contain named attachment bytes.');
     // A reply carrying files is a message even without words.
-    if(typeof input.eventId!=='string'||!input.eventId||!['progress','final'].includes(input.kind)||typeof input.text!=='string'||(!input.text.trim()&&!input.files?.length&&!(input.kind==='final'&&input.replyBody==='')))throw new SessionOwnerError('A reply needs an event ID, kind and either text or a file.');
+    if(typeof input.eventId!=='string'||!input.eventId||!['progress','final'].includes(input.kind)||typeof input.text!=='string'
+      ||!hasPeerReplyContent({kind:input.kind,text:input.text,fileCount:input.files?.length??0,replyBody:input.replyBody}))
+      throw new SessionOwnerError('A reply needs an event ID, kind and either text or a file.');
     const final=input.kind==='final';
     const disposition:WorkDisposition|undefined=input.workDisposition;
     if(final&&JSON.parse(row.payload_json).answerGuaranteeVersion===1){

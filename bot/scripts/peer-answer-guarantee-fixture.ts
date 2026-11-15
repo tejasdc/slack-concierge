@@ -104,6 +104,14 @@ async function child(){
   malformedRow=db.query('SELECT status,remote_status_json,outcome FROM session_peer_requests WHERE request_id=?').get(nullReplyId) as any;
   assert.equal(malformedRow.status,'version_hold');assert.equal(malformedRow.outcome,null);
   assert.equal(JSON.parse(malformedRow.remote_status_json).originStatusReadFailure.reason,'reply_summary_invalid');
+  const malformedInputErrorId='peer-answer-guarantee-malformed-input-error';
+  insertRequest(malformedInputErrorId,'version_hold',exactStatus(malformedInputErrorId));
+  responseOverrides.set(malformedInputErrorId,()=>Response.json(exactStatus(malformedInputErrorId,{inputState:'failed',inputError:{message:{bad:true}}})));
+  await peers.notified(malformedInputErrorId);
+  malformedRow=db.query('SELECT status,remote_status_json,outcome FROM session_peer_requests WHERE request_id=?').get(malformedInputErrorId) as any;
+  assert.equal(malformedRow.status,'version_hold');assert.equal(malformedRow.outcome,null);
+  assert.equal(JSON.parse(malformedRow.remote_status_json).originStatusReadFailure.reason,'input_error_invalid',
+   'a malformed failure carrier cannot authorize inferred failure settlement');
   const badReplySummaries:[string,Record<string,unknown>][]=[
    ['peer-answer-guarantee-incomplete-needs-you',{eventId:'turn_outcome:action:bad',kind:'progress',status:'forwarded',text:'',turnOutcome:'needs_you',files:0}],
    ['peer-answer-guarantee-bad-reply-boolean',{eventId:'bad-reply-boolean',kind:'progress',status:'forwarded',text:'progress',notify:'false'}],
@@ -118,6 +126,16 @@ async function child(){
    assert.equal(JSON.parse(row.remote_status_json).originStatusReadFailure.reason,'reply_summary_invalid');
    assert.deepEqual(JSON.parse(row.remote_status_json).replies,[],'invalid summary fields are rejected before status retention');
   }
+  const emptyProgressId='peer-answer-guarantee-empty-progress-summary';
+  insertRequest(emptyProgressId,'version_hold',exactStatus(emptyProgressId));
+  responseOverrides.set(emptyProgressId,()=>Response.json(exactStatus(emptyProgressId,{replies:[{
+   eventId:'empty-progress-summary',kind:'progress',status:'forwarded',text:'',files:0,sourceInputId:'remote-input',sourceRunId:'remote-run'}]})));
+  let emptyProgressError:unknown=null;
+  try{await peers.notified(emptyProgressId);}catch(error){emptyProgressError=error;}
+  assert.equal(emptyProgressError,null,'a reply summary must be rejected as a failed status read before reply recording can throw');
+  const emptyProgressRow=db.query('SELECT status,remote_status_json,outcome FROM session_peer_requests WHERE request_id=?').get(emptyProgressId) as any;
+  assert.equal(emptyProgressRow.status,'version_hold');assert.equal(emptyProgressRow.outcome,null);
+  assert.equal(JSON.parse(emptyProgressRow.remote_status_json).originStatusReadFailure.reason,'reply_summary_invalid');
   const unresolvedId='peer-answer-guarantee-unresolved-duty';
   insertRequest(unresolvedId,'version_hold',exactStatus(unresolvedId));
   const unresolvedExecution={turnId:42,runId:'run:42',status:'cancelled',settled:true,acknowledged:true,acknowledgedAt:'2026-11-15T00:00:00.000Z',
@@ -262,6 +280,7 @@ async function child(){
   await peers.stop();
   assert.equal(cancelPosts,1,'the exact explicit cancellation is also sent through the normal peer revoke path');
   console.log(JSON.stringify({fixture:'peer-answer-guarantee',malformedStatusPreservedProof:true,nestedExecutionAndReplyValidation:true,
+   emptyProgressRejectedBeforeWrite:true,malformedInputErrorRejectedBeforeWrite:true,
    overlapSerialized:true,exactHoldRecoverySingleRead:true,historicalNoticeIdentitiesPreserved:true,progressPreserved:true,
    failedReadsBlockCachedInference:true,explicitCancelEffective:true,unresolvedDutyBlocksRemoteCancel:true,
    independentFinalProofUsable:true,noReplay:requestPosts===0}));
