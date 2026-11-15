@@ -1,3 +1,4 @@
+import {recordCustodyNativeTerminal} from './codex-custody-terminal';
 import { createHash, randomUUID } from "node:crypto";
 import {nativeInputClientMessageId} from './native-result-identity';
 import { clearRetryBreaker, recordRetryFailure } from './retry-breaker';
@@ -835,6 +836,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         }
       },
       onProviderTerminal: () => {
+        if(input.providerId==='codex')recordCustodyNativeTerminal(input.turnId,input.ownerInstanceId,dispatchAttempt);
         try { flushPendingProviderProgressEvents(); }
         catch(error){log('error','session_progress_terminal_flush_failed',{turn_id:input.turnId,...errorFields(error)});}
         input.closeSteering(new Error("The provider turn completed."));

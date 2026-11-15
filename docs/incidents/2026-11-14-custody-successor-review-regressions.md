@@ -17,6 +17,12 @@ identity; recovery staging could reuse an ordinary handoff action; and an old re
 builder could seal an old application with the new controller's capability file.
 The reviewer reproduced the old-builder artifact counterexample. The production observer
 callback also independently resumed newly bound threads and repeated that on reconnect.
+Verdict2 then found that a confirmed selected Stop/error disabled later distinct work,
+Continue stranded the admitted-before-acknowledgement interval, unhealthy rollback tried
+offline pointer publication before stopping the candidate, and supported old-application
+hybrids lacked the new publication receiver. Complete peer-source clarification also
+found selected-attempt fanout to transferred incoming duties and a successor final proof
+being compared against the origin's historical predecessor identity.
 
 These are source/disposable-state findings. No target recovery or installed repair is
 claimed. The corrected native transport boundary covers actual managed senders;
@@ -45,11 +51,49 @@ The parent's later paused-successor reproduction found the suspension refusal ra
 before exact Stop validation. Stop now validates its retained active turn and Stop
 input before the productive-admission hold; it does not bypass connection custody
 or clear Pause.
+Verdict2 separates the selected attempt's acknowledgement/native terminal receipt from
+successor availability. After confirmed selected Stop/error, a later distinct admission
+requires the original connection and fresh exact-thread effects; the final forward guard
+requires its turn/attempt receipt. Unknown outcomes remain held and the allowance stays spent.
+Continue recognizes admitted construction before acknowledgement. Peer status and final-proof
+consumers resolve the exact accepted custody chain while preserving historical acceptance;
+unconfirmed first pushes remain pending and selected outcomes do not settle inherited duties.
+Release publication discovers the actual application's supported lane. Legacy/unhealthy owners
+are positively stopped before offline publication; healthy capable owners serialize it.
+Post-start offline inheritance is cleared and rollback retains drains through restored health.
 The existing child-bridge generation fixture also explicitly disables daemon
 management: selecting a fake bridge must not retain the production client's host
 tuning/start defaults during a disposable-only acceptance run.
 
 ## Acceptance scenario
+
+- **Seed:** A real managed disposable client, accepted selected reminder, exact native
+  acknowledgement, original connection, and three retained writing duties.
+- **Action:** Run `bun run scripts/codex-custody-successor-fixture.ts`. Its stock-native
+  substitute confirms exact Stop through direct and reconciliation-loop interruption,
+  or confirms selected error, before the real coordinator reconciles the terminal placement.
+  Only then does a distinct input run through the owner, execution host and final byte guard.
+- **Expected:** Duties stay open; later native acknowledgement/useful output succeeds;
+  canonical allowance remains spent; a nonempty native queue holds a further admission.
+  Pause remains deliberate, and Continue during admitted does not strand acknowledgement.
+- **Replayable offline:** yes (actual owner/client/guard, substituted native responses).
+
+- **Seed:** Accepted incoming peer duties transferred to the selected placement, or an outgoing
+  child returning after its requester transferred custody.
+- **Action:** Run `bun run scripts/codex-custody-peer-fixture.ts` from `bot/`.
+- **Expected:** Status polling and notifications retain independent duties after selected failure,
+  Stop or consultation completion; exact successor finals settle once in either arrival order;
+  historical acceptance stays intact; late child return follows the current holder without resend.
+- **Replayable offline:** yes (actual producer/consumer with controlled transport).
+
+- **Seed:** A preserved old application receiver, corrected controller, compatible LKG, and
+  disposable systemd/health transitions including an active unhealthy candidate.
+- **Action:** Run `bun run scripts/release-application-compatibility.ts` from `bot/` with
+  explicit disposable state/test authorization.
+- **Expected:** Ordinary predeployment restore, hybrid promotion and control recovery use a
+  positively stopped owner when needed. Failed health restores/restarts compatible LKG under
+  retained drains. Capable publication is serialized; arbitrary RPC failure never falls back live.
+- **Replayable offline:** yes (actual receiver/CLI/shell; host effects substituted).
 
 - **Seed:** A paused protected successor with an active followup and retained human Stop.
 - **Action:** Run `bun run scripts/codex-custody-forward-guard-fixture.ts` and

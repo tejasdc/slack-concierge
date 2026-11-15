@@ -8,8 +8,10 @@ import {releaseWorkerPath} from '../src/release-worker';
 import {Database} from 'bun:sqlite';
 import {CUSTODY_APPLICATION_CAPABILITY_PATH,CUSTODY_CONTROL_CAPABILITY_PATH,requireCustodyReader} from '../src/codex-custody-compatibility';
 import {requireOfflineReleaseServiceStopped} from '../src/ledger-access-policy';
+import {releasePublicationAcceptance} from './release-publication-acceptance';
+import {IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION} from '../src/test-authorizations';
 
-// No canonical ledger imports, supervisor calls, credential access, or live pointer changes.
+// Disposable ledgers/receiver sockets only; systemd/health effects are substituted.
 const source=resolve(import.meta.dir,'../..'),scratch=mkdtempSync(join(tmpdir(),'release-compatibility-'));
 function run(cmd:string[],cwd=source){const result=Bun.spawnSync({cmd,cwd,stdout:'pipe',stderr:'pipe'});if(result.exitCode!==0)throw new Error(result.stderr.toString());return result.stdout;}
 const repo=join(scratch,'repo'),releases=join(scratch,'deploy');
@@ -102,6 +104,10 @@ try{
  // New builder verifies older sealed artifacts and emits application provenance itself.
  const next=await modern.prepare('modern-control-fixture',candidate);
  old.verify(next.artifactPath);assert.equal(next.manifest.application_bundle_source_digest,next.manifest.source_tree_digest);
+ const actualLegacyHybrid=await modern.prepare('actual-legacy-app-current-control-fixture',baseApplication,candidate);
+ await releasePublicationAcceptance({source,scratch,repo,baseCommit,manager:modern,
+  oldArtifact:baseArtifact.artifactPath,modernArtifact:next.artifactPath,
+  modernRollback:prepared.artifactPath,hybridArtifact:actualLegacyHybrid.artifactPath});
  // A control-only upgrade keeps worker bytes from the application commit. Older installed
  // builders may or may not already emit the exact application-source proof.
  const speechSource=join(repo,'bot/src/speech-job-worker.ts');
@@ -172,6 +178,7 @@ try{
  const previousEnv={repo:process.env.CONCIERGE_REPO,state:process.env.CONCIERGE_STATE_DIR,release:process.env.CONCIERGE_DEPLOYMENT_RELEASE_ROOT,
   runtime:process.env.CONCIERGE_DEPLOYMENT_RUNTIME_DIR,bun:process.env.CONCIERGE_BUN_BIN};
  process.env.CONCIERGE_REPO=repo;
+ process.env.CONCIERGE_TEST_AUTHORIZATION=IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION;
  process.env.CONCIERGE_DEPLOYMENT_RUNTIME_DIR=join(scratch,'runtime');process.env.CONCIERGE_BUN_BIN=process.execPath;
  const requirementsFirstState=join(scratch,'requirements-first-state');mkdirSync(requirementsFirstState);
  const requirementsFirstRoot=join(scratch,'requirements-first-release');

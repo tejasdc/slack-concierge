@@ -4035,7 +4035,8 @@ export function acknowledgeTurnProviderInput(
     `).run(turnId, ownerInstanceId, dispatchAttempt);
     if (changed.changes !== 1) throw new Error("Provider input acknowledgement lost turn ownership.");
     db.query(`UPDATE codex_custody_successors SET acknowledged_at=COALESCE(acknowledged_at,CURRENT_TIMESTAMP),state='acknowledged'
-      WHERE placement_turn_id=? AND dispatch_attempt=? AND attempt_spent_at IS NOT NULL`).run(turnId,dispatchAttempt);
+      WHERE placement_turn_id=? AND dispatch_attempt=? AND attempt_spent_at IS NOT NULL
+      AND state IN ('admitting','admitted','acknowledged')`).run(turnId,dispatchAttempt);
     for (const contextTurnId of contextTurnIds) {
       db.query(`
         UPDATE turns SET input_context_received_by_turn_id=?

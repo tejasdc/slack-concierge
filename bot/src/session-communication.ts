@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import {custodySelectedTerminalConfirmed} from './codex-custody-terminal';
 import { historyStorageStatus, type HistoryStorageKind } from './history-storage-status';
 import { createHash, randomUUID } from 'node:crypto';
 import {implementationAlias} from './implementation-models';
@@ -3166,9 +3167,9 @@ export class SessionCommunicationCoordinator {
                 const reason=ended.status==='error'?endedWorkInPlainWords(turn.agent_text):stop
                     ?stoppedByTejasText(stop.atMs):'The selected custody attempt was canceled before it produced a result.';
                 db.transaction(()=>{
-                    db.query(`UPDATE codex_custody_successors SET state='held',error=?
+                    db.query(`UPDATE codex_custody_successors SET state=?,error=?
                         WHERE canonical_input_id=? AND placement_turn_id=? AND state IN ('admitting','admitted','acknowledged')`)
-                        .run(reason,custody.canonical_input_id,ended.id);
+                        .run(custodySelectedTerminalConfirmed(custody.canonical_input_id)?'acknowledged':'held',reason,custody.canonical_input_id,ended.id);
                     const eventId=`custody-attempt-failed:${custody.canonical_input_id}:${ended.id}`;
                     if(!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))
                         recordSessionEvent({eventId,sessionId:custody.successor_session_id,inputId:custody.placement_input_id,turnId:ended.id,

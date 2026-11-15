@@ -222,6 +222,8 @@ function localOwnerRequest(shared:(request:Request)=>Promise<Response>,sessions?
         return Response.json(await owner.refreshAuthEphemera());
       if(request.method==='GET'&&url.pathname==='/supervisor/ping')
         return Response.json({ok:true,pid:process.pid,startedAt,release,logging:logSinkCounters(),ledgerDurability:ledgerDurabilityCounters()});
+      if(request.method==='GET'&&url.pathname==='/internal/deployment-release-capabilities'&&owner)
+        return Response.json({publication:1,pid:process.pid,release});
       if(request.method==='GET'&&url.pathname==='/supervisor/durability')
         return Response.json(protectedDurability.snapshot());
       // The outside Grafana reconciler (remote-box) reads retained firing episodes and submits

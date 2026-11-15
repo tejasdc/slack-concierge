@@ -174,10 +174,11 @@ main() {
   artifact_digest=$(printf '%s\n' "$prepared" | jq -er '.artifact_digest')
   CANDIDATE_ARTIFACT_PATH="$artifact_path"
   CANDIDATE_ARTIFACT_DIGEST="$artifact_digest"
+  stop_release_owner
   CONCIERGE_RELEASE_OFFLINE=1 CONCIERGE_REPO="$REPO" CONCIERGE_STATE_DIR="$STATE_DIR" \
     "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" activate \
     --run-id "$DEPLOY_RUN_ID" --artifact "$artifact_path"
-  CONCIERGE_REPO="$REPO" CONCIERGE_STATE_DIR="$STATE_DIR" \
+  CONCIERGE_RELEASE_OFFLINE=1 CONCIERGE_REPO="$REPO" CONCIERGE_STATE_DIR="$STATE_DIR" \
     "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" set-control --artifact "$artifact_path"
   CONCIERGE_REPO="$REPO" CONCIERGE_STATE_DIR="$STATE_DIR" \
     "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" install-runtime
@@ -201,9 +202,7 @@ main() {
     return 1
   fi
 
-  CONCIERGE_REPO="$REPO" CONCIERGE_STATE_DIR="$STATE_DIR" \
-    "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" promote \
-    --run-id "$DEPLOY_RUN_ID" --artifact-digest "$artifact_digest" --artifact "$artifact_path"
+  promote_candidate_release
   record_deployment_phase releasing "{\"initial_lkg\":\"$EXPECTED_LKG_COMMIT\",\"app_server_identity\":\"$app_server_after\"}"
   release_deployment_gate
   confirm_service_proof_is_current

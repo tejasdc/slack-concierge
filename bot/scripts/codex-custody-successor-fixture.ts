@@ -245,6 +245,11 @@ try {
  assert.ok(spentAt,'canonical additional attempt spent durably before native send');
  assert.equal(nativeCalls.filter(call=>call==='turn/start').length,1,'selected native turn/start occurs exactly once');
  const activeIdentity=db.query('SELECT status,owner_instance_id,provider_admission_intended_at,provider_turn_id FROM turns WHERE id=?').get(claim.turn_id) as any;
+ assert.equal(custodySuccessor(reminder.id)?.state,'admitted','native identity precedes the gated user acknowledgement');
+ host.owner.action(`concierge:${successor.id}`,{clientActionId:'pause-admitted-before-ack',action:{kind:'pause'}});
+ assert.equal(sessionMetadata(getSessionById(successor.id)!).suspended,true);
+ host.owner.action(`concierge:${successor.id}`,{clientActionId:'continue-admitted-before-ack',action:{kind:'continue'}});
+ assert.equal(sessionMetadata(getSessionById(successor.id)!).suspended,false,'Continue recognizes admitted construction before acknowledgement');
  assert.equal(activeIdentity.status,'running','the native completion gate keeps the selected owner turn active');
  assert.ok(activeIdentity.provider_admission_intended_at,'owner marks native provider admission before custody successor input can act');
  assert.equal(activeIdentity.provider_turn_id,'successor-native-turn','the actual native turn identity is already retained before a scoped action');
@@ -268,6 +273,7 @@ try {
  const actualResult=await hostRun;
  assert.equal(actualResult.status,'delivered','host reports delivered after native completion');
  assert.equal(custodySuccessor(reminder.id)?.state,'acknowledged','real native user-message acknowledgment resolves custody state');
+ assert.equal(sessionMetadata(getSessionById(successor.id)!).suspended,false,'acknowledgement must not strand the earlier Continue');
  const settledTurn=db.query('SELECT provider_turn_id,provider_input_acknowledged_at,status FROM turns WHERE id=?').get(claim.turn_id) as any;
  assert.equal(settledTurn.provider_turn_id,providerTurnId,'native turn identity is persisted by the real provider-start callback');
  assert.ok(settledTurn.provider_input_acknowledged_at,'native acknowledgment is persisted by the real input consumer');
@@ -276,75 +282,6 @@ try {
  assert.match(JSON.parse(savedResult.payload_json).text,/Useful writing continuation/,'persisted useful result is derived from native completion');
  assert.equal(db.query('SELECT provider_input_acknowledged_at FROM turns WHERE id=?').get(claim.turn_id).provider_input_acknowledged_at!==null,true);
  await assert.rejects(()=>protectedRun.beforeAdmission(),/spent|changed|exclusive/i,'second native admission is refused after the shared allowance is spent');
- const unrelated=retainSessionInput({id:'successor-unrelated-input',sessionId:custody.successor_session_id,scope:'fixture-next',actionId:'unrelated',
-   kind:'input',origin:'human',payload:{text:'Do this separate follow-up task.'}}).input;enqueueSessionInput(unrelated.id);
- const nextClaim=claimNextQueuedTurn('fixture-owner');assert.ok(nextClaim);assert.equal(nextClaim.accepted_input_id,unrelated.id);
- const nextProtected=protectedCustodyRun(nextClaim.turn_id,'fixture-owner',nextClaim.dispatch_attempt)!;
- assert.equal(nextProtected.construction.threadId,'successor-native-thread','later work stays on the exact committed successor thread');
- await nextProtected.beforeAdmission();
- const allowanceAfterNext=custodySuccessor(reminder.id)!;
- assert.equal(allowanceAfterNext.attempt_spent_at,spentAt,'unrelated work cannot reset the canonical recovery allowance');
- assert.equal(allowanceAfterNext.dispatch_attempt,claim.dispatch_attempt,'unrelated turn does not consume a second selected-input attempt');
-
- // Reconcile a failed canonical placement through the real communication coordinator. Its
- // failure is custody-attempt state, not a terminal disposition for every request transferred
- // with that placement. Then prove one independent duty can still receive a scoped reply.
- db.query("UPDATE turns SET status='error',agent_text='CODEX_INPUT_NOT_ACKNOWLEDGED: fixture refusal',ended_at=CURRENT_TIMESTAMP WHERE id=?").run(claim.turn_id);
- for(const dutyId of [requestId,'sibling-duty-one','sibling-duty-two']){
-   const duty=db.query('SELECT * FROM session_communication_requests WHERE request_id=?').get(dutyId) as any;
-   await (coordinator as any).dispatch(duty);
-   assert.equal((db.query('SELECT outcome FROM session_communication_requests WHERE request_id=?').get(dutyId) as any).outcome,null,
-     `failed canonical attempt leaves transferred duty ${dutyId} open`);
- }
- assert.equal(custodySuccessor(reminder.id)?.state,'held','selected terminal failure is retained on canonical custody');
- assert.equal((db.query("SELECT COUNT(*) AS n FROM session_owner_events WHERE event_id=?").get(`custody-attempt-failed:${reminder.id}:${claim.turn_id}`) as any).n,1,
-   'reconciliation records one exact canonical attempt failure');
- const nextAttempt=nextClaim.dispatch_attempt;
- assert.equal(markTurnProviderAdmissionIntended(nextClaim.turn_id,'fixture-owner',nextAttempt),true);
- recordTurnProviderTurnId(nextClaim.turn_id,'unrelated-live-native-turn');
- acknowledgeTurnProviderInput(nextClaim.turn_id,'fixture-owner',nextAttempt,[]);
- await coordinator.reply({source:{input_id:unrelated.id,run_id:nativeRunId(nextClaim.turn_id)},action_id:'unrelated-duty-progress',request_id:'sibling-duty-one',
-   text:'The separate duty remains actionable after the selected attempt failed.',final:false});
- const survivingProgress=db.query('SELECT request_id,kind FROM session_communication_events WHERE action_key=?')
-   .get(JSON.stringify(['input',unrelated.id,'unrelated-duty-progress'])) as any;
- assert.equal(survivingProgress.request_id,'sibling-duty-one','another transferred duty still accepts its own exact source-bound reply');
- assert.equal(survivingProgress.kind,'progress');
- assert.equal((db.query('SELECT outcome FROM session_communication_requests WHERE request_id=?').get('sibling-duty-one') as any).outcome,null);
-
- // A separately retained exact human Stop also belongs to the selected attempt. It must be
- // recorded on custody without canceling the three independent duties that were on that run.
- const stopSuccessor=createNativeSession('codex',{title:'Stopped custody fixture',summary:'fixture',purpose:'writing',origin:'native',cwd:workspace,
-   model:'gpt-6-astra',reasoningEffort:'medium'});
- const stopHandoffId='fixture-stopped-handoff';
- db.query(`INSERT INTO session_handoffs(id,predecessor_session_id,successor_session_id,state,action_id,handoff_kind,canonical_input_id,
-   caller_session_id,reason,requesting_input_id,requesting_run_id,inventory_json,inventory_digest)
-   VALUES(?,?,?,'accepted','fixture-stop','codex-custody-successor',?,?,?,?,?,'{}','fixture')`)
-   .run(stopHandoffId,predecessor.id,stopSuccessor.id,reminder.id,requester.id,'fixture',actorInput.id,actorRun);
- const stopCanonical=retainSessionInput({id:'stop-canonical-duty',sessionId:predecessor.id,scope:'stop-fixture',actionId:'canonical',kind:'request',origin:'service',payload:{text:'canonical'}}).input;
- const stopPlacement=retainSessionInput({id:'stop-placement',sessionId:stopSuccessor.id,scope:'stop-fixture',actionId:'placement',kind:'input',origin:'service',payload:{text:'selected stop attempt'}}).input;
- enqueueSessionInput(stopPlacement.id);const stopTurn=Number((db.query('SELECT turn_id FROM session_inputs WHERE id=?').get(stopPlacement.id) as any).turn_id);
- const stopRun=nativeRunId(stopTurn);
- db.query("UPDATE turns SET status='cancelled',ended_at=CURRENT_TIMESTAMP,stop_requested_at=CURRENT_TIMESTAMP WHERE id=?").run(stopTurn);
- const humanStop=retainSessionInput({id:'fixture-tejas-stop',sessionId:stopSuccessor.id,scope:'surface:thinkering',actionId:'fixture-stop',kind:'stop',origin:'human',payload:{runId:stopRun}}).input;
- db.query(`INSERT INTO codex_custody_successors(canonical_input_id,predecessor_session_id,successor_session_id,handoff_id,placement_input_id,
-   placement_turn_id,request_id,source_input_id,source_run_id,state,plan_json,snapshot_json)
-   VALUES(?,?,?,?,?,?,? ,?,?,'acknowledged','{}','{}')`)
-   .run(stopCanonical.id,predecessor.id,stopSuccessor.id,stopHandoffId,stopPlacement.id,stopTurn,'stop-duty-one',actorInput.id,actorRun);
- for(const [dutyId,suffix] of [['stop-duty-one','one'],['stop-duty-two','two'],['stop-duty-three','three']] as const){
-   db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
-     target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,status,outcome)
-     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)`).run(dutyId,'fixture',`stop-${suffix}`,actorTurn,requester.id,'root',`stop-${suffix}`,stopSuccessor.id,'fixture','root',
-       JSON.stringify({requestedEffect:'work',text:`independent stopped duty ${suffix}`,after:[]}),`stop-${suffix}`,0,0,actorInput.id,stopPlacement.id,'admitted');
-   const duty=db.query('SELECT * FROM session_communication_requests WHERE request_id=?').get(dutyId) as any;
-   await (coordinator as any).dispatch(duty);
-   assert.equal((db.query('SELECT outcome FROM session_communication_requests WHERE request_id=?').get(dutyId) as any).outcome,null,
-     `Tejas Stop on the exact selected turn does not cancel independent duty ${dutyId}`);
- }
- const stoppedAttempt=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(`custody-attempt-failed:${stopCanonical.id}:${stopTurn}`) as any;
- const stoppedPayload=JSON.parse(stoppedAttempt.payload_json);
- assert.equal(stoppedPayload.terminalStatus,'cancelled');assert.equal(stoppedPayload.stoppedBy,'tejas');
- assert.equal(stoppedPayload.stopInputId,humanStop.id,'attempt history retains the exact human Stop operation');
-
  const makeTarget=async(requestKey:string)=>{
    const target=createNativeSession('codex',{title:`${requestKey} Astra Medium`,summary:'Continue exact writing',purpose:'writing',origin:'native',cwd:workspace,
      model:'gpt-6-astra',reasoningEffort:'medium'});
@@ -460,6 +397,113 @@ try {
      throw new Error(`unexpected empty-route native request ${method}`);
    },
  };
+ // Exercise selected Stop and later work through the real owner/host/client forward policy.
+ // The child substitutes only stock-native responses; all owner identity and byte guards run.
+ for(const terminalCase of ['stop','error'] as const){
+ const lifecycleRequest=terminalCase+'-selected-real-bridge';
+ const stoppedTarget=await makeTarget(lifecycleRequest);
+ for(const suffix of ['one','two'])db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,
+   source_session_id,source_root_ts,action_id,target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,
+   source_input_id,target_input_id,status,outcome) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)`)
+   .run(lifecycleRequest+'-'+suffix,'fixture',lifecycleRequest+'-'+suffix,actorTurn,requester.id,'root',lifecycleRequest+'-'+suffix,
+     stoppedTarget.target.id,'fixture','root',JSON.stringify({requestedEffect:'work',text:'Retained independent '+suffix,after:[]}),suffix,
+     0,0,actorInput.id,stoppedTarget.report.id,'admitted');
+ await registerLegacyPrefix(stoppedTarget.target.id,stoppedTarget.threadId,stoppedTarget.rollout,
+   stoppedTarget.target.binding_generation,'empty-'+lifecycleRequest);
+ const lifecycleBridge=join(scratch,terminalCase+'-lifecycle-bridge.ts'),lifecycleTrace=join(scratch,terminalCase+'-lifecycle-trace.jsonl');
+ const effectsFile=join(scratch,terminalCase+'-lifecycle-effects.json');writeFileSync(effectsFile,'{}');
+ writeFileSync(lifecycleBridge,`import {onJsonLines} from ${JSON.stringify(jsonLinesModule)};
+ import {appendFileSync,readFileSync} from 'node:fs';
+ const source=${JSON.stringify(stoppedTarget.threadId)},successor=${JSON.stringify(terminalCase+'-selected-successor')},path=${JSON.stringify(stoppedTarget.rollout)};
+ let selectedClient='',interrupts=0;const turns=new Map();
+ const send=value=>process.stdout.write(JSON.stringify(value)+'\\n');
+ const notify=(method,params)=>send({type:'event',event:{method,params}});
+ send({type:'ready'});
+ onJsonLines(process.stdin,line=>{const call=JSON.parse(line);if(call.type==='close')process.exit(0);
+ if(call.type!=='request')return;const p=call.params||{},effects=JSON.parse(readFileSync(${JSON.stringify(effectsFile)},'utf8'));
+ appendFileSync(${JSON.stringify(lifecycleTrace)},JSON.stringify({method:call.method,params:p})+'\\n');
+ let result;
+ if(call.method==='thread/start')result={thread:{id:successor,modelProvider:'openai',model:p.model,reasoningEffort:'medium',cwd:p.cwd,
+   runtimeWorkspaceRoots:p.runtimeWorkspaceRoots,environments:p.environments},model:p.model,modelProvider:'openai',reasoningEffort:'medium',
+   cwd:p.cwd,runtimeWorkspaceRoots:p.runtimeWorkspaceRoots,approvalPolicy:p.approvalPolicy,sandbox:{type:'dangerFullAccess'}};
+ else if(call.method==='thread/read')result={thread:{id:p.threadId,status:{type:'idle'},path,modelProvider:'openai',
+   model:'gpt-6-astra',reasoningEffort:'medium',cwd:${JSON.stringify(workspace)},runtimeWorkspaceRoots:[${JSON.stringify(workspace)}]}};
+ else if(call.method==='thread/queue/list')result={data:effects.queue||[],nextCursor:null};
+ else if(call.method==='thread/backgroundTerminals/list')result={data:effects.terminals||[],nextCursor:null};
+ else if(call.method==='thread/goal/get')result={goal:effects.goal||null};
+ else if(call.method==='thread/turns/list'){
+   if(effects.failed&&turns.has('selected-stop-native-turn'))Object.assign(turns.get('selected-stop-native-turn'),{status:'failed',error:{message:'Confirmed selected fixture failure'}});
+   result={data:p.threadId===source?[{id:${JSON.stringify('empty-'+lifecycleRequest)},status:'completed',items:[]}]:[...turns.values()],nextCursor:null};
+ }
+ else if(call.method==='thread/items/list')result={data:(turns.get(p.turnId)?.items||[]).map(item=>({turnId:p.turnId,item})),nextCursor:null};
+ else if(call.method==='turn/start'){
+   const selected=!selectedClient,id=selected?'selected-stop-native-turn':'later-native-turn';if(selected)selectedClient=p.clientUserMessageId;
+   const items=[{type:'userMessage',clientId:p.clientUserMessageId}];
+   if(!selected)items.push({type:'agentMessage',id:'later-answer',text:'Distinct work completed after exact selected Stop.'});
+   turns.set(id,{id,status:selected?'inProgress':'completed',items});result={turn:{id}};
+   send({type:'response',id:call.id,result});notify('turn/started',{threadId:successor,turn:{id}});
+   notify('item/completed',{threadId:successor,turnId:id,item:items[0]});
+   if(!selected)notify('turn/completed',{threadId:successor,turn:turns.get(id)});return;
+ }else if(call.method==='turn/interrupt'){
+   interrupts++;result={};
+   // First RPC success alone proves nothing. Only the reconciliation-loop interrupt stops it.
+   if(interrupts>1){const t=turns.get(p.turnId);t.status='interrupted';notify('turn/completed',{threadId:successor,turn:t});}
+ }else throw new Error('Unexpected lifecycle native call '+call.method);
+ send({type:'response',id:call.id,result});});`);
+ const lifecycleNative=new CodexAppServerClient('/disposable',process.execPath,{bridgePath:lifecycleBridge,manageDaemon:false,shutdownGraceMs:50});
+ newCustodyClient=lifecycleNative;
+ const stoppedRecovery=await coordinator.recoverCodexNeverAcknowledged({source:{input_id:actorInput.id,run_id:actorRun},
+   action_id:terminalCase+'-recover-selected-lifecycle',request_id:lifecycleRequest,custody_successor:true});
+ const selectedStopClaim=claimNextQueuedTurn('fixture-owner');assert.ok(selectedStopClaim);
+ assert.equal(selectedStopClaim.turn_id,stoppedRecovery.placement_turn_id);
+ const selectedStopRun=host.run(selectedStopClaim);
+ const waitUntil=async(check:()=>boolean)=>{const deadline=Date.now()+10_000;while(!check()){
+   if(Date.now()>deadline)throw new Error('Lifecycle fixture did not reach its exact state');await Bun.sleep(1);
+ }};
+ await waitUntil(()=>custodySuccessor(stoppedTarget.report.id)?.state==='acknowledged');
+ const selectedSpent=custodySuccessor(stoppedTarget.report.id)!.attempt_spent_at;
+ host.owner.action(`concierge:${stoppedRecovery.successor_session_id}`,{clientActionId:terminalCase+'-pause-real-selected-stop',action:{kind:'pause'}});
+ if(terminalCase==='stop')await host.owner.stop(`concierge:${stoppedRecovery.successor_session_id}`,{clientActionId:'stop-real-selected',runId:nativeRunId(selectedStopClaim.turn_id)});
+ else writeFileSync(effectsFile,JSON.stringify({failed:true}));
+ assert.equal((await selectedStopRun).status,terminalCase==='stop'?'cancelled':'error','real native terminal outcome reaches owner settlement');
+ writeFileSync(effectsFile,'{}');
+ const stopTrace=readFileSync(lifecycleTrace,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+ assert.equal(stopTrace.filter(call=>call.method==='turn/interrupt').length,terminalCase==='stop'?2:0,
+   'direct Stop and same-generation reconciliation-loop Stop both cross the installed forwarding policy');
+ assert.equal(sessionMetadata(getSessionById(stoppedRecovery.successor_session_id)!).suspended,true,'terminal outcome preserves explicit Pause');
+ host.owner.action(`concierge:${stoppedRecovery.successor_session_id}`,{clientActionId:terminalCase+'-continue-real-selected-stop',action:{kind:'continue'}});
+ for(const dutyId of [lifecycleRequest,lifecycleRequest+'-one',lifecycleRequest+'-two']){
+   await (coordinator as any).dispatch(db.query('SELECT * FROM session_communication_requests WHERE request_id=?').get(dutyId));
+   assert.equal(db.query('SELECT outcome FROM session_communication_requests WHERE request_id=?').get(dutyId).outcome,null);
+ }
+ assert.ok(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`custody-attempt-failed:${stoppedTarget.report.id}:${selectedStopClaim.turn_id}`),
+   'the actual communication terminal branch must run before later work is accepted');
+ assert.equal(custodySuccessor(stoppedTarget.report.id)?.state,'acknowledged','confirmed selected Stop preserves successor binding availability');
+ const laterInput=retainSessionInput({id:terminalCase+'-after-real-selected-stop',sessionId:stoppedRecovery.successor_session_id,scope:'fixture',actionId:terminalCase+'-after-real-stop',
+   kind:'input',origin:'human',payload:{text:'Perform distinct work for the retained writing duty.'}}).input;
+ enqueueSessionInput(laterInput.id);
+ const laterClaim=claimNextQueuedTurn('fixture-owner');assert.ok(laterClaim);assert.equal(laterClaim.accepted_input_id,laterInput.id);
+ assert.equal((await host.run(laterClaim)).status,'delivered','later work runs after reconciliation through actual protected native turn/start');
+ assert.ok(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`custody-terminal-effects:${laterClaim.turn_id}:${laterClaim.dispatch_attempt}`),
+   'later admission obtains fresh native/background/process effect reconciliation');
+ assert.equal(custodySuccessor(stoppedTarget.report.id)!.attempt_spent_at,selectedSpent,'later work never replenishes the canonical allowance');
+ const lifecycleCalls=readFileSync(lifecycleTrace,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+ assert.equal(lifecycleCalls.filter(call=>call.method==='turn/start').length,2,'one selected send and one distinct followup, without replay');
+ assert.equal(lifecycleCalls.some(call=>['thread/resume','thread/fork'].includes(call.method)),false);
+ const laterResult=JSON.parse((db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(`result:${laterClaim.turn_id}`) as any).payload_json);
+ assert.match(laterResult.text,/Distinct work completed after exact selected Stop/);
+ // Known terminal is not an assertion that background effects vanished. A later admission
+ // is held before byte forwarding if a fresh native queue observation is nonempty.
+ writeFileSync(effectsFile,JSON.stringify({queue:[{id:'retained-native-queue',input:[],clientUserMessageId:'unresolved-queued-input'}]}));
+ const heldInput=retainSessionInput({id:terminalCase+'-after-stop-with-effects',sessionId:stoppedRecovery.successor_session_id,scope:'fixture',actionId:terminalCase+'-after-stop-effects',
+   kind:'input',origin:'human',payload:{text:'This must stay held behind unresolved effects.'}}).input;enqueueSessionInput(heldInput.id);
+ const heldClaim=claimNextQueuedTurn('fixture-owner');assert.ok(heldClaim);assert.equal(heldClaim.accepted_input_id,heldInput.id);
+ assert.notEqual((await host.run(heldClaim)).status,'delivered');
+ assert.equal(readFileSync(lifecycleTrace,'utf8').trim().split('\n').map(line=>JSON.parse(line)).filter(call=>call.method==='turn/start').length,2,
+   'unresolved effects cannot produce a third native turn/start');
+ newCustodyClient=nativeClient;
+ }
+
  const borrowed=await makeBorrowedAuthority('borrowed-authority-positive');
  const borrowedAction='borrowed-authority-reentry';
  const borrowedResult=await coordinator.recoverCodexNeverAcknowledged({source:{input_id:borrowed.wakeInput.id,run_id:borrowed.wakeRun},
@@ -641,6 +685,9 @@ try {
      `real runner-to-owner failure leaves ${dutyId} open for its own disposition`);
  }
  assert.equal(custodySuccessor(emptyTarget.report.id)?.state,'held','coordinator stores the real runner failure on canonical custody');
+ host.owner.action(`concierge:${emptyRecovery.successor_session_id}`,{clientActionId:'continue-unacknowledged-selected',action:{kind:'continue'}});
+ assert.equal(sessionMetadata(getSessionById(emptyRecovery.successor_session_id)!).suspended,true,'Continue cannot release unacknowledged selected failure');
+ assert.equal(emptyRun.sends,1,'uncertain/unacknowledged failure cannot replenish the native allowance');
  newCustodyClient=nativeClient;
 
  // A lost thread/start response is retained as uncertain. Re-entry returns that held operation

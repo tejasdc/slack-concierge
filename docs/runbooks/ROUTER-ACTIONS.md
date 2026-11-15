@@ -262,7 +262,15 @@ the native effect. A lost or rejected send never replenishes that allowance.
 
 Queue retries, parked resumption and the legacy recovery reservation cannot create
 another selected send. The same native thread remains protected for later distinct
-inputs without resetting the original allowance. Reconciliation uses
+inputs without resetting the original allowance. A selected Stop or error records that
+attempt's outcome separately from successor availability. When its actual acknowledgement
+and exact native terminal observation are retained, the successor can accept distinct
+work under its original connection. Before that work reaches native forwarding, the
+owner rechecks current queue, goal, background terminals, processes and other unresolved
+owner effects. The final forwarding guard requires that exact admission's receipt.
+Missing acknowledgement, terminal proof or association remains held. Continue recognizes
+the admitted interval before acknowledgement and never overrides explicit Pause or an
+unfinished/uncertain custody boundary. Reconciliation uses
 the recorded thread, turn/client identity and paginated observation; they never
 resume a cold thread, replace it or resend. Since turn-start and history reads do
 not attach a new native listener, protected reconciliation keeps observing an

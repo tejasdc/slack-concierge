@@ -5,6 +5,7 @@ import {installCodexCustodyForwardGuard,type CodexCustodyForwardScope} from './c
 import {isCodexNativeObservation} from './codex-native-observations';
 import {successorThreadStartParams,type CodexSuccessorPlan} from './codex-successor-native';
 import {nativeInputClientMessageId} from './native-result-identity';
+import {custodySelectedTerminalConfirmed} from './codex-custody-terminal';
 
 type Relation={canonical_input_id:string;predecessor_session_id:number;successor_session_id:number;handoff_id:string;
   placement_input_id:string;placement_turn_id:number;state:string;plan_json:string;native_thread_id:string|null;
@@ -148,6 +149,19 @@ function successorGuard(scope:CodexCustodyForwardScope,relation:Relation) {
     const accepted=db.query(`SELECT 1 FROM session_inputs WHERE id=? AND session_id=? AND turn_id=? AND kind NOT IN ('stop')`)
       .get(turn.accepted_input_id,relation.successor_session_id,turn.id);
     if(!accepted)throw new Error('Later successor work has no distinct currently accepted owner input.');
+    const terminal=db.query('SELECT status FROM turns WHERE id=?').get(relation.placement_turn_id) as {status:string};
+    if(!['done','error','cancelled'].includes(terminal.status))
+      throw new Error('Later successor admission remains held while its selected attempt is unresolved.');
+    if(terminal.status==='error'||terminal.status==='cancelled'){
+      const reconciled=db.query(`SELECT 1 FROM session_owner_events WHERE event_id=? AND session_id=? AND turn_id=?
+        AND kind='custody_terminal_effects' AND json_extract(payload_json,'$.canonicalInputId')=?
+        AND json_extract(payload_json,'$.nativeConnection.senderId')=? AND json_extract(payload_json,'$.nativeConnection.generation')=?
+        AND json_extract(payload_json,'$.receipt.threadId')=? AND json_extract(payload_json,'$.receipt.owner.admittingTurnId')=?`)
+        .get(`custody-terminal-effects:${turn.id}:${turn.dispatch_attempt}`,relation.successor_session_id,turn.id,
+          relation.canonical_input_id,scope.senderId,scope.generation,relation.native_thread_id,turn.id);
+      if(!custodySelectedTerminalConfirmed(relation.canonical_input_id)||!reconciled)
+        throw new Error('Later successor admission remains held until exact terminal and current effects are reconciled.');
+    }
   }
   if(!once(scope,relation,relation.successor_session_id,turn.id,selected?'selected-admission':'successor-turn'))
     throw new Error('This native turn send was already attempted; reconcile its retained result.');

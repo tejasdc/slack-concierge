@@ -100,6 +100,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md#stop-while-taking-back-an-existing-codex-turn).
   The one-time source-bound native recovery controls and post-release acceptance procedure are
   documented in [the Codex recovery runbook](docs/runbooks/CODEX-NATIVE-RECOVERY-ACCEPTANCE.md).
+  Custody-successor terminal continuation follows [exact recovery](docs/runbooks/ROUTER-ACTIONS.md#exact-codex-report-back-recovery);
+  transferred peer-duty status and final proof follow [the peer wire contract](docs/contracts/session-owner-v1.md#peer-instances).
 - Empty, unacknowledged service report-backs use a separate exact-input recovery with durable
   deduplication and immutable result history; see [router actions](docs/runbooks/ROUTER-ACTIONS.md#exact-codex-report-back-recovery)
   and [the incident evidence](docs/runbooks/CODEX-EMPTY-REPORT-BACK-RECOVERY-EVIDENCE.md).

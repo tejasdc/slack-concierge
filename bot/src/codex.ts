@@ -1588,7 +1588,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
             await client.request("turn/interrupt", {
               threadId: activeThreadId,
               turnId: activeTurnId,
-            }, { requestTimeoutMs });
+            }, { requestTimeoutMs,custodyOwnerSessionId:input.custodyOwnerSessionId??input.custodySuccessor?.plan.ownerSessionId });
           } catch {
             // The interrupt response is non-atomic with the daemon state. The
             // next exact history read, not the transport outcome, is decisive.

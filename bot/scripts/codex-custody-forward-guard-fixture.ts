@@ -83,6 +83,9 @@ try{
   db.query("UPDATE turns SET status='done',ended_at=CURRENT_TIMESTAMP WHERE id=?").run(placementTurn);
   db.query("UPDATE turns SET status='running',owner_instance_id='owner-1',dispatch_attempt=1,provider_turn_id='followup-native-turn' WHERE id=?").run(followupTurn);
   const later={...admission,input:[{type:'text',text:'Distinct followup',text_elements:[]}],clientUserMessageId:`slack-concierge:turn:${followupTurn}:attempt:1`};
+  db.query("UPDATE turns SET status='parked' WHERE id=?").run(placementTurn);
+  refused(()=>codexCustodyForwardGuard(scope('turn/start',later,successor.id)),/selected attempt is unresolved/);
+  db.query("UPDATE turns SET status='done' WHERE id=?").run(placementTurn);
   assert.doesNotThrow(()=>codexCustodyForwardGuard(scope('turn/start',later,successor.id)));
   const steeringInput=retainSessionInput({id:'successor-steering',sessionId:successor.id,scope:'fixture',actionId:'steering',kind:'input',origin:'agent',payload:{text:'Preserved in-flight steering'}}).input;
   const attached=attachSessionSteering(steeringInput.id,followupTurn);

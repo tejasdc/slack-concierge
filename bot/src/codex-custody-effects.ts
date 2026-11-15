@@ -12,7 +12,7 @@ export type CustodyPredecessorEffectsReceipt={
   goal:{status:'absent'|'complete'|'feature-disabled';objective?:string};
   backgroundTerminals:{status:'observed'|'thread-not-loaded';ids:string[]};
   currentProcesses:CodexLeftoverProcess[];
-  owner:{activeExecutions:0;unresolvedTurnIds:number[];recheckedProcessSightingTurnIds:number[];unsettledProcessSightingTurnIds:number[]};
+  owner:{activeExecutions:0;unresolvedTurnIds:number[];recheckedProcessSightingTurnIds:number[];unsettledProcessSightingTurnIds:number[];admittingTurnId?:number};
 };
 
 const refuse=(message:string):never=>{throw new Error(`Predecessor effect reconciliation refused: ${message}`);};
@@ -36,12 +36,15 @@ async function allPages(client:CodexAppServerClientLike,method:string,threadId:s
   return rows;
 }
 
-function ownerFacts(sessionId:number,selectedTurnId:number,threadId:string,current:CodexLeftoverProcess[]) {
+function ownerFacts(sessionId:number,selectedTurnId:number,threadId:string,current:CodexLeftoverProcess[],admittingTurnId?:number) {
+  if(admittingTurnId!==undefined&&!db.query(`SELECT 1 FROM turns WHERE id=? AND session_id=? AND status='running'
+    AND owner_instance_id IS NOT NULL AND provider_turn_id IS NULL AND provider_input_acknowledged_at IS NULL`)
+    .get(admittingTurnId,sessionId))refuse('the excluded admission is not the exact unsent owner-running turn.');
   const selected=db.query('SELECT session_id,status FROM turns WHERE id=?').get(selectedTurnId) as {session_id:number;status:string}|null;
   if(!selected||selected.session_id!==sessionId||!['done','error','cancelled','parked'].includes(selected.status))
     refuse('the selected owner turn is missing, belongs to another session, or is not terminal.');
-  const unresolved=db.query(`SELECT id FROM turns WHERE session_id=? AND status IN ('running','delivering') ORDER BY id`)
-    .all(sessionId) as {id:number}[];
+  const unresolved=db.query(`SELECT id FROM turns WHERE session_id=? AND status IN ('running','delivering') AND id IS NOT ? ORDER BY id`)
+    .all(sessionId,admittingTurnId??null) as {id:number}[];
   if(unresolved.length)refuse(`owner turns remain unresolved (${unresolved.map(row=>row.id).join(', ')}).`);
   const steering=db.query(`SELECT s.id FROM turn_steering_messages s JOIN turns t ON t.id=s.turn_id
     WHERE t.session_id=? AND s.status IN ('sending','ambiguous') ORDER BY s.id`).all(sessionId) as {id:number}[];
@@ -49,8 +52,8 @@ function ownerFacts(sessionId:number,selectedTurnId:number,threadId:string,curre
   const lifecycle=db.query(`SELECT json_extract(native_metadata_json,'$.codexLifecycle.state') AS state FROM sessions WHERE id=?`)
     .get(sessionId) as {state:string|null}|null;
   if(lifecycle?.state==='running'||lifecycle?.state==='uncertain')refuse(`owner Codex lifecycle remains ${lifecycle.state}.`);
-  const activeExecutions=db.query(`SELECT execution_id FROM executions WHERE session_id=? AND state IN ('intended','live','exited')`)
-    .all(sessionId) as {execution_id:string}[];
+  const activeExecutions=db.query(`SELECT execution_id FROM executions WHERE session_id=? AND state IN ('intended','live','exited') AND turn_id IS NOT ?`)
+    .all(sessionId,admittingTurnId??null) as {execution_id:string}[];
   if(activeExecutions.length)refuse(`owner execution records remain active (${activeExecutions.map(row=>row.execution_id).join(', ')}).`);
 
   const sightings=db.query(`SELECT turn_id,payload_json FROM session_owner_events
@@ -76,7 +79,7 @@ function ownerFacts(sessionId:number,selectedTurnId:number,threadId:string,curre
   if(current.length)refuse(`fresh owner process observation found ${current.length} process(es) attached to this native thread.`);
   if(pending.length)refuse(`fresh owner process observation still contains previously sighted process identities (turns ${pending.join(', ')}).`);
   return {activeExecutions:0 as const,unresolvedTurnIds:unresolved.map(row=>row.id),recheckedProcessSightingTurnIds:rechecked,
-    unsettledProcessSightingTurnIds:pending};
+    unsettledProcessSightingTurnIds:pending,...(admittingTurnId===undefined?{}:{admittingTurnId})};
 }
 
 function validProcess(value:unknown):value is CodexLeftoverProcess {
@@ -90,7 +93,7 @@ const processKey=(row:CodexLeftoverProcess)=>`${row.pid}:${row.startTicks}`;
 /** Reconcile post-cutoff effects for one exact predecessor. Process evidence is freshly
  * obtained by the execution host; this receipt is not a transport cutoff or writer-exclusion proof. */
 export async function reconcileCodexCustodyPredecessorEffects(client:CodexAppServerClientLike,
-  input:{predecessorSessionId:number;threadId:string;selectedTurnId:number},
+  input:{predecessorSessionId:number;threadId:string;selectedTurnId:number;admittingTurnId?:number},
   observeProcesses:(threadId:string)=>Promise<CodexLeftoverProcess[]>):Promise<CustodyPredecessorEffectsReceipt>{
   const session=getSessionById(input.predecessorSessionId);
   if(!session||session.provider_id!=='codex'||session.agent_session_uuid!==input.threadId)
@@ -150,7 +153,7 @@ export async function reconcileCodexCustodyPredecessorEffects(client:CodexAppSer
 
   const current=await observeProcesses(input.threadId);
   if(!Array.isArray(current)||current.some(row=>!validProcess(row)))refuse('fresh owner process observation returned an unknown result shape.');
-  const owner=ownerFacts(input.predecessorSessionId,input.selectedTurnId,input.threadId,current);
+  const owner=ownerFacts(input.predecessorSessionId,input.selectedTurnId,input.threadId,current,input.admittingTurnId);
   return {format:'codex-custody-predecessor-effects-v1',sessionId:input.predecessorSessionId,threadId:input.threadId,
     selectedTurnId:input.selectedTurnId,threadStatus:status as 'idle'|'notLoaded',queuedSubmissionIds,goal,
     backgroundTerminals:{status:backgroundStatus,ids:backgroundTerminalIds},currentProcesses:current,owner};

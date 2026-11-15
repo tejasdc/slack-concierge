@@ -1709,9 +1709,10 @@ export class SessionExecutionHost {
           // must still reach its process, so it is not re-checked here.
           // A ChatGPT run taken back after a restart uses the admission its send was made under.
           if(successor){
-            const protectedRun=protectedCustodyRun(claim.turn_id,this.options.instanceId,claim.dispatch_attempt)!;
             let client=this.custodyCodexClients.get(session.id);
             if(!client){client=this.custodyClient();this.custodyCodexClients.set(session.id,client);}
+            const protectedRun=protectedCustodyRun(claim.turn_id,this.options.instanceId,claim.dispatch_attempt,
+              {client,observeProcesses:this.options.custodyObserveProcesses})!;
             custodyConnection(client).protect(protectedRun.plan.nativeConnection);
             if(!adoption)await custodyConnection(client).assert(protectedRun.plan.nativeConnection);
             actual={...actual,...(custodyPlacement(claim.turn_id)?{prompt:JSON.parse(input.payload_json).text}:{}),cwd:protectedRun.plan.cwd,

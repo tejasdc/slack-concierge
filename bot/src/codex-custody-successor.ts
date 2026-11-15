@@ -16,6 +16,7 @@ import {ledgerDurable} from './ledger-durability-barrier';
 import {custodyConnection} from './codex-custody-connection';
 import {freezeManagedCodexTarget,type ManagedCodexCustodyCutoff} from './codex-app-server-client';
 import {reconcileCodexCustodyPredecessorEffects} from './codex-custody-effects';
+import {custodySelectedTerminalConfirmed} from './codex-custody-terminal';
 import {observeCodexCustodyProcesses,type CodexLeftoverProcess} from './codex-leftover-processes';
 
 export interface CustodySuccessorRow {
@@ -466,7 +467,8 @@ export async function consumeCustodyAttempt(turnId:number,ownerInstanceId:string
     fail('The selected execution stopped while its consumed allowance became durable.');
 }
 
-export function protectedCustodyRun(turnId:number,ownerInstanceId:string,dispatchAttempt:number) {
+export function protectedCustodyRun(turnId:number,ownerInstanceId:string,dispatchAttempt:number,
+  native?:{client:CodexAppServerClientLike;observeProcesses?:(threadId:string)=>Promise<CodexLeftoverProcess[]>}) {
   const turn=db.query('SELECT session_id FROM turns WHERE id=?').get(turnId) as {session_id:number}|null;
   const row=custodyPlacement(turnId)??(turn?custodySuccessorSession(turn.session_id):null);if(!row)return null;
   if(!row.native_thread_id||!row.construction_json)fail('Successor construction is not confirmed.');
@@ -480,11 +482,44 @@ export function protectedCustodyRun(turnId:number,ownerInstanceId:string,dispatc
         AND status='running' AND stop_requested_at IS NULL`).get(turnId,row.successor_session_id,ownerInstanceId,dispatchAttempt);
       const metadata=sessionMetadata(session);
       const plan=JSON.parse(row.plan_json) as CodexSuccessorPlan;
-      if(!live||session.agent_session_uuid!==row.native_thread_id||metadata.suspended||metadata.model!=='gpt-6-astra'
+      const current=custodySuccessor(row.canonical_input_id)!;
+      if(!live||!['admitted','acknowledged'].includes(current.state)||session.agent_session_uuid!==row.native_thread_id||metadata.suspended||metadata.model!=='gpt-6-astra'
         ||metadata.reasoningEffort!=='medium'||metadata.cwd!==plan.cwd
         ||JSON.stringify([...new Set([metadata.cwd,...(metadata.additionalDirs??[])])])!==JSON.stringify(plan.runtimeWorkspaceRoots)
         ||supersededBy(row.predecessor_session_id)!==`concierge:${session.id}`)
         fail('The subsequent input lost its protected successor binding.');
       assertExcluded(row.predecessor_session_id);
+      const selected=db.query('SELECT status FROM turns WHERE id=?').get(row.placement_turn_id) as {status:string};
+      if(!['done','error','cancelled'].includes(selected.status))
+        fail('The selected attempt has no terminal owner outcome; later work remains held.');
+      if(selected.status==='error'||selected.status==='cancelled'){
+        if(!native||!custodySelectedTerminalConfirmed(row.canonical_input_id))
+          fail('Later work remains held until the acknowledged selected attempt has exact native terminal evidence.');
+        const connection=custodyConnection(native.client);
+        await connection.assert(plan.nativeConnection);
+        const receipt=await reconcileCodexCustodyPredecessorEffects(connection,{predecessorSessionId:row.successor_session_id,
+          threadId:row.native_thread_id!,selectedTurnId:row.placement_turn_id,admittingTurnId:turnId},
+          native.observeProcesses??(async threadId=>{
+            const association=await connection.witness();
+            if(!association.endpoint||association.endpoint.relayRunner)fail('Successor process effects have no supported local native endpoint.');
+            return observeCodexCustodyProcesses(threadId,association.endpoint.socketPath);
+          }));
+        await connection.assert(plan.nativeConnection);
+        assertNativeCutoff(row.canonical_input_id);
+        const latest=getSessionById(row.successor_session_id)!;
+        const latestMetadata=sessionMetadata(latest),latestRelation=custodySuccessor(row.canonical_input_id)!;
+        if(latestMetadata.suspended||latest.agent_session_uuid!==row.native_thread_id||latestMetadata.model!=='gpt-6-astra'
+          ||latestMetadata.reasoningEffort!=='medium'||latestMetadata.cwd!==plan.cwd
+          ||JSON.stringify([...new Set([latestMetadata.cwd,...(latestMetadata.additionalDirs??[])])])!==JSON.stringify(plan.runtimeWorkspaceRoots)
+          ||latestRelation.plan_json!==row.plan_json||latestRelation.state!=='acknowledged'
+          ||supersededBy(row.predecessor_session_id)!==`concierge:${latest.id}`
+          ||!custodySelectedTerminalConfirmed(row.canonical_input_id)
+          ||!db.query(`SELECT 1 FROM turns WHERE id=? AND owner_instance_id=? AND dispatch_attempt=?
+            AND status='running' AND stop_requested_at IS NULL`).get(turnId,ownerInstanceId,dispatchAttempt))
+          fail('The successor changed while terminal effects were reconciled; later work remains held.');
+        assertExcluded(row.predecessor_session_id);
+        recordSessionEvent({eventId:`custody-terminal-effects:${turnId}:${dispatchAttempt}`,sessionId:row.successor_session_id,
+          turnId,kind:'custody_terminal_effects',payload:{canonicalInputId:row.canonical_input_id,nativeConnection:plan.nativeConnection,receipt}});
+      }
     }};
 }

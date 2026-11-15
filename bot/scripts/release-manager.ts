@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
 
 import { realpathSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { defaultReleaseEnvironment, TrustedRootReleaseManager } from "../src/deployment-release";
-import { ledgerAccess } from "../src/ledger-access-policy";
+import { ledgerAccess, requireOfflineReleaseServiceStopped } from "../src/ledger-access-policy";
+import { releasePublicationMode } from "../src/deployment-release-publication";
 import { deploymentReactionTokensForCommitRange } from "../src/deployment-reaction-tokens";
 import { notifyDeploymentWorker } from "../src/deployment-worker-wake";
 import { deploymentOwnerFetch as ownerFetch } from "../src/deployment-owner-fetch";
@@ -59,6 +61,18 @@ try {
   };
   const repositoryRoot = process.env.CONCIERGE_REPO || "/var/lib/slack-concierge-deployment/source";
   const manager = new TrustedRootReleaseManager(defaultReleaseEnvironment(repositoryRoot));
+  if(command==='require-stopped') {
+    requireOfflineReleaseServiceStopped(process.env.CONCIERGE_SERVICE||'concierge-bot.service',service=>{
+      const status=spawnSync('systemctl',['show',service,'-p','LoadState','-p','ActiveState','-p','SubState',
+        '-p','MainPID','-p','ControlPID','-p','Job'],{encoding:'utf8'});
+      return {status:status.status,stdout:status.stdout};
+    });
+    finish(0,{status:'stopped'});
+  }
+  if(command==='publication-mode')finish(0,{mode:await releasePublicationMode(manager,ownerFetch)});
+  if(ownerServedReleaseCommand&&['activate','restore-lkg','promote','set-control'].includes(command??'')
+    &&await releasePublicationMode(manager,ownerFetch)!=='serialized')
+    throw new Error('The serving application requires positively stopped-owner publication.');
   if (command?.startsWith("recovery-")) {
     const {handleControlRecovery}=await import('../src/deployment-control-recovery');
     finish(0, await handleControlRecovery(command, option, manager));
@@ -143,6 +157,7 @@ try {
     const release = manager.verify(required("--artifact"));
     if (release.artifact_digest !== artifactDigest) throw new Error("Promoted artifact path and digest disagree.");
     const artifact=required('--artifact');
+    if(!ownerServedReleaseCommand)manager.verifyControlActivation(artifact);
     const promoted = ownerServedReleaseCommand
       ? (await ownerReleaseMutation('promote-and-activate-control',{runId,artifactDigest,artifactPath:artifact})).promoted
       : await releaseMutation('promote',{runId,artifactDigest},()=>promoteDeploymentRelease(runId,artifactDigest));
@@ -179,7 +194,7 @@ try {
     const { kept, removed } = manager.pruneReleases([release.artifact_path, ...inUse]);
     finish(0, { status: "pruned", kept, removed: removed.length });
   }
-  throw new Error("usage: release-manager.ts <install-runtime|install-launchers|prepare|activate|restore-lkg|promote|set-control|current|lkg|prune>");
+  throw new Error("usage: release-manager.ts <install-runtime|install-launchers|prepare|activate|restore-lkg|promote|set-control|current|lkg|prune|publication-mode|require-stopped>");
 } catch (error) {
   finish(1, { status: "error", error: error instanceof Error ? error.message : String(error) });
 }

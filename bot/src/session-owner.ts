@@ -2909,7 +2909,7 @@ export class SessionOwner {
           ORDER BY created_at DESC LIMIT 1`).get(session.id) as {state:string}|null;
         const recoveryStaged=!!custody||handoff?.state==='proposed';
         const explicitPause=action.kind==='pause';
-        const constructionReady=!!custody&&['constructed','admitting','acknowledged'].includes(custody.state);
+        const constructionReady=!!custody&&['constructed','admitting','admitted','acknowledged'].includes(custody.state);
         updateSessionMetadata(session.id,{suspended:explicitPause||recoveryStaged&&!constructionReady,
           ...(recoveryStaged?{custodyUserPaused:explicitPause}:{})});
         if(action.kind==='pause')discardQueuedTurnContinuations(session.id,'pause');
