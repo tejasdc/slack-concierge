@@ -9,7 +9,7 @@ cause_status: best-explanation
 
 ## What was seen
 
-The retained request `ed4dd1b9-51bf-4b4c-8d1e-db8ad76f72fb` had three separate version-hold notices. Its later exact peer status reported guarantee version 1, accepted version 1, a ready answer task, and zero unresolved obligations. The original request remained admitted with its progress and watch linkage; no replacement request was needed. The failed historical response bytes were not retained, so the specific transport trigger is unknown.
+The retained request `ed4dd1b9-51bf-4b4c-8d1e-db8ad76f72fb` had five separate version-hold notices in the retained event evidence. Its later exact peer status reported guarantee version 1, accepted version 1, a ready answer task, and zero unresolved obligations. The original request remained admitted with all eight progress reports and its watch linkage; no replacement request was needed. The failed historical response bytes were not retained, so the specific transport trigger is unknown.
 
 ## Cause
 
@@ -23,5 +23,5 @@ Serialize reconciliation by original request ID. Validate each successful status
 
 - **Seed:** An open version-held request with exact target identity, a prior valid status and three retained `peer answer guarantee unconfirmed` events using historical random IDs.
 - **Action:** Overlap two notifications while the peer first returns malformed successful JSON, then returns one exact v1 ready status.
-- **Expected:** The malformed read does not release the hold, overwrite prior proof or add a notice. The next read releases the hold, records readiness and recovery time, performs no second GET or POST, and preserves the three historical event IDs and original request identity.
+- **Expected:** Malformed and structurally invalid reads do not release the hold, overwrite prior proof or add a notice. A malformed 404 cannot settle from cached readiness. A current exact unresolved duty keeps inferred completion and remote cancellation blocked, while an explicit requester cancellation remains effective. The next exact ready read releases the hold, records readiness and recovery time, performs no second GET or request POST, and preserves historical event IDs and original request identity.
 - **Replayable offline:** yes (the native fixture uses a scratch ledger and a controlled `PeerClient` HTTP boundary; it contacts no provider or Mac).

@@ -11,7 +11,8 @@ import {AWAITING_INSPECTION,PROMPT_ANSWER_REMINDER_MS,PROMPT_ANSWER_OVERDUE_MS,R
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {OWNER_READ_RESPONSE_MS} from './owner-transport-policy';
 import {awaitingOutside} from './storage-observation';
-import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
+import {db,getSessionById,SETTLED_EXECUTION_SQL,SETTLED_TURN_STATUSES} from './state';
+import {TURN_STATE} from './session-receipt-state';
 import {meaningIndex} from './meaning-index';
 import {acceptedInputForTurn,carryingTurn,enqueueSessionInput,getAcceptedSessionInput,handedToARun, withdrawUnstartedServiceInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {heldRequestNotice,inputHold,readInputExecution,resolveSessionAddress,sessionAddress,SessionOwnerError,type SessionOwner} from './session-owner';
@@ -176,6 +177,9 @@ export class PeerError extends Error {
 class PeerStatusReadError extends Error {
   constructor(readonly reason:string,readonly httpStatus:number,readonly contentType:string|null,readonly contentLength:number|null){super('Peer status could not be decoded.');}
 }
+const peerStatusReadFailureReason=(error:unknown)=>error instanceof PeerStatusReadError?error.reason:
+  error instanceof PeerError&&error.kind==='unauthorized'?'status_unauthorized':
+  error instanceof PeerError&&error.kind==='unreachable'?'status_unreachable':'status_read_failed';
 class PeerReplyContractError extends Error {}
 /** Bun names a refused connection `ConnectionRefused`; Node names it `ECONNREFUSED`. */
 const peerAnsweredRefused=(error:unknown)=>['ConnectionRefused','ECONNREFUSED'].includes(String((error as {code?:unknown})?.code??''));
@@ -218,19 +222,26 @@ export class PeerClient {
     }
     this.refusedSince=null;
     let value:any=null;
+    const statusReadError=(reason:string)=>{
+      const declaredType=response.headers.get('content-type')?.split(';',1)[0]?.trim().toLowerCase()??'';
+      const contentType=/^[a-z0-9.+-]{1,40}\/[a-z0-9.+-]{1,40}$/.test(declaredType)?declaredType:null;
+      const declaredLength=response.headers.get('content-length')?.trim()??'';
+      const parsedLength=/^\d{1,12}$/.test(declaredLength)?Number(declaredLength):null;
+      return new PeerStatusReadError(reason,response.status,contentType,Number.isSafeInteger(parsedLength)?parsedLength:null);
+    };
     try {value=await awaitingOutside(()=>response.json());} catch(error) {
-      if(strictJson&&response.ok){
+      if(strictJson){
         const name=(error as {name?:unknown})?.name;
         const reason=name==='SyntaxError'?'status_json_invalid':name==='AbortError'?'status_body_read_aborted':'status_body_read_failed';
-        const declaredType=response.headers.get('content-type')?.split(';',1)[0]?.trim().toLowerCase()??'';
-        const contentType=/^[a-z0-9.+-]{1,40}\/[a-z0-9.+-]{1,40}$/.test(declaredType)?declaredType:null;
-        const declaredLength=response.headers.get('content-length')?.trim()??'';
-        const parsedLength=/^\d{1,12}$/.test(declaredLength)?Number(declaredLength):null;
-        throw new PeerStatusReadError(reason,response.status,contentType,Number.isSafeInteger(parsedLength)?parsedLength:null);
+        throw statusReadError(reason);
       }
       value=null;
     }
-    if(response.status===401||response.status===403)throw new PeerError(`Peer ${this.name} refused this instance's token.`,'unauthorized',response.status,'PEER_UNAUTHORIZED');
+    if(response.status===401||response.status===403){
+      if(strictJson)throw statusReadError('status_unauthorized');
+      throw new PeerError(`Peer ${this.name} refused this instance's token.`,'unauthorized',response.status,'PEER_UNAUTHORIZED');
+    }
+    if(strictJson&&!response.ok)throw statusReadError('status_http_error');
     if(!response.ok){
       const message=typeof value?.error==='string'?value.error:value?.error?.message??`Peer ${this.name} answered ${response.status}.`;
       throw new PeerError(message,'refused',response.status,value?.error?.code??'PEER_REFUSED');
@@ -250,7 +261,8 @@ type PeerEventRow={event_id:string;request_id:string;kind:'progress'|'final'|'ov
 type DeliveryRow={request_id:string;peer:string;origin_session_id:string;origin_input_id:string;origin_run_id:string;target_session_id:number;target_input_id:string;requested_effect:string;origin_provenance_json:string|null;notified_fingerprint:string|null;closed_at_ms:number|null;reminded_at_ms:number|null;reminded_via:string|null;prompt_reminded_at_ms:number|null;stalled_at_ms:number|null;stalled_reason:string|null;created_at_ms:number};
 type ReplyRow={event_id:string;request_id:string;action_key:string|null;kind:'progress'|'final';payload_json:string;status:string;error:string|null;created_at_ms:number};
 export type PeerActor={session:number;turn:number;inputId:string};
-type WorkDisposition='completed'|'failed'|'needs_decision';
+const WORK_DISPOSITIONS=['completed','failed','needs_decision'] as const;
+type WorkDisposition=typeof WORK_DISPOSITIONS[number];
 type PeerRequestStatus=Record<string,any>&{requestId:string;sessionId:string;address:string;inputState:string;
   stillWorking:boolean;execution:Record<string,any>|null;replies:any[]};
 type PeerStatusRead={status:PeerRequestStatus|null;reason:string|null};
@@ -258,11 +270,57 @@ const PEER_ANSWER_GUARANTEE_HEALTH='peer answer guarantee unconfirmed';
 const peerRequestStatus=(value:unknown,expected:{requestId:string;sessionId?:string;address?:string}):PeerStatusRead=>{
   if(!record(value))return {status:null,reason:'status_not_object'};
   if(value.requestId!==expected.requestId)return {status:null,reason:'request_id_mismatch'};
+  if(typeof value.sessionId!=='string'||!value.sessionId)return {status:null,reason:'status_target_invalid'};
+  if(typeof value.address!=='string'||!value.address)return {status:null,reason:'status_target_invalid'};
   if(expected.sessionId&&value.sessionId!==expected.sessionId)return {status:null,reason:'session_id_mismatch'};
   if(expected.address&&value.address!==expected.address)return {status:null,reason:'address_mismatch'};
   if(typeof value.inputState!=='string'||typeof value.stillWorking!=='boolean'
     ||value.execution!==null&&!record(value.execution)||!Array.isArray(value.replies))
     return {status:null,reason:'status_shape_invalid'};
+  if(value.execution!==null){
+    const execution=value.execution;
+    const executionState=typeof execution.status==='string'&&
+      (execution.status==='queued'||execution.status==='running'||Object.hasOwn(TURN_STATE,execution.status));
+    const terminalSettled=typeof execution.status==='string'&&SETTLED_TURN_STATUSES.includes(execution.status as typeof SETTLED_TURN_STATUSES[number]);
+    if(!Number.isSafeInteger(execution.turnId)||execution.turnId<=0||typeof execution.runId!=='string'||!execution.runId
+      ||!executionState||typeof execution.settled!=='boolean'||execution.settled&&!terminalSettled
+      ||typeof execution.acknowledged!=='boolean'||typeof execution.stopped!=='boolean'
+      ||typeof execution.dedicated!=='boolean'
+      ||execution.acknowledgedAt!==null&&typeof execution.acknowledgedAt!=='string'
+      ||execution.steeringStatus!==null&&typeof execution.steeringStatus!=='string'
+      ||execution.text!==null&&typeof execution.text!=='string'||execution.error!==null&&typeof execution.error!=='string'
+      ||execution.sha256!==null&& (typeof execution.sha256!=='string'||! /^[a-f0-9]{64}$/.test(execution.sha256)))
+      return {status:null,reason:'execution_shape_invalid'};
+    if(execution.answersWithTurn!==undefined&&typeof execution.answersWithTurn!=='boolean'
+      ||execution.stoppedByTejasAtMs!==undefined&&execution.stoppedByTejasAtMs!==null
+        &&(!Number.isSafeInteger(execution.stoppedByTejasAtMs)||execution.stoppedByTejasAtMs<0))
+      return {status:null,reason:'execution_shape_invalid'};
+  }
+  for(const reply of value.replies){
+    if(!record(reply)||typeof reply.eventId!=='string'||!reply.eventId||!['progress','final'].includes(reply.kind)
+      ||typeof reply.status!=='string'||!reply.status||typeof reply.text!=='string'
+      ||reply.files!==undefined&&(!Number.isSafeInteger(reply.files)||reply.files<0)
+      ||reply.sourceInputId!==null&&reply.sourceInputId!==undefined&&typeof reply.sourceInputId!=='string'
+      ||reply.sourceRunId!==null&&reply.sourceRunId!==undefined&&typeof reply.sourceRunId!=='string'
+      ||reply.workDisposition!==null&&reply.workDisposition!==undefined&&!WORK_DISPOSITIONS.includes(reply.workDisposition)
+      ||reply.turnOutcome!==null&&reply.turnOutcome!==undefined&&reply.turnOutcome!=='needs_you'
+      ||['answersQuestion','notify','alsoMainThread'].some(key=>reply[key]!==undefined&&typeof reply[key]!=='boolean')
+      ||reply.completionTurnId!==null&&reply.completionTurnId!==undefined
+        &&(!Number.isSafeInteger(reply.completionTurnId)||reply.completionTurnId<=0)
+      ||reply.replyBody!==undefined&&typeof reply.replyBody!=='string'
+      ||reply.closingLine!==undefined&&typeof reply.closingLine!=='string'
+      ||reply.answerGroup!==undefined&&typeof reply.answerGroup!=='string'
+      ||reply.evidence!==undefined&&!Array.isArray(reply.evidence)
+      ||reply.handBack!==undefined&&typeof reply.handBack!=='string'
+      ||reply.quiet!==undefined&&typeof reply.quiet!=='string'
+      ||reply.turnOutcome==='needs_you'&&(reply.kind!=='progress'||!reply.text.trim()
+        ||!reply.eventId.startsWith('turn_outcome:action:')||typeof reply.sourceInputId!=='string'||!reply.sourceInputId
+        ||typeof reply.sourceRunId!=='string'||!reply.sourceRunId||(reply.files??0)>0))
+      return {status:null,reason:'reply_summary_invalid'};
+  }
+  if(value.stalled!==null&&value.stalled!==undefined&&(!record(value.stalled)
+    ||!Number.isSafeInteger(value.stalled.atMs)||value.stalled.atMs<0||typeof value.stalled.reason!=='string'||!value.stalled.reason))
+    return {status:null,reason:'stalled_shape_invalid'};
   if(value.answerGuaranteeVersion!==undefined&&value.answerGuaranteeVersion!==1)
     return {status:null,reason:'answer_guarantee_version_invalid'};
   if(value.acceptedAnswerGuaranteeVersion!==undefined
@@ -848,7 +906,7 @@ export class SessionPeers {
         payload:{requestId,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),...(reason?{reason}:{})},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId});
       if(retained.duplicate)return;
       db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed'}),retained.input.id);
-      if(!row.outcome)this.settle(row,'canceled','The requesting session canceled this request. The worker on the peer is told to stop.');
+      if(!row.outcome)this.settle(row,'canceled','The requesting session canceled this request. The worker on the peer is told to stop.',null,null,true);
       withdrawCanceledChatGptAttempt(requestId,this.now());
     })();
     // The peer may still be accepting a queued-offline delivery. Keep revocation owed
@@ -886,7 +944,7 @@ export class SessionPeers {
     try{remote=await client.request<unknown>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal,true);}
     catch(error){
       if(this.stopped)return false;
-      if(error instanceof PeerStatusReadError){this.recordStatusReadFailure(row,error.reason,error);return false;}
+      this.recordStatusReadFailure(row,peerStatusReadFailureReason(error),error instanceof PeerStatusReadError?error:undefined);
       this.note(row.peer,error);
       if(error instanceof PeerError&&error.kind==='refused'&&error.status===404)
         this.settle(row,'failed',`${row.peer} refused this request as a changed repeat (${conflict}) but does not hold it; it was not sent again.`);
@@ -933,11 +991,14 @@ export class SessionPeers {
     db.query("UPDATE session_peer_requests SET remote_status_json=? WHERE request_id=? AND outcome IS NULL")
       .run(JSON.stringify({...prior,originStatusReadFailure:diagnostic}),current.request_id);
   }
-  private settle(row:PeerRequestRow,outcome:string,text:string,output:unknown=null,disposition:WorkDisposition|null=null) {
+  private settle(row:PeerRequestRow,outcome:string,text:string,output:unknown=null,disposition:WorkDisposition|null=null,sourceAuthorizedCancellation=false) {
+    row=this.row(row.request_id);
+    if(row.outcome)return false;
     const requestPayload=JSON.parse(row.payload_json);
     if(requestPayload.answerGuaranteeVersion===1&&requestPayload.requestedEffect==='work'&&row.status!=='queued_offline'){
       const remote=row.remote_status_json?JSON.parse(row.remote_status_json):null;
-      if(remote?.originStatusReadFailure||remote?.answerGuaranteeVersion!==1||remote.answerTaskReady!==true){
+      if(!(outcome==='canceled'&&sourceAuthorizedCancellation)
+        &&(remote?.originStatusReadFailure||remote?.answerGuaranteeVersion!==1||remote.answerTaskReady!==true)){
         const eventId=`peer-answer-settlement-hold:${row.request_id}`;
         if(!db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(eventId))
           this.event(row,'overdue',{text:`The ${row.peer} work request ${row.request_id} cannot close as ${outcome} until that peer confirms its exact task has no unresolved ChatGPT answers. Its failed attempt and original request remain held for recovery.`,
@@ -1196,7 +1257,8 @@ export class SessionPeers {
         })();
         row=this.row(row.request_id);
         reconciledStatus=remote;
-      }catch(error){if(!this.stopped){if(error instanceof PeerStatusReadError)this.recordStatusReadFailure(row,error.reason,error);else this.note(row.peer,error);}return;}
+      }catch(error){if(!this.stopped){this.recordStatusReadFailure(row,peerStatusReadFailureReason(error),error instanceof PeerStatusReadError?error:undefined);
+        if(!(error instanceof PeerStatusReadError))this.note(row.peer,error);}return;}
     }
     if(row.status==='queued_offline'){
       if(!row.delivery_json){this.settle(row,'failed','The queued delivery body is missing.');return;}
@@ -1220,8 +1282,9 @@ export class SessionPeers {
                 .run(remote.sessionId,remote.address??row.remote_address,JSON.stringify(remote),row.request_id);
               await this.revokeCanceledRemote(row.request_id);
               return;
-            }
-          }catch(error){if(this.stopped)return;if(error instanceof PeerStatusReadError)this.recordStatusReadFailure(row,error.reason,error);else this.note(row.peer,error);}
+            }else this.recordStatusReadFailure(row,checked.reason??'status_invalid');
+          }catch(error){if(this.stopped)return;this.recordStatusReadFailure(row,peerStatusReadFailureReason(error),error instanceof PeerStatusReadError?error:undefined);
+            if(!(error instanceof PeerStatusReadError))this.note(row.peer,error);}
           const eventId=`peer-correction-withdrawn-uncertain:${row.request_id}`;
           if(!db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(eventId))
             this.event(row,'overdue',{text:`The original ChatGPT duty ended while corrected request ${row.request_id} had an uncertain peer admission. Its exact receipt still needs reconciliation; no replacement send will occur.`,
@@ -1306,7 +1369,8 @@ export class SessionPeers {
     try {remote=reconciledStatus??await client.request<unknown>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal,true);this.unreachable.delete(row.peer);}
     catch(error) {
       if(this.stopped)return;
-      if(error instanceof PeerStatusReadError){this.recordStatusReadFailure(row,error.reason,error);return;}
+      this.recordStatusReadFailure(row,peerStatusReadFailureReason(error),error instanceof PeerStatusReadError?error:undefined);
+      if(error instanceof PeerStatusReadError)return;
       this.note(row.peer,error);
       if(error instanceof PeerError&&error.kind==='refused'&&error.status===404){this.settle(row,'failed','The peer no longer holds this request; its target session was not found.');return;}
       log('warn','session_peer_request_unavailable',{request_id:row.request_id,peer:row.peer,...errorFields(error)});
