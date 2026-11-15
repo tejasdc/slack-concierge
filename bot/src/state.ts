@@ -1165,8 +1165,9 @@ export interface TurnArtifactRegistration {
   mtimeMs: number;
 }
 
+export const SETTLED_TURN_STATUSES=['done','error','cancelled','delivery_parked'] as const;
 export const SETTLED_EXECUTION_SQL = `
-  prerequisite.status IN ('done', 'error', 'cancelled', 'delivery_parked')
+  prerequisite.status IN (${SETTLED_TURN_STATUSES.map(status=>`'${status}'`).join(',')})
   AND prerequisite.delivery_status NOT IN ('pending', 'sending')
   AND NOT EXISTS (SELECT 1 FROM turn_artifact_batches batch
     WHERE batch.turn_id=prerequisite.id AND batch.status IN ('collecting', 'pending'))

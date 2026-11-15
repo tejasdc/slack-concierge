@@ -11,7 +11,8 @@ import {AWAITING_INSPECTION,PROMPT_ANSWER_REMINDER_MS,PROMPT_ANSWER_OVERDUE_MS,R
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {OWNER_READ_RESPONSE_MS} from './owner-transport-policy';
 import {awaitingOutside} from './storage-observation';
-import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
+import {db,getSessionById,SETTLED_EXECUTION_SQL,SETTLED_TURN_STATUSES} from './state';
+import {TURN_STATE} from './session-receipt-state';
 import {meaningIndex} from './meaning-index';
 import {acceptedInputForTurn,carryingTurn,enqueueSessionInput,getAcceptedSessionInput,handedToARun, withdrawUnstartedServiceInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {heldRequestNotice,inputHold,readInputExecution,resolveSessionAddress,sessionAddress,SessionOwnerError,type SessionOwner} from './session-owner';
@@ -173,6 +174,12 @@ export function peerSettings(env:NodeJS.ProcessEnv=process.env):PeerSettings {
 export class PeerError extends Error {
   constructor(message:string,readonly kind:'unreachable'|'unauthorized'|'refused',readonly status:number|null=null,readonly code:string|null=null){super(message);}
 }
+class PeerStatusReadError extends Error {
+  constructor(readonly reason:string,readonly httpStatus:number,readonly contentType:string|null,readonly contentLength:number|null){super('Peer status could not be decoded.');}
+}
+const peerStatusReadFailureReason=(error:unknown)=>error instanceof PeerStatusReadError?error.reason:
+  error instanceof PeerError&&error.kind==='unauthorized'?'status_unauthorized':
+  error instanceof PeerError&&error.kind==='unreachable'?'status_unreachable':'status_read_failed';
 class PeerReplyContractError extends Error {}
 /** Bun names a refused connection `ConnectionRefused`; Node names it `ECONNREFUSED`. */
 const peerAnsweredRefused=(error:unknown)=>['ConnectionRefused','ECONNREFUSED'].includes(String((error as {code?:unknown})?.code??''));
@@ -181,7 +188,7 @@ const PEER_DOWN_ANNOUNCE_AFTER_MS=3*60_000;
 export class PeerClient {
   private refusedSince:number|null=null;
   constructor(readonly name:string,readonly url:string,private readonly token:string,readonly paths:string[]=[],readonly archives:string[]=[]){}
-  async request<T=any>(method:'GET'|'POST',path:string,body?:unknown,timeoutMs=OWNER_READ_RESPONSE_MS,trackAvailability=true,signal?:AbortSignal):Promise<T> {
+  async request<T=any>(method:'GET'|'POST',path:string,body?:unknown,timeoutMs=OWNER_READ_RESPONSE_MS,trackAvailability=true,signal?:AbortSignal,strictJson=false):Promise<T> {
     let response:Response;
     // A request to the peer carries ledger facts (its request, its answer); they reach the disk first.
     if(method==='POST')await ledgerDurable();
@@ -215,8 +222,26 @@ export class PeerClient {
     }
     this.refusedSince=null;
     let value:any=null;
-    try {value=await awaitingOutside(()=>response.json());} catch {value=null;}
-    if(response.status===401||response.status===403)throw new PeerError(`Peer ${this.name} refused this instance's token.`,'unauthorized',response.status,'PEER_UNAUTHORIZED');
+    const statusReadError=(reason:string)=>{
+      const declaredType=response.headers.get('content-type')?.split(';',1)[0]?.trim().toLowerCase()??'';
+      const contentType=/^[a-z0-9.+-]{1,40}\/[a-z0-9.+-]{1,40}$/.test(declaredType)?declaredType:null;
+      const declaredLength=response.headers.get('content-length')?.trim()??'';
+      const parsedLength=/^\d{1,12}$/.test(declaredLength)?Number(declaredLength):null;
+      return new PeerStatusReadError(reason,response.status,contentType,Number.isSafeInteger(parsedLength)?parsedLength:null);
+    };
+    try {value=await awaitingOutside(()=>response.json());} catch(error) {
+      if(strictJson){
+        const name=(error as {name?:unknown})?.name;
+        const reason=name==='SyntaxError'?'status_json_invalid':name==='AbortError'?'status_body_read_aborted':'status_body_read_failed';
+        throw statusReadError(reason);
+      }
+      value=null;
+    }
+    if(response.status===401||response.status===403){
+      if(strictJson)throw statusReadError('status_unauthorized');
+      throw new PeerError(`Peer ${this.name} refused this instance's token.`,'unauthorized',response.status,'PEER_UNAUTHORIZED');
+    }
+    if(strictJson&&!response.ok)throw statusReadError('status_http_error');
     if(!response.ok){
       const message=typeof value?.error==='string'?value.error:value?.error?.message??`Peer ${this.name} answered ${response.status}.`;
       throw new PeerError(message,'refused',response.status,value?.error?.code??'PEER_REFUSED');
@@ -236,7 +261,92 @@ type PeerEventRow={event_id:string;request_id:string;kind:'progress'|'final'|'ov
 type DeliveryRow={request_id:string;peer:string;origin_session_id:string;origin_input_id:string;origin_run_id:string;target_session_id:number;target_input_id:string;requested_effect:string;origin_provenance_json:string|null;notified_fingerprint:string|null;closed_at_ms:number|null;reminded_at_ms:number|null;reminded_via:string|null;prompt_reminded_at_ms:number|null;stalled_at_ms:number|null;stalled_reason:string|null;created_at_ms:number};
 type ReplyRow={event_id:string;request_id:string;action_key:string|null;kind:'progress'|'final';payload_json:string;status:string;error:string|null;created_at_ms:number};
 export type PeerActor={session:number;turn:number;inputId:string};
-type WorkDisposition='completed'|'failed'|'needs_decision';
+const WORK_DISPOSITIONS=['completed','failed','needs_decision'] as const;
+type WorkDisposition=typeof WORK_DISPOSITIONS[number];
+type PeerRequestStatus=Record<string,any>&{requestId:string;sessionId:string;address:string;inputState:string;
+  stillWorking:boolean;execution:Record<string,any>|null;replies:any[]};
+type PeerStatusRead={status:PeerRequestStatus|null;reason:string|null};
+const hasPeerReplyContent=(input:{kind:string;text:string;fileCount:number;replyBody?:unknown})=>
+  !!input.text.trim()||input.fileCount>0||input.kind==='final'&&input.replyBody==='';
+const peerReplyDispositionAllowed=(kind:string,disposition:unknown,requestedEffect:unknown)=>
+  disposition===null||disposition===undefined||kind==='final'&&requestedEffect==='work'
+    &&WORK_DISPOSITIONS.includes(disposition as WorkDisposition);
+const PEER_ANSWER_GUARANTEE_HEALTH='peer answer guarantee unconfirmed';
+const peerRequestStatus=(value:unknown,expected:{requestId:string;sessionId?:string;address?:string;requestedEffect?:string}):PeerStatusRead=>{
+  if(!record(value))return {status:null,reason:'status_not_object'};
+  if(value.requestId!==expected.requestId)return {status:null,reason:'request_id_mismatch'};
+  if(typeof value.sessionId!=='string'||!value.sessionId)return {status:null,reason:'status_target_invalid'};
+  if(typeof value.address!=='string'||!value.address)return {status:null,reason:'status_target_invalid'};
+  if(expected.sessionId&&value.sessionId!==expected.sessionId)return {status:null,reason:'session_id_mismatch'};
+  if(expected.address&&value.address!==expected.address)return {status:null,reason:'address_mismatch'};
+  if(typeof value.inputState!=='string'||typeof value.stillWorking!=='boolean'
+    ||value.execution!==null&&!record(value.execution)||!Array.isArray(value.replies))
+    return {status:null,reason:'status_shape_invalid'};
+  if(value.inputError!==undefined&&value.inputError!==null&&typeof value.inputError!=='string'
+    &&(!record(value.inputError)||typeof value.inputError.message!=='string'
+      ||value.inputError.code!==undefined&&value.inputError.code!==null&&typeof value.inputError.code!=='string'))
+    return {status:null,reason:'input_error_invalid'};
+  if(value.execution!==null){
+    const execution=value.execution;
+    const executionState=typeof execution.status==='string'&&
+      (execution.status==='queued'||execution.status==='running'||Object.hasOwn(TURN_STATE,execution.status));
+    const terminalSettled=typeof execution.status==='string'&&SETTLED_TURN_STATUSES.includes(execution.status as typeof SETTLED_TURN_STATUSES[number]);
+    if(!Number.isSafeInteger(execution.turnId)||execution.turnId<=0||typeof execution.runId!=='string'||!execution.runId
+      ||!executionState||typeof execution.settled!=='boolean'||execution.settled&&!terminalSettled
+      ||typeof execution.acknowledged!=='boolean'||typeof execution.stopped!=='boolean'
+      ||typeof execution.dedicated!=='boolean'
+      ||execution.acknowledgedAt!==null&&typeof execution.acknowledgedAt!=='string'
+      ||execution.steeringStatus!==null&&typeof execution.steeringStatus!=='string'
+      ||execution.text!==null&&typeof execution.text!=='string'||execution.error!==null&&typeof execution.error!=='string'
+      ||execution.sha256!==null&& (typeof execution.sha256!=='string'||! /^[a-f0-9]{64}$/.test(execution.sha256)))
+      return {status:null,reason:'execution_shape_invalid'};
+    if(execution.answersWithTurn!==undefined&&typeof execution.answersWithTurn!=='boolean'
+      ||execution.stoppedByTejasAtMs!==undefined&&execution.stoppedByTejasAtMs!==null
+        &&(!Number.isSafeInteger(execution.stoppedByTejasAtMs)||execution.stoppedByTejasAtMs<0))
+      return {status:null,reason:'execution_shape_invalid'};
+  }
+  for(const reply of value.replies){
+    if(!record(reply)||typeof reply.eventId!=='string'||!reply.eventId||!['progress','final'].includes(reply.kind)
+      ||typeof reply.status!=='string'||!reply.status||typeof reply.text!=='string'
+      ||reply.files!==undefined&&(!Number.isSafeInteger(reply.files)||reply.files<0)
+      ||!hasPeerReplyContent({kind:reply.kind,text:reply.text,fileCount:reply.files??0,replyBody:reply.replyBody})
+      ||reply.sourceInputId!==null&&reply.sourceInputId!==undefined&&typeof reply.sourceInputId!=='string'
+      ||reply.sourceRunId!==null&&reply.sourceRunId!==undefined&&typeof reply.sourceRunId!=='string'
+      ||!peerReplyDispositionAllowed(reply.kind,reply.workDisposition,expected.requestedEffect)
+      ||reply.turnOutcome!==null&&reply.turnOutcome!==undefined&&reply.turnOutcome!=='needs_you'
+      ||['answersQuestion','notify','alsoMainThread'].some(key=>reply[key]!==undefined&&typeof reply[key]!=='boolean')
+      ||reply.completionTurnId!==null&&reply.completionTurnId!==undefined
+        &&(!Number.isSafeInteger(reply.completionTurnId)||reply.completionTurnId<=0)
+      ||reply.replyBody!==undefined&&typeof reply.replyBody!=='string'
+      ||reply.closingLine!==undefined&&typeof reply.closingLine!=='string'
+      ||reply.answerGroup!==undefined&&typeof reply.answerGroup!=='string'
+      ||reply.evidence!==undefined&&!Array.isArray(reply.evidence)
+      ||reply.handBack!==undefined&&typeof reply.handBack!=='string'
+      ||reply.quiet!==undefined&&typeof reply.quiet!=='string'
+      ||reply.turnOutcome==='needs_you'&&(reply.kind!=='progress'||!reply.text.trim()
+        ||!reply.eventId.startsWith('turn_outcome:action:')||typeof reply.sourceInputId!=='string'||!reply.sourceInputId
+        ||typeof reply.sourceRunId!=='string'||!reply.sourceRunId||(reply.files??0)>0))
+      return {status:null,reason:'reply_summary_invalid'};
+  }
+  if(value.stalled!==null&&value.stalled!==undefined&&(!record(value.stalled)
+    ||!Number.isSafeInteger(value.stalled.atMs)||value.stalled.atMs<0||typeof value.stalled.reason!=='string'||!value.stalled.reason))
+    return {status:null,reason:'stalled_shape_invalid'};
+  if(value.answerGuaranteeVersion!==undefined&&value.answerGuaranteeVersion!==1)
+    return {status:null,reason:'answer_guarantee_version_invalid'};
+  if(value.acceptedAnswerGuaranteeVersion!==undefined
+    &&value.acceptedAnswerGuaranteeVersion!==null&&value.acceptedAnswerGuaranteeVersion!==1)
+    return {status:null,reason:'accepted_answer_guarantee_version_invalid'};
+  if(value.answerTaskReady!==undefined&&typeof value.answerTaskReady!=='boolean')
+    return {status:null,reason:'answer_task_ready_invalid'};
+  if(value.unresolvedChatGptObligations!==undefined
+    &&(!Number.isSafeInteger(value.unresolvedChatGptObligations)||value.unresolvedChatGptObligations<0))
+    return {status:null,reason:'unresolved_obligation_count_invalid'};
+  if(value.answerGuaranteeVersion===1&&(![1,null].includes(value.acceptedAnswerGuaranteeVersion)
+    ||typeof value.answerTaskReady!=='boolean'||!Number.isSafeInteger(value.unresolvedChatGptObligations)
+    ||value.unresolvedChatGptObligations<0||(value.answerTaskReady&&value.unresolvedChatGptObligations>0)))
+    return {status:null,reason:'answer_guarantee_evidence_incomplete'};
+  return {status:value as PeerRequestStatus,reason:null};
+};
 type Dependencies={self:string;clients:Map<string,PeerClient>;owner:SessionOwner;now?:()=>number;onError:(error:unknown)=>void;isOwnerAlive:(owner:string)=>boolean;onWake?:()=>void;hasPendingOperations?:()=>boolean};
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const object=(value:unknown):Record<string,any>=>{if(!value||typeof value!=='object'||Array.isArray(value))throw new SessionOwnerError('A JSON object is required.');return value as Record<string,any>;};
@@ -275,6 +385,7 @@ export const requestIdFor=(sourceInputId:string,actionId:string)=>{const h=hash(
 export class SessionPeers {
   private readonly tasks=new Map<string,Promise<void>>();
   private readonly again=new Set<string>();
+  private readonly requestReconciliations=new Map<string,Promise<void>>();
   private reconciliation:Promise<void>|null=null;
   private reconciliationDirty=false;
   private stopped=true;
@@ -766,6 +877,7 @@ export class SessionPeers {
   }
   receipt(row:PeerRequestRow) {
     const remote=row.remote_status_json?JSON.parse(row.remote_status_json):null;
+    const remoteCheck=remote?peerRequestStatus(remote,{requestId:row.request_id,sessionId:row.remote_session_id,address:row.remote_address,requestedEffect:JSON.parse(row.payload_json).requestedEffect}):null;
     const execution=remote?.execution;
     const queued=row.status==='queued_offline';
     return {request_id:row.request_id,status:row.status,outcome:row.outcome,peer:row.peer,source_session_id:`concierge:${row.source_session_id}`,
@@ -773,10 +885,21 @@ export class SessionPeers {
       target_address:row.remote_address?this.presentedAddress(row.peer,row.remote_address):null,target:row.remote_session_id?this.cachedView(row.peer,row.remote_session_id):null,target_session_id:row.remote_session_id?this.presentedSession(row.peer,row.remote_session_id):null,target_input_id:row.remote_operation_id,
       operation_id:(db.query("SELECT id FROM session_inputs WHERE request_id=? AND kind='request' ORDER BY rowid LIMIT 1").get(row.request_id) as {id:string}|null)?.id??null,
       routed_request_id:null,target_turn_id:null,due_at_ms:row.due_at_ms,overdue_at_ms:row.overdue_at_ms,result:row.result_json?JSON.parse(row.result_json):null,
-      remote:remote?{inputState:remote.inputState,inputError:remote.inputError??null,stillWorking:remote.stillWorking,observedAt:remote.observedAt}:null,
+      remote:remote?{inputState:remote.inputState,inputError:remote.inputError??null,stillWorking:remote.stillWorking,observedAt:remote.observedAt,
+        identityValid:remoteCheck?.status!==null&&remoteCheck?.status!==undefined,
+        requestId:remote.requestId??null,sessionId:remote.sessionId??null,address:remote.address??null,
+        ...(remote.answerGuaranteeVersion===undefined?{}:{answerGuaranteeVersion:remote.answerGuaranteeVersion}),
+        ...(remote.acceptedAnswerGuaranteeVersion===undefined?{}:{acceptedAnswerGuaranteeVersion:remote.acceptedAnswerGuaranteeVersion}),
+        ...(remote.answerTaskReady===undefined?{}:{answerTaskReady:remote.answerTaskReady}),
+        ...(remote.unresolvedChatGptObligations===undefined?{}:{unresolvedChatGptObligations:remote.unresolvedChatGptObligations}),
+        ...(remote.originStatusReadFailure?{statusReadFailure:{reason:remote.originStatusReadFailure.reason,observedAt:remote.originStatusReadFailure.observedAt,
+          ...(remote.originStatusReadFailure.httpStatus===undefined?{}:{httpStatus:remote.originStatusReadFailure.httpStatus}),
+          ...(remote.originStatusReadFailure.contentType===undefined?{}:{contentType:remote.originStatusReadFailure.contentType}),
+          ...(remote.originStatusReadFailure.contentLength===undefined?{}:{contentLength:remote.originStatusReadFailure.contentLength})}}:{}),
+        ...(remote.originStatusReadRecoveredAt?{statusReadRecoveredAt:remote.originStatusReadRecoveredAt}:{})}:null,
       execution:execution?{turn_id:execution.turnId,run_id:execution.runId,input_kind:execution.steeringStatus?'steering':'turn',input_status:execution.steeringStatus??execution.status,acknowledged_at:execution.acknowledgedAt??null,provider_turn_id:null,peer:row.peer}:null,
       events:(db.query('SELECT * FROM session_peer_events WHERE request_id=? ORDER BY rowid').all(row.request_id) as PeerEventRow[])
-        .map(event=>({event_id:event.event_id,kind:event.kind,status:event.status,error:event.error,payload:JSON.parse(event.payload_json),routed_request_id:null}))};
+        .map(event=>({event_id:event.event_id,kind:event.kind,status:event.status,error:event.error,created_at_ms:event.created_at_ms,payload:JSON.parse(event.payload_json),routed_request_id:null}))};
   }
   inspect(requestId:string){return this.receipt(this.row(requestId));}
   get(actor:PeerActor,requestId:string) {
@@ -793,7 +916,7 @@ export class SessionPeers {
         payload:{requestId,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),...(reason?{reason}:{})},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId});
       if(retained.duplicate)return;
       db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed'}),retained.input.id);
-      if(!row.outcome)this.settle(row,'canceled','The requesting session canceled this request. The worker on the peer is told to stop.');
+      if(!row.outcome)this.settle(row,'canceled','The requesting session canceled this request. The worker on the peer is told to stop.',null,null,true);
       withdrawCanceledChatGptAttempt(requestId,this.now());
     })();
     // The peer may still be accepting a queued-offline delivery. Keep revocation owed
@@ -828,19 +951,22 @@ export class SessionPeers {
   /** The peer refused a repeat because it already holds this request ID with other bytes. */
   private async adoptPeerHeldRequest(client:PeerClient,row:PeerRequestRow,conflict:string):Promise<boolean> {
     let remote:any;
-    try{remote=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal);}
+    try{remote=await client.request<unknown>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal,true);}
     catch(error){
       if(this.stopped)return false;
+      this.recordStatusReadFailure(row,peerStatusReadFailureReason(error),error instanceof PeerStatusReadError?error:undefined);
       this.note(row.peer,error);
       if(error instanceof PeerError&&error.kind==='refused'&&error.status===404)
         this.settle(row,'failed',`${row.peer} refused this request as a changed repeat (${conflict}) but does not hold it; it was not sent again.`);
       return false;
     }
     if(this.stopped)return false;
-    if(remote?.requestId!==row.request_id||typeof remote.sessionId!=='string'||typeof remote.address!=='string'){
-      this.settle(row,'failed',`${row.peer} refused this request as a changed repeat (${conflict}) and did not report the copy it holds; it was not sent again.`);
+    const checked=peerRequestStatus(remote,{requestId:row.request_id,requestedEffect:JSON.parse(row.payload_json).requestedEffect});
+    if(!checked.status){
+      this.recordStatusReadFailure(row,checked.reason??'status_invalid');
       return false;
     }
+    remote=checked.status;
     db.transaction(()=>{
       db.query("UPDATE session_peer_requests SET remote_session_id=?,remote_address=?,remote_operation_id=coalesce(remote_operation_id,?),delivery_json=NULL,status='recorded' WHERE request_id=? AND status='queued_offline'")
         .run(remote.sessionId,remote.address,typeof remote.operationId==='string'?remote.operationId:null,row.request_id);
@@ -862,11 +988,27 @@ export class SessionPeers {
       db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=?").run(eventId);
     return eventId;
   }
-  private settle(row:PeerRequestRow,outcome:string,text:string,output:unknown=null,disposition:WorkDisposition|null=null) {
+  private recordStatusReadFailure(row:PeerRequestRow,reason:string,evidence?:{httpStatus:number;contentType:string|null;contentLength:number|null}) {
+    const current=this.row(row.request_id);if(current.outcome)return;
+    const prior=current.remote_status_json?JSON.parse(current.remote_status_json):{};
+    const diagnostic={requestId:current.request_id,peer:current.peer,reason,observedAt:new Date(this.now()).toISOString(),
+      ...(evidence?{httpStatus:evidence.httpStatus,contentType:evidence.contentType,contentLength:evidence.contentLength}:{})};
+    const previous=prior.originStatusReadFailure;
+    if(previous?.reason!==reason||previous?.requestId!==current.request_id){
+      log('warn','session_peer_status_read_invalid',{request_id:current.request_id,peer:current.peer,reason,
+        ...(evidence?{http_status:evidence.httpStatus,content_type:evidence.contentType,content_length:evidence.contentLength}:{})});
+    }
+    db.query("UPDATE session_peer_requests SET remote_status_json=? WHERE request_id=? AND outcome IS NULL")
+      .run(JSON.stringify({...prior,originStatusReadFailure:diagnostic}),current.request_id);
+  }
+  private settle(row:PeerRequestRow,outcome:string,text:string,output:unknown=null,disposition:WorkDisposition|null=null,sourceAuthorizedCancellation=false) {
+    row=this.row(row.request_id);
+    if(row.outcome)return false;
     const requestPayload=JSON.parse(row.payload_json);
     if(requestPayload.answerGuaranteeVersion===1&&requestPayload.requestedEffect==='work'&&row.status!=='queued_offline'){
       const remote=row.remote_status_json?JSON.parse(row.remote_status_json):null;
-      if(remote?.answerGuaranteeVersion!==1||remote.answerTaskReady!==true){
+      if(!(outcome==='canceled'&&sourceAuthorizedCancellation)
+        &&(remote?.originStatusReadFailure||remote?.answerGuaranteeVersion!==1||remote.answerTaskReady!==true)){
         const eventId=`peer-answer-settlement-hold:${row.request_id}`;
         if(!db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(eventId))
           this.event(row,'overdue',{text:`The ${row.peer} work request ${row.request_id} cannot close as ${outcome} until that peer confirms its exact task has no unresolved ChatGPT answers. Its failed attempt and original request remain held for recovery.`,
@@ -923,13 +1065,15 @@ export class SessionPeers {
     }
     if(input.files!==undefined&&(!Array.isArray(input.files)||input.files.some((file:any)=>typeof file?.name!=='string'||typeof file?.contentType!=='string'||typeof file?.base64!=='string')))throw new SessionOwnerError('Files must contain named attachment bytes.');
     // A reply carrying files is a message even without words.
-    if(typeof input.eventId!=='string'||!input.eventId||!['progress','final'].includes(input.kind)||typeof input.text!=='string'||(!input.text.trim()&&!input.files?.length&&!(input.kind==='final'&&input.replyBody==='')))throw new SessionOwnerError('A reply needs an event ID, kind and either text or a file.');
+    if(typeof input.eventId!=='string'||!input.eventId||!['progress','final'].includes(input.kind)||typeof input.text!=='string'
+      ||!hasPeerReplyContent({kind:input.kind,text:input.text,fileCount:input.files?.length??0,replyBody:input.replyBody}))
+      throw new SessionOwnerError('A reply needs an event ID, kind and either text or a file.');
     const final=input.kind==='final';
     const disposition:WorkDisposition|undefined=input.workDisposition;
     if(final&&JSON.parse(row.payload_json).answerGuaranteeVersion===1){
       const proof=input.settlementProof;
       const remote=row.remote_status_json?JSON.parse(row.remote_status_json):null;
-      const preUpgradeReceipt=remote?.answerGuaranteeVersion===1&&remote.acceptedAnswerGuaranteeVersion===null
+      const preUpgradeReceipt=!remote?.originStatusReadFailure&&remote?.answerGuaranteeVersion===1&&remote.acceptedAnswerGuaranteeVersion===null
         &&remote.answerTaskReady===true&&remote.requestId===requestId&&remote.sessionId===row.remote_session_id;
       const citedOpen=Array.isArray(proof?.openObligationIds)&&proof.openObligationIds.length>0
         &&proof.openObligationIds.every((id:unknown)=>typeof id==='string'&&id.length>0)
@@ -970,7 +1114,7 @@ export class SessionPeers {
       input={...input,answersQuestion:false};
       answerMarkDropped=!final;
     }
-    if(disposition!==undefined&&(!final||requestedEffect!=='work'||!['completed','failed','needs_decision'].includes(disposition)))throw new SessionOwnerError('A work disposition requires a final reply to a work request.');
+    if(!peerReplyDispositionAllowed(input.kind,disposition,requestedEffect))throw new SessionOwnerError('A work disposition requires a final reply to a work request.');
     const result=db.transaction(():{recorded:'recorded'|'duplicate'|'refused';reason?:string}=>{
       if(db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(input.eventId))return {recorded:'duplicate'};
       // The owner's own inference from a finished turn is not the recipient's word: a recipient
@@ -1035,9 +1179,26 @@ export class SessionPeers {
     return db.query("SELECT * FROM session_peer_events WHERE request_id=? AND kind='final' AND superseded_by_event_id IS NULL").get(requestId) as PeerEventRow|null;
   }
   async notified(requestId:string) {
-    const row=this.row(requestId);
-    await this.dispatch(row);
+    await this.reconcileRequest(requestId,()=>this.dispatch(this.row(requestId)));
     return {outcome:this.row(requestId).outcome};
+  }
+  private reconcileRequest(requestId:string,work:()=>Promise<void>) {
+    const previous=this.requestReconciliations.get(requestId);
+    if(previous)return previous;
+    const current=Promise.resolve().then(work);
+    this.requestReconciliations.set(requestId,current);
+    const cleanup=()=>{if(this.requestReconciliations.get(requestId)===current)this.requestReconciliations.delete(requestId);};
+    void current.then(cleanup,cleanup);
+    return current;
+  }
+  private answerGuaranteeHold(row:PeerRequestRow) {
+    const existing=db.query(`SELECT event_id FROM session_peer_events WHERE request_id=? AND kind='overdue'
+      AND json_extract(payload_json,'$.health')=? ORDER BY rowid LIMIT 1`).get(row.request_id,PEER_ANSWER_GUARANTEE_HEALTH) as {event_id:string}|null;
+    const eventId=existing?.event_id??`peer-answer-guarantee-hold:${row.request_id}`;
+    if(!existing&&!db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(eventId))
+      this.event(row,'overdue',{text:`${row.peer} has not confirmed the answer guarantee for request ${row.request_id}. The original request stays held for exact reconciliation; it will not be sent again.`,
+        health:PEER_ANSWER_GUARANTEE_HEALTH,agentReminder:true},eventId);
+    return eventId;
   }
   private activatePeerAttachmentCorrection(row:PeerRequestRow,accepted:any) {
     const payload=JSON.parse(row.payload_json);
@@ -1073,18 +1234,43 @@ export class SessionPeers {
     if(!client){if(row.status!=='version_hold')this.settle(row,'failed',`Peer ${row.peer} is no longer configured on this instance.`);return;}
     // Reconcile the original request ID after a peer upgrade. The old acceptance is never
     // replayed; the upgraded receiver checks the exact retained task, including legacy asks.
+    let reconciledStatus:PeerRequestStatus|null=null;
     if(row.status==='version_hold'){
       try{
-        const remote=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal);
+        const raw=await client.request<unknown>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal,true);
         if(this.stopped)return;
-        if(remote?.answerGuaranteeVersion!==1)return;
+        row=this.row(row.request_id);if(row.outcome)return;
+        const checked=peerRequestStatus(raw,{requestId:row.request_id,sessionId:row.remote_session_id,address:row.remote_address,requestedEffect:JSON.parse(row.payload_json).requestedEffect});
+        if(!checked.status){this.recordStatusReadFailure(row,checked.reason??'status_invalid');return;}
+        const remote=checked.status;
+        if(remote.answerGuaranteeVersion!==1){
+          const previous=row.remote_status_json?JSON.parse(row.remote_status_json):{};
+          const observedAt=new Date(this.now()).toISOString();
+          const saved={...remote,observedAt,...(previous.originStatusReadFailure?{originStatusReadRecoveredAt:observedAt}:
+            previous.originStatusReadRecoveredAt?{originStatusReadRecoveredAt:previous.originStatusReadRecoveredAt}:{})};
+          if(previous.originStatusReadFailure)log('info','session_peer_status_read_recovered',{request_id:row.request_id,peer:row.peer,
+            answer_guarantee_version:null,accepted_answer_guarantee_version:null,answer_task_ready:null,unresolved_chatgpt_obligations:null});
+          db.query("UPDATE session_peer_requests SET remote_status_json=? WHERE request_id=? AND outcome IS NULL AND status='version_hold'")
+            .run(JSON.stringify(saved),row.request_id);
+          this.answerGuaranteeHold(row);return;
+        }
         db.transaction(()=>{
-          db.query("UPDATE session_peer_requests SET status='recorded',remote_status_json=?,delivery_json=NULL WHERE request_id=? AND status='version_hold'")
-            .run(JSON.stringify(remote),row.request_id);
+          const current=this.row(row.request_id);if(current.outcome)return;
+          const previous=current.remote_status_json?JSON.parse(current.remote_status_json):{};
+          const observedAt=new Date(this.now()).toISOString();
+          const saved={...remote,observedAt,...(previous.originStatusReadFailure?{originStatusReadRecoveredAt:observedAt}:
+            previous.originStatusReadRecoveredAt?{originStatusReadRecoveredAt:previous.originStatusReadRecoveredAt}:{})};
+          if(previous.originStatusReadFailure)log('info','session_peer_status_read_recovered',{request_id:row.request_id,peer:row.peer,
+            answer_guarantee_version:remote.answerGuaranteeVersion??null,accepted_answer_guarantee_version:remote.acceptedAnswerGuaranteeVersion??null,
+            answer_task_ready:remote.answerTaskReady??null,unresolved_chatgpt_obligations:remote.unresolvedChatGptObligations??null});
+          db.query("UPDATE session_peer_requests SET status='recorded',remote_status_json=?,delivery_json=NULL WHERE request_id=? AND status='version_hold' AND outcome IS NULL")
+            .run(JSON.stringify(saved),row.request_id);
           bindChatGptPeerTarget(row.request_id,`${row.peer}/${remote.sessionId}`,this.now());
         })();
         row=this.row(row.request_id);
-      }catch(error){if(!this.stopped)this.note(row.peer,error);return;}
+        reconciledStatus=remote;
+      }catch(error){if(!this.stopped){this.recordStatusReadFailure(row,peerStatusReadFailureReason(error),error instanceof PeerStatusReadError?error:undefined);
+        if(!(error instanceof PeerStatusReadError))this.note(row.peer,error);}return;}
     }
     if(row.status==='queued_offline'){
       if(!row.delivery_json){this.settle(row,'failed','The queued delivery body is missing.');return;}
@@ -1099,16 +1285,18 @@ export class SessionPeers {
           // A prior POST may have reached the peer despite a lost response. Inspect that
           // same request ID; never issue another corrected browser send after withdrawal.
           try{
-            const remote=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal);
+            const remote=await client.request<unknown>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal,true);
             if(this.stopped)return;
-            if(remote?.requestId===row.request_id&&typeof remote.sessionId==='string'){
+            const checked=peerRequestStatus(remote,{requestId:row.request_id,requestedEffect:JSON.parse(row.payload_json).requestedEffect});
+            if(checked.status){const remote=checked.status;
               this.settle(row,'canceled','The original answer duty ended after this exact corrected request may have reached the peer.');
               db.query('UPDATE session_peer_requests SET remote_session_id=?,remote_address=?,remote_status_json=?,delivery_json=NULL WHERE request_id=?')
                 .run(remote.sessionId,remote.address??row.remote_address,JSON.stringify(remote),row.request_id);
               await this.revokeCanceledRemote(row.request_id);
               return;
-            }
-          }catch(error){if(this.stopped)return;this.note(row.peer,error);}
+            }else this.recordStatusReadFailure(row,checked.reason??'status_invalid');
+          }catch(error){if(this.stopped)return;this.recordStatusReadFailure(row,peerStatusReadFailureReason(error),error instanceof PeerStatusReadError?error:undefined);
+            if(!(error instanceof PeerStatusReadError))this.note(row.peer,error);}
           const eventId=`peer-correction-withdrawn-uncertain:${row.request_id}`;
           if(!db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(eventId))
             this.event(row,'overdue',{text:`The original ChatGPT duty ended while corrected request ${row.request_id} had an uncertain peer admission. Its exact receipt still needs reconciliation; no replacement send will occur.`,
@@ -1167,8 +1355,7 @@ export class SessionPeers {
           db.query("UPDATE session_peer_requests SET remote_session_id=?,remote_address=?,remote_operation_id=?,status='version_hold' WHERE request_id=? AND status='queued_offline'")
             .run(accepted.sessionId,accepted.address,accepted.operationId,row.request_id);
           holdChatGptPeerVersion(row.request_id,this.now());
-          this.event(row,'overdue',{text:`${row.peer} accepted request ${row.request_id} without the answer-obligation version. The request remains open for exact receipt reconciliation after that peer upgrades; it will not be sent again.`,
-            health:'peer answer guarantee unconfirmed',agentReminder:true});
+          this.answerGuaranteeHold({...row,remote_session_id:accepted.sessionId,remote_address:accepted.address});
         })();
         this.wake();
         return;
@@ -1191,23 +1378,34 @@ export class SessionPeers {
       }
     }
     let remote:any;
-    try {remote=await client.request('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal);this.unreachable.delete(row.peer);}
+    try {remote=reconciledStatus??await client.request<unknown>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal,true);this.unreachable.delete(row.peer);}
     catch(error) {
       if(this.stopped)return;
+      this.recordStatusReadFailure(row,peerStatusReadFailureReason(error),error instanceof PeerStatusReadError?error:undefined);
+      if(error instanceof PeerStatusReadError)return;
       this.note(row.peer,error);
       if(error instanceof PeerError&&error.kind==='refused'&&error.status===404){this.settle(row,'failed','The peer no longer holds this request; its target session was not found.');return;}
       log('warn','session_peer_request_unavailable',{request_id:row.request_id,peer:row.peer,...errorFields(error)});
       return;
     }
     if(this.stopped)return;
-    remote={...remote,observedAt:new Date(this.now()).toISOString()};
+    row=this.row(row.request_id);if(row.outcome)return;
+    const checked=peerRequestStatus(remote,{requestId:row.request_id,sessionId:row.remote_session_id,address:row.remote_address,requestedEffect:JSON.parse(row.payload_json).requestedEffect});
+    if(!checked.status){this.recordStatusReadFailure(row,checked.reason??'status_invalid');return;}
+    remote={...checked.status,observedAt:new Date(this.now()).toISOString()};
+    const priorRemote=row.remote_status_json?JSON.parse(row.remote_status_json):{};
+    if(priorRemote.originStatusReadFailure){
+      remote.originStatusReadRecoveredAt=remote.observedAt;
+      log('info','session_peer_status_read_recovered',{request_id:row.request_id,peer:row.peer,
+        answer_guarantee_version:remote.answerGuaranteeVersion??null,accepted_answer_guarantee_version:remote.acceptedAnswerGuaranteeVersion??null,
+        answer_task_ready:remote.answerTaskReady??null,unresolved_chatgpt_obligations:remote.unresolvedChatGptObligations??null});
+    }else if(priorRemote.originStatusReadRecoveredAt)remote.originStatusReadRecoveredAt=priorRemote.originStatusReadRecoveredAt;
     if(JSON.parse(row.payload_json).answerGuaranteeVersion===1&&remote.answerGuaranteeVersion!==1){
       db.transaction(()=>{
         db.query("UPDATE session_peer_requests SET status='version_hold',remote_status_json=? WHERE request_id=? AND outcome IS NULL")
           .run(JSON.stringify(remote),row.request_id);
         holdChatGptPeerVersion(row.request_id,this.now());
-        this.event(row,'overdue',{text:`${row.peer} reported request ${row.request_id} without the answer-obligation version. Its exact effect is held for reconciliation; no replacement send is made.`,
-          health:'peer answer guarantee unconfirmed',agentReminder:true});
+        this.answerGuaranteeHold(row);
       })();
       this.wake();
       return;
@@ -2017,7 +2215,7 @@ export class SessionPeers {
             AND d.rowid<=? AND d.rowid>? ORDER BY d.rowid LIMIT 1`,
         row=>this.canceledByOrigin(row.request_id));
       await this.scanRows<PeerRequestRow>('session_peer_requests','SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests INDEXED BY session_peer_open_reconcile WHERE outcome IS NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1',
-        row=>this.schedule(`ask:${row.request_id}`,()=>this.dispatch(this.row(row.request_id))));
+        row=>this.schedule(`ask:${row.request_id}`,()=>this.reconcileRequest(row.request_id,()=>this.dispatch(this.row(row.request_id)))));
       await this.scanRows<PeerEventRow>('session_peer_events',"SELECT rowid AS reconciliation_rowid,* FROM session_peer_events INDEXED BY session_peer_events_undelivered WHERE status NOT IN ('received','retained') AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1",
         event=>this.schedule(`event:${event.event_id}`,()=>this.deliver(event)));
       await this.scanRows<DeliveryRow>('session_peer_deliveries',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_deliveries WHERE (closed_at_ms IS NULL
@@ -2106,5 +2304,5 @@ export class SessionPeers {
     if(this.stopped)return;
     for(const peer of [...this.unrecovered])if(!failed.has(peer))this.unrecovered.delete(peer);
   }
-  async stop(){this.stopped=true;this.peerReadController.abort();this.reconciliationDirty=false;this.disarm?.();this.disarm=null;for(const job of this.catalogueTasks.values())job.controller.abort();await this.reconciliation;await Promise.allSettled([...this.tasks.values(),...[...this.catalogueTasks.values()].map(job=>job.promise)]);}
+  async stop(){this.stopped=true;this.peerReadController.abort();this.reconciliationDirty=false;this.disarm?.();this.disarm=null;for(const job of this.catalogueTasks.values())job.controller.abort();await this.reconciliation;await Promise.allSettled([...this.tasks.values(),...this.requestReconciliations.values(),...[...this.catalogueTasks.values()].map(job=>job.promise)]);}
 }
