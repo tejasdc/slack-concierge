@@ -35,14 +35,21 @@ let deferred = false, databasePath = '';
 let synced = 0, inFlight: { id: number; changes: number; since: number; startedAtMs: number; loggedAt: number } | null = null, nextId = 0;
 const waiters: Waiter[] = [];
 
-const totalChanges = () => (db.query('SELECT total_changes() AS n').get() as { n: number }).n;
+let totalChangesStatement: ReturnType<typeof db.prepare> | null = null;
+const totalChanges = () => {
+  if (!totalChangesStatement) throw new Error('Ledger durability counter was not prepared');
+  return (totalChangesStatement.get() as { n: number }).n;
+};
 
 function settle() {
   while (waiters.length && waiters[0].changes <= synced) waiters.shift()!.resolve();
 }
 
 function pump() {
-  if (!threads || inFlight || db.inTransaction) return;
+  // Every caller runs in a microtask, timer or worker callback after the synchronous
+  // transaction wrapper has committed or rolled back. Reading Bun's inTransaction
+  // getter here acquires a process-wide SQLite registry lock on every pump.
+  if (!threads || inFlight) return;
   const changes = totalChanges();
   if (changes <= synced) { settle(); return; }
   const now = performance.now(), id = ++nextId;
@@ -189,7 +196,11 @@ function startThreads() {
 export function startLedgerDurability(stateDir: string): void {
   if (databasePath || process.platform !== 'linux') return;
   // The ledger may be a link to its own filesystem; SQLite keeps the log beside the real file.
-  databasePath = realpathSync(join(stateDir, 'state.db'));
+  const path = realpathSync(join(stateDir, 'state.db'));
+  // Retain this statement outside the observation wrapper's bounded query cache so a
+  // periodic sample never prepares it while the owner is serving or draining.
+  totalChangesStatement = db.prepare('SELECT total_changes() AS n');
+  databasePath = path;
   installLedgerBarrier(durable);
   protectedDurability.installed=1;
   startThreads();
