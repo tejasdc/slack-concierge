@@ -1248,7 +1248,7 @@ export class SessionOwner {
    * test session. The caller has already been proven a current, fenced run of `creatorSessionId`
    * by session communication; this checks the creation lineage (exact create request, its
    * recorded source and target) and then reports the first input the content guard would reject,
-   * judged against the creation's own source pair. It reads no payload, receipt, file or event
+   * judged by the creator session's membership (the creator session is the one that recorded the create request). It reads no payload, receipt, file or event
    * and has no success branch that opens content. The scan is the guard's own predicate over the
    * target's inputs, so coverage is complete; no examined/hasMore paging is needed.
    */
