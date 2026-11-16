@@ -102,3 +102,11 @@ if(notInThread.sessionCount!==2||notInThread.bySession[0]?.title!=='Worker'||Mat
   ||unlinkedResult.accounts[1].notInThread.sessionCount!==0)
   throw new Error('Not-in-a-thread use lost its per-account sessions or triggers.');
 console.log('Not-in-a-thread breakdown names sessions and triggers per account.');
+
+// One weekly figure across accounts: each account's share added, over the accounts with a current reading.
+const combined=result.threadAllowanceById['topic-a'].combined;
+if(combined.accounts!==2||Math.abs(combined.usedPercent-6.25)>1e-9||combined.byProvider.length!==1
+  ||combined.byProvider[0].provider!=='codex'||Math.abs(combined.byProvider[0].usedPercent-6.25)>1e-9
+  ||result.combinedWeekly.accounts!==2||Math.abs(result.combinedWeekly.usedPercent-27.5)>1e-9)
+  throw new Error(`combined weekly figure is not the accounts' shares over their count: ${JSON.stringify({combined,overall:result.combinedWeekly})}`);
+console.log('A thread using 7.5% of one account and 5% of another reads as 6.25% of the combined weekly allowance.');

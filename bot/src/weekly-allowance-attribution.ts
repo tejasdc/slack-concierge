@@ -81,7 +81,36 @@ type Component={provider:string;account:string;window:string;usedPercent:number|
   coverage:{from:string|null;through:string|null;observedDeltaPercent:number|null;transcriptWeighted:number;
     totalTranscriptWeighted:number;uncoveredTranscriptWeighted:number;complete:boolean;periods:number;
     otherProviderUseUnknown:true;bucketMinutes:15}};
-type Projection={usedPercent:number|null;basis:'estimated'|'unavailable';components:Component[];rawTokens:Raw;callCount:number};
+type Combined={usedPercent:number|null;currentPeriodPercent:number|null;accounts:number;complete:boolean};
+type Projection={usedPercent:number|null;basis:'estimated'|'unavailable';components:Component[];rawTokens:Raw;callCount:number;
+  combined:Combined&{byProvider:(Combined&{provider:string})[]}};
+
+/**
+ * One weekly figure for work, across every subscription he pays for: each account's estimated
+ * share added up and divided by the number of accounts with a current weekly reading, so it reads
+ * as a share of his whole weekly allowance. Each account counts as one equal unit, as he counts
+ * them ("we have 3 Claude accounts and only 2 Codex accounts ... aggregated usage per provider",
+ * 2026-11-16); the same rule within one provider gives the per-provider figures. Tejas asked on
+ * 2026-11-16 for this one aggregate everywhere, with accounts only when he opens the breakdown.
+ */
+function combine(components:Component[],capacity:Map<string,number>,provider?:string):Combined{
+  const parts=components.filter(part=>part.window==='Weekly'&&part.basis==='estimated'&&(!provider||part.provider===provider));
+  const accounts=provider?capacity.get(provider)??0:[...capacity.values()].reduce((sum,count)=>sum+count,0);
+  const total=(pick:(part:Component)=>number|null)=>{
+    const values=parts.map(pick).filter((value):value is number=>value!==null);
+    return accounts>0&&values.length?values.reduce((sum,value)=>sum+value,0)/accounts:null;
+  };
+  return {usedPercent:total(part=>part.usedPercent),currentPeriodPercent:total(part=>part.currentPeriodPercent),accounts,
+    complete:parts.every(part=>part.coverage.complete)};
+}
+/** Accounts that count toward the combined figure: a weekly meter with a fresh current reading and a known account. */
+function weeklyCapacity(allMeters:Map<string,Meter>):Map<string,number>{
+  const capacity=new Map<string,number>();
+  for(const meter of allMeters.values())
+    if(meter.window==='Weekly'&&!meter.account.startsWith('unknown')&&meter.currentIndex!==null&&meter.currentIndex!==undefined)
+      capacity.set(meter.provider,(capacity.get(meter.provider)??0)+1);
+  return capacity;
+}
 type Share={covered:Map<number,number>;uncovered:number};
 type Accumulator={raw:Raw;calls:number;weighted:Map<string,Share>};
 const accumulator=():Accumulator=>({raw:blank(),calls:0,weighted:new Map()});
@@ -110,7 +139,10 @@ function projection(value:Accumulator,allMeters:Map<string,Meter>):Projection{
         otherProviderUseUnknown:true,bucketMinutes:15}};
   }).sort((a,b)=>a.provider.localeCompare(b.provider)||a.account.localeCompare(b.account)||a.window.localeCompare(b.window));
   const only=components.length===1?components[0]:null;
-  return {usedPercent:only?.usedPercent??null,basis:only?.basis??'unavailable',components,rawTokens:value.raw,callCount:value.calls};
+  const capacity=weeklyCapacity(allMeters);
+  return {usedPercent:only?.usedPercent??null,basis:only?.basis??'unavailable',components,rawTokens:value.raw,callCount:value.calls,
+    combined:{...combine(components,capacity),byProvider:[...capacity.keys()].sort()
+      .map(provider=>({provider,...combine(components,capacity,provider)}))}};
 }
 
 /** How many unlinked sessions each account names; the rest are counted, not listed. */
@@ -192,8 +224,17 @@ export function attributeWeeklyAllowance(report:any,readings:Reading[],nowMs=Dat
         weeklyAllowance:projection(accountSessions.get(JSON.stringify([account.provider,account.account,
           session.address??(session.providerConversationId?`outside:${session.providerConversationId}`:'unassigned')]))??accumulator(),allMeters)}))};
   });
+  // The measured reading behind the combined figure: every counted account's own weekly reading, averaged.
+  const counted=[...allMeters.values()].filter(meter=>meter.window==='Weekly'&&!meter.account.startsWith('unknown')
+    &&meter.currentIndex!==null&&meter.currentIndex!==undefined);
+  const average=(list:Meter[])=>list.length?list.reduce((sum,meter)=>sum+meter.usedPercent,0)/list.length:null;
+  const combinedWeekly={usedPercent:average(counted),accounts:counted.length,
+    byProvider:[...new Set(counted.map(meter=>meter.provider))].sort().map(provider=>{
+      const own=counted.filter(meter=>meter.provider===provider);
+      return {provider,usedPercent:average(own),accounts:own.length};
+    })};
   const {attributionBuckets:_,...rest}=report;
-  return {...rest,accounts,sessionAllowanceById,threadAllowanceById,
+  return {...rest,accounts,combinedWeekly,sessionAllowanceById,threadAllowanceById,
     byThread:Object.entries(threadAllowanceById).filter(([id])=>id!=='unassigned').map(([topicId,weeklyAllowance])=>({topicId,weeklyAllowance})),
     byRoutine:Object.entries(routineAllowanceById).map(([rootId,weeklyAllowance])=>({rootId:Number(rootId),weeklyAllowance,
       byDay:[...routineDays].filter(([id])=>JSON.parse(id)[0]===Number(rootId)).map(([id,value])=>({date:JSON.parse(id)[1],weeklyAllowance:projection(value,allMeters)}))})),

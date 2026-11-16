@@ -1138,7 +1138,14 @@ provider's current reset period alone (null when that period has no fresh measur
 is what the Accounts bar divides: the account's reading restarts at each reset, so a seven-day
 estimate would describe the previous week's work. A call is assigned to a topic only when its exact turn input
 has a recorded request topic, attached thread link, or topic root; work without
-that evidence stays unassigned. Each account also carries `notInThread`: its unassigned
+that evidence stays unassigned. Every projection also carries `combined`: one weekly figure across his subscriptions, each
+account's estimated share added up and divided by the number of accounts with a current weekly
+reading (`accounts`), plus the same per provider in `combined.byProvider`. Each account counts as
+one equal unit, as he counts them ("3 Claude accounts and only 2 Codex accounts ... aggregated
+usage per provider", 2026-11-16); he asked that day for this one aggregate everywhere, with
+accounts only when he opens the breakdown. The report and the Accounts overview carry
+`combinedWeekly`, the counted accounts' own readings averaged, overall and per provider.
+Each account also carries `notInThread`: its unassigned
 use by what started it (`byTrigger`) and its 12 largest unassigned sessions (`bySession`,
 with title, address and the triggers behind each, plus `sessionCount`), because Tejas asked
 on 2026-11-16 which sessions make up "Not in a thread" and why they had no thread. A trigger

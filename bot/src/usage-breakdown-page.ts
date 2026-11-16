@@ -13,7 +13,7 @@ type Raw={input:number;cacheWrite:number;cacheWrite1h:number;cacheRead:number;ou
 type Measured={model:string;weighted:number;raw:Raw;calls:number;helperWeighted:number;helperRaw:Raw;helperCalls:number};
 type Component={provider:string;account:string;window:string;usedPercent:number|null;currentPeriodPercent?:number|null;
   basis:string;coverage?:{complete?:boolean}};
-type Projection={usedPercent:number|null;basis:string;components:Component[]};
+type Projection={usedPercent:number|null;basis:string;components:Component[];combined?:any};
 
 /** Conversations listed one by one; the rest are summed per account and project. */
 export const PAGE_SESSIONS=200;
@@ -29,7 +29,8 @@ function compactProjection(value:any):Projection|null{
   return {usedPercent:value.usedPercent??null,basis:value.basis,components:(value.components??[])
     .filter((part:any)=>part.basis==='estimated')
     .map((part:any)=>({provider:part.provider,account:part.account,window:part.window,usedPercent:part.usedPercent??null,
-      currentPeriodPercent:part.currentPeriodPercent??null,basis:part.basis,coverage:{complete:part.coverage?.complete}}))};
+      currentPeriodPercent:part.currentPeriodPercent??null,basis:part.basis,coverage:{complete:part.coverage?.complete}})),
+    combined:value.combined};
 }
 
 function session(row:any){
@@ -51,7 +52,17 @@ function sumProjections(values:(Projection|null)[]):Projection|null{
   }
   const components=[...parts.values()];
   if(!components.length)return null;
-  return {usedPercent:components.length===1?components[0]!.usedPercent:null,basis:'estimated',components};
+  const added=(list:any[])=>{
+    const sum=(key:'usedPercent'|'currentPeriodPercent')=>list.some(item=>item?.[key]!==null&&item?.[key]!==undefined)
+      ?list.reduce((total,item)=>total+(item?.[key]??0),0):null;
+    return {usedPercent:sum('usedPercent'),currentPeriodPercent:sum('currentPeriodPercent'),accounts:list.find(Boolean)?.accounts??0,
+      complete:list.every(item=>item?.complete!==false)};
+  };
+  const combined=values.map(value=>(value as any)?.combined).filter(Boolean);
+  const providers=[...new Set(combined.flatMap((item:any)=>item.byProvider.map((part:any)=>part.provider)))].sort() as string[];
+  return {usedPercent:components.length===1?components[0]!.usedPercent:null,basis:'estimated',components,
+    ...(combined.length?{combined:{...added(combined),byProvider:providers.map(provider=>({provider,
+      ...added(combined.map((item:any)=>item.byProvider.find((part:any)=>part.provider===provider)))}))}}:{})};
 }
 
 function remainder(project:string|null,rows:any[]){

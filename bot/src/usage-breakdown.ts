@@ -119,6 +119,7 @@ function allowanceOverview(report:Record<string,any>){
   const threads=[...(report.byThread??[])].sort((a:any,b:any)=>largest(b.weeklyAllowance)-largest(a.weeklyAllowance));
   return {accounts:(report.accounts??[]).map((account:any)=>({provider:account.provider,account:account.account,
       weeklyAllowance:account.weeklyAllowance??null,notInThread:account.notInThread??null})),
+    combinedWeekly:report.combinedWeekly??null,
     byThread:threads.slice(0,OVERVIEW_THREADS),threadCount:threads.length,
     unassignedThread:report.unassignedThread??null,byRoutine:report.byRoutine??[],byDay:report.byDay??[]};
 }
