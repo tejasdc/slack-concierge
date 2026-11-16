@@ -50,6 +50,7 @@ const recoverCustodySuccessor=(input:any,client:CodexAppServerClientLike)=>recov
 const {SessionExecutionHost}=await import('../src/session-execution-host');
 const {ActiveTurnDispatchRegistry}=await import('../src/turn-dispatch-seams');
 const {runCodexTurn}=await import('../src/codex');
+const {dispatchModelForTurn}=await import('../src/astra-turn-gate');
 let stopHost:(()=>Promise<void>)|null=null;
 
 let constructionCount=0,spentAtNativeSend:string|null=null,runModelGateDuringSend=()=>{},markNativeSent!:()=>void;
@@ -250,6 +251,8 @@ try {
    const preserved=coordinator.modelStartGate({providerSessionId:'successor-native-thread',model:'gpt-6-astra',providerTurnId,
      ownerTurnId:claim.turn_id,sourceRunId:nativeRunId(claim.turn_id)});
    assert.deepEqual(preserved,{known:true,allowed:true},'the exact running successor retains Astra Medium without a fabricated human choice');
+   {assert.equal(dispatchModelForTurn({sessionId:custody.successor_session_id,turnId:claim.turn_id,inputId:db.query('SELECT accepted_input_id FROM turns WHERE id=?').get(claim.turn_id).accepted_input_id,model:'gpt-6-astra',
+      providerSessionId:'successor-native-thread',dispatchAttempt:1}),'gpt-6-astra','a custody placement stays on Astra Medium at dispatch');}
    assert.equal(db.query("SELECT COUNT(*) AS n FROM session_owner_events WHERE session_id=? AND kind='model_escalation'").get(custody.successor_session_id).n,0,
      'successor preservation does not manufacture a human escalation choice');
    const wrongThread=coordinator.modelStartGate({providerSessionId:'another-native-thread',model:'gpt-6-astra',providerTurnId,

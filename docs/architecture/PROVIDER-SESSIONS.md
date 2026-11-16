@@ -790,6 +790,17 @@ the next provider start. A later model change replaces that exemption; the
 native Astra prompt check compares the current session model with its recorded
 authorization so an older selection cannot authorize a new prompt after a
 change away from Astra.
+The Astra rule is one owner decision with two callers: the prompt hook (above) and
+Concierge's own dispatch. Before it starts a turn on a session bound to Astra, Concierge
+asks the same rule. A turn it would refuse runs on GPT-6.1 Sol for that turn only (same
+native thread, same reasoning effort, the model sent on the turn's start request), records
+a `model_substitution` event with the rule's reason, and leaves the stored binding alone, so
+a later turn Tejas explicitly gives Astra still runs on Astra. Custody successors keep their
+plan's Astra Medium. Without this, the hook's refusal made Codex end the turn without
+recording its input and the work looked silently lost. Any refusal the hook still returns is
+recorded as `model_start_denied` for that turn, and a parked unacknowledged turn then says
+"Blocked by the Astra escalation check" with the reason instead of the generic text.
+Failure record: `docs/incidents/2026-11-16-astra-gate-silently-blocked-agent-work.md`.
 It rejects an unexplained Astra prompt; the wrapper still checks command-line
 starts. The usage report flags transcript Fable/Astra calls that lack a matching
 record, including a newly discovered bypass.

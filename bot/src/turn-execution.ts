@@ -12,6 +12,7 @@ import {providerAccountUsage,type ProviderUsage} from './provider-account-usage'
 import {warmClaudeAccount} from './prompt-cache-lifetime';
 import {yieldBankedTurn} from './saved-work';
 import {recordSessionEvent,sessionMetadata,updateSessionMetadata} from './session-inputs';
+import {dispatchModelForTurn} from './astra-turn-gate';
 import {codexRelayRunner} from './codex-app-server-client';
 import {runnerMachineCall} from './runner-machine-calls';
 import {claudeAccountSelection} from './provider-account-selection';
@@ -367,6 +368,14 @@ function moveAutomaticFirstTurnOffRefusingModel(input:TurnExecutionInput,dispatc
   })();
 }
 
+/** The Astra check refuses a prompt through Codex's hook, which ends the turn without a word; the owner's record of that refusal says why. */
+export function astraDenialStatus(turnId:number):string|null {
+  const row=db.query("SELECT payload_json FROM session_owner_events WHERE turn_id=? AND kind='model_start_denied' ORDER BY sequence DESC LIMIT 1")
+    .get(turnId) as {payload_json:string}|null;
+  const message=row?JSON.parse(row.payload_json).message:null;
+  return typeof message==='string'&&message?`Blocked by the Astra escalation check: ${message}`:null;
+}
+
 export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnExecutionOutcome> {
   const turnStart = Date.now();
   const dispatchAttempt = input.dispatchAttempt
@@ -712,6 +721,10 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       setTurnReplayInput(input.turnId,providerPrompt,input.unreplayableAttachmentCount??0);
     // An adopted run's account was recorded when it started.
     let accountRecorded=!!input.adopted;
+    const dispatchModel=input.presentation==='native'&&input.providerId==='codex'&&!input.adopted
+      ?dispatchModelForTurn({sessionId:input.session.id,turnId:input.turnId,inputId:input.inputId,model:input.model,
+        providerSessionId:input.session.agent_session_uuid??'',dispatchAttempt})
+      :input.model;
     const result = await input.provider.run({
       // Claude Code snapshots system instructions on the first turn. Put the changing
       // allowance reading in this turn's message so each resumed run receives it.
@@ -721,7 +734,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       additionalDirs: preparedTurn.additionalDirs,
       sessionUUID: input.session.agent_session_uuid || (input.session.provider_id === 'chatgpt' ? sessionMetadata(input.session).nativeBinding?.sessionId : null) || null,
       systemPrompt: preparedTurn.systemPrompt,
-      model: input.providerId === "claude-code" ? claudeLaunchModel??undefined : input.model,
+      model: input.providerId === "claude-code" ? claudeLaunchModel??undefined : dispatchModel,
+      ...(dispatchModel!==input.model?{turnModelOverride:dispatchModel}:{}),
       onPreferredModel: (model) => recordTurnPreferredModel(input.turnId, input.ownerInstanceId, model),
       reasoning_effort: input.reasoningEffort,
       clientUserMessageId: nativeInputClientMessageId(input.turnId,dispatchAttempt),
@@ -1447,7 +1461,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
               : structuredFailure?.failureClass === "parked_access"
               ? undefined
               : (error instanceof Error?error.message:String(error)).startsWith('CODEX_INPUT_NOT_ACKNOWLEDGED:')
-              ? `Status: parked - Codex completed without acknowledging this accepted input or producing work; the original input is preserved for exact transcript-verified recovery with sessions codex-recover <original-request-id>`
+              ? (()=>{const denial=astraDenialStatus(input.turnId);
+                return denial?`Status: parked - ${denial}; the original input is preserved`
+                  :`Status: parked - Codex completed without acknowledging this accepted input or producing work; the original input is preserved for exact transcript-verified recovery with sessions codex-recover <original-request-id>`;})()
               : `Status: parked - provider dispatch failed; input preserved as turn ${input.turnId} until resumed`,
           });
       if (!preserved) throw new Error("Provider dispatch failure could not be durably preserved.");
