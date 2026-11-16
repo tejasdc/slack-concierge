@@ -17,7 +17,8 @@ import { log } from "./log";
 import { awaitingOutside } from "./storage-observation";
 
 const CALL_TIMEOUT_MS = 15_000;
-type Pending = { resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> };
+export type RunnerMachineAnswerIdentity = Readonly<Record<string, unknown>>;
+type Pending = { method:string; observeAnswer?: (identity:RunnerMachineAnswerIdentity|null)=>void; resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> };
 type Channel = { socket: WebSocket; open: Promise<void>; pending: Map<number, Pending> };
 const channels = new Map<string, Channel>();
 let nextId = 0;
@@ -25,6 +26,12 @@ let nextId = 0;
 export class RunnerUnreachableError extends Error {}
 /** The relay never accepted a request message, so this call cannot have acted on the runner. */
 export class RunnerCallNotSentError extends RunnerUnreachableError {}
+/** The responding process reports its loaded identity; absence on an old runner stays unknown. */
+export class RunnerMachineCallError extends Error {
+  constructor(message:string,readonly method:string,readonly answeringRunner:RunnerMachineAnswerIdentity|null,readonly code:string|number|null,readonly phase:string|null) {
+    super(message);this.name='RunnerMachineCallError';
+  }
+}
 
 function requestSocket() {
   return join(realpathSync(process.env.CONCIERGE_STATE_DIR!), "requests.sock");
@@ -51,7 +58,11 @@ function channel(runner: string): Channel {
     const call = pending.get(message?.id);
     if (!call) return;
     pending.delete(message.id); clearTimeout(call.timer);
-    if (message.error !== undefined) call.reject(new Error(String(message.error)));
+    const identity=message.answeringRunner&&typeof message.answeringRunner==='object'&&!Array.isArray(message.answeringRunner)?message.answeringRunner:null;
+    call.observeAnswer?.(identity);
+    if (message.error !== undefined) call.reject(new RunnerMachineCallError(String(message.error),call.method,identity,
+      typeof message.errorCode==='string'||typeof message.errorCode==='number'?message.errorCode:null,
+      typeof message.errorPhase==='string'?message.errorPhase:null));
     else call.resolve(message.result);
   };
   const made = { socket, open, pending };
@@ -64,7 +75,8 @@ function channel(runner: string): Channel {
  * within `timeoutMs` (opening the channel included). A launch passes a longer limit than the
  * runner's own supervisor wait, so a slow start is answered rather than abandoned.
  */
-export async function runnerMachineCall<T = any>(runner: string, method: string, params: Record<string, unknown>, timeoutMs = CALL_TIMEOUT_MS): Promise<T> {
+export async function runnerMachineCall<T = any>(runner: string, method: string, params: Record<string, unknown>, timeoutMs = CALL_TIMEOUT_MS,
+  observeAnswer?: (identity:RunnerMachineAnswerIdentity|null)=>void): Promise<T> {
   const current = channel(runner);
   const id = ++nextId;
   // The answer comes from another process, so the time is awaited, never owner slowness: a project
@@ -80,7 +92,7 @@ export async function runnerMachineCall<T = any>(runner: string, method: string,
     }, timeoutMs);
     current.open.then(() => {
       if (expired) return; // never sent: a late send after the caller gave up would act unseen
-      current.pending.set(id, { resolve, reject, timer });
+      current.pending.set(id, { method, observeAnswer, resolve, reject, timer });
       try { current.socket.send(JSON.stringify({ id, method, params })); sent=true; }
       catch (error) { current.pending.delete(id); clearTimeout(timer); reject(new RunnerUnreachableError(String(error))); }
     }, error => { clearTimeout(timer); reject(new RunnerCallNotSentError(String(error))); });
@@ -97,14 +109,16 @@ export function closeRunnerMachineCalls() {
  * The runner's side of one channel: answer each call with `handle`, in any order. A handler's error
  * becomes the call's error; the channel stays open.
  */
-export function serveRunnerMachineCalls(socket: WebSocket, handle: (method: string, params: any) => Promise<unknown>) {
+export function serveRunnerMachineCalls(socket: WebSocket, handle: (method: string, params: any) => Promise<unknown>,answeringRunner?:RunnerMachineAnswerIdentity) {
   socket.onmessage = event => {
     let message: any;
     try { message = JSON.parse(String(event.data)); } catch { return; }
     if (typeof message?.id !== "number" || typeof message.method !== "string") return;
     void handle(message.method, message.params ?? {}).then(
-      result => ({ id: message.id, result: result ?? null }),
-      error => ({ id: message.id, error: error instanceof Error ? error.message : String(error) }),
+      result => ({ id: message.id, result: result ?? null, ...(answeringRunner?{answeringRunner}:{}) }),
+      error => ({ id: message.id, error: error instanceof Error ? error.message : String(error),
+        ...(typeof error?.code==='string'||typeof error?.code==='number'?{errorCode:error.code}:{}),
+        ...(typeof error?.phase==='string'?{errorPhase:error.phase}:{}),...(answeringRunner?{answeringRunner}:{}) }),
     ).then(answer => {
       try { socket.send(JSON.stringify(answer)); }
       catch (error) { log("warn", "runner_machine_call_unanswered", { method: message.method, error: String(error) }); }

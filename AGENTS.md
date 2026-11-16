@@ -31,7 +31,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   Native release acceptance explicitly selects the host's GNU timeout dependency;
   see [durability acceptance](docs/architecture/PROTECTED-DURABILITY-OBSERVATION.md#isolated-acceptance-and-live-gate).
 - Mac disk upkeep shares the existing automatic update job; log retention, identity staging,
-  finished-worktree proof, pressure notices and receipts live in
+  finished-worktree proof, pressure notices and partial-effect receipts live in
   [Mac disk maintenance](docs/runbooks/MAC-DISK-MAINTENANCE.md).
 - Provider-change handoffs move accepted inputs only under the exact safety rules in
   [session ownership](docs/architecture/SESSION-OWNER.md#provider-change-handoff).
@@ -138,6 +138,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - The explicit Astra Medium custody-successor mode preserves the original reminder and
   attempts, commits custody before native construction, and spends one shared allowance
   before admission. It has no cold-resume fallback; see the [custody-successor contract](docs/runbooks/ROUTER-ACTIONS.md#custody-successor-recovery).
+  Protected co-located relay association, runner preparation and worktree-inventory
+  diagnostics follow [the runner contract](docs/architecture/RUNNERS.md#codex-app-server-on-a-runner-built-off-until-concierge_codex_runner-is-set).
 - Final replies expire only questions linked to that dispatch; repair an older
   sibling expiry through the exact-event restoration described in the
   [native Inbox contract](docs/contracts/native-inbox.md).

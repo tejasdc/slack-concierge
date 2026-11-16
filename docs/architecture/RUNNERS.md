@@ -259,6 +259,41 @@ app server is the final deployment step for that property.
 
 ## Codex App Server on a runner (built, off until `CONCIERGE_CODEX_RUNNER` is set)
 
+Custody-successor recovery uses the configured relay through the separate
+`codex-app-server-protected-v1` target and `protected-open-v1` listener operation.
+An old runner cannot interpret that as an ordinary managing open. A protected
+pair requires an already-running native endpoint and skips daemon startup,
+tuning, scope changes and hook pruning. Ordinary connections retain their direct
+Bun WebSocket path and existing management behavior. They do not spawn the
+association child or Python probe and are not capturable as associated custody
+senders. Missing association holds custody; it never fails ordinary traffic.
+A covered predecessor needs its own explicit protected connection. A later
+connection cannot upgrade an ordinary sender's proof.
+
+The pair carries its own correlated association envelope before native traffic:
+pair/challenge, serving runner incarnation and loaded helper identity, actual
+connected native peer incarnation and namespace identities, and effective runner
+preparation. The runner's per-pair Node WebSocket helper obtains credentials from
+that connected Unix descriptor; it does not open another socket to infer the
+peer. The owner bridge consumes the envelope. Custody witnesses retain it with
+their existing client/sender/generation identity and validate shared observation
+namespaces. Each applicable captured predecessor generation needs its own
+association; a new listener or connection cannot attest an old pair.
+
+The committed construction plan binds the runner transformation actually applied
+to shell/helper settings. Required protected hook-pin failure prevents native
+turn forwarding. Reconnection supplies no mutation authority, and exact Stop
+keeps its exact-turn association checks without requiring productive quiescence.
+This supports demonstrated co-location, not general remote-runner custody.
+
+Worktree inventory keeps the registered runner project and exact provider/account
+transcript association. It streams that transcript against Git's known worktree
+paths rather than allocating the whole transcript or refusing it by file size.
+Failures retain project/query/parse phase, original nonsecret error, selection
+provenance, resolved location and answering implementation identity when available.
+An omission still prevents custody commitment; it is never an empty substitute
+inventory or a local-directory fallback.
+
 Codex turns do not use a per-turn host: one long-lived Codex App Server holds every thread, and
 Concierge talks JSON-RPC to it over a WebSocket on its local control socket through a small Node
 bridge (`codex-app-server-bridge.mjs`). Custody already rests on that daemon (a later owner follows a
