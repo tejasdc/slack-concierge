@@ -1255,9 +1255,15 @@ export class SessionCommunicationCoordinator {
             if(saved.duplicate)return {...JSON.parse(saved.input.receipt_json??'{}'),duplicate:true};
             if(turnDeclaredByAction(actor.turn,actor.session,actor.inputId))
                 throw new Error('This turn already declared the outcome for this input by action.');
+            let journalFailure:unknown;
+            if(journalPending&&input.outcome==='failed'){
+                this.fenced(this.actor(input.source));
+                if(!this.dependencies.owner)throw new Error('Journal recovery Inbox is unavailable; failure has not been handed off.');
+                journalFailure=this.dependencies.owner.failJournalProcessing({inputId:actor.inputId,runId:nativeRunId(actor.turn)},content);
+            }
             recordTurnOutcome({eventId:`turn_outcome:action:${saved.input.id}`,sessionId:actor.session,turnId:actor.turn,
                 inputId:actor.inputId,outcome:input.outcome,text:content||null,todoId,refuseUnreadable:true,quiet:quiet||null});
-            const receipt={state:'completed',outcome:input.outcome,inputId:actor.inputId};
+            const receipt={state:'completed',outcome:input.outcome,inputId:actor.inputId,...(journalFailure?{journalFailure}:{})};
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(receipt),saved.input.id);
             // A worker on an Inbox thread waiting on him reaches him through that thread; its own
             // needs_you is left to the Inbox by thnkr.ing, which would otherwise never hear of it.

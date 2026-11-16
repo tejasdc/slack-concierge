@@ -2803,6 +2803,23 @@ export class SessionOwner {
     return this.dispatch(saved.input);
   }
   /** The trusted thnkr.ing server wakes the existing keeper as a service, never as Tejas. */
+  failJournalProcessing(source:{inputId:string;runId:string},reason:string) {
+    const actor=agentTestSource(source)!;
+    const original=getAcceptedSessionInput(actor.inputId)!;
+    const obligation=JSON.parse(original.payload_json).journalProcessing;
+    if(!obligation)throw new Error('A journal processing failure requires a typed processing source.');
+    const id=`journal-processing-failure:${hash(actor.inputId)}`;
+    const prior=getAcceptedSessionInput(id);
+    const intent=prior??retainSessionInput({id,sessionId:actor.sessionId,scope:'journal-processing-failure',actionId:id,kind:'journal-processing-failure',origin:'agent',
+      sourceInputId:actor.inputId,sourceRunId:actor.runId,payload:{source:{kind:'agent-report',id,recordedAt:new Date().toISOString(),title:'Journal processing needs recovery',
+        metadata:{agentSource:{inputId:actor.inputId,runId:actor.runId},journalProcessingFailure:{rootId:obligation.rootId,inputId:actor.inputId,sourceArrivedAt:original.created_at,reason}}},
+        text:`Processing the saved journal source ${obligation.rootId} failed. Source input: ${actor.inputId}. Recover the original processing obligation without replaying accepted or uncertain effects.\n\n${reason}`}}).input;
+    if(intent.receipt_json)return JSON.parse(intent.receipt_json);
+    const accepted=this.acceptInboxCapture(JSON.parse(intent.payload_json));
+    const receipt={state:'failed',rootId:obligation.rootId,inputId:actor.inputId,reason:JSON.parse(intent.payload_json).source.metadata.journalProcessingFailure.reason,report:accepted.report};
+    db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify(receipt),intent.id);
+    return receipt;
+  }
   async reviewJournal(body:unknown,revalidate?:()=>void) {
     const input=object(body);only(input,['source','action_id','review']);
     const source=object(input.source);only(source,['input_id','run_id']);
