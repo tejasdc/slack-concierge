@@ -120,13 +120,17 @@ function settleUnacceptedProposals():void {
   }
 }
 
-/** Moved sessions still working: a proposal not yet settled, or a successor with work it can run. A
- * successor whose own provider later ran out holds its queue and no longer counts against the pace. */
+/** Moved sessions still working: a proposal not yet settled, or a successor still running or able to run
+ * the work the move carried (its handoff brief and moved inputs, all retained under the handoff's scope).
+ * A successor's later, unrelated work does not count: on 2026-11-16 a session moved on Nov 11 held one
+ * of the two slots for five days just by being busy, so Codex's wall moved one session instead of
+ * thirteen. A successor whose own provider later ran out holds its queue and no longer counts either. */
 function inFlight():number {
   return preparing+(db.query(`SELECT count(*) AS count FROM session_handoffs handoff WHERE handoff.action_id LIKE ?
-    AND (handoff.state='proposed' OR (handoff.state='accepted' AND EXISTS (SELECT 1 FROM turns
-      WHERE session_id=handoff.successor_session_id AND (status IN ('running','delivering')
-        OR (status='queued' AND COALESCE(dispatch_hold,'')<>'usage')))))`)
+    AND (handoff.state='proposed' OR (handoff.state='accepted' AND EXISTS (SELECT 1 FROM turns turn
+      JOIN session_inputs carried ON carried.id=turn.accepted_input_id AND carried.scope='handoff:'||handoff.id
+      WHERE turn.session_id=handoff.successor_session_id AND (turn.status IN ('running','delivering')
+        OR (turn.status='queued' AND COALESCE(turn.dispatch_hold,'')<>'usage')))))`)
     .get(`${ACTION_PREFIX}%`) as {count:number}).count;
 }
 
