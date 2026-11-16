@@ -47,6 +47,8 @@ const FIXTURE_WRITERS: Readonly<Record<string, readonly string[]>> = {
   'scripts/codex-resume-notice-fixture.ts': ["new Database(':memory:')"],
   'scripts/google-quota-disagreement-fixture.ts': ["new Database(':memory:')"],
   'scripts/topic-projection-fixture.ts': ["new Database(join(root,'presentation.db'))"],
+  // This mkdtemp-owned projection is intentionally made stale to exercise its real upgrade.
+  'scripts/inbox-prepared-lineage-fixture.ts': ["new Database(join(root,'presentation.db'))"],
   'scripts/owner-collection-growth-fixtures.ts': ["new Database(':memory:')", "new Database(':memory:')", "new Database(':memory:')"],
   'scripts/session-card-growth-fixtures.ts': ["new Database(':memory:')", "new Database(':memory:')"],
 };

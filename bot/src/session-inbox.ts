@@ -18,6 +18,9 @@ import type {InboxProducerKind} from './inbox-producer-sources';
 import {answerClosingLine} from './answer-closing-line';
 import {inboxAttribution} from './inbox-attribution-read';
 import {activePostCollapseSql} from './inbox-collapse-visibility';
+import {readInboxThreadLink} from './inbox-thread-link-read';
+export type {InboxThreadLink} from './inbox-thread-link-read';
+import type {InboxThreadLink} from './inbox-thread-link-read';
 
 export type InboxCapture = {
   source:{kind:InboxProducerKind;id:string;recordedAt:string;title?:string;metadata?:Record<string,unknown>};
@@ -216,17 +219,11 @@ export function inboxMessage(row:any) {
  * is an additive record: the retained input keeps its own bytes, the latest record wins,
  * and detaching returns the capture to its own row.
  */
-export type InboxThreadLink={inputId:string;root:string;thread:string;attached:boolean;routedBy:any;at:string};
 export function inboxThreadLink(sessionId:number,inputId:string):InboxThreadLink|null {
   // An accepted input keeps its identity when the Inbox router changes provider.
   // Its next placement may be recorded by the successor, so the latest event for
   // that exact input wins across the handoff chain.
-  const row=db.query(`SELECT payload_json,created_at FROM session_owner_events
-    WHERE kind='thread_link' AND input_id=? ORDER BY sequence DESC LIMIT 1`).get(inputId) as {payload_json:string;created_at:string}|null;
-  if(!row)return null;
-  const payload=JSON.parse(row.payload_json);
-  return {inputId,root:payload.root,thread:payload.thread,attached:payload.attached!==false,routedBy:payload.routedBy??null,
-    at:row.created_at.includes('T')?row.created_at:row.created_at+'Z'};
+  return readInboxThreadLink(db,inputId);
 }
 
 /**

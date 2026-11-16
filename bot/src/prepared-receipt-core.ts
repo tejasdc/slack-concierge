@@ -7,6 +7,7 @@ import {noticeTime} from './notice-time';
 import {inputProvenance,existingRunIdFor} from './input-provenance';
 import {receiptAttachmentProjection,type ReceiptAttachment} from './receipt-attachments';
 import {codexAccountSwitchProjection} from './codex-account-switch-receipt';
+import {readInboxThreadLink} from './inbox-thread-link-read';
 
 type SourceInput={id:string;session_id:number;kind:string;origin:string;source_input_id:string|null;
   source_run_id:string|null;
@@ -199,10 +200,7 @@ export function readCompactReceipt(source:Database,inputId:string):PreparedRecei
     alternatives:offer.alternatives.map(({alias,label,provider}:any)=>({alias,label,provider})),
     open:!offer.choice&&['queued','running'].includes(turn!.status),choice:offer.choice,chosenAt:offer.chosenAt,
     rerunSessionId:offer.rerunSessionId}:null;
-  const linkRow=input.origin==='human'?source.query(`SELECT payload_json FROM session_owner_events
-    WHERE session_id=? AND kind='thread_link' AND input_id=? ORDER BY sequence DESC LIMIT 1`)
-    .get(input.session_id,input.id) as {payload_json:string}|null:null;
-  const link=linkRow?json(linkRow.payload_json) as ThreadLink:null;
+  const link=input.origin==='human'?readInboxThreadLink(source,input.id):null;
   const attachmentProjection=receiptAttachmentProjection(source,input.kind,json(input.payload_json));
   return compactReceiptFromFacts(input,turn,steering,conversation,stopped?.status??null,
     {kind:'exact',statusDetail,providerOutage,attachments:attachmentProjection.attachments,

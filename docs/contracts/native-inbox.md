@@ -996,9 +996,20 @@ left behind by a failover or stand-in bind cannot drop out of view (failure reco
 Because the Stop check only runs when the router ends a turn, the owner's thread-upkeep pass
 (the provider-usage reading cadence, about every three minutes) wakes an idle router with one
 `unfiled-wake:` service input per set of captures unfiled for 10 minutes, the age thnkr.ing
-labels "Never filed". A capture still unfiled at 30 minutes while the router is not running a
-turn records a `stuck_work` repair notice (`inbox-unfiled:<root>`) for the repair agent, since
-the router is then evidently unable to file; filing it resolves the notice.
+labels "Never filed". At the first upkeep pass after 30 minutes, a separate inspection input
+reaches the current router even while it has running or queued work. A running turn may have
+started before those captures arrived, so waiting for its eventual Stop check is insufficient.
+The input is retained once per current router, milestone and exact overdue-root set; another
+pass or restart reuses that identity, while a successor router receives its own inspection.
+It asks the router to check current filing and work receipts, never to replay accepted work.
+Thirty minutes uses the earlier threshold Tejas requested instead of waiting an hour; this
+reuses the existing upkeep cadence and adds no timer, agent schedule or notification to him.
+A capture still unfiled at 30 minutes while the router is not running a turn also records a
+`stuck_work` repair notice (`inbox-unfiled:<root>`) for the repair agent, since the router is
+then evidently unable to file; filing it resolves the notice. The existing wake log records
+the milestone, running state and count; a retained inspection input proves admission, not
+that the router has processed it. See the
+[repeated waiting failure](../incidents/2026-11-15-filed-inputs-still-waiting-in-inbox.md).
 
 `/session-communication/owed` returns `unfiled` beside its existing reply obligations.
 For Inbox runs, its retained filing projection runs in the existing private read
