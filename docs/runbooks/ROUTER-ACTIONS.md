@@ -642,6 +642,10 @@ can route its own attributed follow-up with `sessions board post --thread <handl
 before activation; repeating its source/action identity reuses the same post and invocations.
 An explicit empty selection is passive, including for the thread coordinator. The thread's
 coordinator is distinct from the Inbox and can synthesize or route through this same command.
+The Lab surface can add or remove voices later. Membership updates affect future selections;
+accepted responses retain their original roster and conditions, and adding a voice alone
+starts no turn. A selected newcomer sees the shared discussion through the selected entry.
+Participants receive group context and a concise default, while full original answers remain retained.
 
 **Discussing in the Lab.** `sessions board read|thread|post|claim|reveal|close|product|cite|link …` with the
 run's source pair (and a stable `--action-id` for changes) reads and writes the lab record in thnkr.ing (/lab):

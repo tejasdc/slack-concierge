@@ -14,6 +14,9 @@ and Mac; comparison does not assert equal private histories or equal source mate
   a deterministic invocation ID and an ordinary accepted service input. A published
   answer is keyed by that invocation and its retained terminal event. Retries compare
   identities and payloads, never text similarity.
+  Roster updates append immutable membership revisions and compare the expected
+  current revision before advancing a retained head pointer. Each activation pins an
+  immutable membership record; old outputs never look up today's roster conditions.
 - **Acceptance:** conversation recorded → exact context frozen → ordinary provider input
   admitted → original provider output retained → journal publication acknowledged.
   Each fact has a separate status. No admission receipt claims publication.
@@ -37,6 +40,9 @@ and Mac; comparison does not assert equal private histories or equal source mate
 - **Falsifying check:** disposable fixture restarts between admission and output, loses
   a publication response after its effect, repeats create/respond, supplies a wrong
   output identity, and verifies independent initial prompts and selected-only activation.
+  It also removes a voice during an accepted run, adds a new voice without starting it,
+  targets the newcomer after intervening discussion, and retries stale or duplicate
+  roster changes without changing already-accepted conditions.
 
 ## Context and answer custody
 
@@ -46,6 +52,13 @@ An existing session keeps its history, which is disclosed rather than called fre
 Later explicit activations freeze the visible discussion through the exact triggering
 entry. Newer posts cannot enter that invocation after acceptance. Passive posts wake
 nobody, including the thread coordinator.
+Adding or removing a voice changes only future selections. A removed voice's accepted
+or running invocation remains attributable to its original roster revision. Re-adding
+the same session creates another revision and never rewrites its old instructions.
+Added sessions start no provider turn until explicitly selected, then receive the
+shared discussion through their triggering entry rather than an independent opening.
+All participants are told this is a group conversation: concise, direct responses are
+the default, with depth when the human asks. The retained provider answer is never trimmed.
 Each reader keeps its own sealed visibility; later activations never reuse another
 participant's context. The Lab's canonical read projection withholds other initial
 answers from a still-independent reader while the human can see answers as they arrive.
@@ -79,14 +92,32 @@ existing NotebookLM skill when its explicit instructions request that approach.
   activation states; `before` pages older activations through a scope/rowid index.
 - `POST /sessions/v1/lab/conversations/:thread/respond` freezes the triggering entry and
   exact canonical session IDs in `targets`; `[]` admits no provider work.
+- `POST /sessions/v1/lab/conversations/:thread/participants` accepts `clientActionId`,
+  `expectedRevision`, `add` choices and canonical session IDs in `remove`. Duplicate
+  accepted actions return their original change identity and revision before checking
+  the stale precondition. The current view exposes `membershipRevision` and its roster;
+  `GET .../:thread/memberships/:revision` resolves an exact immutable past revision.
+  The coordinator is stable, and membership updates do not cancel accepted work.
 - `GET .../:thread/requests/:requestId` proves an exact retained invocation even before
   context loading. `GET .../:thread/responses/:requestId/:eventId` proves one original
   acknowledged terminal answer, its immutable provider admission and binding event.
 - On the existing configured Thinkering capability transport,
   `/session-capabilities/lab/records/:thread` bootstraps the immutable opening;
-  `POST .../binding` acknowledges the journal membership; `GET .../response-context`
+  `POST .../binding {membershipRevision}` acknowledges that exact journal membership;
+  both its acknowledgement and `GET .../response-context` echo the verified revision.
+  Historical revisions remain provable when an older invocation continues.
+  `GET .../response-context`
   resolves the participant's exact entry interval; `POST .../responses` publishes by
   invocation/event identity. These calls never supply arbitrary author or answer bytes.
+
+The authenticated gateway's run or runner principal always requires an exact live
+source pair for create, respond and roster mutations. A run principal must also match
+the pair's session and turn; omitting provenance cannot become a human action. Original
+answer verification is reserved for the trusted publication service entrance and is
+refused to authenticated agent or marked browser callers, including through the native
+read worker. Public journal reads retain their separate participant-aware projection.
+The owner model catalogue publishes ChatGPT thinking levels from its existing validator
+source; clients do not import the browser adapter or maintain a second option list.
 
 Original admitted answers remain publishable when the human later changes a session's
 model. A new invocation refuses provider/model/effort/project/generation drift before
@@ -95,6 +126,9 @@ identity are visible failure states and never trigger a replacement provider cal
 The generic terminal-continuation path refuses an exact typed Lab invocation: a new
 unbound turn cannot outlive the failed comparison. Ordinary in-turn retries and
 existing-execution reconciliation keep their original accepted identity.
+If a queued invocation's binding drifts before admission, the existing guarded service
+withdrawal revokes that provably unstarted input before reporting refusal. Restoring
+metadata later cannot leave the refused input hidden in the queue.
 Publication disconnects retry only the same original event. Permanent refusals stay
 visible, and an unavailable provider holds the exact accepted input without substitution.
 
@@ -102,4 +136,8 @@ The build runs `bot/scripts/lab-conversations-fixture.ts` against an isolated le
 It exercises the real queue, execution host and ChatGPT adapter with a deterministic
 external-provider transport, plus restart/publication loss, source substitution,
 per-reader contexts, selected routing, source markers, model policy and shutdown.
+The actual authenticated foreground gateway and canonical read workers exercise the
+principal/source mismatch and original-output isolation refusals. Roster checks cover
+compare-and-set, duplicate updates, removal during execution, passive provisioning and
+newcomer context with unchanged source material and instructions.
 That fixture is source acceptance, not a live browser or real-provider claim.

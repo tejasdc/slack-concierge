@@ -18,7 +18,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 
 ## Architecture
 
-- [Selective Lab conversations](architecture/LAB-CONVERSATIONS.md) — independent initial answers, explicit selected follow-ups, participant conditions and original provider-output custody.
+- [Selective Lab conversations](architecture/LAB-CONVERSATIONS.md) — independent initial answers, revisioned add/remove rosters, explicit selected follow-ups, participant conditions and original provider-output custody.
 
 - [Unified session ownership](architecture/SESSION-OWNER.md) — the sole session/input/request ledger, authenticated Thinkering surface, removable Slack adapter, native controls, source custody and consultation policy.
 - [Runners and the owner on its own app server](architecture/RUNNERS.md) — what ties the owner to the agents' machine, the agents' network entrance with signed tokens, the runner lease protocol and the cut that moves turns onto runners.

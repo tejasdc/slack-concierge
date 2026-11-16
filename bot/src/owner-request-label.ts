@@ -2,7 +2,7 @@ import {ownerGetPolicy} from './owner-get-policy';
 
 /** GET labels are the reader contract, never a second list of its static words. */
 const mutationPaths=[
- '/lab/conversations','/lab/conversations/:id/respond',
+ '/lab/conversations','/lab/conversations/:id/respond','/lab/conversations/:id/participants',
  '/sessions','/sessions/:id/inputs','/sessions/:id/stop','/sessions/:id/actions',
  '/sessions/:id/actions/:id/cancel','/sessions/:id/outage-choice','/sessions/:id/message-actions','/sessions/:id/input','/sessions/:id/title',
  '/sessions/:id/forks','/sessions/:id/comparisons','/sessions/:id/tasks',

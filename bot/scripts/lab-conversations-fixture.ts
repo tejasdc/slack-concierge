@@ -19,14 +19,14 @@ async function child(){
  let lab:any;
  const ports:any={
   bootstrap:async()=>({version:1,state:{owner:`concierge:${coordinator.id}`},entries:[opening]}),
-  prepare:async(choice:any)=>{assert.ok(choice.sessionId);return {choice,sessionId:Number(choice.sessionId.slice(10))};},
+  prepare:async(choice:any)=>choice.sessionId?{choice,sessionId:Number(choice.sessionId.slice(10))}:{choice,provider:'codex',metadata:{summary:undefined,title:choice.label,purpose:'chat',model:choice.model,reasoningEffort:choice.reasoningEffort,cwd:process.env.CONCIERGE_STATE_DIR!,project:process.env.CONCIERGE_STATE_DIR!,origin:'native'}},
   sources:async(refs:any[])=>refs.map(reference=>({reference,text:'Actual selected source material.',sha256:hash('Actual selected source material.')})),
-  bind:async(thread:string)=>({version:1,thread,bound:true}),
+  bind:async(thread:string,membershipRevision:number)=>({version:1,thread,membershipRevision,bound:true}),
   context:async({thread,entryId,sessionId,requestId,independent,signal}:any)=>{
    assert.equal(lab.requestFacts(thread,requestId).sessionId,sessionId,'descriptor exists before context crosses the service boundary');
    if(sessionId===blockSession)await new Promise<void>((resolve,reject)=>{releaseBlock=resolve;signal.addEventListener('abort',()=>reject(new Error('stopped')),{once:true});});
-   return {version:1,thread,entryId,sessionId,responseTargets:lab.requestFacts(thread,requestId).responseTargets,
-    entries:independent?[opening]:[{id:`sealed-${sessionId}`,text:`Only ${sessionId} can see this sealed contribution.`},{id:entryId,text:'The exact selected follow-up.'}]};
+   return {version:1,thread,entryId,sessionId,membershipRevision:lab.requestFacts(thread,requestId).membershipRevision,responseTargets:lab.requestFacts(thread,requestId).responseTargets,
+    entries:independent?[opening]:[...(thread==='roster'?[opening,{id:'intervening-shared-entry',text:'An intervening shared discussion before the newcomer.'}]:[]),{id:`sealed-${sessionId}`,text:`Only ${sessionId} can see this sealed contribution.`},{id:entryId,text:'The exact selected follow-up.'}]};
   },
   publish:async({thread,requestId,eventId}:any)=>{
    const facts=lab.answerFacts(thread,requestId,eventId),key=`${requestId}:${eventId}`;
@@ -123,6 +123,37 @@ async function child(){
  assert.equal((await post({clientActionId:'incomplete-marker',entryId:'marker',targets:[],agentSource:{inputId:source.id}}))?.status,403);
  assert.equal((await post({clientActionId:'signed-human',entryId:'marker',targets:[]}))?.status,202);
  assert.equal(db.query("SELECT origin FROM session_inputs WHERE scope='lab:activation:comparison' AND action_id='signed-human'").get()?.origin,'human');
+ // Exercise the actual authenticated gateway and canonical read worker, not just
+ // caller-supplied optional source headers on the owner handler.
+ const {startForegroundGateway}=await import('../src/foreground-gateway'),{agentTokenKey,mintAgentToken}=await import('../src/agent-run-tokens');
+ const root=process.env.CONCIERGE_STATE_DIR!,ownerSocket=join(root,'lab-fixture-gateway-owner.sock');
+ const privateOwner=Bun.serve({unix:ownerSocket,idleTimeout:0,fetch:async request=>(await owner.handle(request))??new Response(null,{status:404})});
+ const probe=Bun.serve({hostname:'127.0.0.1',port:0,fetch:()=>new Response('fixture')});const port=probe.port!;await probe.stop(true);
+ const key=agentTokenKey(root),runToken=mintAgentToken(key,{kind:'run',sessionId:coordinator.id,turnId:queued.turn_id!}),runnerToken=mintAgentToken(key,{kind:'runner',runner:'mac'});
+ const gateway=await startForegroundGateway({stateDir:root,ownerSocket,readWorkerEntry:join(import.meta.dir,'../src/native-read-worker.ts'),peer:null,agent:{hostname:'127.0.0.1',port,keyHex:key.toString('hex')}});
+ const network=(path:string,token:string,body?:unknown)=>fetch(`http://127.0.0.1:${port}/sessions/v1${path}`,{method:body===undefined?'GET':'POST',headers:{authorization:`Bearer ${token}`,'content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})});
+ try{
+  for(const token of [runToken,runnerToken]){
+   assert.equal((await network('/lab/conversations',token,{clientActionId:'missing-source-create'})).status,403);
+   assert.equal((await network('/lab/conversations/comparison/respond',token,{clientActionId:'missing-source-response',entryId:'marker',targets:[]})).status,403);
+   assert.equal((await network('/lab/conversations/comparison/participants',token,{clientActionId:'missing-source-roster',expectedRevision:1,add:[],remove:[]})).status,403);
+  }
+  const wrongRun=mintAgentToken(key,{kind:'run',sessionId:coordinator.id,turnId:queued.turn_id!+1000});
+  assert.equal((await network('/lab/conversations/comparison/respond',wrongRun,{clientActionId:'wrong-token-run',entryId:'marker',targets:[],agentSource})).status,403);
+  assert.equal((await network('/lab/conversations/comparison/respond',runToken,{clientActionId:'exact-token-run',entryId:'marker',targets:[],agentSource})).status,202);
+  assert.equal(db.query("SELECT origin FROM session_inputs WHERE scope='lab:activation:comparison' AND action_id='exact-token-run'").get()?.origin,'agent');
+  const original=[...records.values()].find(record=>record.facts.requestId===codingInvocation.requestId).facts;
+  const outputPath=`/lab/conversations/comparison/responses/${encodeURIComponent(original.requestId)}/${encodeURIComponent(original.eventId)}`;
+  assert.equal((await owner.handle(new Request(`http://owner/sessions/v1${outputPath}`)))?.status,200,'trusted publication service still obtains the exact original answer');
+  for(const token of [runToken,runnerToken]){
+   assert.equal((await network('/lab/conversations/comparison',token)).status,200,'the ordinary view can disclose public identities without granting answer bytes');
+   assert.equal((await network(outputPath,token)).status,403,'an authenticated agent cannot use publication verification to bypass independent Lab visibility');
+  }
+  const markedRead=await owner.handle(new Request(`http://owner/sessions/v1${outputPath}`,{headers:{'x-concierge-verified-agent-source':`${source.id} ${runId}`}}));assert.equal(markedRead?.status,403);
+  const catalogue=await (await network('/models',runToken)).json() as any;
+  assert.deepEqual(catalogue.chatgptThinkingLevels,(await import('../src/aliases')).CHATGPT_THINKING_LEVELS);
+  assert.ok(catalogue.selectors.some((selector:any)=>selector.provider==='chatgpt'&&typeof selector.model==='string'&&typeof selector.label==='string'));
+ }finally{await gateway.stop(true);await privateOwner.stop(true);}
  const oldLocate=(owner as any).locateProject;(owner as any).locateProject=async()=>({name:'fixture',path:'.',cwd:process.env.CONCIERGE_STATE_DIR!,runner:null});
  const topChoice={key:'astra',label:'Explicit human top model',provider:'codex',model:'gpt-6-astra',reasoningEffort:'medium',project:'fixture'};
  assert.equal((await (owner as any).prepareLabParticipant(topChoice)).metadata.model,'gpt-6-astra');
@@ -135,6 +166,54 @@ async function child(){
  (coordinatorCommand as any).stopped=false;
  await coordinatorCommand.board(parsed.body);
  assert.ok(lab.view('comparison').activations.some((value:any)=>value.entryId==='coordinator-post-entry'),'the real coordinator command admits selected responses to its attributed question');
+
+ // Roster changes retain immutable conditions for accepted work, while provisioning
+ // a new voice alone never asks that model to run.
+ const rosterA=make('codex','Original roster voice'),rosterB=make('codex','Other roster voice');
+ const rosterCreate={clientActionId:'create-roster',thread:'roster',questionEntryId:'opening',participants:[{key:'original',label:'Original conditions',sessionId:`concierge:${rosterA.id}`,instructions},{key:'other',label:'Other conditions',sessionId:`concierge:${rosterB.id}`} ]};
+ await lab.create(rosterCreate);await lab.reconcile();
+ const originalInvocation=lab.view('roster').activations[0].invocations.find((value:any)=>value.sessionId===`concierge:${rosterA.id}`);
+ const excluded=(db.query('SELECT id FROM sessions WHERE id<>?').all(rosterA.id) as {id:number}[]).map(row=>row.id);
+ const originalClaim=claimNextQueuedTurn('lab-fixture',Date.now(),excluded)!;assert.equal(originalClaim.session_id,rosterA.id);
+ markTurnProviderAdmissionIntended(originalClaim.turn_id,'lab-fixture',originalClaim.dispatch_attempt);acknowledgeTurnProviderInput(originalClaim.turn_id,'lab-fixture',originalClaim.dispatch_attempt,[]);
+ const originalMember=lab.requestFacts('roster',originalInvocation.requestId).participant;
+ db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({admission:{provider:'codex',model:originalMember.model,bindingGeneration:originalMember.generation,inputId:originalClaim.accepted_input_id,runId:nativeRunId(originalClaim.turn_id)}}),originalClaim.accepted_input_id);
+ inputs.recordSessionEvent({eventId:`fixture-roster-binding:${originalClaim.turn_id}`,sessionId:rosterA.id,inputId:originalClaim.accepted_input_id,turnId:originalClaim.turn_id,kind:'lab_binding_verified',payload:Object.fromEntries(['provider','model','reasoningEffort','project','projectPath','generation'].map(key=>[key,originalMember[key]]))});
+ const oldResponse={clientActionId:'old-roster-selection',entryId:'old-selected-entry',targets:[`concierge:${rosterA.id}`]};lab.respond('roster',oldResponse);
+ const rosterChange={clientActionId:'replace-roster-voice',expectedRevision:1,add:[{key:'newcomer',label:'Newcomer with sources',provider:'codex',model:'gpt-6-luna',reasoningEffort:'low',project:'fixture',instructions:'Read the exact selected source.\nKeep this condition verbatim.',sources:[ref]}],remove:[`concierge:${rosterA.id}`]};
+ const beforeRosterTurns=db.query('SELECT count(*) AS n FROM turns').get()?.n,beforeRosterSessions=db.query('SELECT count(*) AS n FROM sessions').get()?.n;
+ const [changed,repeated]=await Promise.all([lab.participants('roster',rosterChange),lab.participants('roster',rosterChange)]);
+ assert.equal(changed.membershipRevision,2);assert.equal(changed.change.revision,2);assert.equal(changed.coordinatorSessionId,`concierge:${coordinator.id}`);
+ assert.equal(db.query('SELECT count(*) AS n FROM turns').get()?.n,beforeRosterTurns,'adding a voice starts no provider turn');
+ assert.equal(db.query('SELECT count(*) AS n FROM sessions').get()?.n,Number(beforeRosterSessions)+1);
+ assert.equal(repeated.change.inputId,changed.change.inputId);assert.equal(repeated.change.duplicate,true);
+ assert.equal(db.query('SELECT count(*) AS n FROM sessions').get()?.n,Number(beforeRosterSessions)+1,'duplicate roster update never provisions twice');
+ await assert.rejects(()=>lab.participants('roster',{...rosterChange,clientActionId:'stale-update'}),/membership changed/i);
+ assert.throws(()=>lab.respond('roster',{clientActionId:'removed-future-selection',entryId:'new-entry',targets:[`concierge:${rosterA.id}`]}),/bound|participant/i);
+ lab.respond('roster',oldResponse);
+ assert.equal(lab.requestFacts('roster',originalInvocation.requestId).membershipRevision,1,'accepted work keeps its old roster after removal');
+ assert.equal(lab.requestFacts('roster',originalInvocation.requestId).participant.instructions,instructions);
+ finishTurn(originalClaim.turn_id,'done','Full original answer from the removed running voice.\nIts second line is preserved.');await lab.reconcile();
+ const originalRecord=[...records.values()].find(record=>record.facts.requestId===originalInvocation.requestId);assert.ok(originalRecord,JSON.stringify(lab.view('roster').activations));
+ assert.equal(originalRecord.facts.membershipRevision,1);assert.equal(originalRecord.facts.participant.label,'Original conditions');assert.ok(originalRecord.facts.text.endsWith('Its second line is preserved.'));
+ assert.ok(lab.membership('roster',1).participants.some((member:any)=>member.sessionId===`concierge:${rosterA.id}`));
+ assert.ok(!lab.membership('roster',2).participants.some((member:any)=>member.sessionId===`concierge:${rosterA.id}`));
+ const newcomer=changed.change.add[0],newcomerNumber=Number(newcomer.slice(10));
+ assert.equal(db.query('SELECT count(*) AS n FROM turns WHERE session_id=?').get(newcomerNumber)?.n,0,'journal membership acknowledgement remains passive');
+ lab.respond('roster',{clientActionId:'ask-newcomer',entryId:'newcomer-entry',targets:[newcomer]});await lab.reconcile();
+ const newcomerActivation=lab.view('roster').activations.find((value:any)=>value.actionId==='ask-newcomer');assert.equal(newcomerActivation.independent,false);assert.equal(newcomerActivation.membershipRevision,2);
+ const newcomerInput=getAcceptedSessionInput(newcomerActivation.invocations[0].inputId)!,newcomerPrompt=JSON.parse(newcomerInput.payload_json).text;
+ assert.ok(newcomerPrompt.includes('An intervening shared discussion before the newcomer.'));assert.ok(newcomerPrompt.includes(rosterChange.add[0].instructions));assert.ok(newcomerPrompt.includes('Actual selected source material.'));
+ assert.ok(newcomerPrompt.includes('keep your reply concise by default'));assert.ok(newcomerPrompt.includes('fuller answer when the human asks for depth'));
+ updateSessionMetadata(newcomerNumber,{model:'gpt-6.1-sol'});
+ lab.respond('roster',{clientActionId:'newcomer-drift',entryId:'newcomer-drift-entry',targets:[newcomer]});await lab.reconcile();
+ assert.equal(lab.view('roster').activations.find((value:any)=>value.actionId==='newcomer-drift').invocations[0].state,'refused');
+ assert.equal(db.query('SELECT status FROM turns WHERE id=?').get(newcomerInput.turn_id)?.status,'cancelled','a refused queued invocation cannot run invisibly after its model is restored');
+ updateSessionMetadata(newcomerNumber,{model:'gpt-6-luna'});
+ const readded=await lab.participants('roster',{clientActionId:'readd-original',expectedRevision:2,add:[{key:'original',label:'Changed future conditions',sessionId:`concierge:${rosterA.id}`,instructions:'Future condition only.'}],remove:[]});
+ assert.equal(readded.membershipRevision,3);assert.equal(lab.requestFacts('roster',originalInvocation.requestId).participant.instructions,instructions,'re-adding a session never rewrites its accepted prior conditions');
+ const oldUpdateRetry=await lab.participants('roster',rosterChange);assert.equal(oldUpdateRetry.membershipRevision,3);assert.equal(oldUpdateRetry.change.revision,2,'duplicate action returns its original applied revision before checking a stale precondition');
+ await assert.rejects(()=>lab.participants('roster',{clientActionId:'remove-coordinator',expectedRevision:3,add:[],remove:[`concierge:${coordinator.id}`]}),/coordinator remains stable/i);
 
  // An unresolved context for one voice cannot hold its ready sibling or the ordinary
  // communication loop. Stop aborts observation and never starts the blocked voice.
@@ -150,7 +229,7 @@ async function child(){
  const last=lab.view('comparison').activations[0].invocations[0];assert.equal(lab.requestFacts('comparison',last.requestId).requestId,last.requestId,'an exact descriptor beyond 64 pending activations remains addressable');
  const plan=db.query("EXPLAIN QUERY PLAN SELECT rowid FROM session_inputs INDEXED BY session_inputs_lab_history WHERE kind='lab-activation' AND scope=? AND rowid<? ORDER BY rowid DESC LIMIT 21").all('lab:activation:comparison',Number.MAX_SAFE_INTEGER) as any[];
  assert.ok(plan.some(row=>row.detail.includes('session_inputs_lab_history')));assert.ok(!plan.some(row=>row.detail.includes('TEMP B-TREE')));
- console.log(JSON.stringify({fixture:'lab-conversations',idempotentCreate:true,sourceCorrectMarkers:true,providerRestartNoReplay:true,exactOriginalOutput:true,realChatGptHostAdapter:true,perReaderContext:true,passiveNoWake:true,bindingDriftRefused:true,noUnboundTerminalContinuation:true,nonblockingAndStop:true}));
+ console.log(JSON.stringify({fixture:'lab-conversations',idempotentCreate:true,sourceCorrectMarkers:true,authenticatedGatewayActorCustody:true,agentOutputVerifierRefused:true,providerRestartNoReplay:true,exactOriginalOutput:true,realChatGptHostAdapter:true,perReaderContext:true,passiveNoWake:true,bindingDriftRefused:true,noUnboundTerminalContinuation:true,nonblockingAndStop:true,revisionedRoster:true,removeRunningRetainsOriginal:true,addVoicePassiveUntilSelected:true,newVoiceSharedContext:true}));
 }
 
 if(process.argv.includes('--child')){await child();process.exit(0);}

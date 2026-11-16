@@ -204,6 +204,8 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
         CREATE INDEX IF NOT EXISTS session_inputs_lab_pending ON session_inputs(id)
           WHERE kind='lab-activation' AND json_extract(receipt_json,'$.state')='pending';
         CREATE INDEX IF NOT EXISTS session_inputs_lab_history ON session_inputs(scope) WHERE kind='lab-activation';
+        CREATE INDEX IF NOT EXISTS session_inputs_lab_roster_pending ON session_inputs(id)
+          WHERE kind='lab-roster' AND json_extract(receipt_json,'$.state')='pending';
         CREATE TABLE IF NOT EXISTS canvas_project_policies (
           revision_id TEXT PRIMARY KEY,
           group_name TEXT NOT NULL,

@@ -1,4 +1,5 @@
 import {requirementsFor} from './request-history';
+import {parseAgentPrincipalHeader} from './agent-token-verify';
 import {LabConversations,LabConversationError,type LabParticipantChoice,type LabPreparedParticipant,type LabActor} from './lab-conversations';
 import {labConversationCapability} from './lab-conversation-capability';
 import {threadOnlyReturnInputSql} from "./inbox-request-root";
@@ -620,7 +621,7 @@ export class SessionOwner {
       bootstrap:thread=>labConversationCapability('GET',thread,'bootstrap'),
       prepare:(choice,actor)=>this.prepareLabParticipant(choice,actor),
       sources:references=>this.materializeLabSources(references),
-      bind:(thread,signal)=>labConversationCapability('POST',thread,'binding',{},signal),
+      bind:(thread,membershipRevision,signal)=>labConversationCapability('POST',thread,'binding',{membershipRevision},signal),
       context:({thread,entryId,sessionId,requestId,signal})=>labConversationCapability('GET',thread,'context',{entryId,sessionId,requestId},signal),
       publish:({thread,requestId,eventId,signal})=>labConversationCapability('POST',thread,'publish',{requestId,eventId},signal),
       dispatch:input=>this.dispatch(input),wake:()=>this.communication?.wake(),
@@ -649,7 +650,7 @@ export class SessionOwner {
     const provider=choice.provider;
     if(provider==='chatgpt'){
       if(choice.project!==undefined||choice.model!==undefined)throw new LabConversationError('ChatGPT uses its thinking level or explicit ChatGPT project destination, rather than a code project or coding model.');
-      const model=chatgptSessionModel(choice.reasoningEffort??'pro');
+      const model=chatgptSessionModel(choice.reasoningEffort);
       if(!model)throw new LabConversationError('Choose a supported ChatGPT thinking level.');
       return {choice,provider:'chatgpt',metadata:{title:choice.label,purpose:'chat',model,cwd:this.defaultCwd}};
     }
@@ -675,12 +676,15 @@ export class SessionOwner {
     const marked=request.headers.get('x-concierge-verified-agent-source'),supplied=bodySource?`${bodySource.inputId} ${bodySource.runId}`:null;
     if(marked&&supplied&&marked!==supplied)throw new LabConversationError('The marked Lab source differs from its submitted source.',403,'AGENT_SOURCE_MISMATCH');
     const header=marked??supplied;
+    const authenticated=request.headers.get('x-concierge-agent-principal'),principal=authenticated?parseAgentPrincipalHeader(authenticated):null;
+    if(authenticated&&(!principal||!header))throw new LabConversationError('An authenticated agent needs its exact admitted source input and run.',403,'AGENT_SOURCE_REQUIRED');
     if(!header)return undefined;
     const pair=/^(\S+) (\S+)$/.exec(header);
     if(!pair)throw new LabConversationError('The marked Lab source is invalid.',403,'AGENT_SOURCE_REQUIRED');
     const value={inputId:pair[1]!,runId:pair[2]!};
     const source=getAcceptedSessionInput(value.inputId),observed=source?readInputExecution(source):null;
     if(!source||!observed?.turn||nativeRunId(observed.turn.id)!==value.runId||observed.turn.session_id!==source.session_id||observed.turn.status!=='running'||!observed.turn.provider_admission_intended_at||observed.turn.stop_requested_at)throw new LabConversationError('The marked Lab source must be its exact admitted live run.',403,'AGENT_SOURCE_REQUIRED');
+    if(principal?.kind==='run'&&(principal.sessionId!==source.session_id||principal.turnId!==observed.turn.id))throw new LabConversationError('The Lab source does not belong to this authenticated agent run.',403,'AGENT_SOURCE_MISMATCH');
     return {inputId:source.id,runId:value.runId,sessionId:source.session_id};
   }
   captureDeliveryStatus?:()=>{available:boolean;reason:string|null};
@@ -4643,9 +4647,14 @@ export class SessionOwner {
       if(parts[0]==='lab'&&parts[1]==='conversations'){
         if(request.method==='POST'&&parts.length===2)return ownerJson(await this.labConversations.create(body,this.labActor(request,body)),{status:202});
         if(request.method==='POST'&&parts.length===4&&parts[3]==='respond')return ownerJson(this.labConversations.respond(parts[2]!,body,this.labActor(request,body)),{status:202});
+        if(request.method==='POST'&&parts.length===4&&parts[3]==='participants')return ownerJson(await this.labConversations.participants(parts[2]!,body,this.labActor(request,body)),{status:202});
         if(request.method==='GET'&&parts.length===3)return ownerJson(this.labConversations.view(parts[2]!,url.searchParams.has('before')?Number(url.searchParams.get('before')):undefined));
         if(request.method==='GET'&&parts.length===5&&parts[3]==='requests')return ownerJson(this.labConversations.requestFacts(parts[2]!,parts[4]!));
-        if(request.method==='GET'&&parts.length===6&&parts[3]==='responses')return ownerJson(this.labConversations.answerFacts(parts[2]!,parts[4]!,parts[5]!));
+        if(request.method==='GET'&&parts.length===5&&parts[3]==='memberships')return ownerJson(this.labConversations.membership(parts[2]!,Number(parts[4])));
+        if(request.method==='GET'&&parts.length===6&&parts[3]==='responses'){
+          if(request.headers.has('x-concierge-agent-principal')||request.headers.has('x-concierge-verified-agent-source')||request.headers.has('x-concierge-agent-test-create'))throw new LabConversationError('Original Lab answer verification is reserved for the trusted publication service.',403,'LAB_OUTPUT_SERVICE_ONLY');
+          return ownerJson(this.labConversations.answerFacts(parts[2]!,parts[4]!,parts[5]!));
+        }
         throw new LabConversationError('Unknown Lab conversation operation.',404,'LAB_ROUTE_NOT_FOUND');
       }
       if(parts[0]==='agent-test'&&parts[1]==='sessions'){
@@ -4868,7 +4877,7 @@ export class SessionOwner {
       // The selectable models, so a client picker never keeps its own list. Derived from
       // the alias table, so it cannot disagree with what a session can actually run.
       else if(request.method==='GET'&&parts[0]==='models'&&parts.length===1)
-        result={models:modelCatalogue(),efforts:[...REASONING_EFFORTS],selectors:providerSelectorCatalogue()};
+        result={models:modelCatalogue(),efforts:[...REASONING_EFFORTS],chatgptThinkingLevels:[...CHATGPT_THINKING_LEVELS],selectors:[...providerSelectorCatalogue(),{key:'chatgpt',provider:'chatgpt',model:chatgptSessionModel(undefined),label:providerDisplayName('chatgpt')}]};
       else if(request.method==='GET'&&parts[0]==='auth'&&parts[1]==='providers'&&parts.length===2)
         result=await this.authProviders(url.searchParams.get('machine')??undefined,url.searchParams.get('fresh')==='1');
       else if(request.method==='GET'&&parts[0]==='auth'&&parts[1]==='claude-launch-choice'&&parts.length===2){
