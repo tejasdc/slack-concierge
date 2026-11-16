@@ -1236,7 +1236,20 @@ export class SessionCommunicationCoordinator {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const input=inboxPublication(value),peers=this.dependencies.peers,self=peers?.self??process.env.CONCIERGE_PEER_NAME??'cloud';
         if(input.destinationOwner!==self)throw new Error('This instance does not own that Inbox destination.');
-        if(input.sourceOwner===self)return this.post({...input});
+        if(input.sourceOwner===self){
+            // A confirmed local post is also a receipt read after the source run ends.
+            // No new intent is admitted through this branch, even if its author handed off.
+            const prior=db.query('SELECT * FROM session_inputs WHERE scope=? AND action_id=?')
+                .get(`communication:${input.source.input_id}`,input.action_id) as AcceptedSessionInput|null;
+            if(prior){
+                const expected={kind:'thread-post',thread:input.thread,text:input.text.trim(),targetSessionId:input.targetSessionId};
+                if(prior.origin!=='agent'||prior.kind!=='action'||prior.source_input_id!==input.source.input_id
+                    ||prior.source_run_id!==input.source.run_id||stablePayload(JSON.parse(prior.payload_json))!==stablePayload(expected))
+                    throw new Error('Idempotency conflict: publication changed.');
+                return {post:JSON.parse(prior.receipt_json!).post,duplicate:true};
+            }
+            return this.post({...input});
+        }
         if(!peers)throw new Error('The publication source owner is unavailable.');
         const scope=`inbox-publication:${input.sourceOwner}:${input.source.input_id}`;
         const existing=()=>db.query('SELECT * FROM session_inputs WHERE scope=? AND action_id=?').get(scope,input.action_id) as AcceptedSessionInput|null;
