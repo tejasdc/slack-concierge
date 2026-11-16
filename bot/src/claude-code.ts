@@ -6,6 +6,7 @@ import { splitTurnOutcomeMarker, type TurnOutcomeMark } from "./turn-outcome-mar
 import { claudeHistoryMessages, claudeToolNames, providerMessageObserver, type ProviderMessageCallback } from "./provider-history";
 import { log } from "./log";
 import { ProgressCb, RunResult } from "./codex";
+import { launchRefusalReason } from "./claude-launch-refusal";
 import { ProviderDispatchError, ProviderTurnCancelledError, isClaudeUsageExhaustion, isContextOverflowRefusal } from "./provider-failures";
 import { SteeringNotSentError, SteeringSender } from "./steering";
 import { WriteOutcomeUnknownError } from "./execution-host-client";
@@ -1506,6 +1507,12 @@ export async function runClaudeCodeTurn(input: {
     // written then; its own words on stderr are the only record of why (8876, 2026-11-06).
     log("warn", "claude_code_ended_before_ack", { model: input.model ?? null, resumed: !!input.sessionUUID,
       stderr_tail: stderr.replace(/\s+/g, " ").trim().slice(-600) || null });
+    // Concierge's launcher refused before Claude started, so nothing was sent: the turn fails now
+    // with that reason, its requests settle failed and come back for a new owner, instead of
+    // parking as an ambiguous end with its requests counted as live (claude-launch-refusal.ts).
+    const refusal = launchRefusalReason(stderr, outcome.code);
+    if (refusal) throw new ProviderDispatchError({ message: `Claude could not start this turn: ${refusal}`,
+      failureClass: "parked_terminal", terminalConfirmed: true, toolsUsed: [], threadScoped: true });
     throw new Error("Claude Code ended before acknowledging the initial user message.");
   }
   if (!providerProducedResult) {

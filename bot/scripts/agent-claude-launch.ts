@@ -3,6 +3,7 @@ import {accessSync,closeSync,constants,existsSync,openSync,readdirSync,readFileS
 import {dirname,delimiter,isAbsolute,join,resolve,sep} from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {requestApiResponse} from './router-request-client';
+import {LAUNCH_REFUSED_EXIT,LAUNCH_REFUSED_MARKER} from '../src/claude-launch-refusal';
 
 // When the owner places a launch on a runner, it names the account, not a path: the path is the
 // runner's own (runner-provider-accounts.ts). Passed through unresolved, Claude found no sign-in at
@@ -25,6 +26,15 @@ function runnerClaudeHome(account:string):string{
   return matches[0]!;
 }
 
+// Every refusal before Claude starts is marked (claude-launch-refusal.ts says why).
+let claudeStarted=false;
+const refuse=(error:unknown)=>{
+  if(claudeStarted){console.error(error instanceof Error?error.message:String(error));process.exit(1);}
+  console.error(`${LAUNCH_REFUSED_MARKER} ${(error instanceof Error?error.message:String(error)).replace(/\s+/g,' ')}`);
+  process.exit(LAUNCH_REFUSED_EXIT);
+};
+process.on('uncaughtException',refuse);
+process.on('unhandledRejection',refuse);
 const args=process.argv.slice(2);
 const wrapper=realpathSync(join(import.meta.dir,'claude'));
 if(process.env.CONCIERGE_CLAUDE_LAUNCH_PARENT_PID===String(process.ppid)){
@@ -138,6 +148,7 @@ if(!passthrough){
   for(const name of ['ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','CLAUDE_CODE_OAUTH_TOKEN','CLAUDE_CODE_USE_BEDROCK','CLAUDE_CODE_USE_VERTEX','CLAUDE_CODE_USE_FOUNDRY']){
     if(environment[name])throw new Error(`Claude account selection refused a competing ${name} credential or provider setting. Explicitly pin an intentional route.`);
   }
+  let useConciergeChoice=!exactResume;
   if(exactResume){
     const root=process.env.HOME??'';
     const defaultHome=join(root,'.claude');
@@ -167,12 +178,19 @@ if(!passthrough){
       }
     }finally{closeSync(fd);}
     if(newline<0)throw new Error(`Claude exact resume ${exactResume}: original transcript header is missing, incomplete or too large.`);
-    let binding:{accountUuid:string;organizationUuid:string};
+    let binding:{accountUuid:string;organizationUuid:string}|null=null;
     try{
       const row=JSON.parse(header.subarray(0,newline).toString('utf8'));
-      if(row?.type!=='session-owner'||row.sessionId!==exactResume||typeof row.accountUuid!=='string'||!row.accountUuid||typeof row.organizationUuid!=='string'||!row.organizationUuid)throw new Error('invalid header');
+      // Claude Code wrote no owner header before mid-November 2026; such a transcript is shared by
+      // every account home, so Concierge's verified account choice below resumes it (2026-11-16:
+      // refusing it parked 29 turns in 9 sessions).
+      if(row?.type!=='session-owner')throw new Error('legacy');
+      if(row.sessionId!==exactResume||typeof row.accountUuid!=='string'||!row.accountUuid||typeof row.organizationUuid!=='string'||!row.organizationUuid)throw new Error('invalid header');
       binding={accountUuid:row.accountUuid,organizationUuid:row.organizationUuid};
-    }catch{throw new Error(`Claude exact resume ${exactResume}: original transcript header binding is missing or malformed.`);}
+    }catch(error){
+      if(!(error instanceof Error&&error.message==='legacy'))throw new Error(`Claude exact resume ${exactResume}: original transcript header binding is missing or malformed.`);
+    }
+    if(binding){
     const matches:string[]=[];
     for(const home of homes){
       try{
@@ -194,7 +212,9 @@ if(!passthrough){
     if(matches.length!==1)throw new Error(`Claude exact resume ${exactResume}: original account ${binding.accountUuid} organization ${binding.organizationUuid} has ${matches.length?'ambiguous working homes':'no working home'}.`);
     if(process.platform==='darwin'&&matches[0]===defaultHome)delete environment.CLAUDE_CONFIG_DIR;
     else environment.CLAUDE_CONFIG_DIR=matches[0];
-  }else{
+    }else useConciergeChoice=true;
+  }
+  if(useConciergeChoice){
   const response=await requestApiResponse(`/sessions/v1/auth/claude-launch-choice${model?`?model=${encodeURIComponent(model)}`:''}`);
   if(!response.ok){
     const refusal=response.result?.error;
@@ -222,6 +242,7 @@ if(!passthrough){
   }
   }
 }
+claudeStarted=true;
 const child=spawn(executable,args,{env:environment,stdio:'inherit'});
 for(const signal of ['SIGINT','SIGTERM'] as const)process.on(signal,()=>child.kill(signal));
 child.on('error',error=>{console.error(error.message);process.exitCode=1;});

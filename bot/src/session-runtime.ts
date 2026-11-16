@@ -31,7 +31,7 @@ import {startBackgroundJobWatch} from './background-waits';
 import {startUpdateWaitWatch} from './update-wait-notices';
 import {startMachineWatchWorker,wakeWatchWorker} from './watches';
 import {claimAdoptableExecutions,hostedTurns,watchHeldExecution,type Adoption} from './executions';
-import {interruptOrphanedTurn} from './state';
+import {interruptOrphanedTurn,failUnacknowledgedClaudeParkedTurns} from './state';
 import {recoverExhaustedClaudeWork} from './provider-exhaustion-recovery';
 import {maybeStartInboxProviderFailover} from './inbox-provider-failover';
 import {moveHeldWork} from './held-work-failover';
@@ -158,6 +158,9 @@ export async function startSessionRuntime() {
   },60_000);
   ghostSweep.unref?.();
   const stopProcessAuditSweep=host.startCodexProcessAuditSweep(()=>draining);
+  // Turns parked because Claude never acknowledged their input fail now, so their requests return for a new owner.
+  try{const failed=failUnacknowledgedClaudeParkedTurns();if(failed.length)log('warn','unacknowledged_claude_parks_failed',{turn_ids:failed});}
+  catch(error){log('error','unacknowledged_claude_park_repair_failed',errorFields(error));}
   codexSessionObserver.start();communication.start();queue.wake();
   writeNativeSandboxReadyReceipt(runtime,resolve(runtime.stateDir,'requests.sock'));
   log('info','concierge_session_owner_online',{instance_id:instanceId,slack_enabled:false});
