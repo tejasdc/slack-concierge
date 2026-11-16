@@ -4,6 +4,7 @@ import {AUTOMATIC_PROVIDER_ALIASES,aliasKeepingTier,normalizeReasoningEffort} fr
 import {nativeRunId,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {proposeHandoff,queuedWorkMovable,withdrawHandoff} from './session-handoff';
 import {log} from './log';
+import {automaticMoveRefusal,type MoveKindRefusal} from './automatic-move-kind';
 
 /**
  * Moves agent sessions whose queued work their provider cannot start (its allowance is spent or a
@@ -75,7 +76,7 @@ export function pinned(session:SessionRow):boolean {
 /** At most one skip line per session and reason in this window, in memory: a restart may repeat one. */
 const SKIP_LOG_WINDOW_MS=30*60_000;
 const skipLogged=new Map<string,number>();
-type SkipReason='pinned'|'source_can_start'|'no_receiver'|'receiver_above_stop'|'busy'|'unmovable';
+type SkipReason='pinned'|'source_can_start'|'no_receiver'|'receiver_above_stop'|'busy'|'unmovable'|MoveKindRefusal;
 function logSkip(sessionId:number,reason:SkipReason):void {
   const key=`${sessionId}:${reason}`,now=Date.now();
   if((skipLogged.get(key)??0)+SKIP_LOG_WINDOW_MS>now)return;
@@ -200,6 +201,10 @@ function logPinnedHeld():void {
 function considerCandidate(candidate:Candidate):boolean {
     const session=getSessionById(candidate.id);
     if(!eligible(session))return false;
+    // Only coding work moves by itself; a discussion, brainstorm, design or Lab session waits for its
+    // own provider (automatic-move-kind.ts).
+    const kind=automaticMoveRefusal(session);
+    if(kind){logSkip(session.id,kind);return false;}
     if(!sourceCannotStart(session)){logSkip(session.id,'source_can_start');return false;}
     if(db.query(`SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering','parked','interrupted','delivery_parked') LIMIT 1`).get(session.id)){logSkip(session.id,'busy');return false;}
     const {target,reason}=receiver(session);

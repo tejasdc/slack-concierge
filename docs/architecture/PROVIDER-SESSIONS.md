@@ -298,6 +298,14 @@ alias tables (`aliasKeepingTier`).
 
 #### Automatic moves of held work
 
+Only coding work moves by itself (`automatic-move-kind.ts`, used by held-work failover and the
+Claude-allowance transfer). A session stays on its provider and waits when it is Lab work, a chat or
+writing session, in a brainstorm/writing/design template project, or one Tejas writes in himself;
+otherwise it moves only with evidence of code work (counted code edits in it or a session it
+continues, or having been started by `sessions implement`). Unknown kinds stay. Tejas, 2026-11-16:
+"if it's like a regular coding section, obviously, can be moved. If it's like a discussion of
+[brainstorming] section, I'm having ... It's not something you can automatically move."
+
 A Codex turn that is accepted and then ended with the provider's usage-limit message, with no
 assistant output and no tools, did nothing. The Codex runner re-throws it with the account's reset
 (from Codex's own rate-limit report, else the spent window of the stored usage reading; the
