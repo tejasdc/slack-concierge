@@ -56,12 +56,23 @@ drains affected thread summaries in batches of 20 before continuing. Empty forme
 are removed from the sorting pile; genuinely unfiled human roots remain. It also corrects
 cached topic membership when the resolved root itself has not changed, then sweeps existing
 root summaries in 100-row pages so a zero-member orphan cannot escape the repair. The version is
-marked complete only after every page finishes, so interrupted work safely resumes by
-rechecking derived rows. The canonical ledger is opened read-only; no filing operation,
+marked complete only after every page and durable topic dependency finishes. The derived
+`presentation_inbox_lineage_work` row stores message/root keysets, phase, cumulative counts
+and the original start time with each committed page. Worker or release restart resumes
+the next unprocessed page, including a root keyset whose last row was deleted, then drains
+remaining dependencies. Already-completed version-2 stores need no new semantic upgrade.
+An interrupted old worker had no cursor to recover; its first run with this correction
+starts safely from the beginning once. The canonical ledger is opened read-only; no filing operation,
 provider action, or accepted input is replayed. One completion log records generation,
-version, examined/moved/topic-correction counts, orphan removals, pages, and elapsed time.
-Each removed empty human sorting root has a separate content-free diagnostic with its
-exact root and current canonical target (which may be null). This is projection evidence,
+version, cumulative examined/moved/topic-correction counts, orphan removals, pages, and wall
+time including restarts. Content-free progress records report initial/resumed phase and
+keysets, then at phase changes and at most once per ten seconds. Counts and completion
+remain durable even if interruption loses a post-commit log record; source head advancing
+after the upgrade and caught-up read coverage are alternative completion evidence.
+After each page commits, the worker attempts a separate content-free diagnostic for each
+removed empty human sorting root, with exact root and current canonical target (which may
+be null). Interruption before that write can lose an individual diagnostic; the committed
+cursor and cumulative count remain authoritative. This is projection evidence,
 not proof that the associated work completed.
 Existing compact receipts refresh through the worker's existing bounded revision rebuild.
 
@@ -75,7 +86,9 @@ root work and topic dirtiness drain even when the source change journal is quiet
 service, timer or canonical operation is involved.
 `bot/scripts/inbox-prepared-lineage-fixture.ts` exercises the real worker's initial build,
 already-version-1 upgrade, empty orphan cleanup, same-root topic correction, latest
-detach/relink, recursive replies, and a real post-commit interruption followed by two restarts.
+detach/relink, recursive replies, and real post-commit interruptions in semantic message
+scan, root sweep, dependency drain and incremental reassignment. It audits committed
+message visits and cumulative counts, then verifies another ordinary restart.
 The change feed retains seven days of revisions and explicitly resets an older cursor. Garbage collection
 walks finite batches, removes superseded generations and unreferenced chunks, and never
 deletes canonical records. A removed detail reference requires refreshing its owning item.
