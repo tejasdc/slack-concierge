@@ -8,11 +8,14 @@ import { moveCodexDaemonToOwnScope, raiseCodexDaemonFileLimit, startCodexDaemonW
 import { OwnerDrainBeforeProviderAdmissionError } from "./provider-failures";
 import { randomUUID } from "node:crypto";
 import {isCodexNativeObservation} from './codex-native-observations';
+import type {CodexRelayAssociation} from './runner-codex-relay';
+import {assertCustodyEndpoint} from './codex-custody-colocation';
 
 const DEFAULT_SOCKET_PATH = join(homedir(), ".codex/app-server-control/app-server-control.sock");
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const custodyClients = new Set<CodexAppServerClient>();
-const frozenCustodyTargets = new Map<string,{ownerSessionId:number;threadId:string;endpoint:{socketPath:string;relayRunner:string|null}|undefined}>();
+type CustodyCutoffEndpoint={socketPath:string;relayRunner:string|null;relayAssociation?:CodexRelayAssociation};
+const frozenCustodyTargets = new Map<string,{ownerSessionId:number;threadId:string;endpoint:CustodyCutoffEndpoint|undefined}>();
 const custodyBarrierGenerations = new Map<string,Map<number,Map<string,number>>>();
 function isCustodyMutation(method:string) { return !isCodexNativeObservation(method); }
 
@@ -48,6 +51,7 @@ interface PendingRequest {
 
 interface ActiveConnection {
   serverInfo?:unknown;
+  relayAssociation?:CodexRelayAssociation;
   generation: number;
   process: ChildProcessWithoutNullStreams;
   disconnected: Promise<void>;
@@ -79,6 +83,7 @@ export interface CodexRequestOptions {
 }
 
 export type CodexCustodyForwardScope = {
+  nativeEndpoint?:CodexAppServerClientLike['nativeEndpoint'];
   senderId: string;
   generation: number;
   method: string;
@@ -108,7 +113,7 @@ function forwardedScope(senderId:string,generation:number,method:string,params:u
 
 export interface CodexAppServerClientLike {
   readonly custodySenderId?:string;
-  readonly nativeEndpoint?:{socketPath:string;relayRunner:string|null;serverInfo:unknown};
+  readonly nativeEndpoint?:{socketPath:string;relayRunner:string|null;serverInfo:unknown;relayAssociation?:CodexRelayAssociation};
   connect(): Promise<number>;
   request(
     method: string,
@@ -148,11 +153,13 @@ export class CodexAppServerClient {
       relayRunner?: string | null;
       /** A protected recovery client must never start or tune a shared native daemon. */
       manageDaemon?: boolean;
+      protectedRelay?:boolean;
     } = {},
   ) { custodyClients.add(this); }
 
   get activeGeneration() { return this.active?.generation ?? null; }
-  get nativeEndpoint(){return {socketPath:this.socketPath,relayRunner:this.options.relayRunner??null,serverInfo:this.active?.serverInfo??null};}
+  get nativeEndpoint(){return {socketPath:this.socketPath,relayRunner:this.options.relayRunner??null,serverInfo:this.active?.serverInfo??null,
+    ...(this.active?.relayAssociation?{relayAssociation:this.active.relayAssociation}:{})};}
 
   connect(): Promise<number> {
     if (this.closed) {
@@ -202,7 +209,7 @@ export class CodexAppServerClient {
       });
       if (isCustodyMutation(method)) {
         try {
-          const scope=forwardedScope(this.custodySenderId,connection.generation,method,params,options.custodyOwnerSessionId??null);
+          const scope={...forwardedScope(this.custodySenderId,connection.generation,method,params,options.custodyOwnerSessionId??null),nativeEndpoint:this.nativeEndpoint};
           refuseFrozenCustodyTarget(scope);
           custodyForwardGuard?.(scope);
           const {params:_params,...metadata}=scope;
@@ -230,7 +237,7 @@ export class CodexAppServerClient {
     }
     if (isCustodyMutation(method)) {
       try {
-        const scope=forwardedScope(this.custodySenderId,connection.generation,method,params,options.custodyOwnerSessionId??null);
+        const scope={...forwardedScope(this.custodySenderId,connection.generation,method,params,options.custodyOwnerSessionId??null),nativeEndpoint:this.nativeEndpoint};
         refuseFrozenCustodyTarget(scope);
         custodyForwardGuard?.(scope);
         const {params:_params,...metadata}=scope;
@@ -311,7 +318,7 @@ export class CodexAppServerClient {
     }
     const bridgePath = this.options.bridgePath || releaseCodexBridgePath();
     const child = spawn(this.nodeExecutable, [bridgePath, this.socketPath,
-      ...(relay ? [`/runner/v1/relay/connect?runner=${encodeURIComponent(relay)}&target=codex-app-server`] : [])], {
+      ...(relay ? [`/runner/v1/relay/connect?runner=${encodeURIComponent(relay)}&target=${this.options.protectedRelay?'codex-app-server-protected-v1':'codex-app-server'}&challenge=${randomUUID()}`] : [])], {
       stdio: ["pipe", "pipe", "pipe"],
     });
     let resolveDisconnected!: () => void;
@@ -418,6 +425,11 @@ export class CodexAppServerClient {
     }
     if (event.type === "ready") {
       connection.serverInfo=event.serverInfo??null;
+      if(this.options.protectedRelay&&this.options.relayRunner&&(!event.relayAssociation||!event.relayAssociation.protected)){
+        this.failConnection(connection,new CodexAppServerClientError('Protected runner association missing.','rejected'));connection.process.kill('SIGTERM');return;
+      }
+      const freeze=(value:any):any=>{if(value&&typeof value==='object'){for(const child of Object.values(value))freeze(child);Object.freeze(value);}return value;};
+      connection.relayAssociation=event.relayAssociation?freeze(event.relayAssociation):undefined;
       connection.resolveReady();
       return;
     }
@@ -506,7 +518,7 @@ function refuseFrozenCustodyTarget(scope:CodexCustodyForwardScope) {
 export type ManagedCodexCustodyCutoff = {
   ownerSessionId:number;
   threadId:string;
-  endpoint:{socketPath:string;relayRunner:string|null}|null;
+  endpoint:CustodyCutoffEndpoint|null;
   sourcePath:string|null;
   bindingGeneration:number|null;
   frozenAt:string;
@@ -522,7 +534,8 @@ export type ManagedCodexCustodyCutoffReceipt=Omit<ManagedCodexCustodyCutoff,"ass
 
 /** Install an in-process cutoff synchronously, then acknowledge the exact target on every
  * captured live sender generation. This is not proof for senders outside this managed registry. */
-export function freezeManagedCodexTarget(input:{ownerSessionId:number;threadId:string;timeoutMs?:number;endpoint?:{socketPath:string;relayRunner:string|null};sourcePath?:string;bindingGeneration?:number}):ManagedCodexCustodyCutoff {
+export function freezeManagedCodexTarget(input:{ownerSessionId:number;threadId:string;timeoutMs?:number;endpoint?:CustodyCutoffEndpoint;sourcePath?:string;bindingGeneration?:number}):ManagedCodexCustodyCutoff {
+  assertCustodyEndpoint(input.endpoint,false);
   const key=`${input.ownerSessionId}:${input.threadId}`;
   const priorHold=frozenCustodyTargets.get(key);
   if(priorHold?.endpoint&&input.endpoint
@@ -544,6 +557,7 @@ export function freezeManagedCodexTarget(input:{ownerSessionId:number;threadId:s
   let reconciled=false;
   const cutoff:ManagedCodexCustodyCutoff={ownerSessionId:input.ownerSessionId,threadId:input.threadId,endpoint:input.endpoint??null,sourcePath:input.sourcePath??null,bindingGeneration:input.bindingGeneration??null,frozenAt:new Date().toISOString(),captured:captured.map(({senderId,generation,endpoint})=>({senderId,generation,endpoint})),barriers,unresolved,coverage:"managed-client-registry-only",externalCoverage:"not-asserted",
     assertCurrentHold(){
+      assertCustodyEndpoint(input.endpoint,false);
       const held=frozenCustodyTargets.get(key);
       if(!held||held.endpoint&&(held.endpoint.socketPath!==input.endpoint?.socketPath||held.endpoint.relayRunner!==input.endpoint?.relayRunner))
         throw new Error("Managed native target cutoff no longer covers its exact endpoint.");
@@ -570,7 +584,15 @@ export function freezeManagedCodexTarget(input:{ownerSessionId:number;threadId:s
           unresolved.push(`Sender ${row.senderId} has ${scope.classification} ${scope.method} on ${scope.serializationKey??'unknown key'}; the target thread/read cannot establish its complete disposition (RPC completed=${scope.completed}).`);
         if(row.client.activeGeneration!==row.generation){unresolved.push(`Sender ${row.senderId} lost captured generation ${row.generation} before its same-generation barrier.`);continue;}
         try {
+          assertCustodyEndpoint(row.endpoint,false);
+          if(JSON.stringify(row.endpoint)!==JSON.stringify(row.client.nativeEndpoint))
+            throw new Error('The captured sender changed its exact native endpoint association.');
+          if(input.endpoint?.relayRunner&&JSON.stringify(row.endpoint.relayAssociation?.nativePeer)!==JSON.stringify(input.endpoint.relayAssociation?.nativePeer))
+            throw new Error('The captured relay pair reaches a different native process incarnation.');
           const result=await row.client.request("thread/read",{threadId:input.threadId},{expectedConnectionGeneration:row.generation,requestTimeoutMs:input.timeoutMs??30_000});
+          assertCustodyEndpoint(row.endpoint,false);
+          if(row.client.activeGeneration!==row.generation||JSON.stringify(row.endpoint)!==JSON.stringify(row.client.nativeEndpoint))
+            throw new Error('The captured sender lost its exact native association during its barrier.');
           const returned=result?.thread?.id;
           if(returned!==input.threadId){unresolved.push(`Sender ${row.senderId} returned a nonmatching thread/read identity.`);continue;}
           const covered=custodyBarrierGenerations.get(row.senderId)??new Map<number,Map<string,number>>();
@@ -598,12 +620,12 @@ export function sharedCodexAppServerClient() {
 }
 
 /** A new connection to the App Server Concierge's turns use, wherever it runs (the observer keeps its own). */
-export function ownerCodexAppServerClient(): CodexAppServerClient {
-  const runner = codexRelayRunner();
+export function ownerCodexAppServerClient(options:{protectedRelay?:boolean;manageDaemon?:boolean;relayRunner?:string|null}={}): CodexAppServerClient {
+  const runner = options.relayRunner===undefined?codexRelayRunner():options.relayRunner;
   return runner
     ? new CodexAppServerClient(join(process.env.CONCIERGE_STATE_DIR?.trim() || join(homedir(), ".local/state/concierge"), "requests.sock"),
-      undefined, { relayRunner: runner })
-    : new CodexAppServerClient();
+      undefined, { ...options,relayRunner: runner })
+    : new CodexAppServerClient(undefined,undefined,options);
 }
 
 export function codexRelayRunner(): string | null {

@@ -4,13 +4,16 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {spawnSync} from 'node:child_process';
-import {createHash} from 'node:crypto';
+import {spawn,spawnSync} from 'node:child_process';
+import {createHash,randomUUID} from 'node:crypto';
+import {onJsonLines,jsonLine} from '../src/json-lines';
 import {IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION} from '../src/test-authorizations';
 import type {CodexAppServerClientLike} from '../src/codex-app-server-client';
 import controlFormat from '../src/codex-custody-control-format.json';
 
 const scratch=mkdtempSync(join(tmpdir(),'codex-custody-successor-'));
+const relayMode=process.argv.includes('--relay');
+process.env.CONCIERGE_NODE_BIN=process.env.CONCIERGE_NODE_BIN||Bun.which('node')||'/usr/bin/node';
 process.env.CONCIERGE_STATE_DIR=scratch;process.env.CONCIERGE_CAPTURE_STATE_DIR=join(scratch,'capture');
 process.env.CONCIERGE_TEST_MODE='1';process.env.CONCIERGE_TEST_AUTHORIZATION=IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION;
 process.env.CODEX_HOME=join(scratch,'codex');
@@ -24,9 +27,10 @@ writeFileSync(join(selectedArtifact,'manifest.json'),JSON.stringify({...controll
 symlinkSync(join('releases',controllerDigest),join(releaseRoot,'control'));
 process.env.CONCIERGE_DEPLOYMENT_RELEASE_ROOT=releaseRoot;
 const workspace=join(scratch,'writing');mkdirSync(workspace);spawnSync('git',['init',workspace],{stdio:'ignore'});
+writeFileSync(join(workspace,'AGENTS.md'),'Disposable writing fixture project.\n');
 spawnSync('git',['-C',workspace,'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--allow-empty','-m','fixture'],{stdio:'ignore'});
 mkdirSync(join(process.env.CODEX_HOME,'sessions','2026','11','14'),{recursive:true});
-const thread='native-predecessor',sourceFile=join(scratch,'original-rollout.jsonl');
+const thread=relayMode?randomUUID():'native-predecessor',sourceFile=join(scratch,'original-rollout.jsonl');
 writeFileSync(sourceFile,JSON.stringify({threadId:thread,worktree:workspace}));
 writeFileSync(join(process.env.CODEX_HOME,'sessions','2026','11','14',`rollout-2026-11-14T00-00-00-${thread}.jsonl`),JSON.stringify({text:workspace}));
 const key=join(scratch,'lab.key');writeFileSync(key,'fixture-key');
@@ -49,6 +53,7 @@ const {runCodexTurn}=await import('../src/codex');
 let stopHost:(()=>Promise<void>)|null=null;
 
 let constructionCount=0,spentAtNativeSend:string|null=null,runModelGateDuringSend=()=>{},markNativeSent!:()=>void;
+let actualConstructionParams:any=null;
 let markConstructionStarted!:()=>void,releaseConstruction!:()=>void;
 const constructionStarted=new Promise<void>(resolve=>{markConstructionStarted=resolve;});
 const constructionGate=new Promise<void>(resolve=>{releaseConstruction=resolve;});
@@ -57,7 +62,7 @@ const nativeSent=new Promise<void>(resolve=>{markNativeSent=resolve;});
 const nativeCompletion=new Promise<void>(resolve=>{releaseNativeCompletion=()=>{nativeCompleted=true;resolve();};});
 const providerTurnRecorded=new Promise<void>(resolve=>{markProviderTurnRecorded=resolve;});
 const nativeCalls:string[]=[];const listeners=new Set<(event:any)=>void>();
-const nativeClient:CodexAppServerClientLike & {close():Promise<void>}={
+const standinNativeClient:CodexAppServerClientLike & {close():Promise<void>}={
   custodySenderId:'fixture-owner-native-client',nativeEndpoint:{socketPath:'/disposable',relayRunner:null,serverInfo:{fixture:true}},
   async connect(){return 1},async notify(){},onNotification(listener:(event:any)=>void){listeners.add(listener);return ()=>listeners.delete(listener);},onDisconnect(){return ()=>true},
   waitForDisconnect(){return new Promise<void>(()=>{})},
@@ -74,7 +79,7 @@ const nativeClient:CodexAppServerClientLike & {close():Promise<void>}={
     if(method==='thread/read')return {thread:{id:thread,status:{type:'idle'},path:sourceFile,modelProvider:'openai',model:'gpt-6-astra',reasoningEffort:'medium',cwd:workspace,runtimeWorkspaceRoots:[workspace]}};
     if(method==='thread/queue/list'||method==='thread/backgroundTerminals/list')return {data:[],nextCursor:null};
     if(method==='thread/goal/get')return {goal:null};
-    if(method==='thread/start'){constructionCount++;markConstructionStarted();await constructionGate;return {thread:{id:'successor-native-thread',modelProvider:'openai',model:'gpt-6-astra',reasoningEffort:'medium',cwd:workspace,
+    if(method==='thread/start'){actualConstructionParams=params;constructionCount++;markConstructionStarted();await constructionGate;return {thread:{id:'successor-native-thread',modelProvider:'openai',model:'gpt-6-astra',reasoningEffort:'medium',cwd:workspace,
       runtimeWorkspaceRoots:[workspace],environments:[{environmentId:'local',cwd:workspace,runtimeWorkspaceRoots:[workspace]}]},model:'gpt-6-astra',modelProvider:'openai',reasoningEffort:'medium',cwd:workspace,
       runtimeWorkspaceRoots:[workspace],approvalPolicy:'never',sandbox:{type:'dangerFullAccess'}};}
     if(method==='turn/start'){
@@ -98,6 +103,47 @@ const nativeClient:CodexAppServerClientLike & {close():Promise<void>}={
     throw new Error(`unexpected native request ${method}`);
   },async close(){},
 };
+// The relay variant substitutes only native/provider effects and the strict process scan.
+// Association, runner preparation, byte forwarding and owner custody use production code.
+let relay:Awaited<ReturnType<typeof import('./fixtures/custody-relay-harness').createCustodyRelayFixture>>|null=null;
+let relayNative:ReturnType<typeof Bun.serve>|null=null;
+let relayBackend:string|null=null;
+const relayThreads=new Set<string>(relayMode?[thread]:[]);
+const relayChildren=new Set<ReturnType<typeof spawn>>();
+if(relayMode){
+  process.env.CONCIERGE_WORKSPACE_ROOT=scratch;
+  mkdirSync(join(scratch,'home'),{recursive:true});
+  mkdirSync(join(scratch,'home','.codex-accounts'),{recursive:true});
+  symlinkSync(process.env.CODEX_HOME!,join(scratch,'home','.codex'));
+  const payload=Buffer.from(JSON.stringify({email:'custody-fixture@example.invalid'})).toString('base64url');
+  writeFileSync(join(process.env.CODEX_HOME!,'auth.json'),JSON.stringify({tokens:{account_id:'disposable-custody',id_token:`header.${payload}.signature`}}));
+  const appSocket=join(scratch,'fixture-native.sock');
+  type Peer={backend:string|null;child:ReturnType<typeof spawn>|null;unsubscribe?:()=>boolean};
+  relayNative=Bun.serve<Peer>({unix:appSocket,fetch:(request,server)=>server.upgrade(request,{data:{backend:relayBackend,child:null}})?undefined:new Response('ws only',{status:400}),
+    websocket:{open(socket){
+      if(socket.data.backend&&socket.data.backend!=='legacy'){
+        const child=spawn(process.execPath,[socket.data.backend],{stdio:['pipe','pipe','pipe']});
+        socket.data.child=child;relayChildren.add(child);child.stderr.on('data',data=>process.stderr.write(data));
+        onJsonLines(child.stdout,line=>{const frame=JSON.parse(line);
+          if(frame.type==='response')socket.send(JSON.stringify({id:frame.id,...(frame.error?{error:frame.error}:{result:frame.result})}));
+          else if(frame.type==='event')socket.send(JSON.stringify(frame.event));});
+      }else if(socket.data.backend===null){
+        const listener=(event:any)=>socket.send(JSON.stringify(event));listeners.add(listener);socket.data.unsubscribe=()=>listeners.delete(listener);
+      }
+    },async message(socket,message){
+      const call=JSON.parse(String(message));if(call.method==='initialize'){socket.send(JSON.stringify({id:call.id,result:{userAgent:'disposable-native-effects'}}));return;}
+      if(call.id===undefined)return;
+      if(socket.data.child){socket.data.child.stdin.write(jsonLine({type:'request',...call}));return;}
+      const result=socket.data.backend==='legacy'
+        ?call.method==='thread/read'?{thread:{id:call.params.threadId}}:{turn:{id:call.params.clientUserMessageId}}
+        :await standinNativeClient.request(call.method,call.params);
+      socket.send(JSON.stringify({id:call.id,result}));
+    },close(socket){socket.data.unsubscribe?.();socket.data.child?.kill('SIGKILL');}}});
+  const {createCustodyRelayFixture}=await import('./fixtures/custody-relay-harness');
+  relay=await createCustodyRelayFixture(scratch,appSocket);
+  process.env.CONCIERGE_CODEX_RUNNER='ax41';
+}
+const nativeClient=relay?relay.client():standinNativeClient;
 let newCustodyClient:CodexAppServerClientLike & {close():Promise<void>}=nativeClient;
 const managedLegacySenders:{custodySenderId:string;activeGeneration:number|null;close(options?:{immediate?:boolean}):Promise<void>}[]=[];
 const cutoffBridge=join(scratch,'cutoff-bridge.js');
@@ -111,12 +157,14 @@ onJsonLines(process.stdin,line=>{const call=JSON.parse(line);
  });`);
 const {CodexAppServerClient,freezeManagedCodexTarget}=await import('../src/codex-app-server-client');
 async function registerLegacyPrefix(sessionId:number,threadId:string,sourcePath:string,bindingGeneration:number,providerTurnId:string){
- const sender=new CodexAppServerClient('/disposable',process.execPath,{bridgePath:cutoffBridge,manageDaemon:false,shutdownGraceMs:50});
+ const backend=relayBackend;if(relayThreads.has(threadId))relayBackend='legacy';
+ const sender=relay&&relayThreads.has(threadId)?relay.client(true):new CodexAppServerClient('/disposable',process.execPath,{bridgePath:cutoffBridge,manageDaemon:false,shutdownGraceMs:50});
  managedLegacySenders.push(sender);
  await sender.request('turn/start',{threadId,clientUserMessageId:providerTurnId,input:[]},{custodyOwnerSessionId:sessionId});
+ relayBackend=backend;
  const endpoint=sender.nativeEndpoint;
  const cutoff=freezeManagedCodexTarget({ownerSessionId:sessionId,threadId,
-   endpoint:{socketPath:endpoint.socketPath,relayRunner:endpoint.relayRunner},sourcePath,bindingGeneration});
+   endpoint,sourcePath,bindingGeneration});
  const receipt=await cutoff.reconcile();
  assert.equal(receipt.captured.length,1,'the real disposable native sender is tied to this exact predecessor');
  assert.equal(receipt.captured[0]?.senderId,sender.custodySenderId);
@@ -129,6 +177,7 @@ async function registerLegacyPrefix(sessionId:number,threadId:string,sourcePath:
 try {
  const predecessor=createNativeSession('codex',{title:'Astra Medium writing',summary:'Continue writing',purpose:'writing',origin:'native',cwd:workspace,
    model:'gpt-6-astra',reasoningEffort:'medium'});
+ if(relayMode)updateSessionMetadata(predecessor.id,{providerRunner:'ax41',providerAccount:'custody-fixture@example.invalid',projectName:'writing',projectPath:''});
  db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run(thread,predecessor.id);
  const human=retainSessionInput({id:'human-model-choice',sessionId:predecessor.id,scope:'fixture',actionId:'human-choice',kind:'request',origin:'human',
    payload:{text:'Use Astra Medium for this writing work.'}}).input;enqueueSessionInput(human.id);
@@ -169,7 +218,7 @@ try {
    run:(actual:any)=>{const onStarted=actual.onProviderTurnStarted;return runCodexTurn({...actual,
      onProviderTurnStarted:(id:string)=>{onStarted?.(id);markProviderTurnRecorded();},applicationInstructions:actual.systemPrompt});},
    fork:async()=>{throw new Error('fork is outside this fixture');}}},
-   defaultCwd:workspace,wake:()=>{},thesaurusContext:async()=>'',custodyClientFactory:()=>newCustodyClient,custodyObserveProcesses:async threadId=>{
+   defaultCwd:workspace,wake:()=>{},thesaurusContext:async()=>'',custodyClientFactory:relayMode?undefined:()=>newCustodyClient,custodyObserveProcesses:async threadId=>{
      assert.equal(typeof threadId,'string');return [];
    }});
  stopHost=()=>host.stop();
@@ -178,6 +227,24 @@ try {
  (coordinator as any).stopped=false;(coordinator as any).wake=()=>{};
  // This old provider-turn identity was observed in the selected immutable attempt row.
  await registerLegacyPrefix(predecessor.id,thread,sourceFile,predecessor.binding_generation,'native-empty-attempt');
+ if(relayMode){
+   await nativeClient.connect();
+   const endpoint=nativeClient.nativeEndpoint!;
+   const {assertCustodyEndpoint,assertCustodyRunnerBinding,custodyProcessEndpoint}=await import('../src/codex-custody-colocation');
+   assert.doesNotThrow(()=>assertCustodyRunnerBinding('ax41',endpoint));
+   assert.doesNotThrow(()=>assertCustodyRunnerBinding(undefined,endpoint),'undefined retains the configured fallback');
+   assert.throws(()=>assertCustodyRunnerBinding(null,endpoint),/binding differs/,'explicit null cannot inherit the configured relay');
+   assert.doesNotThrow(()=>assertCustodyRunnerBinding(null,{socketPath:'/local',relayRunner:null}));
+   assert.throws(()=>assertCustodyRunnerBinding(undefined,{socketPath:'/local',relayRunner:null}),/binding differs/);
+   const wrongNamespace=structuredClone(endpoint);wrongNamespace.relayAssociation!.nativePeer.namespaces.mnt='0:0';
+   assert.throws(()=>assertCustodyEndpoint(wrongNamespace),/namespace/,'a mutation of the actual peer receipt cannot invent co-location');
+   const reusedPid=structuredClone(endpoint);reusedPid.relayAssociation!.nativePeer.startTicks='0';
+   assert.throws(()=>assertCustodyEndpoint(reusedPid),/incarnation/,'numeric PID equality does not survive incarnation mismatch');
+   const wrongRunner=structuredClone(endpoint);wrongRunner.relayAssociation!.runnerIdentity.startTicks='0';
+   assert.throws(()=>assertCustodyEndpoint(wrongRunner),/incarnation/,'the actual serving runner incarnation must also remain valid');
+   assert.deepEqual(custodyProcessEndpoint(endpoint),{socketPath:join(scratch,'fixture-native.sock'),nativePid:process.pid},
+     'process observation uses the actual native peer endpoint, never the owner requests socket');
+ }
  runModelGateDuringSend=()=>{
    const providerTurnId='successor-native-turn';
    const preserved=coordinator.modelStartGate({providerSessionId:'successor-native-thread',model:'gpt-6-astra',providerTurnId,
@@ -198,7 +265,7 @@ try {
    assert.equal(delegatedAstra.allowed,false,'a new Astra helper cannot inherit the accepted parent binding');
  };
  const recovery=coordinator.recoverCodexNeverAcknowledged({source:{input_id:actorInput.id,run_id:actorRun},action_id:'recover-writing-once',request_id:requestId,custody_successor:true});
- await constructionStarted;
+ await Promise.race([constructionStarted,recovery.then(()=>{throw new Error('Recovery returned before its native construction gate.');})]);
  const constructing=custodySuccessor(reminder.id)!;
  host.owner.action(`concierge:${constructing.successor_session_id}`,{clientActionId:'pause-during-native-construction',action:{kind:'pause'}});
  assert.equal(sessionMetadata(getSessionById(constructing.successor_session_id)!).custodyUserPaused,true,'supported Pause records a newer explicit hold');
@@ -211,6 +278,18 @@ try {
  assert.equal(custody.native_thread_id,'successor-native-thread');
  assert.equal(JSON.parse(custody.plan_json).model,'gpt-6-astra');
  assert.equal(JSON.parse(custody.plan_json).custodyCommitted,true);
+ if(relayMode){
+   const plan=JSON.parse(custody.plan_json),association=plan.nativeConnection.endpoint.relayAssociation;
+   assert.equal(association.runner,'ax41');assert.equal(association.protected,true);
+   assert.equal(association.nativePeer.pid,process.pid,'association comes from the actual accepted native socket');
+   assert.equal(actualConstructionParams.config.shell_environment_policy.set.CONCIERGE_STATE_DIR,relay!.runnerState);
+   const {successorThreadStartParams}=await import('../src/codex-successor-native');
+   assert.deepEqual(actualConstructionParams,successorThreadStartParams(plan),'actual native configuration equals the assessed committed mapping');
+   assert.equal(sessionMetadata(getSessionById(custody.successor_session_id)!).providerRunner,'ax41','custody preserves the explicit retained binding');
+   const cutoff=JSON.parse(custody.snapshot_json).cutoff;
+   assert.ok(cutoff.captured.every((row:any)=>row.endpoint.relayAssociation&&row.endpoint.relayAssociation.pairId!==association.pairId),
+     'each predecessor sender has its own native pair receipt');
+ }
  assert.equal(db.query('SELECT turn_id FROM session_inputs WHERE id=?').get(reminder.id).turn_id,failedTurn,'original reminder/attempt stay immutable');
  assert.equal(db.query('SELECT provider_turn_id FROM turns WHERE id=?').get(failedTurn).provider_turn_id,'native-empty-attempt');
  const successor=getSessionById(custody.successor_session_id)!;
@@ -239,7 +318,7 @@ try {
  assert.equal(nativeCalls.includes('turn/start'),false,'stale-source refusal happens before a native send');
  writeFileSync(sourceFile,originalRollout);
  const hostRun=host.run(claim);
- await nativeSent;
+ await Promise.race([nativeSent,hostRun.then(()=>{throw new Error('Host run returned before native admission.');})]);
  await providerTurnRecorded;
  const spentAt=spentAtNativeSend;
  assert.ok(spentAt,'canonical additional attempt spent durably before native send');
@@ -282,10 +361,13 @@ try {
  assert.match(JSON.parse(savedResult.payload_json).text,/Useful writing continuation/,'persisted useful result is derived from native completion');
  assert.equal(db.query('SELECT provider_input_acknowledged_at FROM turns WHERE id=?').get(claim.turn_id).provider_input_acknowledged_at!==null,true);
  await assert.rejects(()=>protectedRun.beforeAdmission(),/spent|changed|exclusive/i,'second native admission is refused after the shared allowance is spent');
+ if(relayMode){delete process.env.CONCIERGE_CODEX_RUNNER;host.options.custodyClientFactory=()=>newCustodyClient;}
  const makeTarget=async(requestKey:string)=>{
    const target=createNativeSession('codex',{title:`${requestKey} Astra Medium`,summary:'Continue exact writing',purpose:'writing',origin:'native',cwd:workspace,
      model:'gpt-6-astra',reasoningEffort:'medium'});
-   const threadId=`thread-${requestKey}`,rollout=join(scratch,`${requestKey}.jsonl`);writeFileSync(rollout,JSON.stringify({threadId,workspace}));
+   const onRelay=relayMode&&requestKey.endsWith('-selected-real-bridge');
+   const threadId=onRelay?randomUUID():`thread-${requestKey}`,rollout=join(scratch,`${requestKey}.jsonl`);writeFileSync(rollout,JSON.stringify({threadId,workspace}));
+   if(onRelay){relayThreads.add(threadId);updateSessionMetadata(target.id,{providerRunner:'ax41',providerAccount:'custody-fixture@example.invalid',projectName:'writing',projectPath:''});}
    writeFileSync(join(process.env.CODEX_HOME!,'sessions','2026','11','14',`rollout-2026-11-14T00-00-01-${threadId}.jsonl`),JSON.stringify({text:workspace}));
    db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run(threadId,target.id);
    const human=retainSessionInput({id:`human-${requestKey}`,sessionId:target.id,scope:`fixture-${requestKey}`,actionId:'human-choice',kind:'request',origin:'human',
@@ -400,6 +482,7 @@ try {
  // Exercise selected Stop and later work through the real owner/host/client forward policy.
  // The child substitutes only stock-native responses; all owner identity and byte guards run.
  for(const terminalCase of ['stop','error'] as const){
+ if(relayMode){process.env.CONCIERGE_CODEX_RUNNER='ax41';host.options.custodyClientFactory=undefined;}
  const lifecycleRequest=terminalCase+'-selected-real-bridge';
  const stoppedTarget=await makeTarget(lifecycleRequest);
  for(const suffix of ['one','two'])db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,
@@ -408,8 +491,6 @@ try {
    .run(lifecycleRequest+'-'+suffix,'fixture',lifecycleRequest+'-'+suffix,actorTurn,requester.id,'root',lifecycleRequest+'-'+suffix,
      stoppedTarget.target.id,'fixture','root',JSON.stringify({requestedEffect:'work',text:'Retained independent '+suffix,after:[]}),suffix,
      0,0,actorInput.id,stoppedTarget.report.id,'admitted');
- await registerLegacyPrefix(stoppedTarget.target.id,stoppedTarget.threadId,stoppedTarget.rollout,
-   stoppedTarget.target.binding_generation,'empty-'+lifecycleRequest);
  const lifecycleBridge=join(scratch,terminalCase+'-lifecycle-bridge.ts'),lifecycleTrace=join(scratch,terminalCase+'-lifecycle-trace.jsonl');
  const effectsFile=join(scratch,terminalCase+'-lifecycle-effects.json');writeFileSync(effectsFile,'{}');
  writeFileSync(lifecycleBridge,`import {onJsonLines} from ${JSON.stringify(jsonLinesModule)};
@@ -450,7 +531,10 @@ try {
    if(interrupts>1){const t=turns.get(p.turnId);t.status='interrupted';notify('turn/completed',{threadId:successor,turn:t});}
  }else throw new Error('Unexpected lifecycle native call '+call.method);
  send({type:'response',id:call.id,result});});`);
- const lifecycleNative=new CodexAppServerClient('/disposable',process.execPath,{bridgePath:lifecycleBridge,manageDaemon:false,shutdownGraceMs:50});
+ if(relayMode)relayBackend=lifecycleBridge;
+ await registerLegacyPrefix(stoppedTarget.target.id,stoppedTarget.threadId,stoppedTarget.rollout,
+   stoppedTarget.target.binding_generation,'empty-'+lifecycleRequest);
+ const lifecycleNative=relayMode?relay!.client():new CodexAppServerClient('/disposable',process.execPath,{bridgePath:lifecycleBridge,manageDaemon:false,shutdownGraceMs:50});
  newCustodyClient=lifecycleNative;
  const stoppedRecovery=await coordinator.recoverCodexNeverAcknowledged({source:{input_id:actorInput.id,run_id:actorRun},
    action_id:terminalCase+'-recover-selected-lifecycle',request_id:lifecycleRequest,custody_successor:true});
@@ -501,7 +585,8 @@ try {
  assert.notEqual((await host.run(heldClaim)).status,'delivered');
  assert.equal(readFileSync(lifecycleTrace,'utf8').trim().split('\n').map(line=>JSON.parse(line)).filter(call=>call.method==='turn/start').length,2,
    'unresolved effects cannot produce a third native turn/start');
- newCustodyClient=nativeClient;
+ newCustodyClient=standinNativeClient;
+ if(relayMode){delete process.env.CONCIERGE_CODEX_RUNNER;host.options.custodyClientFactory=()=>newCustodyClient;}
  }
 
  const borrowed=await makeBorrowedAuthority('borrowed-authority-positive');
@@ -554,7 +639,7 @@ try {
  assert.equal((db.query('SELECT agent_session_uuid FROM sessions WHERE id=?').get(heldStage.successor_session_id) as any).agent_session_uuid,null,
    'authority loss before custody commitment cannot construct a native successor');
  assert.equal(raceStarts,0);
- newCustodyClient=nativeClient;
+ newCustodyClient=standinNativeClient;
 
  // The original repair source can end after the real handoff transaction commits custody but
  // before construction intent. A different live work-authorized session must resume that exact
@@ -595,7 +680,7 @@ try {
  newCustodyClient=retryClient;
  const recoveredWithoutNewBudget=await coordinator.recoverCodexNeverAcknowledged({source:{input_id:replacementRepairer.input.id,run_id:replacementRepairer.runId},
    action_id:'new-agent-resumes-committed-custody',request_id:'custody-retry-after-source-ended',custody_successor:true});
- newCustodyClient=nativeClient;
+ newCustodyClient=standinNativeClient;
  assert.equal(recoveredWithoutNewBudget.state,'constructed');assert.equal(retryStarts,1);
  host.owner.action(`concierge:${recoveredWithoutNewBudget.successor_session_id}`,{clientActionId:'hold-after-repairer-retry',action:{kind:'pause'}});
  const afterRepairerRetry=custodySuccessor(lateRetryTarget.report.id)!;
@@ -615,7 +700,7 @@ try {
  assert.equal(db.query('SELECT COUNT(*) AS n FROM codex_unacknowledged_recoveries WHERE accepted_input_id=?').get(lateRetryTarget.report.id).n,0,
    'no duplicate legacy recovery attempt is created');
  assert.equal(lateInitialStarts,0,'the ended source never sent a construction request');
- newCustodyClient=nativeClient;
+ newCustodyClient=standinNativeClient;
 
  // Pause can arrive after passive handoff staging but before the canonical custody relation
  // exists. The proposed recovery handoff itself must therefore carry the Pause marker forward.
@@ -636,7 +721,7 @@ try {
  newCustodyClient=preRelationClient;
  const pausedBeforeRelation=await coordinator.recoverCodexNeverAcknowledged({source:{input_id:actorInput.id,run_id:actorRun},action_id:preRelationAction,
    request_id:'pause-before-custody-relation',custody_successor:true});
- newCustodyClient=nativeClient;
+ newCustodyClient=standinNativeClient;
  assert.equal(pausedBeforeRelation.state,'constructed');assert.equal(pauseRecorded,true,'the fixture pauses in the staged-handoff/pre-relation window');
  const pausedPreRelationSession=getSessionById(pausedBeforeRelation.successor_session_id)!;
  assert.equal(sessionMetadata(pausedPreRelationSession).custodyUserPaused,true,'pre-relation Pause is durably retained through custody relation creation');
@@ -688,7 +773,7 @@ try {
  host.owner.action(`concierge:${emptyRecovery.successor_session_id}`,{clientActionId:'continue-unacknowledged-selected',action:{kind:'continue'}});
  assert.equal(sessionMetadata(getSessionById(emptyRecovery.successor_session_id)!).suspended,true,'Continue cannot release unacknowledged selected failure');
  assert.equal(emptyRun.sends,1,'uncertain/unacknowledged failure cannot replenish the native allowance');
- newCustodyClient=nativeClient;
+ newCustodyClient=standinNativeClient;
 
  // A lost thread/start response is retained as uncertain. Re-entry returns that held operation
  // without asking the native service to construct another thread.
@@ -762,4 +847,6 @@ try {
  db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run('bad-thread',bad.id);
  assert.equal(nativeCalls.includes('thread/resume'),false);
  console.log('custody successor owner fixture passed: live work authority, complete prior-attempt observation, atomic custody, explicit Astra Medium construction, one persisted acknowledgement/useful result, canonical dedupe');
-} finally {await stopHost?.();await Promise.all(managedLegacySenders.map(sender=>sender.close({immediate:true})));lab.stop();db.close();rmSync(scratch,{recursive:true,force:true});}
+ if(relayMode)console.log('Route A owner composition passed: actual protected factory/client/bridge/gateway/runner/native peer receipt, exact predecessor pair barriers and runner worktree inventory, committed effective configuration, one selected acknowledgment/useful result, exact paused Stop and error followed by distinct work. Native effects and strict process scan are substitutes.');
+} finally {await stopHost?.();await Promise.all(managedLegacySenders.map(sender=>sender.close({immediate:true})));await relay?.close();relayNative?.stop(true);
+  for(const child of relayChildren)child.kill('SIGKILL');lab.stop();db.close();rmSync(scratch,{recursive:true,force:true});}

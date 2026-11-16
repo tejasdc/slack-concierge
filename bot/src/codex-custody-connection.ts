@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import type {CodexAppServerClientLike,CodexRequestOptions} from './codex-app-server-client';
 import {isCodexNativeObservation} from './codex-native-observations';
+import {assertCustodyEndpoint} from './codex-custody-colocation';
 
 export type CustodyNativeConnection={clientId:string;senderId:string|null;generation:number;endpoint:CodexAppServerClientLike['nativeEndpoint']|null};
 const clients=new WeakMap<CodexAppServerClientLike,CustodyConnection>();
@@ -14,6 +15,7 @@ class CustodyConnection implements CodexAppServerClientLike {
   private protectionRequired=false;
   constructor(private readonly client:CodexAppServerClientLike & {close?:()=>Promise<void>}){}
   get custodySenderId(){return this.client.custodySenderId;}
+  get nativeEndpoint(){return this.client.nativeEndpoint;}
   async connect(){
     const generation=await this.client.connect();
     this.generation??=generation;
@@ -24,7 +26,9 @@ class CustodyConnection implements CodexAppServerClientLike {
     const generation=await this.connect();
     if(generation!==this.generation)
       throw new Error('Protected native connection changed; custody remains held pending boundary reconciliation.');
-    return {clientId:this.clientId,senderId:this.client.custodySenderId??null,generation,endpoint:this.client.nativeEndpoint??null};
+    assertCustodyEndpoint(this.client.nativeEndpoint);
+    return {clientId:this.clientId,senderId:this.client.custodySenderId??null,generation,
+      endpoint:this.client.nativeEndpoint?structuredClone(this.client.nativeEndpoint):null};
   }
   async assert(witness:CustodyNativeConnection|undefined){
     const current=await this.witness();

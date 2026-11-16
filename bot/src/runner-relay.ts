@@ -19,17 +19,21 @@ import {log} from './log';
  * socket may connect. No owner state or ledger is touched, so this runs inside the gateway.
  */
 /** `runner-machine` is the owner's call channel to the runner itself (runner-machine-calls.ts). */
-export const RELAY_TARGETS=new Set(['codex-app-server','runner-machine']);
+export const RELAY_TARGETS=new Set(['codex-app-server','codex-app-server-protected-v1','runner-machine']);
 const ACCEPT_DEADLINE_MS=15_000;
 const BUFFER_LIMIT=16*1024*1024;
+const ASSOCIATION_PREFIX='{"conciergeRelay":"association-v1",';
+const ASSOCIATION_PREFIX_BYTES=Buffer.from(ASSOCIATION_PREFIX);
+function associationPrefix(message:Message){return typeof message==='string'?message.startsWith(ASSOCIATION_PREFIX):
+  message.length>=ASSOCIATION_PREFIX_BYTES.length&&message.subarray(0,ASSOCIATION_PREFIX_BYTES.length).equals(ASSOCIATION_PREFIX_BYTES);}
 
 type Message=string|Buffer;
 export type RelaySocketData=
   |{role:'listen';runner:string}
-  |{role:'local';runner:string;id:string;target:string}
+  |{role:'local';runner:string;id:string;target:string;challenge:string}
   |{role:'accept';runner:string;id:string};
-type Pair={id:string;runner:string;target:string;local:ServerWebSocket<RelaySocketData>;remote:ServerWebSocket<RelaySocketData>|null;
-  waiting:Message[];waitingBytes:number;timer:ReturnType<typeof setTimeout>|null};
+type Pair={id:string;runner:string;target:string;challenge:string;ticket:string;local:ServerWebSocket<RelaySocketData>;remote:ServerWebSocket<RelaySocketData>|null;
+  associationPending:boolean;waiting:Message[];waitingBytes:number;timer:ReturnType<typeof setTimeout>|null};
 
 export class RunnerRelay {
   private readonly listeners=new Map<string,ServerWebSocket<RelaySocketData>>();
@@ -41,7 +45,9 @@ export class RunnerRelay {
     const runner=url.searchParams.get('runner')??'',target=url.searchParams.get('target')??'';
     if(!RELAY_TARGETS.has(target))return Response.json({ok:false,error:'UNKNOWN_RELAY_TARGET'},{status:404});
     if(!this.listeners.has(runner))return Response.json({ok:false,error:'RUNNER_NOT_LISTENING',detail:`runner ${runner} has no relay channel open`},{status:503});
-    if(server.upgrade(request,{data:{role:'local',runner,id:randomUUID(),target}}))return undefined;
+    const challenge=url.searchParams.get('challenge')||randomUUID();
+    if(!/^[A-Za-z0-9-]{1,128}$/.test(challenge))return Response.json({ok:false,error:'INVALID_RELAY_CHALLENGE'},{status:400});
+    if(server.upgrade(request,{data:{role:'local',runner,id:randomUUID(),target,challenge}}))return undefined;
     return Response.json({ok:false,error:'WEBSOCKET_REQUIRED'},{status:426});
   }
 
@@ -55,7 +61,7 @@ export class RunnerRelay {
     else {
       const id=url.searchParams.get('id')??'';
       const pair=this.pairs.get(id);
-      if(!pair||pair.runner!==runner||pair.remote)return Response.json({ok:false,error:'UNKNOWN_RELAY'},{status:404});
+      if(!pair||pair.runner!==runner||pair.remote||pair.target==='codex-app-server-protected-v1'&&url.searchParams.get('ticket')!==pair.ticket)return Response.json({ok:false,error:'UNKNOWN_RELAY'},{status:404});
       data={role:'accept',runner,id};
     }
     if(server.upgrade(request,{data}))return undefined;
@@ -87,10 +93,12 @@ export class RunnerRelay {
       if(data.role==='local'){
         const listener=this.listeners.get(data.runner);
         if(!listener){socket.close(1013,'runner not listening');return;}
-        const pair:Pair={id:data.id,runner:data.runner,target:data.target,local:socket,remote:null,waiting:[],waitingBytes:0,
+        const pair:Pair={id:data.id,runner:data.runner,target:data.target,challenge:data.challenge,ticket:randomUUID(),local:socket,remote:null,
+          associationPending:data.target==='codex-app-server-protected-v1',waiting:[],waitingBytes:0,
           timer:setTimeout(()=>this.end(pair,'the runner did not accept the relay in time'),ACCEPT_DEADLINE_MS)};
         this.pairs.set(data.id,pair);
-        listener.send(JSON.stringify({op:'open',id:data.id,target:data.target}));
+        listener.send(JSON.stringify({op:data.target==='codex-app-server-protected-v1'?'protected-open-v1':'open',id:data.id,
+          target:data.target==='codex-app-server-protected-v1'?'codex-app-server':data.target,challenge:pair.challenge,ticket:pair.ticket}));
         return;
       }
       const pair=this.pairs.get(data.id);
@@ -106,7 +114,21 @@ export class RunnerRelay {
       if(data.role==='listen')return; // the runner's channel carries nothing to the owner
       const pair=this.pairs.get(data.id);
       if(!pair)return;
-      if(data.role==='accept'){this.forward(pair,pair.local,message);return;}
+      if(data.role==='accept'){
+        if(pair.associationPending){
+          pair.associationPending=false;
+          // Only the first protected frame is control. Ordinary relays and the native stream
+          // never pass through JSON.parse here, regardless of payload size.
+          if(!associationPrefix(message)){this.end(pair,'protected relay association must be the first frame');return;}
+          let frame:any;try{frame=JSON.parse(String(message));}catch{this.end(pair,'invalid relay association');return;}
+          const association=frame.association;
+          if(frame?.conciergeRelay!=='association-v1'||association?.pairId!==pair.id||association?.challenge!==pair.challenge||association?.runner!==pair.runner
+            ||association?.protected!==true){this.end(pair,'relay association did not match its pair');return;}
+          this.forward(pair,pair.local,JSON.stringify({...frame,association:{...association,runner:data.runner}}));return;
+        }
+        if(associationPrefix(message)){this.end(pair,'late relay association');return;}
+        this.forward(pair,pair.local,message);return;
+      }
       if(pair.remote){this.forward(pair,pair.remote,message);return;}
       pair.waitingBytes+=typeof message==='string'?Buffer.byteLength(message):message.length;
       if(pair.waitingBytes>BUFFER_LIMIT){this.end(pair,'too much waited for the runner');return;}

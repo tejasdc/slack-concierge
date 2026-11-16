@@ -1,19 +1,28 @@
 import { basename, isAbsolute, relative, sep } from 'node:path';
-import { runnerMachineCall } from './runner-machine-calls';
+import { runnerMachineCall,type RunnerMachineAnswerIdentity } from './runner-machine-calls';
 
 export type RunnerProjectLocation={project:string|null;path:string;cwd:string};
 type Coordinates={projectName?:unknown;projectPath?:unknown;project?:unknown;cwd?:unknown};
 
+function checkedLocation(value:RunnerProjectLocation):RunnerProjectLocation {
+  if(!value||(value.project!==null&&typeof value.project!=='string')||typeof value.path!=='string'
+    ||typeof value.cwd!=='string'||!isAbsolute(value.cwd))throw new Error('The runner returned a malformed project location.');
+  return value;
+}
+
 /** Resolve a persisted session location on its runner without probing the owner's workspace. */
-export async function resolveRunnerProjectLocation(runner:string,metadata:Coordinates):Promise<RunnerProjectLocation> {
+export async function resolveRunnerProjectLocation(runner:string,metadata:Coordinates,
+  observeAnswer?:(identity:RunnerMachineAnswerIdentity|null)=>void):Promise<RunnerProjectLocation> {
   let projectName=typeof metadata.projectName==='string'?metadata.projectName:null;
   let projectPath=typeof metadata.projectPath==='string'?metadata.projectPath:'';
   if(!projectName) {
     const recordedProject=typeof metadata.project==='string'?metadata.project:null;
     const recordedCwd=typeof metadata.cwd==='string'?metadata.cwd:recordedProject;
-    if(!recordedCwd)return runnerMachineCall<RunnerProjectLocation>(runner,'projects.default',{});
+    if(!recordedCwd)return checkedLocation(await runnerMachineCall<RunnerProjectLocation>(runner,'projects.default',{},undefined,observeAnswer));
     if(!isAbsolute(recordedCwd))throw new Error('This session has no stable project identity for its runner.');
-    const projects=await runnerMachineCall<{projects:{name:string;path:string}[]}>(runner,'projects.list',{});
+    const projects=await runnerMachineCall<{projects:{name:string;path:string}[]}>(runner,'projects.list',{},undefined,observeAnswer);
+    if(!projects||!Array.isArray(projects.projects)||projects.projects.some(project=>!project||typeof project.name!=='string'||typeof project.path!=='string'))
+      throw new Error('The runner returned a malformed projects.list response.');
     const rootName=recordedProject&&isAbsolute(recordedProject)?basename(recordedProject):'';
     const rooted=projects.projects.filter(project=>project.name===rootName);
     if(recordedProject&&rooted.length===1&&recordedCwd.startsWith(recordedProject+sep)) {
@@ -31,5 +40,5 @@ export async function resolveRunnerProjectLocation(runner:string,metadata:Coordi
   }
   if(projectPath.startsWith('/')||projectPath.includes('\\')||projectPath.split('/').some(part=>part==='..'))
     throw new Error('This session’s stored project folder is invalid.');
-  return runnerMachineCall<RunnerProjectLocation>(runner,'projects.resolve',{project:projectName,path:projectPath});
+  return checkedLocation(await runnerMachineCall<RunnerProjectLocation>(runner,'projects.resolve',{project:projectName,path:projectPath},undefined,observeAnswer));
 }

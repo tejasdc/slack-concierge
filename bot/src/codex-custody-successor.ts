@@ -14,6 +14,8 @@ import type {CodexAppServerClientLike} from './codex-app-server-client';
 import {proveCodexInputNeverAcknowledged} from './codex-unacknowledged-proof';
 import {ledgerDurable} from './ledger-durability-barrier';
 import {custodyConnection} from './codex-custody-connection';
+import {assertCustodyRunnerBinding,custodyProcessEndpoint} from './codex-custody-colocation';
+import {withoutMachinePaths} from './runner-machine';
 import {freezeManagedCodexTarget,type ManagedCodexCustodyCutoff} from './codex-app-server-client';
 import {reconcileCodexCustodyPredecessorEffects} from './codex-custody-effects';
 import {custodySelectedTerminalConfirmed} from './codex-custody-terminal';
@@ -54,7 +56,7 @@ async function sourceFingerprint(path:string) {
   return {bytes,digest:digest.digest('hex'),sourceDevice:before.dev,sourceInode:before.ino};
 }
 
-function selectedFacts(requestId:string) {
+function selectedFacts(requestId:string,client:CodexAppServerClientLike) {
   const request=db.query('SELECT * FROM session_communication_requests WHERE request_id=?').get(requestId) as any;
   const selected=getAcceptedSessionInput(`report-back:${requestId}`);
   const session=selected?getSessionById(selected.session_id):null;
@@ -70,12 +72,13 @@ function selectedFacts(requestId:string) {
   const metadata=sessionMetadata(session),receipt=JSON.parse(selected.receipt_json??'{}');
   const turn=db.query('SELECT * FROM turns WHERE id=? AND accepted_input_id=? AND session_id=?')
     .get(selected.turn_id,selected.id,session.id) as any;
+  assertCustodyRunnerBinding(metadata.providerRunner,client.nativeEndpoint);
   const admission=receipt.admission;
   const effort=admission?.reasoningEffort??(db.query(`SELECT json_extract(payload_json,'$.effort') AS effort
     FROM session_owner_events WHERE event_id=? AND session_id=? AND turn_id=? AND kind='prompt_cache_identity'`)
     .get(`prompt-cache-identity:${turn?.id}:${turn?.dispatch_attempt}`,session.id,turn?.id) as any)?.effort;
   if(metadata.model!=='gpt-6-astra'||metadata.reasoningEffort!=='medium'||metadata.outside||metadata.interactionPolicy
-    ||metadata.providerRunner||session.status==='archived'||(metadata.suspended&&!transferred)||!turn
+    ||session.status==='archived'||(metadata.suspended&&!transferred)||!turn
     ||!['done','parked','error'].includes(turn.status)||turn.owner_instance_id!==null||turn.stop_requested_at!==null
     ||turn.provider_input_acknowledged_at!==null||turn.dispatch_attempt<1
     ||admission?.provider!=='codex'||admission.model!==metadata.model||effort!=='medium'
@@ -208,13 +211,16 @@ function recoveryAction(input:CustodySuccessorRequest,relation?:CustodySuccessor
 export async function recoverCustodySuccessor(input:CustodySuccessorRequest,client:CodexAppServerClientLike,
   observeProcesses?:(threadId:string)=>Promise<CodexLeftoverProcess[]>) {
   client=custodyConnection(client);
-  const currentProcesses=observeProcesses??(async(threadId:string)=>{
-    const association=await custodyConnection(client).witness();
-    if(!association.endpoint||association.endpoint.relayRunner)fail('Current process effects have no supported local native endpoint.');
-    return observeCodexCustodyProcesses(threadId,association.endpoint.socketPath);
-  });
   input.validateSource();
   recoveryAction(input);
+  await custodyConnection(client).witness();
+  const currentProcesses=observeProcesses??(async(threadId:string)=>{
+    const association=await custodyConnection(client).witness();
+    const endpoint=custodyProcessEndpoint(association.endpoint??undefined);
+    const result=await observeCodexCustodyProcesses(threadId,endpoint.socketPath,endpoint.nativePid);
+    await custodyConnection(client).assert(association);
+    return result;
+  });
   const prior=custodySuccessor(`report-back:${input.requestId}`);
   if(prior){
     db.transaction(()=>{input.validateSource();recoveryAction(input,prior);}).immediate();
@@ -224,11 +230,11 @@ export async function recoverCustodySuccessor(input:CustodySuccessorRequest,clie
       await refreshStagedCustody(input,prior,client,currentProcesses);
       input.validateSource();
       let accepted=await commitRecoveryHandoff({actorSession:input.actorSession,inputId:input.sourceInputId,runId:input.sourceRunId,
-        handoffId:prior.handoff_id,digest:handoff.inventory_digest,placementInputId:prior.placement_input_id,placementTurnId:prior.placement_turn_id,validateAuthority:()=>{input.validateSource();selectedFacts(input.requestId);assertNativeCutoff(`report-back:${input.requestId}`);}});
+        handoffId:prior.handoff_id,digest:handoff.inventory_digest,placementInputId:prior.placement_input_id,placementTurnId:prior.placement_turn_id,validateAuthority:()=>{input.validateSource();selectedFacts(input.requestId,client);assertNativeCutoff(`report-back:${input.requestId}`);}});
       // A changed inventory is read from the owner, then checked again inside the transfer transaction.
       if(!accepted.accepted&&'digest' in accepted)accepted=await commitRecoveryHandoff({actorSession:input.actorSession,
         inputId:input.sourceInputId,runId:input.sourceRunId,handoffId:prior.handoff_id,digest:accepted.digest,
-        placementInputId:prior.placement_input_id,placementTurnId:prior.placement_turn_id,validateAuthority:()=>{input.validateSource();selectedFacts(input.requestId);assertNativeCutoff(`report-back:${input.requestId}`);}});
+        placementInputId:prior.placement_input_id,placementTurnId:prior.placement_turn_id,validateAuthority:()=>{input.validateSource();selectedFacts(input.requestId,client);assertNativeCutoff(`report-back:${input.requestId}`);}});
       if(!accepted.accepted)fail('Current inventory could not be committed; successor remains passive.');
     }
     const current=custodySuccessor(prior.canonical_input_id)!;
@@ -238,7 +244,7 @@ export async function recoverCustodySuccessor(input:CustodySuccessorRequest,clie
     }
     return current;
   }
-  const facts=selectedFacts(input.requestId);
+  const facts=selectedFacts(input.requestId,client);
   // This initial read obtains preserved source/namespace references, not eligibility evidence.
   // Terminal/effect reconciliation happens only after the durable target hold and barriers.
   const snapshot=await sourceSnapshot(client,facts,true);
@@ -255,13 +261,13 @@ export async function recoverCustodySuccessor(input:CustodySuccessorRequest,clie
     if(!resource.isDirectory())fail('A source-owned worktree is no longer accessible.');
     snapshot.resources.push({path:item.ref,dev:resource.dev,ino:resource.ino});
   }
-  const latest=selectedFacts(input.requestId);
+  const latest=selectedFacts(input.requestId,client);
   if(latest.selected.payload_json!==facts.selected.payload_json||latest.session.binding_generation!==snapshot.bindingGeneration)
     fail('Canonical input or retained binding changed while staging custody.');
   const nativeConnection=await custodyConnection(client).witness();
   const relation=db.transaction(()=>{
     input.validateSource();
-    selectedFacts(input.requestId);
+    selectedFacts(input.requestId,client);
     const raced=custodySuccessor(facts.selected.id);if(raced)return raced;
     const currentHandoff=db.query("SELECT 1 FROM session_handoffs WHERE id=? AND state='proposed' AND handoff_kind='codex-custody-successor' AND canonical_input_id=?")
       .get(staged.handoffId,facts.selected.id);
@@ -282,7 +288,8 @@ export async function recoverCustodySuccessor(input:CustodySuccessorRequest,clie
     const ownerEnvironment=providerOwnerEnvironment();
     const {CONCIERGE_COMMIT_PROVENANCE:_provenance,CONCIERGE_COMMIT_INPUT:_commitInput,...shellEnvironment}=ownerEnvironment;
     const plan:CodexSuccessorPlan={operationId:staged.handoffId,ownerSessionId:successorId,model:'gpt-6-astra',provider:snapshot.provider,
-      cwd:facts.metadata.cwd!,runtimeWorkspaceRoots:[...new Set([facts.metadata.cwd!,...(facts.metadata.additionalDirs??[])])],environmentId:'local',config:codexOwnedThreadConfig(shellEnvironment),
+      cwd:facts.metadata.cwd!,runtimeWorkspaceRoots:[...new Set([facts.metadata.cwd!,...(facts.metadata.additionalDirs??[])])],environmentId:'local',
+      config:codexOwnedThreadConfig(nativeConnection.endpoint?.relayRunner?withoutMachinePaths(shellEnvironment):shellEnvironment),
       approvalPolicy:'never',sandbox:'danger-full-access',custodyCommitted:true,predecessorExcluded:true,nativeConnection,
       additionalContext:{instructions:{kind:'application',value:sessionInputInstructions({standing:isWritingSession(facts.session)?WRITING_SESSION_STANDING:null})},
         custody:{kind:'application',value:`Continue the preserved duties of concierge:${facts.session.id}. Read its retained conversation through sessions context. Original source: ${snapshot.path}. Existing accepted work must not be replayed. Resource access is preservation, not productive write ownership. Preserve separately assigned productive custodians: do not edit or reset their retained worktrees. Read the repair coordinator's retained source for current scope: ${input.sourceInputId}. Exact obligation inventory: ${JSON.stringify(staged.inventory??{})}`}}};
@@ -297,7 +304,7 @@ export async function recoverCustodySuccessor(input:CustodySuccessorRequest,clie
   await refreshStagedCustody(input,relation,client,currentProcesses);
   db.transaction(()=>{input.validateSource();recoveryAction(input,relation);}).immediate();
   const committed=await commitRecoveryHandoff({actorSession:input.actorSession,inputId:input.sourceInputId,runId:input.sourceRunId,
-    handoffId:relation.handoff_id,digest:staged.digest,placementInputId:relation.placement_input_id,placementTurnId:relation.placement_turn_id,validateAuthority:()=>{input.validateSource();selectedFacts(input.requestId);assertNativeCutoff(`report-back:${input.requestId}`);}});
+    handoffId:relation.handoff_id,digest:staged.digest,placementInputId:relation.placement_input_id,placementTurnId:relation.placement_turn_id,validateAuthority:()=>{input.validateSource();selectedFacts(input.requestId,client);assertNativeCutoff(`report-back:${input.requestId}`);}});
   if(!committed.accepted)fail('Custody inventory changed; native construction remains withheld.');
   return constructCustodySuccessor(input,relation,client);
 }
@@ -319,7 +326,7 @@ async function refreshStagedCustody(input:CustodySuccessorRequest,relation:Custo
   assertNativeCutoff(relation.canonical_input_id);
   const effects=await reconcileCodexCustodyPredecessorEffects(client,{predecessorSessionId:relation.predecessor_session_id,
     threadId:before.threadId!,selectedTurnId:getAcceptedSessionInput(relation.canonical_input_id)!.turn_id!},observeProcesses);
-  const facts=selectedFacts(input.requestId),proof=await reconcileSelected(client,facts);
+  const facts=selectedFacts(input.requestId,client),proof=await reconcileSelected(client,facts);
   const fresh=await sourceSnapshot(client,facts);
   if(fresh.threadId!==before.threadId||fresh.bindingGeneration!==before.bindingGeneration
     ||fresh.path!==before.path||fresh.sourceDevice!==before.sourceDevice||fresh.sourceInode!==before.sourceInode)
@@ -333,7 +340,7 @@ async function refreshStagedCustody(input:CustodySuccessorRequest,relation:Custo
   const nativeConnection=await custodyConnection(client).witness();
   db.transaction(()=>{
     assertNativeCutoff(relation.canonical_input_id);
-    input.validateSource();selectedFacts(input.requestId);
+    input.validateSource();selectedFacts(input.requestId,client);
     const current=custodySuccessor(relation.canonical_input_id);
     if(!current||!['staged','custody'].includes(current.state)||current.state!==relation.state
       ||current.construction_intended_at!==null||current.handoff_id!==relation.handoff_id)
@@ -444,6 +451,7 @@ export async function consumeCustodyAttempt(turnId:number,ownerInstanceId:string
     const plan=JSON.parse(current.plan_json) as CodexSuccessorPlan;
     const snapshot=JSON.parse(current.snapshot_json) as Awaited<ReturnType<typeof sourceSnapshot>>;
     const metadata=sessionMetadata(session);
+    assertCustodyRunnerBinding(metadata.providerRunner,plan.nativeConnection?.endpoint??undefined);
     const owned=db.query(`SELECT 1 FROM turns WHERE id=? AND owner_instance_id=? AND dispatch_attempt=?
       AND status='running' AND stop_requested_at IS NULL`).get(turnId,ownerInstanceId,dispatchAttempt);
     const obligation=db.query(`SELECT 1 FROM session_communication_requests WHERE request_id=? AND target_session_id=?
@@ -453,7 +461,7 @@ export async function consumeCustodyAttempt(turnId:number,ownerInstanceId:string
       ||placement.payload_json!==original.payload_json||hash(original.payload_json)!==snapshot.payloadHash
       ||session.agent_session_uuid!==current.native_thread_id
       ||supersededBy(current.predecessor_session_id)!==`concierge:${current.successor_session_id}`
-      ||metadata.model!=='gpt-6-astra'||metadata.reasoningEffort!=='medium'||metadata.suspended||metadata.outside||metadata.providerRunner
+      ||metadata.model!=='gpt-6-astra'||metadata.reasoningEffort!=='medium'||metadata.suspended||metadata.outside
       ||metadata.cwd!==plan.cwd||JSON.stringify([...new Set([metadata.cwd,...(metadata.additionalDirs??[])])])!==JSON.stringify(plan.runtimeWorkspaceRoots))
       fail('Canonical successor attempt is spent, changed, stopped, or no longer exclusively owned.');
     if(db.query(`UPDATE codex_custody_successors SET state='admitting',attempt_spent_at=CURRENT_TIMESTAMP,dispatch_attempt=?
@@ -474,7 +482,13 @@ export function protectedCustodyRun(turnId:number,ownerInstanceId:string,dispatc
   if(!row.native_thread_id||!row.construction_json)fail('Successor construction is not confirmed.');
   return {plan:JSON.parse(row.plan_json) as CodexSuccessorPlan,construction:JSON.parse(row.construction_json) as CodexSuccessorConstruction,
     beforeAdmission:async()=>{
-      if(row.placement_turn_id===turnId)return consumeCustodyAttempt(turnId,ownerInstanceId,dispatchAttempt);
+      const retainedPlan=JSON.parse(row.plan_json) as CodexSuccessorPlan;
+      if(native)await custodyConnection(native.client).assert(retainedPlan.nativeConnection);
+      if(row.placement_turn_id===turnId){
+        await consumeCustodyAttempt(turnId,ownerInstanceId,dispatchAttempt);
+        if(native)await custodyConnection(native.client).assert(retainedPlan.nativeConnection);
+        return;
+      }
       assertNativeCutoff(row.canonical_input_id);
       assertInstalledCustodyController(process.env.CONCIERGE_DEPLOYMENT_RELEASE_ROOT||'/var/lib/slack-concierge-deployment');
       const session=getSessionById(row.successor_session_id)!;
@@ -483,6 +497,7 @@ export function protectedCustodyRun(turnId:number,ownerInstanceId:string,dispatc
       const metadata=sessionMetadata(session);
       const plan=JSON.parse(row.plan_json) as CodexSuccessorPlan;
       const current=custodySuccessor(row.canonical_input_id)!;
+      assertCustodyRunnerBinding(metadata.providerRunner,plan.nativeConnection?.endpoint??undefined);
       if(!live||!['admitted','acknowledged'].includes(current.state)||session.agent_session_uuid!==row.native_thread_id||metadata.suspended||metadata.model!=='gpt-6-astra'
         ||metadata.reasoningEffort!=='medium'||metadata.cwd!==plan.cwd
         ||JSON.stringify([...new Set([metadata.cwd,...(metadata.additionalDirs??[])])])!==JSON.stringify(plan.runtimeWorkspaceRoots)
@@ -501,8 +516,10 @@ export function protectedCustodyRun(turnId:number,ownerInstanceId:string,dispatc
           threadId:row.native_thread_id!,selectedTurnId:row.placement_turn_id,admittingTurnId:turnId},
           native.observeProcesses??(async threadId=>{
             const association=await connection.witness();
-            if(!association.endpoint||association.endpoint.relayRunner)fail('Successor process effects have no supported local native endpoint.');
-            return observeCodexCustodyProcesses(threadId,association.endpoint.socketPath);
+            const endpoint=custodyProcessEndpoint(association.endpoint??undefined);
+            const result=await observeCodexCustodyProcesses(threadId,endpoint.socketPath,endpoint.nativePid);
+            await connection.assert(association);
+            return result;
           }));
         await connection.assert(plan.nativeConnection);
         assertNativeCutoff(row.canonical_input_id);
