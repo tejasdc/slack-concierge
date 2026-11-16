@@ -11,10 +11,10 @@ import {INBOX_UNFILED_ACROSS_ROUTERS_TEST_AUTHORIZATION} from '../src/test-autho
 if(process.argv[2]!=='--child'){
   const root=mkdtempSync(join(tmpdir(),'concierge-prepared-lineage-'));
   try{
-    console.log(await runFixtureChild({command:process.execPath,args:[import.meta.path,'--child'],deadlineMs:45_000,
+    console.log(JSON.stringify(await runFixtureChild({command:process.execPath,args:[import.meta.path,'--child'],deadlineMs:45_000,
       fixture:'inbox-prepared-lineage',env:{...process.env,CONCIERGE_STATE_DIR:root,
         CONCIERGE_CAPTURE_STATE_DIR:join(root,'capture'),CONCIERGE_TEST_MODE:'1',
-        CONCIERGE_TEST_AUTHORIZATION:INBOX_UNFILED_ACROSS_ROUTERS_TEST_AUTHORIZATION}}));
+        CONCIERGE_TEST_AUTHORIZATION:INBOX_UNFILED_ACROSS_ROUTERS_TEST_AUTHORIZATION}})));
   }finally{rmSync(root,{recursive:true,force:true});}
 }else{
   const root=process.env.CONCIERGE_STATE_DIR!;
