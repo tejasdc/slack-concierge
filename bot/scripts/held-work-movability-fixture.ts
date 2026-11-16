@@ -12,12 +12,14 @@ process.env.CONCIERGE_STATE_DIR=scratch;
 process.env.CONCIERGE_CAPTURE_STATE_DIR=join(scratch,'capture');
 process.env.CONCIERGE_TEST_MODE='1';
 process.env.CONCIERGE_TEST_AUTHORIZATION=HELD_WORK_MOVABILITY_TEST_AUTHORIZATION;
+// Inventory's Lab read must fail fast and locally; its omission does not affect custody.
+process.env.THINKERING_AGENT_TEST_KEY_FILE=join(scratch,'no-lab-key');
 
 const [{db,claimNextQueuedTurn,markTurnProviderAdmissionIntended,retryRunningTurnAfterProviderFailure},
   {SessionOwner},{createNativeSession,retainSessionInput,enqueueSessionInput,getAcceptedSessionInput},
-  {safeTurn,transferSession},{queuedWorkMovable}]=await Promise.all([
+  {safeTurn,transferSession},{queuedWorkMovable,proposeHandoff,acceptHandoff},{admitChatGptObligation}]=await Promise.all([
   import('../src/state'),import('../src/session-owner'),import('../src/session-inputs'),
-  import('../src/provider-exhaustion-recovery'),import('../src/session-handoff')]);
+  import('../src/provider-exhaustion-recovery'),import('../src/session-handoff'),import('../src/chatgpt-obligations')]);
 new SessionOwner({available:()=>true,wake:()=>{},stop:async()=>false,steer:()=>false},scratch);
 
 const OWNER='held-work-fixture';
@@ -98,7 +100,32 @@ try{
   const unproposed=heldInput('fixture-no-proposal',false,'claude-code',true);
   assert.equal(transferSession(unproposed.session.id),1,'without a proposed SAME handoff, automatic transfer still works');
   assert.ok(db.query('SELECT 1 FROM provider_recovery_sessions WHERE source_session_id=?').get(unproposed.session.id));
-  console.log('held-work-movability-fixture: terminal usage refusals move with acknowledgement and start history intact; unclassified starts, uncertain acknowledgements, foreign receipts, dependencies, continuations, and competing proposals stay blocked; unproposed automatic transfer still works.');
+
+  // concierge:9767 → 9847, 2026-11-16: a predecessor holding an unanswered ChatGPT question has both its
+  // answer duty and its sent request in the inventory. Moving the answer moved the request first, and the
+  // sent step then refused "changed during handoff", so no such handoff could be accepted.
+  const asker=createNativeSession('codex',{title:'asker with open ChatGPT question',summary:undefined,purpose:'develop',origin:'native'});
+  const chatgpt=createNativeSession('chatgpt',{title:'ChatGPT review',summary:undefined,purpose:'chat',origin:'native'});
+  const askerInput=retainSessionInput({id:'fixture-asker-input',sessionId:asker.id,scope:'fixture',actionId:'asker',kind:'input',origin:'agent',
+    payload:{text:'Ask ChatGPT and hand off'}}).input;
+  const askerTurn=enqueueSessionInput(askerInput.id).turn_id!;
+  db.query("UPDATE turns SET status='done' WHERE id=?").run(askerTurn);
+  db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,
+    source_root_ts,action_id,target_session_id,target_channel,target_root_ts,payload_json,payload_hash,source_input_id,target_input_id,due_at_ms,created_at_ms)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run('fixture-chatgpt-question','fixture','fixture-1',askerTurn,asker.id,'fixture-root','ask-chatgpt',
+      chatgpt.id,'fixture','fixture-root',JSON.stringify({text:'Review this',after:[],requestedEffect:'work'}),'fixture-hash',askerInput.id,null,Date.now()+60_000,Date.now());
+  admitChatGptObligation({requestId:'fixture-chatgpt-question',task:{kind:'direct_input',id:askerInput.id},askerSessionId:asker.id,
+    question:'Review this',targetSessionId:`concierge:${chatgpt.id}`,now:Date.now(),legacyCustodyVerified:true});
+  const proposal=await proposeHandoff({actorSession:asker.id,inputId:askerInput.id,runId:'fixture-run',predecessorId:asker.id,
+    provider:'cc-sonnet',reason:'Codex allowance exhausted',actionId:'fixture-handoff'});
+  assert.deepEqual(proposal.inventory.items.map((item:any)=>item.id),['answer:fixture-chatgpt-question','sent:fixture-chatgpt-question']);
+  const successorId=Number(proposal.successor.slice('concierge:'.length));
+  const accepted=await acceptHandoff({actorSession:successorId,inputId:`handoff:${proposal.handoffId}`,runId:'fixture-successor-run',
+    handoffId:proposal.handoffId,digest:proposal.digest});
+  assert.equal(accepted.accepted,true,'a handoff holding a ChatGPT answer duty and its sent request is accepted');
+  assert.equal((db.query('SELECT source_session_id FROM session_communication_requests WHERE request_id=?').get('fixture-chatgpt-question') as any).source_session_id,successorId);
+  assert.equal((db.query('SELECT asker_session_id FROM session_chatgpt_obligations WHERE obligation_id=?').get('fixture-chatgpt-question') as any).asker_session_id,successorId);
+  console.log('held-work-movability-fixture: terminal usage refusals move with acknowledgement and start history intact; unclassified starts, uncertain acknowledgements, foreign receipts, dependencies, continuations, and competing proposals stay blocked; unproposed automatic transfer still works; a handoff holding an open ChatGPT question moves both its sent request and answer duty.');
 }finally{
   rmSync(scratch,{recursive:true,force:true});
 }
