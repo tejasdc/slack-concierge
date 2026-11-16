@@ -37,7 +37,7 @@ try {
       readSequence:0,closure:null,createdBy:by,createdAt:at,updatedAt:at};
     const request={requestId:`req:${randomUUID()}`,topicId,title,brief:'',state:'open',disposition:null,revision:1,
       sources:[{inputId:root}],dispatches:[],closure:null,createdAt:at,updatedAt:at};
-    const payload={change:'created',topicId,topic,roots:[{rootInputId:root,topicId,placedAt:at,placedBy:by,reason:'fixture'}],
+    const payload={change:'created',topicId,topic,roots:[{rootInputId:root,topicId,placedAt:at,placedBy:by,reason:recovered?'migration':'fixture'}],
       request,questions:[],by,reason:'fixture',revision:1,recovered};
     recordSessionEvent({eventId:`topic-fixture:${root}`,sessionId:router.id,kind:'topic',payload});
     topics.applyTopicChange('topic',payload);
@@ -80,10 +80,18 @@ try {
 
   // The Nov 5 conversion had already given the forward a thread of its own. It goes back once,
   // and his thread keeps its name without the first words of his reply as another name.
+  // A conversion thread someone has since re-placed into is left alone: it may be kept on purpose.
+  const kept=placed(`request:${randomUUID()}`,'Kept on purpose',true);
+  const keptRoot=(db.query('SELECT root_input_id FROM inbox_topic_roots WHERE topic_id=?').get(kept) as {root_input_id:string}).root_input_id;
+  db.query("UPDATE inbox_topic_roots SET reason='placed by the router' WHERE topic_id=?").run(kept);
+  db.query(`INSERT INTO session_communication_requests(request_id,source_turn_id,source_session_id,action_id,target_session_id,payload_json,payload_hash,
+    due_at_ms,created_at_ms,source_input_id,target_input_id,thread_root_input_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(keptRoot.slice('request:'.length),turn,successor.id,'kept-action',worker.id,'{}','fixture',Date.now(),Date.now(),reply,keptRoot,capture);
   const split=placed(sent,'No, no, no, no.',true);
   assert.deepEqual(topics.rejoinThreadsSplitAtHandoff(),{merged:1,unclear:0});
   const closed=db.query('SELECT state,closure_json FROM inbox_topics WHERE topic_id=?').get(split) as {state:string;closure_json:string};
   assert.equal(closed.state,'closed');
+  assert.equal((db.query('SELECT state FROM inbox_topics WHERE topic_id=?').get(kept) as {state:string}).state,'open','a touched thread stays');
   assert.equal(JSON.parse(closed.closure_json).into,thread);
   assert.equal((db.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(sent) as {topic_id:string}).topic_id,thread);
   assert.deepEqual(JSON.parse((db.query('SELECT aliases_json FROM inbox_topics WHERE topic_id=?').get(thread) as {aliases_json:string}).aliases_json),[]);
