@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { privateDatabaseCommand } from './private-database-command';
+import { privateCodeCommand } from './private-database-command';
 import {
   chmodSync,
   copyFileSync,
@@ -128,7 +128,7 @@ interface SpawnResult {
 }
 
 export interface ReleaseServices {
-  spawn(command: string[], options?: { cwd?: string; stdin?: Uint8Array }): SpawnResult;
+  spawn(command: string[], options?: { cwd?: string; stdin?: Uint8Array; env?: NodeJS.ProcessEnv }): SpawnResult;
   build(entrypoint: string, outputFile: string, target?: "bun" | "node"): Promise<void>;
 }
 
@@ -270,6 +270,7 @@ function defaultServices(): ReleaseServices {
       return Bun.spawnSync({
         cmd: command,
         cwd: options.cwd,
+        env: options.env,
         stdin: options.stdin,
         stdout: "pipe",
         stderr: "pipe",
@@ -455,12 +456,20 @@ export class TrustedRootReleaseManager {
       const hasPresentationGate=existsSync(join(sourceRoot,'bot/scripts/presentation-release-check.ts'));
       if(applicationDeclaration.applicationBundles.length&&!hasPresentationGate)
         throw new Error('Candidate application is missing its presentation release check.');
-      const presentationCheck=hasPresentationGate?this.services.spawn(privateDatabaseCommand([
-        '/usr/bin/timeout',String(CANDIDATE_PRESENTATION_TIMEOUT_SECONDS),'/usr/bin/env','CONCIERGE_TEST_MODE=1','CONCIERGE_TEST_AUTHORIZATION=responsive-system-b1eed622',
-        `CONCIERGE_STATE_DIR=${join(stagingRoot,'isolated-owner')}`,`CONCIERGE_CAPTURE_STATE_DIR=${join(stagingRoot,'isolated-capture')}`,
-        this.environment.bunExecutable,
-        join(sourceRoot,'bot/scripts/presentation-release-check.ts'),
-      ]),{cwd:join(sourceRoot,'bot')}):null;
+      // The candidate's own checks create nested private sandboxes, which the capability-less
+      // database boundary forbids; the code boundary keeps the same ledger masks and adds only
+      // the namespace capabilities those children need.
+      let presentationCheck:SpawnResult|null=null;
+      if(hasPresentationGate){
+        const isolated=privateCodeCommand([
+          '/usr/bin/timeout',String(CANDIDATE_PRESENTATION_TIMEOUT_SECONDS),'/usr/bin/env','CONCIERGE_TEST_MODE=1','CONCIERGE_TEST_AUTHORIZATION=responsive-system-b1eed622',
+          `CONCIERGE_STATE_DIR=${join(stagingRoot,'isolated-owner')}`,`CONCIERGE_CAPTURE_STATE_DIR=${join(stagingRoot,'isolated-capture')}`,
+          this.environment.bunExecutable,
+          join(sourceRoot,'bot/scripts/presentation-release-check.ts'),
+        ],process.env);
+        try{presentationCheck=this.services.spawn(isolated.command,{cwd:join(sourceRoot,'bot'),env:isolated.environment});}
+        finally{isolated.cleanup();}
+      }
       if(presentationCheck&&presentationCheck.exitCode!==0)throw new Error(
         `Candidate presentation cost check failed: ${failedCandidateCheck({...presentationCheck,
           timeoutSeconds:CANDIDATE_PRESENTATION_TIMEOUT_SECONDS,
