@@ -68,6 +68,15 @@ close logs leave one live page proxy, `launchctl print pid/<Web App PID>` still 
 WebContent child, its birth identity matches the process reading, and no service-worker-only
 log has ever named that PID in the bounded log window. Missing logs, a renderer older than the
 30-minute log window, multiple pages or reused service-worker processes produce unknown.
+Each event since 2026-11-16 also keeps content-free `attributionDiagnostics`: the outcome class
+(ok, timeout, exit code, signal, output limit, spawn error) and elapsed time of the log query and
+of one `ps` start-time read of every candidate, a finer reason (for example
+`multiple_open_main_frame_proxies` or `log_query_failed`), line counts, every still-open
+main-frame page proxy with its PID and commit time, and each candidate's start time and whether it
+predates the log window. The start-time read runs even when the log query fails. These fields show
+which boundary failed and keep ambiguity visible; they never choose a page from the largest child
+or a matching start time, and the attribution values above are unchanged. Records written before
+this field exist stay as they were.
 The request's optional mode and page session ID are correlation hints, not independent proof
 of a renderer. Browser network routing may prevent proof that the process making a loopback
 request is that renderer, so this is a conservative Web App page candidate rather than a

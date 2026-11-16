@@ -21,7 +21,17 @@ let lastPersistError: string | null = null;
 
 type ProcessReading = { pid: number; birthAbstime: number; userNs: number; systemNs: number; physicalBytes: number; path: string };
 type Sample = { at: string; elapsedMs: number; helper: ProcessReading | null; engine: ProcessReading | null; launcher: ProcessReading | null; shell: ProcessReading | null; children: ProcessReading[]; error?: string };
-type VoiceEvent = { id: string; mode: "dictation" | "canvas_voice" | "think_aloud" | "unknown"; pageSessionId: string | null; beganAt: string; endedAt?: string; cutoffAt?: string; page: { pid: number; birthAbstime: number; evidence: string } | null; attribution: string; samples: Sample[]; deadline: number; afterUntil?: number };
+type VoiceEvent = { id: string; mode: "dictation" | "canvas_voice" | "think_aloud" | "unknown"; pageSessionId: string | null; beganAt: string; endedAt?: string; cutoffAt?: string; page: { pid: number; birthAbstime: number; evidence: string } | null; attribution: string; attributionDiagnostics?: AttributionDiagnostics; samples: Sample[]; deadline: number; afterUntil?: number };
+// Content-free: process IDs, WebKit page-proxy IDs, timestamps, counts and command outcome classes only.
+type StageOutcome = { stage: "log_query" | "renderer_launch"; outcome: "ok" | "timeout" | "exit" | "signal" | "output_limit" | "spawn_error" | "unknown_error"; elapsedMs: number; exitCode?: number; signal?: string; errorCode?: string };
+type OpenProxy = { pageProxyId: number; pid: number; committedAt: string | null; liveChild: boolean; serviceWorkerPid: boolean };
+type CandidateLifecycle = { pid: number; birthAbstime: number; launchedAt: string | null; launchedBeforeLogWindow: boolean | null; openMainFrameProxyIds: number[] };
+type AttributionDiagnostics = {
+  version: 1; elapsedMs: number; logWindowMs: number; stages: StageOutcome[];
+  reason: "no_live_web_app_page" | "log_query_failed" | "no_open_main_frame_proxy" | "multiple_open_main_frame_proxies" | "open_proxy_not_unique_live_child" | "renderer_launch_unknown" | "renderer_older_than_log_window" | "unique" | "observer_error";
+  lifecycleLines?: { commits: number; mainFrameCommits: number; closes: number; serviceWorkerLines: number };
+  openMainFrameProxies?: OpenProxy[]; candidates?: CandidateLifecycle[]; errorName?: string;
+};
 
 async function command(file: string, args: string[], timeout = 1500) {
   const answer = await exec(file, args, { timeout, maxBuffer: 512 * 1024 });
@@ -74,27 +84,95 @@ async function sample(): Promise<Sample> {
 
 // WebKit's app-owned page-proxy lifecycle is stronger than a WebContent start-time match.
 // Missing or truncated unified logs produce unknown, never a guessed page.
-async function attribute(shell: ProcessReading | null, candidates: ProcessReading[]) {
-  if (!shell || !candidates.length) return { page: null, attribution: "no_live_web_app_page" };
+const logWindowMs = 30 * 60_000;
+
+function failedStage(stage: StageOutcome["stage"], error: unknown, elapsedMs: number): StageOutcome {
+  const failure = (error && typeof error === "object" ? error : {}) as { code?: unknown; killed?: unknown; signal?: unknown };
+  const signal = typeof failure.signal === "string" ? failure.signal.slice(0, 16) : undefined;
+  if (failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return { stage, outcome: "output_limit", elapsedMs };
+  if (failure.killed === true) return { stage, outcome: "timeout", elapsedMs, signal };
+  if (typeof failure.code === "number") return { stage, outcome: "exit", elapsedMs, exitCode: failure.code };
+  if (signal) return { stage, outcome: "signal", elapsedMs, signal };
+  if (typeof failure.code === "string") return { stage, outcome: "spawn_error", elapsedMs, errorCode: failure.code.slice(0, 40) };
+  return { stage, outcome: "unknown_error", elapsedMs };
+}
+
+async function timedStage(stage: StageOutcome["stage"], file: string, args: string[], timeout: number) {
+  const start = performance.now();
   try {
-    const lines = (await command("/usr/bin/log", ["show", "--last", "30m", "--info", "--style", "compact", "--predicate", `processID == ${shell.pid} AND (eventMessage CONTAINS "WebPageProxy::didCommitLoadForFrame" OR eventMessage CONTAINS "WebPageProxy::close" OR eventMessage CONTAINS "service worker process without page")`], 3000)).split("\n");
-    const open = new Map<string, number>();
-    const workers = new Set<number>();
-    for (const line of lines) {
+    const stdout = await command(file, args, timeout);
+    return { stdout, outcome: { stage, outcome: "ok", elapsedMs: Math.round(performance.now() - start) } as StageOutcome };
+  } catch (error) {
+    // `ps -p` exits 1 when one listed PID has exited but still prints the others.
+    const partial = error && typeof error === "object" && "stdout" in error && typeof error.stdout === "string" ? error.stdout : null;
+    return { stdout: partial, outcome: failedStage(stage, error, Math.round(performance.now() - start)) };
+  }
+}
+
+function localLogTime(line: string) {
+  const stamp = line.match(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}\.\d{3})/);
+  const at = stamp ? new Date(`${stamp[1]}T${stamp[2]}`) : null;
+  return at && Number.isFinite(at.valueOf()) ? at.toISOString() : null;
+}
+
+// WebKit's app-owned page-proxy lifecycle is stronger than a WebContent start-time match.
+// Missing or truncated unified logs produce unknown, never a guessed page. Diagnostics record
+// which boundary failed and every open main-frame proxy, so ambiguity stays visible instead of
+// being resolved by largest child or start-time coincidence.
+async function attribute(shell: ProcessReading | null, candidates: ProcessReading[]) {
+  const start = performance.now();
+  const stages: StageOutcome[] = [];
+  const finish = (attribution: string, reason: AttributionDiagnostics["reason"], extra: Partial<AttributionDiagnostics> = {}, page: VoiceEvent["page"] = null) =>
+    ({ page, attribution, diagnostics: { version: 1, elapsedMs: Math.round(performance.now() - start), logWindowMs, stages, reason, ...extra } as AttributionDiagnostics });
+  if (!shell || !candidates.length) return finish("no_live_web_app_page", "no_live_web_app_page");
+
+  const query = await timedStage("log_query", "/usr/bin/log", ["show", "--last", "30m", "--info", "--style", "compact", "--predicate", `processID == ${shell.pid} AND (eventMessage CONTAINS "WebPageProxy::didCommitLoadForFrame" OR eventMessage CONTAINS "WebPageProxy::close" OR eventMessage CONTAINS "service worker process without page")`], 3000);
+  stages.push(query.outcome);
+  const open = new Map<number, { pid: number; committedAt: string | null }>();
+  const workers = new Set<number>();
+  const lifecycleLines = { commits: 0, mainFrameCommits: 0, closes: 0, serviceWorkerLines: 0 };
+  if (query.outcome.outcome === "ok") {
+    for (const line of (query.stdout ?? "").split("\n")) {
       const worker = line.match(/\[PID=(\d+)\].*service worker process without page/);
-      if (worker) workers.add(Number(worker[1]));
+      if (worker) { workers.add(Number(worker[1])); lifecycleLines.serviceWorkerLines++; }
       const match = line.match(/\[pageProxyID=(\d+), webPageID=\d+, PID=(\d+)\] WebPageProxy::(didCommitLoadForFrame|close):?/);
       if (!match) continue;
-      if (match[3] === "close") open.delete(match[1]);
-      else if (line.includes("isMainFrame=1")) open.set(match[1], Number(match[2]));
+      if (match[3] === "close") { lifecycleLines.closes++; open.delete(Number(match[1])); continue; }
+      lifecycleLines.commits++;
+      if (line.includes("isMainFrame=1")) { lifecycleLines.mainFrameCommits++; open.set(Number(match[1]), { pid: Number(match[2]), committedAt: localLogTime(line) }); }
     }
-    const active = [...new Set(open.values())];
-    const matches = candidates.filter((item) => active.includes(item.pid) && !workers.has(item.pid));
-    if (matches.length !== 1 || active.length !== 1) return { page: null, attribution: "page_lifecycle_missing_or_ambiguous" };
-    const launched = new Date((await command("/bin/ps", ["-p", String(matches[0].pid), "-o", "lstart="], 700)).trim());
-    if (!Number.isFinite(launched.valueOf()) || Date.now() - launched.valueOf() > 30 * 60_000) return { page: null, attribution: "renderer_older_than_log_window" };
-    return { page: { pid: matches[0].pid, birthAbstime: matches[0].birthAbstime, evidence: `Web App ${shell.pid} main-frame commit with no close; unique live child` }, attribution: "unique_webkit_page_proxy" };
-  } catch { return { page: null, attribution: "page_lifecycle_unavailable" }; }
+  }
+
+  // One read of every candidate's start time, taken even when the log query failed, shows whether
+  // the 30-minute lifecycle window could have contained each renderer's main-frame commit.
+  const launch = await timedStage("renderer_launch", "/bin/ps", ["-p", candidates.map((item) => item.pid).join(","), "-o", "pid=,lstart="], 700);
+  stages.push(launch.outcome);
+  const launchedAt = new Map<number, number>();
+  for (const line of (launch.stdout ?? "").split("\n")) {
+    const row = line.match(/^\s*(\d+)\s+(.+?)\s*$/);
+    const at = row ? new Date(row[2]).valueOf() : NaN;
+    if (row && Number.isFinite(at)) launchedAt.set(Number(row[1]), at);
+  }
+  const windowStart = Date.now() - logWindowMs;
+  const livePids = new Set(candidates.map((item) => item.pid));
+  const openMainFrameProxies: OpenProxy[] = [...open].slice(0, 16).map(([pageProxyId, item]) => ({ pageProxyId, pid: item.pid, committedAt: item.committedAt, liveChild: livePids.has(item.pid), serviceWorkerPid: workers.has(item.pid) }));
+  const lifecycle: CandidateLifecycle[] = candidates.map((item) => {
+    const at = launchedAt.get(item.pid);
+    return { pid: item.pid, birthAbstime: item.birthAbstime, launchedAt: at === undefined ? null : new Date(at).toISOString(), launchedBeforeLogWindow: at === undefined ? null : at < windowStart, openMainFrameProxyIds: [...open].filter(([, proxy]) => proxy.pid === item.pid).map(([id]) => id).slice(0, 8) };
+  });
+  const evidence = { lifecycleLines, openMainFrameProxies, candidates: lifecycle };
+  if (query.outcome.outcome !== "ok") return finish("page_lifecycle_unavailable", "log_query_failed", evidence);
+
+  const active = [...new Set([...open.values()].map((item) => item.pid))];
+  const matches = candidates.filter((item) => active.includes(item.pid) && !workers.has(item.pid));
+  if (matches.length !== 1 || active.length !== 1) {
+    const reason = active.length === 0 ? "no_open_main_frame_proxy" : active.length > 1 ? "multiple_open_main_frame_proxies" : "open_proxy_not_unique_live_child";
+    return finish("page_lifecycle_missing_or_ambiguous", reason, evidence);
+  }
+  const launched = launchedAt.get(matches[0].pid);
+  if (launched === undefined) return finish("page_lifecycle_unavailable", "renderer_launch_unknown", evidence);
+  if (Date.now() - launched > logWindowMs) return finish("renderer_older_than_log_window", "renderer_older_than_log_window", evidence);
+  return finish("unique_webkit_page_proxy", "unique", evidence, { pid: matches[0].pid, birthAbstime: matches[0].birthAbstime, evidence: `Web App ${shell.pid} main-frame commit with no close; unique live child` });
 }
 
 async function writeEvent(event: VoiceEvent) {
@@ -171,8 +249,12 @@ export const macVoiceObserver = {
       const answer = await attribute(current.shell, current.children);
       event.page = answer.page;
       event.attribution = answer.attribution;
-    })().catch(() => { event.attribution = "observer_error"; });
+      event.attributionDiagnostics = answer.diagnostics;
+    })().catch((error) => {
+      event.attribution = "observer_error";
+      event.attributionDiagnostics = { version: 1, elapsedMs: 0, logWindowMs, stages: [], reason: "observer_error", errorName: error instanceof Error ? error.name.slice(0, 40) : "unknown" };
+    });
   },
   end(id: string) { const event = events.get(id); if (event) { event.endedAt = new Date().toISOString(); event.afterUntil = Math.min(Date.now() + 30_000, event.deadline); } },
-  status() { return { activeEvents: events.size, pendingWrites, ringSamples: pre.length, lastSampleAt: last?.at ?? null, lastSampleElapsedMs: last?.elapsedMs ?? null, lastPageAttribution: [...events.values()].at(-1)?.attribution ?? null, lastPersistError }; },
+  status() { return { activeEvents: events.size, pendingWrites, ringSamples: pre.length, lastSampleAt: last?.at ?? null, lastSampleElapsedMs: last?.elapsedMs ?? null, lastPageAttribution: [...events.values()].at(-1)?.attribution ?? null, lastAttributionReason: [...events.values()].at(-1)?.attributionDiagnostics?.reason ?? null, lastPersistError }; },
 };
