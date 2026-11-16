@@ -193,7 +193,7 @@ import {HostedClaudeCodeTransport,HostUnavailableError,claudeExecutable,executio
 import {RUNNER_SUPERVISOR,RunnerHostAccess} from './runner-host-access';
 import {agentRunEnvironment} from './agent-run-tokens';
 import {commitSessionIdentity} from './peer-identity';
-import {recordExecutionExited,recordExecutionLaunched,recordLiveAdoption,releaseExecution,retainExecutionIntent,type Adoption,type ExecutionRow} from './executions';
+import {recordExecutionExited,recordExecutionLaunched,recordLiveAdoption,releaseExecution,retainExecutionIntent,trackOpenHostedExecutionsOfTurn,type Adoption,type ExecutionRow} from './executions';
 
 export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex'|'antigravity';mode:'interactive'|'device'|'host-managed';pending:boolean;signInKeepsCurrent:true;pendingFor:string|null;pendingUrl:string|null;lastSignIn:{ok:boolean;detail:string|null}|null;message:string;signedIn?:boolean;checking?:boolean;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
 /**
@@ -1337,6 +1337,7 @@ export class SessionExecutionHost {
     }
     try {
       return await this.options.registry.run({turnId:claim.turn_id,sessionId:session.id},async(steeringController,closeSteering,cancellationController)=>{
+        trackOpenHostedExecutionsOfTurn(claim.turn_id);
         if(input.kind==='fork'){closeSteering(new Error('A native fork control has no model input channel.'));return this.runFork(claim,input,session);}
         if(sessionMetadata(session).outside)steeringController.close(new Error('An independent Codex command has no live input channel.'));
         if(adoption){
@@ -1700,6 +1701,11 @@ export class SessionExecutionHost {
           // (Claude, Codex or ChatGPT) is started or told anything.
           await ledgerDurable({kind:'provider_input',id:input.id});
           if(boundLabInvocation(input)&&!labInvocationBindingMatches(input))throw new ProviderCapabilityUnavailableError('send','The Lab participant’s provider, model or effort changed; no replacement execution was submitted.');
+          if(!adoption&&(onRunner||session.provider_id==='claude-code'&&executionHostsEnabled())){
+            if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
+            if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
+              throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
+          }
           // A run taken back after a restart takes messages again only once its history is rebuilt;
           // what the restart returned to the queue meanwhile goes into it then.
           if(adoption&&prepared.onSteeringReady){
@@ -1819,10 +1825,7 @@ export class SessionExecutionHost {
       ...(adoption?{adopted:true,beforeProviderAdmission:()=>{}}
         :onRunner
           // The runner finds the Claude CLI on its own machine; a missing one is its definite refusal.
-          ?{beforeProviderAdmission:()=>{
-            if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
-              throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
-          }}
+          ?{beforeProviderAdmission:()=>{}}
         :session.provider_id==='claude-code'&&executionHostsEnabled()
           ?{beforeProviderAdmission:()=>{
             try{launchClaudeExecutable=claudeExecutable();}
@@ -1831,8 +1834,6 @@ export class SessionExecutionHost {
               throw new ProviderDispatchError({message:error.message,failureClass:'retryable',terminalConfirmed:true,
                 toolsUsed:[],localPrerequisiteUnavailable:true});
             }
-            if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
-              throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
           }}
         :sharedCodex&&!successor?{beforeProviderAdmission:()=>{
           if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
