@@ -81,6 +81,10 @@ jobs:
             if [ -e "/proc/sys/kernel/$setting" ]; then sudo sysctl -w "kernel.$setting=0"; fi
           done
           sysctl user.max_user_namespaces kernel.unprivileged_userns_clone 2>/dev/null || true
+          # Ubuntu's bwrap-userns-restrict profile also forbids a user namespace inside a
+          # bubblewrap sandbox; unload AppArmor profiles on this disposable runner only.
+          sudo aa-teardown >/dev/null 2>&1 || sudo systemctl stop apparmor || true
+          bwrap --die-with-parent --bind / / --dev /dev --unshare-user --uid 0 --gid 0 -- true
           # The checks' exact shape: a private user namespace nested inside another.
           bwrap --die-with-parent --bind / / --dev /dev --unshare-user --uid 0 --gid 0 -- \
             bwrap --die-with-parent --bind / / --dev /dev --unshare-user --uid 0 --gid 0 -- true
