@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import {agentJson} from "../src/agent-local-time";
 import {basename} from 'node:path';
 import {readFileSync} from 'node:fs';
 import {requestApiResponse} from './router-request-client';
@@ -28,5 +29,5 @@ if(!message.trim())invalid('Describe what happened, what was expected, and why i
 const files=paths.map(path=>({name:basename(path),contentType:Bun.file(path).type||'application/octet-stream',base64:readFileSync(path).toString('base64')}));
 const response=await requestApiResponse('/sessions/v1/agent-report',{source:{inputId:sourceInput,runId:sourceRun},
   actionId,title,text:message,files});
-if(response.ok)console.log(JSON.stringify(response.result));
-else {console.error(JSON.stringify(response.result));process.exitCode=1;}
+if(response.ok)console.log(agentJson(response.result));
+else {console.error(agentJson(response.result));process.exitCode=1;}

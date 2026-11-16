@@ -1,3 +1,4 @@
+import {agentJson} from "../src/agent-local-time";
 /**
  * `router-actions.sh messages`: an agent on the Mac reads Tejas's texts, received and sent. Texts
  * that look like a login code, reset or sign-in link (bot/src/text-code-withholding.ts) are shown
@@ -34,18 +35,18 @@ function option(args: string[], name: string): string | undefined {
 const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) { console.log(usage); process.exit(0); }
 if (process.platform !== 'darwin') {
-  console.log(JSON.stringify({ error: 'MESSAGES_NOT_ON_THIS_MACHINE', message: 'His texts live only on the Mac. Ask a Mac session, or read his own sent texts through thnkr.ing.' }));
+  console.log(agentJson({ error: 'MESSAGES_NOT_ON_THIS_MACHINE', message: 'His texts live only on the Mac. Ask a Mac session, or read his own sent texts through thnkr.ing.' }));
   process.exit(2);
 }
 const attachmentToExport = option(args, '--attachment');
 if (args.includes('--attachment')) {
   const folder = option(args, '--to');
-  if (!attachmentToExport || !folder) { console.error(JSON.stringify({ error: 'INVALID_ATTACHMENT_EXPORT', usage })); process.exit(2); }
+  if (!attachmentToExport || !folder) { console.error(agentJson({ error: 'INVALID_ATTACHMENT_EXPORT', usage })); process.exit(2); }
   const result = exportAttachment(attachmentToExport, folder);
   try { recordMessagesRead({ event: 'error' in result ? 'messages_attachment_refused' : 'messages_attachment_exported', cwd: process.cwd(),
     attachment: attachmentToExport, to: 'exported' in result ? result.exported.path : folder, error: 'error' in result ? result.error : undefined }); }
-  catch (error) { console.error(JSON.stringify({ event: 'messages_attachment_log_failed', error: String(error) })); }
-  console.log(JSON.stringify(result, null, 1));
+  catch (error) { console.error(agentJson({ event: 'messages_attachment_log_failed', error: String(error) })); }
+  console.log(agentJson(result));
   process.exit('error' in result ? 2 : 0);
 }
 function bounded(raw: string | undefined, fallback: number, max: number): number {
@@ -70,7 +71,7 @@ const beforeTime = dateStart(before);
 if (historical && (!selectedChatGuid || fromTime === null || beforeTime === null
     || beforeTime <= fromTime || beforeTime - fromTime > 45 * 86_400
     || withWhom || args.includes('--days'))) {
-  console.error(JSON.stringify({ error: 'INVALID_HISTORICAL_MESSAGES_WINDOW', usage }));
+  console.error(agentJson({ error: 'INVALID_HISTORICAL_MESSAGES_WINDOW', usage }));
   process.exit(2);
 }
 
@@ -85,7 +86,7 @@ const selectedChat = historical ? database.query(`
 `).get(selectedChatGuid) as { id: number } | null : null;
 if (historical && !selectedChat) {
   database.close();
-  console.error(JSON.stringify({ error: 'CHAT_NOT_FOUND', message: 'Use the exact chatGuid from an approved Messages read of this conversation.' }));
+  console.error(agentJson({ error: 'CHAT_NOT_FOUND', message: 'Use the exact chatGuid from an approved Messages read of this conversation.' }));
   process.exit(2);
 }
 const rows = database.query(`
@@ -193,9 +194,9 @@ database.close();
     cwd: process.cwd(), with: withWhom, chatGuid: selectedChatGuid, q: query,
     from: historical ? from : null, before: historical ? before : null, days: historical ? null : days,
     limit, shown: shown.length, withheld: counts, codesShown, codeRuleUnavailable: !!codeRuleUnavailable }); }
-  catch (error) { console.error(JSON.stringify({ event: 'messages_read_log_failed', error: String(error) })); }
+  catch (error) { console.error(agentJson({ event: 'messages_read_log_failed', error: String(error) })); }
 }
-console.log(JSON.stringify({
+console.log(agentJson({
   messages: shown,
   chats,
   withheld,

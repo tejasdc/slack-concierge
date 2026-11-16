@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import {agentJson} from "../src/agent-local-time";
 import {requestApiResponse} from './router-request-client';
 import {createHash} from 'node:crypto';
 
@@ -16,19 +17,19 @@ async function main(args:string[]){
     const flags=flagsOf(args.slice(1),['--consultation']);
     if(!flags.get('--consultation'))throw new Error(usage);
     const answer=await requestApiResponse('/sessions/v1/projects/canvas-policy',{consultation:flags.get('--consultation')});
-    console.log(JSON.stringify(answer.result));if(!answer.ok)process.exitCode=1;return;
+    console.log(agentJson(answer.result));if(!answer.ok)process.exitCode=1;return;
   }
   if(args[0]==='canvas-bind'){
     const board=args[1],flags=flagsOf(args.slice(2),['--title','--existing','--inside']);
     if(!board||!flags.get('--title')||!flags.get('--existing'))throw new Error(usage);
     const digest=createHash('sha256').update(board).digest('hex').slice(0,24);
     const answer=await requestApiResponse('/sessions/v1/canvas-projects/ensure',{clientActionId:`canvas-project:${digest}`,boardId:board,boardTitle:flags.get('--title'),existingProject:{name:flags.get('--existing'),...(flags.get('--inside')?{inside:flags.get('--inside')}:{})}});
-    console.log(JSON.stringify(answer.result));if(!answer.ok)process.exitCode=1;return;
+    console.log(agentJson(answer.result));if(!answer.ok)process.exitCode=1;return;
   }
   if(args[0]==='canvas-status'){
     const board=args[1];if(!board||args.length!==2)throw new Error(usage);
     const answer=await requestApiResponse('/sessions/v1/canvas-projects/'+encodeURIComponent(board));
-    console.log(JSON.stringify(answer.result));if(!answer.ok)process.exitCode=1;return;
+    console.log(agentJson(answer.result));if(!answer.ok)process.exitCode=1;return;
   }
   const [verb,project,...rest]=args;
   if(!verb||!['new','share','status','cancel'].includes(verb)||!project||project.startsWith('--'))throw new Error(usage);
@@ -49,7 +50,7 @@ async function main(args:string[]){
   const path=verb==='status'?`/sessions/v1/projects/${encodeURIComponent(project)}/status${flags.get('--to')?`?peer=${encodeURIComponent(flags.get('--to')!)}`:''}`:`/sessions/v1/projects/${verb}`;
   const body=verb==='new'?{name:project,consultation:flags.get('--consultation'),purpose:flags.get('--purpose'),...(flags.has('--template')?{template:flags.get('--template')}:{}),hereOnly:flags.has('--here-only'),...(source?{source}:{})}:verb==='share'?{name:project,to:flags.get('--to'),...(source?{source}:{})}:verb==='cancel'?{name:project,to:flags.get('--to')}:undefined;
   const answer=await requestApiResponse(path,body);
-  console.log(JSON.stringify(answer.result));
+  console.log(agentJson(answer.result));
   if(!answer.ok)process.exitCode=1;
 }
 function flagsOf(args:string[],allowed:string[]){const flags=new Map<string,string>();for(let i=0;i<args.length;i++){const flag=args[i]!;if(!allowed.includes(flag)||flags.has(flag)||i+1>=args.length||args[i+1]!.startsWith('--'))throw new Error(`Invalid project option: ${flag}.\n${usage}`);flags.set(flag,args[++i]!);}return flags;}

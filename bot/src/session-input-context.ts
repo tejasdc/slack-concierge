@@ -2,6 +2,7 @@ import { CODEX_INVESTIGATOR_MODEL, modelDisplayName, TOP_MODEL_CHOICES } from '.
 import { sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
 import { REQUEST_PROTOCOL } from './request-protocol';
 import { STILL_WAITING_MINUTES } from './request-liveness';
+import { annotateTextWithHisTime } from './agent-local-time';
 
 // Provider children inherit the service's PATH, which does not include the operator's
 // ~/.local/bin, so a bare "router-actions.sh" is "command not found" for every agent.
@@ -62,8 +63,8 @@ export function sessionInputInstructions(options: { standing?: string | null } =
 
 export function sessionTurnContext(input: AcceptedSessionInput, runId: string,
   options: { unnamed?: boolean; budget?: string | null; notice?: string | null; thesaurus?: string | null } = {}) {
-  return [options.thesaurus,options.budget,options.notice,options.unnamed?unnamedSessionStep(input,runId):null]
-    .filter(Boolean).join('\n\n');
+  return annotateTextWithHisTime([options.thesaurus,options.budget,options.notice,options.unnamed?unnamedSessionStep(input,runId):null]
+    .filter(Boolean).join('\n\n'));
 }
 
 /**
@@ -74,5 +75,7 @@ export function sessionTurnContext(input: AcceptedSessionInput, runId: string,
  * Sending the same normal form keeps both sides identical.
  */
 export function sessionInputEnvelope(input: AcceptedSessionInput, runId: string, content: string) {
-  return `${sessionInputIdentityContext(input, runId)}\n\n${content}`.trimEnd();
+  // Agent requests and service notices carry server UTC times; his own words stay exactly as sent.
+  const body = input.origin === 'human' ? content : annotateTextWithHisTime(content);
+  return `${sessionInputIdentityContext(input, runId)}\n\n${body}`.trimEnd();
 }
