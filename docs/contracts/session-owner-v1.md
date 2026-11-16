@@ -18,7 +18,7 @@ output is read; there is no clean/allowed result and the content refusal is unch
 The bound content entrance's authorship check treats a session's own steered owner notice as
 the session's own: a service-origin input of kind `input` whose source and request equal its own
 id and whose source run is a turn of that same session (for example the account budget brief and background-job
-notices; a missing source or request never qualifies). Spelling of the id and the text are not read. Any other service or human input, and
+notices; a missing source or request never qualifies), or the single closing notice of an accepted handoff of that session as predecessor (service input, action `notice`, no request, id and scope equal to `handoff-notice:` plus that accepted handoff's id, and a source input and run held together by one turn of that session). Spelling of the id and the text are not read; a proposed or withdrawn handoff, another session's handoff or a mismatched pair does not qualify. Any other service or human input, and
 any agent input from another source, still closes the entrance with AGENT_TEST_SCOPE_CHANGED.
 
 ## Current mutation admission
