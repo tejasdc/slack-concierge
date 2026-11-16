@@ -47,8 +47,12 @@ if(process.argv.includes('--owner')){
  const area=topicsCommand(actor,{verb:'area.create',action_id:'publication-area',name:'Lab acceptance'}).area;
  topicsCommand(actor,{verb:'create',action_id:'publication-topic',title:'Lab acceptance',roots:[boxRun.source.input_id],area_ids:[area.id]});
  const counts=()=>({requests:(db.query('SELECT count(*) AS n FROM session_communication_requests').get() as any).n,
+  peerRequests:(db.query('SELECT count(*) AS n FROM session_peer_requests').get() as any).n,
+  peerDeliveries:(db.query('SELECT count(*) AS n FROM session_peer_deliveries').get() as any).n,
   turns:(db.query('SELECT count(*) AS n FROM turns').get() as any).n,
   duties:(db.query('SELECT count(*) AS n FROM session_communication_requests WHERE outcome IS NULL').get() as any).n,
+  peerDuties:(db.query('SELECT count(*) AS n FROM session_peer_requests WHERE outcome IS NULL').get() as any).n
+   +(db.query('SELECT count(*) AS n FROM session_peer_deliveries WHERE closed_at_ms IS NULL').get() as any).n,
   posts:(db.query("SELECT count(*) AS n FROM session_owner_events WHERE kind='post'").get() as any).n});
  // Authenticated loopback transport stands in for the gateway listener only. Every command
  // response and source proof below is produced by the actual owner.handle and real peer client.
@@ -135,21 +139,33 @@ if(process.argv.includes('--owner')){
   const incoming=await cloud.command('replies');
   const publication=(source:any,sourceOwner:string,action_id:string)=>({version:1,source,action_id,sourceOwner,destinationOwner:'cloud',targetSessionId:cloud.ready.inbox,thread:cloud.ready.thread,text:` ${action_id}: exact publication bytes `});
   const rows=[];
+  const unchangedWork=(before:any,after:any)=>{for(const field of ['requests','peerRequests','peerDeliveries','turns','duties','peerDuties'])assert.equal(after[field],before[field],`${field} changed`);};
   for(const [machine,source,author] of [['cloud',cloud.ready.source,cloud.ready.author],['mac',mac.ready.source,`mac:${mac.ready.author.slice(10)}`]] as const){
    const body=publication(source,machine,`${machine}-publication`),before=await cloud.command('stats');
+   const beforeSource=machine==='mac'?await mac.command('stats'):before;
    const first=await cloud.command('post',{body});assert.ok(first.status<300,JSON.stringify(first));assert.equal(first.body.duplicate,false);
    const duplicate=await cloud.command('post',{body});assert.ok(duplicate.status<300);assert.equal(duplicate.body.duplicate,true);assert.deepEqual(duplicate.body.post,first.body.post);
    for(const changed of [{...body,text:body.text+'changed'},{...body,text:body.text.trim()},{...body,source:{...source,run_id:'wrong-run'}}]){
     const refused=await cloud.command('post',{body:changed});assert.ok(refused.status>=400,JSON.stringify(refused));
    }
-   const after=await cloud.command('stats');assert.equal(after.requests,before.requests);assert.equal(after.turns,before.turns);assert.equal(after.duties,before.duties);assert.equal(after.posts,before.posts+1);
+   const after=await cloud.command('stats');unchangedWork(before,after);assert.equal(after.posts,before.posts+1);
+   const afterSource=machine==='mac'?await mac.command('stats'):after;unchangedWork(beforeSource,afterSource);
    const display=await cloud.command('read',{messageId:first.body.post.messageId});
    for(const projection of [display.live,display.prepared]){assert.equal(projection.content,body.text);assert.equal(projection.author.session.id,author);assert.equal(projection.author.inputId,source.input_id);assert.equal(projection.author.runId,source.run_id);}
-   rows.push({machine,httpStatus:first.status,post:first.body.post,duplicate:true,changedBytesRefused:true,noNewRequestTurnDuty:true,liveAndPreparedAuthor:author});
+   rows.push({machine,httpStatus:first.status,post:first.body.post,duplicate:true,changedBytesRefused:true,noNewRequestTurnDuty:true,
+    beforeDestination:before,afterDestination:after,beforeSource,afterSource,liveAndPreparedAuthor:author});
   }
   const valid=publication(mac.ready.source,'mac','foreign-invalid-target');
-  for(const body of [{...valid,targetSessionId:'concierge:99999'},{...valid,thread:'missing-thread'},{...valid,source:{...valid.source,input_id:'invented-source'}}]){
-   const before=await cloud.command('stats'),refused=await cloud.command('post',{body});assert.ok(refused.status>=400);assert.equal((await cloud.command('stats')).posts,before.posts);
+  for(const [name,changes,reason] of [
+   ['wrong-inbox',{targetSessionId:'concierge:99999'},/Inbox destination changed/i],
+   ['wrong-thread',{thread:'missing-thread'},/not a message in this Inbox/i],
+   ['wrong-source',{source:{...valid.source,input_id:'invented-source'}},/exact live run|admitted input/i],
+   ['wrong-destination',{destinationOwner:'mac'},/does not own that Inbox destination/i],
+  ] as const){
+   const body={...valid,...changes,action_id:name};
+   const before=await cloud.command('stats'),beforeSource=await mac.command('stats'),refused=await cloud.command('post',{body});
+   assert.ok(refused.status>=400);assert.match(JSON.stringify(refused.body),reason,`${name} refused at the wrong boundary`);
+   const after=await cloud.command('stats');assert.equal(after.posts,before.posts);unchangedWork(before,after);unchangedWork(beforeSource,await mac.command('stats'));
   }
   const principal=await cloud.command('post',{body:valid,principal:'run:untrusted'});assert.equal(principal.status,403);
   // Retain exact foreign intent at the source, then end its run before destination admission.
