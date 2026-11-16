@@ -14,8 +14,8 @@ process.env.CONCIERGE_TEST_MODE='1';
 process.env.CONCIERGE_TEST_AUTHORIZATION=REQUEST_STANDING_TEST_AUTHORIZATION;
 
 const [{db,claimNextQueuedTurn,markTurnProviderAdmissionIntended,acknowledgeTurnProviderInput},
-  {SessionOwner},{SessionCommunicationCoordinator},{nativeRunId,updateSessionMetadata},{topicsCommand},{requestStanding,heldRequests,workerWork,openRequestStandings,QUIET_WAKE_MS},{REMINDERS_SINCE_MS}]=await Promise.all([
-  import('../src/state'),import('../src/session-owner'),import('../src/session-communication'),import('../src/session-inputs'),import('../src/session-topics'),import('../src/request-standing'),import('../src/request-liveness')]);
+  {SessionOwner},{SessionCommunicationCoordinator},{nativeRunId,updateSessionMetadata},{topicsCommand},{requestStanding,heldRequests,workerWork,openRequestStandings,QUIET_WAKE_MS,standingFinder},{REMINDERS_SINCE_MS},{topicCurrentWorkers}]=await Promise.all([
+  import('../src/state'),import('../src/session-owner'),import('../src/session-communication'),import('../src/session-inputs'),import('../src/session-topics'),import('../src/request-standing'),import('../src/request-liveness'),import('../src/topic-current-workers')]);
 
 const errors:unknown[]=[];
 let clock=Date.now();
@@ -34,7 +34,12 @@ function run(){
 }
 const quietInputs=(requestId:string)=>(db.query("SELECT id FROM session_inputs WHERE id LIKE ? AND id NOT LIKE '%:session:%' ORDER BY id").all(`request-quiet:${requestId}:%`) as {id:string}[]).map(row=>row.id);
 // The owner's own chase (report-back, stall, overdue reminder) is stopped once the requests exist, so only the quiet clock is measured.
-const scan=async()=>{const live=communication as any;live.stopped=false;try{await live.scanQuietRequests();}finally{live.stopped=true;}};
+const scan=async()=>{
+  const live=communication as any;live.stopped=false;
+  try{await live.scanQuietRequests();await communication.idle();}finally{live.stopped=true;}
+  // The owner's own report-back reminders (a different service) are not the clock under test: withdraw them.
+  db.query("UPDATE turns SET status='cancelled' WHERE status='queued' AND session_id<>1 AND id IN (SELECT turn_id FROM session_inputs WHERE id LIKE 'report-back:%' OR id LIKE 'request-reminder:%' OR id LIKE 'return:%')").run();
+};
 const tick=async(ms:number)=>{clock+=ms;await scan();};
 const endTurns=(sessionId:number)=>db.query("UPDATE turns SET status='done',ended_at=CURRENT_TIMESTAMP WHERE session_id=? AND status IN ('queued','running')").run(sessionId);
 const standing=(id:string)=>requestStanding(db,id,clock)!;
@@ -96,8 +101,30 @@ try {
   await tick(3*HOUR);
   for(const id of [workingId,heldId,chainId])assert.deepEqual(quietInputs(id),[],`no wake for ${id}`);
 
+  // Every worker has a standing, and a waiting request is not dropped while another one works.
+  const routed=topicCurrentWorkers(db,[{sessionId:`concierge:${d.id}`,title:'D',requestId:workingId}],standingFinder(db,new Map(),clock));
+  assert.equal(routed[0]!.standing!.state,'working','a routed request that is not a topic dispatch gets a real standing');
+  const both=workerWork(routed,openRequestStandings(db,[{state:'open',dispatches:[{requestId:workingId},{requestId:heldId}]}],clock))!;
+  assert.equal(both.kind,'worker_working');
+  assert.deepEqual(both.workers.map(worker=>worker.requestId).sort(),[heldId,workingId].sort(),'one entry per request, working and waiting together');
+  assert.equal(both.workers.find(worker=>worker.requestId===heldId)!.standing!.state,'held');
+  assert.equal(both.workers.find(worker=>worker.requestId===workingId)!.standing!.state,'working');
+
+  // Wakes that bring no word stop after three: the fourth time round the request is stalled for the Inbox router.
+  endTurns(a.id);await tick(61*60_000);
+  assert.equal(quietInputs(waitingId).length,3);endTurns(a.id);
+  assert.equal((db.query('SELECT stalled_at_ms FROM session_communication_requests WHERE request_id=?').get(waitingId) as {stalled_at_ms:number|null}).stalled_at_ms,null);
+  await tick(61*60_000);
+  assert.equal(quietInputs(waitingId).length,3,'no fourth wake');
+  assert.equal(standing(waitingId).state,'stalled');assert.match(standing(waitingId).text,/no word after three hourly reminders/);
+  // A progress reply starts the count again: quiet request h had one wake; it gets a second, then word, then more than three wakes in all.
+  endTurns(h.id);await tick(61*60_000);assert.equal(quietInputs(quietId).length,2);endTurns(h.id);
+  db.query("INSERT INTO session_communication_events(event_id,request_id,kind,action_key,payload_json,created_at_ms) VALUES(?,?,'progress',NULL,?,?)").run(randomUUID(),quietId,JSON.stringify({text:'Still on it.'}),clock);
+  for(let round=3;round<=5;round++){await tick(61*60_000);assert.equal(quietInputs(quietId).length,round,`wake ${round} after the word`);endTurns(h.id);}
+  assert.equal((db.query('SELECT stalled_at_ms FROM session_communication_requests WHERE request_id=?').get(quietId) as {stalled_at_ms:number|null}).stalled_at_ms,null,'word reset the count');
+
   // Quiet with nothing to wait on gets its wake too; stalled says so.
-  assert.deepEqual(quietInputs(quietId),[`request-quiet:${quietId}:1`],'a holder with nothing to wait on is woken too');
+  assert.equal(quietInputs(quietId)[0],`request-quiet:${quietId}:1`,'a holder with nothing to wait on is woken too');
   db.query('UPDATE session_communication_requests SET stalled_at_ms=? WHERE request_id=?').run(clock,workingId);
   assert.equal(standing(workingId).state,'stalled');assert.match(standing(workingId).text,/^Stopped without finishing/);
 

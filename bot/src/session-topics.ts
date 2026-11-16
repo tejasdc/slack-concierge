@@ -19,7 +19,7 @@ import {errorFields,log} from './log';
 import {ensureTable as ensureRepairNotices,recordRepairNotice,resolveRepairNotice} from './repair-notices';
 import {readTodos,STEP_ASKS,type TodoState} from './question-todos';
 import {closedRequestDispatches,openRequestDeliveries,topicCurrentWorkers,workingThrough} from './topic-current-workers';
-import {openRequestStandings,workerWork} from './request-standing';
+import {openRequestStandings,standingFinder,workerWork} from './request-standing';
 import {approvalDecision} from './decision-approval';
 import {hisWordsLine,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
 import {deviceQuestionNamesPhysicalPrerequisite} from './agent-reachable-app-question';
@@ -817,8 +817,8 @@ function topicWork(topic:StoredTopic,roots:string[],index:WorkIndex,entries:Entr
       ?{root:null,sessionId:`concierge:${live.targetSessionId}`,title:(target&&sessionMetadata(target).title)||'Agent session',requestId:live.requestId}
       :{root:null,sessionId:receiveSessionFromPeer(live.remoteSessionId!,live.peer!),title:`${live.peer} session`,requestId:live.requestId});
   }
-  const standings=openRequestStandings(db,requests,Date.now());
-  const value=workerWork(topicCurrentWorkers(db,working,id=>standings.get(id)??null),standings);
+  const now=Date.now(),standings=openRequestStandings(db,requests,now);
+  const value=workerWork(topicCurrentWorkers(db,working,standingFinder(db,standings,now)),standings);
   if(value)return value;
   return {kind:'idle' as const,text:''};
 }

@@ -1,6 +1,6 @@
 import {questionDisplay} from './topic-display-rules';
 import {askedAnswerPostIds,askedAnswerStatus,routeForMessage} from './asked-answer';
-import {openRequestStandings,workerWork} from './request-standing';
+import {openRequestStandings,standingFinder,workerWork} from './request-standing';
 import {closedRequestDispatches,openRequestDeliveries,topicCurrentWorkers,workingThrough} from './topic-current-workers';
 import {topicReplyTargets} from './reply-target-rules';
 import type {Database} from 'bun:sqlite';
@@ -286,8 +286,8 @@ function topicWorkValue(context:TopicContext,topic:any,roots:string[],requests:r
   working.push(live.targetSessionId!==null
    ?{root:null,sessionId:`concierge:${live.targetSessionId}`,title:sessionTitle(context.source,live.targetSessionId)||'Agent session',requestId:live.requestId,through:live.through.map(id=>`concierge:${id}`)}
    :{root:null,sessionId:peerAddress(live.peer!,live.remoteSessionId!),title:`${live.peer} session`,requestId:live.requestId});
- const standings=openRequestStandings(context.source,requests,Date.now());
- const value=workerWork(topicCurrentWorkers(context.source,working,id=>standings.get(id)??null),standings);
+ const now=Date.now(),standings=openRequestStandings(context.source,requests,now);
+ const value=workerWork(topicCurrentWorkers(context.source,working,standingFinder(context.source,standings,now)),standings);
  if(value)return value;
  return {kind:'idle' as const,text:''};
 }

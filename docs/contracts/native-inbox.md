@@ -791,7 +791,7 @@ request from, oldest first. `text` is plain words with no ids and no clock times
 `since`, `until` and `remindedAt` and the web app composes them. A topic's `work` is `worker_working`
 while any open request's standing is `working`, else the new `worker_waiting` (text: the first
 holder's title and its state words), and `idle` only when no request is open. Each `workers[]` entry
-keeps `sessionId`, `title` and `progress` for older builds and adds `requestId` and `standing`. A
+keeps `sessionId`, `title` and `progress` for older builds and adds `requestId` and `standing`. `workers[]` holds one entry per open request: the current workers plus every open request's standing not already among them, so a waiting request is not dropped while another one works, and a routed request the thread does not list as its own is given its standing too. A
 session view (live and prepared card) adds `heldRequests: {count, oldestAt} | null`: open requests
 whose current target is that session.
 

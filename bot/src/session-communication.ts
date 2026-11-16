@@ -29,7 +29,7 @@ import {ProviderCapabilityUnavailableError} from './provider-policy';
 import {codexAccountSwitchReply} from './codex-account-switch-receipt';
 import { log } from './log';
 import { deliverRequestReminder } from './request-reminder-carrier';
-import { QUIET_WAKE_MS, quietWakeText, requestLastWordMs, requestStanding } from './request-standing';
+import { QUIET_WAKE_MS, QUIET_WAKES_BEFORE_STALL, quietWakeText, requestLastWordMs, requestStanding } from './request-standing';
 import { heldPrerequisite } from './request-prerequisite-hold';
 import { STEP_ASKS, finishedTodoRefusal, type TodoState } from './question-todos';
 import {boundSearchResponse} from './search-response-boundary';
@@ -106,6 +106,8 @@ type RequestRow = {
     reminded_via: string | null;
     stalled_at_ms: number | null;
     quiet_reminded_at_ms: number | null;
+    quiet_streak_since_ms: number | null;
+    quiet_streak_count: number;
     created_at_ms: number;
 };
 type EventRow = {
@@ -3675,6 +3677,14 @@ export class SessionCommunicationCoordinator {
             this.stallRequest(request, 'the holder session is paused, archived or no longer available', `stalled:concierge:${request.target_session_id}:quiet`);
             return;
         }
+        // Wakes that brought no word do not go on for ever: after the third, the Inbox router reassigns the request.
+        // A progress or final reply since the streak began starts the count again.
+        const word = db.query("SELECT max(created_at_ms) AS at FROM session_communication_events WHERE request_id=? AND kind IN ('progress','final')").get(request.request_id) as { at: number | null };
+        const streak = request.quiet_streak_since_ms !== null && (word.at ?? 0) <= request.quiet_streak_since_ms ? request.quiet_streak_count : 0;
+        if (streak >= QUIET_WAKES_BEFORE_STALL) {
+            this.stallRequest(request, 'no word after three hourly reminders', `stalled:concierge:${request.target_session_id}:quiet`);
+            return;
+        }
         const accepted = getAcceptedSessionInput(request.target_input_id!);
         if (!accepted?.turn_id) return recheck(now + STILL_WAITING_AFTER_MS);
         const turn = db.query('SELECT native_run_id FROM turns WHERE id=?').get(accepted.turn_id) as { native_run_id: string | null } | null;
@@ -3684,7 +3694,8 @@ export class SessionCommunicationCoordinator {
             deliverRequestReminder({ eventId: '', identity: `request-quiet:${request.request_id}:${sent + 1}`, acceptedInputId: null, sourceSessionId: request.target_session_id,
                 sourceInputId: request.target_input_id!, sourceRunId: turn?.native_run_id ?? nativeRunId(accepted.turn_id), requestId: request.request_id,
                 text: quietWakeText(standing, requestLabel(request.payload_json), Math.round((now - requestLastWordMs(db, request) + QUIET_WAKE_MS) / 60_000)), owner: this.dependencies.owner! });
-            db.query('UPDATE session_communication_requests SET quiet_reminded_at_ms=? WHERE request_id=? AND outcome IS NULL').run(now, request.request_id);
+            db.query('UPDATE session_communication_requests SET quiet_reminded_at_ms=?,quiet_streak_since_ms=?,quiet_streak_count=? WHERE request_id=? AND outcome IS NULL')
+                .run(now, streak === 0 ? now : request.quiet_streak_since_ms, streak + 1, request.request_id);
             log('info', 'session_request_quiet_wake', { request_id: request.request_id, holder_session_id: `concierge:${request.target_session_id}`, number: sent + 1, standing: standing.state });
             recheck(now + QUIET_WAKE_MS);
         } catch (error) {

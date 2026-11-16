@@ -12,6 +12,8 @@ import {latestWorkerProgress} from './worker-progress';
  * `text` never embeds a clock time: times travel in `since` and `until` and the web app composes them.
  */
 export const QUIET_WAKE_MS=60*60_000;
+/** Quiet wakes with no word after the first before the request is stalled for the Inbox router to reassign. */
+export const QUIET_WAKES_BEFORE_STALL=3;
 
 export type StandingState='working'|'waiting'|'held'|'quiet'|'stalled';
 export type StandingPerson={sessionId:string;title:string};
@@ -159,11 +161,17 @@ export function openRequestStandings(source:Database,requests:readonly {state:st
  * standing in words. Null when the thread has no open request and nobody at work.
  */
 export function workerWork(current:CurrentWorker[],standings:Map<string,RequestStanding>){
- const workers=current.length?current:[...standings.values()].map(standing=>({sessionId:standing.holder.sessionId as string|null,title:standing.holder.title,
-  progress:standing.progress,requestId:standing.requestId,standing:standing as RequestStanding|null}));
+ const covered=new Set(current.map(worker=>worker.requestId));
+ // Every open request keeps its own entry: a waiting one is not dropped because another one works.
+ const workers:CurrentWorker[]=[...current,...[...standings.values()].filter(standing=>!covered.has(standing.requestId)).map(standing=>({
+  sessionId:standing.holder.sessionId as string|null,title:standing.holder.title,progress:standing.progress,requestId:standing.requestId,standing:standing as RequestStanding|null}))];
  if(!workers.length)return null;
  if(workers.some(worker=>!worker.standing||worker.standing.state==='working'))
   return {kind:'worker_working' as const,text:workers.length===1?`With ${workers[0]!.title}`:`With ${workers.length} agents`,sessionId:workers[0]!.sessionId,workers};
  const first=workers[0]!;
  return {kind:'worker_waiting' as const,text:`${first.title} · ${first.standing!.text}`,sessionId:first.sessionId,workers};
 }
+
+/** The standing of any request id: from the thread's own open requests, else computed (a routed request the thread does not list). */
+export const standingFinder=(source:Database,standings:Map<string,RequestStanding>,nowMs:number)=>
+ (requestId:string)=>standings.get(requestId)??requestStanding(source,requestId,nowMs);
