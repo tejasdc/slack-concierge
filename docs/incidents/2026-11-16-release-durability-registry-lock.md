@@ -17,7 +17,7 @@ The durability pump read the transaction-state accessor on every eligible period
 
 ## Fix
 
-The pump no longer reads the transaction-state accessor. It prepares a dedicated change-counter statement on the existing accepting connection before serving starts and retains it outside the bounded query cache. It still captures a target before posting a sync and credits only a successful sync reply for that target. Worker lifetime, receipt barriers, and provider-send barriers are unchanged. The full request gap and exact provider-result continuity remain to be accepted on natural releases.
+The pump no longer reads the transaction-state accessor. It prepares a dedicated change-counter statement on the existing accepting connection before serving starts and retains it outside the bounded query cache. An exceptional outer transaction exit checks the engine state; if cleanup left an open transaction or its state cannot be established, the process exits before another callback can credit a sync. Nested savepoint failures are checked at their containing outer boundary. The pump still captures a target before posting a sync and credits only a successful sync reply for that target. Worker lifetime, receipt barriers, and provider-send barriers are unchanged. The full request gap and exact provider-result continuity remain to be accepted on natural releases.
 
 ## Acceptance scenario
 

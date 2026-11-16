@@ -119,9 +119,10 @@ function rowBytes(row: unknown): number {
 
 /** Wrap once at the existing ledger boundary; future query callers are observed automatically.
  * Weak maps do not extend a prepared statement's lifetime. No per-query history is retained. */
-export function observedDatabase(database: Database): Database {
+export function observedDatabase(database: Database, onUnclosedTransaction?: () => never): Database {
   const statements = new WeakMap<object, object>();
   const transactions = new WeakMap<Function, Function>();
+  let transactionDepth = 0;
   const fingerprintOf = (sql: string) => createHash('sha256').update(sql).digest('hex').slice(0, 16);
   function transaction(raw: Function, phases: ReturnType<typeof transactionPhaseTiming>): Function {
     const prior = transactions.get(raw);
@@ -131,7 +132,21 @@ export function observedDatabase(database: Database): Database {
       phases.callbackLeft = undefined;
       phases.slowestStatementMs = 0;
       phases.slowestStatementFingerprint = null;
-      return observeSynchronousStorage('transaction', null, () => Reflect.apply(raw, this, args), phases);
+      const outermost = transactionDepth++ === 0;
+      try {
+        return observeSynchronousStorage('transaction', null, () => Reflect.apply(raw, this, args), phases);
+      } catch (error) {
+        if (outermost && onUnclosedTransaction) {
+          // Bun normally rolls back on an exception. A failed rollback can leave an
+          // open transaction whose row changes have already advanced total_changes().
+          let closed = false;
+          try { closed = !database.inTransaction; } catch { /* unknown is unsafe */ }
+          if (!closed) onUnclosedTransaction();
+        }
+        throw error;
+      } finally {
+        transactionDepth--;
+      }
     };
     transactions.set(raw, wrapped);
     // Bun's variants are non-configurable properties: proxying those to different values

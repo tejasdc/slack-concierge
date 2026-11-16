@@ -64,6 +64,9 @@ Linux only) changes where the disk is waited for, not what is written or when it
   during the 2026-11-16 release. A confirmed sync credits only the counter target captured before
   that sync, never a later counter value. This ordering requires that no accepting-connection
   transaction remain open across an event-loop callback and later commit without another write.
+  If an outer transaction throws and Bun's cleanup leaves the connection in a transaction (or
+  its state cannot be read), the accepting process exits before another callback can credit a
+  sync. Nested savepoint failures are checked at the containing outer transaction boundary.
 - A slow-sync record joins up to 16 labelled released waiters to that successful sync. It keeps
   the committed change target sampled by the barrier, sample time, the sync already in flight
   when a later target arrived, the selected sync ID, worker notification time and owner delivery
