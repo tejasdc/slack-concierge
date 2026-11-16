@@ -6,6 +6,7 @@ import {peerRequestMessage,receiveSessionFromPeer} from './peer-identity';
 import {SERVICE_NOTICE_SCOPE,noticeTime} from './provider-free-notice';
 import {routedMaterialSource} from './session-routed-material';
 import {minutesText,pebbleArrivalWaitMs} from './session-inbox';
+import {passiveContributorAuthor} from './inbox-attribution-read';
 import {FIXED_PRODUCER_DOORS,readerCaptureVia,type InboxProducerKind} from './inbox-producer-sources';
 
 /** Who wrote a message, by the one author-session rule in session-presence.ts. */
@@ -164,9 +165,8 @@ export function doorOf(input:AcceptedSessionInput):string|null {
 }
 
 function acceptedInputAuthorWithoutProvenance(input:AcceptedSessionInput):{author:MessageAuthor;text?:string} {
-  const payload=JSON.parse(input.payload_json);
-  if(input.origin==='agent'&&payload.responseMode==='context'&&payload.contributedBy?.author?.kind==='agent')
-    return {author:payload.contributedBy.author};
+  const contributor=passiveContributorAuthor(input);
+  if(contributor)return {author:contributor as MessageAuthor};
   const external=db.query('SELECT agent_name,text,request_id FROM session_external_requests WHERE target_input_id=?').get(input.id) as {agent_name:string;text:string;request_id:string}|null;
   if(external)return {author:{kind:'agent',outsideAgent:{name:external.agent_name,label:`Outside agent · ${external.agent_name}`},requestId:external.request_id,communication:'request'},text:external.text};
   const captureSource=JSON.parse(input.payload_json).capture?.source;

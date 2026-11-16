@@ -20,7 +20,14 @@ export function boundedChangedMessageIds(db:Database,sessionId:number,after:numb
     WHERE session_id=? AND kind='message-action' AND sequence>? AND sequence<=? ORDER BY sequence LIMIT ?`)
     .all(sessionId,after,head,HISTORY_CHANGE_LIMIT+1) as MessageChange[];
   if(actions.length>HISTORY_CHANGE_LIMIT)return null;
+  // Passive custody settles with a turnless receipt; it reprojects only the held saved-context message.
+  const receipts=db.query(`SELECT input_id FROM session_owner_events
+    WHERE session_id=? AND kind='receipt' AND input_id IS NOT NULL AND sequence>? AND sequence<=?
+      AND json_extract(payload_json,'$.change') IN ('context_saved','context_failed','context_uncertain')
+    ORDER BY sequence LIMIT ?`).all(sessionId,after,head,HISTORY_CHANGE_LIMIT+1) as {input_id:string}[];
+  if(receipts.length>HISTORY_CHANGE_LIMIT)return null;
   const held=new Set(heldIds),changed=new Set<string>();
+  for(const row of receipts)if(held.has(`context:${row.input_id}`))changed.add(`context:${row.input_id}`);
   for(const row of [...versions,...actions])if(row.id&&held.has(row.id))changed.add(row.id);
   const changedTurns=new Set(turns.flatMap(row=>row.turn_id?[row.turn_id]:[]));
   if(changedTurns.size&&held.size){

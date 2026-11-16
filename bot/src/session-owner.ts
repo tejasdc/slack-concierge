@@ -79,7 +79,7 @@ import {standingAgentView} from './standing-agent-view';
 import {hostTimerView} from './host-timer-view';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
 import {legacyNotificationRequest} from './session-notification-request';
-import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
+import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxRowByMessageId,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
 import {capturesEnterRouter,isInboxProducerKind,readerCaptureAuthor,readerCaptureRefusal,type ReaderCaptureOrigin} from './inbox-producer-sources';
 import {inboxCapturesPage} from './inbox-captures-page';
 import {inboxQueuePage} from './inbox-queue';
@@ -2348,7 +2348,14 @@ export class SessionOwner {
     return {noteId:`inbox-message-${messageId}`,...link(messageId,inbox),text:entry.content as string,title:`${from} in an Inbox thread`,capturedAt:typeof entry.createdAt==='string'?at(entry.createdAt):new Date().toISOString()};
   }
   retainedContextSource(input:{captureId?:string;messageId?:string}):{payload:Record<string,any>;source:{inputId?:string;messageId?:string;sessionId:string;origin:string;author:import('./provider-history').MessageAuthor;sourceInputId?:string|null;sourceRunId?:string|null;actionId?:string;createdAt:string}} {
-    const accepted=input.captureId?retainedInboxCapture(input.captureId):input.messageId?getAcceptedSessionInput(input.messageId):null;
+    // A displayed saved-context message is `context:<input-id>`; it resolves to its accepted input only
+    // through the checked event/input relationship, never by stripping the prefix.
+    const savedContext=input.messageId?.startsWith('context:')&&inboxSession()
+      ?inboxRowByMessageId(inboxSession()!.id,input.messageId) as {kind:string;session_id:number;input_id:string|null}|null:null;
+    const savedInput=savedContext?.kind==='message'&&savedContext.input_id&&input.messageId===`context:${savedContext.input_id}`
+      ?getAcceptedSessionInput(savedContext.input_id):null;
+    const accepted=input.captureId?retainedInboxCapture(input.captureId):savedInput&&savedInput.session_id===savedContext!.session_id
+      ?savedInput:input.messageId?getAcceptedSessionInput(input.messageId):null;
     if(accepted){
       const body=JSON.parse(accepted.payload_json),payload=body.firstInput??body;
       const {contextOperationOnly:_operationOnly,...materialPayload}=payload;
@@ -2370,7 +2377,7 @@ export class SessionOwner {
     return {payload:{text:original.text,attachments:(message.attachments??[]).map((attachment:any)=>attachment.id),
       ...(message.replyToMessage?{replyToMessage:message.replyToMessage}:{}),
       ...(message.messageThreadRootId?{messageThreadRootId:message.messageThreadRootId}:{})},
-      source:{messageId:input.messageId,sessionId:`concierge:${inbox!.id}`,origin:message.author?.kind??'unknown',
+      source:{messageId:input.messageId,sessionId:`concierge:${message.sourceSessionId??inbox!.id}`,origin:message.author?.kind??'unknown',
         author:message.author??{kind:'unknown'},createdAt:original.capturedAt}};
   }
   /** A follow-up joins the note an earlier capture or message made, under the same key. */
