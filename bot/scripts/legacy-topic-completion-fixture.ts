@@ -5,6 +5,7 @@ import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {LEGACY_TOPIC_COMPLETION_TEST_AUTHORIZATION} from '../src/test-authorizations';
 import {Database} from 'bun:sqlite';
+import {ledgerWriteResults} from '../src/ledger-write-results';
 import {PreparedTopics} from '../src/prepared-topics';
 import {preparedTopicValue} from '../src/prepared-topic-values';
 import {unsentRequestStatus,workWithUnsentRequests} from '../src/topic-current-workers';
@@ -65,7 +66,7 @@ try {
     unsentRequestStatus([{state:'open',dispatches:[]}]));
   assert.equal(returned.kind,'router_queued');assert.equal(returned.returnInputId,'return:exact');
   assert.match(returned.text,/recorded but not sent.*answer came back/);
-  const projection=new Database(':memory:');
+  const projection=ledgerWriteResults(new Database(':memory:'));
   try{
     const topics=new PreparedTopics(db,projection);
     projection.exec('CREATE TABLE presentation_messages(generation INTEGER,root_input_id TEXT,event_sequence INTEGER,created_at TEXT,message_id TEXT,input_id TEXT,entry_kind TEXT)');
@@ -247,6 +248,37 @@ try {
   topicsCommand(successorTurn.actor,{verb:'request.reopen',request_id:inherited.request.requestId,action_id:'reopen-exact',reason:'The source obligation still needs work.'});
   assert.throws(()=>topicsCommand(successorTurn.actor,{verb:'request.close',request_id:inherited.request.requestId,
     action_id:'reopened-generic-answer',disposition:'completed',evidence:[siblingPost],reason:'An answer exists in this topic.'}),/exact source message/);
+
+  // Reopening does not require resending accepted work. A late final from the same
+  // latest dispatch can satisfy it, but only its new unsuperseded final is evidence.
+  topicsCommand(successorTurn.actor,{verb:'request.reopen',request_id:later.request.requestId,
+    action_id:'reopen-late-result',reason:'Reconcile the original accepted work after reopening.'});
+  const reopenedAt=(db.query('SELECT reopened_at FROM inbox_requests WHERE request_id=?').get(later.request.requestId) as {reopened_at:string}).reopened_at;
+  assert.throws(()=>topicsCommand(successorTurn.actor,{verb:'request.close',request_id:later.request.requestId,
+    action_id:'reopened-old-final',disposition:'completed',evidence:[typedEvent.event_id],reason:'The old answer is still retained.'}),/reopened/);
+  const lateFinalId='final:late-return-after-reopen';
+  const lateTime=Date.parse(reopenedAt)+1000;
+  const retainedFinal=db.query('SELECT payload_json FROM session_communication_events WHERE event_id=?').get(typedEvent.event_id) as {payload_json:string};
+  db.query('UPDATE session_communication_events SET superseded_by_event_id=? WHERE event_id=?').run(lateFinalId,typedEvent.event_id);
+  db.query('INSERT INTO session_communication_events(event_id,request_id,kind,payload_json,created_at_ms) VALUES(?,?,?,?,?)')
+    .run(lateFinalId,typedDispatch.request_id,'final',retainedFinal.payload_json,lateTime);
+  db.query("UPDATE session_communication_requests SET result_json=json_set(result_json,'$.event_id',?) WHERE request_id=?")
+    .run(lateFinalId,typedDispatch.request_id);
+  const latePost=`post:forward:${lateFinalId}`;
+  recordSessionEvent({eventId:latePost,sessionId:successorId,inputId:rootId,kind:'post',payload:{text:'The late checked result.',
+    requestId:typedDispatch.request_id,replyKind:'final',workDisposition:'completed',postedBy:'owner-forward'}});
+  db.query('UPDATE session_owner_events SET created_at=? WHERE event_id=?').run(new Date(lateTime).toISOString(),latePost);
+  const genericLatePost='post:generic-latest-dispatch';
+  recordSessionEvent({eventId:genericLatePost,sessionId:successorId,inputId:rootId,kind:'post',payload:{text:'The same dispatch is mentioned.',
+    requestId:typedDispatch.request_id,replyKind:'final',workDisposition:'completed'}});
+  db.query('UPDATE session_owner_events SET created_at=? WHERE event_id=?').run(new Date(lateTime).toISOString(),genericLatePost);
+  assert.throws(()=>topicsCommand(successorTurn.actor,{verb:'request.close',request_id:later.request.requestId,
+    action_id:'reopened-generic-same-dispatch',disposition:'completed',evidence:[genericLatePost],reason:'The dispatch is mentioned.'}),/reopened/);
+  assert.throws(()=>topicsCommand(successorTurn.actor,{verb:'request.close',request_id:later.request.requestId,
+    action_id:'reopened-superseded-final',disposition:'completed',evidence:[typedEvent.event_id],reason:'The former final is retained.'}),/reopened/);
+  const lateClosed=topicsCommand(successorTurn.actor,{verb:'request.close',request_id:later.request.requestId,
+    action_id:'reopened-late-exact-final',disposition:'completed',evidence:[latePost],reason:'Checked the new exact final from the already accepted dispatch.'});
+  assert.equal(lateClosed.request.state,'closed');
   assert.deepEqual(errors,[]);
   console.log('Legacy topic completion fixture passed: uncertain and unrelated evidence stayed open; exact finals and successor thread answer closed without duplicate posts.');
 } finally {

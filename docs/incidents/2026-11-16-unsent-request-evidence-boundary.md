@@ -34,6 +34,10 @@ completion. The status projection counted workers but not open undispatched obli
 Direct completion requires a later non-service, non-forwarded post replying to one of the
 exact request source messages. A dispatch answer must go through the existing linked-work
 checks. Reopened direct answers use the same source boundary and the reopening time.
+An already accepted latest dispatch can supply a new checked completed final after reopening;
+only its unsuperseded final identity or exact forwarded post is accepted. The regression
+fixture reproduces and guards the earlier over-narrow refusal of that late result. A new
+post merely naming the same dispatch cannot substitute for its exact final.
 Router obligations and prompts label undispatched requests explicitly. Both thread status
 assemblers retain an unsent count and warning, including alongside a worker. A waiting
 worker plus unsent request uses the existing routing status so the web view renders the

@@ -714,7 +714,11 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   names a later direct answer to that request's exact source message as evidence. A later
   answer to a sibling source, a forwarded answer from an unlinked dispatch, or a service
   notice in the same thread cannot close it. The same source boundary applies to a new
-  direct answer used after reopening. A bare completion claim with no linked work or answer
+  direct answer used after reopening. An already accepted latest dispatch may also return
+  a new checked completed final after reopening: its unsuperseded retained final identity
+  (or its exact forwarded final post in this topic) supplies evidence without resending
+  accepted work. A generic post merely naming that dispatch does not qualify.
+  A bare completion claim with no linked work or answer
   is refused. Verification-only agent test reports remain distinct
   from human requests.
 - Open requests without a dispatch remain explicitly `unsent` in the router's obligations

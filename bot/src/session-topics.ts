@@ -1805,6 +1805,27 @@ function directRequestAnswer(topic:StoredTopic,request:StoredRequest,id:string,a
   return typeof repliedTo==='string'&&request.sources.some(source=>source.inputId===repliedTo)
     &&topicOfRoot(inboxThreadRoot(topic.sessionId,id)??'')===topic.topicId;
 }
+/** An already accepted attempt may return a new final after its obligation reopened. */
+function reopenedLinkedFinal(topic:StoredTopic,dispatchId:string,row:CompletionRow|null,evidence:readonly string[],reopenedAt:string):boolean {
+  if(!row?.result_json)return false;
+  let result:any;
+  try{result=JSON.parse(row.result_json);}catch{return false;}
+  const eventId=result.event_id;
+  if(typeof eventId!=='string'||!verifiedFinalEvidence(dispatchId,row,[eventId]))return false;
+  const final=(db.query("SELECT created_at_ms FROM session_communication_events WHERE event_id=? AND request_id=? AND kind='final' AND superseded_by_event_id IS NULL")
+    .get(eventId,dispatchId)??db.query("SELECT created_at_ms FROM session_peer_events WHERE event_id=? AND request_id=? AND kind='final' AND superseded_by_event_id IS NULL")
+    .get(eventId,dispatchId)) as {created_at_ms:number}|null;
+  if(!final||final.created_at_ms<Date.parse(reopenedAt))return false;
+  return evidence.includes(eventId)||evidence.some(id=>{
+    if(id!==`post:forward:${eventId}`&&id!==`post:forward:shared:${eventId}:${topic.topicId}`)return false;
+    const post=db.query("SELECT payload_json,created_at FROM session_owner_events WHERE event_id=? AND kind='post'")
+      .get(id) as {payload_json:string;created_at:string}|null;
+    if(!post||Date.parse(iso(post.created_at)!)<Date.parse(reopenedAt))return false;
+    const payload=JSON.parse(post.payload_json);
+    return payload.requestId===dispatchId&&payload.replyKind==='final'&&payload.workDisposition==='completed'
+      &&topicOfRoot(inboxThreadRoot(topic.sessionId,id)??'')===topic.topicId;
+  });
+}
 function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evidence:string[]=[]){
   const settled=(id:string)=>{
     const local=db.query("SELECT outcome,result_json,created_at_ms,stalled_at_ms,json_extract(payload_json,'$.requestedEffect') AS requested_effect FROM session_communication_requests WHERE request_id=?").get(id) as CompletionRow|null;
@@ -1841,8 +1862,9 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evid
   if(unfinished.length)throw new TopicError(`This request's work has not finished (${unfinished.map((d:any)=>d.requestId).join(', ')}): close it completed only when that work answered as done. If part of what he asked is not done, do it or have it built, then close.`,409,'REQUEST_WORK_UNFINISHED');
   if(request.reopenedAt&&((request.completionFloor??0)>=dispatches.length
     ||(latest&&((workRow(latest.id)?.createdAtMs??0)<new Date(request.reopenedAt).getTime())))
-    &&!evidence.some(id=>directRequestAnswer(topic,request,id,request.reopenedAt!)))
-    throw new TopicError('This request was reopened after its last linked answer. Name a new checked direct answer to its exact source, or link the work that finished the reopened obligation.',409,'REQUEST_REOPENED_COMPLETION_EVIDENCE_REQUIRED');
+    &&!evidence.some(id=>directRequestAnswer(topic,request,id,request.reopenedAt!))
+    &&!(latest&&reopenedLinkedFinal(topic,latest.id,latest.row,evidence,request.reopenedAt)))
+    throw new TopicError('This request was reopened after its last linked answer. Name a new checked direct answer to its exact source, the latest dispatch’s new exact final, or link the work that finished the reopened obligation.',409,'REQUEST_REOPENED_COMPLETION_EVIDENCE_REQUIRED');
   if(latest&&humanRequest(topic,request)) {
     const shared=db.query(`SELECT count(*) AS count FROM inbox_requests request,json_each(request.dispatches_json) dispatch
       WHERE json_extract(dispatch.value,'$.requestId')=?`).get(latest.id) as {count:number};
