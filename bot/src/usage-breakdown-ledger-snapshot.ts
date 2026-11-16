@@ -4,12 +4,43 @@ import {deflateSync,inflateSync} from 'node:zlib';
 type Row=Record<string,unknown>;
 export type UsageLedgerSnapshot={sinceMs:number;sessions:Row[];turns:Row[];events:Row[];policyRequests:Row[];timeZone:string};
 
+/**
+ * What started a turn, in a few words. Accounts names it for work that no thread explains, so
+ * he can see whether that use came from his own messages, agents asking agents, report-backs,
+ * recurring work or a session carrying on. The input's ID prefix names its door; the input's
+ * recorded author separates his messages from an agent's. Unknown prefixes stay visible as such.
+ */
+const triggerByPrefix:Record<string,string>={
+  capture:'his capture',
+  return:'report-back',answer:'report-back',owed:'report-back','question-reminder':'report-back','unfiled-wake':'report-back',
+  'turn-continuation':'continuing after interruption',recovery:'continuing after interruption',handoff:'handoff to another model',
+  'handoff-input':'handoff to another model','handoff-unsent':'handoff to another model','handoff-notice':'handoff to another model',
+  'pause-resume':'continuing after interruption',snooze:'woke from snooze',watch:'woke on a watch',
+  'thread-upkeep':'Inbox upkeep',area:'Inbox upkeep','area-theme':'Inbox upkeep','topic-event':'Inbox upkeep',
+  'canvas-observation':'Canvas observation',lab:'Lab',
+};
+export function turnTrigger(acceptedInputId:unknown,origin:unknown,savedKind:unknown):string{
+  if(savedKind==='scheduled')return 'scheduled';
+  if(typeof savedKind==='string'&&savedKind)return 'saved for later';
+  if(typeof acceptedInputId!=='string'||!acceptedInputId)return 'no recorded input';
+  const prefix=acceptedInputId.includes(':')?acceptedInputId.slice(0,acceptedInputId.indexOf(':')):'';
+  if(prefix==='request')return origin==='human'?'his request':'agent request';
+  if(triggerByPrefix[prefix])return triggerByPrefix[prefix]!;
+  if(origin==='human')return 'his message';
+  if(origin==='agent')return 'agent message';
+  if(origin==='service')return 'service event';
+  return prefix?`other (${prefix})`:'other';
+}
+
 /** Only the owner-held facts needed to attribute one week of runner usage. */
 export function captureUsageLedgerSnapshot(ledger:Database,sinceMs:number):UsageLedgerSnapshot{
   const since=new Date(sinceMs).toISOString().slice(0,19).replace('T',' ');
-  const turns=ledger.query(`SELECT turn.id,turn.session_id,turn.status,turn.provider_turn_id,turn.provider_started_at,turn.ended_at,
+  const inputsPresent=!!ledger.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_inputs'").get();
+  const turns=(ledger.query(`SELECT turn.id,turn.session_id,turn.status,turn.provider_turn_id,turn.provider_started_at,turn.ended_at,
     saved_kind,saved_repeat_ms,saved_root_id,saved_sequence,saved_fire_at_ms,provider_duration_ms
-    ,topic.topic_id FROM turns turn
+    ,topic.topic_id,turn.accepted_input_id AS trigger_input_id,
+    ${inputsPresent?'(SELECT input.origin FROM session_inputs input WHERE input.id=turn.accepted_input_id)':'NULL'} AS trigger_origin
+    FROM turns turn
     LEFT JOIN inbox_topic_roots topic ON topic.root_input_id=coalesce(
       (SELECT coalesce(nullif(request.topic_root_input_id,''),request.thread_root_input_id)
        FROM session_communication_requests request WHERE request.target_input_id=turn.accepted_input_id
@@ -19,7 +50,8 @@ export function captureUsageLedgerSnapshot(ledger:Database,sinceMs:number):Usage
        WHERE link.kind='thread_link' AND link.input_id=turn.accepted_input_id ORDER BY link.sequence DESC LIMIT 1),
       turn.accepted_input_id)
     WHERE (turn.provider_started_at IS NOT NULL AND (turn.provider_started_at>=? OR turn.ended_at>=? OR turn.ended_at IS NULL))
-      OR (turn.saved_kind='scheduled' AND turn.saved_repeat_ms IS NOT NULL AND turn.saved_fire_at_ms>=?)`).all(since,since,sinceMs) as Row[];
+      OR (turn.saved_kind='scheduled' AND turn.saved_repeat_ms IS NOT NULL AND turn.saved_fire_at_ms>=?)`).all(since,since,sinceMs) as Row[])
+    .map(({trigger_input_id,trigger_origin,...row})=>({...row,trigger:turnTrigger(trigger_input_id,trigger_origin,row.saved_kind)}));
   const sessionIds=new Set(turns.map(row=>row.session_id as number));
   const sessions=(ledger.query('SELECT id,agent_session_uuid,provider_id,native_metadata_json,last_turn_at FROM sessions WHERE agent_session_uuid IS NOT NULL').all() as Row[])
     .filter(row=>{if(typeof row.last_turn_at==='string'&&Date.parse(row.last_turn_at)>=sinceMs)sessionIds.add(row.id as number);
@@ -97,7 +129,7 @@ export function ledgerFromUsageSnapshot(snapshot:UsageLedgerSnapshot):Database{
   const db=new Database(':memory:');
   db.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,agent_session_uuid TEXT,provider_id TEXT,native_metadata_json TEXT);
     CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,status TEXT,provider_turn_id TEXT,provider_started_at TEXT,ended_at TEXT,
-      saved_kind TEXT,saved_repeat_ms INTEGER,saved_root_id INTEGER,saved_sequence INTEGER,saved_fire_at_ms INTEGER,provider_duration_ms INTEGER,topic_id TEXT);
+      saved_kind TEXT,saved_repeat_ms INTEGER,saved_root_id INTEGER,saved_sequence INTEGER,saved_fire_at_ms INTEGER,provider_duration_ms INTEGER,topic_id TEXT,trigger TEXT);
     CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,session_id INTEGER,turn_id INTEGER,kind TEXT,payload_json TEXT,created_at TEXT);
     CREATE TABLE saved_work_settings(singleton INTEGER PRIMARY KEY,time_zone TEXT);
     CREATE TABLE usage_policy_requests(request_id TEXT PRIMARY KEY,source_session_id INTEGER,payload_json TEXT,created_at_ms INTEGER);`);
@@ -108,7 +140,7 @@ export function ledgerFromUsageSnapshot(snapshot:UsageLedgerSnapshot):Database{
   db.exec('BEGIN');
   try{
     insert('sessions',['id','agent_session_uuid','provider_id','native_metadata_json'],snapshot.sessions);
-    insert('turns',['id','session_id','status','provider_turn_id','provider_started_at','ended_at','saved_kind','saved_repeat_ms','saved_root_id','saved_sequence','saved_fire_at_ms','provider_duration_ms','topic_id'],snapshot.turns);
+    insert('turns',['id','session_id','status','provider_turn_id','provider_started_at','ended_at','saved_kind','saved_repeat_ms','saved_root_id','saved_sequence','saved_fire_at_ms','provider_duration_ms','topic_id','trigger'],snapshot.turns);
     insert('session_owner_events',['sequence','session_id','turn_id','kind','payload_json','created_at'],snapshot.events);
     insert('usage_policy_requests',['request_id','source_session_id','payload_json','created_at_ms'],snapshot.policyRequests);
     db.query('INSERT INTO saved_work_settings VALUES(1,?)').run(snapshot.timeZone);

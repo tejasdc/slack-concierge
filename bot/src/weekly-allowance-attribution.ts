@@ -2,7 +2,7 @@ import type {Database} from 'bun:sqlite';
 
 type Raw={input:number;cacheWrite:number;cacheWrite1h:number;cacheRead:number;output:number};
 type Bucket={provider:string;account:string;window:string;atMs:number;sessionId:string|null;topicId:string|null;
-  routineRootId:number|null;weighted:number;raw:Raw;calls:number;conversation?:string|null};
+  routineRootId:number|null;weighted:number;raw:Raw;calls:number;conversation?:string|null;unlinked?:string|null};
 type Reading={provider:string;account:string;window_name:string;observed_at_ms:number;used_percent:number;resets_at_ms:number|null};
 /** One allowance period: the readings that share a reset instant. Its rise is shared only among work inside it. */
 type Period={from:number;through:number;delta:number;denominator:number};
@@ -113,6 +113,11 @@ function projection(value:Accumulator,allMeters:Map<string,Meter>):Projection{
   return {usedPercent:only?.usedPercent??null,basis:only?.basis??'unavailable',components,rawTokens:value.raw,callCount:value.calls};
 }
 
+/** How many unlinked sessions each account names; the rest are counted, not listed. */
+const UNLINKED_SESSIONS_SHOWN=12;
+const accountShare=(value:Projection,provider:string,account:string)=>value.components.find(part=>part.provider===provider
+  &&part.account===account&&part.window==='Weekly')?.usedPercent??-1;
+
 /** Called after all runner reports are merged, so a provider-meter delta is allocated once. */
 export function attributeWeeklyAllowance(report:any,readings:Reading[],nowMs=Date.now()):any{
   const buckets=(report.attributionBuckets??[]) as Bucket[];
@@ -120,6 +125,9 @@ export function attributeWeeklyAllowance(report:any,readings:Reading[],nowMs=Dat
   const sessions=new Map<string,Accumulator>(),threads=new Map<string,Accumulator>(),routines=new Map<string,Accumulator>(),days=new Map<string,Accumulator>();
   const accountSessions=new Map<string,Accumulator>(),routineDays=new Map<string,Accumulator>();
   const accountRows=new Map<string,Accumulator>();
+  // Work no thread explains, per account: by session and by what started it.
+  const unlinkedSessions=new Map<string,Accumulator>(),unlinkedTriggers=new Map<string,Accumulator>();
+  const sessionTriggers=new Map<string,Map<string,number>>();
   const put=(map:Map<string,Accumulator>,id:string,bucket:Bucket)=>{
     const value=map.get(id)??accumulator();
     // A Fable call is bucketed under both Claude meters it draws on; its tokens are counted once, under "Weekly".
@@ -142,6 +150,14 @@ export function attributeWeeklyAllowance(report:any,readings:Reading[],nowMs=Dat
       put(routineDays,JSON.stringify([bucket.routineRootId,day(bucket.atMs,report.timeZone)]),bucket);
     }
     put(days,day(bucket.atMs,report.timeZone),bucket);
+    if(bucket.topicId===null){
+      const sessionKey=JSON.stringify([bucket.provider,bucket.account,bucket.sessionId??bucket.conversation??'unassigned']);
+      const trigger=bucket.unlinked??'not recorded';
+      put(unlinkedSessions,sessionKey,bucket);
+      put(unlinkedTriggers,JSON.stringify([bucket.provider,bucket.account,trigger]),bucket);
+      if(bucket.window==='Weekly'){const triggers=sessionTriggers.get(sessionKey)??new Map<string,number>();
+        triggers.set(trigger,(triggers.get(trigger)??0)+bucket.weighted);sessionTriggers.set(sessionKey,triggers);}
+    }
   }
   const project=(map:Map<string,Accumulator>)=>Object.fromEntries([...map].map(([id,value])=>[id,projection(value,allMeters)]));
   const sessionAllowanceById=project(sessions),threadAllowanceById=project(threads),routineAllowanceById=project(routines),dayAllowanceByDate=project(days);
@@ -149,9 +165,26 @@ export function attributeWeeklyAllowance(report:any,readings:Reading[],nowMs=Dat
     const meter=allMeters.get(key(account.provider,account.account,'Weekly'));
     const measured=meter&&nowMs-Date.parse(meter.observedAt)<=MAX_READING_AGE_MS;
     const accountProjection=projection(accountRows.get(JSON.stringify([account.provider,account.account]))??accumulator(),allMeters);
+    const prefix=JSON.stringify([account.provider,account.account]).slice(0,-1)+',';
+    const titles=new Map<string,any>((account.bySession??[]).map((session:any)=>
+      [session.address??(session.providerConversationId?`outside:${session.providerConversationId}`:'unassigned'),session]));
+    const ranked=(map:Map<string,Accumulator>)=>[...map].filter(([id])=>id.startsWith(prefix))
+      .map(([id,value])=>({id:(JSON.parse(id) as string[])[2]!,weeklyAllowance:projection(value,allMeters)}))
+      .map(row=>({...row,rank:accountShare(row.weeklyAllowance,account.provider,account.account)}))
+      .sort((a,b)=>b.rank-a.rank);
+    const sessionRows=ranked(unlinkedSessions);
+    const notInThread={
+      byTrigger:ranked(unlinkedTriggers).map(row=>({trigger:row.id,weeklyAllowance:row.weeklyAllowance})),
+      sessionCount:sessionRows.length,
+      bySession:sessionRows.slice(0,UNLINKED_SESSIONS_SHOWN).map(row=>{
+        const session=titles.get(row.id),triggers=[...(sessionTriggers.get(JSON.stringify([account.provider,account.account,row.id]))??new Map<string,number>())]
+          .sort((a,b)=>b[1]-a[1]).map(([trigger])=>trigger);
+        return {address:session?.address??(row.id.startsWith('concierge:')?row.id:null),title:session?.title??null,project:session?.project??null,
+          triggers,weeklyAllowance:row.weeklyAllowance};
+      })};
     return {...account,weeklyAllowance:{usedPercent:measured?meter.usedPercent:null,basis:measured?'measured':'unavailable',
       resetsAt:measured?meter.resetsAt:null,observedAt:meter?.observedAt??null,
-      estimatedUse:accountProjection},
+      estimatedUse:accountProjection},notInThread,
       bySession:account.bySession.map((session:any)=>({...session,
         weeklyAllowance:projection(accountSessions.get(JSON.stringify([account.provider,account.account,
           session.address??(session.providerConversationId?`outside:${session.providerConversationId}`:'unassigned')]))??accumulator(),allMeters)}))};
