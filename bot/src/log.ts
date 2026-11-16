@@ -160,6 +160,11 @@ export function logToStderr(level: LogLevel, event: string, fields: Record<strin
 }
 
 export function errorFields(err: unknown) {
-  if (err instanceof Error) return { error: err.message, stack: err.stack };
+  if (err instanceof Error) {
+    // Errors may carry identifying fields (e.g. the action id of an idempotency
+    // conflict) so a refusal in the log names what was refused.
+    const extra = (err as { logFields?: unknown }).logFields;
+    return { error: err.message, stack: err.stack, ...(extra && typeof extra === 'object' ? extra : {}) };
+  }
   return { error: String(err) };
 }

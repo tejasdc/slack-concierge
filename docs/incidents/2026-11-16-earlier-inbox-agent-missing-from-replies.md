@@ -15,10 +15,13 @@ In “Possible missing text after moving a note,” Tejas tried to answer the re
 
 The thread read follows all Inbox sessions in one lineage, but the reply-target read considered posts only from the current Inbox session. A second lookup for the writer of a selected post had the same narrower scope. The recipient list therefore omitted a visible post's writer after the Inbox role moved. Whether the agent's request was still open was incidental: a post must retain its writer as a reply choice for its entire lifetime.
 
+The first release corrected the rule but did not refresh saved recipient lists for existing threads. On the installed release at 08:50 UTC, the real thread's read still omitted `post:forward:3f41be42-202f-4018-a058-b6d01edb7e49` from the recovery agent's `owns`, even though the canonical post and both Inbox sessions were present and the installed source contained the lineage rule. The saved thread row was not marked dirty. This was a second, distinct acceptance failure: changing the rule alone does not recompute old prepared rows.
+
 ## Fix
 
 Read post writers across the same Inbox lineage as the visible thread. Preserve the established rule for ordinary main-thread replies: the latest speaker is the initial recipient, and the current Inbox agent remains a choice. A reply under an exact agent post initially goes to that post's writer, subject to an accepted handoff successor, even when its request is closed.
 An earlier Inbox role holder still counts as the router, so exposing its posts does not add a false agent choice.
+Mark each existing saved thread for a one-time recipient refresh when the new rule first starts. The presentation database records that refresh version so later restarts do not repeatedly rebuild the same threads.
 
 ## Acceptance scenario
 
