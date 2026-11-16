@@ -1,7 +1,8 @@
 import { basename } from 'node:path';
 import { db, type SessionRow } from './state';
-import { getAcceptedSessionInput, sessionInputProvenance, sessionMetadata } from './session-inputs';
+import { sessionMetadata } from './session-inputs';
 import { log } from './log';
+import { topicRootIn } from './work-thread-root';
 import { takesManySubjects } from './session-roles';
 
 /**
@@ -117,15 +118,7 @@ const topicOfRoot = (root: string | null | undefined) => root
  * how one session drifts across subjects). Null when neither is in the Inbox: outside this rule.
  */
 export function topicRootFor(threadRoot: string | null | undefined, sourceInputId: string | null | undefined): string | null {
-  if (topicOfRoot(threadRoot)) return threadRoot!;
-  const source = sourceInputId ? getAcceptedSessionInput(sourceInputId) : null;
-  const human = source ? (source.origin === 'human' ? source.id : sessionInputProvenance(source)?.originatingHuman?.inputId) : null;
-  if (!human) return null;
-  if (topicOfRoot(human)) return human;
-  // His reply inside a thread is not a root; the Inbox's own request from it names the thread.
-  const routed = db.query(`SELECT thread_root_input_id AS root FROM session_communication_requests
-    WHERE source_input_id=? AND thread_root_input_id IS NOT NULL ORDER BY created_at_ms DESC LIMIT 1`).get(human) as { root: string } | null;
-  return routed && topicOfRoot(routed.root) ? routed.root : null;
+  return topicRootIn(db, threadRoot, sourceInputId);
 }
 
 export const topicOf = (topicRoot: string | null) => topicOfRoot(topicRoot);
