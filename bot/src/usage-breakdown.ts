@@ -104,6 +104,7 @@ const OVERVIEW_THREADS=50;
 
 /**
  * The weekly allowance overview Accounts shows: each account's measured reading and estimated use,
+ * what its use outside any thread was (leading sessions and what started them),
  * the leading threads, every routine with its days, and each day. It is a few tens of kilobytes;
  * the full week breakdown carries every session's token detail and is far past the read limit.
  */
@@ -111,7 +112,7 @@ function allowanceOverview(report:Record<string,any>){
   const largest=(projection:any)=>Math.max(-1,...(projection?.components??[]).map((component:any)=>component.usedPercent??-1));
   const threads=[...(report.byThread??[])].sort((a:any,b:any)=>largest(b.weeklyAllowance)-largest(a.weeklyAllowance));
   return {accounts:(report.accounts??[]).map((account:any)=>({provider:account.provider,account:account.account,
-      weeklyAllowance:account.weeklyAllowance??null})),
+      weeklyAllowance:account.weeklyAllowance??null,notInThread:account.notInThread??null})),
     byThread:threads.slice(0,OVERVIEW_THREADS),threadCount:threads.length,
     unassignedThread:report.unassignedThread??null,byRoutine:report.byRoutine??[],byDay:report.byDay??[]};
 }

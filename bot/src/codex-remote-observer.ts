@@ -26,6 +26,7 @@ import {
   type CodexSessionMapping,
 } from "./state";
 import { ensureTldr, extractTldr } from "./text";
+import { isProtectedCodexProviderThread } from "./codex-session-observer";
 
 const LOCAL_DELIVERY_RETRY_MS = 100;
 
@@ -249,6 +250,7 @@ export class CodexRemoteObserver {
 
   providerSessionBound(providerThreadUuid: string) {
     if (this.stopped) return Promise.resolve();
+    if (isProtectedCodexProviderThread(providerThreadUuid)) return Promise.resolve();
     if (this.subscribedThreadIds.has(providerThreadUuid)) return Promise.resolve();
     const pending = this.pendingThreadSubscriptions.get(providerThreadUuid);
     if (pending) return pending;
@@ -311,14 +313,16 @@ export class CodexRemoteObserver {
   }
 
   private async subscribeCurrentMappings(connection: CodexAppServerClientLike, generation: number) {
-    const eligibleMappings = this.listMappings().filter((candidate) => codexRemoteChannelAllowed(candidate));
+    const eligibleMappings = this.listMappings().filter((candidate) => codexRemoteChannelAllowed(candidate)
+      && !isProtectedCodexProviderThread(candidate.provider_thread_uuid));
     for (const mapping of eligibleMappings) {
       if (await connection.connect() !== generation) return false;
       try {
+        if (isProtectedCodexProviderThread(mapping.provider_thread_uuid)) continue;
         await connection.request("thread/resume", {
           threadId: mapping.provider_thread_uuid,
           excludeTurns: true,
-        });
+        },{custodyOwnerSessionId:mapping.session_id});
         log("info", "codex_remote_thread_subscribed", {
           provider_thread_uuid: mapping.provider_thread_uuid,
           channel: mapping.slack_channel_id,
@@ -349,10 +353,11 @@ export class CodexRemoteObserver {
     if (this.stopped || await this.appServer.connect() !== generation) {
       throw new Error("The provider observer connection changed while subscribing a newly bound session.");
     }
+    if (isProtectedCodexProviderThread(providerThreadUuid)) return;
     await this.appServer.request("thread/resume", {
       threadId: providerThreadUuid,
       excludeTurns: true,
-    });
+    },{custodyOwnerSessionId:mappings[0].session_id});
     if (this.stopped || await this.appServer.connect() !== generation) {
       throw new Error("The provider observer connection changed after subscribing a newly bound session.");
     }

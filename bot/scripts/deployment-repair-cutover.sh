@@ -67,10 +67,12 @@ online_runtime_sha() {
     | head -1
 }
 
+# The unit copy is taken before the first stop, so every failure after the owner is stopped has a
+# restoration plan. A failure before unit replacement copies back the unchanged original.
 restore_legacy_unit() {
-  [ -n "$BOT_UNIT_BACKUP" ] || return 0
-  cp -a "$BOT_UNIT_BACKUP" "$SYSTEMD_DIR/concierge-bot.service"
-  systemctl daemon-reload
+  [ -n "$BOT_UNIT_BACKUP" ] || return 1
+  cp -a "$BOT_UNIT_BACKUP" "$SYSTEMD_DIR/concierge-bot.service" || return 1
+  systemctl daemon-reload || return 1
   restart_unit "$SERVICE"
 }
 
@@ -79,11 +81,14 @@ cutover_failed() {
   trap - EXIT ERR INT TERM
   set +e
   if [ "$CUTOVER_COMPLETE" != "1" ]; then
-    restore_legacy_unit
     DEPLOYED_COMMIT="$EXPECTED_LKG_COMMIT"
-    probe_capture_ingress
-    probe_service
-    release_deployment_gate
+    # Admission drains are released only after the restored owner and capture ingress both pass
+    # their functional probes; otherwise they stay held for the documented recovery.
+    if restore_legacy_unit && probe_capture_ingress && probe_service; then
+      release_deployment_gate
+    else
+      echo "CUTOVER FAILED: the prior owner could not be restored and verified; admission drains remain held." >&2
+    fi
     record_deployment_failure "$status"
   fi
   exit "$status"
@@ -174,17 +179,18 @@ main() {
   artifact_digest=$(printf '%s\n' "$prepared" | jq -er '.artifact_digest')
   CANDIDATE_ARTIFACT_PATH="$artifact_path"
   CANDIDATE_ARTIFACT_DIGEST="$artifact_digest"
+  install -d -m 0700 "$LEGACY_BACKUP_ROOT/unit"
+  BOT_UNIT_BACKUP="$LEGACY_BACKUP_ROOT/unit/concierge-bot.service.$(date -u +%Y%m%dT%H%M%SZ)"
+  cp -a "$SYSTEMD_DIR/concierge-bot.service" "$BOT_UNIT_BACKUP"
+  stop_release_owner
   CONCIERGE_RELEASE_OFFLINE=1 CONCIERGE_REPO="$REPO" CONCIERGE_STATE_DIR="$STATE_DIR" \
     "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" activate \
     --run-id "$DEPLOY_RUN_ID" --artifact "$artifact_path"
-  CONCIERGE_REPO="$REPO" CONCIERGE_STATE_DIR="$STATE_DIR" \
+  CONCIERGE_RELEASE_OFFLINE=1 CONCIERGE_REPO="$REPO" CONCIERGE_STATE_DIR="$STATE_DIR" \
     "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" set-control --artifact "$artifact_path"
   CONCIERGE_REPO="$REPO" CONCIERGE_STATE_DIR="$STATE_DIR" \
     "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" install-runtime
 
-  install -d -m 0700 "$LEGACY_BACKUP_ROOT/unit"
-  BOT_UNIT_BACKUP="$LEGACY_BACKUP_ROOT/unit/concierge-bot.service.$(date -u +%Y%m%dT%H%M%SZ)"
-  cp -a "$SYSTEMD_DIR/concierge-bot.service" "$BOT_UNIT_BACKUP"
   install -m 0644 "$SOURCE_ROOT/systemd/concierge-bot.service" "$SYSTEMD_DIR/concierge-bot.service"
   install -m 0644 "$SOURCE_ROOT/systemd/concierge-deployment-repair@.service" \
     "$SYSTEMD_DIR/concierge-deployment-repair@.service"
@@ -201,9 +207,7 @@ main() {
     return 1
   fi
 
-  CONCIERGE_REPO="$REPO" CONCIERGE_STATE_DIR="$STATE_DIR" \
-    "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" promote \
-    --run-id "$DEPLOY_RUN_ID" --artifact-digest "$artifact_digest" --artifact "$artifact_path"
+  promote_candidate_release
   record_deployment_phase releasing "{\"initial_lkg\":\"$EXPECTED_LKG_COMMIT\",\"app_server_identity\":\"$app_server_after\"}"
   release_deployment_gate
   confirm_service_proof_is_current

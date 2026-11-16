@@ -1130,7 +1130,15 @@ provider's current reset period alone (null when that period has no fresh measur
 is what the Accounts bar divides: the account's reading restarts at each reset, so a seven-day
 estimate would describe the previous week's work. A call is assigned to a topic only when its exact turn input
 has a recorded request topic, attached thread link, or topic root; work without
-that evidence stays unassigned. Topic and routine rows carry optional display
+that evidence stays unassigned. Each account also carries `notInThread`: its unassigned
+use by what started it (`byTrigger`) and its 12 largest unassigned sessions (`bySession`,
+with title, address and the triggers behind each, plus `sessionCount`), because Tejas asked
+on 2026-11-16 which sessions make up "Not in a thread" and why they had no thread. A trigger
+is read from the turn's accepted input: the ID prefix names its door (request, capture,
+report-back, handoff, Inbox upkeep, …) and the recorded input author separates his messages
+from agents'; scheduled and saved turns are named as such; calls in a Concierge conversation
+that match no turn are `between turns`, and conversations Concierge does not own are
+`outside Concierge`. The overview carries the same `notInThread` per account. Topic and routine rows carry optional display
 titles read from the existing owner ledger after runner merge. Existing token
 totals and price-proxy `share` fields remain for older clients.
 

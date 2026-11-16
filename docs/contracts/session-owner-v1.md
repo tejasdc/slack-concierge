@@ -15,6 +15,12 @@ and `sourceRelation` (`same_target|other|missing`). The scan uses the same predi
 bound content guard, so coverage is complete. No payload, receipt, file, history or provider
 output is read; there is no clean/allowed result and the content refusal is unchanged.
 
+The bound content entrance's authorship check treats a session's own steered owner notice as
+the session's own: a service-origin input of kind `input` whose source and request equal its own
+id and whose source run is a turn of that same session (for example the account budget brief and background-job
+notices; a missing source or request never qualifies). Spelling of the id and the text are not read. Any other service or human input, and
+any agent input from another source, still closes the entrance with AGENT_TEST_SCOPE_CHANGED.
+
 ## Current mutation admission
 
 `router-actions.sh sessions mutation-admission --source-input <input-id> --source-run <run-id>`
@@ -312,10 +318,13 @@ authority, events and the `sessions topics` agent commands are specified in
 A request's `dispatches` are projected live from the request rows, not from the snapshot taken when the router linked them: each carries the current `outcome` and `state`, `sourceInputId` (the Inbox message the router was answering when it sent it, where a thread places its card), `at` and the first 240 characters of its `text`; a dispatch whose row the owner no longer holds keeps the linked snapshot.
 
 `GET /sessions/v1/inbox/topics/:id` also returns `replyTargets:{router, default, choices:[{sessionId,title,why,owns:[id…]}]}`:
-who a reply inside the thread goes to. `choices` are the sessions this owner runs that hold a
-still-open, unstalled request in the thread, asked an open question there, or returned the answer
-being replied to; `default` is the one owning the item replied to, else the single choice, else the
-router. The questions read carries the same per group. A human input to the Inbox with
+who a reply inside the thread goes to. `choices` include agents that wrote posts in the thread,
+even when their requests have closed or the Inbox role has moved to another session; the post's
+author is read across the same Inbox lineage as the visible thread. Open work and questions also
+remain choices. Earlier Inbox role holders count as the router rather than separate agent choices.
+`default` is the author of an item he explicitly replies to, else the latest
+speaker in the thread, else its single working agent, else the router. The questions read carries
+the same per group. A human input to the Inbox with
 `replyToMessage` may carry `deliverTo` (a choice's session id, or `router`); absent, the owner
 applies its default. A reply addressed to an agent is retained in the Inbox as his message
 (`accepted` event `forwarded:<input>`, receipt `{state:'waiting', forwardedTo}`, a `topic`
@@ -776,6 +785,32 @@ additive to everything above, carry a request between two instances' ledgers:
 | `POST /sessions/v1/peers/requests/:requestId/replies` | Target → origin: `{eventId, kind:"progress"|"final", text, workDisposition?, evidence?, completionTurnId?, files?:[{name,contentType,base64}], responder:{peer,sessionId,inputId,runId}}`; idempotent by `eventId`. `files` are the reply's attachments read from the target's custody at forward time, because the origin cannot reach it; the origin admits them into its own custody keyed by request ID, event ID and position, so a re-forward reuses it, and records those origin-side IDs on the peer event and its return. `text` may be empty when the reply carries a file. Returns `{outcome}`. |
 | `POST /sessions/v1/peers/requests/:requestId/notify` | Target → origin: the request's execution or replies changed; the origin re-reads the facts and returns `{outcome}`. |
 
+For a transferred incoming recovery duty, the exact authenticated status adds
+`operationId` and `custodyPlacement:{version:1,canonicalInputId,predecessorSessionId,
+placementInputId,placementTurnId,transfers}`. Each transfer names its request,
+accepted handoff, original input and predecessor/successor identities, derived
+from committed handoff inventory and owed-item records. The origin anchors this
+chain at its retained acceptance before resolving the current custodian. Original
+recipient, address and accepted-input columns remain historical provenance; the
+receipt exposes those separately as `accepted_recipient`.
+
+Status keeps the selected attempt's truthful terminal facts. A selected Stop/error
+cannot settle an independent transferred duty through polling or notification.
+Only that duty's explicit final or legitimate requester cancellation supplies its
+disposition. A final from the new custodian still passes the exact task proof
+identity check. If a push arrives before authenticated custody reconciliation,
+the reply entrance returns `{eventId,recorded:"pending",outcome}`; the sender
+retains it, and the existing exact-request status reconciliation/pull confirms
+custody and records the event once. An unmatched responder assertion supplies no
+transfer authority and stays pending. An event's author is distinct from the request's
+current holder: status, push and pull carry each retained reply's original author
+(`responderSessionId`; its absence means the current recipient). A reply retained by an
+earlier holder before a handoff is accepted once when the committed handoff chain names
+that holder and the current holder's authenticated status lists that exact event with
+that author; its original proof is validated against that author and is never
+rewritten. Current custody alone decides who may create a new reply. Late outgoing child returns keep their
+original request/event/input identity and follow the already-transferred source
+holder, remaining held there when it cannot receive them; the child is not resent.
 An explicit asked question may be linked after peer dispatch. The origin reconciles the
 accepted request before sending its late clock command through the existing peer channel.
 An older or offline receiver leaves that clock acknowledgement pending; reconciliation

@@ -27,6 +27,7 @@ import {recordDeploymentReleasePrepared,recordDeploymentReleaseActivationIntent,
   failDeploymentRun,recordPreservedCheckout} from './deployment-state';
 import {resolveDeploymentReactionTargets} from './deployment-reaction-provenance';
 import {releaseFilesInUse} from './executions';
+import {defaultReleaseEnvironment,TrustedRootReleaseManager} from './deployment-release';
 import {enrollNativePipelineContinuation,tickNativePipelineContinuation} from './native-pipeline-continuation-owner';
 import {runnerRoutes} from './runner-routes';
 import {listReadHead} from './presentation-topic-reader';
@@ -206,7 +207,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
 }
 
 /** Capabilities installed only on the root-private Unix socket, never on the peer listener. */
-function localOwnerRequestApiHandler(shared:(request:Request)=>Promise<Response>,sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
+export function localOwnerRequestApiHandler(shared:(request:Request)=>Promise<Response>,sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
   const handle=localOwnerRequest(shared,sessions,owner);
   // Runner routes and the other local capabilities are owner work too: a block in them is named
   // by route (2026-11-05: a 6.6 s runner-route transaction ran unlabelled inside a 10.9 s block).
@@ -226,6 +227,8 @@ function localOwnerRequest(shared:(request:Request)=>Promise<Response>,sessions?
         return Response.json(await owner.refreshAuthEphemera());
       if(request.method==='GET'&&url.pathname==='/supervisor/ping')
         return Response.json({ok:true,pid:process.pid,startedAt,release,logging:logSinkCounters(),ledgerDurability:ledgerDurabilityCounters()});
+      if(request.method==='GET'&&url.pathname==='/internal/deployment-release-capabilities'&&owner)
+        return Response.json({publication:1,pid:process.pid,release});
       if(request.method==='GET'&&url.pathname==='/supervisor/durability')
         return Response.json(protectedDurability.snapshot());
       // The outside Grafana reconciler (remote-box) reads retained firing episodes and submits
@@ -258,7 +261,36 @@ function localOwnerRequest(shared:(request:Request)=>Promise<Response>,sessions?
       }
       if(request.method==='POST'&&url.pathname==='/internal/deployment-release'&&owner){
         const input=await request.json() as any;
-        if(!/^[0-9a-f-]{36}$/.test(input?.runId??''))throw new Error('Invalid deployment run.');
+        const operation=String(input?.operation??'');
+        const filePublication=['activate-files','activate-control-files','restore-files'].includes(operation);
+        if(!filePublication&&!/^[0-9a-f-]{36}$/.test(input?.runId??''))throw new Error('Invalid deployment run.');
+        if(operation==='promote-and-activate-control'){
+          if(typeof input.artifactPath!=='string'||!input.artifactPath.startsWith('/')
+            ||typeof input.artifactDigest!=='string'||!/^[a-f0-9]{64}$/.test(input.artifactDigest))
+            throw new Error('A verified release artifact and digest are required.');
+          const repositoryRoot=process.env.CONCIERGE_REPO||'/var/lib/slack-concierge-deployment/source';
+          const manager=new TrustedRootReleaseManager(defaultReleaseEnvironment(repositoryRoot));
+          const release=manager.verify(input.artifactPath);
+          if(release.artifact_digest!==input.artifactDigest)throw new Error('Promoted artifact path and digest disagree.');
+          // Preflight before the ledger promotion, then keep promotion and pointer publication
+          // in this owner turn. No recovery marker can appear between this gate and the rename.
+          manager.verifyControlActivation(input.artifactPath);
+          const promoted=promoteDeploymentRelease(input.runId,input.artifactDigest);
+          const manifest=manager.activateControl(input.artifactPath);
+          return Response.json({promoted,manifest});
+        }
+        // Pointer checks and publication stay in this synchronous owner turn. Recovery publishes
+        // its reader requirement in the same event loop, so no stale cross-process precheck can
+        // survive a requirement publication.
+        if(filePublication){
+          if(typeof input.artifactPath!=='string'||!input.artifactPath.startsWith('/'))
+            throw new Error('A verified release artifact path is required.');
+          const repositoryRoot=process.env.CONCIERGE_REPO||'/var/lib/slack-concierge-deployment/source';
+          const manager=new TrustedRootReleaseManager(defaultReleaseEnvironment(repositoryRoot));
+          if(operation==='activate-files')return Response.json(manager.activate(input.artifactPath));
+          if(operation==='activate-control-files')return Response.json(manager.activateControl(input.artifactPath));
+          return Response.json(manager.restore(input.artifactPath));
+        }
         if(input.operation==='resolve-reaction-tokens'){
           if(!Array.isArray(input.tokens)||!input.tokens.every((token:unknown)=>
             typeof token==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(token)))
