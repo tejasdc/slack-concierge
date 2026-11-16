@@ -117,6 +117,10 @@ export class PreparedTopics {
    prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN reply_post_lineage INTEGER NOT NULL DEFAULT 1');
    prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
   })();
+  if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='unsent_request_status'))prepared.transaction(()=>{
+   prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN unsent_request_status INTEGER NOT NULL DEFAULT 1');
+   prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
+  })();
   // A question's heading is its first line and the rest is its detail since 2026-11-16; threads
   // prepared before then keep the whole text as the heading, so recompute each thread with questions once.
   if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='question_heading_detail'))prepared.transaction(()=>{

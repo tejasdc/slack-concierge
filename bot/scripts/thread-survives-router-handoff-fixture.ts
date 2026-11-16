@@ -63,6 +63,8 @@ try {
   assert.equal(inbox.inboxThreadRoot(router.id,sent),capture,'the forward belongs to the thread it was sent from');
 
   // The router hands off while the forward is still open: custody of the open request moves.
+  // Seed historical custody; ordinary transfers now require an explicit human instruction.
+  db.query("UPDATE sessions SET native_metadata_json=json_remove(native_metadata_json,'$.standingRole') WHERE id=?").run(router.id);
   const successor=createNativeSession('claude-code',{title:'Inbox',summary:'Router after the handoff',inbox:true,inboxRole:'project-router',standingRole:'inbox'});
   db.query(`INSERT INTO session_handoffs(id,predecessor_session_id,successor_session_id,state,action_id,
     caller_session_id,reason,requesting_input_id,requesting_run_id,inventory_json,inventory_digest)

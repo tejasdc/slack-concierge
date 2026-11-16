@@ -81,6 +81,7 @@ import {movedToCodex} from './provider-exhaustion-recovery';
 import {SIGNIN_WORKER,signInRenewalOf,signInWorkerActionId,signInWorkerText} from './signin-renewal';
 import {markRepairNoticesDelivered,pendingRepairNotices,repairNoticeText,REPAIR_AGENT_PROVIDER,REPAIR_AGENT_TITLE} from './repair-notices';
 import {standingAgent,standingAgentForSession,standingAgentSession,assertStandingAgentPlacement,bindStandingAgentSession,unboundJournalKeeperSession,unboundRepairAgentSession,canOwnStandingWork,STANDING_WORK_REFUSAL,type StandingAgentRole} from './standing-agents';
+import {currentInboxHolder,holdsInbox,INBOX_PIN_REFUSAL} from './inbox-session-pin';
 import {resolveRunnerProjectLocation} from './runner-project-location';
 import {standingAgentView} from './standing-agent-view';
 import {hostTimerView} from './host-timer-view';
@@ -1510,6 +1511,7 @@ export class SessionOwner {
     if(busy)throw new SessionOwnerError('That session has work running or queued; move it once it is idle.',409,'SESSION_BUSY');
     const from=sessionMetadata(getSessionById(sessionId)!).cwd??null;
     const current=sessionMetadata(getSessionById(sessionId)!);
+    if(holdsInbox(getSessionById(sessionId)!)&&current.cwd!==project.cwd)throw new SessionOwnerError(INBOX_PIN_REFUSAL,409,'INBOX_SESSION_PINNED');
     updateSessionMetadata(sessionId,{cwd:project.cwd,project:project.cwd,projectName:project.name,projectPath:project.path,
       ...(project.runner?{providerRunner:project.runner}:{}),
       ...(current.standingRole&&current.cwd!==project.cwd?{standingRole:null}:{})});
@@ -1906,7 +1908,7 @@ export class SessionOwner {
     const canvasTitles=this.projectSetup?.canvasProjectTitles();
     const remote=await this.runnerProjectCall<{workspaceRoot:string;projects:{name:string;path:string}[]}>('projects.list',{});
     const projects=remote?remote.projects.map(project=>({name:project.name,cwd:join(remote.workspaceRoot,project.path)})):sessionProjects(this.defaultCwd);
-    return {projects:projects.map(project=>({...project,...(canvasTitles?.has(project.name)?{canvasTitle:canvasTitles.get(project.name)}:{}),defaultProvider:project.name==='slack-inbox'?(claudeAllowanceHeld()?'codex':'cc-opus-1m'):configuredProviderDefault(remote?this.managedProjectRecord(project.name)?.provider_default:getChannelByCodePath(project.cwd)?.provider_default)}))};
+    return {projects:projects.map(project=>({...project,...(canvasTitles?.has(project.name)?{canvasTitle:canvasTitles.get(project.name)}:{}),defaultProvider:project.name==='slack-inbox'?'cc-opus-1m':configuredProviderDefault(remote?this.managedProjectRecord(project.name)?.provider_default:getChannelByCodePath(project.cwd)?.provider_default)}))};
   }
   private managedProjectRecord(id:string) {
     const rows=db.query('SELECT rowid AS rowId,* FROM channels WHERE code_path IS NOT NULL').all() as Array<{rowId:number;name:string;code_path:string;provider_default:string;slack_channel_id:string|null}>;
@@ -2144,6 +2146,8 @@ export class SessionOwner {
       tries:0,since:new Date(startsAtMs).toISOString(),failedAt:null,repair:null,stopped:null};
   }
   private ensureInboxSession() {
+    const pinned=currentInboxHolder();
+    if(pinned)return pinned;
     const current=inboxSession(),meta=current?sessionMetadata(current):null;
     if(current&&meta?.inboxRole==='project-router'&&meta.standingRole==='inbox'){
       maybeStartStandingRoleFailover(current);
@@ -2154,7 +2158,7 @@ export class SessionOwner {
       ?{name:'slack-inbox',path:'',cwd:join(this.defaultCwd,'slack-inbox'),runner}
       :sessionProject(this.defaultCwd,'slack-inbox')&&{name:'slack-inbox',path:'',cwd:sessionProject(this.defaultCwd,'slack-inbox')!.cwd,runner:null};
     if(!project)throw new SessionOwnerError('The slack-inbox project is unavailable.',503,'PROJECT_UNAVAILABLE');
-    const provider=claudeAllowanceHeld()?'codex':'claude-code';
+    const provider='claude-code';
     return createNativeSession(provider,{title:'Inbox',summary:INBOX_PURPOSE,inbox:true,inboxRole:'project-router',standingRole:'inbox',
       purpose:'chat',cwd:project.cwd,project:project.cwd,projectName:project.name,projectPath:project.path,
       ...(project.runner?{providerRunner:project.runner}:{}),model:provider==='claude-code'?'opus[1m]':undefined});

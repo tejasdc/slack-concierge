@@ -93,6 +93,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 
 ## Session and Inbox obligations
 
+- The Inbox stays in its current Claude Code conversation, across saved-account switches;
+  only a retained explicit human instruction can move it. Automatic exhaustion waits in place.
+  See [Inbox conversation pin](docs/architecture/PROVIDER-STATE-FLOW.md#inbox-conversation-pin).
 - Saved context is a settled input, never queued work. Preserve its exact attribution,
   attachments and chosen recipient; only a later active message brings it to the provider.
   See [passive session context](docs/contracts/session-owner-v1.md#passive-session-context).
@@ -117,6 +120,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   carry the live syntax and enforcement. The [request and return contract](docs/architecture/SESSION-OWNER.md#requests-and-returns)
   and [prompt thread answers](docs/architecture/PROMPT-THREAD-ANSWERS.md)
   own return position, partial answers and final disposition.
+- Recorded unsent obligations and direct-answer source checks are described in the
+  [native Inbox contract](docs/contracts/native-inbox.md); sharing a thread does not establish completion evidence.
 - Asked-question clocks, exact retained-answer recovery and owner-derived delay status follow
   [prompt answers](docs/architecture/PROMPT-THREAD-ANSWERS.md); historical questions stay in the
   one Inbox's [prepared global views](docs/architecture/PREPARED-TOPICS.md).
