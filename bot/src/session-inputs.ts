@@ -352,8 +352,19 @@ export function retainSessionInput(input:{id?:string;sessionId:number;scope:stri
   const payload=timed('serializeMs',()=>stablePayload(classifiable&&value&&typeof value==='object'?{...value,notificationRequest:mark}:value));
   const old=timed('existingMs',()=>db.query('SELECT * FROM session_inputs WHERE scope=? AND action_id=?').get(input.scope,input.actionId)) as AcceptedSessionInput|null;
   if (old) {
-    if (old.session_id!==input.sessionId || ![rawPayload,payload].includes(stablePayload(JSON.parse(old.payload_json))) || old.origin!==input.origin || old.kind!==input.kind
-      || old.source_input_id!==(input.sourceInputId??null) || old.source_run_id!==(input.sourceRunId??null) || old.request_id!==(input.requestId??null)) throw new Error('Idempotency conflict: accepted action payload changed.');
+    const changed=[
+      old.session_id!==input.sessionId&&'session',
+      ![rawPayload,payload].includes(stablePayload(JSON.parse(old.payload_json)))&&'payload',
+      old.origin!==input.origin&&'origin',
+      old.kind!==input.kind&&'kind',
+      old.source_input_id!==(input.sourceInputId??null)&&'source_input',
+      old.source_run_id!==(input.sourceRunId??null)&&'source_run',
+      old.request_id!==(input.requestId??null)&&'request',
+    ].filter((field):field is string=>Boolean(field));
+    if (changed.length) throw Object.assign(new Error('Idempotency conflict: accepted action payload changed.'),{logFields:{
+      conflict_scope:input.scope,conflict_action_id:input.actionId,conflict_accepted_input_id:old.id,conflict_session_id:input.sessionId,
+      conflict_kind:input.kind,conflict_origin:input.origin,conflict_source_input_id:input.sourceInputId??null,
+      conflict_request_id:input.requestId??null,conflict_changed:changed}});
     return {input:old,duplicate:true};
   }
   const id=input.id??randomUUID();
