@@ -76,7 +76,7 @@ function stalledReason(source:Database,requestId:string):string|null{
 }
 
 /** A request the holder sent and still waits on, or a watch its own partial reply named. */
-function dependencies(source:Database,holder:number,requestId:string):{agents:StandingPerson[];requestIds:string[];peers:number;watch:string|null}{
+function dependencies(source:Database,holder:number,requestId:string):{agents:StandingPerson[];requestIds:string[];peers:number}{
  const agents:StandingPerson[]=[],requestIds:string[]=[];
  for(const row of source.query('SELECT request_id,target_session_id AS target FROM session_communication_requests WHERE source_session_id=? AND outcome IS NULL ORDER BY created_at_ms DESC').all(holder) as {request_id:string;target:number}[]){
   agents.push({sessionId:`concierge:${row.target}`,title:localTitle(source,row.target)});requestIds.push(row.request_id);
@@ -84,12 +84,24 @@ function dependencies(source:Database,holder:number,requestId:string):{agents:St
  let peers=0;
  for(const row of source.query("SELECT peer,remote_session_id AS remote FROM session_peer_requests WHERE source_session_id=? AND outcome IS NULL AND json_extract(payload_json,'$.responseMode') IS NOT 'context' ORDER BY created_at_ms DESC").all(holder) as {peer:string;remote:string}[])
   {agents.push({sessionId:peerAddress(row.peer,row.remote),title:peerTitle(source,row.peer,row.remote)});peers++;}
- const watch=source.query(`SELECT watch.condition_json FROM watches watch WHERE watch.session_id=? AND watch.state IN ('accepted','observing')
-  AND coalesce(watch.series_id,watch.watch_id) IN (SELECT coalesce(named.series_id,named.watch_id) FROM session_communication_events reply
-   JOIN watches named ON named.watch_id=json_extract(reply.payload_json,'$.waitingOnWatch') WHERE reply.request_id=? AND reply.kind='progress') LIMIT 1`)
-  .get(holder,requestId) as {condition_json:string}|null;
- return {agents,requestIds,peers,watch:watch?(/slack-concierge-deployment/.test(watch.condition_json)?'a Concierge release':'something it is watching'):null};
+ return {agents,requestIds,peers};
 }
+
+/**
+ * A watch that will wake this holder by itself: accepted or observing, owned by the holder session, with a deadline still
+ * ahead and no gap in its coverage. The one this request's own partial reply named comes first, else any live watch of the
+ * holder (many agents wait without naming it). It wakes the session when it fires, fails or expires, so a request held on
+ * it is not quiet. A gap in coverage is not a live watch.
+ */
+export function liveWatchOf(source:Database,holder:number,requestId:string,nowMs:number):{deadlineMs:number;label:string}|null{
+ const row=source.query(`SELECT watch.deadline_ms,watch.condition_json,
+   coalesce(watch.series_id,watch.watch_id) IN (SELECT coalesce(named.series_id,named.watch_id) FROM session_communication_events reply
+    JOIN watches named ON named.watch_id=json_extract(reply.payload_json,'$.waitingOnWatch') WHERE reply.request_id=? AND reply.kind='progress') AS named
+  FROM watches watch WHERE watch.session_id=? AND watch.state IN ('accepted','observing') AND watch.deadline_ms>? AND watch.gaps_json IN ('[]','')
+  ORDER BY named DESC,watch.deadline_ms ASC LIMIT 1`).get(requestId,holder,nowMs) as {deadline_ms:number;condition_json:string}|null;
+ return row?{deadlineMs:row.deadline_ms,label:/slack-concierge-deployment/.test(row.condition_json)?'a Concierge release':'something it is watching'}:null;
+}
+
 
 /** The standing of one open local or peer communication request, or null when it is not open. */
 export function requestStanding(source:Database,requestId:string,nowMs:number):RequestStanding|null{
@@ -115,12 +127,13 @@ export function requestStanding(source:Database,requestId:string,nowMs:number):R
    const last=chain[chain.length-1]!;
    return {...base,state:'working',text:last===local.target_session_id?'Working now':`Working through ${localTitle(source,last)}`};
   }
+  const watch=liveWatchOf(source,local.target_session_id,requestId,nowMs);
+  if(watch)return {...base,state:'waiting',text:`Waiting for ${watch.label}`,until:iso(watch.deadlineMs)};
   const waitingOn=dependencies(source,local.target_session_id,requestId);
   if(waitingOn.agents.length){
    const [first,...others]=waitingOn.agents;
    return {...base,state:'waiting',text:`Waiting on ${first!.title}${others.length?` and ${others.length} other${others.length===1?'':'s'}`:''} · no word from ${others.length?'them':'it'}`};
   }
-  if(waitingOn.watch)return {...base,state:'waiting',text:`Waiting for ${waitingOn.watch}`};
   return {...base,state:'quiet',text:'No word yet'};
  }
  const peer=source.query('SELECT request_id,peer,remote_session_id,outcome,stalled_at_ms,created_at_ms FROM session_peer_requests WHERE request_id=?').get(requestId) as
@@ -199,6 +212,7 @@ export function dependencyStuck(source:Database,requestId:string,standing:Reques
  const row=source.query('SELECT target_session_id FROM session_communication_requests WHERE request_id=?').get(requestId) as {target_session_id:number}|null;
  if(!row)return false;
  if(standing.state==='waiting'){
+  if(liveWatchOf(source,row.target_session_id,requestId,nowMs))return false;
   const waitingOn=dependencies(source,row.target_session_id,requestId);
   if(!waitingOn.agents.length)return false;
   if(waitingOn.peers)return false;
@@ -206,7 +220,7 @@ export function dependencyStuck(source:Database,requestId:string,standing:Reques
  }
  if(standing.state==='quiet'){
   const named=source.query("SELECT 1 FROM session_communication_events WHERE request_id=? AND kind='progress' AND json_extract(payload_json,'$.waitingOnWatch') IS NOT NULL LIMIT 1").get(requestId);
-  return !!named&&!dependencies(source,row.target_session_id,requestId).watch;
+  return !!named&&!liveWatchOf(source,row.target_session_id,requestId,nowMs);
  }
  return false;
 }
