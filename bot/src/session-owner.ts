@@ -605,10 +605,24 @@ function validateCanvasContext(input:Record<string,any>) {
  * does not read the text or the id's spelling. Every other service input, such as a returned
  * request or thnkr.ing feature text, still counts as other authorship. A new producer of this
  * exact shape must not put another session's content in it.
+ *
+ * The one closing notice of an accepted handoff is the owner's too (notifySupersededSession, the
+ * only writer of the `handoff-notice:` scope). It names the predecessor's active input and run
+ * rather than itself, so it is proven differently, from the canonical records: an accepted handoff
+ * whose predecessor is this session and whose id is the notice's scope and id, no request, action
+ * 'notice', and a source pair that one turn of this session actually holds. A bare prefix, a
+ * proposed or withdrawn handoff, another session's handoff or a mismatched pair is not proof.
  */
 const FOREIGN_AUTHORSHIP_PREDICATE=`((candidate.origin<>'agent' AND NOT (candidate.origin='service' AND candidate.kind='input'
-        AND candidate.source_input_id IS candidate.id AND candidate.request_id IS candidate.id
-        AND EXISTS (SELECT 1 FROM turns AS own_run WHERE own_run.native_run_id=candidate.source_run_id AND own_run.session_id=candidate.session_id)))
+        AND ((candidate.source_input_id IS candidate.id AND candidate.request_id IS candidate.id
+            AND EXISTS (SELECT 1 FROM turns AS own_run WHERE own_run.native_run_id=candidate.source_run_id AND own_run.session_id=candidate.session_id))
+          OR (candidate.action_id='notice' AND candidate.request_id IS NULL AND candidate.id=candidate.scope
+            AND EXISTS (SELECT 1 FROM session_handoffs AS closed_handoff WHERE closed_handoff.state='accepted'
+              AND closed_handoff.predecessor_session_id=candidate.session_id AND candidate.scope='handoff-notice:'||closed_handoff.id)
+            AND EXISTS (SELECT 1 FROM turns AS notice_turn WHERE notice_turn.session_id=candidate.session_id
+              AND notice_turn.native_run_id=candidate.source_run_id AND notice_turn.accepted_input_id=candidate.source_input_id)
+            AND EXISTS (SELECT 1 FROM session_inputs AS notice_source WHERE notice_source.id=candidate.source_input_id
+              AND notice_source.session_id=candidate.session_id)))))
       OR (candidate.origin='agent' AND NOT EXISTS (SELECT 1 FROM session_inputs AS own_source
           WHERE own_source.id=candidate.source_input_id AND own_source.session_id IN (candidate.session_id, ?))))`;
 
