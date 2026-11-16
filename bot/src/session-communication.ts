@@ -42,7 +42,7 @@ import {cancelWatch,listWatches,registerWatch} from './watches';
 import {inspectWatchPair,reconcileWatchPair} from './watch-custody';
 import {boardCommand,type BoardActor,type BoardInput} from './commons-board-service';
 import {notifyAgentPost,dispatchedFromInput} from './thread-notifications';
-import {acceptHandoff,handoffObligations,proposeHandoff,supersededAddress,supersededBy,withdrawHandoff,withdrawnSuccessor} from './session-handoff';
+import {acceptHandoff,handoffObligations,proposeHandoff,reconcileWithdrawnHandoffQueues,supersededAddress,supersededBy,withdrawHandoff,withdrawnSuccessor} from './session-handoff';
 import {askAsideOnce} from './session-asides';
 import {awaitingOutside} from './storage-observation';
 import {earlierWorkFor,type EarlierWork} from './request-history';
@@ -3935,6 +3935,8 @@ export class SessionCommunicationCoordinator {
     private async reconcile() {
         let startedPeers = false;
         if (!this.startupReconciled) {
+            const withdrawnTurns=reconcileWithdrawnHandoffQueues();
+            if(withdrawnTurns)log('info','handoff_withdrawn_queue_reconciled',{turns:withdrawnTurns});
             const transferredAnswers=reconcileHandoffChatGptObligations(this.now());
             if(transferredAnswers.moved)log('info','chatgpt_handoff_answer_reconciliation',{transferredAnswers:transferredAnswers.moved});
             for(const error of transferredAnswers.errors)log('error','chatgpt_handoff_answer_reconciliation_failed',{error});

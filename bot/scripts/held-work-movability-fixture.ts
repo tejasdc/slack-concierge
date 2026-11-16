@@ -16,8 +16,8 @@ process.env.CONCIERGE_TEST_AUTHORIZATION=HELD_WORK_MOVABILITY_TEST_AUTHORIZATION
 process.env.THINKERING_AGENT_TEST_KEY_FILE=join(scratch,'no-lab-key');
 
 const [{db,claimNextQueuedTurn,markTurnProviderAdmissionIntended,retryRunningTurnAfterProviderFailure},
-  {SessionOwner},{createNativeSession,retainSessionInput,enqueueSessionInput,getAcceptedSessionInput},
-  {safeTurn,transferSession},{queuedWorkMovable,proposeHandoff,acceptHandoff},{admitChatGptObligation}]=await Promise.all([
+  {SessionOwner},{createNativeSession,retainSessionInput,enqueueSessionInput,getAcceptedSessionInput,queueTurnContinuation},
+  {safeTurn,transferSession},{queuedWorkMovable,proposeHandoff,acceptHandoff,withdrawHandoff,reconcileWithdrawnHandoffQueues},{admitChatGptObligation}]=await Promise.all([
   import('../src/state'),import('../src/session-owner'),import('../src/session-inputs'),
   import('../src/provider-exhaustion-recovery'),import('../src/session-handoff'),import('../src/chatgpt-obligations')]);
 new SessionOwner({available:()=>true,wake:()=>{},stop:async()=>false,steer:()=>false},scratch);
@@ -57,6 +57,59 @@ function heldInput(id:string,started:boolean,provider:'codex'|'claude-code'='cod
 }
 
 try{
+  // Withdrawn Mac successors 248/249/250 retained queued retries, one a continuation.
+  // Reproduce the historical rows and the ordinary withdrawal transition in private state.
+  for(const historical of [true,false]){
+    const predecessor=createNativeSession('codex',{title:'withdrawal source',purpose:'develop',origin:'native'});
+    const successor=createNativeSession('codex',{title:'withdrawal successor',purpose:'develop',origin:'native'});
+    const handoffId=`withdrawal-fixture-${historical}`;
+    db.query(`INSERT INTO session_handoffs(id,predecessor_session_id,successor_session_id,state,action_id,caller_session_id,reason,
+      requesting_input_id,requesting_run_id,inventory_json,inventory_digest)
+      VALUES(?,?,?,?,?,?,?,?,?,'{}','fixture')`).run(handoffId,predecessor.id,successor.id,historical?'withdrawn':'proposed',
+        handoffId,predecessor.id,'fixture','source','run');
+    const retained=[];
+    for(const [index,mode] of ['continuation','untouched','acknowledged','running'].entries()){
+      const input=retainSessionInput({id:`${handoffId}:${index}`,sessionId:successor.id,scope:mode==='continuation'?'turn-continuation':`handoff:${handoffId}`,
+        actionId:`${handoffId}:${index}`,kind:'input',origin:'service',payload:{text:'exact retained words',...(mode==='continuation'?{continuation:{sourceTurnId:1127}}:{})}}).input;
+      const turnId=enqueueSessionInput(input.id).turn_id!;
+      db.query(`UPDATE turns SET dispatch_hold='backoff',dispatch_next_attempt_ms=0 WHERE id=?`).run(turnId);
+      if(mode==='acknowledged'){
+        db.query(`UPDATE turns SET provider_input_acknowledged_at='2026-11-15 00:00:00',provider_turn_id='retained-provider-turn' WHERE id=?`).run(turnId);
+        db.query(`UPDATE session_inputs SET receipt_json='{"admission":{"inputId":"original"}}' WHERE id=?`).run(input.id);
+      }
+      if(mode==='running')db.query("UPDATE turns SET status='running',owner_instance_id='existing-run' WHERE id=?").run(turnId);
+      retained.push({input:getAcceptedSessionInput(input.id)!,turnId,mode});
+    }
+    if(historical)assert.equal(reconcileWithdrawnHandoffQueues(),3);
+    else assert.equal(withdrawHandoff({actorSession:predecessor.id,handoffId}).withdrawn,true);
+    for(const {input,turnId,mode} of retained){
+      const turn=db.query('SELECT * FROM turns WHERE id=?').get(turnId) as any;
+      const after=getAcceptedSessionInput(input.id)!;
+      assert.equal(after.payload_json,input.payload_json,'accepted words and lineage stay exact');
+      assert.equal(after.turn_id,turnId,'no replacement execution');
+      if(mode==='running'){assert.equal(turn.status,'running');assert.equal(turn.owner_instance_id,'existing-run');continue;}
+      assert.equal(turn.status,'cancelled');
+      assert.match(turn.agent_text,/handoff was withdrawn/);
+      assert.equal(turn.dispatch_hold,null);
+      assert.equal(turn.dispatch_next_attempt_ms,null);
+      const receipt=JSON.parse(after.receipt_json!);
+      assert.equal(receipt.reason,'handoff_withdrawn');
+      assert.equal(receipt.state,mode==='acknowledged'?'uncertain':'canceled');
+      if(mode==='acknowledged'){
+        assert.equal(turn.provider_turn_id,'retained-provider-turn');
+        assert.equal(turn.provider_input_acknowledged_at,'2026-11-15 00:00:00');
+        assert.deepEqual(receipt.admission,{inputId:'original'});
+      }
+      assert.equal(queueTurnContinuation(turnId,{kind:'interrupted',detail:'fixture'}),null,'withdrawal cannot spawn another continuation');
+    }
+    const before=db.query('SELECT count(*) AS n FROM session_owner_events').get() as any;
+    assert.equal(reconcileWithdrawnHandoffQueues(),0,'existing-state repair is idempotent');
+    assert.deepEqual(db.query('SELECT count(*) AS n FROM session_owner_events').get(),before);
+    db.query("UPDATE turns SET status='done',ended_at=CURRENT_TIMESTAMP WHERE session_id=? AND status='running'").run(successor.id);
+    assert.equal(queueTurnContinuation(retained.find(item=>item.mode==='running')!.turnId,
+      {kind:'boundary',detail:'existing run finished'}),null,'a surviving run cannot create new work after withdrawal');
+  }
+  console.log('withdrawn handoffs: historical and new queues terminalize, uncertainty and exact evidence survive, running work stays, continuation and repeat repair do nothing');
   const held=heldInput('fixture-held',false);
   assert.equal(held.turn.dispatch_hold,'usage');
   assert.ok(held.turn.provider_admission_intended_at,'the refusal came after admission intent');

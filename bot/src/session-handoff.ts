@@ -19,6 +19,7 @@ import {claudeConfigDir,locateClaudeTranscript} from './claude-transcript-watch'
 import {runnerMachineCall,RunnerMachineCallError,RunnerUnreachableError,type RunnerMachineAnswerIdentity} from './runner-machine-calls';
 import {resolveRunnerProjectLocation,type RunnerProjectLocation} from './runner-project-location';
 import {undeliveredRequestState} from './request-prerequisite-hold';
+import {resolveUsageHoldNoticesForSettledTurn,type UsageProvider} from './provider-usage';
 
 const run=promisify(execFile);
 type Item={id:string;kind:'sent'|'owed'|'answer'|'queued'|'watch'|'lab'|'worktree';ref:string;holder:string;[key:string]:unknown};
@@ -661,6 +662,50 @@ async function acceptHandoffInternal(input:{actorSession:number;inputId:string;r
   return result;
 }
 
+/** Withdrawal revokes future execution, never an earlier provider attempt's evidence. */
+function settleWithdrawnSuccessor(current:HandoffRow):number {
+  updateSessionMetadata(current.successor_session_id,{suspended:true});
+  const queued=db.query(`SELECT turn.*,input.receipt_json,input.id AS input_id,
+    (EXISTS (SELECT 1 FROM turn_steering_messages WHERE turn_id=turn.id AND status IN ('sent','sending','ambiguous'))
+      OR EXISTS (SELECT 1 FROM turn_artifact_deliveries WHERE turn_id=turn.id)
+      OR EXISTS (SELECT 1 FROM turn_artifact_batches WHERE turn_id=turn.id AND status<>'collecting')) AS effect_possible
+    FROM turns turn LEFT JOIN session_inputs input ON input.id=turn.accepted_input_id
+    WHERE turn.session_id=? AND turn.status='queued' ORDER BY turn.id`).all(current.successor_session_id) as any[];
+  const reason='The proposed handoff was withdrawn; this successor will not resume the waiting work.';
+  for(const turn of queued){
+    const prior=JSON.parse(turn.receipt_json??'{}');
+    const uncertain=!!(turn.provider_admission_intended_at||turn.provider_started_at||turn.provider_turn_id
+      ||turn.provider_input_acknowledged_at||turn.effect_possible||prior.state==='uncertain');
+    finishTurn(turn.id,'cancelled',reason);
+    db.query(`UPDATE turns SET dispatch_hold=NULL,dispatch_failure_class=NULL,dispatch_next_attempt_ms=NULL WHERE id=?`).run(turn.id);
+    settleTurnDependencies(turn.id);
+    const provider=getSessionById(current.successor_session_id)?.provider_id;
+    if(provider&&['codex','claude-code','antigravity'].includes(provider))
+      resolveUsageHoldNoticesForSettledTurn(provider as UsageProvider,turn.id,'request_withdrawn');
+    if(turn.input_id)db.query(`UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(JSON.stringify({...prior,state:uncertain?'uncertain':'canceled',reason:'handoff_withdrawn',
+        handoffId:current.id,turnId:turn.id,cancellationDetail:reason,
+        ...(uncertain?{error:{code:'HANDOFF_WITHDRAWN_WITH_PRIOR_PROVIDER_ATTEMPT',
+          message:'Future execution was withdrawn; an earlier provider attempt may have taken effect.'}}:{})}),turn.input_id);
+    recordSessionEvent({eventId:`handoff-withdrawn:${current.id}:turn:${turn.id}`,sessionId:current.successor_session_id,
+      turnId:turn.id,...(turn.input_id?{inputId:turn.input_id}:{}),kind:'handoff_withdrawn',
+      payload:{handoffId:current.id,reason,couldHaveReachedProvider:uncertain}});
+  }
+  return queued.length;
+}
+
+/** The normal owner startup repairs old withdrawals, using the same transition as new ones. */
+export function reconcileWithdrawnHandoffQueues():number {
+  return db.transaction(()=>{
+    const withdrawn=db.query(`SELECT handoff.* FROM session_handoffs handoff WHERE handoff.state='withdrawn'
+      AND EXISTS (SELECT 1 FROM turns WHERE session_id=handoff.successor_session_id AND status='queued')`).all() as HandoffRow[];
+    let settled=0;
+    for(const current of withdrawn)settled+=settleWithdrawnSuccessor(current);
+    if(settled)executionChanged();
+    return settled;
+  }).immediate();
+}
+
 export function withdrawHandoff(input:{actorSession:number;handoffId:string}) {
   return db.transaction(()=>{
     const current=row(input.handoffId);if(!current||current.state!=='proposed')throw new Error('This handoff is not proposed.');
@@ -670,7 +715,7 @@ export function withdrawHandoff(input:{actorSession:number;handoffId:string}) {
       &&db.query('SELECT 1 FROM codex_custody_successors WHERE handoff_id=?').get(current.id))
       throw new Error('This canonical recovery owns a retained native cutoff. Pause or Stop its work; ordinary handoff withdrawal cannot release that custody reservation.');
     db.query("UPDATE session_handoffs SET state='withdrawn',withdrawn_at=CURRENT_TIMESTAMP WHERE id=? AND state='proposed'").run(current.id);
-    updateSessionMetadata(current.successor_session_id,{suspended:true});
+    settleWithdrawnSuccessor(current);
     executionChanged();return {withdrawn:true,handoffId:current.id,predecessor:canonical(current.predecessor_session_id)};
   }).immediate();
 }
