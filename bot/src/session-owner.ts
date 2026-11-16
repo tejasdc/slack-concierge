@@ -96,7 +96,7 @@ import {sessionCatalogueLabels} from './session-labels';
 import {sessionAddress} from './session-address';
 import {handoffView,supersededBy,supersededAddress,withdrawnSuccessor} from './session-handoff';
 import {sessionExecution,sessionPresence} from './session-presence';
-import {heldRequests} from './request-standing';
+import {heldRequests,inputRefusalStreak} from './request-standing';
 import {inboxAttribution} from './inbox-attribution-read';
 import {openInboxObligationCount,openInboxObligations} from './session-topics';
 import {workThread} from './session-fit';
@@ -1402,6 +1402,10 @@ export class SessionOwner {
     const meta=sessionMetadata(session);
     return !meta.canvasObservation&&this.providerReachable(session,meta)&&session.status!=='archived'&&!meta.suspended&&!supersededBy(session.id)&&!withdrawnSuccessor(session.id);
   }
+  /** Why an agent's ask to this session is refused before admission; null when its recent turns took their input. */
+  inputRefusal(session:SessionRow) {
+    return inputRefusalStreak(db,session.id);
+  }
   /**
    * The view's execution state alone. A peer delivery's status asks only whether its recipient is
    * still working, and building whole views for that was a fifth of every Inbox receipts read
@@ -1455,6 +1459,7 @@ export class SessionOwner {
     const modelExecution=!active||acceptedInputForTurn(active.id)?.kind!=='fork';
     const consultationReadiness=origin==='imported'?this.consultationReadiness(meta):{ready:false,reason:null};
     const consult=!meta.canvasObservation&&origin==='imported'&&session.provider_id!=='chatgpt'&&providerCaps.consultation===true&&consultationReadiness.ready&&this.runtime.available(session.provider_id)&&session.status!=='archived'&&!meta.suspended;
+    const inputRefused=meta.canvasObservation?null:inputRefusalStreak(db,session.id);
     const consultationRefusal=origin==='imported'&&session.provider_id!=='chatgpt'&&!meta.canvasObservation&&!available&&!consultationReadiness.ready?consultationReadiness.reason:null;
     return {id:`concierge:${session.id}`,address:sessionAddress(session),bindingGeneration:session.binding_generation??1,provider:session.provider_id,origin,catalogueKind,
       timing:presence.timing,cancellation:presence.cancellation,agentName:presence.agentName,presenceRevision:presence.presenceRevision,
@@ -1476,6 +1481,7 @@ export class SessionOwner {
       needsAttention:meta.inbox?preparedAttention!.needsAttention??true:needsAttention(meta),turnOutcome:meta.turnOutcome??null,
       withdrawnNeeds:meta.withdrawnNeeds??[],unread:generation>(meta.readGeneration??0),execution,backgroundWait:active?turnBackgroundWait(active.id):null,pendingCount:queued,
       heldRequests:heldRequests(db,session.id),
+      inputRefused:inputRefused?{since:inputRefused.since,count:inputRefused.count,lastTurnId:inputRefused.lastTurnId}:null,
       savedWork:(()=>{const saved=savedSessionTurn(session.id);return saved?{kind:saved.saved_kind,quietOnly:saved.saved_quiet_only===1,
         startsAt:savedStartAt(saved),
         expiresAt:saved.saved_expires_at_ms?new Date(saved.saved_expires_at_ms).toISOString():null,
@@ -1488,7 +1494,7 @@ export class SessionOwner {
       continuedAs:origin==='imported'?(()=>{const row=db.query("SELECT receipt_json FROM session_inputs WHERE session_id=? AND kind='resurrect' AND receipt_json IS NOT NULL ORDER BY created_at DESC LIMIT 1").get(session.id) as {receipt_json:string}|null;return row?JSON.parse(row.receipt_json)?.result?.sessionId??null:null;})():null,
       fidelity:{mode:origin==='native'?'native':'evidence',dialogue:'preserved',branch:'verified',compaction:origin==='native'?'native':'historical-expansion',tools:origin==='native'?'native':'missing',attachments:'unknown',environment:'current',omissions:[]},
       interactionPolicy:policy??'standard',consultationSource:meta.source?.consultation??null,canvasObservation:meta.canvasObservation?{boardId:meta.canvasBoardId??''}:null,policyLabel:meta.canvasObservation?'Canvas voice record — observed speech and action outcomes; no provider turns':consultationOnly?'Consultation only — information, no actions':null,
-      capabilities:{send:this.canSend(session),resume:!meta.canvasObservation&&origin==='imported'&&catalogueKind==='historical-evidence'&&['claude-code','codex'].includes(session.provider_id)&&typeof meta.source?.nativeId==='string'&&/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(meta.source.nativeId),stop:!meta.canvasObservation&&!!active&&modelExecution&&providerCaps.stop!==false&&session.provider_id!=='chatgpt',steer:!meta.outside&&!meta.canvasObservation&&available&&!external&&modelExecution&&session.status!=='archived'&&!meta.suspended&&providerCaps.steer!==false&&session.provider_id!=='chatgpt',fork:!meta.canvasObservation&&available&&session.status!=='archived'&&!meta.suspended&&!!session.agent_session_uuid&&!!this.runtime.fork&&!consultationOnly&&providerCaps.fork===true,consult,recover:!meta.canvasObservation&&!external&&!!this.runtime.recover&&providerCaps.recover!==false&&execution==='uncertain',models:!meta.canvasObservation&&available&&session.status!=='archived'?providerCaps.models??[]:[],attachments:!meta.canvasObservation&&available&&session.status!=='archived'?providerCaps.attachments??[]:[],reason:meta.canvasObservation?'Canvas speech and action observations only.':consultationRefusal??(!available?(origin==='imported'?(consult?'Takes no work: a conversation from outside Concierge. It answers questions through a consultation copy; ask it with --requested-effect informational.':'Archive evidence is read-only.'):'Provider unavailable.'):providerCaps.reason??(consultationOnly?'Consultation permits information only; native fork is unavailable.':answersQuestionsOnly(session,meta)))}};
+      capabilities:{send:this.canSend(session)&&!inputRefused,resume:!meta.canvasObservation&&origin==='imported'&&catalogueKind==='historical-evidence'&&['claude-code','codex'].includes(session.provider_id)&&typeof meta.source?.nativeId==='string'&&/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(meta.source.nativeId),stop:!meta.canvasObservation&&!!active&&modelExecution&&providerCaps.stop!==false&&session.provider_id!=='chatgpt',steer:!inputRefused&&!meta.outside&&!meta.canvasObservation&&available&&!external&&modelExecution&&session.status!=='archived'&&!meta.suspended&&providerCaps.steer!==false&&session.provider_id!=='chatgpt',fork:!meta.canvasObservation&&available&&session.status!=='archived'&&!meta.suspended&&!!session.agent_session_uuid&&!!this.runtime.fork&&!consultationOnly&&providerCaps.fork===true,consult,recover:!meta.canvasObservation&&!external&&!!this.runtime.recover&&providerCaps.recover!==false&&execution==='uncertain',models:!meta.canvasObservation&&available&&session.status!=='archived'?providerCaps.models??[]:[],attachments:!meta.canvasObservation&&available&&session.status!=='archived'?providerCaps.attachments??[]:[],reason:meta.canvasObservation?'Canvas speech and action observations only.':inputRefused?.reason??consultationRefusal??(!available?(origin==='imported'?(consult?'Takes no work: a conversation from outside Concierge. It answers questions through a consultation copy; ask it with --requested-effect informational.':'Archive evidence is read-only.'):'Provider unavailable.'):providerCaps.reason??(consultationOnly?'Consultation permits information only; native fork is unavailable.':answersQuestionsOnly(session,meta)))}};
   }
   /**
    * Re-homes a session in another folder. Every turn reads the session's folder when it starts, so
