@@ -1,4 +1,5 @@
 import type {Database} from 'bun:sqlite';
+import {ANSWERING_POST_SQL} from './asked-answer';
 
 type InputRow={id:string;session_id:number;source_input_id:string|null;source_run_id:string|null;
   origin:string;kind:string;created_at:string;client:string|null;producer:string|null;attachments:string|null;
@@ -124,23 +125,33 @@ export function reportWindow(db:Database,sinceRaw:string|null,untilRaw:string|nu
   const human=bounded(db.query(`SELECT ${inputFields} FROM session_inputs WHERE created_at>=? AND created_at<?
     AND origin='human' AND kind='input' ORDER BY created_at,id LIMIT ${MAX_ROWS+1}`).all(since,until) as InputRow[],'Human inputs');
   const related=db.query(`SELECT id FROM session_inputs WHERE source_input_id=? AND id LIKE 'request:%'`);
-  const request=db.query(`SELECT outcome,target_session_id AS session,created_at_ms AS createdAtMs
+  const request=db.query(`SELECT outcome,target_session_id AS session,created_at_ms AS createdAtMs,
+    source_input_id AS sourceInput,target_input_id AS targetInput,thread_root_input_id AS threadRoot,
+    due_at_ms AS dueAtMs,prompt_answered_at_ms AS promptAnsweredAtMs,prompt_reminded_at_ms AS promptRemindedAtMs,
+    overdue_at_ms AS overdueAtMs,result_json AS resultJson
     FROM session_communication_requests WHERE request_id=?`);
+  const sourceRun=db.query('SELECT source_run_id AS sourceRun FROM session_inputs WHERE id=?');
+  const final=db.query(`SELECT event_id AS eventId,status,error,created_at_ms AS createdAtMs FROM session_communication_events
+    WHERE request_id=? AND kind='final' AND superseded_by_event_id IS NULL LIMIT 1`);
   const posts=bounded(db.query(`SELECT event_id AS eventId,created_at AS createdAt,
-      json_extract(payload_json,'$.requestId') AS requestId
+      json_extract(payload_json,'$.requestId') AS requestId,
+      json_extract(payload_json,'$.replyKind') AS replyKind,
+      json_extract(payload_json,'$.answersQuestion') AS answersQuestion,
+      json_extract(payload_json,'$.workDisposition') AS workDisposition,
+      json_extract(payload_json,'$.postedBy') AS postedBy,${ANSWERING_POST_SQL} AS answering
     FROM session_owner_events WHERE sequence>=? AND kind='post' AND created_at>=?
       AND json_extract(payload_json,'$.requestId') IS NOT NULL
     ORDER BY sequence LIMIT ${MAX_ROWS+1}`).all(firstEventAt(db,since),since) as
-      {eventId:string;createdAt:string;requestId:string}[],'Thread posts');
-  const postsByRequest=new Map<string,{eventId:string;createdAt:string}[]>();
+      {eventId:string;createdAt:string;requestId:string;replyKind:string|null;answersQuestion:number|null;workDisposition:string|null;postedBy:string|null;answering:number|null}[],'Thread posts');
+  const postsByRequest=new Map<string,Omit<typeof posts[number],'requestId'>[]>();
   for(const post of posts){
     const found=postsByRequest.get(post.requestId)??[];
-    found.push({eventId:post.eventId,createdAt:post.createdAt});
+    const {requestId,...details}=post;found.push(details);
     postsByRequest.set(post.requestId,found);
   }
   const reportFiles=new Set(reports.flatMap(row=>files(row.attachments)));
   const matched=new Map<string,string[]>();
-  for(const row of reports)matched.set(row.id,(related.all(row.id) as {id:string}[]).map(item=>item.id.slice(8)));
+  for(const row of [...reports,...human])matched.set(row.id,(related.all(row.id) as {id:string}[]).map(item=>item.id.slice(8)));
   // The Inbox's exact obligation-to-dispatch links survive re-routing and shared dispatches.
   for(const row of bounded(db.query(`SELECT sources_json,dispatches_json FROM inbox_requests LIMIT ${MAX_ROWS+1}`)
     .all() as {sources_json:string;dispatches_json:string}[],'Inbox requests')){
@@ -165,12 +176,21 @@ export function reportWindow(db:Database,sinceRaw:string|null,untilRaw:string|nu
     }
   }
   const requestState=(id:string)=>{
-    const state=request.get(id) as {outcome:string|null;session:number;createdAtMs:number}|null;
+    const state=request.get(id) as {outcome:string|null;session:number;createdAtMs:number;sourceInput:string|null;targetInput:string|null;threadRoot:string|null;
+      dueAtMs:number;promptAnsweredAtMs:number|null;promptRemindedAtMs:number|null;overdueAtMs:number|null;resultJson:string|null}|null;
     const threadPosts=postsByRequest.get(id)??[];
+    const answerPosts=threadPosts.filter(post=>post.answering===1);
+    let result:any=null;try{result=state?.resultJson?JSON.parse(state.resultJson):null;}catch{}
     return {id,known:!!state,outcome:state?.outcome??null,session:state?.session??null,createdAtMs:state?.createdAtMs??null,
-      answeredInThread:threadPosts.length>0,threadPosts};
+      sourceInput:state?.sourceInput??null,sourceRun:(sourceRun.get(`request:${id}`) as {sourceRun:string|null}|null)?.sourceRun??null,
+      targetInput:state?.targetInput??null,threadRoot:state?.threadRoot??null,
+      dueAtMs:state?.dueAtMs??null,promptAnsweredAtMs:state?.promptAnsweredAtMs??null,
+      promptRemindedAtMs:state?.promptRemindedAtMs??null,overdueAtMs:state?.overdueAtMs??null,
+      final:final.get(id)??null,workDisposition:result?.workDisposition??null,summary:result?.summary??null,
+      answeredInThread:answerPosts.length>0,answeredAt:answerPosts[0]?.createdAt??null,
+      answerClassificationComplete:threadPosts.every(post=>!!post.replyKind||post.postedBy==='service'),threadPosts};
   };
-  const requestsFor=(row:InputRow)=>bounded((related.all(row.id) as {id:string}[]).map(item=>requestState(item.id.slice(8))),'Routed requests');
+  const requestsFor=(row:InputRow)=>bounded((matched.get(row.id)??[]).map(requestState),'Routed requests');
   return {since,until,reports:reports.map(row=>({...presented(row),requests:(matched.get(row.id)??[]).map(requestState)})),
     humanInputs:human.map(row=>({...presented(row),requests:requestsFor(row)}))};
 }

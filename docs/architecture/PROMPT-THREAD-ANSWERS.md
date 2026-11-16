@@ -37,6 +37,21 @@ ambiguous provider send. A Mac recipient uses the same peer request and live-inp
 Mac sleeps, the origin retains the request and the answer clock still records that no answer has
 arrived; the Mac receives its input when it wakes.
 
+An explicit `kind:asked` question and its exact recorded dispatch establish this same answer
+clock for work the Inbox dispatches, including a question declared after the request was sent.
+The original request creation time stays the clock origin. An already-retained answering partial
+settles a late-recognized clock at its original event time; final/terminal requests are never
+reopened. A thread address or passive capture alone does not establish an answer obligation.
+Question declaration and exact request linkage reconcile the clock in the canonical writer;
+startup reconciles open asked questions once. The existing coordinator owns scheduling.
+
+For an already-accepted peer request, the origin sends the idempotent, authenticated
+`POST /sessions/v1/peers/requests/:id/prompt-answer` command through the existing peer channel.
+The receiver verifies the original session/input/run, retains the exact question and original
+request time, and uses its existing one-reminder path. It never submits the task again.
+An old or sleeping peer leaves that command pending for ordinary reconciliation; its original
+work remains in custody and the question status does not claim that its reminder was accepted.
+
 The recipient answers with a final request reply or a partial reply bearing `--answers-question`.
 The latter posts the agent's words in Tejas's thread immediately, records an explicit answer signal,
 and keeps the work request open. After that partial, a final reply may omit its body. The owner
@@ -85,6 +100,13 @@ An ask explicitly carrying `--return-to-requester` still sends the agent request
 A late answer is posted to the same thread. The existing fifteen-minute work-stall policy remains
 separate and resumes after a prompt answer; its timer events also stay out of his thread.
 An unavailable agent or sleeping peer cannot promise a semantic answer by a wall clock.
+
+The existing Your questions card receives optional owner-derived `answerStatus: {text:string,
+delayed:boolean}` in canonical and prepared reads. It distinguishes an unassigned question,
+ordinary waiting, an overdue answer, an exact retained prerequisite or device/sign-in wait,
+and a recorded result whose answer delivery is not established. Retained answer reads take
+precedence. Existing question age remains the age; no browser timer, Timeline band or new
+phone-reminder cadence is introduced. Work completion and prompt-answer settlement stay separate.
 
 The origin owns the due time and answer signal. A peer recipient owns its own reminder timer from
 the instant it accepts the request. Stable reminder input identities and retained reply event IDs

@@ -1,4 +1,5 @@
 import {questionDisplay} from './topic-display-rules';
+import {askedAnswerPostIds,askedAnswerStatus} from './asked-answer';
 import {closedRequestDispatches,openRequestDeliveries,topicCurrentWorkers,workingThrough} from './topic-current-workers';
 import {topicReplyTargets} from './reply-target-rules';
 import type {Database} from 'bun:sqlite';
@@ -118,28 +119,10 @@ function routeForMessage(source:Database,messageId:unknown):{destinationMessageI
 
 function readsFor(context:TopicContext,question:any,roots:Set<string>){
  if(question.kind==='asked'){
-  const requestId=question.owner?.dispatchRequestId;
-  const sources=Array.isArray(question.sources)?question.sources:[];
-  const followups=typeof requestId==='string'&&requestId?sources.slice(1):sources;
-  const expandedFollowups:string[]=[];
-  for(const id of followups){
-   expandedFollowups.push(id);
-   const route=routeForMessage(context.source,id);
-   if(route){
-    if(route.destinationMessageId)expandedFollowups.push(route.destinationMessageId);
-    if(route.sourceMessageId)expandedFollowups.push(route.sourceMessageId);
-   }
-  }
-  const posts=context.source.query(`SELECT event_id FROM session_owner_events
-   WHERE session_id IN (${context.sessionIds.map(()=>'?').join(',')}) AND kind='post' AND (
-    (?<>'' AND json_extract(payload_json,'$.requestId')=?)
-    OR json_extract(payload_json,'$.replyToMessage.messageId') IN (SELECT value FROM json_each(?))
-   ) AND (
-    json_extract(payload_json,'$.answersQuestion')=1
-    OR (json_extract(payload_json,'$.replyKind')='final' AND json_extract(payload_json,'$.workDisposition')='completed')
-   ) ORDER BY sequence`).all(...context.sessionIds,typeof requestId==='string'?requestId:'',typeof requestId==='string'?requestId:'',JSON.stringify([...new Set(expandedFollowups)])) as {event_id:string}[];
-  return posts.flatMap(post=>{const message=messageById(context,post.event_id);
-   return message&&(message.content.trim()||message.detailRef)?[readingValue(post.event_id,message)]:[];});
+  return askedAnswerPostIds(context.source,question,context.sessionIds).flatMap(id=>{
+   const message=messageById(context,id);
+   return message&&(message.content.trim()||message.detailRef)?[readingValue(id,message)]:[];
+  });
  }
  if(question.kind!=='reading')return [];
  const {source,sessionId,root}=context;
@@ -200,7 +183,9 @@ function questionValue(context:TopicContext,row:any,roots:string[],replies:{inpu
   .get(question.topicId,question.id,question.revision),
   context.source.query("SELECT kind,revision,at,by_json FROM inbox_topic_reading WHERE topic_id=? AND item_id=? AND kind='acknowledged' ORDER BY at DESC LIMIT 1")
   .get(question.topicId,question.id)].filter(Boolean);
- return questionDisplay({...question,questionId:question.id},replies,reading,readsFor(context,question,new Set(roots)));
+ const reads=readsFor(context,question,new Set(roots));
+ return {...questionDisplay({...question,questionId:question.id},replies,reading,reads),
+  ...(question.kind==='asked'?{answerStatus:askedAnswerStatus(context.source,question,reads.length>0)}:{})};
 }
 
 export type TopicItemSink={question:(value:any)=>void;request:(value:any)=>void};

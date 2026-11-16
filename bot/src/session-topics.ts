@@ -8,6 +8,7 @@ import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
 import {db,getSessionById,type SessionRow} from './state';
 import {carryingTurn,getAcceptedSessionInput,humanAuthored,nativeRunId,sessionInputProvenance,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput,type RetainInputTiming} from './session-inputs';
 import {INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
+import {askedAnswerPostIds,askedAnswerStatus,requireAskedAnswer} from './asked-answer';
 import {BUG_REPORT_OWN_THREAD,isBugReportInput,capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot,postForwardedThreadAnswer} from './session-inbox';
 import {answerClosingLine} from './answer-closing-line';
 import {notSeenWorking} from './answers-to-tejas';
@@ -175,6 +176,16 @@ function routerSessionOwnsTopic(sourceSessionId:number,topicSessionId:number):bo
 }
 
 export function readsFor(question:{topicId:string;kind?:QuestionKind;legacyNeedEventId:string|null;owner:any;brief:any;sources?:string[]}):ReadingText[] {
+  if(question.kind==='asked'){
+    const topic=db.query('SELECT session_id FROM inbox_topics WHERE topic_id=?').get(question.topicId) as {session_id:number}|null;
+    if(!topic)return [];
+    const sessions=(db.query(INBOX_LINEAGE_SQL).all(topic.session_id) as {id:number}[]).map(row=>row.id);
+    return askedAnswerPostIds(db,question,sessions).flatMap(id=>{
+      const row=inboxRowByMessageId(null,id) as {session_id:number}|null;
+      const message=row?inboxMessageById(row.session_id,id) as {content?:string;createdAt?:string}|null:null;
+      return message&&String(message.content??'').trim()?[{messageId:id,text:String(message.content),at:message.createdAt??''}]:[];
+    });
+  }
   if((question.kind??'decision')!=='reading')return [];
   const topic=db.query('SELECT session_id FROM inbox_topics WHERE topic_id=?').get(question.topicId) as {session_id:number}|null;
   if(!topic)return [];
@@ -511,6 +522,9 @@ export function topicOfRoot(rootInputId:string):string|null {
  */
 export function applyTopicChange(kind:string,payload:any) {
   projectTopicChange(kind,payload);
+  if((kind==='topic_question'||kind==='topic_request')&&typeof payload.topicId==='string')
+    for(const row of db.query("SELECT * FROM inbox_questions WHERE topic_id=? AND kind='asked' AND state IN ('open','partial')").all(payload.topicId) as any[])
+      requireAskedAnswer(db,toStoredQuestion(row));
   if(kind!=='area')keepThreadOpenOrClosed(payload);
   if(kind==='topic'&&MEANING_CHANGES.has(payload?.change)&&typeof payload.topicId==='string')threadChanges.changed(payload.topicId);
 }
@@ -922,7 +936,8 @@ function latestHumanReply(index:ReadIndex,roots:string[]):HumanReply[] {
 }
 function questionView(question:StoredQuestion,replies:HumanReply[]) {
   const reading=db.query('SELECT kind,revision,at,by_json FROM inbox_topic_reading WHERE topic_id=? AND item_id=? ORDER BY at').all(question.topicId,question.questionId) as any[];
-  return questionDisplay(question,replies,reading,readsFor(question));
+  const reads=readsFor(question);
+  return {...questionDisplay(question,replies,reading,reads),...(question.kind==='asked'?{answerStatus:askedAnswerStatus(db,question,reads.length>0)}:{})};
 }
 /**
  * A dispatch as it stands now, not as it stood when the router linked it: the linked record is a
