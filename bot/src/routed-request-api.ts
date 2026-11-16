@@ -2,6 +2,8 @@ import {withContentReader,LabDisclosureError} from './lab-content-disclosure';
 import {routeLabel,withTaskLabel} from './owner-task-labels';
 import {readFileSync} from "node:fs";
 import { finishedTodoRefusal, namedTodo } from './question-todos';
+import {readRequirementState} from './requirement-records';
+import {runRequirementCommand} from './requirement-command';
 import {chmod} from "node:fs/promises";
 import {removeUnboundSocket} from "./private-api-socket";
 import {startForegroundGatewayProcess,type ForegroundPeer} from "./foreground-gateway-supervisor";
@@ -84,6 +86,18 @@ async function withTodoState(input:any):Promise<any>{
   const id=typeof rest.todo==='string'?rest.todo.trim():'';
   if(!id||id==='none')return rest;
   return {...rest,todo_checked:await namedTodo(id)};
+}
+
+/**
+ * The requirement records a completed reply is judged against, read from thnkr.ing now; a caller can
+ * never supply them. A reply that closes nothing (failed, needs_decision, partial) is never read.
+ */
+async function withRequirementState(input:any,sessions:SessionCommunicationCoordinator):Promise<any>{
+  const {requirements_state:_ignored,...rest}=input??{};
+  if(!rest.final||rest.workDisposition!=='completed'||typeof rest.request_id!=='string')return rest;
+  const refs=sessions.requirementRefs(rest.request_id);
+  const state=refs?await readRequirementState(refs.ids,refs.topic):null;
+  return state?{...rest,requirements_state:state}:rest;
 }
 
 export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
@@ -182,7 +196,11 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         }
         if (operation === 'context') return Response.json(await sessions.context(input));
         if (operation === 'ask') return Response.json(await sessions.ask(input), {status:202});
-        if (operation === 'reply') return Response.json(await withLinkCheck(await sessions.reply(await withTodoState(input)),input,owner));
+        if (operation === 'reply') return Response.json(await withLinkCheck(await sessions.reply(await withRequirementState(await withTodoState(input),sessions)),input,owner));
+        if (operation === 'requirements') {
+          try{const answer=await runRequirementCommand(input,owner);return Response.json(answer.body,{status:answer.status||502});}
+          catch(error){return Response.json({error:{code:'REQUIREMENTS_UNAVAILABLE',message:error instanceof Error?error.message:'thnkr.ing could not be reached for the requirement record.'}},{status:502});}
+        }
         if (operation === 'get') return Response.json(sessions.get(input));
         if (operation === 'cancel') return Response.json(sessions.cancel(input));
       }
