@@ -201,13 +201,20 @@ try {
  const historical=Bun.spawnSync(['/usr/bin/git','-C',resolve(import.meta.dir,'../..'),'show','99e66d2460c0b0ad8c58e5ac5d11fa002129c149:bot/scripts/deploy.sh'],{stdout:'pipe',stderr:'pipe'});assert.equal(historical.exitCode,0,Buffer.from(historical.stderr).toString());fs.writeFileSync(oldDeploy,historical.stdout);
  const captureInstall=join(root,'capture-install.sh');
  fs.writeFileSync(captureInstall,`#!/bin/bash\nset -euo pipefail\nsource "$FIXTURE_OLD_DEPLOY"\nCONTROL_CONFIG_DIR="$FIXTURE_CAPTURE_CONFIG"\ninstall_capture_runtime\ncapture_runtime_fingerprint > "$FIXTURE_CAPTURE_FINGERPRINT"\n`);
- const captureEnv={...process.env,CONCIERGE_REPO:resolve(import.meta.dir,'../..'),CONCIERGE_BUN_BIN:join(runtime,'bun'),CONCIERGE_CAPTURE_CONFIG_DEST:join(root,'capture-routes.toml'),CONCIERGE_SYSTEMD_DIR:captureUnits,FIXTURE_OLD_DEPLOY:oldDeploy,FIXTURE_CAPTURE_CONFIG:captureConfig,FIXTURE_CAPTURE_FINGERPRINT:join(root,'capture-fingerprint')};
+ // The old installer runs the repository-wide retry-architecture lint before building capture;
+ // that lint is its own release check, so here a scratch repository with the real source and
+ // dependencies records the call instead of repeating the whole-repository scan per install.
+ const captureRepo=join(root,'capture-repo'),lintCalls=join(root,'capture-lint.calls'),realBot=resolve(import.meta.dir,'..');
+ fs.mkdirSync(join(captureRepo,'bot/scripts'),{recursive:true});
+ for(const name of ['src','node_modules','package.json'])fs.symlinkSync(join(realBot,name),join(captureRepo,'bot',name));
+ fs.writeFileSync(join(captureRepo,'bot/scripts/retry-architecture-lint.ts'),`require('node:fs').appendFileSync(${JSON.stringify(lintCalls)},'lint\\n');\n`);
+ const captureEnv={...process.env,CONCIERGE_REPO:captureRepo,CONCIERGE_BUN_BIN:join(runtime,'bun'),CONCIERGE_CAPTURE_CONFIG_DEST:join(root,'capture-routes.toml'),CONCIERGE_SYSTEMD_DIR:captureUnits,FIXTURE_OLD_DEPLOY:oldDeploy,FIXTURE_CAPTURE_CONFIG:captureConfig,FIXTURE_CAPTURE_FINGERPRINT:join(root,'capture-fingerprint')};
  async function installCapture(){const child=Bun.spawn(['/bin/bash',captureInstall],{env:captureEnv,stdout:'pipe',stderr:'pipe'});children.push(child);const [out,err,code]=await Promise.all([new Response(child.stdout).text(),new Response(child.stderr).text(),child.exited]);fs.appendFileSync(join(root,'capture-install.stdout'),out);fs.appendFileSync(join(root,'capture-install.stderr'),err);assert.equal(code,0,err);return fs.readFileSync(captureEnv.FIXTURE_CAPTURE_FINGERPRINT,'utf8').trim();}
  const originalEngine=JSON.parse(fs.readFileSync(join(releaseRoot,'launch-authority/selected.json'),'utf8')).engine;
  const firstCapture=await installCapture(),firstWrapper=fs.readFileSync(join(capture,'bun'),'utf8');
  pointer('control',modern);manager.installRuntime();
  assert.equal(fs.readFileSync(join(runtime,'bun'),'utf8'),firstWrapper,'ordinary release preserves the copied generic engine wrapper bytes');
- const sameCapture=await installCapture();assert.equal(sameCapture,firstCapture,'actual old installer fingerprint stays unchanged across ordinary artifact promotion');
+ const sameCapture=await installCapture();assert.equal(fs.readFileSync(lintCalls,'utf8'),'lint\nlint\n','the old installer still invokes its lint before each capture build');assert.equal(sameCapture,firstCapture,'actual old installer fingerprint stays unchanged across ordinary artifact promotion');
  const changedEngine=join(root,'changed-engine');fs.copyFileSync(process.execPath,changedEngine);fs.appendFileSync(changedEngine,'\nowned-engine-byte-change-79\n');fs.chmodSync(changedEngine,0o555);
  const changedManager=new driver.TrustedRootReleaseManager({repositoryRoot:root,releaseRoot,installRoot:runtime,bunExecutable:changedEngine});changedManager.installRuntime();
  const nextEngine=JSON.parse(fs.readFileSync(join(releaseRoot,'launch-authority/selected.json'),'utf8')).engine;assert.notEqual(nextEngine,originalEngine);
