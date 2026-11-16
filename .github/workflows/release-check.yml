@@ -74,7 +74,9 @@ jobs:
       - name: Install native check dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y restic bubblewrap
+          # No bubblewrap: the hosted runner cannot create nested namespaces, so isolation-dependent
+          # checks belong to the native group run on the AX41 candidate gate (release-checks.json).
+          sudo apt-get install -y restic
       - name: Run the complete bounded check group
         working-directory: bot
         env:
@@ -84,7 +86,6 @@ jobs:
       - name: Release check cancellation and owned descendant cleanup
         run: |
           bun bot/scripts/release-check-lifetime-fixture.ts
-          bun bot/scripts/private-code-command.ts -- bun bot/scripts/owned-process-group-native-fixture.ts --require-owned-group
 
   release-check:
     name: Release check
