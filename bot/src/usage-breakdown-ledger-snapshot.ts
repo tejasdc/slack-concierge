@@ -1,5 +1,6 @@
 import {Database} from 'bun:sqlite';
 import {deflateSync,inflateSync} from 'node:zlib';
+import {turnTopicRootIn} from './work-thread-root';
 
 type Row=Record<string,unknown>;
 export type UsageLedgerSnapshot={sinceMs:number;sessions:Row[];turns:Row[];events:Row[];policyRequests:Row[];timeZone:string};
@@ -36,6 +37,12 @@ export function turnTrigger(acceptedInputId:unknown,origin:unknown,savedKind:unk
 export function captureUsageLedgerSnapshot(ledger:Database,sinceMs:number):UsageLedgerSnapshot{
   const since=new Date(sinceMs).toISOString().slice(0,19).replace('T',' ');
   const inputsPresent=!!ledger.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_inputs'").get();
+  const topicsPresent=inputsPresent&&['inbox_topic_roots','session_communication_requests'].every(name=>
+    !!ledger.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name));
+  const topicOfTurnInput=(input:unknown)=>{
+    const root=typeof input==='string'?turnTopicRootIn(ledger,input):null;
+    return root?(ledger.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(root) as {topic_id:string}|null)?.topic_id??null:null;
+  };
   const turns=(ledger.query(`SELECT turn.id,turn.session_id,turn.status,turn.provider_turn_id,turn.provider_started_at,turn.ended_at,
     saved_kind,saved_repeat_ms,saved_root_id,saved_sequence,saved_fire_at_ms,provider_duration_ms
     ,topic.topic_id,turn.accepted_input_id AS trigger_input_id,
@@ -51,7 +58,11 @@ export function captureUsageLedgerSnapshot(ledger:Database,sinceMs:number):Usage
       turn.accepted_input_id)
     WHERE (turn.provider_started_at IS NOT NULL AND (turn.provider_started_at>=? OR turn.ended_at>=? OR turn.ended_at IS NULL))
       OR (turn.saved_kind='scheduled' AND turn.saved_repeat_ms IS NOT NULL AND turn.saved_fire_at_ms>=?)`).all(since,since,sinceMs) as Row[])
-    .map(({trigger_input_id,trigger_origin,...row})=>({...row,trigger:turnTrigger(trigger_input_id,trigger_origin,row.saved_kind)}));
+    .map(({trigger_input_id,trigger_origin,...row})=>({...row,
+      // The direct joins above miss work that reaches its thread only through the human behind it
+      // (a report-back, a watch wake, a continuation); the owner's own rule resolves those.
+      topic_id:row.topic_id??(topicsPresent?topicOfTurnInput(trigger_input_id):null),
+      trigger:turnTrigger(trigger_input_id,trigger_origin,row.saved_kind)}));
   const sessionIds=new Set(turns.map(row=>row.session_id as number));
   const sessions=(ledger.query('SELECT id,agent_session_uuid,provider_id,native_metadata_json,last_turn_at FROM sessions WHERE agent_session_uuid IS NOT NULL').all() as Row[])
     .filter(row=>{if(typeof row.last_turn_at==='string'&&Date.parse(row.last_turn_at)>=sinceMs)sessionIds.add(row.id as number);
