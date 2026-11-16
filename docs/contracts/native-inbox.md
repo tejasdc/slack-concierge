@@ -63,6 +63,12 @@ ledger event, and the Inbox page and its `history?after=` delta both include it,
 they share one query. It appears as an assistant message with `author.communication:
 "post"`, the `replyToMessage` it answers, and the thread's root `inputId`.
 
+The canonical post operation is also available to an authenticated peer owner at
+`POST /session-communication/post`. It takes the exact accepted agent input and run, stable action
+ID, and Inbox message. It uses the same ledger, thread-root validation, attribution and idempotency
+as a local `sessions post`, without admitting a provider turn or creating a reply request. Peer
+access is limited to this post operation, not the rest of the local communication API.
+
 ### Direct messages to the Inbox router
 
 A human-surface message addressed to the Inbox router joins its running turn through the
