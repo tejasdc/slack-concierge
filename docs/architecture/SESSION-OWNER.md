@@ -191,6 +191,11 @@ the successor receives a linked copy. A scheduled input instead changes session 
 so its accepted input and firing IDs remain stable. The request keeps its own ID. Sent request IDs
 and their targets do not change. The original ChatGPT request and answer event retain
 their IDs; the successor handles that exact answer after its return is acknowledged.
+An open ChatGPT request appears twice in the inventory, as its answer duty and as a sent
+request. The answer item moves the request first; the sent item then accepts that same move
+(successor already the source, same open or settled state) and records itself. Any other
+change to the request still refuses acceptance. The build runs
+`bot/scripts/handoff-chatgpt-answer-sent-fixture.ts` for this pair (handoff 2ace9de1, 2026-11-16).
 Older accepted handoffs that moved the request but left its answer duty with the
 predecessor are reconciled on owner startup without another ChatGPT send.
 An owed request's reply ownership moves to the

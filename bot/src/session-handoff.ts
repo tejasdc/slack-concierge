@@ -345,11 +345,17 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
     const successorTurnId=getAcceptedSessionInput(successorInputId)?.turn_id;
     if(!successorTurnId)throw new Error('Successor handoff brief was not queued.');
     const movable=new Set(verified.items.filter(item=>item.kind==='queued'&&item.movable).map(item=>item.ref));
+    const answerMovedRequests=new Set<string>();
     for(const item of verified.items){
       if(item.kind==='sent'){
         const table=db.query('SELECT 1 FROM session_communication_requests WHERE request_id=?').get(item.ref)?'session_communication_requests':'session_peer_requests';
-        const changed=db.query(`UPDATE ${table} SET source_session_id=? WHERE request_id=? AND source_session_id=? AND ${item.pendingReturn?'outcome IS NOT NULL':'outcome IS NULL'}`).run(to,item.ref,from);
-        if(changed.changes!==1)throw new Error(`Sent request ${item.ref} changed during handoff.`);
+        const outcomeMatches=item.pendingReturn?'outcome IS NOT NULL':'outcome IS NULL';
+        const changed=db.query(`UPDATE ${table} SET source_session_id=? WHERE request_id=? AND source_session_id=? AND ${outcomeMatches}`).run(to,item.ref,from);
+        // A ChatGPT request is both an answer duty and a sent request. Its answer item (sorted first) already
+        // moved the request's source to the successor in this transaction; that is the same move, not a change.
+        const movedByAnswerHere=changed.changes===0&&answerMovedRequests.has(item.ref)
+          &&!!db.query(`SELECT 1 FROM ${table} WHERE request_id=? AND source_session_id=? AND ${outcomeMatches}`).get(item.ref,to);
+        if(changed.changes!==1&&!movedByAnswerHere)throw new Error(`Sent request ${item.ref} changed during handoff.`);
         // An unstarted return input carries its exact ID to the successor; delivery then dispatches it there.
         // A queued one moves with its queued item below.
         // One answer can carry several requests through a single return input; it moves once.
@@ -362,8 +368,11 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
         }
         record(item.kind,item.ref);
       }else if(item.kind==='answer'){
+        const answerRequest=(db.query('SELECT active_request_id FROM session_chatgpt_obligations WHERE obligation_id=? AND asker_session_id=?')
+          .get(item.ref,from) as {active_request_id:string}|null)?.active_request_id;
         if(!transferChatGptAnswerOwnership(item.ref,from,to,Date.now()))
           throw new Error(`ChatGPT answer ${item.ref} changed during handoff.`);
+        if(answerRequest)answerMovedRequests.add(answerRequest);
         record(item.kind,item.ref);
       }else if(item.kind==='owed'){
         const table=item.source==='peer'?'session_peer_deliveries':item.source==='outside'?'session_external_requests':'session_communication_requests';

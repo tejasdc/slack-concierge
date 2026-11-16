@@ -16,6 +16,8 @@ export const NOTIFICATION_TOPIC_CORRECTION_TEST_AUTHORIZATION='notification-topi
 export const CHATGPT_TOOL_READ_ACCEPTANCE_TEST_AUTHORIZATION='chatgpt-tool-read-acceptance-2026-11-13';
 export const CODEX_SWITCH_RECEIPT_TEST_AUTHORIZATION='codex-switch-receipt-2026-11-13';
 export const PEER_ANSWER_GUARANTEE_TEST_AUTHORIZATION='peer-answer-guarantee-2026-11-15';
+// Request fd4fc165 (handoff 2ace9de1) requires a regression check for an answer+sent ChatGPT handoff.
+export const HANDOFF_CHATGPT_ANSWER_SENT_TEST_AUTHORIZATION='handoff-chatgpt-answer-sent-2026-11-16';
 
 // Exact worker request a168df69 requires disposable journal processing acceptance.
 export const JOURNAL_PROCESSING_TEST_AUTHORIZATION = "journal-processing-a168df69";
