@@ -229,13 +229,18 @@ const STREAK_SCAN_LIMIT=200;
  * clears by itself the moment the session takes an input. Reads turns_session_latest (session_id, id DESC).
  */
 export function inputRefusalStreak(source:Database,sessionId:number):InputRefusal|null{
- const rows=source.query(`SELECT id,COALESCE(ended_at,started_at) AS at,
+ // Runs for every session view, so a healthy session reads only its latest three turns; the wider scan
+ // that counts the streak runs only once all three are refused.
+ const latest=(limit:number)=>source.query(`SELECT id,COALESCE(ended_at,started_at) AS at,
    (provider_input_acknowledged_at IS NULL AND (
      (status='parked' AND agent_text LIKE 'CODEX_INPUT_NOT_ACKNOWLEDGED:%')
      OR (status='done' AND json_valid(outbound_text) AND json_extract(outbound_text,'$.result.text')=''
        AND json_array_length(json_extract(outbound_text,'$.result.toolsUsed'))=0))) AS refused
   FROM turns INDEXED BY turns_session_latest WHERE session_id=? AND status IN ('done','parked','error') ORDER BY id DESC LIMIT ?`)
-  .all(sessionId,STREAK_SCAN_LIMIT) as {id:number;at:string;refused:number}[];
+  .all(sessionId,limit) as {id:number;at:string;refused:number}[];
+ const head=latest(INPUT_REFUSAL_THRESHOLD);
+ if(head.length<INPUT_REFUSAL_THRESHOLD||head.some(row=>row.refused!==1))return null;
+ const rows=latest(STREAK_SCAN_LIMIT);
  let count=0;
  while(count<rows.length&&rows[count]!.refused===1)count++;
  if(count<INPUT_REFUSAL_THRESHOLD)return null;
