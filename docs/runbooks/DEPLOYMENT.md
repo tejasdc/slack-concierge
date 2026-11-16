@@ -684,7 +684,10 @@ runs; only a request that provably never reached the owner, or a read, is sent a
 wait is a `deployment_owner_socket_wait` line in the deploy journal. Failure recording stops
 waiting at once when the service is fully stopped and records offline, as before.
 A desired commit whose
-run failed is not run again; the next push to `main` starts a fresh run.
+run failed is not run again; the next push to `main` starts a fresh run. This holds when the
+failure was capacity: after space is freed for a refused pre-migration copy, a later
+`deployment_settling` line alone does not admit the failed commit, so recovery is an ordinary
+merge to `main` (2026-11-16: four runs refused for disk, then no run after space was freed).
 
 The functional Codex probe uses the running unit's configured runner setting, so a local App Server
 cannot pass health for an owner that reaches Codex through the runner relay. A candidate with a
