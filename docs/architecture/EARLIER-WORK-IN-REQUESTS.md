@@ -78,8 +78,12 @@ retry.
 The first reply (partial or final) to a request whose payload recorded any earlier work must
 carry `--before "<what that work did and how this approach differs>"`; the owner refuses it
 otherwise, the same way completed work needs `--checked`. A hand-back is exempt. The statement
-is folded into the reply's words as "What came before: …", so the requester, and Tejas in an
-Inbox thread, read it. Peer-delivered requests are not gated on the replying machine.
+is agent context: it closes the reply's words, after a rule, as "What came before: …", so the
+requester and the Inbox router read it while the agent's own TL;DR leads what Tejas reads in his
+thread; the note sits below for anyone who wants it. Until 2026-11-16 it led the reply, above the
+TL;DR, and Tejas asked "Isn't 'what came before' context, for the agents? Why is it required for
+me?" Readers that need only the agent's own words strip it (both placements) through one helper.
+Peer-delivered requests are not gated on the replying machine.
 
 ## Earlier sessions show how they can answer
 
