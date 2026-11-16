@@ -101,36 +101,29 @@ overlap no commit: on 2026-11-15 it ran from 04:56 to 20:41 UTC without rewindin
 concierge:9747 from 16,215 shared-memory header samples).
 
 The thread now finishes a generation already partly copied (`checkpointed > 0` with fewer than
-64 MB still uncopied) on its next tick, under the same pressure gate and on its
-`synchronous=FULL` connection. It first uses PASSIVE, which takes no writer lock. Under steady
-commits that copy keeps losing the race: on a disposable ledger at 60 commits/s, PASSIVE alone
-never rewound in 191 attempts. So after three consecutive tail attempts that each copied
-something in at most 250 ms and still left a tail, the thread finishes the tail once in FULL
-mode with no lock wait of its own. FULL holds the writer lock while it copies and syncs, so no
-commit can extend the tail and the owner's next commit rewinds the log. With no lock wait, FULL
-gives up at once if the owner is mid-commit and never waits for a reader while holding the lock;
-in both cases it continues as PASSIVE.
+64 MB still uncopied) on its next tick, under the same pressure gate, still with PASSIVE on its
+`synchronous=FULL` connection. It never takes the writer lock, so the owner's commits never
+wait for a checkpoint. A tail copy can lose the race to a commit made while it runs; the next
+tick tries again. Recycling is therefore likely under the live write rate, not guaranteed:
+on a disposable ledger at 60 commits/s (thresholds scaled to 1 MB/4 MB, pressure gate off),
+PASSIVE tail copies never rewound in 191 attempts, while at 15 commits/s they rewound
+repeatedly and kept the log under 330 frames. Live after installation on 2026-11-16, the log
+rewound six times between 07:29 and 07:48 UTC, back to about 16,400 frames each time.
 
-The cost is that the owner's commits wait while FULL copies a small tail and syncs the
-database, on the owner's event loop. If those syncs took longer than the owner's five-second
-lock wait, the waiting commit would fail as "database is locked", which PASSIVE never caused;
-the quiet-disk gate and the three fast attempts first make that unlikely, and it would show as a
-FULL `ms` above 5000 in `ledger_checkpoint` with owner loop-lag events. This was judged
-acceptable against the alternative below because it happens at most once per partly copied
-generation and only on a quiet disk, while the alternative has not been made to work. Disposable runs on this host
-(40 s each, worker thresholds scaled to 1 MB/4 MB, pressure gate off): at 60 commits/s the old
-thread never rewound and the log reached 35 MB, while the new one rewound 18 times and stayed
-under 2.7 MB, with the same longest commit (189 ms against 187 ms); at 15 commits/s one FULL
-copy took 684 ms and held a commit for 745 ms (old thread's longest commit: 272 ms). Every row
-written was read back. The alternative that avoids this wait, a fixed tail with RESTART behind
-asynchronous writer admission, was drafted (held in the `wal9747-source` worktree) but never
-passed as a whole. Doing nothing let the log grow without bound.
+From 07:17 to about 08:30 UTC on 2026-11-16 the installed release also had a FULL fallback after
+three fast lost races. FULL holds the writer lock through its copy and syncs, which puts a
+checkpoint back in the owner's synchronous write path; the original repair required owner
+writes not to wait on checkpoints, so it was removed. Its four live attempts all returned
+`busy=1` within 2–171 ms (owner mid-commit) and continued as PASSIVE; no FULL copy under the
+writer lock was observed. A guaranteed rewind needs a fixed tail, such as RESTART behind
+asynchronous writer admission; that design was drafted (held in the `wal9747-source` worktree)
+but never passed as a whole.
 
-Each tail attempt is logged in `ledger_checkpoint` with `tail: true` and `mode` (`passive` or
-`full`); a tail attempt that copies nothing (an older reader holds it) is not logged. The live
-check is that series: `log` must fall back to a small value within minutes of each 64 MB copy,
-and FULL's `ms` is the longest a commit waited for it. Rewinding reuses the log file; it does
-not shrink a file that already grew.
+Each tail attempt that copies something is logged in `ledger_checkpoint` with `tail: true`; one
+that copies nothing (an older reader holds it) is not logged. The live check is that series:
+`log` must fall back to a small value within minutes of each 64 MB copy. If it stops doing so,
+the race is being lost under the current write rate and the fixed-tail design is the next step.
+Rewinding reuses the log file; it does not shrink a file that already grew.
 
 On 2026-10-13 the owner accumulated 102 seconds of loop lag around an update, with one dispatch
 write reaching SQLite's five-second busy timeout. The first long stalls and slow WAL syncs started
