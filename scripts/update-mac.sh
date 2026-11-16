@@ -17,6 +17,11 @@ quiet() { local code=0; drain check "$@" >/dev/null || code=$?; [ "$code" -eq 0 
 
 # The whole run is one function, parsed before it starts: the pull below can rewrite this file.
 main() {
+  # Housekeeping is useful even with no new release or while agents keep working. It never
+  # restarts Concierge; retirement takes its own short admission gate only on an idle Mac.
+  /usr/bin/nice -n 19 /usr/bin/python3 scripts/mac-disk-maintenance.py \
+    --state "$STATE" --workspace "$HOME/workspace" --repo "$PWD" \
+    || echo "Mac disk housekeeping failed; the next existing upkeep run retries." >&2
   branch=$(git rev-parse --abbrev-ref HEAD)
   [ "$branch" = main ] || { echo "Refusing: checkout is on $branch, not main." >&2; exit 2; }
   [ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "Refusing: checkout has uncommitted changes." >&2; git status --short >&2; exit 2; }
