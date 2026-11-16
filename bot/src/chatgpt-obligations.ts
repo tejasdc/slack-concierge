@@ -138,11 +138,13 @@ function currentHandoffHolder(sessionId:number):number {
 }
 
 /** Called inside the accepting handoff's transaction, or a recovery transaction. */
-export function transferChatGptAnswerOwnership(obligationId:string,from:number,to:number,now:number):boolean {
+export function transferChatGptAnswerOwnership(obligationId:string,from:number,to:number,now:number,
+  returnMovesWithHandoff=false):boolean {
   const obligation=db.query(`SELECT * FROM session_chatgpt_obligations WHERE obligation_id=? AND asker_session_id=?
     AND state NOT IN ('resolved','withdrawn_by_tejas')`).get(obligationId,from) as ObligationRow|null;
   if(!obligation)return false;
-  if(obligation.answer_event_id&&!obligation.answer_return_input_id)
+  // A return still queued and moving in the same handoff is acknowledged later, by the successor.
+  if(obligation.answer_event_id&&!obligation.answer_return_input_id&&!returnMovesWithHandoff)
     throw new Error(`ChatGPT answer ${obligationId} has no acknowledged return input to transfer.`);
   const localRequest=db.query(`SELECT source_session_id FROM session_communication_requests WHERE request_id=?`)
     .get(obligation.active_request_id) as {source_session_id:number}|null;

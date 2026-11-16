@@ -147,6 +147,23 @@ function pendingReturnInputs(requestId:string):{inputId:string|null;state:'unadm
   });
 }
 
+/**
+ * Whether a ChatGPT answer's not-yet-acknowledged return input waits in a queued turn this handoff
+ * moves (never started, no dependencies; see movableQueuedTurn). The answer duty can
+ * then move too, and the receipt is recorded when the successor's provider acknowledges that input.
+ * Waiting for the predecessor to acknowledge it deadlocked every handoff whose predecessor could not
+ * run (concierge:9772 → 9874, 2026-11-16: Codex allowance exhausted with a review answer queued).
+ */
+function answerReturnTravels(answerEventId:string,movable:Set<string>):boolean {
+  const event=(db.query(`SELECT accepted_input_id,status FROM session_communication_events WHERE event_id=?`).get(answerEventId)
+    ??db.query(`SELECT accepted_input_id,status FROM session_peer_events WHERE event_id=?`).get(answerEventId)) as
+    {accepted_input_id:string|null;status:string}|null;
+  if(!event?.accepted_input_id||event.status==='received'||event.status==='retained')return false;
+  const input=getAcceptedSessionInput(event.accepted_input_id);
+  if(!input||input.steering_id!==null||(input.receipt_json&&JSON.parse(input.receipt_json).state))return false;
+  return movable.has(input.id);
+}
+
 function movableQueuedTurn(turn:WaitingTurn,input:NonNullable<ReturnType<typeof getAcceptedSessionInput>>):boolean {
   // An unfired or replay-safe held schedule has no provider effects. Keep its turn and firing identity when
   // ownership moves: repeating schedules use that identity to book exactly one successor.
@@ -330,7 +347,9 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
   const observed=await inventory(proposed.predecessor_session_id,{inputId:input.inputId,runId:input.runId});
   const current=inventoryLocalWithExternal(proposed.predecessor_session_id,observed),currentDigest=digest(current);
   if(input.digest!==currentDigest) return {accepted:false,handoffId:input.handoffId,inventory:current,digest:currentDigest,reason:'Inventory changed; acknowledge this exact digest.'};
-  if(current.items.some(item=>item.kind==='answer'&&item.answerEventId&&!item.answerReturnInputId))
+  const movableNow=new Set(current.items.filter(item=>item.kind==='queued'&&item.movable).map(item=>item.ref));
+  if(current.items.some(item=>item.kind==='answer'&&item.answerEventId&&!item.answerReturnInputId
+    &&!answerReturnTravels(item.answerEventId,movableNow)))
     return {accepted:false,handoffId:input.handoffId,inventory:current,digest:currentDigest,reason:'A ChatGPT answer has not reached its asking session yet. Let the exact return receipt settle before handing off its duty.'};
   if(current.items.some(item=>item.kind==='queued'&&!item.movable&&!item.obsolete))
     return {accepted:false,handoffId:input.handoffId,inventory:current,digest:currentDigest,reason:'A queued input may have reached its provider or has dependencies. Let its exact outcome settle before accepting ownership.'};
@@ -348,6 +367,9 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
     // A ChatGPT answer duty moves its own active request with it, so its sent request must move
     // first; inventory order (answer:… sorts before sent:…) refused every handoff holding both
     // (concierge:9767 → 9847, 2026-11-16).
+    // Read before any queued item moves: moving it re-points the answer event at the successor's copy.
+    const travellingAnswers=new Set(verified.items.filter(item=>item.kind==='answer'&&item.answerEventId&&!item.answerReturnInputId
+      &&answerReturnTravels(item.answerEventId,movable)).map(item=>item.ref));
     const transferOrder=[...verified.items].sort((a,b)=>Number(a.kind==='answer')-Number(b.kind==='answer'));
     for(const item of transferOrder){
       if(item.kind==='sent'){
@@ -366,7 +388,7 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
         }
         record(item.kind,item.ref);
       }else if(item.kind==='answer'){
-        if(!transferChatGptAnswerOwnership(item.ref,from,to,Date.now()))
+        if(!transferChatGptAnswerOwnership(item.ref,from,to,Date.now(),travellingAnswers.has(item.ref)))
           throw new Error(`ChatGPT answer ${item.ref} changed during handoff.`);
         record(item.kind,item.ref);
       }else if(item.kind==='owed'){
