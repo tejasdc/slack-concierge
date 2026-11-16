@@ -59,22 +59,54 @@ if (setup.role === 'sync') {
   // that inode and drops ALL of this process's POSIX locks, including the owner's writer lock
   // on another thread. NOOP reports uncopied frames without copying or bypassing SQLite.
   const pageSize = (connection.query('PRAGMA page_size').get() as { page_size: number }).page_size;
-  const pendingBytes = () => {
+  const uncopied = () => {
     const result = connection.query('PRAGMA wal_checkpoint(NOOP)').get() as { log: number; checkpointed: number };
-    return Math.max(0, result.log - result.checkpointed) * (pageSize + 24);
+    return { bytes: Math.max(0, result.log - result.checkpointed) * (pageSize + 24), checkpointed: result.checkpointed };
   };
+  const LOST_TAIL_RACES = 3, FAST_TAIL_MS = 250;
+  let lostTailRaces = 0;
   const tick = () => {
-    let bytes = 0;
-    try { bytes = pendingBytes(); } catch { return; }
+    let before: { bytes: number; checkpointed: number };
+    try { before = uncopied(); } catch { return; }
+    const { bytes } = before;
     const ioPressure = pressure();
+    // The log rewinds only when a writer starts with every committed frame copied. PASSIVE
+    // copies up to the frame it saw when it began, so commits made while it runs stay behind
+    // as a small tail. Waiting for that tail to reach the copy threshold let the log grow
+    // without bound (16 hours and ~14 GB on 2026-11-15), so a generation already partly copied
+    // has its tail finished on the next tick, first without the writer lock. Under steady
+    // commits that copy keeps losing the race (a disposable ledger at 60 commits/s never
+    // rewound in 191 attempts), so after LOST_TAIL_RACES fast attempts the tail is finished once
+    // in FULL mode, which holds the writer lock while it copies so no commit can extend it.
+    // The owner's commits wait for that copy: a small tail, only on a quiet disk, only after a
+    // fast attempt, and with no lock wait here, so FULL never waits for a reader while holding
+    // the writer lock and gives up at once if the owner is mid-commit.
+    // See docs/architecture/LEDGER-DURABILITY.md#log-recycling.
+    if (before.checkpointed === 0 || bytes === 0) lostTailRaces = 0;
+    const tail = before.checkpointed > 0 && bytes > 0 && bytes < setup.quietBytes;
     // A complete checkpoint lets the owner's next commit rewind the log, and that rewind is
     // the one sync left on the owner's loop. Doing it while the disk is busy is what would
     // stall it, so the log grows through busy periods and is copied when the disk is quiet.
-    if (bytes < setup.quietBytes || (ioPressure > setup.quietPressure && bytes < setup.forceBytes)) return;
+    if ((bytes < setup.quietBytes && !tail) || (ioPressure > setup.quietPressure && bytes < setup.forceBytes)) return;
+    const full = tail && lostTailRaces >= LOST_TAIL_RACES;
     const started = performance.now();
     try {
-      const result = connection.query('PRAGMA wal_checkpoint(PASSIVE)').get() as { busy: number; log: number; checkpointed: number };
-      port.postMessage({ kind: 'checkpoint', ms: performance.now() - started, bytes, ioPressure, ...result });
+      let result: { busy: number; log: number; checkpointed: number };
+      if (full) {
+        raw.exec('PRAGMA busy_timeout = 0');
+        try { result = connection.query('PRAGMA wal_checkpoint(FULL)').get() as typeof result; }
+        finally { raw.exec('PRAGMA busy_timeout = 5000'); lostTailRaces = 0; }
+      } else {
+        result = connection.query('PRAGMA wal_checkpoint(PASSIVE)').get() as typeof result;
+      }
+      const ms = performance.now() - started;
+      // A reader still using older frames can hold the tail in place; record a tail attempt
+      // only when it copied something, so a long read does not log every tick.
+      if (tail && !full) {
+        if (result.checkpointed <= before.checkpointed) return;
+        lostTailRaces = ms <= FAST_TAIL_MS ? lostTailRaces + 1 : 0;
+      }
+      port.postMessage({ kind: 'checkpoint', ms, bytes, ioPressure, tail, mode: full ? 'full' : 'passive', ...result });
     } catch (error) {
       port.postMessage({ kind: 'checkpoint', ms: performance.now() - started, bytes, ioPressure,
         error: error instanceof Error ? error.message : String(error) });
