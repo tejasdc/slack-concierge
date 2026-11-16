@@ -1,3 +1,4 @@
+import './sqlite-worker-identity';
 /** Provider page projection belongs on a separate event loop from sends and page routing. */
 import {parentPort} from 'node:worker_threads';
 import {SessionOwner} from './session-owner';

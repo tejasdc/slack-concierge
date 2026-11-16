@@ -85,6 +85,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [quiet service notices](docs/contracts/native-inbox.md#quiet-service-notices).
 - Exact operation reads used for provider admission and recovery read current retained state;
   see [receipt freshness](docs/architecture/SESSION-OWNER.md#identity-and-admission).
+- SQLite-owning Bun threads emit bounded startup identity before opening databases;
+  see [native worker attribution](docs/architecture/LEDGER-DURABILITY.md#native-worker-attribution).
 - Exact predecessor/successor file-watch inspection and quiet retirement use retained recovery
   and work-delegation custody, not cross-session list/cancel; see
   [watch custody](docs/architecture/WATCHES.md#exact-pair-recovery-custody).
