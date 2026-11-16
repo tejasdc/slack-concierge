@@ -23,3 +23,4 @@ export const LAB_PUBLICATION_TEST_AUTHORIZATION='lab-publication-85ee7a4e';
 // Exact worker request a168df69 requires disposable journal processing acceptance.
 export const JOURNAL_PROCESSING_TEST_AUTHORIZATION = "journal-processing-a168df69";
 export const LAB_CONVERSATIONS_TEST_AUTHORIZATION='lab-conversations-2026-11-15';
+export const THREAD_SURVIVES_ROUTER_HANDOFF_TEST_AUTHORIZATION='thread-survives-router-handoff-2026-11-16';
