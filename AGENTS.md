@@ -30,6 +30,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   rollback's separate controller and the disposable installed-command acceptance.
   Native release acceptance explicitly selects the host's GNU timeout dependency;
   see [durability acceptance](docs/architecture/PROTECTED-DURABILITY-OBSERVATION.md#isolated-acceptance-and-live-gate).
+- Mac disk upkeep shares the existing automatic update job; log retention, identity staging,
+  finished-worktree proof, pressure notices and receipts live in
+  [Mac disk maintenance](docs/runbooks/MAC-DISK-MAINTENANCE.md).
 - Provider-change handoffs move accepted inputs only under the exact safety rules in
   [session ownership](docs/architecture/SESSION-OWNER.md#provider-change-handoff).
 - Merge a checked pull request with `scripts/merge-pr.sh <number>`, which serialises
