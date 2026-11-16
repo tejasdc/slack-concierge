@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps,runLedgerSegment} from './ledger-admission';
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { log } from "./log";
 
@@ -143,10 +145,10 @@ export class ProviderLoginManager {
   }
 
   async start(provider: string, command: string, cwd: string, flow: AuthLoginFlow = "paste-code",
-    env: Record<string, string> = {}): Promise<AuthLoginStartResult> {
+    env: Record<string, string> = {}): Promise<AuthLoginStartResult> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     // Reserve the provider slot before any await so a second concurrent start
     // finds and tears down this login instead of orphaning it.
-    await this.abandon(provider);
+    (yield this.abandon(provider));
     const child = spawn(command, {
       cwd,
       shell: true,
@@ -178,9 +180,9 @@ export class ProviderLoginManager {
     const urlWaitMs = this.options.urlWaitMs ?? 20_000;
     const waitDeadline = Date.now() + urlWaitMs;
     let exitCode: number | null | undefined;
-    void login.exited.then((code) => {
+    void login.exited.then(ledgerCallback((code) => {
       exitCode = code;
-    });
+    }));
     // A device login is only presentable once both halves are on screen: the URL
     // to open and the code to type there. Waiting for both avoids showing him a
     // page that immediately asks for a code this call has not read yet.
@@ -190,7 +192,7 @@ export class ProviderLoginManager {
     while (Date.now() < waitDeadline) {
       if (presentable()) break;
       if (exitCode !== undefined) break;
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      (yield new Promise((resolve) => setTimeout(resolve, 100)));
     }
 
     // The login may have been superseded by a concurrent start while awaiting.
@@ -206,29 +208,29 @@ export class ProviderLoginManager {
         : { status: "failed", output: stripTerminalEscapes(login.output).trim(), reason: "cli_exited" }, exitCode);
     }
     if (!url) {
-      await this.abandon(provider);
+      (yield this.abandon(provider));
       return this.record(provider, flow, { status: "failed", output: stripTerminalEscapes(login.output).trim(), reason: "no_url_before_timeout" });
     }
     login.state = flow === "device" ? "awaiting_approval" : "awaiting_code";
     login.url = url;
     const ttlMs = this.options.pendingTtlMs ?? 10 * 60_000;
-    login.expiry = setTimeout(() => { void this.abandon(provider); }, ttlMs);
+    login.expiry = setTimeout(ledgerCallback(() => { void this.abandon(provider); }), ttlMs);
     // Announced before the result is returned, so the sign-in is already holding updates
     // back by the time he is looking at the link.
     this.announce(provider, Date.now() + ttlMs);
     // A login that finishes on its own (a browser flow that never asks for a
     // pasted code) still counts as a completed refresh.
-    void login.exited.then((code) => {
+    void login.exited.then(ledgerCallback((code) => {
       if (this.pending.get(provider) !== login) return;
       this.pending.delete(provider);
       if (login.expiry) clearTimeout(login.expiry);
       this.announce(provider, null);
       if (code === 0) this.options.onUnattendedCompletion?.(provider);
-    });
+    }));
     return this.record(provider, flow, flow === "device"
       ? { status: "awaiting_approval", url, userCode: extractUserCode(login.output) }
       : { status: "awaiting_code", url });
-  }
+  }).call(this));}
 
   /**
    * Every sign-in leaves a record of how it ended.
@@ -253,7 +255,7 @@ export class ProviderLoginManager {
     return result;
   }
 
-  async complete(provider: string, code: string): Promise<AuthLoginCompleteResult> {
+  async complete(provider: string, code: string): Promise<AuthLoginCompleteResult> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const login = this.pending.get(provider);
     if (!login || login.state !== "awaiting_code") {
       // The commonest way this happens is a Concierge update between his opening the link
@@ -272,12 +274,12 @@ export class ProviderLoginManager {
       return { status: "failed", output: stripTerminalEscapes(login.output).trim() };
     }
     const completionWaitMs = this.options.completionWaitMs ?? 60_000;
-    const exitCode = await Promise.race([
+    const exitCode = (yield Promise.race([
       login.exited,
       new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), completionWaitMs)),
-    ]);
+    ]));
     if (exitCode === "timeout") {
-      await this.killChild(login);
+      (yield this.killChild(login));
       log("warn", "provider_signin_completed", { provider, outcome: "failed", reason: "cli_never_settled" });
       return { status: "failed", output: stripTerminalEscapes(login.output).trim() };
     }
@@ -290,15 +292,16 @@ export class ProviderLoginManager {
     return exitCode === 0
       ? { status: "completed", output: stripTerminalEscapes(login.output).trim() }
       : { status: "failed", output: stripTerminalEscapes(login.output).trim() };
-  }
+  }).call(this));}
 
   private async abandon(provider: string): Promise<void> {
     const login = this.pending.get(provider);
     if (!login) return;
     this.pending.delete(provider);
     if (login.expiry) clearTimeout(login.expiry);
-    this.announce(provider, null);
-    await this.killChild(login);
+    const announcement=runLedgerSegment(()=>this.announce(provider,null));
+    try {await this.killChild(login);}
+    finally {await announcement;}
   }
 
   private async killChild(login: PendingLogin): Promise<void> {

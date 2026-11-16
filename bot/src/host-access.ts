@@ -41,7 +41,12 @@ export interface HostLink {
    * Follow Claude's own transcript for picked-up messages where the provider runs. Present only on
    * a link whose host is on another machine; a local run reads the transcript itself.
    */
-  watchTranscript?(input: { sessionUuid: string; fromStart: boolean; onPickup: (pickup: any) => void }): () => void;
+  watchTranscript?(input: { sessionUuid: string; fromStart: boolean; onPickup: (pickup: any) => void | Promise<void> }): () => void;
+}
+
+export interface HostJournalReader {
+  read(through: number): AsyncGenerator<HostFrame>;
+  close(): Promise<void>;
 }
 
 export interface HostAccess {
@@ -54,6 +59,7 @@ export interface HostAccess {
   connect(timeoutMs?: number): Promise<HostLink>;
   custody(): Promise<HostCustody>;
   journal(): AsyncGenerator<HostFrame>;
+  journalReader?(): HostJournalReader;
   release(): Promise<boolean>;
   stopSuperseded(): Promise<boolean>;
   supervisorView(): Promise<SupervisorView>;

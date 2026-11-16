@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import type { SlackMessageFile } from "./attachments";
 import { steeringTargetKey, TurnSteeringController } from "./steering";
 import type { ProviderId } from "./state";
@@ -165,7 +167,7 @@ export class ActiveTurnDispatchRegistry {
       closeSteering: (reason?: Error) => void,
       cancellation: TurnCancellationController,
     ) => Promise<T>,
-  ): Promise<T> {
+  ): Promise<T> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if (!Number.isSafeInteger(input.turnId) || input.turnId < 1
       || (input.sessionId !== undefined && (!Number.isSafeInteger(input.sessionId) || input.sessionId < 1))) {
       throw new Error("Active execution requires an exact turn and session identity.");
@@ -201,7 +203,7 @@ export class ActiveTurnDispatchRegistry {
     }
     if (key !== null) this.targets.set(key, target);
     try {
-      return await execute(controller, closeSteering, cancellation);
+      return (yield execute(controller, closeSteering, cancellation));
     } finally {
       cancellation.close();
       closeSteering();
@@ -210,7 +212,7 @@ export class ActiveTurnDispatchRegistry {
       try { this.lifecycle.onSettled(input.turnId); }
       finally { resolveSettled(); }
     }
-  }
+  }).call(this));}
 
   dispatchSteering<T>(
     channelId: string,
@@ -287,12 +289,12 @@ export async function startRecoveredSessionTurnQueue(dependencies: {
   startRuntime(): Promise<void>;
   verifyProviderReady(): Promise<void>;
   startQueue(): void;
-}) {
-  await dependencies.recoverPriorTurns();
-  await dependencies.startRuntime();
-  await dependencies.verifyProviderReady();
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield dependencies.recoverPriorTurns());
+  (yield dependencies.startRuntime());
+  (yield dependencies.verifyProviderReady());
   dependencies.startQueue();
-}
+}).call(this));}
 
 export function dispatchComparisonTurn<T>(input: {
   requestId: string;

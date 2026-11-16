@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import { createHash } from "node:crypto";
 import {
   sharedCodexAppServerClient,
@@ -136,7 +138,7 @@ export async function deliverCodexRemoteMirrorEvent(
     shouldStop?(): boolean;
     waitBeforeRetry?(milliseconds: number): Promise<void>;
   },
-): Promise<{ delivered: boolean; responseTldr: string | null }> {
+): Promise<{ delivered: boolean; responseTldr: string | null }> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const park = dependencies.park ?? parkCodexRemoteMirrorEvent;
   const getMapping = dependencies.getMapping ?? getUniqueCodexSessionMapping;
   const mapping = getMapping(event.provider_thread_uuid);
@@ -156,7 +158,7 @@ export async function deliverCodexRemoteMirrorEvent(
     );
     return { delivered: false, responseTldr: null };
   }
-  const response = await dependencies.postMessage();
+  const response = (yield dependencies.postMessage());
   if (!response?.ts) throw new Error("Slack did not return a timestamp for the mirrored Codex item.");
   const slackMessageTs = String(response.ts);
   const responseTldr = event.item_kind === "agent" ? extractTldr(event.payload_text) : null;
@@ -183,11 +185,11 @@ export async function deliverCodexRemoteMirrorEvent(
         slack_message_ts: slackMessageTs,
         failures,
       });
-      await waitBeforeRetry(Math.min(LOCAL_DELIVERY_RETRY_MS * 2 ** Math.min(failures - 1, 6), 5_000));
+      (yield waitBeforeRetry(Math.min(LOCAL_DELIVERY_RETRY_MS * 2 ** Math.min(failures - 1, 6), 5_000)));
     }
   }
   return { delivered: false, responseTldr };
-}
+}).call(this));}
 
 export class CodexRemoteObserver {
   private stopped = false;
@@ -255,11 +257,11 @@ export class CodexRemoteObserver {
     const pending = this.pendingThreadSubscriptions.get(providerThreadUuid);
     if (pending) return pending;
     const subscription = this.subscribeBoundProviderSession(providerThreadUuid)
-      .finally(() => {
+      .finally(ledgerCallback(() => {
         if (this.pendingThreadSubscriptions.get(providerThreadUuid) === subscription) {
           this.pendingThreadSubscriptions.delete(providerThreadUuid);
         }
-      });
+      }));
     this.pendingThreadSubscriptions.set(providerThreadUuid, subscription);
     return subscription;
   }
@@ -271,17 +273,17 @@ export class CodexRemoteObserver {
     this.deliveryRetryAt = null;
     this.resolveStoppedSignal();
     this.wakeDeliveries();
-    await Promise.allSettled(
+    (await Promise.allSettled(
       [
         this.connectionLoop,
         this.deliveryLoop,
         this.notificationLoop,
         ...this.pendingThreadSubscriptions.values(),
       ].filter(Boolean) as Promise<void>[],
-    );
+    ));
   }
 
-  private async runConnections() {
+  private async runConnections() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     let failures = 0;
     while (!this.stopped) {
       let generation: number | null = null;
@@ -289,14 +291,14 @@ export class CodexRemoteObserver {
         this.queueNotification(event);
       });
       try {
-        generation = await this.appServer.connect();
-        if (!await this.subscribeCurrentMappings(this.appServer, generation)) continue;
+        generation = (yield this.appServer.connect());
+        if (!(yield this.subscribeCurrentMappings(this.appServer, generation))) continue;
         failures = 0;
         clearRetryBreaker("codex-remote-observer:app-server");
-        await Promise.race([
+        (yield Promise.race([
           this.appServer.waitForDisconnect(generation),
           this.stoppedSignal,
-        ]);
+        ]));
       } catch (error) {
         if (!this.stopped) log("warn", "codex_remote_observer_disconnected", errorFields(error));
       } finally {
@@ -307,22 +309,22 @@ export class CodexRemoteObserver {
         const decision = recordRetryFailure({ key: "codex-remote-observer:app-server", site: "codex-observer",
           what: "Codex Remote observation", failure: { kind: "transient",
             reason: "The Codex App Server did not answer.", restartSignal: "the Codex App Server answers a capped probe" } });
-        await Promise.race([wait(decision.action === "retry" ? Math.max(0, decision.atMs - Date.now()) : RETRY_POLICIES.observer.capDelayMs), this.stoppedSignal]);
+        (yield Promise.race([wait(decision.action === "retry" ? Math.max(0, decision.atMs - Date.now()) : RETRY_POLICIES.observer.capDelayMs), this.stoppedSignal]));
       }
     }
-  }
+  }).call(this));}
 
-  private async subscribeCurrentMappings(connection: CodexAppServerClientLike, generation: number) {
+  private async subscribeCurrentMappings(connection: CodexAppServerClientLike, generation: number) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const eligibleMappings = this.listMappings().filter((candidate) => codexRemoteChannelAllowed(candidate)
       && !isProtectedCodexProviderThread(candidate.provider_thread_uuid));
     for (const mapping of eligibleMappings) {
-      if (await connection.connect() !== generation) return false;
+      if ((yield connection.connect()) !== generation) return false;
       try {
         if (isProtectedCodexProviderThread(mapping.provider_thread_uuid)) continue;
-        await connection.request("thread/resume", {
+        (yield connection.request("thread/resume", {
           threadId: mapping.provider_thread_uuid,
           excludeTurns: true,
-        },{custodyOwnerSessionId:mapping.session_id});
+        },{custodyOwnerSessionId:mapping.session_id}));
         log("info", "codex_remote_thread_subscribed", {
           provider_thread_uuid: mapping.provider_thread_uuid,
           channel: mapping.slack_channel_id,
@@ -330,7 +332,7 @@ export class CodexRemoteObserver {
         });
         this.subscribedThreadIds.add(mapping.provider_thread_uuid);
       } catch (error) {
-        if (await connection.connect() !== generation) return false;
+        if ((yield connection.connect()) !== generation) return false;
         log("warn", "codex_remote_thread_subscription_failed", {
           ...errorFields(error),
           provider_thread_uuid: mapping.provider_thread_uuid,
@@ -338,27 +340,27 @@ export class CodexRemoteObserver {
           thread_ts: mapping.slack_thread_ts,
         });
       }
-      if (await connection.connect() !== generation) return false;
+      if ((yield connection.connect()) !== generation) return false;
     }
     return true;
-  }
+  }).call(this));}
 
-  private async subscribeBoundProviderSession(providerThreadUuid: string) {
+  private async subscribeBoundProviderSession(providerThreadUuid: string) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const mappings = this.listMappings().filter((mapping) => (
       mapping.provider_thread_uuid === providerThreadUuid
       && codexRemoteChannelAllowed(mapping)
     ));
     if (mappings.length !== 1) return;
-    const generation = await this.appServer.connect();
-    if (this.stopped || await this.appServer.connect() !== generation) {
+    const generation = (yield this.appServer.connect());
+    if (this.stopped || (yield this.appServer.connect()) !== generation) {
       throw new Error("The provider observer connection changed while subscribing a newly bound session.");
     }
     if (isProtectedCodexProviderThread(providerThreadUuid)) return;
-    await this.appServer.request("thread/resume", {
+    (yield this.appServer.request("thread/resume", {
       threadId: providerThreadUuid,
       excludeTurns: true,
-    },{custodyOwnerSessionId:mappings[0].session_id});
-    if (this.stopped || await this.appServer.connect() !== generation) {
+    },{custodyOwnerSessionId:mappings[0].session_id}));
+    if (this.stopped || (yield this.appServer.connect()) !== generation) {
       throw new Error("The provider observer connection changed after subscribing a newly bound session.");
     }
     this.subscribedThreadIds.add(providerThreadUuid);
@@ -368,17 +370,17 @@ export class CodexRemoteObserver {
       thread_ts: mappings[0].slack_thread_ts,
       trigger: "provider_session_bound",
     });
-  }
+  }).call(this));}
 
   private queueNotification(event: any) {
     this.notificationLoop = this.notificationLoop
-      .then(() => this.onNotification(event))
-      .catch((error) => {
+      .then(ledgerCallback(() => this.onNotification(event)))
+      .catch(ledgerCallback((error) => {
         log("error", "codex_remote_notification_failed", errorFields(error));
-      });
+      }));
   }
 
-  private async onNotification(event: any) {
+  private async onNotification(event: any) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if (event.method !== "item/completed") return;
     const params = event.params || {};
     const item = params.item || {};
@@ -403,13 +405,13 @@ export class CodexRemoteObserver {
           failures,
         });
         const retryMs = retryDelayMs(RETRY_POLICIES.observer, failures);
-        await Promise.race([
+        (yield Promise.race([
           this.waitBeforeObservationRetry(retryMs),
           this.stoppedSignal,
-        ]);
+        ]));
       }
     }
-  }
+  }).call(this));}
 
   private observeNotification(params: any) {
     const providerThreadUuid = String(params.threadId || "");
@@ -492,10 +494,10 @@ export class CodexRemoteObserver {
       this.deliveryWakePending = false;
       return;
     }
-    await Promise.race([
+    (await Promise.race([
       new Promise<void>((resolve) => { this.resolveDeliveryWake = resolve; }),
       this.stoppedSignal,
-    ]);
+    ]));
     this.resolveDeliveryWake = null;
     this.deliveryWakePending = false;
   }
@@ -511,16 +513,16 @@ export class CodexRemoteObserver {
     if (this.deliveryRetryTimer && this.deliveryRetryAt !== null && this.deliveryRetryAt <= nextAttemptMs) return;
     if (this.deliveryRetryTimer) clearTimeout(this.deliveryRetryTimer);
     this.deliveryRetryAt = nextAttemptMs;
-    this.deliveryRetryTimer = setTimeout(() => {
+    this.deliveryRetryTimer = setTimeout(ledgerCallback(() => {
       this.deliveryRetryTimer = null;
       this.deliveryRetryAt = null;
       if (!this.stopped) this.wakeDeliveries();
-    }, Math.max(0, nextAttemptMs - Date.now()));
+    }), Math.max(0, nextAttemptMs - Date.now()));
   }
 
-  private async runDeliveries() {
+  private async runDeliveries() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     while (!this.stopped) {
-      await this.waitForDeliveryWake();
+      (yield this.waitForDeliveryWake());
       while (!this.stopped) {
         const event = this.claimMirrorEvent();
         if (!event) {
@@ -528,7 +530,7 @@ export class CodexRemoteObserver {
           break;
         }
         try {
-          const delivery = await deliverCodexRemoteMirrorEvent(event, {
+          const delivery = (yield deliverCodexRemoteMirrorEvent(event, {
             getMapping: this.getMapping,
             postMessage: () => slackCall(this.slackClient, "chat.postMessage", {
               channel: event.slack_channel_id,
@@ -539,11 +541,11 @@ export class CodexRemoteObserver {
               client_msg_id: event.client_msg_id,
             }, { channel: event.slack_channel_id }),
             shouldStop: () => this.stopped,
-          });
+          }));
           if (!delivery.delivered) continue;
           if (delivery.responseTldr && this.scheduleThreadStatusProjection) {
             try {
-              await this.scheduleThreadStatusProjection(event.slack_channel_id, event.slack_thread_ts);
+              (yield this.scheduleThreadStatusProjection(event.slack_channel_id, event.slack_thread_ts));
             } catch (projectionError) {
               log("error", "codex_remote_summary_projection_failed", {
                 ...errorFields(projectionError),
@@ -576,5 +578,5 @@ export class CodexRemoteObserver {
         }
       }
     }
-  }
+  }).call(this));}
 }

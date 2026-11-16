@@ -22,8 +22,11 @@ type PublishNotice = (input: {
 /** Told when a breaker that had announced itself is cleared by a success, so its notice can say so. */
 type NoticeCleared = (key: string) => void;
 
-export function createRetryBreaker(db: Database, publishNotice?: PublishNotice, noticeCleared?: NoticeCleared) {
-  db.exec(`CREATE TABLE IF NOT EXISTS retry_breakers (
+export function createRetryBreaker(db: Database, publishNotice?: PublishNotice, noticeCleared?: NoticeCleared,
+  initializeSchema = true) {
+  // The ledger owner creates this table before projection workers open their readonly
+  // connections. A reader must not turn importing this shared helper into schema DDL.
+  if (initializeSchema) db.exec(`CREATE TABLE IF NOT EXISTS retry_breakers (
     key TEXT PRIMARY KEY,
     site TEXT NOT NULL,
     first_failure_ms INTEGER NOT NULL,

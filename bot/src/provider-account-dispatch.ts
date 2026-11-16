@@ -1,3 +1,4 @@
+import {ledgerCallback} from './ledger-admission';
 import {existsSync,lstatSync,mkdirSync,readdirSync,readlinkSync,realpathSync,renameSync,symlinkSync,unlinkSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
@@ -127,7 +128,7 @@ function provenOrProve(account:string,home:string):boolean{
   if(Date.now()-(failedAt.get(home)??0)<RECHECK_AFTER_FAILURE_MS)return false;
   if(!proving.has(home)){
     proving.add(home);
-    void claudeAccountWorks(home,account).then(check=>{
+    void claudeAccountWorks(home,account).then(ledgerCallback(check=>{
       // Work held because no account had room may now have one: release it to try again.
       if(check.ok){markClaudeHomeVerified(home);releaseUsageContinuationHolds('claude-code');releaseUsageHeldWork('claude-code');releaseAuthHold('claude-code','home_proven');}
       else {
@@ -135,7 +136,7 @@ function provenOrProve(account:string,home:string):boolean{
         log('warn','claude_account_home_unproven',{account,reason:check.reason});
         if(check.reason==='signed_out')needClaudeSignInRenewal(account,'the background account check found it signed out');
       }
-    }).catch(()=>{}).finally(()=>proving.delete(home));
+    })).catch(()=>{}).finally(()=>proving.delete(home));
   }
   return false;
 }

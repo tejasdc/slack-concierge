@@ -14,9 +14,5 @@
  *
  * Run from the repository with CONCIERGE_STATE_DIR pointing at the live state directory.
  */
-import { db } from "../src/state";
-
-const cleared = db.query(`UPDATE sessions
-  SET native_metadata_json = json_set(native_metadata_json,'$.claudeAccountNotice', json('null'))
-  WHERE json_extract(native_metadata_json,'$.claudeAccountNotice') IS NOT NULL`).run().changes;
-console.log(JSON.stringify({ cleared }));
+import {manualLedgerCommand} from "../src/deployment-repair-client";
+console.log(JSON.stringify(await manualLedgerCommand({operation:"clear-stale-account-notices"})));

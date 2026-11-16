@@ -1,5 +1,7 @@
 import {adoptContentSource,assertCommunicationContent,assertInputContent,contentReaderHeaders,outsideContentReader,withContentSource} from './lab-content-disclosure';
 import {pendingJournalProcessing} from "./journal-processing";
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import { readFileSync } from 'node:fs';
 import {custodySelectedTerminalConfirmed} from './codex-custody-terminal';
 import { historyStorageStatus, type HistoryStorageKind } from './history-storage-status';
@@ -422,7 +424,7 @@ export class SessionCommunicationCoordinator {
      * same problem (request-history.ts). Questions and ChatGPT get none: they are not repairs.
      */
     private async earlierWork(actor: Actor, input: {summary?: string; text: string; requestedEffect?: string; provider?: string; saved?: unknown},
-        topicRoot: string | null, targetSessionId: number | null): Promise<EarlierWork | null> {
+        topicRoot: string | null, targetSessionId: number | null): Promise<EarlierWork | null> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         const target = targetSessionId ? getSessionById(targetSessionId) : null;
         if (input.requestedEffect !== 'work' || input.saved || input.provider === 'chatgpt' || target?.provider_id === 'chatgpt'
             || (target && (sessionMetadata(target).interactionPolicy === 'consultation-only' || takesManySubjects(target) || isWritingSession(target)))) return null;
@@ -435,7 +437,7 @@ export class SessionCommunicationCoordinator {
             exclude: [actor.session, ...(targetSessionId ? [targetSessionId] : []), ...(inbox ? [inbox.id] : [])],
             titleOf: id => { const session = getSessionById(id); return session ? (owner?.catalogueLabels(session).title ?? `Session ${id}`) : `Session ${id}`; },
             answerability: id => { try { return this.answerability(id); } catch { return 'how it can be asked is unknown'; } }});
-    }
+    }).call(this));}
     /** How an earlier session can be asked now, in the words a receiving agent acts on. */
     private answerability(sessionId: number): string {
         const session = getSessionById(sessionId);
@@ -457,17 +459,17 @@ export class SessionCommunicationCoordinator {
      * the session itself is not woken or changed. The answer is this command's result; one that
      * takes longer than the command may wait is collected by repeating the same command.
      */
-    private async sideCopyAnswer(actor: Actor, input: {action_id: string; text: string; files?: unknown[]; attachments?: unknown[]; captureId?: string}, frozen: {session: SessionRow; state: string}) {
+    private async sideCopyAnswer(actor: Actor, input: {action_id: string; text: string; files?: unknown[]; attachments?: unknown[]; captureId?: string}, frozen: {session: SessionRow; state: string}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if (input.files?.length || input.attachments?.length || input.captureId) throw new Error('A side copy answers from the conversation alone; it cannot inspect attached files.');
         const {session} = frozen, meta = sessionMetadata(session);
         const question = input.text.trim().slice(0, 8000);
         const id = `${session.id}:request-side:${hash(`${actor.inputId ?? ''}:${input.action_id}:${question}`)}`;
-        const asked = await awaitingOutside(() => askAsideOnce(id, () => ({provider: session.provider_id, sessionUuid: session.agent_session_uuid!,
+        const asked = (yield awaitingOutside(() => askAsideOnce(id, () => ({provider: session.provider_id, sessionUuid: session.agent_session_uuid!,
             cwd: meta.cwd ?? this.dependencies.owner.defaultCwd, model: meta.model ?? null,
             boundary:(db.query(`SELECT provider_turn_id FROM turns WHERE session_id=? AND status='done'
               AND provider_turn_id IS NOT NULL ORDER BY id DESC LIMIT 1`).get(session.id) as {provider_turn_id:string}|null)?.provider_turn_id??null,
             passage: '', question, earlier: [],
-            agentAsker: `concierge:${actor.session}`}), 90_000));
+            agentAsker: `concierge:${actor.session}`}), 90_000)));
         const address = sessionAddress(session);
         if (asked.state === 'asking')
             return {state: 'asking', address, answeredBy: 'side copy',
@@ -475,7 +477,7 @@ export class SessionCommunicationCoordinator {
         log('info', 'request_side_copy_answered', {session_id: session.id, duration_ms: asked.durationMs});
         return {state: 'answered', address, answeredBy: 'side copy', answer: asked.answer, model: asked.model,
             notice: `This session is ${frozen.state}, so a saved side copy of its conversation answered (no tools; this question was not saved and the session itself was not woken). No request was opened.`};
-    }
+    }).call(this));}
     private peerActor(actor: Actor): PeerActor {
         return {session:actor.session,turn:actor.turn,inputId:actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id};
     }
@@ -672,12 +674,12 @@ export class SessionCommunicationCoordinator {
         limit?: number;
         peer?: string;
         thread?: string;
-    }) {
+    }) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         const actor = this.actor(input.source);
         if (!Array.isArray(input.concepts) || input.concepts.length < 1 || input.concepts.length > 8
             || input.concepts.some(value => typeof value !== 'string' || !value.trim()))
             throw new Error('Use one to eight nonempty search concepts.');
-        if (input.peer !== undefined) return boundSearchResponse(await this.peers().search(input.peer, input.concepts, input.limit));
+        if (input.peer !== undefined) return boundSearchResponse((yield this.peers().search(input.peer, input.concepts, input.limit)));
         if (!this.dependencies.owner) throw new Error('Common session discovery is unavailable.');
         const local = () => actor.inputId?withContentSource({inputId:actor.inputId,runId:nativeRunId(actor.turn)},()=>this.dependencies.owner.search({query:input.concepts.join(' '),limit:input.limit})):this.dependencies.owner.search({query:input.concepts.join(' '),limit:input.limit}, {
             beforeTs:actor.source.message_ts!,excludeChannel:actor.source.channel_id!,excludeRootTs:actor.root!
@@ -689,46 +691,46 @@ export class SessionCommunicationCoordinator {
         const hub = this.dependencies.peers?.meaningHub();
         let found:any = null;
         if (hub) {
-            try { found = await this.dependencies.peers!.searchThrough(hub, input.concepts, input.limit); }
+            try { found = (yield this.dependencies.peers!.searchThrough(hub, input.concepts, input.limit)); }
             catch (error) {
-                const fallback:any = await this.dependencies.peers!.federatedSearch(local, input.concepts, input.limit);
+                const fallback:any = (yield this.dependencies.peers!.federatedSearch(local, input.concepts, input.limit));
                 found = {...fallback,coverage:{...fallback.coverage,complete:false,omissions:[...(fallback.coverage?.omissions??[]),`The search on ${hub} could not be reached (${error instanceof Error?error.message:String(error)}); these results match words on this machine and whatever ${hub} answered directly.`]}};
             }
         }
         // Sessions live on several instances; discovery covers all of them unless one was named.
-        found ??= await (this.dependencies.peers ? this.dependencies.peers.federatedSearch(local, input.concepts, input.limit) : local());
+        found ??= (yield (this.dependencies.peers ? this.dependencies.peers.federatedSearch(local, input.concepts, input.limit) : local()));
         return boundSearchResponse({...found,results:this.withWorkload(found.results??[],actor,input.thread)});
-    }
+    }).call(this));}
     /** The whole search from this machine, for a peer that searches through it. */
-    async searchEverywhere(query: string, limit?: number) {
+    async searchEverywhere(query: string, limit?: number) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         const local = () => this.dependencies.owner.search({query, limit});
-        return boundSearchResponse(await (this.dependencies.peers ? this.dependencies.peers.federatedSearch(local, [query], limit) : local()));
-    }
+        return boundSearchResponse((yield (this.dependencies.peers ? this.dependencies.peers.federatedSearch(local, [query], limit) : local())));
+    }).call(this));}
     async context(input: {
         source: CommunicationSource;
         address: string;
         thread?: string;
-    }) {
+    }) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         const actor = this.actor(input.source);
         const remote = this.dependencies.peers?.splitAddress(input.address);
         if (remote) {
             const peers = this.dependencies.peers!;
-            try { return await peers.context(remote.peer, remote.address); }
+            try { return (yield peers.context(remote.peer, remote.address)); }
             catch (error) {
                 if (!(error instanceof PeerError && error.kind === 'unreachable')) throw error;
                 return peers.offlineContext(remote.peer, remote.address, address => this.dependencies.owner.context({address}));
             }
         }
         const address = this.address(input.address);
-        const context:any = await (actor.inputId?withContentSource({inputId:actor.inputId,runId:nativeRunId(actor.turn)},()=>this.dependencies.owner.context({address:sessionAddress(getSessionById(address.session)!)})):this.dependencies.owner.context({address:sessionAddress(getSessionById(address.session)!)}));
+        const context:any = (yield (actor.inputId?withContentSource({inputId:actor.inputId,runId:nativeRunId(actor.turn)},()=>this.dependencies.owner.context({address:sessionAddress(getSessionById(address.session)!)})):this.dependencies.owner.context({address:sessionAddress(getSessionById(address.session)!)})));
         return this.withWorkload([context],actor,input.thread)[0];
-    }
-    async projects(input:{source:CommunicationSource;peer?:string}) {
+    }).call(this));}
+    async projects(input:{source:CommunicationSource;peer?:string}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         this.actor(input.source);
         if(input.peer!==undefined)return this.peers().projects(input.peer);
         if(!this.dependencies.owner)throw new Error('Native session owner is unavailable.');
         return this.dependencies.owner.projects();
-    }
+    }).call(this));}
     agents(input:{source:CommunicationSource}) {
         this.actor(input.source);
     }
@@ -761,11 +763,11 @@ export class SessionCommunicationCoordinator {
             return receipt;
         })();
     }
-    async peerInventory(input:{source:CommunicationSource}) {
+    async peerInventory(input:{source:CommunicationSource}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         this.actor(input.source);
         if(!this.dependencies.peers)return {self:null,peers:[]};
         return this.dependencies.peers.inventoryWithReachability();
-    }
+    }).call(this));}
     /**
      * The end-of-turn hook asks this when an agent tries to stop: Claude Code's and Codex's Stop
      * hook run the same script, which names the provider and its own conversation (`session_id` in
@@ -1005,7 +1007,7 @@ export class SessionCommunicationCoordinator {
      * then revalidate that exact run before evaluating obligations or recording offer/reminder effects. */
     async owed(input:{provider:string;provider_session_id:string;run_id?:string;offer?:string[];remind?:boolean},
         readUnfiled:(sessionId:number,turnId:number,signal:AbortSignal)=>Promise<ReturnType<typeof unfiledReceivedInputs>>,
-        signal:AbortSignal) {
+        signal:AbortSignal) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if(signal.aborted)return {ok:false as const,status:503,code:'READ_CANCELLED',message:'The owed read was cancelled before owner-side evaluation.'};
         const running=this.owedRunning(input);
         if(!running)return {ok:true as const,value:{owed:[] as OwedRequest[],unfiled:[],waiting:false,source:null}};
@@ -1015,7 +1017,7 @@ export class SessionCommunicationCoordinator {
         const needsInboxRead=!!session&&sessionMetadata(session).inbox;
         if(!needsInboxRead)return {ok:true as const,value:this.owedForRunning(input,running,[])};
         let unfiled:ReturnType<typeof unfiledReceivedInputs>=[];
-        try {unfiled=await readUnfiled(running.session_id,running.turn_id,signal);}
+        try {unfiled=(yield readUnfiled(running.session_id,running.turn_id,signal));}
         catch(error) {return signal.aborted
             ?{ok:false as const,status:503,code:'READ_CANCELLED',message:'The owed read was cancelled before owner-side evaluation.'}
             :{ok:false as const,status:503,code:'UNFILED_READ_UNAVAILABLE',message:error instanceof Error?error.message:'The Inbox filing read is unavailable.'};}
@@ -1026,7 +1028,7 @@ export class SessionCommunicationCoordinator {
             return {ok:false as const,status:409,code:'RUN_CHANGED',message:'The run changed while its Inbox filing state was being read; no reminder was recorded.'};
         if(signal.aborted)return {ok:false as const,status:503,code:'READ_CANCELLED',message:'The owed read was cancelled before owner-side evaluation.'};
         return {ok:true as const,value:this.owedForRunning(input,current,unfiled)};
-    }
+    }).call(this));}
     /**
      * How much allowance each provider has left on this machine, and when the account in
      * use is expected to run out. It is a read: it recommends nothing, changes nothing and
@@ -1044,7 +1046,7 @@ export class SessionCommunicationCoordinator {
         return historyStorageStatus(stateDir,input.kind,input.after,input.limit);
     }
     /** Switch through the same guarded account operation as Accounts, attributed to this agent run. */
-    async switchCodexAccount(input:{source:CommunicationSource;action_id:string;profile_id:string;machine?:string}) {
+    async switchCodexAccount(input:{source:CommunicationSource;action_id:string;profile_id:string;machine?:string}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const authority=this.authority(this.fenced(this.actor(input.source))),actor=authority.actor;
         action(input.action_id);
@@ -1058,7 +1060,7 @@ export class SessionCommunicationCoordinator {
             ? {...codexAccountSwitchReply(saved.input.id,JSON.parse(saved.input.receipt_json)),duplicate:true}
             : {...codexAccountSwitchReply(saved.input.id,{status:'uncertain',detail:'The earlier account switch has no final receipt; inspect the account before another attempt.'}),duplicate:true};
         try {
-            const result=await this.dependencies.owner.switchAuthProfile('codex',input.profile_id,input.machine);
+            const result=(yield this.dependencies.owner.switchAuthProfile('codex',input.profile_id,input.machine));
             const reply=codexAccountSwitchReply(saved.input.id,result as Record<string,unknown>);
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
                 .run(JSON.stringify(reply),saved.input.id);
@@ -1071,7 +1073,7 @@ export class SessionCommunicationCoordinator {
                 .run(JSON.stringify(reply),saved.input.id);
             return reply;
         }
-    }
+    }).call(this));}
     /**
      * A session names itself, and may correct that name later. It used to be one-shot, so a
      * session that had been given a bad name — by itself earlier, or by whoever created it —
@@ -1080,7 +1082,7 @@ export class SessionCommunicationCoordinator {
      * 2026). A name Tejas set himself still wins and is never written over.
      */
     /** Moves a session (this one or another on this machine) to a project or a folder inside one; see SessionOwner.moveSession. */
-    async move(input:{source:CommunicationSource;action_id:string;address:string;project:string}) {
+    async move(input:{source:CommunicationSource;action_id:string;address:string;project:string}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.fenced(this.actor(input.source));
         action(input.action_id);
@@ -1090,7 +1092,7 @@ export class SessionCommunicationCoordinator {
         const targetRow=getSessionById(target.id);
         if(!targetRow)throw new Error('That session address is unknown here.');
         const binding=sessionMetadata(targetRow).providerRunner;
-        const projectLocation=await this.dependencies.owner!.prepareProjectLocation(input.project,typeof binding==='string'?binding:undefined);
+        const projectLocation=(yield this.dependencies.owner!.prepareProjectLocation(input.project,typeof binding==='string'?binding:undefined));
         return db.transaction(()=>{
             const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
                 kind:'action',origin:'agent',payload:{kind:'move-session',session:target.id,project:input.project},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn)});
@@ -1100,7 +1102,7 @@ export class SessionCommunicationCoordinator {
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',moved}),saved.input.id);
             return {session:this.dependencies.owner!.view(getSessionById(target.id)!),...moved};
         })();
-    }
+    }).call(this));}
     /** Any agent may name any session here; a title Tejas set himself always wins [decision: agents-are-never-handcuffed]. */
     title(input:{source:CommunicationSource;action_id:string;title:string;address?:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
@@ -1261,7 +1263,7 @@ export class SessionCommunicationCoordinator {
     }
     /** A trusted Lab service posts to an explicit Inbox; foreign source proof comes from
      * the configured peer itself. It never admits an input, turn, request, or reply duty. */
-    async publishInbox(value:unknown) {
+    async publishInbox(value:unknown) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const input=inboxPublication(value),peers=this.dependencies.peers,self=peers?.self??process.env.CONCIERGE_PEER_NAME??'cloud';
         if(input.destinationOwner!==self)throw new Error('This instance does not own that Inbox destination.');
@@ -1287,8 +1289,8 @@ export class SessionCommunicationCoordinator {
             return {post:JSON.parse(prior.receipt_json!).post,duplicate:true};
         };
         const prior=existing();if(prior)return duplicate(prior);
-        const proof=await peers.client(input.sourceOwner).request<ReturnType<SessionCommunicationCoordinator['publicationSource']>>(
-            'POST','/sessions/v1/peers/inbox-post-source',input);
+        const proof=(yield peers.client(input.sourceOwner).request<ReturnType<SessionCommunicationCoordinator['publicationSource']>>(
+            'POST','/sessions/v1/peers/inbox-post-source',input)) as ReturnType<SessionCommunicationCoordinator['publicationSource']>;
         if(proof?.version!==1||proof.sourceOwner!==input.sourceOwner||proof.source?.input_id!==input.source.input_id
             ||proof.source.run_id!==input.source.run_id||!/^concierge:[1-9][0-9]*$/.test(proof.session?.id??''))
             throw new Error('The source owner did not prove this exact publication.');
@@ -1311,7 +1313,7 @@ export class SessionCommunicationCoordinator {
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',post:receipt}),saved.input.id);
             return {post:receipt,duplicate:false};
         })();
-    }
+    }).call(this));}
     /** A live session declares its turn's outcome as a retained, retry-safe action. */
     outcome(input:{source:CommunicationSource;action_id:string;outcome:DeclaredTurnOutcome;text?:string;quiet_because?:string;summary?:string;his_words?:string;why_not_answered?:string;only_he_can?:string;todo?:string;todo_checked?:TodoState|null|'unavailable';decision_id?:string;approval_action?:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
@@ -1430,7 +1432,7 @@ export class SessionCommunicationCoordinator {
     }
     /** Resume the original native run only after the capability proves its browser send never
      * happened. The owner checks that proof and requeues the same run, not a new question. */
-    async recoverChatGptNeverSent(input:{source:CommunicationSource;action_id:string;request_id:string}) {
+    async recoverChatGptNeverSent(input:{source:CommunicationSource;action_id:string;request_id:string}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.fenced(this.actor(input.source));action(input.action_id);
         if(!actor.inputId)throw new Error('ChatGPT recovery needs the asking session’s exact accepted input and live run.');
@@ -1450,7 +1452,7 @@ export class SessionCommunicationCoordinator {
             throw new Error('This asking session has no open obligation for that exact original ChatGPT request.');
         if(getSessionById(request.target_session_id)?.provider_id!=='chatgpt')
             throw new Error('The exact original request does not target a ChatGPT session.');
-        const result=await this.dependencies.owner.requeueProvenUnsentChatGpt(request.target_session_id,request.target_input_id);
+        const result=(yield this.dependencies.owner.requeueProvenUnsentChatGpt(request.target_session_id,request.target_input_id));
         const receipt=db.transaction(()=>{
             const saved=retainSessionInput(retainedAction);
             if(saved.duplicate)return {...JSON.parse(saved.input.receipt_json??'{}'),duplicate:true};
@@ -1462,10 +1464,10 @@ export class SessionCommunicationCoordinator {
         })();
         this.wake();
         return receipt;
-    }
+    }).call(this));}
     /** Recover only the exact service report-back bound to an open work request. Its target input
      * and action receipt stay separate from the already-acknowledged original work input. */
-    async recoverCodexNeverAcknowledged(input:{source:CommunicationSource;action_id:string;request_id:string;custody_successor?:boolean}) {
+    async recoverCodexNeverAcknowledged(input:{source:CommunicationSource;action_id:string;request_id:string;custody_successor?:boolean}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const authority=this.authority(this.fenced(this.actor(input.source))),actor=authority.actor;action(input.action_id);
         if(authority.scope!=='work')throw new Error('Codex recovery requires work authority from this exact live run.');
@@ -1480,8 +1482,8 @@ export class SessionCommunicationCoordinator {
                     ||(live.authorityInputId??live.actor.inputId)!==authorityInputId||this.row(input.request_id).outcome!==null)
                     throw new Error('Recovery lost its exact live work authority or its underlying request settled.');
             };
-            const result=await recover({actorSession:actor.session,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),
-                requestId:input.request_id,actionId:input.action_id,authorityInputId,validateSource});
+            const result=(yield recover({actorSession:actor.session,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),
+                requestId:input.request_id,actionId:input.action_id,authorityInputId,validateSource}));
             this.wake();return result;
         }
         if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?')
@@ -1536,8 +1538,8 @@ export class SessionCommunicationCoordinator {
                 ||currentRequest.target_input_id!==request.target_input_id||currentRequest.target_session_id!==session.id)
                 throw new Error('The asking run lost work authority or the exact target request changed during native-history inspection.');
         };
-        result=await this.dependencies.owner.requeueProvenUnacknowledgedCodex(session.id,operation.id,
-            {requestId:input.request_id,actionId:input.action_id,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),validateSource});
+        result=(yield this.dependencies.owner.requeueProvenUnacknowledgedCodex(session.id,operation.id,
+            {requestId:input.request_id,actionId:input.action_id,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),validateSource}));
         }
         const currentAuthority=this.authority(this.fenced(this.actor({input_id:actor.inputId,run_id:nativeRunId(actor.turn)})));
         if(currentAuthority.scope!=='work'||currentAuthority.actor.session!==actor.session)
@@ -1553,7 +1555,7 @@ export class SessionCommunicationCoordinator {
         })();
         if(result.status==='requeued')this.wake();
         return receipt;
-    }
+    }).call(this));}
     /** The asking session or Inbox router may retire one exact open needs_you, without redeclaring its turn. */
     withdrawAttention(input:{source:CommunicationSource;action_id:string;address:string;need_event_id:string;reason:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
@@ -1617,14 +1619,14 @@ export class SessionCommunicationCoordinator {
             });
         }
     }
-    async note(input:{source:CommunicationSource;action_id:string;captureId?:string;messageId?:string;summary?:string;addTo?:string;person?:string;journal?:'entry'|'checkin'}) {
+    async note(input:{source:CommunicationSource;action_id:string;captureId?:string;messageId?:string;summary?:string;addTo?:string;person?:string;journal?:'entry'|'checkin'}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.fenced(this.actor(input.source));action(input.action_id);
         if(!this.dependencies.owner)throw new Error('Native session owner is unavailable.');
         const sourceInputId=actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id;
         this.actor({input_id:sourceInputId,run_id:nativeRunId(actor.turn)});
         return this.dependencies.owner.saveInboxNote({sourceInputId,sourceRunId:nativeRunId(actor.turn),sourceSessionId:actor.session,actionId:input.action_id,...(typeof input.summary==='string'?{summary:input.summary}:{}),...(typeof input.addTo==='string'?{addTo:input.addTo}:{}),...(typeof input.person==='string'?{person:input.person}:{}),...(input.journal==='entry'||input.journal==='checkin'?{journal:input.journal}:{}),...(typeof input.messageId==='string'?{messageId:input.messageId}:{captureId:input.captureId})});
-    }
+    }).call(this));}
     /** Whether a request paced with --after-settled still has to wait for this earlier request. */
     private pacingWaitsOn(id: string): boolean {
         const earlier = this.row(id);
@@ -1840,21 +1842,21 @@ export class SessionCommunicationCoordinator {
             {sessionId:actor.session,inputId:actor.inputId,runId:nativeRunId(actor.turn),targetAddress:input.address,
                 ...(authority.authorityInputId?{authorityInputId:authority.authorityInputId}:{})});
     }
-    async pause(input:{source:CommunicationSource;verb:'status'|'all'|'resume';action_id?:string;session_ids?:string[]}) {
+    async pause(input:{source:CommunicationSource;verb:'status'|'all'|'resume';action_id?:string;session_ids?:string[]}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         this.actor(input.source);
         if(input.verb==='status')return this.dependencies.owner.globalPauseStatus();
         if(!input.action_id)throw new Error('Pause or resume needs a stable action ID.');
         action(input.action_id);
         return this.dependencies.owner.globalPauseControl(input.verb==='all',
             {clientActionId:input.action_id,...(input.session_ids?{sessionIds:input.session_ids}:{})});
-    }
+    }).call(this));}
     /**
      * The Commons board (docs/plans/2026-10-08-commons-board.md): a shared place where sessions discuss
      * in the open. Its source of truth is plain files; the author is this live run's session, and a
      * mention wakes the mentioned session once with a notice. status and sweep are supervisor checks
      * served on this machine's owner socket and need no session.
      */
-    async board(input:BoardInput&{source?:CommunicationSource}) {
+    async board(input:BoardInput&{source?:CommunicationSource}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const supervisor=input.verb==='status'||input.verb==='sweep';
         let actor:BoardActor|null=null;
@@ -1873,17 +1875,17 @@ export class SessionCommunicationCoordinator {
             const binding=this.dependencies.owner.labConversations.view(input.thread.replace(/^lab:/,''));
             if(input.responseTargets.some(sessionId=>!binding.participants.some(member=>member.sessionId===sessionId)))throw new Error('Choose only exact sessions bound to this Lab conversation.');
         }
-        const result=await boardCommand(input,actor,{
+        const result=(yield boardCommand(input,actor,{
             admit:admission=>this.dependencies.owner.admit(admission),
             askPeer:({address,actionId,text,sourceInputId,sourceRunId})=>this.ask({source:{input_id:sourceInputId,run_id:sourceRunId},action_id:actionId,address,text,requestedEffect:'informational'}),
-        });
+        }));
         if(input.responseTargets?.length&&actor&&'id' in result){
             const thread=input.thread!.replace(/^lab:/,'');
             this.dependencies.owner.labConversations.respond(thread,{clientActionId:`lab-post:${actor.inputId}:${input.action_id}`,entryId:result.id,targets:input.responseTargets},
                 {inputId:actor.inputId!,runId:actor.runId!,sessionId:actor.session});
         }
         return result;
-    }
+    }).call(this));}
     mutationAdmission(input:{source:CommunicationSource}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         if(!input.source?.input_id||!input.source?.run_id)
@@ -1905,14 +1907,14 @@ export class SessionCommunicationCoordinator {
         const actor=this.fenced(this.actor(input.source));
         return this.dependencies.owner.diagnoseAgentTestScope(actor.session,input.create_input_id,input.address);
     }
-    async obligations(input:{source:CommunicationSource;address?:string}) {
+    async obligations(input:{source:CommunicationSource;address?:string}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         const actor=this.actor(input.source);
         if(!actor.inputId)throw new Error('Obligations require an exact native source input and run.');
         const target=input.address?this.address(input.address).session:actor.session;
         return handoffObligations(actor.session,target,{inputId:actor.inputId,runId:nativeRunId(actor.turn)});
-    }
+    }).call(this));}
     async handoff(input:{source:CommunicationSource;verb:'propose'|'accept'|'withdraw';address?:string;provider?:string;model?:string;effort?:string;
-      reason?:string;session_name?:string;action_id?:string;handoff_id?:string;digest?:string}) {
+      reason?:string;session_name?:string;action_id?:string;handoff_id?:string;digest?:string}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.actor(input.source);
         if(!actor.inputId)throw new Error('Handoff requires an exact native source input and run.');
@@ -1920,29 +1922,29 @@ export class SessionCommunicationCoordinator {
             this.fenced(actor);
             if(!input.address||!input.provider||!input.reason||!input.action_id)throw new Error('Handoff needs predecessor address, provider, reason and stable action ID.');
             action(input.action_id);
-            const proposed=await proposeHandoff({actorSession:actor.session,inputId:actor.inputId,runId:nativeRunId(actor.turn),
+            const proposed=(yield proposeHandoff({actorSession:actor.session,inputId:actor.inputId,runId:nativeRunId(actor.turn),
                 predecessorId:this.address(input.address).session,provider:input.provider,model:input.model,effort:input.effort,
-                reason:input.reason,sessionName:input.session_name,actionId:input.action_id});
+                reason:input.reason,sessionName:input.session_name,actionId:input.action_id}));
             this.wake();return proposed;
         }
         if(!input.handoff_id)throw new Error('Name the exact handoff ID.');
         if(input.verb==='accept'){
             if(!input.digest)throw new Error('Acknowledge the exact inventory digest.');
-            const accepted=await acceptHandoff({actorSession:actor.session,inputId:actor.inputId,runId:nativeRunId(actor.turn),
-                handoffId:input.handoff_id,digest:input.digest});
+            const accepted=(yield acceptHandoff({actorSession:actor.session,inputId:actor.inputId,runId:nativeRunId(actor.turn),
+                handoffId:input.handoff_id,digest:input.digest}));
             if(accepted.accepted&&!('duplicate' in accepted)){this.dependencies.owner.notifySupersededSession(accepted.predecessor,accepted.successor,input.handoff_id);this.wake();}
             return accepted;
         }
         if(input.verb==='withdraw')return withdrawHandoff({actorSession:actor.session,handoffId:input.handoff_id});
         throw new Error('Choose handoff propose, accept or withdraw.');
-    }
+    }).call(this));}
     /**
      * Wake this session once, when a file or directory changes, when a command finishes, or at a
      * deadline (docs/architecture/WATCHES.md). Local to this machine and to the session whose live run
      * asks: this route is served on the owner socket only, never to a peer, and a watch is never forwarded.
      */
     /** A link opened in a browser on a machine, with no session: the order waits in the ledger while that machine sleeps. */
-    async openLink(input:{source:CommunicationSource;action_id:string;url:string;on?:string;browser?:string}) {
+    async openLink(input:{source:CommunicationSource;action_id:string;url:string;on?:string;browser?:string}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         if(!input.source?.input_id)throw new Error('Open a link from an admitted native run: use --source-input and --source-run.');
         const links=this.dependencies.owner?.peerLinks;
@@ -1953,8 +1955,8 @@ export class SessionCommunicationCoordinator {
         action(input.action_id);
         return links.open({source:{session:actor.session,input:actor.inputId!,run:nativeRunId(actor.turn)},actionId:input.action_id,url:input.url,
             ...(input.on===undefined?{}:{peer:input.on}),...(input.browser===undefined?{}:{browser:input.browser})});
-    }
-    async watch(input:{source:CommunicationSource;verb:'file'|'command'|'list'|'cancel'|'inspect-pair'|'reconcile-pair';action_id?:string;until?:string;renew?:boolean;requiredCommit?:string;path?:string;argv?:string[];cwd?:string;watch_id?:string;runner?:string;old_watch_id?:string;new_watch_id?:string;inspection?:string}) {
+    }).call(this));}
+    async watch(input:{source:CommunicationSource;verb:'file'|'command'|'list'|'cancel'|'inspect-pair'|'reconcile-pair';action_id?:string;until?:string;renew?:boolean;requiredCommit?:string;path?:string;argv?:string[];cwd?:string;watch_id?:string;runner?:string;old_watch_id?:string;new_watch_id?:string;inspection?:string}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         if(!input.source?.input_id)throw new Error('A watch is registered from an admitted native run: use --source-input and --source-run.');
         const actor=this.actor(input.source),origin={originInputId:actor.inputId!,originRunId:nativeRunId(actor.turn)};
@@ -1976,14 +1978,14 @@ export class SessionCommunicationCoordinator {
         if(typeof input.until!=='string'||!input.until.trim())throw new Error('--until is required.');
         if(input.verb==='file'){
             if(typeof input.path!=='string')throw new Error('Name the file or directory to watch.');
-            if(input.renew&&(!this.dependencies.owner||!await this.dependencies.owner.hasRegisteredProject(getSessionById(actor.session)!)))
+            if(input.renew&&(!this.dependencies.owner||!(yield this.dependencies.owner.hasRegisteredProject(getSessionById(actor.session)!))))
                 throw new Error(STANDING_WORK_REFUSAL);
             return registerWatch({kind:'file',sessionId:actor.session,...origin,actionId:input.action_id,until:input.until,path:input.path,renew:input.renew,requiredCommit:input.requiredCommit,runner:input.runner??null});
         }
         if(input.requiredCommit!==undefined)throw new Error('--required-commit is only for a file watch.');
         if(!Array.isArray(input.argv)||typeof input.cwd!=='string')throw new Error('A command watch needs --cwd and the command after --.');
         return registerWatch({kind:'command',sessionId:actor.session,...origin,actionId:input.action_id,until:input.until,argv:input.argv,cwd:input.cwd,runner:input.runner??null});
-    }
+    }).call(this));}
     async ask(input: {
         responseMode?:'context';
         source: CommunicationSource;
@@ -2039,7 +2041,7 @@ export class SessionCommunicationCoordinator {
         /** A session a new one should consult for context; its address is put in the first input. */
         consult?:string;
         saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;daily?:{time:string;timeZone:string};quietOnly?:boolean};
-    }) {
+    }) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if (this.stopped)
             throw new Error('Session communication is not accepting requests.');
         if (input.resume_source && (input.peer !== undefined || input.saved || input.correction_of || input.recovery_of || input.routeMessageId))
@@ -2130,7 +2132,7 @@ export class SessionCommunicationCoordinator {
             if(!agent)throw new Error(`Unknown standing agent role ${input.role}; use sessions agents.`);
             if(input.address||input.provider||input.project||input.peer||input.outside||input.resurrect||input.saved?.kind==='banked'||input.consult)
                 throw new Error('--role chooses the standing agent session and project; do not combine it with an address, provider, project, peer or banked work.');
-            standingLocation=await this.dependencies.owner.prepareProjectLocation(agent.project);
+            standingLocation=(yield this.dependencies.owner.prepareProjectLocation(agent.project));
             const session=standingAgentSession(this.dependencies.owner.defaultCwd,agent.role);
             if(!session)standingRole=agent.role;
             input=session?{...input,role:undefined,address:sessionAddress(session)}
@@ -2211,7 +2213,7 @@ export class SessionCommunicationCoordinator {
         // A discovered address already says where the session lives.
         const remote = this.dependencies.peers?.splitAddress(input.address);
         if (input.resurrect && !remote) {
-            const continued=await this.dependencies.owner.resurrect({clientActionId:`ask-resurrect:${hash(`${actor.session}:${actor.turn}:${actor.inputId??''}:${input.action_id}`)}`,address:input.address});
+            const continued=(yield this.dependencies.owner.resurrect({clientActionId:`ask-resurrect:${hash(`${actor.session}:${actor.turn}:${actor.inputId??''}:${input.action_id}`)}`,address:input.address}));
             const address=continued.session.address;
             const target=this.dependencies.peers?.splitAddress(address);
             input={...input,address:target?.address??address,peer:target?.peer,resurrect:undefined};
@@ -2219,9 +2221,9 @@ export class SessionCommunicationCoordinator {
             if (input.peer !== undefined && input.peer !== remote.peer) throw new Error('The address names a different peer than --peer.');
             if (input.resurrect) {
                 // Continue the peer session here, from its archived transcript, as a distinct session.
-                const continued=await this.dependencies.owner.resurrect({
+                const continued=(yield this.dependencies.owner.resurrect({
                     clientActionId:`ask-resurrect:${hash(`${actor.session}:${actor.turn}:${actor.inputId??''}:${input.action_id}`)}`,
-                    address:input.address});
+                    address:input.address}));
                 input = {...input, peer: undefined, address: continued.session.address, resurrect: undefined};
             } else input = {...input, peer: remote.peer, address: remote.address};
         }
@@ -2238,11 +2240,11 @@ export class SessionCommunicationCoordinator {
         const title=normalizeSessionTitle(input.title);
         let projectLocation=standingLocation;
         if(input.implementation){
-            projectLocation=await this.dependencies.owner!.prepareImplementationWorktree(input.project!,actor.inputId!,input.action_id);
+            projectLocation=(yield this.dependencies.owner!.prepareImplementationWorktree(input.project!,actor.inputId!,input.action_id));
             input={...input,project:`${projectLocation.name}/${projectLocation.path}`,
                 text:`Implement the fixed design below in the worktree already selected for this session. Check your changes and reply to the designing session with what changed and what you verified. The designer reviews the result before answering Tejas.\n\n${input.text}`};
         }else if(input.provider&&input.provider!=='chatgpt'&&input.project&&!projectLocation)
-            projectLocation=await this.dependencies.owner!.prepareProjectLocation(input.project);
+            projectLocation=(yield this.dependencies.owner!.prepareProjectLocation(input.project));
         if(input.saved) {
             if((!input.provider&&!requestedRole)||input.peer||(!requestedRole&&!title)||input.after?.length)
                 throw new Error('Saved work needs a standing role or a newly named local session with no prerequisites.');
@@ -2252,7 +2254,7 @@ export class SessionCommunicationCoordinator {
                 throw new Error('Scheduled work needs a future time.');
             if(input.saved.repeatEveryMs!==undefined) {
                 const sourceSession=getSessionById(actor.session)!;
-                if((!requestedRole&&!await this.dependencies.owner.hasRegisteredProject(sourceSession))||!projectLocation)
+                if((!requestedRole&&!(yield this.dependencies.owner.hasRegisteredProject(sourceSession)))||!projectLocation)
                     throw new Error(STANDING_WORK_REFUSAL);
             }
         }
@@ -2294,7 +2296,7 @@ export class SessionCommunicationCoordinator {
             const askedPeer=db.query('SELECT payload_json FROM session_peer_requests WHERE source_input_id=? AND action_id=?').get(actor.inputId??'',input.action_id) as {payload_json:string}|null;
             if(askedPeer)input={...input,text:JSON.parse(askedPeer.payload_json).text??input.text};
             else {
-                const history=await this.earlierWork(actor,input,routedFrom?.root??topicRootFor(threadRoot,actor.inputId),null);
+                const history=(yield this.earlierWork(actor,input,routedFrom?.root??topicRootFor(threadRoot,actor.inputId),null));
                 if(history?.text)input={...input,text:`${history.text}\n\n${input.text}`};
             }
             if(input.requestedEffect==='work'){
@@ -2377,7 +2379,7 @@ export class SessionCommunicationCoordinator {
                 ||original.source_session_id!==actor.session||original.target_session_id!==targetSession.id
                 ||!original.target_input_id)
                 throw new Error('The original failed ChatGPT request does not own this exact unanswered question, task, and target.');
-            correctionProof=await this.dependencies.owner.proveRejectedChatGptAttachment(targetSession.id,original.target_input_id);
+            correctionProof=(yield this.dependencies.owner.proveRejectedChatGptAttachment(targetSession.id,original.target_input_id));
             const originalHashes=new Set(correctionProof.attachmentHashes);
             if(!input.files.some(file=>!originalHashes.has(createHash('sha256').update(Buffer.from(file.base64,'base64')).digest('hex'))))
                 throw new Error('The correction needs at least one attached file with changed bytes.');
@@ -2412,8 +2414,8 @@ export class SessionCommunicationCoordinator {
                 throw new Error('A request may be paced only behind this session’s own requests.');
         // Looked up once, after every refusal above, when the request is first accepted; a retry
         // returned the receipt earlier.
-        const history=await this.earlierWork(actor,input,topicRoot??null,target?.session??null);
-        const consultation=historical?await this.dependencies.owner!.prepareConsultation(input.address!,undefined,input.evidence):null;
+        const history=(yield this.earlierWork(actor,input,topicRoot??null,target?.session??null));
+        const consultation=historical?(yield this.dependencies.owner!.prepareConsultation(input.address!,undefined,input.evidence)):null;
         if(consultation||history) {
             if(this.stopped)throw new Error('Session communication is not accepting requests.');
             const raced=prior();
@@ -2511,7 +2513,7 @@ export class SessionCommunicationCoordinator {
         })();
         this.wake();
         return this.receipt(this.row(id));
-    }
+    }).call(this));}
     private scheduleOwnRole(actor:{session:number;turn:number;inputId?:string|null},
         saved:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;daily?:{time:string;timeZone:string};quietOnly?:boolean},
         role:string,actionId:string,text:string,digest:string) {
@@ -2564,19 +2566,19 @@ export class SessionCommunicationCoordinator {
             void this.peers().ask({session:input.inbox.id,turn:standIn.id,inputId:input.inputId},{peer,action_id:actionId,address,text:input.text,requestedEffect:'work',
                 ...(attachments.length?{attachments}:{}),threadRoot:input.target.root,framing:requestId=>forwardedReplyFraming(requestId,input.text,origin,input.target.topicId,input.inputId,input.target.messageThreadRootId,input.target.messageThreadRequestId),forwardedReply:{inboxInputId:input.inputId,topicId:input.target.topicId,authorKind:origin,
                   ...(input.target.messageThreadRootId?{messageThreadRootId:input.target.messageThreadRootId}:{}),...(input.target.messageThreadRequestId?{messageThreadRequestId:input.target.messageThreadRequestId}:{})}})
-              .then(receipt=>{
+              .then(ledgerCallback(receipt=>{
                 if(receipt.status==='queued_offline')db.query("UPDATE session_inputs SET receipt_json=json_set(receipt_json,'$.statusDetail',json(?)),updated_at=CURRENT_TIMESTAMP WHERE id=?")
                     .run(JSON.stringify({code:'PEER_ASLEEP',message:`Queued until ${peer} wakes; the agent gets it the moment the Mac is back.`,clearsAt:null,automaticRetry:true}),input.inputId);
                 log('info','inbox_reply_forwarded',{request_id:id,input_id:input.inputId,peer,target_address:address,topic_id:input.target.topicId,queued:receipt.status==='queued_offline'});
-              })
-              .catch(error=>{
+              }))
+              .catch(ledgerCallback(error=>{
                 // The peer may have committed the stable request before our answer was lost.
                 // Keep the exact target as a recoverable intent, never claim it was not sent.
                 const detail={code:'FORWARD_DELIVERY_UNCONFIRMED',message:'Delivery to the other machine is unconfirmed; the same request will be checked again.',clearsAt:null,automaticRetry:true};
                 db.query("UPDATE session_inputs SET receipt_json=json_set(receipt_json,'$.statusDetail',json(?)),updated_at=CURRENT_TIMESTAMP WHERE id=? AND json_extract(receipt_json,'$.state')='waiting'")
                     .run(JSON.stringify(detail),input.inputId);
                 log('warn','inbox_reply_forward_failed',{request_id:id,input_id:input.inputId,peer,error:String((error as Error)?.message??error).slice(0,300)});
-              }).finally(()=>this.forwarding.delete(id));
+              })).finally(ledgerCallback(()=>this.forwarding.delete(id)));
             this.wake();
             return id;
         }
@@ -2605,7 +2607,7 @@ export class SessionCommunicationCoordinator {
         this.wake();
         return id;
     }
-    async forwardContext(input:{inbox:SessionRow;inputId:string;target:{peer:{peer:string;address:string};sessionId:string};payload:Record<string,any>}):Promise<unknown> {
+    async forwardContext(input:{inbox:SessionRow;inputId:string;target:{peer:{peer:string;address:string};sessionId:string};payload:Record<string,any>}):Promise<unknown> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if(this.stopped)throw new Error('Session communication is not accepting context.');
         const accepted=getAcceptedSessionInput(input.inputId);
         if(!accepted||accepted.session_id!==input.inbox.id)throw new Error('The saved context must name its accepted source input.');
@@ -2614,13 +2616,13 @@ export class SessionCommunicationCoordinator {
         const files=attachmentIds.map(id=>{const {id:_id,...file}=owner.attachment(id);return file;});
         const contextPayload={...input.payload,attachments:[],attachmentSourceIds:attachmentIds};
         const actionId=`forward-context:${input.inputId}`;
-        const receipt=await this.peers().ask({session:input.inbox.id,turn:accepted.turn_id,inputId:input.inputId},{
+        const receipt=(yield this.peers().ask({session:input.inbox.id,turn:accepted.turn_id,inputId:input.inputId},{
             peer:input.target.peer.peer,address:input.target.peer.address,action_id:actionId,
             text:String(input.payload.text??''),responseMode:'context',contextPayload,files,
-        });
+        }));
         db.query("UPDATE session_inputs SET receipt_json=json_remove(receipt_json,'$.contextForward'),updated_at=CURRENT_TIMESTAMP WHERE id=?").run(input.inputId);
         return receipt;
-    }
+    }).call(this));}
     /** Post every fresh reply for a named Inbox thread, independently of its effect scope. */
     private threadAnswer(request:RequestRow,event:EventRow,declared:any):{root:string;forwarded:{inboxInputId:string}|null}|null {
         const thread=this.answerThread(request);
@@ -3207,7 +3209,7 @@ export class SessionCommunicationCoordinator {
         if(needsRepair)this.wake();
         return true;
     }
-    private async dispatch(request: RequestRow) {
+    private async dispatch(request: RequestRow) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if (request.outcome || this.stopped)
             return;
         if (!request.source_input_id || !request.target_input_id) {
@@ -3418,8 +3420,8 @@ export class SessionCommunicationCoordinator {
         if(this.holdFailedChatGptRequest(request,endedWorkInPlainWords(turn.agent_text)))return;
         this.settle(request, 'failed', endedWorkInPlainWords(turn.agent_text),
             { ...output, ...(turn.agent_text ? { providerError: String(turn.agent_text).slice(0, 2000) } : {}) });
-    }
-    private async deliver(event: EventRow) {
+    }).call(this));}
+    private async deliver(event: EventRow) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if (this.stopped)
             return;
         const request = this.row(event.request_id);
@@ -3550,7 +3552,7 @@ export class SessionCommunicationCoordinator {
             return;
         }
         db.query("UPDATE session_communication_events SET status='uncertain',error='Legacy return delivery requires owner reconciliation; no effect has been replayed.' WHERE event_id=? AND status NOT IN ('received','uncertain')").run(event.event_id);
-    }
+    }).call(this));}
     private postThreadEvent(request:RequestRow,event:EventRow,declared:any):boolean {
         if(event.kind==='overdue')return false;
         const thread=this.threadAnswer(request,event,declared);
@@ -3812,7 +3814,7 @@ export class SessionCommunicationCoordinator {
     }
     private incidentScanTraceRemaining = 200;
     /** One durable record is the fairness boundary; a Promise microtask does not yield to I/O. */
-    private async scanRows<T>(table: string, sql: string, visit: (row: T) => void|Promise<void>, ...args: (number | string)[]) {
+    private async scanRows<T>(table: string, sql: string, visit: (row: T) => void|Promise<void>, ...args: (number | string)[]) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if (this.incidentScanTraceRemaining-- > 0)
             log('warn', 'incident_reconciliation_scan', { table, sql: sql.replace(/\s+/g, ' ').slice(0, 400) });
         const query = db.query(sql);
@@ -3822,16 +3824,16 @@ export class SessionCommunicationCoordinator {
             const row = query.get(...args, highWater, cursor) as (T & { reconciliation_rowid: number }) | null;
             if (!row) return;
             cursor = row.reconciliation_rowid;
-            await visit(row);
-            await new Promise<void>(resolve => setImmediate(resolve));
+            (yield visit(row));
+            (yield new Promise<void>(resolve => setImmediate(resolve)));
         }
-    }
+    }).call(this));}
     private deferredRequestIds(now: number) {
         for (const [id, recheck] of this.healthyRechecks)
             if (recheck.nextCheck <= now) this.healthyRechecks.delete(id);
         return JSON.stringify([...this.healthyRechecks.keys()]);
     }
-    private async scanExternalRequests() {
+    private async scanExternalRequests() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if (this.incidentScanTraceRemaining-- > 0)
             log('warn', 'incident_reconciliation_scan', { table: 'session_external_requests', sql: 'scanExternalRequests' });
         const query = db.query(`SELECT rowid AS reconciliation_rowid,* FROM session_external_requests
@@ -3846,9 +3848,9 @@ export class SessionCommunicationCoordinator {
             createdAt = row.created_at_ms;
             cursor = row.reconciliation_rowid;
             this.chaseExternalStranded(row);
-            await new Promise<void>(resolve => setImmediate(resolve));
+            (yield new Promise<void>(resolve => setImmediate(resolve)));
         }
-    }
+    }).call(this));}
     private recoverChatGptObligation(row:ChatGptObligationRow) {
         const now=this.now();
         let current=db.query(`SELECT * FROM session_chatgpt_obligations WHERE obligation_id=? AND due_at_ms<=?
@@ -3929,7 +3931,7 @@ export class SessionCommunicationCoordinator {
                     : `ChatGPT answer obligation ${current.obligation_id} for ${current.task_kind}:${current.task_id} remains open. Exact question: ${current.question_text}\nActive request: ${current.active_request_id}. State: ${current.state}; next action: ${current.next_action}. ${chatGptAnswerCommand(current)} Inspect the original browser operation and retained conversation/receipt, then get the exact answer back and declare how it was handled. If the original request settled failed and a later received ChatGPT answer covers this question, use sessions answer ${current.obligation_id} --handling superseded --successor-request <later-request-id> --answer-event <received-event-id> --reason <coverage> <source-flags> --action-id <stable-id>. If the original receipt proves Send was never pressed, use sessions chatgpt-recover ${current.active_request_id} --action-id <stable-action> to requeue that original run. A timeout, generic failed turn, or ambiguous receipt does not authorize another send. If this repair attempt cannot finish, the owner will wake this same obligation again.`});
         })();
     }
-    private async reconcile() {
+    private async reconcile() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         let startedPeers = false;
         if (!this.startupReconciled) {
             const transferredAnswers=reconcileHandoffChatGptObligations(this.now());
@@ -3939,22 +3941,22 @@ export class SessionCommunicationCoordinator {
             if(legacy.scanned)log('info','chatgpt_legacy_reconciliation',{...legacy});
             const withdrawn=reconcileCanceledChatGptObligations(this.now());
             if(withdrawn)log('info','chatgpt_asker_withdrawal_reconciliation',{withdrawn});
-            if (!await releaseLateRetainedReturns(() => this.stopped)) return;
+            if (!(yield releaseLateRetainedReturns(() => this.stopped))) return;
             if (this.stopped) return;
             this.startupReconciled = true;
             reconcileAskedAnswerClocks(db);
             this.dependencies.peers?.start();
             // Topic backfill followed retained-return restoration before this sweep yielded.
-            const backfill = setTimeout(() => void backfillRequestTopics(() => this.stopped).catch(error => log('warn', 'request_topics_backfill_failed', { error: error instanceof Error ? error.message : String(error) })), 60_000);
+            const backfill = setTimeout(ledgerCallback(() => void backfillRequestTopics(() => this.stopped).catch(error => log('warn', 'request_topics_backfill_failed', { error: error instanceof Error ? error.message : String(error) }))), 60_000);
             backfill.unref?.();
             startedPeers = true;
         }
         while (this.reconciliationDirty && !this.stopped) {
             this.reconciliationDirty = false;
-            this.schedule('lab-conversations',async()=>{
-                this.pendingLabConversations=await this.dependencies.owner.labConversations.reconcile();
+            this.schedule('lab-conversations',()=>runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+                this.pendingLabConversations=(yield this.dependencies.owner.labConversations.reconcile());
                 if(!this.stopped)this.arm();
-            });
+            }).call(this)));
             if (!startedPeers) this.dependencies.peers?.wake();
             startedPeers = false;
             let pendingAcceptedRecovery=false;
@@ -3962,7 +3964,7 @@ export class SessionCommunicationCoordinator {
             // plain turn index for `turn_id IS NULL` and walked every input without a turn (37,000 of
             // 54,000 rows, 80 MB of pages) twice per wake, while the system sqlite3 used to check the plan
             // chose the partial index (2026-10-30). The hint makes the bound hold under the engine that runs.
-            await this.scanRows<AcceptedSessionInput>('session_inputs',`SELECT rowid AS reconciliation_rowid,* FROM session_inputs INDEXED BY session_inputs_surface_recovery
+            (yield this.scanRows<AcceptedSessionInput>('session_inputs',`SELECT rowid AS reconciliation_rowid,* FROM session_inputs INDEXED BY session_inputs_surface_recovery
                 WHERE scope='surface:thinkering' AND kind='input' AND turn_id IS NULL AND steering_id IS NULL
                   AND request_id IS NULL AND (json_extract(receipt_json,'$.admissionIntent') IN ('queue','live')
                     OR json_extract(receipt_json,'$.state')='waiting' AND json_extract(receipt_json,'$.forwardTarget') IS NOT NULL)
@@ -3976,8 +3978,8 @@ export class SessionCommunicationCoordinator {
                 pendingAcceptedRecovery=true;
                 try{this.dependencies.owner.recoverAcceptedInput(input);}
                 catch(error){log('warn','accepted_input_recovery_waiting',{input_id:input.id,error:String(error).slice(0,300)});}
-            });
-            await this.scanRows<AcceptedSessionInput>('session_inputs',`SELECT rowid AS reconciliation_rowid,* FROM session_inputs INDEXED BY session_inputs_capture_recovery
+            }));
+            (yield this.scanRows<AcceptedSessionInput>('session_inputs',`SELECT rowid AS reconciliation_rowid,* FROM session_inputs INDEXED BY session_inputs_capture_recovery
                 WHERE scope GLOB 'capture:*' AND kind='input' AND turn_id IS NULL AND steering_id IS NULL
                   AND request_id IS NULL AND json_extract(receipt_json,'$.admissionIntent')='live'
                   AND id='capture:' || json_extract(payload_json,'$.capture.id')
@@ -3985,17 +3987,17 @@ export class SessionCommunicationCoordinator {
                 pendingAcceptedRecovery=true;
                 try{this.dependencies.owner.recoverAcceptedInput(input);}
                 catch(error){log('warn','capture_input_recovery_waiting',{input_id:input.id,error:String(error).slice(0,300)});}
-            });
-            await this.scanRows<AcceptedSessionInput>('session_inputs',`SELECT rowid AS reconciliation_rowid,* FROM session_inputs INDEXED BY session_inputs_context_forward
+            }));
+            (yield this.scanRows<AcceptedSessionInput>('session_inputs',`SELECT rowid AS reconciliation_rowid,* FROM session_inputs INDEXED BY session_inputs_context_forward
                 WHERE json_extract(receipt_json,'$.contextForward') IS NOT NULL
                   AND json_extract(payload_json,'$.responseMode')='context'
-                  AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,async input=>{
+                  AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,input=>runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
                 const forward=JSON.parse(input.receipt_json??'{}').contextForward;
                 const inbox=getSessionById(input.session_id);
                 if(!inbox||typeof forward?.target?.peer?.peer!=='string'||typeof forward.target.peer.address!=='string'
                   ||typeof forward.target.sessionId!=='string'||!forward.payload||typeof forward.payload!=='object')return;
                 try{
-                    await this.forwardContext({inbox,inputId:input.id,target:forward.target,payload:forward.payload});
+                    (yield this.forwardContext({inbox,inputId:input.id,target:forward.target,payload:forward.payload}));
                     db.query("UPDATE session_inputs SET receipt_json=json_remove(receipt_json,'$.contextForward'),updated_at=CURRENT_TIMESTAMP WHERE id=?").run(input.id);
                 }catch(error){
                     if(error instanceof SessionOwnerError&&error.code==='PEER_CONTEXT_UNSUPPORTED'){
@@ -4005,58 +4007,58 @@ export class SessionCommunicationCoordinator {
                           kind:'receipt',payload:{change:'context_refused',peer:forward.target.peer.peer}});
                     }else log('warn','peer_context_forward_waiting',{input_id:input.id,target:forward.target.sessionId,error:String(error).slice(0,300)});
                 }
-            });
+            }).call(this))));
             this.pendingAcceptedRecovery=pendingAcceptedRecovery;
             // A cancellation that arrived while a session was paused must revoke its already
             // queued turn. Reconcile historical cancellations too, before any account wake.
             // Driven from the few queued turns: starting from the requests walked every request's
             // stored text on each wake (2026-11-03).
-            await this.scanRows<RequestRow>('session_communication_requests', `SELECT r.rowid AS reconciliation_rowid,r.* FROM turns t INDEXED BY turns_queued_order
+            (yield this.scanRows<RequestRow>('session_communication_requests', `SELECT r.rowid AS reconciliation_rowid,r.* FROM turns t INDEXED BY turns_queued_order
                 CROSS JOIN session_inputs i ON i.turn_id=t.id CROSS JOIN session_communication_requests r ON r.target_input_id=i.id
                 WHERE r.outcome='canceled' AND t.status='queued' AND r.rowid<=? AND r.rowid>?
                 ORDER BY r.rowid LIMIT 1`, request => db.transaction(()=>{
                     if(request.target_input_id&&cancelQueuedWithdrawnRequest(request.target_input_id))
                         withdrawUnstartedServiceInput(`canceled:${request.request_id}`,'The request was withdrawn before its worker began.');
-                })());
-            await this.scanRows<RequestRow>('session_communication_requests', `SELECT r.rowid AS reconciliation_rowid,r.* FROM session_communication_requests r
+                })()));
+            (yield this.scanRows<RequestRow>('session_communication_requests', `SELECT r.rowid AS reconciliation_rowid,r.* FROM session_communication_requests r
                 JOIN session_inputs i ON i.id=r.target_input_id JOIN turns t ON t.id=i.turn_id
                 WHERE r.outcome IS NULL AND r.overdue_at_ms IS NULL AND t.status='queued' AND r.rowid<=? AND r.rowid>?
-                ORDER BY r.rowid LIMIT 1`, request => this.inspectProviderHold(request));
+                ORDER BY r.rowid LIMIT 1`, request => this.inspectProviderHold(request)));
             if (this.now() >= this.nextRequestInspectionAt)
-                await this.scanRows<RequestRow>('session_communication_requests', `SELECT rowid AS reconciliation_rowid,* FROM session_communication_requests
+                (yield this.scanRows<RequestRow>('session_communication_requests', `SELECT rowid AS reconciliation_rowid,* FROM session_communication_requests
                     WHERE ${AWAITING_INSPECTION} AND request_id NOT IN (SELECT value FROM json_each(?))
                       AND due_at_ms<=? AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
                     request => {
                         this.healthyRechecks.delete(request.request_id);
                         this.inspectOverdueRequest(request);
-                    }, this.deferredRequestIds(this.now()), this.now());
+                    }, this.deferredRequestIds(this.now()), this.now()));
             if (this.stopped) break;
-            await this.scanQuietRequests();
-            await auditUndeliveredReturns(this.now(), () => this.stopped);
-            await this.scanExternalRequests();
-            await this.scanRows<ChatGptObligationRow>('session_chatgpt_obligations',`SELECT rowid AS reconciliation_rowid,* FROM session_chatgpt_obligations INDEXED BY chatgpt_obligations_due
+            (yield this.scanQuietRequests());
+            (yield auditUndeliveredReturns(this.now(), () => this.stopped));
+            (yield this.scanExternalRequests());
+            (yield this.scanRows<ChatGptObligationRow>('session_chatgpt_obligations',`SELECT rowid AS reconciliation_rowid,* FROM session_chatgpt_obligations INDEXED BY chatgpt_obligations_due
                 WHERE state NOT IN ('resolved','withdrawn_by_tejas') AND due_at_ms IS NOT NULL AND due_at_ms<=?
-                  AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,row=>this.recoverChatGptObligation(row),this.now());
-            await this.scanRows<RequestRow>('session_communication_requests','SELECT rowid AS reconciliation_rowid,* FROM session_communication_requests WHERE outcome IS NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1',
-                request => this.schedule(`ask:${request.request_id}`, () => this.dispatch(this.row(request.request_id))));
-            await this.scanRows<EventRow>('session_communication_events',"SELECT rowid AS reconciliation_rowid,* FROM session_communication_events INDEXED BY session_communication_outbox WHERE status<>'received' AND status NOT IN ('received','retained') AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1",
-                event => this.schedule(`event:${event.event_id}`, () => this.deliver(event)));
+                  AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,row=>this.recoverChatGptObligation(row),this.now()));
+            (yield this.scanRows<RequestRow>('session_communication_requests','SELECT rowid AS reconciliation_rowid,* FROM session_communication_requests WHERE outcome IS NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1',
+                request => this.schedule(`ask:${request.request_id}`, () => this.dispatch(this.row(request.request_id)))));
+            (yield this.scanRows<EventRow>('session_communication_events',"SELECT rowid AS reconciliation_rowid,* FROM session_communication_events INDEXED BY session_communication_outbox WHERE status<>'received' AND status NOT IN ('received','retained') AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1",
+                event => this.schedule(`event:${event.event_id}`, () => this.deliver(event))));
             if (!this.stopped) this.arm();
         }
-    }
+    }).call(this));}
     wake() {
         if (this.stopped) return;
         this.reconciliationDirty = true;
         if (this.reconciliation) return;
         // The loop serves every session; it never inherits the reader of the request that woke it.
         this.reconciliation = outsideContentReader(() => new Promise<void>(resolve => setImmediate(resolve))
-            .then(() => this.reconcile())
-            .catch(error => {
+            .then(ledgerCallback(() => this.reconcile()))
+            .catch(ledgerCallback(error => {
                 this.reconciliationDirty = false;
                 this.disarm?.();
                 this.disarm = null;
                 this.dependencies.onError(error);
-            })
+            }))
             .finally(() => {
                 this.reconciliation = null;
                 if (this.reconciliationDirty && !this.stopped) this.wake();
@@ -4098,7 +4100,7 @@ export class SessionCommunicationCoordinator {
         if (this.dependencies.arm)
             this.disarm = this.dependencies.arm(() => outsideContentReader(() => this.wake()), delay);
         else {
-            const timer = outsideContentReader(() => setTimeout(() => this.wake(), delay));
+            const timer = outsideContentReader(() => setTimeout(ledgerCallback(() => this.wake()), delay));
             timer.unref();
             this.disarm = () => clearTimeout(timer);
         }
@@ -4110,8 +4112,8 @@ export class SessionCommunicationCoordinator {
         this.wake();
     }
     async idle() { do {
-        await this.reconciliation;
-        await Promise.all([...this.tasks.values()]);
+        (await this.reconciliation);
+        (await Promise.all([...this.tasks.values()]));
     } while (this.tasks.size || this.reconciliation || this.reconciliationDirty); }
     async stop() { this.stopped = true; this.dependencies.owner.labConversations.stop(); this.reconciliationDirty = false; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; const peerStop=this.dependencies.peers?.stop(); await this.reconciliation; await Promise.allSettled([...this.tasks.values()]); await peerStop; this.healthyRechecks.clear(); this.quietChecks.clear(); this.quietWakeTimes = null; this.nextRequestInspectionAt = 0; }
 }

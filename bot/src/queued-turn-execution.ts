@@ -1,3 +1,4 @@
+import {runLedgerSteps} from './ledger-admission';
 import { stripProviderAliases } from "./aliases";
 import { parseSlackMessageFilesJson, type SlackMessageFile } from "./attachments";
 import { comparisonTargetLabel, turnInputPolicy } from "./comparison";
@@ -126,10 +127,10 @@ export async function executePersistedQueuedTurn<TOutcome>(
     run(input: ClaimedTurnInput): Promise<TOutcome>;
     fail(claim: QueuedTurnClaimRow, error: unknown): TOutcome | Promise<TOutcome>;
   },
-): Promise<TOutcome> {
+): Promise<TOutcome> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   try {
-    return await dependencies.run(dependencies.buildInput(claim));
+    return (yield dependencies.run(dependencies.buildInput(claim)));
   } catch (error) {
-    return await dependencies.fail(claim, error);
+    return (yield dependencies.fail(claim, error));
   }
-}
+}).call(this));}

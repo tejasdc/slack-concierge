@@ -1,5 +1,6 @@
 import {CodexAppServerClientError,type CodexAppServerClientLike} from './codex-app-server-client';
 import {db,getSessionById} from './state';
+import {runLedgerSteps} from './ledger-admission';
 import type {CodexLeftoverProcess} from './codex-leftover-processes';
 
 export type CustodyPredecessorEffectsReceipt={
@@ -94,19 +95,19 @@ const processKey=(row:CodexLeftoverProcess)=>`${row.pid}:${row.startTicks}`;
  * obtained by the execution host; this receipt is not a transport cutoff or writer-exclusion proof. */
 export async function reconcileCodexCustodyPredecessorEffects(client:CodexAppServerClientLike,
   input:{predecessorSessionId:number;threadId:string;selectedTurnId:number;admittingTurnId?:number},
-  observeProcesses:(threadId:string)=>Promise<CodexLeftoverProcess[]>):Promise<CustodyPredecessorEffectsReceipt>{
+  observeProcesses:(threadId:string)=>Promise<CodexLeftoverProcess[]>):Promise<CustodyPredecessorEffectsReceipt>{return runLedgerSteps((function* (): Generator<unknown, any, any> {
   const session=getSessionById(input.predecessorSessionId);
   if(!session||session.provider_id!=='codex'||session.agent_session_uuid!==input.threadId)
     refuse('the predecessor no longer has the exact retained Codex thread binding.');
 
-  const read=await client.request('thread/read',{threadId:input.threadId,includeTurns:false});
+  const read=(yield client.request('thread/read',{threadId:input.threadId,includeTurns:false}));
   const thread=read?.thread;
   if(!thread||thread.id!==input.threadId||!thread.status||typeof thread.status!=='object'||typeof thread.status.type!=='string')
     refuse('thread/read did not return the exact thread and pinned status shape.');
   const status=thread.status.type;
   if(status!=='idle'&&status!=='notLoaded')refuse(`thread/read reports ${status}; the predecessor is not known idle.`);
 
-  const queue=await allPages(client,'thread/queue/list',input.threadId);
+  const queue=(yield allPages(client,'thread/queue/list',input.threadId));
   const queuedSubmissionIds:string[]=[];
   for(const item of queue){
     if(typeof item?.id!=='string'||!item.id||!Array.isArray(item.input)||typeof item.clientUserMessageId!=='string')
@@ -116,7 +117,7 @@ export async function reconcileCodexCustodyPredecessorEffects(client:CodexAppSer
   if(queuedSubmissionIds.length)refuse(`native queue has ${queuedSubmissionIds.length} retained submission(s).`);
 
   let goalResponse:any,goalFeatureDisabled=false;
-  try{goalResponse=await client.request('thread/goal/get',{threadId:input.threadId});}
+  try{goalResponse=(yield client.request('thread/goal/get',{threadId:input.threadId}));}
   catch(error){
     if(!exactNativeRefusal(error,'thread/goal/get','goals feature is disabled'))throw error;
     if(status!=='notLoaded')refuse('goal inspection is disabled for a resident thread; its retained goal needs a supported disposition.');
@@ -134,7 +135,7 @@ export async function reconcileCodexCustodyPredecessorEffects(client:CodexAppSer
   }else refuse('thread/goal/get returned an unknown goal shape.');
 
   let terminals:any[],backgroundStatus:'observed'|'thread-not-loaded'='observed';
-  try{terminals=await allPages(client,'thread/backgroundTerminals/list',input.threadId);}
+  try{terminals=(yield allPages(client,'thread/backgroundTerminals/list',input.threadId));}
   catch(error){
     const detail=`thread not found: ${input.threadId}`;
     if(status!=='notLoaded'||!exactNativeRefusal(error,'thread/backgroundTerminals/list',detail))throw error;
@@ -151,10 +152,11 @@ export async function reconcileCodexCustodyPredecessorEffects(client:CodexAppSer
   }
   if(backgroundTerminalIds.length)refuse(`native thread has ${backgroundTerminalIds.length} background terminal process(es).`);
 
-  const current=await observeProcesses(input.threadId);
+  const current=(yield observeProcesses(input.threadId));
   if(!Array.isArray(current)||current.some(row=>!validProcess(row)))refuse('fresh owner process observation returned an unknown result shape.');
   const owner=ownerFacts(input.predecessorSessionId,input.selectedTurnId,input.threadId,current,input.admittingTurnId);
   return {format:'codex-custody-predecessor-effects-v1',sessionId:input.predecessorSessionId,threadId:input.threadId,
     selectedTurnId:input.selectedTurnId,threadStatus:status as 'idle'|'notLoaded',queuedSubmissionIds,goal,
     backgroundTerminals:{status:backgroundStatus,ids:backgroundTerminalIds},currentProcesses:current,owner};
+})());
 }

@@ -4,6 +4,7 @@ import { PROVIDER_ALIASES, modelDisplayName, type ProviderAliasKey } from "./ali
 import { db, executionChanged, getSessionById, type ProviderId } from "./state";
 import { log } from "./log";
 import { inboxSession } from "./session-inbox";
+import { runLedgerSegment, runSynchronousLedgerSegment } from "./ledger-admission";
 
 /**
  * A provider outage, told to Tejas once per stuck message with the choices that can
@@ -136,10 +137,12 @@ export function outageOfferForTurn(turnId: number): OutageOffer | null {
   return row ? offerFromRow(row) : null;
 }
 export function recordOutageChoice(turnId: number, choice: string, rerunSessionId: string | null) {
-  const changed = db.query("UPDATE provider_outage_offers SET choice=?,chosen_at=?,rerun_session_id=? WHERE turn_id=? AND choice IS NULL")
-    .run(choice, new Date().toISOString(), rerunSessionId, turnId).changes === 1;
-  if (changed) executionChanged();
-  return changed;
+  return runSynchronousLedgerSegment(() => {
+    const changed = db.query("UPDATE provider_outage_offers SET choice=?,chosen_at=?,rerun_session_id=? WHERE turn_id=? AND choice IS NULL")
+      .run(choice, new Date().toISOString(), rerunSessionId, turnId).changes === 1;
+    if (changed) executionChanged();
+    return changed;
+  });
 }
 
 // Trouble that clears within the CLI's first quick retries is not an outage worth a
@@ -155,36 +158,42 @@ const offering = new Set<number>();
  */
 export async function offerOutageChoices(input: { turnId: number; status: number | null },
   record: (event: { eventId: string; sessionId: number; inputId: string; turnId: number; kind: string; payload: unknown }) => void) {
-  if (offering.has(input.turnId) || outageOfferForTurn(input.turnId)) return;
-  const turn = db.query("SELECT id,session_id,accepted_input_id,provider_model,status FROM turns WHERE id=?").get(input.turnId) as any;
-  if (!turn?.accepted_input_id || !["queued", "running"].includes(turn.status)) return;
-  const accepted = db.query("SELECT origin FROM session_inputs WHERE id=?").get(turn.accepted_input_id) as { origin: string } | null;
-  if (accepted?.origin !== "human") return;
-  const session = getSessionById(turn.session_id);
-  if (!session || session.provider_id === "chatgpt") return;
-  offering.add(input.turnId);
+  const prepared = await runLedgerSegment(() => {
+    if (offering.has(input.turnId) || outageOfferForTurn(input.turnId)) return;
+    const turn = db.query("SELECT id,session_id,accepted_input_id,provider_model,status FROM turns WHERE id=?").get(input.turnId) as any;
+    if (!turn?.accepted_input_id || !["queued", "running"].includes(turn.status)) return;
+    const accepted = db.query("SELECT origin FROM session_inputs WHERE id=?").get(turn.accepted_input_id) as { origin: string } | null;
+    if (accepted?.origin !== "human") return;
+    const session = getSessionById(turn.session_id);
+    if (!session || session.provider_id === "chatgpt") return;
+    offering.add(input.turnId);
+    return { turn, session, sameProviderOnly: inboxSession()?.id === turn.session_id };
+  });
+  if (!prepared) return;
+  const { turn, session, sameProviderOnly } = prepared;
   try {
     const provider = session.provider_id as ProviderId;
     // Another provider can only answer in a new conversation. The Inbox is one conversation
     // whose threads are its whole job, so it is offered the other Claude models only.
-    const sameProviderOnly = inboxSession()?.id === turn.session_id;
     const [incident, alternatives] = await Promise.all([incidentFor(provider, turn.provider_model), verifiedAlternatives(provider, turn.provider_model, sameProviderOnly)]);
-    const still = db.query("SELECT status FROM turns WHERE id=?").get(input.turnId) as { status: string } | null;
-    if (!still || !["queued", "running"].includes(still.status)) return;
-    const offer: OutageOffer = { turnId: turn.id, inputId: turn.accepted_input_id, sessionId: turn.session_id, provider, model: turn.provider_model,
-      status: input.status, incident, alternatives, offeredAt: new Date().toISOString(), choice: null, chosenAt: null, rerunSessionId: null };
-    const inserted = db.query("INSERT OR IGNORE INTO provider_outage_offers(turn_id,input_id,session_id,payload_json) VALUES(?,?,?,?)")
-      .run(turn.id, turn.accepted_input_id, turn.session_id, JSON.stringify(offer)).changes === 1;
-    if (!inserted) return;
-    record({ eventId: `provider-outage:${turn.id}`, sessionId: turn.session_id, inputId: turn.accepted_input_id, turnId: turn.id, kind: "provider_outage",
-      payload: { inputId: turn.accepted_input_id, provider, model: turn.provider_model, modelLabel: modelLabel(turn.provider_model), status: input.status,
-        incident, alternatives: alternatives.map(({ alias, label }) => ({ alias, label })) } });
-    log("warn", "provider_outage_offered", { turn_id: turn.id, session_id: turn.session_id, status: input.status,
-      incident: incident?.name ?? null, alternatives: alternatives.map(item => item.alias) });
-    executionChanged();
+    await runLedgerSegment(() => {
+      const still = db.query("SELECT status FROM turns WHERE id=?").get(input.turnId) as { status: string } | null;
+      if (!still || !["queued", "running"].includes(still.status)) return;
+      const offer: OutageOffer = { turnId: turn.id, inputId: turn.accepted_input_id, sessionId: turn.session_id, provider, model: turn.provider_model,
+        status: input.status, incident, alternatives, offeredAt: new Date().toISOString(), choice: null, chosenAt: null, rerunSessionId: null };
+      const inserted = db.query("INSERT OR IGNORE INTO provider_outage_offers(turn_id,input_id,session_id,payload_json) VALUES(?,?,?,?)")
+        .run(turn.id, turn.accepted_input_id, turn.session_id, JSON.stringify(offer)).changes === 1;
+      if (!inserted) return;
+      record({ eventId: `provider-outage:${turn.id}`, sessionId: turn.session_id, inputId: turn.accepted_input_id, turnId: turn.id, kind: "provider_outage",
+        payload: { inputId: turn.accepted_input_id, provider, model: turn.provider_model, modelLabel: modelLabel(turn.provider_model), status: input.status,
+          incident, alternatives: alternatives.map(({ alias, label }) => ({ alias, label })) } });
+      log("warn", "provider_outage_offered", { turn_id: turn.id, session_id: turn.session_id, status: input.status,
+        incident: incident?.name ?? null, alternatives: alternatives.map(item => item.alias) });
+      executionChanged();
+    });
   } catch (error) {
     log("error", "provider_outage_offer_failed", { turn_id: input.turnId, error: error instanceof Error ? error.message : String(error) });
   } finally {
-    offering.delete(input.turnId);
+    await runLedgerSegment(() => { offering.delete(input.turnId); });
   }
 }

@@ -1,3 +1,4 @@
+import {runLedgerSteps} from './ledger-admission';
 import { db } from './state';
 import { log } from './log';
 import { recordTurnOutcome } from './session-turn-outcome';
@@ -54,7 +55,7 @@ const AUDIT_EVERY_MS = 60 * 1000;
 let auditedAt = -Infinity;
 let incidentAuditTraceRemaining = 20;
 
-async function scanAuditRows<T>(table:string,sql:string,args:unknown[],visit:(row:T)=>void,stopped:()=>boolean) {
+async function scanAuditRows<T>(table:string,sql:string,args:unknown[],visit:(row:T)=>void,stopped:()=>boolean) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if (incidentAuditTraceRemaining-- > 0)
         log('warn', 'incident_reconciliation_scan', { table, sql: sql.replace(/\s+/g, ' ').slice(0, 400) });
     const highWater=(db.query(`SELECT max(rowid) AS value FROM ${table}`).get() as {value:number|null}).value??0;
@@ -65,12 +66,12 @@ async function scanAuditRows<T>(table:string,sql:string,args:unknown[],visit:(ro
         if(!row)return true;
         cursor=row.reconciliation_rowid;
         visit(row);
-        await new Promise<void>(resolve=>setImmediate(resolve));
+        (yield new Promise<void>(resolve=>setImmediate(resolve)));
     }
     return false;
-}
+}).call(this));}
 
-export async function auditUndeliveredReturns(now = Date.now(),stopped:()=>boolean=()=>false) {
+export async function auditUndeliveredReturns(now = Date.now(),stopped:()=>boolean=()=>false) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if (now - auditedAt < AUDIT_EVERY_MS) return;
     auditedAt = now;
     if (stopped()) { auditedAt = -Infinity; return; }
@@ -87,7 +88,7 @@ export async function auditUndeliveredReturns(now = Date.now(),stopped:()=>boole
         ['session_communication_events','session_communication_requests','AND r.source_input_id IS NOT NULL',false],
         ['session_peer_events','session_peer_requests','',true],
     ] as const) {
-      const complete=await scanAuditRows<any>(events,
+      const complete=(yield scanAuditRows<any>(events,
         `${UNHANDLED(events,requests,extra,true)} AND e.rowid<=? AND e.rowid>? ORDER BY e.rowid LIMIT 1`,[],row=>{
         if (seenInputs.has(row.accepted_input_id)) { reportedUnhandled.add(row.event_id); return; }
         seenInputs.add(row.accepted_input_id);
@@ -115,10 +116,10 @@ export async function auditUndeliveredReturns(now = Date.now(),stopped:()=>boole
                 outcome: 'response', text: `A result reached this conversation, but the agent stopped ${row.turn_status === 'error' ? 'after an error' : 'without confirming what happened'}, so nobody has read it. Open the conversation to see it; it has not been sent again.` }))();
             reportedUnhandled.add(row.event_id);
         } catch (error) { log('error', 'session_return_unhandled_attention_failed', { event_id: row.event_id, error: error instanceof Error ? error.message : String(error) }); }
-      },stopped);
+      },stopped));
       if(!complete){auditedAt=-Infinity;return;}
     }
-}
+}).call(this));}
 
 /**
  * The release that stopped retaining completion shipped while the old runtime kept retaining.
@@ -127,7 +128,7 @@ export async function auditUndeliveredReturns(now = Date.now(),stopped:()=>boole
  * retained before this instant stay history, so nothing is delivered twice.
  */
 const RETAINED_WRITES_REDELIVERED_UNTIL_MS = 1790022862331;
-export async function releaseLateRetainedReturns(stopped:()=>boolean=()=>false) {
+export async function releaseLateRetainedReturns(stopped:()=>boolean=()=>false) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     for (const table of ['session_communication_events', 'session_peer_events']) {
         const highWater=(db.query(`SELECT max(rowid) AS value FROM ${table}`).get() as {value:number|null}).value??0;
         const next=db.query(`SELECT rowid AS id FROM ${table} WHERE status='retained' AND created_at_ms>? AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`);
@@ -138,7 +139,7 @@ export async function releaseLateRetainedReturns(stopped:()=>boolean=()=>false) 
             if(!row)break;
             cursor=row.id;
             restore.run(row.id,RETAINED_WRITES_REDELIVERED_UNTIL_MS);
-            await new Promise<void>(resolve=>setImmediate(resolve));
+            (yield new Promise<void>(resolve=>setImmediate(resolve)));
         }
         if(stopped())return false;
     }
@@ -157,9 +158,9 @@ export async function releaseLateRetainedReturns(stopped:()=>boolean=()=>false) 
             if(!row)break;
             cursor=row.id;
             settle.run(row.id);
-            await new Promise<void>(resolve=>setImmediate(resolve));
+            (yield new Promise<void>(resolve=>setImmediate(resolve)));
         }
         if(stopped())return false;
     }
     return true;
-}
+}).call(this));}

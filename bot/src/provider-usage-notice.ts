@@ -1,3 +1,4 @@
+import {runLedgerSteps} from './ledger-admission';
 import { providerDisplayName } from "./aliases";
 import { authHeldInputCount, db, getSessionById } from "./state";
 import { log } from "./log";
@@ -260,7 +261,7 @@ export function noticeTurnContinuation(input:{provider:UsageProvider;model:strin
 export async function useResetIfWorkStopped(input: UsageHoldNotice, record: RecordEvent,
   spend: (account: string, idempotencyKey: string, beforeConsume: () => void) => Promise<{ status: string; detail: string;
     accountId?: string; verifiedReadStartedAtMs?: number; remainingCredits?: number | null; nextExpiresAt?: string | null }>,
-  afterUse: (accountId: string) => Promise<number>): Promise<void> {
+  afterUse: (accountId: string) => Promise<number>): Promise<void> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const provider = input.provider;
   const held=db.query(`SELECT turn.saved_kind AS saved_kind FROM turns turn JOIN sessions session ON session.id=turn.session_id
     WHERE turn.id=? AND session.provider_id=? AND turn.status='queued'
@@ -303,14 +304,14 @@ export async function useResetIfWorkStopped(input: UsageHoldNotice, record: Reco
   const digest = createHash("sha256").update(episode).digest("hex");
   // Stable across restarts and short enough for the provider's recommended UUID shape.
   const idempotencyKey = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-5${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
-  const outcome = await spend(decision.account, idempotencyKey, () => {
+  const outcome = (yield spend(decision.account, idempotencyKey, () => {
     // Reserve only after direct preflight succeeds, immediately before the provider call.
     // A declined preflight leaves the hold eligible for a later existing wake or manual action.
     if (db.query("SELECT 1 FROM session_owner_events WHERE event_id=?").get(episode))
       throw new Error("This reset episode already has an attempt.");
     record({ eventId: episode, sessionId: session, kind: "provider_reset_attempt",
       payload: { provider, account: decision.account, because: decision.because } });
-  });
+  }));
   if (outcome.status !== "used" || !outcome.accountId || !outcome.verifiedReadStartedAtMs) {
     log("warn", "provider_reset_auto_not_confirmed", {
       provider, account_known: true, outcome: outcome.status,
@@ -325,7 +326,7 @@ export async function useResetIfWorkStopped(input: UsageHoldNotice, record: Reco
   if (currentAccount('codex')?.id !== outcome.accountId) {
     log("warn", "provider_reset_auto_account_changed", { provider, account_known: true });
   } else if (cleared) {
-    try { released = await afterUse(outcome.accountId); }
+    try { released = (yield afterUse(outcome.accountId)); }
     catch (error) { log("error", "provider_reset_auto_release_failed", {
       provider, error: error instanceof Error ? error.message : String(error) }); }
   }
@@ -349,7 +350,7 @@ export async function useResetIfWorkStopped(input: UsageHoldNotice, record: Reco
     },
   });
   log("warn", "provider_reset_used_automatically", { provider, remaining, released_inputs: released });
-}
+}).call(this));}
 
 /**
  * One allowance period, named by a reset instant that wobbles.

@@ -1,22 +1,67 @@
+import CHECK_POLICY from './release-check-policy.json';
 import {existsSync,readFileSync} from 'node:fs';
 import {dirname,join,resolve,relative} from 'node:path';
-import {PRESENTATION_READERS} from '../src/presentation-reader-contracts';
-import {checkReaderRefusals} from './presentation-contract-fixture';
-import {checkTopicProjectionLifecycle,checkNativeOwnerProjectionLifecycle} from './topic-projection-fixture';
-import {checkDispatchClaim} from './dispatch-claim-fixture';
-import {checkLedgerConstructors} from './ledger-constructor-check';
-import {checkSessionLocationComposition} from './session-location-contract';
-import {checkProviderContract} from './provider-contract-check';
+import {privateCodeCommand} from '../src/private-database-command';
 import {runFixtureChild} from './fixture-child';
+import {currentProcessIdentity,processNativeLifetimeEnded} from '../src/runtime-identity';
 // Older installed builders already execute this candidate-owned entrance.
 // A package-only check would not protect the first activation of these workers.
-import './foreground-boundary-check';
 
+async function checkPresentation(){
+const {liveLedgerPresent}=await import('./run-release-checks');
+// The native inventory models this Linux server's isolation; a Mac peer has no such gate.
+const hostGate=process.platform==='linux'&&liveLedgerPresent();
+// Isolation protects the live ledger; only a machine without one may run this unisolated.
+if(process.env.CONCIERGE_PRIVATE_CODE_BOUNDARY_VERIFIED!=='1'&&hostGate)throw Error('Candidate checks require the verified private-code entrance.');
+const {PRESENTATION_READERS}=await import('../src/presentation-reader-contracts');
+const {checkReaderRefusals}=await import('./presentation-contract-fixture');
+const {checkTopicProjectionLifecycle,checkNativeOwnerProjectionLifecycle}=await import('./topic-projection-fixture');
+const {checkDispatchClaim}=await import('./dispatch-claim-fixture');
+const {checkLedgerConstructors}=await import('./ledger-constructor-check');
+const {checkSessionLocationComposition}=await import('./session-location-contract');
+const {checkProviderContract}=await import('./provider-contract-check');
+await import('./foreground-boundary-check');
 const root=resolve(import.meta.dir,'..');
 // The installed controller retains stderr but discards stdout and exit status on a timed-out
-// candidate. Keep the last completed step visible without expanding its 90-second boundary.
+// candidate. Keep the last completed step visible within the shared release-check budget.
 const phase=(name:string)=>process.stderr.write(`presentation-check: ${name}\n`);
 phase('started');
+// Every controller, including older installed ones, runs this candidate-owned check before it
+// seals a release, so the host-only inventory runs here against the exact candidate source.
+// On a host with a live ledger it is mandatory: a failure, timeout or missing result refuses
+// the release. Inside the release-check suite the same group runs as its own declared group.
+const nativeChecks:Record<string,unknown>={};
+let nativePending:Promise<void>|null=null;
+// Only the candidate's own suite inventory passes --suite-portable on the command line; the
+// controller's prepare never does, and no environment value can stand in for it.
+const suitePortable=process.argv.includes('--suite-portable');
+// Each host-only group runs in this check's process group (the controller's deadline and cleanup
+// cover it) and must return its own pass receipt; anything else refuses the release.
+const deadlineAt=Math.floor(performance.timeOrigin)+CHECK_POLICY.deadlineMs-2*CHECK_POLICY.cleanupMs;
+const runHostGroup=async(group:string)=>{
+ const output:string[]=[];
+ await runFixtureChild({command:process.execPath,args:[join(import.meta.dir,'run-release-checks.ts'),'--suite-child','--group',group],
+  env:{...process.env,CONCIERGE_CHECK_DEADLINE_AT:String(deadlineAt)},deadlineMs:Math.max(1,deadlineAt-Date.now()),
+  fixture:`host-release-checks ${group}`,requireCheckpoint:false,requireOwnedGroup:false,
+  onOutput:(stream,chunk)=>{if(stream==='stdout')output.push(String(chunk));else process.stderr.write(chunk);}});
+ const receipt=JSON.parse(output.join('').trim().split('\n').at(-1)!) as {status?:string;group?:string};
+ if(receipt.status!=='passed'||receipt.group!==group)throw Error(`Host release checks ${group} did not report a pass: ${JSON.stringify(receipt)}`);
+ nativeChecks[group]=receipt;
+};
+if(hostGate&&!suitePortable){
+ // The isolation check needs this boundary untouched (its hidden Codex home empty), so it runs
+ // alone first; the remaining host-only checks then run beside this check's own stages, which
+ // removes their serial cost without dropping or shortening any of them.
+ phase('host-isolation-checks');
+ await runHostGroup('nativeIsolation');
+ phase('host-release-checks-started');
+ nativePending=runHostGroup('native');
+ nativePending.catch(()=>{});
+}
+if(process.platform==='linux'){
+ if(await processNativeLifetimeEnded(currentProcessIdentity()))throw Error('The current native process was incorrectly reported exited.');
+ phase('native-process-lifetime');
+}
 const sessionLocation=checkSessionLocationComposition(root);
 phase('session-location-contract');
 const providerContract=checkProviderContract(root);
@@ -114,6 +159,17 @@ const failures=lifecycleResults.filter(result=>result.status==='rejected');
 // guaranteed to include its inner messages, and the controller keeps only a bounded tail.
 for(const failure of failures)process.stderr.write(`presentation-check: lifecycle failure: ${String((failure.reason as Error)?.message??failure.reason).slice(0,4000)}\n`);
 if(failures.length)throw new AggregateError(failures.map(result=>result.reason),'Candidate lifecycle checks failed.');
+if(nativePending){phase('host-release-checks-wait');await nativePending;}
 phase('passed');
 const [topicProjection,nativeOwnerProjection,foreground,inboxLineage,askedAnswer]=lifecycleResults.map(result=>(result as PromiseFulfilledResult<unknown>).value);
-console.log(JSON.stringify({check:'presentation-release',status:'passed',workerModules:visited.size,ledgerConstructors,sessionLocation,providerContract,topicProjection,nativeOwnerProjection,dispatchClaim,foreground,inboxLineage,askedAnswer,readers:results}));
+console.log(JSON.stringify({check:'presentation-release',status:'passed',nativeChecks:hostGate&&!suitePortable?nativeChecks:'not-host',workerModules:visited.size,ledgerConstructors,sessionLocation,providerContract,topicProjection,nativeOwnerProjection,dispatchClaim,foreground,inboxLineage,askedAnswer,readers:results}));
+
+}
+if(process.argv.includes('--bounded-child'))await checkPresentation();
+else {
+ const isolated=privateCodeCommand([process.execPath,import.meta.path,'--bounded-child',...(process.argv.includes('--suite-portable')?['--suite-portable']:[])],process.env);
+ try{await runFixtureChild({command:isolated.command[0]!,args:isolated.command.slice(1),env:isolated.environment,
+  deadlineMs:CHECK_POLICY.deadlineMs-CHECK_POLICY.cleanupMs,fixture:'presentation-release',requireCheckpoint:false,requireOwnedGroup:true,
+  onOutput:(stream,chunk)=>process[stream].write(chunk)});
+ }finally{isolated.cleanup();}
+}

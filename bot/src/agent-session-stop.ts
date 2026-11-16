@@ -1,3 +1,4 @@
+import {runLedgerSteps} from './ledger-admission';
 import { requestAgentStopForSession } from "./state";
 import type { ActiveTurnDispatchRegistry } from "./turn-dispatch-seams";
 
@@ -6,7 +7,7 @@ export async function handleAgentSessionStop(input: {
   teamId?: string;
   expectedTeamId: string | null;
   registry: ActiveTurnDispatchRegistry;
-}): Promise<"cancelled" | "ignored"> {
+}): Promise<"cancelled" | "ignored"> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const { event, registry } = input;
   if (!input.expectedTeamId || input.teamId !== input.expectedTeamId
     || !event.channel || !event.thread_ts || !event.event_ts) return "ignored";
@@ -17,8 +18,8 @@ export async function handleAgentSessionStop(input: {
     return target.cancellation.request();
   });
   if (!matched.matched || !matched.value) return "ignored";
-  await matched.value;
+  (yield matched.value);
   // The turn coordinator owns terminal message/status delivery. A delayed
   // event handler must never set a successor's Agent session back to active.
   return "cancelled";
-}
+}).call(this));}

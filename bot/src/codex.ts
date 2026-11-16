@@ -1,3 +1,8 @@
+import { runLedgerSegment, runLedgerSteps } from "./ledger-admission";
+import { storedCodexSpentReset } from "./codex-spent-reset";
+const providerCustody = Symbol("provider callback custody");
+async function drainProviderCallbacks(input: RunCodexTurnInput) { await (input as any)[providerCustody]?.drain(); }
+import { withProviderCallbackCustody, type ProviderCallbackCustody } from "./provider-callback-custody";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
@@ -50,7 +55,7 @@ export type ProgressEvent =
   | { type: "mac_surface_activity"; itemId: string; activity: MacSurfaceActivity }
   | { type: "done"; text?: string };
 
-export type ProgressCb = (event: ProgressEvent) => void;
+export type ProgressCb = (event: ProgressEvent) => void | Promise<void>;
 
 export interface RunResult {
   /**
@@ -451,14 +456,14 @@ export interface RunCodexTurnInput {
   interactionPolicy?: ProviderInteractionPolicy;
   onProgress?: ProgressCb;
   onProviderMessage?: ProviderMessageCallback;
-  onSteeringReady?: (sender: SteeringSender) => void;
-  onCancellationReady?: (cancel: () => Promise<void>) => void;
-  onProviderTerminal?: () => void;
-  onInputAcknowledged?: () => void;
-  onProviderThreadStarted?: (providerThreadId: string) => void;
-  onProviderTurnStarted?: (providerTurnId: string) => void;
+  onSteeringReady?: (sender: SteeringSender) => void | Promise<void>;
+  onCancellationReady?: (cancel: () => Promise<void>) => void | Promise<void>;
+  onProviderTerminal?: () => void | Promise<void>;
+  onInputAcknowledged?: () => void | Promise<void>;
+  onProviderThreadStarted?: (providerThreadId: string) => void | Promise<void>;
+  onProviderTurnStarted?: (providerTurnId: string) => void | Promise<void>;
   /** A resume unanswered past `resumeNoticeAfterMs` ("waiting"), then its end ("ended"). */
-  onResumeUnanswered?: (wait: CodexResumeWait) => void;
+  onResumeUnanswered?: (wait: CodexResumeWait) => void | Promise<void>;
   resumeNoticeAfterMs?: number;
   executable?: string;
   requestTimeoutMs?: number;
@@ -467,7 +472,7 @@ export interface RunCodexTurnInput {
   appServerClient?: CodexAppServerClientLike;
   /** Owner session identity attached to native sends for cutoff attribution. */
   custodyOwnerSessionId?:number;
-  onRateLimits?: (snapshot: unknown) => void;
+  onRateLimits?: (snapshot: unknown) => void | Promise<void>;
   /**
    * This run's turn was started by an earlier coordinator and is still the daemon's: follow it by
    * its exact thread (and turn, when recorded), never start one (design 2026-10-07 §4.2).
@@ -479,9 +484,9 @@ export interface RunCodexTurnInput {
   adopted?: boolean;
   /** Follow-ups the earlier coordinator was sending; Codex's history decides whether each arrived. */
   recoveredSteeringClientIds?: string[];
-  onRecoveredSteering?: (clientMessageId: string, outcome: "acknowledged" | "unacknowledged") => void;
+  onRecoveredSteering?: (clientMessageId: string, outcome: "acknowledged" | "unacknowledged") => void | Promise<void>;
   /** The adopted turn was still running in the daemon when it was taken over (survival evidence). */
-  onAdoptedLive?: () => void;
+  onAdoptedLive?: () => void | Promise<void>;
   /** Owner-committed successor placement; never cold-resume or create its thread. */
   custodySuccessor?: { plan: CodexSuccessorPlan; construction: CodexSuccessorConstruction; beforeAdmission: () => Promise<void> };
 }
@@ -605,7 +610,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
     resolve: (value: any) => void;
     reject: (error: Error) => void;
     timeout: ReturnType<typeof setTimeout> | undefined;
-    onAccepted?: (value: any) => void;
+    onAccepted?: (value: any) => void | Promise<void>;
   }>();
   // An adopted run's predecessor's requests, by id, so their answers in the replay are understood.
   const predecessorRequests = new Map<number, { method: string; params: any }>();
@@ -639,16 +644,20 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   let resolveWriter!: () => void;
   const writerReady = new Promise<void>((resolve) => { resolveWriter = resolve; });
 
-  const writeMessage = async (message: unknown, meta?: TransportFrameMeta, afterWrite?: () => void) => {
+  const writeControlMessage = async (message: unknown, meta?: TransportFrameMeta, afterWrite?: () => void) => {
     await writerReady;
-    // Turn and steering rows reach the disk before Codex is told; the barrier keeps call order.
+    // Keep the existing channel fence for controls and protocol replies too.
     await ledgerDurable();
     if (processClosed || !writeLine) throw new Error("codex app-server stdin is closed");
     await writeLine(`${JSON.stringify(message)}\n`, meta);
     afterWrite?.();
   };
+  const writeMessage = async (message: unknown, meta?: TransportFrameMeta, afterWrite?: () => void) => {
+    await drainProviderCallbacks(input);
+    return writeControlMessage(message,meta,afterWrite);
+  };
 
-  const request = (method: string, params: unknown, onAccepted?: (value: any) => void): Promise<any> => {
+  const requestWithWriter = (send:typeof writeMessage) => (method: string, params: unknown, onAccepted?: (value: any) => void): Promise<any> => {
     const id = ++requestId;
     return new Promise((resolve, reject) => {
       pendingRequests.set(id, { resolve, reject, timeout: undefined, onAccepted });
@@ -666,7 +675,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
       const meta: TransportFrameMeta | undefined = method === "turn/steer" && typeof (params as any)?.clientUserMessageId === "string"
         ? { kind: "steering", clientMessageId: (params as any).clientUserMessageId, commandId: `steer-${(params as any).clientUserMessageId}` }
         : method === "turn/interrupt" ? { kind: "interrupt" } : undefined;
-      void writeMessage({ method, id, params }, meta, armTimeout).catch((error) => {
+      void send({ method, id, params }, meta, armTimeout).catch((error) => {
         const pending = pendingRequests.get(id);
         if (pending) clearTimeout(pending.timeout);
         pendingRequests.delete(id);
@@ -674,6 +683,8 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
       });
     });
   };
+  const request=requestWithWriter(writeMessage);
+  const requestControl=requestWithWriter(writeControlMessage);
 
   const notify = (method: string) => writeMessage({ method });
 
@@ -882,7 +893,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
       // predecessor; those still open are answered once, after the replay (unansweredServerRequests).
       if (replaying) { unansweredServerRequests.set(String(ev.id), ev.method); return; }
       recordActivity();
-      void writeMessage({
+      void writeControlMessage({
         id: ev.id,
         error: { code: -32601, message: `Slack Concierge cannot answer server request ${ev.method}.` },
       }).catch(() => {});
@@ -934,6 +945,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
       const lines = stdoutRest.split("\n");
       stdoutRest = lines.pop() || "";
       for (const line of lines) handleLine(line);
+      return drainProviderCallbacks(input);
     },
     onStderr: (chunk) => { stderr += chunk; },
     onStdinReady: (write, close) => { writeLine = write; closeInput = close; resolveWriter(); },
@@ -941,7 +953,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
     onReplayedInput: (line, meta) => recoverPredecessorRequest(line, meta),
     onReplayEnd: () => {
       replaying = false;
-      for (const [id, method] of unansweredServerRequests) void writeMessage({
+      for (const [id, method] of unansweredServerRequests) void writeControlMessage({
         id: Number.isNaN(Number(id)) ? id : Number(id),
         error: { code: -32601, message: `Slack Concierge cannot answer server request ${method}.` },
       }).catch(() => {});
@@ -1030,7 +1042,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
       input.onCancellationReady?.(async () => {
         if (turnSettled || !activeTurnId) return;
         cancellationReason = new ProviderTurnCancelledError();
-        await request("turn/interrupt", { threadId, turnId: activeTurnId });
+        await requestControl("turn/interrupt", { threadId, turnId: activeTurnId });
       });
       input.onSteeringReady?.(async (steering) => {
         if (turnSettled || !activeTurnId) {
@@ -1170,7 +1182,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     inactivityTimeout = null;
   };
   let resetInactivityTimeout = () => {};
-  const request = async (
+  const requestControl = async (
     method: string,
     params: unknown,
     onAccepted?: (value: any) => void,
@@ -1184,6 +1196,10 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       custodyOwnerSessionId:input.custodyOwnerSessionId??input.custodySuccessor?.plan.ownerSessionId });
     resetInactivityTimeout();
     return result;
+  };
+  const request = async (method:string,params:unknown,onAccepted?:(value:any)=>void,beforeSend?:()=>Promise<void>) => {
+    await drainProviderCallbacks(input);
+    return requestControl(method,params,onAccepted,beforeSend);
   };
   let stopBeforeSubmission!: (error: Error) => void;
   const stoppedBeforeSubmission = new Promise<never>((_resolve, reject) => { stopBeforeSubmission = reject; });
@@ -1221,6 +1237,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     return end;
   };
   const resumeUntilAnswered = async (threadId: string, params: unknown) => {
+    await drainProviderCallbacks(input);
     await ledgerDurable();
     if (interruptionReason) throw interruptionReason;
     const endWatch = watchResume(threadId);
@@ -1473,6 +1490,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   // following it cannot end by waiting; a turn this run submitted itself keeps the open search.
   let adoptedSearchesLeft = input.adoptTurn ? 20 : Infinity;
   let adoptedLiveReported = false;
+  const noticesAwaitingTurnId = new Set<Promise<void>>();
   const reconcileAcceptedTurn = async () => {
     stopInactivityTimeout();
     let retryMs = 100;
@@ -1480,6 +1498,8 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       try {
         if (!activeThreadId) throw new Error("Cannot reconcile a Codex turn without its thread id.");
         connectionGeneration = await client.connect();
+        if (turnSettled || controllerClosed) return;
+        await Promise.all(noticesAwaitingTurnId);
         if (turnSettled || controllerClosed) return;
         if (!input.custodySuccessor) {
           const recoveredInput = { ...input, sessionUUID: activeThreadId };
@@ -1549,11 +1569,23 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         }
         if (typeof turn.id === "string") acceptActiveTurnId(turn.id);
         const stillRunning = !turn?.status || turn.status === "inProgress";
+        if (stillRunning && recoveryMustInterrupt && activeTurnId) {
+          try {
+            // Exact native identity authorizes this existing recovery control.
+            // Material callbacks may wait, while native history still owns them.
+            await client.request("turn/interrupt", {
+              threadId: activeThreadId, turnId: activeTurnId,
+            }, { requestTimeoutMs,custodyOwnerSessionId:input.custodyOwnerSessionId??input.custodySuccessor?.plan.ownerSessionId });
+          } catch {
+            // The next exact history read decides termination, not this reply.
+          }
+        }
         if (stillRunning) {
           // A live paginated turn can have items only in Codex memory. Its first user item
           // proves receipt; later notifications and terminal persisted history carry output.
           for (const item of Array.isArray(turn.items) ? turn.items : [])
             if (item?.type === "userMessage") recordCompletedItem(item);
+          await drainProviderCallbacks(input);
         } else {
           let itemCursor: string | null = null;
           do {
@@ -1565,6 +1597,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
             if (!Array.isArray(page?.data) || page.data.some((entry: any) => entry?.turnId !== turn.id))
               throw new Error("Codex did not return the exact turn's item page.");
             for (const entry of page.data) recordCompletedItem(entry.item);
+            await drainProviderCallbacks(input);
             await new Promise<void>((resolve) => setImmediate(resolve));
             if (turnSettled || controllerClosed) return;
             const nextCursor = typeof page.nextCursor === "string" ? page.nextCursor : null;
@@ -1584,15 +1617,6 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
           continue;
         }
         if (recoveryMustInterrupt && activeTurnId) {
-          try {
-            await client.request("turn/interrupt", {
-              threadId: activeThreadId,
-              turnId: activeTurnId,
-            }, { requestTimeoutMs,custodyOwnerSessionId:input.custodyOwnerSessionId??input.custodySuccessor?.plan.ownerSessionId });
-          } catch {
-            // The interrupt response is non-atomic with the daemon state. The
-            // next exact history read, not the transport outcome, is decisive.
-          }
           await waitForRecoveryRetry(retryMs);
           retryMs = Math.min(retryMs * 2, 5_000);
           continue;
@@ -1606,6 +1630,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         return;
       } catch (error) {
         if (turnSettled || controllerClosed) return;
+        if ((input as any)[providerCustody]?.hasFailure()) { parkUnconfirmedTurn(error); return; }
         if (error instanceof ProviderCapabilityUnavailableError
           || (error instanceof CodexAppServerClientError && Number.isFinite(error.code))) {
           parkUnconfirmedTurn(error);
@@ -1637,7 +1662,16 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     }, inactivityTimeoutMs);
   };
 
-  const unsubscribeNotifications = client.onNotification((event) => {
+  const unsubscribeNotifications = client.onNotification(async (event) => {
+    let handled: (() => void) | undefined, waiting: Promise<void> | undefined;
+    if (!activeTurnId && turnSubmissionAttempted && event.params?.threadId === activeThreadId
+        && (event.params?.turnId || event.params?.turn?.id)) {
+      // Reconciliation started when the turn id arrives must see this notice handled
+      // first; otherwise it reads history for a turn the stream has already finished.
+      waiting = new Promise<void>(resolve => { handled = resolve; });
+      noticesAwaitingTurnId.add(waiting);
+      await Promise.race([turnStarted, turnCompletion]);
+    }
     try {
       handleNotification(event);
     } catch (error) {
@@ -1649,7 +1683,28 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       });
       stopInactivityTimeout();
       if (turnSubmissionAttempted && activeThreadId) void ensureRecovered(error);
+      throw error;
+    } finally {
+      if (waiting) { noticesAwaitingTurnId.delete(waiting); handled!(); }
     }
+    await drainProviderCallbacks(input);
+  }, {
+    accepts(event) {
+      if (controllerClosed || turnSettled || /delta$/i.test(event?.method ?? "")) return false;
+      if (event.method === "account/rateLimits/updated" || event.method === "codex/event/token_count") return true;
+      const params = event.params ?? {}, threadId = params.threadId ?? params.thread?.id;
+      const turnId = params.turnId ?? params.turn?.id;
+      return !!activeThreadId && threadId === activeThreadId && (!activeTurnId || !turnId || turnId === activeTurnId);
+    },
+    async reconcile() {
+      if (recoveryPromise) await recoveryPromise;
+      if (!turnSettled && !controllerClosed && turnSubmissionAttempted && activeThreadId) await ensureRecovered();
+      await drainProviderCallbacks(input);
+    },
+    onError(error) {
+      log("error", "codex_turn_callback_failed", { ...errorFields(error), provider_thread_uuid: activeThreadId, provider_turn_id: activeTurnId });
+      if (!turnSettled && !controllerClosed && turnSubmissionAttempted && activeThreadId) void ensureRecovered(error);
+    },
   });
   const unsubscribeDisconnect = client.onDisconnect((error, generation) => {
     if (connectionGeneration !== generation) return;
@@ -1676,6 +1731,12 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       interruptionReason = new ProviderTurnCancelledError();
       recoveryMustInterrupt = true;
       if (input.adoptTurn) {
+        if (activeThreadId && activeTurnId) {
+          // An existing recovery can already be waiting for material consumption.
+          // Stop the exact retained turn now; recovery still confirms its outcome.
+          try { await client.request("turn/interrupt", {threadId:activeThreadId,turnId:activeTurnId}, {requestTimeoutMs}); }
+          catch { /* Exact history, not a failed control reply, remains decisive. */ }
+        }
         // Let exact-history recovery reconnect and discover a missing turn id by the retained
         // client message identity. Callback completion alone does not prove provider termination.
         await ensureRecovered(interruptionReason);
@@ -1687,7 +1748,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         throw parkUnconfirmedTurn(new Error("Stop requested before Codex confirmed an exact provider turn; cancellation is not confirmed."));
       }
       try {
-        await request("turn/interrupt", { threadId: activeThreadId, turnId: activeTurnId });
+        await requestControl("turn/interrupt", { threadId: activeThreadId, turnId: activeTurnId });
       } catch (error) {
         if (unconfirmedFailure) throw unconfirmedFailure;
         if (turnSettled) return;
@@ -1914,24 +1975,10 @@ function withUsageClearance(error: ProviderDispatchError, clearsAtMs: number): P
     accountReadingWait: error.accountReadingWait, threadScoped: error.threadScoped, clearsAtMs });
 }
 
-/** The latest reset among this account's spent windows in its last stored usage reading. */
-async function storedCodexSpentReset(label: string): Promise<number | null> {
-  try {
-    const [{ providerAccountUsage }, { includedAllowanceWindows }] = await Promise.all([
-      import("./provider-account-usage"), import("./account-allowance-observation")]);
-    const account = providerAccountUsage("codex")?.accounts.find(value => value.label === label);
-    if (!account) return null;
-    const resets = includedAllowanceWindows("codex", account).filter(window => window.usedPercent >= 100)
-      .map(window => Date.parse(window.resetsAt ?? "")).filter(value => Number.isFinite(value) && value > Date.now());
-    return resets.length ? Math.max(...resets) : null;
-  } catch {
-    return null;
-  }
-}
 
-export async function runCodexTurn(input: RunCodexTurnInput): Promise<RunResult> {
-  if(input.custodySuccessor&&input.executable)
-    throw new ProviderCapabilityUnavailableError('send','Custody successor execution requires its protected native client.');
+async function runCodexTurnProducer(input: RunCodexTurnInput, custody: ProviderCallbackCustody): Promise<RunResult> {
+  return runLedgerSteps((function* () {
+  input = { ...input, [providerCustody]: custody } as RunCodexTurnInput;
   assertProviderInteractionPolicy(input.interactionPolicy);
   const attempt = usageAttempt("codex", undefined, input.accountLabel);
   // A turn being taken back is already the daemon's; refusing it on usage would abandon it running.
@@ -1949,24 +1996,26 @@ export async function runCodexTurn(input: RunCodexTurnInput): Promise<RunResult>
     input = { ...input, environment: !input.executable && codexRelayRunner() ? withoutMachinePaths(environment) : environment };
   }
   try {
-    const result = await (input.executable ? runCodexTurnStdio(input) : runCodexTurnShared(input));
+    const result = yield (input.executable ? runCodexTurnStdio(input) : runCodexTurnShared(input));
     recordUsageSuccess(attempt);
     return result;
   } catch (error) {
     if (error instanceof Error && isCodexUsageLimitMessage(error.message)) {
       if (resetAt === null && !input.executable) {
         try {
-          const report = await (input.appServerClient ?? sharedCodexAppServerClient())
+          const report = yield (input.appServerClient ?? sharedCodexAppServerClient())
             .request("account/rateLimits/read", {}, { requestTimeoutMs: 10_000 });
           resetAt = codexUsageReset(report?.rateLimitsByLimitId?.codex ?? report?.rateLimits);
         } catch {
           log("warn", "provider_usage_reset_unavailable", { provider: "codex" });
         }
       }
-      throw await codexUsageRefusalWait(error, attempt, resetAt);
+      throw (yield codexUsageRefusalWait(error, attempt, resetAt));
     }
     throw error;
   }
+
+  }).call(this));
 }
 
 /**
@@ -1979,10 +2028,10 @@ export async function runCodexTurn(input: RunCodexTurnInput): Promise<RunResult>
  * Server path was fixed, because they built their failure separately.
  */
 export async function codexUsageRefusalWait(error: unknown, attempt: ReturnType<typeof usageAttempt>,
-  reportedReset: number | null): Promise<unknown> {
+  reportedReset: number | null): Promise<unknown> {return runLedgerSteps((function* (): Generator<unknown, any, any> {
   // The stored reading's spent window, when Codex's own report named no reset. Never the
   // human-facing "try again at" text, which is a date without a zone.
-  const resetAt = reportedReset ?? await storedCodexSpentReset(attempt.label);
+  const resetAt = reportedReset ?? (yield storedCodexSpentReset(attempt.label));
   recordUsageExhaustion(attempt, resetAt);
   if (error instanceof ProviderDispatchError && error.terminalConfirmed && !error.assistantOutput
     && error.toolsUsed.length === 0 && error.clearsAtMs === null) {
@@ -1990,7 +2039,7 @@ export async function codexUsageRefusalWait(error: unknown, attempt: ReturnType<
     if (retained !== null) return withUsageClearance(error, retained);
   }
   return error;
-}
+})());}
 
 export const isCodexUsageLimitMessage = (message: string) => /^you(?:'|’)ve hit your usage limit\b/i.test(message);
 
@@ -2110,4 +2159,10 @@ export async function findCodexTurnIdsByReplayText(input: {
     if (matchesReplay && turn?.id) matches.add(String(turn.id));
   }
   return [...matches];
+}
+
+export async function runCodexTurn(input: Parameters<typeof runCodexTurnProducer>[0]): Promise<RunResult> {
+  if(input.custodySuccessor&&input.executable)
+    throw new ProviderCapabilityUnavailableError('send','Custody successor execution requires its protected native client.');
+  return withProviderCallbackCustody(input, (held, custody) => runCodexTurnProducer(held, custody));
 }

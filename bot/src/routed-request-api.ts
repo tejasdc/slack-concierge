@@ -1,4 +1,10 @@
 import {withContentReader,LabDisclosureError} from './lab-content-disclosure';
+import {dispatchRepairLedgerCommand} from "./deployment-repair-commands";
+import {dispatchManualLedgerCommand} from "./manual-ledger-commands";
+import {deploymentDrainCommand} from './deployment-drain-commands';
+import {registerDeploymentLedgerHandover} from './deployment-ledger-handover';
+import {dispatchControlRecoveryCommand} from './deployment-control-recovery-commands';
+import {runLedgerSteps} from './ledger-admission';
 import {routeLabel,withTaskLabel} from './owner-task-labels';
 import {readFileSync} from "node:fs";
 import { finishedTodoRefusal, namedTodo } from './question-todos';
@@ -23,7 +29,7 @@ import {supersededBy,supersededAddress,withdrawnSuccessor} from './session-hando
 import {recordDeploymentReleasePrepared,recordDeploymentReleaseActivationIntent,
   recordDeploymentReleaseActivated,registerDeploymentTurnReactionTargets,
   recordDeploymentTurnReactionDiscoveryFailure,claimDeploymentRun,recordDeploymentRunPhase,getDeploymentRun,
-  getLastKnownGoodRelease,promoteDeploymentRelease,completeDeploymentRunOnOwner,
+  getLastKnownGoodRelease,promoteDeploymentRelease,completeDeploymentRunOnOwner,deploymentReleaseFilesInUse,
   failDeploymentRun,recordPreservedCheckout} from './deployment-state';
 import {resolveDeploymentReactionTargets} from './deployment-reaction-provenance';
 import {releaseFilesInUse} from './executions';
@@ -59,42 +65,42 @@ const release=(()=>{
  * A post or reply that names files he cannot open tells its author at once, beside the receipt,
  * so the agent sends a path that opens; nothing is refused (agents are never handcuffed).
  */
-async function withLinkCheck<T>(result:T,input:{text?:unknown},owner?:SessionOwner):Promise<T|(T&{unopenable_links:unknown[];warning:string})>{
+async function withLinkCheck<T>(result:T,input:{text?:unknown},owner?:SessionOwner):Promise<T|(T&{unopenable_links:unknown[];warning:string})>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if(!owner||typeof input?.text!=='string'||!result||typeof result!=='object')return result;
-  const refused=await unopenableLinksWithReader(input.text,path=>owner.file(path,null));
+  const refused=(yield unopenableLinksWithReader(input.text,path=>owner.file(path,null)));
   if(!refused.length)return result;
   return {...result,unopenable_links:refused,
     warning:`Posted, but ${refused.length===1?'this file link':'these file links'} will not open for Tejas: ${refused.map(link=>`${link.path} (${link.reason})`).join('; ')}. Move the file somewhere it opens or send a corrected path.`};
-}
+}).call(this));}
 
 /** The router's own questions name to-dos too; one he already finished refuses the declaration before it can ring him. */
-async function refuseFinishedTodoQuestions(input:any):Promise<void>{
+async function refuseFinishedTodoQuestions(input:any):Promise<void>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if(input?.verb!=='questions'||!Array.isArray(input.questions))return;
   for(const item of input.questions){
     const id=typeof item?.todo==='string'?item.todo.trim():'';
     if(!id||id==='none')continue;
-    const todo=await namedTodo(id);
+    const todo=(yield namedTodo(id));
     if(todo===null)throw new Error(`He has no to-do "${id}". Name one of his to-dos by its exact id, or "todo": "none".`);
     if(todo!=='unavailable'){const refusal=finishedTodoRefusal(todo);if(refusal)throw new Error(refusal);}
   }
-}
+}).call(this));}
 /** The named to-do's current state, read from thnkr.ing; a caller can never supply it. */
-async function withTodoState(input:any):Promise<any>{
+async function withTodoState(input:any):Promise<any>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const {todo_checked:_ignored,...rest}=input??{};
   const id=typeof rest.todo==='string'?rest.todo.trim():'';
   if(!id||id==='none')return rest;
-  return {...rest,todo_checked:await namedTodo(id)};
-}
+  return {...rest,todo_checked:(yield namedTodo(id))};
+}).call(this));}
 
 export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
-  const handle=async function handleRoutedRequest(request: Request): Promise<Response> {
+  const handle=async function handleRoutedRequest(request: Request): Promise<Response> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     try {
       const url = new URL(request.url);
-      const native=await owner?.handle(request);
+      const native=(yield owner?.handle(request));
       if(native)return native;
       if (request.method === 'POST' && url.pathname.startsWith('/session-communication/') && sessions) {
         const operation = url.pathname.slice('/session-communication/'.length);
-        const input = await request.json();
+        const input = (yield request.json());
         const sourceInput=typeof input?.source?.input_id==='string'?getAcceptedSessionInput(input.source.input_id):null;
         const successor=sourceInput?supersededBy(sourceInput.session_id):null;
         const withdrawn=sourceInput?withdrawnSuccessor(sourceInput.session_id):false;
@@ -107,8 +113,8 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
           return Response.json({error:`This session is superseded by ${successor}; use ${supersededAddress(sourceInput!.session_id)} for owner writes.`,successor,successorAddress:supersededAddress(sourceInput!.session_id),code:'SESSION_SUPERSEDED'},{status:409});
         if(withdrawn&&operation!=='outcome'&&!readOnly)
           return Response.json({error:'This proposed handoff was withdrawn; this successor cannot write.',code:'HANDOFF_WITHDRAWN'},{status:409});
-        if (operation === 'search') return Response.json(await sessions.search(input));
-        if (operation === 'projects') return Response.json(await sessions.projects(input));
+        if (operation === 'search') return Response.json((yield sessions.search(input)));
+        if (operation === 'projects') return Response.json((yield sessions.projects(input)));
         if (operation === 'agents') {
           sessions.agents(input);
           const stateDir=process.env.CONCIERGE_STATE_DB?dirname(process.env.CONCIERGE_STATE_DB)
@@ -117,17 +123,17 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
             {unix:join(stateDir,'requests.sock'),signal:AbortSignal.timeout(8_000)} as RequestInit);
         }
         if (operation === 'agent-bind') return Response.json(sessions.bindAgent(input));
-        if (operation === 'peers') return Response.json(await sessions.peerInventory(input));
+        if (operation === 'peers') return Response.json((yield sessions.peerInventory(input)));
         if (operation === 'usage') {
           const current=sessions.usage(input);
           return Response.json(input.by_session
-            ? await usageBreakdown(input.period==='week'?'week':'today') : current);
+            ? (yield usageBreakdown(input.period==='week'?'week':'today')) : current);
         }
         if (operation === 'history-storage') return Response.json(sessions.historyStorage(input));
-        if (operation === 'auth-switch') return Response.json(await sessions.switchCodexAccount(input));
+        if (operation === 'auth-switch') return Response.json((yield sessions.switchCodexAccount(input)));
         if (operation === 'saved') return Response.json(sessions.saved(input));
         if (operation === 'snooze') return Response.json(sessions.snooze(input));
-        if (operation === 'pause') return Response.json(await sessions.pause(input));
+        if (operation === 'pause') return Response.json((yield sessions.pause(input)));
         if (operation === 'control') return Response.json(sessions.control(input));
         if (operation === 'watch') {
           // A runner's own token names its machine for certain: that wins over what the helper sent.
@@ -135,27 +141,27 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
           // (agents are never handcuffed; docs/architecture/WATCHES.md "Which machine").
           const principal=request.headers.get('x-concierge-agent-principal');
           const runner=principal?.startsWith('runner:')?principal.slice('runner:'.length):input.runner;
-          return Response.json(await sessions.watch({...input,...(runner?{runner}:{})}));
+          return Response.json((yield sessions.watch({...input,...(runner?{runner}:{})})));
         }
-        if (operation === 'handoff') return Response.json(await sessions.handoff(input));
-        if (operation === 'obligations') return Response.json(await sessions.obligations(input));
+        if (operation === 'handoff') return Response.json((yield sessions.handoff(input)));
+        if (operation === 'obligations') return Response.json((yield sessions.obligations(input)));
         if (operation === 'agent-test-scope') return Response.json(sessions.agentTestScopeDiagnostic(input));
         if (operation === 'mutation-admission') return Response.json(sessions.mutationAdmission(input));
-        if (operation === 'open') return Response.json(await sessions.openLink(input));
-        if (operation === 'board') return Response.json(await sessions.board(input));
+        if (operation === 'open') return Response.json((yield sessions.openLink(input)));
+        if (operation === 'board') return Response.json((yield sessions.board(input)));
         if (operation === 'owed') {
           const stateDir=process.env.CONCIERGE_STATE_DB?dirname(process.env.CONCIERGE_STATE_DB)
             :process.env.CONCIERGE_STATE_DIR||'/root/.local/state/concierge';
-          const result=await sessions.owed(input,async(sessionId,turnId,signal)=>{
+          const result=(yield sessions.owed(input,async(sessionId,turnId,signal)=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
             const query=new URLSearchParams({sessionId:String(sessionId),turnId:String(turnId)});
-            const response=await fetch(`http://localhost/internal/owed-unfiled?${query}`,{
+            const response=(yield fetch(`http://localhost/internal/owed-unfiled?${query}`,{
               unix:join(stateDir,'requests.sock'),signal,
-            } as RequestInit);
+            } as RequestInit));
             if(!response.ok)throw new Error('The Inbox filing read is unavailable.');
-            const body=await response.json() as {unfiled?:unknown};
+            const body=(yield response.json()) as {unfiled?:unknown};
             if(!Array.isArray(body.unfiled))throw new Error('The Inbox filing read returned an invalid result.');
             return body.unfiled as ReturnType<typeof unfiledReceivedInputs>;
-          },request.signal);
+          }).call(this));},request.signal));
           if(!result.ok)return Response.json({error:{code:result.code,message:result.message}},{status:result.status});
           return Response.json(result.value);
         }
@@ -163,26 +169,26 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'edit-gate') return Response.json(sessions.editGate(input));
         if (operation === 'model-start-gate') return Response.json(sessions.modelStartGate(input));
         if (operation === 'edit-reason') return Response.json(sessions.editReason(input));
-        if (operation === 'journal-review') return Response.json(await sessions.journalReview(input));
-        if (operation === 'note') return Response.json(await sessions.note(input));
+        if (operation === 'journal-review') return Response.json((yield sessions.journalReview(input)));
+        if (operation === 'note') return Response.json((yield sessions.note(input)));
         if (operation === 'title') return Response.json(sessions.title(input));
-        if (operation === 'move') return Response.json(await sessions.move(input));
-        if (operation === 'post') return Response.json(await withLinkCheck(sessions.post(input),input,owner));
-        if (operation === 'outcome') return Response.json(sessions.outcome(await withTodoState(input)));
+        if (operation === 'move') return Response.json((yield sessions.move(input)));
+        if (operation === 'post') return Response.json((yield withLinkCheck(sessions.post(input),input,owner)));
+        if (operation === 'outcome') return Response.json(sessions.outcome((yield withTodoState(input))));
         if (operation === 'answer') return Response.json(sessions.handleChatGptAnswer(input));
         if (operation === 'legacy-link') return Response.json(sessions.classifyLegacyChatGpt(input));
-        if (operation === 'chatgpt-recover') return Response.json(await sessions.recoverChatGptNeverSent(input));
-        if (operation === 'codex-recover') return Response.json(await sessions.recoverCodexNeverAcknowledged(input));
+        if (operation === 'chatgpt-recover') return Response.json((yield sessions.recoverChatGptNeverSent(input)));
+        if (operation === 'codex-recover') return Response.json((yield sessions.recoverCodexNeverAcknowledged(input)));
         if (operation === 'attention-withdraw') return Response.json(sessions.withdrawAttention(input));
         if (operation === 'thread') return Response.json(sessions.thread(input));
         if (operation === 'topics') {
-            await refuseFinishedTodoQuestions(input);
-            const listHead=input.verb==='list'?await listReadHead(typeof input.cursor==='string'?input.cursor:null,request.signal):undefined;
+            (yield refuseFinishedTodoQuestions(input));
+            const listHead=input.verb==='list'?(yield listReadHead(typeof input.cursor==='string'?input.cursor:null,request.signal)):undefined;
             return Response.json(sessions.topics(input,listHead));
         }
-        if (operation === 'context') return Response.json(await sessions.context(input));
-        if (operation === 'ask') return Response.json(await sessions.ask(input), {status:202});
-        if (operation === 'reply') return Response.json(await withLinkCheck(await sessions.reply(await withTodoState(input)),input,owner));
+        if (operation === 'context') return Response.json((yield sessions.context(input)));
+        if (operation === 'ask') return Response.json((yield sessions.ask(input)), {status:202});
+        if (operation === 'reply') return Response.json((yield withLinkCheck((yield sessions.reply((yield withTodoState(input)))),input,owner)));
         if (operation === 'get') return Response.json(sessions.get(input));
         if (operation === 'cancel') return Response.json(sessions.cancel(input));
       }
@@ -202,8 +208,18 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
     } catch (error) {
       return requestFailure(request,error);
     }
-  };
+  }).call(this));};
   return (request:Request)=>withContentReader(request,()=>handle(request));
+}
+
+/** Supervisor controls do not join the business queue. Maintenance's original
+ * durability proof and held worker sync must not block the supervisor's entrance. */
+export function supervisorControlResponse(request:Request):Response|null {
+  if(request.method!=='GET')return null;
+  const path=new URL(request.url).pathname;
+  if(path==='/supervisor/ping')return Response.json({ok:true,pid:process.pid,startedAt,release,logging:logSinkCounters(),ledgerDurability:ledgerDurabilityCounters()});
+  if(path==='/supervisor/durability')return Response.json(protectedDurability.snapshot());
+  return null;
 }
 
 /** Capabilities installed only on the root-private Unix socket, never on the peer listener. */
@@ -218,13 +234,15 @@ export function localOwnerRequestApiHandler(shared:(request:Request)=>Promise<Re
 
 function localOwnerRequest(shared:(request:Request)=>Promise<Response>,sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
   return async function fetch(request:Request):Promise<Response> {
+    const control=supervisorControlResponse(request);if(control)return control;
+    return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     try {
       const url=new URL(request.url);
-      if(url.pathname.startsWith('/runner/v1/')&&owner)return await runnerRoutes(request,url);
+      if(url.pathname.startsWith('/runner/v1/')&&owner)return (yield runnerRoutes(request,url));
       if(request.method==='GET'&&url.pathname==='/internal/auth-ephemera'&&owner)
         return Response.json(owner.authEphemera());
       if(request.method==='POST'&&url.pathname==='/internal/auth-refresh'&&owner)
-        return Response.json(await owner.refreshAuthEphemera());
+        return Response.json((yield owner.refreshAuthEphemera()));
       if(request.method==='GET'&&url.pathname==='/supervisor/ping')
         return Response.json({ok:true,pid:process.pid,startedAt,release,logging:logSinkCounters(),ledgerDurability:ledgerDurabilityCounters()});
       if(request.method==='GET'&&url.pathname==='/internal/deployment-release-capabilities'&&owner)
@@ -238,11 +256,11 @@ function localOwnerRequest(shared:(request:Request)=>Promise<Response>,sessions?
         if(!alerts)return Response.json({error:'alert_receiver_unavailable'},{status:503});
         if(request.method==='GET'&&url.pathname==='/grafana/v1/firing')return Response.json({episodes:alerts.firing()});
         if(request.method==='POST'&&url.pathname==='/grafana/v1/recoveries'){
-          const result=alerts.reconcileRecovery(await request.json() as GrafanaRecoveryEvidence);
+          const result=alerts.reconcileRecovery((yield request.json()) as GrafanaRecoveryEvidence);
           return Response.json(result,{status:result.status});
         }
         if(request.method==='POST'&&url.pathname==='/grafana/v1/firings'){
-          const result=alerts.reconcileFiring(await request.json() as GrafanaFiringEvidence);
+          const result=alerts.reconcileFiring((yield request.json()) as GrafanaFiringEvidence);
           return Response.json(result,{status:result.status});
         }
         return Response.json({error:'method_not_allowed'},{status:405});
@@ -250,17 +268,21 @@ function localOwnerRequest(shared:(request:Request)=>Promise<Response>,sessions?
       if(request.method==='GET'&&url.pathname==='/internal/deployment-last-known-good'&&owner)
         return Response.json(getLastKnownGoodRelease());
       if(request.method==='GET'&&url.pathname==='/internal/deployment-release-files-in-use'&&owner)
-        return Response.json(releaseFilesInUse());
+        return Response.json([...releaseFilesInUse(),...deploymentReleaseFilesInUse()]);
       if(request.method==='POST'&&url.pathname==='/internal/native-pipeline-continuation'&&owner){
-        const input=await request.json() as any;
+        const input=(yield request.json()) as any;
         if(typeof input?.id!=='string'||!/^[a-zA-Z0-9_-]{1,100}$/.test(input.id))
           throw new Error('An exact continuation ID is required.');
         if(input.operation==='enroll')return Response.json(enrollNativePipelineContinuation(input.id,input.payload));
-        if(input.operation==='tick')return Response.json(await tickNativePipelineContinuation(input.id));
+        if(input.operation==='tick')return Response.json((yield tickNativePipelineContinuation(input.id)));
         throw new Error('Unknown continuation operation.');
       }
+      if(request.method==='POST'&&url.pathname==='/internal/deployment-drain'&&owner){
+        const input=(yield request.json()) as any;
+        return Response.json(deploymentDrainCommand(input));
+      }
       if(request.method==='POST'&&url.pathname==='/internal/deployment-release'&&owner){
-        const input=await request.json() as any;
+        const input=(yield request.json()) as any;
         const operation=String(input?.operation??'');
         const filePublication=['activate-files','activate-control-files','restore-files'].includes(operation);
         if(!filePublication&&!/^[0-9a-f-]{36}$/.test(input?.runId??''))throw new Error('Invalid deployment run.');
@@ -311,8 +333,14 @@ function localOwnerRequest(shared:(request:Request)=>Promise<Response>,sessions?
         if(input.operation==='promote')return Response.json(promoteDeploymentRelease(input.runId,input.artifactDigest));
         throw new Error('Unknown deployment release operation.');
       }
+      if(request.method==='POST'&&url.pathname==='/internal/deployment-control-recovery'&&owner)
+        return Response.json(dispatchControlRecoveryCommand((yield request.json())));
+      if(request.method==='POST'&&url.pathname==='/internal/deployment-repair'&&owner)
+        return Response.json(dispatchRepairLedgerCommand((yield request.json())));
+      if(request.method==='POST'&&url.pathname==='/internal/manual-ledger'&&owner)
+        return Response.json(dispatchManualLedgerCommand((yield request.json())));
       if(request.method==='POST'&&url.pathname==='/internal/deployment-run'&&owner){
-        const input=await request.json() as any;
+        const input=(yield request.json()) as any;
         if(!/^[0-9a-f-]{36}$/.test(input?.runId??''))throw new Error('Invalid deployment run.');
         if(input.operation==='show')return Response.json(getDeploymentRun(input.runId));
         if(input.operation==='desired'){
@@ -343,7 +371,9 @@ function localOwnerRequest(shared:(request:Request)=>Promise<Response>,sessions?
             ||typeof input.serviceInvocationId!=='string'||!input.serviceInvocationId
             ||!input.evidence||typeof input.evidence!=='object'||Array.isArray(input.evidence))
             throw new Error('Invalid deployment completion evidence.');
-          return Response.json(await completeDeploymentRunOnOwner(input));
+          const completed=(yield completeDeploymentRunOnOwner(input));
+          registerDeploymentLedgerHandover(input.runId);
+          return Response.json(completed);
         }
         if(input.operation==='fail'){
           if(typeof input.error!=='string'||!input.error
@@ -361,30 +391,30 @@ function localOwnerRequest(shared:(request:Request)=>Promise<Response>,sessions?
         throw new Error('Unknown deployment run operation.');
       }
       if(request.method==='POST'&&url.pathname==='/external/capture'&&owner) {
-        const input=await request.json() as any;
+        const input=(yield request.json()) as any;
         if(!/^[a-z][a-z0-9-]{2,40}$/.test(input?.name))throw new Error('Invalid outside agent name.');
         return Response.json(owner.acceptInboxCapture({source:{kind:'outside-agent',id:input.id,recordedAt:input.recordedAt,
           title:`Outside agent · ${input.name}`,metadata:{outsideAgent:input.name}},text:input.text,files:input.files}),{status:202});
       }
       if(request.method==='POST'&&url.pathname==='/external/ask'&&sessions)
-        return Response.json(sessions.externalAsk(await request.json()),{status:202});
+        return Response.json(sessions.externalAsk((yield request.json())),{status:202});
       if(request.method==='POST'&&url.pathname==='/external/get'&&sessions){
-        const input=await request.json() as {name:string;request_id:string};
+        const input=(yield request.json()) as {name:string;request_id:string};
         return Response.json(sessions.externalGet(input.name,input.request_id));
       }
       if(request.method==='POST'&&url.pathname==='/external/withdraw'&&sessions)
-        return Response.json(sessions.externalWithdraw(await request.json()));
+        return Response.json(sessions.externalWithdraw((yield request.json())));
       return shared(request);
     } catch(error) {
       return requestFailure(request,error);
     }
-  };
+  }).call(this));};
 }
 
-export async function startRoutedRequestApi(stateDir: string, coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner,peer?:ForegroundPeer|null) {
+export async function startRoutedRequestApi(stateDir: string, coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner,peer?:ForegroundPeer|null) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const path = join(stateDir, "request-owner.sock");
   // A killed listener leaves its filesystem entry behind; normal close removes it.
-  await removeUnboundSocket(path);
+  (yield removeUnboundSocket(path));
   const handle=localOwnerRequestApiHandler(requestApiHandler(coordinator,workspaceUrl,sessions,owner),sessions,owner);
   const server = Bun.serve({
     unix: path,
@@ -392,17 +422,19 @@ export async function startRoutedRequestApi(stateDir: string, coordinator: Route
     // A command's answer is its receipt, so it leaves only once the rows it reports are on disk.
     // Reads answer at once: the supervisor's liveness ping must never wait for the disk.
     fetch: async request=>{
+      const control=supervisorControlResponse(request);if(control)return control;
+      return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
       try {
-        return request.method==='GET'?await handle(request):await protectedOwnerReceipt(()=>handle(request),
-          request.headers.get('x-concierge-admission-id')??undefined);
+        return request.method==='GET'?(yield handle(request)):(yield protectedOwnerReceipt(()=>handle(request),
+          request.headers.get('x-concierge-admission-id')??undefined));
       } catch(error) {return requestFailure(request,error);}
-    },
+    }).call(this));},
   });
   if(owner)startLedgerDurability(stateDir);
   let stopPresentation:ReturnType<typeof startPresentationWorker>|undefined;
   let stopGateway:Awaited<ReturnType<typeof startForegroundGatewayProcess>>|undefined;
   try {
-    await chmod(path, 0o600);
+    (yield chmod(path, 0o600));
     // First-run creation belongs to the canonical writer, never to a GET reader.
     try {owner?.inbox();}
     catch(error) {
@@ -414,10 +446,10 @@ export async function startRoutedRequestApi(stateDir: string, coordinator: Route
     // Every accepting canonical owner serves prepared reads, regardless of its adapters.
     // Start only after the exclusive socket bind, so a refused second owner spawns nothing.
     if(owner)stopPresentation=startPresentationWorker();
-    stopGateway=await startForegroundGatewayProcess(stateDir,path,peer);
+    stopGateway=(yield startForegroundGatewayProcess(stateDir,path,peer));
   } catch(error) {
-    await server.stop(true);
-    await stopPresentation?.();
+    (yield server.stop(true));
+    (yield stopPresentation?.());
     throw error;
   }
   let stopping:Promise<void>|null=null,gatewayStopping:Promise<void>|null=null;
@@ -427,12 +459,12 @@ export async function startRoutedRequestApi(stateDir: string, coordinator: Route
     // turn's App Server connection on a runner) until `closeRelays`, the drain's last step.
     stop:(closeActiveConnections=false)=>stopping??=(async()=>{
       try {
-        if(closeActiveConnections)await (gatewayStopping??=stopGateway?.(true)??Promise.resolve());
+        if(closeActiveConnections)(await (gatewayStopping??=stopGateway?.(true)??Promise.resolve()));
         else stopGateway?.stopListening();
-        await server.stop(closeActiveConnections);
+        (await server.stop(closeActiveConnections));
       }
-      finally {await stopPresentation?.();}
+      finally {(await stopPresentation?.());}
     })(),
     closeRelays,
   };
-}
+}).call(this));}

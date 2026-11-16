@@ -1,3 +1,4 @@
+import {ledgerCallback} from './ledger-admission';
 import {db,getSessionById,type SessionRow} from './state';
 import {newWorkCapacity,capacityCanStart,type AutomaticProvider} from './provider-start-choice';
 import {AUTOMATIC_PROVIDER_ALIASES,aliasKeepingTier,normalizeReasoningEffort} from './aliases';
@@ -230,13 +231,13 @@ function considerCandidate(candidate:Candidate):boolean {
       predecessorId:session.id,provider:successorAlias,...(successorEffort?{effort:successorEffort}:{}),
       reason:`${sourceProvider} has no allowance to start this session's queued work and ${target.provider} has room. Continue it through the exact handoff inventory; only inputs that never reached ${sourceProvider} move.`,
       actionId:`${ACTION_PREFIX}${session.id}:${attempt}`})
-      .then(result=>{
+      .then(ledgerCallback(result=>{
         // The successor's provider was also the owner's choice, so it can move again later.
         const successor=Number(String(result.successor).slice('concierge:'.length));
         if(successor)updateSessionMetadata(successor,{automaticProviderChoice:true});
         log('warn','held_work_failover_proposed',{predecessor:session.id,successor:result.successor,handoff_id:result.handoffId,
           from:sourceProvider,to:target.provider,receiver_used:target.used,owes_inbox:!!candidate.owes_inbox});
-      })
+      }))
       .catch(error=>log('error','held_work_failover_failed',{predecessor:session.id,error:String(error)}))
       .finally(()=>{preparing--;});
     return true;

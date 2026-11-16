@@ -119,7 +119,7 @@ function rowBytes(row: unknown): number {
 
 /** Wrap once at the existing ledger boundary; future query callers are observed automatically.
  * Weak maps do not extend a prepared statement's lifetime. No per-query history is retained. */
-export function observedDatabase(database: Database): Database {
+export function observedDatabase(database: Database,admit?:(sql:string)=>void): Database {
   const statements = new WeakMap<object, object>();
   const transactions = new WeakMap<Function, Function>();
   const fingerprintOf = (sql: string) => createHash('sha256').update(sql).digest('hex').slice(0, 16);
@@ -127,6 +127,7 @@ export function observedDatabase(database: Database): Database {
     const prior = transactions.get(raw);
     if (prior) return prior;
     const wrapped = function(this: unknown, ...args: any[]) {
+      admit?.('BEGIN');
       phases.callbackEntered = undefined;
       phases.callbackLeft = undefined;
       phases.slowestStatementMs = 0;
@@ -139,6 +140,7 @@ export function observedDatabase(database: Database): Database {
     for (const key of Reflect.ownKeys(raw)) {
       if (['arguments', 'caller', 'prototype'].includes(String(key))) continue;
       const descriptor = Object.getOwnPropertyDescriptor(raw, key)!;
+      if(key==='database')descriptor.value=databaseProxy;
       if (['default', 'deferred', 'immediate', 'exclusive'].includes(String(key)) && typeof descriptor.value === 'function')
         descriptor.value = transaction(descriptor.value, phases);
       Object.defineProperty(wrapped, key, descriptor);
@@ -149,7 +151,7 @@ export function observedDatabase(database: Database): Database {
     const prior = statements.get(raw);
     if (prior) return prior;
     const fingerprint = fingerprintOf(sql);
-    const measured = <T>(read: () => T): T => observeSynchronousStorage('statement', () => fingerprint, read);
+    const measured = <T>(read: () => T): T => {admit?.(sql);return observeSynchronousStorage('statement', () => fingerprint, read);};
     const record = (scope: Scope, started: number, result: any, method: string, failed: boolean, count = true) => {
       if (scope.closed) return;
       const elapsed = performance.now() - started;
@@ -171,6 +173,7 @@ export function observedDatabase(database: Database): Database {
     };
     const proxy = new Proxy(raw, { get(target, property) {
       const value = Reflect.get(target, property, target);
+      if(property==='native'&&value&&typeof value==='object')return statement(value,sql);
       if (typeof value !== 'function') return value;
       if (property === 'as') return (...args: any[]) => statement(Reflect.apply(value, target, args), sql);
       if (property === 'iterate') return (...args: any[]) => {
@@ -194,7 +197,11 @@ export function observedDatabase(database: Database): Database {
           };
         }});
       };
-      if (!['get', 'all', 'values', 'run'].includes(String(property))) return value.bind(target);
+      if (!['get', 'all', 'values', 'run'].includes(String(property))) return (...args:any[])=>{
+        admit?.(sql);
+        const result=Reflect.apply(value,target,args);
+        return result===target?proxy:result;
+      };
       return (...args: any[]) => {
         const scope = scopes.getStore();
         if (!scope || scope.closed) return measured(() => Reflect.apply(value, target, args));
@@ -221,6 +228,7 @@ export function observedDatabase(database: Database): Database {
   const prepared = new Map<string, any>();
   const PREPARED_LIMIT = 2000;
   const cachedQuery = (target: Database, sql: string) => {
+    admit?.(sql);
     const cached = prepared.get(sql);
     if (cached) { prepared.delete(sql); prepared.set(sql, cached); return cached; }
     const created = statement(observeSynchronousStorage('statement', () => fingerprintOf(sql), () => target.prepare(sql)), sql);
@@ -228,16 +236,16 @@ export function observedDatabase(database: Database): Database {
     if (prepared.size > PREPARED_LIMIT) prepared.delete(prepared.keys().next().value!);
     return created;
   };
-  return new Proxy(database, { get(target, property) {
+  const databaseProxy = new Proxy(database, { get(target, property) {
     const value = Reflect.get(target, property, target);
     if (property === 'query')
-      return (sql: string, ...args: any[]) => args.length
+      return (sql: string, ...args: any[]) => {admit?.(sql);return args.length
         ? statement(observeSynchronousStorage('statement', () => fingerprintOf(sql), () => Reflect.apply(value, target, [sql, ...args])), sql)
-        : cachedQuery(target, sql);
+        : cachedQuery(target, sql);};
     if (property === 'prepare')
-      return (sql: string, ...args: any[]) => statement(observeSynchronousStorage('statement', () => fingerprintOf(sql), () => Reflect.apply(value, target, [sql, ...args])), sql);
+      return (sql: string, ...args: any[]) => {admit?.(sql);return statement(observeSynchronousStorage('statement', () => fingerprintOf(sql), () => Reflect.apply(value, target, [sql, ...args])), sql);};
     if (property === 'close')
-      return (...args: any[]) => { prepared.clear(); return Reflect.apply(value, target, args); };
+      return (...args: any[]) => { admit?.('CLOSE');prepared.clear(); return Reflect.apply(value, target, args); };
     if (property === 'transaction')
       return (callback: Function, ...args: any[]) => {
         const phases = transactionPhaseTiming();
@@ -249,6 +257,7 @@ export function observedDatabase(database: Database): Database {
         return transaction(Reflect.apply(value, target, [timedCallback, ...args]), phases);
       };
     if (property === 'exec' || property === 'run') return (...args: any[]) => {
+      admit?.(String(args[0]));
       const scope = scopes.getStore();
       const measured = () => observeSynchronousStorage('statement', () => fingerprintOf(String(args[0])), () => Reflect.apply(value, target, args));
       if (!scope || scope.closed) return measured();
@@ -259,6 +268,12 @@ export function observedDatabase(database: Database): Database {
       catch (error) { scope.work.db_errors++; throw error; }
       finally { scope.work.db_duration_ms += performance.now() - started; }
     };
-    return typeof value === 'function' ? value.bind(target) : value;
+    return typeof value === 'function' ? (...args:any[])=>{
+      admit?.(`DATABASE ${String(property)}`);
+      const result=Reflect.apply(value,target,args);
+      return result&&typeof result.run==='function'&&typeof result.get==='function'
+        ?statement(result,typeof args[0]==='string'?args[0]:'[unknown prepared statement]'):result;
+    } : value;
   }});
+  return databaseProxy;
 }

@@ -20,7 +20,7 @@ export type Retryable<T> = Readonly<{
   now?: () => number;
   wait?: (ms: number) => Promise<void>;
   random?: () => number;
-  onBudgetExhausted?: (error: RetryBudgetExhaustedError) => void;
+  onBudgetExhausted?: (error: RetryBudgetExhaustedError) => void | Promise<void>;
 }>;
 
 export function retryDelayMs(policy: RetryPolicy, attempt: number, random = Math.random): number {
@@ -48,24 +48,24 @@ export async function withRetry<T>(input: Retryable<T>): Promise<T> {
   const wait = input.wait ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
   const startedAtMs = input.startedAtMs ?? now();
   let lastError: unknown = null;
-  const exhausted = (attempts: number, reason: RetryBudgetExhaustedError["reason"]): never => {
+  const exhausted = async (attempts: number, reason: RetryBudgetExhaustedError["reason"]): Promise<never> => {
     const error = new RetryBudgetExhaustedError(input.operation, attempts, Math.max(0, now() - startedAtMs),
       lastError, reason, startedAtMs);
     log("error", "retry_budget_exhausted", { operation: input.operation, attempts, elapsed_ms: error.elapsedMs,
       reason, last_error: String(lastError) });
-    input.onBudgetExhausted?.(error);
+    await input.onBudgetExhausted?.(error);
     throw error;
   };
   for (let attempt = 1; attempt <= input.policy.maxAttempts; attempt++) {
-    if (now() - startedAtMs >= input.policy.maxAgeMs) exhausted(attempt - 1, "deadline");
+    if (now() - startedAtMs >= input.policy.maxAgeMs) return exhausted(attempt - 1, "deadline");
     try { return await input.run(attempt); }
     catch (error) {
       lastError = error;
       const kind = input.classifyError(error, attempt);
-      if (kind === "permanent") exhausted(attempt, "permanent");
-      if (attempt >= input.policy.maxAttempts) exhausted(attempt, "attempts");
+      if (kind === "permanent") return exhausted(attempt, "permanent");
+      if (attempt >= input.policy.maxAttempts) return exhausted(attempt, "attempts");
       const remaining = input.policy.maxAgeMs - (now() - startedAtMs);
-      if (remaining <= 0) exhausted(attempt, "deadline");
+      if (remaining <= 0) return exhausted(attempt, "deadline");
       await wait(Math.min(remaining, retryDelayMs(input.policy, attempt, input.random)));
     }
   }

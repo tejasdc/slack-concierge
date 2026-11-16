@@ -30,7 +30,7 @@ captured one such cycle (61 frames committed during a 1.6 s copy); no stuck read
 The checkpoint thread finishes a partly copied generation's tail on its next tick with PASSIVE,
 never taking the writer lock. (A FULL fallback shipped first in 6c982e7a was removed because it
 held the writer lock against the owner's commits.) Rewinding is likely, not guaranteed: at 60
-commits/s on a disposable ledger PASSIVE tail copies did not rewind. See `docs/architecture/LEDGER-DURABILITY.md#log-recycling`.
+commits/s on a disposable ledger PASSIVE tail copies did not rewind. See `docs/architecture/LEDGER-DURABILITY.md#log-recycling-before-owner-admission-history`.
 
 ## Acceptance scenario
 

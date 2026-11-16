@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import {ledgerCallback} from './ledger-admission';
 
 /**
  * Health notices go to the repair agent first, never straight to Tejas (2026-10-08 [decision:
@@ -98,7 +99,7 @@ export function startRepairNoticeDelivery(deliver: () => number|Promise<number>,
     }
   };
   pass();
-  const timer = setInterval(pass, 60_000);
+  const timer = setInterval(ledgerCallback(pass), 60_000);
   timer.unref?.();
   return () => clearInterval(timer);
 }

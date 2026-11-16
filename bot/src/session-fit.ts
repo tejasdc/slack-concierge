@@ -1,3 +1,4 @@
+import {runLedgerSteps} from './ledger-admission';
 import { basename } from 'node:path';
 import { db, type SessionRow } from './state';
 import { sessionMetadata } from './session-inputs';
@@ -88,23 +89,23 @@ const BACKFILL_DAYS = 14;
  * Once per start: requests sent before topics were stored on them get their topic thread filled from
  * the ledger alone, so "which topics a session handles" covers them too.
  */
-export async function backfillRequestTopics(stopped: () => boolean) {
+export async function backfillRequestTopics(stopped: () => boolean) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const started = Date.now();
   let requests = 0;
   for (const row of db.query(`SELECT request_id, thread_root_input_id AS root, source_input_id AS source FROM session_communication_requests
     WHERE topic_root_input_id IS NULL AND created_at_ms >= ?`).all(started - BACKFILL_DAYS * 86_400_000) as { request_id: string; root: string | null; source: string | null }[]) {
     if (stopped()) return;
     db.query('UPDATE session_communication_requests SET topic_root_input_id=? WHERE request_id=?').run(topicRootFor(row.root, row.source) ?? '', row.request_id);
-    if (++requests % 100 === 0) await new Promise(resolve => setImmediate(resolve));
+    if (++requests % 100 === 0) (yield new Promise(resolve => setImmediate(resolve)));
   }
   for (const row of db.query(`SELECT request_id, thread_root_input_id AS root, source_input_id AS source FROM session_peer_requests
     WHERE topic_root_input_id IS NULL AND created_at_ms >= ?`).all(started - BACKFILL_DAYS * 86_400_000) as { request_id: string; root: string | null; source: string | null }[]) {
     if (stopped()) return;
     db.query('UPDATE session_peer_requests SET topic_root_input_id=? WHERE request_id=?').run(topicRootFor(row.root, row.source) ?? '', row.request_id);
-    if (++requests % 100 === 0) await new Promise(resolve => setImmediate(resolve));
+    if (++requests % 100 === 0) (yield new Promise(resolve => setImmediate(resolve)));
   }
   if (requests) log('info', 'request_topics_backfilled', { requests, durationMs: Date.now() - started });
-}
+}).call(this));}
 
 // --- Topics a session holds, and what a request is about. ---
 

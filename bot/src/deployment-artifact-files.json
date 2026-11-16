@@ -55,7 +55,20 @@
     "control/application/native-read-worker.js": "bot/src/native-read-worker.ts",
     "control/application/ledger-durability-worker.js": "bot/src/ledger-durability-worker.ts",
     "control/application/watch-observation-worker.js": "bot/src/watch-observation-worker.ts",
-    "control/application/owner-task-watchdog-worker.js": "bot/src/owner-task-watchdog-worker.ts"
+    "control/application/owner-task-watchdog-worker.js": "bot/src/owner-task-watchdog-worker.ts",
+    "control/deployment-launch-authority.js": "bot/scripts/deployment-launch-authority.ts",
+    "control/session-turn-queue.js": "bot/scripts/session-turn-queue.ts",
+    "control/clear-stale-account-notices.js": "bot/scripts/clear-stale-account-notices.ts",
+    "control/repair-inbox-needs.js": "bot/scripts/repair-inbox-needs.ts",
+    "control/application/session-turn-queue.js": "bot/scripts/session-turn-queue.ts",
+    "control/application/clear-stale-account-notices.js": "bot/scripts/clear-stale-account-notices.ts",
+    "control/application/repair-inbox-needs.js": "bot/scripts/repair-inbox-needs.ts",
+    "control/application/deployment-launch-authority.js": "bot/scripts/deployment-launch-authority.ts",
+    "control/application/deploy-state.js": "bot/scripts/deploy-state.ts",
+    "control/application/deployment-repair.js": "bot/scripts/deployment-repair.ts",
+    "control/application/drain-status.js": "bot/scripts/drain-status.ts",
+    "control/application/recover-deployment.js": "bot/scripts/recover-deployment.ts",
+    "control/application/release-manager.js": "bot/scripts/release-manager.ts"
   },
   "controlFiles": {
     "control/ledger-read.py": "scripts/ledger-read.py",
@@ -91,7 +104,8 @@
     "control/systemd/concierge-deployment-repair@.service": "systemd/concierge-deployment-repair@.service",
     "control/systemd/concierge-capture.conf": "systemd/concierge-capture.conf",
     "control/systemd/router-actions.sh": "systemd/router-actions.sh",
-    "control/config/capture-routes.toml": "config/capture-routes.toml"
+    "control/config/capture-routes.toml": "config/capture-routes.toml",
+    "control/deployment-command-authority.json": "bot/src/deployment-command-authority.json"
   },
   "applicationBundles": [
     "control/application/presentation-message-worker.js",
@@ -106,6 +120,15 @@
     "control/application/native-read-worker.js",
     "control/application/ledger-durability-worker.js",
     "control/application/watch-observation-worker.js",
-    "control/application/owner-task-watchdog-worker.js"
+    "control/application/owner-task-watchdog-worker.js",
+    "control/application/session-turn-queue.js",
+    "control/application/clear-stale-account-notices.js",
+    "control/application/repair-inbox-needs.js",
+    "control/application/deployment-launch-authority.js",
+    "control/application/deploy-state.js",
+    "control/application/deployment-repair.js",
+    "control/application/drain-status.js",
+    "control/application/recover-deployment.js",
+    "control/application/release-manager.js"
   ]
 }

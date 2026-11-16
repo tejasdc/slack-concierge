@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import {createHash} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
@@ -54,7 +56,7 @@ export class PeerLinks {
   hasPending(){return !!db.query("SELECT 1 FROM peer_link_opens WHERE state='queued' OR (answered_at_ms IS NOT NULL AND return_input_id IS NULL) LIMIT 1").get();}
 
   /** Called from the communication coordinator with an already verified live source. */
-  async open(input:{source:Source;actionId:string;peer?:unknown;url:unknown;browser?:unknown}) {
+  async open(input:{source:Source;actionId:string;peer?:unknown;url:unknown;browser?:unknown}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const url=validUrl(input.url),browser=validBrowser(input.browser);
     const peer=input.peer===undefined?'mac':input.peer;
     if(typeof peer!=='string'||(peer!==this.self&&!this.clients.has(peer)))throw new Error(`Unknown machine ${String(peer)}; see sessions peers.`);
@@ -65,12 +67,12 @@ export class PeerLinks {
     const recorded=this.row(id)!;
     if(recorded.url!==url||recorded.peer!==peer||recorded.browser!==browser)throw new Error('This --action-id already opened a different link; use a new one.');
     log('info','peer_link_open_recorded',{open_id:id,peer,site:site(url),browser});
-    if(recorded.state==='queued')await this.attempt(recorded);
+    if(recorded.state==='queued')(yield this.attempt(recorded));
     const current=this.row(id)!;
     // The command itself is the answer for anything settled now; only a later settlement returns.
     if(current.state!=='queued'&&current.answered_at_ms===null)db.query('UPDATE peer_link_opens SET answered_at_ms=?,return_input_id=? WHERE open_id=? AND return_input_id IS NULL').run(Date.now(),'answered-by-command',id);
     return this.view(current);
-  }
+  }).call(this));}
 
   private row(id:string){return db.query('SELECT * FROM peer_link_opens WHERE open_id=?').get(id) as Row|null;}
   private view(row:Row) {
@@ -87,12 +89,12 @@ export class PeerLinks {
     if(!changed)return;
     log(state==='opened'?'info':'warn','peer_link_open_settled',{open_id:row.open_id,peer:row.peer,state,reason:outcome?.reason??null});
   }
-  private async attempt(row:Row) {
-    if(row.peer===this.self){this.settle(row,...this.settled(await this.openHere({openId:row.open_id,url:row.url,browser:row.browser})));return;}
+  private async attempt(row:Row) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+    if(row.peer===this.self){this.settle(row,...this.settled((yield this.openHere({openId:row.open_id,url:row.url,browser:row.browser}))));return;}
     const client=this.clients.get(row.peer);if(!client)return;
     db.query('UPDATE peer_link_opens SET last_attempt_at_ms=? WHERE open_id=?').run(Date.now(),row.open_id);
     try {
-      const answer=await client.request<{outcome:Outcome}>('POST','/sessions/v1/peers/links',{openId:row.open_id,url:row.url,browser:row.browser},ATTEMPT_MS);
+      const answer=(yield client.request<{outcome:Outcome}>('POST','/sessions/v1/peers/links',{openId:row.open_id,url:row.url,browser:row.browser},ATTEMPT_MS));
       this.settle(row,...this.settled(answer.outcome));
     } catch(error) {
       // A peer without this route needs its update; the order waits for it like for a sleeping peer.
@@ -100,7 +102,7 @@ export class PeerLinks {
       if(reason==='refused')this.settle(row,'failed',{state:'failed',reason:error instanceof Error?error.message.slice(0,300):String(error)});
       else log('info','peer_link_open_waiting',{open_id:row.open_id,peer:row.peer,reason,...errorFields(error)});
     }
-  }
+  }).call(this));}
   private settled(outcome:Outcome|undefined):['opened'|'failed',Outcome] {
     if(outcome?.state==='opened')return ['opened',{state:'opened'}];
     return ['failed',{state:'failed',reason:typeof outcome?.reason==='string'?outcome.reason.slice(0,300):'the machine gave no answer'}];
@@ -118,49 +120,49 @@ export class PeerLinks {
   wake() {
     if(this.running){this.again=true;return;}
     this.running=true;
-    queueMicrotask(async()=>{
+    queueMicrotask(ledgerCallback(async()=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
       try {
         do {
           this.again=false;
           for(const row of db.query("SELECT * FROM peer_link_opens WHERE state='queued' ORDER BY created_at_ms").all() as Row[]){
             if(Date.now()>=row.expires_at_ms)this.settle(row,'expired');
-            else await this.attempt(row);
+            else (yield this.attempt(row));
           }
           for(const row of db.query("SELECT * FROM peer_link_opens WHERE state IN ('opened','failed','expired') AND return_input_id IS NULL").all() as Row[])this.returnResult(row);
         } while(this.again);
       } catch(error){log('error','peer_link_open_wake_failed',errorFields(error));}
       finally{this.running=false;}
-    });
+    }).call(this));}));
   }
 
   /** Receiver: the peer's order, opened at most once per order identity. */
-  async receive(value:unknown):Promise<{outcome:Outcome}> {
+  async receive(value:unknown):Promise<{outcome:Outcome}> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const data=value as Record<string,unknown>;
     if(!data||typeof data!=='object'||Object.keys(data).some(key=>!['openId','url','browser'].includes(key))||typeof data.openId!=='string'||!/^[a-f0-9]{32}$/.test(data.openId))
       throw new Error('Invalid link order.');
     const receipt=db.query('SELECT result_json FROM peer_link_receipts WHERE open_id=?').get(data.openId) as {result_json:string}|null;
     if(receipt)return {outcome:JSON.parse(receipt.result_json) as Outcome};
     let outcome:Outcome;
-    try {outcome=await this.openHere({openId:data.openId,url:validUrl(data.url),browser:validBrowser(data.browser)});}
+    try {outcome=(yield this.openHere({openId:data.openId,url:validUrl(data.url),browser:validBrowser(data.browser)}));}
     catch(error){outcome={state:'failed',reason:error instanceof Error?error.message:String(error)};}
     db.query('INSERT OR IGNORE INTO peer_link_receipts(open_id,result_json,created_at_ms) VALUES(?,?,?)').run(data.openId,JSON.stringify(outcome),Date.now());
     return {outcome:JSON.parse((db.query('SELECT result_json FROM peer_link_receipts WHERE open_id=?').get(data.openId) as {result_json:string}).result_json) as Outcome};
-  }
+  }).call(this));}
   private inFlight=new Map<string,Promise<Outcome>>();
   private openHere(order:{openId:string;url:string;browser:string}):Promise<Outcome> {
     const running=this.inFlight.get(order.openId);if(running)return running;
-    const work=(async():Promise<Outcome>=>{
+    const work=(async():Promise<Outcome>=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
       if(this.platform!=='darwin')return {state:'failed',reason:`${this.self} has no desktop browser to open links in`};
       const app=BROWSERS[order.browser as Browser];
       try {
-        await promisify(execFile)('/usr/bin/open',app?['-a',app,order.url]:[order.url],{timeout:10_000});
+        (yield promisify(execFile)('/usr/bin/open',app?['-a',app,order.url]:[order.url],{timeout:10_000}));
         log('info','peer_link_opened',{open_id:order.openId,site:site(order.url),browser:order.browser});
         return {state:'opened'};
       } catch(error) {
         const reason=String((error as {stderr?:unknown})?.stderr??'').trim().split('\n')[0]?.slice(0,300)||(error instanceof Error?error.message.slice(0,300):'open failed');
         return {state:'failed',reason};
       }
-    })();
+    }).call(this));})();
     this.inFlight.set(order.openId,work);
     void work.finally(()=>this.inFlight.delete(order.openId));
     return work;

@@ -1,4 +1,5 @@
 import {outsideContentReader} from './content-reader-scope';
+import { runLedgerSegment } from "./ledger-admission";
 export interface SessionTurnQueueCoordinatorOptions<TClaim extends { turn_id: number }> {
   /** Clock-driven queue maintenance runs once before each wake pass, not before each claim. */
   beforeClaims?(): void;
@@ -47,7 +48,19 @@ export class SessionTurnQueueCoordinator<TClaim extends { turn_id: number }> {
   }
 
   private pump() {
+    // Keep pumping ownership while this complete claim slice waits for admission.
+    void runLedgerSegment(() => this.pumpSegment()).catch(error => {
+      void runLedgerSegment(() => {
+        this.claimFailures += 1;
+        try { this.options.onClaimError?.(error, this.claimFailures); }
+        finally { this.finishPump(); }
+      });
+    });
+  }
+
+  private pumpSegment() {
     try {
+      if (this.stopped || this.options.shouldStop()) return;
       let claimedInSlice = 0;
       if (this.needsPreparation) {
         this.wakeRequested = false;
@@ -75,11 +88,11 @@ export class SessionTurnQueueCoordinator<TClaim extends { turn_id: number }> {
             execution = Promise.reject(error);
           }
           void execution
-            .catch((error) => this.options.onError(claim, error))
-            .finally(() => {
+            .catch((error) => runLedgerSegment(() => this.options.onError(claim, error)))
+            .finally(() => runLedgerSegment(() => {
               this.activeTurnIds.delete(claim.turn_id);
               this.wake();
-            });
+            }));
         }
         if (claimedInSlice >= SessionTurnQueueCoordinator.CLAIMS_PER_SLICE) {
           this.continueOnNextTurn();

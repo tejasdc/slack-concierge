@@ -19,7 +19,7 @@ CHILD = ROOT / "scripts/bounded-logging-child.ts"
 def source_guard():
     # These one-shot helpers' stdout is a JSON result protocol read by their parent.
     # It is not an application log and must not acquire a newline or loss semantics.
-    protocol_outputs = {"presentation-search-read.ts": {"process.stdout.write"},
+    protocol_outputs = {"deployment-launch-authority.ts": {"process.stdout.write"},"presentation-search-read.ts": {"process.stdout.write"},
                         "provider-fork-worker.ts": {"process.stdout.write"},
                         "provider-history-object-migrate.ts": {"process.stdout.write"},
                         "provider-history-cache-maintenance.ts": {"process.stdout.write"}}

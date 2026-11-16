@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -171,17 +173,17 @@ if (process.env.CONCIERGE_READ_WORKER !== "1") db.exec(`CREATE TABLE IF NOT EXIS
   usage_json TEXT NOT NULL
 )`);
 
-async function run(command: string, args: string[], env: Record<string, string> = {}): Promise<string> {
+async function run(command: string, args: string[], env: Record<string, string> = {}): Promise<string> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const child = Bun.spawn([command, ...args], {
     env: { ...process.env, PATH: `${LOCAL_BIN}:${process.env.PATH ?? ""}`, ...env },
     stdout: "pipe", stderr: "pipe", stdin: "ignore",
   });
   const timer = setTimeout(() => child.kill(), READ_TIMEOUT_MS);
   try {
-    const [stdout] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    const [stdout] = (yield Promise.all([new Response(child.stdout).text(), child.exited]));
     return stdout;
   } finally { clearTimeout(timer); }
-}
+}).call(this));}
 
 function iso(value: unknown): string | null {
   if (typeof value !== "string" || !value) return null;
@@ -220,13 +222,13 @@ function codexIdentity(home: string): { email: string | null; plan: string | nul
 
 const CODEX_PLAN: Record<string, string> = { pro: "Pro", prolite: "Pro Lite", plus: "Plus", team: "Team", business: "Business" };
 
-async function codexAccount(home: string, agents: boolean): Promise<AccountUsage> {
+async function codexAccount(home: string, agents: boolean): Promise<AccountUsage> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const identity = codexIdentity(home);
   const label = identity.email ?? (agents ? "Agents' account" : home.split("/").pop()!);
   // Named below by the caller, which drops what it cannot name.
   const plan = identity.plan ? (CODEX_PLAN[identity.plan] ?? identity.plan) : null;
   let row: any;
-  try { row = JSON.parse(await run(CODEXBAR, ["usage", "--provider", "codex", "--format", "json"], { CODEX_HOME: home }))[0]; }
+  try { row = JSON.parse((yield run(CODEXBAR, ["usage", "--provider", "codex", "--format", "json"], { CODEX_HOME: home })))[0]; }
   catch { return { label, plan, current: agents, windows: [], problem: "Usage could not be read." }; }
   if (row?.error) {
     const message = String(row.error.message ?? "");
@@ -234,7 +236,7 @@ async function codexAccount(home: string, agents: boolean): Promise<AccountUsage
       const renewal=renewSavedCodexLogin(home,label,()=>{
         // A renewal may finish before the pass that noticed expiry has stored its result.
         // Wait for that pass to settle so the new reading cannot join and then disappear.
-        void (inFlight??Promise.resolve()).catch(()=>{}).then(()=>scheduleProviderAccountUsageRefresh()).catch(()=>{});
+        void (inFlight??Promise.resolve()).catch(()=>{}).then(ledgerCallback(()=>scheduleProviderAccountUsageRefresh())).catch(()=>{});
       });
       if(renewal==='signed_out')return {label,plan,current:false,windows:[],signedOut:true,
         problem:'This saved Codex sign-in was refused by Codex. It needs signing in again.'};
@@ -267,7 +269,7 @@ async function codexAccount(home: string, agents: boolean): Promise<AccountUsage
   return { label, plan: plan ?? (usage.loginMethod ? (CODEX_PLAN[usage.loginMethod] ?? usage.loginMethod) : null),
     current: agents, windows, problem: null, readAt: iso(usage.updatedAt),
     resetCredits: resetCredits(usage.codexResetCredits), usageCredits: codexCredits(row?.credits) };
-}
+}).call(this));}
 
 /** The ChatGPT credit balance the same reading reports (OpenAI's "Extra usage" pool). The
  * reading carries no expiry, so none is stated; a grant's expiry lives only in OpenAI's email. */
@@ -292,7 +294,7 @@ function resetCredits(block: any): ResetCredits | null {
   };
 }
 
-async function readCodex(): Promise<ProviderUsage> {
+async function readCodex(): Promise<ProviderUsage> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if (!existsSync(CODEXBAR)) return { observedAt: new Date().toISOString(), accounts: [], problem: "CodexBar is not installed on this host." };
   const seen = new Set<string>(), accounts: AccountUsage[] = [];
   for (const { home, agents } of codexHomes()) {
@@ -304,10 +306,10 @@ async function readCodex(): Promise<ProviderUsage> {
     // box headed "Agents' account" saying only that its usage could not be read, about an
     // account it could not name and he could not act on (2026-09-22).
     if (!email) continue;
-    accounts.push(await codexAccount(home, agents));
+    accounts.push((yield codexAccount(home, agents)));
   }
   return { observedAt: new Date().toISOString(), accounts, problem: null };
-}
+}).call(this));}
 
 /**
  * One Claude account's windows read from its own login, at most once per OWN_LOGIN_INTERVAL_MS (inside
@@ -320,7 +322,7 @@ const OWN_LOGIN_INTERVAL_MS = 5 * 60_000;
 const OWN_LOGIN_MAX_BACKOFF_MS = 30 * 60_000;
 const ownLoginPacing = new Map<string, { nextAtMs: number; failures: number; credentialVersion: string | null }>();
 async function pacedOwnLoginWindows(label: string, previous: AccountUsage | undefined, force = false):
-    Promise<{ windows: UsageWindow[]; readAt: string | null; problem: string | null; fresh: boolean } | null> {
+    Promise<{ windows: UsageWindow[]; readAt: string | null; problem: string | null; fresh: boolean } | null> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const kept = previous && previous.windows.length && previous.readAt
     ? { windows: [...previous.windows], readAt: previous.readAt } : null;
   // A kept reading counts as good only while it is younger than the longest gap between reads; older,
@@ -329,13 +331,13 @@ async function pacedOwnLoginWindows(label: string, previous: AccountUsage | unde
     ? null : "Showing the last reading; the latest could not be taken.";
   const renewal = renewClaudeOwnLoginForUsage(label);
   // A pressed Refresh must wait for Claude's own token renewal before asking for usage.
-  if (force) await renewal;
+  if (force) (yield renewal);
   const credentialVersion = claudeCredentialVersion(label);
   const pacing = ownLoginPacing.get(label) ?? { nextAtMs: 0, failures: 0, credentialVersion };
   // A kept reading is a good one whose time says how old it is, so the work router can still use it.
   if (!force && credentialVersion === pacing.credentialVersion && Date.now() < pacing.nextAtMs)
     return kept ? { ...kept, problem: keptProblem, fresh: false } : null;
-  const own = await claudeWindowsFromOwnLogin(label);
+  const own = (yield claudeWindowsFromOwnLogin(label));
   const observedVersion = claudeCredentialVersion(label);
   if (own) {
     ownLoginPacing.set(label, { nextAtMs: Date.now() + OWN_LOGIN_INTERVAL_MS, failures: 0, credentialVersion: observedVersion });
@@ -346,9 +348,9 @@ async function pacedOwnLoginWindows(label: string, previous: AccountUsage | unde
   ownLoginPacing.set(label, { failures,
     nextAtMs: Date.now() + Math.min(OWN_LOGIN_INTERVAL_MS * 2 ** (failures - 1), OWN_LOGIN_MAX_BACKOFF_MS), credentialVersion: observedVersion });
   return kept ? { ...kept, problem: keptProblem, fresh: false } : null;
-}
+}).call(this));}
 
-async function readClaude(force = false): Promise<ProviderUsage> {
+async function readClaude(force = false): Promise<ProviderUsage> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   // The Mac's Claude logins live separately in its GUI Keychain; claude-swap has no
   // accounts there. Read those same local logins rather than borrowing an older peer bar.
   if (process.platform === "darwin") {
@@ -360,7 +362,7 @@ async function readClaude(force = false): Promise<ProviderUsage> {
     const accounts: AccountUsage[] = [];
     for (const profile of profiles) {
       if (accounts.some(account => account.label === profile.label)) continue;
-      const signIn = await macClaudeSignIn(profile.label);
+      const signIn = (yield macClaudeSignIn(profile.label));
       if (signIn !== "signed-in") {
         const kept = signIn === "unverified" ? previous.get(profile.label) : null;
         accounts.push({ label: profile.label, plan: null, current: profile.label === current,
@@ -372,8 +374,8 @@ async function readClaude(force = false): Promise<ProviderUsage> {
           usageCredits: null, apiCredits: null });
         continue;
       }
-      const own = await pacedOwnLoginWindows(profile.label, previous.get(profile.label), force);
-      const facts = await claudeAccountFacts(profile.label, ms => noticeTime(db, ms));
+      const own = (yield pacedOwnLoginWindows(profile.label, previous.get(profile.label), force));
+      const facts = (yield claudeAccountFacts(profile.label, ms => noticeTime(db, ms)));
       accounts.push({ label: profile.label, plan: facts?.plan ?? null, current: profile.label === current,
         windows: own?.windows ?? [], problem: own ? own.problem : "Usage could not be read.",
         readAt: own?.readAt ?? null, usageCredits: facts?.usageCredits ?? null, apiCredits: facts?.apiCredits ?? null });
@@ -386,7 +388,7 @@ async function readClaude(force = false): Promise<ProviderUsage> {
   // need not be the account a Concierge execution is spending. Keep the tool's
   // per-account fetch timestamp: its cache can serve an older reading on failure.
   let list: any;
-  try { list = JSON.parse(await run(CSWAP, ["list", "--json"])); }
+  try { list = JSON.parse((yield run(CSWAP, ["list", "--json"]))); }
   catch { return { observedAt: new Date().toISOString(), accounts: [], problem: "Claude usage could not be read." }; }
   if (!Array.isArray(list?.accounts))
     return { observedAt: new Date().toISOString(), accounts: [], problem: "Claude usage could not be read." };
@@ -419,7 +421,7 @@ async function readClaude(force = false): Promise<ProviderUsage> {
     let readAtNow = readAt;
     if (status !== "ok") {
       // claude-swap's own copy of this login can die while the real one works; read the real one.
-      const own = await pacedOwnLoginWindows(label, previous.get(label));
+      const own = (yield pacedOwnLoginWindows(label, previous.get(label)));
       if (own) {
         windows.splice(0, windows.length, ...own.windows);
         // A fresh read from the real login clears claude-swap's warning (such as a sign-in needed), and so
@@ -430,7 +432,7 @@ async function readClaude(force = false): Promise<ProviderUsage> {
     }
     // Plan tier and credits ride on the same login the bars come from; a login whose token
     // has lapsed keeps its last facts, and a never-read one simply has none yet.
-    const facts = await claudeAccountFacts(label, ms => noticeTime(db, ms));
+    const facts = (yield claudeAccountFacts(label, ms => noticeTime(db, ms)));
     accounts.push({ label, plan: facts?.plan ?? null, current: account?.active === true, windows, problem, readAt: readAtNow,
       usageCredits: facts?.usageCredits ?? null, apiCredits: facts?.apiCredits ?? null });
   }
@@ -440,39 +442,39 @@ async function readClaude(force = false): Promise<ProviderUsage> {
   // list, so it was missing from every reading and nothing could see its room.
   for (const profile of listProfiles("claude-code")) {
     if (!profile.signedIn || !profile.label || accounts.some(account => account.label === profile.label)) continue;
-    const own = await pacedOwnLoginWindows(profile.label, previous.get(profile.label));
-    const facts = await claudeAccountFacts(profile.label, ms => noticeTime(db, ms));
+    const own = (yield pacedOwnLoginWindows(profile.label, previous.get(profile.label)));
+    const facts = (yield claudeAccountFacts(profile.label, ms => noticeTime(db, ms)));
     accounts.push({ label: profile.label, plan: facts?.plan ?? null, current: false,
       windows: own?.windows ?? [], problem: own ? own.problem : "Usage could not be read.", readAt: own?.readAt ?? null,
       usageCredits: facts?.usageCredits ?? null, apiCredits: facts?.apiCredits ?? null });
   }
   return { observedAt: new Date().toISOString(), accounts, problem: null };
-}
+}).call(this));}
 
 /** The subscription's quota is read through Google's own CLI, without an agent turn. */
-async function readAntigravity(): Promise<ProviderUsage> {
+async function readAntigravity(): Promise<ProviderUsage> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const observedAt = new Date().toISOString();
   const unavailable = (problem: string): ProviderUsage => ({ observedAt, accounts: [], problem });
   let executable: string;
   try { executable = antigravityExecutable(); }
   catch (error) { return unavailable(error instanceof Error ? error.message : "The Google agent CLI is unavailable."); }
-  const capture = async (args: string[], timeoutMs: number) => {
+  const capture = async (args: string[], timeoutMs: number) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const child = Bun.spawn([executable, ...args], {
       env: { ...process.env, AGY_CLI_DISABLE_AUTO_UPDATE: "true" },
       cwd: homedir(), stdin: "ignore", stdout: "pipe", stderr: "pipe",
     });
     const timer = setTimeout(() => child.kill(), timeoutMs);
     try {
-      const [stdout, stderr, code] = await Promise.all([
+      const [stdout, stderr, code] = (yield Promise.all([
         new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
-      ]);
+      ]));
       return { stdout, stderr, code };
     } finally { clearTimeout(timer); }
-  };
+  }).call(this));};
   // /usage starts an interactive OAuth flow even with closed stdin. The models subcommand
   // refuses an unsigned account promptly, so it is the noninteractive sign-in gate.
   let preflight: Awaited<ReturnType<typeof capture>>;
-  try { preflight = await capture(["--output-format", "json", "models"], 15_000); }
+  try { preflight = (yield capture(["--output-format", "json", "models"], 15_000)); }
   catch { return unavailable("Google's sign-in state could not be checked."); }
   if (preflight.code !== 0) return unavailable(/please sign in|authentication required/i.test(preflight.stderr)
     ? "Sign in to the Google agent on this machine to show its allowance."
@@ -487,7 +489,7 @@ async function readAntigravity(): Promise<ProviderUsage> {
     !offeredModels.some((model: any) => model?.id === selectedModel))
     return unavailable("Google's selected model is not currently offered.");
   let stdout = "", stderr = "", code = -1;
-  try { ({ stdout, stderr, code } = await capture(["-p", "/usage", "--output-format", "json"], 25_000)); }
+  try { ({ stdout, stderr, code } = (yield capture(["-p", "/usage", "--output-format", "json"], 25_000))); }
   catch { return unavailable("Google's allowance could not be read."); }
   if (code !== 0) return unavailable(/authentication required|please sign in|not logged in/i.test(stderr)
     ? "Sign in to the Google agent on this machine to show its allowance."
@@ -547,7 +549,7 @@ async function readAntigravity(): Promise<ProviderUsage> {
     payload?.plan_tier, statusFresh ? statusIdentity.plan : null].find((value: unknown) => typeof value === "string" && value.trim());
   return { observedAt, accounts: [{ label: email, plan: typeof plan === "string" ? plan : null,
     current: true, windows, problem: null, readAt: observedAt }], problem: null };
-}
+}).call(this));}
 
 // Whether a reading is happening right now, so a surface can say "checking" instead of
 // showing an account with nothing under it. One pass at a time: a second request while one
@@ -565,7 +567,7 @@ export function usageRefreshing(): boolean { return inFlight !== null; }
  */
 export function scheduleProviderAccountUsageRefresh(force = false): Promise<void> {
   if (inFlight && force && !inFlightForced)
-    return inFlight.then(() => scheduleProviderAccountUsageRefresh(true), () => scheduleProviderAccountUsageRefresh(true));
+    return inFlight.then(ledgerCallback(() => scheduleProviderAccountUsageRefresh(true)), ledgerCallback(() => scheduleProviderAccountUsageRefresh(true)));
   if (!inFlight) {
     inFlightForced = force;
     inFlight = refreshProviderAccountUsage(force).finally(() => { inFlight = null; inFlightForced = false; });
@@ -578,7 +580,7 @@ export function scheduleProviderAccountUsageRefresh(force = false): Promise<void
 export function scheduleProviderAccountUsageRefreshAfterCurrent(): Promise<void> {
   const current = inFlight;
   if (!current) return scheduleProviderAccountUsageRefresh();
-  return current.catch(() => {}).then(() => scheduleProviderAccountUsageRefresh());
+  return current.catch(() => {}).then(ledgerCallback(() => scheduleProviderAccountUsageRefresh()));
 }
 
 /**
@@ -594,21 +596,21 @@ export function scheduleProviderAccountUsageRefreshAfterCurrent(): Promise<void>
  */
 export function startProviderUsageWatch(options: { stopped: () => boolean; onReading?: () => void; urgent?: () => boolean }) {
   let timer: ReturnType<typeof setTimeout> | null = null;
-  const tick = async () => {
+  const tick = async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     timer = null;
     if (options.stopped()) return;
-    try { await scheduleProviderAccountUsageRefresh(); } catch { /* the next pass tries again */ }
+    try { (yield scheduleProviderAccountUsageRefresh()); } catch { /* the next pass tries again */ }
     try { options.onReading?.(); } catch { /* a notice must never stop the readings */ }
     arm();
-  };
+  }).call(this));};
   const arm = () => {
     if (timer || options.stopped()) return;
     let urgent = false;
     try { urgent = usageReadingIsUrgent()||!!options.urgent?.(); } catch { urgent = false; }
-    timer = setTimeout(() => void tick(), urgent ? USAGE_URGENT_REFRESH_MS : USAGE_REFRESH_MS);
+    timer = setTimeout(ledgerCallback(() => void tick()), urgent ? USAGE_URGENT_REFRESH_MS : USAGE_REFRESH_MS);
     timer.unref?.();
   };
-  const first = setTimeout(() => void tick(), 30_000);
+  const first = setTimeout(ledgerCallback(() => void tick()), 30_000);
   first.unref?.();
   return () => { if (timer) clearTimeout(timer); clearTimeout(first); timer = null; };
 }
@@ -626,18 +628,18 @@ export function startProviderUsageWatch(options: { stopped: () => boolean; onRea
  * A peer-sourced account is never passed on again (`viaPeer`), so two instances filling
  * each other's gaps cannot loop or launder a stale number through a third hop.
  */
-async function peerAccounts(provider: ProviderKey): Promise<AccountUsage[]> {
+async function peerAccounts(provider: ProviderKey): Promise<AccountUsage[]> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   let settings;
   try { settings = peerSettings(); } catch { return []; }
   if (!settings.token || !settings.peers.length) return [];
   const found: AccountUsage[] = [];
   for (const peer of settings.peers) {
     try {
-      const response = await fetch(`${peer.url}/sessions/v1/auth/providers?machine=${encodeURIComponent(peer.name)}`, {
+      const response = (yield fetch(`${peer.url}/sessions/v1/auth/providers?machine=${encodeURIComponent(peer.name)}`, {
         headers: { authorization: `Bearer ${settings.token}` }, signal: AbortSignal.timeout(8_000),
-      });
+      }));
       if (!response.ok) continue;
-      const body = await response.json() as any;
+      const body = (yield response.json()) as any;
       const views = Array.isArray(body) ? body : (body?.providers ?? []);
       for (const view of views) {
         if (view?.provider !== provider) continue;
@@ -652,27 +654,27 @@ async function peerAccounts(provider: ProviderKey): Promise<AccountUsage[]> {
     } catch { /* an unreachable peer simply contributes nothing */ }
   }
   return found;
-}
+}).call(this));}
 
-export async function refreshProviderAccountUsage(force = false): Promise<void> {
+export async function refreshProviderAccountUsage(force = false): Promise<void> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   for (const [provider, read] of [["codex", readCodex], ["claude-code", () => readClaude(force)]] as const) {
     try {
     const runner=providerRunnerTarget(provider);
       let usage:ProviderUsage;
       let runnerIdentityConfirmed=true;
       if(runner){
-        const readings=await runnerMachineCall<Record<string,ProviderUsage>>(runner,'accounts.readings',{},100_000);
+        const readings=(yield runnerMachineCall<Record<string,ProviderUsage>>(runner,'accounts.readings',{},100_000));
         const remote=readings?.[provider];
         if(!remote||!Array.isArray(remote.accounts)||typeof remote.observedAt!=='string')
           throw new Error(`runner ${runner} returned no ${provider} account readings`);
         usage={...remote,sourceRunner:runner};
         try {
           const selected=provider==='claude-code'?selectedClaudeHome()?.label:null;
-          const identity=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider,...(selected?{account:selected}:{})});
+          const identity=(yield runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider,...(selected?{account:selected}:{})}));
           runnerIdentityConfirmed=!!identity&&typeof identity.id==='string'&&typeof identity.label==='string';
           setRunnerAccountInUse(provider,runnerIdentityConfirmed?identity:null);
         } catch { runnerIdentityConfirmed=false;setRunnerAccountInUse(provider,null); }
-      }else usage=await read();
+      }else usage=(yield read());
       // The provider's source time chooses between two observations for the same label.
       // A fresh peer reading may replace a stale local cache; a fresh local one stays local.
       // The join is label-only and retained as such, never described as credential proof.
@@ -681,7 +683,7 @@ export async function refreshProviderAccountUsage(force = false): Promise<void> 
       // a newly added server account from the Mac's local sign-in repair path.
       const borrowed=!runner&&(provider === "claude-code" || usage.problem||!usage.accounts.length
         ||usage.accounts.some(account=>!accountReadingFresh(provider,usage,account))
-        ?await peerAccounts(provider):[]);
+        ?(yield peerAccounts(provider)):[]);
       if (borrowed.length) {
         const merged = new Map(usage.accounts.map(account=>[account.label,account]));
         for (const account of borrowed) {
@@ -750,12 +752,12 @@ export async function refreshProviderAccountUsage(force = false): Promise<void> 
     const runner=providerRunnerTarget('antigravity');
     let usage:ProviderUsage;
     if(runner){
-      const remote=await runnerMachineCall<ProviderUsage>(runner,'accounts.google.readings',{},45_000);
+      const remote=(yield runnerMachineCall<ProviderUsage>(runner,'accounts.google.readings',{},45_000));
       if(!remote||!Array.isArray(remote.accounts)||typeof remote.observedAt!=='string')throw new Error('runner returned no Google allowance reading');
       usage={...remote,sourceRunner:runner};
       const active=remote.accounts.find(account=>account.current);
       setAntigravityAccountInUse(active?{email:active.label,plan:active.plan}:null);
-    }else usage = await readAntigravity();
+    }else usage = (yield readAntigravity());
     db.query(`INSERT INTO ${accountUsageTable(provider)} (provider, observed_at, usage_json) VALUES (?, ?, ?)
       ON CONFLICT(provider) DO UPDATE SET observed_at=excluded.observed_at, usage_json=excluded.usage_json`)
       .run(provider, usage.observedAt, JSON.stringify(usage));
@@ -763,11 +765,11 @@ export async function refreshProviderAccountUsage(force = false): Promise<void> 
     setAntigravityAccountInUse(account ? { email: account.label, plan: account.plan } : null);
     recordUsageReading(provider, usage);
     if (account) {
-      const { releaseAuthHold } = await import("./provider-activation");
+      const { releaseAuthHold } = (yield import("./provider-activation"));
       releaseAuthHold(provider, "interval");
       // A refusal Google gave after this reading's kind of "room" outranks the reading (see
       // rememberModelCapacityRefusal in turn execution); its memory expires on its own.
-      const { anyModelRefused } = await import("./provider-model-capacity");
+      const { anyModelRefused } = (yield import("./provider-model-capacity"));
       if (accountReadingFresh(provider,usage,account) && account.windows.length >= 2 && account.windows.every(window => window.usedPercent < 100)
         && !anyModelRefused(provider)) {
         releaseUsageContinuationHolds(provider);
@@ -783,7 +785,7 @@ export async function refreshProviderAccountUsage(force = false): Promise<void> 
     setAntigravityAccountInUse(null);
     log("warn", "provider_account_usage_failed", { provider: "antigravity", error_name: (error as Error)?.name ?? "Error" });
   }
-}
+}).call(this));}
 
 /**
  * Work held for an account that is no longer the one in use should not keep waiting.

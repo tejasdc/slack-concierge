@@ -1,5 +1,7 @@
 import {contentReaderHeaders} from './lab-content-disclosure';
 import {outsideContentReader} from './content-reader-scope';
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import {createHash,randomUUID} from 'node:crypto';
 import {copyFileSync,existsSync,mkdirSync,readFileSync,readdirSync,statSync} from 'node:fs';
 import {homedir} from 'node:os';
@@ -191,15 +193,15 @@ const PEER_DOWN_ANNOUNCE_AFTER_MS=3*60_000;
 export class PeerClient {
   private refusedSince:number|null=null;
   constructor(readonly name:string,readonly url:string,private readonly token:string,readonly paths:string[]=[],readonly archives:string[]=[]){}
-  async request<T=any>(method:'GET'|'POST',path:string,body?:unknown,timeoutMs=OWNER_READ_RESPONSE_MS,trackAvailability=true,signal?:AbortSignal,strictJson=false):Promise<T> {
+  async request<T=any>(method:'GET'|'POST',path:string,body?:unknown,timeoutMs=OWNER_READ_RESPONSE_MS,trackAvailability=true,signal?:AbortSignal,strictJson=false):Promise<T> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     let response:Response;
     // A request to the peer carries ledger facts (its request, its answer); they reach the disk first.
-    if(method==='POST')await ledgerDurable();
+    if(method==='POST')(yield ledgerDurable());
     try {
       // The peer's answer is a wait on another machine, never owner time: on 2026-11-07 the Mac
       // stopped answering and six reply reads of 20 s each, inside its notify requests, were
       // counted as owner slowness (work-flow supervisor incident 474d66cd, reopened 15 times).
-      response=await awaitingOutside(()=>fetch(this.url+path,{method,signal:signal?AbortSignal.any([signal,AbortSignal.timeout(timeoutMs)]):AbortSignal.timeout(timeoutMs),headers:{...contentReaderHeaders(true),authorization:`Bearer ${this.token}`,accept:'application/json',...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})}));
+      response=(yield awaitingOutside(()=>fetch(this.url+path,{method,signal:signal?AbortSignal.any([signal,AbortSignal.timeout(timeoutMs)]):AbortSignal.timeout(timeoutMs),headers:{...contentReaderHeaders(true),authorization:`Bearer ${this.token}`,accept:'application/json',...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})})));
     } catch(error) {
       if(signal?.aborted)throw error;
       // A peer that sleeps is normal, so its unreachability is never a notice to Tejas: it
@@ -232,7 +234,7 @@ export class PeerClient {
       const parsedLength=/^\d{1,12}$/.test(declaredLength)?Number(declaredLength):null;
       return new PeerStatusReadError(reason,response.status,contentType,Number.isSafeInteger(parsedLength)?parsedLength:null);
     };
-    try {value=await awaitingOutside(()=>response.json());} catch(error) {
+    try {value=(yield awaitingOutside(()=>response.json()));} catch(error) {
       if(strictJson){
         const name=(error as {name?:unknown})?.name;
         const reason=name==='SyntaxError'?'status_json_invalid':name==='AbortError'?'status_body_read_aborted':'status_body_read_failed';
@@ -251,7 +253,7 @@ export class PeerClient {
     }
     if(trackAvailability)clearRetryBreaker(`peer:${this.name}`);
     return value as T;
-  }
+  }).call(this));}
 }
 
 type PeerRequestRow={request_id:string;peer:string;source_session_id:number;source_turn_id:number|null;source_input_id:string;action_id:string;payload_json:string;payload_hash:string;
@@ -426,12 +428,12 @@ export class SessionPeers {
   constructor(private readonly dependencies:Dependencies){this.now=dependencies.now??Date.now;}
   get self(){return this.dependencies.self;}
   inventory(){return {self:this.self,peers:[...this.dependencies.clients.values()].map(client=>({name:client.name,url:client.url,lastUnreachableAt:this.unreachable.get(client.name)??null,catalogue:this.catalogueSync.status(client.name)}))};}
-  async inventoryWithReachability() {
-    return {self:this.self,peers:await Promise.all([...this.dependencies.clients.values()].map(async client=>{
-      try {const status=await client.request('GET','/sessions/v1/status',undefined,5_000);return {name:client.name,url:client.url,reachable:true,status};}
+  async inventoryWithReachability() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+    return {self:this.self,peers:(yield Promise.all([...this.dependencies.clients.values()].map(async client=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+      try {const status=(yield client.request('GET','/sessions/v1/status',undefined,5_000));return {name:client.name,url:client.url,reachable:true,status};}
       catch(error) {return {name:client.name,url:client.url,reachable:false,error:error instanceof Error?error.message:String(error)};}
-    }))};
-  }
+    }).call(this));})))};
+  }).call(this));}
   client(name:unknown):PeerClient {
     if(typeof name!=='string'||!this.dependencies.clients.has(name))throw new SessionOwnerError(`Unknown peer instance${typeof name==='string'?` ${name}`:''}; see sessions peers.`,404,'PEER_UNKNOWN');
     return this.dependencies.clients.get(name)!;
@@ -484,16 +486,16 @@ export class SessionPeers {
       }
     })();
   }
-  async refreshCatalogue(peer:string) {
+  async refreshCatalogue(peer:string) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const active=this.catalogueTasks.get(peer);if(active)return active.promise;
     const client=this.dependencies.clients.get(peer);
     const lastAttempt=this.catalogueRefreshedAt.get(peer);
     if(!client||lastAttempt!==undefined&&this.now()-lastAttempt<OFFLINE_MS)return;
     this.catalogueRefreshedAt.set(peer,this.now());
     const controller=new AbortController();let more=false;
-    const promise=(async()=>{
+    const promise=(async()=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
       try{
-        const result=await this.catalogueSync.refresh(peer,(path,signal)=>client.request('GET',path,undefined,10_000,true,signal),controller.signal);
+        const result=(yield this.catalogueSync.refresh(peer,(path,signal)=>client.request('GET',path,undefined,10_000,true,signal),controller.signal));
         if(!controller.signal.aborted){more=result.more;this.unreachable.delete(peer);}
       }catch(error){
         if(!controller.signal.aborted){this.note(peer,error);log('warn','session_peer_catalogue_refresh_failed',{peer,...errorFields(error)});}
@@ -501,10 +503,10 @@ export class SessionPeers {
         this.catalogueTasks.delete(peer);
         if(more&&!controller.signal.aborted){this.catalogueRefreshedAt.delete(peer);this.wake();}
       }
-    })();
+    }).call(this));})();
     this.catalogueTasks.set(peer,{promise,controller});
     return promise;
-  }
+  }).call(this));}
   private cachedView(peer:string,remote:string):any|null {
     const row=db.query('SELECT * FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(peer,remote) as CatalogueRow|null;
     return row?peerCatalogueView(JSON.parse(row.view_json),peer,this.availability(peer),row.updated_at_ms):null;
@@ -521,9 +523,9 @@ export class SessionPeers {
   /** Which peer's home holds this absolute path, or null when no peer claims it. */
   instanceForPath(path:string):string|null{return this.peerForPath(path);}
   /** Read a Markdown file from the machine that holds it. The peer applies its own workspace boundary. */
-  async readFile(peer:string,path:string){return this.client(peer).request('GET','/sessions/v1/files?'+new URLSearchParams({path,machine:peer}),undefined,20_000);}
+  async readFile(peer:string,path:string){return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {return this.client(peer).request('GET','/sessions/v1/files?'+new URLSearchParams({path,machine:peer}),undefined,20_000);}).call(this));}
   /** List one registered project folder on the peer that owns it. */
-  async projectFiles(peer:string,project:string,path:string){return this.client(peer).request('GET','/sessions/v1/projects/'+encodeURIComponent(project)+'/files?'+new URLSearchParams({path,machine:peer}),undefined,20_000);}
+  async projectFiles(peer:string,project:string,path:string){return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {return this.client(peer).request('GET','/sessions/v1/projects/'+encodeURIComponent(project)+'/files?'+new URLSearchParams({path,machine:peer}),undefined,20_000);}).call(this));}
   /** Configured peers in the order they were given, for surfaces that show every machine. */
   names():string[]{return [...this.dependencies.clients.keys()];}
   /**
@@ -537,10 +539,10 @@ export class SessionPeers {
    * forwarded exactly as the route has always accepted it, and a peer still running an older
    * build signs itself in rather than rejecting a field it has never heard of.
    */
-  async authProviders(peer:string,fresh=false){return this.client(peer).request('GET','/sessions/v1/auth/providers?'+new URLSearchParams({machine:peer,...(fresh?{fresh:'1'}:{})}),undefined,fresh?30_000:8_000);}
-  async authAction(peer:string,path:string,body:Record<string,unknown>,timeoutMs:number){return this.client(peer).request('POST',`/sessions/v1/auth/${path}`,body,timeoutMs);}
-  async projects(peer:string){return this.client(peer).request('GET','/sessions/v1/projects');}
-  async search(peer:string,concepts:string[],limit?:number):Promise<any>{return this.qualify(peer,await this.client(peer).request('POST','/sessions/v1/search',{query:concepts.join(' '),...(limit===undefined?{}:{limit})},8_000));}
+  async authProviders(peer:string,fresh=false){return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {return this.client(peer).request('GET','/sessions/v1/auth/providers?'+new URLSearchParams({machine:peer,...(fresh?{fresh:'1'}:{})}),undefined,fresh?30_000:8_000);}).call(this));}
+  async authAction(peer:string,path:string,body:Record<string,unknown>,timeoutMs:number){return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {return this.client(peer).request('POST',`/sessions/v1/auth/${path}`,body,timeoutMs);}).call(this));}
+  async projects(peer:string){return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {return this.client(peer).request('GET','/sessions/v1/projects');}).call(this));}
+  async search(peer:string,concepts:string[],limit?:number):Promise<any>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {return this.qualify(peer,(yield this.client(peer).request('POST','/sessions/v1/search',{query:concepts.join(' '),...(limit===undefined?{}:{limit})},8_000)));}).call(this));}
   /**
    * The peer to search through when this machine has no meaning index of its own (the Mac): the
    * machine that keeps the archive, which is any peer whose archive is not kept here. A peer known
@@ -564,9 +566,9 @@ export class SessionPeers {
    * `<peer>:<n>`, and sessions it found on this machine (named `<self>:<n>` there) are this
    * machine's own, shown with this machine's current view of them.
    */
-  async searchThrough(peer:string,concepts:string[],limit?:number):Promise<any> {
+  async searchThrough(peer:string,concepts:string[],limit?:number):Promise<any> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     let value:any;
-    try{value=await this.client(peer).request<any>('POST','/sessions/v1/search',{query:concepts.join(' '),everywhere:true,...(limit===undefined?{}:{limit})},20_000);this.unreachable.delete(peer);}
+    try{value=(yield this.client(peer).request<any>('POST','/sessions/v1/search',{query:concepts.join(' '),everywhere:true,...(limit===undefined?{}:{limit})},20_000));this.unreachable.delete(peer);}
     catch(error){this.note(peer,error);throw error;}
     const self=this.self;
     const own=(item:string)=>self&&item.startsWith(`${self}:`)&&/^\d+$/.test(item.slice(self.length+1))?`concierge:${item.slice(self.length+1)}`
@@ -587,14 +589,14 @@ export class SessionPeers {
     this.remember(peer,results.map((result:any)=>result.session).filter((session:any)=>session?.peer===peer));
     log('info','session_search_through_peer',{peer,results:results.length});
     return {...answer,results,coverage:{...answer.coverage,searchedOn:peer}};
-  }
-  async commitIdentity(peer:string,input:{session:string}):Promise<{session:string;input:string}|null>{
-    const identity=await this.client(peer).request('POST','/sessions/v1/commit-identity',input,8_000);
+  }).call(this));}
+  async commitIdentity(peer:string,input:{session:string}):Promise<{session:string;input:string}|null>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+    const identity=(yield this.client(peer).request('POST','/sessions/v1/commit-identity',input,8_000));
     const session=input.session.replace(/^concierge:/,`${peer}:`);
     if(!identity||identity.session!==session||typeof identity.input!=='string')throw new Error('The committing machine returned no current input.');
     return {session,input:identity.input};
-  }
-  async context(peer:string,address:string):Promise<any>{return this.qualify(peer,await this.client(peer).request('POST','/sessions/v1/context',{address},8_000));}
+  }).call(this));}
+  async context(peer:string,address:string):Promise<any>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {return this.qualify(peer,(yield this.client(peer).request('POST','/sessions/v1/context',{address},8_000)));}).call(this));}
   /** A peer's answer names its sessions as `<peer>:<n>` and its addresses as `<peer>/session:…`, so an agent can use them directly. */
   private qualify(peer:string,value:unknown):unknown {
     const walk=(item:unknown):unknown=>{
@@ -612,16 +614,16 @@ export class SessionPeers {
    * as that session, marked offline when the peer does not answer. A live peer answer only
    * adds sessions the archive has not seen yet and says which are running now.
    */
-  async federatedSearch(local:()=>Promise<any>,concepts:string[],limit?:number) {
-    const [own,...peers]=await Promise.all([local(),...[...this.dependencies.clients.keys()].map(async name=>{
+  async federatedSearch(local:()=>Promise<any>,concepts:string[],limit?:number) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+    const [own,...peers]=(yield Promise.all([local(),...[...this.dependencies.clients.keys()].map(async name=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
       // A sleeping laptop answers no faster for being asked again: reaching it costs seconds of
       // connect timeout, and every search paid them. Within the offline window this reads the
       // same as a failed probe — archived-only, catalogue matches kept — and the window expiring
       // probes again, so the peer is found on its own once it is back. meaningHub() skips alike.
       if(this.offline(name))return {name,value:null,error:offlineNote(name)};
-      try{const value=await this.search(name,concepts,limit);this.unreachable.delete(name);this.remember(name,(value?.results??[]).map((result:any)=>result.session));return {name,value,error:null};}
+      try{const value=(yield this.search(name,concepts,limit));this.unreachable.delete(name);this.remember(name,(value?.results??[]).map((result:any)=>result.session));return {name,value,error:null};}
       catch(error){this.note(name,error);return {name,value:null,error:error instanceof Error?error.message:String(error)};}
-    })]);
+    }).call(this));})]));
     const merged=new Map<string,any>();
     const add=(result:any)=>{const id=result.session?.id;const prior=id?merged.get(id):null;
       if(prior){prior.evidence=[...prior.evidence,...(result.evidence??[])];if(result.session.execution)prior.session={...prior.session,...result.session};}
@@ -671,7 +673,7 @@ export class SessionPeers {
     log('info','session_peer_search',{local:own.results.length,merged:results.length,offline:Object.entries(availability).filter(([,value])=>!value.reachable).map(([name])=>name),
       peerSessions:results.filter((result:any)=>result.session?.peer).map((result:any)=>`${result.session.id}${result.archive?'@archive':result.catalogueOnly?'@catalogue':result.session.archived?'@archived':'@live'}`).slice(0,12)});
     return {...own,results,coverage:{...own.coverage,complete,omissions,peers:availability,sources:(own.coverage?.sources??0)+peers.reduce((sum,peer)=>sum+Number(peer.value?.coverage?.sources??0),0)}};
-  }
+  }).call(this));}
   /** Where a peer session's transcript sits in this instance's archive, if it has been pushed here. */
   archivedTranscript(peer:string,threadId:string):{path:string;archivedAt:string}|null {
     const client=this.dependencies.clients.get(peer);
@@ -699,7 +701,7 @@ export class SessionPeers {
     bind:(sessionId:number,provider:'claude-code'|'codex',uuid:string)=>void;defaultCwd:string;
     prepare?:(input:{provider:'claude-code'|'codex';threadId:string;archived:{path:string;archivedAt:string};
       projectName:string|null;projectPath:string|null})=>Promise<{cwd:string;project:string|null;projectName:string|null;projectPath:string;
-      providerRunner:string;providerAccount:string}>}) {
+      providerRunner:string;providerAccount:string}>}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     this.client(peer);
     let tuple:any=null;try{tuple=JSON.parse(Buffer.from(address.slice(8),'base64url').toString());}catch{}
     const remote=Array.isArray(tuple)&&Number.isSafeInteger(tuple[1])?`concierge:${tuple[1]}`:null;
@@ -717,8 +719,8 @@ export class SessionPeers {
     if(view.projectNameTruncated||view.projectTruncated&&typeof view.projectName!=='string')throw new SessionOwnerError('The exact project identity has not reached this instance yet. Refresh this peer before resurrecting the session.',409,'PEER_PROJECT_IDENTITY_INCOMPLETE');
     const projectName=typeof view.projectName==='string'?view.projectName:typeof view.project==='string'?basename(view.project.replace(/\/+$/,'')):null;
     let location:{cwd:string;project:string|null;projectName:string|null;projectPath:string;providerRunner?:string;providerAccount?:string};
-    if(options.prepare)location=await options.prepare({provider,threadId,archived,projectName,
-      projectPath:typeof view.projectPath==='string'?view.projectPath:null});
+    if(options.prepare)location=(yield options.prepare({provider,threadId,archived,projectName,
+      projectPath:typeof view.projectPath==='string'?view.projectPath:null}));
     else {
       const project=projectName?sessionProject(options.defaultCwd,projectName):null;
       if(!project)throw new SessionOwnerError(`This instance has no registered project folder named ${projectName??'(unknown)'} to resurrect into.`,409,'PROJECT_UNAVAILABLE');
@@ -742,9 +744,9 @@ export class SessionPeers {
     options.bind(created.id,provider,threadId);
     log('info','session_peer_resurrected',{peer,remote_session:presented,session_id:created.id,provider});
     return {sessionId:created.id,reused:false};
-  }
+  }).call(this));}
   /** Context for a peer session while the peer is offline: its last catalogue view plus its archived transcript here. */
-  async offlineContext(peer:string,address:string,localContext:(address:string)=>Promise<any>) {
+  async offlineContext(peer:string,address:string,localContext:(address:string)=>Promise<any>) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     let tuple:any=null;try{tuple=JSON.parse(Buffer.from(address.slice(8),'base64url').toString());}catch{}
     const remote=Array.isArray(tuple)&&Number.isSafeInteger(tuple[1])?`concierge:${tuple[1]}`:null;
     const view=remote?this.cachedView(peer,remote):null;
@@ -752,9 +754,9 @@ export class SessionPeers {
     const threadId=view.runtimeThreadId;
     const archived=threadId?db.query("SELECT id,binding_generation FROM sessions WHERE json_extract(native_metadata_json,'$.origin')='imported' AND json_extract(native_metadata_json,'$.source.nativeId')=? ORDER BY id DESC LIMIT 1").get(threadId) as {id:number}|null:null;
     if(!archived)return {session:view,evidence:[],hasMore:false,offline:true,note:`${offlineNote(peer)} No archived transcript of this session is indexed here yet.`};
-    const context=await localContext(sessionAddress(getSessionById(archived.id)!));
+    const context=(yield localContext(sessionAddress(getSessionById(archived.id)!)));
     return {...context,session:view,archive:context.session,offline:true,note:`${offlineNote(peer)} Dialogue below comes from the archived transcript.`};
-  }
+  }).call(this));}
   /** `<peer>/session:…` names a session on that peer; anything else is local. */
   splitAddress(address:unknown):{peer:string;address:string}|null {
     if(typeof address!=='string')return null;
@@ -779,7 +781,7 @@ export class SessionPeers {
     requestedEffect?:'informational'|'work';authorityInputId?:string;files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null;threadSourceMessageId?:string;returnToRequester?:boolean;
     routedFrom?:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'|'service'|'unknown';author?:import('./provider-history').MessageAuthor};
     /** The words the recipient reads instead of the standard agent-request framing (his thread reply), and the thread message it answers so its replies post there. */
-    framing?:(id:string)=>string;forwardedReply?:{inboxInputId:string;topicId:string;authorKind?:'human'|'agent';messageThreadRootId?:string;messageThreadRequestId?:string}}) {
+    framing?:(id:string)=>string;forwardedReply?:{inboxInputId:string;topicId:string;authorKind?:'human'|'agent';messageThreadRootId?:string;messageThreadRequestId?:string}}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(this.stopped)throw new Error('Session communication is not accepting requests.');
     if(actor.turn===null&&input.responseMode!=='context')throw new Error('An active peer request needs its actual provider turn.');
     const client=this.client(input.peer);
@@ -811,7 +813,7 @@ export class SessionPeers {
       addressedProvider=addressedRemote?this.cachedView(input.peer,addressedRemote)?.provider??admitted?.provider??null:null;
       if(addressedRemote&&!addressedProvider&&input.responseMode!=='context'){
         try{
-          const exact=await client.request<any>('GET',`/sessions/v1/sessions/${encodeURIComponent(addressedRemote)}/view`,undefined,8_000);
+          const exact=(yield client.request<any>('GET',`/sessions/v1/sessions/${encodeURIComponent(addressedRemote)}/view`,undefined,8_000));
           const view=exact?.session;
           if(view?.id===addressedRemote&&view.address===input.address&&typeof view.provider==='string'&&view.provider){
             this.remember(input.peer,[view]);
@@ -943,7 +945,7 @@ export class SessionPeers {
     retain(queuedAddress(),true);
     this.wake();
     return this.receipt(this.row(id));
-  }
+  }).call(this));}
   receipt(row:PeerRequestRow) {
     const passive=JSON.parse(row.payload_json);
     if(passive.responseMode==='context'&&passive.contextOperationId){
@@ -1001,7 +1003,7 @@ export class SessionPeers {
     if(!row.outcome)this.schedule(`cancel:${requestId}`,()=>this.revokeCanceledRemote(requestId));
     return this.receipt(this.row(requestId));
   }
-  private async revokeCanceledRemote(requestId:string) {
+  private async revokeCanceledRemote(requestId:string) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const row=this.row(requestId);
     if(row.outcome!=='canceled'||!row.remote_operation_id
       ||JSON.parse(row.remote_status_json??'{}').cancellationAcknowledged)return;
@@ -1012,7 +1014,7 @@ export class SessionPeers {
     const client=this.dependencies.clients.get(row.peer);
     if(!client)return;
     try {
-      await client.request('POST',`/sessions/v1/peers/requests/${encodeURIComponent(requestId)}/cancel`,{});
+      (yield client.request('POST',`/sessions/v1/peers/requests/${encodeURIComponent(requestId)}/cancel`,{}));
       acknowledge();
     } catch(error) {
       // A peer that explicitly has no delivery has no execution authority left to
@@ -1024,11 +1026,11 @@ export class SessionPeers {
       }
       log('warn','session_peer_cancel_unsent',{request_id:requestId,peer:row.peer,...errorFields(error)});
     }
-  }
+  }).call(this));}
   /** The peer refused a repeat because it already holds this request ID with other bytes. */
-  private async adoptPeerHeldRequest(client:PeerClient,row:PeerRequestRow,conflict:string):Promise<boolean> {
+  private async adoptPeerHeldRequest(client:PeerClient,row:PeerRequestRow,conflict:string):Promise<boolean> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     let remote:any;
-    try{remote=await client.request<unknown>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal,true);}
+    try{remote=(yield client.request<unknown>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal,true));}
     catch(error){
       if(this.stopped)return false;
       this.recordStatusReadFailure(row,peerStatusReadFailureReason(error),error instanceof PeerStatusReadError?error:undefined);
@@ -1052,7 +1054,7 @@ export class SessionPeers {
     })();
     log('warn','session_peer_request_conflict_adopted',{request_id:row.request_id,peer:row.peer,conflict});
     return true;
-  }
+  }).call(this));}
   private event(row:PeerRequestRow,kind:PeerEventRow['kind'],payload:unknown,eventId=randomUUID()) {
     if(db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(eventId))return eventId;
     db.query('INSERT INTO session_peer_events(event_id,request_id,kind,payload_json,created_at_ms) VALUES(?,?,?,?,?)').run(eventId,row.request_id,kind,JSON.stringify(payload),this.now());
@@ -1256,13 +1258,13 @@ export class SessionPeers {
    * peer's push, and historical recovery (whose replies the peer will never push again) throws so
    * the peer stays in `unrecovered` and the whole reply is fetched on a later attempt.
    */
-  private async pullReply(client:PeerClient,row:PeerRequestRow,reply:any,historical:boolean) {
+  private async pullReply(client:PeerClient,row:PeerRequestRow,reply:any,historical:boolean) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     // A retained event keeps its author; only an older peer's status lacks it, and that peer
     // cannot have transferred custody, so its author is the current recipient.
     const responder={peer:row.peer,sessionId:typeof reply.responderSessionId==='string'?reply.responderSessionId:currentPeerRecipient(row).sessionId,inputId:reply.sourceInputId??null,runId:reply.sourceRunId??null};
     if(!reply.files)return this.recordReply(this.row(row.request_id),{eventId:reply.eventId,kind:reply.kind,text:reply.text,turnOutcome:reply.turnOutcome,replyBody:reply.replyBody,closingLine:reply.closingLine,answerGroup:reply.answerGroup,answersQuestion:reply.answersQuestion??undefined,notify:reply.notify===true,alsoMainThread:reply.alsoMainThread===true,workDisposition:reply.workDisposition??undefined,settlementProof:reply.settlementProof,completionTurnId:reply.completionTurnId??null,evidence:reply.evidence??undefined,handBack:reply.handBack??undefined,quiet:reply.quiet??undefined,responder});
     let whole:any;
-    try {whole=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies/${encodeURIComponent(reply.eventId)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal);}
+    try {whole=(yield client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies/${encodeURIComponent(reply.eventId)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal));}
     catch(error) {
       if(this.stopped)return null;
       log('warn','session_peer_reply_fetch_failed',{request_id:row.request_id,peer:row.peer,event_id:reply.eventId,historical,...errorFields(error)});
@@ -1271,19 +1273,19 @@ export class SessionPeers {
     }
     if(this.stopped)return null;
     return this.recordReply(this.row(row.request_id),whole);
-  }
+  }).call(this));}
   /** The request's final that still stands; a superseded inference is history. */
   private currentFinal(requestId:string){
     return db.query("SELECT * FROM session_peer_events WHERE request_id=? AND kind='final' AND superseded_by_event_id IS NULL").get(requestId) as PeerEventRow|null;
   }
-  async notified(requestId:string) {
-    await this.reconcileRequest(requestId,()=>this.dispatch(this.row(requestId)));
+  async notified(requestId:string) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+    (yield this.reconcileRequest(requestId,()=>this.dispatch(this.row(requestId))));
     return {outcome:this.row(requestId).outcome};
-  }
+  }).call(this));}
   private reconcileRequest(requestId:string,work:()=>Promise<void>) {
     const previous=this.requestReconciliations.get(requestId);
     if(previous)return previous;
-    const current=Promise.resolve().then(work);
+    const current=Promise.resolve().then(ledgerCallback(work));
     this.requestReconciliations.set(requestId,current);
     const cleanup=()=>{if(this.requestReconciliations.get(requestId)===current)this.requestReconciliations.delete(requestId);};
     void current.then(cleanup,cleanup);
@@ -1326,7 +1328,7 @@ export class SessionPeers {
       }
     }
   }
-  private async dispatch(row:PeerRequestRow) {
+  private async dispatch(row:PeerRequestRow) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(row.outcome||this.stopped)return;
     const client=this.dependencies.clients.get(row.peer);
     if(!client){if(row.status!=='version_hold')this.settle(row,'failed',`Peer ${row.peer} is no longer configured on this instance.`);return;}
@@ -1335,7 +1337,7 @@ export class SessionPeers {
     let reconciledStatus:PeerRequestStatus|null=null;
     if(row.status==='version_hold'){
       try{
-        const raw=await client.request<unknown>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal,true);
+        const raw=(yield client.request<unknown>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal,true));
         if(this.stopped)return;
         row=this.row(row.request_id);if(row.outcome)return;
         const checked=peerRequestStatus(raw,{requestId:row.request_id,...peerStatusRecipient(row,raw),requestedEffect:JSON.parse(row.payload_json).requestedEffect});
@@ -1383,14 +1385,14 @@ export class SessionPeers {
           // A prior POST may have reached the peer despite a lost response. Inspect that
           // same request ID; never issue another corrected browser send after withdrawal.
           try{
-            const remote=await client.request<unknown>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal,true);
+            const remote=(yield client.request<unknown>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal,true));
             if(this.stopped)return;
             const checked=peerRequestStatus(remote,{requestId:row.request_id,requestedEffect:JSON.parse(row.payload_json).requestedEffect});
             if(checked.status){const remote=checked.status;
               this.settle(row,'canceled','The original answer duty ended after this exact corrected request may have reached the peer.');
               db.query('UPDATE session_peer_requests SET remote_session_id=?,remote_address=?,remote_status_json=?,delivery_json=NULL WHERE request_id=?')
                 .run(remote.sessionId,remote.address??row.remote_address,JSON.stringify(remote),row.request_id);
-              await this.revokeCanceledRemote(row.request_id);
+              (yield this.revokeCanceledRemote(row.request_id));
               return;
             }else this.recordStatusReadFailure(row,checked.reason??'status_invalid');
           }catch(error){if(this.stopped)return;this.recordStatusReadFailure(row,peerStatusReadFailureReason(error),error instanceof PeerStatusReadError?error:undefined);
@@ -1408,7 +1410,7 @@ export class SessionPeers {
       let accepted:any;
       let adoptedPeerCopy=false;
       if(queuedDelivery.responseMode==='context') {
-        try{await this.assertContextCapability(row.peer);}
+        try{(yield this.assertContextCapability(row.peer));}
         catch(error){
           this.note(row.peer,error);
           if(error instanceof SessionOwnerError&&error.code==='PEER_CONTEXT_UNSUPPORTED'){
@@ -1421,7 +1423,7 @@ export class SessionPeers {
       try{
         const delivery=queuedDelivery;
         if(delivery.responseMode==='context')db.query("UPDATE session_peer_requests SET remote_status_json=json_set(coalesce(remote_status_json,'{}'),'$.contextPostAttemptedAtMs',?) WHERE request_id=?").run(this.now(),row.request_id);
-        accepted=await client.request('POST',delivery.correctionOf?'/sessions/v1/peers/requests/corrected-attachment':'/sessions/v1/peers/requests',delivery);
+        accepted=(yield client.request('POST',delivery.correctionOf?'/sessions/v1/peers/requests/corrected-attachment':'/sessions/v1/peers/requests',delivery));
         if(delivery.correctionOf)this.activatePeerAttachmentCorrection(row,accepted);
         this.unreachable.delete(row.peer);
       }
@@ -1442,7 +1444,7 @@ export class SessionPeers {
         // about five times a second for days, enough owner log lines to blind the outside
         // monitor. Follow the copy the peer holds instead, through the ordinary status poll.
         if(error instanceof PeerError&&error.kind==='refused'&&error.status===409&&error.message.startsWith('Idempotency conflict')&&!queuedDelivery.correctionOf){
-          if(!await this.adoptPeerHeldRequest(client,row,error.message))return;
+          if(!(yield this.adoptPeerHeldRequest(client,row,error.message)))return;
           adoptedPeerCopy=true;
           row=this.row(row.request_id);
         }
@@ -1498,21 +1500,21 @@ export class SessionPeers {
       if(JSON.parse(row.payload_json).forwardedReply)db.query("UPDATE session_inputs SET receipt_json=json_remove(receipt_json,'$.statusDetail'),updated_at=CURRENT_TIMESTAMP WHERE id=?").run(row.source_input_id);
       row=this.row(row.request_id);
       if(row.outcome==='canceled'){
-        await this.revokeCanceledRemote(row.request_id);
+        (yield this.revokeCanceledRemote(row.request_id));
         return;
       }
       }
     }
     let remote:any;
     try {
-      remote=reconciledStatus??await client.request<unknown>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal,true);
+      remote=reconciledStatus??(yield client.request<unknown>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal,true));
       this.unreachable.delete(row.peer);
       const askedClock=JSON.parse(row.payload_json);
       if(askedClock.promptAnswerQuestionId&&!askedClock.promptAnswerPeerAcknowledged){
         try{
-          const accepted=await client.request<{recorded:boolean}>('POST',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/prompt-answer`,{
+          const accepted=(yield client.request<{recorded:boolean}>('POST',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/prompt-answer`,{
             originSessionId:`concierge:${row.source_session_id}`,originInputId:row.source_input_id,originRunId:nativeRunId(row.source_turn_id),
-            questionId:askedClock.promptAnswerQuestionId,createdAtMs:row.created_at_ms},OWNER_READ_RESPONSE_MS,false,this.peerReadController.signal);
+            questionId:askedClock.promptAnswerQuestionId,createdAtMs:row.created_at_ms},OWNER_READ_RESPONSE_MS,false,this.peerReadController.signal));
           if(accepted.recorded)db.query("UPDATE session_peer_requests SET payload_json=json_set(payload_json,'$.promptAnswerPeerAcknowledged',1) WHERE request_id=?")
             .run(row.request_id);
         }catch(error){
@@ -1573,7 +1575,7 @@ export class SessionPeers {
       // A reply the peer gave up pushing is still the peer's answer, and this poll carries it:
       // take it. Writing the request off lost a finished Mac answer whose single push met the
       // server mid-restart (2026-10-04, request c5a8444f). Fail only if it cannot be fetched.
-      const pulled=await this.pullReply(client,row,reply,false);
+      const pulled=(yield this.pullReply(client,row,reply,false));
       if(this.stopped)return;
       if(!pulled&&(reply.status==='failed_deadline'||reply.status==='failed_budget')){
         this.settle(row,'failed',`The peer could not return its answer: ${reply.status==='failed_deadline'?'delivery reached its deadline':'delivery exhausted its retry budget'}, and fetching it failed. ${reply.eventId}`);
@@ -1631,8 +1633,8 @@ export class SessionPeers {
     }
     this.settle(row,'failed',endedWorkInPlainWords(execution.error,` on ${row.peer}`),
       {...output,...(execution.error?{providerError:String(execution.error).slice(0,2000)}:{})});
-  }
-  private async deliver(event:PeerEventRow) {
+  }).call(this));}
+  private async deliver(event:PeerEventRow) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(this.stopped)return;
     const row=this.row(event.request_id);
     const recipient=currentPeerRecipient(row);
@@ -1738,7 +1740,7 @@ export class SessionPeers {
       if(event.kind==='final')recordChatGptReturnReceipt({eventId:event.event_id,returnInputId:accepted.id,now:this.now()});
       for(const joined of group.joining)recordChatGptReturnReceipt({eventId:joined.event_id,returnInputId:accepted.id,now:this.now()});
     }
-  }
+  }).call(this));}
   /** Whether this request's agent replies post into an Inbox thread, by the rule postThreadEvent applies. */
   private answersInThread(row:PeerRequestRow):boolean {
     const requestPayload=JSON.parse(row.payload_json);
@@ -1885,7 +1887,7 @@ export class SessionPeers {
     return row;
   }
   deliveryFor(inputId:string){return db.query('SELECT * FROM session_peer_deliveries WHERE target_input_id=?').get(inputId) as DeliveryRow|null;}
-  async accept(body:unknown,correctedAttachmentRoute=false) {
+  async accept(body:unknown,correctedAttachmentRoute=false) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const input=object(body);
     const requestId=input.requestId;
     if(typeof requestId!=='string'||!/^[0-9a-f-]{36}$/.test(requestId))throw new SessionOwnerError('A peer request needs its UUID.');
@@ -2024,7 +2026,7 @@ export class SessionPeers {
         ||prior.message!==input.message
         ||db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='final' LIMIT 1").get(input.correctionOf))
         throw new SessionOwnerError('The original peer delivery does not own this exact question, task and ChatGPT target.',409,'PEER_CORRECTION_CUSTODY');
-      correctionProof=await owner.proveRejectedChatGptAttachment(target.id,original.target_input_id);
+      correctionProof=(yield owner.proveRejectedChatGptAttachment(target.id,original.target_input_id));
       const hashes=new Set(correctionProof.attachmentHashes);
       if(!input.files.some((file:{base64:string})=>!hashes.has(createHash('sha256').update(Buffer.from(file.base64,'base64')).digest('hex'))))
         throw new SessionOwnerError('The corrected peer attachment must have changed bytes.',409,'PEER_CORRECTION_UNCHANGED');
@@ -2074,7 +2076,7 @@ export class SessionPeers {
     owner.dispatch(getAcceptedSessionInput(created.target_input_id)!);
     this.wake();
     return this.accepted(created);
-  }
+  }).call(this));}
   private accepted(row:DeliveryRow){const session=getSessionById(row.target_session_id)!;
     const provenance=JSON.parse(row.origin_provenance_json??'{}');
     const version=provenance.answerGuaranteeVersion;
@@ -2319,27 +2321,27 @@ export class SessionPeers {
     return this.deliveryReceipt(row);
   }
   /** Forward a recipient's replies and execution changes to the origin; both are retried until the origin has them. */
-  private async report(row:DeliveryRow) {
+  private async report(row:DeliveryRow) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(this.stopped)return;
     const client=this.dependencies.clients.get(row.peer);
     if(!client)return;
     for(const reply of db.query("SELECT * FROM session_peer_replies WHERE request_id=? AND status='pending' ORDER BY rowid").all(row.request_id) as ReplyRow[]) {
       const turnNeed=JSON.parse(reply.payload_json).turnOutcome==='needs_you';
       try {
-        const answer=await withRetry({operation:'peer-reply',key:reply.event_id,policy:RETRY_POLICIES.peerReply,
+        const answer=(yield withRetry({operation:'peer-reply',key:reply.event_id,policy:RETRY_POLICIES.peerReply,
           // A final reply may already have closed the origin's request, so it will not poll
           // this status again. Keep a turn question eligible for later bounded retry windows.
           startedAtMs:turnNeed?this.now():reply.created_at_ms,
-          run:async()=>{
-            const response=await client.request<{eventId?:string;recorded?:string;reason?:string}>('POST',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies`,this.replyBody(row,reply),undefined,false);
+          run:async()=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+            const response=(yield client.request<{eventId?:string;recorded?:string;reason?:string}>('POST',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies`,this.replyBody(row,reply),undefined,false));
             if(response?.eventId!==reply.event_id||!['recorded','duplicate','refused','pending'].includes(response.recorded??''))
               throw new PeerReplyContractError('The peer answered, but did not confirm this reply by event ID and recorded status.');
             return response;
-          },
+          }).call(this));},
           classifyError:(error,attempt)=>error instanceof PeerReplyContractError
             ?attempt>=PEER_REPLY_SCHEMA_MISMATCH_ATTEMPTS?'permanent':'unknown'
             :error instanceof PeerError&&error.kind==='refused'&&error.status!==null&&error.status<500?'permanent':'transient',
-        });
+        }));
         if(answer.recorded==='pending')continue;
         // Forwarded means the origin confirmed it holds this exact event. A refusal is recorded as
         // one; any other answer (an origin from before confirmations) leaves it pending and resent.
@@ -2383,11 +2385,11 @@ export class SessionPeers {
       // An unchanged queued target only needs one origin check after reconnect.
       // Reopening the full retry budget each interval would produce repeated
       // retry-stopped repair notices while the origin is offline.
-      const answer=unchanged?await notify():await withRetry({operation:'peer-notify',key:`${row.request_id}:${fingerprint}`,
+      const answer=unchanged?(yield notify()):(yield withRetry({operation:'peer-notify',key:`${row.request_id}:${fingerprint}`,
         policy:RETRY_POLICIES.peerNotify,run:notify,
         classifyError:(error)=>error instanceof PeerError&&error.kind==='refused'
           &&!(error.status===404&&this.now()-row.created_at_ms<=PEER_REQUEST_ORPHAN_GRACE_MS)?'permanent':'transient',
-      });
+      }));
       this.unreachable.delete(row.peer);
       db.query('UPDATE session_peer_deliveries SET notified_fingerprint=?,closed_at_ms=CASE WHEN ? THEN ? ELSE closed_at_ms END WHERE request_id=?').run(fingerprint,answer?.outcome?1:0,this.now(),row.request_id);
       if(answer?.outcome==='canceled'&&!db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='final'").get(row.request_id))
@@ -2405,11 +2407,11 @@ export class SessionPeers {
         log('warn','session_peer_notify_failed',{request_id:row.request_id,peer:row.peer,status:error instanceof PeerError?error.status:null,...errorFields(error)});
       }
     }
-  }
+  }).call(this));}
 
   // ---- scheduling, shared with the coordinator's wake ----
   private incidentScanTraceRemaining=200;
-    private async scanRows<T>(table:string,sql:string,visit:(row:T)=>void|Promise<void>,...args:(number|string)[]) {
+  private async scanRows<T>(table:string,sql:string,visit:(row:T)=>void|Promise<void>,...args:(number|string)[]) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(this.incidentScanTraceRemaining-- > 0)
       log('warn','incident_reconciliation_scan',{table,sql:sql.replace(/\s+/g,' ').slice(0,400)});
     const query=db.query(sql);
@@ -2419,41 +2421,41 @@ export class SessionPeers {
       const row=query.get(...args,highWater,cursor) as (T&{reconciliation_rowid:number})|null;
       if(!row)return;
       cursor=row.reconciliation_rowid;
-            await visit(row);
-      await new Promise<void>(resolve=>setImmediate(resolve));
+      (yield visit(row));
+      (yield new Promise<void>(resolve=>setImmediate(resolve)));
     }
-  }
-  private async reconcile() {
+  }).call(this));}
+  private async reconcile() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     while(this.reconciliationDirty&&!this.stopped){
       this.reconciliationDirty=false;
       // Catalogue refreshes have their own task owner and bounded interval.
       for(const name of this.dependencies.clients.keys())void this.refreshCatalogue(name);
       // Each scan names its partial index: Bun's SQLite otherwise walked the whole table by rowid,
       // stored payloads included, on every wake (about three times a second on 2026-11-03).
-      await this.scanRows<PeerRequestRow>('session_peer_requests',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests INDEXED BY session_peer_requests_canceled
+      (yield this.scanRows<PeerRequestRow>('session_peer_requests',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests INDEXED BY session_peer_requests_canceled
           WHERE outcome='canceled' AND remote_operation_id IS NOT NULL
             AND coalesce(json_extract(remote_status_json,'$.cancellationAcknowledged'),0)=0
             AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
-        row=>this.schedule(`cancel:${row.request_id}`,()=>this.revokeCanceledRemote(row.request_id)));
-      await this.scanRows<PeerRequestRow>('session_peer_requests',"SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests INDEXED BY session_peer_open_reconcile WHERE outcome IS NULL AND overdue_at_ms IS NULL AND json_extract(remote_status_json,'$.hold.code') IS NOT NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1",
-        row=>this.inspectHold(row));
-      await this.scanRows<PeerRequestRow>('session_peer_requests',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests INDEXED BY session_peer_open_reconcile WHERE ${AWAITING_INSPECTION} AND json_extract(payload_json,'$.responseMode') IS NOT 'context' AND due_at_ms<=? AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
-        row=>this.inspectOverdueRequest(row),this.now());
+        row=>this.schedule(`cancel:${row.request_id}`,()=>this.revokeCanceledRemote(row.request_id))));
+      (yield this.scanRows<PeerRequestRow>('session_peer_requests',"SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests INDEXED BY session_peer_open_reconcile WHERE outcome IS NULL AND overdue_at_ms IS NULL AND json_extract(remote_status_json,'$.hold.code') IS NOT NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1",
+        row=>this.inspectHold(row)));
+      (yield this.scanRows<PeerRequestRow>('session_peer_requests',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests INDEXED BY session_peer_open_reconcile WHERE ${AWAITING_INSPECTION} AND json_extract(payload_json,'$.responseMode') IS NOT 'context' AND due_at_ms<=? AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
+        row=>this.inspectOverdueRequest(row),this.now()));
       if(this.unrecovered.size)this.schedule('recover-discarded-replies',()=>this.recoverDiscardedReplies());
       // A cancellation could have been admitted by an older release without revoking its
       // held turn. The cancellation instruction itself can then sit behind that same hold.
-      await this.scanRows<DeliveryRow>('session_peer_deliveries',`SELECT d.rowid AS reconciliation_rowid,d.* FROM session_peer_deliveries d
+      (yield this.scanRows<DeliveryRow>('session_peer_deliveries',`SELECT d.rowid AS reconciliation_rowid,d.* FROM session_peer_deliveries d
           JOIN session_inputs notice ON notice.id='canceled:'||d.request_id
           JOIN session_inputs target ON target.id=d.target_input_id
           JOIN turns turn ON turn.id=target.turn_id
           WHERE d.closed_at_ms IS NOT NULL AND turn.status='queued' AND turn.saved_kind IS NULL
             AND d.rowid<=? AND d.rowid>? ORDER BY d.rowid LIMIT 1`,
-        row=>this.canceledByOrigin(row.request_id));
-      await this.scanRows<PeerRequestRow>('session_peer_requests','SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests INDEXED BY session_peer_open_reconcile WHERE outcome IS NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1',
-        row=>this.schedule(`ask:${row.request_id}`,()=>this.reconcileRequest(row.request_id,()=>this.dispatch(this.row(row.request_id)))));
-      await this.scanRows<PeerEventRow>('session_peer_events',"SELECT rowid AS reconciliation_rowid,* FROM session_peer_events INDEXED BY session_peer_events_undelivered WHERE status NOT IN ('received','retained') AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1",
-        event=>this.schedule(`event:${event.event_id}`,()=>this.deliver(event)));
-      await this.scanRows<DeliveryRow>('session_peer_deliveries',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_deliveries WHERE (closed_at_ms IS NULL
+        row=>this.canceledByOrigin(row.request_id)));
+      (yield this.scanRows<PeerRequestRow>('session_peer_requests','SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests INDEXED BY session_peer_open_reconcile WHERE outcome IS NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1',
+        row=>this.schedule(`ask:${row.request_id}`,()=>this.reconcileRequest(row.request_id,()=>this.dispatch(this.row(row.request_id))))));
+      (yield this.scanRows<PeerEventRow>('session_peer_events',"SELECT rowid AS reconciliation_rowid,* FROM session_peer_events INDEXED BY session_peer_events_undelivered WHERE status NOT IN ('received','retained') AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1",
+        event=>this.schedule(`event:${event.event_id}`,()=>this.deliver(event))));
+      (yield this.scanRows<DeliveryRow>('session_peer_deliveries',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_deliveries WHERE (closed_at_ms IS NULL
           OR request_id IN (SELECT request_id FROM session_peer_replies WHERE status='pending')) AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
         row=>{
           if(row.closed_at_ms===null){
@@ -2461,22 +2463,22 @@ export class SessionPeers {
             if(target.turn_id===null)this.dependencies.owner.dispatch(target);
           }
           this.schedule(`report:${row.request_id}`,()=>this.report(this.delivery(row.request_id)));
-        });
-      await this.scanRows<DeliveryRow>('session_peer_deliveries',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_deliveries WHERE closed_at_ms IS NULL AND prompt_reminded_at_ms IS NULL
+        }));
+      (yield this.scanRows<DeliveryRow>('session_peer_deliveries',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_deliveries WHERE closed_at_ms IS NULL AND prompt_reminded_at_ms IS NULL
           AND (json_extract(origin_provenance_json,'$.forwardedIntent.promptAnswer')=1 OR json_extract(origin_provenance_json,'$.askedAnswer') IS NOT NULL)
           AND coalesce(json_extract(origin_provenance_json,'$.askedAnswer.createdAtMs'),created_at_ms)<=? AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
-        row=>this.remindPromptAnswer(row),this.now()-PROMPT_ANSWER_REMINDER_MS);
+        row=>this.remindPromptAnswer(row),this.now()-PROMPT_ANSWER_REMINDER_MS));
       if(!this.stopped)this.arm();
     }
-  }
+  }).call(this));}
   wake() {
     if(this.stopped)return;
     this.reconciliationDirty=true;
     if(this.reconciliation)return;
     this.dependencies.onWake?.();
     this.reconciliation=outsideContentReader(()=>new Promise<void>(resolve=>setImmediate(resolve))
-      .then(()=>this.reconcile())
-      .catch(error=>{this.reconciliationDirty=false;this.disarm?.();this.disarm=null;this.dependencies.onError(error);})
+      .then(ledgerCallback(()=>this.reconcile()))
+      .catch(ledgerCallback(error=>{this.reconciliationDirty=false;this.disarm?.();this.disarm=null;this.dependencies.onError(error);}))
       .finally(()=>{this.reconciliation=null;if(this.reconciliationDirty&&!this.stopped)this.wake();}));
   }
   private schedule(key:string,work:()=>Promise<void>) {
@@ -2498,7 +2500,7 @@ export class SessionPeers {
       AND (json_extract(origin_provenance_json,'$.forwardedIntent.promptAnswer')=1 OR json_extract(origin_provenance_json,'$.askedAnswer') IS NOT NULL)`).get(PROMPT_ANSWER_REMINDER_MS) as {due:number|null}).due;
     const delays=[...(owed?[retryDelayMs(RETRY_POLICIES.peerRequest,RETRY_POLICIES.peerRequest.maxAttempts)]:[]),...(due===null?[]:[Math.max(0,due-this.now())]),...(reminder===null?[]:[Math.max(0,reminder-this.now())])];
     if(!delays.length)return;
-    const timer=setTimeout(()=>this.wake(),Math.min(24*60*60_000,...delays));
+    const timer=setTimeout(ledgerCallback(()=>this.wake()),Math.min(24*60*60_000,...delays));
     timer.unref();
     this.disarm=()=>clearTimeout(timer);
   }
@@ -2512,7 +2514,7 @@ export class SessionPeers {
    * in `unrecovered` and is retried on the minute retry timer until every read succeeds.
    */
   private unrecovered=new Set<string>();
-  private async recoverDiscardedReplies() {
+  private async recoverDiscardedReplies() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const since=this.now()-14*24*60*60*1000;
     const failed=new Set<string>();
     const highWater=(db.query('SELECT max(rowid) AS value FROM session_peer_requests').get() as {value:number|null}).value??0;
@@ -2522,23 +2524,23 @@ export class SessionPeers {
       const row=query.get(since,highWater,cursor) as (PeerRequestRow&{reconciliation_rowid:number})|null;
       if(!row)break;
       cursor=row.reconciliation_rowid;
-      await new Promise<void>(resolve=>setImmediate(resolve));
+      (yield new Promise<void>(resolve=>setImmediate(resolve)));
       if(this.stopped)return;
       if(!this.unrecovered.has(row.peer)||failed.has(row.peer))continue;
       if(!isInferredFinal(this.currentFinal(row.request_id)))continue;
       const client=this.dependencies.clients.get(row.peer);
       if(!client)continue;
       try {
-        const remote=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal);
+        const remote=(yield client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal));
         if(this.stopped)return;
         for(const reply of (remote.replies as any[])??[])if(!db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(reply.eventId)){
-          const result=await this.pullReply(client,row,reply,true);
+          const result=(yield this.pullReply(client,row,reply,true));
           log('info','session_peer_discarded_reply_recovered',{request_id:row.request_id,peer:row.peer,event_id:reply.eventId,kind:reply.kind,recorded:result?.recorded??'left for push'});
         }
       } catch(error) {if(this.stopped)return;failed.add(row.peer);log('warn','session_peer_discarded_reply_recovery_failed',{request_id:row.request_id,peer:row.peer,...errorFields(error)});}
     }
     if(this.stopped)return;
     for(const peer of [...this.unrecovered])if(!failed.has(peer))this.unrecovered.delete(peer);
-  }
-  async stop(){this.stopped=true;this.peerReadController.abort();this.reconciliationDirty=false;this.disarm?.();this.disarm=null;for(const job of this.catalogueTasks.values())job.controller.abort();await this.reconciliation;await Promise.allSettled([...this.tasks.values(),...this.requestReconciliations.values(),...[...this.catalogueTasks.values()].map(job=>job.promise)]);}
+  }).call(this));}
+  async stop(){this.stopped=true;this.peerReadController.abort();this.reconciliationDirty=false;this.disarm?.();this.disarm=null;for(const job of this.catalogueTasks.values())job.controller.abort();(await this.reconciliation);(await Promise.allSettled([...this.tasks.values(),...this.requestReconciliations.values(),...[...this.catalogueTasks.values()].map(job=>job.promise)]));}
 }

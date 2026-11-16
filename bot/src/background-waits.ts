@@ -1,4 +1,5 @@
 import { db, executionChanged } from "./state";
+import {ledgerCallback} from './ledger-admission';
 import { nativeRunId } from "./session-inputs";
 import { log } from "./log";
 import { STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES } from "./request-liveness";
@@ -170,7 +171,7 @@ export function startBackgroundJobWatch(admit: (input: BackgroundNoticeAdmission
       releases.delete(turnId);
     }
   };
-  const timer = setInterval(tick, 10_000);
+  const timer = setInterval(ledgerCallback(tick), 10_000);
   tick();
   return () => clearInterval(timer);
 }

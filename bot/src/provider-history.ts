@@ -82,7 +82,7 @@ export interface ProviderHistoryMessage {
   marks?: {reactions:string[];saved:boolean};
 }
 
-export type ProviderMessageCallback = (message: ProviderHistoryMessage) => void;
+export type ProviderMessageCallback = (message: ProviderHistoryMessage) => void | Promise<void>;
 
 export function providerMessageObserver(callback?: ProviderMessageCallback) {
   const versions = new Map<string, string>();

@@ -65,7 +65,7 @@ try{
  const prepared=await old.prepare('old-control-fixture',candidate);
  modern.verify(prepared.artifactPath);
  if(process.env.CUSTODY_RELEASE_FIXTURE_SKIP_PRESENTATION!=='1'){
-  const application=checkReleaseApplication(prepared.artifactPath,repo,releases);
+  const application=await checkReleaseApplication(prepared.artifactPath,repo,releases);
   assert.equal(application.status,'passed');
  }
  const paths=JSON.parse(readFileSync(join(repo,'bot/src/deployment-artifact-files.json'),'utf8')).applicationBundles as string[];
@@ -235,7 +235,7 @@ try{
  const hybrid=await modern.prepare('hybrid-fixture',candidate,control);
  assert.equal(readFileSync(join(hybrid.artifactPath,'control/application/speech-job-worker.js'),'utf8').includes('CONTROL_WORKER_MUST_NOT_REPLACE_APPLICATION'),false);
  if(process.env.CUSTODY_RELEASE_FIXTURE_SKIP_PRESENTATION!=='1')
-  assert.equal(checkReleaseApplication(hybrid.artifactPath,repo,releases).status,'passed');
+  assert.equal((await checkReleaseApplication(hybrid.artifactPath,repo,releases)).status,'passed');
  const oldHybrid=await old.prepare('old-hybrid-fixture',candidate,control);
  assert.equal(oldHybrid.manifest.custody_application_provenance,undefined);
  assert.throws(()=>activationManager.activate(oldHybrid.artifactPath),/CODEX_CUSTODY_APPLICATION_PROVENANCE_NOT_PROVEN/,
@@ -243,8 +243,8 @@ try{
  if(process.env.CUSTODY_RELEASE_FIXTURE_SKIP_PRESENTATION==='1'){
   // This debug acceptance mode keeps the custody release path but omits the separate full app suite.
  } else if(oldHybrid.manifest.application_bundle_source_digest===oldHybrid.manifest.source_tree_digest)
-  assert.equal(checkReleaseApplication(oldHybrid.artifactPath,repo,releases).status,'passed');
- else assert.throws(()=>checkReleaseApplication(oldHybrid.artifactPath,repo,releases),/provenance/);
+  assert.equal((await checkReleaseApplication(oldHybrid.artifactPath,repo,releases)).status,'passed');
+ else await assert.rejects(()=>checkReleaseApplication(oldHybrid.artifactPath,repo,releases),/provenance/);
  // A missing gate must be refused before activation, whether the installed builder already
  // refuses preparation or only the candidate's preactivation check knows that boundary.
  rmSync(join(repo,'bot/scripts/presentation-release-check.ts'));
@@ -254,7 +254,7 @@ try{
  let missingGateRefusedAt='preactivation';
  try{missingGate=await old.prepare('missing-gate-fixture',missingGateCommit);}
  catch(error){assert.match(String(error),/missing its presentation release check/);missingGateRefusedAt='preparation';}
- if(missingGate)assert.throws(()=>checkReleaseApplication(missingGate.artifactPath,repo,releases),/missing its presentation release check/);
+ if(missingGate)await assert.rejects(()=>checkReleaseApplication(missingGate.artifactPath,repo,releases),/missing its presentation release check/);
  console.log(JSON.stringify({check:'release-application-compatibility',status:'passed',oldControl:baseCommit,
   workers:paths.length,oldToNewPreactivation:true,newToOldVerification:true,isolatedState:true,
   hybridApplicationPinned:true,oldBuilderGenericApplicationDigestMatches:oldHybrid.manifest.application_bundle_source_digest===oldHybrid.manifest.source_tree_digest,

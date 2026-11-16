@@ -1,4 +1,5 @@
 import { publishRetryBreakerNotice } from "./retry-breaker-notice";
+import { runLedgerSegment } from "./ledger-admission";
 import {
   nextRetry,
   retryDelayMs,
@@ -14,11 +15,11 @@ export function withRetry<T>(input: Retryable<T>): Promise<T> {
   const callerExhausted = input.onBudgetExhausted;
   return withRetryCore({
     ...input,
-    onBudgetExhausted: (error) => {
-      publishRetryBreakerNotice({ key: `${input.operation}:${input.key}:${error.startedAtMs}`,
+    onBudgetExhausted: async (error) => {
+      await runLedgerSegment(() => publishRetryBreakerNotice({ key: `${input.operation}:${input.key}:${error.startedAtMs}`,
         what: input.operation, reason: String(error.lastError), sinceMs: error.startedAtMs,
-        restartSignal: "the operation is explicitly retried after the failure is resolved" });
-      callerExhausted?.(error);
+        restartSignal: "the operation is explicitly retried after the failure is resolved" }));
+      await callerExhausted?.(error);
     },
   });
 }

@@ -1,3 +1,4 @@
+import {runLedgerSteps,runLedgerSegment} from './ledger-admission';
 import { createHash } from "node:crypto";
 import {
   adoptRewrittenDesiredCommit,
@@ -69,13 +70,13 @@ async function projectDeploymentReactionTarget(
   client: any,
   row: DeploymentTurnReactionRow,
   timestamp: string,
-) {
+) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   try {
-    await slackCall(client, "reactions.add", {
+    (yield slackCall(client, "reactions.add", {
       channel: row.slack_channel_id,
       timestamp,
       name: DEPLOYMENT_REACTION_EMOJI[row.desired_state],
-    }, { channel: row.slack_channel_id });
+    }, { channel: row.slack_channel_id }));
   } catch (error) {
     if (slackErrorCode(error) !== "already_reacted") throw error;
   }
@@ -87,16 +88,16 @@ async function projectDeploymentReactionTarget(
       : [];
   for (const state of statesToRemove) {
     try {
-      await slackCall(client, "reactions.remove", {
+      (yield slackCall(client, "reactions.remove", {
         channel: row.slack_channel_id,
         timestamp,
         name: DEPLOYMENT_REACTION_EMOJI[state],
-      }, { channel: row.slack_channel_id });
+      }, { channel: row.slack_channel_id }));
     } catch (error) {
       if (slackErrorCode(error) !== "no_reaction") throw error;
     }
   }
-}
+}).call(this));}
 
 async function registerReactionTargetsForCommitRange(input: {
   runId: string;
@@ -104,13 +105,13 @@ async function registerReactionTargetsForCommitRange(input: {
   candidateCommit: string;
   state: DeploymentTurnReactionState;
   turnId?: number;
-}) {
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   try {
-    const targets = await deploymentReactionTargetsForCommitRange(
+    const targets = (yield deploymentReactionTargetsForCommitRange(
       process.env.CONCIERGE_REPO || "/var/lib/slack-concierge-deployment/source",
       input.baseCommit,
       input.candidateCommit,
-    );
+    ));
     return registerDeploymentTurnReactionTargets(
       input.runId,
       input.turnId === undefined ? targets : targets.filter((target) => target.turnId === input.turnId),
@@ -125,9 +126,9 @@ async function registerReactionTargetsForCommitRange(input: {
     });
     return 0;
   }
-}
+}).call(this));}
 
-export async function refreshActiveDeploymentReactionTargets(turnId?: number) {
+export async function refreshActiveDeploymentReactionTargets(turnId?: number) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const activeRun = getActiveDeploymentRun();
   const lastKnownGood = getLastKnownGoodRelease();
   const attributableCommit = activeRun?.candidate_commit || activeRun?.desired_commit;
@@ -139,7 +140,7 @@ export async function refreshActiveDeploymentReactionTargets(turnId?: number) {
     state: activeRun.repair_state && activeRun.repair_state !== "retrying" ? "repairing" : "deploying",
     turnId,
   });
-}
+}).call(this));}
 
 export interface DeploymentWorkerServices {
   launchRun(run: DeploymentRunRow): Promise<void>;
@@ -152,12 +153,12 @@ export interface DeploymentWorkerServices {
  * the next one — nine restarts in eleven minutes on 2026-09-23, with his update notice never
  * clearing. Main's head is adopted once, loudly, instead of chasing what no longer exists.
  */
-async function installableDesiredCommit(): Promise<string | null> {
-  await ensureDeploymentSource();
+async function installableDesiredCommit(): Promise<string | null> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield ensureDeploymentSource());
   for (;;) {
     const desired = getDeploymentDesiredState();
     if (!desired) return null;
-    const main = await commitMainHas(desired.desired_commit);
+    const main = (yield commitMainHas(desired.desired_commit));
     if (getDeploymentDesiredState()?.desired_commit !== desired.desired_commit) continue;
     if (!main || !main.rewritten) return desired.desired_commit;
     const adopted = adoptRewrittenDesiredCommit({ head: main.head, rewrittenFrom: desired.desired_commit });
@@ -168,7 +169,7 @@ async function installableDesiredCommit(): Promise<string | null> {
     });
     return adopted?.desired_commit ?? null;
   }
-}
+}).call(this));}
 
 export async function reconcileDeploymentWork(input: {
   client: any;
@@ -187,7 +188,7 @@ export async function reconcileDeploymentWork(input: {
   launched: number;
   repairsLaunched: number;
   reactionsStarted: number;
-}> {
+}> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const recoveredNotices = recoverDeploymentNoticeClaims(input.isOwnerAlive);
   const recoveredReactions = recoverDeploymentTurnReactionClaims();
   const deadRuns = recoverDeadDeploymentRuns(input.isOwnerAlive);
@@ -197,7 +198,7 @@ export async function reconcileDeploymentWork(input: {
   let settlesAtMs: number | null | undefined = undefined;
   if (!input.shouldStop()) {
     try {
-      const desired = await installableDesiredCommit();
+      const desired = (yield installableDesiredCommit());
       settlesAtMs = null;
       const startsAtMs = automaticDeploymentStartsAtMs();
       if (desired && !getActiveDeploymentRun() && desired !== getLastKnownGoodRelease()?.git_commit
@@ -212,12 +213,12 @@ export async function reconcileDeploymentWork(input: {
       log("error", "automatic_deployment_request_failed", errorFields(error));
     }
   }
-  await refreshActiveDeploymentReactionTargets();
+  (yield refreshActiveDeploymentReactionTargets());
   let launched = 0;
   for (const run of listPreparedDeploymentRuns()) {
     if (input.shouldStop()) break;
     try {
-      await input.services.launchRun(run);
+      (yield input.services.launchRun(run));
       launched += 1;
     } catch (error) {
       // A lost supervisor answer cannot prove the detached runner failed to start. Keep the
@@ -230,12 +231,12 @@ export async function reconcileDeploymentWork(input: {
       const failure = `Transient deployment launch failed: ${launchError}`;
       const lastKnownGood = getLastKnownGoodRelease();
       if (run.desired_commit && lastKnownGood) {
-        await registerReactionTargetsForCommitRange({
+        (yield registerReactionTargetsForCommitRange({
           runId: run.id,
           baseCommit: lastKnownGood.git_commit,
           candidateCommit: run.desired_commit,
           state: "repairing",
-        });
+        }));
         beginDeploymentRepair({
           runId: run.id,
           failedCommit: run.desired_commit,
@@ -270,7 +271,7 @@ export async function reconcileDeploymentWork(input: {
     if (input.shouldStop()) break;
     try {
       if (!input.services.launchRepair) throw new Error("Deployment repair launcher is unavailable.");
-      await input.services.launchRepair(incident.id);
+      (yield input.services.launchRepair(incident.id));
       repairsLaunched += 1;
     } catch (error) {
       if ((error as any)?.code === "start-limit-hit") {
@@ -306,11 +307,11 @@ export async function reconcileDeploymentWork(input: {
   }
 
   let reactionsStarted = 0;
-  await Promise.all(listPendingDeploymentTurnReactions().map(async (reaction) => {
+  (yield Promise.all(listPendingDeploymentTurnReactions().map(async (reaction) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if (input.shouldStop()) return;
     let claimed: DeploymentTurnReactionRow | null = null;
     reactionsStarted += 1;
-    const outcome = await runDurableNoticeWorker({
+    const outcome = (yield runDurableNoticeWorker({
       load: () => {
         const current = getDeploymentTurnReaction(reaction.turn_id);
         return current && deploymentReactionNoticeShape(current);
@@ -319,12 +320,12 @@ export async function reconcileDeploymentWork(input: {
         claimed = claimDeploymentTurnReaction(reaction.turn_id, nowMs);
         return claimed && deploymentReactionNoticeShape(claimed);
       },
-      deliver: async (current) => {
-        await projectDeploymentReactionTarget(input.client, current, current.slack_message_ts);
+      deliver: async (current) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+        (yield projectDeploymentReactionTarget(input.client, current, current.slack_message_ts));
         if (current.slack_user_msg_ts !== current.slack_message_ts) {
-          await projectDeploymentReactionTarget(input.client, current, current.slack_user_msg_ts);
+          (yield projectDeploymentReactionTarget(input.client, current, current.slack_user_msg_ts));
         }
-      },
+      }).call(this));},
       markDelivered: () => {
         if (!claimed) throw new Error("Deployment reaction projection completed without a claim.");
         markDeploymentTurnReactionDelivered(claimed.turn_id, claimed.desired_revision, claimed.desired_state);
@@ -341,7 +342,7 @@ export async function reconcileDeploymentWork(input: {
       shouldStop: input.shouldStop,
       breakerKey: `deployment-reaction:${reaction.run_id}:${reaction.turn_id}`,
       breakerWhat: "A deployment status update",
-    });
+    }));
     log(outcome === "delivered" ? "info" : "warn", "deployment_turn_reaction_settled", {
       deployment_run_id: reaction.run_id,
       turn_id: reaction.turn_id,
@@ -349,10 +350,10 @@ export async function reconcileDeploymentWork(input: {
       outcome,
     });
     input.onTurnReactionSettled?.(reaction.turn_id);
-  }));
+  }).call(this));})));
 
-  await Promise.all(listPendingDeploymentNotices().map(async (notice) => {
-    const outcome = await runDurableNoticeWorker({
+  (yield Promise.all(listPendingDeploymentNotices().map(async (notice) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+    const outcome = (yield runDurableNoticeWorker({
       load: () => {
         const current = getDeploymentNotice(notice.id);
         return current && {
@@ -371,18 +372,18 @@ export async function reconcileDeploymentWork(input: {
           startedAtMs: sqlTimeMs(claimed.created_at),
         };
       },
-      deliver: async () => {
+      deliver: async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         const current = getDeploymentNotice(notice.id);
         if (!current || current.status !== "sending") throw new Error("Deployment notice lost its sending lease.");
-        await postLongReply({
+        (yield postLongReply({
           client: input.client,
           channel: current.slack_channel_id,
           threadTs: current.slack_thread_ts,
           text: current.text,
           user: current.requested_by_user_id || undefined,
           idempotencyKey: current.client_msg_id,
-        });
-      },
+        }));
+      }).call(this));},
       markDelivered: () => markDeploymentNoticeDelivered(notice.id, input.ownerInstanceId),
       markRetry: (error, nextAttemptMs) => markDeploymentNoticeRetry(
         notice.id,
@@ -395,13 +396,13 @@ export async function reconcileDeploymentWork(input: {
       shouldStop: input.shouldStop,
       breakerKey: `deployment-notice:${notice.id}`,
       breakerWhat: "A deployment notice",
-    });
+    }));
     log(outcome === "delivered" ? "info" : "warn", "deployment_notice_settled", {
       deployment_run_id: notice.run_id,
       deployment_notice_id: notice.id,
       outcome,
     });
-  }));
+  }).call(this));})));
 
   return {
     deadRuns,
@@ -413,4 +414,4 @@ export async function reconcileDeploymentWork(input: {
     repairsLaunched,
     reactionsStarted,
   };
-}
+}).call(this));}

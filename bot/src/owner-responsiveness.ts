@@ -1,4 +1,5 @@
 import { db } from "./state-database";
+import {runLedgerSegment,ledgerCallback} from './ledger-admission';
 import {readFileSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import { log } from "./log";
@@ -75,7 +76,7 @@ export function noteOwnerStall(ms: number, cpuMs: number | null = null): void {
   stalls.push({ at: now, ms, cpuMs });
   trim(now);
   // A long freeze ends with this tick; judge it now rather than a minute later.
-  evaluate(now);
+  void runLedgerSegment(()=>evaluate(now));
 }
 
 /** One owner request that took `ms`, so a notice can say what was slow. */
@@ -91,7 +92,7 @@ export function startOwnerResponsivenessWatch(): void {
   lastBadAt = Date.now();
   episodeStartedAt = openNoticeExists() ? lastBadAt : null;
   log("info", "owner_responsiveness_watch_started", { window_ms: WINDOW_MS, blocked_in_window_ms: BLOCKED_IN_WINDOW_MS, single_freeze_ms: SINGLE_FREEZE_MS, open_notice: episodeStartedAt !== null });
-  timer = setInterval(() => { try { evaluate(Date.now()); } catch (error) { log("error", "owner_responsiveness_failed", { error: String(error) }); } }, 60_000);
+  timer = setInterval(ledgerCallback(() => { try { evaluate(Date.now()); } catch (error) { log("error", "owner_responsiveness_failed", { error: String(error) }); } }), 60_000);
   timer.unref?.();
 }
 

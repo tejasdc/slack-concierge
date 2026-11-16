@@ -1,3 +1,4 @@
+import {runLedgerSteps} from './ledger-admission';
 import { db } from "./state";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -23,23 +24,23 @@ function repositoryRoot() {
   return process.env.CONCIERGE_REPOSITORY_ROOT || "/var/lib/slack-concierge-deployment/source";
 }
 
-async function git(arguments_: string[]): Promise<string | null> {
+async function git(arguments_: string[]): Promise<string | null> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   try {
-    const result = await promisify(execFile)("git", arguments_, { cwd: repositoryRoot(),
-      env: { ...process.env, HOME: process.env.HOME || "/root", GIT_TERMINAL_PROMPT: "0" }, maxBuffer: 16 * 1024 * 1024 });
+    const result = (yield promisify(execFile)("git", arguments_, { cwd: repositoryRoot(),
+      env: { ...process.env, HOME: process.env.HOME || "/root", GIT_TERMINAL_PROMPT: "0" }, maxBuffer: 16 * 1024 * 1024 }));
     return result.stdout;
   } catch { return null; }
-}
+}).call(this));}
 
-async function changesBetween(previous: string | null, revision: string): Promise<Change[]> {
+async function changesBetween(previous: string | null, revision: string): Promise<Change[]> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   // The oldest listed release still needs a description. Its first parent is the boundary
   // when the previous release has fallen out of the bounded history.
-  const base = previous || (await git(["rev-parse", `${revision}^1`]))?.trim() || null;
+  const base = previous || ((yield git(["rev-parse", `${revision}^1`])))?.trim() || null;
   const range = base ? [`${base}..${revision}`] : ["--max-count=1", revision];
   // Include branch commits inside a merge. Notes are read on every request because an
   // already-published note may be corrected without changing the commit or release row.
-  const output = await git(["log", "--notes=refs/notes/update", "--topo-order", "--reverse",
-    "--format=%x1e%H%x00%P%x00%s%x00%B%x00%N", ...range]);
+  const output = (yield git(["log", "--notes=refs/notes/update", "--topo-order", "--reverse",
+    "--format=%x1e%H%x00%P%x00%s%x00%B%x00%N", ...range]));
   return (output ?? "").split("\x1e").slice(1).map((record) => {
     const [hash, parents, subject, body, attached] = record.split("\x00");
     const written = attached?.trim() || noteInMessage(body ?? "");
@@ -50,7 +51,7 @@ async function changesBetween(previous: string | null, revision: string): Promis
       merge: (parents?.trim().split(/\s+/).length ?? 0) > 1,
     };
   }).filter((change) => change.revision);
-}
+}).call(this));}
 
 /**
  * What a pending update brings him, in his own language. Commit subjects are written for
@@ -107,11 +108,11 @@ function refreshNotesSoon() {
 export async function pendingUpdateSummary(previous: string | null, revision: string): Promise<{
   notes: string[];
   subjects: string[];
-}> {
+}> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if (!previous || previous === revision) return { notes: [], subjects: [] };
   const notes: string[] = [];
   const subjects: string[] = [];
-  for (const change of await changesBetween(previous, revision)) {
+  for (const change of (yield changesBetween(previous, revision))) {
     const note = change.note;
     // `internal` was never a description: those changes are waiting for their sentence like any
     // other, and a git note on the commit is how one is added after the fact.
@@ -124,12 +125,12 @@ export async function pendingUpdateSummary(previous: string | null, revision: st
     if (!notes.includes(note)) notes.push(note);
   }
   return { notes, subjects };
-}
+}).call(this));}
 
 /** The notes for every change between the running release and a pending one, in order. */
-export async function pendingUpdateNotes(previous: string | null, revision: string): Promise<string[]> {
-  return (await pendingUpdateSummary(previous, revision)).notes;
-}
+export async function pendingUpdateNotes(previous: string | null, revision: string): Promise<string[]> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  return ((yield pendingUpdateSummary(previous, revision))).notes;
+}).call(this));}
 
 /**
  * Whether main still has the commit a push asked for. A force-push leaves that commit on no branch
@@ -139,24 +140,24 @@ export async function pendingUpdateNotes(previous: string | null, revision: stri
  * never cleared (capture d526a570). The fetch happens only in the case that already looks wrong,
  * because a commit can also be missing here simply because this checkout has not fetched it yet.
  */
-export async function commitMainHas(commit: string): Promise<{ head: string; rewritten: boolean } | null> {
-  const head = async () => (await git(["rev-parse", "origin/main"]))?.trim() || null;
-  const contains = async () => await git(["merge-base", "--is-ancestor", commit, "origin/main"]) !== null;
-  const answer = async (rewritten: boolean) => { const at = await head(); return at ? { head: at, rewritten } : null; };
-  if (await contains()) return answer(false);
-  await git(["fetch", "origin", "--quiet"]);
-  return await contains() ? answer(false) : answer(true);
-}
+export async function commitMainHas(commit: string): Promise<{ head: string; rewritten: boolean } | null> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  const head = async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {return ((yield git(["rev-parse", "origin/main"])))?.trim() || null;}).call(this));};
+  const contains = async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {return (yield git(["merge-base", "--is-ancestor", commit, "origin/main"])) !== null;}).call(this));};
+  const answer = async (rewritten: boolean) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> { const at = (yield head()); return at ? { head: at, rewritten } : null; }).call(this));};
+  if ((yield contains())) return answer(false);
+  (yield git(["fetch", "origin", "--quiet"]));
+  return (yield contains()) ? answer(false) : answer(true);
+}).call(this));}
 
 const iso = (value: string | null) => value ? new Date(value.includes("T") ? value : `${value.replace(" ", "T")}Z`).toISOString() : null;
 
-export async function releaseHistory(): Promise<{ releases: ReleaseView[] }> {
+export async function releaseHistory(): Promise<{ releases: ReleaseView[] }> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const rows = db.query(`SELECT git_commit, state, activated_at FROM deployment_releases
     WHERE promoted_at IS NOT NULL ORDER BY promoted_at DESC, rowid DESC LIMIT ?`).all(LIMIT + 1) as
     { git_commit: string; state: string; activated_at: string | null }[];
   const releases: ReleaseView[] = [];
   for (const [index, row] of rows.slice(0, LIMIT).entries()) {
-    const rawChanges = await changesBetween(rows[index + 1]?.git_commit ?? null, row.git_commit);
+    const rawChanges = (yield changesBetween(rows[index + 1]?.git_commit ?? null, row.git_commit));
     if (rawChanges.some((change) => !change.note)) refreshNotesSoon();
     const changes = rawChanges
       .filter((change) => !change.merge || change.note)
@@ -171,4 +172,4 @@ export async function releaseHistory(): Promise<{ releases: ReleaseView[] }> {
     });
   }
   return { releases };
-}
+}).call(this));}

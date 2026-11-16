@@ -1,18 +1,17 @@
 #!/usr/bin/env bun
 
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { ledgerAccess } from "../src/ledger-access-policy";
+import {deploymentLedgerMode} from "../src/deployment-launch-authority";
 import { notifyDeploymentWorker } from "../src/deployment-worker-wake";
 import { isAncestorProcess, processIdentity } from "../src/runtime-identity";
+import {repairLedgerCommand} from "../src/deployment-repair-client";
 import { deploymentOwnerFetch } from "../src/deployment-owner-fetch";
 
 // A served claim or phase needs only the private socket. Opening even a read-only SQLite
 // connection in this short-lived helper can acquire WAL writer/checkpoint locks on close.
-const stateDir = process.env.CONCIERGE_STATE_DIR;
-const ownerServedDeploymentCommand = stateDir
-  ? ledgerAccess(realpathSync(stateDir), Bun.main, false).ownerServedDeploymentCommand
-  : false;
+const ledgerMode=await deploymentLedgerMode();
+const ownerServedDeploymentCommand=ledgerMode==="owner";
 const state = ownerServedDeploymentCommand
   ? {} as typeof import("../src/deployment-state")
   : await import("../src/deployment-state");
@@ -97,16 +96,17 @@ try {
   if (command === "request") {
     const sourceTurnId = Number(process.env.CONCIERGE_TURN_ID || "");
     const ownerInstanceId = process.env.CONCIERGE_OWNER_INSTANCE_ID || "";
-    const continuation = deploymentContinuationForAgent({
+    const continuationInput = {
       sourceTurnId,
       ownerInstanceId,
       sourceSessionId: Number(process.env.CONCIERGE_SESSION_ID || ""),
       slackChannelId: process.env.CONCIERGE_SLACK_CHANNEL_ID || "",
       slackThreadTs: process.env.CONCIERGE_SLACK_THREAD_TS || "",
-    });
-    const result = requestDeployment({
-      sourceTurnId: continuation.sourceTurnId,
-      ownerInstanceId: continuation.ownerInstanceId,
+    };
+    const continuation = ownerServedDeploymentCommand ? null : deploymentContinuationForAgent(continuationInput);
+    const result = ownerServedDeploymentCommand ? await repairLedgerCommand("requestDeploymentFromAgent",[continuationInput,requiredOption("--expected-commit")]) : requestDeployment({
+      sourceTurnId: continuation!.sourceTurnId,
+      ownerInstanceId: continuation!.ownerInstanceId,
       expectedCommit: requiredOption("--expected-commit"),
     });
     finish(0, {
@@ -184,7 +184,7 @@ try {
   }
 
   if (command === "operator-request") {
-    const result = requestOperatorDeployment();
+    const result = ownerServedDeploymentCommand ? await repairLedgerCommand("requestOperatorDeployment",[]) : requestOperatorDeployment();
     finish(0, {
       status: "requested",
       run_id: result.run.id,
@@ -255,7 +255,7 @@ try {
     else try { run = await ownerDeploymentMutation("fail", {runId,error,outcome,options}); }
     catch (failure) {
       if (!(failure as {ownerTransportUnavailable?:boolean}).ownerTransportUnavailable
-        || !coordinatorFullyStopped()) throw failure;
+        || !coordinatorFullyStopped() || await deploymentLedgerMode()!=="legacy") throw failure;
       // Failure recovery may run after the service has stopped. The fully stopped
       // boundary is the only time this controller may become the ledger writer.
       process.env.CONCIERGE_RELEASE_OFFLINE = '1';
@@ -276,13 +276,13 @@ try {
   }
 
   if (command === "repair-begin") {
-    const incident = beginDeploymentRepair({
+    const incident = await repairLedgerCommand("beginDeploymentRepair",[{
       runId: requiredOption("--run-id"),
       failedCommit: requiredOption("--failed-commit").toLowerCase(),
       restoredCommit: requiredOption("--restored-commit").toLowerCase(),
       failureFingerprint: requiredOption("--failure-fingerprint"),
       error: requiredOption("--error"),
-    });
+    }]);
     notifyDeploymentWorker();
     finish(incident.status === "parked" ? 2 : 0, {
       status: incident.status,
@@ -299,17 +299,17 @@ try {
       throw new Error("--owner-pid must identify a live ancestor repair supervisor.");
     }
     const identity = processIdentity(ownerPid);
-    const incident = claimDeploymentRepair({
+    const incident = await repairLedgerCommand("claimDeploymentRepair",[{
       incidentId: requiredOption("--incident-id"),
       pid: identity.pid,
       bootId: identity.bootId,
       startTicks: identity.startTicks,
-    });
+    }]);
     finish(0, { status: incident.status, incident_id: incident.id, run_id: incident.run_id });
   }
 
   if (command === "repair-show") {
-    const incident = getDeploymentRepairIncident(requiredOption("--incident-id"));
+    const incident = await repairLedgerCommand("getDeploymentRepairIncident",[requiredOption("--incident-id")]);
     finish(incident ? 0 : 1, incident || { status: "error", error: "deployment repair incident not found" });
   }
 

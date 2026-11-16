@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import {
   getLastKnownGoodRelease,
   getDeploymentDesiredState,
@@ -30,16 +32,16 @@ export interface DeploymentPushServices {
 }
 
 function defaultServices(repositoryRoot: string): DeploymentPushServices {
-  const git = async (arguments_: string[]): Promise<GitResult> => {
+  const git = async (arguments_: string[]): Promise<GitResult> => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     try {
-      const result = await promisify(execFile)("git", arguments_, {
+      const result = (yield promisify(execFile)("git", arguments_, {
         cwd: repositoryRoot, env: { ...process.env, HOME: process.env.HOME || "/root", GIT_TERMINAL_PROMPT: "0" }, maxBuffer: 16 * 1024 * 1024,
-      });
+      }));
       return { exitCode: 0, stdout: result.stdout, stderr: result.stderr };
     } catch (error: any) {
       return { exitCode: typeof error?.code === "number" ? error.code : -1, stdout: String(error?.stdout || ""), stderr: String(error?.stderr || error) };
     }
-  };
+  }).call(this));};
   return {
     git,
     ensureSource: () => ensureDeploymentSource(repositoryRoot),
@@ -67,27 +69,27 @@ export async function acceptGitHubDeploymentPush(
   push: GitHubDeploymentPush,
   repositoryRoot = process.env.CONCIERGE_REPO || "/var/lib/slack-concierge-deployment/source",
   services = defaultServices(repositoryRoot),
-) {
+) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   return serializePush(repositoryRoot, () => acceptPush(push, services));
-}
+}).call(this));}
 
-async function acceptPush(push: GitHubDeploymentPush, services: DeploymentPushServices) {
-  if (services.ensureSource) await services.ensureSource();
-  successful(await services.git(["fetch", "--quiet", "origin", "main"]), "git fetch origin main");
+async function acceptPush(push: GitHubDeploymentPush, services: DeploymentPushServices) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  if (services.ensureSource) (yield services.ensureSource());
+  successful((yield services.git(["fetch", "--quiet", "origin", "main"])), "git fetch origin main");
   // Sentences written for him after a commit was pushed live in notes; the update line reads them here.
-  await services.git(["fetch", "--quiet", "origin", "+refs/notes/update:refs/notes/update"]);
-  const desiredCommit = successful(await services.git(["rev-parse", "origin/main"]), "git rev-parse origin/main");
+  (yield services.git(["fetch", "--quiet", "origin", "+refs/notes/update:refs/notes/update"]));
+  const desiredCommit = successful((yield services.git(["rev-parse", "origin/main"])), "git rev-parse origin/main");
   if (!/^[0-9a-f]{40}$/.test(desiredCommit)) throw new Error("origin/main did not resolve to a full Git commit");
 
-  const eventCommit = successful(await services.git(["rev-parse", `${push.after}^{commit}`]), "git rev-parse event commit");
+  const eventCommit = successful((yield services.git(["rev-parse", `${push.after}^{commit}`])), "git rev-parse event commit");
   if (eventCommit !== push.after) throw new Error("GitHub event commit did not resolve exactly");
-  if ((await services.git(["merge-base", "--is-ancestor", eventCommit, desiredCommit])).exitCode !== 0) {
+  if (((yield services.git(["merge-base", "--is-ancestor", eventCommit, desiredCommit]))).exitCode !== 0) {
     throw new Error("GitHub event commit is not an ancestor of current origin/main");
   }
 
   const lastKnownGood = services.getLastKnownGoodCommit();
   if (lastKnownGood
-    && (await services.git(["merge-base", "--is-ancestor", lastKnownGood, desiredCommit])).exitCode !== 0) {
+    && ((yield services.git(["merge-base", "--is-ancestor", lastKnownGood, desiredCommit]))).exitCode !== 0) {
     throw new Error(`origin/main ${desiredCommit} is not descended from last-known-good ${lastKnownGood}`);
   }
 
@@ -96,8 +98,8 @@ async function acceptPush(push: GitHubDeploymentPush, services: DeploymentPushSe
   let current: string | null, advances: boolean, stale: boolean;
   do {
     current = services.getCurrentDesiredCommit();
-    advances = current ? (await services.git(["merge-base", "--is-ancestor", current, desiredCommit])).exitCode === 0 : false;
-    stale = current ? (await services.git(["merge-base", "--is-ancestor", desiredCommit, current])).exitCode === 0 : false;
+    advances = current ? ((yield services.git(["merge-base", "--is-ancestor", current, desiredCommit]))).exitCode === 0 : false;
+    stale = current ? ((yield services.git(["merge-base", "--is-ancestor", desiredCommit, current]))).exitCode === 0 : false;
   } while (services.getCurrentDesiredCommit() !== current);
   const observed = services.observe({
     desiredCommit,
@@ -113,7 +115,7 @@ async function acceptPush(push: GitHubDeploymentPush, services: DeploymentPushSe
     event_commit: eventCommit,
     observation: observed.reason,
   };
-}
+}).call(this));}
 
 /**
  * A push GitHub announced while Concierge was down is never announced again: the webhook got a 502
@@ -124,11 +126,11 @@ async function acceptPush(push: GitHubDeploymentPush, services: DeploymentPushSe
 export async function catchUpMissedPush(
   repositoryRoot = process.env.CONCIERGE_REPO || "/var/lib/slack-concierge-deployment/source",
   services = defaultServices(repositoryRoot),
-) {
-  return serializePush(repositoryRoot, async () => {
-    if (services.ensureSource) await services.ensureSource();
-    successful(await services.git(["fetch", "--quiet", "origin", "main"]), "git fetch origin main");
-    const head = successful(await services.git(["rev-parse", "origin/main"]), "git rev-parse origin/main");
+) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  return serializePush(repositoryRoot, async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+    if (services.ensureSource) (yield services.ensureSource());
+    successful((yield services.git(["fetch", "--quiet", "origin", "main"])), "git fetch origin main");
+    const head = successful((yield services.git(["rev-parse", "origin/main"])), "git rev-parse origin/main");
     return acceptPush({ deliveryId: `startup-catch-up:${head}`, repository: "", ref: "refs/heads/main", after: head }, services);
-  });
-}
+  }).call(this));});
+}).call(this));}

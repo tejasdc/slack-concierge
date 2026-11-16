@@ -30,6 +30,14 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   rollback's separate controller and the disposable installed-command acceptance.
   Native release acceptance explicitly selects the host's GNU timeout dependency;
   see [durability acceptance](docs/architecture/PROTECTED-DURABILITY-OBSERVATION.md#isolated-acceptance-and-live-gate).
+- Complete synchronous ledger operations and every serving reset-capable checkpoint share
+  [WAL recycling admission](docs/architecture/LEDGER-DURABILITY.md#wal-recycling-admission).
+  Preserve original sync-descriptor custody, cooperative checkpoint cleanup certificates and
+  native exit, retained provider sources and separate native runtime-compatibility acceptance.
+  Recycling also requires the existing release authority's
+  [launch-through-native-cleanup handover](docs/runbooks/DEPLOYMENT.md#ledger-command-selection-and-native-lifetime).
+  Release checks retain their complete inventory and owned cleanup within the
+  [bounded check contract](docs/runbooks/RELEASE-CHECKS.md).
 - Mac disk upkeep shares the existing automatic update job; log retention, identity staging,
   finished-worktree proof, pressure notices and partial-effect receipts live in
   [Mac disk maintenance](docs/runbooks/MAC-DISK-MAINTENANCE.md).

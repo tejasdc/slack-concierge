@@ -1,3 +1,5 @@
+import { withProviderCallbackCustody, type ProviderCallbackCustody } from "./provider-callback-custody";
+import { runLedgerSteps } from "./ledger-admission";
 /**
  * The agent of an outside request (`sessions ask --outside`): the Codex command line, `codex exec`,
  * running in its own execution host unit. Concierge starts it and reads what it says from the host's
@@ -69,7 +71,8 @@ const MAX_ERROR_TEXT = 1_000;
  */
 const NOT_TOOLS = new Set(["agent_message", "reasoning", "error"]);
 
-export async function runOutsideCodexTurn(input: OutsideRun): Promise<RunResult> {
+async function runOutsideCodexTurnProducer(input: OutsideRun, custody: ProviderCallbackCustody): Promise<RunResult> {
+  return runLedgerSteps((function* (): Generator<unknown, any, any> {
   if (input.interactionPolicy === "consultation-only")
     throw new ProviderCapabilityUnavailableError("consultation", "An outside run has no information-only policy.");
   if (!input.transport)
@@ -77,18 +80,20 @@ export async function runOutsideCodexTurn(input: OutsideRun): Promise<RunResult>
 
   // The same account limit as App Server turns: while it is recorded, a new run is refused before the
   // CLI is launched, carrying the reset, so its input waits instead of being sent and refused.
-  const usage = await import("./provider-usage");
+  const usage = (yield import("./provider-usage")) as typeof import("./provider-usage");
   const attempt = usage.usageAttempt("codex", undefined, input.accountLabel);
   if (!input.adopted) usage.assertUsageAvailable(attempt);
-  try { return await runLaunchedOutsideCodexTurn(input); }
+  try { return (yield runLaunchedOutsideCodexTurn(input, custody)); }
   catch (error) {
-    if (error instanceof ProviderDispatchError && (await import("./codex")).isCodexUsageLimitMessage(error.message))
-      throw await (await import("./codex")).codexUsageRefusalWait(error, attempt, null);
+    const codex = (yield import("./codex")) as typeof import("./codex");
+    if (error instanceof ProviderDispatchError && codex.isCodexUsageLimitMessage(error.message))
+      throw (yield codex.codexUsageRefusalWait(error, attempt, null));
     throw error;
   }
+  })());
 }
 
-async function runLaunchedOutsideCodexTurn(input: OutsideRun): Promise<RunResult> {
+async function runLaunchedOutsideCodexTurn(input: OutsideRun, custody: ProviderCallbackCustody): Promise<RunResult> {
   const content = outsideCodexPromptContent(input);
   if (!input.adopted && !input.runnerPromptFile) {
     mkdirSync(dirname(input.promptFile), { recursive: true, mode: 0o700 });
@@ -152,6 +157,7 @@ async function runLaunchedOutsideCodexTurn(input: OutsideRun): Promise<RunResult
   };
 
   try {
+    await custody.drain();
     const exit = await input.transport.run({
       args, cwd: input.cwd,
       environment: providerOwnerEnvironment({...input.environment,CONCIERGE_OUTSIDE_RUN:'1'}),
@@ -171,6 +177,7 @@ async function runLaunchedOutsideCodexTurn(input: OutsideRun): Promise<RunResult
           try { event = JSON.parse(line) as CodexEvent; } catch { continue; }
           handle(event);
         }
+        return custody.drain();
       },
       // Not copied into a visible error: the CLI controls it and may name local machine details.
       onStderr: chunk => { stderrTail = (stderrTail + chunk).slice(-MAX_ERROR_TEXT); },
@@ -209,4 +216,8 @@ async function runLaunchedOutsideCodexTurn(input: OutsideRun): Promise<RunResult
   } finally {
     rmSync(input.promptFile, { force: true });
   }
+}
+
+export async function runOutsideCodexTurn(input: Parameters<typeof runOutsideCodexTurnProducer>[0]): Promise<RunResult> {
+  return withProviderCallbackCustody(input, (held, custody) => runOutsideCodexTurnProducer(held, custody));
 }

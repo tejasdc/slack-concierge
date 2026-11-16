@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import {db,getChannel,type SessionRow} from './state';
 import {sessionMetadata} from './session-inputs';
 import {prepareClaudeHistory} from './provider-history';
@@ -20,7 +22,7 @@ export function startProviderHistoryWarmer(defaultCwd:string):()=>void {
     const channel=session.slack_channel_id?getChannel(session.slack_channel_id):null;
     return sessionMetadata(session).cwd??channel?.code_path??channel?.vault_path??defaultCwd;
   };
-  const pass=async()=>{
+  const pass=async()=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     // Busy conversations are found through the partial running and queued indexes. Reading each
     // turn's status instead walked every Claude turn's stored text once a minute (2026-11-03).
     const due=(db.query(`SELECT s.*,MAX(t.id) AS latest_turn_id FROM sessions s JOIN turns t ON t.session_id=s.id
@@ -36,18 +38,18 @@ export function startProviderHistoryWarmer(defaultCwd:string):()=>void {
       const metadata=sessionMetadata(session);
       const machine=typeof (metadata as any).providerRunner==='string'&&typeof (metadata as any).providerAccount==='string'
         ?{runner:(metadata as any).providerRunner,account:(metadata as any).providerAccount}:undefined;
-      const outcome=await prepareClaudeHistory(session.agent_session_uuid!,cwd(session),session.id,machine)
-        .catch(()=>'unprepared' as const);
+      const outcome=(yield prepareClaudeHistory(session.agent_session_uuid!,cwd(session),session.id,machine)
+        .catch(ledgerCallback(()=>'unprepared' as const)));
       outcomes[outcome]=(outcomes[outcome]??0)+1;
       // An unprepared conversation is tried again after its next turn or restart, not every pass.
       prepared.set(session.id,session.latest_turn_id);
     }
     log('info','provider_history_warmed',{conversations:due.length,...outcomes,duration_ms:Math.round(performance.now()-started)});
-  };
+  }).call(this));};
   const schedule=(delay:number)=>{
     if(stopped)return;
-    timer=setTimeout(()=>{void pass().catch(error=>log('warn','provider_history_warm_failed',
-      {reason:error instanceof Error?error.message:'unknown'})).finally(()=>schedule(SWEEP_MS));},delay);
+    timer=setTimeout(ledgerCallback(()=>{void pass().catch(error=>log('warn','provider_history_warm_failed',
+      {reason:error instanceof Error?error.message:'unknown'})).finally(ledgerCallback(()=>schedule(SWEEP_MS)));}),delay);
     timer.unref?.();
   };
   schedule(30_000);

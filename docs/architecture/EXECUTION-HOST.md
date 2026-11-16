@@ -74,6 +74,14 @@ scans the journal in bounded chunks twice: once for write outcomes, once to rebu
 original order. The complete journal remains the custody record; no byte cursor or snapshot is
 treated as proof of a provider side effect.
 
+During [ledger recycling](LEDGER-DURABILITY.md#wal-recycling-admission), receiving a frame is
+distinct from consuming its provider callbacks. The coordinator pumps command/status replies
+independently, retains a journal sequence cursor and awaits ordered data consumption before
+replay-end, provider-result or host-release settlement. An already-running host keeps its original
+protocol and journal; an owner update does not restart that host or resubmit its provider input.
+Normal shutdown obeys the same admission and callback drain. An uncertain consumer leaves the
+existing host/native source available for the original recovery path.
+
 ## Coordinator states
 
 `executions.state`: `intended` (recorded before `systemd-run`) → `live` (unit started) → `exited`
@@ -200,6 +208,10 @@ are command hooks in `--settings`, held by the unchanged process).
   thread, reads its history, settles a finished turn from it or keeps following notifications, and
   never calls `turn/start`. A turn the thread's history never shows is reported unconfirmed after a
   bounded search. Follow-ups that were being sent are decided by the history (`clientId`).
+  When a callback waits on maintenance, full material items and input/steering identities remain
+  recoverable through those exact native pages. Callback consumption and history-page replay
+  finish before successful terminal settlement. Transient intermediate UI versions receive no
+  new crash-durable promise; no separate raw notification archive or release authority is added.
 - Earlier private Codex execution rows remain readable. If one is still open after an update,
   its existing host is adopted and settled through its recorded transport; no new private
   Codex process is launched. The account homes remain for usage readings and Accounts switching.

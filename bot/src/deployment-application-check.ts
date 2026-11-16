@@ -3,13 +3,13 @@ import {existsSync,mkdirSync,mkdtempSync,readFileSync,realpathSync,rmSync,symlin
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
-import {TrustedRootReleaseManager,failedCandidateCheck,CANDIDATE_PRESENTATION_TIMEOUT_SECONDS,type ReleaseManifest} from './deployment-release';
+import {TrustedRootReleaseManager,failedCandidateCheck,CANDIDATE_PRESENTATION_TIMEOUT_SECONDS,CANDIDATE_PRESENTATION_CLEANUP_SECONDS,type ReleaseManifest} from './deployment-release';
 import {releaseCodexBridgePath} from './release-worker';
-import {privateDatabaseCommand} from './private-database-command';
+import {runPrivatePresentationCheck} from './private-presentation-check';
 
 /** Runs in the candidate's existing preactivation command, including when an older control
  * built it. The Git archive is verified against the seal before executing isolated fixtures. */
-export function checkReleaseApplication(artifact:string,repositoryRoot:string,releaseRoot:string){
+export async function checkReleaseApplication(artifact:string,repositoryRoot:string,releaseRoot:string){
  const manager=new TrustedRootReleaseManager({repositoryRoot,releaseRoot,installRoot:join(releaseRoot,'unused-install'),bunExecutable:process.execPath});
  const manifest=manager.verify(artifact);
  const archive=Bun.spawnSync({cmd:['/usr/bin/git','-C',repositoryRoot,'archive','--format=tar',manifest.git_commit],stdout:'pipe',stderr:'pipe'});
@@ -57,14 +57,13 @@ export function checkReleaseApplication(artifact:string,repositoryRoot:string,re
   }
   const gate=join(scratch,'bot/scripts/presentation-release-check.ts');
   if(!existsSync(gate))throw new Error('Candidate application is missing its presentation release check.');
-  const [executable,...arguments_]=privateDatabaseCommand([process.execPath,gate]);
-  const checked=spawnSync(executable!,arguments_,{cwd:join(scratch,'bot'),encoding:'utf8',timeout:CANDIDATE_PRESENTATION_TIMEOUT_SECONDS*1000,
-   env:{...process.env,BUN_INSTALL_AUTO:'disable',CONCIERGE_TEST_MODE:'1',CONCIERGE_TEST_AUTHORIZATION:'responsive-system-b1eed622',
-    CONCIERGE_STATE_DIR:join(scratch,'isolated-owner'),CONCIERGE_CAPTURE_STATE_DIR:join(scratch,'isolated-capture')}});
-  if(checked.error||checked.status!==0)throw new Error(`Candidate presentation check failed: ${failedCandidateCheck({
-   exitCode:checked.status,signal:checked.signal,stdout:checked.stdout,stderr:checked.stderr,
-   error:checked.error??null,timeoutSeconds:CANDIDATE_PRESENTATION_TIMEOUT_SECONDS})}`);
-  const result=JSON.parse(checked.stdout.trim().split('\n').at(-1)??'null');
+  const checked=await runPrivatePresentationCheck([process.execPath,gate,'--bounded-child'],join(scratch,'bot'),
+   {...process.env,BUN_INSTALL_AUTO:'disable',CONCIERGE_TEST_MODE:'1',CONCIERGE_TEST_AUTHORIZATION:'responsive-system-b1eed622',
+    CONCIERGE_STATE_DIR:join(scratch,'isolated-owner'),CONCIERGE_STATE_DB:join(scratch,'isolated-owner/state.db'),
+    CONCIERGE_PRIVATE_CODE_STATE:join(scratch,'isolated-owner'),CONCIERGE_CAPTURE_STATE_DIR:join(scratch,'isolated-capture')});
+  if(checked.exitCode!==0)throw new Error(`Candidate presentation check failed: ${failedCandidateCheck({
+   ...checked,timeoutSeconds:CANDIDATE_PRESENTATION_TIMEOUT_SECONDS})}`);
+  const result=JSON.parse(checked.stdout.toString().trim().split('\n').at(-1)??'null');
   if(result?.check!=='presentation-release'||result.status!=='passed')throw new Error('Candidate presentation check returned no passing receipt.');
   return {...result,git_commit:manifest.git_commit,artifact_digest:manifest.artifact_digest};
  }finally{rmSync(scratch,{recursive:true,force:true});}

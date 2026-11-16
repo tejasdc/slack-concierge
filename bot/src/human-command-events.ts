@@ -1,3 +1,4 @@
+import {runLedgerSteps} from './ledger-admission';
 import { db } from './state';
 import { inboxSession } from './session-inbox';
 import { recordSessionEvent } from './session-inputs';
@@ -22,7 +23,7 @@ function eventSession(scope: string): number {
 }
 
 /** Publication is idempotent; the capture outbox is acknowledged only after ledger durability. */
-export async function publishHumanCommandTerminalEvent(command: TerminalHumanCommandStatus): Promise<void> {
+export async function publishHumanCommandTerminalEvent(command: TerminalHumanCommandStatus): Promise<void> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const eventId = `human-command:${command.actionId}:terminal`;
   const prior = db.query('SELECT session_id FROM session_owner_events WHERE event_id=?').get(eventId) as { session_id: number } | null;
   recordSessionEvent({
@@ -31,5 +32,5 @@ export async function publishHumanCommandTerminalEvent(command: TerminalHumanCom
     kind: 'human_command',
     payload: { command },
   });
-  await ledgerDurable();
-}
+  (yield ledgerDurable());
+}).call(this));}

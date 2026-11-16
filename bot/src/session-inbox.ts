@@ -1,3 +1,4 @@
+import {runLedgerSteps} from './ledger-admission';
 import {createHash} from 'node:crypto';
 import {db,type SessionRow} from './state';
 import {getAcceptedSessionInput,recordSessionEvent,sessionMetadata,type AcceptedSessionInput} from './session-inputs';
@@ -421,7 +422,7 @@ export function markResultAnsweredByPost(result:{sessionId:number;turnId:number;
 }
 /** Older results predate the marker. Walk the existing turn-kind index once, then retain a
  * completion event. Interrupted batches replay safely through stable marker IDs. */
-export async function backfillResultAnsweredByPost(stopped:()=>boolean):Promise<number> {
+export async function backfillResultAnsweredByPost(stopped:()=>boolean):Promise<number> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const completionId='result:posted:backfill:v1';
   if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(completionId))return 0;
   const head=(db.query('SELECT COALESCE(MAX(id),0) AS n FROM turns').get() as {n:number}).n;
@@ -441,7 +442,7 @@ export async function backfillResultAnsweredByPost(stopped:()=>boolean):Promise<
       }
     }).immediate();
     after=rows.at(-1)!.turnId;
-    await new Promise<void>(resolve=>setImmediate(resolve));
+    (yield new Promise<void>(resolve=>setImmediate(resolve)));
   }
   if(!stopped()){
     const inbox=db.query("SELECT id FROM sessions WHERE json_extract(native_metadata_json,'$.inbox')=1 ORDER BY id LIMIT 1")
@@ -449,7 +450,7 @@ export async function backfillResultAnsweredByPost(stopped:()=>boolean):Promise<
     if(inbox)recordSessionEvent({eventId:completionId,sessionId:inbox.id,kind:'result_posted_backfill_complete',payload:{upToTurnId:head}});
   }
   return marked;
-}
+}).call(this));}
 /**
  * A finished turn that owed a thread its answer and never posted has its closing text
  * relayed there by the owner, as the router's reply, so the answer reaches the thread rather

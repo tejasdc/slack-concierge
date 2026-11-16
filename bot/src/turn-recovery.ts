@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import { existsSync } from "node:fs";
 import { errorFields, log } from "./log";
 import { cleanExpiredArtifactStaging } from "./artifact-delivery-worker";
@@ -170,7 +172,7 @@ export async function reconcileRecoverableTurns(input: {
   activeTurnIds: readonly number[];
   isOwnerAlive(identity: { pid: number; bootId: string; startTicks: string }): boolean;
   services: TurnRecoveryServices;
-}): Promise<"done" | "stopped"> {
+}): Promise<"done" | "stopped"> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const sweptGhosts = sweepGhostRunningTurns(input.instanceId, input.activeTurnIds);
   if (sweptGhosts > 0) log("warn", "ghost_running_turns_swept", { count: sweptGhosts, scope: "startup" });
   for (const turn of listRecoverableTurns()) {
@@ -181,7 +183,7 @@ export async function reconcileRecoverableTurns(input: {
     })) continue;
 
     if (turn.turn_kind === "native" || input.nativeOnly) {
-      if (await recoverTurnWithoutSlack(input, turn) === "stopped") return "stopped";
+      if ((yield recoverTurnWithoutSlack(input, turn)) === "stopped") return "stopped";
       continue;
     }
 
@@ -189,14 +191,14 @@ export async function reconcileRecoverableTurns(input: {
     if (turn.status === "running") {
       if (turn.projection_mode === "agent" && turn.stop_requested_at) {
         const reason = "Turn stopped from Slack.";
-        await stopRecoveredAgentProgress(input, turn, "Stopped", "complete");
-        const agentSessionStatus = await setRecoveredAgentSessionStatus(
+        (yield stopRecoveredAgentProgress(input, turn, "Stopped", "complete"));
+        const agentSessionStatus = (yield setRecoveredAgentSessionStatus(
           input,
           turn.slack_channel_id,
           visibleThreadTs,
           turn.id,
           "active",
-        );
+        ));
         if (agentSessionStatus.outcome === "stopped") return "stopped";
         if (agentSessionStatus.error && turn.requested_by_user_id) {
           const failureNotice = terminalProjectionFailureNotice(
@@ -204,11 +206,11 @@ export async function reconcileRecoverableTurns(input: {
             turn.id,
             { agentSessionStatusError: agentSessionStatus.error },
           )!;
-          const noticeOutcome = await input.services.projectTurnStatus({
+          const noticeOutcome = (yield input.services.projectTurnStatus({
             client: input.client,
             turnId: turn.id,
             text: failureNotice,
-          });
+          }));
           if (noticeOutcome === "stopped") return "stopped";
         }
         abandonInterruptedTurnArtifacts(turn.id, reason);
@@ -237,11 +239,11 @@ export async function reconcileRecoverableTurns(input: {
           }
         }
         if (turn.projection_mode === "legacy") {
-          const statusOutcome = await input.services.projectTurnStatus({
+          const statusOutcome = (yield input.services.projectTurnStatus({
             client: input.client,
             turnId: turn.id,
             text: "Status: queued - service restarted before dispatch; input preserved and retrying automatically",
-          });
+          }));
           if (statusOutcome === "stopped") return "stopped";
         }
         continue;
@@ -254,24 +256,24 @@ export async function reconcileRecoverableTurns(input: {
         error: null,
       };
       if (turn.projection_mode === "agent") {
-        await stopRecoveredAgentProgress(input, turn, reason, "error");
-        recoveredAgentSessionStatus = await setRecoveredAgentSessionStatus(
+        (yield stopRecoveredAgentProgress(input, turn, reason, "error"));
+        recoveredAgentSessionStatus = (yield setRecoveredAgentSessionStatus(
           input,
           turn.slack_channel_id,
           visibleThreadTs,
           turn.id,
           "suspended",
-        );
+        ));
         if (recoveredAgentSessionStatus.outcome === "stopped") return "stopped";
       } else {
-        const statusOutcome = await input.services.projectTurnStatus({
+        const statusOutcome = (yield input.services.projectTurnStatus({
           client: input.client,
           turnId: turn.id,
           text: formatTurnStatusMessage({
             state: "interrupted",
             detail: `Status: interrupted - ${reason}`,
           }),
-        });
+        }));
         if (statusOutcome === "stopped") return "stopped";
       }
       abandonInterruptedTurnArtifacts(turn.id, reason);
@@ -287,11 +289,11 @@ export async function reconcileRecoverableTurns(input: {
             )
           : interruptionText;
         try {
-          const noticeOutcome = await input.services.projectTurnStatus({
+          const noticeOutcome = (yield input.services.projectTurnStatus({
             client: input.client,
             turnId: turn.id,
             text: actionText,
-          });
+          }));
           if (noticeOutcome === "stopped") return "stopped";
           if (noticeOutcome === "permanent_failure") {
             log("error", "recovered_interruption_notice_parked", {
@@ -315,20 +317,20 @@ export async function reconcileRecoverableTurns(input: {
     if (!outboundText || !claimOrphanedDelivery(turn.id, turn.owner_instance_id, input.instanceId)) continue;
     if (turn.projection_mode === "agent") {
       const progress = restoreRetriedTurnProgressMessage(turn.id, input.instanceId);
-      const progressStopped = await stopRecoveredAgentProgress(
+      const progressStopped = (yield stopRecoveredAgentProgress(
         input,
         { ...turn, ...progress },
         agentWorkCompleteTitle(turn.provider_duration_ms),
         "complete",
-      );
+      ));
       if (!progressStopped) {
-        const agentSessionStatus = await setRecoveredAgentSessionStatus(
+        const agentSessionStatus = (yield setRecoveredAgentSessionStatus(
           input,
           turn.slack_channel_id,
           visibleThreadTs,
           turn.id,
           "suspended",
-        );
+        ));
         if (agentSessionStatus.outcome === "stopped") {
           relinquishTurnDelivery(turn.id, input.instanceId);
           return "stopped";
@@ -344,11 +346,11 @@ export async function reconcileRecoverableTurns(input: {
               )
             : progressFailureText;
           try {
-            const noticeOutcome = await input.services.projectTurnStatus({
+            const noticeOutcome = (yield input.services.projectTurnStatus({
               client: input.client,
               turnId: turn.id,
               text: actionText,
-            });
+            }));
             if (noticeOutcome === "stopped") {
               relinquishTurnDelivery(turn.id, input.instanceId);
               return "stopped";
@@ -367,13 +369,13 @@ export async function reconcileRecoverableTurns(input: {
     }
     let responseDeliveryConfirmed = false;
     try {
-      const deliveryOutcome = await input.services.deliverOutcome({
+      const deliveryOutcome = (yield input.services.deliverOutcome({
         turnId: turn.id,
         client: input.client,
         channel: turn.slack_channel_id,
         threadTs: visibleThreadTs,
         text: outboundText,
-      });
+      }));
       if (deliveryOutcome === "stopped") {
         relinquishTurnDelivery(turn.id, input.instanceId);
         return "stopped";
@@ -393,11 +395,11 @@ export async function reconcileRecoverableTurns(input: {
         let statusOutcome: ProjectionOutcome = "delivered";
         if (turn.projection_mode === "legacy") {
           try {
-            statusOutcome = await input.services.projectTurnStatus({
+            statusOutcome = (yield input.services.projectTurnStatus({
               client: input.client,
               turnId: turn.id,
               text: parkedStatusText,
-            });
+            }));
           } catch (projectionError) {
             parkTurnStatusProjectionAfterFailure(
               turn.id,
@@ -412,13 +414,13 @@ export async function reconcileRecoverableTurns(input: {
             });
           }
         } else {
-          const agentSessionStatus = await setRecoveredAgentSessionStatus(
+          const agentSessionStatus = (yield setRecoveredAgentSessionStatus(
             input,
             turn.slack_channel_id,
             visibleThreadTs,
             turn.id,
             "suspended",
-          );
+          ));
           if (turn.requested_by_user_id) {
             const deliveryFailureText = `<@${turn.requested_by_user_id}> Action required for turn ${turn.id}: response delivery was permanently parked after restart.`;
             const actionText = agentSessionStatus.error
@@ -430,11 +432,11 @@ export async function reconcileRecoverableTurns(input: {
                 )
               : deliveryFailureText;
             try {
-              statusOutcome = await input.services.projectTurnStatus({
+              statusOutcome = (yield input.services.projectTurnStatus({
                 client: input.client,
                 turnId: turn.id,
                 text: actionText,
-              });
+              }));
               if (agentSessionStatus.outcome === "stopped" && statusOutcome === "delivered") {
                 statusOutcome = "stopped";
               }
@@ -487,18 +489,18 @@ export async function reconcileRecoverableTurns(input: {
             ? "delivered"
             : "permanent_failure";
         } else if (input.services.projectRootSummary && rootSummaryText) {
-          summaryOutcome = await input.services.projectRootSummary({
+          summaryOutcome = (yield input.services.projectRootSummary({
             client: input.client,
             channel: turn.slack_channel_id,
             threadTs: visibleThreadTs,
             turnId: turn.id,
             text: rootSummaryText,
-          });
+          }));
         } else {
           summaryOutcome = "delivered";
         }
       } else {
-        const turnStatusOutcome = await input.services.projectTurnStatus({
+        const turnStatusOutcome = (yield input.services.projectTurnStatus({
           client: input.client,
           turnId: turn.id,
           text: formatTurnStatusMessage({
@@ -506,12 +508,12 @@ export async function reconcileRecoverableTurns(input: {
             tldr: turn.response_tldr || undefined,
             detail: "Status: done - response delivery recovered after restart",
           }),
-        });
+        }));
         if (turnStatusOutcome === "stopped") {
           relinquishTurnDelivery(turn.id, input.instanceId);
           return "stopped";
         }
-        summaryOutcome = await input.services.projectThreadSummary({
+        summaryOutcome = (yield input.services.projectThreadSummary({
           client: input.client,
           channel: turn.slack_channel_id,
           threadTs: visibleThreadTs,
@@ -521,7 +523,7 @@ export async function reconcileRecoverableTurns(input: {
             tldr: completedThreadStatus?.thread_tldr || turn.response_tldr || undefined,
             detail: "Status: done - response delivery recovered after restart",
           }),
-        });
+        }));
       }
       if (summaryOutcome === "stopped") {
         relinquishTurnDelivery(turn.id, input.instanceId);
@@ -534,13 +536,13 @@ export async function reconcileRecoverableTurns(input: {
         )?.projection_error || "Root-summary projection failed permanently during recovery."
         : null;
       if (turn.projection_mode === "agent") {
-        const agentSessionStatus = await setRecoveredAgentSessionStatus(
+        const agentSessionStatus = (yield setRecoveredAgentSessionStatus(
           input,
           turn.slack_channel_id,
           visibleThreadTs,
           turn.id,
           "active",
-        );
+        ));
         if (agentSessionStatus.outcome === "stopped") {
           relinquishTurnDelivery(turn.id, input.instanceId);
           return "stopped";
@@ -553,11 +555,11 @@ export async function reconcileRecoverableTurns(input: {
           : null;
         if (failureNotice) {
           try {
-            const noticeOutcome = await input.services.projectTurnStatus({
+            const noticeOutcome = (yield input.services.projectTurnStatus({
               client: input.client,
               turnId: turn.id,
               text: failureNotice,
-            });
+            }));
             if (noticeOutcome === "stopped") {
               relinquishTurnDelivery(turn.id, input.instanceId);
               return "stopped";
@@ -592,12 +594,12 @@ export async function reconcileRecoverableTurns(input: {
     }
   }
   return "done";
-}
+}).call(this));}
 
 async function recoverTurnWithoutSlack(
   input: Parameters<typeof reconcileRecoverableTurns>[0],
   turn: RecoverableTurnRow,
-): Promise<"done" | "stopped"> {
+): Promise<"done" | "stopped"> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if (turn.status === "running") {
     const unattempted = neverAdmittedWithoutEffects(turn);
     if (unattempted === null) return "done";
@@ -640,7 +642,7 @@ async function recoverTurnWithoutSlack(
 
   let deliveryConfirmed = false;
   try {
-    const outcome = await input.services.deliverNativeResult!(result);
+    const outcome = (yield input.services.deliverNativeResult!(result));
     if (outcome === "stopped") {
       relinquishTurnDelivery(turn.id, input.instanceId);
       return "stopped";
@@ -659,7 +661,7 @@ async function recoverTurnWithoutSlack(
     throw error;
   }
   return "done";
-}
+}).call(this));}
 
 export function readRetainedNativeResult(turn: Pick<RecoverableTurnRow,"id"|"session_id"|"agent_text"|"outbound_text">): NativeTurnResult {
   const source = db.query("SELECT accepted_input_id, provider_turn_id FROM turns WHERE id=?").get(turn.id) as {
@@ -722,12 +724,12 @@ function scheduleWorkingReactionCleanup(
   input: Parameters<typeof reconcileRecoverableTurns>[0],
   turnId: number,
 ) {
-  void input.services.scheduleWorkingReactionCleanup?.(input.client, turnId).catch((error) => {
+  void input.services.scheduleWorkingReactionCleanup?.(input.client, turnId).catch(ledgerCallback((error) => {
     log("error", "recovered_turn_reaction_cleanup_worker_failed", {
       ...errorFields(error),
       turn_id: turnId,
     });
-  });
+  }));
 }
 
 async function stopRecoveredAgentProgress(
@@ -741,13 +743,13 @@ async function stopRecoveredAgentProgress(
   },
   title: string,
   status: "complete" | "error",
-) {
+) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if (turn.progress_stream_state === "stopped") return true;
   if (!input.services.stopAgentProgress
     || !turn.progress_stream_ts
     || !["streaming", "stopping", "parked"].includes(turn.progress_stream_state)) return false;
   try {
-    await input.services.stopAgentProgress({
+    (yield input.services.stopAgentProgress({
       client: input.client,
       turnId: turn.id,
       channel: turn.slack_channel_id,
@@ -758,7 +760,7 @@ async function stopRecoveredAgentProgress(
         title,
         status,
       }],
-    });
+    }));
     return true;
   } catch (error) {
     log("error", "recovered_agent_progress_stop_failed", {
@@ -769,7 +771,7 @@ async function stopRecoveredAgentProgress(
     });
     return false;
   }
-}
+}).call(this));}
 
 async function setRecoveredAgentSessionStatus(
   input: Parameters<typeof reconcileRecoverableTurns>[0],
@@ -777,15 +779,15 @@ async function setRecoveredAgentSessionStatus(
   threadTs: string,
   turnId: number,
   status: "active" | "processing" | "suspended",
-): Promise<AgentSessionStatusProjectionResult> {
+): Promise<AgentSessionStatusProjectionResult> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if (!input.services.setAgentSessionStatus) return { outcome: "delivered", error: null };
   try {
-    const outcome = await input.services.setAgentSessionStatus({
+    const outcome = (yield input.services.setAgentSessionStatus({
       client: input.client,
       channel,
       threadTs,
       status,
-    });
+    }));
     const normalizedOutcome = outcome || "delivered";
     const projectionError = normalizedOutcome === "permanent_failure"
       ? getSlackAgentSessionStatusProjection(channel, threadTs)?.projection_error
@@ -805,4 +807,4 @@ async function setRecoveredAgentSessionStatus(
       error: error instanceof Error ? error.message : String(error),
     };
   }
-}
+}).call(this));}

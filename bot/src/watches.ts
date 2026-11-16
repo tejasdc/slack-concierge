@@ -12,6 +12,8 @@
  * that settles it and before anything is delivered; the event reaches the registering session as
  * one service input with the stable id `watch:<watch-id>:<event>`.
  */
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import { createHash, randomBytes } from "node:crypto";
 import { db,globalPauseState,getSessionById } from "./state";
 import { MAX_DIRECTORY_ENTRIES, versionChange, type PathVersion } from "./path-version";
@@ -148,19 +150,19 @@ const RELEASE_REPO = "/var/lib/slack-concierge-deployment/source";
 type FileCondition = { path: string; requiredCommit?: string };
 
 /** A scoped release is ready only after its installed commit has a successful deployment receipt. */
-async function installedReleaseIncludes(commit: string): Promise<"included" | "excluded" | "unconfirmed"> {
+async function installedReleaseIncludes(commit: string): Promise<"included" | "excluded" | "unconfirmed"> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   try {
-    return await releaseIncludesCommit({ requiredCommit: commit, manifestPath: `${RELEASE_LINK}/manifest.json`,
+    return (yield releaseIncludesCommit({ requiredCommit: commit, manifestPath: `${RELEASE_LINK}/manifest.json`,
       repositoryRoot: process.env.CONCIERGE_REPO || RELEASE_REPO,
       succeeded: (installed, artifact) => !!db.query(`SELECT 1 FROM deployment_releases release
         JOIN deployment_runs run ON run.id=release.run_id
         WHERE release.artifact_digest=? AND release.git_commit=? AND release.state='lkg'
-          AND run.status='succeeded' AND run.deployed_commit=? LIMIT 1`).get(artifact, installed, installed) });
+          AND run.status='succeeded' AND run.deployed_commit=? LIMIT 1`).get(artifact, installed, installed) }));
   } catch (error) {
     log("warn", "scoped_release_unconfirmed", errorFields(error));
     return "unconfirmed";
   }
-}
+}).call(this));}
 
 export function watchView(row: WatchRow) {
   const condition = JSON.parse(row.condition_json);
@@ -191,7 +193,7 @@ function recoveryLineage(sessionId: number): number[] {
 }
 
 /** Idempotent by (origin input, action id): a retry returns the first registration and never makes a second. */
-export async function registerWatch(input: WatchRegistration, now = Date.now()): Promise<{ watch: ReturnType<typeof watchView>; duplicate: boolean; takenOverFrom?: string }> {
+export async function registerWatch(input: WatchRegistration, now = Date.now()): Promise<{ watch: ReturnType<typeof watchView>; duplicate: boolean; takenOverFrom?: string }> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if (!input.actionId || input.actionId.length > 200) throw new Error("A stable action id is required.");
   if (input.kind === "file" && input.requiredCommit !== undefined) {
     if (input.path !== RELEASE_LINK || !input.renew || process.env.CONCIERGE_PEER_NAME === "mac")
@@ -236,7 +238,7 @@ export async function registerWatch(input: WatchRegistration, now = Date.now()):
   let baseline: unknown, mode: string;
   if (input.kind === "file") {
     if (!input.path.startsWith("/")) throw new Error("A watched path must be absolute.");
-    const version = await machine.observe(input.path);
+    const version = (yield machine.observe(input.path));
     if (version.type === "directory" && version.digest?.startsWith("too-many:"))
       throw new Error(`That directory has more than ${MAX_DIRECTORY_ENTRIES} entries; watch a narrower one.`);
     baseline = version; mode = version.mode;
@@ -244,7 +246,7 @@ export async function registerWatch(input: WatchRegistration, now = Date.now()):
     if (!input.argv.length || input.argv.length > 256 || input.argv.some(item => typeof item !== "string") || input.argv.join("").length > 65_536)
       throw new Error("A command watch needs an explicit argument list (at most 256 arguments).");
     if (!input.argv[0]!.includes("/")) throw new Error("The command must be a path; the helper resolves a bare name before sending it.");
-    if (!input.cwd.startsWith("/") || !await machine.isDirectory(input.cwd)) throw new Error("--cwd must be an existing absolute directory.");
+    if (!input.cwd.startsWith("/") || !(yield machine.isDirectory(input.cwd))) throw new Error("--cwd must be an existing absolute directory.");
     if (!runner && !executionHostsEnabled()) throw new Error("This machine cannot run a command apart from Concierge, so it cannot watch one.");
     baseline = { notStarted: true }; mode = "launch-record";
   }
@@ -271,7 +273,7 @@ export async function registerWatch(input: WatchRegistration, now = Date.now()):
   }
   wakeWatchWorker();
   return { watch: watchView(db.query("SELECT * FROM watches WHERE watch_id=?").get(watchId) as WatchRow), duplicate: false };
-}
+}).call(this));}
 
 /** A session's own watches, newest first. */
 export function listWatches(sessionId: number) {
@@ -421,7 +423,7 @@ export type WatchWorkerDeps = {
 
 let wakeRequested: (() => void) | null = null;
 /** A registration or cancel asks the worker to look now instead of at the next poll. */
-export function wakeWatchWorker() { queueMicrotask(() => wakeRequested?.()); }
+export function wakeWatchWorker() { queueMicrotask(ledgerCallback(() => wakeRequested?.())); }
 
 /** The machine a watch's path or command is on: this owner's, or its runner's through the call channel. */
 let localMachine: WatchMachine | null = null;
@@ -441,11 +443,11 @@ function describeExit(exit: { code: number | null; signal: string | null }) {
   return exit.signal ? `the command ended on signal ${exit.signal}` : `the command exited with code ${exit.code}`;
 }
 
-async function observeFile(row: WatchRow, now: number) {
+async function observeFile(row: WatchRow, now: number) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const condition = JSON.parse(row.condition_json) as FileCondition;
   const baseline = JSON.parse(row.baseline_json) as PathVersion;
   let current: PathVersion;
-  try { current = await machineFor(row).observe(condition.path); }
+  try { current = (yield machineFor(row).observe(condition.path)); }
   catch (error) {
     // Unreadable now: nothing was observed, so the silence is recorded as a gap when observation resumes.
     log("warn", "watch_unreadable", { watch_id: row.watch_id, ...errorFields(error) });
@@ -466,7 +468,7 @@ async function observeFile(row: WatchRow, now: number) {
     // Also check the registration baseline once: the repair may already be installed before
     // the caller binds this watch to its request. Later polls read Git only after a link swap.
     if (change || row.state === "accepted") {
-      const match = await installedReleaseIncludes(condition.requiredCommit);
+      const match = (yield installedReleaseIncludes(condition.requiredCommit));
       if (match === "included") {
         settle(row.watch_id, "fired", { observedAt: now, now,
           detail: `installed release includes commit ${condition.requiredCommit}`, observed: { version: current } });
@@ -477,37 +479,37 @@ async function observeFile(row: WatchRow, now: number) {
       if (match === "excluded" && change) update(row.watch_id, "baseline_json=?, baseline_mode=?", JSON.stringify(current), current.mode);
       if (match === "unconfirmed") {
         if (now >= row.deadline_ms) update(row.watch_id, "deadline_ms=?", now + row.renew_ms!);
-        await markObserved(row, now);
+        (yield markObserved(row, now));
         return;
       }
     }
     // A scoped dependency's duration is a storage lease, not a reason to spend an agent turn.
     if (now >= row.deadline_ms) update(row.watch_id, "deadline_ms=?", now + row.renew_ms!);
     if (row.state === "accepted") update(row.watch_id, "state='observing'");
-    await markObserved(row, now);
+    (yield markObserved(row, now));
     return;
   }
   if (change) { settle(row.watch_id, "fired", { observedAt: now, now, detail: `${condition.path}: ${change}`, observed: { version: current } }); return; }
   if (now >= row.deadline_ms) { settle(row.watch_id, "expired", { observedAt: now, now, detail: `no change to ${condition.path} was observed (still ${describeBaseline(baseline)})` }); return; }
-  await markObserved(row, now);
-}
+  (yield markObserved(row, now));
+}).call(this));}
 
 function markObserved(row: WatchRow, now: number) {
   return recordWatchObservation(row, now, WATCH_GAP_MS);
 }
 
-async function launchCommand(row: WatchRow, deps: WatchWorkerDeps, now: number) {
+async function launchCommand(row: WatchRow, deps: WatchWorkerDeps, now: number) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const condition = JSON.parse(row.condition_json) as { argv: string[]; cwd: string };
   const machine = machineFor(row);
   if (now >= row.deadline_ms) { settle(row.watch_id, "expired", { observedAt: null, now, detail: "its deadline passed before the command could be started, so it was never started" }); return; }
-  if (!await machine.isDirectory(condition.cwd)) { settle(row.watch_id, "failed", { observedAt: now, now, detail: `the working directory ${condition.cwd} no longer exists, so the command was not started` }); return; }
+  if (!(yield machine.isDirectory(condition.cwd))) { settle(row.watch_id, "failed", { observedAt: now, now, detail: `the working directory ${condition.cwd} no longer exists, so the command was not started` }); return; }
   const executionId = newExecutionId();
-  const record = await machine.hostRecord(executionId);
+  const record = (yield machine.hostRecord(executionId));
   // The intent is recorded before the supervisor is asked, so a crash in between leaves evidence.
   update(row.watch_id, "host_execution_id=?, host_directory=?, host_unit=?, host_protocol=?, host_state='intended'",
     executionId, record.directory, record.unit, record.protocol);
   let launch: Awaited<ReturnType<WatchMachine["launch"]>>;
-  try { launch = await machine.launch({ executionId, argv: condition.argv, cwd: condition.cwd, environment: ordinaryCommandEnvironment() }); }
+  try { launch = (yield machine.launch({ executionId, argv: condition.argv, cwd: condition.cwd, environment: ordinaryCommandEnvironment() })); }
   catch (error) { log("warn", "watch_command_start_unconfirmed", { watch_id: row.watch_id, runner: row.runner ?? null, ...errorFields(error) }); return; }
   if ("notStarted" in launch) {
     update(row.watch_id, "host_state='gone'");
@@ -516,20 +518,20 @@ async function launchCommand(row: WatchRow, deps: WatchWorkerDeps, now: number) 
   }
   update(row.watch_id, "host_script=?, host_state='live'", launch.hostScript);
   log("info", "watch_command_started", { watch_id: row.watch_id, execution_id: executionId, runner: row.runner ?? null });
-  await markObserved(row, now);
-}
+  (yield markObserved(row, now));
+}).call(this));}
 
 /** What the host says about the command; a machine that cannot be reached is not knowing, this poll. */
-async function commandState(row: WatchRow): ReturnType<WatchMachine["commandState"]> {
-  try { return await machineFor(row).commandState(row.host_execution_id!, row.host_directory!); }
+async function commandState(row: WatchRow): ReturnType<WatchMachine["commandState"]> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  try { return (yield machineFor(row).commandState(row.host_execution_id!, row.host_directory!)); }
   catch (error) { log("warn", "watch_command_state_unread", { watch_id: row.watch_id, runner: row.runner ?? null, ...errorFields(error) }); return { state: "unknown" }; }
-}
+}).call(this));}
 
-async function observeCommand(row: WatchRow, deps: WatchWorkerDeps, now: number) {
-  if (!row.host_execution_id) { await launchCommand(row, deps, now); return; }
+async function observeCommand(row: WatchRow, deps: WatchWorkerDeps, now: number) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  if (!row.host_execution_id) { (yield launchCommand(row, deps, now)); return; }
   if (row.host_state === "intended") {
     // A coordinator died between recording the intent and learning the result.
-    const outcome = await machineFor(row).startOutcome(row.host_execution_id, row.host_directory!).catch(() => "unknown" as const);
+    const outcome = (yield machineFor(row).startOutcome(row.host_execution_id, row.host_directory!).catch(ledgerCallback(() => "unknown" as const)));
     if (outcome === "never-ran" && row.runner && now < row.deadline_ms) {
       // The call that started it went unanswered (a slow runner or a dropped channel), and the runner,
       // which knows its own starts in flight, says it never started: start it afresh.
@@ -544,10 +546,10 @@ async function observeCommand(row: WatchRow, deps: WatchWorkerDeps, now: number)
     } else if (outcome === "unknown") return;
     else update(row.watch_id, "host_state='live'");
   }
-  const state = await commandState(row);
+  const state = (yield commandState(row));
   if (state.state === "exited") {
     let tail: string;
-    try { tail = await machineFor(row).outputTail(row.host_directory!); }
+    try { tail = (yield machineFor(row).outputTail(row.host_directory!)); }
     catch (error) { log("warn", "watch_output_unread", { watch_id: row.watch_id, runner: row.runner ?? null, ...errorFields(error) }); return; }
     settle(row.watch_id, "fired", { observedAt: now, now, detail: `${describeExit(state)}`, observed: { exit: { code: state.code, signal: state.signal }, outputTail: tail } });
     return;
@@ -562,37 +564,37 @@ async function observeCommand(row: WatchRow, deps: WatchWorkerDeps, now: number)
     return;
   }
   if (now >= row.deadline_ms) { settle(row.watch_id, "expired", { observedAt: now, now, detail: "the command had not finished by the deadline, so it was stopped" }); return; }
-  await markObserved(row, now);
-}
+  (yield markObserved(row, now));
+}).call(this));}
 
 /** After a watch ends: stop a command that is still running, then let its host go. */
-async function cleanUpHost(row: WatchRow, now: number) {
+async function cleanUpHost(row: WatchRow, now: number) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if (!row.host_execution_id || !["live", "stopping", "intended"].includes(row.host_state ?? "")) return;
-  const state = await commandState(row);
+  const state = (yield commandState(row));
   if (state.state === "running") {
     if (!row.host_stop_at_ms) {
-      await signalHost(row, "SIGTERM");
+      (yield signalHost(row, "SIGTERM"));
       update(row.watch_id, "host_state='stopping', host_stop_at_ms=?", now);
     } else if (!row.host_killed && now - row.host_stop_at_ms > STOP_GRACE_MS) {
-      await signalHost(row, "SIGKILL");
+      (yield signalHost(row, "SIGKILL"));
       update(row.watch_id, "host_killed=1");
     }
     return;
   }
   if (state.state === "exited") {
-    if (await machineFor(row).release(row.host_execution_id, row.host_directory!)) {
+    if ((yield machineFor(row).release(row.host_execution_id, row.host_directory!))) {
       update(row.watch_id, "host_state='released'");
       // launchd keeps a finished job loaded; it is removed once it reports stopped.
-      setTimeout(() => { void machineFor(row).retire(row.host_execution_id!).catch(error =>
-        log("warn", "watch_host_retire_failed", { watch_id: row.watch_id, error: String(error) })); }, 10_000).unref?.();
+      setTimeout(ledgerCallback(() => { void machineFor(row).retire(row.host_execution_id!).catch(error =>
+        log("warn", "watch_host_retire_failed", { watch_id: row.watch_id, error: String(error) })); }), 10_000).unref?.();
     }
   } else if (state.state === "lost") update(row.watch_id, "host_state='gone'");
-}
+}).call(this));}
 
-async function signalHost(row: WatchRow, signal: "SIGTERM" | "SIGKILL") {
-  try { await machineFor(row).signal(row.host_execution_id!, row.host_directory!, signal, `watch-${signal}-${row.watch_id}`); }
+async function signalHost(row: WatchRow, signal: "SIGTERM" | "SIGKILL") {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  try { (yield machineFor(row).signal(row.host_execution_id!, row.host_directory!, signal, `watch-${signal}-${row.watch_id}`)); }
   catch (error) { log("warn", "watch_command_signal_failed", { watch_id: row.watch_id, signal, runner: row.runner ?? null, ...errorFields(error) }); }
-}
+}).call(this));}
 
 function deliverPending(deps: WatchWorkerDeps, now: number) {
   const due = db.query("SELECT * FROM watches WHERE delivery_state='pending' AND (delivery_next_ms IS NULL OR delivery_next_ms<=?) ORDER BY terminal_at_ms LIMIT 20").all(now) as WatchRow[];
@@ -629,27 +631,27 @@ function deliverPending(deps: WatchWorkerDeps, now: number) {
   }
 }
 
-async function pruneRecords(now: number) {
+async function pruneRecords(now: number) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const old = db.query(`SELECT * FROM watches WHERE host_directory IS NOT NULL AND host_pruned=0 AND host_state IN ('released','gone')
     AND terminal_at_ms<?`).all(now - RECORD_RETENTION_MS) as WatchRow[];
   for (const row of old) {
-    try { await machineFor(row).prune(row.host_directory!); update(row.watch_id, "host_pruned=1"); }
+    try { (yield machineFor(row).prune(row.host_directory!)); update(row.watch_id, "host_pruned=1"); }
     catch (error) { log("warn", "watch_record_prune_failed", { watch_id: row.watch_id, ...errorFields(error) }); }
   }
-}
+}).call(this));}
 
 const endedCommands = () => db.query("SELECT * FROM watches WHERE kind='command' AND state NOT IN ('accepted','observing') AND host_state IN ('intended','live','stopping')").all() as WatchRow[];
 
 /** The runners among these that answer a short check now, each asked once per poll, together. */
-async function reachableRunners(names: (string | null | undefined)[]): Promise<Set<string>> {
+async function reachableRunners(names: (string | null | undefined)[]): Promise<Set<string>> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const runners = [...new Set(names.filter((name): name is string => !!name))];
-  const answers = await Promise.all(runners.map(runner => runnerMachineCall(runner, "ping", {}, 3_000).then(() => runner, () => null)));
+  const answers = (yield Promise.all(runners.map(runner => runnerMachineCall(runner, "ping", {}, 3_000).then(ledgerCallback(() => runner), ledgerCallback(() => null)))));
   for (const runner of runners) if (!answers.includes(runner)) log("warn", "watch_runner_unreachable", { runner });
   return new Set(answers.filter((name): name is string => !!name));
-}
+}).call(this));}
 
 /** One poll. `now` is a parameter so a pause can be simulated exactly. */
-export async function runWatchTick(deps: WatchWorkerDeps, now = Date.now()) {
+export async function runWatchTick(deps: WatchWorkerDeps, now = Date.now()) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const pause=globalPauseState();
   const open = db.query(`SELECT * FROM watches WHERE state IN ('accepted','observing')
     AND (?=0 OR EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=?
@@ -657,7 +659,7 @@ export async function runWatchTick(deps: WatchWorkerDeps, now = Date.now()) {
     .all(pause.paused?1:0,pause.generation,process.env.CONCIERGE_PEER_NAME==='mac'?'mac':'cloud') as WatchRow[];
   const started = performance.now();
   deliverPending(deps, now);
-  const reachable = pollReachable = await reachableRunners([...open.map(row => row.runner), ...endedCommands().map(row => row.runner)]);
+  const reachable = pollReachable = (yield reachableRunners([...open.map(row => row.runner), ...endedCommands().map(row => row.runner)]));
   const pingMs = performance.now() - started;
   let slowest: { row: WatchRow; ms: number } | null = null;
   for (const row of open) {
@@ -671,15 +673,15 @@ export async function runWatchTick(deps: WatchWorkerDeps, now = Date.now()) {
       continue;
     }
     try {
-      if (row.kind === "file") await observeFile(row, now);
-      else await observeCommand(row, deps, now);
+      if (row.kind === "file") (yield observeFile(row, now));
+      else (yield observeCommand(row, deps, now));
     } catch (error) { log("error", "watch_poll_failed", { watch_id: row.watch_id, ...errorFields(error) }); }
     const ms = performance.now() - watchStarted;
     if (!slowest || ms > slowest.ms) slowest = { row, ms };
   }
   for (const row of endedCommands()) {
     if (row.runner && !reachable.has(row.runner)) continue;
-    try { await cleanUpHost(row, now); } catch (error) { log("warn", "watch_host_cleanup_failed", { watch_id: row.watch_id, ...errorFields(error) }); }
+    try { (yield cleanUpHost(row, now)); } catch (error) { log("warn", "watch_host_cleanup_failed", { watch_id: row.watch_id, ...errorFields(error) }); }
   }
   deliverPending(deps, now);
   // A poll longer than the gap threshold is itself a recorded gap; this names what it waited on.
@@ -687,7 +689,7 @@ export async function runWatchTick(deps: WatchWorkerDeps, now = Date.now()) {
   if (durationMs > WATCH_GAP_MS) log("warn", "watch_poll_slow", { duration_ms: Math.round(durationMs), open_watches: open.length,
     ping_ms: Math.round(pingMs), slowest_watch_id: slowest?.row.watch_id ?? null, slowest_kind: slowest?.row.kind ?? null,
     slowest_runner: slowest?.row.runner ?? null, slowest_ms: slowest ? Math.round(slowest.ms) : null });
-}
+}).call(this));}
 
 /** Starts this machine's one watch worker; returns its stop function. */
 export function startWatchWorker(deps: WatchWorkerDeps): () => void {
@@ -700,18 +702,18 @@ export function startWatchWorker(deps: WatchWorkerDeps): () => void {
   db.query("UPDATE watches SET delivery_attempts=0, delivery_next_ms=NULL WHERE delivery_state='pending'").run();
   void pruneRecords(Date.now());
   let running = false, again = false, timer: ReturnType<typeof setTimeout> | null = null, stopped = false;
-  const poll = async () => {
+  const poll = async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if (stopped || deps.stopped?.()) return;
     if (running) { again = true; return; }
     running = true;
-    try { await runWatchTick(deps); }
+    try { (yield runWatchTick(deps)); }
     catch (error) { log("error", "watch_worker_failed", errorFields(error)); }
     finally { running = false; }
     if (again) { again = false; void poll(); }
-  };
-  const arm = () => { timer = setTimeout(() => { void poll().finally(() => { if (!stopped) arm(); }); }, WATCH_POLL_MS); };
+  }).call(this));};
+  const arm = () => { timer = setTimeout(ledgerCallback(() => { void poll().finally(ledgerCallback(() => { if (!stopped) arm(); })); }), WATCH_POLL_MS); };
   wakeRequested = () => { void poll(); };
-  void waitForWatchObservationWorker().then(() => poll()).catch(error =>
+  void waitForWatchObservationWorker().then(ledgerCallback(() => poll())).catch(error =>
     log('warn', 'watch_observation_worker_unavailable', errorFields(error)));
   arm();
   return () => { stopped = true; if (timer) clearTimeout(timer); wakeRequested = null; stopWatchObservationWorker(); };

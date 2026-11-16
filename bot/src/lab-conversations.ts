@@ -1,3 +1,4 @@
+import {runLedgerSteps} from './ledger-admission';
 import {createHash} from 'node:crypto';
 import {db,getSessionById,executionChanged,type ProviderId} from './state';
 import {createNativeSession,getAcceptedSessionInput,retainSessionInput,recordSessionEvent,sessionMetadata,stablePayload,withdrawUnstartedServiceInput,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
@@ -121,21 +122,21 @@ export class LabConversations {
   private saveReceipt(input:AcceptedSessionInput,value:ActionReceipt){
     db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(value),input.id);
   }
-  async create(body:unknown,actor?:LabActor){
+  async create(body:unknown,actor?:LabActor){return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const input=object(body);only(input,['clientActionId','thread','coordinatorSessionId','questionEntryId','participants','agentSource']);
     const action=identifier(input.clientActionId,'Stable action identity'),thread=identifier(input.thread,'Lab thread'),entryId=identifier(input.questionEntryId,'Opening question entry');
     const prior=readAction('lab:conversation',thread);
     if(prior){this.checkRetry(prior,input,actor);return this.view(thread);}
     const choices=participantChoices(input.participants);
-    const bootstrap=await this.ports.bootstrap(thread),opening=bootstrap.entries.find(entry=>entry.id===entryId);
+    const bootstrap=(yield this.ports.bootstrap(thread)),opening=bootstrap.entries.find(entry=>entry.id===entryId);
     if(bootstrap.version!==1||bootstrap.entries.length!==1||!opening)throw new LabConversationError('Choose the exact opening question of this Lab thread.',409,'LAB_QUESTION_MISMATCH');
     const author=bootstrap.state.owner;
     const authorSession=/^concierge:[1-9][0-9]*$/.test(author)?author:null;
     if(authorSession&&input.coordinatorSessionId&&input.coordinatorSessionId!==authorSession)throw new LabConversationError('The existing Lab thread author coordinates this conversation.',409,'LAB_COORDINATOR_MISMATCH');
     if(author!=='tejas'&&!authorSession)throw new LabConversationError('This Lab thread belongs to another Concierge instance; start the comparison through that instance.',409,'LAB_COORDINATOR_MACHINE_MISMATCH');
-    const prepared=await Promise.all(choices.map((choice:LabParticipantChoice)=>this.ports.prepare(choice,actor)));
+    const prepared=(yield Promise.all(choices.map((choice:LabParticipantChoice)=>this.ports.prepare(choice,actor))));
     const selectedCoordinator=authorSession??input.coordinatorSessionId;
-    const coordinator=await this.ports.prepare({key:'coordinator',label:'Thread coordinator',...(selectedCoordinator?{sessionId:selectedCoordinator}:{provider:'auto',project:'agent-ecology'})},actor);
+    const coordinator=(yield this.ports.prepare({key:'coordinator',label:'Thread coordinator',...(selectedCoordinator?{sessionId:selectedCoordinator}:{provider:'auto',project:'agent-ecology'})},actor));
     // Resolve projects before the transaction; no HTTP or provider work belongs inside it.
     db.transaction(()=>{
       const raced=readAction('lab:conversation',thread);if(raced){this.checkRetry(raced,input,actor);return;}
@@ -150,7 +151,7 @@ export class LabConversations {
       this.recordChoices(saved,binding.participants,choices,actor);
     })();
     this.ports.wake();return this.view(thread);
-  }
+  }).call(this));}
   private checkRetry(saved:AcceptedSessionInput,input:unknown,actor?:LabActor){
     const payload=JSON.parse(saved.payload_json);
     if(stablePayload(payload.request)!==stablePayload(input)||stablePayload(payload.actor??null)!==stablePayload(actor??null))throw new LabConversationError('Idempotency conflict.',409,'IDEMPOTENCY_CONFLICT');
@@ -166,7 +167,7 @@ export class LabConversations {
     const payload=JSON.parse(saved.payload_json);
     return {version:1,thread,clientActionId:actionId,inputId:saved.id,membershipRevision:payload.binding.membershipRevision,add:payload.added,remove:payload.request.remove};
   }
-  async participants(thread:string,body:unknown,actor?:LabActor){
+  async participants(thread:string,body:unknown,actor?:LabActor){return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const input=object(body);only(input,['clientActionId','expectedRevision','add','remove','agentSource']);
     const action=identifier(input.clientActionId,'Stable action identity'),scope=`lab:roster:${thread}`;
     const prior=readAction(scope,action);
@@ -178,7 +179,7 @@ export class LabConversations {
     if(!choices.length&&!input.remove.length)throw new LabConversationError('Add or remove at least one participant.');
     const before=this.conversation(thread);
     if(before.binding.membershipRevision!==input.expectedRevision)throw new LabConversationError('The group membership changed. Read the current roster before applying this change.',409,'LAB_MEMBERSHIP_REVISION_CONFLICT');
-    const prepared=await Promise.all(choices.map(choice=>this.ports.prepare(choice,actor)));
+    const prepared=(yield Promise.all(choices.map(choice=>this.ports.prepare(choice,actor))));
     const saved=db.transaction(()=>{
       const raced=readAction(scope,action);if(raced){this.checkRetry(raced,input,actor);return {record:raced,duplicate:true};}
       const current=this.conversation(thread);
@@ -200,7 +201,7 @@ export class LabConversations {
       executionChanged();return {record,duplicate:false};
     })();
     this.ports.wake();return this.rosterResult(saved.record,saved.duplicate);
-  }
+  }).call(this));}
   respond(thread:string,body:unknown,actor?:LabActor){
     const input=object(body);only(input,['clientActionId','entryId','targets','agentSource']);
     const action=identifier(input.clientActionId,'Stable action identity'),entryId=identifier(input.entryId,'Triggering entry');
@@ -289,9 +290,9 @@ export class LabConversations {
     if(kept.state==='completed')return Promise.resolve();
     if(kept.state==='refused')return Promise.reject(new LabConversationError(kept.error??'The Lab refused this membership revision.',409,'LAB_MEMBERSHIP_REFUSED'));
     const inFlight=this.bindingPasses.get(record.id);if(inFlight)return inFlight;
-    const work=(async()=>{
+    const work=runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
       try{
-        const bound=await this.ports.bind(binding.thread,binding.membershipRevision,this.abort.signal);
+        const bound=(yield this.ports.bind(binding.thread,binding.membershipRevision,this.abort.signal));
         if(this.abort.signal.aborted)throw new LabConversationError('Lab membership observation stopped.',503,'LAB_OBSERVATION_STOPPED');
         if(!bound||typeof bound!=='object'||(bound as any).version!==1||(bound as any).thread!==binding.thread||(bound as any).membershipRevision!==binding.membershipRevision||(bound as any).bound!==true)throw new LabConversationError('The Lab did not confirm this exact participant membership revision.',502,'LAB_BINDING_UNCONFIRMED');
         const fresh=JSON.parse(getAcceptedSessionInput(record.id)!.receipt_json??'{}');
@@ -303,7 +304,7 @@ export class LabConversations {
         db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({...fresh,state:permanent?'refused':'pending',error:reason}),record.id);
         throw error;
       }
-    })().finally(()=>{this.bindingPasses.delete(record.id);});
+    }).call(this)).finally(()=>{this.bindingPasses.delete(record.id);});
     this.bindingPasses.set(record.id,work);return work;
   }
   private pendingPage(kind:'lab-activation'|'lab-roster',index:string,after:string):AcceptedSessionInput[]{
@@ -311,24 +312,24 @@ export class LabConversations {
     if(after&&page.length<64)page.push(...db.query(`SELECT * FROM session_inputs INDEXED BY ${index} WHERE kind='${kind}' AND json_extract(receipt_json,'$.state')='pending' AND id<=? ORDER BY id LIMIT ?`).all(after,64-page.length) as AcceptedSessionInput[]);
     return page;
   }
-  private async advance(){
+  private async advance(){return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const rosters=this.pendingPage('lab-roster','session_inputs_lab_roster_pending',this.rosterAfter);
-    const membershipWork=Promise.all(rosters.map(async record=>{if(!this.abort.signal.aborted)await this.ensureBound(record,JSON.parse(record.payload_json).binding).catch(()=>{});}));
+    const membershipWork=Promise.all(rosters.map(record=>runLedgerSteps((function* (this: any): Generator<unknown, any, any> {if(!this.abort.signal.aborted)(yield this.ensureBound(record,JSON.parse(record.payload_json).binding).catch(()=>{}));}).call(this))));
     const actions=this.pendingPage('lab-activation','session_inputs_lab_pending',this.after);
-    await Promise.all(actions.map(async action=>{
+    (yield Promise.all(actions.map(action=>runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
       if(this.abort.signal.aborted)return;
       const payload=JSON.parse(action.payload_json),binding=activationBinding(action),state=receipt(action);
-      try{await this.ensureBound(this.membershipRecord(binding.thread,binding.membershipRevision).record,binding);}
+      try{(yield this.ensureBound(this.membershipRecord(binding.thread,binding.membershipRevision).record,binding));}
       catch(error){
         if(error instanceof LabConversationError&&error.status>=400&&error.status<500){for(const invocation of state.invocations){invocation.state='refused';invocation.error=`${error.code}: ${error.message}`;}state.state='completed';this.saveReceipt(action,state);}
         return;
       }
-      await Promise.all(state.invocations.map(async invocation=>{
+      (yield Promise.all(state.invocations.map(invocation=>runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if(this.abort.signal.aborted||['published','failed','refused'].includes(invocation.state))return;
         const member=binding.participants.find(participant=>participant.key===invocation.key)!;
         try{
           if(invocation.state==='context_pending'){
-            const context=await this.ports.context({thread:binding.thread,entryId:payload.entryId,sessionId:member.sessionId,requestId:invocation.requestId,independent:payload.independent,signal:this.abort.signal});
+            const context=(yield this.ports.context({thread:binding.thread,entryId:payload.entryId,sessionId:member.sessionId,requestId:invocation.requestId,independent:payload.independent,signal:this.abort.signal}));
             if(this.abort.signal.aborted)return;
             if(context.version!==1||context.thread!==binding.thread||context.entryId!==payload.entryId||context.sessionId!==member.sessionId||context.membershipRevision!==binding.membershipRevision||!Array.isArray(context.entries)||!context.entries.length||context.entries.at(-1)?.id!==payload.entryId)
               throw new LabConversationError('The Lab context did not prove the exact triggering entry.',409,'LAB_CONTEXT_MISMATCH');
@@ -336,7 +337,7 @@ export class LabConversations {
             if(!payload.independent&&(!Array.isArray(context.responseTargets)||stablePayload([...context.responseTargets].sort())!==stablePayload(selectedSessions.sort())))throw new LabConversationError('The selected participants differ from the triggering Lab entry.',409,'LAB_TARGETS_MISMATCH');
             if(payload.independent&&context.entries.length!==1)throw new LabConversationError('Independent first answers may see only the common opening entry.',409,'LAB_INDEPENDENCE_REFUSED');
             if(payload.independent&&stablePayload(context.entries[0])!==stablePayload(binding.opening))throw new LabConversationError('The common opening changed from its retained comparison snapshot.',409,'LAB_QUESTION_CHANGED');
-            const loaded=await this.observe(this.ports.sources(member.sources));
+            const loaded=(yield this.observe(this.ports.sources(member.sources)));
             if(this.abort.signal.aborted)return;
             if(loaded.length!==member.sources.length||loaded.some((source,index)=>stablePayload(source.reference)!==stablePayload(member.sources[index])||typeof source.text!=='string'||!source.text.trim()||createHash('sha256').update(source.text).digest('hex')!==source.sha256))throw new LabConversationError('The exact selected source material could not be verified.',409,'LAB_SOURCES_UNAVAILABLE');
             context.sources=loaded;
@@ -381,7 +382,7 @@ export class LabConversations {
             try{facts=this.outputFacts(binding.thread,invocation.requestId,eventId,false);}
             catch{invocation.state='failed';invocation.error='LAB_OUTPUT_UNCONFIRMED: the terminal turn did not prove an acknowledged original provider answer.';this.saveReceipt(action,state);return;}
             recordSessionEvent({eventId,sessionId:accepted.session_id,inputId:accepted.id,turnId:accepted.turn_id,kind:'lab_original_output',payload:{requestId:invocation.requestId,sha256:createHash('sha256').update(facts.text).digest('hex')}});
-            const publication=await this.ports.publish({thread:binding.thread,requestId:invocation.requestId,eventId,signal:this.abort.signal});
+            const publication=(yield this.ports.publish({thread:binding.thread,requestId:invocation.requestId,eventId,signal:this.abort.signal}));
             if(!publication||typeof publication!=='object'||typeof (publication as any).id!=='string'||typeof (publication as any).address!=='string'||typeof (publication as any).duplicate!=='boolean')throw new LabConversationError('The Lab did not confirm the exact original-answer publication.',502,'LAB_PUBLICATION_UNCONFIRMED');
             invocation.state='published';invocation.eventId=eventId;invocation.publication=publication;delete invocation.error;
           } else if(turn&&['error','cancelled'].includes(turn.status)){
@@ -395,13 +396,13 @@ export class LabConversations {
           if(error instanceof LabConversationError&&error.code==='LAB_BINDING_CHANGED')invocation.state='refused';
         }
         this.saveReceipt(action,state);
-      }));
+      }).call(this)))));
       if(state.invocations.every(invocation=>['published','failed','refused'].includes(invocation.state))){state.state='completed';this.saveReceipt(action,state);}
-    }));
-    await membershipWork;
+    }).call(this)))));
+    (yield membershipWork);
     this.after=actions.at(-1)?.id??'';
     this.rosterAfter=rosters.at(-1)?.id??'';
     return !!db.query("SELECT 1 FROM session_inputs INDEXED BY session_inputs_lab_pending WHERE kind='lab-activation' AND json_extract(receipt_json,'$.state')='pending' LIMIT 1").get()
       ||!!db.query("SELECT 1 FROM session_inputs INDEXED BY session_inputs_lab_roster_pending WHERE kind='lab-roster' AND json_extract(receipt_json,'$.state')='pending' LIMIT 1").get();
-  }
+  }).call(this));}
 }

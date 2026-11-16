@@ -1,3 +1,5 @@
+import { runLedgerSegment, runLedgerSteps } from "./ledger-admission";
+import { withProviderCallbackCustody, transportObservationCallbacks, ProviderCallbackCustody } from "./provider-callback-custody";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
@@ -91,16 +93,16 @@ export interface ClaudeCodeTransport {
     inheritEnvironment?: boolean;
     stdin: string;
     /** `at` is set only for a frame replayed from a host's record: the time the host received it. */
-    onStdout: (chunk: string, at?: number) => void;
-    onStderr: (chunk: string) => void;
-    onStdinReady?: (write: (input: string, meta?: TransportFrameMeta) => Promise<void>, close: () => void) => void;
+    onStdout: (chunk: string, at?: number) => void | Promise<void>;
+    onStderr: (chunk: string) => void | Promise<void>;
+    onStdinReady?: (write: (input: string, meta?: TransportFrameMeta) => Promise<void>, close: () => void) => void | Promise<void>;
     /** Interrupt the provider process itself; closing a streaming input only ends future turns. */
-    onInterruptReady?: (interrupt: () => Promise<void>) => void;
-    onProtocolActivityReady?: (record: () => void) => void;
+    onInterruptReady?: (interrupt: () => Promise<void>) => void | Promise<void>;
+    onProtocolActivityReady?: (record: () => void) => void | Promise<void>;
     /** A write an earlier coordinator made to this same process, replayed from the host's record. */
-    onReplayedInput?: (line: string, meta: TransportFrameMeta | null, at: number, outcome: "written" | "unknown") => void;
+    onReplayedInput?: (line: string, meta: TransportFrameMeta | null, at: number, outcome: "written" | "unknown") => void | Promise<void>;
     /** The replayed history has been handed over; from here frames are live and decisions may act. */
-    onReplayEnd?: () => void;
+    onReplayEnd?: () => void | Promise<void>;
   }): Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
 }
 
@@ -112,17 +114,21 @@ export class SubprocessClaudeCodeTransport implements ClaudeCodeTransport {
     private readonly timeouts: { inactivityMs?: number; shutdownGraceMs?: number } = {},
   ) {}
 
-  run(input: {
+  run(input: Parameters<ClaudeCodeTransport["run"]>[0]) {
+    return withProviderCallbackCustody(input, held => this.runProducer(held), transportObservationCallbacks);
+  }
+
+  private runProducer(input: {
     args: string[];
     cwd: string;
     environment?: Record<string, string>;
     inheritEnvironment?: boolean;
     stdin: string;
-    onStdout: (chunk: string, at?: number) => void;
-    onStderr: (chunk: string) => void;
-    onStdinReady?: (write: (input: string, meta?: TransportFrameMeta) => Promise<void>, close: () => void) => void;
-    onInterruptReady?: (interrupt: () => Promise<void>) => void;
-    onProtocolActivityReady?: (record: () => void) => void;
+    onStdout: (chunk: string, at?: number) => void | Promise<void>;
+    onStderr: (chunk: string) => void | Promise<void>;
+    onStdinReady?: (write: (input: string, meta?: TransportFrameMeta) => Promise<void>, close: () => void) => void | Promise<void>;
+    onInterruptReady?: (interrupt: () => Promise<void>) => void | Promise<void>;
+    onProtocolActivityReady?: (record: () => void) => void | Promise<void>;
   }): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
     const proc = spawn(this.executable, input.args, {
       cwd: input.cwd,
@@ -181,8 +187,16 @@ export class SubprocessClaudeCodeTransport implements ClaudeCodeTransport {
         inactivityTimeout = setTimeout(failForInactivity, inactivityMs);
       };
 
-      proc.stdout.on("data", (chunk: Buffer) => input.onStdout(chunk.toString()));
-      proc.stderr.on("data", (chunk: Buffer) => input.onStderr(chunk.toString()));
+      const consume = (stream: typeof proc.stdout, callback: (chunk: string) => void | Promise<void>) => {
+        stream.on("data", (chunk: Buffer) => {
+          stream.pause();
+          Promise.resolve(callback(chunk.toString())).catch(terminateWithError).finally(() => {
+            if (!settled) stream.resume();
+          });
+        });
+      };
+      consume(proc.stdout, input.onStdout);
+      consume(proc.stderr, input.onStderr);
       proc.on("error", terminateWithError);
       proc.stdin.on("error", terminateWithError);
       proc.on("close", (code, signal) => {
@@ -248,6 +262,7 @@ export class ClaudeOutputAccumulator {
   private agentSpoke = false;
   private toolsUsed: string[] = [];
   private sawAcknowledgedUserInput = false;
+  private readonly acknowledgedUserUuids = new Set<string>();
   private awaitingInitialPrompt: boolean;
   private seenEvents = false;
   private eventCount = 0;
@@ -258,6 +273,32 @@ export class ClaudeOutputAccumulator {
     this.awaitingInitialPrompt = initialPrompt !== undefined;
   }
 
+  /** A queued-command pickup has native text/UUID but no user row to project. */
+  acknowledgeTranscriptInput(text: string, uuid: string | null): void {
+    if (this.awaitingInitialPrompt && text !== this.initialPrompt) return;
+    this.awaitingInitialPrompt = false;
+    this.seenEvents = true;
+    this.acceptUserInput(uuid);
+  }
+
+  private acceptUserInput(uuid: string | null): boolean {
+    if (uuid) {
+      if (this.acknowledgedUserUuids.has(uuid)) return false;
+      this.acknowledgedUserUuids.add(uuid);
+    }
+    if (this.sawAcknowledgedUserInput) {
+      this.messageParts.length = 0;
+      this.agentSpoke = false;
+      this.responseChars = 0;
+      this.finalResult = "";
+      this.isError = false;
+      this.durationMs = undefined;
+      this.model = this.sessionModel;
+    }
+    this.sawAcknowledgedUserInput = true;
+    return true;
+  }
+
   push(ev: JsonValue): void {
     this.seenEvents = true;
     this.eventCount++;
@@ -265,21 +306,7 @@ export class ClaudeOutputAccumulator {
       if (acknowledgedUserText(ev) === this.initialPrompt) this.awaitingInitialPrompt = false;
       else if (ev.type !== "system" || ev.subtype !== "init") return;
     }
-    if (acknowledgedUserText(ev) !== null) {
-      if (this.sawAcknowledgedUserInput) {
-        // Every accepted stdin user message starts a new visible response
-        // segment. This covers interrupted tools, interrupted streaming, and
-        // the race where the prior response completes before interrupt ack.
-        this.messageParts.length = 0;
-        this.agentSpoke = false;
-        this.responseChars = 0;
-        this.finalResult = "";
-        this.isError = false;
-        this.durationMs = undefined;
-        this.model = this.sessionModel;
-      }
-      this.sawAcknowledgedUserInput = true;
-    }
+    if (acknowledgedUserText(ev) !== null && !this.acceptUserInput(typeof ev.uuid === "string" ? ev.uuid : null)) return;
     if (typeof ev.session_id === "string") this.sessionUUID = ev.session_id;
     if (ev.type === "system" && ev.subtype === "init" && typeof ev.model === "string") {
       this.sessionModel = ev.model.trim() || undefined;
@@ -490,7 +517,7 @@ export const CLAUDE_AGENT_HOOK_SETTINGS = JSON.stringify({ hooks: {
       command:`if [ -x ${MANAGED_EDIT_HOOK} ]; then ${MANAGED_EDIT_HOOK}; else "$CONCIERGE_BUN_BIN" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/implementation-edit-hook.${HOOK_SUFFIX}"; fi`,timeout:20}]}],
 } });
 
-export async function runClaudeCodeTurn(input: {
+async function runClaudeCodeTurnProducer(input: {
   prompt: string;
   cwd: string;
   additionalDirs: string[];
@@ -503,24 +530,25 @@ export async function runClaudeCodeTurn(input: {
   accountLabel?: string;
   usageProbe?: boolean;
   interactionPolicy?: ProviderInteractionPolicy;
+  clientUserMessageId?: string;
   onProgress?: ProgressCb;
   onProviderMessage?: ProviderMessageCallback;
-  onClaudeCall?: (call:{conversation:string|null;callId:string;atMs:number;cacheable:boolean})=>void;
-  onProviderThreadStarted?: (providerThreadId: string) => void;
-  onSteeringReady?: (sender: SteeringSender) => void;
-  onCancellationReady?: (cancel: () => Promise<void>) => void;
-  onProviderTerminal?: () => void;
+  onClaudeCall?: (call:{conversation:string|null;callId:string;atMs:number;cacheable:boolean})=>void | Promise<void>;
+  onProviderThreadStarted?: (providerThreadId: string) => void | Promise<void>;
+  onSteeringReady?: (sender: SteeringSender) => void | Promise<void>;
+  onCancellationReady?: (cancel: () => Promise<void>) => void | Promise<void>;
+  onProviderTerminal?: () => void | Promise<void>;
   /** The run finished answering but stays live for unfinished background work; null when that ends. */
-  onBackgroundWait?: (wait: ClaudeBackgroundWait | null) => void;
+  onBackgroundWait?: (wait: ClaudeBackgroundWait | null) => void | Promise<void>;
   /** Claude marked a background job ended but its report never reached the agent. */
-  onBackgroundReportMissing?: (task: BackgroundReportMissing) => void;
-  onBackgroundReleaseReady?: (release: (() => boolean) | null) => void;
+  onBackgroundReportMissing?: (task: BackgroundReportMissing) => void | Promise<void>;
+  onBackgroundReleaseReady?: (release: (() => boolean) | null) => void | Promise<void>;
   /** Claude is retrying a failed API call on its own; null once a call gets through. */
-  onProviderRetry?: (retry: ClaudeProviderRetry | null) => void;
+  onProviderRetry?: (retry: ClaudeProviderRetry | null) => void | Promise<void>;
   /** While retrying, a way to end this attempt so the next one starts at once; null after. */
-  onRetryRestartReady?: (restart: (() => boolean) | null) => void;
-  onInputAcknowledged?: () => void;
-  onPreferredModel?: (model: string) => void;
+  onRetryRestartReady?: (restart: (() => boolean) | null) => void | Promise<void>;
+  onInputAcknowledged?: () => void | Promise<void>;
+  onPreferredModel?: (model: string) => void | Promise<void>;
   modelSwitchTimeoutMs?: number;
   steeringAcknowledgementGraceMs?: number;
   transport?: ClaudeCodeTransport;
@@ -530,8 +558,18 @@ export async function runClaudeCodeTurn(input: {
    */
   adopted?: boolean;
   /** A follow-up the earlier coordinator wrote: whether Claude has now taken it. */
-  onRecoveredSteering?: (clientMessageId: string, outcome: "acknowledged" | "unacknowledged") => void;
-}): Promise<RunResult> {
+  onRecoveredSteering?: (clientMessageId: string, outcome: "acknowledged" | "unacknowledged") => void | Promise<void>;
+}, custody: ProviderCallbackCustody): Promise<RunResult> {
+  return runLedgerSteps((function* () {
+  const observations = new ProviderCallbackCustody();
+  const admitObservation = <A extends unknown[]>(operation: (...args: A) => void) => (...args: A) => {
+    observations.enqueue(() => runLedgerSegment(() => operation(...args)));
+    const consumed = observations.drain();
+    void consumed.catch(() => {});
+    return consumed;
+  };
+  const drainObservations = async () => { await observations.drain(); await custody.drain(); };
+  const runAfterCallbacks = async <T>(run: () => Promise<T>): Promise<T> => { await drainObservations(); return run(); };
   const transport = input.transport || new SubprocessClaudeCodeTransport();
   // A replayed frame happened when the host received it, and that time is what ages are measured
   // from: a background job does not become new because Concierge restarted.
@@ -576,7 +614,14 @@ export async function runClaudeCodeTurn(input: {
   let stderr = "";
   let reportedStarted = false;
   let closeInput = () => {};
+  let providerInputEnded = false;
+  const endProviderInput = () => {
+    if (providerInputEnded) return;
+    providerInputEnded = true;
+    closeInput();
+  };
   let writeInput: ((value: string, meta?: TransportFrameMeta) => Promise<void>) | null = null;
+  let writeControlInput: typeof writeInput = null;
   let inputClosed = false;
   let initialPromptAcknowledged = false;
   let observedInputActive = false;
@@ -701,6 +746,8 @@ export async function runClaudeCodeTurn(input: {
   // still marks the start of that message's output for publishing, so each message
   // acknowledged from the transcript is remembered until its echo is seen.
   let initialEchoObserved = false;
+  let initialSubmissionUuid: string | null = input.adopted ? null : input.clientUserMessageId
+    ? claudeInitialSubmissionUuid(input.clientUserMessageId) : null;
   const pickedUpAwaitingEcho: Array<{ text: string; uuid: string }> = [];
   const takePickedUpEcho = (uuid: unknown, text: string) => {
     const index = pickedUpAwaitingEcho.findIndex((picked) =>
@@ -745,12 +792,12 @@ export async function runClaudeCodeTurn(input: {
     const keepAlive = setInterval(() => recordProtocolActivity(), 60_000);
     const ceilingMs = backgroundWaitCeilingMs();
     // Measured from when the jobs started, so an adopted wait keeps its own clock.
-    const ceiling = setTimeout(() => {
+    const ceiling = setTimeout(admitObservation(() => {
       log("warn", "claude_code_background_wait_ceiling", { session_uuid: observedSessionUuid,
         waited_ms: Date.now() - since, tasks: backgroundTaskDescriptions() });
       reportProviderTerminal();
       closeProviderInput();
-    }, Math.max(0, ceilingMs - (Date.now() - since)));
+    }), Math.max(0, ceilingMs - (Date.now() - since)));
     backgroundWait = { since, keepAlive, ceiling };
     log("info", "claude_code_background_wait_started", { session_uuid: observedSessionUuid,
       tasks: backgroundTaskDescriptions(), ceiling_ms: ceilingMs });
@@ -823,14 +870,14 @@ export async function runClaudeCodeTurn(input: {
       recordBackgroundTaskEvent({ type: "system", subtype: "task_notification", task_id: taskId });
       return;
     }
-    endingBackgroundTasks.set(taskId, setTimeout(() => {
+    endingBackgroundTasks.set(taskId, setTimeout(admitObservation(() => {
       endingBackgroundTasks.delete(taskId);
       const task = backgroundTasks.get(taskId);
       if (!task || inputClosed) return;
       log("warn", "claude_code_background_report_missing", { session_uuid: observedSessionUuid, task_id: taskId, status });
       input.onBackgroundReportMissing?.({ id: taskId, description: task.description, status });
       recordBackgroundTaskEvent({ type: "system", subtype: "task_notification", task_id: taskId });
-    }, BACKGROUND_REPORT_GRACE_MS));
+    }), BACKGROUND_REPORT_GRACE_MS));
   };
   const recordBackgroundTaskEvent = (event: JsonValue) => {
     if (event.type === "user" && event.origin?.kind === "task-notification"
@@ -901,13 +948,13 @@ export async function runClaudeCodeTurn(input: {
     // Claude normally answers the finished task in a new turn, whose result closes the run.
     // If no turn follows, nothing is left to wait for.
     activitySinceResult = false;
-    backgroundSettle = setTimeout(() => {
+    backgroundSettle = setTimeout(admitObservation(() => {
       backgroundSettle = null;
       if (!activitySinceResult && providerProducedResult) {
         endBackgroundWait();
         scheduleCloseAfterResult();
       }
-    }, 60_000);
+    }), 60_000);
   };
   /**
    * Ends the run's input. While an adopted run replays its history nothing closes the live
@@ -931,7 +978,7 @@ export async function runClaudeCodeTurn(input: {
       acknowledgementDeadline = null;
     }
     failPendingAcknowledgements(reason);
-    closeInput();
+    endProviderInput();
   };
   const failModelSwitch = (error: unknown) => {
     modelSwitchError = error instanceof Error ? error : new Error(String(error));
@@ -948,9 +995,9 @@ export async function runClaudeCodeTurn(input: {
     const requestId = `concierge_model_${++nextControlRequestId}`;
     let settle!: () => void;
     const settled = new Promise<void>((resolve) => { settle = resolve; });
-    modelSwitch = { requestId, attempt: usageAttempt("claude-code", model, input.accountLabel), settled, settle, deadline: setTimeout(() => {
+    modelSwitch = { requestId, attempt: usageAttempt("claude-code", model, input.accountLabel), settled, settle, deadline: setTimeout(admitObservation(() => {
       failModelSwitch(new Error("Claude Code did not acknowledge the fallback model switch."));
-    }, input.modelSwitchTimeoutMs ?? 10_000) };
+    }), input.modelSwitchTimeoutMs ?? 10_000) };
     input.onProgress?.({ type: "narration", text: `Claude reached its usage limit. Continuing this conversation with ${model}.` });
     log("info", "claude_code_usage_fallback", { session_uuid: parsed.sessionUUID, preferred_model: preferredModel, model });
     void writeInput(`${JSON.stringify({ type: "control_request", request_id: requestId,
@@ -975,10 +1022,10 @@ export async function runClaudeCodeTurn(input: {
         || cancellationReason || modelSwitchError || parsed.toolsUsed.length > 0
         || !isContextOverflowRefusal(parsed.text)) return false;
     compactionAttempted = true;
-    compaction = { result: null, error: null, deadline: setTimeout(() => {
+    compaction = { result: null, error: null, deadline: setTimeout(admitObservation(() => {
       compaction = null;
       closeProviderInput(new Error("Claude Code did not finish compacting the full conversation."));
-    }, COMPACTION_TIMEOUT_MS) };
+    }), COMPACTION_TIMEOUT_MS) };
     input.onProgress?.({ type: "narration", text: "This conversation was full. Compacting it and sending the message again." });
     log("info", "claude_code_compaction_started", { session_uuid: parsed.sessionUUID });
     void writeInput(`${claudeCodeUserMessage("/compact")}\n`, { kind: "compact" }).catch(error => {
@@ -991,7 +1038,7 @@ export async function runClaudeCodeTurn(input: {
     if (replaying) { closeCheckOwed = true; return; }
     if (closeCheckScheduled || inputClosed) return;
     closeCheckScheduled = true;
-    queueMicrotask(() => {
+    queueMicrotask(admitObservation(() => {
       closeCheckScheduled = false;
       if (inputClosed || modelSwitch || compaction) return;
       if (!providerProducedResult) return;
@@ -1007,13 +1054,13 @@ export async function runClaudeCodeTurn(input: {
         return;
       }
       if (!acknowledgementDeadline) {
-        acknowledgementDeadline = setTimeout(() => {
+        acknowledgementDeadline = setTimeout(admitObservation(() => {
           acknowledgementDeadline = null;
           reportProviderTerminal();
           closeProviderInput(new Error("Claude Code did not acknowledge steering after completing its prior response."));
-        }, input.steeringAcknowledgementGraceMs ?? 5_000);
+        }), input.steeringAcknowledgementGraceMs ?? 5_000);
       }
-    });
+    }));
   };
   const maybeRegisterSteeringSender = () => {
     if (steeringSenderRegistered || inputClosed || !writeInput || !initialPromptAcknowledged || replaying) return;
@@ -1021,7 +1068,7 @@ export async function runClaudeCodeTurn(input: {
     input.onSteeringReady?.(async (steering) => {
       if (modelSwitch) await modelSwitch.settled;
       return new Promise<void>((resolve, reject) => {
-        if (inputClosed || !writeInput) {
+        if (inputClosed || cancellationReason || !writeInput) {
           reject(new SteeringNotSentError("Claude Code completed before the steering message arrived."));
           return;
         }
@@ -1076,11 +1123,18 @@ export async function runClaudeCodeTurn(input: {
   // visibly said Working. The row is published only after it matched a message this turn
   // sent, so the stream's current-input guard is not needed for it and stays for the rest.
   const publishPickedUpRow = (pickup: ClaudeTranscriptPickup) => {
-    if (pickup.row && typeof pickup.row === "object") publishProviderRow(pickup.row as JsonValue);
+    output.acknowledgeTranscriptInput(pickup.text, pickup.uuid);
+    if (pickup.row && typeof pickup.row === "object") {
+      output.push(pickup.row as JsonValue);
+      publishProviderRow(pickup.row as JsonValue);
+    }
   };
   const recordTranscriptPickup = (pickup: ClaudeTranscriptPickup) => {
     if (!initialPromptAcknowledged) {
-      if (pickup.text === input.prompt) {
+      if (pickup.text === input.prompt && (!initialSubmissionUuid || pickup.uuid === initialSubmissionUuid)) {
+        observedInputActive = true;
+        observedInputUuid = pickup.uuid;
+        if (pickup.uuid) initialEchoObserved = true;
         acknowledgeInitialPrompt();
         publishPickedUpRow(pickup);
       }
@@ -1096,27 +1150,40 @@ export async function runClaudeCodeTurn(input: {
   const startTranscriptWatch = (sessionUuid: string, fromStart: boolean) => {
     stopTranscriptWatch();
     // A host on a runner has Claude's transcript on that machine; the runner follows it there.
-    const remote = (transport as { transcriptWatcher?: () => ((watch: { sessionUuid: string; fromStart: boolean; onPickup: (pickup: ClaudeTranscriptPickup) => void }) => () => void) | null })
+    const remote = (transport as { transcriptWatcher?: () => ((watch: { sessionUuid: string; fromStart: boolean; onPickup: (pickup: ClaudeTranscriptPickup) => void | Promise<void> }) => () => void) | null })
       .transcriptWatcher?.();
     stopTranscriptWatch = remote
-      ? remote({ sessionUuid, fromStart, onPickup: recordTranscriptPickup })
-      : watchClaudeTranscript({ sessionUuid, fromStart, environment: input.environment, onPickup: recordTranscriptPickup });
+      ? remote({ sessionUuid, fromStart, onPickup: admitObservation(recordTranscriptPickup) })
+      : watchClaudeTranscript({ sessionUuid, fromStart, environment: input.environment, onPickup: admitObservation(recordTranscriptPickup) });
   };
   // Stop is his, so it is available as soon as there is a writer, replay or not, and it closes
   // the input even if the interrupt could not be written (a full disk refuses the write).
   const maybeRegisterCancellation = () => {
-    if (cancellationRegistered || inputClosed || !writeInput) return;
+    if (cancellationRegistered || inputClosed || !writeControlInput) return;
     cancellationRegistered = true;
     input.onCancellationReady?.(async () => {
-      if (cancellationReason || inputClosed || !writeInput) return;
+      if (cancellationReason || inputClosed || !writeControlInput) return;
       cancellationReason = new ProviderTurnCancelledError();
-      reportProviderTerminal();
       const requestId = `concierge_stop_${++nextControlRequestId}`;
-      try { await writeInput(`${claudeCodeInterruptRequest(requestId)}\n`, { kind: "interrupt", commandId: requestId }); }
-      finally { closeProviderInput(cancellationReason, true); }
+      try { await writeControlInput(`${claudeCodeInterruptRequest(requestId)}\n`, { kind: "interrupt", commandId: requestId }); }
+      finally {
+        // Stop reaches the native process now. Its logical settlement follows the
+        // original output and acknowledgement frames already retained by this run.
+        endProviderInput();
+        void admitObservation(() => {
+          reportProviderTerminal();
+          closeProviderInput(cancellationReason!, true);
+        })();
+      }
     });
   };
-  const handleProtocolEvent = (event: JsonValue) => {
+  const handleProtocolEvent = (event: JsonValue, at: number | null = null) => {
+    observations.enqueue(() => runLedgerSegment(() => {
+      eventAt = at;
+      try { output.push(event); handleProtocolEventSegment(event); } finally { eventAt = null; }
+    }));
+  };
+  const handleProtocolEventSegment = (event: JsonValue) => {
     if (!CLAUDE_PROTOCOL_EVENT_TYPES.has(String(event.type || ""))) return;
     recordProtocolActivity();
     recordBackgroundTaskEvent(event);
@@ -1211,7 +1278,8 @@ export async function runClaudeCodeTurn(input: {
     const sessionMatches = !observedSessionUuid || !event.session_id || event.session_id === observedSessionUuid;
     const userText = sessionMatches ? acknowledgedUserText(event) : null;
     if (userText !== null) {
-      const initialEcho = !initialEchoObserved && userText === input.prompt;
+      const initialEcho = !initialEchoObserved && userText === input.prompt
+        && (!initialSubmissionUuid || event.uuid === initialSubmissionUuid);
       const followUp = initialPromptAcknowledged && !initialEcho ? pendingAcknowledgementFor(event.uuid, userText) : null;
       const pickedUpEcho = !initialEcho && !followUp && takePickedUpEcho(event.uuid, userText);
       // Claude records its own delivery of a finished background task by origin, not wording.
@@ -1308,7 +1376,10 @@ export async function runClaudeCodeTurn(input: {
   const recoverPredecessorWrite = (line: string, meta: TransportFrameMeta | null) => {
     const message = parseJson(line);
     const text = isRecord(message) ? acknowledgedUserText(message) : null;
-    if (meta?.kind === "steering" && meta.clientMessageId && text !== null) {
+    if (meta?.kind === "initial") {
+      if (text !== input.prompt) throw new Error("The original Claude input differs from the retained turn");
+      initialSubmissionUuid = isRecord(message) && typeof message.uuid === "string" ? message.uuid : null;
+    } else if (meta?.kind === "steering" && meta.clientMessageId && text !== null) {
       const clientMessageId = meta.clientMessageId;
       ownerSubmittedTexts.add(text);
       pendingAcknowledgements.push({ text, clientMessageId, settled: false,
@@ -1355,6 +1426,7 @@ export async function runClaudeCodeTurn(input: {
   const finishReplay = () => {
     if (!replaying) return;
     replaying = false;
+    if (observedSessionUuid) startTranscriptWatch(observedSessionUuid, initialSubmissionUuid !== null);
     // A Stop the predecessor began (its interrupt is in the record) is completed: the input is
     // closed and the signal grace follows, without sending the interrupt again.
     if (cancellationReason) {
@@ -1368,11 +1440,11 @@ export async function runClaudeCodeTurn(input: {
       return;
     }
     // Deadlines run in the live run's time, from now.
-    if (compaction && !compaction.result) compaction.deadline = setTimeout(() => {
+    if (compaction && !compaction.result) compaction.deadline = setTimeout(admitObservation(() => {
       compaction = null;
       closeProviderInput(new Error("Claude Code did not finish compacting the full conversation."));
-    }, COMPACTION_TIMEOUT_MS);
-    if (modelSwitch) modelSwitch.deadline = setTimeout(() => failModelSwitch(new Error("Claude Code did not acknowledge the fallback model switch.")),
+    }), COMPACTION_TIMEOUT_MS);
+    if (modelSwitch) modelSwitch.deadline = setTimeout(admitObservation(() => failModelSwitch(new Error("Claude Code did not acknowledge the fallback model switch."))),
       input.modelSwitchTimeoutMs ?? 10_000);
     for (const [taskId, status] of endedDuringReplay) backgroundTaskEnded(taskId, status);
     endedDuringReplay.clear();
@@ -1401,17 +1473,22 @@ export async function runClaudeCodeTurn(input: {
     additional_dir_count: input.additionalDirs.length,
   });
   // Watching starts before Claude does, so only what this process writes is read.
-  if (input.sessionUUID && !input.forkSession) startTranscriptWatch(input.sessionUUID, false);
-  const outcome = await transport.run({
+  if (input.sessionUUID && !input.forkSession && !input.adopted) startTranscriptWatch(input.sessionUUID, false);
+  const outcome = yield runAfterCallbacks(() => transport.run({
     args,
     cwd: input.cwd,
     environment: { ...(input.interactionPolicy === "consultation-only" ? claudeConsultationEnvironment(input.environment) : providerOwnerEnvironment(input.environment)),
       CLAUDE_CODE_SUBAGENT_MODEL: input.environment?.CLAUDE_CODE_SUBAGENT_MODEL || DEFAULT_CLAUDE_SUBAGENT_MODEL },
     ...(input.interactionPolicy === "consultation-only" ? { inheritEnvironment: false } : {}),
-    stdin: `${claudeCodeUserMessage(input.prompt)}\n`,
+    stdin: `${claudeCodeUserMessage(input.prompt, initialSubmissionUuid ?? undefined)}\n`,
     onStdinReady: (write, close) => {
       closeInput = close;
-      writeInput = write;
+      writeControlInput = write;
+      writeInput = async (...args) => {
+        await drainObservations();
+        if (providerInputEnded) throw new SteeringNotSentError("Claude Code input has closed.");
+        return write(...args);
+      };
       if (inputClosed) {
         close();
         return;
@@ -1422,11 +1499,11 @@ export async function runClaudeCodeTurn(input: {
     onProtocolActivityReady: (record) => {
       recordProtocolActivity = record;
     },
-    onReplayEnd: finishReplay,
-    onReplayedInput: (line, meta, at) => {
+    onReplayEnd: admitObservation(finishReplay),
+    onReplayedInput: admitObservation((line: string, meta: TransportFrameMeta | null, at: number) => {
       eventAt = at;
       try { recoverPredecessorWrite(line, meta); } finally { eventAt = null; }
-    },
+    }),
     onStdout: (chunk, at) => {
       const processingStarted=performance.now();
       providerBytes+=Buffer.byteLength(chunk);providerChunks++;
@@ -1444,8 +1521,7 @@ export async function runClaudeCodeTurn(input: {
           if (isRecord(event)) {
             structuredSeen = true;
             unstructuredOutput = "";
-            output.push(event);
-            handleProtocolEvent(event);
+            handleProtocolEvent(event, at ?? null);
           }
         }
       } finally { eventAt = null; }
@@ -1458,26 +1534,30 @@ export async function runClaudeCodeTurn(input: {
       });
       // Narration is live status only: replayed lines wait for the next live one, and a burst of
       // chunks is read once, a quarter second after it starts.
-      if (at !== undefined || narrationDue) return;
-      narrationDue = setTimeout(() => {
+      if (at !== undefined || narrationDue) return drainObservations();
+      narrationDue = setTimeout(admitObservation(() => {
         narrationDue = null;
         const parsed = output.read(unstructuredOutput);
         if (parsed.text && !parsed.isError && !modelSwitch) input.onProgress?.({ type: "narration", text: parsed.text });
-      }, 250);
+      }), 250);
+      return drainObservations();
     },
     onStderr: (chunk) => {
       stderr = (stderr + chunk).slice(-4 * 1024);
     },
-  }).catch((error) => {
+  })).catch(async (error) => {
     if (narrationDue) { clearTimeout(narrationDue); narrationDue = null; }
     stopTranscriptWatch();
-    closeProviderInput();
+    endProviderInput();
+    await admitObservation(() => closeProviderInput())();
     throw error;
   });
+  yield drainObservations();
   if (narrationDue) { clearTimeout(narrationDue); narrationDue = null; }
   stopTranscriptWatch();
   const finalBufferedEvent = parseJson(eventBuffer.trim());
-  if (isRecord(finalBufferedEvent)) { output.push(finalBufferedEvent); handleProtocolEvent(finalBufferedEvent); }
+  if (isRecord(finalBufferedEvent)) handleProtocolEvent(finalBufferedEvent);
+  yield drainObservations();
   if (providerProducedResult) reportProviderTerminal();
   closeProviderInput();
   input.onRetryRestartReady?.(null);
@@ -1510,6 +1590,11 @@ export async function runClaudeCodeTurn(input: {
     // Concierge's launcher refused before Claude started, so nothing was sent: the turn fails now
     // with that reason, its requests settle failed and come back for a new owner, instead of
     // parking as an ambiguous end with its requests counted as live (claude-launch-refusal.ts).
+    if (input.adopted) throw new ProviderDispatchError({
+      message: "Claude Code ended before acknowledging the original input. Its retained execution remains uncertain; the original input must not be resent.",
+      failureClass: "parked_terminal", terminalConfirmed: false, processExit: outcome,
+      providerSessionId: observedSessionUuid ?? input.sessionUUID,
+    });
     const refusal = launchRefusalReason(stderr, outcome.code);
     if (refusal) throw new ProviderDispatchError({ message: `Claude could not start this turn: ${refusal}`,
       failureClass: "parked_terminal", terminalConfirmed: true, toolsUsed: [], threadScoped: true });
@@ -1574,6 +1659,8 @@ export async function runClaudeCodeTurn(input: {
     ...(parsed.durationMs !== undefined ? { durationMs: parsed.durationMs } : {}),
     ...(parsed.turnOutcome ? { turnOutcome: parsed.turnOutcome } : {}),
   };
+
+  }).call(this));
 }
 
 /**
@@ -1609,4 +1696,17 @@ export async function forkClaudeCodeSession(input: {
     throw new Error("claude-code fork did not return a new session id");
   }
   return result;
+}
+
+export async function runClaudeCodeTurn(input: Parameters<typeof runClaudeCodeTurnProducer>[0]): Promise<RunResult> {
+  return withProviderCallbackCustody(input, (held, custody) => runClaudeCodeTurnProducer(held, custody));
+}
+
+/** A transport UUID identifies one existing accepted input; it does not replace its source ID. */
+export function claudeInitialSubmissionUuid(clientUserMessageId: string): string {
+  const bytes = createHash("sha256").update("claude-initial-input\0").update(clientUserMessageId).digest().subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x80;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const value = bytes.toString("hex");
+  return `${value.slice(0,8)}-${value.slice(8,12)}-${value.slice(12,16)}-${value.slice(16,20)}-${value.slice(20)}`;
 }

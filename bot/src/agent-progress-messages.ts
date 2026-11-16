@@ -1,3 +1,4 @@
+import {runLedgerSteps} from './ledger-admission';
 import { randomUUID } from "node:crypto";
 import { webApi } from "@slack/bolt";
 import { progressActivityIdAfterChunks, type SlackAgentProgressChunk } from "./agent-progress";
@@ -76,7 +77,7 @@ function shrinkPageAfterRejection(page: ProgressPage) {
   })();
 }
 
-export async function projectAgentProgressMessages(client: any, turnId: number) {
+export async function projectAgentProgressMessages(client: any, turnId: number) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const turn = getTurnProgressStream(turnId);
   if (!turn) throw new Error(`Missing Agent turn ${turnId}.`);
   for (;;) {
@@ -101,11 +102,11 @@ export async function projectAgentProgressMessages(client: any, turnId: number) 
       .run(turnId, page.page_number);
     try {
       const result: any = page.message_ts
-        ? await agentProgressSlackCall(client, "chat.update", { ...args, ts: page.message_ts })
-        : await agentProgressSlackCall(client, "chat.postMessage", {
+        ? (yield agentProgressSlackCall(client, "chat.update", { ...args, ts: page.message_ts }))
+        : (yield agentProgressSlackCall(client, "chat.postMessage", {
             ...args, thread_ts: turn.slack_thread_ts, client_msg_id: page.client_msg_id,
             unfurl_links: false, unfurl_media: false,
-          });
+          }));
       const ts = page.message_ts ?? result.ts;
       if (!ts) throw new Error("Slack returned no progress-message timestamp.");
       db.transaction(() => {
@@ -120,4 +121,4 @@ export async function projectAgentProgressMessages(client: any, turnId: number) 
       shrinkPageAfterRejection(page);
     }
   }
-}
+}).call(this));}

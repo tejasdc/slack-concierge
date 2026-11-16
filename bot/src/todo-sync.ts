@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps,runLedgerSegment} from './ledger-admission';
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
@@ -569,8 +571,8 @@ export class TodoProjectionManager {
   reconcile(input: { client: any; channel: ChannelRow; user?: string | null }) {
     const key = input.channel.slack_channel_id;
     const predecessor = this.pendingByChannel.get(key);
-    const task = (predecessor ? predecessor.catch(() => null) : Promise.resolve(null))
-      .then(() => this.reconcileUntilStable(input))
+    const task = (predecessor ? predecessor.catch(ledgerCallback(() => null)) : Promise.resolve(null))
+      .then(ledgerCallback(() => this.reconcileUntilStable(input)))
       .finally(() => {
       if (this.pendingByChannel.get(key) === task) this.pendingByChannel.delete(key);
     });
@@ -580,21 +582,21 @@ export class TodoProjectionManager {
 
   async drain() {
     while (this.pendingByChannel.size > 0) {
-      await Promise.allSettled([...this.pendingByChannel.values()]);
+      (await Promise.allSettled([...this.pendingByChannel.values()]));
     }
   }
 
-  private async reconcileUntilStable(input: { client: any; channel: ChannelRow; user?: string | null }) {
+  private async reconcileUntilStable(input: { client: any; channel: ChannelRow; user?: string | null }) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     while (true) {
-      const path = await this.reconcileOnce(input);
+      const path = (yield this.reconcileOnce(input));
       if (path) return path;
       log("info", "todo_sync_file_changed_during_reconcile", {
         channel: input.channel.slack_channel_id,
       });
     }
-  }
+  }).call(this));}
 
-  private async reconcileOnce(input: { client: any; channel: ChannelRow; user?: string | null }) {
+  private async reconcileOnce(input: { client: any; channel: ChannelRow; user?: string | null }) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const fileSnapshot = readFileSnapshot(input.channel);
     const syncState = getTodoSyncState(input.channel.slack_channel_id);
     const baseRows = parseBase(input.channel.slack_channel_id);
@@ -621,11 +623,11 @@ export class TodoProjectionManager {
         return migratedPath;
       }
       if (!currentChannel.list_id || currentChannel.list_access_level !== "read") {
-        await ensureChannelList({
+        (yield ensureChannelList({
           ...input,
           channel: currentChannel,
           ...this.identity,
-        });
+        }));
       }
       log("info", "todo_projection_unchanged", {
         channel: input.channel.slack_channel_id,
@@ -634,7 +636,7 @@ export class TodoProjectionManager {
       return todoPath(input.channel);
     }
 
-    const listedSlackRows = await listItems({ ...input, ...this.identity });
+    const listedSlackRows = (yield listItems({ ...input, ...this.identity }));
     if (!syncState?.historical_migration_complete) {
       const boundIds = new Set([
         ...baseRows.map((row) => row.id),
@@ -651,16 +653,16 @@ export class TodoProjectionManager {
     fileRows = bindUnboundFileRows(fileRows, slackRows);
 
     for (const row of fileRows.filter((candidate) => candidate.id.startsWith("local:"))) {
-      const itemId = await appendListItem({
+      const itemId = (yield appendListItem({
         ...input,
         ...this.identity,
         text: row.title,
         source: "todo",
         sourceMessage: row.slackOrigin,
-      });
+      }));
       if (!itemId) throw new Error("Slack did not return an ID for a newly synchronized todo.");
       if (row.completed) {
-        await updateListItem({ ...input, ...this.identity, itemId, completed: true });
+        (yield updateListItem({ ...input, ...this.identity, itemId, completed: true }));
       }
       fileRows = fileRows.map((candidate) => candidate.id === row.id ? { ...candidate, id: itemId } : candidate);
       slackRows.push({ ...row, id: itemId });
@@ -668,7 +670,7 @@ export class TodoProjectionManager {
 
     const projection = projectTodoRows(fileRows, slackRows);
     for (const itemId of projection.deleteSlackIds) {
-      await deleteListItem({ ...input, ...this.identity, itemId });
+      (yield deleteListItem({ ...input, ...this.identity, itemId }));
     }
 
     const slackById = new Map(slackRows.map((row) => [row.id, row]));
@@ -676,15 +678,15 @@ export class TodoProjectionManager {
     for (const row of projection.rows) {
       const slackRow = slackById.get(row.id);
       if (!slackRow) {
-        const itemId = await appendListItem({
+        const itemId = (yield appendListItem({
           ...input,
           ...this.identity,
           text: row.title,
           source: "todo",
           sourceMessage: row.slackOrigin,
-        });
+        }));
         if (!itemId) throw new Error("Slack did not return an ID while restoring a file-owned todo.");
-        if (row.completed) await updateListItem({ ...input, ...this.identity, itemId, completed: true });
+        if (row.completed) (yield updateListItem({ ...input, ...this.identity, itemId, completed: true }));
         synchronizedRows.push({ ...row, id: itemId });
         continue;
       }
@@ -696,14 +698,14 @@ export class TodoProjectionManager {
         : row.title;
       const completed = slackRow.completed === row.completed ? undefined : row.completed;
       if (title !== undefined || completed !== undefined) {
-        await updateListItem({
+        (yield updateListItem({
           ...input,
           ...this.identity,
           itemId: row.id,
           title,
           completed,
           sourceMessage: row.slackOrigin,
-        });
+        }));
       }
       synchronizedRows.push(row);
     }
@@ -729,5 +731,5 @@ export class TodoProjectionManager {
       item_count: synchronizedRows.length,
     });
     return path;
-  }
+  }).call(this));}
 }

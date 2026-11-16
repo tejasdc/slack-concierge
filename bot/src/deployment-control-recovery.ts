@@ -3,17 +3,41 @@ import { existsSync, lstatSync, readFileSync, readlinkSync, readdirSync, renameS
 import { join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import { TrustedRootReleaseManager } from "./deployment-release";
-import { claimControlRecovery, controlRecoveryEvent, failControlRecovery, getControlRecoveryIntent,
-  getActiveDeploymentRun, getDeploymentDesiredState, getDeploymentRepairIncident, getDeploymentRun, getLastKnownGoodRelease,
-  getLatestDeploymentRun, LKG_UNAVAILABLE_ERROR, listDeploymentRunEvents, prepareControlRecovery,
-  prepareSelfVerificationControlRecovery,
-  prepareLostRegistryControlRecovery, recordControlRecoveryEvent, recordDeploymentReleasePrepared,
-  type DeploymentReleaseRow, type DeploymentRunRow } from "./deployment-state";
+import type {DeploymentReleaseRow,DeploymentRunRow} from './deployment-state';
+import {controlRecoveryLedgerCommand} from './deployment-control-recovery-client';
+import type {RecoveryLedgerCommand} from './deployment-control-recovery-commands';
 import { isAncestorProcess, processIdentity } from "./runtime-identity";
 import { notifyDeploymentWorker } from "./deployment-worker-wake";
 
 export type RecoveryCommand = (command: string[], cwd?: string) => string;
 const hash = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
+
+async function recoveryLedger(selection:RecoveryLedgerCommand['selection']) {
+  let current=await controlRecoveryLedgerCommand({selection});
+  const mutateBatch=async(operations:NonNullable<RecoveryLedgerCommand['operations']>)=>{
+    const next=await controlRecoveryLedgerCommand({selection,expected:current.expected,operations});
+    current=next;
+    return next.results;
+  };
+  const observation=()=>current.observation;
+  return {
+    mutateBatch,
+    mutate:async(kind:NonNullable<RecoveryLedgerCommand['operations']>[number]['kind'],args:any[]) => (await mutateBatch([{kind,args}]))[0] as any,
+    lkgUnavailableError:current.observation.lkgUnavailableError,
+    getControlRecoveryIntent:(_runId:string)=>observation().intent,
+    getDeploymentRepairIncident:(_incidentId:string)=>observation().incident,
+    getDeploymentRun:(runId:string)=>runId===selection.runId?observation().run:runId===observation().incidentRun?.id?observation().incidentRun:null,
+    getLastKnownGoodRelease:()=>observation().lkg,
+    getDeploymentDesiredState:()=>observation().desired,
+    getLatestDeploymentRun:()=>observation().latest,
+    listDeploymentRunEvents:(_runId:string)=>observation().history,
+    getActiveDeploymentRun:(_target:string)=>observation().active,
+    controlRecoveryEvent:(_runId:string,event:string)=>{
+      if(event!=='control_recovery_mask_intended')throw Error('Unknown controller recovery observation.');
+      return observation().mask;
+    },
+  };
+}
 
 export function recoveryCommand(command: string[], cwd?: string) {
   const result = Bun.spawnSync({ cmd: command, cwd, env: { ...process.env, HOME: "/root", GIT_TERMINAL_PROMPT: "0" },
@@ -101,8 +125,10 @@ function verifyCurrentRollback(artifactPath: string, invocationId: string,
   command([manager.environment.bunExecutable, join(artifactPath, "control/healthcheck.js")]);
 }
 
-export function containControlRecovery(runId: string, manager: TrustedRootReleaseManager,
-  systemdDirectory = "/etc/systemd/system", command: RecoveryCommand = recoveryCommand) {
+export async function containControlRecovery(runId: string, manager: TrustedRootReleaseManager,
+  systemdDirectory = "/etc/systemd/system", command: RecoveryCommand = recoveryCommand, ledger?:Awaited<ReturnType<typeof recoveryLedger>>) {
+  ledger??=await recoveryLedger({runId});
+  const {getControlRecoveryIntent,controlRecoveryEvent,getLastKnownGoodRelease}=ledger;
   const intent = getControlRecoveryIntent(runId);
   if (!intent) throw new Error("Unknown controller recovery.");
   manager.verify(intent.artifactPath);
@@ -112,7 +138,7 @@ export function containControlRecovery(runId: string, manager: TrustedRootReleas
   const file = lstatSync(path);
   if (file.isSymbolicLink()) {
     if (readlinkSync(path) !== "/dev/null") throw new Error("Unexpected repair-unit symlink.");
-    if (!prior) recordControlRecoveryEvent(runId, "control_recovery_mask_intended", { ...proof, owned: false, path });
+    if (!prior) await ledger.mutate('event',[runId,"control_recovery_mask_intended",{ ...proof, owned: false, path }]);
   } else {
     if (!file.isFile()) throw new Error("Repair unit is not a regular file.");
     const lkg = getLastKnownGoodRelease();
@@ -126,20 +152,25 @@ export function containControlRecovery(runId: string, manager: TrustedRootReleas
     if (!priorArtifact) {
       throw new Error("Installed repair unit differs from the proven release; refusing to replace it.");
     }
-    recordControlRecoveryEvent(runId, "control_recovery_mask_intended", {
+    await ledger.mutate('event',[runId,"control_recovery_mask_intended",{
       ...proof, owned: true, path, prior_artifact: priorArtifact, prior_digest: digest,
-    });
+    }]);
     const temporary = `${path}.${randomUUID()}.mask`;
     symlinkSync("/dev/null", temporary);
     renameSync(temporary, path);
   }
   command(["systemctl", "daemon-reload"]);
-  recordControlRecoveryEvent(runId, "control_recovery_contained", proof);
+  await ledger.mutate('event',[runId,"control_recovery_contained",proof]);
   return proof;
 }
 
 export async function handleControlRecovery(commandName: string, option: (name: string) => string | null,
   manager: TrustedRootReleaseManager, command: RecoveryCommand = recoveryCommand): Promise<Record<string, unknown>> {
+  const selectedRunId=option('--run-id')||randomUUID();
+  const ledger=await recoveryLedger({runId:selectedRunId,incidentId:option('--incident-id')});
+  const LKG_UNAVAILABLE_ERROR=ledger.lkgUnavailableError;
+  const {getControlRecoveryIntent,controlRecoveryEvent,getDeploymentRepairIncident,getDeploymentRun,
+    getLastKnownGoodRelease,getDeploymentDesiredState,getLatestDeploymentRun,listDeploymentRunEvents,getActiveDeploymentRun}=ledger;
   const required = (name: string) => { const value = option(name); if (!value) throw new Error(`${name} is required.`); return value; };
   if (commandName === "recovery-start") {
     let runId = option("--run-id");
@@ -197,19 +228,18 @@ export async function handleControlRecovery(commandName: string, option: (name: 
             throw new Error("Operator control-lock exception does not match the intact incident, health history or human policy.");
           }
           verifyCurrentRollback(lkg.artifact_path, exception.current_lkg.service_invocation_id, manager, command);
-          runId = randomUUID();
-          const artifact = await manager.prepare(runId, lkg.git_commit, controlCommit);
-          prepareControlRecovery({ runId, incidentId, controlCommit, healthyCommit: lkg.git_commit,
+          runId = selectedRunId;
+          const artifact = (await manager.prepare(runId, lkg.git_commit, controlCommit));
+          await ledger.mutateBatch([{kind:'prepare',args:[{ runId, incidentId, controlCommit, healthyCommit: lkg.git_commit,
             artifactPath: artifact.artifactPath, artifactDigest: artifact.manifest.artifact_digest,
             sourceTreeDigest: command(["git", "rev-parse", "HEAD^{tree}"], sourceRoot),
-            operatorAuthorityDigest: hash(exceptionBytes) });
-          recordControlRecoveryEvent(runId, "operator_failure_observed", {
+            operatorAuthorityDigest: hash(exceptionBytes) }]},{kind:'event',args:[runId,"operator_failure_observed",{
             failed_run_id: run.id, failure: exception.failure, rollback: exception.rollback,
             previous_review_verdict: incident.review_verdict,
             previous_review_commit: incident.repair_commit,
             previous_review_digest: exception.previous_review_digest,
             operator_authority_digest: hash(exceptionBytes),
-          });
+          }]}]);
         } else if (exception.kind === "human_authorized_lkg_self_verification_recovery") {
           // For a control that rejects its own last-known-good release, so every deploy stops
           // before activation (see DEPLOYMENT-REPAIR.md, "Artifact contents"). Proves that exact
@@ -238,17 +268,16 @@ export async function handleControlRecovery(commandName: string, option: (name: 
             throw new Error("Operator exception does not match the self-verification failure, the LKG or the human authority.");
           }
           verifyCurrentRollback(lkg.artifact_path, exception.rollback.service_invocation_id, manager, command);
-          runId = randomUUID();
-          const artifact = await manager.prepare(runId, lkg.git_commit, controlCommit);
-          prepareSelfVerificationControlRecovery({ runId, incidentId, controlCommit, healthyCommit: lkg.git_commit,
+          runId = selectedRunId;
+          const artifact = (await manager.prepare(runId, lkg.git_commit, controlCommit));
+          await ledger.mutateBatch([{kind:'prepare-self',args:[{ runId, incidentId, controlCommit, healthyCommit: lkg.git_commit,
             artifactPath: artifact.artifactPath, artifactDigest: artifact.manifest.artifact_digest,
             sourceTreeDigest: command(["git", "rev-parse", "HEAD^{tree}"], sourceRoot),
-            operatorAuthorityDigest: hash(exceptionBytes), sourceRunId: failed.id });
-          recordControlRecoveryEvent(runId, "operator_failure_observed", {
+            operatorAuthorityDigest: hash(exceptionBytes), sourceRunId: failed.id }]},{kind:'event',args:[runId,"operator_failure_observed",{
             failed_run_id: failed.id, failure: exception.failure, rollback: exception.rollback,
             human_authorization_input: exception.human_authorization.input_id,
             operator_authority_digest: hash(exceptionBytes),
-          });
+          }]}]);
         } else {
           if (getDeploymentRepairIncident(incidentId)) throw new Error("An existing incident must use its exact controller recovery path.");
           const backupPath = required("--registry-backup");
@@ -275,9 +304,9 @@ export async function handleControlRecovery(commandName: string, option: (name: 
             throw new Error("The operator exception does not match this observed failure and rollback.");
           }
           verifyCurrentRollback(release.artifact_path, exception.rollback.service_invocation_id, manager, command);
-          runId = randomUUID();
-          const artifact = await manager.prepare(runId, release.git_commit, controlCommit);
-          prepareLostRegistryControlRecovery({
+          runId = selectedRunId;
+          const artifact = (await manager.prepare(runId, release.git_commit, controlCommit));
+          await ledger.mutate('prepare-lost',[{
             intent: { runId, sourceRunId: runId, incidentId, controlCommit, healthyCommit: release.git_commit,
               artifactPath: artifact.artifactPath, artifactDigest: artifact.manifest.artifact_digest,
               sourceTreeDigest: command(["git", "rev-parse", "HEAD^{tree}"], sourceRoot),
@@ -285,7 +314,7 @@ export async function handleControlRecovery(commandName: string, option: (name: 
             lkgRun: run, lkgRelease: release, snapshotDigest: exception.registry_backup_digest,
             failureEvidence: { ...exception.failure, operator_authority_digest: hash(exceptionBytes) },
             rollbackEvidence: exception.rollback,
-          });
+          }]);
         }
       } else {
         const reviewBytes = regularEvidence(required("--review-evidence"), "Review evidence");
@@ -297,11 +326,11 @@ export async function handleControlRecovery(commandName: string, option: (name: 
         const lkg = getLastKnownGoodRelease();
         if (!lkg) throw new Error("No healthy application release is recorded.");
         manager.verify(lkg.artifact_path);
-        runId = randomUUID();
-        const artifact = await manager.prepare(runId, lkg.git_commit, controlCommit);
-        prepareControlRecovery({ runId, incidentId, controlCommit, healthyCommit: lkg.git_commit,
+        runId = selectedRunId;
+        const artifact = (await manager.prepare(runId, lkg.git_commit, controlCommit));
+        await ledger.mutate('prepare',[{ runId, incidentId, controlCommit, healthyCommit: lkg.git_commit,
           artifactPath: artifact.artifactPath, artifactDigest: artifact.manifest.artifact_digest,
-          sourceTreeDigest: command(["git", "rev-parse", "HEAD^{tree}"], sourceRoot), reviewDigest: hash(reviewBytes) });
+          sourceTreeDigest: command(["git", "rev-parse", "HEAD^{tree}"], sourceRoot), reviewDigest: hash(reviewBytes) }]);
       }
     }
     const intent = getControlRecoveryIntent(runId);
@@ -311,14 +340,14 @@ export async function handleControlRecovery(commandName: string, option: (name: 
       || manifest.git_commit !== intent.healthyCommit) throw new Error("Recovery artifact does not match durable intent.");
     if (getDeploymentRun(runId)?.status === "succeeded") return { status: "succeeded", run_id: runId };
     const unit = `concierge-control-recovery-${runId.slice(0, 12)}`;
-    recordControlRecoveryEvent(runId, "control_recovery_launch_intended", { unit, artifact_digest: intent.artifactDigest });
+    await ledger.mutate('event',[runId,"control_recovery_launch_intended",{ unit, artifact_digest: intent.artifactDigest }]);
     command(["systemd-run", "--unit", unit, "--collect", "--no-block", "--property=Type=exec",
       "--property=Restart=no", "--property=KillMode=control-group",
       "--setenv=HOME=/root", `--setenv=CONCIERGE_REPO=${manager.environment.repositoryRoot}`,
       `--setenv=CONCIERGE_STATE_DIR=${process.env.CONCIERGE_STATE_DIR || "/root/.local/state/concierge"}`,
       `--setenv=CONCIERGE_DEPLOYMENT_RELEASE_ROOT=${manager.environment.releaseRoot}`,
       `--setenv=CONCIERGE_DEPLOYMENT_RUNTIME_DIR=${manager.environment.installRoot}`,
-      `--setenv=CONCIERGE_BUN_BIN=${manager.environment.bunExecutable}`,
+      `--setenv=CONCIERGE_BUN_BIN=${join(manager.environment.installRoot,'bun')}`,
       `--setenv=CONCIERGE_DEPLOYMENT_CONTROL_ROOT=${join(intent.artifactPath, "control")}`,
       `--setenv=CONCIERGE_CONTROL_RECOVERY_RUN_ID=${runId}`,
       "/usr/bin/bash", join(intent.artifactPath, "control/deploy.sh")]);
@@ -333,16 +362,16 @@ export async function handleControlRecovery(commandName: string, option: (name: 
     const pid = Number(required("--owner-pid"));
     if (!Number.isSafeInteger(pid) || !isAncestorProcess(pid)) throw new Error("Recovery owner must be a live ancestor.");
     assertRepairUnitStopped(intent.incidentId, command);
-    const run = claimControlRecovery(runId, processIdentity(pid));
+    const run = await ledger.mutate('claim',[runId,processIdentity(pid)]);
     if (run.status === "succeeded") return { status: "succeeded", run_id: runId };
-    containControlRecovery(runId, manager, process.env.CONCIERGE_SYSTEMD_DIR || "/etc/systemd/system", command);
+    await containControlRecovery(runId, manager, process.env.CONCIERGE_SYSTEMD_DIR || "/etc/systemd/system", command,ledger);
     const manifest = manager.verify(intent.artifactPath);
-    recordDeploymentReleasePrepared(runId, intent.artifactPath, manifest);
+    await ledger.mutate('prepared',[runId,intent.artifactPath,manifest]);
     notifyDeploymentWorker();
     return { ...intent, run, mask_owned: Boolean(controlRecoveryEvent(runId, "control_recovery_mask_intended")?.owned) };
   }
   if (commandName === "recovery-failed") {
-    const run = failControlRecovery(runId, required("--error"));
+    const run = await ledger.mutate('failed',[runId,required("--error")]);
     notifyDeploymentWorker();
     return { status: "reserved", run };
   }
@@ -360,7 +389,7 @@ export async function handleControlRecovery(commandName: string, option: (name: 
         throw new Error("The promoted repair unit must be installed before clearing containment.");
       }
       command(["systemctl", "daemon-reload"]);
-      recordControlRecoveryEvent(runId, "control_recovery_unmasked", { control_commit: intent.controlCommit });
+      await ledger.mutate('event',[runId,"control_recovery_unmasked",{ control_commit: intent.controlCommit }]);
     }
     return { status: "ready", owned_mask: Boolean(mask?.owned) };
   }

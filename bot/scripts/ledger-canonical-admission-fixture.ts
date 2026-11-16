@@ -1,0 +1,38 @@
+import assert from 'node:assert/strict';
+import {Database} from 'bun:sqlite';
+import {observedDatabase} from '../src/storage-observation';
+import {ledgerWriteResults} from '../src/ledger-write-results';
+import {assertLedgerSql,enableLedgerAdmission,maintainLedger,runLedgerSegment,assertLedgerSegment,runLedgerSteps,ledgerCallback} from '../src/ledger-admission';
+const raw=ledgerWriteResults(new Database(':memory:'));
+const db=observedDatabase(raw,assertLedgerSql);
+db.exec('CREATE TABLE t(value);INSERT INTO t VALUES(1)');
+const escaped=db.query('UPDATE t SET value=value+1');
+const returning=db.prepare('UPDATE t SET value=value+1 RETURNING value');
+const native=escaped.native;
+const transactionDatabase=db.transaction(()=>{}).database;
+assert.equal(transactionDatabase,db);
+enableLedgerAdmission();
+let resume!:()=>void;
+const maintenance=maintainLedger(()=>new Promise<void>(resolve=>{resume=resolve;}));
+await Promise.resolve();
+const before=(db.query('SELECT total_changes() n').get() as any).n;
+for(const operation of [()=>escaped.run(),()=>native.run(),()=>transactionDatabase.query('UPDATE t SET value=9').run(),()=>returning.get(),()=>db.exec('SELECT 1;UPDATE t SET value=9'),()=>db.transaction(()=>{})(),()=>db.prepare('PRAGMA user_version=7'),()=>db.close()])assert.throws(operation,/NOT_ADMITTED/);
+await assert.rejects((async()=>{await Promise.resolve();escaped.run();})(),/NOT_ADMITTED/,'an untransformed resumed callback inherits no SQL permission');
+assert.equal((db.query('SELECT total_changes() n').get() as any).n,before);
+let observer=false,completed=false;
+const mutation=runLedgerSegment(()=>{
+ db.transaction(()=>{
+  db.query('UPDATE t SET value=value+1').run();
+  assertLedgerSegment();observer=true;
+ })();
+}).then(()=>{completed=true;});
+await Promise.resolve();assert.equal(completed,false);assert.equal(observer,false);
+resume();await maintenance;await mutation;
+assert.equal(observer,true);assert.equal((db.query('SELECT value FROM t').get() as any).value,2);
+await assert.rejects(runLedgerSegment(()=>{db.transaction(()=>{db.query('UPDATE t SET value=7').run();throw Error('rollback');})();}),/rollback/);
+assert.equal((db.query('SELECT value FROM t').get() as any).value,2);
+const receiver={value:7,async run(input:number){return runLedgerSteps((function*(this:typeof receiver){yield Promise.resolve();assertLedgerSegment();return this.value+input;}).call(this));}};
+assert.equal(await receiver.run(3),10);
+assert.equal(await ledgerCallback(function(this:{value:number},n:number){assertLedgerSegment();return this.value+n;}).call(receiver,4),11);
+await runLedgerSegment(()=>db.close());
+console.log(JSON.stringify({fixture:'canonical-admission',pass:true,checks:11,properties:['prepared statement escape refused','RETURNING read method refused','multi-statement SELECT prefix refused','transaction entry refused','PRAGMA prepare refused','close refused','untransformed resumed SQL callback refused','whole transaction and synchronous observer','rollback semantics','receiver across wait','native callback receiver']}));

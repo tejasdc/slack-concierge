@@ -1,3 +1,5 @@
+import { open as openJournalFile, type FileHandle } from "node:fs/promises";
+import { withProviderCallbackCustody, executionObservationCallbacks, transportObservationCallbacks, type ProviderCallbackCustody } from "./provider-callback-custody";
 /**
  * The coordinator's side of an execution host (bot/scripts/execution-host.ts): starting one under
  * the machine's own supervisor, and the connection that attaches to it, replays its record and
@@ -16,7 +18,7 @@ import { nextRetry } from "./retry-core";
 import { log } from "./log";
 import { ledgerDurable } from "./ledger-durability-barrier";
 import { ProviderDispatchError } from "./provider-failures";
-import type { HostAccess, HostLink, HostManifest, HostRunnerFile } from "./host-access";
+import type { HostAccess, HostLink, HostManifest, HostRunnerFile, HostJournalReader } from "./host-access";
 
 import HOST_PROTOCOLS from "./host-protocols.json";
 /**
@@ -435,6 +437,7 @@ export class LocalHostAccess implements HostAccess {
   connect(timeoutMs?: number) { return HostConnection.connect(hostSocketPath(this.directory), timeoutMs); }
   custody() { return hostCustody(this.directory, this.executionId); }
   journal() { return streamJournal(this.directory); }
+  journalReader() { return localHostJournalReader(this.directory); }
   release() { return releaseHost(this.directory, this.executionId); }
   stopSuperseded() { return stopSupersededHost(this.directory, this.executionId); }
   supervisorView() { return hostSupervisorView(this.executionId); }
@@ -455,10 +458,10 @@ export type HostedExecution = {
   /** Where the host is; by default this machine (LocalHostAccess). */
   access?: HostAccess;
   /** Ledger custody steps; each is called once, in order, never for a replayed fact. */
-  onLaunched?: (launch: HostLaunch) => void;
-  onAttached?: (status: HostStatus & { until: number }) => void;
-  onExited?: (exit: { code: number | null; signal: string | null }) => void;
-  onReleased?: () => void;
+  onLaunched?: (launch: HostLaunch) => void | Promise<void>;
+  onAttached?: (status: HostStatus & { until: number }) => void | Promise<void>;
+  onExited?: (exit: { code: number | null; signal: string | null }) => void | Promise<void>;
+  onReleased?: () => void | Promise<void>;
 };
 
 /**
@@ -470,6 +473,7 @@ export type HostedExecution = {
 export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
   private readonly access: HostAccess;
   private link: HostLink | null = null;
+  private callbackCustody: ProviderCallbackCustody | null = null;
   constructor(private readonly execution: HostedExecution,
     /** `inactivityMs: null` sets no limit: an outside run is watched, never policed (outside-codex.ts). */
     private readonly timeouts: { inactivityMs?: number | null; shutdownGraceMs?: number } = {},
@@ -482,29 +486,45 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
    * Claude's transcript is read where Claude runs. A runner's link follows it there and sends each
    * pickup back; on this machine the caller reads the transcript itself (null).
    */
-  transcriptWatcher(): ((input: { sessionUuid: string; fromStart: boolean; onPickup: (pickup: any) => void }) => () => void) | null {
+  transcriptWatcher(): ((input: { sessionUuid: string; fromStart: boolean; onPickup: (pickup: any) => void | Promise<void> }) => () => void) | null {
     if (this.access.place !== "runner") return null;
     return input => {
       // A resumed conversation asks before the host is attached; the watch starts on each link.
       const watch = { input, stop: null as (() => void) | null, stopped: false };
       this.watches.add(watch);
-      if (this.link?.watchTranscript) watch.stop = this.link.watchTranscript(input);
+      if (this.link?.watchTranscript) watch.stop = this.link.watchTranscript(this.watchInput(input));
       return () => { watch.stopped = true; this.watches.delete(watch); watch.stop?.(); };
     };
   }
-  private readonly watches = new Set<{ input: { sessionUuid: string; fromStart: boolean; onPickup: (pickup: any) => void }; stop: (() => void) | null; stopped: boolean }>();
+  private readonly watches = new Set<{ input: { sessionUuid: string; fromStart: boolean; onPickup: (pickup: any) => void | Promise<void> }; stop: (() => void) | null; stopped: boolean }>();
+  private watchInput(input: { sessionUuid: string; fromStart: boolean; onPickup: (pickup: any) => void | Promise<void> | Promise<void> }) {
+    return { ...input, onPickup: (pickup: any) => {
+      const custody = this.callbackCustody;
+      if (!custody) throw new Error("Transcript pickup arrived outside execution callback custody");
+      custody.enqueue(() => input.onPickup(pickup));
+      return custody.drain();
+    } };
+  }
+
   private linkAttached(link: HostLink) {
     this.link = link;
-    for (const watch of this.watches) if (!watch.stopped && link.watchTranscript) { watch.stop?.(); watch.stop = link.watchTranscript(watch.input); }
+    for (const watch of this.watches) if (!watch.stopped && link.watchTranscript) { watch.stop?.(); watch.stop = link.watchTranscript(this.watchInput(watch.input)); }
   }
 
   run(input: Parameters<ClaudeCodeTransport["run"]>[0]): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
-    const execution = this.execution;
+    return withProviderCallbackCustody(input, (held, custody) => {
+      this.callbackCustody = custody;
+      return this.runProducer(held, custody.wrap(this.execution, executionObservationCallbacks), custody);
+    }, transportObservationCallbacks);
+  }
+
+  private runProducer(input: Parameters<ClaudeCodeTransport["run"]>[0], execution: typeof this.execution, custody: ProviderCallbackCustody): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
     const inactivityMs = this.timeouts.inactivityMs === null ? null : this.timeouts.inactivityMs ?? 30 * 60_000;
     const shutdownGraceMs = this.timeouts.shutdownGraceMs ?? 2_000;
     const access = this.access;
-    if (execution.mode === "adopt-record") return this.runFromRecord(input);
-    return new Promise((resolve, reject) => {
+    if (execution.mode === "adopt-record") return this.runFromRecord(input, execution, custody);
+    const journalReader = access.journalReader?.();
+    return new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
       const adopted=execution.mode==="adopt";
       if(adopted)activeAdoptedRuns++;
       let connection: HostLink | null = null;
@@ -521,6 +541,8 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
       };
       const signal = (name: "SIGTERM" | "SIGKILL") => {
         if (exited || !connection) return;
+        // Controls keep their existing connection-level durability fence. They
+        // cannot wait behind a business observation held by ledger admission.
         void connection.command({ op: "signal", id: `signal-${name}-${randomUUID()}`, signal: name }).catch(() => {});
       };
       const scheduleKill = () => { timers.push(setTimeout(() => signal("SIGKILL"), shutdownGraceMs)); };
@@ -562,20 +584,15 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
       };
 
       // ---- frames -------------------------------------------------------------------------
-      // Frames up to the host's sequence at attach (`replayUntil`) are the predecessor's history.
-      // They are collected whole, so each recorded write is replayed with its recorded outcome,
-      // and handed over only after this run's writer exists; then the run is told the history
-      // ended. Nothing in between can act on the live process (design §3.1 step 4).
+      // The original journal owns payload custody. Socket arrivals advance only a scalar
+      // frontier; one streaming consumer reads that range and awaits each observation.
+      // Control replies keep pumping even while admission holds the data consumer.
       let replayUntil = 0, ready = false, replayEnded = false, lastSeen = 0, received = 0;
       let replayFrames=0,replayBytes=0,replayMaxFrameMs=0,journalBytes:number|null=null;
       let providerPid:number|null=null,spawnError:string|null=null,initialWritten=false;
       let streamingReplay = false;
       let replayOutcomes = new Map<string, "written" | "failed">();
-      // Frames can arrive in the same chunk as the attach answer, before the history's end is known
-      // here; they wait unsorted until it is (`early`), then are sorted once.
-      const early: HostFrame[] = [];
-      const history: HostFrame[] = [];
-      const pendingLive: HostFrame[] = [];
+      let framePump: Promise<void> | null = null;
       const handle = (frame: HostFrame, replayed: boolean, outcomes?: Map<string, "written" | "failed">) => {
         const started=performance.now();
         lastSeen = frame.s;
@@ -585,17 +602,17 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
         else if (frame.k === "h" && typeof frame.d?.providerPid === "number") providerPid=frame.d.providerPid;
         else if (frame.k === "c" && frame.d?.op === "spawn-error") spawnError=String(frame.d.error??'provider spawn failed');
         else if (frame.k === "c" && frame.d?.op === "written" && frame.d?.id === "initial") initialWritten=true;
-        else if (frame.k === "i" && replayed && frame.d?.id !== "initial") {
+        else if (frame.k === "i" && replayed) {
           const outcome = outcomes?.get(frame.d.id) ?? "unknown";
           // A write the host recorded as failed never reached the provider and rebuilds nothing.
           if (outcome !== "failed") input.onReplayedInput?.(frame.d.line, frame.d.meta ?? null, frame.t, outcome);
         } else if (frame.k === "x") {
           exited = true;
           const exit = { code: frame.d?.code ?? null, signal: (frame.d?.signal ?? null) as NodeJS.Signals | null };
-          execution.onExited?.(exit);
           // The host keeps its record until the turn's result is durably settled; the turn's owner
           // releases it afterwards (releaseHost), so a crash in between still finds it.
           if (!replayEnded) { replayEnded = true; input.onReplayEnd?.(); }
+          execution.onExited?.(exit);
           if (terminationError) finish(terminationError);
           else if (spawnError && providerPid === null && !initialWritten)
             finish(new ProviderDispatchError({message:`The provider command could not start: ${spawnError}`,
@@ -610,48 +627,58 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
         execution_id:execution.executionId,replay_frames:replayFrames,replay_bytes:replayBytes,
         journal_bytes:journalBytes,max_frame_ms:Math.round(replayMaxFrameMs),active_adopted_runs:activeAdoptedRuns,
       });
-      const endHistory = () => {
-        if (replayEnded || !ready) return;
-        // Sequences are contiguous, so the history is complete exactly when the last frame sorted
-        // into it reaches the boundary; what has merely been received (perhaps in one chunk with
-        // the attach answer) does not count until it has been sorted.
-        if ((streamingReplay ? lastSeen : (history.at(-1)?.s ?? lastSeen)) < replayUntil) return;
-        if (streamingReplay) {
-          replayEnded = true;
-          recordReplay();
-          input.onReplayEnd?.();
-          replayOutcomes.clear();
-          resetInactivity();
-          for (const frame of pendingLive.splice(0)) sort(frame);
-          return;
-        }
-        const outcomes = new Map<string, "written" | "failed">();
-        for (const frame of history) if (frame.k === "c" && typeof frame.d?.id === "string") {
-          if (frame.d.op === "written") outcomes.set(frame.d.id, "written");
-          if (frame.d.op === "write-failed") outcomes.set(frame.d.id, "failed");
-        }
-        for (const frame of history.splice(0)) { if (settled) return; try { handle(frame, true, outcomes); } catch (error) { terminateWithError(error); } }
-        if (!replayEnded) { replayEnded = true; input.onReplayEnd?.(); }
+      const consumeCallbacks = () => custody.drain().catch(() => {
+        // The first consumer error remains the final producer error. Keep consuming
+        // exact later source observations instead of silently dropping them.
+      });
+      const completeReplay = async () => {
+        if (replayEnded || lastSeen < replayUntil) return;
+        replayEnded = true;
         recordReplay();
+        input.onReplayEnd?.();
+        await consumeCallbacks();
+        replayOutcomes.clear();
         resetInactivity();
-        for (const frame of pendingLive.splice(0)) sort(frame);
       };
-      // Every frame is taken once, in sequence, whichever connection carried it.
+      const pumpFrames = () => {
+        if (!ready || framePump || settled) return;
+        framePump = (async () => {
+          if (!streamingReplay && !replayEnded) {
+            for await (const frame of access.journal()) {
+              if (frame.s > replayUntil) break;
+              if (frame.k === "c" && typeof frame.d?.id === "string") {
+                if (frame.d.op === "written") replayOutcomes.set(frame.d.id, "written");
+                if (frame.d.op === "write-failed") replayOutcomes.set(frame.d.id, "failed");
+              }
+            }
+          }
+          await completeReplay();
+          while (!settled && lastSeen < received) {
+            const target = received;
+            for await (const frame of journalReader ? journalReader.read(target) : access.journal()) {
+              if (frame.s <= lastSeen) continue;
+              if (frame.s > target || settled) break;
+              if (frame.s !== lastSeen + 1) throw new HostUnavailableError("The retained execution journal has a sequence gap");
+              handle(frame, frame.s <= replayUntil, replayOutcomes);
+              await consumeCallbacks();
+              await completeReplay();
+            }
+            if (!settled && lastSeen < target)
+              throw new HostUnavailableError("The retained execution journal is missing an announced frame");
+          }
+        })().catch(error => finish(error instanceof Error ? error : new Error(String(error)))).finally(() => {
+          framePump = null;
+          if (!settled && received > lastSeen) pumpFrames();
+        });
+      };
+      const endHistory = () => pumpFrames();
+      // Every sequence is consumed once, independently of the connection that announced it.
+      // No payload closure is retained per incoming frame.
       const dispatch = (frame: HostFrame) => {
         if (frame.s <= received || settled) return;
         received = frame.s;
-        sort(frame);
-      };
-      const sort = (frame: HostFrame) => {
-        if (!ready) { early.push(frame); return; }
-        if (frame.s <= replayUntil && !replayEnded) {
-          if (streamingReplay) {
-            try { handle(frame, true, replayOutcomes); } catch (error) { terminateWithError(error); }
-          } else history.push(frame);
-          endHistory(); return;
-        }
-        if (!replayEnded) { pendingLive.push(frame); return; }
-        try { handle(frame, false); } catch (error) { terminateWithError(error); }
+        if (ready && frame.s > replayUntil && (frame.k === "o" || frame.k === "e")) resetInactivity();
+        pumpFrames();
       };
 
       // ---- connection and custody ------------------------------------------------------------
@@ -694,12 +721,12 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
               input.onInterruptReady?.(async () => { throw new HostWriteRefusedError("the provider has exited"); });
               input.onStdinReady?.(() => Promise.reject(new HostWriteRefusedError("the provider has exited")), () => {});
               ready = true;
-              for (const frame of early.splice(0)) sort(frame);
             }
             streamingReplay = true;
             replayOutcomes = outcomes;
             for await (const frame of access.journal()) dispatch(frame);
             endHistory();
+            await framePump;
             if (!settled) finish(new HostUnavailableError("the execution host left a record that ends without the provider's exit"));
             return;
           } else if (custody === "dead") {
@@ -729,8 +756,8 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
         });
         input.onStdinReady?.((value: string, meta?: TransportFrameMeta) => write(value, meta), () => closeInput());
         input.onProtocolActivityReady?.(resetInactivity);
+        await custody.drain();
         ready = true;
-        for (const frame of early.splice(0)) sort(frame);
         endHistory();
       };
       const begin = async () => {
@@ -750,6 +777,7 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
               initialInput: input.stdin.endsWith("\n") ? input.stdin.slice(0, -1) : input.stdin,
               initialMeta: { kind: "initial" } }, this.files);
           execution.onLaunched?.(launch);
+          await custody.drain();
           await establish(await access.connectWhenReady());
         } else {
           await establish(await access.connect());
@@ -762,14 +790,14 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
         }
         finish(error instanceof Error ? error : new Error(String(error)));
       });
-    });
+    }).finally(() => journalReader?.close());
   }
 
   /**
    * The host is gone but its record holds the provider's exit: the run is rebuilt from the record
    * alone and settles from its own evidence, never as an interruption (it cannot write any more).
    */
-  private async runFromRecord(input: Parameters<ClaudeCodeTransport["run"]>[0]): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  private async runFromRecord(input: Parameters<ClaudeCodeTransport["run"]>[0], execution: HostedExecution, custody: ProviderCallbackCustody): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
     let exit: HostFrame | null = null;
     const outcomes = new Map<string, "written" | "failed">();
     for await (const frame of this.access.journal()) {
@@ -785,19 +813,49 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
     for await (const frame of this.access.journal()) {
       if (frame.k === "o") input.onStdout(`${frame.d}\n`, frame.t);
       else if (frame.k === "e") input.onStderr(String(frame.d));
-      else if (frame.k === "i" && frame.d?.id !== "initial") {
+      else if (frame.k === "i") {
         const outcome = outcomes.get(frame.d.id) ?? "unknown";
         if (outcome !== "failed") input.onReplayedInput?.(frame.d.line, frame.d.meta ?? null, frame.t, outcome);
       }
+      await custody.drain().catch(() => {});
     }
     input.onReplayEnd?.();
-    this.execution.onExited?.({ code: exit.d?.code ?? null, signal: exit.d?.signal ?? null });
+    execution.onExited?.({ code: exit.d?.code ?? null, signal: exit.d?.signal ?? null });
     return { code: exit.d?.code ?? null, signal: (exit.d?.signal ?? null) as NodeJS.Signals | null };
   }
 }
 
 /** The host is positively gone and recorded no exit: what the provider did is unconfirmed. */
 export class HostLostError extends Error {}
+
+/** A reader keeps the original append-only descriptor and byte position between heads. */
+export function localHostJournalReader(directory: string): HostJournalReader {
+  let descriptor: FileHandle | null = null, position = 0, sequence = 0;
+  let pending = Buffer.alloc(0);
+  return {
+    async *read(through) {
+      descriptor ??= await openJournalFile(join(directory, "journal"), "r");
+      while (sequence < through) {
+        const newline = pending.indexOf(10);
+        if (newline >= 0) {
+          const line = pending.subarray(0, newline).toString("utf8");
+          pending = pending.subarray(newline + 1);
+          if (!line) continue;
+          const frame = JSON.parse(line) as HostFrame;
+          if (frame.s !== sequence + 1) throw new HostUnavailableError("Original host journal sequence changed");
+          sequence = frame.s; yield frame;
+          continue;
+        }
+        const bytes = Buffer.alloc(64 * 1024);
+        const { bytesRead } = await descriptor.read(bytes, 0, bytes.length, position);
+        if (!bytesRead) throw new HostUnavailableError("Original host journal is missing an announced frame");
+        position += bytesRead;
+        pending = Buffer.concat([pending, bytes.subarray(0, bytesRead)]);
+      }
+    },
+    async close() { await descriptor?.close(); descriptor = null; pending = Buffer.alloc(0); },
+  };
+}
 
 /** Two-pass recovery can scan a journal without retaining its output frames in memory. */
 export async function* streamJournal(directory: string): AsyncGenerator<HostFrame> {

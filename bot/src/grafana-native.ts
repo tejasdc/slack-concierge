@@ -1,3 +1,4 @@
+import {runLedgerSteps} from './ledger-admission';
 import {resolveRepairNotice} from "./repair-notices";
 import { createHash } from "node:crypto";
 import { db } from "./state";
@@ -10,7 +11,7 @@ function episodeKey(row: GrafanaAlertRow) {
 }
 
 /** Native receipt is deterministic: an owner crash after publication cannot duplicate it. */
-export async function publishNativeGrafanaAlert(row: GrafanaAlertRow): Promise<string> {
+export async function publishNativeGrafanaAlert(row: GrafanaAlertRow): Promise<string> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const key = episodeKey(row);
   const inputId = `service:grafana:${key}:${row.status}`;
   // The durable Grafana receipt is enough for the external owner and reserved
@@ -24,4 +25,4 @@ export async function publishNativeGrafanaAlert(row: GrafanaAlertRow): Promise<s
   else publishProviderFreeNotice(db, { key: `${key}:firing`, kind: "grafana_alert", text,
     payload: { condition: row.condition, fingerprint: row.fingerprint, source: GRAFANA_ORIGIN } });
   return inputId;
-}
+}).call(this));}

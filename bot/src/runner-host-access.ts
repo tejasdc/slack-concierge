@@ -1,3 +1,4 @@
+import {runLedgerSteps,runLedgerSegment} from './ledger-admission';
 /**
  * The coordinator's side of a host that runs on a runner (docs/architecture/RUNNERS.md, "Turns on
  * a runner"). The runner starts the unchanged execution host for a `turn` job, attaches to it on its
@@ -23,7 +24,7 @@ import { OWNER_DRAIN_WITHDRAWAL_REASON, runnerActivity } from "./runner-leases";
 import { runnerLedger } from "./runner-ledger";
 import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION, HostNotStartedError, HostUnavailableError,
   type HostCustody, type HostFrame, type HostLaunch, type HostStatus, type SupervisorView } from "./execution-host-client";
-import type { HostAccess, HostLink, HostManifest, HostRunnerFile } from "./host-access";
+import type { HostAccess, HostLink, HostManifest, HostRunnerFile, HostJournalReader } from "./host-access";
 
 export const RUNNER_SUPERVISOR = "runner";
 export const TURN_JOB_KIND = "turn";
@@ -78,11 +79,11 @@ export class RunnerHostAccess implements HostAccess {
   constructor(readonly executionId: string, private readonly ownerInstanceId?: string,
     private readonly targetRunner?: string) { this.jobId = turnJobId(executionId); }
 
-  async launch(manifest: HostManifest, files: HostRunnerFile[] = []): Promise<HostLaunch> {
+  async launch(manifest: HostManifest, files: HostRunnerFile[] = []): Promise<HostLaunch> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const payload = { executionId: this.executionId, manifest, files, protocols: ADOPTABLE_HOST_PROTOCOLS,
       ...(this.targetRunner ? { targetRunner: this.targetRunner } : {}) };
     // The execution's intent and turn are on disk before any runner can see the work.
-    await ledgerDurable();
+    yield ledgerDurable();
     engine().enqueue({ jobId: this.jobId, kind: TURN_JOB_KIND, payload, replaySafe: false });
     // A launch that crossed the drain's first sweep still has no runner custody. The enqueue and
     // withdrawal run without an await between them, and withdraw refuses a concurrent claim.
@@ -111,9 +112,10 @@ export class RunnerHostAccess implements HostAccess {
           ...(typeof attached?.protocol === "number" ? { protocol: attached.protocol } : {}),
           hostScript: "", runtime: "", manifestDigest: createHash("sha256").update(JSON.stringify(payload)).digest("hex") };
       }
-      await nextActivity(this.jobId);
+      yield nextActivity(this.jobId);
     }
-  }
+
+}).call(this));}
 
   /**
    * Whether the runner holding this job reached the owner after `sinceMs`, waiting up to `timeoutMs`:
@@ -155,17 +157,41 @@ export class RunnerHostAccess implements HostAccess {
    * held until it does, and an ended job settles from its recorded exit or is lost.
    */
   async custody(): Promise<HostCustody> {
-    let job = engine().job(this.jobId, Number.MAX_SAFE_INTEGER);
-    if (!job) return "dead";
-    if (job.state === "queued" && engine().withdraw(this.jobId, "the coordinator that queued it stopped before a runner claimed it")) return "dead";
-    job = engine().job(this.jobId, Number.MAX_SAFE_INTEGER)!;
-    if (!ended(job.state)) return this.attachedEvent() ? "answering" : "held";
+    const current=await runLedgerSegment(() => {
+      let job = engine().job(this.jobId, Number.MAX_SAFE_INTEGER);
+      if (!job) return "dead" as const;
+      if (job.state === "queued" && engine().withdraw(this.jobId, "the coordinator that queued it stopped before a runner claimed it")) return "dead" as const;
+      job = engine().job(this.jobId, Number.MAX_SAFE_INTEGER)!;
+      if (!ended(job.state)) return this.attachedEvent() ? "answering" as const : "held" as const;
+      return null;
+    });
+    if(current!==null)return current;
     for await (const frame of this.journal()) if (frame.k === "x") return "settle-from-record";
     return "dead";
   }
 
   async *journal(): AsyncGenerator<HostFrame> {
     for await (const event of jobEvents(this.jobId)) if (event.frame?.k === "host") yield event.frame.f as HostFrame;
+  }
+
+  journalReader(): HostJournalReader {
+    let position: Position = { attempt: 0, seq: 0 }, sequence = 0;
+    const jobId = this.jobId;
+    return {
+      async *read(through) {
+        for await (const event of jobEvents(jobId, position)) {
+          position = { attempt: event.attempt, seq: event.seq };
+          if (event.frame?.k !== "host") continue;
+          const frame = event.frame.f as HostFrame;
+          if (frame.s <= sequence) continue;
+          if (frame.s !== sequence + 1) throw new HostUnavailableError("Original runner host journal sequence changed");
+          sequence = frame.s; yield frame;
+          if (sequence === through) return;
+        }
+        if (sequence < through) throw new HostUnavailableError("Original runner journal is missing an announced frame");
+      },
+      async close() {},
+    };
   }
 
   async release(): Promise<boolean> {
@@ -194,9 +220,9 @@ export class RunnerHostAccess implements HostAccess {
  * Records a command for the job's runner and waits for its first result. The command is recorded
  * only after the rows it rests on are on disk, like a local host's commands.
  */
-async function runnerCommand(jobId: string, message: { op: string; id: string; [key: string]: unknown }, timeoutMs: number | null): Promise<any> {
+async function runnerCommand(jobId: string, message: { op: string; id: string; [key: string]: unknown }, timeoutMs: number | null): Promise<any> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const commandId = `${jobId}:${message.id}`;
-  await ledgerDurable();
+  yield ledgerDurable();
   engine().command(jobId, { commandId, kind: message.op, body: message });
   const deadline = timeoutMs === null ? Infinity : Date.now() + timeoutMs;
   for (;;) {
@@ -205,9 +231,10 @@ async function runnerCommand(jobId: string, message: { op: string; id: string; [
     const job = engine().job(jobId, Number.MAX_SAFE_INTEGER);
     if (!job || ended(job.state)) throw new HostUnavailableError(`the runner job ended before answering ${message.op}`);
     if (Date.now() >= deadline) throw new HostUnavailableError(`the runner did not answer ${message.op} in time`);
-    await nextActivity(jobId);
+    yield nextActivity(jobId);
   }
-}
+
+}).call(this));}
 
 /** One coordinator's attachment to a runner-held host: frames from the ledger, commands into it. */
 class RunnerLink implements HostLink {
@@ -216,7 +243,7 @@ class RunnerLink implements HostLink {
   readonly replayWriteOutcomes = new Map<string, "written" | "failed">();
   private closed = false;
   private closedHandlers: Array<(reason: string) => void> = [];
-  private pickupHandlers = new Map<string, (pickup: any) => void>();
+  private pickupHandlers = new Map<string, (pickup: any) => void | Promise<void>>();
   constructor(private readonly access: RunnerHostAccess) {}
 
   async attach(from: number, onFrame: (frame: HostFrame) => void): Promise<HostStatus & { until: number; streamingReplay?: boolean }> {
@@ -260,7 +287,7 @@ class RunnerLink implements HostLink {
         const frame = event.frame;
         if (frame?.k === "host" && frame.f?.s >= from) onFrame(frame.f as HostFrame);
         else if (frame?.k === "pickup" && (event.attempt > pickupsFrom.attempt || (event.attempt === pickupsFrom.attempt && event.seq > pickupsFrom.seq)))
-          this.pickupHandlers.get(frame.watch)?.(frame.pickup);
+          await this.pickupHandlers.get(frame.watch)?.(frame.pickup);
       }
       if (read) continue;
       const job = engine().job(jobId, Number.MAX_SAFE_INTEGER);
@@ -283,7 +310,7 @@ class RunnerLink implements HostLink {
     return runnerCommand(this.access.jobId, { op: "status", id: `status-${crypto.randomUUID()}` }, timeoutMs);
   }
 
-  watchTranscript(input: { sessionUuid: string; fromStart: boolean; onPickup: (pickup: any) => void }): () => void {
+  watchTranscript(input: { sessionUuid: string; fromStart: boolean; onPickup: (pickup: any) => void | Promise<void> }): () => void {
     const watch = `watch-${crypto.randomUUID()}`;
     this.pickupHandlers.set(watch, input.onPickup);
     void runnerCommand(this.access.jobId, { op: "watch-transcript", id: watch, sessionUuid: input.sessionUuid, fromStart: input.fromStart }, null).catch(() => {});

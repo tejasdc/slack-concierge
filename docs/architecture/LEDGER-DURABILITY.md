@@ -8,8 +8,8 @@ transaction (`rootCommits`). These are exact counts for this write path, not tot
 ledger table. Compare them with WAL commit-frame counts when investigating overall ledger write
 pressure. The metric contains event kinds and counts only, never message content or IDs.
 
-Provider tool updates and commentary are kept in a bounded owner-memory queue for at most one
-second, then written in one SQLite transaction. A queue also flushes at 512 events or 4 MiB,
+While serving, provider tool updates and commentary wait for the existing one-second batch
+timer, then are written in one SQLite transaction. A queue also flushes at 512 events or 4 MiB,
 before an immediate provider message, and when a provider turn ends. Exact event IDs, versions,
 order and the accepted input to which each update belongs are captured before the wait; duplicate
 replays are ignored. A flush reserves SQLite's writer up front (an immediate transaction), because
@@ -72,12 +72,12 @@ Linux only) changes where the disk is waited for, not what is written or when it
   supervisor's liveness ping answer at once. Not covered: Thinkering notifications and pushes,
   project files and attachment files written by the owner; after a power loss those can describe a
   row that was lost, which repeats or orphans a notice but never replays provider work.
-- A **checkpoint thread** (role `checkpoint`, its own `synchronous=FULL` connection) runs
-  `PRAGMA wal_checkpoint(PASSIVE)`, which never takes the writer lock. It reads how much log is
-  uncopied through `PRAGMA wal_checkpoint(NOOP)` (frames written minus frames copied) and
-  `PRAGMA page_size`, and copies once 64 MB is waiting while `/proc/pressure/io` "some avg10" is at most 10%,
-  or at 256 MB regardless. It copies a small log only to finish a partly copied one (see
-  [log recycling](#log-recycling)). It is the ledger's only checkpointer on
+- A **checkpoint thread** (role `checkpoint`, its own `synchronous=FULL` connection) measures
+  uncopied bytes with `PRAGMA wal_checkpoint(NOOP)` and `PRAGMA page_size`. Its unchanged
+  selection is 64 MiB waiting while `/proc/pressure/io` "some avg10" is at most 10%, or 256 MiB
+  regardless. It requests an owner-controlled recycling cycle instead of autonomously copying
+  a moving snapshot; see [WAL recycling admission](#wal-recycling-admission). It is the only
+  explicit serving checkpointer on
   Linux: every ledger writer wrapped by `ledgerWriteResults`, including deployment controls,
   sets `wal_autocheckpoint=0` before preparing statements; the owner's connection also sets it
   explicitly. On 2026-10-12 the pressure gate rarely opened, the log reached 285 MB (the old
@@ -89,7 +89,209 @@ Linux only) changes where the disk is waited for, not what is written or when it
   [after releasing the write lock](https://www.sqlite.org/c3ref/wal_hook.html), and its
   [PASSIVE mode does not wait for writers](https://www.sqlite.org/c3ref/wal_checkpoint_v2.html).
 
-### Log recycling
+## WAL recycling admission
+
+The November 15 moving-tail capture established a distinct correctness gap: PASSIVE copied
+through 2,004,669 while concurrent commits had already advanced the tail to 2,004,730. Its
+successful snapshot equality did not mean the current tail was backfilled. Reader gaps alone
+could not recycle those newer frames, and the existing byte selection then deferred that small
+remainder. This is a demonstrated concurrency cycle, not proof of a permanently pinned reader.
+
+The same canonical owner connection still performs application transactions. No application
+writer was moved to a second authority. `ledger-admission.ts` retains complete synchronous
+business operations, including validation reads, in-memory decisions, commits and synchronous
+observer cascades. A generator driver yields at the routine's existing external awaits and
+acquires a fresh lexical permission for each continuation, rejection, catch and finally arm.
+The driver never keeps permission while an external promise is pending. Native callback
+adapters retain their original receiver and arguments. AsyncResource preserves attribution
+and storage telemetry while queued; it does not confer permission.
+
+The canonical `observedDatabase` facade checks preparation, statement execution, RETURNING
+reads, transaction variants, iterators, PRAGMAs, unknown methods and public statement/database
+aliases. A plain single SELECT remains available for original-connection `total_changes()`
+proof sampling and supervisor counters. Those counters can enter SQLite; they are not a
+memory-only liveness route. This read exemption does not authorize a
+business read/decide/write sequence outside its admitted closure. An unexpected mutation
+entrance fails the owner before the native writer attempt; it is not translated into a
+successful business refusal or a fake SQLite BUSY result. Accepted inputs and existing
+uncertain-effect recovery remain authoritative across that failure.
+
+Startup/schema initialization is a separate lifetime. Both runtime compositions activate
+admission after their setup. The original sync worker makes the canonical connection NORMAL;
+recycling remains disabled until release handover proves the supported writer lifetime
+boundary and completes an initial prime. Read workers keep separate physically readonly
+canonical connections. Supported serving deployment, drain and recovery commands use complete
+semantic operations on the owner's existing protected command interface. File restoration,
+Git and systemd effects stay with the release controller. The launch authority retains
+compatible FULL access for verified legacy application lifetimes and exclusive pre-start
+operations. A failed socket request never grants direct writer access.
+The legacy project registry's direct-path mutators also use the existing canonical ledger file
+identity policy and refuse that live file, including aliases. Current project discovery follows
+project folders and the runner catalogue, rather than historical Slack channel mappings; offline
+registry copies retain their existing behavior. This closes a direct constructor path outside
+the accepting owner rather than adding a second mutation entrance.
+
+For one cycle:
+
+1. Unchanged byte/pressure eligibility asks the owner to recycle. Existing release selection
+   first excludes new legacy helper selection and proves prior native lifetimes complete.
+   A refusal before admission closes retains the request: the original worker retries on
+   its existing tick, or the owner retains an unavailable worker's replacement obligation
+   on the existing replacement interval. It does not invent a completed epoch.
+   The owner closes business
+   admission synchronously and assigns one epoch. Current synchronous work and nested
+   observers finish before the asynchronous grant.
+2. The existing descriptor-backed sync barrier covers the original connection's committed
+   application frontier. Its SELECT sampling and worker replies remain live while admission
+   is closed. A queued business operation is not included until it actually commits.
+3. Only that worker/epoch receives a grant. The worker performs actual RESTART at the fixed
+   tail. BUSY retains the same pending cycle even if partial copying reduces uncopied bytes.
+   Finite old reader snapshots finish naturally; the owner does not cancel them.
+4. With the same grant, the worker begins an immediate FULL transaction, reads the current
+   signed `main.user_version`, writes that exact value and commits. This dirties page one and
+   creates/synchronizes the next WAL header off the owner. It verifies the value is preserved,
+   no transaction remains open, and NOOP reports nonempty unbackfilled frames before success.
+5. The owner validates exact worker and epoch, then reopens operation admission. The metadata
+   prime advances no application receipt watermark. Deferred operations commit before their
+   ordinary durability fence is sampled; a reply must match the exact in-flight sync ID.
+
+No additional raw checkpoint-inspection descriptor is opened. Generation/header proof belongs
+to the disposable acceptance fixture, whose main process owns its continuously held descriptor.
+Runtime completion uses SQLite's RESTART/commit/NOOP contracts; the original sync descriptor
+remains the sole application durability witness.
+
+This primer is validated on Bun 1.4.2 revision
+`744846f844374847c902b5e7fd59b4342a51ef99`, embedded SQLite 3.53.2 source
+`d6e03d8c777cfa2d35e3b60d8ec3e0187f3e9f99d8e2ee9cac695fd6fcdf1a24`.
+Same-value metadata priming and Bun VM teardown behavior are implementation-dependent evidence,
+not an extra timeless SQLite public promise. Rerun the real-worker and syscall acceptance when
+changing this runtime boundary.
+
+### Worker lifetime and failure
+
+Bun's pinned `Bun__sqliteCheckpointForTermination` explicitly attempts TRUNCATE before closing
+still-registered VM connections. PERSIST_WAL and SQLite NO_CKPT_ON_CLOSE do not suppress it.
+An idle checkpoint worker dying after a successful prime could otherwise reset the WAL before
+the owner receives its exit event, putting header fsync on the next canonical NORMAL write.
+
+The private checkpoint connection has a finite resource vocabulary: uncached, finalized fixed
+SQL statements, with no backup, BLOB, extension or cached iterator callers. Retirement closes
+this known connection cooperatively, then reports an incarnation/retirement-specific cleanup
+certificate. Replacement requires both that certificate and the worker's own exit. The owner
+never force-terminates an attached checkpoint worker: Bun can hold a process-global SQLite
+mutex during its termination sweep, blocking even owner getters while a native sync stalls.
+An own-error/own-exit hook clears the registered connection before that sweep. A refused close
+is not parked: a maintenance epoch that fails after admission closed would hold every business
+write forever, so the owner logs `ledger_maintenance_failed_closed` and exits with the same
+status as lost sync authority. Ending the whole process (unlike terminating one thread in a
+living process) releases its native locks, and nothing unsynced was ever answered; the existing
+startup recovery reopens the ledger. A lost close certificate, where the worker may still be
+inside a native call, stays held: no timer can prove that call ended. While a RESTART waits on
+an old reader, each busy return (the existing five-second lock wait) logs
+`ledger_recycle_waiting_for_reader`, so a long hold of business writes is visible.
+
+Admission misses are fatal only inside a maintenance window, where the worker holds the writer.
+While serving, no epoch can begin under a synchronous statement, so a statement outside a
+segment is allowed and reported once per call site as `ledger_operation_unadmitted_while_serving`;
+a grant is refused while such a caller leaves a transaction open, and the worker asks again.
+
+Before the release handover enables fixed-tail recycling, a legacy direct writer may still
+exist, so the checkpoint worker keeps the previously installed lock-free behavior: PASSIVE
+copies under the same quiet/forced eligibility, finishing a partly-copied tail on the next
+tick, logged as `ledger_checkpoint` with mode `passive-before-handover`. A handover that never
+completes therefore leaves the log copied as before rather than uncopied. A timer,
+possible old success, stale epoch, error notification or newly opened descriptor is never
+proof of native cleanup or application durability. Loss of an accepting sync authority remains
+fail-closed. This finite private connection contract is not a claim about arbitrary Bun programs.
+
+### Release handover before recycling
+
+The existing release authority owns two distinct scopes: short selection exclusion and
+inherited legacy generation descriptors held through native process cleanup. A deploy child
+can return its durable success response while its enclosing old supervisor still owns its
+generation. The owner records pending handover in existing release events and serves ordinary
+work; it does not wait for that ancestor in the response the ancestor needs to finish.
+Existing reconciliation inputs later prove bootstrap participants and accepted managed launch
+intents drained, then complete initial RESTART/prime and the original descriptor-backed receipt
+before enabling recycling. A restarted owner makes a fresh incarnation-bound proof.
+
+Publication closes future supported helper selection before capturing the finite pre-existing
+set. Exact process identities use boot/start identity plus Linux pidfd process-exit readiness,
+which waits for the last native thread, including a process whose leader is already a zombie.
+Managed jobs/cgroups retain queued launch obligations. A process-name snapshot or a success
+notification alone is not the boundary. Verified artifact inspection runs outside the owner
+event loop. The deployment runbook owns command compatibility, engine identity and pruning.
+
+Operationally, a successful deployment response can precede handover completion. Inspect the
+exact run through the existing bounded read entrance; do not infer eligibility from a green
+release response or a success-shaped log. This example is a read contract, not authorization
+for an additional production trial:
+
+```sql
+SELECT sequence,event,detail_json,created_at
+FROM deployment_run_events
+WHERE run_id = '<exact-run-id>'
+  AND event IN ('ledger_handover_pending','ledger_handover_complete')
+ORDER BY sequence DESC LIMIT 8;
+```
+
+Use [the bounded ledger reader](../runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md#read-the-live-ledger-without-a-copy-first)
+for an authorized investigation. Pending means the accepting incarnation retains the
+obligation and serves ordinary work; it does not mean recycling is enabled. Complete is
+recorded after native participant drainage and prime, then the original sync barrier must
+cover that record before runtime eligibility is enabled. The record is bound to its exact
+application incarnation; a new process must prove again. Admission phase and sync coverage
+remain separate in existing durability counters. Checkpoint progress after an ordinary next
+write demonstrates natural reuse; unchanged physical WAL length is not failure or proof of
+uncheckpointed work. A close refusal or pre-grant refusal retains an obligation, not a
+completed epoch. No success log substitutes for the descriptor-backed receipt or native
+cleanup evidence.
+
+### Producer custody, drain and bounds
+
+Provider consumers may await admission, so their producers retain original events and await
+ordered consumption before result/terminal settlement. Pre-effect transitions still await their
+existing durable intent. Host control replies are pumped independently of retained data
+consumption; live/replayed events retain their original journal identities. Progress that cannot
+flush synchronously during exit uses the existing spill contract without attempting SQLite's
+writer while maintenance holds it. Normal drain final writes acquire the same business gate;
+the original sync authority lives through drain.
+
+Maintenance can hold a callback or progress flush beyond the normal batching timer. It does not
+invent a new cap or discard output. Existing execution hosts retain their journals until canonical
+settlement. Their consumers keep a source cursor/current record while control replies stay live.
+Shared Codex retains ordered callbacks through consumption and preserves its existing exact native
+history recovery for material messages, accepted inputs and steering identities; transient UI
+versions acquire no new crash-durable contract. This repair adds no separate notification archive
+or retirement authority. Source retention grows with actual provider output, not repeated WAL
+copy attempts. There is no claimed global byte ceiling for an indefinitely producing provider
+or an indefinitely held reader. With finite relevant readers and working storage, the fixed
+tail can recycle. Logical reuse is distinct from physical file shrinkage.
+
+### Source and acceptance boundaries
+
+Short admission, canonical-alias and synchronous-observer checks are recurring build guards.
+The real-disk/native-worker, forced-tail, worker-exit and syscall-latch fixtures are explicit
+repair/runtime-compatibility acceptance, not an unbounded physical-I/O addition to every release.
+`ledger-recycling-owner-composition.ts` runs the real owner route, receipt barrier, canonical
+facade and original sync/checkpoint workers on a disposable ledger. Its C interposer separately
+holds checkpoint main-db fsync, primer header fsync, and successive original-descriptor
+fdatasync calls, recording native TIDs. HTTP supervisor control continues at each hold; the
+mutation frontier stays fixed during recycling, the resumed owner does no header fsync, and
+an earlier proof cannot release a later provider effect.
+
+These checks prove their disposable source/runtime composition. They do not establish a
+production release, physical-device behavior, arbitrary storage/VFS behavior, complete
+power-loss durability or physical reclaim. Installed acceptance remains a distinct release
+obligation. The replayable failure record is
+[`2026-11-15-checkpoint-snapshot-outran-by-commits.md`](../incidents/2026-11-15-checkpoint-snapshot-outran-by-commits.md).
+
+### Log recycling before owner admission (history)
+
+This section records the interim PASSIVE tail-copy repair that shipped on 2026-11-16 and the
+incident behind it. The WAL recycling admission design above replaces that autonomous copy: the
+checkpoint thread now only requests an owner-controlled RESTART cycle, so the `tail: true`
+checkpoint series and the tick-by-tick tail retry described below no longer run.
 
 SQLite rewinds the log only when a writer begins with every committed frame already copied
 ([WAL format](https://www.sqlite.org/walformat.html)). PASSIVE copies up to the frame it saw

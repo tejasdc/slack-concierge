@@ -1,3 +1,4 @@
+import {runLedgerSteps,runLedgerSegment} from './ledger-admission';
 import {agentTokenKey,mintAgentToken} from './agent-run-tokens';
 import {RunnerProtocolError} from './runner-leases';
 import {runnerLedger} from './runner-ledger';
@@ -19,14 +20,14 @@ function fail(error:unknown):Response {
   throw error;
 }
 
-export async function runnerRoutes(request:Request,url:URL):Promise<Response> {
+export async function runnerRoutes(request:Request,url:URL):Promise<Response> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const principal=request.headers.get('x-concierge-agent-principal');
   const path=url.pathname.slice('/runner/v1/'.length);
   try {
     if(request.method==='POST'&&path==='token') {
       // Only the owner's own machine (its root-private socket) may create a runner's credential.
       if(principal)return Response.json({ok:false,error:'LOCAL_ONLY'},{status:403});
-      const input=await request.json() as {runner?:unknown};
+      const input=yield request.json() as {runner?:unknown};
       if(typeof input.runner!=='string'||!/^[a-z][a-z0-9-]{1,40}$/.test(input.runner))
         return Response.json({ok:false,error:'INVALID',detail:'Name the runner with lowercase letters, digits and dashes.'},{status:400});
       const directory=process.env.CONCIERGE_STATE_DIR;
@@ -35,7 +36,7 @@ export async function runnerRoutes(request:Request,url:URL):Promise<Response> {
     }
     if(request.method==='POST'&&path==='probes') {
       // A marked probe: a runner that claims it echoes it back, proving claim, heartbeat, events and finish.
-      const input=await request.json() as {probeId?:unknown;text?:unknown};
+      const input=yield request.json() as {probeId?:unknown;text?:unknown};
       if(typeof input.probeId!=='string'||!/^[A-Za-z0-9_-]{8,80}$/.test(input.probeId))
         return Response.json({ok:false,error:'INVALID',detail:'A probe needs a stable probeId.'},{status:400});
       const queued=engine().enqueue({jobId:`probe:${input.probeId}`,kind:'probe',replaySafe:true,
@@ -51,7 +52,7 @@ export async function runnerRoutes(request:Request,url:URL):Promise<Response> {
     const runner=RUNNER.exec(principal??'')?.[1];
     if(!runner)return Response.json({ok:false,error:'RUNNER_ONLY',detail:'Runner routes need a runner token.'},{status:403});
     if(request.method!=='POST')return Response.json({ok:false,error:'NOT_FOUND'},{status:404});
-    const input=await request.json() as any;
+    const input=yield request.json() as any;
     if(path==='claim'){
       const kinds=Array.isArray(input.kinds)?input.kinds.filter((kind:unknown)=>typeof kind==='string'):PROBE_KINDS;
       return Response.json({ok:true,job:engine().claim(runner,kinds)});
@@ -68,4 +69,5 @@ export async function runnerRoutes(request:Request,url:URL):Promise<Response> {
     }
     return Response.json({ok:false,error:'NOT_FOUND'},{status:404});
   } catch(error){return fail(error);}
-}
+
+}).call(this));}

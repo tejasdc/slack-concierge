@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import {onCodexHistoryChanged} from './codex-session-observer';
 import {boundLabInvocation,labInvocationBindingMatches} from './lab-conversations';
 import { codexAppServerReady, codexRelayRunner, ownerCodexAppServerClient, waitForCodexAppServerOrDrain } from "./codex-app-server-client";
@@ -67,28 +69,28 @@ export class DedicatedCodexTestClients {
   private readonly clients=new Map<number,DedicatedCodexTestClient>();
   private readonly retiring=new Map<number,Set<DedicatedCodexTestClient>>();
   get(turnId:number){return this.clients.get(turnId);}
-  async replace(turnId:number,next:DedicatedCodexTestClient){
+  async replace(turnId:number,next:DedicatedCodexTestClient){return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const prior=this.clients.get(turnId);
     this.clients.set(turnId,next);
-    if(prior&&prior.client!==next.client)try{await prior.client.close();}catch(error){
+    if(prior&&prior.client!==next.client)try{(yield prior.client.close());}catch(error){
       const pending=this.retiring.get(turnId)??new Set<DedicatedCodexTestClient>();pending.add(prior);this.retiring.set(turnId,pending);throw error;
     }
-  }
-  async closeIfTerminal(turnId:number,status:string|null){
+  }).call(this));}
+  async closeIfTerminal(turnId:number,status:string|null){return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const current=this.clients.get(turnId);
     if(!current||!status||!['done','error','cancelled'].includes(status))return false;
     const pending=this.retiring.get(turnId)??new Set<DedicatedCodexTestClient>();
     const resources=new Set([...pending,current]);
     let failure:unknown;
     for(const resource of resources){
-      try{await resource.client.close();pending.delete(resource);}
+      try{(yield resource.client.close());pending.delete(resource);}
       catch(error){failure??=error;}
     }
     if(pending.size)this.retiring.set(turnId,pending);else this.retiring.delete(turnId);
     if(this.clients.get(turnId)===current&&!failure)this.clients.delete(turnId);
     if(failure)throw failure;
     return true;
-  }
+  }).call(this));}
 }
 
 /**
@@ -297,7 +299,7 @@ export class SessionExecutionHost {
     // f48861f1: "Can we extend the same Claude code automation for account switching here to Codex too").
     // Checked whenever work stops or starts and once a minute, since a usage reading can arrive between.
     const detach=observeExecutionChanges(()=>void this.moveCodexOffSpentAccount());
-    const timer=setInterval(()=>void this.moveCodexOffSpentAccount(),60_000);
+    const timer=setInterval(ledgerCallback(()=>void this.moveCodexOffSpentAccount()),60_000);
     this.stopCodexMoves=()=>{detach();clearInterval(timer);};
     this.capabilityClient=options.capabilityClient??(thinkeringConfigured(options.capabilitySocket)?new SessionCapabilityClient({socketPath:options.capabilitySocket}):null);
     // A device login completes in the browser with nothing to send back, so the
@@ -305,7 +307,7 @@ export class SessionExecutionHost {
     // belongs here too, or the new account would sit on disk unused.
     this.providerLoginManager=new ProviderLoginManager({onUnattendedCompletion:provider=>{
       void (provider==='codex'?this.codexLogin.completed():this.finishClaudeSignIn())
-        .catch(error=>{log('warn','auth_activation_failed',{provider,...errorFields(error)});});
+        .catch(ledgerCallback(error=>{log('warn','auth_activation_failed',{provider,...errorFields(error)});}));
     },onPendingChanged:(provider,expiresAtMs)=>{
       // A sign-in he has started becomes work in progress the drain can see, so an update
       // waits for it instead of discarding it while he is fetching the code.
@@ -314,20 +316,20 @@ export class SessionExecutionHost {
     }});
     // A Codex sign-in lands in a home of its own and is only then put in use, so the
     // account already here keeps its token instead of being deleted by the login.
-    this.codexLogin=new CodexAccountLogin(this.providerLoginManager,async home=>{
-      const result=await this.putCodexAccountInUse(join(home,'auth.json'));
+    this.codexLogin=new CodexAccountLogin(this.providerLoginManager,async home=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+      const result=(yield this.putCodexAccountInUse(join(home,'auth.json')));
       this.lastSignIn.set('codex',{ok:result.status==='completed',detail:result.status==='completed'?null:result.detail??null});
-    });
+    }).call(this));});
     // A Claude sign-in lands in a folder of its own too, and is filed under whoever it
     // turned out to be, so the login every Claude session here runs on is never replaced.
     this.claudeLogin=new ClaudeAccountLogin(this.providerLoginManager);
     // Codex signs itself in over its own API and keeps the token it obtained, so there is
     // nothing here to activate — only parked work to release once the account is usable.
     this.owner=new SessionOwner({wake:options.wake,available:provider=>provider==='chatgpt'?!!this.capabilityClient:!!options.providers[provider]&&options.providers[provider]!.capabilities?.send!==false,
-      steer:input=>this.steer(input),stop:async(session,turn)=>{const stopped=options.registry.requestSessionStop(session,turn);if(!stopped.matched)return false;await stopped.completion;return true;},
+      steer:input=>this.steer(input),stop:async(session,turn)=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {const stopped=options.registry.requestSessionStop(session,turn);if(!stopped.matched)return false;(yield stopped.completion);return true;}).call(this));},
       prepareCodexTestConnectionLoss:(session,turn)=>this.prepareTestCodexConnectionLoss(session,turn),
       codexTestConnectionLoss:(session,turn,binding)=>this.loseTestCodexConnection(session,turn,binding),
-      safeStop:async(session,turn)=>{const stopped=options.registry.requestSafeSessionCancellation(session,turn);if(!stopped.matched)return false;await stopped.completion;return true;},
+      safeStop:async(session,turn)=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {const stopped=options.registry.requestSafeSessionCancellation(session,turn);if(!stopped.matched)return false;(yield stopped.completion);return true;}).call(this));},
       capabilities:session=>this.capabilities(session),
       readJournalEntry:this.capabilityClient?root=>this.capabilityClient!.readJournalEntry(root):undefined,
       saveCaptureNote:this.capabilityClient?input=>this.capabilityClient!.saveCaptureNote(input):undefined,
@@ -383,12 +385,12 @@ export class SessionExecutionHost {
       ||!Number.isSafeInteger(generation)||tracked.faultDeadlineMs<=Date.now())return null;
     return {executionId:execution.execution_id,dispatchAttempt:turn.dispatch_attempt,generation,faultDeadlineMs:tracked.faultDeadlineMs};
   }
-  private async loseTestCodexConnection(sessionId:number,turnId:number,binding:{executionId:string;dispatchAttempt:number;generation:number;faultDeadlineMs:number}):Promise<"observed"|"stale"> {
+  private async loseTestCodexConnection(sessionId:number,turnId:number,binding:{executionId:string;dispatchAttempt:number;generation:number;faultDeadlineMs:number}):Promise<"observed"|"stale"> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const current=this.prepareTestCodexConnectionLoss(sessionId,turnId);
     if(!codexTestFaultBindingMatches(binding,current))return 'stale';
     const tracked=this.testCodexClients.get(turnId)!;
     return tracked.client.loseConnectionGeneration(binding.generation);
-  }
+  }).call(this));}
   private runnerAuthTarget(provider:ProviderKey):string|null{
     return providerRunnerTarget(provider);
   }
@@ -398,14 +400,14 @@ export class SessionExecutionHost {
     const restored={runner:pending.runner,operationId:pending.operationId,profileId:pending.profileId,status:'starting'};
     this.runnerSignIns.set(provider,restored);return restored;
   }
-  private async finishRunnerSignIn(provider:ProviderKey,answer:any):Promise<ProviderAuthRefreshResult>{
+  private async finishRunnerSignIn(provider:ProviderKey,answer:any):Promise<ProviderAuthRefreshResult>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const operation=this.restoreRunnerSignIn(provider);
     if(!operation||answer?.status!=='completed'||typeof answer.account!=='string')return {status:'failed',detail:'The runner did not confirm a completed sign-in.'};
     const account=answer.account as string;
     if(provider==='codex'){
       let activation:ActivationReport;
       try{
-        const result=await activateRunnerCodexAccount(operation.runner,account,`activate:${operation.operationId}`) as any;
+        const result=(yield activateRunnerCodexAccount(operation.runner,account,`activate:${operation.operationId}`)) as any;
         activation={status:result?.status==='applied'?'applied':result?.status==='deferred'?'deferred':'failed',detail:String(result?.detail??'')};
       }catch(error){activation={status:'failed',detail:'The runner account was saved, but Codex could not be switched on the runner.'};log('warn','runner_codex_activation_failed',{error_name:(error as Error)?.name??'Error'});}
       const activated=activation.status==='applied';
@@ -428,21 +430,21 @@ export class SessionExecutionHost {
     void scheduleProviderAccountUsageRefresh().catch(()=>{});
     return {status:'completed',detail:`${account} is saved on runner ${operation.runner} and selected for new Claude turns.`,
       resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh(provider)};
-  }
-  private async refreshRunnerSignIn(provider:ProviderKey):Promise<void>{
+  }).call(this));}
+  private async refreshRunnerSignIn(provider:ProviderKey):Promise<void>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const operation=this.restoreRunnerSignIn(provider);if(!operation)return;
     try{
-      const answer=await runnerMachineCall<any>(operation.runner,'accounts.signin.status',{operationId:operation.operationId});
+      const answer=(yield runnerMachineCall<any>(operation.runner,'accounts.signin.status',{operationId:operation.operationId}));
       if(!answer||typeof answer.status!=='string')return;
       this.runnerSignIns.set(provider,{...operation,...answer});
-      if(answer.status==='completed')await this.finishRunnerSignIn(provider,answer);
+      if(answer.status==='completed')(yield this.finishRunnerSignIn(provider,answer));
       else if(['failed','interrupted','not_found'].includes(answer.status)){
         this.lastSignIn.set(provider,{ok:false,detail:answer.detail??'The runner sign-in ended before it could be completed. Start it again.'});
         this.runnerSignIns.delete(provider);clearPendingSignIn(provider);
       }
     }catch(error){log('warn','runner_signin_status_unavailable',{provider,runner:operation.runner,error_name:(error as Error)?.name??'Error'});}
-  }
-  private async startRunnerSignIn(provider:ProviderKey,profileId?:string|null):Promise<ProviderAuthRefreshResult>{
+  }).call(this));}
+  private async startRunnerSignIn(provider:ProviderKey,profileId?:string|null):Promise<ProviderAuthRefreshResult>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const runner=this.runnerAuthTarget(provider);if(!runner)return {status:'failed',detail:'No runner is configured for this provider.'};
     if(this.restoreRunnerSignIn(provider))return {status:'failed',detail:'A sign-in is already waiting on the runner. Refresh the Accounts page to continue it.'};
     const operationId=`signin:${randomUUID()}`;
@@ -451,10 +453,10 @@ export class SessionExecutionHost {
       return {status:'failed',detail:'This machine is installing an update. No sign-in started; try again after the update finishes.'};
     this.runnerSignIns.set(provider,operation);
     try{
-      const answer=await runnerMachineCall<any>(runner,'accounts.signin.start',{operationId,provider});
+      const answer=(yield runnerMachineCall<any>(runner,'accounts.signin.start',{operationId,provider}));
       if(!answer||typeof answer.status!=='string')throw new Error('The runner returned no sign-in outcome.');
       this.runnerSignIns.set(provider,{...operation,...answer});
-      if(answer.status==='completed')return await this.finishRunnerSignIn(provider,answer);
+      if(answer.status==='completed')return (yield this.finishRunnerSignIn(provider,answer));
       if(answer.status==='awaiting_approval')return {status:'awaiting_approval',url:answer.url,userCode:answer.userCode};
       if(answer.status==='awaiting_code')return {status:'awaiting_code',url:answer.url};
       this.lastSignIn.set(provider,{ok:false,detail:answer.detail??'The runner could not start sign-in.'});
@@ -467,12 +469,12 @@ export class SessionExecutionHost {
       log('warn','runner_signin_start_failed',{provider,runner,error_name:(error as Error)?.name??'Error'});
       return {status:'failed',detail:'The runner could not confirm whether sign-in started. Refresh the Accounts page before trying again.'};
     }
-  }
-  private async completeRunnerSignIn(provider:ProviderKey,code:string):Promise<ProviderAuthRefreshResult>{
+  }).call(this));}
+  private async completeRunnerSignIn(provider:ProviderKey,code:string):Promise<ProviderAuthRefreshResult>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const operation=this.restoreRunnerSignIn(provider);
     if(!operation)return {status:'no_pending_login',detail:'This runner sign-in is no longer waiting. Start it again.'};
     try{
-      const status=await runnerMachineCall<any>(operation.runner,'accounts.signin.status',{operationId:operation.operationId});
+      const status=(yield runnerMachineCall<any>(operation.runner,'accounts.signin.status',{operationId:operation.operationId}));
       if(status?.status==='completed')return this.finishRunnerSignIn(provider,status);
       if(status?.status==='interrupted'||status?.status==='not_found'){
         this.runnerSignIns.delete(provider);clearPendingSignIn(provider);
@@ -481,7 +483,7 @@ export class SessionExecutionHost {
       if(status?.status!=='awaiting_code'||provider!=='claude-code')
         return {status:'no_pending_login',detail:'The runner is not waiting for a pasted sign-in code.'};
       this.runnerSignIns.set(provider,{...operation,...status,status:'completing'});
-      const answer=await runnerMachineCall<any>(operation.runner,'accounts.signin.complete',{operationId:operation.operationId,code});
+      const answer=(yield runnerMachineCall<any>(operation.runner,'accounts.signin.complete',{operationId:operation.operationId,code}));
       if(answer?.status==='completed')return this.finishRunnerSignIn(provider,answer);
       if(answer?.status==='awaiting_code')return {status:'awaiting_code',url:answer.url};
       this.lastSignIn.set(provider,{ok:false,detail:answer?.detail??'The runner did not accept that sign-in code.'});
@@ -491,7 +493,7 @@ export class SessionExecutionHost {
       log('warn','runner_signin_complete_failed',{provider,runner:operation.runner,error_name:(error as Error)?.name??'Error'});
       return {status:'failed',detail:'The runner could not confirm the sign-in code outcome. Refresh the Accounts page before trying again.'};
     }
-  }
+  }).call(this));}
   /** What Codex itself last said about its sign-in; see codexSignInState. */
   private codexSignIn:'signed-in'|'signed-out'|'unknown'='unknown';
   /** Private control answer: never reads credentials, usage, SQLite or the filesystem. */
@@ -605,11 +607,11 @@ export class SessionExecutionHost {
    * `checking`, and the page reads again until no row says `checking`. One check at a time is
    * shared by every reader.
    */
-  async refreshAuthEphemera():Promise<ProviderAuthEphemera>{
+  async refreshAuthEphemera():Promise<ProviderAuthEphemera>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     this.checkProviderAuth(true);
     for(const provider of ['codex','claude-code'] as const)void this.refreshRunnerSignIn(provider);
     return this.authEphemera();
-  }
+  }).call(this));}
   private checkProviderAuth(fresh=false):void{
     const recent=Date.now()-this.providerAuthCheckedAt<30_000;
     if(this.providerAuthCheck){
@@ -623,19 +625,19 @@ export class SessionExecutionHost {
     if(!fresh&&recent)return;
     this.trackProviderAuthCheck(Promise.all([
       providerRunnerTarget('claude-code')?Promise.resolve():refreshClaudeAccount(),
-      providerRunnerTarget('codex')?Promise.resolve():codexSignInState().then(answer=>{this.codexSignIn=answer.state;if(answer.state==='signed-in')setCodexAccountInUse(answer);}).catch(()=>{}),
+      providerRunnerTarget('codex')?Promise.resolve():codexSignInState().then(ledgerCallback(answer=>{this.codexSignIn=answer.state;if(answer.state==='signed-in')setCodexAccountInUse(answer);})).catch(()=>{}),
       scheduleProviderAccountUsageRefresh(fresh).catch(()=>{})]));
   }
   private trackProviderAuthCheck(work:Promise<unknown>):void{
-    const check=work.then(()=>undefined,()=>undefined);
+    const check=work.then(ledgerCallback(()=>undefined),ledgerCallback(()=>undefined));
     this.providerAuthCheck=check;
-    void check.then(()=>{
+    void check.then(ledgerCallback(()=>{
       if(this.providerAuthCheck!==check)return;
       this.providerAuthCheck=null;
       this.providerAuthCheckedAt=Date.now();
-    });
+    }));
   }
-  private async providerAuthStatus(fresh=false):Promise<readonly ProviderAuthView[]>{
+  private async providerAuthStatus(fresh=false):Promise<readonly ProviderAuthView[]>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     this.checkProviderAuth(fresh);
     const checking=this.providerAuthCheck!==null;
     // Reading the list never copies a login. It used to snapshot the Codex login in use into
@@ -650,7 +652,7 @@ export class SessionExecutionHost {
       return {...view,checking};
     });
     return [...accounts,antigravityAuthView(this.authEphemera())];
-  }
+  }).call(this));}
   private providerAuthCheck:Promise<void>|null=null;
   private authViewSteps:Record<string,number>={};
   private providerAuthCheckedAt=0;
@@ -661,12 +663,12 @@ export class SessionExecutionHost {
    * the reset state and the offer disappears, so nothing has to announce what happened.
    * Only Codex grants these; Claude has nothing of the kind to spend.
    */
-  private async useProviderResetCredit(provider:string,account:string){
+  private async useProviderResetCredit(provider:string,account:string){return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(provider!=='codex')throw new ProviderCapabilityUnavailableError('auth','This provider does not grant allowance resets.');
     const runner=this.runnerAuthTarget('codex');
     let outcome=runner
-      ?await runnerMachineCall<any>(runner,'accounts.codex.resetCredit',{account,operationId:`owner-reset:${randomUUID()}`})
-      :await useCodexResetCredit(account);
+      ?(yield runnerMachineCall<any>(runner,'accounts.codex.resetCredit',{account,operationId:`owner-reset:${randomUUID()}`}))
+      :(yield useCodexResetCredit(account));
     if(outcome.status==='used'&&outcome.accountId&&outcome.verifiedReadStartedAtMs){
       try {
         const cleared=clearCodexAccountUsage(outcome.accountId,outcome.verifiedReadStartedAtMs);
@@ -679,31 +681,31 @@ export class SessionExecutionHost {
       }
     }
     if(outcome.status==='used'||outcome.status==='redeemed'||outcome.status==='none'){
-      await scheduleProviderAccountUsageRefresh().catch(()=>{});
+      (yield scheduleProviderAccountUsageRefresh().catch(()=>{}));
       // A read already in flight before redemption may have been joined above. It cannot
       // update the Accounts row or authorize a move from the result of the reset.
       if(outcome.status==='used'&&outcome.verifiedReadStartedAtMs){
         const readAt=storedUsage('codex')?.accounts.find(item=>item.label===account)?.readAt;
         if((Date.parse(readAt??'')||0)<outcome.verifiedReadStartedAtMs)
-          await scheduleProviderAccountUsageRefresh().catch(()=>{});
+          (yield scheduleProviderAccountUsageRefresh().catch(()=>{}));
       }
       // A reset can belong to a saved account other than the selected one. Reconsider the
       // normal guarded account move now, rather than waiting for its next periodic pass.
-      if(outcome.status==='used')await this.moveCodexOffSpentAccount();
+      if(outcome.status==='used')(yield this.moveCodexOffSpentAccount());
     }
     return outcome;
-  }
+  }).call(this));}
   /** One deliberate, tool-free admission check. The held work moves only after this succeeds. */
   private usageCheck:Promise<unknown>|null=null;
   private usageProbeRunning=false;
   private usageProbeContext:{provider:'claude-code'|'codex';account:string;model:string|null}|null=null;
   private retryHeldUsage(){
     if(this.usageCheck)return this.usageCheck;
-    const check=this.checkHeldUsage().finally(()=>{if(this.usageCheck===check)this.usageCheck=null;});
+    const check=this.checkHeldUsage().finally(ledgerCallback(()=>{if(this.usageCheck===check)this.usageCheck=null;}));
     this.usageCheck=check;
     return check;
   }
-  private async checkHeldUsage(){
+  private async checkHeldUsage(){return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(this.usageProbeRunning)return {status:'unconfirmed',...this.usageProbeContext,
       detail:'The previous provider check is still stopping; no new check was started.'};
     for(const provider of ['claude-code','codex'] as const){
@@ -723,7 +725,7 @@ export class SessionExecutionHost {
       const runnerTarget=providerRunnerTarget(provider)??savedRunner;
       let runnerIdentity:{id:string;label:string}|null=null;
       if(runnerTarget){
-        try{runnerIdentity=await runnerMachineCall(runnerTarget,'accounts.identity',{provider,...(savedAccount?{account:savedAccount}:{})});}
+        try{runnerIdentity=(yield runnerMachineCall(runnerTarget,'accounts.identity',{provider,...(savedAccount?{account:savedAccount}:{})}));}
         catch{return {status:'unconfirmed',provider,account:null,detail:`Runner ${runnerTarget} could not confirm the account for this held turn.`};}
       }
       const home=runnerTarget?null:provider==='claude-code'?selectedClaudeHome():null;
@@ -733,7 +735,7 @@ export class SessionExecutionHost {
       const priorLimit=cachedUsageLimit(attempt);
       if(runnerTarget){
         try{
-          const readings=await runnerMachineCall<Record<string,any>>(runnerTarget,'accounts.readings',{},100_000);
+          const readings=(yield runnerMachineCall<Record<string,any>>(runnerTarget,'accounts.readings',{},100_000));
           const usage=readings?.[provider];
           const reading=usage?.accounts?.find((item:any)=>item.label===accountLabel);
           const hasRoom=!!usage&&!!reading&&reading.signedOut!==true
@@ -758,27 +760,27 @@ export class SessionExecutionHost {
         let deadline:ReturnType<typeof setTimeout>|null=null;
         this.usageProbeContext={provider,account:accountLabel,model:waiting.model};
         this.usageProbeRunning=true;
-        const execution=Promise.resolve().then(()=>runner.run({
+        const execution=Promise.resolve().then(ledgerCallback(()=>runner.run({
           prompt:'Reply OK. Do not use tools.',cwd:this.options.defaultCwd,additionalDirs:[],sessionUUID:null,
           model:waiting.model??undefined,accountLabel,interactionPolicy:'consultation-only',usageProbe:true,
           ...(home?{environment:{CLAUDE_CONFIG_DIR:home.home}}:{}),
           onCancellationReady:stop=>{cancellation.stop=stop;if(expired)void stop().catch(()=>{});},
-        })).then(answer=>({kind:'success' as const,answer}),error=>({kind:'failure' as const,error}))
-          .finally(()=>{this.usageProbeRunning=false;this.usageProbeContext=null;});
+        }))).then(ledgerCallback(answer=>({kind:'success' as const,answer})),ledgerCallback(error=>({kind:'failure' as const,error})))
+          .finally(ledgerCallback(()=>{this.usageProbeRunning=false;this.usageProbeContext=null;}));
         const timeout=new Promise<{kind:'timeout'}>(resolve=>{
           deadline=setTimeout(()=>resolve({kind:'timeout'}),60_000);
           deadline.unref?.();
         });
-        const result=await Promise.race([execution,timeout]);
+        const result=(yield Promise.race([execution,timeout]));
         if(deadline)clearTimeout(deadline);
         if(result.kind==='timeout'){
           expired=true;
           if(cancellation.stop)void cancellation.stop().catch(()=>{});
           let stopWait:ReturnType<typeof setTimeout>|null=null;
-          await Promise.race([execution,new Promise<void>(resolve=>{
+          (yield Promise.race([execution,new Promise<void>(resolve=>{
             stopWait=setTimeout(resolve,10_000);
             stopWait.unref?.();
-          })]);
+          })]));
           if(stopWait)clearTimeout(stopWait);
           return {status:'unconfirmed',provider,account:accountLabel,model:waiting.model,
             detail:'The provider did not finish within a minute. Stop was requested; waiting work remains held.'};
@@ -807,7 +809,7 @@ export class SessionExecutionHost {
       }
     }
     return {status:'no_waiting'};
-  }
+  }).call(this));}
   private resumeParkedWorkAfterAuthRefresh(provider:ProviderKey):number[]{
     const resumedTurnIds=resumeBlockedParkedHeadTurns();
     if(resumedTurnIds.length)log('info','parked_head_turns_resumed',{reason:'auth_refresh',provider,turn_ids:resumedTurnIds});
@@ -819,43 +821,43 @@ export class SessionExecutionHost {
     return provider;
   }
   /** A credential change is only finished once the provider actually uses it. */
-  private async settleCredentialChange(provider:ProviderKey):Promise<ProviderAuthRefreshResult>{
-    const activation=await activateCredentials(provider);
+  private async settleCredentialChange(provider:ProviderKey):Promise<ProviderAuthRefreshResult>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+    const activation=(yield activateCredentials(provider));
     // The sign-in just changed who this host is; read it again so the answer this call
     // returns, and the next providers read, name the account that is actually active.
-    if(provider==='claude-code')await refreshClaudeAccount();
+    if(provider==='claude-code')(yield refreshClaudeAccount());
     // The set of accounts changed, so their limits are read now rather than at the next
     // half-hourly pass; an account that just arrived would otherwise have nothing to show.
     void scheduleProviderAccountUsageRefresh().catch(()=>{});
     return {status:activation.status==='failed'?'failed':'completed',activation,
       resumedTurnIds:activation.status==='applied'?this.resumeParkedWorkAfterAuthRefresh(provider):[]};
-  }
+  }).call(this));}
   /**
    * `profileId` is the kept account he pressed sign-in on; absent means a new account. A
    * lapsed account is repaired in place: its row starts this, and finishing it switches to it.
    */
-  private async startProviderAuthRefresh(provider:string,profileId?:string|null):Promise<ProviderAuthRefreshResult>{
+  private async startProviderAuthRefresh(provider:string,profileId?:string|null):Promise<ProviderAuthRefreshResult>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const key=this.assertAuthProvider(provider);
     if(this.runnerAuthTarget(key))return this.startRunnerSignIn(key,profileId);
     if(key==='codex'){
       this.lastSignIn.delete('codex');
-      const started=await this.codexLogin.start();
+      const started=(yield this.codexLogin.start());
       if(started.status==='awaiting_approval')return {status:'awaiting_approval',url:started.url,userCode:started.userCode};
       if(started.status==='completed')return this.settleCredentialChange(key);
       log('warn','auth_refresh_failed',{provider:key});
       return {status:'failed'};
     }
     const expected=profileId?this.claudeProfile(profileId)?.label??null:null;
-    const started=await this.claudeLogin.start(expected);
+    const started=(yield this.claudeLogin.start(expected));
     if(started.status==='awaiting_code')return {status:'awaiting_code',url:started.url};
     if(started.status==='completed')return this.finishClaudeSignIn();
     log('warn','auth_refresh_failed',{provider:key,reason:started.reason,output_chars:started.output.length});
     return {status:'failed',detail:SIGN_IN_FAILURE_DETAIL[started.reason]??'The sign-in could not be started. Nothing changed.'};
-  }
-  private async completeProviderAuthRefresh(provider:string,code:string):Promise<ProviderAuthRefreshResult>{
+  }).call(this));}
+  private async completeProviderAuthRefresh(provider:string,code:string):Promise<ProviderAuthRefreshResult>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const key=this.assertAuthProvider(provider);
     if(this.runnerAuthTarget(key))return this.completeRunnerSignIn(key,code);
-    const completion=key==='claude-code'?await this.claudeLogin.complete(code):await this.providerLoginManager.complete(key,code);
+    const completion=key==='claude-code'?(yield this.claudeLogin.complete(code)):(yield this.providerLoginManager.complete(key,code));
     // Not a wrong code: the waiting sign-in is gone, most often because Concierge updated
     // between his opening the link and his pasting what it gave him. Telling him the code
     // was wrong sent him round the same loop again, which is most of why this has felt like
@@ -864,14 +866,14 @@ export class SessionExecutionHost {
     if(completion.status==='completed')return key==='claude-code'?this.finishClaudeSignIn():this.settleCredentialChange(key);
     log('warn','auth_refresh_failed',{provider:key,stage:'complete',output_chars:completion.output.length});
     return {status:'failed',detail:'The sign-in tool did not accept that code. Nothing changed.'};
-  }
+  }).call(this));}
   /**
    * A finished Claude sign-in is kept under the account it actually is, then switched to
    * through the same proof as the Switch button, so "signed in" and "in use" cannot disagree.
    * Signing in as someone other than the account pressed keeps that login and switches nothing.
    */
-  private async finishClaudeSignIn():Promise<ProviderAuthRefreshResult>{
-    const filed=await this.claudeLogin.file();
+  private async finishClaudeSignIn():Promise<ProviderAuthRefreshResult>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+    const filed=(yield this.claudeLogin.file());
     if(filed.status==='failed')return {status:'failed',detail:filed.detail};
     void scheduleProviderAccountUsageRefresh().catch(()=>{});
     if(filed.expected&&filed.expected!==filed.email)
@@ -879,7 +881,7 @@ export class SessionExecutionHost {
     // The home it was just filed into, never a lookup by name: the default login has the same
     // address, and choosing it would re-test the login this sign-in was meant to replace.
     return this.switchProviderAuthProfile('claude-code',basename(filed.home));
-  }
+  }).call(this));}
   private claudeProfile(profileId:string):{id:string;label:string}|null{
     if(this.runnerAuthTarget('claude-code')){
       const account=providerAccountUsage('claude-code')?.accounts.find(item=>
@@ -898,13 +900,13 @@ export class SessionExecutionHost {
    * saying so. The login is moved, never copied, and a failed proof moves both logins back
    * and restarts Codex onto the one it had, so a refused switch leaves his machine unchanged.
    */
-  private async putCodexAccountInUse(source:string):Promise<ProviderAuthRefreshResult>{
+  private async putCodexAccountInUse(source:string):Promise<ProviderAuthRefreshResult>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const runner=this.runnerAuthTarget('codex');
     if(runner){
       if(this.codexSwitching)return {status:'failed',detail:'Another Codex switch is still finishing on the runner. Nothing was changed.'};
       this.codexSwitching=true;
       try{
-        const activation=await activateRunnerCodexAccount(runner,source,`switch:${randomUUID()}`) as any;
+        const activation=(yield activateRunnerCodexAccount(runner,source,`switch:${randomUUID()}`)) as any;
         if(activation?.status!=='applied')return {status:'failed',detail:activation?.detail??'Codex account switching on the runner could not be confirmed.'};
         void scheduleProviderAccountUsageRefresh().catch(()=>{});
         return {status:'completed',activation:{status:'applied',detail:`Codex on runner ${runner} now uses ${source}.`},
@@ -917,13 +919,13 @@ export class SessionExecutionHost {
     if(!releaseSavedLogin)return {status:'failed',detail:'A saved Codex login is being renewed right now. Nothing was changed; try again when its usage reading finishes.'};
     this.codexSwitching=true;
     try {
-      return await this.moveCodexAndProve(source);
+      return (yield this.moveCodexAndProve(source));
     } finally { this.codexSwitching=false;releaseSavedLogin(); }
-  }
-  private async moveCodexAndProve(source:string):Promise<ProviderAuthRefreshResult>{
+  }).call(this));}
+  private async moveCodexAndProve(source:string):Promise<ProviderAuthRefreshResult>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const move=moveCodexAccountIntoUse(source);
     let activation:ActivationReport;
-    try { activation=await activateCredentials('codex'); }
+    try { activation=(yield activateCredentials('codex')); }
     catch(error){ log('warn','auth_activation_failed',{provider:'codex',...errorFields(error)}); activation={status:'failed',detail:''}; }
     if(activation.status==='applied'){
       void scheduleProviderAccountUsageRefresh().catch(()=>{});
@@ -933,19 +935,19 @@ export class SessionExecutionHost {
     move.undo();
     // Codex never restarted, so the account was never tried: say what failed, not "could not sign in".
     if(activation.restartFailed)return {status:'failed',detail:activation.detail};
-    const back=move.outgoing?await activateCredentials('codex'):null;
+    const back=move.outgoing?(yield activateCredentials('codex')):null;
     log('warn','provider_profile_switch_refused',{provider:'codex',reason:'account_did_not_authenticate',previous_answered:back?back.status==='applied':null});
     const still=move.outgoing?(back?.status==='applied'?` Still on ${move.outgoing.label}.`:` Codex is back on ${move.outgoing.label}, which did not answer either.`):'';
     return {status:'failed',needsSignIn:true,detail:`${move.incoming.label} could not sign in from this machine.${still}`};
-  }
+  }).call(this));}
   private claudeSwitching=false;
-  private async switchClaudeAccount(profileId:string):Promise<ProviderAuthRefreshResult>{
+  private async switchClaudeAccount(profileId:string):Promise<ProviderAuthRefreshResult>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const key='claude-code' as const;
     const profile=this.claudeProfile(profileId);
     if(!profile)throw new ProviderCapabilityUnavailableError('auth','That Claude account is not available on this machine.');
     const runner=this.runnerAuthTarget(key);
     if(runner){
-      const check=await runnerMachineCall<{available:boolean;resolution:string}>(runner,'accounts.validate',{provider:key,account:profile.label});
+      const check=(yield runnerMachineCall<{available:boolean;resolution:string}>(runner,'accounts.validate',{provider:key,account:profile.label}));
       if(!check?.available)return {status:'failed',detail:`${profile.label} is not uniquely available on runner ${runner}. Nothing was switched.`};
       selectClaudeAccount(profile.id,profile.label);
       void scheduleProviderAccountUsageRefresh().catch(()=>{});
@@ -960,7 +962,7 @@ export class SessionExecutionHost {
       }
     }
     forgetClaudeHomeCheck(home);
-    const check=await claudeAccountWorks(home,profile.label);
+    const check=(yield claudeAccountWorks(home,profile.label));
     // At its limit is still signed in and still his choice: select it, and its work waits for the
     // reset or runs on the other account while that one has room.
     const full=check.reason==='out_of_room';
@@ -994,22 +996,22 @@ export class SessionExecutionHost {
       ?`Switched to ${profile.label}, but it did not answer the test request: Claude said it is at its usage limit. Its work waits for the reset or runs on another account with room.`
       :`Switched. ${profile.label} answered a real request on this machine.`},
       resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh(key)};
-  }
-  private async switchProviderAuthProfile(provider:string,profileId:string):Promise<ProviderAuthRefreshResult>{
+  }).call(this));}
+  private async switchProviderAuthProfile(provider:string,profileId:string):Promise<ProviderAuthRefreshResult>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const key=this.assertAuthProvider(provider);
     if(key==='claude-code'){
       // One switch at a time: two presses in a row used to race on preparing the same home and the
       // second was refused for a reason that was not true.
       if(this.claudeSwitching)return {status:'failed',detail:'Another Claude switch is still finishing on this machine. Nothing was changed.'};
       this.claudeSwitching=true;
-      try { return await this.switchClaudeAccount(profileId); } finally { this.claudeSwitching=false; }
+      try { return (yield this.switchClaudeAccount(profileId)); } finally { this.claudeSwitching=false; }
     }
     const runner=this.runnerAuthTarget('codex');
     if(runner){
       const account=providerAccountUsage('codex')?.accounts.find(item=>
         `runner-${createHash('sha256').update(item.label).digest('hex').slice(0,16)}`===profileId);
       if(!account)throw new ProviderCapabilityUnavailableError('auth','That Codex account is not available on the configured runner.');
-      const activation=await activateRunnerCodexAccount(runner,account.label,`switch:${randomUUID()}`) as any;
+      const activation=(yield activateRunnerCodexAccount(runner,account.label,`switch:${randomUUID()}`)) as any;
       if(activation?.status!=='applied')return {status:'failed',detail:activation?.detail??'Codex account switching on the runner could not be confirmed.'};
       void scheduleProviderAccountUsageRefresh().catch(()=>{});
       return {status:'completed',activation:{status:'applied',detail:`Codex on runner ${runner} now uses ${account.label}.`},
@@ -1018,7 +1020,7 @@ export class SessionExecutionHost {
     const source=codexProfileSource(profileId);
     if(!source)throw new ProviderCapabilityUnavailableError('auth','That Codex account is not available on this machine.');
     return this.putCodexAccountInUse(source);
-  }
+  }).call(this));}
   /**
    * Codex runs every turn on one shared login, so it cannot pick an account per turn the way Claude
    * does: the whole machine moves, through the same proven switch as the Accounts button. It moves
@@ -1027,12 +1029,12 @@ export class SessionExecutionHost {
    * already been refused, so this waits seconds, not hours). The switch releases the work that was
    * held for the spent account's reset. Nothing is said to him about it, as for Claude.
    */
-  private async moveCodexOffSpentAccount():Promise<void>{
+  private async moveCodexOffSpentAccount():Promise<void>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(this.codexSwitching||runningCodexTurns()!==0)return;
     const target=codexAccountWithRoomWhileInUseIsSpent();
     if(!target||Date.now()-(this.codexMoveFailedAt.get(target.label)??0)<15*60_000)return;
     log('info','codex_account_move_started',{reason:'in_use_account_spent'});
-    const result=await this.putCodexAccountInUse(target.source).catch(error=>({status:'failed' as const,detail:String((error as Error)?.message??error)}));
+    const result=(yield this.putCodexAccountInUse(target.source).catch(ledgerCallback(error=>({status:'failed' as const,detail:String((error as Error)?.message??error)}))));
     if(result.status==='completed')log('info','codex_account_moved',{released:'resumedTurnIds' in result?result.resumedTurnIds?.length??0:0});
     else {
       // Only an account that would not sign in waits before it is tried again; a failure of the
@@ -1040,22 +1042,22 @@ export class SessionExecutionHost {
       if((result as {needsSignIn?:boolean}).needsSignIn)this.codexMoveFailedAt.set(target.label,Date.now());
       log('warn','codex_account_move_failed',{detail:String(result.detail??'').slice(0,300)});
     }
-  }
+  }).call(this));}
   async stop():Promise<void>{
     this.beginDrain();this.stopCodexMoves();this.stopCodexWindows();
     await Promise.allSettled([...this.custodyCodexClients.values()].map(client=>client.close()));
     this.custodyCodexClients.clear();
     const timedStop=async(name:string,stop:()=>Promise<void>)=>{
       const started=performance.now();
-      try{await stop();}
+      try{(await stop());}
       finally{log('info','execution_host_stop_component',{component:name,duration_ms:Math.round(performance.now()-started)});}
     };
-    await Promise.all([
+    (await Promise.all([
       timedStop('provider_login',()=>this.providerLoginManager.stop()),
       timedStop('codex_login',()=>this.codexLogin.stop()),
       timedStop('claude_login',()=>this.claudeLogin.stop()),
       timedStop('history_pages',()=>this.historyPages.close()),
-    ]);
+    ]));
   }
   private capabilities(session:SessionRow) {
     if(session.provider_id==='chatgpt'&&this.capabilityClient)return {...chatGptCapabilities,recover:true,models:['chat','work',...CHATGPT_THINKING_LEVELS,...CHATGPT_THINKING_LEVELS.map(level=>HIS_CHATGPT_PREFIX+level)],attachments:['*/*']};
@@ -1065,7 +1067,7 @@ export class SessionExecutionHost {
   }
   private cwd(session:ReturnType<typeof getSessionById>) {if(!session)throw new Error('Unknown session');const channel=session.slack_channel_id?getChannel(session.slack_channel_id):null;return sessionMetadata(session).cwd??channel?.code_path??channel?.vault_path??this.options.defaultCwd;}
   private readRef(session:NonNullable<ReturnType<typeof getSessionById>>) {const binding=sessionMetadata(session).nativeBinding;if(!binding)throw new Error('Exact native account/conversation binding is unavailable.');return {sessionId:`concierge:${session.id}`,bindingGeneration:session.binding_generation??1,binding};}
-  private async history(session:NonNullable<ReturnType<typeof getSessionById>>,cursor:string|null,limit:number) {
+  private async history(session:NonNullable<ReturnType<typeof getSessionById>>,cursor:string|null,limit:number) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(session.provider_id==='chatgpt') {
       if(!sessionMetadata(session).nativeBinding)return null;
       if(!this.capabilityClient)throw new Error('ChatGPT history capability unavailable.');
@@ -1077,19 +1079,19 @@ export class SessionExecutionHost {
     return provider.history({sessionUuid:session.agent_session_uuid,cwd:this.cwd(session),cursor,limit,ownerSessionId:session.id,
       ...(typeof metadata.providerRunner==='string'?{runner:metadata.providerRunner}:{}),
       ...(typeof metadata.providerAccount==='string'?{account:metadata.providerAccount}:{})});
-  }
-  private async historyMessage(session:SessionRow,messageId:string,turnId:string|null) {
+  }).call(this));}
+  private async historyMessage(session:SessionRow,messageId:string,turnId:string|null) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(!session.agent_session_uuid)return null;
     if(session.provider_id==='claude-code')return readClaudeCachedMessage(session.agent_session_uuid,messageId);
     if(session.provider_id==='codex'&&turnId)return readCodexHistoryMessage(session.agent_session_uuid,turnId,messageId);
     return null;
-  }
-  private async detail(session:NonNullable<ReturnType<typeof getSessionById>>,detailKey:string) {
+  }).call(this));}
+  private async detail(session:NonNullable<ReturnType<typeof getSessionById>>,detailKey:string) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(session.provider_id==='chatgpt') {if(!this.capabilityClient)throw new Error('ChatGPT detail capability unavailable.');return this.capabilityClient.detail({...this.readRef(session),detailKey});}
     const provider=this.options.providers[session.provider_id];if(!provider?.detail||!session.agent_session_uuid)throw new Error('Native detail capability unavailable.');
     return provider.detail({sessionUuid:session.agent_session_uuid,cwd:this.cwd(session),detailKey,ownerSessionId:session.id});
-  }
-  private async artifact(session:NonNullable<ReturnType<typeof getSessionById>>,artifactId:string) {
+  }).call(this));}
+  private async artifact(session:NonNullable<ReturnType<typeof getSessionById>>,artifactId:string) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(session.provider_id!=='chatgpt'||!this.capabilityClient)throw new Error('Artifact download capability unavailable.');
     const events=db.query("SELECT payload_json FROM session_owner_events WHERE session_id=? AND kind='message'").all(session.id) as any[];
     for(const event of events) {
@@ -1097,7 +1099,7 @@ export class SessionExecutionHost {
       for(const part of message?.richContent?.parts??[])if(part.kind==='file'&&part.id===artifactId)return this.capabilityClient.artifact({...this.readRef(session),messageId:message.id,path:part.path});
     }
     throw new Error('Artifact is not retained under this exact session message.');
-  }
+  }).call(this));}
   private capabilityEvidence(input:AcceptedSessionInput,turnId:number,evidence:CapabilityEvidence) {
     const encoded=JSON.stringify(evidence),digest=createHash('sha256').update(encoded).digest('hex');
     recordSessionEvent({eventId:`capability:${input.id}:${digest}`,sessionId:input.session_id,inputId:input.id,turnId,kind:'capability',payload:evidence});
@@ -1230,24 +1232,24 @@ export class SessionExecutionHost {
         // prepareText always supplies the actual provider words. Preparing them here would
         // synchronously finish the Inbox history index before the message even enters its queue.
         const accepted=target.controller.enqueue({clientMessageId:input.id,text:'',
-          prepareText:async root=>{
+          prepareText:async root=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
             const canvasSpeech=!!canvasSpeechContext(attached);
             const attachments=this.owner.attachments([...new Set([...(body.attachments??[]),...(canvasSpeech?[]:passiveContextAttachments(attached))])]);
             let text=this.prompt(attached);
             if(canvasSpeech)text=String(body.text??'');
             if(attachments.length) {
               if(!root)throw new Error('The active turn has no owned attachment root.');
-              const transcripts=[];for(const attachment of attachments){const path=join(root,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});text+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/')){if(attachment.transcriptText)transcripts.push({slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const});else{const heard=await attachedRecordingWords({slackFileId:attachment.id,title:attachment.name,path});if(heard.transcript)transcripts.push(heard.transcript);if(heard.note)text+=`\n${heard.note}`;}}}const transcript=transcriptionPrompt(transcripts.filter(item=>!body.text?.includes(item.text)));text+=transcript?`\n\n${transcript}`:'';
+              const transcripts=[];for(const attachment of attachments){const path=join(root,`${attachment.id}-${attachment.name}`);(yield writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600}));text+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/')){if(attachment.transcriptText)transcripts.push({slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const});else{const heard=(yield attachedRecordingWords({slackFileId:attachment.id,title:attachment.name,path}));if(heard.transcript)transcripts.push(heard.transcript);if(heard.note)text+=`\n${heard.note}`;}}}const transcript=transcriptionPrompt(transcripts.filter(item=>!body.text?.includes(item.text)));text+=transcript?`\n\n${transcript}`:'';
             }
             if(sessionMetadata(session).interactionPolicy!=='consultation-only'&&session.provider_id!=='chatgpt'&&!canvasSpeechContext(attached))text=sessionInputEnvelope(attached,nativeRunId(target.turnId),text);
             updateTurnSteeringReplayText(steeringId,text,attachments.length);
             return text;
-          },
-          onSending:()=>markTurnSteeringMessageSending(steeringId),
-          onSent:()=>{markTurnSteeringMessageSent(steeringId);deliveryChanged('sent');},
-          onError:error=>{markTurnSteeringMessageFailed(steeringId,error.message);deliveryChanged('failed');},
-          onAmbiguous:error=>{markTurnSteeringMessageAmbiguous(steeringId,error.message);deliveryChanged('ambiguous');},
-          onAmbiguousFinalized:()=>{finalizeTurnSteeringMessageAmbiguity(steeringId);}});
+          }).call(this));},
+          onSending:ledgerCallback(()=>markTurnSteeringMessageSending(steeringId)),
+          onSent:ledgerCallback(()=>{markTurnSteeringMessageSent(steeringId);deliveryChanged('sent');}),
+          onError:ledgerCallback(error=>{markTurnSteeringMessageFailed(steeringId,error.message);deliveryChanged('failed');}),
+          onAmbiguous:ledgerCallback(error=>{markTurnSteeringMessageAmbiguous(steeringId,error.message);deliveryChanged('ambiguous');}),
+          onAmbiguousFinalized:ledgerCallback(()=>{finalizeTurnSteeringMessageAmbiguity(steeringId);})});
         if(!accepted){markTurnSteeringMessageFailed(steeringId,'The live run ended before accepting this input.');deliveryChanged('failed');}
         return accepted;
       };
@@ -1261,7 +1263,7 @@ export class SessionExecutionHost {
     });
     return matched.matched&&matched.value;
   }
-  async deliverResult(result:NativeTurnResult):Promise<'delivered'> {
+  async deliverResult(result:NativeTurnResult):Promise<'delivered'> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     this.retainResult(result);
     // An Inbox turn that answered another agent's return or request only in its closing text
     // has that text relayed into the thread it owes, before the outcome is recorded, so a
@@ -1291,7 +1293,7 @@ export class SessionExecutionHost {
       catch(fallbackError){log('error','delivered_result_unsaid_record_failed',{turn_id:result.turnId,...errorFields(fallbackError)});}
     }
     return 'delivered';
-  }
+  }).call(this));}
   private retainResult(result:NativeTurnResult) {
     try {flushPendingProviderProgressEvents();}
     catch(error){log('error','session_progress_before_result_failed',{turn_id:result.turnId,...errorFields(error)});}
@@ -1326,7 +1328,7 @@ export class SessionExecutionHost {
    * A run is executed here once per dispatch attempt; `adoption` is that same run taken back by a
    * later coordinator from its execution host after a restart, through the same steps.
    */
-  async run(claim:QueuedTurnClaimRow,adoption?:Adoption) {
+  async run(claim:QueuedTurnClaimRow,adoption?:Adoption) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(claim.turn_kind!=='native'||!claim.accepted_input_id)throw new Error('Native execution requires an accepted input.');
     const input=getAcceptedSessionInput(claim.accepted_input_id),session=getSessionById(claim.session_id);
     if(!input||!session||input.session_id!==session.id||input.turn_id!==claim.turn_id||input.steering_id!==null)throw new Error('Accepted native input binding changed.');
@@ -1338,20 +1340,20 @@ export class SessionExecutionHost {
       recordSessionEvent({eventId:`recovered-run:${claim.turn_id}:${claim.dispatch_attempt}:${count}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'run',payload:{run:this.owner.run(nativeRunId(claim.turn_id))}});
     }
     try {
-      return await this.options.registry.run({turnId:claim.turn_id,sessionId:session.id},async(steeringController,closeSteering,cancellationController)=>{
-        trackOpenHostedExecutionsOfTurn(claim.turn_id);
+      return (yield this.options.registry.run({turnId:claim.turn_id,sessionId:session.id},async(steeringController,closeSteering,cancellationController)=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+          trackOpenHostedExecutionsOfTurn(claim.turn_id);
         if(input.kind==='fork'){closeSteering(new Error('A native fork control has no model input channel.'));return this.runFork(claim,input,session);}
         if(sessionMetadata(session).outside)steeringController.close(new Error('An independent Codex command has no live input channel.'));
         if(adoption){
-          await this.settleUnsentSteering(claim.turn_id,adoption.execution);
+          (yield this.settleUnsentSteering(claim.turn_id,adoption.execution));
           if(session.provider_id==='antigravity')this.recoverAntigravityUnsentInputs();
         }
-        const outcome=await this.runModel(claim,input,session,steeringController,closeSteering,cancellationController,adoption);
+        const outcome=(yield this.runModel(claim,input,session,steeringController,closeSteering,cancellationController,adoption));
         // Only here is the run's outcome durably settled; a crash before this leaves the host's
         // record for the next coordinator to settle from.
-        await this.releaseExecutions(claim.turn_id).catch(error=>log('warn','execution_release_failed',{turn_id:claim.turn_id,...errorFields(error)}));
+        (yield this.releaseExecutions(claim.turn_id).catch(error=>log('warn','execution_release_failed',{turn_id:claim.turn_id,...errorFields(error)})));
         return outcome;
-      });
+      }).call(this));}));
     } finally {
       // The abandoned coordinator already recorded this identity with the parked result. A
       // recovered run gets a distinct terminal fact after the host's actual outcome is known.
@@ -1363,14 +1365,14 @@ export class SessionExecutionHost {
       // A drain's proven-unsent requeue is a handoff, not a provider failure.
       // Any standing role (the Inbox, the repair agent, …) whose provider just refused it can move.
       if(!this.draining)maybeStartStandingRoleFailover(getSessionById(session.id));
-      if(session.provider_id==='codex'&&(process.platform==='linux'||process.env.CONCIERGE_CODEX_RUNNER))await this.auditCodexTurn(claim.turn_id).catch(error=>
-        log('warn','codex_process_audit_failed',{turn_id:claim.turn_id,...errorFields(error)}));
+      if(session.provider_id==='codex'&&(process.platform==='linux'||process.env.CONCIERGE_CODEX_RUNNER))(yield this.auditCodexTurn(claim.turn_id).catch(error=>
+        log('warn','codex_process_audit_failed',{turn_id:claim.turn_id,...errorFields(error)})));
       const ownedClient=this.testCodexClients.get(claim.turn_id);
       const terminal=db.query('SELECT status FROM turns WHERE id=?').get(claim.turn_id) as {status:string}|null;
-      if(ownedClient&&terminal)await this.testCodexClients.closeIfTerminal(claim.turn_id,terminal.status).catch(error=>
-        log('warn','codex_test_client_close_failed',{turn_id:claim.turn_id,...errorFields(error)}));
+      if(ownedClient&&terminal)(yield this.testCodexClients.closeIfTerminal(claim.turn_id,terminal.status).catch(error=>
+        log('warn','codex_test_client_close_failed',{turn_id:claim.turn_id,...errorFields(error)})));
     }
-  }
+  }).call(this));}
   /**
    * Both owner compositions (index.ts and session-runtime.ts) start this, so the retry lives with
    * the host that records the intents. The audit at turn end usually runs before the turn row is
@@ -1381,12 +1383,12 @@ export class SessionExecutionHost {
     const sweep=()=>{if(!stopped())void this.reconcileCodexProcessAudits().catch(error=>
       log('error','codex_process_audit_recovery_failed',errorFields(error)));};
     sweep();
-    const timer=setInterval(sweep,60_000);
+    const timer=setInterval(ledgerCallback(sweep),60_000);
     timer.unref?.();
     return ()=>clearInterval(timer);
   }
   /** An intent survives a coordinator restart; an unfinished check is retried by the sweep above. */
-  async reconcileCodexProcessAudits() {
+  async reconcileCodexProcessAudits() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const pending=db.query(`SELECT intent.turn_id FROM session_owner_events intent
       JOIN turns turn ON turn.id=intent.turn_id AND turn.status IN ('done','error','cancelled')
       WHERE intent.event_id>='codex-process-audit-intent:' AND intent.event_id<'codex-process-audit-intent;'
@@ -1395,16 +1397,16 @@ export class SessionExecutionHost {
         AND NOT EXISTS (SELECT 1 FROM session_owner_events done
           WHERE done.event_id='codex-process-audit-done:'||intent.turn_id)
       ORDER BY intent.turn_id LIMIT 50`).all() as {turn_id:number}[];
-    for(const row of pending)await this.auditCodexTurn(row.turn_id).catch(error=>
-      log('warn','codex_process_audit_recovery_failed',{turn_id:row.turn_id,...errorFields(error)}));
-    await this.followCodexProcessSightings().catch(error=>log('warn','codex_process_sighting_failed',errorFields(error)));
-  }
+    for(const row of pending)(yield this.auditCodexTurn(row.turn_id).catch(error=>
+      log('warn','codex_process_audit_recovery_failed',{turn_id:row.turn_id,...errorFields(error)})));
+    (yield this.followCodexProcessSightings().catch(error=>log('warn','codex_process_sighting_failed',errorFields(error))));
+  }).call(this));}
   /**
    * Each held sighting ends one of two ways, with no agent needed for the first: every process
    * exits (the sighting settles, and a report it joined closes once all its sightings have), or
    * one is still running after the grace period (it is reported once, grouped on the open issue).
    */
-  private async followCodexProcessSightings() {
+  private async followCodexProcessSightings() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const open=db.query(`SELECT sighting.turn_id,sighting.session_id,sighting.input_id,sighting.payload_json,turn.native_run_id,
         (SELECT reported.payload_json FROM session_owner_events reported
           WHERE reported.event_id='codex-process-sighting-reported:'||sighting.turn_id) AS reported_json
@@ -1414,20 +1416,20 @@ export class SessionExecutionHost {
           WHERE settled.event_id='codex-process-sighting-settled:'||sighting.turn_id)
       ORDER BY sighting.turn_id LIMIT 100`).all() as {turn_id:number;session_id:number;input_id:string;payload_json:string;
         native_run_id:string|null;reported_json:string|null}[];
-    for(const row of open)await this.followCodexProcessSighting(row).catch(error=>
-      log('warn','codex_process_sighting_failed',{turn_id:row.turn_id,...errorFields(error)}));
+    for(const row of open)(yield this.followCodexProcessSighting(row).catch(error=>
+      log('warn','codex_process_sighting_failed',{turn_id:row.turn_id,...errorFields(error)})));
     this.settleExitedProcessReports();
-  }
+  }).call(this));}
   private async followCodexProcessSighting(row:{turn_id:number;session_id:number;input_id:string;payload_json:string;
-    native_run_id:string|null;reported_json:string|null}) {
+    native_run_id:string|null;reported_json:string|null}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     {
       const sighting=JSON.parse(row.payload_json) as {threadId:string;runner?:string;processes:CodexLeftoverProcess[];sightedAtMs:number};
       const reportRequestId=row.reported_json?JSON.parse(row.reported_json).requestId as string|null:null;
       // Older sightings predate runner attribution but used this runner when the relay was on.
       const sightingRunner=sighting.runner||process.env.CONCIERGE_CODEX_RUNNER?.trim();
       const alive=sightingRunner
-        ?(await Promise.all(sighting.processes.map(async processRecord =>
-          await runnerMachineCall<boolean>(sightingRunner,'codex.processAlive',{process:processRecord})?processRecord:null)))
+        ?((yield Promise.all(sighting.processes.map(async processRecord =>
+          {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {return (yield runnerMachineCall<boolean>(sightingRunner,'codex.processAlive',{process:processRecord}))?processRecord:null;}).call(this));}))))
           .filter((record):record is CodexLeftoverProcess=>record!==null)
         :sighting.processes.filter(codexProcessStillRunning);
       if(!alive.length){
@@ -1440,15 +1442,15 @@ export class SessionExecutionHost {
       const title='A finished Codex turn left background processes running';
       const detail=`Codex turn ${row.turn_id} (session concierge:${row.session_id}, thread ${sighting.threadId}) finished, and ${alive.length} non-browser process(es) bearing its exact thread ID were still running ${Math.round((Date.now()-sighting.sightedAtMs)/60_000)} minutes later outside Concierge-owned execution units: ${JSON.stringify(alive)}. `+
         'Inspect current PID and start time before stopping unneeded work. Intentional work needs a registered command watch or another durable supervisor. Concierge closes this report itself once every recorded process has exited.';
-      const receipt=await this.owner.reportAgentIssue({source:{inputId:row.input_id,runId:row.native_run_id??nativeRunId(row.turn_id)},
-        actionId:`codex-leftover-process-${row.turn_id}`,issueKey:'codex-leftover-process',title,text:detail});
+      const receipt=(yield this.owner.reportAgentIssue({source:{inputId:row.input_id,runId:row.native_run_id??nativeRunId(row.turn_id)},
+        actionId:`codex-leftover-process-${row.turn_id}`,issueKey:'codex-leftover-process',title,text:detail}));
       const requestId=(receipt as any)?.report?.requestId??null;
       recordSessionEvent({eventId:`codex-process-sighting-reported:${row.turn_id}`,sessionId:row.session_id,inputId:row.input_id,
         turnId:row.turn_id,kind:'process_audit',payload:{requestId}});
       log('warn','codex_leftover_process_reported',{turn_id:row.turn_id,session_id:row.session_id,processes:alive,
         request_id:requestId,deduplicated:(receipt as any)?.deduplicated===true});
     }
-  }
+  }).call(this));}
   private settleExitedProcessReports() {
     // Recomputed every sweep, so a restart between a sighting settling and its report closing loses nothing.
     const reports=db.query(`SELECT DISTINCT request.request_id FROM session_owner_events reported
@@ -1477,7 +1479,7 @@ export class SessionExecutionHost {
     return !db.query(`SELECT 1 FROM sessions WHERE id=?
       AND json_extract(native_metadata_json,'$.codexLifecycle.state') IN ('running','uncertain')`).get(sessionId);
   }
-  private async auditCodexTurn(turnId:number) {
+  private async auditCodexTurn(turnId:number) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(this.codexProcessAudits.has(turnId))return;
     if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`codex-process-audit-done:${turnId}`))return;
     this.codexProcessAudits.add(turnId);
@@ -1509,8 +1511,8 @@ export class SessionExecutionHost {
       const savedRunner=row.native_metadata_json?JSON.parse(row.native_metadata_json)?.providerRunner:null;
       const runner=typeof savedRunner==='string'&&savedRunner? savedRunner : process.env.CONCIERGE_CODEX_RUNNER?.trim()||null;
       const remaining=runner
-        ?await runnerMachineCall<CodexLeftoverProcess[]>(runner,'codex.leftoverProcesses',{threadId:row.agent_session_uuid})
-        :await codexLeftoverProcesses(row.agent_session_uuid);
+        ?(yield runnerMachineCall<CodexLeftoverProcess[]>(runner,'codex.leftoverProcesses',{threadId:row.agent_session_uuid}))
+        :(yield codexLeftoverProcesses(row.agent_session_uuid));
       if(!this.codexProcessAuditReady(turnId,row.session_id))return;
       // A sighting is held, not reported: most detached jobs (a build, a short wait) finish on
       // their own within minutes, and only one that keeps running needs anyone's attention.
@@ -1522,7 +1524,7 @@ export class SessionExecutionHost {
       recordSessionEvent({eventId:`codex-process-audit-done:${turnId}`,sessionId:row.session_id,
         inputId:row.accepted_input_id,turnId,kind:'process_audit',payload:{threadId:row.agent_session_uuid,remaining:remaining.length}});
     } finally {this.codexProcessAudits.delete(turnId);}
-  }
+  }).call(this));}
   settleSetupFailure(claim:Pick<QueuedTurnClaimRow,'turn_id'|'dispatch_attempt'>,error:unknown) {
     const boundary=getRunningTurnDispatchBoundary(claim.turn_id,this.options.instanceId,claim.dispatch_attempt);
     if(!boundary)return false;
@@ -1539,7 +1541,7 @@ export class SessionExecutionHost {
    * provably unsent: they fail back to their own queue. One it was writing is settled by the host's
    * record: written means Claude's pickup decides it (during replay or later), absent means unsent.
    */
-  private async settleUnsentSteering(turnId:number,execution:ExecutionRow) {
+  private async settleUnsentSteering(turnId:number,execution:ExecutionRow) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const rows=db.query(`SELECT steering.id,steering.status,input.id AS input_id FROM turn_steering_messages steering
       LEFT JOIN session_inputs input ON input.steering_id=steering.id
       WHERE steering.turn_id=? AND steering.status IN ('queued','sending')`).all(turnId) as {id:number;status:string;input_id:string|null}[];
@@ -1552,27 +1554,19 @@ export class SessionExecutionHost {
     // A host records a write before making it, then records whether it completed. Only those
     // records prove anything: no attempt means unsent; a recorded failure means unsent; a
     // completed write is decided by Claude's pickup; anything unreadable or unfinished stays uncertain.
-    const attempted=new Set<string>(),completed=new Set<string>(),failed=new Set<string>();
-    let readable=true;
-    try {
-      for await(const frame of execution.supervisor===RUNNER_SUPERVISOR?new RunnerHostAccess(execution.execution_id).journal():streamJournal(execution.directory)) {
-        if(frame.k==='i'&&frame.d?.meta?.kind==='steering'&&typeof frame.d.meta.clientMessageId==='string')attempted.add(frame.d.id);
-        if(frame.k==='c'&&frame.d?.op==='written')completed.add(frame.d.id);
-        if(frame.k==='c'&&frame.d?.op==='write-failed')failed.add(frame.d.id);
-      }
-    } catch(error){readable=false;log('warn','execution_journal_unreadable',{execution_id:execution.execution_id,...errorFields(error)});}
+    const {attempted,completed,failed,readable}=(yield readSteeringJournalEvidence(execution));
     for(const row of sending) {
       const command=row.input_id?`steer-${row.input_id}`:null;
       if(!readable||!command){markTurnSteeringMessageAmbiguous(row.id,'Concierge restarted while sending this message and its delivery cannot be confirmed.');continue;}
       if(!attempted.has(command)||failed.has(command)){markTurnSteeringMessageFailed(row.id,'Concierge restarted before this message was written to the agent; it was never delivered.');continue;}
       if(!completed.has(command))markTurnSteeringMessageAmbiguous(row.id,'Concierge restarted while this message was being written to the agent; its delivery cannot be confirmed.');
     }
-  }
+  }).call(this));}
   /** After the turn's outcome is durably the owner's, its host may let its record go. */
-  private async releaseExecutions(turnId:number) {
+  private async releaseExecutions(turnId:number) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     for(const execution of db.query("SELECT * FROM executions WHERE turn_id=? AND state IN ('live','exited')").all(turnId) as ExecutionRow[])
-      await releaseExecution(execution);
-  }
+      (yield releaseExecution(execution));
+  }).call(this));}
   /** What Claude's record of picking up an earlier coordinator's follow-up means for its delivery. */
   private recoveredSteering(clientMessageId:string,outcome:'acknowledged'|'unacknowledged') {
     const row=db.query('SELECT steering_id,session_id,turn_id FROM session_inputs WHERE id=?').get(clientMessageId) as {steering_id:number|null;session_id:number;turn_id:number|null}|null;
@@ -1586,7 +1580,7 @@ export class SessionExecutionHost {
     recordSessionEvent({eventId:steeringAttemptEventId(`delivery:${clientMessageId}:${outcome==='acknowledged'?'sent':'ambiguous'}`,clientMessageId,row.steering_id),sessionId:row.session_id,inputId:clientMessageId,
       turnId:row.turn_id,kind:'delivery',payload:{state:outcome==='acknowledged'?'sent':'ambiguous'}});
   }
-  private async runModel(claim:QueuedTurnClaimRow,input:AcceptedSessionInput,session:SessionRow,steeringController:TurnSteeringController,closeSteering:(reason?:Error)=>void,cancellationController:TurnCancellationController,adoption?:Adoption) {
+  private async runModel(claim:QueuedTurnClaimRow,input:AcceptedSessionInput,session:SessionRow,steeringController:TurnSteeringController,closeSteering:(reason?:Error)=>void,cancellationController:TurnCancellationController,adoption?:Adoption) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const successor=custodySuccessorSession(session.id);
     const saved=savedTurn(claim.turn_id);
     const metadata=sessionMetadata(session);
@@ -1624,8 +1618,8 @@ export class SessionExecutionHost {
     let cwd=onRunner?'':this.cwd(session);
     if(onRunner) {
       const resolved=typeof metadata.projectName==='string'
-        ?await runnerMachineCall<{cwd:string}>(runnerTarget!,'projects.resolve',{project:metadata.projectName,path:metadata.projectPath??''})
-        :await runnerMachineCall<{cwd:string}>(runnerTarget!,'projects.default',{});
+        ?(yield runnerMachineCall<{cwd:string}>(runnerTarget!,'projects.resolve',{project:metadata.projectName,path:metadata.projectPath??''}))
+        :(yield runnerMachineCall<{cwd:string}>(runnerTarget!,'projects.default',{}));
       cwd=resolved.cwd;
     }
     const body=JSON.parse(input.payload_json),payload=input.kind==='create'?body.firstInput:body;
@@ -1645,19 +1639,19 @@ export class SessionExecutionHost {
     try {
       if(attachments.length&&metadata.interactionPolicy==='consultation-only')throw new ProviderCapabilityUnavailableError('attachments','Information-only consultation cannot read attached files.');
       if(!adoption&&(attachments.length||passiveAttachments.length)&&session.provider_id!=='chatgpt') {
-        staging=await mkdtemp(join(tmpdir(),`concierge-native-${claim.turn_id}-`));additionalDirs.push(staging);
-        const transcripts=[];for(const attachment of attachments){const path=join(staging,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});if(onRunner)stagedFiles.push({path,base64:attachment.base64});prompt+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/')){if(attachment.transcriptText)transcripts.push({slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const});else{const heard=await attachedRecordingWords({slackFileId:attachment.id,title:attachment.name,path});if(heard.transcript)transcripts.push(heard.transcript);if(heard.note)prompt+=`\n${heard.note}`;}}}const transcript=transcriptionPrompt(transcripts.filter(item=>!payload.text?.includes(item.text)));prompt+=transcript?`\n\n${transcript}`:'';
+        staging=(yield mkdtemp(join(tmpdir(),`concierge-native-${claim.turn_id}-`)));additionalDirs.push(staging);
+        const transcripts=[];for(const attachment of attachments){const path=join(staging,`${attachment.id}-${attachment.name}`);(yield writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600}));if(onRunner)stagedFiles.push({path,base64:attachment.base64});prompt+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/')){if(attachment.transcriptText)transcripts.push({slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const});else{const heard=(yield attachedRecordingWords({slackFileId:attachment.id,title:attachment.name,path}));if(heard.transcript)transcripts.push(heard.transcript);if(heard.note)prompt+=`\n${heard.note}`;}}}const transcript=transcriptionPrompt(transcripts.filter(item=>!payload.text?.includes(item.text)));prompt+=transcript?`\n\n${transcript}`:'';
         if(canvasSpeech) {
           const savedTranscripts=[];
           for(const attachment of passiveAttachments) {
             const path=join(staging,`${attachment.id}-${attachment.name}`);
-            await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});
+            (yield writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600}));
             if(onRunner)stagedFiles.push({path,base64:attachment.base64});
             canvasPassiveFileContext.push(JSON.stringify({id:attachment.id,name:attachment.name,contentType:attachment.contentType,path}));
             if(attachment.contentType.startsWith('audio/')) {
               if(attachment.transcriptText)savedTranscripts.push({slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const});
               else {
-                const heard=await attachedRecordingWords({slackFileId:attachment.id,title:attachment.name,path});
+                const heard=(yield attachedRecordingWords({slackFileId:attachment.id,title:attachment.name,path}));
                 if(heard.transcript)savedTranscripts.push(heard.transcript);
                 if(heard.note)canvasPassiveFileContext.push(JSON.stringify({id:attachment.id,note:heard.note}));
               }
@@ -1672,7 +1666,7 @@ export class SessionExecutionHost {
       if(nativeContext&&!adoption) {
         const runId=nativeRunId(claim.turn_id);
         // His meanings for his own terms in these words, so no agent guesses at one (thesaurus-context.ts).
-        const thesaurus=await (this.options.thesaurusContext??thesaurusTurnContext)(prompt);
+        const thesaurus=(yield (this.options.thesaurusContext??thesaurusTurnContext)(prompt));
         // On a machine configured for it (the Mac), a start while the machine is crowded says so, unless
         // the work is one he is waiting on. The notice comes at turn start; running turns are never steered.
         const crowdConfig=crowdingConfig(),crowding=crowdConfig?readCrowding(db,crowdConfig):null;
@@ -1692,20 +1686,20 @@ export class SessionExecutionHost {
         for(let index=0;index<runAdditionalDirs.length;index++) {
           const directory=runAdditionalDirs[index]!;
           if(staging&&directory===staging)continue;
-          const remote=await runnerMachineCall<{cwd:string}>(runnerTarget!,'projects.locate',{location:directory}).catch(error=>{
+          const remote=(yield runnerMachineCall<{cwd:string}>(runnerTarget!,'projects.locate',{location:directory}).catch(ledgerCallback(error=>{
             throw new ProviderCapabilityUnavailableError('execution',`An additional folder cannot be resolved on runner ${runnerTarget}: ${error instanceof Error?error.message:String(error)}`);
-          });
+          })));
           runAdditionalDirs[index]=remote.cwd;
         }
       }
       let launchClaudeExecutable:string|undefined;
       const underlying=this.options.providers[session.provider_id];
       const provider:AgentProvider={id:session.provider_id,capabilities:underlying?.capabilities,
-        fork:async()=>{throw new Error('Native fork uses its exact control turn.');},
-        run:async prepared=>{
+        fork:async()=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {throw new Error('Native fork uses its exact control turn.');}).call(this));},
+        run:async prepared=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
           // The claimed turn, its execution record and its input are on disk before any provider
           // (Claude, Codex or ChatGPT) is started or told anything.
-          await ledgerDurable({kind:'provider_input',id:input.id});
+          (yield ledgerDurable({kind:'provider_input',id:input.id}));
           if(boundLabInvocation(input)&&!labInvocationBindingMatches(input))throw new ProviderCapabilityUnavailableError('send','The Lab participant’s provider, model or effort changed; no replacement execution was submitted.');
           if(!adoption&&(onRunner||session.provider_id==='claude-code'&&executionHostsEnabled())){
             if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
@@ -1716,7 +1710,7 @@ export class SessionExecutionHost {
           // what the restart returned to the queue meanwhile goes into it then.
           if(adoption&&prepared.onSteeringReady){
             const ready=prepared.onSteeringReady;
-            prepared={...prepared,onSteeringReady:sender=>{ready(sender);queueMicrotask(()=>this.pullWaitingInputs(session.id));}};
+            prepared={...prepared,onSteeringReady:sender=>{ready(sender);queueMicrotask(ledgerCallback(()=>this.pullWaitingInputs(session.id)));}};
           }
           let actual=prepared;
           // New Codex turns always use the shared daemon. Retain the old host path only
@@ -1759,7 +1753,7 @@ export class SessionExecutionHost {
             const protectedRun=protectedCustodyRun(claim.turn_id,this.options.instanceId,claim.dispatch_attempt,
               {client,observeProcesses:this.options.custodyObserveProcesses})!;
             custodyConnection(client).protect(protectedRun.plan.nativeConnection);
-            if(!adoption)await custodyConnection(client).assert(protectedRun.plan.nativeConnection);
+            if(!adoption)(yield custodyConnection(client).assert(protectedRun.plan.nativeConnection));
             actual={...actual,...(custodyPlacement(claim.turn_id)?{prompt:JSON.parse(input.payload_json).text}:{}),cwd:protectedRun.plan.cwd,
               additionalDirs:[...protectedRun.plan.runtimeWorkspaceRoots].filter(path=>path!==protectedRun.plan.cwd),
               custodySuccessor:protectedRun,appServerClient:client};
@@ -1768,7 +1762,7 @@ export class SessionExecutionHost {
           const admission=adoption?followed:this.retainAdmission(claim,input,session,actual,attachments);
           if(adoption&&session.provider_id==='chatgpt'&&!admission)throw new ProviderDispatchError({message:'The ChatGPT send this run made has no retained admission; it cannot be followed.',terminalConfirmed:false,toolsUsed:[]});
           if(adoption&&session.provider_id==='chatgpt'){
-            await this.ownerServing;
+            (yield this.ownerServing);
             log('info','chatgpt_run_follow_started',{turn_id:claim.turn_id,execution_id:adoption.execution.execution_id});
           }
           if(session.provider_id==='chatgpt'&&admission) {
@@ -1783,18 +1777,18 @@ export class SessionExecutionHost {
             if(!adoption)retainExecutionIntent({executionId:newExecutionId(),turnId:claim.turn_id,dispatchAttempt:claim.dispatch_attempt,sessionId:session.id,provider:'chatgpt',
               directory:'',coordinatorInstanceId:this.options.instanceId,supervisor:'capability-host',processor:{replayPrompt,runAdditionalDirs,staging:null,account:null}});
             return this.capabilityClient.createChatGptProvider({run:{operationId:input.id,sessionId:`concierge:${session.id}`,inputId:input.id,runId:admission.runId},admission:admission as ChatGptAdmission,attachments:attachments.map(({transcriptText,...file})=>file),
-              onEvidence:evidence=>this.capabilityEvidence(input,claim.turn_id,evidence),onNativeBinding:binding=>updateSessionMetadata(session.id,{nativeBinding:binding}),
-              onConversationTitle:title=>adoptProviderConversationTitle(session.id,title),
+              onEvidence:ledgerCallback(evidence=>this.capabilityEvidence(input,claim.turn_id,evidence)),onNativeBinding:ledgerCallback(binding=>updateSessionMetadata(session.id,{nativeBinding:binding})),
+              onConversationTitle:ledgerCallback(title=>adoptProviderConversationTitle(session.id,title)),
               ...(adoption?{follow:{onLive:()=>{recordLiveAdoption(adoption.execution.execution_id);
                 log('info','chatgpt_run_followed',{turn_id:claim.turn_id,execution_id:adoption.execution.execution_id,still_running:true});}}}:{})}).run(actual)
-              .then(result=>{
+              .then(ledgerCallback(result=>{
                 noteChatgptModel(result.text);
                 const body=result.text.replace(/^Answered by ChatGPT model[^\n]*\n*/,'').trim();
                 if(!body){
                   throw new ProviderDispatchError({message:'ChatGPT returned a proof line without an answer body.',terminalConfirmed:false,toolsUsed:[],failureClass:'retryable'});
                 }
                 return result;
-              },error=>{noteChatgptChannelFailure(error,session.id,claim.dispatch_attempt);throw error;});
+              }),ledgerCallback(error=>{noteChatgptChannelFailure(error,session.id,claim.dispatch_attempt);throw error;}));
           }
           if(outside){
             // Older owners advertised steering for outside CLI turns, whose one-shot input has no
@@ -1805,8 +1799,8 @@ export class SessionExecutionHost {
           }
           if(!underlying)throw new ProviderCapabilityUnavailableError('send',`${session.provider_id} is unavailable; no provider substitution was attempted.`);
           return underlying.run(actual);
-        }};
-      return await executeAgentTurn({
+        }).call(this));}};
+      return (yield executeAgentTurn({
       presentation:'native',inputId:input.id,turnKind:'native',turnId:claim.turn_id,session,provider,providerId:session.provider_id,providerLabel:session.provider_id,
       text:claim.turn_user_text,prompt,cwd,additionalDirs,model:claim.provider_model??undefined,reasoningEffort:claim.reasoning_effort??undefined,
       baseSystemPrompt:nativeContext?[sessionInputInstructions({
@@ -1850,11 +1844,11 @@ export class SessionExecutionHost {
         // An outside run's thread lives in its own CLI process; the shared App Server must not load it.
         if(provider==='codex'&&!metadata.outside)void this.options.providerSessionBound?.(uuid).catch(error=>log('warn','codex_session_subscription_failed',{provider_thread_uuid:uuid,...errorFields(error)}));
       },deliverResult:result=>this.deliverResult(result)},
-      });
+      }));
     } finally {
-      if(staging)await rm(staging,{recursive:true,force:true});
+      if(staging)(yield rm(staging,{recursive:true,force:true}));
     }
-  }
+  }).call(this));}
   /**
    * A new Claude run starts in its own execution host, recorded in the ledger before the host is
    * started, with what a later coordinator needs to take it back: the exact prompt, folders and
@@ -1885,7 +1879,7 @@ export class SessionExecutionHost {
     const stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!);
     return {...prepared,...adoption.processor.run,adopted:true,
       ...(executable===MANAGED_CODEX?{legacyPrivateCodex:true}:{}),
-      onRecoveredSteering:(clientMessageId:string,outcome:'acknowledged'|'unacknowledged')=>this.recoveredSteering(clientMessageId,outcome),
+      onRecoveredSteering:ledgerCallback((clientMessageId:string,outcome:'acknowledged'|'unacknowledged')=>this.recoveredSteering(clientMessageId,outcome)),
       transport:this.hostedTransport(adoption.mode,adoption.execution.execution_id,stateDir,executable,undefined,
         adoption.execution.supervisor===RUNNER_SUPERVISOR?[]:undefined)} as any;
   }
@@ -1908,14 +1902,14 @@ export class SessionExecutionHost {
     // Through a runner's relay the runner also pins its own helpers at the turn's start (runner.ts);
     // an App Server started by this owner's unit (the AX41's until its next restart) reads these.
     const stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!),botDir=providerOwnerEnvironment().CONCIERGE_ROUTER_BOT_DIR;
-    return {...prepared,custodyOwnerSessionId:session.id,...(appServerClient?{appServerClient}:{}),onProviderThreadStarted:(threadId:string)=>{
+    return {...prepared,custodyOwnerSessionId:session.id,...(appServerClient?{appServerClient}:{}),onProviderThreadStarted:ledgerCallback((threadId:string)=>{
       try{if(botDir)pinCodexThreadHooks(stateDir,threadId,executionId,botDir);}
       catch(error){
         if(custodySuccessorSession(session.id))throw error;
         log('warn','codex_hook_pin_failed',{execution_id:executionId,...errorFields(error)});
       }
-      onProviderThreadStarted?.(threadId);
-    }} as any;
+      return onProviderThreadStarted?.(threadId);
+    })} as any;
   }
   /**
    * An outside request's run: the Codex command line in its own execution host, recorded before the
@@ -1956,8 +1950,8 @@ export class SessionExecutionHost {
     return {...prepared,...adoption.processor.run,custodyOwnerSessionId:session.id,...(appServerClient?{appServerClient}:{}),
       adoptTurn:{threadId:current.agent_session_uuid,turnId:turn?.provider_turn_id??null},
       recoveredSteeringClientIds:sending,
-      onAdoptedLive:()=>recordLiveAdoption(adoption.execution.execution_id),
-      onRecoveredSteering:(clientMessageId:string,outcome:'acknowledged'|'unacknowledged')=>this.recoveredSteering(clientMessageId,outcome)} as any;
+      onAdoptedLive:ledgerCallback(()=>recordLiveAdoption(adoption.execution.execution_id)),
+      onRecoveredSteering:ledgerCallback((clientMessageId:string,outcome:'acknowledged'|'unacknowledged')=>this.recoveredSteering(clientMessageId,outcome))} as any;
   }
   /** `runnerFiles` places the host on a runner (an empty list when taking a runner's run back). */
   private hostedTransport(mode:'launch'|'adopt'|'adopt-record',executionId:string,stateDir:string,executable?:string,timeouts?:{inactivityMs:number|null},
@@ -1969,16 +1963,16 @@ export class SessionExecutionHost {
     return new HostedClaudeCodeTransport({mode,executionId,stateDir,routerBotDir,
       ...(runnerFiles?{access:new RunnerHostAccess(executionId,mode==='launch'?this.options.instanceId:undefined,targetRunner)}:{}),
       executable:executable??(mode==='launch'?claudeExecutable():undefined),
-      onLaunched:launch=>recordExecutionLaunched(executionId,launch),
-      onAttached:status=>{
+      onLaunched:ledgerCallback(launch=>recordExecutionLaunched(executionId,launch)),
+      onAttached:ledgerCallback(status=>{
         log('info','execution_host_attached',{execution_id:executionId,mode,host_pid:status.hostPid,provider_pid:status.providerPid,replayed:status.until,provider_running:!status.exit});
         // A runner's run counts as taken over alive only once its runner reaches this owner afterwards.
         if(mode==='adopt'&&!status.exit){
-          if(runnerFiles){const since=Date.now();void new RunnerHostAccess(executionId).contactAfter(since).then(alive=>{if(alive)recordLiveAdoption(executionId);});}
+          if(runnerFiles){const since=Date.now();void new RunnerHostAccess(executionId).contactAfter(since).then(ledgerCallback(alive=>{if(alive)recordLiveAdoption(executionId);}));}
           else recordLiveAdoption(executionId);
         }
-      },
-      onExited:exit=>recordExecutionExited(executionId,exit)},timeouts,runnerFiles);
+      }),
+      onExited:ledgerCallback(exit=>recordExecutionExited(executionId,exit))},timeouts,runnerFiles);
   }
   private retainAdmission(claim:QueuedTurnClaimRow,input:AcceptedSessionInput,session:SessionRow,actual:Parameters<AgentProvider['run']>[0],attachments:ReturnType<SessionOwner['attachments']>) {
     const current=getSessionById(session.id)!,metadata=sessionMetadata(current);
@@ -2009,7 +2003,7 @@ export class SessionExecutionHost {
     this.owner.invalidateReceipt(input.id);
     return admission;
   }
-  private async runFork(claim:QueuedTurnClaimRow,operation:AcceptedSessionInput,session:SessionRow) {
+  private async runFork(claim:QueuedTurnClaimRow,operation:AcceptedSessionInput,session:SessionRow) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     let effectIntended=false;
     try {
       const pin=readNativeForkPin(operation),provider=this.options.providers[pin.provider];
@@ -2018,9 +2012,9 @@ export class SessionExecutionHost {
       const runner=runnerBinding.status==='bound'?runnerBinding.runner:null;
       let cursor:string|null=null,found=false;const cursors=new Set<string>();
       do {
-        const page=await provider.history({sessionUuid:pin.parentSessionUUID,cwd:this.cwd(session),cursor,limit:100,
+        const page=(yield provider.history({sessionUuid:pin.parentSessionUUID,cwd:this.cwd(session),cursor,limit:100,
           ...(runner?{runner}:{}),
-          ...(typeof metadata.providerAccount==='string'?{account:metadata.providerAccount}:{})});
+          ...(typeof metadata.providerAccount==='string'?{account:metadata.providerAccount}:{})}));
         found=page.messages.some(message=>provider.capabilities!.forkBoundary==='message'?message.id===pin.boundary:message.turnId===pin.boundary);
         if(found)break;
         cursor=page.nextCursor;
@@ -2039,10 +2033,10 @@ export class SessionExecutionHost {
       if(runner) {
         let account=typeof metadata.providerAccount==='string'?metadata.providerAccount:null;
         if(account){
-          const validation=await runnerMachineCall<any>(runner,'accounts.validate',{provider:pin.provider,account});
+          const validation=(yield runnerMachineCall<any>(runner,'accounts.validate',{provider:pin.provider,account}));
           if(validation?.available!==true)throw new ProviderCapabilityUnavailableError('fork','The conversation’s recorded provider account is not uniquely available on its runner.');
         }else{
-          const discovery=await runnerMachineCall<any>(runner,'accounts.transcript',{provider:pin.provider,account:null,nativeId:pin.parentSessionUUID});
+          const discovery=(yield runnerMachineCall<any>(runner,'accounts.transcript',{provider:pin.provider,account:null,nativeId:pin.parentSessionUUID}));
           if(discovery?.resolution!=='unique'||typeof discovery.account!=='string'||!discovery.account)
             throw new ProviderCapabilityUnavailableError('fork','This older conversation does not identify one unique provider account on its runner.');
           account=discovery.account;
@@ -2050,15 +2044,15 @@ export class SessionExecutionHost {
         let location:{project:string|null;path:string};
         if(typeof metadata.projectName==='string')location={project:metadata.projectName,path:typeof metadata.projectPath==='string'?metadata.projectPath:''};
         else {
-          const resolved=await resolveRunnerProjectLocation(runner,{project:metadata.project,cwd:metadata.cwd??pin.cwd});
+          const resolved=(yield resolveRunnerProjectLocation(runner,{project:metadata.project,cwd:metadata.cwd??pin.cwd}));
           location={project:resolved.project,path:resolved.path};
         }
-        const additionalLocations=await Promise.all(additionalDirs.map(async directory=>{
-          const resolved=await runnerMachineCall<any>(runner,'projects.locate',{location:directory});
+        const additionalLocations=(yield Promise.all(additionalDirs.map(async directory=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+          const resolved=(yield runnerMachineCall<any>(runner,'projects.locate',{location:directory}));
           if(typeof resolved?.project!=='string'||typeof resolved?.path!=='string')
             throw new ProviderCapabilityUnavailableError('fork','An additional project folder cannot be resolved on the conversation’s runner.');
           return {project:resolved.project,path:resolved.path};
-        }));
+        }).call(this));})));
         retained.runner=runner;retained.account=account;retained.location=location;retained.additionalLocations=additionalLocations;
         remoteCall={provider:pin.provider,account,sessionUUID:pin.parentSessionUUID,boundary:pin.boundary,
           threadSource:retained.threadSource,location,additionalLocations};
@@ -2068,11 +2062,11 @@ export class SessionExecutionHost {
         db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({...JSON.parse(operation.receipt_json!),fork:retained}),operation.id);
       })();
       effectIntended=true;
-      const remoteResult=remoteCall?await runnerMachineCall<any>(runner!,'provider-fork.execute',remoteCall,120_000):null;
+      const remoteResult=remoteCall?(yield runnerMachineCall<any>(runner!,'provider-fork.execute',remoteCall,120_000)):null;
       if(remoteResult?.status==='rejected')throw Object.assign(new Error(String(remoteResult.reason)),{outcome:'rejected'});
       const result:RunResult=remoteCall
         ?{text:'Fork created.',sessionUUID:remoteResult?.sessionUUID,toolsUsed:[],providerTurnId:null}
-        :await provider.fork({sessionUUID:pin.parentSessionUUID,cwd:retained.cwd,additionalDirs:retained.additionalDirs,lastTurnId:pin.boundary,threadSource:retained.threadSource,interactionPolicy:'standard'});
+        :(yield provider.fork({sessionUUID:pin.parentSessionUUID,cwd:retained.cwd,additionalDirs:retained.additionalDirs,lastTurnId:pin.boundary,threadSource:retained.threadSource,interactionPolicy:'standard'}));
       if(typeof result.sessionUUID!=='string'||result.sessionUUID===pin.parentSessionUUID)throw new Error('The runner did not return a distinct provider fork identity.');
       completeNativeFork(operation.id,this.options.instanceId,result);
     } catch(error) {
@@ -2081,8 +2075,8 @@ export class SessionExecutionHost {
       if(confirmed)failRunningTurnAndReleaseSession(claim.turn_id,this.options.instanceId,reason);
       else interruptOrphanedTurn(claim.turn_id,this.options.instanceId,`Native fork outcome is uncertain; it will not be repeated. ${reason}`);
     }
-  }
-  private async requeueProvenUnsentChatGpt(session:SessionRow,operation:AcceptedSessionInput):Promise<{status:'requeued'|'already_queued'|'already_running';runId:string}> {
+  }).call(this));}
+  private async requeueProvenUnsentChatGpt(session:SessionRow,operation:AcceptedSessionInput):Promise<{status:'requeued'|'already_queued'|'already_running';runId:string}> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(session.provider_id!=='chatgpt'||!this.capabilityClient||operation.session_id!==session.id||operation.turn_id===null)
       throw new Error('Safe ChatGPT requeue needs the original native operation in its exact provider session.');
     const turn=db.query('SELECT * FROM turns WHERE id=? AND session_id=? AND turn_kind=\'native\'')
@@ -2098,7 +2092,7 @@ export class SessionExecutionHost {
     if(turn.status==='queued'||turn.status==='running')return {status:turn.status==='queued'?'already_queued':'already_running',runId:turn.native_run_id};
     if(turn.status!=='error')throw new Error('Only a terminal original turn with no-send proof can be requeued.');
     const run={operationId:operation.id,sessionId:`concierge:${session.id}`,inputId:operation.id,runId:turn.native_run_id};
-    const receipt=await this.capabilityClient.reconcile(run);
+    const receipt=(yield this.capabilityClient.reconcile(run));
     if(receipt.runId!==run.runId||receipt.state!=='failed'||receipt.acknowledgedAt!==null
       ||receipt.result?.state!=='failed'||receipt.result.turnId!==null||receipt.result.text!==''
       ||!['CHATGPT_NOT_SENT','CHATGPT_SEND_FAILED'].includes(String(receipt.result.error))
@@ -2116,9 +2110,9 @@ export class SessionExecutionHost {
       inputId:operation.id,turnId:turn.id,kind:'run',payload:{reason:'exact_provider_receipt_proved_no_send',runId:run.runId}});
     this.options.wake();
     return {status:'requeued',runId:run.runId};
-  }
+  }).call(this));}
   private async requeueProvenUnacknowledgedCodex(session:SessionRow,operation:AcceptedSessionInput,input:{requestId:string;actionId:string;sourceInputId:string;sourceRunId:string;validateSource?:()=>void}):
-    Promise<{status:'requeued'|'already_recovered';runId:string;providerTurnIds:string[]}> {
+    Promise<{status:'requeued'|'already_recovered';runId:string;providerTurnIds:string[]}> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const reserved=codexUnacknowledgedRecovery(operation.id);
     if(reserved){
       if(reserved.request_id!==input.requestId||reserved.turn_id!==operation.turn_id)
@@ -2179,11 +2173,11 @@ export class SessionExecutionHost {
     if(db.query(`SELECT 1 FROM executions WHERE turn_id=? AND state IN ('intended','live','exited') LIMIT 1`).get(turn.id))
       throw new Error('A prior Codex execution still has an open host record; reconcile it before recovery.');
     const client=ownerCodexAppServerClient();
-    await client.connect();
+    (yield client.connect());
     let nativeTurns:any[]=[];let turnCursor:string|null=null;
     do {
-      const page=await client.request('thread/turns/list',{threadId:session.agent_session_uuid,cursor:turnCursor,limit:50,
-        sortDirection:'desc',itemsView:'notLoaded'});
+      const page=(yield client.request('thread/turns/list',{threadId:session.agent_session_uuid,cursor:turnCursor,limit:50,
+        sortDirection:'desc',itemsView:'notLoaded'}));
       if(!Array.isArray(page?.data))throw new Error('Codex did not return a complete native turn list for exact recovery.');
       nativeTurns.push(...page.data);
       const next=typeof page.nextCursor==='string'?page.nextCursor:null;
@@ -2197,8 +2191,8 @@ export class SessionExecutionHost {
       if(!nativeTurn)throw new Error('Codex history does not contain the exact native turn retained for this attempt.');
       const items:any[]=[];let itemCursor:string|null=null;
       do {
-        const page=await client.request('thread/items/list',{threadId:session.agent_session_uuid,turnId:attempt.providerTurnId,
-          cursor:itemCursor,limit:100,sortDirection:'asc'});
+        const page=(yield client.request('thread/items/list',{threadId:session.agent_session_uuid,turnId:attempt.providerTurnId,
+          cursor:itemCursor,limit:100,sortDirection:'asc'}));
         if(!Array.isArray(page?.data)||page.data.some((entry:any)=>entry?.turnId!==attempt.providerTurnId))
           throw new Error('Codex did not return the exact native attempt item page.');
         items.push(...page.data.map((entry:any)=>entry.item));
@@ -2237,10 +2231,10 @@ export class SessionExecutionHost {
         actionId:input.actionId,providerTurnIds:proof.attempts.map(attempt=>attempt.providerTurnId)}});
     this.options.wake();
     return {status:'requeued',runId:turn.native_run_id,providerTurnIds:proof.attempts.map(attempt=>attempt.providerTurnId)};
-  }
+  }).call(this));}
   /** A corrected attachment is a new immutable input. Only the original provider receipt can
    * authorize linking that input to the unanswered question; a generic failed turn cannot. */
-  private async proveRejectedChatGptAttachment(session:SessionRow,operation:AcceptedSessionInput):Promise<{runId:string;reason:string;attachmentHashes:string[]}> {
+  private async proveRejectedChatGptAttachment(session:SessionRow,operation:AcceptedSessionInput):Promise<{runId:string;reason:string;attachmentHashes:string[]}> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(session.provider_id!=='chatgpt'||!this.capabilityClient||operation.session_id!==session.id||operation.turn_id===null)
       throw new Error('Attachment correction needs the original ChatGPT operation in its exact session.');
     const turn=db.query("SELECT * FROM turns WHERE id=? AND session_id=? AND turn_kind='native'")
@@ -2256,7 +2250,7 @@ export class SessionExecutionHost {
       ||stablePayload(admission.nativeBinding)!==stablePayload(sessionMetadata(session).nativeBinding??null))
       throw new Error('The original attachment admission or conversation binding changed.');
     const run={operationId:operation.id,sessionId:`concierge:${session.id}`,inputId:operation.id,runId:turn.native_run_id};
-    const receipt=await this.capabilityClient.reconcile(run);
+    const receipt=(yield this.capabilityClient.reconcile(run));
     const reason=receipt.result?.error;
     if(receipt.runId!==run.runId||receipt.state!=='failed'||receipt.acknowledgedAt!==null
       ||receipt.result?.state!=='failed'||receipt.result.turnId!==null||receipt.result.text!==''
@@ -2271,8 +2265,8 @@ export class SessionExecutionHost {
       ||stablePayload(sessionMetadata(current).nativeBinding??null)!==stablePayload(admission.nativeBinding))
       throw new Error('The ChatGPT session changed during attachment-rejection inspection.');
     return {runId:run.runId,reason,attachmentHashes:admission.attachments.map(file=>file.sha256)};
-  }
-  private async recover(session:SessionRow,operation:AcceptedSessionInput) {
+  }).call(this));}
+  private async recover(session:SessionRow,operation:AcceptedSessionInput) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(operation.turn_id===null)return;
     let turn=db.query('SELECT * FROM turns WHERE id=? AND session_id=?').get(operation.turn_id,session.id) as any;
     if(!turn||turn.turn_kind!=='native'||!['interrupted','parked','delivery_parked','delivering'].includes(turn.status))return;
@@ -2289,9 +2283,9 @@ export class SessionExecutionHost {
       if(pin.provider!=='codex'||!pin.threadSource||!pin.cwd)return;
       const retained=pin as NativeForkPin&{runner?:string;account?:string;location?:{project:string|null;path:string}};
       const matches=retained.runner&&retained.account&&retained.location
-        ?(await runnerMachineCall<any>(retained.runner,'provider-fork.find',{provider:'codex',account:retained.account,sessionUUID:pin.parentSessionUUID,
-          threadSource:pin.threadSource,location:retained.location},120_000))?.sessionUUIDs??[]
-        :await (this.options.findForks?this.options.findForks(pin):(await import('./codex')).findCodexForksByThreadSource({sourceSessionUUID:pin.parentSessionUUID,threadSource:pin.threadSource,cwd:pin.cwd}));
+        ?((yield runnerMachineCall<any>(retained.runner,'provider-fork.find',{provider:'codex',account:retained.account,sessionUUID:pin.parentSessionUUID,
+          threadSource:pin.threadSource,location:retained.location},120_000)))?.sessionUUIDs??[]
+        :(yield (this.options.findForks?this.options.findForks(pin):((yield import('./codex'))).findCodexForksByThreadSource({sourceSessionUUID:pin.parentSessionUUID,threadSource:pin.threadSource,cwd:pin.cwd})));
       if(matches.length!==1||matches[0]===pin.parentSessionUUID)return;
       const result:RunResult={text:'Fork recovered from exact native provenance.',sessionUUID:matches[0]!,toolsUsed:[],providerTurnId:null};
       db.transaction(()=>{if(this.claimResult(turn,result))completeNativeFork(operation.id,this.options.instanceId,result);})();
@@ -2304,7 +2298,7 @@ export class SessionExecutionHost {
       const admission=saved.admission as ChatGptAdmission;
       if(admission.bindingGeneration!==session.binding_generation||admission.inputId!==operation.id||admission.runId!==turn.native_run_id)return;
       const run={operationId:operation.id,sessionId:`concierge:${session.id}`,inputId:operation.id,runId:turn.native_run_id};
-      const receipt=await this.capabilityClient.reconcile(run);
+      const receipt=(yield this.capabilityClient.reconcile(run));
       if(receipt.runId!==run.runId)throw new Error('Reconciliation returned another provider effect.');
       this.capabilityEvidence(operation,turn.id,{kind:'reconcile',run,receipt});
       const current=getSessionById(session.id)!;
@@ -2343,11 +2337,11 @@ export class SessionExecutionHost {
     if(!claimed)return;
     if(proof&&(proof.state==='failed'||proof.state==='canceled'))return;
     try {
-      await this.deliverResult({...result,turnId:turn.id,sessionId:session.id,inputId:operation.id});
+      (yield this.deliverResult({...result,turnId:turn.id,sessionId:session.id,inputId:operation.id}));
       markTurnResponseDelivered(turn.id);
       if(!finishDeliveredTurn(turn.id))throw new Error('Reconciled result could not settle its exact turn.');
     } catch(error) {relinquishTurnDelivery(turn.id,this.options.instanceId);throw error;}
-  }
+  }).call(this));}
   private claimResult(turn:{id:number;session_id:number;status?:string;owner_instance_id?:string|null},result:RunResult) {
     if(turn.status==='delivering')return claimOrphanedDelivery(turn.id,turn.owner_instance_id??null,this.options.instanceId);
     return claimNativeResultReconciliation({turnId:turn.id,sessionId:turn.session_id,ownerInstanceId:this.options.instanceId,agentText:result.text,outboundText:JSON.stringify({version:1,result}),isOwnerAlive:isProcessIdentityAlive});
@@ -2445,4 +2439,19 @@ export function chooseTurnRunner(session:SessionRow,metadata=sessionMetadata(ses
   const selected=process.env.CONCIERGE_TURN_RUNNER?.trim()||codexRelayRunner();
   if(!selected)throw new Error(`${session.provider_id} runner placement is enabled, but no runner target is configured.`);
   return selected;
+}
+
+/** The journal reader owns its iterator across I/O. It collects evidence only;
+ * ledger interpretation and settlement resume inside a newly admitted segment. */
+async function readSteeringJournalEvidence(execution:ExecutionRow) {
+  const attempted=new Set<string>(),completed=new Set<string>(),failed=new Set<string>();
+  let readable=true;
+  try {
+    for await(const frame of execution.supervisor===RUNNER_SUPERVISOR?new RunnerHostAccess(execution.execution_id).journal():streamJournal(execution.directory)) {
+      if(frame.k==='i'&&frame.d?.meta?.kind==='steering'&&typeof frame.d.meta.clientMessageId==='string')attempted.add(frame.d.id);
+      if(frame.k==='c'&&frame.d?.op==='written')completed.add(frame.d.id);
+      if(frame.k==='c'&&frame.d?.op==='write-failed')failed.add(frame.d.id);
+    }
+  } catch(error){readable=false;log('warn','execution_journal_unreadable',{execution_id:execution.execution_id,...errorFields(error)});}
+  return {attempted,completed,failed,readable};
 }

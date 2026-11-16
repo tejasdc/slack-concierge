@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import { operationalResponseInstructions } from "./operational-response";
 import type { Database } from "bun:sqlite";
 import { createCoalescingEventRunner } from "./coalescing-event-runner";
@@ -54,18 +56,18 @@ export class GrafanaSlackError extends Error {
 
 export async function publishGrafanaAlert(input: {
   token: string; row: GrafanaAlertRow; fetch?: typeof fetch;
-}) {
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const update = Boolean(input.row.root_ts);
   let response: Response;
   try {
-    response = await (input.fetch || fetch)(`https://slack.com/api/chat.${update ? "update" : "postMessage"}`, {
+    response = (yield (input.fetch || fetch)(`https://slack.com/api/chat.${update ? "update" : "postMessage"}`, {
       method: "POST", headers: { authorization: `Bearer ${input.token}`, "content-type": "application/json" },
       body: JSON.stringify({ channel: input.row.channel, ...(update ? { ts: input.row.root_ts } : {}),
         text: renderGrafanaAlert(input.row), unfurl_links: false, unfurl_media: false }),
       signal: AbortSignal.timeout(10_000),
-    });
+    }));
   } catch { throw new GrafanaSlackError(update, update ? "update_transport_failure" : "ambiguous_post"); }
-  const body: any = await response.json().catch(() => null);
+  const body: any = (yield response.json().catch(ledgerCallback(() => null)));
   if (response.status === 429 || body?.error === "ratelimited") {
     const seconds = Number(response.headers.get("retry-after"));
     throw new GrafanaSlackError(true, "rate_limited", Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 0);
@@ -75,7 +77,7 @@ export async function publishGrafanaAlert(input: {
   }
   if (update && body.ts !== input.row.root_ts) throw new GrafanaSlackError(false, "update_receipt_mismatch");
   return body.ts as string;
-}
+}).call(this));}
 
 export type GrafanaRecoveryEvidence = {
   fingerprint: string; condition: string; startsAt: string; endsAt: string;
@@ -246,13 +248,13 @@ export class GrafanaAlerts {
     this.wake();
   }
   wake() {
-    void this.runner.request("event").catch(() => this.observe("grafana_alert_worker_failed", { reason: "delivery_or_persistence_failed" }));
+    void this.runner.request("event").catch(ledgerCallback(() => this.observe("grafana_alert_worker_failed", { reason: "delivery_or_persistence_failed" })));
   }
-  async settled() { await this.runner.active(); }
+  async settled() { (await this.runner.active()); }
   async stop() {
     this.stopping = true;
     if (activeReceiver === this) activeReceiver = null;
-    await this.settled();
+    (await this.settled());
   }
   private investigate(row: GrafanaAlertRow) {
     // Historical delivery proves only its old destination. A fresh firing is retargeted by
@@ -275,7 +277,7 @@ export class GrafanaAlerts {
     })();
     this.options.wakeTurns();
   }
-  private async deliver() {
+  private async deliver() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     while (!this.stopping) {
       let row = this.options.db.query(`SELECT * FROM grafana_alerts WHERE delivery_status='pending'
         ORDER BY next_attempt_ms,fingerprint LIMIT 1`).get() as GrafanaAlertRow | null;
@@ -287,7 +289,7 @@ export class GrafanaAlerts {
       const rateLimitUntil = (this.options.db.query("SELECT MAX(next_attempt_ms) AS until_ms FROM grafana_alerts WHERE error='rate_limited'").get() as { until_ms: number | null }).until_ms || 0;
       const nextAttempt = Math.max(row.next_attempt_ms, rateLimitUntil);
       if (nextAttempt > Date.now()) {
-        await (this.options.wait || Bun.sleep)(Math.min(nextAttempt - Date.now(), 1000)); continue;
+        (yield (this.options.wait || Bun.sleep)(Math.min(nextAttempt - Date.now(), 1000))); continue;
       }
       if (this.options.db.query(`SELECT 1 FROM grafana_alerts WHERE condition=? AND channel=?
         AND root_ts IS NULL AND delivery_status='parked' LIMIT 1`).get(row.condition, row.channel)) {
@@ -310,7 +312,7 @@ export class GrafanaAlerts {
         WHERE fingerprint=? AND delivery_status='pending'`).run(this.options.ownerId, row.root_ts, row.fingerprint);
       if (!claimed.changes) continue;
       let ts: string;
-      try { ts = await this.options.publish(row); }
+      try { ts = (yield this.options.publish(row)); }
       catch (error) {
         const retry = row.channel === "native:inbox" || error instanceof GrafanaSlackError && error.retryable && row.attempts < 2;
         this.options.db.query(`UPDATE grafana_alerts SET delivery_status=?,owner_id=NULL,error=?,next_attempt_ms=?
@@ -321,15 +323,15 @@ export class GrafanaAlerts {
         this.observe(retry ? "grafana_alert_retry" : "grafana_alert_parked", { fingerprint: row.fingerprint });
         continue;
       }
-      await retryTransientDatabaseOperation({ operation: () => {
+      (yield retryTransientDatabaseOperation({ operation: () => {
         const result = this.options.db.query(`UPDATE grafana_alerts SET root_ts=?,delivered_revision=?,owner_id=NULL,error=NULL,
           delivery_status=CASE WHEN revision=? THEN 'delivered' ELSE 'pending' END
           WHERE fingerprint=? AND delivery_status='sending' AND owner_id=?`)
           .run(ts, row.revision, row.revision, row.fingerprint, this.options.ownerId);
         if (!result.changes) throw new Error("Alert delivery ownership changed.");
-      } });
+      } }));
       this.observe("grafana_alert_delivered", { fingerprint: row.fingerprint, state: row.status, revision: row.revision, message_ts: ts });
       this.investigate(this.row(row.fingerprint)!);
     }
-  }
+  }).call(this));}
 }

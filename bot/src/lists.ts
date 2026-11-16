@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps,runLedgerSegment} from './ledger-admission';
 import { createHmac } from "node:crypto";
 import {
   beginChannelListCreationIntent,
@@ -259,17 +261,17 @@ async function discoverChannelList(input: {
   channel: ChannelRow;
   user?: string | null;
   intent: ChannelListCreationIntent | null;
-} & ListIdentityInput): Promise<DiscoveredList | null> {
+} & ListIdentityInput): Promise<DiscoveredList | null> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if (!input.identityOwnerId) throw new Error("Slack List reconciliation requires the authenticated bot owner ID.");
   const candidates: Array<{ file: any; discovered: DiscoveredList }> = [];
   let page = 1;
   let pages = 1;
   do {
-    const listed: any = await slackListCall(input.client, "files.list", {
+    const listed: any = (yield slackListCall(input.client, "files.list", {
       count: 100,
       page,
       types: "all",
-    }, { channel: input.channel.slack_channel_id, user: input.user || undefined });
+    }, { channel: input.channel.slack_channel_id, user: input.user || undefined }));
     for (const file of Array.isArray(listed.files) ? listed.files : []) {
       if (file?.filetype !== "list" && file?.mimetype !== "application/vnd.slack-list") continue;
       if (file?.user !== input.identityOwnerId) continue;
@@ -306,31 +308,31 @@ async function discoverChannelList(input: {
     return createdDelta || String(left.file?.id || "").localeCompare(String(right.file?.id || ""));
   });
   return candidates.length ? candidates[0].discovered : null;
-}
+}).call(this));}
 
-async function persistChannelListState(channelId: string, state: ListState) {
-  const persisted = await retryTransientDatabaseOperation({
+async function persistChannelListState(channelId: string, state: ListState) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  const persisted = (yield retryTransientDatabaseOperation({
     operation: () => updateChannelListState(channelId, {
       listId: state.listId,
       titleColumnId: state.titleColumnId,
       completedColumnId: state.completedColumnId,
       accessLevel: null,
     }),
-  });
+  }));
   if (persisted.stopped) throw new Error("Slack List state persistence stopped.");
-}
+}).call(this));}
 
 async function makeChannelListReadOnly(input: {
   client: any;
   channel: ChannelRow;
   state: ListState;
   user?: string | null;
-}) {
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   try {
     const channelId = input.channel.slack_channel_id;
     let recipients: { channel_ids: string[] } | { user_ids: string[] } = { channel_ids: [channelId] };
     if (channelId.startsWith("D")) {
-      const info: any = await slackListCall(input.client, "conversations.info", { channel: channelId });
+      const info: any = (yield slackListCall(input.client, "conversations.info", { channel: channelId }));
       const conversation = info?.channel;
       if (conversation?.id !== channelId || conversation?.is_im !== true
         || typeof conversation.user !== "string" || !/^[UW][A-Z0-9]+$/.test(conversation.user)) {
@@ -340,11 +342,11 @@ async function makeChannelListReadOnly(input: {
       }
       recipients = { user_ids: [conversation.user] };
     }
-    await slackListCall(input.client, "slackLists.access.set", {
+    (yield slackListCall(input.client, "slackLists.access.set", {
       list_id: input.state.listId,
       access_level: "read",
       ...recipients,
-    }, { channel: input.channel.slack_channel_id, user: input.user || undefined });
+    }, { channel: input.channel.slack_channel_id, user: input.user || undefined }));
     log("info", "list_access_set_done", {
       channel: input.channel.slack_channel_id,
       list_id: input.state.listId,
@@ -352,13 +354,13 @@ async function makeChannelListReadOnly(input: {
     });
   } catch (err) {
     if (missingScopes(err).length) {
-      await notifyMissingScope({
+      (yield notifyMissingScope({
         client: input.client,
         channel: input.channel.slack_channel_id,
         user: input.user,
         method: "slackLists.access.set",
         err,
-      });
+      }));
     } else {
       log("warn", "list_access_set_failed", {
         channel: input.channel.slack_channel_id,
@@ -368,16 +370,16 @@ async function makeChannelListReadOnly(input: {
     }
     throw err;
   }
-  const persisted = await retryTransientDatabaseOperation({
+  const persisted = (yield retryTransientDatabaseOperation({
     operation: () => updateChannelListState(input.channel.slack_channel_id, {
       listId: input.state.listId,
       titleColumnId: input.state.titleColumnId,
       completedColumnId: input.state.completedColumnId,
       accessLevel: "read",
     }),
-  });
+  }));
   if (persisted.stopped) throw new Error("Slack List read-access persistence stopped.");
-}
+}).call(this));}
 
 const pendingChannelListEnsures = new Map<string, Promise<ListState | null>>();
 
@@ -385,25 +387,25 @@ export async function ensureChannelList(input: {
   client: any;
   channel: ChannelRow;
   user?: string | null;
-} & ListIdentityInput): Promise<ListState | null> {
+} & ListIdentityInput): Promise<ListState | null> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const channelId = input.channel.slack_channel_id;
   const pending = pendingChannelListEnsures.get(channelId);
   if (pending) return pending;
-  const task = ensureChannelListOnce(input).finally(() => {
+  const task = ensureChannelListOnce(input).finally(ledgerCallback(() => {
     if (pendingChannelListEnsures.get(channelId) === task) pendingChannelListEnsures.delete(channelId);
-  });
+  }));
   pendingChannelListEnsures.set(channelId, task);
   return task;
-}
+}).call(this));}
 
 async function reconcileDiscoveredChannelList(input: {
   client: any;
   channel: ChannelRow;
   user?: string | null;
   discovered: DiscoveredList;
-} & ListIdentityInput) {
+} & ListIdentityInput) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if (!input.discovered.finalized) {
-    await slackListCall(input.client, "slackLists.update", {
+    (yield slackListCall(input.client, "slackLists.update", {
       id: input.discovered.state.listId,
       description_blocks: richText(listDescription(
         input.channel,
@@ -411,29 +413,29 @@ async function reconcileDiscoveredChannelList(input: {
         input.discovered.intentId,
         input.identitySecret,
       )),
-    }, { channel: input.channel.slack_channel_id, user: input.user || undefined });
+    }, { channel: input.channel.slack_channel_id, user: input.user || undefined }));
   }
-  await persistChannelListState(input.channel.slack_channel_id, input.discovered.state);
+  (yield persistChannelListState(input.channel.slack_channel_id, input.discovered.state));
   log("info", "list_reconciled", {
     channel: input.channel.slack_channel_id,
     list_id: input.discovered.state.listId,
     title_column_id: input.discovered.state.titleColumnId,
     completed_column_id: input.discovered.state.completedColumnId,
   });
-  await makeChannelListReadOnly({ ...input, state: input.discovered.state });
+  (yield makeChannelListReadOnly({ ...input, state: input.discovered.state }));
   return input.discovered.state;
-}
+}).call(this));}
 
 async function ensureChannelListOnce(input: {
   client: any;
   channel: ChannelRow;
   user?: string | null;
-} & ListIdentityInput): Promise<ListState | null> {
+} & ListIdentityInput): Promise<ListState | null> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const persistedChannel = getChannel(input.channel.slack_channel_id) || input.channel;
   const current = existingListState(persistedChannel);
   if (current) {
     if (persistedChannel.list_access_level !== "read") {
-      await makeChannelListReadOnly({ ...input, channel: persistedChannel, state: current });
+      (yield makeChannelListReadOnly({ ...input, channel: persistedChannel, state: current }));
     }
     return current;
   }
@@ -447,14 +449,14 @@ async function ensureChannelListOnce(input: {
 
   try {
     let intent = creationIntent(persistedChannel);
-    let discovered = await discoverChannelList({ ...input, channel: persistedChannel, intent });
+    let discovered = (yield discoverChannelList({ ...input, channel: persistedChannel, intent }));
     if (discovered) {
-      return await reconcileDiscoveredChannelList({ ...input, channel: persistedChannel, discovered });
+      return (yield reconcileDiscoveredChannelList({ ...input, channel: persistedChannel, discovered }));
     }
     if (!intent) {
-      const started = await retryTransientDatabaseOperation({
+      const started = (yield retryTransientDatabaseOperation({
         operation: () => beginChannelListCreationIntent(persistedChannel.slack_channel_id),
-      });
+      }));
       if (started.stopped || !started.value) {
         const concurrentlyPersisted = existingListState(getChannel(persistedChannel.slack_channel_id) || persistedChannel);
         if (concurrentlyPersisted) return concurrentlyPersisted;
@@ -462,44 +464,44 @@ async function ensureChannelListOnce(input: {
       }
       intent = started.value;
       const intentChannel = getChannel(persistedChannel.slack_channel_id) || persistedChannel;
-      discovered = await discoverChannelList({ ...input, channel: intentChannel, intent });
+      discovered = (yield discoverChannelList({ ...input, channel: intentChannel, intent }));
       if (discovered) {
-        return await reconcileDiscoveredChannelList({ ...input, channel: intentChannel, discovered });
+        return (yield reconcileDiscoveredChannelList({ ...input, channel: intentChannel, discovered }));
       }
     }
-    const created: any = await slackListCall(input.client, "slackLists.create", {
+    const created: any = (yield slackListCall(input.client, "slackLists.create", {
       name: listName(persistedChannel),
       todo_mode: true,
       schema: conciergeListSchema(),
       description_blocks: richText(pendingListDescription(persistedChannel, intent.id, input.identitySecret)),
-    }, { channel: persistedChannel.slack_channel_id, user: input.user || undefined });
+    }, { channel: persistedChannel.slack_channel_id, user: input.user || undefined }));
     const listId = String(created.list_id || "");
     const titleColumnId = columnId(created.list_metadata, "title");
     const completedColumnId = columnId(created.list_metadata, "todo_completed");
     if (!listId || !titleColumnId) throw new Error("slackLists.create did not return list_id/title column metadata");
     const state = { listId, titleColumnId, completedColumnId };
-    await slackListCall(input.client, "slackLists.update", {
+    (yield slackListCall(input.client, "slackLists.update", {
       id: listId,
       description_blocks: richText(listDescription(persistedChannel, listId, intent.id, input.identitySecret)),
-    }, { channel: persistedChannel.slack_channel_id, user: input.user || undefined });
-    await persistChannelListState(persistedChannel.slack_channel_id, state);
+    }, { channel: persistedChannel.slack_channel_id, user: input.user || undefined }));
+    (yield persistChannelListState(persistedChannel.slack_channel_id, state));
     log("info", "list_create_done", {
       channel: persistedChannel.slack_channel_id,
       list_id: listId,
       title_column_id: titleColumnId,
       completed_column_id: completedColumnId,
     });
-    await makeChannelListReadOnly({ ...input, channel: persistedChannel, state });
+    (yield makeChannelListReadOnly({ ...input, channel: persistedChannel, state }));
     return state;
   } catch (err) {
     if (missingScopes(err).length) {
-      await notifyMissingScope({
+      (yield notifyMissingScope({
         client: input.client,
         channel: input.channel.slack_channel_id,
         user: input.user,
         method: "files.list/slackLists.create",
         err,
-      });
+      }));
       return null;
     }
     log("error", "list_create_failed", {
@@ -508,7 +510,7 @@ async function ensureChannelListOnce(input: {
     });
     throw err;
   }
-}
+}).call(this));}
 
 export async function appendListItem(input: {
   client: any;
@@ -517,7 +519,7 @@ export async function appendListItem(input: {
   source: "todo" | "note" | "agent";
   user?: string | null;
   sourceMessage?: { channel: string; ts: string; teamId?: string };
-} & ListIdentityInput): Promise<string | null> {
+} & ListIdentityInput): Promise<string | null> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const sourceUrl = input.sourceMessage
     ? slackMessageSourceUrl(input.sourceMessage.channel, input.sourceMessage.ts, input.sourceMessage.teamId)
     : null;
@@ -525,12 +527,12 @@ export async function appendListItem(input: {
   const key = `${input.channel.slack_channel_id}:${sourceUrl}`;
   const pending = pendingListItemAppends.get(key);
   if (pending) return pending;
-  const task = appendListItemOnce(input, sourceUrl, false).finally(() => {
+  const task = appendListItemOnce(input, sourceUrl, false).finally(ledgerCallback(() => {
     if (pendingListItemAppends.get(key) === task) pendingListItemAppends.delete(key);
-  });
+  }));
   pendingListItemAppends.set(key, task);
   return task;
-}
+}).call(this));}
 
 const pendingListItemAppends = new Map<string, Promise<string | null>>();
 
@@ -548,8 +550,8 @@ async function appendListItemOnce(
   } & ListIdentityInput,
   sourceUrl: string | null,
   reconciledStaleState: boolean,
-): Promise<string | null> {
-  const state = await ensureChannelList(input);
+): Promise<string | null> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  const state = (yield ensureChannelList(input));
   if (!state) return null;
   const title = input.source === "todo" ? input.text.trim() : `[${input.source}] ${input.text.trim()}`;
   const authenticatedSourceUrl = sourceUrl
@@ -566,11 +568,11 @@ async function appendListItemOnce(
     if (authenticatedSourceUrl) {
       let cursor: string | undefined;
       do {
-        const listed: any = await slackListCall(input.client, "slackLists.items.list", {
+        const listed: any = (yield slackListCall(input.client, "slackLists.items.list", {
           list_id: state.listId,
           limit: 100,
           ...(cursor ? { cursor } : {}),
-        }, { channel: input.channel.slack_channel_id, user: input.user || undefined });
+        }, { channel: input.channel.slack_channel_id, user: input.user || undefined }));
         const existing = (Array.isArray(listed.items) ? listed.items : [])
           .find((item: any) => isAuthenticatedListItem({
             item,
@@ -583,7 +585,7 @@ async function appendListItemOnce(
         cursor = String(listed.response_metadata?.next_cursor || "") || undefined;
       } while (cursor);
     }
-    const created: any = await slackListCall(input.client, "slackLists.items.create", {
+    const created: any = (yield slackListCall(input.client, "slackLists.items.create", {
       list_id: state.listId,
       initial_fields: [{
         column_id: state.titleColumnId,
@@ -591,7 +593,7 @@ async function appendListItemOnce(
           ? sourcedRichText(title, authenticatedSourceUrl)
           : input.source === "todo" ? linkedRichText(title) : richText(title),
       }],
-    }, { channel: input.channel.slack_channel_id, user: input.user || undefined });
+    }, { channel: input.channel.slack_channel_id, user: input.user || undefined }));
     const itemId = String(created.item?.id || "");
     log("info", "list_item_create_done", {
       channel: input.channel.slack_channel_id,
@@ -602,20 +604,20 @@ async function appendListItemOnce(
     return itemId || null;
   } catch (err) {
     if (!reconciledStaleState && isStaleListStateError(err)) {
-      const cleared = await retryTransientDatabaseOperation({
+      const cleared = (yield retryTransientDatabaseOperation({
         operation: () => clearChannelListState(input.channel.slack_channel_id, state.listId),
-      });
+      }));
       if (cleared.stopped) throw new Error("Slack List stale-state reconciliation stopped.");
       return appendListItemOnce(input, sourceUrl, true);
     }
     if (missingScopes(err).length) {
-      await notifyMissingScope({
+      (yield notifyMissingScope({
         client: input.client,
         channel: input.channel.slack_channel_id,
         user: input.user,
         method: "slackLists.items.create",
         err,
-      });
+      }));
       return null;
     }
     log("error", "list_item_create_failed", {
@@ -626,15 +628,15 @@ async function appendListItemOnce(
     });
     throw err;
   }
-}
+}).call(this));}
 
 export async function completeListItem(input: {
   client: any;
   channel: ChannelRow;
   itemId: string;
   user?: string | null;
-} & ListIdentityInput): Promise<boolean> {
-  const state = await ensureChannelList(input);
+} & ListIdentityInput): Promise<boolean> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  const state = (yield ensureChannelList(input));
   if (!state?.completedColumnId) {
     log("error", "list_item_complete_failed", {
       channel: input.channel.slack_channel_id,
@@ -645,14 +647,14 @@ export async function completeListItem(input: {
     return false;
   }
   try {
-    await slackListCall(input.client, "slackLists.items.update", {
+    (yield slackListCall(input.client, "slackLists.items.update", {
       list_id: state.listId,
       cells: [{
         row_id: input.itemId,
         column_id: state.completedColumnId,
         checkbox: true,
       }],
-    }, { channel: input.channel.slack_channel_id, user: input.user || undefined });
+    }, { channel: input.channel.slack_channel_id, user: input.user || undefined }));
     log("info", "list_item_complete_done", {
       channel: input.channel.slack_channel_id,
       list_id: state.listId,
@@ -661,13 +663,13 @@ export async function completeListItem(input: {
     return true;
   } catch (err) {
     if (missingScopes(err).length) {
-      await notifyMissingScope({
+      (yield notifyMissingScope({
         client: input.client,
         channel: input.channel.slack_channel_id,
         user: input.user,
         method: "slackLists.items.update",
         err,
-      });
+      }));
       return false;
     }
     log("error", "list_item_complete_failed", {
@@ -678,7 +680,7 @@ export async function completeListItem(input: {
     });
     throw err;
   }
-}
+}).call(this));}
 
 function fieldText(field: any): string {
   if (typeof field?.text === "string") return field.text;
@@ -739,26 +741,26 @@ export async function listItems(input: {
   client: any;
   channel: ChannelRow;
   user?: string | null;
-} & ListIdentityInput): Promise<Array<{ id: string; title: string; completed: boolean }>> {
+} & ListIdentityInput): Promise<Array<{ id: string; title: string; completed: boolean }>> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   return listItemsOnce(input, false);
-}
+}).call(this));}
 
 async function listItemsOnce(input: {
   client: any;
   channel: ChannelRow;
   user?: string | null;
-} & ListIdentityInput, reconciledStaleState: boolean): Promise<Array<{ id: string; title: string; completed: boolean }>> {
+} & ListIdentityInput, reconciledStaleState: boolean): Promise<Array<{ id: string; title: string; completed: boolean }>> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   try {
-    const state = await ensureChannelList(input);
+    const state = (yield ensureChannelList(input));
     if (!state) throw new Error("Slack List is unavailable; TODO projection stopped without changing the canonical file.");
     const items: Array<{ id: string; title: string; completed: boolean }> = [];
     let cursor: string | undefined;
     do {
-      const listed: any = await slackListCall(input.client, "slackLists.items.list", {
+      const listed: any = (yield slackListCall(input.client, "slackLists.items.list", {
         list_id: state.listId,
         limit: 100,
         ...(cursor ? { cursor } : {}),
-      }, { channel: input.channel.slack_channel_id, user: input.user || undefined });
+      }, { channel: input.channel.slack_channel_id, user: input.user || undefined }));
       if (!listed || !Array.isArray(listed.items)) {
         throw new Error("slackLists.items.list returned a malformed response; TODO projection stopped.");
       }
@@ -775,21 +777,21 @@ async function listItemsOnce(input: {
     if (!reconciledStaleState && isStaleListStateError(err)) {
       const current = getChannel(input.channel.slack_channel_id) || input.channel;
       if (current.list_id) {
-        const cleared = await retryTransientDatabaseOperation({
+        const cleared = (yield retryTransientDatabaseOperation({
           operation: () => clearChannelListState(input.channel.slack_channel_id, current.list_id!),
-        });
+        }));
         if (cleared.stopped) throw new Error("Slack List stale-state reconciliation stopped.");
         return listItemsOnce({ ...input, channel: getChannel(input.channel.slack_channel_id) || current }, true);
       }
     }
     if (missingScopes(err).length) {
-      await notifyMissingScope({
+      (yield notifyMissingScope({
         client: input.client,
         channel: input.channel.slack_channel_id,
         user: input.user,
         method: "slackLists.items.list",
         err,
-      });
+      }));
     }
     log("error", "list_items_read_failed", {
       channel: input.channel.slack_channel_id,
@@ -798,7 +800,7 @@ async function listItemsOnce(input: {
     });
     throw err;
   }
-}
+}).call(this));}
 
 export async function updateListItem(input: {
   client: any;
@@ -808,8 +810,8 @@ export async function updateListItem(input: {
   completed?: boolean;
   user?: string | null;
   sourceMessage?: { channel: string; ts: string; teamId?: string };
-} & ListIdentityInput): Promise<void> {
-  const state = await ensureChannelList(input);
+} & ListIdentityInput): Promise<void> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  const state = (yield ensureChannelList(input));
   if (!state) throw new Error("Slack List is unavailable.");
   const cells: any[] = [];
   if (input.title !== undefined) {
@@ -844,22 +846,22 @@ export async function updateListItem(input: {
     });
   }
   if (cells.length === 0) return;
-  await slackListCall(input.client, "slackLists.items.update", {
+  (yield slackListCall(input.client, "slackLists.items.update", {
     list_id: state.listId,
     cells,
-  }, { channel: input.channel.slack_channel_id, user: input.user || undefined });
-}
+  }, { channel: input.channel.slack_channel_id, user: input.user || undefined }));
+}).call(this));}
 
 export async function deleteListItem(input: {
   client: any;
   channel: ChannelRow;
   itemId: string;
   user?: string | null;
-} & ListIdentityInput): Promise<void> {
-  const state = await ensureChannelList(input);
+} & ListIdentityInput): Promise<void> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  const state = (yield ensureChannelList(input));
   if (!state) throw new Error("Slack List is unavailable.");
-  await slackListCall(input.client, "slackLists.items.delete", {
+  (yield slackListCall(input.client, "slackLists.items.delete", {
     list_id: state.listId,
     id: input.itemId,
-  }, { channel: input.channel.slack_channel_id, user: input.user || undefined });
-}
+  }, { channel: input.channel.slack_channel_id, user: input.user || undefined }));
+}).call(this));}

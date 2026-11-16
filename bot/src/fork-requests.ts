@@ -1,3 +1,4 @@
+import {runLedgerSteps} from './ledger-admission';
 import { providerDisplayName } from "./aliases";
 import { CodexControlRequestError, findCodexForksByThreadSource } from "./codex";
 import { retryTransientDatabaseOperation } from "./durable-notice-worker";
@@ -79,61 +80,61 @@ function ownerIsAlive(
   });
 }
 
-async function recoverCodexProviderResult(request: ForkRequestRow): Promise<ForkRequestRow> {
-  const matches = await findCodexForksByThreadSource({
+async function recoverCodexProviderResult(request: ForkRequestRow): Promise<ForkRequestRow> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  const matches = (yield findCodexForksByThreadSource({
     sourceSessionUUID: request.source_provider_session_uuid,
     threadSource: request.provider_request_key,
     cwd: request.cwd,
-  });
+  }));
   if (matches.length === 1) {
-    await retryTransientDatabaseOperation({
+    (yield retryTransientDatabaseOperation({
       operation: () => recoverForkRequestCreated(request.request_id, matches[0]),
-    });
+    }));
   } else if (matches.length > 1) {
     if (request.status === "forking") {
-      await retryTransientDatabaseOperation({
+      (yield retryTransientDatabaseOperation({
         operation: () => markForkRequestRecoveryAmbiguous(
           request.request_id,
           `Codex returned ${matches.length} forks for one request marker; refusing to choose one.`,
         ),
-      });
+      }));
     }
   } else if (request.status === "forking") {
-    await retryTransientDatabaseOperation({
+    (yield retryTransientDatabaseOperation({
       operation: () => resetForkRequestAfterDeadOwner(request.request_id),
-    });
+    }));
   }
   return getForkRequest(request.request_id)!;
-}
+}).call(this));}
 
-async function createProviderFork(request: ForkRequestRow, instanceId: string): Promise<ForkRequestRow> {
+async function createProviderFork(request: ForkRequestRow, instanceId: string): Promise<ForkRequestRow> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const leased = beginForkRequest(request.request_id, instanceId);
   if (!leased) return getForkRequest(request.request_id)!;
   let forkedProviderSessionUUID: string;
   try {
-    const result = await providers[leased.provider_id].fork({
+    const result = (yield providers[leased.provider_id].fork({
       cwd: leased.cwd,
       additionalDirs: JSON.parse(leased.additional_dirs_json),
       sessionUUID: leased.source_provider_session_uuid,
       lastTurnId: leased.last_provider_turn_id,
       threadSource: leased.provider_request_key,
-    });
+    }));
     if (!result.sessionUUID) {
       throw new Error("Provider fork completed without a session id.");
     }
     forkedProviderSessionUUID = result.sessionUUID;
   } catch (error) {
     if (error instanceof CodexControlRequestError && error.outcome === "rejected") {
-      await retryTransientDatabaseOperation({
+      (yield retryTransientDatabaseOperation({
         operation: () => markForkRequestRejected(leased.request_id, instanceId, error.message),
-      });
+      }));
     } else {
-      await retryTransientDatabaseOperation({
+      (yield retryTransientDatabaseOperation({
         operation: () => markForkRequestAmbiguous(leased.request_id, instanceId, String(error)),
-      });
+      }));
       if (leased.provider_id === "codex") {
         try {
-          await recoverCodexProviderResult(getForkRequest(leased.request_id)!);
+          (yield recoverCodexProviderResult(getForkRequest(leased.request_id)!));
         } catch (recoveryError) {
           log("warn", "codex_fork_ambiguity_recovery_failed", {
             request_id: leased.request_id,
@@ -144,29 +145,29 @@ async function createProviderFork(request: ForkRequestRow, instanceId: string): 
     }
     return getForkRequest(request.request_id)!;
   }
-  await retryTransientDatabaseOperation({
+  (yield retryTransientDatabaseOperation({
     operation: () => markForkRequestCreated(leased.request_id, instanceId, forkedProviderSessionUUID),
-  });
+  }));
   return getForkRequest(request.request_id)!;
-}
+}).call(this));}
 
 async function deliverForkAnchor(input: {
   request: ForkRequestRow;
   client: any;
   instanceId: string;
   shouldStop?: () => boolean;
-}): Promise<ForkRequestRow> {
+}): Promise<ForkRequestRow> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   let delayMs = 1_000;
   while (!input.shouldStop?.()) {
     const leased = claimForkRequestDelivery(input.request.request_id, input.instanceId);
     if (!leased) return getForkRequest(input.request.request_id)!;
     let posted: any;
     try {
-      posted = await slackCall(input.client, "chat.postMessage", {
+      posted = (yield slackCall(input.client, "chat.postMessage", {
         channel: leased.slack_channel_id,
         text: forkAnchorMessage(leased),
         client_msg_id: leased.slack_client_msg_id,
-      }, { channel: leased.slack_channel_id, user: leased.requested_by });
+      }, { channel: leased.slack_channel_id, user: leased.requested_by }));
       if (!posted?.ts) throw new Error("Slack did not return a timestamp for the fork anchor.");
     } catch (error) {
       if (!isTransientSlackError(error)) {
@@ -175,42 +176,42 @@ async function deliverForkAnchor(input: {
       }
       markForkRequestDeliveryRetry(leased.request_id, input.instanceId, String(error));
       if (input.shouldStop?.()) return getForkRequest(leased.request_id)!;
-      await sleep(delayMs);
+      (yield sleep(delayMs));
       delayMs = Math.min(delayMs * 2, 30_000);
       continue;
     }
-    const persisted = await retryTransientDatabaseOperation({
+    const persisted = (yield retryTransientDatabaseOperation({
       operation: () => markForkRequestAnchorPosted(
         leased.request_id,
         input.instanceId,
         posted.ts,
       ),
       shouldStop: input.shouldStop,
-    });
+    }));
     if (persisted.stopped) return getForkRequest(leased.request_id)!;
     return persisted.value;
   }
   return getForkRequest(input.request.request_id)!;
-}
+}).call(this));}
 
 async function bindForkAnchor(input: {
   request: ForkRequestRow;
   instanceId: string;
   shouldStop?: () => boolean;
   completeDelivery?: typeof completeForkRequestDelivery;
-}): Promise<ForkRequestRow> {
+}): Promise<ForkRequestRow> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   let delayMs = 50;
   while (!input.shouldStop?.()) {
     const leased = claimForkRequestBinding(input.request.request_id, input.instanceId);
     if (!leased) return getForkRequest(input.request.request_id)!;
     try {
-      const completion = await retryTransientDatabaseOperation({
+      const completion = (yield retryTransientDatabaseOperation({
         operation: () => (input.completeDelivery || completeForkRequestDelivery)(
           leased.request_id,
           input.instanceId,
         ),
         shouldStop: input.shouldStop,
-      });
+      }));
       if (completion.stopped) return getForkRequest(leased.request_id)!;
       return getForkRequest(leased.request_id)!;
     } catch (error) {
@@ -221,12 +222,12 @@ async function bindForkAnchor(input: {
       }
       releaseForkRequestBinding(leased.request_id, input.instanceId, message);
       if (input.shouldStop?.()) return getForkRequest(leased.request_id)!;
-      await sleep(delayMs);
+      (yield sleep(delayMs));
       delayMs = Math.min(delayMs * 2, 1_000);
     }
   }
   return getForkRequest(input.request.request_id)!;
-}
+}).call(this));}
 
 export async function executeForkRequest(input: {
   requestId: string;
@@ -234,25 +235,25 @@ export async function executeForkRequest(input: {
   instanceId: string;
   shouldStop?: () => boolean;
   completeDelivery?: typeof completeForkRequestDelivery;
-}): Promise<ForkRequestRow> {
+}): Promise<ForkRequestRow> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   let request = getForkRequest(input.requestId);
   if (!request) throw new Error(`Unknown fork request ${input.requestId}.`);
-  if (request.status === "claimed") request = await createProviderFork(request, input.instanceId);
+  if (request.status === "claimed") request = (yield createProviderFork(request, input.instanceId));
   if (request.status === "forked") {
-    request = await deliverForkAnchor({ ...input, request });
+    request = (yield deliverForkAnchor({ ...input, request }));
   }
   if (request.status === "binding") {
-    request = await bindForkAnchor({ ...input, request });
+    request = (yield bindForkAnchor({ ...input, request }));
   }
   return request;
-}
+}).call(this));}
 
 export async function reconcileForkRequests(input: {
   client: any;
   instanceId: string;
   isOwnerAlive: (identity: { pid: number; bootId: string; startTicks: string }) => boolean;
   shouldStop?: () => boolean;
-}) {
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const counts = { delivered: 0, pending: 0, ambiguous: 0, error: 0 };
   for (let request of listRecoverableForkRequests()) {
     if (input.shouldStop?.()) break;
@@ -263,7 +264,7 @@ export async function reconcileForkRequests(input: {
           continue;
         }
         if (request.provider_id === "codex") {
-          request = await recoverCodexProviderResult(request);
+          request = (yield recoverCodexProviderResult(request));
         } else {
           markForkRequestRecoveryAmbiguous(
             request.request_id,
@@ -286,15 +287,15 @@ export async function reconcileForkRequests(input: {
         if (request.owner_instance_id) recoverForkRequestBinding(request.request_id);
         request = getForkRequest(request.request_id)!;
       } else if (request.status === "ambiguous" && request.provider_id === "codex") {
-        request = await recoverCodexProviderResult(request);
+        request = (yield recoverCodexProviderResult(request));
       }
 
-      request = await executeForkRequest({
+      request = (yield executeForkRequest({
         requestId: request.request_id,
         client: input.client,
         instanceId: input.instanceId,
         shouldStop: input.shouldStop,
-      });
+      }));
       if (request.status === "delivered") counts.delivered += 1;
       else if (request.status === "ambiguous") counts.ambiguous += 1;
       else if (["error", "parked"].includes(request.status)) counts.error += 1;
@@ -308,7 +309,7 @@ export async function reconcileForkRequests(input: {
     }
   }
   return counts;
-}
+}).call(this));}
 
 export function forkRequestResultMessage(request: ForkRequestRow): string {
   if (request.status === "delivered" && request.slack_message_ts) {
@@ -336,7 +337,7 @@ export async function waitForForkBinding(input: {
   shouldStop?: () => boolean;
   timeoutMs?: number;
   wait?: (milliseconds: number) => Promise<void>;
-}) {
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const wait = input.wait || sleep;
   const deadline = Date.now() + (input.timeoutMs ?? 30_000);
   while (getForkIngressBarrier(input.channelId, input.threadTs)) {
@@ -344,6 +345,6 @@ export async function waitForForkBinding(input: {
     if (Date.now() >= deadline) {
       throw new Error("The fork thread is still being initialized. Please resend this message in a moment.");
     }
-    await wait(50);
+    (yield wait(50));
   }
-}
+}).call(this));}

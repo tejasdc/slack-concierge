@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import {readdir,readFile,stat} from 'node:fs/promises';
 import {join,relative} from 'node:path';
 import {createHash} from 'node:crypto';
@@ -58,46 +60,46 @@ const time=(value:unknown)=>{
 };
 
 /** The names his standing facts are about; a window naming one is about something he cares about. */
-async function standingNames():Promise<string[]> {
-  let text:string;try{text=await readFile(join(NOTES_ROOT,'bio','standing-facts.md'),'utf8');}catch{return [];}
+async function standingNames():Promise<string[]> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  let text:string;try{text=(yield readFile(join(NOTES_ROOT,'bio','standing-facts.md'),'utf8'));}catch{return [];}
   return text.split('\n').map(line=>/^\s*-\s*([^:]+):/.exec(line)?.[1]).filter((names):names is string=>!!names)
     .flatMap(names=>names.split(',').map(name=>name.trim().toLocaleLowerCase('en-US')).filter(Boolean));
-}
+}).call(this));}
 
 const noteCache=new Map<string,{mtime:number;title:string;text:string}>();
 /** His own notes: title and opening words, re-read only when a file changes. */
-async function notes():Promise<{path:string;title:string;text:string}[]> {
+async function notes():Promise<{path:string;title:string;text:string}[]> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const out:{path:string;title:string;text:string}[]=[];
-  const walk=async(dir:string,depth:number):Promise<void>=>{
-    let entries;try{entries=await readdir(dir,{withFileTypes:true});}catch{return;}
+  const walk=async(dir:string,depth:number):Promise<void>=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+    let entries;try{entries=(yield readdir(dir,{withFileTypes:true}));}catch{return;}
     for(const entry of entries){
       if(entry.name.startsWith('.'))continue;
       const path=join(dir,entry.name);
-      if(entry.isDirectory()){if(depth===0&&NOT_NOTES.has(entry.name))continue;if(depth<6)await walk(path,depth+1);continue;}
+      if(entry.isDirectory()){if(depth===0&&NOT_NOTES.has(entry.name))continue;if(depth<6)(yield walk(path,depth+1));continue;}
       if(!entry.name.endsWith('.md'))continue;
-      const mtime=(await stat(path).catch(()=>null))?.mtimeMs;if(mtime===undefined)continue;
+      const mtime=((yield stat(path).catch(ledgerCallback(()=>null))))?.mtimeMs;if(mtime===undefined)continue;
       let cached=noteCache.get(path);
       if(cached?.mtime!==mtime){
-        const body=(await readFile(path,'utf8').catch(()=>'')).replace(/^---\n[\s\S]*?\n---\n/,'');
+        const body=((yield readFile(path,'utf8').catch(ledgerCallback(()=>'')))).replace(/^---\n[\s\S]*?\n---\n/,'');
         const title=entry.name.slice(0,-3);
         cached={mtime,title,text:`${title}. ${body.replace(/\s+/g,' ').trim().slice(0,NOTE_OPENING)}`};
         noteCache.set(path,cached);
       }
       out.push({path,title:cached.title,text:cached.text});
     }
-  };
-  await walk(NOTES_ROOT,0);
+  }).call(this));};
+  (yield walk(NOTES_ROOT,0));
   return out;
-}
+}).call(this));}
 
 /** Earlier sessions, notes and threads close to one message, best first. */
-async function earlierWork(input:{inboxSessionId:number;topicId:string;words:string;arrivedMs:number;search:SessionSearch;threads:{id:string;title:string;text:string;createdMs:number|null}[]}) {
+async function earlierWork(input:{inboxSessionId:number;topicId:string;words:string;arrivedMs:number;search:SessionSearch;threads:{id:string;title:string;text:string;createdMs:number|null}[]}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const index=meaningIndex();if(!index?.installed)return [];
   // One question for the whole thread (his words, as the search reads its first 800 characters),
   // plus at most two passages that name something in his standing facts, which the whole-thread
   // question can drown out (the IdeaFlow case, 2026-11-02). Fourteen windows per message cost up
   // to fourteen owner searches and he asked why the text was being broken up (2026-11-05).
-  const names=await standingNames();
+  const names=(yield standingNames());
   const names_in=(text:string)=>{const lower=text.toLocaleLowerCase('en-US');return names.some(name=>lower.includes(name));};
   const salient=windows(input.words).filter(names_in).slice(0,NAMED_WINDOWS);
   const questions=[input.words.replace(/\s+/g,' ').trim(),...salient];
@@ -108,7 +110,7 @@ async function earlierWork(input:{inboxSessionId:number;topicId:string;words:str
   // Each window's own best few, from every store.
   const perWindow:Found[][]=questions.map(()=>[]);
   for(const [at,query] of questions.entries()){
-    const answer=await input.search({query,limit:10}).catch(error=>{log('warn','earlier_work_search_failed',{error:error instanceof Error?error.message:String(error)});return {results:[]};});
+    const answer=(yield input.search({query,limit:10}).catch(ledgerCallback(error=>{log('warn','earlier_work_search_failed',{error:error instanceof Error?error.message:String(error)});return {results:[]};})));
     for(const result of answer.results??[]){
       const view=result.session,score=Number(result.match?.meaning);
       const local=/^concierge:(\d+)$/.exec(String(view?.id??''));
@@ -121,10 +123,10 @@ async function earlierWork(input:{inboxSessionId:number;topicId:string;words:str
         link:`${APP}?sessionView=sessions&conversation=${encodeURIComponent(view.id)}`,score,snippet:String(result.evidence?.[0]?.snippet??'')});
     }
   }
-  const vectors=await index.queryVectors(questions);
-  const noteList=await notes();
-  const noteVectors=await index.documentVectors(noteList.map(note=>({key:`note:${relative(NOTES_ROOT,note.path)}`,text:note.text})));
-  const threadVectors=await index.documentVectors(input.threads.map(thread=>({key:`thread:${thread.id}`,text:thread.text})));
+  const vectors=(yield index.queryVectors(questions));
+  const noteList=(yield notes());
+  const noteVectors=(yield index.documentVectors(noteList.map(note=>({key:`note:${relative(NOTES_ROOT,note.path)}`,text:note.text}))));
+  const threadVectors=(yield index.documentVectors(input.threads.map(thread=>({key:`thread:${thread.id}`,text:thread.text}))));
   for(const [at,vector] of vectors.entries()){
     for(const note of noteList){
       const other=noteVectors.get(`note:${relative(NOTES_ROOT,note.path)}`);if(!other)continue;
@@ -154,7 +156,7 @@ async function earlierWork(input:{inboxSessionId:number;topicId:string;words:str
     votes.set(found.key,vote);
   }
   return [...votes.values()].sort((a,b)=>b.named-a.named||b.all-a.all||b.best-a.best).slice(0,SHOWN).map(vote=>vote.found);
-}
+}).call(this));}
 
 /** The sentence of his sharing the most words with what was found, so the quote says why this link is here. */
 function closestSentence(words:string,found:Found):string{
@@ -206,7 +208,7 @@ export function hisCaptureWords(text:string):string{
  * when his own words in it change (a new captured message of his). Only messages he sent count;
  * agent reports and alerts filed into his threads are not his thinking. Returns how many posts it made.
  */
-export async function linkEarlierWork(input:{inboxSessionId:number;topicIds:string[];startedMs:number;search:SessionSearch;threads:{id:string;title:string;text:string}[]}) {
+export async function linkEarlierWork(input:{inboxSessionId:number;topicIds:string[];startedMs:number;search:SessionSearch;threads:{id:string;title:string;text:string}[]}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const created=new Map((db.query("SELECT topic_id,created_at FROM inbox_topics WHERE session_id=? AND state='open'").all(input.inboxSessionId) as {topic_id:string;created_at:string}[]).map(row=>[row.topic_id,time(row.created_at)]));
   const threads=input.threads.map(thread=>({...thread,createdMs:created.get(thread.id)??null}));
   let posted=0;
@@ -222,7 +224,7 @@ export async function linkEarlierWork(input:{inboxSessionId:number;topicIds:stri
     if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))continue;
     const started=performance.now();
     // Earlier means before his first message here, so the thread's own later work is never its own match.
-    const found=await earlierWork({inboxSessionId:input.inboxSessionId,topicId,words,arrivedMs:time(his[0]!.at)??arrivedMs,search:input.search,threads});
+    const found=(yield earlierWork({inboxSessionId:input.inboxSessionId,topicId,words,arrivedMs:time(his[0]!.at)??arrivedMs,search:input.search,threads}));
     const durationMs=Math.round(performance.now()-started);
     // A thread with nothing close enough is marked too, so the same words are not searched again.
     const text=found.length?`**Earlier work related to this thread.** Concierge found it by meaning in your sessions, threads and notes, from your own messages here; nothing to do unless you want to open it.\n${found.map(line).join('\n')}`:null;
@@ -233,4 +235,4 @@ export async function linkEarlierWork(input:{inboxSessionId:number;topicIds:stri
       found:found.map(item=>({kind:item.kind,score:Math.round(item.score*1000)/1000}))});
   }
   return posted;
-}
+}).call(this));}

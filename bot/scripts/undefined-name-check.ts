@@ -9,19 +9,19 @@
  * every event-stream page). The TypeScript compiler reports exactly that class as TS2304 and
  * TS2552; the rest of its diagnostics stay advisory until the whole codebase typechecks.
  *
- * Application entry points come from the package build; controller entry points come from
+ * Application entry points come from the canonical release check command inventory so this
+ * check and the bundler never disagree about what ships; controller entry points come from
  * the sealed artifact declaration. Both kinds ship and must reject unresolved identifiers.
  */
 import { spawnSync } from 'node:child_process';
+import CHECKS from './release-checks.json';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const root = join(import.meta.dir, '..');
-const build = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).scripts?.build;
-if (typeof build !== 'string') throw new Error('package.json has no build script to read bundle entry points from.');
-const bundleStep = build.split('&&').map((step) => step.trim()).find((step) => step.startsWith('bun build '));
-if (!bundleStep) throw new Error('The build script has no `bun build` step to read bundle entry points from.');
-const applicationEntries = bundleStep.split(/\s+/).filter((part) => part.startsWith('src/') && part.endsWith('.ts'));
+const bundleStep=CHECKS.build.find(step=>step[0]==='bun'&&step[1]==='build');
+if(!bundleStep)throw new Error('The release check inventory has no bundle step.');
+const applicationEntries=bundleStep.filter(part=>part.startsWith('src/')&&part.endsWith('.ts'));
 if (!applicationEntries.length) throw new Error('The `bun build` step names no src/*.ts entry points.');
 const declaration = JSON.parse(readFileSync(join(root,'src/deployment-artifact-files.json'),'utf8'));
 const controlEntries = Object.values(declaration.controlBundles as Record<string,string>)
