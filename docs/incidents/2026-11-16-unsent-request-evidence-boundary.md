@@ -49,3 +49,7 @@ finals, shared checks, and the shared-failed-check exception retain their existi
 - **Action:** Read router obligations and canonical/prepared status. Attempt completion with the sibling answer and forwarded answer. Then cite a direct answer replying to the exact source. Reopen and retry the unrelated evidence.
 - **Expected:** Unsent status remains explicit; unrelated evidence refuses; the checked direct answer can close; reopening retains the exact-source boundary. Mixed worker waiting preserves both the unsent warning and worker details.
 - **Replayable offline:** yes, `cd bot && bun run scripts/legacy-topic-completion-fixture.ts`.
+
+The sealed release also carries `control/bot/scripts/legacy-topic-completion-fixture.js`.
+Run that installed bundle against its disposable ledger after deployment; a passing source
+fixture alone does not establish installed behavior.
