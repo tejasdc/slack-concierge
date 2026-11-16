@@ -82,6 +82,10 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 
 - New journal keeper processing requires a source-validated structured disposition and durable Inbox handoff for actionable portions; delivery and tracker observations alone cannot complete it. See [journal processing dispositions](docs/contracts/native-inbox.md#journal-processing-dispositions).
 
+- Source-verified cross-owner Lab publication uses the typed service post and immutable peer
+  intent in the [native Inbox contract](docs/contracts/native-inbox.md); publication never becomes
+  human input or a returned work answer.
+
 - Native custody mutation admission and its source-bound, inventory-free result use the
   [current owner port](docs/contracts/session-owner-v1.md#current-mutation-admission);
   ordinary obligations reads do not confer mutation authority.

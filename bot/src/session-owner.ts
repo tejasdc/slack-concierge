@@ -52,7 +52,7 @@ import {hostScriptDigest,hostScriptPath} from './execution-host-client';
 import {providerOwnerEnvironment} from './provider-owner-environment';
 import {escalationReason,topModel} from './model-escalation';
 import {isThinkingModel} from './implementation-models';
-import {humanChoseThinkingModel} from './model-escalation-custody';
+import {humanChoseProvider,humanChoseThinkingModel} from './model-escalation-custody';
 import {STILL_WAITING_MINUTES,supersedeWaitingJournalObservations} from './request-liveness';
 import {lastLaunchedConversationHome} from './session-runner-home';
 import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,discardQueuedTurnContinuations,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordHeldInputReceiptEvent,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
@@ -1480,7 +1480,10 @@ export class SessionOwner {
     if(input.outside&&(selected.provider!=='codex'||input.saved))throw new SessionOwnerError('An outside request runs a new Codex session; choose a Codex alias.',400);
     // Only Claude Code turns run on runners today; another provider would silently stay on this machine.
     if(input.onRunner&&selected.provider!=='claude-code')throw new SessionOwnerError('--on-runner runs a Claude Code session; choose a Claude alias (Automatic chose '+selected.provider+').',400);
-    const {provider,...metadata}={...selected,...(humanThinkingChoice&&selected.model?{explicitThinkingModelChoice:selected.model}:{}),...(input.outside?{outside:true}:{}),...(input.onRunner?{onRunner:true}:{}),
+    // Pinned only where the owner verified Tejas's own choice (the same custody that exempts --provider-reason).
+    const humanProviderChoice=input.provider!=='auto'&&input.provider!=='chatgpt'&&humanChoseProvider(input.sourceInputId,selected.provider);
+    const {provider,...metadata}={...selected,...(humanThinkingChoice&&selected.model?{explicitThinkingModelChoice:selected.model}:{}),
+      ...(humanThinkingChoice||humanProviderChoice?{providerChosenBy:'tejas' as const}:{}),...(input.outside?{outside:true}:{}),...(input.onRunner?{onRunner:true}:{}),
       ...(input.implementation?{implementationFor:{requestId:input.requestId,sourceInputId:input.sourceInputId}}:{})};
     if(input.standingRole){
       assertStandingAgentPlacement(this.defaultCwd,input.standingRole,metadata as NativeSessionMetadata);
@@ -2482,7 +2485,9 @@ export class SessionOwner {
       const session=createNativeSession(provider,{title,summary:purposeFromFirstWords(input.firstInput?.text)??(title?undefined:'A conversation you started that has no message yet.'),purpose:input.purpose,workflowId:input.workflowId,cwd:project?.cwd??this.defaultCwd,
         ...(input.provider==='auto'?{automaticProviderChoice:true}:{}),...(chatgptModel?{model:chatgptModel}:{}),
         ...(providerDefault?{model:providerDefault.model,reasoningEffort:providerDefault.reasoning_effort}:{}),...(project?{project:project.cwd,projectName:project.name,projectPath:project.path,...(project.runner?{providerRunner:project.runner}:{})}:{}),...defaults,...(input.model?{model:input.model}:{}),...(input.reasoningEffort?{reasoningEffort:input.reasoningEffort}:{}),
-        ...(input.model&&isThinkingModel(input.model)?{explicitThinkingModelChoice:input.model}:{})});
+        ...(input.model&&isThinkingModel(input.model)?{explicitThinkingModelChoice:input.model}:{}),
+        // A human create naming a provider or model is his choice; only Automatic leaves it to the owner.
+        ...(input.provider!=='auto'||input.model?{providerChosenBy:'tejas' as const}:{})});
       this.validateAttachments(session,input.firstInput?.attachments);
       const operation=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:action,kind:'create',origin:'human',payload:input}).input;
       const recorded=this.recordCreation(session,operation,!!input.firstInput);
@@ -2948,7 +2953,7 @@ export class SessionOwner {
         if(typeof action.value!=='string'||(action.kind!=='summary'&&!action.value.trim()))throw new SessionOwnerError('Action value must be text.');
         if(action.kind==='model'&&!this.view(session).capabilities.models.includes(action.value.trim()))throw new SessionOwnerError('This provider does not advertise the selected model.',409,'CAPABILITY_UNAVAILABLE');
         updateSessionMetadata(session.id,{[action.kind]:action.value.trim(),
-          ...(action.kind==='model'?{automaticProviderChoice:false,
+          ...(action.kind==='model'?{automaticProviderChoice:false,providerChosenBy:'tejas' as const,
             explicitThinkingModelChoice:isThinkingModel(action.value.trim())?action.value.trim():undefined}:{})});
         if(action.kind==='model'&&topModel(action.value.trim())){
           const control=db.query("SELECT id FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?")
@@ -4552,7 +4557,13 @@ export class SessionOwner {
       }
       if(request.method==='GET'&&parts[0]==='presentation'&&['topics','questions'].includes(parts[1]??''))
         closeQuestionsAnsweredByTodosSoon(admission=>this.admit(admission),'inbox');
-      if(request.method==='GET'&&parts[0]==='reports'&&parts[1]==='chain'&&parts.length===3)
+      if(request.method==='POST'&&this.communication&&((parts[0]==='inbox'&&parts[1]==='posts')||(parts[0]==='peers'&&parts[1]==='inbox-post-source'))&&parts.length===2){
+        // The private service socket and authenticated peer listener may carry Lab publication.
+        // A run/runner token cannot choose another actor by supplying source IDs.
+        if(request.headers.has('x-concierge-agent-principal'))throw new SessionOwnerError('Inbox publication requires a trusted service or peer.',403,'SERVICE_ONLY');
+        result=parts[0]==='inbox'?await this.communication.publishInbox(body):this.communication.publicationSource(body);
+      }
+      else if(request.method==='GET'&&parts[0]==='reports'&&parts[1]==='chain'&&parts.length===3)
         result=reportSourceChain(db,parts[2]!);
       else if(request.method==='GET'&&parts[0]==='reports'&&parts[1]==='window'&&parts.length===2)
         result=reportWindow(db,url.searchParams.get('since'),url.searchParams.get('until'));

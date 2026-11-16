@@ -218,7 +218,9 @@ the conversation with its own brief and open obligations.
 The predecessor is then superseded: owner writes from its run and new requests to it
 are refused with the successor's address. Its live run receives a notice and can finish,
 but cannot write through the owner; its own outcome and reads remain allowed. Suspension
-prevents another turn. The session detail read exposes the canonical continuation chain,
+prevents another turn. In the same transaction the predecessor's standing role (the Inbox
+router role, or any `sessions agents` role such as the journal keeper) moves to the successor,
+so service wakes for that role reach the session that runs. The session detail read exposes the canonical continuation chain,
 successor ID and handoff ID to Thinkering. `sessions obligations` reports the
 outstanding inventory, lineage and current holder on either side of the transfer.
 A request that has not reached a run of its recipient carries `delivered:false` and
@@ -247,10 +249,17 @@ automatic Claude recovery are recorded in the [2026-11-14 follow-up](../incident
 
 After each provider usage reading the owner runs one paced pass (`held-work-failover.ts`). It
 proposes this same handoff for a session whose queued work its provider cannot start (spent
-allowance, or a usage hold with no room) when another automatic provider has room. Only a session
-whose provider the owner chose (`automaticProviderChoice`) moves; his own provider or model choice,
-the Inbox and standing roles (each with their own failover), paused and consultation-only sessions
-stay. It proposes only when every queued input is already movable, so a proposal cannot strand on an
+allowance, or a usage hold with no room) when another automatic provider has room. Every session
+moves unless Tejas himself chose its provider or model (`providerChosenBy: 'tejas'`, recorded where
+the owner verifies his choice: a human create or model control naming one, or a request whose
+provider choice is verified from his words; older sessions count as his when their human create
+named a provider or model). An agent-passed `--provider`, the owner's own Claude-allowance transfers
+and handoff successors are movable. The Inbox and standing roles (each with their own failover),
+paused and consultation-only sessions stay. The successor keeps the predecessor's model tier and
+reasoning effort (`aliasKeepingTier` in `aliases.ts`). Each skipped candidate is logged once per
+session and reason per 30 minutes as `held_work_failover_skipped` (`pinned`, `source_can_start`,
+`no_receiver`, `receiver_above_stop`, `busy`, `unmovable`).
+It proposes only when every queued input is already movable, so a proposal cannot strand on an
 unsafe input; a session that is not movable is skipped for six hours. Sessions the Inbox dispatched
 his open requests to go first, then the longest waiting. At most two moved sessions work at once
 (the 37-session burst of 2026-11-06 froze the owner for 51 s), and no new move starts once the

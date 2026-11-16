@@ -63,6 +63,41 @@ ledger event, and the Inbox page and its `history?after=` delta both include it,
 they share one query. It appears as an assistant message with `author.communication:
 "post"`, the `replyToMessage` it answers, and the thread's root `inputId`.
 
+Lab publications use `POST /sessions/v1/inbox/posts`, a version-1 trusted-service command.
+Network run/runner principals are refused; the root-only service socket and authenticated peer
+listener carry it. Fields are `version:1`, `source:{input_id,run_id}`, `action_id`, `sourceOwner`,
+`destinationOwner`, `targetSessionId`, `thread`, and `text`. Unknown fields are refused.
+Thinkering derives both owners from configured federation and the verified source session,
+and hashes the existing Lab key to the canonical action alphabet.
+
+The destination requires its own machine identity and atomically checks the exact current Inbox
+and message-to-thread binding beside the post. A local source uses canonical `sessions post`.
+A foreign source is proved by a direct authenticated call to its configured peer's
+`POST /sessions/v1/peers/inbox-post-source`, carrying the entire immutable publication.
+That owner validates live exact input/run admission and the handoff fence before retaining
+the new intent in its existing action journal. Identical intent reads remain valid after the run
+ends; different text, run, destination or thread conflicts. No caller-supplied actor is trusted.
+The receiver retains proof and foreign author metadata beside one post event; both live and
+prepared Inbox histories show the source pair and peer author. There is no executable input,
+provider turn, request, attention duty or return obligation.
+
+Existing protected owner receipts and peer-client durability barriers remain in force; no network
+wait occurs inside a transaction. After a lost response, the exact retained post returns before
+contacting the peer; concurrent identical deliveries converge inside the transaction. There is no
+new queue, timer or service. An unavailable/older peer leaves filing unconfirmed and the Lab record
+intact; retry the same publication, never a replacement or human-input route. Install owner support
+on source and destination before the corrected Thinkering caller. Generic communication routes
+remain private to their existing entrances.
+
+The incident-specific canonical replay is `bun bot/scripts/lab-publication-acceptance.ts
+--output /tmp/<owned-result>.json`. It sets only `LAB_PUBLICATION_TEST_AUTHORIZATION`
+(`lab-publication-85ee7a4e`), creates two exclusively owned temporary ledgers, and keeps the
+existing canonical-home/symlink production guards. General test entry points remain disabled.
+Its synthetic inputs, inert provider runtime and authenticated loopback listener are explicit
+substitutes; real owner HTTP responses, peer source proof and both Inbox projections are exercised.
+It is not an installed-app, gateway-authentication, browser, or physical-Mac acceptance claim.
+The independent tester and pre-opened application observer supply those separate evidence layers.
+
 ### Direct messages to the Inbox router
 
 A human-surface message addressed to the Inbox router joins its running turn through the
