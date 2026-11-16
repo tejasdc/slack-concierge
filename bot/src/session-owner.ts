@@ -592,7 +592,7 @@ function validateCanvasContext(input:Record<string,any>) {
 /**
  * The one definition of "another author wrote into this test session". The bound browser
  * entrance refuses on it and the metadata diagnostic explains it from the same text, so the
- * two cannot drift. Parameters: source input, source run (each bound twice when used).
+ * two cannot drift. Parameters: source input, source run (each bound once, in this order).
  */
 const FOREIGN_AUTHORSHIP_PREDICATE=`(candidate.origin<>'agent' OR ((candidate.source_input_id IS NOT ? OR candidate.source_run_id IS NOT ?)
         AND NOT EXISTS (SELECT 1 FROM session_inputs AS own_source

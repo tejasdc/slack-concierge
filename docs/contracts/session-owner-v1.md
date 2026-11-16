@@ -6,8 +6,8 @@
 posts `{source,address,create_input_id}` to `/session-communication/agent-test-scope`. The
 caller must pass the existing current `actor()` and `fenced()` checks and be a run of the session
 that created the target through that exact create request; the historical create pair is lineage,
-not credentials, so any run of that creator qualifies and no other session does (HTTP 403
-`AGENT_TEST_SCOPE_REFUSED`). It returns `{kind:"agent_test_scope_diagnostic",targetSessionId,
+not credentials, so any run of that creator qualifies and no other session does (HTTP 400 with
+the message "This session did not create the exact test session."; the route drops the owner error code). It returns `{kind:"agent_test_scope_diagnostic",targetSessionId,
 createInputId,creationSource,coverage:{complete:true,rejectingInputs},witness}`. `witness` is null
 or the first rejecting input by acceptance order with only `inputId,kind,origin,sourceInputId,
 sourceRunId,requestId,predicateReason` (`origin_not_agent|source_pair_not_creator_and_not_own_session`)

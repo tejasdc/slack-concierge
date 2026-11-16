@@ -32,7 +32,7 @@ allowed verdict, and reports a missing witness as "none rejecting now".
 
 ## Acceptance scenario
 
-- **Seed:** a test session whose creator session later gained one human-origin input.
+- **Seed:** a test session that later gained one human-origin input.
 - **Action:** the creator's current run calls the command; another session calls it.
 - **Expected:** the creator gets that input's metadata only; the other session is refused; the bound read still refuses.
 - **Replayable offline:** yes
