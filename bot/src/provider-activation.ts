@@ -4,7 +4,6 @@ import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { forgetAccountFiles } from "./account-files-memo";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, watch, type FSWatcher } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { authHeldInputCount, codexAdmissionRecoveryHolds, db, holdCodexAdmission, observeExecutionChanges, releaseAuthHeldWork } from "./state";
 import { log } from "./log";
 import { recordSessionEvent } from "./session-inputs";
@@ -25,6 +24,7 @@ import { isClaudeUsageExhaustion } from "./provider-failures";
 import {providerRunnerTarget} from './provider-runner-target';
 import {RunnerCallNotSentError,runnerMachineCall} from './runner-machine-calls';
 import {withCodexRestartLock} from './codex-restart-lock';
+import {armMacLoginKeychainWatch,isRelevantKeychainDatabaseEvent} from './mac-login-keychain-watch';
 
 // Making a credential change take effect on the provider runtime that is
 // already running.
@@ -496,25 +496,48 @@ export function watchAuthHeldCredentials(): () => void {
     void work.catch(error=>log('error',runner?'runner_provider_auth_hold_check_failed':'provider_auth_hold_activation_failed',{
       provider,runner,source,error:error instanceof Error?error.message:String(error)})).finally(()=>{checking.delete(provider);updateInterval();});
   };
+  const credentialChanged=(provider:ProviderKey,source:ReleaseSource)=>{
+    forgetAccountFiles();
+    const prior=debounce.get(provider);if(prior)clearTimeout(prior);
+    debounce.set(provider,setTimeout(()=>{debounce.delete(provider);check(provider,source);},350));
+  };
   const watchCredential=(path:string,provider:ProviderKey,source:ReleaseSource)=>{
     try {
       const filename=basename(path);
       const watcher=watch(dirname(path),(event,changed)=>{
         if(changed && String(changed)!==filename)return;
-        forgetAccountFiles();
-        const prior=debounce.get(provider);if(prior)clearTimeout(prior);
-        debounce.set(provider,setTimeout(()=>{debounce.delete(provider);check(provider,source);},350));
+        credentialChanged(provider,source);
       });
       watcher.on('error',error=>log('error','provider_auth_hold_watch_failed',{provider,source,error:String(error)}));
       watchers.push(watcher);
+      if(source==='keychain_event')log('info','provider_auth_hold_keychain_watch_armed',{provider,scope:'file'});
+    } catch(error){log('error','provider_auth_hold_watch_failed',{provider,source,error:String(error)});}
+  };
+  const watchKeychainDirectory=(provider:ProviderKey,source:ReleaseSource)=>{
+    try {
+      const directory=join(homedir(),'Library','Keychains');
+      const watcher=watch(directory,(_event,changed)=>{
+        if(!isRelevantKeychainDatabaseEvent(changed == null ? null : String(changed)))return;
+        credentialChanged(provider,source);
+      });
+      watcher.on('error',error=>log('error','provider_auth_hold_watch_failed',{provider,source,error:String(error)}));
+      watchers.push(watcher);
+      log('info','provider_auth_hold_keychain_watch_armed',{provider,scope:'directory'});
     } catch(error){log('error','provider_auth_hold_watch_failed',{provider,source,error:String(error)});}
   };
   for(const provider of providers)if(!providerRunnerTarget(provider))watchCredential(credentialPath(provider),provider,'file_event');
   if(process.platform==='darwin'&&!providerRunnerTarget('claude-code')){
-    try {
-      const keychain=execFileSync('/usr/bin/security',['login-keychain','-d','user'],{encoding:'utf8'}).trim().replace(/^"|"$/g,'');
-      if(keychain)watchCredential(keychain,'claude-code','keychain_event');
-    } catch(error){log('error','provider_auth_hold_watch_failed',{provider:'claude-code',source:'keychain_event',error:String(error)});}
+    // Query the user's actual login keychain asynchronously. Some Macs return
+    // an empty path here; watch their user keychain directory instead of
+    // assuming the separate default-keychain setting is also the login one.
+    void armMacLoginKeychainWatch({
+      lookup:()=>run('/usr/bin/security',['login-keychain','-d','user'],5_000),
+      stopped:()=>stopped,
+      watchFile:path=>watchCredential(path,'claude-code','keychain_event'),
+      watchDirectory:()=>watchKeychainDirectory('claude-code','keychain_event'),
+      onFallback:({code,timedOut})=>log('warn','provider_auth_hold_watch_using_directory',{provider:'claude-code',source:'keychain_event',exit_code:code,timed_out:timedOut}),
+      onLookupError:error=>log('error','provider_auth_hold_watch_failed',{provider:'claude-code',source:'keychain_event',error:String(error)}),
+    });
   }
   // A server running outside its manager is put back under it at the first moment nothing runs.
   let repairing=false;

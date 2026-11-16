@@ -204,7 +204,15 @@ will resume automatically.
 The existing credential activation path releases these holds only after the selected
 account answers a small real request. Owner sign-in, account add and switch call
 activation directly. Directory filesystem events watch the login credential names;
-on the Mac, a login Keychain file event also probes a held Claude account. A Codex
+on the Mac, an asynchronous `security login-keychain -d user` lookup selects the
+login Keychain file to watch. If macOS returns no path, Concierge watches the user's
+Keychains directory for keychain-file changes instead of treating the separate
+default-keychain setting as the login keychain. This only triggers the existing
+Claude auth check; it does not read Keychain secrets or decide whether the login
+works. The lookup runs outside the owner loop, so a slow `security` command cannot
+delay accepting work. `provider_auth_hold_keychain_watch_armed` records whether a
+file or directory listener was registered without logging the keychain path.
+A Codex
 activation deferred behind running work is retried when execution changes after
 the last running Codex turn. Startup probes held work once. A three-minute check
 runs only while authentication-held work exists as a temporary fallback for
