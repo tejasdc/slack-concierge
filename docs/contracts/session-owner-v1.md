@@ -1,5 +1,20 @@
 # Unified session owner wire contract v1
 
+## Bound test-session authorship diagnostic
+
+`router-actions.sh sessions agent-test-scope concierge:<id> --create-input request:<uuid> --source-input <input-id> --source-run <run-id>`
+posts `{source,address,create_input_id}` to `/session-communication/agent-test-scope`. The
+caller must pass the existing current `actor()` and `fenced()` checks and be a run of the session
+that created the target through that exact create request; the historical create pair is lineage,
+not credentials, so any run of that creator qualifies and no other session does (HTTP 403
+`AGENT_TEST_SCOPE_REFUSED`). It returns `{kind:"agent_test_scope_diagnostic",targetSessionId,
+createInputId,creationSource,coverage:{complete:true,rejectingInputs},witness}`. `witness` is null
+or the first rejecting input by acceptance order with only `inputId,kind,origin,sourceInputId,
+sourceRunId,requestId,predicateReason` (`origin_not_agent|source_pair_not_creator_and_not_own_session`)
+and `sourceRelation` (`same_target|other|missing`). The scan uses the same predicate text as the
+bound content guard, so coverage is complete. No payload, receipt, file, history or provider
+output is read; there is no clean/allowed result and the content refusal is unchanged.
+
 ## Current mutation admission
 
 `router-actions.sh sessions mutation-admission --source-input <input-id> --source-run <run-id>`
