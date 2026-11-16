@@ -62,7 +62,8 @@ const resetResult=attributeWeeklyAllowance(resetReport,[
   {provider:'codex',account:'one',window_name:'Weekly',observed_at_ms:now,used_percent:10,resets_at_ms:reset}],now) as any;
 const before=resetResult.sessionAllowanceById['concierge:1'],after=resetResult.sessionAllowanceById['concierge:2'];
 const outsideSpan=resetResult.sessionAllowanceById['concierge:3'];
-if(before.usedPercent!==10||after.usedPercent!==10||before.components[0].coverage.complete!==true
+if(before.components[0].currentPeriodPercent!==0||after.components[0].currentPeriodPercent!==10
+  ||before.usedPercent!==10||after.usedPercent!==10||before.components[0].coverage.complete!==true
   ||outsideSpan.basis!=='unavailable'||outsideSpan.components[0].coverage.complete!==false
   ||outsideSpan.components[0].coverage.uncoveredTranscriptWeighted!==1)
   throw new Error('Work before the latest weekly reset lost its estimate, or uncovered work looked complete.');
