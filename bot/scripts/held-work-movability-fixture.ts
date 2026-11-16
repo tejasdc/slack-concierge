@@ -12,12 +12,14 @@ process.env.CONCIERGE_STATE_DIR=scratch;
 process.env.CONCIERGE_CAPTURE_STATE_DIR=join(scratch,'capture');
 process.env.CONCIERGE_TEST_MODE='1';
 process.env.CONCIERGE_TEST_AUTHORIZATION=HELD_WORK_MOVABILITY_TEST_AUTHORIZATION;
+// Inventory's Lab read must fail fast and locally; its omission does not affect custody.
+process.env.THINKERING_AGENT_TEST_KEY_FILE=join(scratch,'no-lab-key');
 
 const [{db,claimNextQueuedTurn,markTurnProviderAdmissionIntended,retryRunningTurnAfterProviderFailure},
   {SessionOwner},{createNativeSession,retainSessionInput,enqueueSessionInput,getAcceptedSessionInput},
-  {safeTurn,transferSession},{queuedWorkMovable}]=await Promise.all([
+  {safeTurn,transferSession},{queuedWorkMovable,proposeHandoff,acceptHandoff},{admitChatGptObligation}]=await Promise.all([
   import('../src/state'),import('../src/session-owner'),import('../src/session-inputs'),
-  import('../src/provider-exhaustion-recovery'),import('../src/session-handoff')]);
+  import('../src/provider-exhaustion-recovery'),import('../src/session-handoff'),import('../src/chatgpt-obligations')]);
 new SessionOwner({available:()=>true,wake:()=>{},stop:async()=>false,steer:()=>false},scratch);
 
 const OWNER='held-work-fixture';
@@ -98,7 +100,72 @@ try{
   const unproposed=heldInput('fixture-no-proposal',false,'claude-code',true);
   assert.equal(transferSession(unproposed.session.id),1,'without a proposed SAME handoff, automatic transfer still works');
   assert.ok(db.query('SELECT 1 FROM provider_recovery_sessions WHERE source_session_id=?').get(unproposed.session.id));
-  console.log('held-work-movability-fixture: terminal usage refusals move with acknowledgement and start history intact; unclassified starts, uncertain acknowledgements, foreign receipts, dependencies, continuations, and competing proposals stay blocked; unproposed automatic transfer still works.');
+
+  // concierge:9767 → 9847, 2026-11-16: a predecessor holding an unanswered ChatGPT question has both its
+  // answer duty and its sent request in the inventory. Moving the answer moved the request first, and the
+  // sent step then refused "changed during handoff", so no such handoff could be accepted.
+  // It also holds a standing role: the journal keeper's role stayed on concierge:4571 after its
+  // 2026-11-15 handoff, so saved check-ins kept going to a session that never ran again.
+  const asker=createNativeSession('codex',{title:'asker with open ChatGPT question',summary:undefined,purpose:'develop',origin:'native',standingRole:'journal-keeper'});
+  const chatgpt=createNativeSession('chatgpt',{title:'ChatGPT review',summary:undefined,purpose:'chat',origin:'native'});
+  const askerInput=retainSessionInput({id:'fixture-asker-input',sessionId:asker.id,scope:'fixture',actionId:'asker',kind:'input',origin:'agent',
+    payload:{text:'Ask ChatGPT and hand off'}}).input;
+  const askerTurn=enqueueSessionInput(askerInput.id).turn_id!;
+  db.query("UPDATE turns SET status='done' WHERE id=?").run(askerTurn);
+  db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,
+    source_root_ts,action_id,target_session_id,target_channel,target_root_ts,payload_json,payload_hash,source_input_id,target_input_id,due_at_ms,created_at_ms)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run('fixture-chatgpt-question','fixture','fixture-1',askerTurn,asker.id,'fixture-root','ask-chatgpt',
+      chatgpt.id,'fixture','fixture-root',JSON.stringify({text:'Review this',after:[],requestedEffect:'work'}),'fixture-hash',askerInput.id,null,Date.now()+60_000,Date.now());
+  admitChatGptObligation({requestId:'fixture-chatgpt-question',task:{kind:'direct_input',id:askerInput.id},askerSessionId:asker.id,
+    question:'Review this',targetSessionId:`concierge:${chatgpt.id}`,now:Date.now(),legacyCustodyVerified:true});
+  const proposal=await proposeHandoff({actorSession:asker.id,inputId:askerInput.id,runId:'fixture-run',predecessorId:asker.id,
+    provider:'cc-sonnet',reason:'Codex allowance exhausted',actionId:'fixture-handoff'});
+  assert.deepEqual(proposal.inventory.items.map((item:any)=>item.id),['answer:fixture-chatgpt-question','sent:fixture-chatgpt-question']);
+  const successorId=Number(proposal.successor.slice('concierge:'.length));
+  const accepted=await acceptHandoff({actorSession:successorId,inputId:`handoff:${proposal.handoffId}`,runId:'fixture-successor-run',
+    handoffId:proposal.handoffId,digest:proposal.digest});
+  assert.equal(accepted.accepted,true,'a handoff holding a ChatGPT answer duty and its sent request is accepted');
+  assert.equal((db.query('SELECT source_session_id FROM session_communication_requests WHERE request_id=?').get('fixture-chatgpt-question') as any).source_session_id,successorId);
+  assert.equal((db.query('SELECT asker_session_id FROM session_chatgpt_obligations WHERE obligation_id=?').get('fixture-chatgpt-question') as any).asker_session_id,successorId);
+  const role=(id:number)=>(db.query("SELECT json_extract(native_metadata_json,'$.standingRole') AS role FROM sessions WHERE id=?").get(id) as any).role;
+  assert.equal(role(successorId),'journal-keeper','the standing role follows the accepted handoff');
+  assert.equal(role(asker.id),null,'the superseded predecessor no longer holds the role');
+  // concierge:9772 → 9874, 2026-11-16: ChatGPT answered, its return waited in the Codex asker's queue,
+  // and Codex's allowance was gone. Acceptance demanded that the asker acknowledge the return first,
+  // which it never could. The never-started return now moves with the duty; the successor acknowledges it.
+  const stuck=createNativeSession('codex',{title:'asker whose answer return is queued',summary:undefined,purpose:'develop',origin:'native'});
+  const stuckInput=retainSessionInput({id:'fixture-stuck-input',sessionId:stuck.id,scope:'fixture',actionId:'stuck',kind:'input',origin:'agent',
+    payload:{text:'Ask ChatGPT for a final review'}}).input;
+  const stuckTurn=enqueueSessionInput(stuckInput.id).turn_id!;
+  db.query("UPDATE turns SET status='done' WHERE id=?").run(stuckTurn);
+  db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,
+    source_root_ts,action_id,target_session_id,target_channel,target_root_ts,payload_json,payload_hash,source_input_id,target_input_id,due_at_ms,created_at_ms)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run('fixture-answered-question','fixture','fixture-2',stuckTurn,stuck.id,'fixture-root','ask-review',
+      chatgpt.id,'fixture','fixture-root',JSON.stringify({text:'Final review',after:[],requestedEffect:'informational'}),'fixture-hash-2',stuckInput.id,null,Date.now()+60_000,Date.now());
+  admitChatGptObligation({requestId:'fixture-answered-question',task:{kind:'direct_input',id:stuckInput.id},askerSessionId:stuck.id,
+    question:'Final review',targetSessionId:`concierge:${chatgpt.id}`,now:Date.now(),legacyCustodyVerified:true});
+  const returnInput=retainSessionInput({id:'return:fixture-answer-event',sessionId:stuck.id,scope:'fixture',actionId:'return',kind:'input',origin:'service',
+    payload:{text:'ChatGPT answered your final review'}}).input;
+  assert.ok(enqueueSessionInput(returnInput.id).turn_id,'the return waits in a queued turn');
+  db.query("UPDATE session_communication_requests SET outcome='answered',status='answered' WHERE request_id=?").run('fixture-answered-question');
+  db.query(`INSERT INTO session_communication_events(event_id,request_id,kind,payload_json,status,created_at_ms,accepted_input_id)
+    VALUES(?,?,'final',?,'admitted',?,?)`).run('fixture-answer-event','fixture-answered-question',JSON.stringify({text:'Ship it'}),Date.now(),returnInput.id);
+  db.query("UPDATE session_chatgpt_obligations SET state='return_pending',answer_event_id=? WHERE obligation_id=?")
+    .run('fixture-answer-event','fixture-answered-question');
+  const stuckProposal=await proposeHandoff({actorSession:stuck.id,inputId:stuckInput.id,runId:'fixture-run-2',predecessorId:stuck.id,
+    provider:'cc-opus',reason:'Codex allowance exhausted',actionId:'fixture-handoff-2'});
+  const stuckSuccessor=Number(stuckProposal.successor.slice('concierge:'.length));
+  const stuckAccepted=await acceptHandoff({actorSession:stuckSuccessor,inputId:`handoff:${stuckProposal.handoffId}`,runId:'fixture-successor-run-2',
+    handoffId:stuckProposal.handoffId,digest:stuckProposal.digest});
+  assert.equal(stuckAccepted.accepted,true,`a queued, never-started answer return moves with its duty: ${(stuckAccepted as any).reason??''}`);
+  const obligation=db.query('SELECT asker_session_id,state,answer_return_input_id FROM session_chatgpt_obligations WHERE obligation_id=?')
+    .get('fixture-answered-question') as any;
+  assert.equal(obligation.asker_session_id,stuckSuccessor);
+  assert.equal(obligation.state,'return_pending','the receipt still waits for the successor to acknowledge the return');
+  const carried=(db.query('SELECT accepted_input_id FROM session_communication_events WHERE event_id=?').get('fixture-answer-event') as any).accepted_input_id;
+  assert.equal(getAcceptedSessionInput(carried)!.session_id,stuckSuccessor,'the answer event now follows the successor’s copy of the return');
+  assert.equal((db.query('SELECT status FROM turns t JOIN session_inputs i ON i.turn_id=t.id WHERE i.id=?').get(carried) as any).status,'queued');
+  console.log('held-work-movability-fixture: terminal usage refusals move with acknowledgement and start history intact; unclassified starts, uncertain acknowledgements, foreign receipts, dependencies, continuations, and competing proposals stay blocked; unproposed automatic transfer still works; a handoff holding an open ChatGPT question moves both its sent request and answer duty; a standing role moves to the successor; a queued, never-started ChatGPT answer return moves with its duty.');
 }finally{
   rmSync(scratch,{recursive:true,force:true});
 }

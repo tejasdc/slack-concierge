@@ -42,7 +42,58 @@ While the prepared list is not ready and no Inbox session exists, both list entr
 `presentation_indexing` coverage. Once the Inbox exists, an initial prepared-list rebuild
 uses the ledger list until the prepared generation is ready, so existing threads stay visible.
 The change feed carries both sides of each update and a null after-value for deletion.
-It retains seven days of revisions and explicitly resets an older cursor. Garbage collection
+Prepared message placement follows the same Inbox lineage as canonical thread reads: a
+successor router can place an input accepted by a predecessor, the latest placement or
+detach for that exact input wins, and replies can follow retained targets across the
+lineage. Human-message routing attribution and compact operation receipts use that same
+latest placement through a shared read-only helper. New messages
+and incremental placement changes use these rules immediately.
+
+Existing prepared messages receive semantic version 2 of the Inbox-lineage upgrade,
+including stores that already completed version 1. The worker
+walks at most 100 messages per transaction, refreshes message placement and display, and
+drains affected thread summaries in batches of 20 before continuing. Empty former roots
+are removed from the sorting pile; genuinely unfiled human roots remain. It also corrects
+cached topic membership when the resolved root itself has not changed, then sweeps existing
+root summaries in 100-row pages so a zero-member orphan cannot escape the repair. The version is
+marked complete only after every page and durable topic dependency finishes. The derived
+`presentation_inbox_lineage_work` row stores message/root keysets, phase, cumulative counts
+and the original start time with each committed page. Worker or release restart resumes
+the next unprocessed page, including a root keyset whose last row was deleted, then drains
+remaining dependencies. Already-completed version-2 stores need no new semantic upgrade.
+Each catch-up pass gives the upgrade at most two seconds of pages, then processes live
+changes, so new messages keep appearing while old placements are repaired; live changes
+already use the corrected lineage. On 2026-11-15 the uninterrupted pass took over 23 minutes,
+three releases restarted it, and thnkr.ing showed no new message for more than an hour.
+An interrupted old worker had no cursor to recover; its first run with this correction
+starts safely from the beginning once. The canonical ledger is opened read-only; no filing operation,
+provider action, or accepted input is replayed. One completion log records generation,
+version, cumulative examined/moved/topic-correction counts, orphan removals, pages, and wall
+time including restarts. Content-free progress records report initial/resumed phase and
+keysets, then at phase changes and at most once per ten seconds. Counts and completion
+remain durable even if interruption loses a post-commit log record; source head advancing
+after the upgrade and caught-up read coverage are alternative completion evidence.
+After each page commits, the worker attempts a separate content-free diagnostic for each
+removed empty human sorting root, with exact root and current canonical target (which may
+be null). Interruption before that write can lose an individual diagnostic; the committed
+cursor and cumulative count remain authoritative. This is projection evidence,
+not proof that the associated work completed.
+Existing compact receipts refresh through the worker's existing bounded revision rebuild.
+
+Incremental link changes retain original-root work and its page cursor in the derived
+`presentation_message_root_work` table before moving messages. Each 100-row transaction
+commits message mappings, display, old/new root summaries, durable topic invalidation and
+the cursor together. After interruption the worker resumes that original root even if the
+linked input itself has already moved; a retry cannot strand its later descendants. The
+queue is scoped to the prepared generation and cleared with replaced generations. Pending
+root work and topic dirtiness drain even when the source change journal is quiet. No new
+service, timer or canonical operation is involved.
+`bot/scripts/inbox-prepared-lineage-fixture.ts` exercises the real worker's initial build,
+already-version-1 upgrade, empty orphan cleanup, same-root topic correction, latest
+detach/relink, recursive replies, and real post-commit interruptions in semantic message
+scan, root sweep, dependency drain and incremental reassignment. It audits committed
+message visits and cumulative counts, then verifies another ordinary restart.
+The change feed retains seven days of revisions and explicitly resets an older cursor. Garbage collection
 walks finite batches, removes superseded generations and unreferenced chunks, and never
 deletes canonical records. A removed detail reference requires refreshing its owning item.
 
@@ -57,12 +108,24 @@ background CPU per topic. Reverse dependency indexes keep unrelated token events
 The overview returns exact per-filter question totals plus one selected-filter page, request
 count and a request page. Additional pages are explicit. Requests may also be paged by their
 source input for cards beside a visible conversation entry. Global question pages retain
-topic groups (without a duplicate flat question array) and exact filter counts. The current
-Inbox owns catalogue and global-question visibility. Older topics remain directly readable,
-with work and reply routing derived from the current Inbox, matching the canonical owner.
+topic groups (without a duplicate flat question array) and exact filter counts. Global questions
+use the active Inbox context for their prepared partition, just as the topic catalogue does.
+The verified Inbox lineage includes topics created by earlier Inbox agents; changing routers
+does not remove their questions from Asked, Open, Reading or the other applicable filters.
+Canonical topic and question ownership remains historical. Work and reply routing use the current Inbox.
 Inbox attention still includes actionable questions from older topics, as the owner does.
 Inbox attention uses those prepared facts and indexed
 maximum generation; incomplete coverage returns unknown attention, never false.
+
+The asked-answer projection upgrade queues existing topics in the worker's bounded dirty
+queue. Its version remains incomplete until that queue is drained and checkpointed; this
+does not copy canonical records or rebuild the message archive. A new reader can meet the
+older metadata schema and reports incomplete coverage until the worker upgrades it.
+Asked questions derive retained answers through their explicit dispatch, or one unambiguous
+exact question-source/Inbox-obligation/dispatch link for legacy records. The corresponding
+request is a prepared dependency even when the old question did not record its dispatch.
+The additive `answerStatus: {text, delayed}` is computed by Concierge; clients display its
+words rather than inventing another deadline or deriving failure from session activity.
 
 Whole-topic detail is metadata only (`collections: 'paged'`), suitable for an explicit Manage
 action needing complete roots; it does not eagerly copy all requests/questions. Large item,

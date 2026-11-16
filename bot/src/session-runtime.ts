@@ -19,7 +19,7 @@ import {startProviderUsageWatch} from './provider-account-usage';
 import {watchAuthHeldCredentials} from './provider-activation';
 import {refreshUsageBreakdownIfStale} from './usage-breakdown';
 import {briefRunningSessions,noticeTurnContinuation,publishExpiringResetNotices,publishUsageForecastNotices} from './provider-usage-notice';
-import {keepThreadsCurrent,migrateInboxTopics,reconcileCarriedClosures,reconcileForwardedFinalAnswers,retireRecoveredBookkeepingRequests,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
+import {keepThreadsCurrent,migrateInboxTopics,reconcileCarriedClosures,reconcileForwardedFinalAnswers,retireRecoveredBookkeepingRequests,rejoinThreadsSplitAtHandoff,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
 import {log,errorFields} from './log';
 import {startStuckWorkWatch} from './stuck-work-watch';
 import {startRepairNoticeDelivery} from './repair-notices';
@@ -31,7 +31,7 @@ import {startBackgroundJobWatch} from './background-waits';
 import {startUpdateWaitWatch} from './update-wait-notices';
 import {startMachineWatchWorker,wakeWatchWorker} from './watches';
 import {claimAdoptableExecutions,hostedTurns,watchHeldExecution,type Adoption} from './executions';
-import {interruptOrphanedTurn} from './state';
+import {interruptOrphanedTurn,failUnacknowledgedClaudeParkedTurns} from './state';
 import {recoverExhaustedClaudeWork} from './provider-exhaustion-recovery';
 import {maybeStartInboxProviderFailover} from './inbox-provider-failover';
 import {moveHeldWork} from './held-work-failover';
@@ -70,6 +70,7 @@ export async function startSessionRuntime() {
   // Additive and safe while the Inbox is live; a second start finds its guard event.
   try {runStartupStep('inbox_topics_migration',()=>migrateInboxTopics());} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
   try {runStartupStep('inbox_bookkeeping_repair',()=>retireRecoveredBookkeepingRequests());} catch(error) {log('error','inbox_bookkeeping_repair_failed',errorFields(error));}
+  try {runStartupStep('inbox_handoff_split_rejoin',()=>rejoinThreadsSplitAtHandoff());} catch(error) {log('error','inbox_handoff_split_rejoin_failed',errorFields(error));}
   try {runStartupStep('forwarded_final_answers',()=>runStartupCatchUp('forwarded-final-answers',ownerEventMaxSequence,(afterSequence,throughSequence)=>reconcileForwardedFinalAnswers(undefined,{afterSequence,throughSequence}),20_000));runStartupStep('carried_closures',()=>runStartupSweep('carried-closures',ownerEventMaxSequence,(afterSequence,throughSequence)=>reconcileCarriedClosures(undefined,{afterSequence,throughSequence}),20_000));} catch(error) {log('error','inbox_request_answer_reconciliation_failed',errorFields(error));}
   const queue=new SessionTurnQueueCoordinator({beforeClaims:prepareSavedWorkForClaims,
     claim:activeTurnIds=>claimNextQueuedTurn(instanceId,Date.now(),registry.activeSessions,[...new Set([...activeTurnIds,...active])]),shouldStop:()=>draining,
@@ -157,6 +158,9 @@ export async function startSessionRuntime() {
   },60_000);
   ghostSweep.unref?.();
   const stopProcessAuditSweep=host.startCodexProcessAuditSweep(()=>draining);
+  // Turns parked because Claude never acknowledged their input fail now, so their requests return for a new owner.
+  try{const failed=failUnacknowledgedClaudeParkedTurns();if(failed.length)log('warn','unacknowledged_claude_parks_failed',{turn_ids:failed});}
+  catch(error){log('error','unacknowledged_claude_park_repair_failed',errorFields(error));}
   codexSessionObserver.start();communication.start();queue.wake();
   writeNativeSandboxReadyReceipt(runtime,resolve(runtime.stateDir,'requests.sock'));
   log('info','concierge_session_owner_online',{instance_id:instanceId,slack_enabled:false});

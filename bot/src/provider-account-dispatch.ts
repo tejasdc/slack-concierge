@@ -394,9 +394,15 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
   }):null;
   if(selectedAttempt&&(!warmRoom||!!selectedAccount))return {account:selectedAttempt.account,home:selectedAttempt.home,
     because:'stayed-on-its-account',expected,selectionRevision:selection?.revision??0};
-  if(warmRoom&&!selectedAccount)return {account:warmRoom.account,home:warmRoom.home,
+  // A warm account with a fresh reading is weighed by the shared rule against the other accounts'
+  // lapse pressure (WARM_STAY_BAND); only a warm account whose reading has gone stale keeps the
+  // conversation on the last good reading alone, because nothing fresh can be compared. The
+  // unconditional stay here was what let the week ending Sunday be spent while the week ending
+  // Wednesday kept its room (2026-11-15), even after the rule itself had the band.
+  const warmFresh=!!warmRoom&&warmRoom.tightestUsedPercent!==null&&!warmRoom.problem;
+  if(warmRoom&&!selectedAccount&&!warmFresh)return {account:warmRoom.account,home:warmRoom.home,
     because:'stayed-for-warm-cache',expected,selectionRevision:selection?.revision??0};
-  const choice=chooseAccountForTurn({accounts:rooms,bound:null,prefer:expected,newlySelected:!!selectedAccount,warmCacheAccount});
+  const choice=chooseAccountForTurn({accounts:rooms,bound:null,prefer:expected,newlySelected:!!selectedAccount,warmCacheAccount:warmRoom?warmCacheAccount:null});
   if(choice.account===null){
     // A new account may be visible in the server's allowance read before this Mac has
     // its own login. Ask the existing browser repair path to establish that local home;

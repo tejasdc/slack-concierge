@@ -5,6 +5,8 @@ import {accountsWithRoom} from './provider-usage-forecast';
 import {claudeAccountAwaitingSignIn} from './provider-account-dispatch';
 import {sessionAddress} from './session-address';
 import {log} from './log';
+import {automaticMoveRefusal} from './automatic-move-kind';
+import {aliasKeepingTier,resolveProviderAlias} from './aliases';
 
 export type WaitingTurn={id:number;session_id:number;accepted_input_id:string;status:string;dispatch_attempt:number;
   dispatch_hold:string|null;provider_admission_intended_at:string|null;provider_started_at:string|null;
@@ -111,7 +113,8 @@ export function transferSession(sessionId:number):number {
   const current=previous?getSessionById(previous.successor_session_id):null;
   let successor=current&&current.status!=='archived'&&!sessionMetadata(current).suspended?current:null;
   if(!successor){
-    successor=createNativeSession('codex',{title:`${meta.title??'Claude work'} (continued on Codex)`,
+    const tierModel=resolveProviderAlias(aliasKeepingTier('codex',meta.model));
+    successor=createNativeSession('codex',{model:tierModel.model,...(meta.reasoningEffort?{reasoningEffort:meta.reasoningEffort}:{}),title:`${meta.title??'Claude work'} (continued on Codex)`,
       summary:meta.summary??`Continues “${meta.title??'Claude work'}” on Codex while Claude's allowance is used up.`,
       purpose:meta.purpose??'develop',cwd:meta.cwd,project:meta.project??null,
       additionalDirs:meta.additionalDirs,origin:'native',recovery:{sourceAddress,reason:'claude_usage_exhausted'}});
@@ -185,6 +188,9 @@ export function recoverExhaustedClaudeWork():number {
       GROUP BY turn.session_id ORDER BY oldest_turn_id LIMIT 20`).all(scanAfterTurnId) as
       {id:number;oldest_turn_id:number}[];
     for(const session of sessions){
+      // The same rule as held-work failover: only coding work moves by itself.
+      const row=getSessionById(session.id);
+      if(!row||automaticMoveRefusal(row))continue;
       try{moved+=db.transaction(()=>transferSession(session.id)).immediate();}
       catch(error){log('error','provider_recovery_failed',{source_session_id:session.id,
         error:error instanceof Error?error.message:String(error)});}

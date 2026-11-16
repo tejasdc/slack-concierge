@@ -1,3 +1,4 @@
+import {withContentReader,LabDisclosureError} from './lab-content-disclosure';
 import {routeLabel,withTaskLabel} from './owner-task-labels';
 import {readFileSync} from "node:fs";
 import { finishedTodoRefusal, namedTodo } from './question-todos';
@@ -42,7 +43,7 @@ function requestFailure(request:Request,error:unknown):Response {
     const stack=error instanceof Error?error.stack?.split('\n').filter(line=>/^\s+at /.test(line)).slice(0,5).map(line=>line.trim().slice(0,300)):undefined;
     log('error','native_command_database_failed',{operation,code:/^SQLITE_[A-Z_]+$/.test(code)?code:'SQLITE_BUSY',transient,stack});
   }
-  const boardStatus=error instanceof BoardError&&error.status>=400&&error.status<500?error.status:400;
+  const boardStatus=error instanceof LabDisclosureError?error.status:error instanceof BoardError&&error.status>=400&&error.status<500?error.status:400;
   return Response.json({error:error instanceof Error?error.message:'Request API failed.'},{status:transient?503:boardStatus});
 }
 
@@ -86,7 +87,7 @@ async function withTodoState(input:any):Promise<any>{
 }
 
 export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
-  return async function handleRoutedRequest(request: Request): Promise<Response> {
+  const handle=async function handleRoutedRequest(request: Request): Promise<Response> {
     try {
       const url = new URL(request.url);
       const native=await owner?.handle(request);
@@ -138,6 +139,8 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         }
         if (operation === 'handoff') return Response.json(await sessions.handoff(input));
         if (operation === 'obligations') return Response.json(await sessions.obligations(input));
+        if (operation === 'agent-test-scope') return Response.json(sessions.agentTestScopeDiagnostic(input));
+        if (operation === 'mutation-admission') return Response.json(sessions.mutationAdmission(input));
         if (operation === 'open') return Response.json(await sessions.openLink(input));
         if (operation === 'board') return Response.json(await sessions.board(input));
         if (operation === 'owed') {
@@ -160,6 +163,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'edit-gate') return Response.json(sessions.editGate(input));
         if (operation === 'model-start-gate') return Response.json(sessions.modelStartGate(input));
         if (operation === 'edit-reason') return Response.json(sessions.editReason(input));
+        if (operation === 'journal-review') return Response.json(await sessions.journalReview(input));
         if (operation === 'note') return Response.json(await sessions.note(input));
         if (operation === 'title') return Response.json(sessions.title(input));
         if (operation === 'move') return Response.json(await sessions.move(input));
@@ -199,6 +203,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
       return requestFailure(request,error);
     }
   };
+  return (request:Request)=>withContentReader(request,()=>handle(request));
 }
 
 /** Capabilities installed only on the root-private Unix socket, never on the peer listener. */

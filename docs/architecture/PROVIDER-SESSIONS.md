@@ -292,6 +292,32 @@ conversation.
 The owner scans held sessions in bounded pages and yields between pages. An ineligible
 session cannot keep later sessions out of recovery indefinitely.
 
+The owner's transfer successor takes the Codex model of the Claude tier it leaves (Opus or Fable to
+Sol, Sonnet to Luna, Haiku to Terra) and keeps its reasoning effort; the mapping lives beside the
+alias tables (`aliasKeepingTier`).
+
+#### Automatic moves of held work
+
+Only coding work moves by itself (`automatic-move-kind.ts`, used by held-work failover and the
+Claude-allowance transfer). A session stays on its provider and waits when it is Lab work, a chat or
+writing session, in a brainstorm/writing/design template project, or one Tejas writes in himself;
+otherwise it moves only with evidence of code work (counted code edits in it or a session it
+continues, or having been started by `sessions implement`). Unknown kinds stay. Tejas, 2026-11-16:
+"if it's like a regular coding section, obviously, can be moved. If it's like a discussion of
+[brainstorming] section, I'm having ... It's not something you can automatically move."
+
+A Codex turn that is accepted and then ended with the provider's usage-limit message, with no
+assistant output and no tools, did nothing. The Codex runner re-throws it with the account's reset
+(from Codex's own rate-limit report, else the spent window of the stored usage reading; the
+"try again at" text is never parsed), so the existing hold keeps the input queued for usage and its
+request open, and the next turn on that account is refused before sending. Outside Codex runs (the
+command line in its own unit) follow the same rule through the same function (`codexUsageRefusalWait`)
+and are refused before launch while the account's limit is recorded; on 2026-11-16 they still failed
+their requests after the App Server path was fixed. Held work then moves to
+a provider with room through the provider-change handoff
+([automatic failover](SESSION-OWNER.md#automatic-failover-of-held-work)) unless Tejas himself chose
+the session's provider or model; the successor keeps the predecessor's model tier and effort.
+
 Eligibility is deliberately narrower than a usage hold. The source session must be active
 and unsuspended, with no running or unresolved execution, outgoing helper, dependency,
 artifact delivery, or earlier open request. All its queued turns must be ordinary,
@@ -416,10 +442,21 @@ five-hour limits should be "limiting our judgment"). Anthropic removes the five-
 from verified Ultra (formerly Max 20x) accounts, so a Claude reading without one is complete:
 only the weekly windows are required. The owner first uses candidates below the existing 90% warning level;
 the others are eligible only when every candidate has crossed it. A stable hash of the
-accepted request identity then distributes starts in proportion to each candidate's
-remaining allowance. That mixes providers even when their readings are equal without
+accepted request identity then distributes starts in proportion to **each provider's total
+remaining weekly room across the accounts it can run on** (`providerTotalRoom` in
+`provider-start-choice.ts`: Claude counts every account with its own home, Codex the signed-in
+account plus every kept account with a fresh reading because the owner moves the login to one
+with room by itself, Google its one account; a cached refusal counts as spent, a stale reading
+as nothing). Until 2026-11-16 the share was the roomiest single account's remaining room, so
+three Claude accounts at 14% weighed the same as one, and Codex at 100% on its signed-in
+account read as out while its other account had room (Tejas: "It has to look at aggregated
+usage per provider, not existing usage per single account"; failure record
+[2026-11-16](../incidents/2026-11-16-new-work-choice-weighed-one-account-per-provider.md)).
+Whether a provider can start now is still its roomiest account; the total decides only the
+share. The held-work and Inbox failovers prefer the receiver with the most total room the same
+way. That mixes providers even when their readings are equal without
 storing a second rotation counter or delaying the request. As usage changes, the mix
-shifts toward the roomier account. No selection promises that a running turn cannot
+shifts toward the roomier provider. No selection promises that a running turn cannot
 consume the last of a five-hour allowance. If all verified candidates are spent, the
 owner binds to the earliest verified reset under the existing hold protocol. Unknown
 or stale room never becomes a guessed start.

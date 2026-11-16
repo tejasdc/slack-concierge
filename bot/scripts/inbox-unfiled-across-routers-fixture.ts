@@ -52,9 +52,41 @@ try {
   assert.equal(admitted[0].sessionId,current.id);
   assert.match(admitted[0].text,/capture:left-behind/);
   assert.deepEqual(topics.wakeRouterForUnfiled(current,admit,at+topics.UNFILED_WAKE_MS+60_000),{woken:false,alarmed:0});
-  assert.deepEqual(topics.wakeRouterForUnfiled(current,admit,at+topics.UNFILED_ALARM_MS),{woken:false,alarmed:1});
+  assert.deepEqual(topics.wakeRouterForUnfiled(current,admit,at+topics.UNFILED_ALARM_MS),{woken:true,alarmed:1});
+  assert.match(admitted[1].text,/at least 30 minutes/);
+  assert.notEqual(admitted[1].inputId,admitted[0].inputId);
+  assert.deepEqual(topics.wakeRouterForUnfiled(current,admit,at+topics.UNFILED_ALARM_MS+60_000),{woken:false,alarmed:0});
   assert.equal((db.query("SELECT kind FROM repair_notices WHERE key='inbox-unfiled:capture:left-behind'").get() as {kind:string}).kind,'stuck_work');
-  console.log('inbox-unfiled-across-routers-fixture: a former router\'s unfiled capture reaches the current router, wakes it and alarms.');
+  // A busy router is still notified at thirty minutes. Retaining a reminder does not
+  // replace its running turn or resubmit the original capture.
+  db.query("INSERT INTO inbox_topic_roots(root_input_id,topic_id) VALUES(?,?)").run('capture:left-behind','topic:filed');
+  capture(former.id,'capture:arrived-during-work','Inspect this new capture','2026-11-05 17:59:00');
+  const turn=db.query("INSERT INTO turns(session_id,slack_user_msg_ts,user_text,status) VALUES(?,?,?,'running') RETURNING id")
+    .get(current.id,'fixture:busy','Existing unrelated work') as {id:number};
+  const before=admitted.length;
+  assert.deepEqual(topics.wakeRouterForUnfiled(current,admit,at+topics.UNFILED_WAKE_MS),{woken:false,alarmed:0});
+  assert.deepEqual(topics.wakeRouterForUnfiled(current,admit,at+topics.UNFILED_ALARM_MS-1),{woken:false,alarmed:0});
+  assert.deepEqual(topics.wakeRouterForUnfiled(current,admit,at+topics.UNFILED_ALARM_MS),{woken:true,alarmed:0});
+  assert.equal(admitted.length,before+1);
+  assert.equal(admitted.at(-1).origin,'service');
+  assert.match(admitted.at(-1).text,/capture:arrived-during-work/);
+  assert.doesNotMatch(admitted.at(-1).text,/capture:left-behind/);
+  assert.equal((db.query('SELECT status FROM turns WHERE id=?').get(turn.id) as {status:string}).status,'running');
+  assert.deepEqual(topics.wakeRouterForUnfiled(current,admit,at+60*60_000),{woken:false,alarmed:0});
+  // Restart/queue state reuses the retained reminder identity; a new router must receive
+  // its own reminder for the same backlog rather than inheriting the old router's silence.
+  db.query("UPDATE turns SET status='queued' WHERE id=?").run(turn.id);
+  assert.deepEqual(topics.wakeRouterForUnfiled(current,admit,at+61*60_000),{woken:false,alarmed:1});
+  const successor=createNativeSession('codex',{title:'Inbox successor',summary:'Next router',inbox:true,inboxRole:'project-router'});
+  updateSessionMetadata(current.id,{standingRole:undefined});
+  updateSessionMetadata(successor.id,{standingRole:'inbox'});
+  assert.deepEqual(topics.wakeRouterForUnfiled(successor,admit,at+62*60_000),{woken:true,alarmed:0});
+  assert.equal(admitted.at(-1).sessionId,successor.id);
+  assert.notEqual(admitted.at(-1).inputId,admitted.at(-2).inputId);
+  db.query("INSERT INTO inbox_topic_roots(root_input_id,topic_id) VALUES(?,?)").run('capture:arrived-during-work','topic:filed');
+  assert.deepEqual(topics.wakeRouterForUnfiled(successor,admit,at+63*60_000),{woken:false,alarmed:0});
+  assert.equal((db.query("SELECT resolved_at_ms FROM repair_notices WHERE key='inbox-unfiled:capture:arrived-during-work'").get() as {resolved_at_ms:number|null}).resolved_at_ms!==null,true);
+  console.log('inbox-unfiled-across-routers-fixture: predecessor filing custody, idle wake, busy/queued thirty-minute reminder, deduplication, role change and filed cleanup pass.');
 } finally {
   rmSync(scratch,{recursive:true,force:true});
 }

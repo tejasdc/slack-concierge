@@ -1,15 +1,18 @@
+import {adoptContentSource,assertCommunicationContent,assertInputContent,contentReaderHeaders,outsideContentReader,withContentSource} from './lab-content-disclosure';
+import {pendingJournalProcessing} from "./journal-processing";
 import { readFileSync } from 'node:fs';
 import {custodySelectedTerminalConfirmed} from './codex-custody-terminal';
 import { historyStorageStatus, type HistoryStorageKind } from './history-storage-status';
 import { createHash, randomUUID } from 'node:crypto';
 import {implementationAlias} from './implementation-models';
+import {reconcileAskedAnswerClocks} from './asked-answer';
 import {implementationEditDecision,recordImplementationEditReason} from './implementation-edit-gate';
 import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, settleTurnDependencies, SETTLED_EXECUTION_SQL, codexUnacknowledgedRecovery, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
-import { awaitingBankedContinuation, carryingTurn, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
-import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
-import { inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
+import { awaitingBankedContinuation, carryingTurn, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, stablePayload, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
+import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, SessionOwnerError, type SessionOwner } from './session-owner';
+import { retainedInboxCapture, inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
 import { INBOX_LINEAGE_SQL } from './inbox-lineage-sql';
 import { BUG_REPORT_OWN_THREAD, followForwardedReply, forwardedReplyFraming, isBugReportInput } from './session-inbox';
@@ -20,6 +23,7 @@ import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordRequesterDecisionReturn, recordTurnOutcome, turnDeclaredByAction, withdrawOpenNeed, type DeclaredTurnOutcome } from './session-turn-outcome';
 import {turnRoutedInput} from './inbox-routing-result';
 import {acceptedInputAuthor,sessionAuthor} from './session-message-author';
+import {inboxPublication,postPromisesAnswer,type InboxPublication,type PublicationProof} from './inbox-publication';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
 import {ProviderCapabilityUnavailableError} from './provider-policy';
@@ -44,7 +48,7 @@ import {withBefore} from './reply-before';
 import { isHisChatGpt,parseProviderSelector,resolveProviderSelector,chatgptProjectThinking } from './aliases';
 import {humanChoseChatGptEffort,humanChoseProvider,humanChoseThinkingModel} from './model-escalation-custody';
 import {escalationReason} from './model-escalation';
-import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindDirectChatGptTaskSource,chatGptAnswerCommand,chatGptObligationForAttempt,classifyLegacyChatGptAsk,holdUnmessageableChatGptAsker,migrateOpenLegacyChatGptAsks,openChatGptObligations,recordChatGptAttemptResult,recordChatGptOriginalRequeued,recordChatGptReturnReceipt,recordChatGptToolRead,reconcileCanceledChatGptObligations,reconcileHandoffChatGptObligations,requireChatGptTaskDisposition,requireChatGptTaskResolved,resolveChatGptAnswer,resolveChatGptTask,resumeMessageableChatGptAsker,validateChatGptToolRead,withdrawCanceledChatGptAttempt,type ChatGptObligationRow} from './chatgpt-obligations';
+import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindDirectChatGptTaskSource,chatGptAnswerCommand,chatGptAttachmentCorrectionPending,chatGptObligationForAttempt,classifyLegacyChatGptAsk,holdUnmessageableChatGptAsker,migrateOpenLegacyChatGptAsks,openChatGptObligations,recordChatGptAttemptResult,recordChatGptOriginalRequeued,recordChatGptReturnReceipt,recordChatGptToolRead,reconcileCanceledChatGptObligations,reconcileHandoffChatGptObligations,requireChatGptTaskDisposition,requireChatGptTaskResolved,resolveChatGptAnswer,resolveChatGptTask,resumeMessageableChatGptAsker,validateChatGptToolRead,withdrawCanceledChatGptAttempt,type ChatGptObligationRow} from './chatgpt-obligations';
 import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, reportBackNotice, strandedStep, stalledNotice, tellWorkerCanceled, cancelQueuedWithdrawnRequest, endRepeatingScheduleForInput, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, finalClosingLine, leadFirst, NEEDS_YOU_SUMMARY_REQUIRED, questionForTejas } from './answers-to-tejas';
@@ -228,6 +232,7 @@ export class SessionCommunicationCoordinator {
     private disarm: (() => void) | null = null;
     private detach: (() => void) | null = null;
     private readonly healthyRechecks = new Map<string, { storedDue: number; nextCheck: number }>();
+    private pendingLabConversations=false;
     private nextRequestInspectionAt = 0;
     private readonly now: () => number;
     constructor(private readonly dependencies: Dependencies) { this.now = dependencies.now ?? Date.now; }
@@ -307,6 +312,7 @@ export class SessionCommunicationCoordinator {
             // since any live run of the recipient session may already reply.
             if (!live || (observed!.steering && !['sending','sent','ambiguous'].includes(observed!.steering.status)))
                 throw new Error('Source must identify this admitted input and its exact live run.');
+            adoptContentSource({inputId:input.id,runId:source.run_id});
             const session = getSessionById(input.session_id)!;
             if (sessionMetadata(session).interactionPolicy === 'consultation-only')
                 throw new Error('Consultation-only sessions cannot send requests or replies.');
@@ -664,7 +670,7 @@ export class SessionCommunicationCoordinator {
             throw new Error('Use one to eight nonempty search concepts.');
         if (input.peer !== undefined) return boundSearchResponse(await this.peers().search(input.peer, input.concepts, input.limit));
         if (!this.dependencies.owner) throw new Error('Common session discovery is unavailable.');
-        const local = () => this.dependencies.owner.search({query:input.concepts.join(' '),limit:input.limit}, actor.inputId ? undefined : {
+        const local = () => actor.inputId?withContentSource({inputId:actor.inputId,runId:nativeRunId(actor.turn)},()=>this.dependencies.owner.search({query:input.concepts.join(' '),limit:input.limit})):this.dependencies.owner.search({query:input.concepts.join(' '),limit:input.limit}, {
             beforeTs:actor.source.message_ts!,excludeChannel:actor.source.channel_id!,excludeRootTs:actor.root!
         });
         // One search for every machine: where this machine has no meaning index (the Mac), the
@@ -705,7 +711,7 @@ export class SessionCommunicationCoordinator {
             }
         }
         const address = this.address(input.address);
-        const context:any = await this.dependencies.owner.context({address:sessionAddress(getSessionById(address.session)!)});
+        const context:any = await (actor.inputId?withContentSource({inputId:actor.inputId,runId:nativeRunId(actor.turn)},()=>this.dependencies.owner.context({address:sessionAddress(getSessionById(address.session)!)})):this.dependencies.owner.context({address:sessionAddress(getSessionById(address.session)!)}));
         return this.withWorkload([context],actor,input.thread)[0];
     }
     async projects(input:{source:CommunicationSource;peer?:string}) {
@@ -928,6 +934,11 @@ export class SessionCommunicationCoordinator {
             inputId:accepted.id,turnId:turn.id,kind:'model_escalation',payload:{model:input.model,reason,sourceInputId:accepted.id,continuation:true}});
         return {known:true,allowed:!refusal,message:refusal?.replaceAll('cx-sol','gpt-6.1-sol')??undefined};
     }
+    async journalReview(input:any) {
+        this.fenced(this.actor(input.source));
+        if(!this.dependencies.owner)throw new Error("Journal owner unavailable.");
+        return this.dependencies.owner.reviewJournal(input,()=>{this.fenced(this.actor(input.source));});
+    }
     editReason(input:{source:CommunicationSource;action_id:string;reason:string}) {
         const actor=this.fenced(this.actor(input.source));
         action(input.action_id);
@@ -977,7 +988,9 @@ export class SessionCommunicationCoordinator {
             owed.push({request_id:request.request_id,requester:`Outside agent · ${request.agent_name}`,
                 requested_effect:request.requested_effect,command:replyCommand(request.request_id,request.requested_effect)});
         }
-        return {owed,unfiled,waiting:false,source};
+        const failed=db.query("SELECT 1 FROM session_inputs WHERE source_input_id=? AND source_run_id=? AND json_extract(payload_json,'$.kind')='turn-outcome' AND json_extract(payload_json,'$.outcome')='failed' AND receipt_json IS NOT NULL LIMIT 1").get(running.accepted_input_id,runId);
+        const journalProcessing=failed?null:pendingJournalProcessing(running.accepted_input_id,runId);
+        return {owed,unfiled,waiting:false,source,journalProcessing};
     }
     /** Resolve the live run on the owner, move only the readonly Inbox projection to a read executor,
      * then revalidate that exact run before evaluating obligations or recording offer/reminder effects. */
@@ -1154,12 +1167,12 @@ export class SessionCommunicationCoordinator {
      * accepted there and then never seen, and it would sit inside the window a history
      * delta fingerprints.
      */
-    post(input:{source:CommunicationSource;action_id:string;thread:string;text:string;topic?:string;promise_request?:string;keep_working?:boolean;notify?:boolean;attachments?:string[];files?:AttachedFile[]}) {
+    post(input:{source:CommunicationSource;action_id:string;thread:string;text:string;targetSessionId?:string;topic?:string;promise_request?:string;keep_working?:boolean;notify?:boolean;attachments?:string[];files?:AttachedFile[]},publication?:InboxPublication) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.fenced(this.actor(input.source));action(input.action_id);
         const carried=files(input.files);
         // A post carrying files is a message even without words: the mockups are the answer.
-        const text=message(typeof input.text==='string'?input.text.trim():input.text,!!(carried.length||input.attachments?.length));
+        const text=message(typeof input.text==='string'&&!publication?input.text.trim():input.text,!!(carried.length||input.attachments?.length));
         if(input.notify&&!text.trim())throw new Error('--notify requires words in the message being posted.');
         if(typeof input.thread!=='string'||!input.thread.trim())throw new Error('A post needs the exact --thread message ID.');
         const sourceInputId=actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id;
@@ -1169,13 +1182,15 @@ export class SessionCommunicationCoordinator {
             // ledger-backed history [decision: agents-are-never-handcuffed].
             const own=getSessionById(actor.session)!,session=sessionMetadata(own).inbox?own:inboxSession();
             if(!session)throw new Error('No Inbox session exists yet.');
+            if(input.targetSessionId!==undefined&&input.targetSessionId!==`concierge:${session.id}`)
+                throw new Error('The Inbox destination changed; nothing was posted.');
             const router=session.id===own.id;
             // The owner, not the caller, decides which thread this belongs to. A reply to any
             // message in a thread carries that thread's root forward.
             const rootInputId=inboxThreadRoot(session.id,input.thread);
             if(!rootInputId)throw new Error('That --thread is not a message in this Inbox.');
             const topicId=topicOfRoot(rootInputId);
-            const promisesAnswer=/\b(?:i(?:'|’)ll|we(?:'|’)ll|will\b(?!\s+(?:not|never)\b)|going to)\b[^.!?\n]{0,100}\b(?:answer|reply|respond)\b|\banswers? here\b|\bwill be answered\b/i.test(text);
+            const promisesAnswer=postPromisesAnswer(text);
             // A named topic must be the one the thread is in; a post cannot be filed under another.
             if(input.topic){const placed=db.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(rootInputId) as {topic_id:string}|null;
                 if(placed&&placed.topic_id!==input.topic)throw new Error(`That message is in thread ${placed.topic_id}, not ${input.topic}. Nothing was posted.`);}
@@ -1190,7 +1205,7 @@ export class SessionCommunicationCoordinator {
                 ?this.retainAttachments(sourceInputId,input.action_id,'post-file',input)
                 :[];
             const saved=retainSessionInput({sessionId:own.id,scope:`communication:${sourceInputId}`,actionId:input.action_id,
-                kind:'action',origin:'agent',payload:{kind:'thread-post',thread:input.thread,text,
+                kind:'action',origin:'agent',payload:{kind:'thread-post',thread:input.thread,text,...(input.targetSessionId?{targetSessionId:input.targetSessionId}:{}),...(publication?{publication}:{}),
                     ...(input.topic?{topic:input.topic}:{}),...(input.promise_request?{promiseRequest:input.promise_request}:{}),
                     ...(input.keep_working?{keepWorking:true}:{}),...(input.notify?{notify:true}:{}),...(attachments.length?{attachments}:{})},sourceInputId,sourceRunId:nativeRunId(actor.turn)});
             const messageId=`post:${saved.input.id}`;
@@ -1201,7 +1216,7 @@ export class SessionCommunicationCoordinator {
                 &&!hasOpenInboxWorkForSource(topicId,sourceInputId,input.promise_request))
                 throw new Error('This post promises an answer without a matching open Inbox request. Route the exact human message as work, or name an open topic request with --promise-request. Nothing was posted.');
             recordSessionEvent({eventId:messageId,sessionId:session.id,inputId:rootInputId,...(router?{turnId:actor.turn}:{}),kind:'post',
-                payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${session.id}`,messageId:input.thread},postedBy:saved.input.id,...(router?{}:{postedBySession:`concierge:${own.id}`}),...(attachments.length?{attachments}:{})}});
+                payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${session.id}`,messageId:input.thread},postedBy:saved.input.id,...(router?{}:{postedBySession:`concierge:${own.id}`}),postSource:{inputId:sourceInputId,runId:nativeRunId(actor.turn)},...(attachments.length?{attachments}:{})}});
             if(input.notify)notifyAgentPost(session.id,rootInputId,messageId,text,true,nativeRunId(actor.turn));
             // Post and release: a deliberate reply ends the router's declared work on the
             // inputs it covers, unless it said it keeps working.
@@ -1210,12 +1225,92 @@ export class SessionCommunicationCoordinator {
             return {post:{...receipt,...(topic?{topicId:topic.topicId}:{})},duplicate:false};
         })();
     }
+    /** The source owner retains the whole send intent, never just a caller's actor number.
+     * Its immutable receipt can be read after the run ends; new text still needs a live run. */
+    publicationSource(value:unknown):PublicationProof {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const input=inboxPublication(value),self=this.dependencies.peers?.self??process.env.CONCIERGE_PEER_NAME??'cloud';
+        if(input.sourceOwner!==self)throw new Error('This instance does not own that publication source.');
+        const scope=`inbox-publication-source:${input.source.input_id}`;
+        const prior=db.query('SELECT * FROM session_inputs WHERE scope=? AND action_id=?').get(scope,input.action_id) as AcceptedSessionInput|null;
+        if(prior){
+            const retained=JSON.parse(prior.payload_json);
+            if(stablePayload(retained.publication)!==stablePayload(input))throw new Error('Idempotency conflict: publication changed.');
+            return retained.proof;
+        }
+        const actor=this.fenced(this.actor(input.source));
+        const author=sessionAuthor(`concierge:${actor.session}`);
+        if(!author)throw new Error('The publication author is unavailable.');
+        return db.transaction(()=>{
+            this.fenced(this.actor(input.source));
+            const proof:PublicationProof={version:1,source:input.source,sourceOwner:self,session:author};
+            const saved=retainSessionInput({sessionId:actor.session,scope,actionId:input.action_id,kind:'action',origin:'agent',
+                payload:{kind:'inbox-publication-source',publication:input,proof},sourceInputId:actor.inputId!,sourceRunId:input.source.run_id});
+            db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',publication:proof}),saved.input.id);
+            return proof;
+        })();
+    }
+    /** A trusted Lab service posts to an explicit Inbox; foreign source proof comes from
+     * the configured peer itself. It never admits an input, turn, request, or reply duty. */
+    async publishInbox(value:unknown) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const input=inboxPublication(value),peers=this.dependencies.peers,self=peers?.self??process.env.CONCIERGE_PEER_NAME??'cloud';
+        if(input.destinationOwner!==self)throw new Error('This instance does not own that Inbox destination.');
+        if(input.sourceOwner===self){
+            // A confirmed local post is also a receipt read after the source run ends.
+            // No new intent is admitted through this branch, even if its author handed off.
+            const prior=db.query('SELECT * FROM session_inputs WHERE scope=? AND action_id=?')
+                .get(`communication:${input.source.input_id}`,input.action_id) as AcceptedSessionInput|null;
+            if(prior){
+                const expected={kind:'thread-post',thread:input.thread,text:input.text,targetSessionId:input.targetSessionId,publication:input};
+                if(prior.origin!=='agent'||prior.kind!=='action'||prior.source_input_id!==input.source.input_id
+                    ||prior.source_run_id!==input.source.run_id||stablePayload(JSON.parse(prior.payload_json))!==stablePayload(expected))
+                    throw new Error('Idempotency conflict: publication changed.');
+                return {post:JSON.parse(prior.receipt_json!).post,duplicate:true};
+            }
+            return this.post({...input},input);
+        }
+        if(!peers)throw new Error('The publication source owner is unavailable.');
+        const scope=`inbox-publication:${input.sourceOwner}:${input.source.input_id}`;
+        const existing=()=>db.query('SELECT * FROM session_inputs WHERE scope=? AND action_id=?').get(scope,input.action_id) as AcceptedSessionInput|null;
+        const duplicate=(prior:AcceptedSessionInput)=>{
+            if(stablePayload(JSON.parse(prior.payload_json).publication)!==stablePayload(input))throw new Error('Idempotency conflict: publication changed.');
+            return {post:JSON.parse(prior.receipt_json!).post,duplicate:true};
+        };
+        const prior=existing();if(prior)return duplicate(prior);
+        const proof=await peers.client(input.sourceOwner).request<ReturnType<SessionCommunicationCoordinator['publicationSource']>>(
+            'POST','/sessions/v1/peers/inbox-post-source',input);
+        if(proof?.version!==1||proof.sourceOwner!==input.sourceOwner||proof.source?.input_id!==input.source.input_id
+            ||proof.source.run_id!==input.source.run_id||!/^concierge:[1-9][0-9]*$/.test(proof.session?.id??''))
+            throw new Error('The source owner did not prove this exact publication.');
+        return db.transaction(()=>{
+            const raced=existing();if(raced)return duplicate(raced);
+            const session=inboxSession();
+            if(!session||input.targetSessionId!==`concierge:${session.id}`)throw new Error('The Inbox destination changed; nothing was posted.');
+            const root=inboxThreadRoot(session.id,input.thread);
+            if(!root)throw new Error('That --thread is not a message in this Inbox.');
+            const topicId=topicOfRoot(root);
+            if(postPromisesAnswer(input.text)&&(!topicId||!hasOpenInboxWorkForSource(topicId,input.source.input_id)))
+                throw new Error('This post promises an answer without a matching open Inbox request. Nothing was posted.');
+            const author={...proof.session,id:`${input.sourceOwner}:${proof.session.id.slice('concierge:'.length)}`};
+            const saved=retainSessionInput({sessionId:session.id,scope,actionId:input.action_id,kind:'action',origin:'agent',
+                payload:{kind:'inbox-publication',publication:input,proof:{...proof,session:author}}});
+            const messageId=`post:${saved.input.id}`,receipt={messageId,thread:input.thread,inputId:root};
+            recordSessionEvent({eventId:messageId,sessionId:session.id,inputId:root,kind:'post',payload:{text:input.text,
+                replyToMessage:{kind:'message',sessionId:input.targetSessionId,messageId:input.thread},postedBy:saved.input.id,postedBySession:author.id,
+                postSource:{session:author,inputId:input.source.input_id,runId:input.source.run_id}}});
+            db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',post:receipt}),saved.input.id);
+            return {post:receipt,duplicate:false};
+        })();
+    }
     /** A live session declares its turn's outcome as a retained, retry-safe action. */
     outcome(input:{source:CommunicationSource;action_id:string;outcome:DeclaredTurnOutcome;text?:string;quiet_because?:string;summary?:string;his_words?:string;why_not_answered?:string;only_he_can?:string;todo?:string;todo_checked?:TodoState|null|'unavailable';decision_id?:string;approval_action?:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.actor(input.source);action(input.action_id);
         if(!actor.inputId)throw new Error('Outcome requires an exact native source input and run.');
         if(!['done','response','needs_you','failed'].includes(input.outcome))throw new Error('Invalid turn outcome.');
+        const journalPending=pendingJournalProcessing(actor.inputId,nativeRunId(actor.turn));
+        if(journalPending&&input.outcome!=="failed")throw new Error(journalPending);
         const stated=typeof input.text==='string'?input.text.trim():'';
         if(input.outcome==='done'&&input.text!==undefined)throw new Error('done takes no text.');
         if(input.outcome!=='done'&&!stated)throw new Error(`${input.outcome} requires text.`);
@@ -1261,9 +1356,15 @@ export class SessionCommunicationCoordinator {
             if(saved.duplicate)return {...JSON.parse(saved.input.receipt_json??'{}'),duplicate:true};
             if(turnDeclaredByAction(actor.turn,actor.session,actor.inputId))
                 throw new Error('This turn already declared the outcome for this input by action.');
+            let journalFailure:unknown;
+            if(journalPending&&input.outcome==='failed'){
+                this.fenced(this.actor(input.source));
+                if(!this.dependencies.owner)throw new Error('Journal recovery Inbox is unavailable; failure has not been handed off.');
+                journalFailure=this.dependencies.owner.failJournalProcessing({inputId:actor.inputId,runId:nativeRunId(actor.turn)},content);
+            }
             recordTurnOutcome({eventId:`turn_outcome:action:${saved.input.id}`,sessionId:actor.session,turnId:actor.turn,
                 inputId:actor.inputId,outcome:input.outcome,text:content||null,todoId,refuseUnreadable:true,quiet:quiet||null});
-            const receipt={state:'completed',outcome:input.outcome,inputId:actor.inputId};
+            const receipt={state:'completed',outcome:input.outcome,inputId:actor.inputId,...(journalFailure?{journalFailure}:{})};
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(receipt),saved.input.id);
             // A worker on an Inbox thread waiting on him reaches him through that thread; its own
             // needs_you is left to the Inbox by thnkr.ing, which would otherwise never hear of it.
@@ -1489,6 +1590,7 @@ export class SessionCommunicationCoordinator {
             sourceMs=performance.now()-phaseStart;
             phaseStart=performance.now();phaseName='command';
             const result=topicsCommand({sessionId:actor.session,turnId:actor.turn,inputId:sourceInputId,runId:nativeRunId(actor.turn)},input,listHead);
+            if(input.action_id){this.healthyRechecks.clear();this.wake();}
             commandMs=performance.now()-phaseStart;
             phaseName='done';
             completed=true;
@@ -1658,6 +1760,7 @@ export class SessionCommunicationCoordinator {
         return true;
     }
     private receipt(row: RequestRow, withTarget = true) {
+        assertCommunicationContent(row.request_id);
         const recheck = this.healthyRechecks.get(row.request_id);
         const due = !row.outcome && row.overdue_at_ms === null && recheck?.storedDue === row.due_at_ms && recheck.nextCheck > this.now()
             ? recheck.nextCheck : row.due_at_ms;
@@ -1754,10 +1857,42 @@ export class SessionCommunicationCoordinator {
                     {method,path,inputId:source.inputId,runId:source.runId,...(body===undefined?{}:{body})})};
             }
         }
-        return boardCommand(input,actor,{
+        if(input.responseTargets!==undefined){
+            if(input.verb!=='post'||!input.thread||!actor)throw new Error('Selected Lab responses require an attributed post in a comparison conversation.');
+            const binding=this.dependencies.owner.labConversations.view(input.thread.replace(/^lab:/,''));
+            if(input.responseTargets.some(sessionId=>!binding.participants.some(member=>member.sessionId===sessionId)))throw new Error('Choose only exact sessions bound to this Lab conversation.');
+        }
+        const result=await boardCommand(input,actor,{
             admit:admission=>this.dependencies.owner.admit(admission),
             askPeer:({address,actionId,text,sourceInputId,sourceRunId})=>this.ask({source:{input_id:sourceInputId,run_id:sourceRunId},action_id:actionId,address,text,requestedEffect:'informational'}),
         });
+        if(input.responseTargets?.length&&actor&&'id' in result){
+            const thread=input.thread!.replace(/^lab:/,'');
+            this.dependencies.owner.labConversations.respond(thread,{clientActionId:`lab-post:${actor.inputId}:${input.action_id}`,entryId:result.id,targets:input.responseTargets},
+                {inputId:actor.inputId!,runId:actor.runId!,sessionId:actor.session});
+        }
+        return result;
+    }
+    mutationAdmission(input:{source:CommunicationSource}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        if(!input.source?.input_id||!input.source?.run_id)
+            throw new Error('Mutation admission requires an exact native source input and run.');
+        const actor=this.fenced(this.actor(input.source));
+        return {admitted:true as const,sessionId:`concierge:${actor.session}`,inputId:actor.inputId!,
+            runId:nativeRunId(actor.turn),origin:actor.user};
+    }
+    /**
+     * Metadata-only explanation of why a bound test-session read refused for changed authorship.
+     * Disclosure needs a current admitted, fenced run of the session that created the target; the
+     * historical creation pair alone never qualifies, and a different session (even one repairing
+     * on its behalf) is refused. The owner checks the creation lineage and reads no content.
+     */
+    agentTestScopeDiagnostic(input:{source:CommunicationSource;create_input_id?:string;address?:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        if(!input.source?.input_id||!input.source?.run_id||!input.create_input_id||!input.address)
+            throw new Error('The diagnostic needs the caller source, the exact creation request and the target address.');
+        const actor=this.fenced(this.actor(input.source));
+        return this.dependencies.owner.diagnoseAgentTestScope(actor.session,input.create_input_id,input.address);
     }
     async obligations(input:{source:CommunicationSource;address?:string}) {
         const actor=this.actor(input.source);
@@ -1839,6 +1974,7 @@ export class SessionCommunicationCoordinator {
         return registerWatch({kind:'command',sessionId:actor.session,...origin,actionId:input.action_id,until:input.until,argv:input.argv,cwd:input.cwd,runner:input.runner??null});
     }
     async ask(input: {
+        responseMode?:'context';
         source: CommunicationSource;
         action_id: string;
         address?: string;
@@ -1903,6 +2039,51 @@ export class SessionCommunicationCoordinator {
         const sender = this.authority(live);
         const actor = input.resume_source ? this.resumedActor(live, input.resume_source) : sender.actor;
         action(input.action_id);
+        if(input.responseMode!==undefined&&input.responseMode!=='context')throw new Error('Unknown response mode.');
+        if(input.responseMode==='context') {
+            if(input.provider||input.role||input.saved||input.after?.length||input.pace?.length||input.return_to_requester
+                ||(!input.address&&!input.peer))
+                throw new Error('Saved context names an existing session without a work request or return destination.');
+            const owner=this.dependencies.owner!;
+            const retained=input.routeMessageId!==undefined||input.captureId!==undefined;
+            if(retained&&(input.text!==undefined&&input.text!==''||input.files?.length||input.attachments?.length))
+                throw new Error('Exact retained context accepts no replacement text or files.');
+            const retainedSource=retained?owner.retainedContextSource({...(input.routeMessageId?{messageId:input.routeMessageId}:{}),...(input.captureId?{captureId:input.captureId}:{})}):null;
+            if(!retainedSource)text(input.text);
+            const attachments=retainedSource?[]:[...(input.attachments??[]),...(input.files??[]).map((file,index)=>owner.upload({...file,
+                clientActionId:`context-file:${hash(actor.inputId+':'+input.action_id)}:${index}`,
+                agentSource:{inputId:actor.inputId,runId:nativeRunId(actor.turn)}}).attachment.id)];
+            const original:Record<string,any>=retainedSource?.payload??{text:input.text,...(attachments.length?{attachments}:{})};
+            owner.attachments(original.attachments);
+            const source=retainedSource?.source;
+            const contributor={sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId:nativeRunId(actor.turn),actionId:input.action_id,
+                author:{kind:'agent',session:sessionAuthor(`concierge:${actor.session}`),inputId:actor.inputId,runId:nativeRunId(actor.turn)}};
+            const attribution=source?{contributedFrom:source,contributedBy:contributor,
+                routedFrom:{sessionId:source.sessionId,messageId:source.inputId??source.messageId,originalText:original.text??'',
+                    originalCreatedAt:source.createdAt,authorKind:source.author.kind,author:source.author}}
+                :{contributedBy:contributor};
+            const split=input.address?this.peersOrNull()?.splitAddress(input.address):null;
+            if(input.peer||split){
+                const peer=input.peer??split!.peer,address=input.address?split?.address??input.address:undefined;
+                if(!address)throw new Error('Saved context needs one exact session address on the selected peer.');
+                const attachmentIds=Array.isArray(original.attachments)?original.attachments as string[]:[];
+                const files=attachmentIds.map(id=>{const {id:_id,...file}=owner.attachment(id);return file;});
+                const contextPayload={...original,attachments:[],attachmentSourceIds:attachmentIds,...attribution};
+                return this.peers().ask(this.peerActor(actor),{peer,action_id:input.action_id,address,text:String(original.text??''),responseMode:'context',
+                    contextPayload,contextOperationPayload:{...original,responseMode:'context',...attribution,
+                      targetAddress:`${peer}/${address}`,contextOperationOnly:true},files});
+            }
+            if(!input.address)throw new Error('Saved context names an exact existing session.');
+            const target=this.address(input.address);
+            const saved=db.transaction(()=>{
+                const retained=retainSessionInput({sessionId:target.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
+                    kind:'input',origin:'agent',sourceInputId:actor.inputId!,sourceRunId:nativeRunId(actor.turn),
+                    payload:{...original,responseMode:'context',...attribution,targetAddress:input.address}});
+                if(!retained.duplicate)owner.recordContextMessage(retained.input);
+                return retained.input;
+            })();
+            return {operation:owner.receipt(saved)};
+        }
         if(input.purpose!==undefined){
             const thinking=chatgptProjectThinking(input.effort)??input.effort;
             if(!['research','design-critique','design-review'].includes(input.purpose)||input.address||input.role||input.implementation||input.saved||input.outside||input.resurrect)
@@ -2178,12 +2359,12 @@ export class SessionCommunicationCoordinator {
                 throw new Error('Attachment correction needs the original ChatGPT address, exact task, and a corrected --file.');
             const original=this.row(input.correction_of);
             const obligation=chatGptObligationForAttempt(input.correction_of);
-            if(!obligation||obligation.obligation_id!==input.correction_of||obligation.active_request_id!==input.correction_of
-                ||obligation.state!=='reconcile_receipt'||obligation.asker_session_id!==actor.session
+            if(!obligation||obligation.obligation_id!==input.correction_of||!chatGptAttachmentCorrectionPending(obligation,original.outcome)
+                ||obligation.asker_session_id!==actor.session
                 ||`${obligation.task_kind}:${obligation.task_id}`!==input.for_task
                 ||obligation.target_session_id!==`concierge:${targetSession.id}`||obligation.question_text!==input.text
                 ||original.source_session_id!==actor.session||original.target_session_id!==targetSession.id
-                ||original.outcome!=='failed'||!original.target_input_id)
+                ||!original.target_input_id)
                 throw new Error('The original failed ChatGPT request does not own this exact unanswered question, task, and target.');
             correctionProof=await this.dependencies.owner.proveRejectedChatGptAttachment(targetSession.id,original.target_input_id);
             const originalHashes=new Set(correctionProof.attachmentHashes);
@@ -2412,6 +2593,22 @@ export class SessionCommunicationCoordinator {
         log('info','inbox_reply_forwarded',{request_id:id,input_id:input.inputId,target_session_id:target.id,topic_id:input.target.topicId});
         this.wake();
         return id;
+    }
+    async forwardContext(input:{inbox:SessionRow;inputId:string;target:{peer:{peer:string;address:string};sessionId:string};payload:Record<string,any>}):Promise<unknown> {
+        if(this.stopped)throw new Error('Session communication is not accepting context.');
+        const accepted=getAcceptedSessionInput(input.inputId);
+        if(!accepted||accepted.session_id!==input.inbox.id)throw new Error('The saved context must name its accepted source input.');
+        const owner=this.dependencies.owner!;
+        const attachmentIds=Array.isArray(input.payload.attachments)?input.payload.attachments as string[]:[];
+        const files=attachmentIds.map(id=>{const {id:_id,...file}=owner.attachment(id);return file;});
+        const contextPayload={...input.payload,attachments:[],attachmentSourceIds:attachmentIds};
+        const actionId=`forward-context:${input.inputId}`;
+        const receipt=await this.peers().ask({session:input.inbox.id,turn:accepted.turn_id,inputId:input.inputId},{
+            peer:input.target.peer.peer,address:input.target.peer.address,action_id:actionId,
+            text:String(input.payload.text??''),responseMode:'context',contextPayload,files,
+        });
+        db.query("UPDATE session_inputs SET receipt_json=json_remove(receipt_json,'$.contextForward'),updated_at=CURRENT_TIMESTAMP WHERE id=?").run(input.inputId);
+        return receipt;
     }
     /** Post every fresh reply for a named Inbox thread, independently of its effect scope. */
     private threadAnswer(request:RequestRow,event:EventRow,declared:any):{root:string;forwarded:{inboxInputId:string}|null}|null {
@@ -3308,7 +3505,7 @@ export class SessionCommunicationCoordinator {
                 && typeof declared.responding_session_id==='string'
                 && /^concierge:\d+$/.test(declared.responding_session_id)
                 ? Number(declared.responding_session_id.slice('concierge:'.length)):request.target_session_id;
-            const accepted = existing ? this.dependencies.owner!.dispatch(existing) : this.dependencies.owner!.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',sourceInputId:request.source_input_id,
+            const accepted = existing ? this.dependencies.owner!.dispatch(existing) : this.dependencies.owner!.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',...(event.kind==='overdue'?{threadReplyNotRequired:true}:{}),sourceInputId:request.source_input_id,
                 sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,
                 text:answerNotice({responder:sessionLabel(coveredResponder),labels:[request,...group.joining.map(joined=>this.row(joined.request_id))].map(row=>requestLabel(row.payload_json)),
                     kind:event.kind,stalled:!!declared.stalled,body:answerView(request,payload),outcome:payload.outcome??null,workDisposition:payload.workDisposition??null,
@@ -3421,7 +3618,7 @@ export class SessionCommunicationCoordinator {
                         // One reminder joins the recipient's current run. The retained input ID
                         // makes a restart or reconciliation harmless.
                         this.dependencies.owner!.admit({sessionId:current.target_session_id,inputId:`question-reminder:${current.request_id}`,
-                            origin:'service',sourceInputId:current.source_input_id!,sourceRunId:nativeRunId(current.source_turn_id),requestId:current.request_id,
+                            origin:'service',threadReplyNotRequired:true,sourceInputId:current.source_input_id!,sourceRunId:nativeRunId(current.source_turn_id),requestId:current.request_id,
                             text:`${asker} is still waiting for an answer to the question in request ${current.request_id}. Answer in the Inbox thread now with sessions reply ${current.request_id} --partial --answers-question, even if the rest of the work continues. A progress-only reply does not answer it.`});
                         db.query('UPDATE session_communication_requests SET prompt_reminded_at_ms=?,due_at_ms=? WHERE request_id=?')
                             .run(now,current.created_at_ms+PROMPT_ANSWER_OVERDUE_MS,current.request_id);
@@ -3505,7 +3702,7 @@ export class SessionCommunicationCoordinator {
     }
     private incidentScanTraceRemaining = 200;
     /** One durable record is the fairness boundary; a Promise microtask does not yield to I/O. */
-    private async scanRows<T>(table: string, sql: string, visit: (row: T) => void, ...args: (number | string)[]) {
+    private async scanRows<T>(table: string, sql: string, visit: (row: T) => void|Promise<void>, ...args: (number | string)[]) {
         if (this.incidentScanTraceRemaining-- > 0)
             log('warn', 'incident_reconciliation_scan', { table, sql: sql.replace(/\s+/g, ' ').slice(0, 400) });
         const query = db.query(sql);
@@ -3515,7 +3712,7 @@ export class SessionCommunicationCoordinator {
             const row = query.get(...args, highWater, cursor) as (T & { reconciliation_rowid: number }) | null;
             if (!row) return;
             cursor = row.reconciliation_rowid;
-            visit(row);
+            await visit(row);
             await new Promise<void>(resolve => setImmediate(resolve));
         }
     }
@@ -3635,6 +3832,7 @@ export class SessionCommunicationCoordinator {
             if (!await releaseLateRetainedReturns(() => this.stopped)) return;
             if (this.stopped) return;
             this.startupReconciled = true;
+            reconcileAskedAnswerClocks(db);
             this.dependencies.peers?.start();
             // Topic backfill followed retained-return restoration before this sweep yielded.
             const backfill = setTimeout(() => void backfillRequestTopics(() => this.stopped).catch(error => log('warn', 'request_topics_backfill_failed', { error: error instanceof Error ? error.message : String(error) })), 60_000);
@@ -3643,6 +3841,10 @@ export class SessionCommunicationCoordinator {
         }
         while (this.reconciliationDirty && !this.stopped) {
             this.reconciliationDirty = false;
+            this.schedule('lab-conversations',async()=>{
+                this.pendingLabConversations=await this.dependencies.owner.labConversations.reconcile();
+                if(!this.stopped)this.arm();
+            });
             if (!startedPeers) this.dependencies.peers?.wake();
             startedPeers = false;
             let pendingAcceptedRecovery=false;
@@ -3673,6 +3875,26 @@ export class SessionCommunicationCoordinator {
                 pendingAcceptedRecovery=true;
                 try{this.dependencies.owner.recoverAcceptedInput(input);}
                 catch(error){log('warn','capture_input_recovery_waiting',{input_id:input.id,error:String(error).slice(0,300)});}
+            });
+            await this.scanRows<AcceptedSessionInput>('session_inputs',`SELECT rowid AS reconciliation_rowid,* FROM session_inputs INDEXED BY session_inputs_context_forward
+                WHERE json_extract(receipt_json,'$.contextForward') IS NOT NULL
+                  AND json_extract(payload_json,'$.responseMode')='context'
+                  AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,async input=>{
+                const forward=JSON.parse(input.receipt_json??'{}').contextForward;
+                const inbox=getSessionById(input.session_id);
+                if(!inbox||typeof forward?.target?.peer?.peer!=='string'||typeof forward.target.peer.address!=='string'
+                  ||typeof forward.target.sessionId!=='string'||!forward.payload||typeof forward.payload!=='object')return;
+                try{
+                    await this.forwardContext({inbox,inputId:input.id,target:forward.target,payload:forward.payload});
+                    db.query("UPDATE session_inputs SET receipt_json=json_remove(receipt_json,'$.contextForward'),updated_at=CURRENT_TIMESTAMP WHERE id=?").run(input.id);
+                }catch(error){
+                    if(error instanceof SessionOwnerError&&error.code==='PEER_CONTEXT_UNSUPPORTED'){
+                        db.query("UPDATE session_inputs SET receipt_json=json_remove(json_set(coalesce(receipt_json,'{}'),'$.contextDelivery',json(?)),'$.contextForward'),updated_at=CURRENT_TIMESTAMP WHERE id=?")
+                          .run(JSON.stringify({peer:forward.target.peer.peer,state:'failed',error:error.message}),input.id);
+                        recordSessionEvent({eventId:`context-delivery-unsupported:${input.id}`,sessionId:input.session_id,inputId:input.id,
+                          kind:'receipt',payload:{change:'context_refused',peer:forward.target.peer.peer}});
+                    }else log('warn','peer_context_forward_waiting',{input_id:input.id,target:forward.target.sessionId,error:String(error).slice(0,300)});
+                }
             });
             this.pendingAcceptedRecovery=pendingAcceptedRecovery;
             // A cancellation that arrived while a session was paused must revoke its already
@@ -3715,7 +3937,8 @@ export class SessionCommunicationCoordinator {
         if (this.stopped) return;
         this.reconciliationDirty = true;
         if (this.reconciliation) return;
-        this.reconciliation = new Promise<void>(resolve => setImmediate(resolve))
+        // The loop serves every session; it never inherits the reader of the request that woke it.
+        this.reconciliation = outsideContentReader(() => new Promise<void>(resolve => setImmediate(resolve))
             .then(() => this.reconcile())
             .catch(error => {
                 this.reconciliationDirty = false;
@@ -3726,20 +3949,20 @@ export class SessionCommunicationCoordinator {
             .finally(() => {
                 this.reconciliation = null;
                 if (this.reconciliationDirty && !this.stopped) this.wake();
-            });
+            }));
     }
     private schedule(key: string, work: () => Promise<void>) {
         if (this.tasks.has(key)) {
             this.again.add(key);
             return;
         }
-        const task = Promise.resolve().then(work);
+        const task = outsideContentReader(() => Promise.resolve().then(work));
         this.tasks.set(key, task);
-        void task.catch(this.dependencies.onError).finally(() => {
+        outsideContentReader(() => void task.catch(this.dependencies.onError).finally(() => {
             this.tasks.delete(key);
             if (this.again.delete(key) && !this.stopped)
                 this.schedule(key, work);
-        });
+        }));
     }
     private arm() {
         this.disarm?.();
@@ -3756,20 +3979,21 @@ export class SessionCommunicationCoordinator {
         this.nextRequestInspectionAt = requestDue;
         const chatGptNext=db.query(`SELECT min(due_at_ms) AS due FROM session_chatgpt_obligations INDEXED BY chatgpt_obligations_due
             WHERE state NOT IN ('resolved','withdrawn_by_tejas') AND due_at_ms IS NOT NULL`).get() as {due:number|null};
-        if (requestDue === Infinity && chatGptNext.due===null && !this.pendingAcceptedRecovery)
+        if (requestDue === Infinity && chatGptNext.due===null && !this.pendingAcceptedRecovery&&!this.pendingLabConversations)
             return;
-        const delay = Math.min(this.pendingAcceptedRecovery?60_000:Infinity,24 * 60 * 60_000,
+        const delay = Math.min(this.pendingLabConversations?30_000:Infinity,this.pendingAcceptedRecovery?60_000:Infinity,24 * 60 * 60_000,
             Math.max(0,requestDue-now),Math.max(0,(chatGptNext.due??Infinity)-now));
         if (this.dependencies.arm)
-            this.disarm = this.dependencies.arm(() => this.wake(), delay);
+            this.disarm = this.dependencies.arm(() => outsideContentReader(() => this.wake()), delay);
         else {
-            const timer = setTimeout(() => this.wake(), delay);
+            const timer = outsideContentReader(() => setTimeout(() => this.wake(), delay));
             timer.unref();
             this.disarm = () => clearTimeout(timer);
         }
     }
     start() { if (!this.stopped) return;
         this.stopped = false; this.startupReconciled = false;
+        this.dependencies.owner.labConversations.start();
         this.detach = observeExecutionChanges(() => this.wake());
         this.wake();
     }
@@ -3777,5 +4001,5 @@ export class SessionCommunicationCoordinator {
         await this.reconciliation;
         await Promise.all([...this.tasks.values()]);
     } while (this.tasks.size || this.reconciliation || this.reconciliationDirty); }
-    async stop() { this.stopped = true; this.reconciliationDirty = false; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; const peerStop=this.dependencies.peers?.stop(); await this.reconciliation; await Promise.allSettled([...this.tasks.values()]); await peerStop; this.healthyRechecks.clear(); this.nextRequestInspectionAt = 0; }
+    async stop() { this.stopped = true; this.dependencies.owner.labConversations.stop(); this.reconciliationDirty = false; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; const peerStop=this.dependencies.peers?.stop(); await this.reconciliation; await Promise.allSettled([...this.tasks.values()]); await peerStop; this.healthyRechecks.clear(); this.nextRequestInspectionAt = 0; }
 }

@@ -50,6 +50,8 @@ export type NativeSessionMetadata = {
   /** Automatic picked this provider, not him: a zero-work refused first turn, and queued work its provider
    * cannot start (held-work-failover.ts), may move to another provider. His model choice clears it. */
   automaticProviderChoice?:boolean;
+  /** Tejas himself chose this session's provider or model, verified by the owner; held-work failover never moves it. */
+  providerChosenBy?:'tejas';
   automaticSmallTask?:boolean;
   /** The selected thinking model was verified against Tejas's own words or peer-retained choice. */
   explicitThinkingModelChoice?:string;
@@ -343,7 +345,8 @@ export function retainSessionInput(input:{id?:string;sessionId:number;scope:stri
   const words=value?.firstInput?.text??value?.text;
   const ownWords=!(value?.capture?.importOnly&&
     (value.capture.source?.metadata?.quoted?.kind!=='human'||value.capture.source?.metadata?.intent!=='action'));
-  const classifiable=input.origin==='human'&&['input','create','inbox-capture'].includes(input.kind);
+  const passive=value?.responseMode==='context';
+  const classifiable=!passive&&input.origin==='human'&&['input','create','inbox-capture'].includes(input.kind);
   const mark=classifiable&&ownWords
     ?notificationRequest(typeof words==='string'?words:''):null;
   const payload=timed('serializeMs',()=>stablePayload(classifiable&&value&&typeof value==='object'?{...value,notificationRequest:mark}:value));
@@ -360,7 +363,9 @@ export function retainSessionInput(input:{id?:string;sessionId:number;scope:stri
     throw new Error('Idempotency conflict: canceled action identity belongs to a different input.');
   timed('insertMs',()=>db.query(`INSERT INTO session_inputs(id,session_id,scope,action_id,kind,origin,payload_json,source_input_id,source_run_id,request_id)
     VALUES(?,?,?,?,?,?,?,?,?,?)`).run(id,input.sessionId,input.scope,input.actionId,input.kind,input.origin,payload,input.sourceInputId??null,input.sourceRunId??null,input.requestId??null));
-  armThreadNotification({id,sessionId:input.sessionId,kind:input.kind,origin:input.origin,payload:value,mark});
+  if(!passive)armThreadNotification({id,sessionId:input.sessionId,kind:input.kind,origin:input.origin,payload:value,mark});
+  if(passive)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?')
+    .run(JSON.stringify({state:'completed',responseMode:'context'}),id);
   if(cancellation)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?')
     .run(JSON.stringify({state:'canceled',canceledBy:cancellation.canceled_by_input_id}),id);
   return {input:timed('readbackMs',()=>getAcceptedSessionInput(id))!,duplicate:false};
@@ -468,6 +473,13 @@ export function queueTurnContinuation(sourceTurnId:number,reason:TurnContinuatio
     // work at a boundary it chose ends as cancelled too, and that work is owed a continuation.
     if(!source || source.stop_requested_at || !source.ended_at
       || (reason.kind==='provider_refused'?source.status!=='error':!['done','error','cancelled'].includes(source.status)))return null;
+    // A typed Lab invocation publishes its original terminal provider answer. A new
+    // generic continuation would lose its exact question, visibility and publication
+    // binding. In-turn retries and existing-execution reconciliation keep that identity.
+    if(source.accepted_input_id&&db.query(`SELECT 1 FROM session_inputs input JOIN session_inputs binding
+      ON binding.scope='lab:binding' AND binding.action_id=input.request_id
+        AND binding.source_input_id=input.source_input_id AND binding.session_id=input.session_id
+      WHERE input.id=? AND input.scope='lab:invocation' AND input.origin='service'`).get(source.accepted_input_id))return null;
     // A crash after the agent declared its result is not unfinished work. Preserve that
     // declaration, including a question waiting for him, rather than restarting it.
     if(reason.kind==='interrupted'&&db.query(`SELECT 1 FROM session_owner_events
@@ -606,6 +618,7 @@ export function attachSessionSteering(inputId:string,turnId:number) {
   return db.transaction(() => {
     const input=getAcceptedSessionInput(inputId);
     if (!input) throw new Error('Unknown accepted input.');
+    if(JSON.parse(input.payload_json).responseMode==='context')throw new Error('Saved context cannot be steered into a provider turn.');
     if (input.steering_id!==null) return input;
     // Every attempt keeps its row as history; one that may have reached the provider is never repeated.
     if(steeringMayHaveReachedProvider(input.id))return input;

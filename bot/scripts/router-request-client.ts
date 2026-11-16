@@ -66,6 +66,10 @@ function insidePrivateCodeEntrance() {
 /** Whether the owner applies this request at most once however often it is sent. */
 export function resendIsSafe(path: string, body?: unknown) {
   if (body === undefined) return true;
+  if(/^\/sessions\/v1\/lab\/conversations\/[^/]+\/participants$/.test(path)&&body&&typeof body==='object'){
+    const value=body as {clientActionId?:unknown;agentSource?:{inputId?:unknown;runId?:unknown}};
+    return typeof value.clientActionId==='string'&&!!value.clientActionId&&typeof value.agentSource?.inputId==='string'&&!!value.agentSource.inputId&&typeof value.agentSource?.runId==='string'&&!!value.agentSource.runId;
+  }
   if(path.startsWith('/sessions/v1/agent-test/sessions/')&&body&&typeof body==='object'
     &&typeof (body as {clientActionId?:unknown}).clientActionId==='string')return true;
   if(path==='/sessions/v1/canvas-projects/ensure'&&body&&typeof body==='object'&&'clientActionId' in body)return true;
@@ -77,7 +81,7 @@ function failureKind(error: unknown): "never-reached" | "maybe-reached" {
   return ownerNeverReached(error) ? "never-reached" : "maybe-reached";
 }
 
-export async function requestApiResponse(path: string, body?: unknown, policy: RetryPolicy = RETRY_POLICIES.ownerRestart) {
+export async function requestApiResponse(path: string, body?: unknown, policy: RetryPolicy = RETRY_POLICIES.ownerRestart, source?:{inputId:string;runId:string}) {
   const serialized = body === undefined ? undefined : JSON.stringify(body);
   const safe = resendIsSafe(path, body);
   if (insidePrivateCodeEntrance()) return { ok: false, status: 0, result: { ok: false, error: "owner_hidden_by_private_code",
@@ -95,7 +99,7 @@ export async function requestApiResponse(path: string, body?: unknown, policy: R
       // The socket path is resolved per attempt: a restart may have replaced the directory link.
       const response = await fetch(ownerUrl(path), {
         ...ownerTransport(), signal: AbortSignal.timeout(Math.min(OWNER_COMMAND_RESPONSE_MS, remainingMs)),
-        headers: { ...ownerHeaders(), ...(serialized === undefined ? {} : { 'Content-Type': 'application/json' }) },
+        headers: { ...ownerHeaders(), ...(source?{'x-concierge-agent-source':`${source.inputId} ${source.runId}`}:{}), ...(serialized === undefined ? {} : { 'Content-Type': 'application/json' }) },
         ...(serialized === undefined ? {} : { method: 'POST', body: serialized }),
       });
       const result: any = await response.json();

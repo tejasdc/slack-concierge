@@ -6,7 +6,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
 import {Database} from 'bun:sqlite';
-import {PreparedTopics} from '../src/prepared-topics';
+import {PreparedTopics,readPreparedQuestions} from '../src/prepared-topics';
 import {runFixtureChild} from './fixture-child';
 
 /** Actual canonical mutations and a separate production projection worker, all under /tmp.
@@ -132,10 +132,42 @@ async function lifecycle(root:string){
    writable.transaction(()=>topics.write(context,topicId))();
    const after=(writable.query('SELECT total_changes() AS n').get() as {n:number}).n;
    assert.equal(after,before,'Revisiting an unchanged topic must perform no database writes');
+   writable.exec('ALTER TABLE presentation_topics_meta DROP COLUMN asked_answers_version');
+   new PreparedTopics(db,writable);
+   assert.equal((writable.query('SELECT asked_answers_version FROM presentation_topics_meta').get() as any).asked_answers_version,0);
+   assert.equal((writable.query('SELECT count(*) AS n FROM presentation_topic_dirty').get() as any).n,1,'An old projection queues its retained topic once');
+   assert.equal(readPreparedQuestions(writable,{state:'asked',canonicalHead:updated.source_head}).coverage.complete,false,
+    'An upgraded projection cannot claim complete question coverage before its dirty queue drains');
   }finally{writable.close();}
   await mutate('/inbox/topics/'+encodeURIComponent(topicId)+'/actions',{clientActionId:'projection-closed',action:{kind:'close',reason:'Synthetic closure while worker stopped'}});
   start();phase('restarted-checkpoint');const resumed=await checkpoint(),third=snapshot(topicId,resumed.generation);assert.equal(third.summary.state,'closed');assert.notEqual(third.hash,second.hash);assert.ok(third.history.length>second.history.length);phase('restarted-ready');
-  assert.ok(resumed.source_head>updated.source_head);console.log(JSON.stringify({fixture:'topic-projection-lifecycle',createdHead:initial.source_head,updatedHead:updated.source_head,restartedHead:resumed.source_head,historyRows:third.history.length}));
+  assert.ok(resumed.source_head>updated.source_head);
+  assert.equal((prepared!.query('SELECT asked_answers_version FROM presentation_topics_meta').get() as any).asked_answers_version,1);
+  const oldInbox=(db.query('SELECT session_id FROM inbox_topics WHERE topic_id=?').get(topicId) as {session_id:number}).session_id;
+  db.query(`INSERT INTO inbox_questions(question_id,topic_id,kind,brief_json,sources_json) VALUES(?,?,?,?,?)`)
+   .run('q:historical-question',topicId,'asked',JSON.stringify({decision:'Where is my original answer?'}),JSON.stringify([capture.operation.id]));
+  let questionHead=await checkpoint();
+  let global=readPreparedQuestions(prepared!,{state:'asked',canonicalHead:questionHead.source_head});
+  assert.ok(global.topics.some((group:any)=>group.questions.some((question:any)=>question.id==='q:historical-question')));
+  const successor=createNativeSession('codex',{title:'Successor Inbox',cwd:root,inbox:true,standingRole:'inbox'});
+  const {updateSessionMetadata}=await import('../src/session-inputs');
+  updateSessionMetadata(oldInbox,{standingRole:null});
+  questionHead=await checkpoint();
+  global=readPreparedQuestions(prepared!,{state:'asked',canonicalHead:questionHead.source_head});
+  assert.equal((prepared!.query('SELECT inbox_session FROM presentation_topics_meta WHERE singleton=1').get() as any).inbox_session,successor.id);
+  assert.ok(global.topics.some((group:any)=>group.questions.some((question:any)=>question.id==='q:historical-question')),
+   'Changing the Inbox router must not remove a historical question from global discovery');
+  assert.equal(global.questionCounts.asked,1);
+  assert.equal((db.query('SELECT session_id FROM inbox_topics WHERE topic_id=?').get(topicId) as any).session_id,oldInbox,'Historical ownership is retained');
+  const unrelated=createNativeSession('codex',{title:'Ordinary session outside the Inbox',cwd:root});
+  db.query('INSERT INTO inbox_topics(topic_id,session_id,title) VALUES(?,?,?)').run('topic:ordinary-session',unrelated.id,'Unrelated private topic');
+  db.query('INSERT INTO inbox_questions(question_id,topic_id,kind,brief_json) VALUES(?,?,?,?)')
+   .run('q:ordinary-session','topic:ordinary-session','asked',JSON.stringify({decision:'Not an Inbox question'}));
+  questionHead=await checkpoint();
+  global=readPreparedQuestions(prepared!,{state:'asked',canonicalHead:questionHead.source_head});
+  assert.equal(global.questionCounts.asked,1,'Ordinary-session questions stay outside the Inbox count');
+  assert.ok(!global.topics.some((group:any)=>group.questions.some((question:any)=>question.id==='q:ordinary-session')));
+  console.log(JSON.stringify({fixture:'topic-projection-lifecycle',createdHead:initial.source_head,updatedHead:updated.source_head,restartedHead:resumed.source_head,historyRows:third.history.length,historicalQuestionSurvivesInboxChange:true}));
  }finally{phase('cleanup-start');try{await stop();}finally{prepared?.close();phase('cleanup-finished');}}
 }
 if(import.meta.main){

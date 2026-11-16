@@ -68,15 +68,34 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   defines the private host read, lane boundaries and coverage gaps; it changes no
   admission policy and authorizes no additional live trial.
 - Commit attribution resolves the current running accepted input, including Mac commits over SSH; see [peer commit identity](docs/runbooks/PEER-INSTANCES.md#commits-a-mac-session-makes-on-the-server).
-- Exact ChatGPT answer handling after a supported tool read preserves provider-return evidence; see [answer obligations](docs/architecture/CHATGPT-ANSWER-OBLIGATIONS.md#explicit-confirmation-after-a-supported-tool-read).
+- Exact ChatGPT answer handling, peer version-hold reconciliation and attachment corrections preserve provider-return evidence and the still-open question; see [answer obligations](docs/architecture/CHATGPT-ANSWER-OBLIGATIONS.md#explicit-confirmation-after-a-supported-tool-read) and the [peer request wire contract](docs/contracts/session-owner-v1.md).
 - Managed native Codex helper edit identity and parent-turn retention follow [provider sessions](docs/architecture/PROVIDER-SESSIONS.md); the Nov 13 lifecycle failure and replay are [here](docs/incidents/2026-11-13-codex-helper-lifetime.md), preserving the earlier [Nov 12 attribution incident](docs/incidents/2026-11-12-codex-helper-edit-gate.md).
 - Marked messages held by per-session Pause retain their original admission identity;
   see [session recovery](docs/architecture/SESSION-OWNER.md#identity-and-admission).
+- Owner-generated no-reply notices may finish without posting or automatic closing-text
+  relay; genuine agent questions and worker answers keep their thread obligation. See
+  [quiet service notices](docs/contracts/native-inbox.md#quiet-service-notices).
+- Exact operation reads used for provider admission and recovery read current retained state;
+  see [receipt freshness](docs/architecture/SESSION-OWNER.md#identity-and-admission).
 - Exact predecessor/successor file-watch inspection and quiet retirement use retained recovery
   and work-delegation custody, not cross-session list/cancel; see
   [watch custody](docs/architecture/WATCHES.md#exact-pair-recovery-custody).
 
 ## Session and Inbox obligations
+
+- Saved context is a settled input, never queued work. Preserve its exact attribution,
+  attachments and chosen recipient; only a later active message brings it to the provider.
+  See [passive session context](docs/contracts/session-owner-v1.md#passive-session-context).
+
+- New journal keeper processing requires a source-validated structured disposition and durable Inbox handoff for actionable portions; delivery and tracker observations alone cannot complete it. See [journal processing dispositions](docs/contracts/native-inbox.md#journal-processing-dispositions).
+
+- Source-verified cross-owner Lab publication uses the typed service post and immutable peer
+  intent in the [native Inbox contract](docs/contracts/native-inbox.md); publication never becomes
+  human input or a returned work answer.
+
+- Native custody mutation admission and its source-bound, inventory-free result use the
+  [current owner port](docs/contracts/session-owner-v1.md#current-mutation-admission);
+  ordinary obligations reads do not confer mutation authority.
 
 - Route agent issue reports through `router-actions.sh report`, which opens the
   Inbox thread and request before routing. See
@@ -88,6 +107,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   carry the live syntax and enforcement. The [request and return contract](docs/architecture/SESSION-OWNER.md#requests-and-returns)
   and [prompt thread answers](docs/architecture/PROMPT-THREAD-ANSWERS.md)
   own return position, partial answers and final disposition.
+- Asked-question clocks, exact retained-answer recovery and owner-derived delay status follow
+  [prompt answers](docs/architecture/PROMPT-THREAD-ANSWERS.md); historical questions stay in the
+  one Inbox's [prepared global views](docs/architecture/PREPARED-TOPICS.md).
 - Preserve exact accepted input, run, action, source-message and target
   identity; do not replay ambiguous or acknowledged effects. Keep human
   authorship distinct from agent and service inputs. See the
@@ -123,6 +145,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [native Inbox](docs/contracts/native-inbox.md),
   [filing before stopping](docs/contracts/native-inbox.md#filing-before-stopping),
   and [requested phone delivery](docs/contracts/requested-phone-notifications.md).
+- Cross-router filing displays and bounded repair follow [prepared topics](docs/architecture/PREPARED-TOPICS.md);
+  the existing [filing upkeep](docs/contracts/native-inbox.md#filing-before-stopping)
+  retains a thirty-minute inspection for a busy Inbox without replaying captures.
 
 ## Find the authority
 
@@ -152,6 +177,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 | Filtered Mac Messages reads, including bounded historical conversation windows and code withholding | [Router actions](docs/runbooks/ROUTER-ACTIONS.md#reading-his-texts-mac) |
 | Canvas project binding and current board title beside stable project folders | [Router actions](docs/runbooks/ROUTER-ACTIONS.md), [wire contract](docs/contracts/session-owner-v1.md#peer-instances) |
 | Mac and server Lab reads and writes | [Router actions](docs/runbooks/ROUTER-ACTIONS.md#discussing-in-the-lab); the server holds the Lab key and the peer channel carries Mac calls under their own source identity |
+| Selective Lab groups, revisioned rosters and original provider answers | [Lab conversations](docs/architecture/LAB-CONVERSATIONS.md); existing queue custody, immutable accepted conditions, explicit response targets and original-output publication |
 | Captures, audio, speech and Canvas observations | [Capture ingress](docs/architecture/CAPTURE-INGRESS.md), [Thinkering capture](docs/runbooks/THINKERING-CAPTURE.md), [speech](docs/architecture/SPEECH-FALLBACK-JOBS.md), [Workers AI speech and search embeddings](docs/architecture/WORKERS-AI.md), [Canvas think-aloud](docs/architecture/canvas-think-aloud.md) |
 | Current-versus-historical documentation | [Documentation index](docs/README.md); plans and incidents are evidence, not authority for current behavior |
 

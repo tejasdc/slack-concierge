@@ -1165,8 +1165,9 @@ export interface TurnArtifactRegistration {
   mtimeMs: number;
 }
 
+export const SETTLED_TURN_STATUSES=['done','error','cancelled','delivery_parked'] as const;
 export const SETTLED_EXECUTION_SQL = `
-  prerequisite.status IN ('done', 'error', 'cancelled', 'delivery_parked')
+  prerequisite.status IN (${SETTLED_TURN_STATUSES.map(status=>`'${status}'`).join(',')})
   AND prerequisite.delivery_status NOT IN ('pending', 'sending')
   AND NOT EXISTS (SELECT 1 FROM turn_artifact_batches batch
     WHERE batch.turn_id=prerequisite.id AND batch.status IN ('collecting', 'pending'))
@@ -4511,6 +4512,33 @@ export function settleSupersededParkedTurn(turnId: number): boolean {
       .run(turnId).changes === 1;
     if (changed) turnFactChanged(turnId,'terminal');
     return changed;
+  })();
+}
+
+/**
+ * Turns parked because Claude ended before acknowledging their input never reached Claude, so
+ * failing them replays nothing; it lets their requests settle failed with this reason and return
+ * to their requester for a new owner. From 2026-11-13 to 11-16 Concierge's launcher refused every
+ * resume of a Claude conversation older than Claude's owner header, and 29 such turns in 9
+ * sessions sat parked with their requests counted as live. New refusals fail at once
+ * (claude-launch-refusal.ts); this releases the ones parked before that release, bounded to parks
+ * that ended before 2026-11-17 so a later unmarked Claude end keeps its ambiguous park. Idempotent.
+ */
+export const CLAUDE_UNACKNOWLEDGED_PARK_TEXT = "Claude Code ended before acknowledging the initial user message.";
+export function failUnacknowledgedClaudeParkedTurns(): number[] {
+  return db.transaction(() => {
+    const rows = db.query(`SELECT turn.id FROM turns turn JOIN sessions session ON session.id=turn.session_id
+      WHERE turn.status='parked' AND turn.dispatch_failure_class='parked_ambiguous' AND session.provider_id='claude-code'
+        AND turn.agent_text=? AND turn.provider_input_acknowledged_at IS NULL AND turn.ended_at<'2026-11-17'`).all(CLAUDE_UNACKNOWLEDGED_PARK_TEXT) as { id: number }[];
+    const failed: number[] = [];
+    for (const row of rows) {
+      if (db.query(`UPDATE turns SET status='error', dispatch_failure_class=NULL,
+          agent_text='Claude could not start this turn: it ended before acknowledging its input, so nothing was sent. Its work needs a new attempt.',
+          ended_at=COALESCE(ended_at,CURRENT_TIMESTAMP) WHERE id=? AND status='parked'`).run(row.id).changes !== 1) continue;
+      turnFactChanged(row.id, 'terminal');
+      failed.push(row.id);
+    }
+    return failed;
   })();
 }
 

@@ -1,5 +1,18 @@
 # Router action helper
 
+## Save exact retained context in an existing session
+
+Use `sessions ask <exact-address> --response-mode context -- <text>` to save your own
+agent-authored context, optionally with existing `--file` or `--attachment` custody.
+No summary is required. For exact retained words, use
+`sessions ask <exact-address> --response-mode context --route-message <message-id>`
+or replace `--route-message` with `--capture-id <capture-id>`. Supply the current
+`--source-input`, `--source-run` and stable `--action-id`. The owner reads the original
+retained words and files in that selector form; omit replacement text and files. This returns a completed
+saved-context operation and creates no work or reply obligation. A later active
+message uses the saved material as attributed data. See the
+[wire contract](../contracts/session-owner-v1.md#passive-session-context).
+
 ## Per-session Pause and Continue
 
 An admitted native agent run with work authority can control one exact native session
@@ -393,6 +406,16 @@ with no accepted inputs, an invalid range, or more than 5,000 rows in a collecti
 is never a clean zero. Both commands use the same authenticated owner entrance as session reads,
 including from a runner where the ledger file is hidden; the query runs in the isolated read
 process. The owning contract is [Runners](../architecture/RUNNERS.md).
+
+The window also joins ordinary human inputs through their exact Inbox obligation/dispatch
+links, including shared or later-routed work. Each post carries its reply kind, explicit
+answer signal, disposition and service/agent attribution. `answeredInThread` requires the
+semantic answer contract; progress and service terminal notices remain evidence without
+being called answers. `answeredAt` is the original qualifying post time, not recovery time.
+Request source/run/thread identity, answer-clock timestamps, final event receipt and disposition
+are returned as bounded diagnostic facts. A final receipt proves recorded return, not provider
+consumption, push delivery or physical-device display. Untyped historical posts retain their
+unknown classification; inspect their exact words with `topics message` before judging coverage.
 
 ## Waiting for a local process
 
@@ -821,6 +844,31 @@ session; queued while the Mac sleeps, with one service result when it later open
 [peer instances](PEER-INSTANCES.md#opening-a-link-on-his-mac-without-a-session).
 
 <a id="discussing-in-the-lab"></a>
+**Selective comparison conversations.** The [Lab conversation contract](../architecture/LAB-CONVERSATIONS.md)
+owns retained participant bindings and provider answers. In a bound comparison thread, an agent
+can route its own attributed follow-up with `sessions board post --thread <handle>
+--response-target concierge:<n> [--response-target concierge:<m>] <source-flags> --action-id A
+-- <question>`. Only the selected bound voices run. The post retains the exact selected sessions
+before activation; repeating its source/action identity reuses the same post and invocations.
+An explicit empty selection is passive, including for the thread coordinator. The thread's
+coordinator is distinct from the Inbox and can synthesize or route through this same command.
+The Lab surface can add or remove voices later. Membership updates affect future selections;
+accepted responses retain their original roster and conditions, and adding a voice alone
+starts no turn. A selected newcomer sees the shared discussion through the selected entry.
+Participants receive group context and a concise default, while full original answers remain retained.
+
+Agents can inspect the owner roster and its `membershipRevision` with `sessions board roster
+--thread <handle>`. To change it, put an object with `add` and `remove` arrays in a local JSON
+file and run `sessions board participants --thread <handle> --revision <membershipRevision>
+--json-file <file> --source-input <inputId> --source-run <runId> --action-id <stable-id>`.
+Each addition uses the existing participant choice, including an existing session ID or the
+explicit provider, model, effort and project; removals use canonical session IDs. The owner
+checks the exact live source and the expected revision. A stale revision is a refusal, not a
+request to silently apply the change to a later roster. A repeated identical action returns
+its original result. If the response was lost, `sessions board participant-change --thread
+<handle> --action-id <stable-id>` reads only the exact retained change identity, revision and
+added/removed session IDs, including after the originating run ends; an unknown action is 404.
+
 **Discussing in the Lab.** `sessions board read|thread|post|claim|reveal|close|product|cite|link …` with the
 run's source pair (and a stable `--action-id` for changes) reads and writes the lab record in thnkr.ing (/lab):
 threads, and the findings, decisions, skills and designs they produce, each with a lasting address (`lab:<handle>`,

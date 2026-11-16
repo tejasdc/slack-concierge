@@ -1,5 +1,49 @@
 # Unified session owner wire contract v1
 
+## Bound test-session authorship diagnostic
+
+`router-actions.sh sessions agent-test-scope concierge:<id> --create-input request:<uuid> --source-input <input-id> --source-run <run-id>`
+posts `{source,address,create_input_id}` to `/session-communication/agent-test-scope`. The
+caller must pass the existing current `actor()` and `fenced()` checks and be a run of the session
+that created the target through that exact create request; the historical create pair is lineage,
+not credentials, so any run of that creator qualifies and no other session does (HTTP 400 with
+the message "This session did not create the exact test session."; the route drops the owner error code). It returns `{kind:"agent_test_scope_diagnostic",targetSessionId,
+createInputId,creationSource,coverage:{complete:true,rejectingInputs},witness}`. `witness` is null
+or the first rejecting input by acceptance order with only `inputId,kind,origin,sourceInputId,
+sourceRunId,requestId,predicateReason` (`origin_not_agent|source_pair_not_creator_and_not_own_session`)
+and `sourceRelation` (`same_target|other|missing`). The scan uses the same predicate text as the
+bound content guard, so coverage is complete. No payload, receipt, file, history or provider
+output is read; there is no clean/allowed result and the content refusal is unchanged.
+
+## Current mutation admission
+
+`router-actions.sh sessions mutation-admission --source-input <input-id> --source-run <run-id>`
+posts `{"source":{"input_id":"…","run_id":"…"}}` to
+`/session-communication/mutation-admission` through the existing private owner socket
+or signed agent network entrance. It accepts native source identity only, with no target,
+role, action ID, inventory request or caller-supplied identity result.
+
+The canonical communication owner runs its existing current `actor()` and `fenced()`
+predicates synchronously. Success is HTTP 200 with
+`{"admitted":true,"sessionId":"concierge:<n>","inputId":"<exact-input>","runId":"<exact-run>","origin":"human|agent|service"}`.
+Origin is the accepted input's author, not an assertion of new human authority. This
+decision neither widens delegated scope nor changes any capability's access checks.
+The existing route returns HTTP 409 / `SESSION_SUPERSEDED` with successor identity for
+a superseded predecessor, or HTTP 409 / `HANDOFF_WITHDRAWN` for a withdrawn successor.
+Other actor/source refusals retain HTTP 400 and their existing error wording, including
+stale, stopped, unadmitted, mixed-source and consultation-only callers. A stopped
+communication coordinator refuses admission too.
+
+This is a point-in-time decision, not a lease, token, reservation or durable operation
+receipt. A native custody client checks it immediately before its mutation, validates the
+exact returned input/run and session identity, and fails closed on a refused, unavailable
+or malformed response. It does not cache it as authority for later mutations. This port
+does not make a remote effect atomic with a later Stop or handoff. Existing obligations
+and other ordinary read semantics stay unchanged; no Lab or worktree inventory is loaded
+by admission. This source change adds no fixture, test authorization or ship gate.
+The originating archive task permits only its existing mandatory normal Thinkering ship
+gates; the coordinated whole-change review and subsequent installed acceptance remain held.
+
 The prepared Threads and Incoming projections attach `filingState` to a human message: `waiting` while its Inbox turn is queued or running, `failed` only after that turn ends without a topic placement, and `filed` once a topic owns the root. This state changes with the turn, not with elapsed time. A consumer must not infer a filing failure from a message's age (November 4 report `38a516a7d3fe96de439228380ce5eb1c00dd5f25056d869a52e1f04c0dc0528a`).
 
 ## Human message delivery choice
@@ -336,6 +380,70 @@ the initial summary, so regular, service-created and scheduled sessions never lo
 their creator did provide. A later summary action may replace it. Peer creation carries the same
 field; an older peer may omit it and still creates the named session.
 
+### Passive session context
+
+The existing session input route accepts optional `responseMode:"context"`. Omission
+keeps ordinary active admission, including joining a live turn. Context keeps exact
+words, attachment custody, source identity and reply/side-thread/recipient references
+in the accepted-input ledger. Acceptance and its completed receipt commit together;
+the receipt has `state:"completed"`, `runId:null`, `request.responseMode:"context"`
+and status `CONTEXT_SAVED` / `Saved for the next conversation.`
+
+Context creates no turn, steering delivery, answer request, notification request or
+attention acknowledgement. It neither clears an outstanding question nor reopens
+completed work. Recovery sees the same terminal receipt and cannot turn it into work.
+A passive Inbox reply also retains an attributed copy in its selected recipient's
+conversation, with its fixed thread and side-thread references. Its source stays in
+the Inbox. The saved context never asks the recipient to answer.
+
+`contextDelivery` on the operation identifies `{targetSessionId,state,requestId?,peer?,error?}`.
+Local custody has state `saved`. A peer destination is `pending` until the exact peer
+confirms saved custody, `failed` after a definitive refusal, or `uncertain` after an
+identity conflict. The completed source receipt proves the source words were retained
+locally; its delivery explanation explicitly distinguishes pending remote custody.
+The existing peer outbox retains the same request while the other machine sleeps.
+Before posting passive bytes, the sender checks the receiver's passive capability;
+an older release is refused without falling back to active work or an answer request.
+Human context forwarding names the accepted input and its action, with a null provider
+turn and run; it never borrows the Inbox's latest provider turn. An agent contribution
+from an actual provider run keeps that run. The peer outbox permits an absent source
+turn only for passive custody; active requests continue to require their actual run.
+Once the source save commits, a forwarding failure returns that exact saved operation
+with its pending delivery metadata, rather than hiding acceptance behind a transport
+error. Peer settlement, source delivery metadata and its receipt announcement commit
+together. A previous unconfirmed POST remains uncertain if a later capability check
+refuses delivery; its exact retained envelope remains available for inspection.
+
+The next explicit active message includes prior retained context from that session
+as attributed historical data, with exact source/action relationships and attachment
+bytes available through ordinary provider attachment preparation. The saved material
+is explicitly data, never instructions or a new authority grant. Context is retained
+for later active messages too, so provider history compaction cannot silently erase
+it. Canvas observation sessions keep their existing separate behavior; argument-map
+speech keeps its raw transcript and receives saved context in application context.
+
+Agents save their own attributed words with
+`sessions ask <address> --response-mode context -- <text>`, with the current
+source/run and stable action ID. Existing `--file` and `--attachment` custody
+options retain exact bytes. No summary or retained-source selector is required.
+The accepted input is agent-authored and linked to that actual agent run; the
+originating human task is not presented as the author of the agent's words.
+The same source/action claim covers local, peer and active asks. Changing the
+destination, material, source run or response mode for an accepted action conflicts
+before execution. A peer contribution returns its own completed, null-run passive
+operation with delivery custody; it does not alter the agent's current task receipt.
+
+Agents may instead contribute exact already-retained material with:
+`sessions ask <address> --response-mode context --route-message <message-id>`
+or `--capture-id <capture-id>`, with the current source/run and stable action ID.
+No replacement text or files are accepted when either retained selector is supplied. Authorship of the retained
+words stays separate from the contributing agent. This is a saved operation, not an
+answer request; no reply is owed. The normal active ask contract is unchanged.
+History, retained-source copying and provider context share the checked original
+material resolver. Full captures use verified retained text bytes, and copies keep
+original authorship distinct from the current contributor. Peer hops normalize each
+actual source record and nested author session rather than substituting the sender.
+
 ### Session names
 
 The canonical name is `sessions.native_metadata_json.title`, exposed unchanged as
@@ -664,6 +772,7 @@ additive to everything above, carry a request between two instances' ledgers:
 | `POST /sessions/v1/peers/project-notices` | A Mac owner without a local Inbox forwards one retained project notice `{orderId,sourcePeer,kind,text}` to the cloud owner. The cloud owner uses the existing provider-free notice and topic filing path; the sender retries until acknowledged. |
 | `POST /sessions/v1/peers/requests` | Origin → target: `{requestId, origin:{peer,sessionId,inputId,runId,originatingHuman?,effectScope?}, provider|address, effort?, project?, title?, summary?, text, requestedEffect, files?}`. For a new session, `summary` is its one-line work description; an older sender may omit it. The target creates the session (or retains a `request:<requestId>` input on the addressed session), retains the delivery and dispatches. Returns `{sessionId, address, operationId}`; a repeated `requestId` returns the existing delivery. |
 | `GET /sessions/v1/peers/requests/:requestId` | Target → origin facts: `{requestId, sessionId, address, inputState, inputError, stillWorking, execution:{turnId,runId,status,settled,acknowledged,acknowledgedAt,stopped,dedicated,steeringStatus,text,error,sha256}|null, replies:[{eventId,kind,status,text,workDisposition,createdAtMs,completion}]}`. The origin, never the target, decides the outcome from these. |
+| `POST /sessions/v1/peers/requests/:requestId/prompt-answer` | Origin → target: `{originSessionId,originInputId,originRunId,questionId,createdAtMs}` adds the existing prompt-answer clock to an already accepted request. The authenticated peer must match the delivery's original source tuple. `createdAtMs` is the original origin request time. Returns `{recorded:true}` without admitting or resending work. A changed retained clock identity is refused; a repeated identical command reuses the one reminder. |
 | `POST /sessions/v1/peers/requests/:requestId/replies` | Target → origin: `{eventId, kind:"progress"|"final", text, workDisposition?, evidence?, completionTurnId?, files?:[{name,contentType,base64}], responder:{peer,sessionId,inputId,runId}}`; idempotent by `eventId`. `files` are the reply's attachments read from the target's custody at forward time, because the origin cannot reach it; the origin admits them into its own custody keyed by request ID, event ID and position, so a re-forward reuses it, and records those origin-side IDs on the peer event and its return. `text` may be empty when the reply carries a file. Returns `{outcome}`. |
 | `POST /sessions/v1/peers/requests/:requestId/notify` | Target → origin: the request's execution or replies changed; the origin re-reads the facts and returns `{outcome}`. |
 
@@ -693,8 +802,16 @@ that author; its original proof is validated against that author and is never
 rewritten. Current custody alone decides who may create a new reply. Late outgoing child returns keep their
 original request/event/input identity and follow the already-transferred source
 holder, remaining held there when it cannot receive them; the child is not resent.
+An explicit asked question may be linked after peer dispatch. The origin reconciles the
+accepted request before sending its late clock command through the existing peer channel.
+An older or offline receiver leaves that clock acknowledgement pending; reconciliation
+retries only the clock command, never the accepted task. Existing answers and closed
+deliveries take precedence. The recipient uses its existing answer reminder, timed from
+the original request, while the origin retains the question and its visible delay state.
+See [prompt thread answers](../architecture/PROMPT-THREAD-ANSWERS.md) for the local and
+peer reconciliation rules.
 
-For the branch's ChatGPT answer contract, new peer admissions add `answerGuaranteeVersion:1`; a ChatGPT target also requires `answerObligation:{id,task:{kind,id},attemptId}` matching its request ID. An addressed ask whose provider is absent from retained catalogue and earlier admission records reads the peer's exact session view, verifies its session ID and address, and retains the returned provider before admission; a known address continues to queue while its peer is offline. Admission echoes the version recorded with that delivery. Status reports the receiver's current `answerGuaranteeVersion:1`, the retained `acceptedAnswerGuaranteeVersion`, `unresolvedChatGptObligations`, and `answerTaskReady` after checking both open obligations and pending legacy classification for the exact peer-delivered task. An old accepted request stays held until the upgraded receiver returns this exact status; then its replies can resume, but inferred settlement requires `answerTaskReady:true`. A pre-upgrade final without `settlementProof` is accepted only when that exact upgraded status also matches its request and target session and says the task is ready. New worker finals carry `settlementProof:{version:1,requestId,recipientPeer,targetSessionId,unresolvedObligations:0}` after the local task guard; a `failed` or `needs_decision` final can instead cite every open obligation with `--open-chatgpt`, and its proof carries those exact IDs while the duties remain open. Push and pull preserve the proof. An ambiguous admission keeps the original request ID and retained body for idempotent reconciliation, with one visible notice; an HTTP error alone cannot settle it. See [ChatGPT answer obligations](../architecture/CHATGPT-ANSWER-OBLIGATIONS.md) for task and recovery states.
+For the branch's ChatGPT answer contract, new peer admissions add `answerGuaranteeVersion:1`; a ChatGPT target also requires `answerObligation:{id,task:{kind,id},attemptId}` matching its request ID. An addressed ask whose provider is absent from retained catalogue and earlier admission records reads the peer's exact session view, verifies its session ID and address, and retains the returned provider before admission; a known address continues to queue while its peer is offline. Admission echoes the version recorded with that delivery. Status reports the receiver's current `answerGuaranteeVersion:1`, the retained `acceptedAnswerGuaranteeVersion` (`1` or `null`), `unresolvedChatGptObligations` (a nonnegative integer), and `answerTaskReady` (a boolean) after checking both open obligations and pending legacy classification for the exact peer-delivered task. A v1 status with incomplete or contradictory guarantee evidence is a failed read, not confirmation. The sender checks exact request, target session and address before retaining status, including the nested execution and reply-summary fields used for reconciliation; documented legacy omissions and additive fields remain valid. A failed status read leaves the last valid status visible for diagnosis, marks it ineligible for inferred closure, and does not turn it into evidence that an old peer accepted the request. An old accepted request stays held until the upgraded receiver returns this exact status; the same response completes that reconciliation without another read. Its replies can then resume, but inferred settlement requires a fresh `answerTaskReady:true`. A pre-upgrade final without `settlementProof` is accepted only when that exact upgraded status also matches its request and target session and says the task is ready, with no unresolved status-read failure. New worker finals carry `settlementProof:{version:1,requestId,recipientPeer,targetSessionId,unresolvedObligations:0}` after the local task guard; a `failed` or `needs_decision` final can instead cite every open obligation with `--open-chatgpt`, and its proof carries those exact IDs while the duties remain open. Push and pull preserve the proof. An explicit requester cancellation remains effective even while peer status is unreadable; inferred cancellation from a remote execution still requires the current task-answer guard. An ambiguous admission keeps the original request ID and retained body for idempotent reconciliation, with one stable typed notice identity across repeated legacy observations and one in-flight status reconciliation per request; an HTTP error alone cannot settle it. Receipts expose the retained guarantee fields, identity validity, read-failure/recovery time and event creation time without replacing unknown fields with guesses. See [ChatGPT answer obligations](../architecture/CHATGPT-ANSWER-OBLIGATIONS.md) for task and recovery states.
 
 `POST /sessions/v1/peers/requests/corrected-attachment` is the only peer admission route for a corrected ChatGPT attachment. An older receiver has no route and cannot send the correction. The new request carries `correctionOf` and the original obligation ID with a new attempt ID. Before retaining the new target input, the receiver verifies the original peer delivery's origin, task, question and target, confirms it has no recipient final, reconciles the original native run with Thinkering for an exact pre-Send attachment rejection, and checks that a corrected file has changed bytes. It retains a digest of the complete corrected request and refuses any changed bytes under the same request ID. Its accepted receipt returns `attachmentCorrectionVersion:1`, the original run ID and rejection reason. The origin keeps the old obligation active while the peer is offline or its response is ambiguous; after the exact corrected request is accepted, it records a new attempt under that obligation before reading the result. Retrying uses the same request ID and dedicated route. If Tejas withdraws the original duty before any peer POST attempt, the queued correction closes without sending. After an attempted POST, the origin first reconciles the same remote request ID and never retries the corrected send; it cancels the exact accepted request when found or leaves one visible uncertain hold.
 | `POST /sessions/v1/resurrections` | Trusted authenticated human surface: `{clientActionId, address}`. A peer address `<peer>/session:…` keeps its existing archive-copy behavior: a distinct reconstructed session here, with `resurrection:{peer,sessionId,address,threadId,archivedAt,archivePath,resurrectedAt}`. A local imported Claude/Codex address with a provider-native UUID continues that UUID in its recorded folder on the owning machine; `resurrection.kind:"continued-in-place"` distinguishes it from an archive copy. The owner calls the authenticated peer route `POST /sessions/v1/resurrections/native` with the pinned provider UUID and folder when that folder belongs to a peer. The owning machine refuses a missing folder with `RESUME_FOLDER_UNAVAILABLE`. When its own provider transcript is gone it answers `NATIVE_TRANSCRIPT_UNAVAILABLE`, and the requester resends once with `restore:{name,sha256,base64}` taken from its transcript archive of that machine; the owning machine verifies the checksum and that the bytes are this conversation, writes them only where nothing exists (Claude: its projects folder for the recorded cwd; Codex: its dated sessions folder), and never records the bytes in its ledger. A bad copy is `NATIVE_TRANSCRIPT_RESTORE_REFUSED`; an unreachable peer yields `MACHINE_UNREACHABLE`. The imported source retains a completed control with the resulting session ID, and repeated actions or a prior unarchived binding return the same session. No provider turn starts until a message is sent. |

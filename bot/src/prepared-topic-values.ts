@@ -1,4 +1,5 @@
 import {questionDisplay} from './topic-display-rules';
+import {askedAnswerPostIds,askedAnswerStatus,routeForMessage} from './asked-answer';
 import {closedRequestDispatches,openRequestDeliveries,topicCurrentWorkers,workingThrough} from './topic-current-workers';
 import {topicReplyTargets} from './reply-target-rules';
 import type {Database} from 'bun:sqlite';
@@ -60,7 +61,8 @@ export function topicContext(source:Database,prepared:Database,generation:number
    title:sessionTitle(source,row.target_session_id)||'Agent session',requestId:row.request_id,through:chain.map(id=>`concierge:${id}`)});
  }
  for(const row of source.query(`SELECT request_id,source_session_id,COALESCE(thread_root_input_id,source_input_id) AS input_id,peer,remote_session_id
-   FROM session_peer_requests WHERE source_session_id IN (${INBOX_LINEAGE_SQL}) AND outcome IS NULL`).all(sessionId) as any[]){
+   FROM session_peer_requests WHERE source_session_id IN (${INBOX_LINEAGE_SQL}) AND outcome IS NULL
+     AND json_extract(payload_json,'$.responseMode') IS NOT 'context'`).all(sessionId) as any[]){
   const peer=source.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
   dispatches.push({root:row.input_id?root(row.source_session_id,row.input_id):null,sessionId:peerAddress(row.peer,row.remote_session_id),
    title:parse(peer?.view_json,{})?.title||`${row.peer} session`,requestId:row.request_id});
@@ -94,52 +96,12 @@ function messageById(context:TopicContext,id:string):{content:string;at:string;r
 const readingValue=(id:string,message:NonNullable<ReturnType<typeof messageById>>)=>({messageId:id,text:message.content,at:message.at,
  ...(message.detailRef?{detailRef:message.detailRef,contentCoverage:message.contentCoverage}:{})});
 
-function routeForMessage(source:Database,messageId:unknown):{destinationMessageId?:string;sourceMessageId?:string}|null{
- if(typeof messageId!=='string'||!messageId.trim())return null;
- const id=messageId.trim();
- let row:{payload_json:string}|null=null;
- if(id.startsWith('topic-change:')||id.startsWith('session-route:')){
-  row=source.query("SELECT payload_json FROM session_owner_events WHERE event_id=? AND kind IN ('topic_route','session_route')").get(id) as {payload_json:string}|null;
- }
- if(!row&&id.startsWith('request:')){
-  row=source.query("SELECT payload_json FROM session_owner_events WHERE event_id=? AND kind='session_route'").get(`session-route:${id.slice('request:'.length)}`) as {payload_json:string}|null;
- }
- if(!row){
-  const routes=source.query("SELECT payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC LIMIT 2")
-   .all(id) as {payload_json:string}[];
-  if(routes.length>1)return null;
-  row=routes[0]??null;
- }
- if(!row){
-  row=source.query("SELECT payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.destinationMessageId')=? ORDER BY sequence DESC LIMIT 1").get(id) as {payload_json:string}|null;
- }
- return row?JSON.parse(row.payload_json):null;
-}
-
 function readsFor(context:TopicContext,question:any,roots:Set<string>){
  if(question.kind==='asked'){
-  const requestId=question.owner?.dispatchRequestId;
-  const sources=Array.isArray(question.sources)?question.sources:[];
-  const followups=typeof requestId==='string'&&requestId?sources.slice(1):sources;
-  const expandedFollowups:string[]=[];
-  for(const id of followups){
-   expandedFollowups.push(id);
-   const route=routeForMessage(context.source,id);
-   if(route){
-    if(route.destinationMessageId)expandedFollowups.push(route.destinationMessageId);
-    if(route.sourceMessageId)expandedFollowups.push(route.sourceMessageId);
-   }
-  }
-  const posts=context.source.query(`SELECT event_id FROM session_owner_events
-   WHERE session_id IN (${context.sessionIds.map(()=>'?').join(',')}) AND kind='post' AND (
-    (?<>'' AND json_extract(payload_json,'$.requestId')=?)
-    OR json_extract(payload_json,'$.replyToMessage.messageId') IN (SELECT value FROM json_each(?))
-   ) AND (
-    json_extract(payload_json,'$.answersQuestion')=1
-    OR (json_extract(payload_json,'$.replyKind')='final' AND json_extract(payload_json,'$.workDisposition')='completed')
-   ) ORDER BY sequence`).all(...context.sessionIds,typeof requestId==='string'?requestId:'',typeof requestId==='string'?requestId:'',JSON.stringify([...new Set(expandedFollowups)])) as {event_id:string}[];
-  return posts.flatMap(post=>{const message=messageById(context,post.event_id);
-   return message&&(message.content.trim()||message.detailRef)?[readingValue(post.event_id,message)]:[];});
+  return askedAnswerPostIds(context.source,question,context.sessionIds).flatMap(id=>{
+   const message=messageById(context,id);
+   return message&&(message.content.trim()||message.detailRef)?[readingValue(id,message)]:[];
+  });
  }
  if(question.kind!=='reading')return [];
  const {source,sessionId,root}=context;
@@ -200,7 +162,9 @@ function questionValue(context:TopicContext,row:any,roots:string[],replies:{inpu
   .get(question.topicId,question.id,question.revision),
   context.source.query("SELECT kind,revision,at,by_json FROM inbox_topic_reading WHERE topic_id=? AND item_id=? AND kind='acknowledged' ORDER BY at DESC LIMIT 1")
   .get(question.topicId,question.id)].filter(Boolean);
- return questionDisplay({...question,questionId:question.id},replies,reading,readsFor(context,question,new Set(roots)));
+ const reads=readsFor(context,question,new Set(roots));
+ return {...questionDisplay({...question,questionId:question.id},replies,reading,reads),
+  ...(question.kind==='asked'?{answerStatus:askedAnswerStatus(context.source,question,reads.length>0)}:{})};
 }
 
 export type TopicItemSink={question:(value:any)=>void;request:(value:any)=>void};

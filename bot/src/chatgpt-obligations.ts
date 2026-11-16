@@ -138,11 +138,13 @@ function currentHandoffHolder(sessionId:number):number {
 }
 
 /** Called inside the accepting handoff's transaction, or a recovery transaction. */
-export function transferChatGptAnswerOwnership(obligationId:string,from:number,to:number,now:number):boolean {
+export function transferChatGptAnswerOwnership(obligationId:string,from:number,to:number,now:number,
+  returnMovesWithHandoff=false):boolean {
   const obligation=db.query(`SELECT * FROM session_chatgpt_obligations WHERE obligation_id=? AND asker_session_id=?
     AND state NOT IN ('resolved','withdrawn_by_tejas')`).get(obligationId,from) as ObligationRow|null;
   if(!obligation)return false;
-  if(obligation.answer_event_id&&!obligation.answer_return_input_id)
+  // A return still queued and moving in the same handoff is acknowledged later, by the successor.
+  if(obligation.answer_event_id&&!obligation.answer_return_input_id&&!returnMovesWithHandoff)
     throw new Error(`ChatGPT answer ${obligationId} has no acknowledged return input to transfer.`);
   const localRequest=db.query(`SELECT source_session_id FROM session_communication_requests WHERE request_id=?`)
     .get(obligation.active_request_id) as {source_session_id:number}|null;
@@ -602,6 +604,14 @@ export function admitChatGptContextFollowUp(input:{requestId:string;obligationId
       `follow-up:${input.requestId}`,'awaiting_answer',JSON.stringify({requestId:input.requestId,priorAnswerEventId:previous.answer_event_id}),input.now);
 }
 
+/** The question stays open when its provider attempt fails, including after original-run recovery.
+ * This checks pending custody only; callers must still prove the exact native rejection. */
+export function chatGptAttachmentCorrectionPending(obligation:Pick<ChatGptObligationRow,'obligation_id'|'active_request_id'|'state'>,outcome:string|null):boolean {
+  return obligation.active_request_id===obligation.obligation_id
+    &&(obligation.state==='reconcile_receipt'||obligation.state==='awaiting_answer')
+    &&(outcome===null||outcome==='failed');
+}
+
 /** A refused attachment never reached Send. A new immutable request may carry corrected bytes,
  * while the original failed request and its receipt remain evidence for the same question. */
 export function admitChatGptAttachmentCorrection(input:{requestId:string;obligationId:string;task:ChatGptTask;
@@ -613,7 +623,7 @@ export function admitChatGptAttachmentCorrection(input:{requestId:string;obligat
     throw new Error('Attachment correction must preserve the original open question, task, target, and failed attempt.');
   const prior=db.query('SELECT * FROM session_chatgpt_obligation_attempts WHERE request_id=?').get(input.requestId) as {obligation_id:string;kind:string}|null;
   if(prior){if(prior.obligation_id!==input.obligationId||prior.kind!=='attachment_correction')throw new Error('Idempotency conflict: correction identity changed.');return;}
-  if(previous.active_request_id!==input.obligationId||previous.state!=='reconcile_receipt')
+  if(!chatGptAttachmentCorrectionPending(previous,null)||!input.originalRunId||!input.reason.startsWith('CHATGPT_ATTACHMENT_REJECTED:'))
     throw new Error('The original failed ChatGPT attempt is no longer awaiting a correction.');
   db.query(`INSERT INTO session_chatgpt_obligation_attempts(request_id,obligation_id,kind,created_at_ms) VALUES(?,?,?,?)`)
     .run(input.requestId,input.obligationId,'attachment_correction',input.now);

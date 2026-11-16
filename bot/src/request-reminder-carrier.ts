@@ -11,7 +11,7 @@ import { readInputExecution } from './session-owner';
  * (docs/incidents/2026-11-12-handed-off-reminder-refused-forever.md).
  */
 export type ReminderDelivery = { inputId: string; status: 'received' | 'admitted' | 'held'; error: string | null };
-type Owner = { admit(input: { sessionId: number; inputId: string; origin: 'service'; sourceInputId: string; sourceRunId: string; requestId: string; text: string }): AcceptedSessionInput;
+type Owner = { admit(input: { sessionId: number; inputId: string; origin: 'service'; threadReplyNotRequired: true; sourceInputId: string; sourceRunId: string; requestId: string; text: string }): AcceptedSessionInput;
   dispatch(input: AcceptedSessionInput): AcceptedSessionInput };
 
 const receiptOf = (input: AcceptedSessionInput): { state?: string; continuedAs?: string; reason?: string } => {
@@ -41,7 +41,7 @@ function observed(input: AcceptedSessionInput): ReminderDelivery {
 export function deliverRequestReminder(o: { eventId: string; acceptedInputId: string | null; sourceSessionId: number;
   sourceInputId: string; sourceRunId: string; requestId: string; text: string; owner: Owner }): ReminderDelivery {
   const original = `request-reminder:${o.eventId}`;
-  const admit = (inputId: string) => observed(o.owner.admit({ sessionId: o.sourceSessionId, inputId, origin: 'service',
+  const admit = (inputId: string) => observed(o.owner.admit({ sessionId: o.sourceSessionId, inputId, origin: 'service', threadReplyNotRequired: true,
     sourceInputId: o.sourceInputId, sourceRunId: o.sourceRunId, requestId: o.requestId, text: o.text }));
   const carrier = (o.acceptedInputId ? reminderCarrier(o.acceptedInputId) : null) ?? reminderCarrier(original);
   if (!carrier) return admit(original);

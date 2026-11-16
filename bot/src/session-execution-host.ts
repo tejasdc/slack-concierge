@@ -1,4 +1,5 @@
 import {onCodexHistoryChanged} from './codex-session-observer';
+import {boundLabInvocation,labInvocationBindingMatches} from './lab-conversations';
 import { codexAppServerReady, codexRelayRunner, ownerCodexAppServerClient, waitForCodexAppServerOrDrain } from "./codex-app-server-client";
 import {CODEX_PROCESS_REPORT_GRACE_MS,codexLeftoverProcesses,codexProcessStillRunning,type CodexLeftoverProcess} from './codex-leftover-processes';
 import {runnerMachineCall,RunnerUnreachableError} from './runner-machine-calls';
@@ -148,6 +149,7 @@ function noteChatgptChannelFailure(error:unknown,sessionId:number,dispatchAttemp
 }
 import type {RunResult} from './codex';
 import {sessionInputEnvelope,sessionInputIdentityContext,sessionInputInstructions,sessionTurnContext} from './session-input-context';
+import {passiveContextFor,passiveContextPrompt,passiveContextAttachments} from './session-passive-context';
 import {thinkAloudInstructions} from './think-aloud-instructions';
 import {INBOX_INSTRUCTIONS,markResultAnsweredByPost,minutesText,pebbleArrivalWaitMs,relayUnpostedAnswer} from './session-inbox';
 import {readClaudeCachedMessage,readCodexHistoryMessage,readClaudeHistory,readCodexHistory} from './provider-history';
@@ -229,10 +231,14 @@ function sameCanvasSpeechTurn(input:AcceptedSessionInput,turnId:number):boolean 
  */
 function canvasSpeechTurnJoiner(turnId:number):(input:AcceptedSessionInput)=>boolean {
   const opening=acceptedInputForTurn(turnId),active=opening?canvasSpeechContext(opening):null;
+  const openingContext=new Set(opening?passiveContextFor(opening).map(context=>context.id):[]);
   return input=>{
     const incoming=canvasSpeechContext(input);
     if(!incoming&&!active)return true;
-    return !!incoming&&!!active&&incoming.boardId===active.boardId&&incoming.pageId===active.pageId;
+    if(!incoming||!active||incoming.boardId!==active.boardId||incoming.pageId!==active.pageId)return false;
+    // Application context is fixed when the provider turn starts. A later saved note
+    // cannot be added to a same-page steering message without becoming stale/missing.
+    return passiveContextFor(input).every(context=>openingContext.has(context.id));
   };
 }
 
@@ -322,6 +328,7 @@ export class SessionExecutionHost {
       codexTestConnectionLoss:(session,turn,binding)=>this.loseTestCodexConnection(session,turn,binding),
       safeStop:async(session,turn)=>{const stopped=options.registry.requestSafeSessionCancellation(session,turn);if(!stopped.matched)return false;await stopped.completion;return true;},
       capabilities:session=>this.capabilities(session),
+      readJournalEntry:this.capabilityClient?root=>this.capabilityClient!.readJournalEntry(root):undefined,
       saveCaptureNote:this.capabilityClient?input=>this.capabilityClient!.saveCaptureNote(input):undefined,
       history:options.history??((session,cursor,limit)=>this.history(session,cursor,limit)),
       projectedHistory:options.history||Object.entries(options.providers).some(([provider,value])=>
@@ -1115,7 +1122,7 @@ export class SessionExecutionHost {
     // The thread this input belongs to, or the instruction to file it first.
     prompt+=topicPromptContext(input.session_id,input.id,payload);
     if(payload.context?.length)prompt+=`\n\n<selected-workspace-revisions>\n${JSON.stringify(payload.context)}\n</selected-workspace-revisions>`;
-    return prompt;
+    return prompt+passiveContextPrompt(input);
   }
   private pullWaitingInputs(sessionId:number) {
     try {
@@ -1222,8 +1229,10 @@ export class SessionExecutionHost {
         // synchronously finish the Inbox history index before the message even enters its queue.
         const accepted=target.controller.enqueue({clientMessageId:input.id,text:'',
           prepareText:async root=>{
-            const attachments=this.owner.attachments(body.attachments);
+            const canvasSpeech=!!canvasSpeechContext(attached);
+            const attachments=this.owner.attachments([...new Set([...(body.attachments??[]),...(canvasSpeech?[]:passiveContextAttachments(attached))])]);
             let text=this.prompt(attached);
+            if(canvasSpeech)text=String(body.text??'');
             if(attachments.length) {
               if(!root)throw new Error('The active turn has no owned attachment root.');
               const transcripts=[];for(const attachment of attachments){const path=join(root,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});text+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/')){if(attachment.transcriptText)transcripts.push({slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const});else{const heard=await attachedRecordingWords({slackFileId:attachment.id,title:attachment.name,path});if(heard.transcript)transcripts.push(heard.transcript);if(heard.note)text+=`\n${heard.note}`;}}}const transcript=transcriptionPrompt(transcripts.filter(item=>!body.text?.includes(item.text)));text+=transcript?`\n\n${transcript}`:'';
@@ -1612,7 +1621,9 @@ export class SessionExecutionHost {
       cwd=resolved.cwd;
     }
     const body=JSON.parse(input.payload_json),payload=input.kind==='create'?body.firstInput:body;
-    const attachments=this.owner.attachments(payload.attachments);
+    const canvasSpeech=!!canvasSpeechContext(input);
+    const passiveAttachments=canvasSpeech?this.owner.attachments(passiveContextAttachments(input)):[];
+    const attachments=this.owner.attachments([...new Set([...(payload.attachments??[]),...(canvasSpeech?[]:passiveContextAttachments(input))])]);
     // An adopted run continues exactly what was started: the same words, files and folders, never
     // a re-preparation that could differ from what the agent already read.
     let prompt=adoption?String(adoption.processor.replayPrompt):this.prompt(input),staging:string|null=adoption?.processor.staging??null;
@@ -1622,11 +1633,31 @@ export class SessionExecutionHost {
     // carries its files' bytes and a run token, and nothing in it relies on this machine.
     const sharedCodex=!adoption&&session.provider_id==='codex'&&metadata.outside!==true&&executionHostsEnabled();
     const stagedFiles:{path:string;base64:string}[]=[];
+    const canvasPassiveFileContext:string[]=[];
     try {
       if(attachments.length&&metadata.interactionPolicy==='consultation-only')throw new ProviderCapabilityUnavailableError('attachments','Information-only consultation cannot read attached files.');
-      if(!adoption&&attachments.length&&session.provider_id!=='chatgpt') {
+      if(!adoption&&(attachments.length||passiveAttachments.length)&&session.provider_id!=='chatgpt') {
         staging=await mkdtemp(join(tmpdir(),`concierge-native-${claim.turn_id}-`));additionalDirs.push(staging);
         const transcripts=[];for(const attachment of attachments){const path=join(staging,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});if(onRunner)stagedFiles.push({path,base64:attachment.base64});prompt+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/')){if(attachment.transcriptText)transcripts.push({slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const});else{const heard=await attachedRecordingWords({slackFileId:attachment.id,title:attachment.name,path});if(heard.transcript)transcripts.push(heard.transcript);if(heard.note)prompt+=`\n${heard.note}`;}}}const transcript=transcriptionPrompt(transcripts.filter(item=>!payload.text?.includes(item.text)));prompt+=transcript?`\n\n${transcript}`:'';
+        if(canvasSpeech) {
+          const savedTranscripts=[];
+          for(const attachment of passiveAttachments) {
+            const path=join(staging,`${attachment.id}-${attachment.name}`);
+            await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});
+            if(onRunner)stagedFiles.push({path,base64:attachment.base64});
+            canvasPassiveFileContext.push(JSON.stringify({id:attachment.id,name:attachment.name,contentType:attachment.contentType,path}));
+            if(attachment.contentType.startsWith('audio/')) {
+              if(attachment.transcriptText)savedTranscripts.push({slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const});
+              else {
+                const heard=await attachedRecordingWords({slackFileId:attachment.id,title:attachment.name,path});
+                if(heard.transcript)savedTranscripts.push(heard.transcript);
+                if(heard.note)canvasPassiveFileContext.push(JSON.stringify({id:attachment.id,note:heard.note}));
+              }
+            }
+          }
+          const savedTranscript=transcriptionPrompt(savedTranscripts);
+          if(savedTranscript)canvasPassiveFileContext.push(savedTranscript);
+        }
       }
       const nativeContext=metadata.interactionPolicy!=='consultation-only'&&session.provider_id!=='chatgpt';
       let canvasApplicationContext:string|null=null;
@@ -1639,7 +1670,7 @@ export class SessionExecutionHost {
         const crowdConfig=crowdingConfig(),crowding=crowdConfig?readCrowding(db,crowdConfig):null;
         const crowdNotice=crowding?.crowded&&!workIsHisToWaitOn(db,claim.turn_id)?crowdingNotice(crowding):null;
         canvasApplicationContext=canvasSpeechApplicationContext(input,runId,session.id);
-        if(canvasApplicationContext)canvasApplicationContext=`${canvasApplicationContext}\n\n${thesaurus}`;
+        if(canvasApplicationContext)canvasApplicationContext=`${canvasApplicationContext}\n\n${thesaurus}${passiveContextPrompt(input)}${canvasPassiveFileContext.length?`\n\n<saved-context-files>\n${canvasPassiveFileContext.join('\n')}\n</saved-context-files>`:''}`;
         else {
           const turnContext=sessionTurnContext(input,runId,{unnamed:!metadata.title?.trim(),thesaurus,
             budget:session.provider_id==='codex'?budgetBriefWithProviderRoom('codex',Date.now()):null,
@@ -1667,6 +1698,7 @@ export class SessionExecutionHost {
           // The claimed turn, its execution record and its input are on disk before any provider
           // (Claude, Codex or ChatGPT) is started or told anything.
           await ledgerDurable({kind:'provider_input',id:input.id});
+          if(boundLabInvocation(input)&&!labInvocationBindingMatches(input))throw new ProviderCapabilityUnavailableError('send','The Lab participant’s provider, model or effort changed; no replacement execution was submitted.');
           // A run taken back after a restart takes messages again only once its history is rebuilt;
           // what the restart returned to the queue meanwhile goes into it then.
           if(adoption&&prepared.onSteeringReady){
@@ -1729,7 +1761,7 @@ export class SessionExecutionHost {
           if(session.provider_id==='chatgpt'&&admission) {
             // Only a person's or an asking agent's own words are ever typed into ChatGPT. Concierge's
             // service notices (cancellations, returns, reminders) are for agents and stop here.
-            if(input.origin==='service')throw new ProviderCapabilityUnavailableError('send','ChatGPT receives only the words of a person or an asking agent; a service notice is not sent.');
+            if(input.origin==='service'&&!boundLabInvocation(input))throw new ProviderCapabilityUnavailableError('send','ChatGPT receives only a person’s request, an asking agent’s request, or an exact bound Lab invocation; a service notice is not sent.');
             if(!this.capabilityClient)throw new ProviderCapabilityUnavailableError('send','ChatGPT capability is not configured.');
             if(admission.purpose!=='chat'||admission.policy!=='standard')throw new ProviderCapabilityUnavailableError('send','ChatGPT does not support this purpose or consultation policy.');
             // The send and its answer live in Thinkering's ChatGPT capability, keyed by this run id;
@@ -1945,6 +1977,7 @@ export class SessionExecutionHost {
     const owned=db.query("SELECT provider_admission_intended_at FROM turns WHERE id=? AND session_id=? AND owner_instance_id=? AND dispatch_attempt=? AND status='running' AND stop_requested_at IS NULL")
       .get(claim.turn_id,session.id,this.options.instanceId,claim.dispatch_attempt) as any;
     if(!owned?.provider_admission_intended_at||current.binding_generation!==session.binding_generation||current.status==='archived'||metadata.suspended)throw new ProviderCapabilityUnavailableError('send','The exact owner admission is no longer current.');
+    if(boundLabInvocation(input)&&(!labInvocationBindingMatches(input)||(actual.model??null)!==(metadata.model??null)||(actual.reasoningEffort??null)!==(metadata.reasoningEffort??null)))throw new ProviderCapabilityUnavailableError('send','The prepared Lab execution differs from the selected provider, model or effort; no replacement was sent.');
     const admission=db.transaction(()=>{
       const saved=JSON.parse(getAcceptedSessionInput(input.id)!.receipt_json??'{}');
       const value={provider:session.provider_id,purpose:metadata.purpose??'chat',inputId:input.id,runId:nativeRunId(claim.turn_id),bindingGeneration:session.binding_generation??1,
@@ -1958,6 +1991,8 @@ export class SessionExecutionHost {
         reasoningEffort:'medium',handoffId:actual.custodySuccessor.plan.operationId}:{} )};
       if(session.provider_id==='chatgpt'&&saved.admission&&stablePayload(saved.admission)!==stablePayload(value))throw new ProviderCapabilityUnavailableError('send','Prepared input changed from its immutable provider admission.');
       recordSessionEvent({eventId:`provider_admission:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'provider_admission',payload:{dispatchAttempt:claim.dispatch_attempt,admission:value}});
+      if(boundLabInvocation(input))recordSessionEvent({eventId:`lab-binding:${input.id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'lab_binding_verified',
+        payload:{provider:session.provider_id,model:actual.model??null,reasoningEffort:actual.reasoningEffort??null,project:metadata.project??null,projectPath:metadata.projectPath??null,generation:session.binding_generation??1}});
       // Keep the established receipt field as the first immutable admission. Later Codex
       // dispatches are retained by attempt identity above instead of replacing its custody.
       if(!saved.admission)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({...saved,admission:value}),input.id);

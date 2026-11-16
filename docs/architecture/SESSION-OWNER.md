@@ -6,6 +6,14 @@ Concierge owns one session catalogue and execution ledger. Thinkering provides t
 
 ## Identity and admission
 
+The exact `GET /operations/:id` receipt is built from current retained input, execution and
+admission history on every read. It authorizes cross-service provider checks and recovery;
+a failed operation can be reopened, so an earlier terminal projection is not current authority.
+Bulk receipt lists retain their existing settled-result cache. On November 15, two reader
+processes returned five versus six admissions for the same recovered ChatGPT operation because
+only the canonical process invalidated its own cache. The single-operation entrance now bypasses
+that process-local cache without changing the exact-admission guard or any stored receipt.
+
 The existing `sessions.id` is public as `concierge:<integer>`. An opaque address pins that row and its binding generation. Provider conversation IDs and original Slack roots remain exact bindings. A fork creates a distinct child with an exact boundary; a verified replacement binding advances the generation. Search ranking, a matching title, an import namespace or a provider UUID alone cannot establish ownership.
 
 Discovery matches current catalogue titles, summaries and project names alongside retained dialogue. A catalogue-only match has an empty dialogue evidence array and the exact current session view; it cannot fabricate a message or collapse equal titles. Context resolves the selected address before communication.
@@ -145,6 +153,12 @@ Every work request carries the earlier work on its problem, and its first reply 
 
 ### Provider-change handoff
 
+Native custody mutation clients use the existing communication owner's
+[current mutation admission](../contracts/session-owner-v1.md#current-mutation-admission)
+decision for their exact source input/run. Obligations reads intentionally remain
+available after handoff and must not substitute for mutation admission. The check
+reuses current actor validation and the existing handoff fence without inventory fan-out.
+
 A provider change creates a successor on the same Concierge instance; it never changes the
 predecessor's bound provider or replays work in progress. A source-bound `sessions handoff`
 proposes the successor in the predecessor's project folder and retains one inventory and
@@ -168,7 +182,8 @@ entries stay where they were and keep their original authors.
 Only a live successor run can accept with the inventory digest. The owner recomputes the
 inventory; a changed digest or an unsafe queued input refuses acceptance and returns the current inventory for
 acknowledgement. An answer with no acknowledged return receipt also holds acceptance until
-that exact return settles. Acceptance transfers the open request return and reply ownership,
+that exact return settles, unless that return still waits in a never-started queued turn the
+handoff moves; then the duty and the return move together and the successor acknowledges it. Acceptance transfers the open request return and reply ownership,
 ChatGPT answer handling and repair ownership, safe never-started queued inputs and inputs held by a
 terminal zero-work usage refusal, scheduled firings,
 and watches in one ledger transaction, recording each
@@ -204,7 +219,9 @@ the conversation with its own brief and open obligations.
 The predecessor is then superseded: owner writes from its run and new requests to it
 are refused with the successor's address. Its live run receives a notice and can finish,
 but cannot write through the owner; its own outcome and reads remain allowed. Suspension
-prevents another turn. The session detail read exposes the canonical continuation chain,
+prevents another turn. In the same transaction the predecessor's standing role (the Inbox
+router role, or any `sessions agents` role such as the journal keeper) moves to the successor,
+so service wakes for that role reach the session that runs. The session detail read exposes the canonical continuation chain,
 successor ID and handoff ID to Thinkering. `sessions obligations` reports the
 outstanding inventory, lineage and current holder on either side of the transfer.
 A request that has not reached a run of its recipient carries `delivered:false` and
@@ -233,10 +250,17 @@ automatic Claude recovery are recorded in the [2026-11-14 follow-up](../incident
 
 After each provider usage reading the owner runs one paced pass (`held-work-failover.ts`). It
 proposes this same handoff for a session whose queued work its provider cannot start (spent
-allowance, or a usage hold with no room) when another automatic provider has room. Only a session
-whose provider the owner chose (`automaticProviderChoice`) moves; his own provider or model choice,
-the Inbox and standing roles (each with their own failover), paused and consultation-only sessions
-stay. It proposes only when every queued input is already movable, so a proposal cannot strand on an
+allowance, or a usage hold with no room) when another automatic provider has room. Every session
+moves unless Tejas himself chose its provider or model (`providerChosenBy: 'tejas'`, recorded where
+the owner verifies his choice: a human create or model control naming one, or a request whose
+provider choice is verified from his words; older sessions count as his when their human create
+named a provider or model). An agent-passed `--provider`, the owner's own Claude-allowance transfers
+and handoff successors are movable. The Inbox and standing roles (each with their own failover),
+paused and consultation-only sessions stay. The successor keeps the predecessor's model tier and
+reasoning effort (`aliasKeepingTier` in `aliases.ts`). Each skipped candidate is logged once per
+session and reason per 30 minutes as `held_work_failover_skipped` (`pinned`, `source_can_start`,
+`no_receiver`, `receiver_above_stop`, `busy`, `unmovable`).
+It proposes only when every queued input is already movable, so a proposal cannot strand on an
 unsafe input; a session that is not movable is skipped for six hours. Sessions the Inbox dispatched
 his open requests to go first, then the longest waiting. At most two moved sessions work at once
 (the 37-session burst of 2026-11-06 froze the owner for 51 s), and no new move starts once the

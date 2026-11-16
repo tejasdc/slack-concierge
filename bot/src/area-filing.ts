@@ -33,7 +33,7 @@ const CLUSTER=3;
 const PLACE_SHARE=0.25;
 const OWN_WORDS=600,DEBOUNCE_MS=2_000;
 
-type Admit=(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown;
+type Admit=(input:{sessionId:number;inputId:string;origin:'service';threadReplyNotRequired:true;sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown;
 type Thread={id:string;title:string;text:string};
 
 const pending=new Set<string>();
@@ -115,7 +115,7 @@ function suggestTheme(sessionId:number,group:string[],all:Map<string,Set<string>
   });
   // An input already retained under this id was admitted by an earlier pass; only its markers are missing.
   if(!db.query('SELECT 1 FROM session_inputs WHERE id=?').get(inputId))
-    admit({sessionId,inputId,origin:'service',sourceInputId:inputId,sourceRunId:inputId,requestId:inputId,
+    admit({sessionId,inputId,origin:'service',threadReplyNotRequired:true,sourceInputId:inputId,sourceRunId:inputId,requestId:inputId,
       text:`These open Inbox threads are close in meaning and no theme area holds them:\n${lines.join('\n')}\nIf they share one idea, make it a theme area (sessions areas create --name … --summary …), link each thread that belongs (sessions areas link), and neighbour it with related areas. If they do not share an idea, leave them. Do not ask Tejas. You do not need to reply to this.`});
   db.transaction(()=>{for(const id of group)recordSessionEvent({eventId:`area-theme-offered:${id}`,sessionId,kind:'area_offer',payload:{topicId:id,offer:inputId}});})();
   return true;

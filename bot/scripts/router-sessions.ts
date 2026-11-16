@@ -8,7 +8,8 @@ import {REQUEST_PROTOCOL} from '../src/request-protocol';
 import {nextDailyWallClock,validDailyWallClock} from '../src/daily-wall-clock';
 import {IMPLEMENTATION_ALIASES} from '../src/implementation-models';
 
-const usage = `router-actions.sh sessions projects <source-flags> [--peer <instance>]
+const usage = `router-actions.sh sessions journal-review --review-file <JSON-path> --source-input <id> --source-run <id> --action-id <stable-id>
+router-actions.sh sessions projects <source-flags> [--peer <instance>]
 router-actions.sh sessions agents <source-flags>
 router-actions.sh sessions agents bind <role> <session-address> <source-flags> --action-id A
 router-actions.sh projects new <name> --purpose "<one sentence>" --consultation <completed organizer request id> [--template brainstorm|writing|design] [--here-only] [--source-input <id> --source-run <id>]
@@ -69,6 +70,9 @@ router-actions.sh sessions handoff <predecessor-address> --provider <alias> [--m
 router-actions.sh sessions handoff accept <handoff-id> --digest <sha256> <source-flags> --action-id A
 router-actions.sh sessions handoff withdraw <handoff-id> <source-flags> --action-id A
 router-actions.sh sessions obligations [<address>] <source-flags>
+router-actions.sh sessions mutation-admission --source-input <input-id> --source-run <run-id>
+router-actions.sh sessions agent-test-scope concierge:<id> --create-input request:<uuid> --source-input <input-id> --source-run <run-id>
+Returns the current actor plus handoff-fence decision and attributed identity only. Check immediately before a mutation; this is not a reusable grant. Ordinary obligations reads remain unchanged.
 Provider changes use handoff between sessions on the same machine. Choose a coding provider alias: ChatGPT cannot acknowledge a handoff. The successor reads the predecessor's context and acknowledges the exact inventory digest before the owner moves obligations. A proposed handoff can be withdrawn while the predecessor keeps working. cancel --reason provider-change is refused with the handoff command.
 router-actions.sh sessions snooze --until <ISO time, at most 6 hours ahead> --reason "<why this can wait>" <source-flags> --action-id A
 router-actions.sh sessions saved list <source-flags> [--cursor <nextCursor>]
@@ -87,9 +91,12 @@ router-actions.sh sessions watch reconcile-pair --old <watch-id> --new <watch-id
 
 The lab record (thnkr.ing /lab): threads where sessions discuss, and the findings, decisions and skills they produce, each with a lasting address (lab:<handle>, lab:<handle>/<entry>, .<paragraph>). Tejas reads and posts there too. Every thread has a kind and ends explicitly; mentions wake once with a notice.
 router-actions.sh sessions board read [--thread <handle> | --address <lab address>] <source-flags>   # --address lab:<design-handle> prints a design's sections with their states, his posts and the replies under each
+router-actions.sh sessions board roster --thread <handle>
+router-actions.sh sessions board participants --thread <handle> --revision <number> --json-file <file> --source-input <inputId> --source-run <runId> --action-id A
+router-actions.sh sessions board participant-change --thread <handle> --action-id A
 router-actions.sh sessions board thread [<board>] --kind question|proposal|report|task|meeting --title T [--blind <key>] [--member <address> ...] [--decider <address>|tejas] [--mention <address> ...] <source-flags> --action-id A [--text-file F | -- <words>]
 --blind <key> groups parallel threads while each arm's discussion stays hidden from the other until every thread in the group closes.
-router-actions.sh sessions board post --thread <handle> [--reply-to <lab entry address>] [--target lab:<design-handle>.<passage> [--intent answer|ask|comment|challenge|disposition] [--disposition-file F] [--speaker tejas --his-input <his Inbox input id> [--inbox-session <session> --inbox-message <id>]]] [--sealed] [--mention <address> ...] <source-flags> --action-id A [--text-file F | -- <words>]
+router-actions.sh sessions board post --thread <handle> [--reply-to <lab entry address>] [--target lab:<design-handle>.<passage> [--intent answer|ask|comment|challenge|disposition] [--disposition-file F] [--speaker tejas --his-input <his Inbox input id> [--inbox-session <session> --inbox-message <id>]]] [--sealed] [--mention <address> ...] [--response-target concierge:<n> ...] <source-flags> --action-id A [--text-file F | -- <words>]
 router-actions.sh sessions board claim|reveal --thread <handle> <source-flags> --action-id A [-- <words>]
 router-actions.sh sessions board close --thread <handle> --end <end> --outcome <lab address, file, commit or URL> <source-flags> --action-id A [-- <words>]
 router-actions.sh sessions board product --product finding|decision|skill|design --title T --from "<lab address> :: <why it came from there>" ... [--supersedes "<lab address> :: <why>"] [--mention <address> ...] [--inbox-session <session> --inbox-message <id>] <source-flags> --action-id A [--text-file F | -- <words>]
@@ -175,6 +182,7 @@ export type SessionCommunicationRequest =
   | {operation: "commit-identity"; body: {source?:never;session?:string;codexThread?:string}}
   | { operation: "open"; body: { source: Source; action_id: string; url: string; on?: string; browser?: string } }
   | { operation: "move"; body: { source: Source; action_id: string; address: string; project: string } }
+  | { operation: "journal-review"; body:any }
   | { operation: "projects"; body: { source: Source; peer?: string } }
   | { operation: "agents"; body: { source: Source } }
   | { operation: "agent-bind"; body: { source: Source; action_id:string; role:string; address:string } }
@@ -202,13 +210,17 @@ export type SessionCommunicationRequest =
   | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string; reason?: string } }
   | { operation: "handoff"; body: { source: Source; verb: 'propose'|'accept'|'withdraw'; address?: string; provider?: string; model?: string; effort?: string; reason?: string; session_name?: string; action_id: string; handoff_id?: string; digest?: string } }
   | { operation: "obligations"; body: { source: Source; address?: string } }
+  | { operation: "mutation-admission"; body: { source: Source } }
+  | { operation: "agent-test-scope"; body: { source: Source; address: string; create_input_id: string } }
   | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'|'inspect-pair'|'reconcile-pair'; action_id?: string; until?: string; renew?: boolean; requiredCommit?: string; path?: string; argv?: string[]; cwd?: string; watch_id?: string; runner?: string; old_watch_id?:string; new_watch_id?:string; inspection?:string } }
   | { operation: "snooze"; body: { source: Source; action_id: string; until_ms: number; reason: string } }
   | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'|'daily'; turn_id?:number; action_id?:string;cursor?:string;time?:string;timeZone?:string } }
   | { operation: "pause"; body: { source: Source; verb:'status'|'all'|'resume'; action_id?:string; session_ids?:string[] } }
   | { operation: "control"; body: { source: Source; verb:'pause'|'continue'; address:string; action_id:string } }
   | { operation: "codex-test-control"; body: { source: Source; verb:'stop'|'connection-loss'; session_id:string; create_input_id:string; run_id:string; action_id:string } }
-  | { operation: "board"; body: { source?: Source; verb: string; [key: string]: unknown } };
+  | { operation: "board"; body: { source?: Source; verb: string; [key: string]: unknown } }
+  | { operation:'lab-roster'|'lab-participant-change';body:{thread:string;action_id?:string;source?:Source} }
+  | { operation:'lab-participants';body:{thread:string;source:{input_id:string;run_id:string};action_id:string;revision:number;add:unknown[];remove:unknown[]} };
 
 class SessionUsageError extends Error {}
 
@@ -363,10 +375,31 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
 
 const BOARD_VERBS=['read','thread','post','claim','reveal','close','product','cite','link','verdict','cards','status','sweep'];
 const BOARD_SINGLE=['--source-input','--source-run','--source-channel','--source-ts','--action-id','--thread','--reply-to','--kind','--title','--blind','--decider','--end','--outcome','--text-file','--product','--supersedes','--medium','--address','--to','--relation','--reason','--target','--intent','--disposition-file','--speaker','--his-input','--inbox-session','--inbox-message','--design','--verdict','--scope','--json-file'];
-const BOARD_REPEATED=['--mention','--member','--from'];
+const BOARD_REPEATED=['--mention','--member','--from','--response-target'];
+function parseLabRosterArgs(verb:string,args:string[]):SessionCommunicationRequest {
+  const allowed=verb==='roster'?['--thread','--source-input','--source-run']:verb==='participant-change'?['--thread','--action-id','--source-input','--source-run']:
+    ['--thread','--revision','--json-file','--source-input','--source-run','--action-id'];
+  const flags=new Map<string,string>();
+  while(args.length){const flag=args.shift()!,value=args.shift();
+    if(!allowed.includes(flag)||flags.has(flag)||!value?.trim()||value.startsWith('--'))invalid(`Invalid ${verb} option ${flag}.`);
+    flags.set(flag,value);
+  }
+  const thread=flags.get('--thread')?.replace(/^lab:/,'');if(!thread)invalid(`${verb} needs --thread.`);
+  const readSource=flags.has('--source-input')||flags.has('--source-run')?sourceFrom(flags):undefined;
+  if(verb==='roster')return {operation:'lab-roster',body:{thread,...(readSource?{source:readSource}:{})}};
+  const action_id=flags.get('--action-id');if(!action_id)invalid(`${verb} needs --action-id.`);
+  if(verb==='participant-change')return {operation:'lab-participant-change',body:{thread,action_id,...(readSource?{source:readSource}:{})}};
+  const source=sourceFrom(flags);if(!('input_id' in source))invalid('Lab participants needs an exact native source input and run.');
+  const revision=Number(flags.get('--revision'));if(!Number.isSafeInteger(revision)||revision<1)invalid('Lab participants needs a positive --revision.');
+  const file=flags.get('--json-file');if(!file)invalid('Lab participants needs --json-file containing add and remove arrays.');
+  let parsed:any;try{parsed=JSON.parse(readFileSync(file,'utf8'));}catch(error){invalid(`--json-file is not JSON: ${error instanceof Error?error.message:String(error)}`);}
+  if(!parsed||typeof parsed!=='object'||Array.isArray(parsed)||Object.keys(parsed).some(key=>!['add','remove'].includes(key))||!Array.isArray(parsed.add)||!Array.isArray(parsed.remove))invalid('--json-file must contain only add and remove arrays.');
+  return {operation:'lab-participants',body:{thread,source,action_id,revision,add:parsed.add,remove:parsed.remove}};
+}
 /** `sessions board <verb> [<board>] …`: the Commons board (docs/plans/2026-10-08-commons-board.md). */
 function parseBoardArgs(args: string[]): SessionCommunicationRequest {
   const verb=args.shift();
+  if(verb&&['roster','participants','participant-change'].includes(verb))return parseLabRosterArgs(verb,args);
   if(!verb||!BOARD_VERBS.includes(verb))invalid(`board takes ${BOARD_VERBS.join(', ')}.`);
   const separator=args.indexOf('--');
   const options=separator<0?[...args]:args.slice(0,separator);
@@ -413,6 +446,7 @@ function parseBoardArgs(args: string[]): SessionCommunicationRequest {
   const names:Record<string,string>={'--action-id':'action_id','--thread':'thread','--reply-to':'reply_to','--kind':'kind','--title':'title','--blind':'blind','--decider':'decider','--end':'end','--outcome':'outcome','--product':'product','--supersedes':'supersedes','--medium':'medium','--address':'address','--to':'to','--relation':'relation','--reason':'reason','--target':'target','--intent':'intent','--speaker':'speaker','--his-input':'his_input','--inbox-session':'inbox_session','--inbox-message':'inbox_message','--design':'design','--verdict':'verdict','--scope':'scope'};
   for(const [flag,key] of Object.entries(names))if(flags.has(flag))body[key]=flags.get(flag);
   if(repeated.get('--mention'))body.mentions=repeated.get('--mention');
+  if(repeated.get('--response-target')){if(verb!=='post')invalid('--response-target is only for board post.');body.responseTargets=repeated.get('--response-target');}
   if(repeated.get('--member'))body.members=repeated.get('--member');
   if(repeated.get('--from'))body.from=repeated.get('--from');
   if(flags.has('--json-file')) {
@@ -431,6 +465,15 @@ function parseBoardArgs(args: string[]): SessionCommunicationRequest {
 
 export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationRequest {
   const [first, ...args] = argv;
+  if(first==='journal-review'){
+    const flags=new Map<string,string>();
+    for(let i=0;i<args.length;i+=2){
+      if(!["--source-input","--source-run","--action-id","--review-file"].includes(args[i]!)||!args[i+1]||flags.has(args[i]!))invalid("journal-review needs source flags, action ID and review-file.");
+      flags.set(args[i]!,args[i+1]!);
+    }
+    for(const key of ["--source-input","--source-run","--action-id","--review-file"])if(!flags.get(key))invalid(`Missing ${key}`);
+    return {operation:"journal-review",body:{source:{input_id:flags.get("--source-input"),run_id:flags.get("--source-run")},action_id:flags.get("--action-id"),review:JSON.parse(readFileSync(flags.get("--review-file")!,"utf8"))}};
+  }
   if(first==='commit-identity'){
     const [session,codexThread,...extra]=args;
     if(extra.length||!session)invalid('commit-identity needs a session or - and optional Codex thread.');
@@ -540,6 +583,34 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     return {operation:'pause',body:{source:sourceFrom(flags),verb,
       ...(flags.has('--action-id')?{action_id:flags.get('--action-id')}:{}),
       ...(sessionIds.length?{session_ids:sessionIds}:{})}};
+  }
+  if (first === 'agent-test-scope') {
+    const address=args.shift();
+    if(!address||!/^concierge:[1-9][0-9]*$/.test(address))invalid('agent-test-scope needs the exact concierge:<id> test session.');
+    const flags=new Map<string,string>();
+    while(args.length){
+      const flag=args.shift()!;
+      if(!['--create-input','--source-input','--source-run'].includes(flag))invalid(`Unexpected agent-test-scope option ${flag}.`);
+      const value=args.shift();
+      if(!value?.trim()||value.startsWith('--')||flags.has(flag))invalid(`${flag} needs one nonempty value.`);
+      flags.set(flag,value);
+    }
+    const createInput=flags.get('--create-input');
+    if(!createInput||!/^request:[0-9a-f-]{36}$/i.test(createInput))invalid('agent-test-scope needs --create-input request:<uuid>.');
+    const source=sourceFrom(flags);
+    return {operation:'agent-test-scope',body:{source,address,create_input_id:createInput}};
+  }
+  if (first === 'mutation-admission') {
+    const flags=new Map<string,string>();
+    while(args.length){
+      const flag=args.shift()!;
+      if(!['--source-input','--source-run'].includes(flag))invalid(`Unexpected mutation-admission option ${flag}.`);
+      const value=args.shift();
+      if(!value?.trim()||value.startsWith('--')||flags.has(flag))invalid(`${flag} needs one nonempty value.`);
+      flags.set(flag,value);
+    }
+    const source=sourceFrom(flags);
+    return {operation:'mutation-admission',body:{source}};
   }
   if (first === 'handoff' || first === 'obligations') {
     const verb = first === 'handoff' && (args[0] === 'accept' || args[0] === 'withdraw')
@@ -853,7 +924,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === "--action-id" && (operation === "ask" || operation === "reply" || operation === "note" || operation === "title" || operation === "post" || operation === "outcome" || operation === "answer" || operation === "thread" || operation === "cancel"))
       || (flag === '--reason' && operation === 'cancel')
       || (flag === "--thread" && (operation === "post" || operation === "thread" || operation === "ask" || operation === "search" || operation === "context"))
-      || (flag === "--route-message" && operation === "ask")
+      || (["--route-message","--response-mode"].includes(flag) && operation === "ask")
       || (flag === "--topic" && operation === "post")
       || (flag === "--promise-request" && operation === "post")
       || (flag === "--provider" && operation === "ask")
@@ -1044,7 +1115,9 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   // Files can carry a message without words; a final can instead close an earlier prompt answer.
   const attachmentOnly=(operation==='reply'||operation==='post')&&!!(paths.length||custody.length);
   const bodylessFinal=operation==='reply'&&!partial&&separator<0&&!textFile&&content.length===0;
-  const exactRoute=operation==='ask'&&flags.has('--route-message');
+  const contextOnly=operation==='ask'&&flags.get('--response-mode')==='context';
+  if(flags.has('--response-mode')&&!contextOnly)invalid('Unknown response mode.');
+  const exactRoute=operation==='ask'&&(flags.has('--route-message')||contextOnly&&flags.has('--capture-id'));
   if(exactRoute&&(separator>=0||textFile||paths.length||custody.length))
     invalid('--route-message uses the original accepted message and attachments; do not supply replacement text or files.');
   if (!exactRoute&&(attachmentOnly ? content.length > 1 : (!bodylessFinal&&((!textFile && separator < 0) || content.length !== 1 || !content[0]!.trim())))) {
@@ -1099,7 +1172,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   // A one-line summary goes first on every request and final reply: what the reader sees before the body.
   const summary=flags.get('--summary')?.trim();
   if(summary!==undefined&&(summary.length>200||summary.includes('\n')))invalid('--summary is one line of at most 200 characters.');
-  if(operation==='ask'&&provider!=='chatgpt'&&!flags.has('--peer')&&!summary)invalid('ask needs --summary "<one line saying what you ask>"; the recipient and Tejas see it before your words.');
+  if(operation==='ask'&&!contextOnly&&provider!=='chatgpt'&&!flags.has('--peer')&&!summary)invalid('ask needs --summary "<one line saying what you ask>"; the recipient and Tejas see it before your words.');
   if(also.length&&paths.length)invalid('--also sends one answer to several requests; attach files already retained with --attachment, or send the files with one request.');
   if(also.length&&partial)invalid('--also closes other requests with this one final answer; a partial reply names one request.');
   // A misplaced answer mark never stops the answer itself from being sent; the owner applies the
@@ -1167,7 +1240,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       invalid('--every-ms requires an interval of at least one minute.');
   }
   return operation === "ask"
-    ? { operation, body: { source, action_id: actionId, ...(role?{role}:provider?{provider}:{address:identity!}), ...(declaredPurpose?{purpose:declaredPurpose}:{}),...(providerReason?{providerReason}:{}), ...(implementation?{implementation:true}:{}), ...(smallTask?{smallTask:true}:{}), ...(outside?{outside:true}:{}), ...(onRunner?{onRunner:true}:{}), ...(codexNativeTestDeadlineMs===undefined?{}:{codexNativeTestFaultDeadlineMs:codexNativeTestDeadlineMs}), ...(title===undefined?{}:{title}), text: content[0]??'', ...(after.length ? { after } : {}),...(pace.length ? { pace } : {}),...(identity?(hisChat?{hisChat:true}:{}):(hisChat?{effort:`tejas:${chatgptChoice??''}`}:chatgptChoice?{effort:chatgptChoice}:defaultPro&&provider==='chatgpt'?{effort:'pro'}:{})),...(flags.has("--escalation-reason")?{escalationReason:flags.get("--escalation-reason")!}:{}),...(project?{project}:{}),...attached,...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(flags.has('--route-message')?{routeMessageId:flags.get('--route-message')!}:{}),...(implementation||returnToRequester?{return_to_requester:true}:{}),...(flags.has('--for-task')?{for_task:flags.get('--for-task')!}:{}),...(flags.has('--recovery-of')?{recovery_of:flags.get('--recovery-of')!}:{}),...(flags.has('--correction-of')?{correction_of:flags.get('--correction-of')!}:{}),...(flags.has('--resume-source-input')?{resume_source:{input_id:flags.get('--resume-source-input')!,run_id:flags.get('--resume-source-run')!}}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(implementation?{requestedEffect:"work"}:requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(summary?{summary}:{}),...(answerView?{answer_view:answerView as 'summary'|'full'}:{}),...(flags.has('--machine-need')?{machine_need:flags.get('--machine-need')!}:{}),...(flags.has('--server-attempt-url')||flags.has('--server-attempt-failure')?{server_attempt:{url:flags.get('--server-attempt-url'),failure:flags.get('--server-attempt-failure')}}:{}),...(flags.has('--consult')?{consult:flags.get('--consult')!}:{}),...(resurrect?{resurrect:true}:{}),...(savedKind?{saved:{kind:savedKind,...(savedKind==='scheduled'?{atMs:scheduledAt}:{}),...(flags.has('--expires')?{expiresAtMs:Date.parse(flags.get('--expires')!)}:{}),...(flags.has('--every-ms')?{repeatEveryMs:Number(flags.get('--every-ms'))}:{}),...(daily?{repeatEveryMs:86_400_000,daily}:{}),...(quietOnly?{quietOnly:true}:{})}}:{}) } }
+    ? { operation, body: { source, action_id: actionId, ...(contextOnly?{responseMode:'context'}:{}), ...(role?{role}:provider?{provider}:{address:identity!}), ...(declaredPurpose?{purpose:declaredPurpose}:{}),...(providerReason?{providerReason}:{}), ...(implementation?{implementation:true}:{}), ...(smallTask?{smallTask:true}:{}), ...(outside?{outside:true}:{}), ...(onRunner?{onRunner:true}:{}), ...(codexNativeTestDeadlineMs===undefined?{}:{codexNativeTestFaultDeadlineMs:codexNativeTestDeadlineMs}), ...(title===undefined?{}:{title}), text: content[0]??'', ...(after.length ? { after } : {}),...(pace.length ? { pace } : {}),...(identity?(hisChat?{hisChat:true}:{}):(hisChat?{effort:`tejas:${chatgptChoice??''}`}:chatgptChoice?{effort:chatgptChoice}:defaultPro&&provider==='chatgpt'?{effort:'pro'}:{})),...(flags.has("--escalation-reason")?{escalationReason:flags.get("--escalation-reason")!}:{}),...(project?{project}:{}),...attached,...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(flags.has('--route-message')?{routeMessageId:flags.get('--route-message')!}:{}),...(implementation||returnToRequester?{return_to_requester:true}:{}),...(flags.has('--for-task')?{for_task:flags.get('--for-task')!}:{}),...(flags.has('--recovery-of')?{recovery_of:flags.get('--recovery-of')!}:{}),...(flags.has('--correction-of')?{correction_of:flags.get('--correction-of')!}:{}),...(flags.has('--resume-source-input')?{resume_source:{input_id:flags.get('--resume-source-input')!,run_id:flags.get('--resume-source-run')!}}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(implementation?{requestedEffect:"work"}:requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(summary?{summary}:{}),...(answerView?{answer_view:answerView as 'summary'|'full'}:{}),...(flags.has('--machine-need')?{machine_need:flags.get('--machine-need')!}:{}),...(flags.has('--server-attempt-url')||flags.has('--server-attempt-failure')?{server_attempt:{url:flags.get('--server-attempt-url'),failure:flags.get('--server-attempt-failure')}}:{}),...(flags.has('--consult')?{consult:flags.get('--consult')!}:{}),...(resurrect?{resurrect:true}:{}),...(savedKind?{saved:{kind:savedKind,...(savedKind==='scheduled'?{atMs:scheduledAt}:{}),...(flags.has('--expires')?{expiresAtMs:Date.parse(flags.get('--expires')!)}:{}),...(flags.has('--every-ms')?{repeatEveryMs:Number(flags.get('--every-ms'))}:{}),...(daily?{repeatEveryMs:86_400_000,daily}:{}),...(quietOnly?{quietOnly:true}:{})}}:{}) } }
     : { operation, body: { source, action_id: actionId, request_id: identity!, text: message, final: !partial, ...(summary?{summary}:{}),...(notify?{notify:true}:{}),...(alsoMainThread?{also_main_thread:true}:{}),
         ...(answersQuestion?{answers_question:true}:{}),
         ...(flags.has('--waiting-on-watch')?{waiting_on_watch:flags.get('--waiting-on-watch')!}:{}),
@@ -1178,6 +1251,15 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
 }
 
 export async function runRouterSessions(request: SessionCommunicationRequest) {
+  if(request.operation==='lab-roster'||request.operation==='lab-participant-change'){
+    const path=`/sessions/v1/lab/conversations/${encodeURIComponent(request.body.thread)}`;
+    const source=request.body.source;
+    return requestApiResponse(request.operation==='lab-roster'?path:`${path}/participant-changes/${encodeURIComponent(request.body.action_id!)}`,undefined,undefined,source&&'input_id' in source?{inputId:source.input_id,runId:source.run_id}:undefined);
+  }
+  if(request.operation==='lab-participants'){
+    const {thread,source,action_id,revision,add,remove}=request.body;
+    return requestApiResponse(`/sessions/v1/lab/conversations/${encodeURIComponent(thread)}/participants`,{clientActionId:action_id,expectedRevision:revision,add,remove,agentSource:{inputId:source.input_id,runId:source.run_id}});
+  }
   if(request.operation==='commit-identity')return requestApiResponse('/sessions/v1/commit-identity',request.body);
   if(request.operation==='codex-test-control'){
     const {source,verb,session_id,create_input_id,run_id,action_id}=request.body;

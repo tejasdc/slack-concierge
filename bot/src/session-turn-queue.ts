@@ -1,3 +1,4 @@
+import {outsideContentReader} from './content-reader-scope';
 export interface SessionTurnQueueCoordinatorOptions<TClaim extends { turn_id: number }> {
   /** Clock-driven queue maintenance runs once before each wake pass, not before each claim. */
   beforeClaims?(): void;
@@ -41,7 +42,8 @@ export class SessionTurnQueueCoordinator<TClaim extends { turn_id: number }> {
 
     this.pumping = true;
     this.needsPreparation = true;
-    this.pump();
+    // Claimed turns outlive the request that woke the queue; they never run as its reader.
+    outsideContentReader(() => this.pump());
   }
 
   private pump() {

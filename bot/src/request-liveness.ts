@@ -35,8 +35,7 @@ export const STILL_WAITING_AFTER_MS = 15 * 60_000;
 export const STILL_WAITING_MINUTES = STILL_WAITING_AFTER_MS / 60_000;
 
 /** Human thread replies get a prompt answer while the recipient continues its work. */
-export const PROMPT_ANSWER_REMINDER_MS = 2 * 60_000;
-export const PROMPT_ANSWER_OVERDUE_MS = 3 * 60_000;
+export {PROMPT_ANSWER_REMINDER_MS,PROMPT_ANSWER_OVERDUE_MS} from './prompt-answer-policy';
 
 /** True while a Concierge update is draining: work held only by it is waiting, not stalled. */
 export function updateDraining(): boolean {
@@ -61,7 +60,8 @@ export function waitingOnLiveRequest(sessionId: number, sinceMs = 0, untakenAnsw
         LEFT JOIN turns saved_turn ON saved_turn.id=target.turn_id
         WHERE request.source_session_id=? AND request.source_input_id IS NOT NULL AND request.created_at_ms>=? AND ${live} AND ${returns}
           AND NOT (saved_turn.saved_kind IS NOT NULL AND saved_turn.status='queued') LIMIT 1`).get(sessionId, sinceMs)
-        || !!db.query(`SELECT 1 FROM session_peer_requests request WHERE source_session_id=? AND created_at_ms>=? AND ${live} AND ${returns} LIMIT 1`).get(sessionId, sinceMs)
+        || !!db.query(`SELECT 1 FROM session_peer_requests request WHERE source_session_id=? AND created_at_ms>=? AND ${live} AND ${returns}
+          AND json_extract(request.payload_json,'$.responseMode') IS NOT 'context' LIMIT 1`).get(sessionId, sinceMs)
         // A request that has just been answered still wakes this session until its answer is taken
         // in: on 2026-10-08 three requests were reported stalled in the same second their worker's
         // own sub-request settled, before the return that woke it had started a turn.
