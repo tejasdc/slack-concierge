@@ -31,4 +31,7 @@ export const sqliteWorkerIdentity = isMainThread ? null : {
   role:basename(Bun.main).replace(/\.(ts|js)$/, '') + (typeof workerData?.role === 'string' ? ':'+workerData.role : ''),
   generation:randomUUID(),...nativeIdentity(),
 };
-if(sqliteWorkerIdentity) logToStderr('info','sqlite_worker_identity',sqliteWorkerIdentity);
+if(sqliteWorkerIdentity) {
+  try { logToStderr('info','sqlite_worker_identity',sqliteWorkerIdentity); }
+  catch { /* Optional attribution must never prevent the worker from starting. */ }
+}
