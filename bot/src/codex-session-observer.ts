@@ -12,6 +12,7 @@ import { projectSessionProviderMessage } from "./session-projection";
 import { recordSessionEvent } from "./session-inputs";
 import { recordCodexWorkload } from "./session-fit";
 import { disconnectCodexLifecycle, observeCodexLifecycle } from "./codex-session-lifecycle";
+import { runLedgerSegment, runLedgerSteps } from "./ledger-admission";
 import {
   getConciergeProviderTurn,
   getUniqueCodexSessionBinding,
@@ -58,8 +59,10 @@ export class CodexSessionObserver {
 
   start() {
     if (this.connectionLoop) return;
-    for (const binding of listUniqueCodexSessionBindings()) disconnectCodexLifecycle(binding.provider_thread_uuid);
-    this.connectionLoop = this.runConnections();
+    this.connectionLoop = runLedgerSegment(() => {
+      if (this.stopped) return;
+      for (const binding of listUniqueCodexSessionBindings()) disconnectCodexLifecycle(binding.provider_thread_uuid);
+    }).then(() => this.runConnections());
   }
 
   providerSessionBound(providerThreadUuid: string) {
@@ -110,7 +113,9 @@ export class CodexSessionObserver {
         if (!await this.observeLoadedBindings(this.appServer, generation)) continue;
         failures = 0;
         if (this.stopped) return;
-        clearRetryBreaker("codex-session-observer:app-server");
+        await runLedgerSegment(() => {
+          if (!this.stopped) clearRetryBreaker("codex-session-observer:app-server");
+        });
         await Promise.race([this.appServer.waitForDisconnect(generation), this.stoppedSignal]);
       } catch (error) {
         if (!this.stopped) log("warn", "codex_session_observer_disconnected", errorFields(error));
@@ -119,16 +124,19 @@ export class CodexSessionObserver {
         await this.notificationLoop;
         // A planned owner handoff has no new provider evidence to record here. The next
         // owner refreshes lifecycle from the App Server after its request API opens.
-        if (!this.stopped) {
-          for (const threadId of this.subscribedThreadIds) disconnectCodexLifecycle(threadId);
-        }
+        if (!this.stopped) await runLedgerSegment(() => {
+          if (!this.stopped) {
+            for (const threadId of this.subscribedThreadIds) disconnectCodexLifecycle(threadId);
+          }
+        });
         this.subscribedThreadIds.clear();
       }
       if (!this.stopped) {
         failures += 1;
-        const decision = recordRetryFailure({ key: "codex-session-observer:app-server", site: "codex-observer",
+        const decision = await runLedgerSegment(() => this.stopped ? null : recordRetryFailure({ key: "codex-session-observer:app-server", site: "codex-observer",
           what: "Codex conversation observation", failure: { kind: "transient",
-            reason: "The Codex App Server did not answer.", restartSignal: "the Codex App Server answers a capped probe" } });
+            reason: "The Codex App Server did not answer.", restartSignal: "the Codex App Server answers a capped probe" } }));
+        if (!decision) return;
         await Promise.race([wait(decision.action === "retry" ? Math.max(0, decision.atMs - Date.now()) : RETRY_POLICIES.observer.capDelayMs), this.stoppedSignal]);
       }
     }
@@ -291,7 +299,9 @@ export class CodexSessionObserver {
       if (!Array.isArray(page?.data) || page.data.some((entry: any) => entry?.turnId !== target.id)) {
         throw new Error("Codex returned protected items for a different native turn.");
       }
-      for (const entry of page.data) this.observeMessages({ threadId: providerThreadUuid, turnId: target.id, item: entry.item });
+      await runLedgerSegment(() => {
+        for (const entry of page.data) this.observeMessages({ threadId: providerThreadUuid, turnId: target.id, item: entry.item });
+      });
       const next = typeof page.nextCursor === "string" ? page.nextCursor : null;
       if (next && next === itemCursor) throw new Error("Codex repeated a protected item cursor.");
       itemCursor = next;
@@ -323,13 +333,17 @@ export class CodexSessionObserver {
       log("warn", "codex_session_history_head_failed", {
         ...errorFields(error), provider_thread_uuid: providerThreadUuid, session_id: sessionId,
       });
-      this.invalidateHistory(sessionId, providerThreadUuid);
+      await runLedgerSegment(() => {
+        if (!this.stopped) this.invalidateHistory(sessionId, providerThreadUuid);
+      });
       return;
     }
-    if (this.stopped) return;
-    if (recordCodexSessionHistoryHead(sessionId, providerThreadUuid, digest)) {
-      this.invalidateHistory(sessionId, providerThreadUuid);
-    }
+    await runLedgerSegment(() => {
+      if (this.stopped) return;
+      if (recordCodexSessionHistoryHead(sessionId, providerThreadUuid, digest)) {
+        this.invalidateHistory(sessionId, providerThreadUuid);
+      }
+    });
   }
 
   private queueNotification(event: any) {
@@ -367,6 +381,26 @@ export class CodexSessionObserver {
   }
 
   private async onNotification(event: any) {
+    const continuation = await runLedgerSegment(() => this.persistNotificationSegment(event));
+    if (!continuation) return;
+    const { threadId, kind } = continuation;
+    if (kind === "status") {
+      if (event.params.status?.type === "active" && !this.subscribedThreadIds.has(threadId)) {
+        // Subscribe outside the notification queue: subscription refresh joins this queue.
+        void this.providerSessionBound(threadId).catch(error =>
+          log("warn", "codex_session_lifecycle_subscription_failed", {
+            provider_thread_uuid: threadId, ...errorFields(error),
+          }));
+      }
+      await this.refreshLifecycle(threadId);
+      const binding = await runLedgerSegment(() => getUniqueCodexSessionBinding(threadId));
+      if (binding) await this.refreshHistoryHead(binding.session_id, threadId);
+    }
+    await this.releaseIdleSubscription(threadId);
+  }
+
+  private persistNotificationSegment(event: any): { threadId: string; kind: "completed" | "status" } | undefined {
+    if (this.stopped) return;
     const threadId = event.params?.threadId;
     if (typeof threadId === "string" && getUniqueCodexSessionBinding(threadId)) {
       if (["turn/started", "turn/completed"].includes(event.method)) {
@@ -374,23 +408,11 @@ export class CodexSessionObserver {
         if (event.method === "turn/started" && this.protectedSessionThreadIds.has(threadId))
           this.startProtectedObservation(threadId);
         if (event.method === "turn/completed") this.invalidateHistory(getUniqueCodexSessionBinding(threadId)!.session_id, threadId);
-        if (event.method === "turn/completed") await this.releaseIdleSubscription(threadId);
+        if (event.method === "turn/completed") return { threadId, kind: "completed" };
         return;
       }
       if (event.method === "thread/status/changed") {
-        if (event.params.status?.type === "active" && !this.subscribedThreadIds.has(threadId)) {
-          // Status changes are broadcast even to connections that did not resume
-          // this thread. Subscribe outside this serial notification loop: the
-          // subscription's lifecycle refresh joins the same loop.
-          void this.providerSessionBound(threadId).catch(error =>
-            log("warn", "codex_session_lifecycle_subscription_failed", {
-              provider_thread_uuid: threadId, ...errorFields(error),
-            }));
-        }
-        await this.refreshLifecycle(threadId);
-        await this.refreshHistoryHead(getUniqueCodexSessionBinding(threadId)!.session_id, threadId);
-        await this.releaseIdleSubscription(threadId);
-        return;
+        return { threadId, kind: "status" };
       }
       if (event.method === "thread/closed") {
         disconnectCodexLifecycle(threadId);
@@ -458,14 +480,19 @@ export class CodexSessionObserver {
         this.appServer.request("thread/read", { threadId, includeTurns: false }),
       ]);
     } catch {
-      if (!this.stopped) disconnectCodexLifecycle(threadId);
+      await runLedgerSegment(() => {
+        if (!this.stopped && (this.lifecycleVersions.get(threadId) ?? 0) === version) disconnectCodexLifecycle(threadId);
+      });
       log("warn", "codex_session_lifecycle_refresh_failed", { provider_thread_uuid: threadId });
       return undefined;
     }
     // Notifications received during this read own newer evidence and are already queued.
-    if (this.stopped || (this.lifecycleVersions.get(threadId) ?? 0) !== version) return undefined;
-    observeCodexLifecycle(threadId, page.data?.[0], "thread/snapshot", snapshot.thread?.status?.type);
-    return typeof snapshot.thread?.status?.type === "string" ? snapshot.thread.status.type : undefined;
+    const status = await runLedgerSegment(() => {
+      if (this.stopped || (this.lifecycleVersions.get(threadId) ?? 0) !== version) return undefined;
+      observeCodexLifecycle(threadId, page.data?.[0], "thread/snapshot", snapshot.thread?.status?.type);
+      return typeof snapshot.thread?.status?.type === "string" ? snapshot.thread.status.type : undefined;
+    });
+    return status;
   }
 
   private observeMessages(params: any) {
@@ -493,15 +520,19 @@ export class CodexSessionObserver {
 }
 
 /** Production callback shared by execution-host binding and provider-session lifecycle hooks. */
-export async function bindCodexProviderSession(
+export function bindCodexProviderSession(
   observer: Pick<CodexSessionObserver, "providerSessionBound"> | null | undefined,
   providerThreadUuid: string,
   secondaryObserver?: { providerSessionBound(providerThreadUuid: string): Promise<void> } | null,
 ) {
-  await observer?.providerSessionBound(providerThreadUuid);
-  const binding = getUniqueCodexSessionBinding(providerThreadUuid);
-  if (binding && protectedCustodyBinding(binding.session_id)) return;
-  await secondaryObserver?.providerSessionBound(providerThreadUuid);
+  // Each synchronous stretch (the observers' own ledger reads and this binding read)
+  // is its own admitted step; the observers' returned promises are the existing waits.
+  return runLedgerSteps((function* (): Generator<unknown, void, any> {
+    yield observer?.providerSessionBound(providerThreadUuid);
+    const binding = getUniqueCodexSessionBinding(providerThreadUuid);
+    if (binding && protectedCustodyBinding(binding.session_id)) return;
+    yield secondaryObserver?.providerSessionBound(providerThreadUuid);
+  })());
 }
 
 export function isProtectedCodexProviderThread(providerThreadUuid: string): boolean {

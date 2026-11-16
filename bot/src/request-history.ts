@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import {DECISIONS_DIR,FAILURE_CASES_DIR,TASTE_PROFILE,decisions,failureCases,oneLine,tastePassages,type Decision,type FailureCase,type TastePassage} from './earlier-records';
 import {db} from './state';
 import {log} from './log';
@@ -100,20 +102,20 @@ type Closest<T>={found:T[];omission:string|null};
  * the taste-profile passage on search scored 0.45 against the Threads search request and the notification
  * passages 0.38-0.41 against his duplicate-notification complaint, so a 0.55 cutoff handed out none.
  */
-async function closestRecords<T>(index:MeaningIndex,vector:Float32Array,items:T[],missing:string,max:number,sameProblemOnly:boolean,doc:(item:T)=>{key:string;text:string}):Promise<Closest<T>> {
+async function closestRecords<T>(index:MeaningIndex,vector:Float32Array,items:T[],missing:string,max:number,sameProblemOnly:boolean,doc:(item:T)=>{key:string;text:string}):Promise<Closest<T>> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if(!items.length)return {found:[],omission:missing};
   const docs=items.map(doc);
-  const vectors=await index.documentVectors(docs);
+  const vectors=(yield index.documentVectors(docs));
   const dot=(a:Float32Array,b:Float32Array)=>{let sum=0;for(let i=0;i<a.length;i++)sum+=a[i]!*b[i]!;return sum;};
   return {found:items.map((item,at)=>{const other=vectors.get(docs[at]!.key);return {item,score:other?dot(vector,other):Number.NEGATIVE_INFINITY};})
     .filter(entry=>sameProblemOnly?entry.score>=MIN_MEANING:Number.isFinite(entry.score)).sort((a,b)=>b.score-a.score).slice(0,max).map(entry=>entry.item),omission:null};
-}
-const closestCases=async(index:MeaningIndex,vector:Float32Array)=>closestRecords(index,vector,await failureCases(),
-  `No failure cases were found in ${FAILURE_CASES_DIR}.`,MAX_CASES,true,(item:FailureCase)=>({key:`failure-case:${item.id}`,text:`${item.id}. ${item.text}`}));
-const closestDecisions=async(index:MeaningIndex,vector:Float32Array)=>closestRecords(index,vector,await decisions(),
-  `His decision record was not found at ${DECISIONS_DIR}.`,MAX_DECISIONS,false,(item:Decision)=>({key:`decision:${item.id}`,text:`${item.decision}. ${item.scope}. ${item.words}`}));
-const closestTaste=async(index:MeaningIndex,vector:Float32Array)=>closestRecords(index,vector,await tastePassages(),
-  `His taste profile was not found at ${TASTE_PROFILE}.`,MAX_TASTE,false,(item:TastePassage)=>({key:item.key,text:`${item.principle}. ${item.text}`}));
+}).call(this));}
+const closestCases=async(index:MeaningIndex,vector:Float32Array)=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {return closestRecords(index,vector,(yield failureCases()),
+  `No failure cases were found in ${FAILURE_CASES_DIR}.`,MAX_CASES,true,(item:FailureCase)=>({key:`failure-case:${item.id}`,text:`${item.id}. ${item.text}`}));}).call(this));};
+const closestDecisions=async(index:MeaningIndex,vector:Float32Array)=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {return closestRecords(index,vector,(yield decisions()),
+  `His decision record was not found at ${DECISIONS_DIR}.`,MAX_DECISIONS,false,(item:Decision)=>({key:`decision:${item.id}`,text:`${item.decision}. ${item.scope}. ${item.words}`}));}).call(this));};
+const closestTaste=async(index:MeaningIndex,vector:Float32Array)=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {return closestRecords(index,vector,(yield tastePassages()),
+  `His taste profile was not found at ${TASTE_PROFILE}.`,MAX_TASTE,false,(item:TastePassage)=>({key:item.key,text:`${item.principle}. ${item.text}`}));}).call(this));};
 
 export type Requirements={available:boolean;taste:TastePassage[];decisions:Decision[];cases:FailureCase[];omissions:string[]};
 /**
@@ -123,13 +125,13 @@ export type Requirements={available:boolean;taste:TastePassage[];decisions:Decis
  * 2026-11-12: "every … feature … should do … an operational review … does this follow [the] taste
  * [profile] … Changes can be get reviewed really quickly".
  */
-export async function requirementsFor(words:string):Promise<Requirements> {
+export async function requirementsFor(words:string):Promise<Requirements> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const index=meaningIndex();
   if(!index?.installed)return {available:false,taste:[],decisions:[],cases:[],omissions:['The meaning index is not installed on this machine.']};
-  const vector=await index.questionVector(oneLine(words,600));
-  const [cases,ruled,taste]=await Promise.all([closestCases(index,vector),closestDecisions(index,vector),closestTaste(index,vector)]);
+  const vector=(yield index.questionVector(oneLine(words,600)));
+  const [cases,ruled,taste]=(yield Promise.all([closestCases(index,vector),closestDecisions(index,vector),closestTaste(index,vector)]));
   return {available:true,taste:taste.found,decisions:ruled.found,cases:cases.found,omissions:[cases,ruled,taste].flatMap(part=>part.omission?[part.omission]:[])};
-}
+}).call(this));}
 
 export async function earlierWorkFor(input:{
   /** The request's one-line summary and words: what the problem is. */
@@ -145,18 +147,18 @@ export async function earlierWorkFor(input:{
   nowMs:number;
   titleOf:(sessionId:number)=>string;
   answerability:Answerability;
-}):Promise<EarlierWork> {
+}):Promise<EarlierWork> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const started=performance.now();
   try {
-    return await lookUp(input);
+    return (yield lookUp(input));
   } catch(error) {
     const reason=error instanceof Error?error.message:String(error);
     log('warn','request_history_failed',{elapsed_ms:Math.round(performance.now()-started),error:reason});
     return {text:`What came before: Concierge's lookup of earlier work failed (${oneLine(reason,200)}); search for it yourself with router-actions.sh sessions search.`,requests:0,sessions:0,cases:0,decisions:0,taste:0,omissions:[reason]};
   }
-}
+}).call(this));}
 
-async function lookUp(input:Parameters<typeof earlierWorkFor>[0]):Promise<EarlierWork> {
+async function lookUp(input:Parameters<typeof earlierWorkFor>[0]):Promise<EarlierWork> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const started=performance.now();
   const omissions:string[]=[];
   const excluded=new Set(input.exclude);
@@ -167,15 +169,15 @@ async function lookUp(input:Parameters<typeof earlierWorkFor>[0]):Promise<Earlie
   const inThread=new Set(thread.map(row=>row.target_session_id));
   const query=oneLine(`${input.summary??''} ${input.text}`,600);
   type Compared={sessions:ReturnType<typeof closestSessions>;cases:Closest<FailureCase>;decisions:Closest<Decision>;taste:Closest<TastePassage>};
-  const compare=async():Promise<Compared|null>=>{
+  const compare=async():Promise<Compared|null>=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const index=meaningIndex();
     if(!index?.installed){omissions.push('Earlier sessions, failure cases, his decisions and his taste profile were not compared: the meaning index is not installed on this machine.');return null;}
-    const vector=await index.questionVector(query);
+    const vector=(yield index.questionVector(query));
     // One index for the question and every comparison, so they always share an embedding model.
-    const [cases,decisions,taste]=await Promise.all([closestCases(index,vector!),closestDecisions(index,vector!),closestTaste(index,vector!)]);
+    const [cases,decisions,taste]=(yield Promise.all([closestCases(index,vector!),closestDecisions(index,vector!),closestTaste(index,vector!)]));
     return {sessions:closestSessions(index,vector!),cases,decisions,taste};
-  };
-  const compared=await within(compare(),MEANING_WAIT_MS).catch(error=>{omissions.push(`Earlier sessions, failure cases, his decisions and his taste profile could not be compared: ${error instanceof Error?error.message:String(error)}.`);return null;});
+  }).call(this));};
+  const compared=(yield within(compare(),MEANING_WAIT_MS).catch(ledgerCallback(error=>{omissions.push(`Earlier sessions, failure cases, his decisions and his taste profile could not be compared: ${error instanceof Error?error.message:String(error)}.`);return null;})));
   if(compared==='late')omissions.push(`Earlier sessions, failure cases, his decisions and his taste profile were not compared within ${MEANING_WAIT_MS/1000} s; search yourself with router-actions.sh sessions search, node scripts/failure-case.mjs search in thnkr.ing, decision search, and his taste profile in the interface-decisions skill.`);
   const sessions=compared&&compared!=='late'?compared.sessions:null;
   const cases=compared&&compared!=='late'?compared.cases:null;
@@ -220,4 +222,4 @@ async function lookUp(input:Parameters<typeof earlierWorkFor>[0]):Promise<Earlie
   if(failures.length)parts.push(`Diagnosed failures in thnkr.ing's failure cases (${FAILURE_CASES_DIR}; read one with node scripts/failure-case.mjs find <id>):\n${failures.map(item=>`- ${item.id} (${item.date}): ${oneLine(item.text,300)}`).join('\n')}`);
   if(omissions.length)parts.push(`Not consulted: ${omissions.join(' ')}`);
   return {text:parts.join('\n\n'),requests:thread.length,sessions:related.length,cases:failures.length,decisions:rulings.length,taste:tastes.length,omissions};
-}
+}).call(this));}

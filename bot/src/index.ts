@@ -1,4 +1,9 @@
 import {closeModuleLoadStorage} from './owner-task-labels-install';
+import {ledgerCallback,runLedgerSteps,runLedgerSegment} from './ledger-admission';
+import {startDeploymentLedgerHandover,scheduleDeploymentLedgerHandover} from './deployment-ledger-handover';
+// This declaration belongs to the application entry, including when an older
+// builder packages it with a separately selected controller.
+export const conciergeLedgerCommandsV1=true;
 import { App, LogLevel } from "@slack/bolt";
 import { recordModuleLoadStep, runStartupPhase, runStartupStep } from './startup-phase';
 import { RoutedRequestCoordinator } from "./routed-requests";
@@ -530,9 +535,9 @@ const activeTurnDispatch = new ActiveTurnDispatchRegistry({
     const dashboardUser = getAgentSessionDashboardUserForTurn(turnId);
     if (dashboardUser) scheduleAgentSessionsHomeRefresh(dashboardUser);
     if (runtime.ownership.deployment) {
-      void refreshActiveDeploymentReactionTargets(turnId).catch((error) => {
+      void refreshActiveDeploymentReactionTargets(turnId).catch(ledgerCallback((error) => {
         log("error", "deployment_turn_reaction_refresh_failed", errorFields(error));
-      });
+      }));
       scheduleDeploymentWork("turn-settled");
       wakeDeploymentRunnerWaitingForIdle();
     }
@@ -543,7 +548,7 @@ if(process.platform==='linux'){
   // Results are small spool artifacts. Only this owner commits them to the attachment ledger;
   // a bounded pass also catches a result produced while Concierge was restarting.
   sessionExecutionHost.owner.reconcileFinishedSpeechJobs();
-  setInterval(()=>sessionExecutionHost.owner.reconcileFinishedSpeechJobs(),1_000);
+  setInterval(ledgerCallback(()=>sessionExecutionHost.owner.reconcileFinishedSpeechJobs()),1_000);
   // The server runs this composition; the Codex process audit's retry must start here too.
   sessionExecutionHost.startCodexProcessAuditSweep(()=>draining);
 }
@@ -644,21 +649,22 @@ if (!projectCutoverStartup.preserveDrain) clearAbandonedDrain(isProcessIdentityA
 registerProcessInstance(instanceId, processIdentity.pid, processIdentity.bootId, processIdentity.startTicks);
 let heartbeatInFlight: Promise<void> | null = null;
 function scheduleProcessHeartbeat() {
+  scheduleDeploymentLedgerHandover();
   if (heartbeatInFlight || draining) return;
   const heartbeat = retryTransientDatabaseOperation({
     operation: () => heartbeatProcessInstance(instanceId),
     shouldStop: () => draining,
   })
     .then(() => {})
-    .catch((error) => {
+    .catch(ledgerCallback((error) => {
       log("error", "process_heartbeat_failed", { instance_id: instanceId, ...errorFields(error) });
-    })
+    }))
     .finally(() => {
       if (heartbeatInFlight === heartbeat) heartbeatInFlight = null;
     });
   heartbeatInFlight = heartbeat;
 }
-setInterval(scheduleProcessHeartbeat, 15_000);
+setInterval(ledgerCallback(scheduleProcessHeartbeat), 15_000);
 
 const skillRoutes = configuredSkillRoutes(
   cfg.substack_editor_bot_user_id || process.env.SUBSTACK_EDITOR_BOT_USER_ID,
@@ -671,7 +677,7 @@ async function deliverTurnOutcome(input: {
   threadTs: string;
   text: string;
   user?: string;
-}): Promise<"delivered" | "stopped" | "permanent_failure"> {
+}): Promise<"delivered" | "stopped" | "permanent_failure"> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const replaceFirstMessageTs = prepareTurnReplyReplacement(input.turnId, input.channel, routerReplyChannelId());
   return runDeliveryWorker({
     recordAttempt: () => recordDeliveryAttempt(input.turnId, null),
@@ -681,14 +687,14 @@ async function deliverTurnOutcome(input: {
     },
     shouldStop: () => draining,
     isRetryable: isTransientSlackError,
-    wait: async (milliseconds) => {
+    wait: async (milliseconds) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
       const deadline = Date.now() + milliseconds;
       while (!draining && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, Math.min(100, deadline - Date.now())));
+        (yield new Promise((resolve) => setTimeout(resolve, Math.min(100, deadline - Date.now()))));
       }
-    },
-    attempt: async () => {
-      await postLongReply({
+    }).call(this));},
+    attempt: async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+      (yield postLongReply({
         client: input.client,
         channel: input.channel,
         threadTs: input.threadTs,
@@ -698,33 +704,33 @@ async function deliverTurnOutcome(input: {
         skipChunkIndexes: deliveredChunkIndexes(input.turnId),
         replaceFirstMessageTs,
         onChunkPosted: (index, ts) => markDeliveryChunkDelivered(input.turnId, index, ts),
-      });
-    },
+      }));
+    }).call(this));},
   });
-}
+}).call(this));}
 
 async function hydrateLegacySlackThreadOwnership(input: {
   client: any;
   channel: string;
   threadTs: string;
   user?: string;
-}) {
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const messageTimestamps: string[] = [];
   let cursor: string | undefined;
   do {
-    const page: any = await slackCall(input.client, "conversations.replies", {
+    const page: any = (yield slackCall(input.client, "conversations.replies", {
       channel: input.channel,
       ts: input.threadTs,
       limit: 200,
       ...(cursor ? { cursor } : {}),
-    }, { channel: input.channel, user: input.user });
+    }, { channel: input.channel, user: input.user }));
     messageTimestamps.push(
       ...(page.messages || []).map((message: any) => String(message.ts || "")).filter(Boolean),
     );
     cursor = page.response_metadata?.next_cursor || undefined;
   } while (cursor && messageTimestamps.length < 1_000);
   return associateLegacyTurnsWithSlackThread(input.channel, input.threadTs, messageTimestamps);
-}
+}).call(this));}
 
 function commandChannelName(command: any) {
   return String(command.channel_name || command.channel_id || "").trim().replace(/^#/, "");
@@ -762,7 +768,7 @@ async function resolveExactForkTurnId(input: {
   } | null;
   cwd: string;
   requireBoundary: boolean;
-}): Promise<string | null> {
+}): Promise<string | null> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   assertProviderHistoryReplayable(input.parent, "fork");
   if (!input.boundary) {
     if (input.requireBoundary) {
@@ -788,11 +794,11 @@ async function resolveExactForkTurnId(input: {
       "This legacy turn has no canonical provider input, so Concierge cannot prove an exact fork point.",
     );
   }
-  const matches = await findCodexTurnIdsByReplayText({
+  const matches = (yield findCodexTurnIdsByReplayText({
     sessionUUID: input.parent.agent_session_uuid,
     replayText: input.boundary.replayText,
     cwd: input.cwd,
-  });
+  }));
   if (matches.length !== 1) {
     throw new Error(matches.length === 0
       ? "This legacy Codex turn could not be matched to an exact provider boundary. Use /fork without a message timestamp to clone the latest complete session."
@@ -800,7 +806,7 @@ async function resolveExactForkTurnId(input: {
   }
   recordTurnProviderTurnId(input.boundary.turnId, matches[0]);
   return matches[0];
-}
+}).call(this));}
 
 function steeringFailureNoticeText(message: Pick<SteeringNotificationRow, "status" | "error">) {
   return message.status === "ambiguous"
@@ -815,31 +821,31 @@ function deterministicSlackClientMessageId(key: string) {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-async function waitForNoticeRetry(milliseconds: number) {
+async function waitForNoticeRetry(milliseconds: number) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const deadline = Date.now() + milliseconds;
   while (!draining && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, Math.min(100, deadline - Date.now())));
+    (yield new Promise((resolve) => setTimeout(resolve, Math.min(100, deadline - Date.now()))));
   }
-}
+}).call(this));}
 
-async function persistThreadStatusState<T>(operation: () => T): Promise<T> {
-  const result = await retryTransientDatabaseOperation({
+async function persistThreadStatusState<T>(operation: () => T): Promise<T> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  const result = (yield retryTransientDatabaseOperation({
     operation,
-  });
+  }));
   if (result.stopped) throw new Error("Status projection persistence stopped.");
   return result.value;
-}
+}).call(this));}
 
 async function scheduleSlackThreadStatusProjection(
   client: any,
   channel: string,
   threadTs: string,
   user?: string | null,
-): Promise<"delivered" | "stopped" | "permanent_failure"> {
+): Promise<"delivered" | "stopped" | "permanent_failure"> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const key = `${channel}:${threadTs}`;
   const existing = activeThreadStatusProjectionTasks.get(key);
   if (existing) {
-    await existing;
+    (yield existing);
     const latest = getSlackThreadStatus(channel, threadTs);
     if (!draining && latest?.projection_status === "pending") {
       return scheduleSlackThreadStatusProjection(client, channel, threadTs, user);
@@ -854,24 +860,24 @@ async function scheduleSlackThreadStatusProjection(
     claim: (nowMs) => persistThreadStatusState(
       () => claimSlackThreadStatusProjection(channel, threadTs, nowMs),
     ),
-    update: async (row) => {
-      await slackCall(client, "chat.update", {
+    update: async (row) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+      (yield slackCall(client, "chat.update", {
         channel,
         ts: row.slack_status_msg_ts,
         text: row.desired_text || "Status unavailable.",
-      }, { channel, user: user || undefined });
-    },
+      }, { channel, user: user || undefined }));
+    }).call(this));},
     post: (row, clientMessageId) => postThreadStatusThroughAnchor({
       anchorTurnId: row.anchor_turn_id,
       projectAnchorTurn: (turnId) => scheduleSlackTurnStatusProjection(client, turnId, user),
       loadStatusMessageTs: () => getSlackThreadStatus(channel, threadTs)?.slack_status_msg_ts || "",
-      updateAnchoredMessage: async (messageTs) => {
-        await slackCall(client, "chat.update", {
+      updateAnchoredMessage: async (messageTs) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+        (yield slackCall(client, "chat.update", {
           channel,
           ts: messageTs,
           text: row.desired_text || "Status unavailable.",
-        }, { channel, user: user || undefined });
-      },
+        }, { channel, user: user || undefined }));
+      }).call(this));},
       postNewMessage: () => slackCall(client, "chat.postMessage", {
         channel,
         thread_ts: row.slack_thread_ts,
@@ -911,22 +917,22 @@ async function scheduleSlackThreadStatusProjection(
     }
   });
   activeThreadStatusProjectionTasks.set(key, task);
-  const outcome = await task;
+  const outcome = (yield task);
   const latest = getSlackThreadStatus(channel, threadTs);
   if (!draining && latest?.projection_status === "pending") {
     return scheduleSlackThreadStatusProjection(client, channel, threadTs, user);
   }
   return outcome;
-}
+}).call(this));}
 
 async function scheduleSlackTurnStatusProjection(
   client: any,
   turnId: number,
   user?: string | null,
-): Promise<"delivered" | "stopped" | "permanent_failure"> {
+): Promise<"delivered" | "stopped" | "permanent_failure"> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const existing = activeTurnStatusProjectionTasks.get(turnId);
   if (existing) {
-    await existing;
+    (yield existing);
     const latest = getTurnStatusProjection(turnId);
     if (!draining && latest?.projection_status === "pending") {
       return scheduleSlackTurnStatusProjection(client, turnId, user);
@@ -941,19 +947,19 @@ async function scheduleSlackTurnStatusProjection(
   const task = runSlackThreadStatusProjection({
     load: () => persistThreadStatusState(() => getTurnStatusProjection(turnId)),
     claim: (nowMs) => persistThreadStatusState(() => claimTurnStatusProjection(turnId, nowMs)),
-    update: async (row) => {
-      await slackCall(client, "chat.update", {
+    update: async (row) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+      (yield slackCall(client, "chat.update", {
         channel: row.slack_channel_id,
         ts: row.slack_status_msg_ts,
         text: row.desired_text || "Status unavailable.",
-      }, { channel: row.slack_channel_id, user: user || undefined });
-    },
-    post: async (row, clientMessageId) => slackCall(client, "chat.postMessage", {
+      }, { channel: row.slack_channel_id, user: user || undefined }));
+    }).call(this));},
+    post: async (row, clientMessageId) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {return slackCall(client, "chat.postMessage", {
       channel: row.slack_channel_id,
       thread_ts: row.slack_thread_ts,
       text: row.desired_text || "Status unavailable.",
       client_msg_id: clientMessageId,
-    }, { channel: row.slack_channel_id, user: user || undefined }),
+    }, { channel: row.slack_channel_id, user: user || undefined });}).call(this));},
     recordMessage: (row, messageTs) => persistThreadStatusState(() => {
       recordTurnStatusMessage(turnId, row.message_generation, messageTs);
     }),
@@ -986,36 +992,36 @@ async function scheduleSlackTurnStatusProjection(
     }
   });
   activeTurnStatusProjectionTasks.set(turnId, task);
-  const outcome = await task;
+  const outcome = (yield task);
   const latest = getTurnStatusProjection(turnId);
   if (!draining && latest?.projection_status === "pending") {
     return scheduleSlackTurnStatusProjection(client, turnId, user);
   }
   return outcome;
-}
+}).call(this));}
 
 async function projectSlackTurnStatus(input: {
   client: any;
   turnId: number;
   text: string;
   user?: string | null;
-}) {
-  await persistThreadStatusState(() => requestTurnStatusProjection(input.turnId, input.text));
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield persistThreadStatusState(() => requestTurnStatusProjection(input.turnId, input.text)));
   return scheduleSlackTurnStatusProjection(input.client, input.turnId, input.user);
-}
+}).call(this));}
 
 function schedulePersistedArtifactDelivery(artifactId: string) {
   return scheduleTurnArtifactDelivery(app.client, artifactId, instanceId, undefined, {
     shouldStop: () => draining,
     wait: waitForNoticeRetry,
     projectFailure: (turnId) => scheduleSlackTurnStatusProjection(app.client, turnId),
-  }).catch((error) => {
+  }).catch(ledgerCallback((error) => {
     log("error", "turn_artifact_worker_failed", {
       artifact_id: artifactId,
       ...errorFields(error),
     });
     return "permanent_failure" as const;
-  }).finally(() => sessionTurnQueue?.wake());
+  })).finally(ledgerCallback(() => sessionTurnQueue?.wake()));
 }
 
 async function projectSlackThreadSummary(input: {
@@ -1025,27 +1031,27 @@ async function projectSlackThreadSummary(input: {
   turnId: number;
   text: string;
   user?: string | null;
-}) {
-  await persistThreadStatusState(() => requestSlackThreadStatusProjection({
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield persistThreadStatusState(() => requestSlackThreadStatusProjection({
     channel: input.channel,
     threadTs: input.threadTs,
     turnId: input.turnId,
     text: input.text,
-  }));
+  })));
   return scheduleSlackThreadStatusProjection(
     input.client,
     input.channel,
     input.threadTs,
     input.user,
   );
-}
+}).call(this));}
 
 const agentJoinedChannels = new Set<string>();
 
-async function ensureAgentChannelMembership(client: any, channel: string) {
+async function ensureAgentChannelMembership(client: any, channel: string) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if (agentJoinedChannels.has(channel)) return;
   try {
-    await slackCall(client, "conversations.join", { channel }, { channel });
+    (yield slackCall(client, "conversations.join", { channel }, { channel }));
     agentJoinedChannels.add(channel);
   } catch (error) {
     if (["already_in_channel", "method_not_supported_for_channel_type"].includes(slackErrorCode(error))) {
@@ -1054,7 +1060,7 @@ async function ensureAgentChannelMembership(client: any, channel: string) {
     }
     throw error;
   }
-}
+}).call(this));}
 
 async function startSlackAgentProgress(input: {
   client: any;
@@ -1064,8 +1070,8 @@ async function startSlackAgentProgress(input: {
   recipientUserId: string;
   recipientTeamId: string;
   chunks: SlackAgentProgressChunk[];
-}) {
-  await ensureAgentChannelMembership(input.client, input.channel);
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield ensureAgentChannelMembership(input.client, input.channel));
   const existing = getTurnProgressStream(input.turnId);
   if (existing?.progress_stream_state === "streaming" && existing.progress_stream_ts) {
     return existing.progress_stream_ts;
@@ -1077,7 +1083,7 @@ async function startSlackAgentProgress(input: {
   }
   try {
     beginAgentProgressMessages(input.turnId, input.chunks);
-    await projectAgentProgressMessages(progressMessageClient, input.turnId);
+    (yield projectAgentProgressMessages(progressMessageClient, input.turnId));
     return getTurnProgressStream(input.turnId)!.progress_stream_ts!;
   } catch (error) {
     parkTurnProgressStream(
@@ -1086,7 +1092,7 @@ async function startSlackAgentProgress(input: {
     );
     throw error;
   }
-}
+}).call(this));}
 
 async function appendSlackAgentProgress(input: {
   client: any;
@@ -1094,36 +1100,36 @@ async function appendSlackAgentProgress(input: {
   channel: string;
   streamTs: string;
   chunks: SlackAgentProgressChunk[];
-}) {
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const stream = getTurnProgressStream(input.turnId);
   if (!stream || stream.progress_stream_ts !== input.streamTs || stream.progress_stream_state !== "streaming") {
     throw new Error(`Turn ${input.turnId} no longer owns Agent stream ${input.streamTs}.`);
   }
   if (hasAgentProgressMessages(input.turnId)) {
     queueAgentProgressMessages(input.turnId, input.chunks);
-    await projectAgentProgressMessages(progressMessageClient, input.turnId);
+    (yield projectAgentProgressMessages(progressMessageClient, input.turnId));
     return;
   }
   if (input.chunks.length === 0) return;
   const activityId = progressActivityIdAfterChunks(input.chunks, stream.progress_activity_id);
-  await agentProgressSlackCall(input.client, "chat.appendStream", {
+  (yield agentProgressSlackCall(input.client, "chat.appendStream", {
     channel: input.channel,
     ts: input.streamTs,
     chunks: legacyProgressChunks(input.chunks),
-  }, { channel: input.channel });
+  }, { channel: input.channel }));
   if (activityId !== stream.progress_activity_id) recordTurnProgressActivity(input.turnId, input.streamTs, activityId);
-}
+}).call(this));}
 
 async function renewSlackAgentProgress(input: {
   client: any;
   channel: string;
   threadTs: string;
-}) {
-  const outcome = await setSlackAgentSessionStatus({ ...input, status: "processing" });
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  const outcome = (yield setSlackAgentSessionStatus({ ...input, status: "processing" }));
   if (outcome !== "delivered") {
     throw new Error(`Agent session status processing projection ${outcome.replaceAll("_", " ")}.`);
   }
-}
+}).call(this));}
 
 async function callSlackAgentSessionStatus(input: {
   client: any;
@@ -1132,15 +1138,15 @@ async function callSlackAgentSessionStatus(input: {
   status: "active" | "processing" | "suspended";
   initiatorUserId?: string | null;
   initialTitle?: string | null;
-}) {
-  await agentProgressSlackCall(input.client, "agents.sessions.setStatus", {
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield agentProgressSlackCall(input.client, "agents.sessions.setStatus", {
     channel_id: input.channel,
     thread_ts: input.threadTs,
     status: input.status,
     initiator_user_id: input.initiatorUserId ?? undefined,
     title: input.initialTitle ?? undefined,
-  }, { channel: input.channel });
-}
+  }, { channel: input.channel }));
+}).call(this));}
 
 function agentSessionStatusProjectionRow(
   row: NonNullable<ReturnType<typeof getSlackAgentSessionStatusProjection>>,
@@ -1157,11 +1163,11 @@ async function scheduleSlackAgentSessionStatusProjection(
   client: any,
   channel: string,
   threadTs: string,
-): Promise<"delivered" | "stopped" | "permanent_failure"> {
+): Promise<"delivered" | "stopped" | "permanent_failure"> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const key = `${channel}:${threadTs}`;
   const existing = activeAgentSessionStatusProjectionTasks.get(key);
   if (existing) {
-    await existing;
+    (yield existing);
     const latest = getSlackAgentSessionStatusProjection(channel, threadTs);
     if (!draining && latest?.projection_status === "pending") {
       return scheduleSlackAgentSessionStatusProjection(client, channel, threadTs);
@@ -1172,29 +1178,29 @@ async function scheduleSlackAgentSessionStatusProjection(
   }
 
   const task = runSlackThreadStatusProjection({
-    load: async () => {
-      const row = await persistThreadStatusState(
+    load: async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+      const row = (yield persistThreadStatusState(
         () => getSlackAgentSessionStatusProjection(channel, threadTs),
-      );
+      ));
       return row ? agentSessionStatusProjectionRow(row) : null;
-    },
-    claim: async (nowMs) => {
-      const row = await persistThreadStatusState(
+    }).call(this));},
+    claim: async (nowMs) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+      const row = (yield persistThreadStatusState(
         () => claimSlackAgentSessionStatusProjection(channel, threadTs, nowMs),
-      );
+      ));
       return row ? agentSessionStatusProjectionRow(row) : null;
-    },
-    update: async (row) => callSlackAgentSessionStatus({
+    }).call(this));},
+    update: async (row) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {return callSlackAgentSessionStatus({
       client,
       channel,
       threadTs,
       status: row.desired_text as "active" | "processing" | "suspended",
       initiatorUserId: row.initiator_user_id,
       initialTitle: row.initial_title,
-    }),
-    post: async () => { throw new Error("Agent session status projections cannot create messages."); },
-    recordMessage: async () => {},
-    replaceMissingMessage: async () => {},
+    });}).call(this));},
+    post: async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> { throw new Error("Agent session status projections cannot create messages."); }).call(this));},
+    recordMessage: async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {}).call(this));},
+    replaceMissingMessage: async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {}).call(this));},
     markDelivered: (row) => persistThreadStatusState(
       () => markSlackAgentSessionStatusProjectionDelivered(channel, threadTs, row.desired_revision),
     ),
@@ -1222,7 +1228,7 @@ async function scheduleSlackAgentSessionStatusProjection(
   });
   activeAgentSessionStatusProjectionTasks.set(key, task);
   return task;
-}
+}).call(this));}
 
 async function setSlackAgentSessionStatus(input: {
   client: any;
@@ -1231,14 +1237,14 @@ async function setSlackAgentSessionStatus(input: {
   status: "active" | "processing" | "suspended";
   initiatorUserId?: string;
   initialTitle?: string;
-}) {
-  await persistThreadStatusState(() => requestSlackAgentSessionStatusProjection(input));
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield persistThreadStatusState(() => requestSlackAgentSessionStatusProjection(input)));
   return scheduleSlackAgentSessionStatusProjection(
     input.client,
     input.channel,
     input.threadTs,
   );
-}
+}).call(this));}
 
 function agentSessionTitleProjectionRow(
   row: NonNullable<ReturnType<typeof getSlackAgentSessionTitleProjection>>,
@@ -1255,11 +1261,11 @@ async function scheduleSlackAgentSessionTitleProjection(
   client: any,
   channel: string,
   threadTs: string,
-): Promise<"delivered" | "stopped" | "permanent_failure"> {
+): Promise<"delivered" | "stopped" | "permanent_failure"> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const key = `${channel}:${threadTs}`;
   const existing = activeAgentSessionTitleProjectionTasks.get(key);
   if (existing) {
-    await existing;
+    (yield existing);
     const latest = getSlackAgentSessionTitleProjection(channel, threadTs);
     if (!draining && latest?.projection_status === "pending") {
       return scheduleSlackAgentSessionTitleProjection(client, channel, threadTs);
@@ -1270,26 +1276,26 @@ async function scheduleSlackAgentSessionTitleProjection(
   }
 
   const task = runSlackThreadStatusProjection({
-    load: async () => {
-      const row = await persistThreadStatusState(
+    load: async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+      const row = (yield persistThreadStatusState(
         () => getSlackAgentSessionTitleProjection(channel, threadTs),
-      );
+      ));
       return row ? agentSessionTitleProjectionRow(row) : null;
-    },
-    claim: async (nowMs) => {
-      const row = await persistThreadStatusState(
+    }).call(this));},
+    claim: async (nowMs) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+      const row = (yield persistThreadStatusState(
         () => claimSlackAgentSessionTitleProjection(channel, threadTs, nowMs),
-      );
+      ));
       return row ? agentSessionTitleProjectionRow(row) : null;
-    },
-    update: async (row) => agentProgressSlackCall(client, "agents.sessions.rename", {
+    }).call(this));},
+    update: async (row) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {return agentProgressSlackCall(client, "agents.sessions.rename", {
       channel_id: channel,
       thread_ts: threadTs,
       title: row.desired_text,
-    }, { channel }),
-    post: async () => { throw new Error("Agent session title projections cannot create messages."); },
-    recordMessage: async () => {},
-    replaceMissingMessage: async () => {},
+    }, { channel });}).call(this));},
+    post: async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> { throw new Error("Agent session title projections cannot create messages."); }).call(this));},
+    recordMessage: async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {}).call(this));},
+    replaceMissingMessage: async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {}).call(this));},
     markDelivered: (row) => persistThreadStatusState(
       () => markSlackAgentSessionTitleProjectionDelivered(channel, threadTs, row.desired_revision),
     ),
@@ -1317,36 +1323,36 @@ async function scheduleSlackAgentSessionTitleProjection(
   });
   activeAgentSessionTitleProjectionTasks.set(key, task);
   return task;
-}
+}).call(this));}
 
-async function publishAgentSessionsHome(client: any, userId: string, notice?: string | null) {
+async function publishAgentSessionsHome(client: any, userId: string, notice?: string | null) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const rows = listAgentSessionDashboardRows(userId).map((row) => ({
     ...row,
     deployment_state: getLatestDeploymentTurnReactionStateForSession(row.session_id),
   }));
-  await slackCall(client, "views.publish", {
+  (yield slackCall(client, "views.publish", {
     user_id: userId,
     view: buildAgentSessionHomeView({ rows, workspaceUrl: myWorkspaceUrl, teamId: myTeamId, notice }),
-  }, { user: userId });
-}
+  }, { user: userId }));
+}).call(this));}
 
 function scheduleAgentSessionsHomeRefresh(userId: string, notice?: string) {
   if (!userId || !openedAgentSessionsHomeUsers.has(userId) || draining) return;
   if (notice) pendingAgentSessionsHomeNotices.set(userId, notice);
   dirtyAgentSessionsHomeUsers.add(userId);
   if (activeAgentSessionsHomeRefreshes.has(userId)) return;
-  const task = (async () => {
+  const task = (async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     while (!draining && dirtyAgentSessionsHomeUsers.delete(userId)) {
       const nextNotice = pendingAgentSessionsHomeNotices.get(userId) || null;
       pendingAgentSessionsHomeNotices.delete(userId);
-      await publishAgentSessionsHome(app.client, userId, nextNotice);
+      (yield publishAgentSessionsHome(app.client, userId, nextNotice));
     }
-  })().catch((error) => {
+  }).call(this));})().catch(ledgerCallback((error) => {
     log("error", "agent_sessions_home_refresh_failed", { user_id: userId, ...errorFields(error) });
-  }).finally(() => {
+  })).finally(ledgerCallback(() => {
     activeAgentSessionsHomeRefreshes.delete(userId);
     if (dirtyAgentSessionsHomeUsers.has(userId) && !draining) scheduleAgentSessionsHomeRefresh(userId);
-  });
+  }));
   activeAgentSessionsHomeRefreshes.set(userId, task);
 }
 
@@ -1356,7 +1362,7 @@ async function stopSlackAgentProgress(input: {
   channel: string;
   streamTs: string;
   chunks: SlackAgentProgressChunk[];
-}) {
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   let retryDelayMs = 1_000;
   while (!draining) {
     const stream = requestTurnProgressStreamStop(input.turnId);
@@ -1368,17 +1374,17 @@ async function stopSlackAgentProgress(input: {
       if (hasAgentProgressMessages(input.turnId)) {
         // Replay any prior desired snapshot before adding terminal chunks. A
         // failed known-message update is safe to retry, an uncertain post isn't.
-        await projectAgentProgressMessages(progressMessageClient, input.turnId);
+        (yield projectAgentProgressMessages(progressMessageClient, input.turnId));
         queueAgentProgressMessages(input.turnId, input.chunks, true);
-        await projectAgentProgressMessages(progressMessageClient, input.turnId);
+        (yield projectAgentProgressMessages(progressMessageClient, input.turnId));
         markTurnProgressStreamStopped(input.turnId);
         return;
       }
-      await agentProgressSlackCall(input.client, "chat.stopStream", {
+      (yield agentProgressSlackCall(input.client, "chat.stopStream", {
         channel: input.channel,
         ts: input.streamTs,
         chunks: legacyProgressChunks(input.chunks),
-      }, { channel: input.channel });
+      }, { channel: input.channel }));
       markTurnProgressStreamStopped(input.turnId);
       return;
     } catch (error) {
@@ -1388,12 +1394,12 @@ async function stopSlackAgentProgress(input: {
       }
       parkTurnProgressStream(input.turnId, `Agent progress finalization failed: ${String(error)}`);
       if (!isTransientSlackError(error)) throw error;
-      await waitForNoticeRetry(retryDelayMs);
+      (yield waitForNoticeRetry(retryDelayMs));
       retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
     }
   }
   throw new Error(`Agent progress finalization for turn ${input.turnId} was interrupted by service drain.`);
-}
+}).call(this));}
 
 function rootSummaryProjectionRow(row: NonNullable<ReturnType<typeof getSlackRootSummaryProjection>>) {
   return {
@@ -1407,11 +1413,11 @@ async function scheduleSlackRootSummaryProjection(
   client: any,
   channel: string,
   threadTs: string,
-): Promise<"delivered" | "stopped" | "permanent_failure"> {
+): Promise<"delivered" | "stopped" | "permanent_failure"> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const key = `${channel}:${threadTs}`;
   const existing = activeRootSummaryProjectionTasks.get(key);
   if (existing) {
-    await existing;
+    (yield existing);
     const latest = getSlackRootSummaryProjection(channel, threadTs);
     if (!draining && latest?.projection_status === "pending") {
       return scheduleSlackRootSummaryProjection(client, channel, threadTs);
@@ -1422,24 +1428,24 @@ async function scheduleSlackRootSummaryProjection(
   }
 
   const task = runSlackThreadStatusProjection({
-    load: async () => {
-      const row = await persistThreadStatusState(() => getSlackRootSummaryProjection(channel, threadTs));
+    load: async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+      const row = (yield persistThreadStatusState(() => getSlackRootSummaryProjection(channel, threadTs)));
       return row ? rootSummaryProjectionRow(row) : null;
-    },
-    claim: async (nowMs) => {
-      const row = await persistThreadStatusState(
+    }).call(this));},
+    claim: async (nowMs) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+      const row = (yield persistThreadStatusState(
         () => claimSlackRootSummaryProjection(channel, threadTs, nowMs),
-      );
+      ));
       return row ? rootSummaryProjectionRow(row) : null;
-    },
-    update: async (row) => {
+    }).call(this));},
+    update: async (row) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
       if (getComparisonRequestForRoot(channel, threadTs)) {
-        const page: any = await slackCall(client, "conversations.replies", {
+        const page: any = (yield slackCall(client, "conversations.replies", {
           token: cfg.bot_token,
           channel,
           ts: threadTs,
           limit: 1,
-        }, { channel });
+        }, { channel }));
         const root = page.messages?.[0];
         const update = buildComparisonRootSummaryUpdate({
           root: root || {},
@@ -1449,42 +1455,42 @@ async function scheduleSlackRootSummaryProjection(
           desiredText: row.desired_text || "",
           revision: row.desired_revision,
         });
-        await slackCall(client, "chat.update", {
+        (yield slackCall(client, "chat.update", {
           token: cfg.bot_token,
           channel,
           ts: threadTs,
           ...update,
-        }, { channel });
+        }, { channel }));
         return;
       }
       // The root of a human-started thread is Tejas's own message; rewriting it needed his
       // user token and put words under his name. That token is revoked, so the summary parks.
       throw new Error("A root summary would edit Tejas's own Slack message; that is retired.");
-    },
-    post: async () => {
+    }).call(this));},
+    post: async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
       throw new Error("A root summary projection cannot create a replacement Slack message.");
-    },
-    recordMessage: async () => {},
-    replaceMissingMessage: async () => {},
+    }).call(this));},
+    recordMessage: async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {}).call(this));},
+    replaceMissingMessage: async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {}).call(this));},
     markDelivered: (row) => persistThreadStatusState(
       () => markSlackRootSummaryProjectionDelivered(channel, threadTs, row.desired_revision),
     ),
     markRetry: (row, error, nextAttemptMs) => persistThreadStatusState(
       () => markSlackRootSummaryProjectionRetry(channel, threadTs, row.desired_revision, error, nextAttemptMs),
     ),
-    markParked: async (row, error) => {
-      await persistThreadStatusState(
+    markParked: async (row, error) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+      (yield persistThreadStatusState(
         () => parkSlackRootSummaryProjection(channel, threadTs, row.desired_revision, error),
-      );
-      void scheduleSlackTurnStatusProjection(client, row.desired_turn_id).catch((noticeError) => {
+      ));
+      void scheduleSlackTurnStatusProjection(client, row.desired_turn_id).catch(ledgerCallback((noticeError) => {
         log("error", "root_summary_failure_notice_projection_failed", {
           ...errorFields(noticeError),
           turn_id: row.desired_turn_id,
           channel,
           thread_ts: threadTs,
         });
-      });
-    },
+      }));
+    }).call(this));},
     isMissingUpdateError: () => false,
     isMissingDuplicateError: () => false,
     isRetryable: isTransientSlackError,
@@ -1497,7 +1503,7 @@ async function scheduleSlackRootSummaryProjection(
   });
   activeRootSummaryProjectionTasks.set(key, task);
   return task;
-}
+}).call(this));}
 
 async function projectSlackRootSummary(input: {
   client: any;
@@ -1505,18 +1511,18 @@ async function projectSlackRootSummary(input: {
   threadTs: string;
   turnId: number;
   text: string;
-}) {
-  await persistThreadStatusState(() => requestSlackRootSummaryProjection(input));
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield persistThreadStatusState(() => requestSlackRootSummaryProjection(input)));
   return scheduleSlackRootSummaryProjection(input.client, input.channel, input.threadTs);
-}
+}).call(this));}
 
 function scheduleDurableNotice(key: string, run: () => Promise<void>) {
   return runKeyedDurableTask(key, run);
 }
 
 function scheduleSteeringNotification(client: any, steeringMessageId: number, user?: string | null) {
-  return scheduleDurableNotice(`steering:${steeringMessageId}`, async () => {
-    const outcome = await runDurableNoticeWorker({
+  return scheduleDurableNotice(`steering:${steeringMessageId}`, async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+    const outcome = (yield runDurableNoticeWorker({
       load: () => {
         const row = getSteeringNotification(steeringMessageId);
         return row && {
@@ -1535,28 +1541,28 @@ function scheduleSteeringNotification(client: any, steeringMessageId: number, us
           nextAttemptMs: row.notice_next_attempt_ms,
         };
       },
-      deliver: async (claimed) => {
+      deliver: async (claimed) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if (claimed.status === "sent") {
           try {
-            await slackCall(client, "reactions.add", {
+            (yield slackCall(client, "reactions.add", {
               channel: claimed.slack_channel_id,
               timestamp: claimed.slack_user_msg_ts,
               name: "arrow_right_hook",
-            }, { channel: claimed.slack_channel_id, user: user || undefined });
+            }, { channel: claimed.slack_channel_id, user: user || undefined }));
           } catch (error) {
             if (slackErrorCode(error) !== "already_reacted") throw error;
           }
           return;
         }
-        await slackCall(client, "chat.postMessage", {
+        (yield slackCall(client, "chat.postMessage", {
           channel: claimed.slack_channel_id,
           thread_ts: claimed.slack_thread_ts,
           text: steeringFailureNoticeText(claimed),
           client_msg_id: deterministicSlackClientMessageId(
             `slack-concierge:steering-failure-notice:${claimed.id}`,
           ),
-        }, { channel: claimed.slack_channel_id, user: user || undefined });
-      },
+        }, { channel: claimed.slack_channel_id, user: user || undefined }));
+      }).call(this));},
       markDelivered: () => markSteeringNotificationDelivered(steeringMessageId),
       markRetry: (error, nextAttemptMs) => markSteeringNotificationRetry(
         steeringMessageId,
@@ -1567,29 +1573,29 @@ function scheduleSteeringNotification(client: any, steeringMessageId: number, us
       isRetryable: isTransientSlackError,
       shouldStop: () => draining,
       wait: waitForNoticeRetry,
-    });
+    }));
     if (outcome !== "delivered") {
       log(outcome === "permanent_failure" ? "error" : "warn", "turn_steering_notification_stopped", {
         steering_message_id: steeringMessageId,
         outcome,
       });
     }
-  });
+  }).call(this));});
 }
 
 function scheduleSlackInputRecoveryNotice(client: any, channel: string, userMessageTs: string) {
-  return scheduleDurableNotice(`input:${channel}:${userMessageTs}`, async () => {
+  return scheduleDurableNotice(`input:${channel}:${userMessageTs}`, async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const normalize = (row: SlackInputRecoveryNoticeRow | null) => row && ({
       ...row,
       noticeStatus: row.recovery_notice_status,
       attempts: row.recovery_notice_attempts,
       nextAttemptMs: row.recovery_notice_next_attempt_ms,
     });
-    const outcome = await runDurableNoticeWorker({
+    const outcome = (yield runDurableNoticeWorker({
       load: () => normalize(getSlackInputRecoveryNotice(channel, userMessageTs)),
       claim: (nowMs) => normalize(claimSlackInputRecoveryNotice(channel, userMessageTs, nowMs)),
-      deliver: async (claimed) => {
-        await slackCall(client, "chat.postMessage", {
+      deliver: async (claimed) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+        (yield slackCall(client, "chat.postMessage", {
           channel: claimed.slack_channel_id,
           thread_ts: claimed.slack_thread_ts,
           text: claimed.kind === "draining"
@@ -1598,8 +1604,8 @@ function scheduleSlackInputRecoveryNotice(client: any, channel: string, userMess
           client_msg_id: deterministicSlackClientMessageId(
             `slack-concierge:input-recovery-notice:${claimed.slack_channel_id}:${claimed.slack_user_msg_ts}`,
           ),
-        }, { channel: claimed.slack_channel_id, user: claimed.user_id || undefined });
-      },
+        }, { channel: claimed.slack_channel_id, user: claimed.user_id || undefined }));
+      }).call(this));},
       markDelivered: () => markSlackInputRecoveryNoticeDelivered(channel, userMessageTs),
       markRetry: (error, nextAttemptMs) => markSlackInputRecoveryNoticeRetry(
         channel,
@@ -1611,7 +1617,7 @@ function scheduleSlackInputRecoveryNotice(client: any, channel: string, userMess
       isRetryable: isTransientSlackError,
       shouldStop: () => draining,
       wait: waitForNoticeRetry,
-    });
+    }));
     if (outcome !== "delivered") {
       log(outcome === "permanent_failure" ? "error" : "warn", "slack_input_recovery_notice_stopped", {
         channel,
@@ -1619,23 +1625,23 @@ function scheduleSlackInputRecoveryNotice(client: any, channel: string, userMess
         outcome,
       });
     }
-  });
+  }).call(this));});
 }
 
 function scheduleChannelListAccessRepair(
   client: any,
   channel: NonNullable<ReturnType<typeof getChannel>>,
 ) {
-  return scheduleDurableNotice(`list-access:${channel.slack_channel_id}`, async () => {
+  return scheduleDurableNotice(`list-access:${channel.slack_channel_id}`, async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     let retryDelayMs = 1_000;
     while (!draining) {
       try {
-        await ensureChannelList({
+        (yield ensureChannelList({
           client,
           channel: getChannel(channel.slack_channel_id) || channel,
           identitySecret: cfg.signing_secret,
           identityOwnerId: myBotUserId || "",
-        });
+        }));
         return;
       } catch (error) {
         if (!isTransientSlackError(error)) {
@@ -1652,26 +1658,26 @@ function scheduleChannelListAccessRepair(
           list_id: channel.list_id,
           retry_delay_ms: retryDelayMs,
         });
-        await waitForNoticeRetry(retryDelayMs);
+        (yield waitForNoticeRetry(retryDelayMs));
         retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
       }
     }
-  });
+  }).call(this));});
 }
 
 function scheduleInlineCaptureConfirmation(client: any, channel: string, userMessageTs: string) {
-  return scheduleDurableNotice(`capture-confirmation:${channel}:${userMessageTs}`, async () => {
+  return scheduleDurableNotice(`capture-confirmation:${channel}:${userMessageTs}`, async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const normalize = (row: InlineCaptureConfirmationRow | null) => row && ({
       ...row,
       noticeStatus: row.capture_confirmation_status,
       attempts: row.capture_confirmation_attempts,
       nextAttemptMs: row.capture_confirmation_next_attempt_ms,
     });
-    const outcome = await runDurableNoticeWorker({
+    const outcome = (yield runDurableNoticeWorker({
       load: () => normalize(getInlineCaptureConfirmation(channel, userMessageTs)),
       claim: (nowMs) => normalize(claimInlineCaptureConfirmation(channel, userMessageTs, nowMs)),
-      deliver: async (claimed) => {
-        await deliverInlineCaptureConfirmation({
+      deliver: async (claimed) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+        (yield deliverInlineCaptureConfirmation({
           client,
           channel: claimed.slack_channel_id,
           threadTs: claimed.slack_thread_ts,
@@ -1681,8 +1687,8 @@ function scheduleInlineCaptureConfirmation(client: any, channel: string, userMes
           messageClientId: deterministicSlackClientMessageId(
             `slack-concierge:inline-capture-confirmation:${claimed.slack_channel_id}:${claimed.slack_user_msg_ts}`,
           ),
-        });
-      },
+        }));
+      }).call(this));},
       markDelivered: () => markInlineCaptureConfirmationDelivered(channel, userMessageTs),
       markRetry: (error, nextAttemptMs) => markInlineCaptureConfirmationRetry(
         channel,
@@ -1694,7 +1700,7 @@ function scheduleInlineCaptureConfirmation(client: any, channel: string, userMes
       isRetryable: isTransientSlackError,
       shouldStop: () => draining,
       wait: waitForNoticeRetry,
-    });
+    }));
     if (outcome !== "delivered") {
       log(outcome === "permanent_failure" ? "error" : "warn", "inline_capture_confirmation_stopped", {
         channel,
@@ -1702,18 +1708,18 @@ function scheduleInlineCaptureConfirmation(client: any, channel: string, userMes
         outcome,
       });
     }
-  });
+  }).call(this));});
 }
 
 function isSqliteContention(error: unknown) {
   return /database (?:is )?(?:locked|busy)|SQLITE_(?:BUSY|LOCKED)/i.test(String(error));
 }
 
-async function persistSteeringTransition(label: string, callback: () => void) {
-  await withRetry({ key: `turn-steering-persistence:${label}`, operation: `turn-steering-persistence:${label}`, policy: RETRY_POLICIES.ledgerWrite,
-    run: async () => callback(),
-    classifyError: error => isSqliteContention(error) ? 'transient' : 'permanent' });
-}
+async function persistSteeringTransition(label: string, callback: () => void) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield withRetry({ key: `turn-steering-persistence:${label}`, operation: `turn-steering-persistence:${label}`, policy: RETRY_POLICIES.ledgerWrite,
+    run: async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {return callback();}).call(this));},
+    classifyError: error => isSqliteContention(error) ? 'transient' : 'permanent' }));
+}).call(this));}
 
 function runHostCommand(input: { command: string; cwd: string; timeoutMs: number }) {
   return new Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }>((resolve, reject) => {
@@ -1744,25 +1750,25 @@ function runHostCommand(input: { command: string; cwd: string; timeoutMs: number
   });
 }
 
-async function ensureChannelFromCommand(command: any) {
+async function ensureChannelFromCommand(command: any) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const existing = getChannel(command.channel_id);
   if (existing) return existing;
   return ensureChannelProject(command.channel_id, commandChannelName(command));
-}
+}).call(this));}
 
-app.command("/concierge-status", async ({ ack, respond }) => {
-  await ack();
-  await respond({
+app.command("/concierge-status", async ({ ack, respond }) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield ack());
+  (yield respond({
     text: `pong - concierge alive at ${new Date().toISOString()} - uptime ${formatDuration(Date.now() - startedAt)}`,
     response_type: "ephemeral",
-  });
-});
+  }));
+}).call(this));});
 
-async function createProjectFromSlash(input: { respond: any; command: any; client: any }) {
+async function createProjectFromSlash(input: { respond: any; command: any; client: any }) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const { respond, command, client } = input;
   const name = command.text.trim();
   if (!name) {
-    await respond({ text: "usage: /new <name>", response_type: "ephemeral" });
+    (yield respond({ text: "usage: /new <name>", response_type: "ephemeral" }));
     return;
   }
   const slug = slugifySlackChannelName(name);
@@ -1776,71 +1782,71 @@ async function createProjectFromSlash(input: { respond: any; command: any; clien
   }
 
   try {
-    const created: any = await slackCall(client, "conversations.create", { name: slug, is_private: false }, {
+    const created: any = (yield slackCall(client, "conversations.create", { name: slug, is_private: false }, {
       channel: command.channel_id,
       user: command.user_id,
-    });
+    }));
     const chan = created.channel!;
     try {
-      await slackCall(client, "conversations.join", { channel: chan.id }, { channel: chan.id, user: command.user_id });
+      (yield slackCall(client, "conversations.join", { channel: chan.id }, { channel: chan.id, user: command.user_id }));
     } catch {}
     try {
-      await slackCall(client, "conversations.invite", { channel: chan.id, users: command.user_id }, {
+      (yield slackCall(client, "conversations.invite", { channel: chan.id, users: command.user_id }, {
         channel: chan.id,
         user: command.user_id,
-      });
+      }));
     } catch {}
 
     const paths = newProject(chan.id, chan.name);
     const channelRow = getChannel(chan.id);
-    if (channelRow) await ensureChannelSurfaces(client, channelRow, command.user_id, "new_channel");
-    await respond({ text: `created <#${chan.id}> - vault: ${paths.vault} - code: ${paths.code}`, response_type: "ephemeral" });
-    await slackCall(client, "chat.postMessage", {
+    if (channelRow) (yield ensureChannelSurfaces(client, channelRow, command.user_id, "new_channel"));
+    (yield respond({ text: `created <#${chan.id}> - vault: ${paths.vault} - code: ${paths.code}`, response_type: "ephemeral" }));
+    (yield slackCall(client, "chat.postMessage", {
       channel: chan.id,
       text: `Concierge ready. Vault: ${paths.vault}\nCode: ${paths.code}`,
-    });
+    }));
   } catch (err) {
     log("error", "new_command_failed", errorFields(err));
-    await respond({ text: `could not create project: ${(err as Error).message}`, response_type: "ephemeral" });
+    (yield respond({ text: `could not create project: ${(err as Error).message}`, response_type: "ephemeral" }));
   }
-}
+}).call(this));}
 
-app.command("/create-channel", async ({ ack, respond, command, client }) => {
-  await ack();
-  await createProjectFromSlash({ respond, command, client });
-});
+app.command("/create-channel", async ({ ack, respond, command, client }) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield ack());
+  (yield createProjectFromSlash({ respond, command, client }));
+}).call(this));});
 
-app.command("/add-dir", async ({ ack, respond, command }) => {
-  await ack();
+app.command("/add-dir", async ({ ack, respond, command }) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield ack());
   const path = command.text.trim();
   if (!path) return respond({ text: "usage: /add-dir <path>", response_type: "ephemeral" });
-  const channel = await ensureChannelFromCommand(command);
+  const channel = (yield ensureChannelFromCommand(command));
   const paths = addDir(channel, path);
-  await respond({ text: `additional dirs: ${paths.join(", ") || "(none)"}`, response_type: "ephemeral" });
-});
+  (yield respond({ text: `additional dirs: ${paths.join(", ") || "(none)"}`, response_type: "ephemeral" }));
+}).call(this));});
 
-app.command("/remove-dir", async ({ ack, respond, command }) => {
-  await ack();
+app.command("/remove-dir", async ({ ack, respond, command }) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield ack());
   const path = command.text.trim();
   if (!path) return respond({ text: "usage: /remove-dir <path>", response_type: "ephemeral" });
-  const channel = await ensureChannelFromCommand(command);
+  const channel = (yield ensureChannelFromCommand(command));
   const paths = removeDir(channel, path);
-  await respond({ text: `additional dirs: ${paths.join(", ") || "(none)"}`, response_type: "ephemeral" });
-});
+  (yield respond({ text: `additional dirs: ${paths.join(", ") || "(none)"}`, response_type: "ephemeral" }));
+}).call(this));});
 
-app.command("/mode", async ({ ack, respond, command }) => {
-  await ack();
+app.command("/mode", async ({ ack, respond, command }) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield ack());
   const mode = command.text.trim() as ChannelMode;
   if (!["agent-auto", "agent-tag", "silent"].includes(mode)) {
     return respond({ text: "usage: /mode <agent-auto|agent-tag|silent>", response_type: "ephemeral" });
   }
-  const channel = await ensureChannelFromCommand(command);
+  const channel = (yield ensureChannelFromCommand(command));
   updateChannelMode(channel.slack_channel_id, mode);
-  await respond({ text: `mode set to ${mode}`, response_type: "ephemeral" });
-});
+  (yield respond({ text: `mode set to ${mode}`, response_type: "ephemeral" }));
+}).call(this));});
 
-app.command("/switch-provider", async ({ ack, respond, command }) => {
-  await ack();
+app.command("/switch-provider", async ({ ack, respond, command }) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield ack());
   const selector = parseProviderSelector(command.text);
   if (!selector) {
     return respond({
@@ -1853,34 +1859,34 @@ app.command("/switch-provider", async ({ ack, respond, command }) => {
   }
   const providerDefault = resolveProviderSelector(selector);
   const stored = selector.effort ? `${selector.alias}-${selector.effort}` : selector.alias;
-  const channel = await ensureChannelFromCommand(command);
+  const channel = (yield ensureChannelFromCommand(command));
   updateChannelProvider(channel.slack_channel_id, stored);
-  await respond({
+  (yield respond({
     text: `default agent set to @${stored} (${comparisonTargetLabel(providerDefault.provider, providerDefault.model)}`
       + `${providerDefault.reasoning_effort ? `, ${providerDefault.reasoning_effort} effort` : ""}). `
       + `Existing threads keep their original provider and model.`,
     response_type: "ephemeral",
-  });
-});
+  }));
+}).call(this));});
 
-app.command("/todo", async ({ ack, respond, command }) => {
-  await ack();
+app.command("/todo", async ({ ack, respond, command }) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield ack());
   const text = command.text.trim();
   if (!text) return respond({ text: "usage: /todo <text>", response_type: "ephemeral" });
-  const channel = await ensureChannelFromCommand(command);
+  const channel = (yield ensureChannelFromCommand(command));
   appendTodo(channel, text, `/todo by ${command.user_name || command.user_id}`);
   todoFileWatcher?.schedule(channel, "capture");
-  await respond({ text: `Todo added: ${text}`, response_type: "ephemeral" });
-});
+  (yield respond({ text: `Todo added: ${text}`, response_type: "ephemeral" }));
+}).call(this));});
 
-app.command("/note", async ({ ack, respond, command, client }) => {
-  await ack();
+app.command("/note", async ({ ack, respond, command, client }) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield ack());
   const text = command.text.trim();
   if (!text) return respond({ text: "usage: /note <text>", response_type: "ephemeral" });
-  const channel = await ensureChannelFromCommand(command);
+  const channel = (yield ensureChannelFromCommand(command));
   const file = appendInbox(channel, text, `/note by ${command.user_name || command.user_id}`);
-  await respond({ text: `note appended to ${file}`, response_type: "ephemeral" });
-});
+  (yield respond({ text: `note appended to ${file}`, response_type: "ephemeral" }));
+}).call(this));});
 
 const AUTH_REFRESH_USAGE = "usage: /auth-refresh <claude-code|codex> [code]";
 
@@ -1890,8 +1896,8 @@ const AUTH_REFRESH_USAGE = "usage: /auth-refresh <claude-code|codex> [code]";
 // live in Thinkering's Provider accounts surface over the same owner capability.
 const HOT_LOGIN_PROVIDERS = new Set(["claude-code"]);
 
-app.command("/auth-refresh", async ({ ack, respond, command }) => {
-  await ack();
+app.command("/auth-refresh", async ({ ack, respond, command }) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield ack());
   const [providerArg, ...codeParts] = command.text.trim().split(/\s+/).filter(Boolean);
   const provider = providerArg || "claude-code";
   if (!["codex", "claude-code"].includes(provider)) {
@@ -1906,7 +1912,7 @@ app.command("/auth-refresh", async ({ ack, respond, command }) => {
   const code = codeParts.join(" ");
   if (code) {
     log("info", "auth_refresh_code_received", { provider, user: command.user_id });
-    const completion = await sessionExecutionHost.owner.completeAuth(provider, code);
+    const completion = (yield sessionExecutionHost.owner.completeAuth(provider, code));
     if (completion.status === "no_pending_login") {
       return respond({
         text: `No ${provider} login is waiting for a code. Start one with \`/auth-refresh ${provider}\`.`,
@@ -1928,8 +1934,8 @@ app.command("/auth-refresh", async ({ ack, respond, command }) => {
     });
   }
   log("info", "auth_refresh_started", { provider, user: command.user_id });
-  await respond({ text: `starting ${provider} auth refresh on this host...`, response_type: "ephemeral" });
-  const started = await sessionExecutionHost.owner.startAuth(provider);
+  (yield respond({ text: `starting ${provider} auth refresh on this host...`, response_type: "ephemeral" }));
+  const started = (yield sessionExecutionHost.owner.startAuth(provider));
   if (started.status === "awaiting_code") {
     return respond({
       text: [
@@ -1948,26 +1954,26 @@ app.command("/auth-refresh", async ({ ack, respond, command }) => {
       response_type: "ephemeral",
     });
   }
-  await respond({
+  (yield respond({
     text: `${provider} auth refresh did not complete on this host. The retained work was not replayed.`,
     response_type: "ephemeral",
-  });
-});
+  }));
+}).call(this));});
 
-app.command("/review-inbox", async ({ ack, respond, command }) => {
-  await ack();
-  const channel = await ensureChannelFromCommand(command);
+app.command("/review-inbox", async ({ ack, respond, command }) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield ack());
+  const channel = (yield ensureChannelFromCommand(command));
   const cwd = channel.code_path || channel.vault_path;
   log("info", "review_command_started", { channel: command.channel_id, user: command.user_id, cwd });
-  await respond({ text: `starting review in ${cwd}...`, response_type: "ephemeral" });
-  const result = await runHostCommand({ command: "journalmaxx-review", cwd, timeoutMs: 120_000 });
+  (yield respond({ text: `starting review in ${cwd}...`, response_type: "ephemeral" }));
+  const result = (yield runHostCommand({ command: "journalmaxx-review", cwd, timeoutMs: 120_000 }));
   const output = `${result.stdout}\n${result.stderr}`.trim();
   if (result.code === 127 || /not found/i.test(output)) {
     log("warn", "review_pipeline_missing", { channel: command.channel_id, cwd, exit_code: result.code });
-    await respond({
+    (yield respond({
       text: "review pipeline not yet installed on this host, see systemd/README.md",
       response_type: "ephemeral",
-    });
+    }));
     return;
   }
   log(result.code === 0 ? "info" : "error", "review_command_finished", {
@@ -1977,18 +1983,18 @@ app.command("/review-inbox", async ({ ack, respond, command }) => {
     timed_out: result.timedOut,
     output_chars: output.length,
   });
-  await respond({
+  (yield respond({
     text: result.code === 0
       ? `review complete:\n${output.slice(0, 1800) || "(no output)"}`
       : `review failed:\n${output.slice(0, 1800) || "(no output)"}`,
     response_type: "ephemeral",
-  });
-});
+  }));
+}).call(this));});
 
-app.command("/fork", async ({ ack, respond, command, client }) => {
-  await ack();
+app.command("/fork", async ({ ack, respond, command, client }) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield ack());
   try {
-    const channel = await ensureChannelFromCommand(command);
+    const channel = (yield ensureChannelFromCommand(command));
     const requestedTs = command.text.trim();
     const parent = resolveForkParentSession(command.channel_id, requestedTs);
     log("info", "fork_parent_resolved", {
@@ -1998,21 +2004,21 @@ app.command("/fork", async ({ ack, respond, command, client }) => {
       parent_thread_ts: parent?.slack_thread_ts || null,
     });
     if (!parent?.agent_session_uuid) {
-      await respond({
+      (yield respond({
         text: unavailableForkSourceMessage(
           command.channel_id,
           requestedTs,
           "No persisted parent session found to fork in this channel.",
         ),
         response_type: "ephemeral",
-      });
+      }));
       return;
     }
     const boundary = requestedTs
       ? getProviderTurnBoundaryForSlackMessage(command.channel_id, requestedTs)
       : null;
     const cwd = channel.code_path || channel.vault_path;
-    const lastProviderTurnId = await resolveExactForkTurnId({
+    const lastProviderTurnId = (yield resolveExactForkTurnId({
       parent: {
         id: parent.id,
         provider_id: parent.provider_id as ProviderId,
@@ -2021,7 +2027,7 @@ app.command("/fork", async ({ ack, respond, command, client }) => {
       boundary,
       cwd,
       requireBoundary: Boolean(requestedTs),
-    });
+    }));
     const claim = claimForkRequest({
       requestId: command.trigger_id,
       channelId: command.channel_id,
@@ -2037,20 +2043,20 @@ app.command("/fork", async ({ ack, respond, command, client }) => {
       cwd,
       additionalDirs: parseAdditionalPaths(channel),
     });
-    const request = await executeForkRequest({
+    const request = (yield executeForkRequest({
       requestId: claim.row.request_id,
       client,
       instanceId,
       shouldStop: () => draining,
-    });
-    await respond({
+    }));
+    (yield respond({
       text: forkRequestResultMessage(request),
       response_type: "ephemeral",
-    });
+    }));
   } catch (err) {
-    await respond({ text: `fork failed: ${(err as Error).message}`, response_type: "ephemeral" });
+    (yield respond({ text: `fork failed: ${(err as Error).message}`, response_type: "ephemeral" }));
   }
-});
+}).call(this));});
 
 async function handleInlineFork(input: {
   channelId: string;
@@ -2060,31 +2066,31 @@ async function handleInlineFork(input: {
   threadTs: string;
   userMsgTs: string;
   claimToken: string;
-}) {
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   let inputClassified = false;
   let notice: string | null = null;
-  const classifyAction = async () => {
+  const classifyAction = async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if (inputClassified) return;
-    const classified = await retryTransientDatabaseOperation({
+    const classified = (yield retryTransientDatabaseOperation({
       operation: () => classifySlackUserInput(
         input.channelId,
         input.userMsgTs,
         input.claimToken,
         "ignored",
       ),
-    });
+    }));
     if (classified.stopped || !classified.value) {
       throw new Error("Inline fork action could not be durably classified.");
     }
     inputClassified = true;
-  };
+  }).call(this));};
 
   try {
-    await waitForForkBinding({
+    (yield waitForForkBinding({
       channelId: input.channelId,
       threadTs: input.threadTs,
       shouldStop: () => draining,
-    });
+    }));
     const channel = getChannel(input.channelId)
       || ensureChannelProject(input.channelId, input.channelName || input.channelId);
     const parent = resolveForkParentSession(input.channelId, input.threadTs);
@@ -2102,7 +2108,7 @@ async function handleInlineFork(input: {
       );
     } else {
       const cwd = channel.code_path || channel.vault_path;
-      const lastProviderTurnId = await resolveExactForkTurnId({
+      const lastProviderTurnId = (yield resolveExactForkTurnId({
         parent: {
           id: parent.id,
           provider_id: parent.provider_id as ProviderId,
@@ -2111,7 +2117,7 @@ async function handleInlineFork(input: {
         boundary: null,
         cwd,
         requireBoundary: false,
-      });
+      }));
       const claim = claimForkRequest({
         requestId: `slack-inline-fork:${input.channelId}:${input.userMsgTs}`,
         channelId: input.channelId,
@@ -2123,13 +2129,13 @@ async function handleInlineFork(input: {
         cwd,
         additionalDirs: parseAdditionalPaths(channel),
       });
-      await classifyAction();
-      const request = await executeForkRequest({
+      (yield classifyAction());
+      const request = (yield executeForkRequest({
         requestId: claim.row.request_id,
         client: input.client,
         instanceId,
         shouldStop: () => draining,
-      });
+      }));
       if (request.status !== "delivered") notice = forkRequestResultMessage(request);
     }
   } catch (error) {
@@ -2141,18 +2147,18 @@ async function handleInlineFork(input: {
     });
     notice = `fork failed: ${(error as Error).message}`;
   } finally {
-    await classifyAction();
+    (yield classifyAction());
   }
 
   if (notice) {
-    await slackCall(input.client, "chat.postEphemeral", {
+    (yield slackCall(input.client, "chat.postEphemeral", {
       channel: input.channelId,
       thread_ts: input.threadTs,
       user: input.user,
       text: notice,
-    }, { channel: input.channelId, user: input.user });
+    }, { channel: input.channelId, user: input.user }));
   }
-}
+}).call(this));}
 
 async function handleInlineComparison(input: {
   channelId: string;
@@ -2164,26 +2170,26 @@ async function handleInlineComparison(input: {
   claimToken: string;
   files: SlackMessageFile[];
   action: Exclude<ReturnType<typeof parseInlineComparisonAction>, { matched: false }>;
-}) {
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   let inputClassified = false;
-  const classifyAction = async () => {
+  const classifyAction = async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if (inputClassified) return;
-    const classified = await retryTransientDatabaseOperation({
+    const classified = (yield retryTransientDatabaseOperation({
       operation: () => classifySlackUserInput(
         input.channelId,
         input.userMsgTs,
         input.claimToken,
         "ignored",
       ),
-    });
+    }));
     if (classified.stopped || !classified.value) {
       throw new Error("Inline comparison action could not be durably classified.");
     }
     inputClassified = true;
-  };
+  }).call(this));};
 
   try {
-    await classifyAction();
+    (yield classifyAction());
     if (input.action.error) throw new Error(input.action.error);
     if (input.files.length > 0) {
       throw new Error("The !compare command cannot include new attachments; it replays attachments already present in the source thread.");
@@ -2202,7 +2208,7 @@ async function handleInlineComparison(input: {
       targetAlias: input.action.targetAlias,
       targetEffort: input.action.targetEffort,
     });
-    await runComparison({
+    (yield runComparison({
       requestId: `slack-inline-compare:${input.channelId}:${input.userMsgTs}`,
       channelId: input.channelId,
       channelName: input.channelName || input.channelId,
@@ -2213,7 +2219,7 @@ async function handleInlineComparison(input: {
       targetProvider: target.provider,
       targetModel: target.model || null,
       client: input.client,
-    });
+    }));
   } catch (error) {
     log("error", "inline_comparison_failed", {
       ...errorFields(error),
@@ -2221,18 +2227,18 @@ async function handleInlineComparison(input: {
       source_thread_ts: input.threadTs,
       slack_user_msg_ts: input.userMsgTs,
     });
-    await postComparisonFailure({
+    (yield postComparisonFailure({
       client: input.client,
       channelId: input.channelId,
       threadTs: input.threadTs,
       userId: input.user,
       requestId: `slack-inline-compare:${input.channelId}:${input.userMsgTs}`,
       error,
-    });
+    }));
   } finally {
-    await classifyAction();
+    (yield classifyAction());
   }
-}
+}).call(this));}
 
 async function handleInlineCapture(input: {
   text: string;
@@ -2242,7 +2248,7 @@ async function handleInlineCapture(input: {
   threadTs: string;
   userMsgTs: string;
   claimToken: string;
-}) {
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const todo = input.text.match(/^[!/](?:todo)\s+([\s\S]+)/i);
   const note = input.text.match(/^[!/](?:note)\s+([\s\S]+)/i);
   if (!todo && !note) return false;
@@ -2269,13 +2275,13 @@ async function handleInlineCapture(input: {
       );
     }
     if (note) appendInbox(input.channel, note[1], `inline by ${input.user}`, captureKey, cfg.signing_secret);
-    const persistedVault = await retryTransientDatabaseOperation({
+    const persistedVault = (yield retryTransientDatabaseOperation({
       operation: () => markInlineCaptureVaultDone(
         input.channel.slack_channel_id,
         input.userMsgTs,
         input.claimToken,
       ),
-    });
+    }));
     if (persistedVault.stopped || !persistedVault.value) {
       throw new Error("Inline capture vault completion could not be persisted.");
     }
@@ -2284,7 +2290,7 @@ async function handleInlineCapture(input: {
   claim = getSlackUserInputClaim(input.channel.slack_channel_id, input.userMsgTs);
   if (claim?.capture_list_status === "pending") {
     if (todo) todoFileWatcher?.schedule(input.channel, "capture");
-    const skippedList = await retryTransientDatabaseOperation({
+    const skippedList = (yield retryTransientDatabaseOperation({
       operation: () => markInlineCaptureListSkipped(
         input.channel.slack_channel_id,
         input.userMsgTs,
@@ -2293,35 +2299,35 @@ async function handleInlineCapture(input: {
           ? "Slack List projection is owned asynchronously by the canonical TODO file watcher."
           : "Inbox notes are not TODOs and are not projected to Slack Lists.",
       ),
-    });
+    }));
     if (skippedList.stopped || !skippedList.value) {
       throw new Error("Inline capture List skip state could not be persisted.");
     }
   }
 
-  const finished = await retryTransientDatabaseOperation({
+  const finished = (yield retryTransientDatabaseOperation({
     operation: () => finishInlineCapture(
       input.channel.slack_channel_id,
       input.userMsgTs,
       input.claimToken,
     ),
-  });
+  }));
   if (finished.stopped || !finished.value) {
     throw new Error("Inline capture sinks were not durably complete.");
   }
   void scheduleInlineCaptureConfirmation(input.client, input.channel.slack_channel_id, input.userMsgTs);
   return true;
-}
+}).call(this));}
 
 function scheduleInlineCaptureRecovery(client: any, channelId: string, userMessageTs: string) {
-  return scheduleDurableNotice(`capture-sinks:${channelId}:${userMessageTs}`, async () => {
+  return scheduleDurableNotice(`capture-sinks:${channelId}:${userMessageTs}`, async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     let retryDelayMs = 1_000;
     while (!draining) {
-      const loaded = await retryTransientDatabaseOperation({
+      const loaded = (yield retryTransientDatabaseOperation({
         operation: () => getSlackUserInputClaim(channelId, userMessageTs),
         shouldStop: () => draining,
         wait: waitForNoticeRetry,
-      });
+      }));
       if (loaded.stopped) return;
       const claim = loaded.value;
       if (!claim || !claim.inline_capture) return;
@@ -2333,13 +2339,13 @@ function scheduleInlineCaptureRecovery(client: any, channelId: string, userMessa
       try {
         let channel = getChannel(channelId);
         if (!channel) {
-          const info: any = await slackCall(client, "conversations.info", { channel: channelId }, {
+          const info: any = (yield slackCall(client, "conversations.info", { channel: channelId }, {
             channel: channelId,
             user: claim.user_id,
-          });
+          }));
           channel = ensureChannelProject(channelId, info.channel?.name || channelId);
         }
-        await handleInlineCapture({
+        (yield handleInlineCapture({
           text: claim.user_text,
           channel,
           user: claim.user_id,
@@ -2347,7 +2353,7 @@ function scheduleInlineCaptureRecovery(client: any, channelId: string, userMessa
           threadTs: claim.reply_thread_ts || claim.slack_user_msg_ts,
           userMsgTs: claim.slack_user_msg_ts,
           claimToken: claim.claim_token,
-        });
+        }));
         return;
       } catch (error) {
         log("warn", "inline_capture_recovery_retry", {
@@ -2356,34 +2362,34 @@ function scheduleInlineCaptureRecovery(client: any, channelId: string, userMessa
           slack_user_msg_ts: userMessageTs,
           delay_ms: retryDelayMs,
         });
-        await waitForNoticeRetry(retryDelayMs);
+        (yield waitForNoticeRetry(retryDelayMs));
         retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
       }
     }
-  });
+  }).call(this));});
 }
 
 async function projectTodos(
   client: any,
   channel: NonNullable<ReturnType<typeof getChannel>>,
   user: string | null,
-) {
+) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if (!todoProjectionManager) throw new Error("TODO projection is not initialized.");
   return todoProjectionManager.reconcile({ client, channel, user });
-}
+}).call(this));}
 
 async function ensureChannelSurfaces(
   client: any,
   channel: NonNullable<ReturnType<typeof getChannel>>,
   user: string | null,
   reason: string,
-) {
-  const canvas = await syncCommittedAgentsCanvas({ client, channel, user, reason, force: true });
-  if (canvas.status === "ignored") await syncAgentsCanvas({ client, channel, user, reason });
+) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  const canvas = (yield syncCommittedAgentsCanvas({ client, channel, user, reason, force: true }));
+  if (canvas.status === "ignored") (yield syncAgentsCanvas({ client, channel, user, reason }));
   canvasCommitWatcher?.watchChannel(channel);
   todoFileWatcher?.watchChannel(channel);
   todoFileWatcher?.schedule(channel, "channel-created");
-}
+}).call(this));}
 
 type TurnRunOutcome =
   | { status: "delivered"; turnId: number }
@@ -2399,12 +2405,12 @@ function schedulePersistedTurnReactionCleanup(turnId: number) {
   void scheduleTurnReactionCleanup(app.client, turnId, {
     shouldStop: () => draining,
     wait: waitForNoticeRetry,
-  }).catch((error) => {
+  }).catch(ledgerCallback((error) => {
     log("error", "turn_reaction_cleanup_worker_failed", {
       ...errorFields(error),
       turn_id: turnId,
     });
-  });
+  }));
 }
 
 function settleClaimedTurnSetupFailure(claim: Pick<QueuedTurnClaimRow, "turn_id" | "session_id" | "slack_channel_id" | "dispatch_attempt" | "turn_kind">, error: unknown) {
@@ -2428,7 +2434,7 @@ function settleClaimedTurnSetupFailure(claim: Pick<QueuedTurnClaimRow, "turn_id"
   });
 }
 
-async function runClaimedTurn(input: ClaimedTurnInput): Promise<TurnRunOutcome> {
+async function runClaimedTurn(input: ClaimedTurnInput): Promise<TurnRunOutcome> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   schedulePersistedTurnReactionCleanup(input.turnId);
   const dependencies = getTurnDependencies(input.turnId);
   if (dependencies.length) input.prompt += `\n\nRecorded prerequisite execution outcomes (ordering completion does not imply success):\n${JSON.stringify(dependencies)}`;
@@ -2440,7 +2446,7 @@ async function runClaimedTurn(input: ClaimedTurnInput): Promise<TurnRunOutcome> 
     provider: input.providerId,
     model: input.model || null,
   });
-  return activeTurnDispatch.run({...input,sessionId:input.session.id}, async (steeringController, closeSteering, cancellationController) => (
+  return activeTurnDispatch.run({...input,sessionId:input.session.id}, async (steeringController, closeSteering, cancellationController) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {return (
     executeAgentTurn({
       turnId: input.turnId,
       session: input.session,
@@ -2497,18 +2503,18 @@ async function runClaimedTurn(input: ClaimedTurnInput): Promise<TurnRunOutcome> 
         projectRootSummary: projectSlackRootSummary,
       },
     })
-  ));
-}
+  );}).call(this));});
+}).call(this));}
 
-async function runPersistedQueuedTurn(claim: QueuedTurnClaimRow) {
+async function runPersistedQueuedTurn(claim: QueuedTurnClaimRow) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   bankedUpkeep.started(claim.turn_id);
-  try { return await runPersistedQueuedTurnBody(claim); }
+  try { return (yield runPersistedQueuedTurnBody(claim)); }
   finally { bankedUpkeep.settled(claim.turn_id); }
-}
+}).call(this));}
 
-async function runPersistedQueuedTurnBody(claim: QueuedTurnClaimRow) {
+async function runPersistedQueuedTurnBody(claim: QueuedTurnClaimRow) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if(claim.turn_kind==='native')return sessionExecutionHost.run(claim);
-  const outcome = await executePersistedQueuedTurn(claim, {
+  const outcome = (yield executePersistedQueuedTurn(claim, {
     buildInput: (queuedClaim) => buildQueuedTurnInput(queuedClaim, {
       client: app.client,
       getSessionById,
@@ -2520,10 +2526,10 @@ async function runPersistedQueuedTurnBody(claim: QueuedTurnClaimRow) {
       settleClaimedTurnSetupFailure(queuedClaim, error);
       return { status: "provider_parked", turnId: queuedClaim.turn_id } as TurnRunOutcome;
     },
-  });
-  await postComparisonTurnFailureIfNeeded(app.client, outcome);
+  }));
+  (yield postComparisonTurnFailureIfNeeded(app.client, outcome));
   return outcome;
-}
+}).call(this));}
 
 function startSessionTurnQueue() {
   if (sessionTurnQueue) return;
@@ -2544,7 +2550,7 @@ function startSessionTurnQueue() {
   sessionTurnQueue.wake();
 }
 
-async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRunOutcome> {
+async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRunOutcome> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   activeInputHandlerCount += 1;
   try {
   const inputClaimToken = randomUUID();
@@ -2558,7 +2564,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
     : { matched: false as const };
   const inlineCaptureRequested = !opts.waitRequested && inputPolicy.handleInlineCapture && /^[!/](?:todo|note)\s+[\s\S]+/i.test(opts.text);
   let inlineCaptureClaimed = false;
-  const claimedInput = await retryTransientDatabaseOperation({
+  const claimedInput = (yield retryTransientDatabaseOperation({
     operation: () => claimSlackUserInput(
       opts.channel,
       opts.userMsgTs,
@@ -2571,7 +2577,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
         files: opts.files || [],
       },
     ),
-  });
+  }));
   if (claimedInput.stopped) throw new Error("Slack input ownership stopped before it became durable.");
   const inputClaim = claimedInput.value;
   if (!inputClaim.claimed) {
@@ -2598,24 +2604,24 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
 
   try {
   if (!opts.waitRequested && isHintCommand(opts)) {
-    const classified = await retryTransientDatabaseOperation({
+    const classified = (yield retryTransientDatabaseOperation({
       operation: () => classifySlackUserInput(opts.channel, opts.userMsgTs, inputClaimToken, "ignored"),
-    });
+    }));
     if (classified.stopped || !classified.value) throw new Error("Hint input ownership could not be persisted.");
-    await slackCall(opts.client, "chat.postMessage", {
+    (yield slackCall(opts.client, "chat.postMessage", {
       channel: opts.channel,
       thread_ts: opts.threadTs,
       text: renderCommandHints({ channel: getChannel(opts.channel), skillRoutes }),
       unfurl_links: false,
       unfurl_media: false,
-    }, { channel: opts.channel, user: opts.user });
+    }, { channel: opts.channel, user: opts.user }));
     return { status: "ignored" };
   }
 
   const steeringDispatch = opts.waitRequested ? { matched: false as const } : activeTurnDispatch.dispatchSteering(
     opts.channel,
     opts.threadTs,
-    async (activeSteeringTarget): Promise<TurnRunOutcome> => {
+    async (activeSteeringTarget): Promise<TurnRunOutcome> => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
       if (opts.expectedSessionId !== undefined && getSessionIdForTurn(activeSteeringTarget.turnId) !== opts.expectedSessionId) throw new Error('The addressed session binding changed before steering.');
     const steeringFiles = opts.files || [];
     const steeringPrompt = stripBotMentions(opts.text);
@@ -2641,9 +2647,9 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
     const accepted = activeSteeringTarget.controller.enqueue({
       clientMessageId: `slack-concierge:steer:${opts.channel}:${opts.userMsgTs}`,
       text: steeringPrompt,
-      prepareText: async (attachmentRoot) => {
+      prepareText: async (attachmentRoot) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if (!attachmentRoot) throw new Error("The active turn has no attachment directory.");
-        const prepared = await prepareProviderInput({
+        const prepared = (yield prepareProviderInput({
           prompt: steeringPrompt,
           text: opts.text,
           files: steeringFiles,
@@ -2655,31 +2661,31 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
           user: opts.user,
           hydrateSlackLinks: !opts.prebuiltPrompt,
           attachmentRoot,
-        });
+        }));
         updateTurnSteeringReplayText(steeringMessage.row.id, prepared.replayText, prepared.unreplayableAttachmentCount);
         return prepared.prompt;
-      },
-      onSending: () => persistSteeringTransition(
+      }).call(this));},
+      onSending: ledgerCallback(() => persistSteeringTransition(
         `sending:${steeringMessage.row.id}`,
         () => markTurnSteeringMessageSending(steeringMessage.row.id),
-      ),
-      onSent: async () => {
-        await persistSteeringTransition(
+      )),
+      onSent: async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+        (yield persistSteeringTransition(
           `sent:${steeringMessage.row.id}`,
           () => markTurnSteeringMessageSent(steeringMessage.row.id),
-        );
+        ));
         log("info", "turn_steering_sent", {
           turn_id: activeSteeringTarget.turnId,
           steering_message_id: steeringMessage.row.id,
           slack_user_msg_ts: opts.userMsgTs,
         });
         void scheduleSteeringNotification(opts.client, steeringMessage.row.id, opts.user);
-      },
-      onError: async (error) => {
-        await persistSteeringTransition(
+      }).call(this));},
+      onError: async (error) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+        (yield persistSteeringTransition(
           `failed:${steeringMessage.row.id}`,
           () => markTurnSteeringMessageFailed(steeringMessage.row.id, error.message),
-        );
+        ));
         log("warn", "turn_steering_failed", {
           ...errorFields(error),
           turn_id: activeSteeringTarget.turnId,
@@ -2687,46 +2693,46 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
           slack_user_msg_ts: opts.userMsgTs,
         });
         void scheduleSteeringNotification(opts.client, steeringMessage.row.id, opts.user);
-      },
-      onAmbiguous: async (error) => {
-        await persistSteeringTransition(
+      }).call(this));},
+      onAmbiguous: async (error) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+        (yield persistSteeringTransition(
           `ambiguous:${steeringMessage.row.id}`,
           () => markTurnSteeringMessageAmbiguous(steeringMessage.row.id, error.message),
-        );
+        ));
         log("warn", "turn_steering_acknowledgement_ambiguous", {
           ...errorFields(error),
           turn_id: activeSteeringTarget.turnId,
           steering_message_id: steeringMessage.row.id,
           slack_user_msg_ts: opts.userMsgTs,
         });
-      },
-      onAmbiguousFinalized: async () => {
+      }).call(this));},
+      onAmbiguousFinalized: async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         let noticeReady = false;
-        await persistSteeringTransition(
+        (yield persistSteeringTransition(
           `ambiguity-finalized:${steeringMessage.row.id}`,
           () => { noticeReady = finalizeTurnSteeringMessageAmbiguity(steeringMessage.row.id); },
-        );
+        ));
         if (noticeReady) void scheduleSteeringNotification(opts.client, steeringMessage.row.id, opts.user);
-      },
+      }).call(this));},
     });
     if (!accepted) {
-      await persistSteeringTransition(
+      (yield persistSteeringTransition(
         `closed-failed:${steeringMessage.row.id}`,
         () => markTurnSteeringMessageFailed(steeringMessage.row.id, "The provider turn already ended."),
-      );
+      ));
       void scheduleSteeringNotification(opts.client, steeringMessage.row.id, opts.user);
       return { status: "error", turnId: activeSteeringTarget.turnId, error: "Provider turn already ended." };
     }
 
     return { status: "steered", turnId: activeSteeringTarget.turnId };
-    },
+    }).call(this));},
   );
   if (steeringDispatch.matched) {
-    return await steeringDispatch.value;
+    return (yield steeringDispatch.value);
   }
 
   if (inlineComparisonAction.matched) {
-    await handleInlineComparison({
+    (yield handleInlineComparison({
       channelId: opts.channel,
       channelName: opts.channelName,
       user: opts.user,
@@ -2736,12 +2742,12 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
       claimToken: inputClaimToken,
       files: opts.files || [],
       action: inlineComparisonAction,
-    });
+    }));
     return { status: "ignored" };
   }
 
   if (inlineForkRequested) {
-    await handleInlineFork({
+    (yield handleInlineFork({
       channelId: opts.channel,
       channelName: opts.channelName,
       user: opts.user,
@@ -2749,40 +2755,40 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
       threadTs: opts.threadTs,
       userMsgTs: opts.userMsgTs,
       claimToken: inputClaimToken,
-    });
+    }));
     return { status: "ignored" };
   }
 
   if (inlineCaptureRequested) {
-    const captureClaim = await retryTransientDatabaseOperation({
+    const captureClaim = (yield retryTransientDatabaseOperation({
       operation: () => beginInlineCapture(opts.channel, opts.userMsgTs, inputClaimToken),
-    });
+    }));
     if (captureClaim.stopped || !captureClaim.value) {
       throw new Error("Inline capture routing could not be persisted.");
     }
     inlineCaptureClaimed = true;
-    await scheduleInlineCaptureRecovery(opts.client, opts.channel, opts.userMsgTs);
+    (yield scheduleInlineCaptureRecovery(opts.client, opts.channel, opts.userMsgTs));
     return { status: "ignored" };
   }
   let channel = getChannel(opts.channel);
   let channelName = opts.channelName;
   if (!channel && !channelName) {
     try {
-      const info: any = await slackCall(opts.client, "conversations.info", { channel: opts.channel }, {
+      const info: any = (yield slackCall(opts.client, "conversations.info", { channel: opts.channel }, {
         channel: opts.channel,
         user: opts.user,
-      });
+      }));
       channelName = info.channel?.name;
     } catch (err) {
       log("warn", "channel_info_failed", { ...errorFields(err), channel: opts.channel });
     }
   }
   channel = channel || ensureChannelProject(opts.channel, channelName || opts.channel);
-  await waitForForkBinding({
+  (yield waitForForkBinding({
     channelId: opts.channel,
     threadTs: opts.threadTs,
     shouldStop: () => draining,
-  });
+  }));
   const mentionedConcierge = myBotUserId ? opts.text.includes(`<@${myBotUserId}>`) : false;
   const topLevelMessage = opts.threadTs === opts.userMsgTs;
 
@@ -2965,14 +2971,14 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
     if (inlineCaptureClaimed) {
       void scheduleInlineCaptureRecovery(opts.client, opts.channel, opts.userMsgTs);
     } else {
-      const failedPendingInputResult = await retryTransientDatabaseOperation({
+      const failedPendingInputResult = (yield retryTransientDatabaseOperation({
         operation: () => failPendingSlackUserInput(
           opts.channel,
           opts.userMsgTs,
           inputClaimToken,
           "Concierge stopped before this message was durably classified.",
         ),
-      });
+      }));
       const failedPendingInput = !failedPendingInputResult.stopped && failedPendingInputResult.value;
       if (failedPendingInput) {
         void scheduleSlackInputRecoveryNotice(opts.client, opts.channel, opts.userMsgTs);
@@ -2983,7 +2989,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
     activeInputHandlerCount -= 1;
     resolveDrainIfIdle();
   }
-}
+}).call(this));}
 
 // Subtypes that are still real user content and must trigger a turn.
 // `undefined` = plain text; thread_broadcast = reply-and-send-to-channel;
@@ -2991,12 +2997,12 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
 // Everything else (channel_join, message_changed, bot_message, …) is skipped.
 const ROUTABLE_SUBTYPES = new Set([undefined, "thread_broadcast", "file_share"]);
 
-app.message(async ({ message, client }) => {
+app.message(async ({ message, client }) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const m = message as any;
   if (!ROUTABLE_SUBTYPES.has(m.subtype)) return;
   if (myBotUserId && m.user === myBotUserId) return;
   if (myBotId && m.bot_id === myBotId) return;
-  await routedRequests.receive({
+  (yield routedRequests.receive({
     channel: m.channel,
     channelName: m.channel_name,
     threadTs: m.thread_ts || m.ts,
@@ -3005,22 +3011,22 @@ app.message(async ({ message, client }) => {
     text: m.text || "",
     files: Array.isArray(m.files) ? m.files : [],
     clientMessageId: m.client_msg_id,
-  });
-});
+  }));
+}).call(this));});
 
-app.event("app_mention", async () => {});
+app.event("app_mention", async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {}).call(this));});
 
-app.event("app_home_opened", async ({ event, client }: any) => {
+app.event("app_home_opened", async ({ event, client }: any) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if (event.tab && event.tab !== "home") return;
   openedAgentSessionsHomeUsers.add(event.user);
   try {
-    await publishAgentSessionsHome(client, event.user);
+    (yield publishAgentSessionsHome(client, event.user));
   } catch (error) {
     log("error", "agent_sessions_home_publish_failed", { user_id: event.user, ...errorFields(error) });
   }
-});
+}).call(this));});
 
-app.event("agent_session_title_changed" as any, async ({ event, body }: any) => {
+app.event("agent_session_title_changed" as any, async ({ event, body }: any) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if (!myTeamId || body.team_id !== myTeamId || !event.channel || !event.thread_ts || !event.title) return;
   try {
     observeSlackAgentSessionTitle({
@@ -3036,22 +3042,22 @@ app.event("agent_session_title_changed" as any, async ({ event, body }: any) => 
       ...errorFields(error),
     });
   }
-});
+}).call(this));});
 
-app.action(APP_HOME_REFRESH_ACTION_ID, async ({ ack, body, client }: any) => {
-  await ack();
+app.action(APP_HOME_REFRESH_ACTION_ID, async ({ ack, body, client }: any) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield ack());
   const userId = body.user?.id;
   if (!userId) return;
   openedAgentSessionsHomeUsers.add(userId);
   try {
-    await publishAgentSessionsHome(client, userId, "Dashboard refreshed.");
+    (yield publishAgentSessionsHome(client, userId, "Dashboard refreshed."));
   } catch (error) {
     log("error", "agent_sessions_home_manual_refresh_failed", { user_id: userId, ...errorFields(error) });
   }
-});
+}).call(this));});
 
-app.action(APP_HOME_STOP_ACTION_ID, async ({ ack, body, action }: any) => {
-  await ack();
+app.action(APP_HOME_STOP_ACTION_ID, async ({ ack, body, action }: any) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield ack());
   const userId = body.user?.id;
   const target = parseAgentSessionActionTarget(action.value);
   const row = userId && target ? getAgentSessionDashboardRowForUser(userId, target.sessionId) : null;
@@ -3097,14 +3103,14 @@ app.action(APP_HOME_STOP_ACTION_ID, async ({ ack, body, action }: any) => {
     turn_id: target.turnId,
   });
   scheduleAgentSessionsHomeRefresh(userId, "Stop requested. Concierge is closing the provider turn safely.");
-  void dispatched.value.catch((error) => {
+  void dispatched.value.catch(ledgerCallback((error) => {
     log("warn", "agent_sessions_home_stop_failed", { turn_id: target.turnId, ...errorFields(error) });
     scheduleAgentSessionsHomeRefresh(userId, "Concierge could not confirm the stop request. Open the thread to check its state.");
-  });
-});
+  }));
+}).call(this));});
 
-app.action(APP_HOME_RENAME_ACTION_ID, async ({ ack, body, action, client }: any) => {
-  await ack();
+app.action(APP_HOME_RENAME_ACTION_ID, async ({ ack, body, action, client }: any) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield ack());
   const userId = body.user?.id;
   const target = parseAgentSessionActionTarget(action.value);
   const row = userId && target ? getAgentSessionDashboardRowForUser(userId, target.sessionId) : null;
@@ -3119,10 +3125,10 @@ app.action(APP_HOME_RENAME_ACTION_ID, async ({ ack, body, action, client }: any)
     return;
   }
   try {
-    await slackCall(client, "views.open", {
+    (yield slackCall(client, "views.open", {
       trigger_id: body.trigger_id,
       view: buildRenameAgentSessionModal(row),
-    }, { user: userId });
+    }, { user: userId }));
   } catch (error) {
     log("error", "agent_sessions_home_rename_modal_failed", {
       session_id: row.session_id,
@@ -3130,9 +3136,9 @@ app.action(APP_HOME_RENAME_ACTION_ID, async ({ ack, body, action, client }: any)
     });
     scheduleAgentSessionsHomeRefresh(userId, "The rename dialog could not be opened. Please try again.");
   }
-});
+}).call(this));});
 
-app.view(APP_HOME_RENAME_VIEW_ID, async ({ ack, body, view, client }: any) => {
+app.view(APP_HOME_RENAME_VIEW_ID, async ({ ack, body, view, client }: any) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const submission = parseRenameAgentSessionSubmission(view);
   const userId = body.user?.id;
   const row = userId && submission
@@ -3140,7 +3146,7 @@ app.view(APP_HOME_RENAME_VIEW_ID, async ({ ack, body, view, client }: any) => {
     : null;
   if (!submission || !row || row.slack_channel_id !== submission.target.channel
     || row.slack_thread_ts !== submission.target.threadTs) {
-    await ack();
+    (yield ack());
     if (userId) scheduleAgentSessionsHomeRefresh(userId, "That session changed before it was renamed.");
     return;
   }
@@ -3149,17 +3155,17 @@ app.view(APP_HOME_RENAME_VIEW_ID, async ({ ack, body, view, client }: any) => {
     threadTs: row.slack_thread_ts,
     title: submission.title,
   });
-  await ack();
+  (yield ack());
   scheduleAgentSessionsHomeRefresh(userId, `Renaming session to “${submission.title}”…`);
   void scheduleSlackAgentSessionTitleProjection(client, row.slack_channel_id, row.slack_thread_ts)
-    .then((outcome) => scheduleAgentSessionsHomeRefresh(
+    .then(ledgerCallback((outcome) => scheduleAgentSessionsHomeRefresh(
       userId,
       outcome === "delivered" ? "Session renamed." : "Slack could not apply that session name.",
-    ));
-});
+    )));
+}).call(this));});
 
-app.action(APP_HOME_RETRY_ACTION_ID, async ({ ack, body, action }: any) => {
-  await ack();
+app.action(APP_HOME_RETRY_ACTION_ID, async ({ ack, body, action }: any) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield ack());
   const userId = body.user?.id;
   const target = parseAgentSessionActionTarget(action.value);
   const row = userId && target ? getAgentSessionDashboardRowForUser(userId, target.sessionId) : null;
@@ -3173,10 +3179,10 @@ app.action(APP_HOME_RETRY_ACTION_ID, async ({ ack, body, action }: any) => {
   scheduleAgentSessionsHomeRefresh(userId, outcome === "resumed" || outcome === "already_queued"
     ? "Turn queued for retry."
     : "That turn is no longer safe to retry.");
-});
+}).call(this));});
 
-app.action(APP_HOME_FORK_ACTION_ID, async ({ ack, body, action, client }: any) => {
-  await ack();
+app.action(APP_HOME_FORK_ACTION_ID, async ({ ack, body, action, client }: any) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield ack());
   const userId = body.user?.id;
   const target = parseAgentSessionActionTarget(action.value);
   const row = userId && target ? getAgentSessionDashboardRowForUser(userId, target.sessionId) : null;
@@ -3220,12 +3226,12 @@ app.action(APP_HOME_FORK_ACTION_ID, async ({ ack, body, action, client }: any) =
       additionalDirs: parseAdditionalPaths(channel),
     });
     scheduleAgentSessionsHomeRefresh(userId, "Creating a fork from the latest complete provider history…");
-    const request = await executeForkRequest({
+    const request = (yield executeForkRequest({
       requestId: claim.row.request_id,
       client,
       instanceId,
       shouldStop: () => draining,
-    });
+    }));
     scheduleAgentSessionsHomeRefresh(userId, forkRequestResultMessage(request));
   } catch (error) {
     log("error", "agent_sessions_home_fork_failed", {
@@ -3234,13 +3240,13 @@ app.action(APP_HOME_FORK_ACTION_ID, async ({ ack, body, action, client }: any) =
     });
     scheduleAgentSessionsHomeRefresh(userId, `Fork failed: ${(error as Error).message}`);
   }
-});
+}).call(this));});
 
-app.event("agent_session_stopped" as any, async ({ event, body }: any) => {
+app.event("agent_session_stopped" as any, async ({ event, body }: any) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   try {
-    const outcome = await handleAgentSessionStop({
+    const outcome = (yield handleAgentSessionStop({
       event, teamId: body.team_id, expectedTeamId: myTeamId, registry: activeTurnDispatch,
-    });
+    }));
     log("info", `agent_session_stop_${outcome}`, { channel: event.channel, thread_ts: event.thread_ts });
   } catch (error) {
     log("error", "agent_session_stop_dispatch_failed", {
@@ -3249,15 +3255,15 @@ app.event("agent_session_stopped" as any, async ({ event, body }: any) => {
       thread_ts: event.thread_ts,
     });
   }
-});
+}).call(this));});
 
-app.event("channel_created", async ({ event, client }) => {
+app.event("channel_created", async ({ event, client }) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const channel = (event as any).channel;
   if (!channel?.id || !channel?.name) return;
   let joined = true;
   let joinErrorMsg: string | null = null;
   try {
-    await slackCall(client, "conversations.join", { channel: channel.id });
+    (yield slackCall(client, "conversations.join", { channel: channel.id }));
   } catch (err) {
     joined = false;
     joinErrorMsg = (err as any)?.data?.error || (err as Error).message;
@@ -3282,36 +3288,36 @@ app.event("channel_created", async ({ event, client }) => {
     });
   }
   const channelRow = getChannel(channel.id);
-  if (channelRow && joined) await ensureChannelSurfaces(client, channelRow, null, "channel_created");
+  if (channelRow && joined) (yield ensureChannelSurfaces(client, channelRow, null, "channel_created"));
   log("info", "channel_created_project_ready", { channel: channel.id, name: channel.name, joined });
   // If we could not auto-join, tell the user in-channel via chat:write.public.
   // Without this, the channel appears dead to a user who created it via the Slack UI.
   if (!joined) {
     try {
-      await slackCall(client, "chat.postMessage", {
+      (yield slackCall(client, "chat.postMessage", {
         channel: channel.id,
         text: `⚠️ Concierge auto-scaffolded this project but couldn't join the channel (\`${joinErrorMsg || "unknown"}\`). Two ways to fix:\n1. Type \`/invite @Concierge\` in this channel (one-time).\n2. Reinstall the app manifest in admin to grant the \`channels:join\` scope; future channels will auto-join.\n\nUntil then, this channel won't receive agent responses.`,
-      });
+      }));
     } catch (postErr) {
       log("warn", "channel_join_failure_notice_failed", { ...errorFields(postErr), channel: channel.id });
     }
   }
-});
+}).call(this));});
 
-app.shortcut("send_to_inbox", async ({ ack, shortcut, client }) => {
-  await ack();
+app.shortcut("send_to_inbox", async ({ ack, shortcut, client }) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield ack());
   const s: any = shortcut;
   const channel = ensureChannelProject(s.channel.id, s.channel.name || s.channel.id);
   const file = appendInbox(channel, s.message.text || "", `shortcut by ${s.user.id}`);
-  await slackCall(client, "chat.postEphemeral", {
+  (yield slackCall(client, "chat.postEphemeral", {
     channel: s.channel.id,
     user: s.user.id,
     text: `sent to inbox: ${file}`,
-  });
-});
+  }));
+}).call(this));});
 
-app.shortcut("turn_into_todo", async ({ ack, shortcut, client }) => {
-  await ack();
+app.shortcut("turn_into_todo", async ({ ack, shortcut, client }) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield ack());
   const s: any = shortcut;
   const channel = ensureChannelProject(s.channel.id, s.channel.name || s.channel.id);
   const file = appendTodo(
@@ -3323,12 +3329,12 @@ app.shortcut("turn_into_todo", async ({ ack, shortcut, client }) => {
     { channel: s.channel.id, ts: s.message.ts },
   );
   todoFileWatcher?.schedule(channel, "capture");
-  await slackCall(client, "chat.postEphemeral", {
+  (yield slackCall(client, "chat.postEphemeral", {
     channel: s.channel.id,
     user: s.user.id,
     text: `todo created: ${file}`,
-  });
-});
+  }));
+}).call(this));});
 
 interface ComparisonInvocation {
   requestId: string;
@@ -3351,15 +3357,15 @@ async function postComparisonFailure(input: {
   userId: string;
   requestId: string;
   error: unknown;
-}) {
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const message = input.error instanceof Error ? input.error.message : String(input.error);
   try {
-    await slackCall(input.client, "chat.postMessage", {
+    (yield slackCall(input.client, "chat.postMessage", {
       channel: input.channelId,
       thread_ts: input.threadTs,
       text: `Comparison failed: ${message}`,
       client_msg_id: comparisonClientMessageId(`failure:${input.requestId}`),
-    }, { channel: input.channelId, user: input.userId });
+    }, { channel: input.channelId, user: input.userId }));
   } catch (noticeError) {
     log("warn", "comparison_failure_notice_failed", {
       ...errorFields(noticeError),
@@ -3368,23 +3374,23 @@ async function postComparisonFailure(input: {
       source_thread_ts: input.threadTs,
     });
   }
-}
+}).call(this));}
 
-async function postComparisonTurnFailureIfNeeded(client: any, outcome: TurnRunOutcome) {
+async function postComparisonTurnFailureIfNeeded(client: any, outcome: TurnRunOutcome) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if (!comparisonOutcomeNeedsSourceFailureNotice(outcome.status) || !outcome.turnId) return;
   const failure = getComparisonSourceFailureForTurn(outcome.turnId);
   if (!failure) return;
-  await postComparisonFailure({
+  (yield postComparisonFailure({
     client,
     channelId: failure.slack_channel_id,
     threadTs: failure.source_thread_ts,
     userId: failure.requested_by,
     requestId: failure.request_id,
     error: new Error(failure.error),
-  });
-}
+  }));
+}).call(this));}
 
-async function runComparison(input: ComparisonInvocation) {
+async function runComparison(input: ComparisonInvocation) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   let claimedRequest = false;
   let comparisonThreadTs: string | null = null;
   try {
@@ -3432,11 +3438,11 @@ async function runComparison(input: ComparisonInvocation) {
       sourceText: comparisonAnchorSourceText(selectedPrompt),
       attachments,
     });
-    const anchor: any = await slackCall(input.client, "chat.postMessage", {
+    const anchor: any = (yield slackCall(input.client, "chat.postMessage", {
       channel: input.channelId,
       ...anchorMessage,
       client_msg_id: comparisonClientMessageId(input.requestId),
-    }, { channel: input.channelId, user: input.requestedBy });
+    }, { channel: input.channelId, user: input.requestedBy }));
     comparisonThreadTs = anchor.ts;
     attachComparisonThread(input.requestId, anchor.ts);
     log("info", "comparison_started", {
@@ -3452,7 +3458,7 @@ async function runComparison(input: ComparisonInvocation) {
       history_through_message_ts: input.historyThroughMessageTs || null,
       comparison_thread_ts: anchor.ts,
     });
-    const comparisonOutcome = await dispatchComparisonTurn({
+    const comparisonOutcome = (yield dispatchComparisonTurn({
       requestId: input.requestId,
       channelId: input.channelId,
       channelName: channel.slack_channel_name,
@@ -3463,10 +3469,10 @@ async function runComparison(input: ComparisonInvocation) {
       client: input.client,
       provider: input.targetProvider,
       model: input.targetModel,
-    }, { dispatch: handleUserMessage });
+    }, { dispatch: handleUserMessage }));
     const recordedOutcome = finishComparisonFromTurnOutcome(input.requestId, comparisonOutcome);
     if (recordedOutcome.status === "error") throw new Error(recordedOutcome.error);
-    await postComparisonTurnFailureIfNeeded(input.client, comparisonOutcome);
+    (yield postComparisonTurnFailureIfNeeded(input.client, comparisonOutcome));
   } catch (error) {
     if (claimedRequest) finishComparisonRequest(input.requestId, "error", String(error));
     log("error", "comparison_failed", {
@@ -3480,19 +3486,19 @@ async function runComparison(input: ComparisonInvocation) {
       target_model: input.targetModel,
       comparison_thread_ts: comparisonThreadTs,
     });
-    await postComparisonFailure({
+    (yield postComparisonFailure({
       client: input.client,
       channelId: input.channelId,
       threadTs: input.sourceThreadTs,
       userId: input.requestedBy,
       requestId: input.requestId,
       error,
-    });
+    }));
   }
-}
+}).call(this));}
 
-app.shortcut(COMPARISON_SHORTCUT_ID, async ({ ack, shortcut, client }) => {
-  await ack();
+app.shortcut(COMPARISON_SHORTCUT_ID, async ({ ack, shortcut, client }) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield ack());
   const s: any = shortcut;
   const sourceThreadTs = s.message.thread_ts || s.message.ts;
   const sourceSession = resolveComparisonSourceSession(s.channel.id, s.message.ts);
@@ -3504,19 +3510,19 @@ app.shortcut(COMPARISON_SHORTCUT_ID, async ({ ack, shortcut, client }) => {
       source_thread_ts: sourceThreadTs,
       source_message_ts: s.message.ts,
     });
-    await postComparisonFailure({
+    (yield postComparisonFailure({
       client,
       channelId: s.channel.id,
       threadTs: sourceThreadTs,
       userId: s.user.id,
       requestId: s.trigger_id,
       error,
-    });
+    }));
     return;
   }
 
   const target = selectProviderForComparison({ sourceProvider: sourceSession.provider_id as ProviderId });
-  await runComparison({
+  (yield runComparison({
     requestId: s.trigger_id,
     channelId: s.channel.id,
     channelName: s.channel.name || s.channel.id,
@@ -3528,11 +3534,11 @@ app.shortcut(COMPARISON_SHORTCUT_ID, async ({ ack, shortcut, client }) => {
     targetProvider: target.provider,
     targetModel: target.model || null,
     client,
-  });
-});
+  }));
+}).call(this));});
 
-app.shortcut("fork_from_here", async ({ ack, shortcut, client }) => {
-  await ack();
+app.shortcut("fork_from_here", async ({ ack, shortcut, client }) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  (yield ack());
   const s: any = shortcut;
   const channel = ensureChannelProject(s.channel.id, s.channel.name || s.channel.id);
   const selectedThreadTs = s.message.thread_ts || s.message.ts;
@@ -3546,7 +3552,7 @@ app.shortcut("fork_from_here", async ({ ack, shortcut, client }) => {
     parent_thread_ts: parent?.slack_thread_ts || null,
   });
   if (!parent?.agent_session_uuid) {
-    await slackCall(client, "chat.postEphemeral", {
+    (yield slackCall(client, "chat.postEphemeral", {
       channel: s.channel.id,
       user: s.user.id,
       text: unavailableForkSourceMessage(
@@ -3554,13 +3560,13 @@ app.shortcut("fork_from_here", async ({ ack, shortcut, client }) => {
         selectedMessageTs,
         "No persisted session found to fork.",
       ),
-    });
+    }));
     return;
   }
   try {
     const boundary = getProviderTurnBoundaryForSlackMessage(s.channel.id, selectedMessageTs);
     const cwd = channel.code_path || channel.vault_path;
-    const lastProviderTurnId = await resolveExactForkTurnId({
+    const lastProviderTurnId = (yield resolveExactForkTurnId({
       parent: {
         id: parent.id,
         provider_id: parent.provider_id as ProviderId,
@@ -3569,7 +3575,7 @@ app.shortcut("fork_from_here", async ({ ack, shortcut, client }) => {
       boundary,
       cwd,
       requireBoundary: true,
-    });
+    }));
     const claim = claimForkRequest({
       requestId: s.trigger_id,
       channelId: s.channel.id,
@@ -3584,56 +3590,56 @@ app.shortcut("fork_from_here", async ({ ack, shortcut, client }) => {
       cwd,
       additionalDirs: parseAdditionalPaths(channel),
     });
-    const request = await executeForkRequest({
+    const request = (yield executeForkRequest({
       requestId: claim.row.request_id,
       client,
       instanceId,
       shouldStop: () => draining,
-    });
+    }));
     if (request.status !== "delivered") {
-      await slackCall(client, "chat.postEphemeral", {
+      (yield slackCall(client, "chat.postEphemeral", {
         channel: s.channel.id,
         user: s.user.id,
         text: forkRequestResultMessage(request),
-      });
+      }));
     }
   } catch (err) {
-    await slackCall(client, "chat.postEphemeral", {
+    (yield slackCall(client, "chat.postEphemeral", {
       channel: s.channel.id,
       user: s.user.id,
       text: `fork failed: ${(err as Error).message}`,
-    });
+    }));
   }
-});
+}).call(this));});
 
 // Note: the #bot-status channel + hourly heartbeat feature was removed per
 // design decision — silence (no reply to a message) is the down signal, and
 // `/concierge-status` reports uptime on demand.
 
-async function refreshRequiredCanvases() {
-  const result = await syncAllAgentsCanvases({
+async function refreshRequiredCanvases() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  const result = (yield syncAllAgentsCanvases({
     channels: getSlackChannels(),
     requireSuccess: true,
-    sync: async (channel) => {
-      const result = await syncCommittedAgentsCanvas({
+    sync: async (channel) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+      const result = (yield syncCommittedAgentsCanvas({
         client: app.client,
         channel,
         user: null,
         reason: "required_startup",
         force: true,
-      });
+      }));
       return result.status === "ignored"
-        ? await syncAgentsCanvas({ client: app.client, channel, user: null, reason: "required_startup" })
+        ? (yield syncAgentsCanvas({ client: app.client, channel, user: null, reason: "required_startup" }))
         : result;
-    },
-  });
+    }).call(this));},
+  }));
   log("info", "required_canvas_refresh_complete", {
     refreshed: result.refreshed,
     failures: result.failures,
   });
-}
+}).call(this));}
 
-async function reconcileOrphanedSlackInputs() {
+async function reconcileOrphanedSlackInputs() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const orphanedInputs = listOrphanedSlackInputClaims(isProcessIdentityAlive);
   for (const input of orphanedInputs) {
     if (!input.inline_capture || !input.user_text || !input.user_id) continue;
@@ -3643,9 +3649,9 @@ async function reconcileOrphanedSlackInputs() {
   if (releasedInputClaims > 0) {
     log("warn", "orphaned_slack_input_claims_recovered", { count: releasedInputClaims });
   }
-}
+}).call(this));}
 
-async function launchPreparedDeploymentRun(run: DeploymentRunRow) {
+async function launchPreparedDeploymentRun(run: DeploymentRunRow) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const command = [
     "systemd-run",
     "--unit", run.unit_name,
@@ -3668,47 +3674,47 @@ async function launchPreparedDeploymentRun(run: DeploymentRunRow) {
     "/usr/local/lib/slack-concierge-deployment/control",
     "deploy",
   ];
-  const launched = await runDeploymentControl(command);
+  const launched = (yield runDeploymentControl(command));
   if (launched.exitCode === 0) return;
-  const observed = await runDeploymentControl(["systemctl", "show", `${run.unit_name}.service`, "--property=LoadState", "--value"]);
+  const observed = (yield runDeploymentControl(["systemctl", "show", `${run.unit_name}.service`, "--property=LoadState", "--value"]));
   const loadState = observed.stdout.trim();
   if (loadState && loadState !== "not-found") return;
   if (observed.exitCode !== 0 || !loadState) {
     throw Object.assign(new Error(`Deployment launch outcome is unconfirmed for ${run.unit_name}`), { code: "launch-unconfirmed" });
   }
   throw new Error(launched.stderr.trim() || `systemd-run exited ${launched.exitCode}`);
-}
+}).call(this));}
 
-async function runDeploymentControl(command: string[]) {
+async function runDeploymentControl(command: string[]) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   try {
-    const result = await promisify(execFile)(command[0]!, command.slice(1), { maxBuffer: 1024 * 1024 });
+    const result = (yield promisify(execFile)(command[0]!, command.slice(1), { maxBuffer: 1024 * 1024 }));
     return { exitCode: 0, stdout: result.stdout, stderr: result.stderr };
   } catch (error: any) {
     return { exitCode: typeof error?.code === "number" ? error.code : -1,
       stdout: String(error?.stdout || ""), stderr: String(error?.stderr || error) };
   }
-}
+}).call(this));}
 
-async function launchDeploymentRepair(incidentId: string) {
+async function launchDeploymentRepair(incidentId: string) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const unit = `concierge-deployment-repair@${incidentId}.service`;
-  const launched = await runDeploymentControl(["systemctl", "start", unit]);
+  const launched = (yield runDeploymentControl(["systemctl", "start", unit]));
   if (launched.exitCode !== 0) {
-    const result = await runDeploymentControl(["systemctl", "show", unit, "--property=Result", "--value"]);
+    const result = (yield runDeploymentControl(["systemctl", "show", unit, "--property=Result", "--value"]));
     const error = new Error(launched.stderr.trim() || `systemctl start ${unit} failed`);
     if (result.exitCode === 0 && result.stdout.trim() === "start-limit-hit") {
       Object.assign(error, { code: "start-limit-hit" });
     }
     throw error;
   }
-}
+}).call(this));}
 
 const deploymentRepositoryRoot = process.env.CONCIERGE_REPO || "/var/lib/slack-concierge-deployment/source";
 type DeploymentWorkReason = "startup" | "github-push" | "turn-settled" | "state-change" | "settled";
 const deploymentWorkRunner = createCoalescingEventRunner<DeploymentWorkReason>({
   shouldStop: () => draining,
-  run: async (reason) => {
+  run: async (reason) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     try {
-      const result = await reconcileDeploymentWork({
+      const result = (yield reconcileDeploymentWork({
         client: app.client,
         ownerInstanceId: instanceId,
         isOwnerAlive: isProcessIdentityAlive,
@@ -3721,7 +3727,7 @@ const deploymentWorkRunner = createCoalescingEventRunner<DeploymentWorkReason>({
           launchRun: launchPreparedDeploymentRun,
           launchRepair: launchDeploymentRepair,
         },
-      });
+      }));
       if (result.deadRuns || result.recoveredNotices || result.recoveredReactions
         || result.automaticDeploymentPrepared || result.launched || result.repairsLaunched
         || result.reactionsStarted) {
@@ -3731,7 +3737,7 @@ const deploymentWorkRunner = createCoalescingEventRunner<DeploymentWorkReason>({
     } catch (error) {
       log("error", "deployment_work_reconciliation_failed", { reason, ...errorFields(error) });
     }
-  },
+  }).call(this));},
 });
 
 // A pending update that waits for main to go quiet has nobody else to wake it when the quiet
@@ -3743,10 +3749,10 @@ function armDeploymentSettleWake(atMs: number | null) {
   deploymentSettleWake = null;
   if (atMs === null) return;
   log("info", "deployment_settling", { starts_at: new Date(atMs).toISOString() });
-  const timer = setTimeout(() => {
+  const timer = setTimeout(ledgerCallback(() => {
     deploymentSettleWake = null;
     scheduleDeploymentWork("settled");
-  }, Math.max(0, atMs - Date.now()) + 1_000);
+  }), Math.max(0, atMs - Date.now()) + 1_000);
   timer.unref?.();
   deploymentSettleWake = { atMs, timer };
 }
@@ -3756,7 +3762,7 @@ function scheduleDeploymentWork(reason: DeploymentWorkReason) {
   void deploymentWorkRunner.request(reason);
 }
 
-async function reconcilePriorInstanceTurns() {
+async function reconcilePriorInstanceTurns() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if (runtime.ownership.deployment) {
     const deploymentNoticesRecovered = recoverDeploymentNoticeClaims(isProcessIdentityAlive);
     const deadDeploymentRuns = recoverDeadDeploymentRuns(isProcessIdentityAlive);
@@ -3767,7 +3773,7 @@ async function reconcilePriorInstanceTurns() {
       });
     }
   }
-  await reconcileOrphanedSlackInputs();
+  (yield reconcileOrphanedSlackInputs());
   const recoveredStatusClaims = recoverSlackThreadStatusProjectionClaims();
   if (recoveredStatusClaims > 0) {
     log("warn", "slack_thread_status_projections_recovered", { count: recoveredStatusClaims });
@@ -3822,27 +3828,27 @@ async function reconcilePriorInstanceTurns() {
     // but do not contact that server until it has answered (after the request socket and any
     // runner relay channel exist).
     const ready = adoption.execution.provider === 'codex' ? codexAppServerReady() : Promise.resolve();
-    void ready.then(() => sessionExecutionHost.run(adoption.claim, adoption)).catch((error) => {
+    void ready.then(ledgerCallback(() => sessionExecutionHost.run(adoption.claim, adoption))).catch(ledgerCallback((error) => {
       log("error", "execution_adoption_failed", { turn_id: adoption.claim.turn_id, execution_id: adoption.execution.execution_id, ...errorFields(error) });
       settleClaimedTurnSetupFailure(adoption.claim, error);
-    }).finally(() => { adoptedTurnIds.delete(adoption.claim.turn_id); bankedUpkeep.settled(adoption.claim.turn_id); sessionTurnQueue?.wake(); });
+    })).finally(ledgerCallback(() => { adoptedTurnIds.delete(adoption.claim.turn_id); bankedUpkeep.settled(adoption.claim.turn_id); sessionTurnQueue?.wake(); }));
   };
-  const executions = await claimAdoptableExecutions({ instanceId, isOwnerAlive: isProcessIdentityAlive });
+  const executions = (yield claimAdoptableExecutions({ instanceId, isOwnerAlive: isProcessIdentityAlive }));
   for (const adoption of executions.adopted) runAdopted(adoption);
   for (const held of executions.held) watchHeldExecution(held, { stopped: () => draining, adopt: runAdopted,
     interrupt: (turnId, reason) => { interruptOrphanedTurn(turnId, instanceId, reason); sessionTurnQueue?.wake(); } });
   let parkedRecoveryActive = false;
-  const parkedRecovery = setInterval(() => {
+  const parkedRecovery = setInterval(ledgerCallback(() => {
     if (draining || parkedRecoveryActive) return;
     parkedRecoveryActive = true;
     void claimAdoptableExecutions({ instanceId, isOwnerAlive: isProcessIdentityAlive, onlyParked: true })
-      .then(found => {
+      .then(ledgerCallback(found => {
         for (const adoption of found.adopted) runAdopted(adoption);
         for (const held of found.held) watchHeldExecution(held, { stopped: () => draining, adopt: runAdopted,
           interrupt: (turnId, reason) => { interruptOrphanedTurn(turnId, instanceId, reason); sessionTurnQueue?.wake(); } });
-      }).catch(error => log("error", "parked_execution_recovery_failed", errorFields(error)))
+      })).catch(error => log("error", "parked_execution_recovery_failed", errorFields(error)))
       .finally(() => { parkedRecoveryActive = false; });
-  }, 60_000);
+  }), 60_000);
   parkedRecovery.unref?.();
   const recoveredSteering = recoverUnsettledSteeringMessages(isProcessIdentityAlive);
   sessionExecutionHost.recoverOutsideWaitingInputs();
@@ -3850,7 +3856,7 @@ async function reconcilePriorInstanceTurns() {
   if (recoveredSteering.failed > 0 || recoveredSteering.ambiguous > 0) {
     log("warn", "unsettled_steering_recovered", recoveredSteering);
   }
-  const recoveryOutcome = await reconcileRecoverableTurns({
+  const recoveryOutcome = (yield reconcileRecoverableTurns({
     client: app.client,
     instanceId,
     activeTurnIds: [...new Set([...activeTurnDispatch.activeTurns, ...(sessionTurnQueue?.activeTurns ?? []),...adoptedTurnIds])],
@@ -3869,16 +3875,16 @@ async function reconcilePriorInstanceTurns() {
         { shouldStop: () => draining, wait: waitForNoticeRetry },
       ),
     },
-  });
+  }));
   if (recoveryOutcome === "stopped") return;
   for (const summary of [...requeuedRootSummaryLengthFailures, ...requeuedComparisonOwnershipFailures]) {
     let outcome: "delivered" | "stopped" | "permanent_failure" = "permanent_failure";
     try {
-      outcome = await scheduleSlackRootSummaryProjection(
+      outcome = (yield scheduleSlackRootSummaryProjection(
         app.client,
         summary.slack_channel_id,
         summary.slack_thread_ts,
-      );
+      ));
     } catch (error) {
       log("error", "requeued_root_summary_projection_failed", {
         ...errorFields(error),
@@ -3901,12 +3907,12 @@ async function reconcilePriorInstanceTurns() {
     let agentSessionStatusError: string | null = null;
     if (agentStatus?.desired_status === "active") {
       try {
-        const statusOutcome = await setSlackAgentSessionStatus({
+        const statusOutcome = (yield setSlackAgentSessionStatus({
           client: app.client,
           channel: summary.slack_channel_id,
           threadTs: summary.slack_thread_ts,
           status: "active",
-        });
+        }));
         if (statusOutcome === "stopped") return;
         if (statusOutcome === "permanent_failure") {
           agentSessionStatusError = getSlackAgentSessionStatusProjection(
@@ -3932,12 +3938,12 @@ async function reconcilePriorInstanceTurns() {
       : null;
     if (failureNotice && turn?.requested_by_user_id) {
       try {
-        const noticeOutcome = await projectSlackTurnStatus({
+        const noticeOutcome = (yield projectSlackTurnStatus({
           client: app.client,
           turnId: summary.desired_turn_id,
           text: failureNotice,
           user: turn.requested_by_user_id,
-        });
+        }));
         if (noticeOutcome === "stopped") return;
         if (noticeOutcome !== "delivered") {
           log("error", "requeued_terminal_projection_failure_notice_incomplete", {
@@ -3970,19 +3976,19 @@ async function reconcilePriorInstanceTurns() {
     void scheduleSlackTurnStatusProjection(app.client, status.turn_id);
   }
   for (const summary of listPendingSlackRootSummaryProjections()) {
-    const outcome = await scheduleSlackRootSummaryProjection(
+    const outcome = (yield scheduleSlackRootSummaryProjection(
       app.client,
       summary.slack_channel_id,
       summary.slack_thread_ts,
-    );
+    ));
     if (outcome === "stopped") return;
   }
   for (const status of listPendingSlackAgentSessionStatusProjections()) {
-    const outcome = await scheduleSlackAgentSessionStatusProjection(
+    const outcome = (yield scheduleSlackAgentSessionStatusProjection(
       app.client,
       status.slack_channel_id,
       status.slack_thread_ts,
-    );
+    ));
     if (outcome === "stopped") return;
   }
   for (const title of listPendingSlackAgentSessionTitleProjections()) {
@@ -4019,16 +4025,16 @@ async function reconcilePriorInstanceTurns() {
     if (!channel.list_id || !channel.list_title_column_id) continue;
     void scheduleChannelListAccessRepair(app.client, channel);
   }
-  const forkRecovery = await reconcileForkRequests({
+  const forkRecovery = (yield reconcileForkRequests({
     client: app.client,
     instanceId,
     isOwnerAlive: isProcessIdentityAlive,
     shouldStop: () => draining,
-  });
+  }));
   log("info", "fork_requests_reconciled", forkRecovery);
   const comparisonRecovery = reconcileComparisonRequests();
   log("info", "comparison_requests_reconciled", comparisonRecovery);
-}
+}).call(this));}
 
 // Every provider account's usage limits, read on a slow cadence because the numbers
 // only need to be roughly current and each read calls the providers' usage services.
@@ -4047,14 +4053,14 @@ watchAuthHeldCredentials();
 // here and needs to exist before the first dispatch, not only once someone opens the
 // Provider accounts dialog.
 void refreshClaudeAccount();
-setInterval(() => { if (!draining) void refreshClaudeAccount(); }, USAGE_REFRESH_MS);
+setInterval(ledgerCallback(() => { if (!draining) void refreshClaudeAccount(); }), USAGE_REFRESH_MS);
 
 // Watchdog for ghost running turns: a turn this coordinator holds in 'running' with no
 // executions row, outside its active queue and dispatch registries, is stalled; neither
 // `claimAdoptableExecutions` (needs an executions row) nor the dead-owner reconciliation
 // (needs a dead owner) will catch it. Introduced after the 2026-10-08 ghost-turn incident
 // (docs/incidents/2026-10-08-ghost-turns-and-near-codex-restart.md).
-setInterval(() => {
+setInterval(ledgerCallback(() => {
   if (draining) return;
   try {
     const swept = sweepGhostRunningTurns(instanceId, [...activeTurnDispatch.activeTurns, ...(sessionTurnQueue?.activeTurns ?? [])]);
@@ -4065,10 +4071,10 @@ setInterval(() => {
   } catch (error) {
     log("error", "ghost_running_turn_sweep_failed", errorFields(error));
   }
-}, 60_000);
+}), 60_000);
 
 let periodicForkRecovery: Promise<unknown> | null = null;
-setInterval(() => {
+setInterval(ledgerCallback(() => {
   if (draining || periodicForkRecovery) return;
   const recovery = reconcileForkRequests({
     client: app.client,
@@ -4076,16 +4082,16 @@ setInterval(() => {
     isOwnerAlive: isProcessIdentityAlive,
     shouldStop: () => draining,
   })
-    .catch((error) => {
+    .catch(ledgerCallback((error) => {
       log("error", "scheduled_fork_request_recovery_failed", errorFields(error));
-    })
+    }))
     .finally(() => {
       if (periodicForkRecovery === recovery) periodicForkRecovery = null;
     });
   periodicForkRecovery = recovery;
-}, 60_000);
+}), 60_000);
 
-setInterval(() => {
+setInterval(ledgerCallback(() => {
   if (draining) return;
   sessionTurnQueue?.wake();
   for (const artifact of listPendingTurnArtifactDeliveries()) {
@@ -4119,7 +4125,7 @@ setInterval(() => {
     schedulePersistedTurnReactionCleanup(cleanup.turn_id);
   }
   cleanExpiredArtifactStaging();
-}, 60_000);
+}), 60_000);
 
 async function drainAndStop(signal: string) {
   if (draining) return;
@@ -4147,7 +4153,10 @@ async function drainAndStop(signal: string) {
   }
   sessionTurnQueue?.stop();
   sessionExecutionHost.beginDrain();
-  const withdrawnRunnerTurns = beginRunnerTurnDrain(instanceId);
+  // Bun waits for every in-flight response before graceful stop resolves. End
+  // event streams immediately; their memory controls do not wait for withdrawal SQL.
+  sessionExecutionHost.owner.closeStreams();
+  const withdrawnRunnerTurns = await runLedgerSegment(()=>beginRunnerTurnDrain(instanceId));
   log("info", "service_drain_started", {
     signal,
     active_turns: activeTurnCount,
@@ -4155,54 +4164,52 @@ async function drainAndStop(signal: string) {
     withdrawn_runner_turn_jobs: withdrawnRunnerTurns,
     instance_id: instanceId,
   });
-  // Bun waits for every in-flight response before a graceful stop resolves, and an
-  // event-stream subscriber never ends its response, so the owner ends them first.
-  sessionExecutionHost.owner.closeStreams();
   const stopRequestSurface = async (surface: string, stop: () => Promise<unknown>) => {
     const startedAt = performance.now();
     log("info", "service_drain_surface_stopping", { signal, surface, instance_id: instanceId });
     try {
-      await stop();
+      (await stop());
     } finally {
       log("info", "service_drain_surface_stopped", {
         signal, surface, duration_ms: Math.round(performance.now() - startedAt), instance_id: instanceId,
       });
     }
   };
-  if (routedRequestServer) await stopRequestSurface("routed_request_server", () => routedRequestServer.stop(false));
-  if (sessionCommunication) await stopRequestSurface("session_communication", () => sessionCommunication.stop());
-  await stopRequestSurface("routed_requests", () => routedRequests.stop());
-  await stopRequestSurface("session_execution_host", () => sessionExecutionHost.stop());
+  if (routedRequestServer) (await stopRequestSurface("routed_request_server", () => routedRequestServer.stop(false)));
+  if (sessionCommunication) (await stopRequestSurface("session_communication", () => sessionCommunication.stop()));
+  (await stopRequestSurface("routed_requests", () => routedRequests.stop()));
+  (await stopRequestSurface("session_execution_host", () => sessionExecutionHost.stop()));
   log("info", "service_drain_request_surfaces_closed", { signal, active_turns: activeTurnCount, instance_id: instanceId });
   const stopDrainStep = async (step: string, stop: () => Promise<unknown>) => {
     const startedAt = performance.now();
-    try { await stop(); }
+    try { (await stop()); }
     finally { log("info", "service_drain_step_finished", { signal, step, duration_ms: Math.round(performance.now() - startedAt), instance_id: instanceId }); }
   };
   if (deploymentEventServer) {
     const server = deploymentEventServer;
     deploymentEventServer = null;
-    await stopDrainStep("deployment_event_server", () => server.stop(false));
+    (await stopDrainStep("deployment_event_server", () => server.stop(false)));
   }
-  if (captureDeliveryWorker) await stopDrainStep("capture_delivery", () => captureDeliveryWorker!.stop());
-  if (humanCommandWorker) await stopDrainStep("human_commands", () => humanCommandWorker!.stop());
-  if (grafanaAlerts) await stopDrainStep("grafana_alerts", () => grafanaAlerts!.stop());
-  if (codexRemoteObserver) await stopDrainStep("codex_remote_observer", () => codexRemoteObserver!.stop());
-  if (codexSessionObserverStop) await stopDrainStep("codex_session_observer", () => codexSessionObserverStop);
-  try { await stopDrainStep("slack_app", () => app.stop()); } catch (error) { log("warn", "slack_app_stop_failed", { signal, error: error instanceof Error ? error.message : String(error) }); }
-  if (turnsThatEndWithThisProcess() > 0 || activeInputHandlerCount > 0) {
-    await stopDrainStep("local_turns", () => new Promise<void>((resolve) => { resolveDrained = resolve; }));
-  }
+  if (captureDeliveryWorker) (await stopDrainStep("capture_delivery", () => captureDeliveryWorker!.stop()));
+  if (humanCommandWorker) (await stopDrainStep("human_commands", () => humanCommandWorker!.stop()));
+  if (grafanaAlerts) (await stopDrainStep("grafana_alerts", () => grafanaAlerts!.stop()));
+  if (codexRemoteObserver) (await stopDrainStep("codex_remote_observer", () => codexRemoteObserver!.stop()));
+  if (codexSessionObserverStop) (await stopDrainStep("codex_session_observer", () => codexSessionObserverStop));
+  try { (await stopDrainStep("slack_app", () => app.stop())); } catch (error) { log("warn", "slack_app_stop_failed", { signal, error: error instanceof Error ? error.message : String(error) }); }
+  const localTurnDrain=await runLedgerSegment(()=>({completion:
+    turnsThatEndWithThisProcess()>0||activeInputHandlerCount>0
+      ?new Promise<void>(resolve=>{resolveDrained=resolve;}):null}));
+  if(localTurnDrain.completion)await stopDrainStep("local_turns",()=>localTurnDrain.completion!);
   const activeDeploymentWork = deploymentWorkRunner.active();
-  if (activeDeploymentWork) await stopDrainStep("deployment_work", () => activeDeploymentWork);
+  if (activeDeploymentWork) (await stopDrainStep("deployment_work", () => activeDeploymentWork));
   canvasCommitWatcher?.close();
   todoFileWatcher?.close();
-  if (todoProjectionManager) await stopDrainStep("todo_projection", () => todoProjectionManager!.drain());
-  await stopDrainStep("shared_codex_client", () => closeSharedCodexAppServerClient());
+  if (todoProjectionManager) (await stopDrainStep("todo_projection", () => todoProjectionManager!.drain()));
+  (await stopDrainStep("shared_codex_client", () => closeSharedCodexAppServerClient()));
   // Last, as the local App Server socket is: a Codex turn relayed to a runner keeps its connection
   // through the drain, and the next owner follows it as it does after any restart.
-  if (routedRequestServer) await stopDrainStep("runner_relays", () => routedRequestServer!.closeRelays());
-  stopProcessInstance(instanceId);
+  if (routedRequestServer) (await stopDrainStep("runner_relays", () => routedRequestServer!.closeRelays()));
+  await runLedgerSegment(()=>stopProcessInstance(instanceId));
   log("info", "service_drain_complete", { signal, instance_id: instanceId });
   process.exit(0);
 }
@@ -4218,7 +4225,7 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
   void drainAndStop("sandbox-socket-identity-failed");
 });
 
-(async () => {
+(async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   try {
     clearSandboxReadyReceipt(runtime);
     const alertFixtures = runtime.profile === "sandbox"
@@ -4293,11 +4300,11 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
       });
       humanCommandWorker.start();
     }
-    const auth: any = await app.client.auth.test();
-    const authenticatedAppId = await resolveAuthenticatedSlackAppId(runtime, auth, async (botId) => {
-      const botInfo: any = await app.client.bots.info({ bot: botId });
+    const auth: any = (yield app.client.auth.test());
+    const authenticatedAppId = (yield resolveAuthenticatedSlackAppId(runtime, auth, async (botId) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+      const botInfo: any = (yield app.client.bots.info({ bot: botId }));
       return botInfo.bot?.app_id;
-    });
+    }).call(this));}));
     assertAuthenticatedSlackIdentity(runtime, { ...auth, app_id: authenticatedAppId });
     myBotUserId = auth.user_id as string;
     myBotId = (auth.bot_id as string) || null;
@@ -4306,7 +4313,7 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
     myWorkspaceUrl = typeof auth.url === "string" ? auth.url : null;
     if (!myWorkspaceUrl) {
       try {
-        const teamInfo: any = await app.client.team.info();
+        const teamInfo: any = (yield app.client.team.info());
         myWorkspaceUrl = typeof teamInfo.team?.url === "string" ? teamInfo.team.url : null;
       } catch (error) {
         log("warn", "slack_workspace_url_unavailable", errorFields(error));
@@ -4316,55 +4323,56 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
       identitySecret: cfg.signing_secret,
       identityOwnerId: myBotUserId || "",
     });
-    todoFileWatcher = new TodoFileWatcher(async (channel) => {
+    todoFileWatcher = new TodoFileWatcher(async (channel) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
       if (draining) return;
-      await projectTodos(app.client, getChannel(channel.slack_channel_id) || channel, null);
-    });
+      (yield projectTodos(app.client, getChannel(channel.slack_channel_id) || channel, null));
+    }).call(this));});
     canvasCommitWatcher = new ProjectionWatcher({
       name: "canvas_commit",
       startupReason: "startup",
       changedReason: "git-head",
       resolveTarget: committedAgentsWatchTarget,
-      project: async (channel, reason) => {
+      project: async (channel, reason) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if (draining) return;
-        const result = await syncCommittedAgentsCanvas({
+        const result = (yield syncCommittedAgentsCanvas({
           client: app.client,
           channel,
           user: null,
           reason,
-        });
+        }));
         if (!result.ok) throw new Error(result.error);
-      },
+      }).call(this));},
       retryMs: null,
     });
     const requireCanvasRefresh = projectCutoverStartup.requireCanvasRefresh;
-    await startRecoveredSessionTurnQueue({
-      recoverPriorTurns: () => runStartupPhase('recovery', async () => {
+    (yield startRecoveredSessionTurnQueue({
+      recoverPriorTurns: () => runStartupPhase('recovery', async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         for (const row of db.query("SELECT request_id FROM routed_requests WHERE status IN ('confirmed', 'parked', 'held')").all() as Array<{ request_id: string }>) {
           recoverRoutedInputClaim(row.request_id, isProcessIdentityAlive);
         }
-        await routedRequests.recover();
-        await reconcilePriorInstanceTurns();
-      }),
-      startRuntime: async () => {
-        await startRuntimeWithRequiredCanvasRefresh({
+        (yield routedRequests.recover());
+        (yield reconcilePriorInstanceTurns());
+      }).call(this));}),
+      startRuntime: async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+        (yield startRuntimeWithRequiredCanvasRefresh({
           requireCanvasRefresh,
           refreshCanvases: () => runStartupPhase('canvas_refresh', refreshRequiredCanvases),
-          startRuntime: async () => {
+          startRuntime: async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
             // The native owner must serve accepted work even when the retired Slack
             // socket cannot complete its TLS handshake. Keep its connection attempt
             // alive; only the Slack sandbox requires it before serving.
             const slackConnection=runStartupPhase('slack_connection', () => app.start());
-            if(sandboxSlackIdentity)await slackConnection;
+            if(sandboxSlackIdentity)(yield slackConnection);
             else void slackConnection.catch(error=>log('warn','slack_connection_unavailable',{
               error:error instanceof Error?error.message:String(error),
             }));
             const wakeOwnerPaths=()=>{sessionTurnQueue?.wake();sessionCommunication?.wake();sessionPeers?.wake();projectSetup.wake();peerLinks.wake();wakeWatchWorker();return ['turn-queue','request-delivery','peers','project-setup','watches'];};
-            routedRequestServer = await runStartupPhase('request_api', () => startRoutedRequestApi(runtime.stateDir, routedRequests, myWorkspaceUrl, sessionCommunication!,sessionExecutionHost.owner,peering.listen?{...peering.listen,token:peering.token!,onContact:()=>{projectSetup.wake();peerLinks.wake();}}:null));
+            routedRequestServer = (yield runStartupPhase('request_api', () => startRoutedRequestApi(runtime.stateDir, routedRequests, myWorkspaceUrl, sessionCommunication!,sessionExecutionHost.owner,peering.listen?{...peering.listen,token:peering.token!,onContact:()=>{projectSetup.wake();peerLinks.wake();}}:null)));
+            (yield startDeploymentLedgerHandover());
             sessionExecutionHost.markOwnerServing();
-            await sessionExecutionHost.owner.refreshGlobalPauseFromOwner(true);
+            (yield sessionExecutionHost.owner.refreshGlobalPauseFromOwner(true));
             void sessionExecutionHost.owner.syncGlobalPausePeers();
-            const globalPauseReconcile=setInterval(()=>void sessionExecutionHost.owner.syncGlobalPausePeers(),5_000);
+            const globalPauseReconcile=setInterval(ledgerCallback(()=>void sessionExecutionHost.owner.syncGlobalPausePeers()),5_000);
             globalPauseReconcile.unref?.();
             startStuckWorkWatch(wakeOwnerPaths,()=>activeTurnDispatch.activeSessions);
             startRepairNoticeDelivery(()=>sessionExecutionHost.owner.deliverRepairNotices(),log);
@@ -4372,20 +4380,20 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
               log('info', 'concierge_peer_listener_online', {instance: peering.self, hostname: peering.listen.hostname, port: peering.listen.port, peers: peering.peers.map(peer => peer.name)});
             }
             sandboxSlackIdentity?.assertConnected();
-            await runStartupPhase('capture_worker', () => captureDeliveryWorker?.start());
+            (yield runStartupPhase('capture_worker', () => captureDeliveryWorker?.start()));
             if (runtime.ownership.codexRemote) {
               codexRemoteObserver = new CodexRemoteObserver(
                 app.client,
                 (channel, threadTs) => scheduleSlackThreadStatusProjection(app.client, channel, threadTs),
               );
             }
-          },
-        });
-      },
+          }).call(this));},
+        }));
+      }).call(this));},
       // Codex readiness never holds or fails startup: Codex turns wait at its gate instead.
-      verifyProviderReady: async () => {
+      verifyProviderReady: async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         void runStartupPhase('provider_readiness', () => verifySharedCodexAppServerReady());
-      },
+      }).call(this));},
       startQueue: () => {
         // Turns parked because Claude never acknowledged their input fail now, so their requests return for a new owner.
         try { const failed = failUnacknowledgedClaudeParkedTurns(); if (failed.length) log("warn", "unacknowledged_claude_parks_failed", { turn_ids: failed }); }
@@ -4409,7 +4417,7 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
         void backfillResultAnsweredByPost(() => draining)
           .then(marked => log('info','inbox_posted_result_backfill',{marked}))
           .catch(error => log('error','inbox_posted_result_backfill_failed',errorFields(error)))
-          .then(() => warmEntryIndex({stopped:()=>draining}))
+          .then(ledgerCallback(() => warmEntryIndex({stopped:()=>draining})))
           .then(warmed => log('info','inbox_entry_index_warmed',warmed))
           .catch(error => log('error','inbox_entry_index_warm_failed',errorFields(error)));
         if (captureQueueToken) {
@@ -4431,12 +4439,12 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
             token: captureQueueToken,
             port: runtime.profile === "sandbox" ? 8380 + runtime.sandboxLane! : 8082,
             deploymentEnabled: runtime.ownership.deployment,
-            acceptAlerts: async (alerts) => grafanaAlerts!.accept(alerts),
+            acceptAlerts: async (alerts) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {return grafanaAlerts!.accept(alerts);}).call(this));},
             observeAlerts: (http_status, accepted_instances, omitted, reason) => {
               if (http_status >= 400) log("warn", "grafana_receiver_refused", { http_status, accepted_instances, omitted, reason });
             },
-            accept: async (push) => {
-              const result = await acceptGitHubDeploymentPush(push, deploymentRepositoryRoot);
+            accept: async (push) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+              const result = (yield acceptGitHubDeploymentPush(push, deploymentRepositoryRoot));
               log("info", "github_deployment_push_accepted", {
                 delivery_id: push.deliveryId,
                 event_commit: result.event_commit,
@@ -4445,7 +4453,7 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
               });
               scheduleDeploymentWork("github-push");
               return result;
-            },
+            }).call(this));},
           });
           log("info", "deployment_event_ingress_online", {
             hostname: deploymentEventServer.hostname,
@@ -4456,7 +4464,7 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
             void catchUpMissedPush(deploymentRepositoryRoot)
               .then((caught) => log("info", "deployment_missed_push_checked", { desired_commit: caught.desired_commit, observation: caught.observation }))
               .catch((error) => log("warn", "deployment_missed_push_check_failed", { error: error instanceof Error ? error.message : String(error) }))
-              .finally(() => scheduleDeploymentWork("startup"));
+              .finally(ledgerCallback(() => scheduleDeploymentWork("startup")));
           }
         }
         const channels = getSlackChannels();
@@ -4475,7 +4483,7 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
           reportOnline();
         }
       },
-    });
+    }));
   } catch (err) {
     try {
       clearSandboxReadyReceipt(runtime);
@@ -4485,5 +4493,5 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
     log("error", "concierge_startup_failed", errorFields(err));
     process.exit(1);
   }
-})();
+}).call(this));})();
 }

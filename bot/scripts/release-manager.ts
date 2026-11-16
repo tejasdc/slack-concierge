@@ -8,6 +8,7 @@ import { releasePublicationMode } from "../src/deployment-release-publication";
 import { deploymentReactionTokensForCommitRange } from "../src/deployment-reaction-tokens";
 import { notifyDeploymentWorker } from "../src/deployment-worker-wake";
 import { deploymentOwnerFetch as ownerFetch } from "../src/deployment-owner-fetch";
+import {deploymentLedgerMode} from '../src/deployment-launch-authority';
 
 function option(name: string) {
   const index = process.argv.indexOf(name);
@@ -38,6 +39,9 @@ try {
   // File-only commands and owner-served commands must not open SQLite at all. A read-only
   // short-lived connection still took WAL writer/checkpoint locks during live updates.
   const stateDir=process.env.CONCIERGE_STATE_DIR;
+  // Select the attested old-app FULL mode before policy or a writable import.
+  // File-only bootstrap commands do not depend on a serving application.
+  if(!['install-runtime','install-launchers','current','set-control'].includes(command??''))await deploymentLedgerMode();
   const ownerServedReleaseCommand=stateDir
     ? ledgerAccess(realpathSync(stateDir),Bun.main,false).ownerServedReleaseCommand
     : false;

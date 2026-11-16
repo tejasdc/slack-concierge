@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import {acceptedInputAuthor,sessionAuthor,withCurrentAuthors} from './session-message-author';
 import {questionDisplay} from './topic-display-rules';
 import {topicReplyTargets,type ReplyTargets} from './reply-target-rules';
@@ -377,7 +379,7 @@ function entryIndex():EntryIndex {
  * A reader that arrives mid-warm finishes only what is left; a thread move that resets the
  * memo mid-warm makes the next step start over. Nothing is written.
  */
-export async function warmEntryIndex(options:{stopped?:()=>boolean;batch?:number}={}):Promise<{rows:number;steps:number;ms:number;complete:boolean}> {
+export async function warmEntryIndex(options:{stopped?:()=>boolean;batch?:number}={}):Promise<{rows:number;steps:number;ms:number;complete:boolean}> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   entryIndexWarming=true;
   try {
   const batch=Math.min(ENTRY_INDEX_WARM_BATCH,Math.max(1,options.batch??ENTRY_INDEX_WARM_BATCH));
@@ -391,10 +393,10 @@ export async function warmEntryIndex(options:{stopped?:()=>boolean;batch?:number
     const read=extendEntryIndex(index,batch,performance.now()+ENTRY_INDEX_WARM_STEP_MS);
     rows+=read.rows;steps+=1;
     if(read.exhausted)return {rows,steps,ms:Math.round(performance.now()-started),complete:true};
-    await new Promise<void>(resolve=>setImmediate(resolve));
+    (yield new Promise<void>(resolve=>setImmediate(resolve)));
   }
   } finally {entryIndexWarming=false;}
-}
+}).call(this));}
 const ENTRY_INDEX_WARM_BATCH=16;
 const ENTRY_INDEX_WARM_STEP_MS=12;
 /** Extends the index over a bounded page of Inbox event keys after its watermark. */
@@ -2994,8 +2996,8 @@ export function closeQuestionsAnsweredByTodosSoon(admit:Parameters<typeof closeQ
   scope:'all'|'inbox'|number='all'):void {
   const key=String(scope);
   if(todoChecksInFlight.has(key))return;
-  const check=closeQuestionsAnsweredByTodos(admit,scope).catch(error=>{
-    log('warn','question_todo_check_failed',{scope:key,reason:error instanceof Error?error.message.slice(0,80):'failed'});return 0;})
+  const check=closeQuestionsAnsweredByTodos(admit,scope).catch(ledgerCallback(error=>{
+    log('warn','question_todo_check_failed',{scope:key,reason:error instanceof Error?error.message.slice(0,80):'failed'});return 0;}))
     .finally(()=>todoChecksInFlight.delete(key));
   todoChecksInFlight.set(key,check);
 }
@@ -3005,7 +3007,7 @@ export function closeQuestionsAnsweredByTodosSoon(admit:Parameters<typeof closeQ
  * on. Runs on the owner's reading cadence; one read of his to-dos covers every linked question.
  */
 export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string;threadReplyNotRequired:true})=>unknown,
-  scope:'all'|'inbox'|number='all'):Promise<number> {
+  scope:'all'|'inbox'|number='all'):Promise<number> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const session=inboxSession();
   if(!session)return 0;
   const linked:{question_id:string}[]=[];
@@ -3031,7 +3033,7 @@ export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:num
   }
   if(!linked.length&&!direct.length)return 0;
   let todos:Map<string,TodoState>;
-  try{todos=new Map((await readTodos()).map(todo=>[todo.id,todo]));}
+  try{todos=new Map(((yield readTodos())).map(todo=>[todo.id,todo]));}
   catch(error){log('warn','question_todo_check_unavailable',{questions:linked.length,direct:direct.length,reason:error instanceof Error?error.message.slice(0,80):'failed'});return 0;}
   let closed=0;
   for(const {question_id} of linked) {
@@ -3058,7 +3060,7 @@ export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:num
           text:`${reason} Your question to him, "${String(question.brief?.decision??'').slice(0,300)}", is closed by that: carry on from there and check the result yourself. You do not need to reply to this.`});
     } catch(error) {log('error','question_todo_close_failed',{question:question_id,message:error instanceof Error?error.message:String(error)});}
   }
-  const {withdrawOpenNeed}=await import('./session-turn-outcome');
+  const {withdrawOpenNeed}=(yield import('./session-turn-outcome'));
   for(const {id} of direct){
     const session=getSessionById(id);
     if(!session||sessionMetadata(session).inbox)continue;
@@ -3079,7 +3081,7 @@ export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:num
   }
   if(closed)log('info','questions_closed_by_todos',{closed});
   return closed;
-}
+}).call(this));}
 
 export function wakeDeferredQuestions(now=Date.now(),admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string;threadReplyNotRequired:true})=>unknown):number {
   const session=inboxSession();
@@ -4184,7 +4186,7 @@ export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:strin
   return pass;
 }
 async function keepThreadsCurrentPass(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string;threadReplyNotRequired:true})=>unknown,
-  withdraw?:WithdrawSuperseded):Promise<ThreadUpkeepResult> {
+  withdraw?:WithdrawSuperseded):Promise<ThreadUpkeepResult> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const session=inboxSession();
   if(!session)return {threads:0,closed:0,settled:0,flagged:0};
   refreshRootMemo();
@@ -4208,7 +4210,7 @@ async function keepThreadsCurrentPass(admit?:(input:{sessionId:number;inputId:st
   for(const topicId of new Set([...open,...running,...closedWithOpenRequests])) {
     try{stuck.push(...keepThreadCurrent(topicId,forwards,false,read,superseded));}
     catch(error){log('error','inbox_thread_upkeep_failed',{topic_id:topicId,message:error instanceof Error?error.message:String(error)});}
-    if(Date.now()>=nextYield){await yieldThreadUpkeep();nextYield=Date.now()+40;}
+    if(Date.now()>=nextYield){(yield yieldThreadUpkeep());nextYield=Date.now()+40;}
   }
   // A replaced attempt that was still waiting is withdrawn, so its agent does not redo the work
   // when its hold lifts. One attempt can be superseded in several threads; it is withdrawn once.
@@ -4220,19 +4222,19 @@ async function keepThreadsCurrentPass(admit?:(input:{sessionId:number;inputId:st
     if(!work||!heldTooLong(heldAttemptSince(work)))continue;
     try{if(withdraw(item.requestId,item.replacedBy))withdrawn++;}
     catch(error){log('error','inbox_superseded_withdraw_failed',{request_id:item.requestId,message:error instanceof Error?error.message:String(error)});}
-    if(Date.now()>=nextYield){await yieldThreadUpkeep();nextYield=Date.now()+40;}
+    if(Date.now()>=nextYield){(yield yieldThreadUpkeep());nextYield=Date.now()+40;}
   }
   const fresh:(Stuck&{attempt:number})[]=[];
   for(const item of stuck){
     const attempt=nextRecoveryAttempt(item);
     if(attempt!==null)fresh.push({...item,attempt});
-    if(Date.now()>=nextYield){await yieldThreadUpkeep();nextYield=Date.now()+40;}
+    if(Date.now()>=nextYield){(yield yieldThreadUpkeep());nextYield=Date.now()+40;}
   }
   let flagged=0;
   if(fresh.length&&admit) {
     for(const group of recoveryGroups(fresh))try {
       if(flagged>=5)break;
-      if(Date.now()>=nextYield){await yieldThreadUpkeep();nextYield=Date.now()+40;}
+      if(Date.now()>=nextYield){(yield yieldThreadUpkeep());nextYield=Date.now()+40;}
       // Another owner action can run while the sweep yields. Recheck exact work and human
       // answers before admitting recovery from an earlier view of this thread.
       const members:(Stuck&{attempt:number})[]=[];
@@ -4282,7 +4284,7 @@ async function keepThreadsCurrentPass(admit?:(input:{sessionId:number;inputId:st
   const settled=openRequestsBefore-(db.query("SELECT count(*) AS count FROM inbox_requests WHERE state='open'").get() as {count:number}).count;
   if(closed||settled||flagged)log('info','inbox_threads_kept_current',{threads:open.length,closed,settled,flagged,stuck:stuck.length});
   return {threads:open.length,closed,settled,flagged};
-}
+}).call(this));}
 
 /** thnkr.ing labels a capture "Never filed" after ten minutes; the router is woken at the same moment. */
 export const UNFILED_WAKE_MS=10*60_000;

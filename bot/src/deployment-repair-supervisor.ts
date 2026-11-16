@@ -2,31 +2,11 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, rename
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { writeLogLine } from "./log";
-import {
-  bindDeploymentRepairSession,
-  assertDeploymentRepairOwner,
-  claimDeploymentRepair,
-  completeDeploymentRepairAgentRun,
-  completeDeploymentRepairIncident,
-  getDeploymentRepairIncident,
-  getDeploymentRepairBudget,
-  getDeploymentRun,
-  latestDeploymentRepairAgentRun,
-  parkDeploymentRepair,
-  parkDeploymentRepairAgentRun,
-  prepareDeploymentRepairAgentLaunch,
-  prepareDeploymentRetry,
-  recoverDeadDeploymentRuns,
-  recordDeploymentRepairChild,
-  recordDeploymentRepairCommit,
-  recordDeploymentRepairWorkspace,
-  type DeploymentRepairAgentRunRow,
-  type DeploymentRepairIncidentRow,
-} from "./deployment-state";
+import type {DeploymentRepairAgentRunRow,DeploymentRepairIncidentRow,DeploymentRunRow} from "./deployment-state";
+import {repairLedgerClient} from "./deployment-repair-client";
 import { currentProcessIdentity, isProcessIdentityAlive, processIdentity } from "./runtime-identity";
-import { getTurnCommitProvenance } from "./state";
 import { notifyDeploymentWorker } from "./deployment-worker-wake";
-import { runRepairAgent, parseRepairAgentResult, RepairAttemptIntegrityError, RepairAttemptStoppedError } from "./deployment-repair-agent";
+import { runRepairAgent, parseRepairAgentResult, RepairAttemptIntegrityError, RepairAttemptStoppedError, type RepairAgentInput } from "./deployment-repair-agent";
 
 interface CommandResult {
   exitCode: number;
@@ -36,17 +16,7 @@ interface CommandResult {
 
 export interface DeploymentRepairServices {
   command(command: string[], options?: { cwd?: string; env?: Record<string, string> }): CommandResult;
-  runAgent(input: {
-    kind: "repair";
-    cwd: string;
-    prompt: string;
-    sessionUuid?: string | null;
-    outputPath: string;
-    finalMessagePath: string;
-    deadlineMs: number;
-    onSpawn(pid: number): void;
-    onSession(sessionUuid: string): void;
-  }): Promise<number>;
+  runAgent(input: RepairAgentInput): Promise<number>;
   isAlive(identity: { pid: number; bootId: string; startTicks: string }): boolean;
   notifyWorker?(): void;
   priorUnitQuiescent?(): boolean;
@@ -81,12 +51,14 @@ function defaultServices(repositoryRoot: string): DeploymentRepairServices {
 export class DeploymentRepairSupervisor {
   private readonly supervisorIdentity = currentProcessIdentity();
   private readonly incidentRoot: string;
+  private readonly ledger:ReturnType<typeof repairLedgerClient>;
 
   constructor(
     readonly incidentId: string,
     readonly repositoryRoot = process.env.CONCIERGE_REPO || "/var/lib/slack-concierge-deployment/source",
     readonly services: DeploymentRepairServices = defaultServices(repositoryRoot),
   ) {
+    this.ledger=repairLedgerClient(incidentId,this.supervisorIdentity);
     this.incidentRoot = join(
       process.env.CONCIERGE_DEPLOYMENT_RELEASE_ROOT || "/var/lib/slack-concierge-deployment",
       "incidents",
@@ -95,19 +67,19 @@ export class DeploymentRepairSupervisor {
   }
 
   async run() {
-    let incident = getDeploymentRepairIncident(this.incidentId);
+    let incident = await this.ledger.getDeploymentRepairIncident(this.incidentId);
     if (!incident) throw new Error(`Unknown deployment repair incident ${this.incidentId}.`);
-    if (incident.status === "parked" || incident.status === "completed") return this.recordOutcome(incident);
-    incident = this.claim();
-    if (incident.status === "parked") return this.recordOutcome(incident);
+    if (incident.status === "parked" || incident.status === "completed") return await this.recordOutcome(incident);
+    incident = await this.claim();
+    if (incident.status === "parked") return await this.recordOutcome(incident);
     try {
-      return this.recordOutcome(await this.runOwned(incident));
+      return await this.recordOutcome((await this.runOwned(incident)));
     } catch (error) {
-      incident = getDeploymentRepairIncident(this.incidentId)!;
-      if (["parked", "completed"].includes(incident.status)) return this.recordOutcome(incident);
-      this.assertOwner();
+      incident = (await this.ledger.getDeploymentRepairIncident(this.incidentId))!;
+      if (["parked", "completed"].includes(incident.status)) return await this.recordOutcome(incident);
+      await this.assertOwner();
       if (error instanceof RepairAttemptIntegrityError || error instanceof RepairAttemptStoppedError || incident.recovery_attempts >= 3) {
-        return this.recordOutcome(parkDeploymentRepair(this.incidentId, String(error), {
+        return await this.recordOutcome(await this.ledger.parkDeploymentRepair(this.incidentId, String(error), {
           noticeReason: `Autonomous repair stopped: ${String(error)}`,
           diagnostics: { supervisor_attempts: incident.recovery_attempts },
         }));
@@ -116,9 +88,10 @@ export class DeploymentRepairSupervisor {
     }
   }
 
-  private recordOutcome(incident: DeploymentRepairIncidentRow) {
-    const agent = latestDeploymentRepairAgentRun(incident.id, "repair");
-    const run = getDeploymentRun(incident.run_id);
+  private async recordOutcome(incident: DeploymentRepairIncidentRow) {
+    const snapshot=await this.ledger.observeDeploymentRepair();
+    incident=snapshot.incident;
+    const {agent,run}=snapshot;
     const deployed = incident.status === "completed" && run?.status === "succeeded";
     const outcome = {
       incident_id: incident.id, run_id: incident.run_id,
@@ -156,68 +129,68 @@ export class DeploymentRepairSupervisor {
       if (recovered.exitCode !== 0) {
         throw new Error(`Interrupted deployment recovery failed: ${commandText(recovered)}`);
       }
-      incident = getDeploymentRepairIncident(this.incidentId)!;
+      incident = (await this.ledger.getDeploymentRepairIncident(this.incidentId))!;
     }
-    recoverDeadDeploymentRuns(this.services.isAlive);
+    await this.ledger.recoverDeadDeploymentRuns();
     while (true) {
-      const run = getDeploymentRun(incident.run_id);
+      const run = await this.ledger.getDeploymentRun(incident.run_id);
       if (!run) throw new Error(`Deployment run ${incident.run_id} disappeared during repair.`);
       if (run.status === "prepared" && run.repair_state === "retrying") {
-        const terminal = this.retryDeployment(incident, run);
+        const terminal = await this.retryDeployment(incident, run);
         if (terminal) return terminal;
-        incident = getDeploymentRepairIncident(this.incidentId)!;
+        incident = (await this.ledger.getDeploymentRepairIncident(this.incidentId))!;
         continue;
       }
       if (run.status !== "releasing") {
         throw new Error(`Repair cannot continue while deployment run ${run.id} is ${run.status}/${run.repair_state || "none"}.`);
       }
-      incident = this.claim();
+      incident = await this.claim();
       if (incident.status === "parked") return incident;
       if (incident.review_verdict) {
         throw new RepairAttemptStoppedError("This incident retains a historical review. Operator resolution is required; no review, correction loop or reinterpretation of its verdict was attempted.");
       }
-      incident = this.ensureWorktree(incident);
+      incident = await this.ensureWorktree(incident);
 
       if (!incident.repair_commit) {
-        const committed = this.discoverCommittedRepair(incident);
+        const committed = await this.discoverCommittedRepair(incident);
         if (committed) {
-          recordDeploymentRepairCommit(this.incidentId, committed);
-          incident = getDeploymentRepairIncident(this.incidentId)!;
+          await this.ledger.recordDeploymentRepairCommit(this.incidentId, committed);
+          incident = (await this.ledger.getDeploymentRepairIncident(this.incidentId))!;
           continue;
         }
-        const result = await this.runRepair(incident, this.initialRepairPrompt(incident));
-        incident = getDeploymentRepairIncident(this.incidentId)!;
-        recordDeploymentRepairCommit(this.incidentId, this.cleanRepairCommit(incident, result.commit!));
+        const result = (await this.runRepair(incident, await this.initialRepairPrompt(incident)));
+        incident = (await this.ledger.getDeploymentRepairIncident(this.incidentId))!;
+        await this.ledger.recordDeploymentRepairCommit(this.incidentId, await this.cleanRepairCommit(incident, result.commit!));
         continue;
       }
 
-      const integration = await this.integrateRepair(incident);
+      const integration = (await this.integrateRepair(incident));
       if (integration === "origin_moved") {
         const newBase = this.git(["rev-parse", "origin/main"], this.repositoryRoot);
-        incident = recordDeploymentRepairWorkspace(
+        incident = await this.ledger.recordDeploymentRepairWorkspace(
           this.incidentId,
           incident.worktree_path!,
           incident.branch_name!,
           newBase,
         );
-        const result = await this.runRepair(
+        const result = (await this.runRepair(
           incident,
           "[GOALS-ONLY] origin/main moved. Merge the new origin/main into the existing repair branch, preserving its published commits and the deployment fix, and commit the reconciliation if needed. Do not run tests, reviews or other agents, or bypass disabled entrypoints. Do not deploy or push. If origin/main already contains the repair, report its exact clean HEAD as repair_committed. If blocked, report blocked with the concrete reason and next executable action; do not manufacture a commit to appear successful.",
-        );
-        incident = getDeploymentRepairIncident(this.incidentId)!;
-        recordDeploymentRepairCommit(this.incidentId, this.cleanRepairCommit(incident, result.commit!, true));
+        ));
+        incident = (await this.ledger.getDeploymentRepairIncident(this.incidentId))!;
+        await this.ledger.recordDeploymentRepairCommit(this.incidentId, await this.cleanRepairCommit(incident, result.commit!, true));
         continue;
       }
 
-      const retry = prepareDeploymentRetry(this.incidentId);
+      const retry = await this.ledger.prepareDeploymentRetry(this.incidentId);
       this.services.notifyWorker?.();
-      const terminal = this.retryDeployment(incident, retry);
+      const terminal = await this.retryDeployment(incident, retry);
       if (terminal) return terminal;
-      incident = getDeploymentRepairIncident(this.incidentId)!;
+      incident = (await this.ledger.getDeploymentRepairIncident(this.incidentId))!;
     }
   }
 
-  private retryDeployment(incident: DeploymentRepairIncidentRow, retry: ReturnType<typeof getDeploymentRun>) {
+  private async retryDeployment(incident: DeploymentRepairIncidentRow, retry: DeploymentRunRow | null) {
     if (!retry) throw new Error("Deployment retry state disappeared before launch.");
     const deployCommand = process.env.CONCIERGE_DEPLOY_COMMAND
       || "/usr/local/lib/slack-concierge-deployment/control";
@@ -232,7 +205,7 @@ export class DeploymentRepairSupervisor {
         CONCIERGE_STATE_DIR: process.env.CONCIERGE_STATE_DIR || "/root/.local/state/concierge",
       },
     });
-    let run = getDeploymentRun(retry.id);
+    let run = await this.ledger.getDeploymentRun(retry.id);
     if (run?.repair_state === "retrying" && run.activation_state && existsSync(deployCommand)) {
       const recovered = this.services.command([deployCommand, "recover"], {
         cwd: this.repositoryRoot,
@@ -241,18 +214,18 @@ export class DeploymentRepairSupervisor {
       if (recovered.exitCode !== 0) {
         throw new Error(`Interrupted retry recovery failed: ${commandText(recovered)}`);
       }
-      run = getDeploymentRun(retry.id);
+      run = await this.ledger.getDeploymentRun(retry.id);
     }
     if (run?.repair_state === "retrying" && !run.activation_state) {
-      recoverDeadDeploymentRuns(this.services.isAlive);
-      run = getDeploymentRun(retry.id);
+      await this.ledger.recoverDeadDeploymentRuns();
+      run = await this.ledger.getDeploymentRun(retry.id);
     }
-    if (run?.status === "succeeded") return completeDeploymentRepairIncident(this.incidentId);
+    if (run?.status === "succeeded") return await this.ledger.completeDeploymentRepairIncident(this.incidentId);
     if (run?.status === "releasing" && run.repair_state === "restored") return null;
     if (run?.status === "prepared" && run.repair_state === "retrying") {
       throw new Error(`Deployment retry stopped before activation: ${commandText(deployed)}`);
     }
-    return parkDeploymentRepair(
+    return await this.ledger.parkDeploymentRepair(
       incident.id,
       `Deployment retry exited ${deployed.exitCode} in ${run?.status || "missing"}/${run?.repair_state || "no repair state"}: ${commandText(deployed)}`,
       {
@@ -268,20 +241,20 @@ export class DeploymentRepairSupervisor {
     );
   }
 
-  private claim() {
-    return claimDeploymentRepair({
+  private async claim() {
+    return await this.ledger.claimDeploymentRepair({
       incidentId: this.incidentId,
       pid: this.supervisorIdentity.pid,
       bootId: this.supervisorIdentity.bootId,
       startTicks: this.supervisorIdentity.startTicks,
-    }, this.services.isAlive);
+    });
   }
 
-  private assertOwner() {
-    return assertDeploymentRepairOwner(this.incidentId, this.supervisorIdentity);
+  private async assertOwner() {
+    return await this.ledger.assertDeploymentRepairOwner(this.incidentId, this.supervisorIdentity);
   }
 
-  private ensureWorktree(incident: DeploymentRepairIncidentRow) {
+  private async ensureWorktree(incident: DeploymentRepairIncidentRow) {
     const worktreePath = incident.worktree_path || join(this.incidentRoot, "worktree");
     const branchName = incident.branch_name || `repair-deployment-${incident.id}`;
     if (!existsSync(join(worktreePath, ".git"))) {
@@ -298,11 +271,11 @@ export class DeploymentRepairSupervisor {
       );
       if (added.exitCode !== 0) throw new Error(`Repair worktree creation failed: ${commandText(added)}`);
     }
-    return recordDeploymentRepairWorkspace(incident.id, worktreePath, branchName, incident.base_commit);
+    return await this.ledger.recordDeploymentRepairWorkspace(incident.id, worktreePath, branchName, incident.base_commit);
   }
 
-  private initialRepairPrompt(incident: DeploymentRepairIncidentRow) {
-    const provenance = this.commitProvenanceEvidence(incident);
+  private async initialRepairPrompt(incident: DeploymentRepairIncidentRow) {
+    const provenance = await this.commitProvenanceEvidence(incident);
     return [
       "[GOALS-ONLY] Repair the observed Concierge deployment failure as a standalone CLI outside managed sessions.",
       `The failed candidate was ${incident.failed_commit}; the healthy runtime remained at or was restored to ${incident.restored_commit}.`,
@@ -315,7 +288,7 @@ export class DeploymentRepairSupervisor {
     ].join("\n\n");
   }
 
-  private commitProvenanceEvidence(incident: DeploymentRepairIncidentRow) {
+  private async commitProvenanceEvidence(incident: DeploymentRepairIncidentRow) {
     const commits = this.services.command(
       ["git", "rev-list", "--reverse", `${incident.restored_commit}..${incident.failed_commit}`],
       { cwd: this.repositoryRoot },
@@ -323,7 +296,7 @@ export class DeploymentRepairSupervisor {
     if (commits.exitCode !== 0) {
       return [{ error: `Could not enumerate failed commit range: ${commandText(commits)}` }];
     }
-    return commits.stdout.split("\n").map((commit) => commit.trim()).filter(Boolean).map((commit) => {
+    return await Promise.all(commits.stdout.split("\n").map((commit) => commit.trim()).filter(Boolean).map(async (commit) => {
       const trailers = this.services.command(
         ["git", "show", "-s", "--format=%(trailers:key=Concierge-Provenance,valueonly)", commit],
         { cwd: this.repositoryRoot },
@@ -334,18 +307,18 @@ export class DeploymentRepairSupervisor {
         : [];
       return {
         commit,
-        sources: [...new Set(tokens)].map((token) => getTurnCommitProvenance(token) || { token, mapping: "missing" }),
+        sources: await Promise.all([...new Set(tokens)].map(async (token) => await this.ledger.getTurnCommitProvenance(token) || { token, mapping: "missing" })),
       };
-    });
+    }));
   }
 
   private async runRepair(incident: DeploymentRepairIncidentRow, prompt: string) {
-    const prior = latestDeploymentRepairAgentRun(incident.id, "repair");
-    const resumeSession = this.resumableSession(prior);
-    return await this.runPersistedAgent(incident, prompt, resumeSession);
+    const prior = await this.ledger.latestDeploymentRepairAgentRun(incident.id, "repair");
+    const resumeSession = await this.resumableSession(prior);
+    return (await this.runPersistedAgent(incident, prompt, resumeSession));
   }
 
-  private resumableSession(prior: DeploymentRepairAgentRunRow | null) {
+  private async resumableSession(prior: DeploymentRepairAgentRunRow | null) {
     if (!prior || prior.launch_state === "completed" || prior.launch_state === "parked") {
       return prior?.session_uuid || prior?.requested_session_uuid || null;
     }
@@ -359,12 +332,7 @@ export class DeploymentRepairSupervisor {
       throw new RepairAttemptIntegrityError(`Prior ${prior.kind} launch has no child identity and its unit is not proven empty.`);
     }
     if (!prior.session_uuid && !prior.requested_session_uuid) {
-      parkDeploymentRepairAgentRun(prior.id, "Launch was intended but no Codex session UUID was durably bound.");
-      parkDeploymentRepair(
-        this.incidentId,
-        `Ambiguous unbound ${prior.kind} launch; no second session was started.`,
-        { noticeReason: `The ${prior.kind} agent launch was ambiguous, so no second session was started.` },
-      );
+      await this.ledger.settleDeploymentRepairAgent({agentRunId:prior.id,error:"Launch was intended but no Codex session UUID was durably bound.",parkError:`Ambiguous unbound ${prior.kind} launch; no second session was started.`});
       throw new Error(`Ambiguous unbound ${prior.kind} launch.`);
     }
     return prior.session_uuid || prior.requested_session_uuid;
@@ -393,16 +361,18 @@ export class DeploymentRepairSupervisor {
     prompt: string,
     sessionUuid: string | null,
   ) {
-    this.assertOwner();
-    const budget = getDeploymentRepairBudget(incident.id);
+    await this.assertOwner();
+    const budget = await this.ledger.getDeploymentRepairBudget(incident.id);
     if (budget.attempts >= budget.maximumAttempts || !Number.isFinite(budget.deadlineMs) || budget.deadlineMs <= Date.now()) {
       throw new RepairAttemptStoppedError("Autonomous repair exhausted its three-launch or thirty-minute incident budget; operator help is required.");
     }
     const kind = "repair";
-    const stamp = `${kind}-${randomUUID()}`;
+    const launchId = randomUUID();
+    const stamp = `${kind}-${launchId}`;
     const outputPath = join(this.incidentRoot, `${stamp}.jsonl`);
     const finalMessagePath = join(this.incidentRoot, `${stamp}.final.json`);
-    const agentRun = prepareDeploymentRepairAgentLaunch({
+    const agentRun = await this.ledger.prepareDeploymentRepairAgentLaunch({
+      id:launchId,
       incidentId: incident.id,
       kind,
       supervisorPid: this.supervisorIdentity.pid,
@@ -414,7 +384,7 @@ export class DeploymentRepairSupervisor {
     });
     let boundSession = sessionUuid;
     let exitCode: number;
-    try { exitCode = await this.services.runAgent({
+    try { exitCode = (await this.services.runAgent({
       kind,
       cwd: incident.worktree_path!,
       prompt,
@@ -422,30 +392,28 @@ export class DeploymentRepairSupervisor {
       outputPath,
       finalMessagePath,
       deadlineMs: budget.deadlineMs,
-      onSpawn: (pid) => {
-        this.assertOwner();
-        recordDeploymentRepairChild(agentRun.id, processIdentity(pid));
+      onSpawn: async (pid, retainedIdentity) => {
+        // The actual launcher retains identity before provider exec. The fallback
+        // keeps existing injected service callbacks compatible with their PID API.
+        const childIdentity=retainedIdentity??processIdentity(pid);
+        await this.assertOwner();
+        await this.ledger.recordDeploymentRepairChild(agentRun.id, childIdentity);
       },
-      onSession: (uuid) => {
-        this.assertOwner();
+      onSession: async (uuid) => {
+        await this.assertOwner();
         if (boundSession && boundSession !== uuid) throw new RepairAttemptIntegrityError("Codex resumed a different repair session UUID.");
+        await this.ledger.bindDeploymentRepairSession(agentRun.id, uuid);
         boundSession = uuid;
-        bindDeploymentRepairSession(agentRun.id, uuid);
       },
-    }); } catch (error) {
+    })); } catch (error) {
       if (error instanceof RepairAttemptIntegrityError || error instanceof RepairAttemptStoppedError) {
-        parkDeploymentRepairAgentRun(agentRun.id, String(error));
+        await this.ledger.settleDeploymentRepairAgent({agentRunId:agentRun.id,error:String(error),parkError:String(error)});
       }
       throw error;
     }
-    this.assertOwner();
+    await this.assertOwner();
     if (!boundSession) {
-      parkDeploymentRepairAgentRun(agentRun.id, `${kind} exited without binding a Codex session UUID.`);
-      parkDeploymentRepair(
-        this.incidentId,
-        `Ambiguous unbound ${kind} launch; no second session will be started.`,
-        { noticeReason: `The ${kind} agent launch was ambiguous, so no second session will be started.` },
-      );
+      await this.ledger.settleDeploymentRepairAgent({agentRunId:agentRun.id,error:`${kind} exited without binding a Codex session UUID.`,parkError:`Ambiguous unbound ${kind} launch; no second session will be started.`});
       throw new Error(`${kind} did not bind a Codex session UUID.`);
     }
     if (exitCode !== 0) throw new Error(`${kind} Codex session ${boundSession} exited ${exitCode}; systemd will resume it.`);
@@ -454,20 +422,20 @@ export class DeploymentRepairSupervisor {
       if (!existsSync(finalMessagePath)) throw new RepairAttemptStoppedError("Repair exited without a final outcome; operator inspection is required.");
       result = parseRepairAgentResult(readFileSync(finalMessagePath, "utf8"));
     } catch (error) {
-      parkDeploymentRepairAgentRun(agentRun.id, String(error));
+      await this.ledger.settleDeploymentRepairAgent({agentRunId:agentRun.id,error:String(error),parkError:String(error)});
       throw error;
     }
-    completeDeploymentRepairAgentRun(agentRun.id, {
+    await this.ledger.settleDeploymentRepairAgent({agentRunId:agentRun.id,result:{
       session_uuid: boundSession, final_message_path: finalMessagePath, ...result,
-    });
+    },...(result.status==="blocked"?{parkError:`${result.summary} Blocker: ${result.blocker} Next action: ${result.next_action}`}:{})});
     if (result.status === "blocked") {
       throw new RepairAttemptStoppedError(`${result.summary} Blocker: ${result.blocker} Next action: ${result.next_action}`);
     }
     return result;
   }
 
-  private cleanRepairCommit(incident: DeploymentRepairIncidentRow, reportedCommit: string, allowIntegratedBase = false) {
-    this.assertOwner();
+  private async cleanRepairCommit(incident: DeploymentRepairIncidentRow, reportedCommit: string, allowIntegratedBase = false) {
+    await this.assertOwner();
     const status = this.git(["status", "--porcelain", "--untracked-files=normal"], incident.worktree_path!);
     if (status) throw new RepairAttemptStoppedError("Repair reported a commit but left uncommitted work; operator inspection is required.");
     const head = this.git(["rev-parse", "HEAD"], incident.worktree_path!);
@@ -481,8 +449,8 @@ export class DeploymentRepairSupervisor {
     return head;
   }
 
-  private discoverCommittedRepair(incident: DeploymentRepairIncidentRow) {
-    const prior = latestDeploymentRepairAgentRun(incident.id, "repair");
+  private async discoverCommittedRepair(incident: DeploymentRepairIncidentRow) {
+    const prior = await this.ledger.latestDeploymentRepairAgentRun(incident.id, "repair");
     if (prior?.launch_state !== "completed" || !prior.result_json) return null;
     const result = parseRepairAgentResult(prior.result_json);
     if (result.status === "blocked") {
@@ -490,11 +458,11 @@ export class DeploymentRepairSupervisor {
     }
     // A failed deployment already consumed this result; diagnosis must use the new failure.
     if (result.commit === incident.failed_commit) return null;
-    return this.cleanRepairCommit(incident, result.commit!);
+    return await this.cleanRepairCommit(incident, result.commit!);
   }
 
   private async integrateRepair(incident: DeploymentRepairIncidentRow): Promise<"pushed" | "origin_moved"> {
-    this.assertOwner();
+    await this.assertOwner();
     const fetched = this.services.command(["git", "fetch", "origin", "main"], { cwd: this.repositoryRoot });
     if (fetched.exitCode !== 0) throw new Error(`Could not refresh origin/main: ${commandText(fetched)}`);
     const originMain = this.git(["rev-parse", "origin/main"], this.repositoryRoot);
@@ -512,8 +480,8 @@ export class DeploymentRepairSupervisor {
       { cwd: incident.worktree_path! },
     );
     if (proposed.exitCode !== 0) throw new Error(`Could not submit repair for release check: ${commandText(proposed)}`);
-    await this.waitForReleaseCheck(head);
-    this.assertOwner();
+    (await this.waitForReleaseCheck(head));
+    await this.assertOwner();
     const refreshed = this.services.command(["git", "fetch", "origin", "main"], { cwd: this.repositoryRoot });
     if (refreshed.exitCode !== 0) throw new Error(`Could not refresh origin/main after release check: ${commandText(refreshed)}`);
     if (this.git(["rev-parse", "origin/main"], this.repositoryRoot) !== incident.base_commit) return "origin_moved";
@@ -528,7 +496,7 @@ export class DeploymentRepairSupervisor {
   private async waitForReleaseCheck(commit: string): Promise<void> {
     const deadline = Date.now() + 20 * 60_000;
     while (Date.now() < deadline) {
-      this.assertOwner();
+      await this.assertOwner();
       const result = this.services.command(
         ["gh", "api", `repos/tejasdc/slack-concierge/commits/${commit}/check-runs`],
         { cwd: this.repositoryRoot },
@@ -546,7 +514,7 @@ export class DeploymentRepairSupervisor {
           `The repair commit ${commit} failed GitHub's required release check (${latest.conclusion}). Inspect ${latest.details_url} and correct that commit before integration.`,
         );
       }
-      await Bun.sleep(10_000);
+      (await Bun.sleep(10_000));
     }
     throw new RepairAttemptStoppedError(`GitHub did not finish the required release check for repair commit ${commit} within twenty minutes.`);
   }

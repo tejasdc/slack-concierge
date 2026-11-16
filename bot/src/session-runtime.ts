@@ -1,3 +1,6 @@
+import {ledgerCallback} from './ledger-admission';
+import {startDeploymentLedgerHandover,scheduleDeploymentLedgerHandover} from './deployment-ledger-handover';
+import {runLedgerSteps,runLedgerSegment} from './ledger-admission';
 import {randomUUID} from 'node:crypto';
 import {resolve} from 'node:path';
 import {resolveRuntimeProfile,clearSandboxReadyReceipt,writeNativeSandboxReadyReceipt} from './runtime-profile';
@@ -39,7 +42,7 @@ import {reconcileCoveredTasteRequest,recoverOctoberBudgetPauses} from './inciden
 import {startAreaFiling} from './area-filing';
 
 /** Composition with the Slack surface removed; the same ledger, FIFO and executor remain. */
-export async function startSessionRuntime() {
+export async function startSessionRuntime() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const runtime=resolveRuntimeProfile();
   clearSandboxReadyReceipt(runtime);
   const instanceId=randomUUID(),identity=currentProcessIdentity();
@@ -48,7 +51,7 @@ export async function startSessionRuntime() {
   const active=new Set<number>();
   const banked=createBankedUpkeep({registry:()=>registry});
   const inspectActiveBanked=banked.inspectActive;
-  const registry=new ActiveTurnDispatchRegistry({onStarted:()=>queueMicrotask(inspectActiveBanked),onSettled:()=>queue.wake()});
+  const registry=new ActiveTurnDispatchRegistry({onStarted:()=>queueMicrotask(ledgerCallback(inspectActiveBanked)),onSettled:()=>queue.wake()});
   let codexSessionObserver:CodexSessionObserver|null=null;
   const host=new SessionExecutionHost({instanceId,registry,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>queue.wake(),providerSessionBound:uuid=>bindCodexProviderSession(codexSessionObserver,uuid)});
   codexSessionObserver=new CodexSessionObserver();
@@ -76,7 +79,7 @@ export async function startSessionRuntime() {
     claim:activeTurnIds=>claimNextQueuedTurn(instanceId,Date.now(),registry.activeSessions,[...new Set([...activeTurnIds,...active])]),shouldStop:()=>draining,
     nextAttemptMs:()=>nextQueuedTurnAttemptMs(),
     onClaimError:(error,consecutiveFailures)=>log('error','session_turn_claim_failed',{...errorFields(error),consecutive_failures:consecutiveFailures}),
-    run:async(claim:QueuedTurnClaimRow)=>{
+    run:async(claim:QueuedTurnClaimRow)=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
       active.add(claim.turn_id);banked.started(claim.turn_id);
       try {
         if(claim.turn_kind!=='native') {
@@ -86,55 +89,55 @@ export async function startSessionRuntime() {
           db.query("UPDATE turns SET turn_kind='native',accepted_input_id=?,status_projection_status='not_needed' WHERE id=? AND owner_instance_id=? AND provider_admission_intended_at IS NULL").run(input.id,claim.turn_id,instanceId);
           claim={...claim,turn_kind:'native',accepted_input_id:input.id};
         }
-        return await host.run(claim);
+        return (yield host.run(claim));
       } finally {
         active.delete(claim.turn_id);banked.settled(claim.turn_id);
       }
-    },onError:(claim,error)=>{host.settleSetupFailure(claim,error);log('error','native_turn_setup_failed',{turn_id:claim.turn_id,...errorFields(error)});}});
-  await host.owner.refreshGlobalPauseFromOwner(true);
+    }).call(this));},onError:(claim,error)=>{host.settleSetupFailure(claim,error);log('error','native_turn_setup_failed',{turn_id:claim.turn_id,...errorFields(error)});}});
+  (yield host.owner.refreshGlobalPauseFromOwner(true));
   // Agents still running in their execution hosts are taken back before anything below reads
   // their turns as orphaned, and continue under the same run (design 2026-10-07 §3.1 step 4).
   const runAdopted=(adoption:Adoption)=>{
     active.add(adoption.claim.turn_id);banked.started(adoption.claim.turn_id);
-    void host.run(adoption.claim,adoption).catch(error=>{
+    void host.run(adoption.claim,adoption).catch(ledgerCallback(error=>{
       log('error','execution_adoption_failed',{turn_id:adoption.claim.turn_id,execution_id:adoption.execution.execution_id,...errorFields(error)});
       host.settleSetupFailure(adoption.claim,error);
-    }).finally(()=>{
+    })).finally(ledgerCallback(()=>{
       active.delete(adoption.claim.turn_id);banked.settled(adoption.claim.turn_id);
       queue.wake();
-    });
+    }));
   };
-  const executions=await claimAdoptableExecutions({instanceId,isOwnerAlive:isProcessIdentityAlive});
+  const executions=(yield claimAdoptableExecutions({instanceId,isOwnerAlive:isProcessIdentityAlive}));
   for(const adoption of executions.adopted)runAdopted(adoption);
   for(const held of executions.held)watchHeldExecution(held,{stopped:()=>draining,adopt:runAdopted,
     interrupt:(turnId,reason)=>{interruptOrphanedTurn(turnId,instanceId,reason);queue.wake();}});
   let parkedRecoveryActive=false;
-  const parkedRecovery=setInterval(()=>{
+  const parkedRecovery=setInterval(ledgerCallback(()=>{
     if(draining||parkedRecoveryActive)return;
     parkedRecoveryActive=true;
     void claimAdoptableExecutions({instanceId,isOwnerAlive:isProcessIdentityAlive,onlyParked:true})
-      .then(found=>{
+      .then(ledgerCallback(found=>{
         for(const adoption of found.adopted)runAdopted(adoption);
         for(const held of found.held)watchHeldExecution(held,{stopped:()=>draining,adopt:runAdopted,
           interrupt:(turnId,reason)=>{interruptOrphanedTurn(turnId,instanceId,reason);queue.wake();}});
-      }).catch(error=>log('error','parked_execution_recovery_failed',errorFields(error)))
+      })).catch(error=>log('error','parked_execution_recovery_failed',errorFields(error)))
       .finally(()=>{parkedRecoveryActive=false;});
-  },60_000);
+  }),60_000);
   parkedRecovery.unref?.();
   recoverUnsettledSteeringMessages(isProcessIdentityAlive);
   host.recoverOutsideWaitingInputs();
   host.recoverAntigravityUnsentInputs();
   recoverTurnArtifactDeliveryClaims(isProcessIdentityAlive);
   const activeTurnIds=()=>[...new Set([...registry.activeTurns,...queue.activeTurns,...active])];
-  await reconcileRecoverableTurns({client:null,instanceId,activeTurnIds:activeTurnIds(),isOwnerAlive:isProcessIdentityAlive,nativeOnly:true,
-    services:{deliverNativeResult:result=>host.deliverResult(result),deliverOutcome:unavailable,projectTurnStatus:unavailable,projectThreadSummary:unavailable}});
+  (yield reconcileRecoverableTurns({client:null,instanceId,activeTurnIds:activeTurnIds(),isOwnerAlive:isProcessIdentityAlive,nativeOnly:true,
+    services:{deliverNativeResult:result=>host.deliverResult(result),deliverOutcome:unavailable,projectTurnStatus:unavailable,projectThreadSummary:unavailable}}));
   const wake=()=>{queue.wake();communication.wake();peers?.wake();projectSetup.wake();peerLinks.wake();wakeWatchWorker();return ['turn-queue','request-delivery','peers','project-setup','watches'];};
-  const server=await startRoutedRequestApi(process.env.CONCIERGE_STATE_DIR!,null,null,communication,host.owner,peering.listen?{...peering.listen,token:peering.token!,onContact:()=>{projectSetup.wake();peerLinks.wake();}}:null);
+  const server=(yield startRoutedRequestApi(process.env.CONCIERGE_STATE_DIR!,null,null,communication,host.owner,peering.listen?{...peering.listen,token:peering.token!,onContact:()=>{projectSetup.wake();peerLinks.wake();}}:null));
   host.markOwnerServing();
   // Retained pause intent outlives the coordinator and a sleeping peer. Reissue native
   // cancellation after execution-host adoption, and deliver the latest generation on contact.
   void host.owner.syncGlobalPausePeers();
-  const globalPauseReconcile=setInterval(()=>void host.owner.syncGlobalPausePeers(),5_000);
+  const globalPauseReconcile=setInterval(ledgerCallback(()=>{scheduleDeploymentLedgerHandover();void host.owner.syncGlobalPausePeers();}),5_000);
   reconcileCoveredTasteRequest();recoverOctoberBudgetPauses();recoverExhaustedClaudeWork();
   startStuckWorkWatch(wake,()=>registry.activeSessions);
   startRepairNoticeDelivery(()=>host.owner.deliverRepairNotices(),log);
@@ -149,13 +152,13 @@ export async function startSessionRuntime() {
   const stopWatchWorker=startMachineWatchWorker(admission=>host.owner.admit(admission),()=>draining);
   const stopAuthWatch=watchAuthHeldCredentials();
   const detach=observeExecutionChanges(()=>{banked.onExecutionChange();recoverExhaustedClaudeWork();queue.wake();});
-  const ghostSweep=setInterval(()=>{
+  const ghostSweep=setInterval(ledgerCallback(()=>{
     if(draining)return;
     try {
       const swept=sweepGhostRunningTurns(instanceId,activeTurnIds());
       if(swept>0){log('warn','ghost_running_turns_swept',{count:swept,scope:'watchdog',max_age_ms:GHOST_TURN_INTERRUPT_AGE_MS});queue.wake();}
     } catch(error){log('error','ghost_running_turn_sweep_failed',errorFields(error));}
-  },60_000);
+  }),60_000);
   ghostSweep.unref?.();
   const stopProcessAuditSweep=host.startCodexProcessAuditSweep(()=>draining);
   // Turns parked because Claude never acknowledged their input fail now, so their requests return for a new owner.
@@ -164,6 +167,7 @@ export async function startSessionRuntime() {
   codexSessionObserver.start();communication.start();queue.wake();
   writeNativeSandboxReadyReceipt(runtime,resolve(runtime.stateDir,'requests.sock'));
   log('info','concierge_session_owner_online',{instance_id:instanceId,slack_enabled:false});
+  (yield startDeploymentLedgerHandover());
   startDeferredStartupRepairs(()=>draining);
   // The Inbox thread index is filled now, in short steps, rather than inside his first tap.
   void warmEntryIndex({stopped:()=>draining})
@@ -176,14 +180,16 @@ export async function startSessionRuntime() {
     if(codexSessionObserverStop)void codexSessionObserverStop.catch(()=>{});
     banked.stop();clearInterval(globalPauseReconcile);clearInterval(ghostSweep);stopProcessAuditSweep();clearInterval(parkedRecovery);clearSandboxReadyReceipt(runtime);stopUsageWatch();stopBackgroundJobWatch();stopUpdateWaitWatch();stopWatchWorker();stopAuthWatch();detach();detachProjection();queue.stop();host.beginDrain();await communication.stop();await codexSessionObserverStop;
     // A hosted agent keeps working through this exit; the next coordinator takes it back.
-    const hosted=hostedTurns(active);
     for(const turnId of active){
-      if(hosted.has(turnId))continue;
-      const row=db.query('SELECT session_id FROM turns WHERE id=?').get(turnId) as {session_id:number}|null;
-      if(row){const cancellation=registry.requestSessionCancellation(row.session_id,turnId);if(cancellation.matched)await cancellation.completion;}
+      const cancellation=await runLedgerSegment(()=>{
+        if(hostedTurns([turnId]).has(turnId))return null;
+        const row=db.query('SELECT session_id FROM turns WHERE id=?').get(turnId) as {session_id:number}|null;
+        return row?registry.requestSessionCancellation(row.session_id,turnId):null;
+      });
+      if(cancellation?.matched)await cancellation.completion;
     }
     await server.stop(true);
   })();
   for(const signal of ['SIGTERM','SIGINT'] as const)process.once(signal,()=>void stop().then(()=>process.exit(0)));
   return {host,communication,server,stop};
-}
+}).call(this));}

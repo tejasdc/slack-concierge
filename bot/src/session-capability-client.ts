@@ -1,3 +1,4 @@
+import { consumeProviderObservation } from "./provider-callback-custody";
 import { createHash } from "node:crypto";
 import { thinkeringConfigured, thinkeringRequest } from "./thinkering-capability-target";
 import { isAbsolute } from "node:path";
@@ -183,7 +184,7 @@ export interface ChatGptRunContext {
   /** Taken back after a restart: the send already happened under this run id, so the run asks
    * Thinkering's capability for it (reconcile, then observe from the start) and never sends again.
    * `onLive` is called when the send was still unfinished at takeover. */
-  follow?: { onLive(): void };
+  follow?: { onLive(): void | Promise<void> };
 }
 
 export interface ChatGptReadRef { sessionId: string; bindingGeneration: number; binding: ChatGptBinding }
@@ -645,9 +646,9 @@ export class SessionCapabilityClient {
       if (candidate === null) return;
       verifyBinding(candidate);
       if (binding !== null) verify(isDeepStrictEqual(candidate, binding), "Provider changed the exact native binding during the owned run.");
-      if (!isDeepStrictEqual(candidate, binding)) await context.onNativeBinding?.(candidate);
+      if (!isDeepStrictEqual(candidate, binding)) await consumeProviderObservation(context.onNativeBinding?.bind(context), candidate);
       binding = candidate;
-      input.onProviderThreadStarted?.(candidate.sessionId);
+      await consumeProviderObservation(input.onProviderThreadStarted, candidate.sessionId);
     };
     const finish = async (result: ChatGptResult, receiptPreSend?: ChatGptPreSendFailure): Promise<RunResult> => {
       verifyResult(result);
@@ -660,13 +661,13 @@ export class SessionCapabilityClient {
       // Reported before the terminal states below throw: a failed or cancelled run still has a
       // conversation ChatGPT named, and that name belongs on the session either way.
       if (typeof result.conversationTitle === "string" && result.conversationTitle.trim())
-        await context.onConversationTitle?.(result.conversationTitle.trim());
+        await consumeProviderObservation(context.onConversationTitle?.bind(context), result.conversationTitle.trim());
       if (result.sessionId !== null) verify(result.sessionId === binding?.sessionId, "Provider result changed its native conversation.");
       if (turnId !== null && result.turnId !== null) verify(turnId === result.turnId, "Provider result changed its native turn.");
       turnId = result.turnId ?? turnId;
       if (result.state === "uncertain") throw new SessionCapabilityError("CHATGPT_SEND_UNCONFIRMED", failureText(result.error, "ChatGPT send remains uncertain."), null, true);
       terminalConfirmed = true;
-      input.onProviderTerminal?.();
+      await consumeProviderObservation(input.onProviderTerminal, );
       if (result.state === "canceled") throw new ProviderTurnCancelledError("ChatGPT confirmed native cancellation.");
       if (result.state === "failed") {
         const neverSent = result.error === "CHATGPT_NOT_SENT" || result.error === "CHATGPT_SEND_FAILED";
@@ -711,21 +712,21 @@ export class SessionCapabilityClient {
         })
         : await send();
       effectRecorded = true;
-      if (context.follow && (receipt.state === "recorded" || receipt.state === "running")) context.follow.onLive();
+      if (context.follow && (receipt.state === "recorded" || receipt.state === "running")) await consumeProviderObservation(context.follow.onLive.bind(context.follow));
       terminalConfirmed = receipt.state === "failed" || receipt.state === "canceled" || receipt.state === "completed";
       if (binding !== null && receipt.nativeBinding !== null) verify(isDeepStrictEqual(binding, receipt.nativeBinding), "Provider receipt changed the admitted native binding.");
-      await context.onEvidence({ kind: context.follow ? "reconcile" : "start", run, receipt });
+      await consumeProviderObservation(context.onEvidence.bind(context), { kind: context.follow ? "reconcile" : "start", run, receipt });
       await acceptBinding(receipt.nativeBinding);
-      if (receipt.acknowledgedAt !== null) input.onInputAcknowledged?.();
+      if (receipt.acknowledgedAt !== null) await consumeProviderObservation(input.onInputAcknowledged, );
       if (receipt.result !== null) return await finish(receipt.result, receipt.error?.preSend);
       if (receipt.state === "uncertain") throw new SessionCapabilityError(receipt.error?.code ?? "CHATGPT_SEND_UNCONFIRMED", failureText(receipt.error, "ChatGPT send remains uncertain."), null, true);
       if (receipt.state === "failed") throw new SessionCapabilityError(receipt.error?.code ?? "CHATGPT_START_FAILED", failureText(receipt.error, "ChatGPT start failed."), 409);
       if (receipt.state === "canceled") {
-        input.onProviderTerminal?.();
+        await consumeProviderObservation(input.onProviderTerminal, );
         throw new ProviderTurnCancelledError("ChatGPT confirmed native cancellation.");
       }
       verify(["recorded", "running"].includes(receipt.state), "Terminal provider receipt omitted its native result.");
-      input.onProgress?.({ type: "started" });
+      await consumeProviderObservation(input.onProgress, { type: "started" });
       while (true) {
         // Thinkering restarts for every release, often while a Pro answer is still being written; its
         // next process reads the acknowledged request on to its answer. Keep asking across that
@@ -758,7 +759,7 @@ export class SessionCapabilityClient {
           } else verifyHistory({ messages: [event.payload.message as CapabilityMessage], nextCursor: null });
         }
         if (observation.result !== null) verifyIdentity(observation.result);
-        await context.onEvidence({ kind: "observe", run, after: cursor, observation });
+        await consumeProviderObservation(context.onEvidence.bind(context), { kind: "observe", run, after: cursor, observation });
         for (const event of observation.events) {
           if (event.kind === "identity") {
             const identity = event.payload;
@@ -767,17 +768,17 @@ export class SessionCapabilityClient {
             if (identity.turnId != null) {
               verify(nonempty(identity.turnId) && (turnId === null || turnId === identity.turnId), "Provider identity changed its native turn.");
               turnId = identity.turnId;
-              input.onProviderTurnStarted?.(turnId);
+              await consumeProviderObservation(input.onProviderTurnStarted, turnId);
               // The native turn id is ChatGPT's own copy of the sent message, which Thinkering reports
               // only after reading it back: that is the acknowledgement. Checking only the start receipt
               // missed every send that ChatGPT confirmed a few seconds later, so no successful answer
               // ever settled its request (2026-10-09).
-              input.onInputAcknowledged?.();
+              await consumeProviderObservation(input.onInputAcknowledged, );
             }
           } else if (event.kind === "message") {
             const message = event.payload.message as CapabilityMessage;
             verifyHistory({ messages: [message], nextCursor: null });
-            if (message.role === "assistant" && message.phase === "commentary") input.onProgress?.({ type: "commentary", text: message.content });
+            if (message.role === "assistant" && message.phase === "commentary") await consumeProviderObservation(input.onProgress, { type: "commentary", text: message.content });
           }
         }
         if (observation.result !== null) return await finish(observation.result);
@@ -793,7 +794,7 @@ export class SessionCapabilityClient {
       const evidence: Extract<CapabilityEvidence, { kind: "failure" }> = { kind: "failure", run, after: cursor,
         code: failure.code, message: failure.message, status: failure.status,
         uncertain: failure.uncertain || (effectRecorded && !terminalConfirmed) || (mayHaveStarted && failure.code === "CAPABILITY_PROTOCOL_ERROR") };
-      try { await context.onEvidence(evidence); } catch { /* The thrown error retains evidence when the owner's durable writer fails. */ }
+      try { await consumeProviderObservation(context.onEvidence.bind(context), evidence); } catch { /* The thrown error retains evidence when the owner's durable writer fails. */ }
       throw new ChatGptDispatchError(evidence, binding, turnId);
     }
   }

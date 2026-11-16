@@ -1,0 +1,81 @@
+import assert from 'node:assert/strict';
+import {mock} from 'bun:test';
+import {mkdtempSync,writeFileSync,readFileSync,existsSync} from 'node:fs';
+import {join} from 'node:path';
+import {createServer as createNetServer} from 'node:net';
+import {createServer} from 'node:http';
+import {WebSocketServer,type WebSocket} from 'ws-node';
+import ts from 'typescript';
+import {createHash} from 'node:crypto';
+const root=mkdtempSync('/tmp/wal79-control-live-');process.env.CONCIERGE_STATE_DIR=root;
+process.env.CONCIERGE_TEST_MODE='1';process.env.CONCIERGE_TEST_AUTHORIZATION='responsive-system-b1eed622';
+mock.module('../src/provider-account-usage',()=>({providerAccountUsage:()=>null,scheduleProviderAccountUsageRefreshAfterCurrent:async()=>{},storedProviderAccountLabels:()=>[]}));
+const {SubprocessClaudeCodeTransport}=await import('../src/claude-code');
+const {HostConnection}=await import('../src/execution-host-client');
+const {CodexAppServerClient}=await import('../src/codex-app-server-client');
+const {TurnCancellationController}=await import('../src/turn-dispatch-seams');
+const {TurnSteeringController}=await import('../src/steering');
+const {ProviderCallbackCustody}=await import('../src/provider-callback-custody');
+const gate=await import('../src/ledger-admission');
+const executionSource=readFileSync(join(import.meta.dir,'../src/turn-execution.ts'),'utf8'),ast=ts.createSourceFile('turn-execution.ts',executionSource,ts.ScriptTarget.Latest,true);
+const registrationSources:Record<string,string>={};
+const findRegistrations=(node:ts.Node)=>{if(ts.isPropertyAssignment(node)&&['onCancellationReady','onSteeringReady'].includes(node.name.getText(ast))&&ts.isArrowFunction(node.initializer))registrationSources[node.name.getText(ast)]=node.initializer.getText(ast);ts.forEachChild(node,findRegistrations);};findRegistrations(ast);
+assert.deepEqual(Object.keys(registrationSources).sort(),['onCancellationReady','onSteeringReady']);
+const exactRegistration=(name:string,input:any,stop:()=>boolean,db:any)=>new Function('input','turnStopWasRequested','db','attachmentRoot',ts.transpileModule('const callback='+registrationSources[name]+';',{compilerOptions:{target:ts.ScriptTarget.ESNext,module:ts.ModuleKind.None}}).outputText+'return callback;')(input,stop,db,root);
+const heldSeams=readFileSync(join(import.meta.dir,'ledger-cancellation-held-2026-11-15.source.txt'),'utf8'),heldAst=ts.createSourceFile('held.ts',heldSeams,99,true);
+const heldClass=heldAst.statements.find(node=>ts.isClassDeclaration(node)&&node.name?.text==='TurnCancellationController')!;
+assert.equal(createHash('sha256').update(heldClass.getText(heldAst)).digest('hex'),'ac121c2fdf9801e82a894f64bab3e4b65d9fb11f6179c0d8e4deba3283d03007','retained original failing callback class');
+const OldCancellation=new Function('ledgerCallback',ts.transpileModule(heldClass.getText(heldAst).replace(/^export\s+/,''),{compilerOptions:{target:ts.ScriptTarget.ESNext,module:ts.ModuleKind.None}}).outputText+'return TurnCancellationController;')(gate.ledgerCallback);
+const until=async(check:()=>boolean,label:string)=>{const end=Date.now()+5000;while(!check()){assert.ok(Date.now()<end,label);await Bun.sleep(2);}};
+const latch=()=>{let release!:()=>void;return {promise:new Promise<void>(r=>release=r),release:()=>release()};};
+const resume=latch(),registration=latch();const observations:string[]=[];let pid=0,writer:((s:string)=>Promise<void>)|undefined,interrupt:(()=>Promise<void>)|undefined,transportDone=false;
+const child=join(root,'synthetic-provider.ts');writeFileSync(child,`import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(join(root,'pid'))},String(process.pid));process.on('SIGINT',()=>{});process.on('SIGTERM',()=>{});process.stdin.on('data',chunk=>{if(String(chunk).includes('emit')){console.log('original-output-1');console.log('original-output-2');}});setInterval(()=>{},1000);`);
+const socketPath=join(root,'host.sock');let hostPeer:any;let silent=false;
+const host=createNetServer(socket=>{hostPeer=socket;let buffer='';socket.on('data',chunk=>{buffer+=chunk;let i;while((i=buffer.indexOf('\n'))>=0){const request=JSON.parse(buffer.slice(0,i));buffer=buffer.slice(i+1);if(request.op==='status'&&!silent)socket.write(JSON.stringify({op:'status',protocol:1,executionId:'fixture',lastSeq:0,exit:null})+'\n');else if(request.id)socket.write(JSON.stringify({op:'accepted',id:request.id,original:true})+'\n');}});});await new Promise<void>(r=>host.listen(socketPath,r));
+const wsServer=createServer(),ws=new WebSocketServer({server:wsServer}),wsPath=join(root,'codex.sock');let peer:WebSocket|undefined;
+ws.on('connection',socket=>{peer=socket;socket.on('message',data=>{const request=JSON.parse(String(data));if(!request.id||request.method==='fixture/silence')return;socket.send(JSON.stringify({id:request.id,result:request.method==='fixture/probe'?{original:true}:{}}));});});await new Promise<void>(r=>wsServer.listen(wsPath,r));
+const client=new CodexAppServerClient(wsPath,'/usr/bin/node',{relayRunner:'disposable-fixture',bridgePath:join(import.meta.dir,'../src/codex-app-server-bridge.mjs'),shutdownGraceMs:40});
+let connection:InstanceType<typeof HostConnection>|undefined,maintenance:Promise<void>|undefined,transport:Promise<unknown>|undefined;
+try {
+ gate.enableLedgerAdmission();
+ connection=await HostConnection.connect(socketPath);await client.connect();
+ transport=new SubprocessClaudeCodeTransport(process.execPath,{inactivityMs:500,shutdownGraceMs:40}).run({args:[child],cwd:root,stdin:'initial\n',
+  onInterruptReady:cancel=>{interrupt=cancel;},onStdinReady:write=>{writer=write;registration.release();},
+  onStdout:chunk=>{observations.push(...chunk.trim().split('\n'));},onStderr:chunk=>{observations.push('stderr:'+chunk);},
+ }).then(value=>{transportDone=true;observations.push('result');return value;},error=>{transportDone=true;observations.push('rejected-result');throw error;});void transport.catch(()=>{});
+ await registration.promise;await until(()=>existsSync(join(root,'pid')),'child ready');pid=Number(readFileSync(join(root,'pid'),'utf8'));
+ const cancellation=new TurnCancellationController();cancellation.register(interrupt!);
+ const custody=new ProviderCallbackCustody(),sequence:string[]=[];client.onNotification(event=>{
+  custody.enqueue(()=>gate.runLedgerSegment(()=>{sequence.push(event.params.identity);}));
+ });
+ maintenance=gate.maintainLedger(()=>resume.promise);await Bun.sleep(0);
+ await writer!('emit\n');
+ const completion=cancellation.request();await completion;assert.deepEqual(observations,[]);assert.equal(transportDone,false);
+ const oldCancellation=new OldCancellation();let oldNativeCalls=0,oldCompletionDone=false;oldCancellation.register(async()=>{oldNativeCalls++;});const oldCompletion=oldCancellation.request().then(()=>oldCompletionDone=true);await Bun.sleep(5);assert.equal(oldNativeCalls,1);assert.equal(oldCompletionDone,false,'actual held114 completion callbacks wait behind admission');
+ const hostReply=await connection.command({op:'signal',id:'original-interrupt',signal:'SIGINT'});assert.equal(hostReply.original,true);
+ peer!.send(JSON.stringify({method:'fixture/observation',params:{identity:'original-item-1'}}));
+ peer!.send(JSON.stringify({method:'fixture/observation',params:{identity:'original-item-2'}}));
+ assert.deepEqual(await client.request('fixture/probe',{}),{original:true});
+ await assert.rejects(client.request('fixture/silence',{},{requestTimeoutMs:40}),/timed out/);
+ silent=true;await assert.rejects(connection.status(40),/timed out/);
+ await until(()=>!existsSync(`/proc/${pid}`),'actual inactivity TERM then KILL child retirement while gate held');
+ assert.equal(transportDone,false,'result waits for accepted output consumption after native child exit');assert.deepEqual(observations,[]);assert.deepEqual(sequence,[]);
+ const late=new TurnCancellationController(),lateRegistration=new ProviderCallbackCustody();let lateNativeCalls=0,stopReads=0,pauseReads=0;
+ const lateCompletion=late.request();let lateDone=false;void lateCompletion.then(()=>lateDone=true);
+ const exactCancel=exactRegistration('onCancellationReady',{turnId:73,cancellationController:late},()=>{stopReads++;return true;},{query:()=>({get:()=>{pauseReads++;return null;}})});
+ const steering=new TurnSteeringController(),steeringSeen:string[]=[];
+ steering.enqueue({clientMessageId:'original-queued-guidance',text:'original guidance words',onSent:()=>gate.runLedgerSegment(()=>{steeringSeen.push('durable-sent');}),onError:error=>{throw error;}});
+ const exactSteering=exactRegistration('onSteeringReady',{steeringController:steering},()=>false,{});
+ const wrapped=lateRegistration.wrap({onCancellationReady:exactCancel,onSteeringReady:exactSteering},['onCancellationReady','onSteeringReady']);
+ void wrapped.onCancellationReady(async()=>{lateNativeCalls++;});void wrapped.onSteeringReady(async(input:any)=>{assert.equal(input.clientMessageId,'original-queued-guidance');steeringSeen.push('native-send');});
+ await Bun.sleep(5);assert.equal(lateDone,false);assert.equal(lateNativeCalls,0);assert.equal(stopReads,0);assert.equal(pauseReads,0);assert.deepEqual(steeringSeen,[]);
+ resume.release();await maintenance;await custody.drain();await lateRegistration.drain();await lateCompletion;
+ await oldCompletion;assert.equal(oldCompletionDone,true);
+ await assert.rejects(transport,/produced no provider activity/);await until(()=>steeringSeen.includes('durable-sent'),'original queued steering settles');assert.equal(stopReads,1);assert.equal(pauseReads,1);assert.deepEqual(steeringSeen,['native-send','durable-sent']);
+ assert.deepEqual(sequence,['original-item-1','original-item-2']);assert.deepEqual(observations,['original-output-1','original-output-2','rejected-result']);assert.equal(lateNativeCalls,1);
+ console.log(JSON.stringify({pass:true,root,pid,actualSubprocessDeadlineAndKillWhileClosed:true,preRegisteredActualInterruptAndCancellationCompletionLive:true,held114ExactClassNegativeCompletionStayedHeld:true,actualHostControlReplyLive:true,actualCodexBridgeReplyLive:true,actualHostSocketTimeoutLive:true,actualCodexRequestDeadlineLive:true,businessObservationsHeld:true,terminalResultWaitsOriginalOutput:true,orderedNativeNotifications:sequence,orderedTransportResult:observations,lateExactSourceStopPredicatesHeld:{stopReads,pauseReads},lateOriginalQueuedSteering:steeringSeen,lateRegistrationRetainedAndDeliveredOnce:true,registrationSources,limits:'Actual subprocess transport, cancellation controller, steering controller, HostConnection Unix socket, Codex client + actual Node bridge to synthetic WebSocket publisher; scratch SQLite state, explicit admitted business consumers rather than live turn execution. Exact turn-execution registration callback source with controlled Stop/pause predicates; exact held114 cancellation class with controlled native cancellation. Account-usage reader controlled. No provider/account/service access.'}));
+}finally{
+ resume.release();await maintenance?.catch(()=>{});await transport?.catch(()=>{});if(pid&&existsSync(`/proc/${pid}`))process.kill(pid,'SIGKILL');
+ connection?.close();hostPeer?.destroy();await client.close({immediate:true});for(const socket of ws.clients)socket.terminate();await new Promise<void>(r=>ws.close(()=>r()));await new Promise<void>(r=>wsServer.close(()=>r()));await new Promise<void>(r=>host.close(()=>r()));
+ const {db}=await import('../src/state-database');await gate.runLedgerSegment(()=>db.close(true));
+}

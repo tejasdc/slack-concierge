@@ -1,3 +1,4 @@
+import {runLedgerSteps,runLedgerSegment} from './ledger-admission';
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -33,17 +34,17 @@ export type ClaudeSignInFiled =
   | { status: "failed"; detail: string };
 
 /** Who a Claude home is signed in as, asked of Claude itself. */
-export async function claudeHomeEmail(home: string): Promise<string | null> {
+export async function claudeHomeEmail(home: string): Promise<string | null> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   try {
     const child = Bun.spawn([CLAUDE_EXECUTABLE, "auth", "status", "--json"],
       { env: { ...process.env, CLAUDE_CONFIG_DIR: home }, stdout: "pipe", stderr: "ignore", stdin: "ignore" });
     const timer = setTimeout(() => child.kill(), 15_000);
-    const [output] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    const [output] = (yield Promise.all([new Response(child.stdout).text(), child.exited]));
     clearTimeout(timer);
     const status = JSON.parse(output) as { loggedIn?: boolean; email?: string };
     return status.loggedIn === true && typeof status.email === "string" && status.email ? status.email : null;
   } catch { return null; }
-}
+}).call(this));}
 
 // An address is passed to a shell, so only an address-shaped value is ever passed.
 const ADDRESS = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
@@ -68,32 +69,32 @@ export class ClaudeAccountLogin {
    * `expected` is the account he pressed sign-in on; Claude's page opens with that address
    * filled in. Null means a new account, named by whoever he signs in as.
    */
-  async start(expected: string | null): Promise<AuthLoginStartResult> {
+  async start(expected: string | null): Promise<AuthLoginStartResult> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     this.discard(this.staging?.home ?? null);
     const home = join(CLAUDE_ACCOUNTS, `.signing-in-${randomUUID().slice(0, 8)}`);
     mkdirSync(home, { recursive: true, mode: 0o700 });
     const address = expected && ADDRESS.test(expected) ? expected : null;
     this.staging = { home, expected: address };
     const command = `${CLAUDE_EXECUTABLE} auth login${address ? ` --email '${address}'` : ""}`;
-    const started = await this.manager.start("claude-code", command, homedir(), "paste-code", { CLAUDE_CONFIG_DIR: home });
+    const started = (yield this.manager.start("claude-code", command, homedir(), "paste-code", { CLAUDE_CONFIG_DIR: home }));
     if (started.status === "failed") { this.discard(home); this.staging = null; }
     return started;
-  }
+  }).call(this));}
 
-  async complete(code: string): Promise<AuthLoginCompleteResult> {
+  async complete(code: string): Promise<AuthLoginCompleteResult> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     return this.manager.complete("claude-code", code);
-  }
+  }).call(this));}
 
   /**
    * Give the finished sign-in its account's home. Called once Claude accepted the code (or
    * finished on its own); the staging folder is gone afterwards either way.
    */
-  async file(): Promise<ClaudeSignInFiled> {
+  async file(): Promise<ClaudeSignInFiled> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const staging = this.staging;
     this.staging = null;
     if (!staging) return { status: "failed", detail: "This sign-in is no longer waiting. Start it again." };
     try {
-      const email = await claudeHomeEmail(staging.home);
+      const email = (yield claudeHomeEmail(staging.home));
       // A Mac keeps the login in the Keychain under the staging folder's name instead of a file.
       const inKeychain = !existsSync(join(staging.home, ".credentials.json")) && claudeKeychainHasLogin(staging.home);
       if (!email || (!existsSync(join(staging.home, ".credentials.json")) && !inKeychain)) {
@@ -126,7 +127,7 @@ export class ClaudeAccountLogin {
     } finally {
       this.discard(staging.home);
     }
-  }
+  }).call(this));}
 
   async stop(): Promise<void> { this.discard(this.staging?.home ?? null); this.staging = null; }
 }

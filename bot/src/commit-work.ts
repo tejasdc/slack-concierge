@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import { execFile } from 'node:child_process';
 import { readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -38,10 +40,10 @@ export function originInput(input: string | null): string | null {
   return current;
 }
 
-async function exists(path: string) { try { return (await stat(path)).isFile(); } catch { return false; } }
+async function exists(path: string) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> { try { return ((yield stat(path))).isFile(); } catch { return false; } }).call(this));}
 
 /** Every place a provider keeps this session's transcript on this machine. */
-async function transcripts(provider: string, uuid: string, atMs: number): Promise<string[]> {
+async function transcripts(provider: string, uuid: string, atMs: number): Promise<string[]> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if (provider === 'codex') {
     const root = join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'sessions');
     // A Codex thread's file sits under the day it began, so look back from the commit's day.
@@ -49,35 +51,35 @@ async function transcripts(provider: string, uuid: string, atMs: number): Promis
       const day = new Date(atMs - back * 86_400_000);
       const dir = join(root, String(day.getUTCFullYear()), String(day.getUTCMonth() + 1).padStart(2, '0'), String(day.getUTCDate()).padStart(2, '0'));
       let names: string[] = [];
-      try { names = await readdir(dir); } catch { continue; }
+      try { names = (yield readdir(dir)); } catch { continue; }
       const name = names.find(entry => entry.includes(uuid) && entry.endsWith('.jsonl'));
       if (name) return [join(dir, name)];
     }
     return [];
   }
   const homes = [join(homedir(), '.claude')];
-  try { for (const account of await readdir(join(homedir(), '.claude-accounts'))) homes.push(join(homedir(), '.claude-accounts', account)); } catch {}
+  try { for (const account of (yield readdir(join(homedir(), '.claude-accounts')))) homes.push(join(homedir(), '.claude-accounts', account)); } catch {}
   const files: string[] = [];
   for (const home of homes) {
     let projects: string[] = [];
-    try { projects = await readdir(join(home, 'projects')); } catch { continue; }
+    try { projects = (yield readdir(join(home, 'projects'))); } catch { continue; }
     for (const project of projects) {
       const candidate = join(home, 'projects', project, `${uuid}.jsonl`);
-      if (await exists(candidate)) files.push(candidate);
+      if ((yield exists(candidate))) files.push(candidate);
     }
   }
   return files;
-}
+}).call(this));}
 
 /** The newest moment before `beforeMs` at which the agent itself wrote `subject`, or null. */
-async function authored(files: string[], subject: string, beforeMs: number): Promise<number | null> {
+async function authored(files: string[], subject: string, beforeMs: number): Promise<number | null> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   // Search for a stretch of the subject that JSON leaves as it is, then read the lines properly.
   const needle = subject.split(/["\\]/).sort((a, b) => b.length - a.length)[0] ?? '';
   if (needle.length < 12) return null;
   let best: number | null = null;
   for (const file of files) {
     let output = '';
-    try { output = (await run('grep', ['-F', '--', needle, file], { maxBuffer: 1 << 26 })).stdout; } catch { continue; }
+    try { output = ((yield run('grep', ['-F', '--', needle, file], { maxBuffer: 1 << 26 }))).stdout; } catch { continue; }
     for (const line of output.split('\n')) {
       let row: any; try { row = JSON.parse(line); } catch { continue; }
       const own = row.type === 'assistant'
@@ -88,9 +90,9 @@ async function authored(files: string[], subject: string, beforeMs: number): Pro
     }
   }
   return best;
-}
+}).call(this));}
 
-export async function commitWork(commit: string, subject: string | null, atIso: string): Promise<CommitWork | null> {
+export async function commitWork(commit: string, subject: string | null, atIso: string): Promise<CommitWork | null> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if (!/^[0-9a-f]{7,40}$/.test(commit)) return null;
   if (found.has(commit)) return found.get(commit)!;
   const at = Date.parse(atIso);
@@ -124,13 +126,13 @@ export async function commitWork(commit: string, subject: string | null, atIso: 
     const writtenAt = runner && (candidate.provider === 'claude-code' || candidate.provider === 'codex')
       ? (() => authoredRunnerProviderSubject({runner,provider:candidate.provider as 'claude-code'|'codex',
           account:candidate.bound_account,sessionUuid:candidate.uuid,subject,beforeMs:at+SLACK_MS})
-          .then(result=>result.timestamp===null?null:Date.parse(result.timestamp)))()
-      : transcripts(candidate.provider,candidate.uuid,at).then(files=>authored(files,subject,at+SLACK_MS));
-    const timestamp = await writtenAt;
+          .then(ledgerCallback(result=>result.timestamp===null?null:Date.parse(result.timestamp))))()
+      : transcripts(candidate.provider,candidate.uuid,at).then(ledgerCallback(files=>authored(files,subject,at+SLACK_MS)));
+    const timestamp = (yield writtenAt);
     if (timestamp !== null && timestamp > nearest) { nearest = timestamp; turn = candidate; }
   }
   const answer = turn ? { sessionId: turn.session, turnId: turn.id, input: originInput(turn.input) } : null;
   // Only a found commit is kept: one not yet in a transcript (the turn still writing) is asked again later.
   if (answer) found.set(commit, answer);
   return answer;
-}
+}).call(this));}

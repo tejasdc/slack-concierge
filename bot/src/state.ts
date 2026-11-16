@@ -2,6 +2,7 @@ import {renumberWaitingStarts,START_ORDER_SQL,decideStart,deferStart,ensureStart
 import { initializeSessionOwnerSchema } from "./session-schema";
 import {threadOnlyReturnInputSql} from './inbox-request-root';
 import { randomUUID } from "node:crypto";
+import {runLedgerSegment} from './ledger-admission';
 import { lstatSync, readdirSync } from "node:fs";
 import { db, initializeLedgerSchema, schemaVersionAtOpen } from "./state-database";
 import { initializeRouterSearchIndex, projectRouterSearchSource, refreshRouterSearchTurnIdentity } from "./router-search-index";
@@ -164,7 +165,7 @@ export function observeExecutionChanges(listener: () => void) {
   return () => { executionChangeListeners.delete(listener); };
 }
 export function executionChanged() {
-  queueMicrotask(() => { for (const listener of executionChangeListeners) listener(); });
+  queueMicrotask(() => { void runLedgerSegment(() => { for (const listener of executionChangeListeners) listener(); }); });
 }
 
 function columns(table: string): Set<string> {

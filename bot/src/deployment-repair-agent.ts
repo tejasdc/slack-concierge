@@ -1,9 +1,10 @@
-import { spawn } from "node:child_process";
+import { spawnOwnedProcessGroup } from "./owned-process-group";
 import { closeSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { onJsonLines } from "./json-lines";
+import { jsonLines } from "./json-lines";
 import { trustedCodexExecCommand } from "./trusted-codex-exec";
 import { CODEX_INVESTIGATOR_MODEL } from "./aliases";
+import type { ProcessIdentity } from "./runtime-identity";
 
 export interface RepairAgentInput {
   kind: "repair";
@@ -13,8 +14,8 @@ export interface RepairAgentInput {
   outputPath: string;
   finalMessagePath: string;
   deadlineMs: number;
-  onSpawn(pid: number): void;
-  onSession(sessionUuid: string): void;
+  onSpawn(pid: number, identity?: ProcessIdentity): void | Promise<void>;
+  onSession(sessionUuid: string): void | Promise<void>;
 }
 
 export class RepairAttemptIntegrityError extends Error {}
@@ -70,17 +71,12 @@ export async function runRepairAgent(input: RepairAgentInput, repositoryRoot: st
   let failure: Error | null = null;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
   let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
-  let child: ReturnType<typeof spawn> | undefined;
+  let child: ReturnType<typeof spawnOwnedProcessGroup> | undefined;
   const fail = (error: unknown) => {
     failure ||= error instanceof Error ? error : new Error(String(error));
-    if (!child?.pid) return;
-    const signal = (name: NodeJS.Signals) => {
-      try { process.kill(-child!.pid!, name); } catch (error: any) {
-        if (error.code !== "ESRCH") failure ||= error;
-      }
-    };
-    signal("SIGTERM");
-    killTimer ||= setTimeout(() => signal("SIGKILL"), 5000);
+    if (!child) return;
+    child.signal("SIGTERM");
+    killTimer ||= setTimeout(() => child!.signal("SIGKILL"), 5000);
   };
   try {
     const environment: NodeJS.ProcessEnv = { ...process.env, HOME: "/root" };
@@ -93,49 +89,48 @@ export async function runRepairAgent(input: RepairAgentInput, repositoryRoot: st
       "CONCIERGE_SESSION_ID", "CONCIERGE_TURN_KIND", "CONCIERGE_OWNER_INSTANCE_ID",
       "CONCIERGE_ACCEPTED_INPUT_ID", "CONCIERGE_SLACK_CHANNEL_ID", "CONCIERGE_SLACK_THREAD_TS"]) delete environment[name];
     const [command, ...launchArgs] = trustedCodexExecCommand(executable, args);
-    child = spawn(command!, launchArgs, {
-      cwd: input.cwd, env: environment,
-      detached: true, stdio: ["ignore", "pipe", "pipe"],
-    });
-    const closed = new Promise<number>((resolve) => {
-      child!.once("error", fail);
-      child!.once("close", (code) => resolve(code ?? 1));
-    });
+    child = spawnOwnedProcessGroup([command!, ...launchArgs], { cwd: input.cwd, env: environment },
+      error => fail(new RepairAttemptIntegrityError(`Repair process-group custody failed: ${String(error)}`)));
     deadlineTimer = setTimeout(() => fail(new RepairAttemptStoppedError(
       "The autonomous repair time budget expired; only this repair process group was stopped. Operator help is required.",
     )), Math.max(1, input.deadlineMs - Date.now()));
-    const linesRead = onJsonLines(child.stdout!, (line) => {
+    // Reading one original record at a time provides stream backpressure while its durable
+    // bookkeeping waits. The detached child may exit first; its output and result stay owned.
+    let spawned:Promise<void>;
+    try {spawned=child.identity.then(identity => identity ? input.onSpawn(identity.pid, identity) : undefined)
+      .catch(error => fail(new RepairAttemptIntegrityError(`Repair process bookkeeping failed: ${String(error)}`)));}
+    catch(error) {fail(new RepairAttemptIntegrityError(`Repair process bookkeeping failed: ${String(error)}`));spawned=Promise.resolve();}
+    const linesRead = (async () => {
       try {
-        writeSync(output, `${line}\n`);
-        const session = repairSessionFromEvent(line);
-        if (session && !failure) input.onSession(session);
-      } catch (error) {
-        fail(new RepairAttemptIntegrityError(`Repair output bookkeeping failed: ${String(error)}`));
-      }
-    });
+        for await (const line of jsonLines(child!.stdout!)) {
+          try {
+            writeSync(output, `${line}\n`);
+            await spawned;
+            const session=repairSessionFromEvent(line);
+            if(session && !failure)await input.onSession(session);
+          } catch(error) {
+            fail(new RepairAttemptIntegrityError(`Repair output bookkeeping failed: ${String(error)}`));
+          }
+        }
+      } catch(error) { fail(error); }
+      await spawned;
+    })();
     child.stdout!.on("error", fail);
     child.stderr!.on("error", fail);
     child.stderr!.on("data", (chunk) => {
       try { writeSync(output, chunk); } catch (error) { fail(error); }
     });
-    try {
-      if (child.pid) input.onSpawn(child.pid);
-    } catch (error) {
-      fail(new RepairAttemptIntegrityError(`Repair process bookkeeping failed: ${String(error)}`));
-    }
-    const code = await closed;
+    const stderrRead = new Promise<void>(resolve => child!.stderr.once("close", resolve));
+    const code = await child.exited;
     // An unterminated last line is handled at stream end; let it land before the log closes.
     await linesRead;
+    await stderrRead;
     if (failure) throw failure;
     return code;
   } finally {
-    if (failure && child?.pid) {
-      try { process.kill(-child.pid, "SIGKILL"); } catch (error: any) {
-        if (error.code !== "ESRCH") throw error;
-      }
-    }
     clearTimeout(killTimer);
     clearTimeout(deadlineTimer);
-    closeSync(output);
+    try { await child?.dispose(!!failure); }
+    finally { closeSync(output); }
   }
 }

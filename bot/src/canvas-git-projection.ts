@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps,runLedgerSegment} from './ledger-admission';
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
@@ -119,7 +121,7 @@ export async function syncCommittedAgentsCanvas(input: {
   reason: string;
   force?: boolean;
   syncCanvas?: typeof syncAgentsCanvas;
-}): Promise<CommittedCanvasProjectionResult> {
+}): Promise<CommittedCanvasProjectionResult> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const channel = getChannel(input.channel.slack_channel_id) || input.channel;
   const source = resolveTrackedAgentsSource(channel);
   if (!source) return { ok: true, status: "ignored" };
@@ -144,7 +146,7 @@ export async function syncCommittedAgentsCanvas(input: {
     return { ok: false, status: "failed", error: "committed_agents_read_failed" };
   }
 
-  const result = await (input.syncCanvas || syncAgentsCanvas)({
+  const result = (yield (input.syncCanvas || syncAgentsCanvas)({
     client: input.client,
     channel,
     user: input.user,
@@ -153,9 +155,9 @@ export async function syncCommittedAgentsCanvas(input: {
       path: `${source.relativePath} @ ${source.commit.slice(0, 12)}`,
       text: agentsText,
     },
-  });
+  }));
   if (!result.ok) return { ...result, status: "failed" };
 
   updateChannelCanvasProjectedCommit(channel.slack_channel_id, source.commit);
   return { ...result, status: "projected", commit: source.commit };
-}
+}).call(this));}

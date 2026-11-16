@@ -22,18 +22,28 @@ export class OwnerSocketNotReady extends Error {
  * stopped. Each wait goes to stderr, which stays in the controller's journal; stdout stays the
  * command's machine-readable result.
  */
-export async function deploymentOwnerFetch(path: string, init: RequestInit,
-  options: { stopWaiting?: () => boolean } = {}): Promise<Response> {
+type OwnerRequestOptions={stopWaiting?:()=>boolean;replaySafe?:boolean};
+export function deploymentOwnerFetch(path:string,init:RequestInit,options:OwnerRequestOptions={}):Promise<Response> {
+  return deploymentOwnerRequest(path,init,options,response=>Promise.resolve(response));
+}
+
+/** A response is accepted only after its complete JSON body has arrived. A replay-safe
+ * command retains the same caller identity when headers arrived but its body was lost. */
+export function deploymentOwnerJson(path:string,init:RequestInit,options:OwnerRequestOptions={}):Promise<{response:Response;body:any}> {
+  return deploymentOwnerRequest(path,init,options,async response=>({response,body:await response.json()}));
+}
+
+async function deploymentOwnerRequest<T>(path:string,init:RequestInit,options:OwnerRequestOptions,consume:(response:Response)=>Promise<T>):Promise<T> {
   const stateDir = process.env.CONCIERGE_STATE_DIR;
   if (!stateDir) throw new Error("CONCIERGE_STATE_DIR is required for release state.");
   const startedAtMs = Date.now();
   try {
     return await withRetry({
       operation: "deployment_owner_request", key: path, policy: RETRY_POLICIES.ownerRestart, startedAtMs,
-      run: () => fetch(`http://localhost${path}`, { ...init, unix: join(stateDir, "request-owner.sock") } as RequestInit),
+      run: async () => consume(await fetch(`http://localhost${path}`, { ...init, unix: join(stateDir, "request-owner.sock") } as RequestInit)),
       classifyError: (error, attempt) => {
         const neverReached = ownerNeverReached(error);
-        if (neverReached ? options.stopWaiting?.() : init.method !== "GET") return "permanent";
+        if (neverReached ? options.stopWaiting?.() : init.method !== "GET" && !options.replaySafe) return "permanent";
         logToStderr("info", "deployment_owner_socket_wait", { path, attempt,
           code: String((error as { code?: unknown })?.code ?? "unknown"), elapsed_ms: Date.now() - startedAtMs });
         return "transient";

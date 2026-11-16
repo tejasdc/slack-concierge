@@ -1,3 +1,4 @@
+import {ledgerCallback} from './ledger-admission';
 import {db,getClaudePreferredModel,getSessionById} from './state';
 import {sessionMetadata} from './session-inputs';
 import {inspectSavedWork,noticeMissedQuietWindows,quietOnlyCutoff,reconsiderBankedWork,resumeBankedAfterYield,savedTurn,savedWorkSettings} from './saved-work';
@@ -65,7 +66,7 @@ export function createBankedUpkeep(input:{registry:()=>ActiveTurnDispatchRegistr
         ||!window||window.usedPercent>=100-reserve)
         requestYield(turnId,'allowance_boundary');
     }
-    if(Number.isFinite(nextQuietBoundary))quietBoundaryTimer=setTimeout(()=>inspectActive(),Math.max(1,nextQuietBoundary-Date.now()));
+    if(Number.isFinite(nextQuietBoundary))quietBoundaryTimer=setTimeout(ledgerCallback(()=>inspectActive()),Math.max(1,nextQuietBoundary-Date.now()));
   };
   /** Each step runs on its own: one failing step must not silently skip the others. */
   const step=(name:string,work:()=>unknown)=>{

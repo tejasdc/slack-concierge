@@ -1,0 +1,5 @@
+{
+  "deadlineMs": 120000,
+  "cleanupMs": 5000,
+  "parallelChecks": 3
+}

@@ -1,4 +1,5 @@
 import {db,executionChanged,getSessionById} from './state';
+import {ledgerCallback} from './ledger-admission';
 import {createNativeSession,enqueueSessionInput,getAcceptedSessionInput,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {newWorkCapacity} from './provider-start-choice';
 import {accountsWithRoom} from './provider-usage-forecast';
@@ -197,7 +198,7 @@ export function recoverExhaustedClaudeWork():number {
     }
     if(sessions.length===20){
       scanAfterTurnId=sessions[sessions.length-1]!.oldest_turn_id;
-      setImmediate(recoverExhaustedClaudeWork);
+      setImmediate(ledgerCallback(recoverExhaustedClaudeWork));
     } else scanAfterTurnId=0;
     if(moved)executionChanged();
     return moved;

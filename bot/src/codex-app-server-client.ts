@@ -60,7 +60,13 @@ interface ActiveConnection {
   stderr: string;
 }
 
-type NotificationListener = (event: any) => void;
+type NotificationListener = (event: any) => void | Promise<void>;
+export type CodexNotificationConsumption = {
+  accepts(event: any): boolean;
+  reconcile(): Promise<void>;
+  onError(error: unknown): void;
+};
+type NotificationConsumer = { options: CodexNotificationConsumption; active: boolean; missed: boolean; closed: boolean };
 type DisconnectListener = (error: Error, generation: number) => void;
 
 export interface CodexRequestOptions {
@@ -116,7 +122,7 @@ export interface CodexAppServerClientLike {
     options?: CodexRequestOptions,
   ): Promise<any>;
   notify(method: string, params?: unknown, options?:Pick<CodexRequestOptions,'expectedConnectionGeneration'|'custodyOwnerSessionId'>): Promise<void>;
-  onNotification(listener: NotificationListener): () => boolean;
+  onNotification(listener: NotificationListener, consumption?: CodexNotificationConsumption): () => boolean;
   onDisconnect(listener: DisconnectListener): () => boolean;
   waitForDisconnect(generation: number): Promise<void>;
   loseConnectionGeneration?(generation: number): Promise<"observed" | "stale">;
@@ -135,6 +141,7 @@ export class CodexAppServerClient {
   private requestId = 0;
   private closed = false;
   private readonly pending = new Map<number, PendingRequest>();
+  private readonly notificationConsumers = new Map<NotificationListener, NotificationConsumer>();
   private readonly notificationListeners = new Set<NotificationListener>();
   private readonly disconnectListeners = new Set<DisconnectListener>();
 
@@ -241,10 +248,35 @@ export class CodexAppServerClient {
     await this.send(connection, { type: "notification", method, params });
   }
 
-  onNotification(listener: NotificationListener) {
+  onNotification(listener: NotificationListener, consumption?: CodexNotificationConsumption) {
     this.notificationListeners.add(listener);
-    return () => this.notificationListeners.delete(listener);
+    if (consumption) this.notificationConsumers.set(listener, { options: consumption, active: false, missed: false, closed: false });
+    return () => {
+      const consumer = this.notificationConsumers.get(listener);
+      if (consumer) consumer.closed = true;
+      this.notificationConsumers.delete(listener);
+      return this.notificationListeners.delete(listener);
+    };
   }
+
+  private consumeNotification(listener: NotificationListener, consumer: NotificationConsumer, event: any) {
+    if (consumer.closed || !consumer.options.accepts(event)) return;
+    if (consumer.active) { consumer.missed = true; return; }
+    consumer.active = true;
+    // Only this original payload remains in flight. Subsequent hints require exact native
+    // reconciliation, rather than retaining an unbounded list of payload closures.
+    void (async () => {
+      try { await listener(event); }
+      catch (error) { consumer.options.onError(error); }
+      event = null;
+      while (!consumer.closed && consumer.missed) {
+        consumer.missed = false;
+        try { await consumer.options.reconcile(); }
+        catch (error) { consumer.options.onError(error); }
+      }
+    })().catch(error => log("error", "codex_notification_consumer_failed", errorFields(error))).finally(() => { consumer.active = false; });
+  }
+
 
   onDisconnect(listener: DisconnectListener) {
     this.disconnectListeners.add(listener);
@@ -458,7 +490,12 @@ export class CodexAppServerClient {
     if (event.type !== "event" || !event.event?.method) return;
     for (const listener of this.notificationListeners) {
       try {
-        listener(event.event);
+        const consumer = this.notificationConsumers.get(listener);
+        if (consumer) this.consumeNotification(listener, consumer, event.event);
+        else {
+          const consumed = listener(event.event);
+          if (consumed) void consumed.catch(error => log("error", "codex_notification_consumer_failed", errorFields(error)));
+        }
       } catch {}
     }
   }

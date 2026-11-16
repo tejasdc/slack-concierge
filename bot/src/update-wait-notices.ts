@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { db } from "./state-database";
+import {ledgerCallback} from './ledger-admission';
 import { log } from "./log";
 import { nativeRunId } from "./session-inputs";
 import { provenRunKinds, turnContinuesThroughRestart } from "./execution-survival";
@@ -91,7 +92,7 @@ export function startUpdateWaitWatch(options: UpdateWaitWatchOptions): () => voi
       log("warn", "update_wait_notice_failed", { error: error instanceof Error ? error.message : String(error) });
     }
   };
-  const timer = setInterval(tick, TICK_MS);
+  const timer = setInterval(ledgerCallback(tick), TICK_MS);
   timer.unref?.();
   tick();
   return () => clearInterval(timer);

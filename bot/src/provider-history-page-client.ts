@@ -16,7 +16,9 @@ export class ProviderHistoryPageClient {
   private pending=new Map<number,{resolve:(value:unknown)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
   private ensure(){
     if(this.worker)return this.worker;
-    const worker=new Worker(releaseWorkerPath('provider-history-page-worker'));
+    const worker=new Worker(releaseWorkerPath('provider-history-page-worker'),{
+      env:{...process.env,CONCIERGE_READ_WORKER:'1'},
+    });
     worker.unref();
     worker.on('message',(reply:Reply)=>{
       const item=this.pending.get(reply.id);if(!item)return;
@@ -58,9 +60,9 @@ export class ProviderHistoryPageClient {
   async close(){
     const worker=this.worker;this.worker=null;
     for(const [id,item] of this.pending){clearTimeout(item.timer);item.reject(new Error('HISTORY_PAGE_WORKER_STOPPED'));this.pending.delete(id);}
-    // This worker only reads provider history. Termination may wait for its current
-    // synchronous read, while the serving process is already draining for a release.
-    // The process exit ends the worker even if that read has not returned yet.
-    if(worker)void worker.terminate().catch(error=>log('warn','provider_history_worker_stop_failed',errorFields(error)));
+    // The page worker is a physically read-only ledger client. Bun's termination result
+    // follows SQLite teardown; it is not an OS-thread join certificate.
+    if(worker)try{await worker.terminate();}
+      catch(error){log('warn','provider_history_worker_stop_failed',errorFields(error));throw error;}
   }
 }

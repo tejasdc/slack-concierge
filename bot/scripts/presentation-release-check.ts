@@ -1,22 +1,31 @@
+import CHECK_POLICY from './release-check-policy.json';
 import {existsSync,readFileSync} from 'node:fs';
 import {dirname,join,resolve,relative} from 'node:path';
-import {PRESENTATION_READERS} from '../src/presentation-reader-contracts';
-import {checkReaderRefusals} from './presentation-contract-fixture';
-import {checkTopicProjectionLifecycle,checkNativeOwnerProjectionLifecycle} from './topic-projection-fixture';
-import {checkDispatchClaim} from './dispatch-claim-fixture';
-import {checkLedgerConstructors} from './ledger-constructor-check';
-import {checkSessionLocationComposition} from './session-location-contract';
-import {checkProviderContract} from './provider-contract-check';
+import {privateCodeCommand} from '../src/private-database-command';
 import {runFixtureChild} from './fixture-child';
+import {currentProcessIdentity,processNativeLifetimeEnded} from '../src/runtime-identity';
 // Older installed builders already execute this candidate-owned entrance.
 // A package-only check would not protect the first activation of these workers.
-import './foreground-boundary-check';
 
+async function checkPresentation(){
+if(process.env.CONCIERGE_PRIVATE_CODE_BOUNDARY_VERIFIED!=='1')throw Error('Candidate checks require the verified private-code entrance.');
+const {PRESENTATION_READERS}=await import('../src/presentation-reader-contracts');
+const {checkReaderRefusals}=await import('./presentation-contract-fixture');
+const {checkTopicProjectionLifecycle,checkNativeOwnerProjectionLifecycle}=await import('./topic-projection-fixture');
+const {checkDispatchClaim}=await import('./dispatch-claim-fixture');
+const {checkLedgerConstructors}=await import('./ledger-constructor-check');
+const {checkSessionLocationComposition}=await import('./session-location-contract');
+const {checkProviderContract}=await import('./provider-contract-check');
+await import('./foreground-boundary-check');
 const root=resolve(import.meta.dir,'..');
 // The installed controller retains stderr but discards stdout and exit status on a timed-out
-// candidate. Keep the last completed step visible without expanding its 90-second boundary.
+// candidate. Keep the last completed step visible within the shared release-check budget.
 const phase=(name:string)=>process.stderr.write(`presentation-check: ${name}\n`);
 phase('started');
+if(process.platform==='linux'){
+ if(await processNativeLifetimeEnded(currentProcessIdentity()))throw Error('The current native process was incorrectly reported exited.');
+ phase('native-process-lifetime');
+}
 const sessionLocation=checkSessionLocationComposition(root);
 phase('session-location-contract');
 const providerContract=checkProviderContract(root);
@@ -117,3 +126,13 @@ if(failures.length)throw new AggregateError(failures.map(result=>result.reason),
 phase('passed');
 const [topicProjection,nativeOwnerProjection,foreground,inboxLineage,askedAnswer]=lifecycleResults.map(result=>(result as PromiseFulfilledResult<unknown>).value);
 console.log(JSON.stringify({check:'presentation-release',status:'passed',workerModules:visited.size,ledgerConstructors,sessionLocation,providerContract,topicProjection,nativeOwnerProjection,dispatchClaim,foreground,inboxLineage,askedAnswer,readers:results}));
+
+}
+if(process.argv.includes('--bounded-child'))await checkPresentation();
+else {
+ const isolated=privateCodeCommand([process.execPath,import.meta.path,'--bounded-child'],process.env);
+ try{await runFixtureChild({command:isolated.command[0]!,args:isolated.command.slice(1),env:isolated.environment,
+  deadlineMs:CHECK_POLICY.deadlineMs-CHECK_POLICY.cleanupMs,fixture:'presentation-release',requireCheckpoint:false,requireOwnedGroup:true,
+  onOutput:(stream,chunk)=>process[stream].write(chunk)});
+ }finally{isolated.cleanup();}
+}

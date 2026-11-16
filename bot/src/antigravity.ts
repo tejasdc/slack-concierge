@@ -1,3 +1,5 @@
+import { runLedgerSteps } from "./ledger-admission";
+import { withProviderCallbackCustody, type ProviderCallbackCustody } from "./provider-callback-custody";
 import type { AgentProvider } from "./providers";
 import type { ClaudeCodeTransport } from "./claude-code";
 import type { RunResult } from "./codex";
@@ -45,7 +47,7 @@ type AntigravityRun = Parameters<AgentProvider["run"]>[0] & {
   /** Taken back from a predecessor's host: its record replays before any decision acts. */
   adopted?: boolean;
   /** A predecessor's steering message was picked up, or the run ended without picking it up. */
-  onRecoveredSteering?: (clientMessageId: string, outcome: "acknowledged" | "unacknowledged") => void;
+  onRecoveredSteering?: (clientMessageId: string, outcome: "acknowledged" | "unacknowledged") => void | Promise<void>;
 };
 
 type AntigravityEvent = {
@@ -90,7 +92,8 @@ async function googleAllowanceSpentUntil(model: string | undefined): Promise<num
 }
 
 /** A Google conversation is named by its exact CLI ID, never by the most recent local project. */
-export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResult> {
+async function runAntigravityTurnProducer(input: AntigravityRun, custody: ProviderCallbackCustody): Promise<RunResult> {
+  return runLedgerSteps((function* () {
   if (input.interactionPolicy === "consultation-only") {
     throw new ProviderCapabilityUnavailableError("consultation", "Antigravity has no verified information-only tool policy.");
   }
@@ -106,7 +109,7 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
   // each launch was refused. This refusal names its reset and comes before any work, so it takes
   // the same path as Google's own refusal: an automatically placed first turn moves to a provider
   // with room, anything else waits until the reset.
-  const spentUntil = await googleAllowanceSpentUntil(input.model);
+  const spentUntil = yield googleAllowanceSpentUntil(input.model);
   if (spentUntil !== null) {
     throw new ProviderDispatchError({ message: `Individual quota reached: Google's allowance for ${input.model ?? "this model"} is used up until ${new Date(spentUntil).toISOString()}.`,
       terminalConfirmed: true, assistantOutput: false, providerSessionId: input.sessionUUID ?? null,
@@ -114,7 +117,7 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
   }
   const dispatchAccount=input.accountLabel??(input.environment?.CONCIERGE_PROVIDER_ID==='antigravity'
     ?input.environment.CONCIERGE_PROVIDER_ACCOUNT:undefined)
-    ??(await import('./provider-accounts')).currentAccount('antigravity')?.label??null;
+    ??(yield import('./provider-accounts')).currentAccount('antigravity')?.label??null;
   const dispatchRunner=providerRunnerTarget('antigravity');
   const dispatchObservedAt=new Date().toISOString();
 
@@ -334,7 +337,8 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
     }
   };
 
-  const exit = await input.transport.run({
+  yield custody.drain();
+  const exit = yield input.transport.run({
     args, cwd: input.cwd,
     environment: { ...providerOwnerEnvironment(input.environment), AGY_CLI_DISABLE_AUTO_UPDATE: "true" },
     stdin: initialInput,
@@ -355,6 +359,7 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
           terminalConfirmed: false, assistantOutput: observedOutput, providerSessionId: conversationId }); }
         handle(event);
       }
+      return custody.drain();
     },
     // stderr is deliberately not copied into a user-visible error: the CLI controls its
     // contents and could include account or local machine details.
@@ -378,8 +383,8 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
       registerSteering();
     },
     onStdinReady: (write, close) => {
-      closeInput = close;
-      writeInput = write;
+      closeInput = () => custody.enqueue(close);
+      writeInput = async (...args) => { await custody.drain(); return write(...args); };
       registerSteering();
       input.onCancellationReady?.(async () => {
         if (!interruptInput) throw new Error("The Google process cannot be interrupted yet.");
@@ -445,15 +450,15 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
       const refusalAt=new Date().toISOString();
       // The error's prose may contain a duration, but only Google's fresh structured quota
       // reply can name a reset we may queue against.
-      const { scheduleProviderAccountUsageRefreshAfterCurrent } = await import("./provider-account-usage");
-      await scheduleProviderAccountUsageRefreshAfterCurrent().catch(() => {});
-      clearsAtMs = await googleAllowanceSpentUntil(input.model);
+      const { scheduleProviderAccountUsageRefreshAfterCurrent } = yield import("./provider-account-usage");
+      yield scheduleProviderAccountUsageRefreshAfterCurrent().catch(() => {});
+      clearsAtMs = yield googleAllowanceSpentUntil(input.model);
       // The refusal is the truth even if a post-refusal reading still shows a small residual
       // balance. The repair agent hears about that mismatch once per day.
       if (clearsAtMs === null) {
         try {
-          const [{ db }, { publishProviderFreeNotice }] = await Promise.all([import("./state-database"), import("./provider-free-notice")]);
-          const [{providerAccountUsage},{googleQuotaDisagreement}]=await Promise.all([
+          const [{ db }, { publishProviderFreeNotice }] = yield Promise.all([import("./state-database"), import("./provider-free-notice")]);
+          const [{providerAccountUsage},{googleQuotaDisagreement}]=yield Promise.all([
             import('./provider-account-usage'),import('./google-quota-disagreement')]);
           const notice=googleQuotaDisagreement({model:input.model??null,account:dispatchAccount,runner:dispatchRunner,
             dispatchObservedAt,refusalAt,error:failureTerminal.error??'',reading:providerAccountUsage('antigravity')});
@@ -490,4 +495,10 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
   input.onProgress?.({ type: "done", text });
   return { text, sessionUUID: conversationId, model: input.model, toolsUsed: [...toolsUsed],
     durationMs: Date.now() - startedAt, ...(turnOutcome ? { turnOutcome } : {}) };
+
+  }).call(this));
+}
+
+export async function runAntigravityTurn(input: Parameters<typeof runAntigravityTurnProducer>[0]): Promise<RunResult> {
+  return withProviderCallbackCustody(input, (held, custody) => runAntigravityTurnProducer(held, custody));
 }

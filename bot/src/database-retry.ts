@@ -1,5 +1,6 @@
 import { withRetry as withRetryCore } from "./retry-core";
 import { RETRY_POLICIES } from "./retry-policies";
+import { runLedgerSegment } from "./ledger-admission";
 
 export function isTransientDatabaseError(error: unknown): boolean {
   const code = String((error as any)?.code || "").toUpperCase();
@@ -20,7 +21,13 @@ export function createDatabaseRetry(withRetry: typeof withRetryCore = withRetryC
     if (input.shouldStop?.()) return { stopped: true };
     return withRetry({ operation: "database-write", key: "sqlite-writer", policy: RETRY_POLICIES.ledgerWrite,
       wait: input.wait,
-      run: async () => input.shouldStop?.() ? { stopped: true as const } : { stopped: false as const, value: input.operation() },
+      run: () => runLedgerSegment(() => {
+        if (input.shouldStop?.()) return { stopped: true as const };
+        const value = input.operation();
+        if (value && typeof (value as { then?: unknown }).then === "function")
+          throw new Error("Database retry operations must be synchronous ledger segments.");
+        return { stopped: false as const, value };
+      }),
       classifyError: (error) => isRetryable(error) ? "transient" : "permanent",
     });
   };

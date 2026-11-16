@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import { db } from './state';
 import { log, errorFields } from './log';
 import { recordSessionEvent } from './session-inputs';
@@ -72,13 +74,13 @@ export function scheduleSessionPurposeRepair(stateDir: string): unknown {
 /** Called once Concierge reports online; works through each deferred first pass page by page. */
 export function startDeferredStartupRepairs(shouldStop: () => boolean) {
   log('info', 'startup_repairs_deferred', { names: [...deferred.map(item => item.name), 'execution-record-prune'], delay_ms: DEFERRED_START_DELAY_MS });
-  setTimeout(() => { void runDeferred(shouldStop); }, DEFERRED_START_DELAY_MS).unref?.();
+  setTimeout(ledgerCallback(() => { void runDeferred(shouldStop); }), DEFERRED_START_DELAY_MS).unref?.();
 }
 
-async function runDeferred(shouldStop: () => boolean) {
+async function runDeferred(shouldStop: () => boolean) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   while (deferred.length) {
     const item = deferred.shift()!;
-    const outcome = await runPages(item, shouldStop);
+    const outcome = (yield runPages(item, shouldStop));
     log(outcome === 'completed' ? 'info' : 'error', 'startup_catch_up_first_pass', { name: item.name, outcome, through_key: item.throughKey });
     if (outcome === 'completed') {
       try { item.onCompleted?.(); }
@@ -86,22 +88,22 @@ async function runDeferred(shouldStop: () => boolean) {
     }
   }
   if (!shouldStop()) {
-    try { await pruneExecutionRecordsInPages(shouldStop); }
+    try { (yield pruneExecutionRecordsInPages(shouldStop)); }
     catch (error) { log('error', 'execution_record_prune_failed', errorFields(error)); }
   }
-}
+}).call(this));}
 
 // A failed page records no mark beyond the last good one, so the next start resumes from there.
-async function runPages(item: DeferredPass, shouldStop: () => boolean): Promise<'completed' | 'stopped' | 'failed'> {
+async function runPages(item: DeferredPass, shouldStop: () => boolean): Promise<'completed' | 'stopped' | 'failed'> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   for (let after = item.afterKey; after < item.throughKey;) {
     if (shouldStop()) return 'stopped';
     const through = Math.min(after + item.pageSize, item.throughKey);
     if (!runPage(item, after, through)) return 'failed';
     after = through;
-    await new Promise(resolve => setTimeout(resolve, PAUSE_BETWEEN_PAGES_MS));
+    (yield new Promise(resolve => setTimeout(resolve, PAUSE_BETWEEN_PAGES_MS)));
   }
   return 'completed';
-}
+}).call(this));}
 
 function runPage(item: DeferredPass, after: number, through: number): boolean {
   try {

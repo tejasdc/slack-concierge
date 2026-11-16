@@ -1,4 +1,6 @@
 import {recordCustodyNativeTerminal} from './codex-custody-terminal';
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import { createHash, randomUUID } from "node:crypto";
 import {nativeInputClientMessageId} from './native-result-identity';
 import { clearRetryBreaker, recordRetryFailure } from './retry-breaker';
@@ -364,7 +366,7 @@ function moveAutomaticFirstTurnOffRefusingModel(input:TurnExecutionInput,dispatc
   })();
 }
 
-export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnExecutionOutcome> {
+export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnExecutionOutcome> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const turnStart = Date.now();
   const dispatchAttempt = input.dispatchAttempt
     ?? getRunningTurnDispatchAttempt(input.turnId, input.ownerInstanceId)
@@ -393,19 +395,19 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   const initialAgentSessionTitle = input.presentation === "native" ? "" : slackAgentSessionTitle(
     getSlackRootRequestText(input.channelId, input.threadTs) ?? input.text,
   );
-  const setAgentSessionStatus = async (status: "active" | "processing" | "suspended") => {
+  const setAgentSessionStatus = async (status: "active" | "processing" | "suspended") => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if (input.presentation === "native" || !useAgentExperience || !input.services.setAgentSessionStatus) {
       return { outcome: "delivered", error: null } satisfies AgentSessionStatusProjectionResult;
     }
     try {
-      const outcome = await input.services.setAgentSessionStatus({
+      const outcome = (yield input.services.setAgentSessionStatus({
         client: input.client,
         channel: input.channelId,
         threadTs: input.threadTs,
         status,
         initiatorUserId: input.user,
         initialTitle: initialAgentSessionTitle,
-      });
+      }));
       const normalizedOutcome = outcome || "delivered";
       const projectionError = normalizedOutcome === "permanent_failure"
         ? getSlackAgentSessionStatusProjection(input.channelId, input.threadTs)?.projection_error
@@ -425,20 +427,20 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         error: error instanceof Error ? error.message : String(error),
       } satisfies AgentSessionStatusProjectionResult;
     }
-  };
+  }).call(this));};
 
   const reportTerminalAgentStatusFailure = async (
     result: AgentSessionStatusProjectionResult,
-  ): Promise<ProjectionOutcome> => {
+  ): Promise<ProjectionOutcome> => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if (input.presentation === "native") return "delivered";
     if (result.outcome !== "permanent_failure" || !result.error) return result.outcome;
     try {
-      const noticeOutcome = await input.services.projectTurnStatus({
+      const noticeOutcome = (yield input.services.projectTurnStatus({
         client: input.client,
         turnId: input.turnId,
         text: agentSessionStatusProjectionFailureNotice(input.user, input.turnId, result.error),
         user: input.user,
-      });
+      }));
       if (noticeOutcome !== "delivered") {
         log(noticeOutcome === "stopped" ? "warn" : "error", "agent_session_status_failure_notice_incomplete", {
           turn_id: input.turnId,
@@ -455,7 +457,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       });
       return "permanent_failure";
     }
-  };
+  }).call(this));};
 
   let runningClaudeAccount:string|null=null;
   let runningClaudeModel:string|null=null;
@@ -468,7 +470,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     let preparedTurn: PreparedProviderTurn;
     if (input.presentation === "native") {
       if (!input.inputId) throw new Error("Native execution requires its accepted input identity.");
-      attachmentRoot = await createTurnAttachmentRoot(input.turnId);
+      attachmentRoot = (yield createTurnAttachmentRoot(input.turnId));
       const replayText = input.prompt;
       setTurnReplayInput(input.turnId, replayText, input.unreplayableAttachmentCount ?? 0);
       const context = listInterruptedInputContext(input.turnId);
@@ -482,7 +484,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         systemPrompt: [input.baseSystemPrompt,input.exactProviderInput?continuityContext:null].filter(Boolean).join("\n\n")||undefined,
       };
     } else {
-      if (!useAgentExperience && input.turnKind !== "deployment_verification") await addWorkingReaction(input);
+      if (!useAgentExperience && input.turnKind !== "deployment_verification") (yield addWorkingReaction(input));
       if (useAgentExperience) {
         if (!input.recipientTeamId
           || !input.services.startAgentProgress
@@ -532,19 +534,19 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
             phase,
           }),
         });
-        const initialAgentSessionStatus = await setAgentSessionStatus("active");
+        const initialAgentSessionStatus = (yield setAgentSessionStatus("active"));
         if (initialAgentSessionStatus.outcome !== "delivered") {
           throw new Error(initialAgentSessionStatus.error
             || `Initial Agent-session active projection ${initialAgentSessionStatus.outcome}.`);
         }
-        statusMessageTs = await progressController.start();
-        const processingAgentSessionStatus = await setAgentSessionStatus("processing");
+        statusMessageTs = (yield progressController.start());
+        const processingAgentSessionStatus = (yield setAgentSessionStatus("processing"));
         if (processingAgentSessionStatus.outcome !== "delivered") {
           throw new Error(processingAgentSessionStatus.error
             || `Agent-session processing projection ${processingAgentSessionStatus.outcome}.`);
         }
       } else {
-        const initialStatusOutcome = await input.services.projectTurnStatus({
+        const initialStatusOutcome = (yield input.services.projectTurnStatus({
           client: input.client,
           turnId: input.turnId,
           text: formatTurnStatusMessage({
@@ -554,7 +556,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
             toolCount: 0,
           }),
           user: input.user,
-        });
+        }));
         if (initialStatusOutcome !== "delivered") {
           throw new Error(`Initial turn status projection ${initialStatusOutcome.replaceAll("_", " ")}.`);
         }
@@ -564,13 +566,13 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         statusController = new TurnStatusController({
           startedAt: turnStart,
           intervalMs: input.statusIntervalMs,
-          updateHeartbeat: async ({ text }) => {
-            await slackCall(input.client, "chat.update", {
+          updateHeartbeat: async ({ text }) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+            (yield slackCall(input.client, "chat.update", {
               channel: input.channelId,
               ts: statusMessageTs,
               text,
-            }, { channel: input.channelId, user: input.user });
-          },
+            }, { channel: input.channelId, user: input.user }));
+          }).call(this));},
           projectTerminal: ({ text }) => input.services.projectTurnStatus({
             client: input.client,
             turnId: input.turnId,
@@ -595,15 +597,15 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       artifactBatchCreated = true;
       prepareArtifactDirectory(input.cwd, input.turnId, artifactOwnershipToken);
 
-      const previousThreadTldrs = await hydrateThreadOwnership(input, statusMessageTs);
-      attachmentRoot = await createTurnAttachmentRoot(input.turnId);
-      preparedTurn = await prepareProviderTurn(input, attachmentRoot, artifactDirectory, previousThreadTldrs);
+      const previousThreadTldrs = (yield hydrateThreadOwnership(input, statusMessageTs));
+      attachmentRoot = (yield createTurnAttachmentRoot(input.turnId));
+      preparedTurn = (yield prepareProviderTurn(input, attachmentRoot, artifactDirectory, previousThreadTldrs));
       attachmentBundle = preparedTurn.attachmentBundle;
     }
     // An adopted run's process is already working, so a Stop requested before it was taken back
     // must be sent to it (onCancellationReady below does), not answered here without it.
     if (!input.adopted && turnStopWasRequested(input.turnId)) {
-      input.cancellationController?.register(async () => {});
+      input.cancellationController?.register(async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {}).call(this));});
       throw new ProviderTurnCancelledError();
     }
     const recordProviderStarted = () => {
@@ -637,8 +639,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       if(!claudeChoice)throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,
         message:`No cached Claude account choice is available for runner ${remoteClaudeRunner}; the turn remains held until owner account readings are available.`});
       let validation:{available:boolean;resolution:string}|null=null;
-      try{validation=await runnerMachineCall(remoteClaudeRunner,'accounts.validate',
-        {provider:'claude-code',account:claudeChoice.account});}
+      try{validation=(yield runnerMachineCall(remoteClaudeRunner,'accounts.validate',
+        {provider:'claude-code',account:claudeChoice.account}));}
       catch(error){throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,
         message:`Runner ${remoteClaudeRunner} could not validate Claude account ${claudeChoice.account}: ${error instanceof Error?error.message:String(error)}`});}
       if(!validation?.available)throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,
@@ -651,7 +653,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     const savedGoogleAccount=sessionMetadata(input.session).providerAccount;
     let remoteGoogleIdentity:{id:string;label:string}|null=null;
     if(remoteGoogleRunner&&!input.adopted){
-      try{remoteGoogleIdentity=await runnerMachineCall<{id:string;label:string}|null>(remoteGoogleRunner,'accounts.identity',{provider:'antigravity'},45_000);}
+      try{remoteGoogleIdentity=(yield runnerMachineCall<{id:string;label:string}|null>(remoteGoogleRunner,'accounts.identity',{provider:'antigravity'},45_000));}
       catch(error){
         throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,accountReadingWait:true,
           message:`Runner ${remoteGoogleRunner} could not read its Google account before this turn started: ${error instanceof Error?error.message:String(error)}`});
@@ -674,7 +676,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         ?{label:metadata.providerAccount}
         :runner?null:currentAccount('codex');
       if(runner&&metadata.providerAccount===undefined&&!input.adopted){
-        try{identity=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider:'codex'});}
+        try{identity=(yield runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider:'codex'}));}
         catch(error){
           throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,accountReadingWait:true,
             message:`Runner ${runner} could not read its Codex account before this turn started: ${error instanceof Error?error.message:String(error)}`});
@@ -699,7 +701,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     }
     if (input.beforeProviderAdmission) {
       const prerequisite = input.beforeProviderAdmission();
-      if (prerequisite) await prerequisite;
+      if (prerequisite) (yield prerequisite);
     } else if (!markTurnProviderAdmissionIntended(input.turnId,input.ownerInstanceId,dispatchAttempt)) {
       throw new Error("Provider admission intent could not be persisted for the current turn attempt.");
     }
@@ -709,7 +711,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       setTurnReplayInput(input.turnId,providerPrompt,input.unreplayableAttachmentCount??0);
     // An adopted run's account was recorded when it started.
     let accountRecorded=!!input.adopted;
-    const result = await input.provider.run({
+    const result = (yield input.provider.run({
       // Claude Code snapshots system instructions on the first turn. Put the changing
       // allowance reading in this turn's message so each resumed run receives it.
       prompt: providerPrompt,
@@ -719,7 +721,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       sessionUUID: input.session.agent_session_uuid || (input.session.provider_id === 'chatgpt' ? sessionMetadata(input.session).nativeBinding?.sessionId : null) || null,
       systemPrompt: preparedTurn.systemPrompt,
       model: input.providerId === "claude-code" ? claudeLaunchModel??undefined : input.model,
-      onPreferredModel: (model) => recordTurnPreferredModel(input.turnId, input.ownerInstanceId, model),
+      onPreferredModel: ledgerCallback((model) => recordTurnPreferredModel(input.turnId, input.ownerInstanceId, model)),
       reasoning_effort: input.reasoningEffort,
       clientUserMessageId: nativeInputClientMessageId(input.turnId,dispatchAttempt),
       environment: {
@@ -744,29 +746,29 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         ...agentRunEnvironment({turnId:input.turnId,sessionId:input.session.id}),
       },
       ...(input.boundAccount?{accountLabel:input.boundAccount.account}:claudeChoice?{accountLabel:claudeChoice.account}:{}),
-      onProviderThreadStarted: (providerThreadId) => recordProviderSession(input, providerThreadId),
-      onProviderTurnStarted: (providerTurnId) => {
+      onProviderThreadStarted: ledgerCallback((providerThreadId) => recordProviderSession(input, providerThreadId)),
+      onProviderTurnStarted: ledgerCallback((providerTurnId) => {
         recordTurnProviderTurnId(input.turnId, providerTurnId);
         recordSessionEvent({eventId:`provider-turn-attempt:${input.turnId}:${dispatchAttempt}`,
           sessionId:input.session.id,inputId:input.inputId,turnId:input.turnId,kind:'provider_turn_attempt',
           payload:{provider:input.providerId,providerTurnId,dispatchAttempt}});
-      },
-      onResumeUnanswered: (wait) => noticeCodexResumeWait(db, { sessionId: input.session.id, turnId: input.turnId }, wait),
-      onInputAcknowledged: () => acknowledgeTurnProviderInput(
+      }),
+      onResumeUnanswered: ledgerCallback((wait) => noticeCodexResumeWait(db, { sessionId: input.session.id, turnId: input.turnId }, wait)),
+      onInputAcknowledged: ledgerCallback(() => acknowledgeTurnProviderInput(
         input.turnId, input.ownerInstanceId, dispatchAttempt, preparedTurn.contextTurnIds,
-      ),
-      onProviderMessage: (message) => {
+      )),
+      onProviderMessage: ledgerCallback((message) => {
         // The provider's own notice (Claude's usage-limit row) is not the agent working on the input.
         if(message.role==='assistant' && !message.providerNotice && message.content.trim())observedAssistantOutput=true;
         try { projectSessionProviderMessage(input.turnId,message); }
         catch(error){log("error","session_message_projection_failed",{turn_id:input.turnId,...errorFields(error)});}
-      },
-      onClaudeCall: (call) => {
+      }),
+      onClaudeCall: ledgerCallback((call) => {
         if(!runningClaudeAccount)return;
         try {updateSessionMetadata(input.session.id,{claudeCacheCall:{...call,account:runningClaudeAccount}});}
         catch(error){log('warn','claude_cache_call_record_failed',{turn_id:input.turnId,...errorFields(error)});}
-      },
-      onProgress: (event) => {
+      }),
+      onProgress: ledgerCallback((event) => {
         if (event.type === 'mac_surface_activity' && input.presentation === 'native'
           && (process.platform === 'darwin' || event.activity.remoteMac)) {
           try {
@@ -824,7 +826,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
             log("warn", "native_progress_observer_failed", { turn_id: input.turnId, ...errorFields(error) });
           }
         }
-      },
+      }),
       onSteeringReady: (sender) => input.steeringController.registerSender(sender, attachmentRoot!),
       onCancellationReady: (cancel) => {
         input.cancellationController?.register(cancel);
@@ -835,23 +837,23 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
           else void input.cancellationController?.request();
         }
       },
-      onProviderTerminal: () => {
+      onProviderTerminal: ledgerCallback(() => {
         if(input.providerId==='codex')recordCustodyNativeTerminal(input.turnId,input.ownerInstanceId,dispatchAttempt);
         try { flushPendingProviderProgressEvents(); }
         catch(error){log('error','session_progress_terminal_flush_failed',{turn_id:input.turnId,...errorFields(error)});}
         input.closeSteering(new Error("The provider turn completed."));
-      },
-      onBackgroundWait: (wait) => recordTurnBackgroundWait(input.turnId, wait),
-      onBackgroundReportMissing: (task) => noticeMissingBackgroundReport(input.turnId, task),
+      }),
+      onBackgroundWait: ledgerCallback((wait) => recordTurnBackgroundWait(input.turnId, wait)),
+      onBackgroundReportMissing: ledgerCallback((task) => noticeMissingBackgroundReport(input.turnId, task)),
       onBackgroundReleaseReady: (release) => registerBackgroundRelease(input.turnId, release),
-      onProviderRetry: (retry) => {
+      onProviderRetry: ledgerCallback((retry) => {
         recordTurnProviderRetry(input.turnId, retry);
         // A minute of the provider's own retries is an outage worth telling him about.
         if (retry && Date.now() - retry.since >= OUTAGE_CONFIRM_MS)
           void offerOutageChoices({ turnId: input.turnId, status: retry.status }, recordSessionEvent);
-      },
+      }),
       onRetryRestartReady: (restart) => registerTurnRetryRestart(input.turnId, restart),
-    });
+    }));
     input.closeSteering();
     try { flushPendingProviderProgressEvents(); }
     catch(error){log('error','session_progress_terminal_flush_failed',{turn_id:input.turnId,...errorFields(error)});}
@@ -909,12 +911,12 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       throw new Error("Completed provider output could not claim durable response delivery.");
     }
     deliveryStarted = true;
-    await progressController?.finish("complete", result.durationMs);
+    (yield progressController?.finish("complete", result.durationMs));
 
     if (input.presentation === "native") {
-      const deliveryOutcome = await input.services.deliverResult({
+      const deliveryOutcome = (yield input.services.deliverResult({
         ...result, text: rawAgentText, turnId: input.turnId, sessionId: input.session.id, inputId: input.inputId,
-      });
+      }));
       if (deliveryOutcome === "stopped") {
         relinquishTurnDelivery(input.turnId, input.ownerInstanceId);
         return { status: "delivery_stopped", turnId: input.turnId };
@@ -934,14 +936,14 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       return { status: "delivered", turnId: input.turnId };
     }
 
-    const deliveryOutcome = await input.services.deliverOutcome({
+    const deliveryOutcome = (yield input.services.deliverOutcome({
       turnId: input.turnId,
       client: input.client,
       channel: input.channelId,
       threadTs: input.threadTs,
       text: outboundText,
       user: input.user,
-    });
+    }));
     if (deliveryOutcome === "stopped") {
       relinquishTurnDelivery(input.turnId, input.ownerInstanceId);
       log("info", "turn_delivery_relinquished", {
@@ -966,7 +968,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         turn_id: input.turnId,
         instance_id: input.ownerInstanceId,
       });
-      const agentSessionStatus = await setAgentSessionStatus("suspended");
+      const agentSessionStatus = (yield setAgentSessionStatus("suspended"));
       const actionText = agentSessionStatus.error
         ? appendAgentSessionStatusProjectionFailure(
             actionRequiredText(input.user, input.turnId, parkedStatusDetail),
@@ -978,13 +980,13 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       let terminalOutcome: "delivered" | "stopped" | "permanent_failure" = "delivered";
       try {
         terminalOutcome = statusController
-          ? await statusController.fail(parkedStatusDetail)
-          : await input.services.projectTurnStatus({
+          ? (yield statusController.fail(parkedStatusDetail))
+          : (yield input.services.projectTurnStatus({
               client: input.client,
               turnId: input.turnId,
               text: actionText,
               user: input.user,
-            });
+            }));
       } catch (projectionError) {
         parkTurnStatusProjectionAfterFailure(
           input.turnId,
@@ -1009,7 +1011,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     }
 
     responseDeliveryConfirmed = true;
-    await statusController?.stop();
+    (yield statusController?.stop());
     const completedThreadStatus = markTurnResponseDelivered(input.turnId);
     const completionStatusText = formatTurnStatusMessage({
       state: "done",
@@ -1021,12 +1023,12 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     let terminalOutcome: "delivered" | "stopped" | "permanent_failure" = "delivered";
     if (statusController) {
       try {
-        terminalOutcome = await statusController.complete({
+        terminalOutcome = (yield statusController.complete({
           elapsedMs: Date.now() - turnStart,
           toolCount: result.toolsUsed.length,
           provider: input.providerLabel,
           tldr: responseTldr,
-        });
+        }));
       } catch (projectionError) {
         parkTurnStatusProjectionAfterFailure(
           input.turnId,
@@ -1063,22 +1065,22 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     try {
       summaryOutcome = useAgentExperience
         ? input.services.projectRootSummary && rootSummaryText
-          ? await input.services.projectRootSummary({
+          ? (yield input.services.projectRootSummary({
               client: input.client,
               channel: input.channelId,
               threadTs: input.threadTs,
               turnId: input.turnId,
               text: rootSummaryText,
-            })
+            }))
           : "delivered"
-        : await input.services.projectThreadSummary({
+        : (yield input.services.projectThreadSummary({
             client: input.client,
             channel: input.channelId,
             threadTs: input.threadTs,
             turnId: input.turnId,
             text: summaryStatusText,
             user: input.user,
-          });
+          }));
     } catch (projectionError) {
       caughtSummaryProjectionError = projectionError instanceof Error
         ? projectionError.message
@@ -1119,7 +1121,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         || caughtSummaryProjectionError
         || "Root-summary projection failed permanently."
       : null;
-    const agentSessionStatus = await setAgentSessionStatus("active");
+    const agentSessionStatus = (yield setAgentSessionStatus("active"));
     if (agentSessionStatus.outcome === "stopped") {
       relinquishTurnDelivery(input.turnId, input.ownerInstanceId);
       log("info", "agent_session_status_projection_relinquished", {
@@ -1136,12 +1138,12 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       : null;
     if (failureNotice) {
       try {
-        const noticeOutcome = await input.services.projectTurnStatus({
+        const noticeOutcome = (yield input.services.projectTurnStatus({
           client: input.client,
           turnId: input.turnId,
           text: failureNotice,
           user: input.user,
-        });
+        }));
         if (noticeOutcome === "stopped") {
           relinquishTurnDelivery(input.turnId, input.ownerInstanceId);
           return { status: "delivery_stopped", turnId: input.turnId };
@@ -1175,7 +1177,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       reasoning_effort: input.reasoningEffort || null,
       status: "idle",
     });
-    await settleTurnArtifacts(input);
+    (yield settleTurnArtifacts(input));
     return { status: "delivered", turnId: input.turnId };
   } catch (error) {
     input.closeSteering(error instanceof Error ? error : new Error(String(error)));
@@ -1190,7 +1192,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       return { status: "delivered", turnId: input.turnId };
     }
     if (responseDeliveryConfirmed) {
-      await statusController?.stop();
+      (yield statusController?.stop());
       relinquishTurnDelivery(input.turnId, input.ownerInstanceId);
       log("error", "post_response_completion_deferred", {
         ...errorFields(error),
@@ -1208,14 +1210,14 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         log("info", "banked_turn_yielded_before_admission", { turn_id: input.turnId });
         return { status: "cancelled", turnId: input.turnId };
       }
-      await progressController?.finish("cancelled");
-      const terminalProjectionOutcome = await reportTerminalAgentStatusFailure(
-        await setAgentSessionStatus("active"),
-      );
+      (yield progressController?.finish("cancelled"));
+      const terminalProjectionOutcome = (yield reportTerminalAgentStatusFailure(
+        (yield setAgentSessionStatus("active")),
+      ));
       if (terminalProjectionOutcome === "stopped") {
         return { status: "delivery_stopped", turnId: input.turnId };
       }
-      await statusController?.stop();
+      (yield statusController?.stop());
       if (artifactBatchCreated) abandonFailedArtifactBatch(input, artifactDirectory, error);
       if (!cancelRunningTurnAndReleaseSession(input.turnId, input.ownerInstanceId, error.message)) {
         throw new Error("Cancelled turn could not atomically release its session lock.");
@@ -1263,15 +1265,15 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     if (preserveDispatchFailure && input.presentation === 'native'
       && error instanceof OwnerDrainBeforeProviderAdmissionError
       && requeueOrphanedPreAdmissionTurn(input.turnId,input.ownerInstanceId)) {
-      await progressController?.pauseForRetry();
-      await statusController?.stop();
+      (yield progressController?.pauseForRetry());
+      (yield statusController?.stop());
       log('info','codex_readiness_requeued_on_owner_drain',{turn_id:input.turnId,dispatch_attempt:dispatchAttempt});
       return {status:'retry_queued',turnId:input.turnId};
     }
     if (preserveDispatchFailure && input.presentation === 'native'
       && requeueWithdrawnRunnerTurn(input.turnId,input.ownerInstanceId,dispatchAttempt)) {
-      await progressController?.pauseForRetry();
-      await statusController?.stop();
+      (yield progressController?.pauseForRetry());
+      (yield statusController?.stop());
       log('info','runner_turn_requeued_unsent',{turn_id:input.turnId,dispatch_attempt:dispatchAttempt});
       return {status:'retry_queued',turnId:input.turnId};
     }
@@ -1296,8 +1298,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // refusal that actually happened.
       if(((structuredFailure?.modelAtCapacity&&structuredFailure.terminalConfirmed)||invalidGoogleModel)&&replaySafe&&
         moveAutomaticFirstTurnOffRefusingModel(input,dispatchAttempt,message)) {
-        await progressController?.pauseForRetry();
-        await statusController?.stop();
+        (yield progressController?.pauseForRetry());
+        (yield statusController?.stop());
         log('warn','automatic_model_capacity_rerouted',{turn_id:input.turnId,session_id:input.session.id,
           provider:input.providerId,model:capacityModel});
         return {status:'retry_queued',turnId:input.turnId};
@@ -1337,8 +1339,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // 4 AM afterparties request was placed on Google with 65 hours left on its quota and ended.
       if((heldUntilMs!==null||googleUsageWait)&&
         moveAutomaticFirstTurnOffRefusingModel(input,dispatchAttempt,message,'usage_refusal')) {
-        await progressController?.pauseForRetry();
-        await statusController?.stop();
+        (yield progressController?.pauseForRetry());
+        (yield statusController?.stop());
         log('warn','automatic_usage_refusal_rerouted',{turn_id:input.turnId,session_id:input.session.id,
           provider:input.providerId,model:capacityModel});
         return {status:'retry_queued',turnId:input.turnId};
@@ -1403,9 +1405,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         if (decision.action === 'retry') policyRetryAtMs = decision.atMs;
       }
       const ambiguous = !replaySafe;
-      if (retryable) await progressController?.pauseForRetry();
-      else await progressController?.finish("error");
-      await statusController?.stop();
+      if (retryable) (yield progressController?.pauseForRetry());
+      else (yield progressController?.finish("error"));
+      (yield statusController?.stop());
       if(input.presentation==='native'&&!retryable&&!ambiguous) {
         if(!failRunningTurnAndReleaseSession(input.turnId,input.ownerInstanceId,message))throw new Error('Native provider refusal could not release its exact execution.');
         log('error','native_provider_refused',{...errorFields(error),turn_id:input.turnId,session_id:input.session.id,dispatch_attempt:dispatchAttempt});
@@ -1446,9 +1448,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       preserveWorkingReaction = retryable;
       if (input.presentation !== "native") {
         if (!useAgentExperience) {
-          await input.services.scheduleTurnStatusProjection?.(input.client, input.turnId, input.user);
+          (yield input.services.scheduleTurnStatusProjection?.(input.client, input.turnId, input.user));
         } else if (!retryable) {
-          const agentSessionStatus = await setAgentSessionStatus("suspended");
+          const agentSessionStatus = (yield setAgentSessionStatus("suspended"));
           const providerFailureText = ambiguous
             ? actionRequiredText(input.user, input.turnId, message)
             : `${actionRequiredText(input.user, input.turnId, message)}\n${parkedDispatchRemediationText(input.providerId, message)}`;
@@ -1461,12 +1463,12 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
               )
             : providerFailureText;
           try {
-            await input.services.projectTurnStatus({
+            (yield input.services.projectTurnStatus({
               client: input.client,
               turnId: input.turnId,
               text: actionText,
               user: input.user,
-            });
+            }));
           } catch (projectionError) {
             parkTurnStatusProjectionAfterFailure(
               input.turnId,
@@ -1491,12 +1493,12 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         // `provider-reset-policy.ts` says nothing else can move it. Tejas authorized this on
         // 2026-09-23: "You don't have to wait for me to reset the usage."
         void useResetIfWorkStopped(hold, recordSessionEvent,
-          (account,idempotencyKey,beforeConsume)=>useCodexResetCredit(account,idempotencyKey,true,beforeConsume), async (accountId) => {
+          (account,idempotencyKey,beforeConsume)=>useCodexResetCredit(account,idempotencyKey,true,beforeConsume), async (accountId) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
           // Count unbound releases before the asynchronous Accounts refresh.
           const released=releaseCodexUnboundUsageHeldWork(accountId);
           void scheduleProviderAccountUsageRefresh().catch(()=>{});
           return released;
-        }).catch(error => log("error", "provider_reset_auto_error", errorFields(error)));
+        }).call(this));}).catch(error => log("error", "provider_reset_auto_error", errorFields(error)));
       }
       if (authWait && (input.providerId === 'codex' || input.providerId === 'claude-code' || input.providerId === 'antigravity')) noticeAuthHold({provider: input.providerId,
         model: input.model ?? null, turnId: input.turnId,
@@ -1519,10 +1521,10 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     }
     const errorStatusText = `Status: error - ${String(error).slice(0, 1200)}`;
     const terminalStatusText = formatTurnStatusMessage({ state: "error", detail: errorStatusText });
-    await progressController?.finish("error");
+    (yield progressController?.finish("error"));
     let terminalOutcome: "delivered" | "stopped" | "permanent_failure" = "delivered";
     if (input.presentation !== "native") {
-      const agentSessionStatus = await setAgentSessionStatus("suspended");
+      const agentSessionStatus = (yield setAgentSessionStatus("suspended"));
       const actionText = agentSessionStatus.error
         ? appendAgentSessionStatusProjectionFailure(
             actionRequiredText(input.user, input.turnId, errorStatusText),
@@ -1533,20 +1535,20 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         : actionRequiredText(input.user, input.turnId, errorStatusText);
       try {
         terminalOutcome = useAgentExperience
-          ? await input.services.projectTurnStatus({
+          ? (yield input.services.projectTurnStatus({
               client: input.client,
               turnId: input.turnId,
               text: actionText,
               user: input.user,
-            })
+            }))
           : statusController
-          ? await statusController.fail(errorStatusText)
-          : await input.services.projectTurnStatus({
+          ? (yield statusController.fail(errorStatusText))
+          : (yield input.services.projectTurnStatus({
               client: input.client,
               turnId: input.turnId,
               text: terminalStatusText,
               user: input.user,
-            });
+            }));
       } catch (projectionError) {
         log("error", "turn_error_status_projection_failed", {
           ...errorFields(projectionError),
@@ -1631,17 +1633,17 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     input.closeSteering();
     recordTurnProviderRetry(input.turnId, null);
     registerTurnRetryRestart(input.turnId, null);
-    await statusController?.stop();
-    if (input.presentation !== "native" && !useAgentExperience && input.turnKind !== "deployment_verification" && !preserveWorkingReaction) void input.services.scheduleWorkingReactionCleanup?.(input.client, input.turnId).catch((error) => {
+    (yield statusController?.stop());
+    if (input.presentation !== "native" && !useAgentExperience && input.turnKind !== "deployment_verification" && !preserveWorkingReaction) void input.services.scheduleWorkingReactionCleanup?.(input.client, input.turnId).catch(ledgerCallback((error) => {
       log("error", "turn_reaction_cleanup_worker_failed", {
         ...errorFields(error),
         turn_id: input.turnId,
         channel: input.channelId,
       });
-    });
+    }));
     try {
-      await input.steeringController.waitForPreparation();
-      await cleanupAttachmentBundle({ dir: attachmentRoot, files: attachmentBundle.files });
+      (yield input.steeringController.waitForPreparation());
+      (yield cleanupAttachmentBundle({ dir: attachmentRoot, files: attachmentBundle.files }));
     } catch (error) {
       log("warn", "slack_attachment_temp_cleanup_failed", {
         dir: attachmentRoot,
@@ -1658,7 +1660,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       });
     }
   }
-}
+}).call(this));}
 
 function abandonFailedArtifactBatch(
   input: TurnExecutionInput,
@@ -1712,14 +1714,14 @@ function parkedDispatchRemediationText(providerId: string, failureDetail: string
   ].join(" ");
 }
 
-async function hydrateThreadOwnership(input: SlackTurnExecutionInput, statusMessageTs: string) {
+async function hydrateThreadOwnership(input: SlackTurnExecutionInput, statusMessageTs: string) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   try {
-    const associatedTurns = await input.services.hydrateLegacyThreadOwnership({
+    const associatedTurns = (yield input.services.hydrateLegacyThreadOwnership({
       client: input.client,
       channel: input.channelId,
       threadTs: input.threadTs,
       user: input.user,
-    });
+    }));
     if (associatedTurns > 0) {
       log("info", "legacy_slack_thread_ownership_hydrated", {
         channel: input.channelId,
@@ -1747,15 +1749,15 @@ async function hydrateThreadOwnership(input: SlackTurnExecutionInput, statusMess
   return input.projectionMode === "agent"
     ? priorAgentThreadTldrs(threadStatus, responses)
     : priorSlackThreadTldrs(threadStatus, responses);
-}
+}).call(this));}
 
 async function prepareProviderTurn(
   input: SlackTurnExecutionInput,
   attachmentRoot: string,
   artifactDirectory: string,
   previousThreadTldrs: string[],
-) {
-  const prepared = await prepareProviderInput({
+) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  const prepared = (yield prepareProviderInput({
     savedReplayText: getTurnReplayInput(input.turnId),
     prompt: input.prompt,
     text: input.text,
@@ -1768,7 +1770,7 @@ async function prepareProviderTurn(
     client: input.client,
     hydrateSlackLinks: input.hydrateSlackLinks,
     attachmentRoot,
-  });
+  }));
   try {
     setTurnReplayInput(
       input.turnId,
@@ -1793,10 +1795,10 @@ async function prepareProviderTurn(
       ].filter(Boolean).join("\n\n") || undefined,
     };
   } catch (error) {
-    await cleanupAttachmentBundle(prepared.attachmentBundle);
+    (yield cleanupAttachmentBundle(prepared.attachmentBundle));
     throw error;
   }
-}
+}).call(this));}
 
 function projectAgentsOwnResponseContract(channel: ChannelRow) {
   const projectRoot = channel.code_path || channel.vault_path;
@@ -1812,15 +1814,15 @@ function projectAgentsOwnResponseContract(channel: ChannelRow) {
   }
 }
 
-async function addWorkingReaction(input: SlackTurnExecutionInput) {
+async function addWorkingReaction(input: SlackTurnExecutionInput) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   try {
-    await slackCall(input.client, "reactions.add", {
+    (yield slackCall(input.client, "reactions.add", {
       channel: input.channelId,
       timestamp: input.userMsgTs,
       name: "hourglass_flowing_sand",
-    }, { channel: input.channelId, user: input.user });
+    }, { channel: input.channelId, user: input.user }));
   } catch {}
-}
+}).call(this));}
 
 function recordProviderSession(
   input: TurnExecutionInput,
@@ -1832,14 +1834,14 @@ function recordProviderSession(
   }
   upsertSession(input.channelId, input.sessionThreadTs, input.providerId, sessionUUID, { status: "running" });
   if (input.providerId === "codex" && sessionUUID) {
-    void input.services.providerSessionBound?.(sessionUUID).catch((error) => {
+    void input.services.providerSessionBound?.(sessionUUID).catch(ledgerCallback((error) => {
       log("warn", "codex_remote_session_subscription_failed", {
         ...errorFields(error),
         provider_thread_uuid: sessionUUID,
         channel: input.channelId,
         thread_ts: input.sessionThreadTs,
       });
-    });
+    }));
   }
   if (input.sessionMode !== "single-persistent" || input.channel.default_session_uuid || !sessionUUID) return;
   const boundUuid = bindChannelDefaultSessionUuid(input.channelId, sessionUUID);
@@ -1852,20 +1854,20 @@ function recordProviderSession(
   });
 }
 
-async function settleTurnArtifacts(input: SlackTurnExecutionInput) {
+async function settleTurnArtifacts(input: SlackTurnExecutionInput) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const artifactDeliveries = listTurnArtifactDeliveries(input.turnId);
   for (const artifact of artifactDeliveries) {
-    const outcome = await scheduleTurnArtifactDelivery(
+    const outcome = (yield scheduleTurnArtifactDelivery(
       input.client,
       artifact.artifact_id,
       input.ownerInstanceId,
       input.user,
       {
-        projectFailure: async (turnId) => {
-          await input.services.scheduleTurnStatusProjection?.(input.client, turnId, input.user);
-        },
+        projectFailure: async (turnId) => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+          (yield input.services.scheduleTurnStatusProjection?.(input.client, turnId, input.user));
+        }).call(this));},
       },
-    );
+    ));
     log(outcome === "delivered" ? "info" : "warn", "artifact_delivery_settled", {
       turn_id: input.turnId,
       artifact_id: artifact.artifact_id,
@@ -1873,7 +1875,7 @@ async function settleTurnArtifacts(input: SlackTurnExecutionInput) {
       outcome,
     });
   }
-}
+}).call(this));}
 
 function logPreparedAttachments(
   input: TurnExecutionInput,

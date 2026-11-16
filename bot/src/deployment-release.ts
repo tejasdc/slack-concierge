@@ -1,14 +1,19 @@
 import { createHash, randomUUID } from "node:crypto";
 import { privateDatabaseCommand } from './private-database-command';
+import {runPrivatePresentationCheck} from './private-presentation-check';
 import {
   chmodSync,
+  closeSync,
   copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   readlinkSync,
+  readSync,
+  rmdirSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -20,11 +25,14 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import BUILT_IN_DECLARATION from "./deployment-artifact-files.json";
 import {assertHistoryCacheActivation,HISTORY_CACHE_CAPABILITY_PATH,HISTORY_CACHE_CONTROL_CAPABILITY_PATH} from "./provider-history-cache-compatibility";
 import {assertCustodyReaderActivation,CUSTODY_APPLICATION_CAPABILITY_PATH,CUSTODY_CONTROL_CAPABILITY_PATH,type CustodyApplicationProvenance} from './codex-custody-compatibility';
+import {authorityCapability,captureManagedLaunches,commandCapability,launchAuthorityReferences,saveLaunchBootstrap,semanticCommandPath,selectedLedgerProcesses,RELEASE_LEDGER_HELPERS,withLaunchSelection} from './deployment-launch-authority';
+import {isLiveLedgerPath} from './ledger-access-policy';
+import RELEASE_CHECK_POLICY from '../scripts/release-check-policy.json';
 
-// Normal preparation took about 47 seconds; the same check passed in 52 seconds under
-// load after a 90-second deploy timeout. Three minutes leaves room for disk contention
-// while retaining a finite guard against a stuck candidate.
-export const CANDIDATE_PRESENTATION_TIMEOUT_SECONDS = 180;
+// The candidate supervises its complete check and descendant cleanup within the same
+// maintained release budget. GNU timeout is the independent outer kill boundary.
+export const CANDIDATE_PRESENTATION_TIMEOUT_SECONDS = RELEASE_CHECK_POLICY.deadlineMs/1000;
+export const CANDIDATE_PRESENTATION_CLEANUP_SECONDS = RELEASE_CHECK_POLICY.cleanupMs/1000;
 
 export function failedCandidateCheck(result: {
   exitCode: number | null;
@@ -129,6 +137,7 @@ interface SpawnResult {
 
 export interface ReleaseServices {
   spawn(command: string[], options?: { cwd?: string; stdin?: Uint8Array }): SpawnResult;
+  presentation?(command:string[],cwd:string,environment:NodeJS.ProcessEnv):Promise<SpawnResult>;
   build(entrypoint: string, outputFile: string, target?: "bun" | "node"): Promise<void>;
 }
 
@@ -199,6 +208,7 @@ function runtimeFilesFor(declaration: ArtifactDeclaration) {
 
 // The stable launcher runs these by name; a release without them could not deploy or repair.
 const LAUNCHER_ENTRYPOINTS = ["control/deploy.sh", "control/deployment-repair.js", "control/release-manager.js"];
+const RUNTIME_DISPATCH_HEADER='#!/bin/sh\n# Concierge runtime dispatch v1\n';
 
 const COMPATIBILITY_FILES = [
   "bot/src/state.ts",
@@ -266,6 +276,7 @@ function makeReadOnly(path: string) {
 
 function defaultServices(): ReleaseServices {
   return {
+    presentation:runPrivatePresentationCheck,
     spawn(command, options = {}) {
       return Bun.spawnSync({
         cmd: command,
@@ -371,15 +382,68 @@ export class TrustedRootReleaseManager {
   }
 
   private installRuntimeLaunchers() {
+    return withLaunchSelection(()=>{
     mkdirSync(this.environment.installRoot, { recursive: true, mode: 0o755 });
+    const capable=[this.currentArtifactPath(),this.controlArtifactPath()].find(path=>path&&(commandCapability(path)||authorityCapability(path)));
+    const anchorPath=join(this.environment.releaseRoot,'launch-authority','selected.json');
+    let authority=capable;
+    let installedEngine:string|null=null;
+    if(!authority&&existsSync(anchorPath))authority=JSON.parse(readFileSync(anchorPath,'utf8')).artifact;
+    if(authority){
+      const manifest=this.verifyRuntimeLaunchers(authority);
+      for(const name of [relative(authority,semanticCommandPath(authority,'deployment-launch-authority'))])
+        if(!manifest.files[name])throw Error('Selected release lacks its command authority.');
+      const rawEngine=join(this.environment.installRoot,'bun-engine');
+      if(!existsSync(rawEngine)){
+        copyFileSync(realpathSync(join(this.environment.installRoot,'bun')),rawEngine);chmodSync(rawEngine,0o555);
+      }
+      const engineBytes=readFileSync(rawEngine),engineDigest=digest(engineBytes);
+      const engineDirectory=join(this.environment.installRoot,'engines',engineDigest),engine=join(engineDirectory,'bun');
+      installedEngine=engine;
+      if(existsSync(engine)){
+        if(digest(readFileSync(engine))!==engineDigest||lstatSync(engine).mode&0o222)throw Error('Installed immutable engine identity changed.');
+      }else{
+        mkdirSync(dirname(engineDirectory),{recursive:true,mode:0o755});
+        const temporary=engineDirectory+'.'+randomUUID()+'.tmp';mkdirSync(temporary,{mode:0o700});
+        writeFileSync(join(temporary,'bun'),engineBytes,{mode:0o555});chmodSync(temporary,0o555);renameSync(temporary,engineDirectory);
+      }
+      const enginePointer=rawEngine+'.'+randomUUID()+'.tmp';
+      symlinkSync(relative(this.environment.installRoot,engine),enginePointer);renameSync(enginePointer,rawEngine);
+      const root=join(this.environment.releaseRoot,'launch-authority');mkdirSync(root,{recursive:true,mode:0o700});
+      const entry=semanticCommandPath(authority,'deployment-launch-authority');
+      const temp=anchorPath+'.'+randomUUID()+'.tmp';writeFileSync(temp,JSON.stringify({format:1,artifact:authority,entry,engine,engineDigest}),{mode:0o600});renameSync(temp,anchorPath);
+      const quote=(value:string)=>"'"+value.replace(/'/g,"'\\''")+"'";
+      const prefix=`${RUNTIME_DISPATCH_HEADER}set -eu\nexport CONCIERGE_DEPLOYMENT_RELEASE_ROOT=${quote(this.environment.releaseRoot)}\nexport CONCIERGE_DEPLOYMENT_RUNTIME_DIR=${quote(this.environment.installRoot)}\nENGINE=${quote(engine)}\n`;
+      const selectedEntry=`ENTRY=$(/usr/bin/python3 -I -S -c 'import json,sys; print(json.load(open(sys.argv[1]))["entry"])' ${quote(anchorPath)})\n`;
+      for(const [name,mode] of [['bun','bun'],['control','control']]){
+        const target=join(this.environment.installRoot,name),temporary=target+'.'+randomUUID()+'.tmp';
+        const commands=RELEASE_LEDGER_HELPERS.flatMap(name=>[name+'.js',name+'.ts']).join('|');
+        const dispatch=name==='bun'
+          ?`MAIN=\${1:-}\nif [ "$MAIN" = run ]; then MAIN=\${2:-}; fi\ncase "\${MAIN##*/}" in\n${commands})\n${selectedEntry}exec "$ENGINE" "$ENTRY" bun "$@";;\n*) exec "$ENGINE" "$@";;\nesac\n`
+          :selectedEntry+'exec "$ENGINE" "$ENTRY" control "$@"\n';
+        writeFileSync(temporary,prefix+dispatch,{mode:0o555});renameSync(temporary,target);
+      }
+      // Existing old jobs can already have selected an executable. Later selections
+      // see the machine wrappers above; keep the former cgroups until native exit.
+      if(process.env.CONCIERGE_STATE_DIR&&isLiveLedgerPath(join(process.env.CONCIERGE_STATE_DIR,'state.db'))&&existsSync('/run/systemd/system'))
+        saveLaunchBootstrap({...captureManagedLaunches(authority,args=>{
+          const result=this.services.spawn(['/usr/bin/systemctl',...args]);
+          if(result.exitCode!==0)throw Error('Cannot establish managed release launch custody.');
+          return Buffer.from(result.stdout).toString('utf8');
+        }),processes:selectedLedgerProcesses()});
+    }
     for (const [name, source] of [["launch", "deployment-launcher.sh"], ["control", "deployment-control-launcher.sh"]]) {
+      if(authority&&name==='control')continue;
       const destination = join(this.environment.installRoot, name);
       const temporary = `${destination}.${randomUUID()}.tmp`;
       try {
         // Keep the installed entrypoint independent of a release's command vocabulary.
         // Older sealed shell launchers are not executable, so invoke Bash explicitly.
         const root = resolve(this.environment.releaseRoot).replace(/'/g, "'\\''");
-        writeFileSync(temporary, `#!/bin/sh\nset -eu\nRELEASE_ROOT=\${CONCIERGE_DEPLOYMENT_RELEASE_ROOT:-'${root}'}\nexec /usr/bin/bash "$RELEASE_ROOT/control/control/${source}" "$@"\n`,
+        const script=authority&&name==='launch'
+          ?`#!/bin/sh\nset -eu\nRELEASE_ROOT=\${CONCIERGE_DEPLOYMENT_RELEASE_ROOT:-'${root}'}\nARTIFACT=$(/usr/bin/readlink -f "$RELEASE_ROOT/current")\ncd "$ARTIFACT"\nexport CONCIERGE_RELEASE_MANIFEST="$ARTIFACT/manifest.json"\nexec '${installedEngine!.replace(/'/g,"'\\''")}' "$ARTIFACT/bot/src/index.js" "$@"\n`
+          :`#!/bin/sh\nset -eu\nRELEASE_ROOT=\${CONCIERGE_DEPLOYMENT_RELEASE_ROOT:-'${root}'}\nexec /usr/bin/bash "$RELEASE_ROOT/control/control/${source}" "$@"\n`;
+        writeFileSync(temporary, script,
           { mode: 0o555, flag: "wx" });
         chmodSync(temporary, 0o555);
         renameSync(temporary, destination);
@@ -387,6 +451,7 @@ export class TrustedRootReleaseManager {
         rmSync(temporary, { force: true });
       }
     }
+    },join(this.environment.releaseRoot,'launch-authority'));
   }
 
   installRuntime() {
@@ -394,10 +459,13 @@ export class TrustedRootReleaseManager {
     if (!artifact) throw new Error("Cannot install runtime without a verified control release.");
     this.verifyRuntimeLaunchers(artifact);
     mkdirSync(this.environment.installRoot, { recursive: true, mode: 0o755 });
-    const bunDestination = join(this.environment.installRoot, "bun");
+    const capable=authorityCapability(artifact)||commandCapability(artifact)||(this.currentArtifactPath()&&commandCapability(this.currentArtifactPath()!));
+    const bunDestination = join(this.environment.installRoot, capable?"bun-engine":"bun");
     const temporaryBun = `${bunDestination}.${randomUUID()}.tmp`;
     try {
-      copyFileSync(realpathSync(this.environment.bunExecutable), temporaryBun);
+      const executable=resolve(this.environment.bunExecutable)===join(this.environment.installRoot,'bun')&&existsSync(join(this.environment.installRoot,'bun-engine'))
+        ?join(this.environment.installRoot,'bun-engine'):realpathSync(this.environment.bunExecutable);
+      copyFileSync(executable, temporaryBun);
       chmodSync(temporaryBun, 0o555);
       renameSync(temporaryBun, bunDestination);
       this.installRuntimeLaunchers();
@@ -455,12 +523,18 @@ export class TrustedRootReleaseManager {
       const hasPresentationGate=existsSync(join(sourceRoot,'bot/scripts/presentation-release-check.ts'));
       if(applicationDeclaration.applicationBundles.length&&!hasPresentationGate)
         throw new Error('Candidate application is missing its presentation release check.');
-      const presentationCheck=hasPresentationGate?this.services.spawn(privateDatabaseCommand([
-        '/usr/bin/timeout',String(CANDIDATE_PRESENTATION_TIMEOUT_SECONDS),'/usr/bin/env','CONCIERGE_TEST_MODE=1','CONCIERGE_TEST_AUTHORIZATION=responsive-system-b1eed622',
+      const presentationEnvironment={...process.env,CONCIERGE_TEST_MODE:'1',CONCIERGE_TEST_AUTHORIZATION:'responsive-system-b1eed622',
+        CONCIERGE_STATE_DIR:join(stagingRoot,'isolated-owner'),CONCIERGE_STATE_DB:join(stagingRoot,'isolated-owner/state.db'),
+        CONCIERGE_CAPTURE_STATE_DIR:join(stagingRoot,'isolated-capture'),CONCIERGE_PRIVATE_CODE_STATE:join(stagingRoot,'isolated-owner')};
+      const presentationCheck=hasPresentationGate?(this.services.presentation
+        ?await this.services.presentation([this.environment.bunExecutable,join(sourceRoot,'bot/scripts/presentation-release-check.ts'),'--bounded-child'],
+          join(sourceRoot,'bot'),presentationEnvironment)
+        :this.services.spawn(privateDatabaseCommand([
+        '/usr/bin/timeout',`--kill-after=${CANDIDATE_PRESENTATION_CLEANUP_SECONDS}`,String(CANDIDATE_PRESENTATION_TIMEOUT_SECONDS),'/usr/bin/env','--unset=CONCIERGE_FIXTURE_SHARED_GROUP','CONCIERGE_TEST_MODE=1','CONCIERGE_TEST_AUTHORIZATION=responsive-system-b1eed622',
         `CONCIERGE_STATE_DIR=${join(stagingRoot,'isolated-owner')}`,`CONCIERGE_CAPTURE_STATE_DIR=${join(stagingRoot,'isolated-capture')}`,
         this.environment.bunExecutable,
         join(sourceRoot,'bot/scripts/presentation-release-check.ts'),
-      ]),{cwd:join(sourceRoot,'bot')}):null;
+      ]),{cwd:join(sourceRoot,'bot')})):null;
       if(presentationCheck&&presentationCheck.exitCode!==0)throw new Error(
         `Candidate presentation cost check failed: ${failedCandidateCheck({...presentationCheck,
           timeoutSeconds:CANDIDATE_PRESENTATION_TIMEOUT_SECONDS,
@@ -687,6 +761,7 @@ export class TrustedRootReleaseManager {
    * digest name; leftovers from an interrupted prune are finished on the next one.
    */
   pruneReleases(ledgerReferences: string[], recent = RETAINED_RECENT_RELEASES) {
+    return withLaunchSelection(()=>{
     const releases = join(this.environment.releaseRoot, "releases");
     const named = readdirSync(releases).filter(name => /^[0-9a-f]{64}$/.test(name));
     const kept = new Set<string>(named.map(name => ({ name, at: lstatSync(join(releases, name)).mtimeMs }))
@@ -696,7 +771,12 @@ export class TrustedRootReleaseManager {
     }
     const releasePath = releaseDigestPattern(this.environment.releaseRoot);
     for (const reference of ledgerReferences) for (const match of reference.matchAll(releasePath)) kept.add(match[1]!);
-    for (const digest of releasesNamedByProcessesAndUnits(this.environment.releaseRoot)) kept.add(digest);
+    for (const reference of launchAuthorityReferences(join(this.environment.releaseRoot,'launch-authority'))) for(const match of reference.matchAll(releasePath))kept.add(match[1]!);
+    const engines=join(this.environment.installRoot,'engines');
+    const liveReferences=releasesNamedByProcessesAndUnits(this.environment.releaseRoot,{additionalRoots:[engines],referenceFiles:[
+      ...['bun','control','launch'].map(name=>join(this.environment.installRoot,name)),
+      join(process.env.CONCIERGE_CAPTURE_RUNTIME_DIR??'/usr/local/lib/slack-concierge','bun')]});
+    for (const digest of liveReferences) kept.add(digest);
     const removed: string[] = [];
     for (const name of named) {
       if (kept.has(name)) continue;
@@ -707,7 +787,18 @@ export class TrustedRootReleaseManager {
     for (const name of readdirSync(releases)) {
       if (name.startsWith(".pruning-")) rmSync(join(releases, name), { recursive: true, force: true });
     }
-    return { kept: [...kept].filter(name => named.includes(name)).sort(), removed };
+    const enginesRemoved:string[]=[];
+    if(existsSync(engines))for(const name of readdirSync(engines)){
+      if(!/^[a-f0-9]{64}$/.test(name)||liveReferences.has(name))continue;
+      const directory=join(engines,name),binary=join(directory,'bun');
+      if(!lstatSync(directory).isDirectory()||JSON.stringify(readdirSync(directory))!==JSON.stringify(['bun'])
+        ||!lstatSync(binary).isFile()||lstatSync(binary).mode&0o222||digest(readFileSync(binary))!==name)
+        throw Error('Unrecognized installed engine files; nothing in that directory was retired.');
+      const retiring=join(engines,'.pruning-'+name);renameSync(directory,retiring);
+      rmSync(join(retiring,'bun'));rmdirSync(retiring);enginesRemoved.push(name);
+    }
+    return { kept: [...kept].filter(name => named.includes(name)).sort(), removed,enginesRemoved };
+    },join(this.environment.releaseRoot,'launch-authority'));
   }
 }
 
@@ -722,10 +813,18 @@ const UNIT_DIRECTORIES = ["/run/systemd/transient", "/run/systemd/system", "/etc
  * mid-scan is skipped; any other failure to read throws, because "could not look" must never pass
  * for "nothing uses it".
  */
-export function releasesNamedByProcessesAndUnits(releaseRoot: string): Set<string> {
-  const pattern = releaseDigestPattern(releaseRoot);
+export function releasesNamedByProcessesAndUnits(releaseRoot: string,options:{additionalRoots?:string[];referenceFiles?:string[]}={}): Set<string> {
+  const roots=[join(releaseRoot,'releases'),...(options.additionalRoots??[])];
+  const pattern = new RegExp(`(?:${roots.map(path=>path.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|')})/([0-9a-f]{64})(?:/|\\b)`,'g');
   const found = new Set<string>();
   const collect = (text: string) => { for (const match of text.matchAll(pattern)) found.add(match[1]!); };
+  const referenceFiles=new Set(options.referenceFiles??[]);
+  const collectWrapper=(path:string)=>{
+    const fd=openSync(path,'r');let owned=false;
+    try{const header=Buffer.alloc(RUNTIME_DISPATCH_HEADER.length);readSync(fd,header,0,header.length,0);owned=header.toString()===RUNTIME_DISPATCH_HEADER;}
+    finally{closeSync(fd);}
+    if(owned)collect(readFileSync(path,'utf8'));
+  };
   const gone = (error: unknown) => ["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "");
   for (const entry of readdirSync("/proc")) {
     if (!/^\d+$/.test(entry)) continue;
@@ -738,12 +837,16 @@ export function releasesNamedByProcessesAndUnits(releaseRoot: string): Set<strin
         try { collect(readlinkSync(`${proc}/${link}`)); } catch (error) { if (!gone(error)) throw error; }
       }
       for (const fd of readdirSync(`${proc}/fd`)) {
-        try { collect(readlinkSync(`${proc}/fd/${fd}`)); } catch (error) { if (!gone(error)) throw error; }
+        try {
+          const path=`${proc}/fd/${fd}`,target=readlinkSync(path);collect(target);
+          if(referenceFiles.has(target.replace(/ \(deleted\)$/,'')))collectWrapper(path);
+        } catch (error) { if (!gone(error)) throw error; }
       }
     } catch (error) {
       if (!gone(error)) throw error;
     }
   }
+  for(const path of referenceFiles)if(existsSync(path))collectWrapper(path);
   for (const directory of UNIT_DIRECTORIES) {
     if (!existsSync(directory)) continue;
     for (const name of readdirSync(directory)) {

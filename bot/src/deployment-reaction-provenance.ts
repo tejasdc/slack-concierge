@@ -1,3 +1,4 @@
+import {runLedgerSteps} from './ledger-admission';
 import { getDeliveredTurnMessageTarget, getTurnCommitProvenance } from "./state";
 import type { DeploymentTurnReactionTarget } from "./deployment-state";
 import { deploymentReactionTokensForCommitRange } from "./deployment-reaction-tokens";
@@ -26,7 +27,7 @@ export async function deploymentReactionTargetsForCommitRange(
   repositoryRoot: string,
   baseCommit: string,
   candidateCommit: string,
-): Promise<DeploymentTurnReactionTarget[]> {
+): Promise<DeploymentTurnReactionTarget[]> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   return resolveDeploymentReactionTargets(
-    await deploymentReactionTokensForCommitRange(repositoryRoot, baseCommit, candidateCommit));
-}
+    (yield deploymentReactionTokensForCommitRange(repositoryRoot, baseCommit, candidateCommit)));
+}).call(this));}

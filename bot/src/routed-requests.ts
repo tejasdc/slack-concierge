@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import type { SlackMessageFile } from "./attachments";
 import { db, SETTLED_EXECUTION_SQL, type SessionRow } from "./state";
 import { visibleSlackRootSql } from "./slack-thread-identity";
@@ -144,23 +146,23 @@ export class RoutedRequestCoordinator {
 
   result(id: string) { return readRoutedRequest(id); }
 
-  async submit(_input: RoutedRequest): Promise<never> {
+  async submit(_input: RoutedRequest): Promise<never> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     throw new Error(RETIRED_SLACK_ROUTING);
-  }
+  }).call(this));}
 
   receive(input: RoutedInput) {
     const received = retryTransientDatabaseOperation({
       operation: () => db.query("INSERT INTO routed_input_events VALUES (?, ?, ?) ON CONFLICT DO NOTHING")
         .run(input.channel, input.userMsgTs, JSON.stringify(input)),
-    }).then(() => {
+    }).then(ledgerCallback(() => {
       if (!this.stopped) return this.owned(input.channel, () => this.flush(input.channel));
-    });
+    }));
     this.pendingInputs.add(received);
     void received.finally(() => this.pendingInputs.delete(received)).catch(() => {});
     return received;
   }
 
-  private async flush(channel: string) {
+  private async flush(channel: string) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const events = db.query(`SELECT message_ts, input_json FROM routed_input_events WHERE channel_id=? ORDER BY ${slackTimestampUsSql('message_ts')}`)
       .all(channel) as Array<{ message_ts: string; input_json: string }>;
     for (const event of events) {
@@ -170,18 +172,18 @@ export class RoutedRequestCoordinator {
       const routed = db.query('SELECT request_id FROM routed_requests WHERE channel_id=? AND (message_ts=? OR request_id=?)')
         .get(channel,event.message_ts,input.clientMessageId??null) as {request_id:string}|null;
       if (routed) { this.retainUncertain(routed.request_id); continue; }
-      await this.dependencies.admit(input);
+      (yield this.dependencies.admit(input));
       db.query('DELETE FROM routed_input_events WHERE channel_id=? AND message_ts=?').run(channel,event.message_ts);
       this.dependencies.onChanged?.();
     }
-  }
+  }).call(this));}
 
   private retainUncertain(id: string) {
     db.query("UPDATE routed_requests SET status='uncertain',error=CASE WHEN error IS NULL THEN ? ELSE error || char(10) || ? END WHERE request_id=? AND status NOT IN ('admitted','failed','uncertain')")
       .run(UNCERTAIN_LEGACY_DELIVERY,UNCERTAIN_LEGACY_DELIVERY,id);
   }
 
-  async recover() {
+  async recover() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const requests = db.query("SELECT * FROM routed_requests WHERE status IN ('accepted', 'publishing', 'confirmed', 'parked', 'held', 'uncertain') ORDER BY rowid").all() as RequestRow[];
     for (const row of requests) {
       if (row.owner_instance_id !== this.dependencies.instanceId && this.dependencies.isOwnerAlive(row.owner_instance_id)) {
@@ -190,8 +192,8 @@ export class RoutedRequestCoordinator {
       this.retainUncertain(row.request_id);
     }
     const channels = db.query("SELECT DISTINCT channel_id FROM routed_input_events").all() as Array<{ channel_id: string }>;
-    for (const channel of channels) await this.owned(channel.channel_id, () => this.flush(channel.channel_id));
-  }
+    for (const channel of channels) (yield this.owned(channel.channel_id, () => this.flush(channel.channel_id)));
+  }).call(this));}
 
   recoverRequest(id: string) {
     this.row(id);
@@ -205,6 +207,6 @@ export class RoutedRequestCoordinator {
 
   async stop() {
     this.stopped = true;
-    await Promise.allSettled([...this.owners.values(), ...this.pendingInputs]);
+    (await Promise.allSettled([...this.owners.values(), ...this.pendingInputs]));
   }
 }

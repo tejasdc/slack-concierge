@@ -1,4 +1,4 @@
-import { resumeParkedSessionTurn } from "../src/state";
+import {manualLedgerCommand} from "../src/deployment-repair-client";
 
 const [command, flag, rawTurnId, ...extra] = process.argv.slice(2);
 if (command !== "resume" || flag !== "--turn-id" || !rawTurnId || extra.length > 0) {
@@ -12,6 +12,6 @@ if (!Number.isSafeInteger(turnId) || turnId <= 0) {
   process.exit(2);
 }
 
-const result = resumeParkedSessionTurn(turnId);
+const result = await manualLedgerCommand({operation:"resume-turn",turnId});
 console.log(`${result}: turn ${turnId}`);
 if (result === "not_parked" || result === "unsafe") process.exit(1);

@@ -1,3 +1,4 @@
+import {runLedgerSteps} from './ledger-admission';
 import type {Database} from 'bun:sqlite';
 import type {SessionCard} from './prepared-session-cards';
 import type {SessionSpace} from './session-space';
@@ -93,7 +94,7 @@ export class PeerCatalogueSync {
    .run(peer,row.remote_session_id,started);
   return rows.length===40;
  }
- async refresh(peer:string,request:CatalogueRequest,signal?:AbortSignal):Promise<{more:boolean}>{
+ async refresh(peer:string,request:CatalogueRequest,signal?:AbortSignal):Promise<{more:boolean}>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   let more=false;
   for(const space of SPACES){
    if(signal?.aborted)return {more:false};
@@ -103,7 +104,7 @@ export class PeerCatalogueSync {
    }
    const query=new URLSearchParams({space,limit:'40',...(state.cursor?{cursor:state.cursor}:{})});
    let page:Page;
-   try{page=await request(`/sessions/v1/presentation/sessions/${state.phase==='window'?'window':'changes'}?${query}`,signal);}
+   try{page=(yield request(`/sessions/v1/presentation/sessions/${state.phase==='window'?'window':'changes'}?${query}`,signal));}
    catch(error){
     if(!signal?.aborted)this.db.query('UPDATE session_peer_catalogue_sync SET error=? WHERE peer=? AND space=? AND version=?')
      .run(error instanceof Error?error.message:'PEER_CATALOGUE_UNAVAILABLE',peer,space,state.version);
@@ -150,5 +151,5 @@ export class PeerCatalogueSync {
   }
   if(!signal?.aborted)more=this.db.transaction(()=>this.retireLegacy(peer))()||more;
   return {more};
- }
+ }).call(this));}
 }

@@ -256,8 +256,35 @@ no code push could help because the check runs inside the control. Recovery used
    either order; repeated identical callbacks are idempotent. A dead bound child
    resumes the same UUID. With no child identity, the exact unit cgroup must be
    empty except for the current supervisor. An ambiguous fresh launch parks.
-   The adapter opens logs and installs listeners before callbacks, and kills
-   and reaps its process group if bookkeeping fails.
+   The adapter opens logs before callbacks and drains the original output and
+   asynchronous PID/session bookkeeping before settling the result. A finite
+   detached guardian anchors the provider's original process group until that
+   drain finishes. Only the guardian signals its own current group, over the
+   launcher's exact private pipe: immediate TERM, the existing five-second KILL,
+   and final failure KILL never target a remembered numeric group. Provider PID
+   callbacks retain the actual provider identity, separate from guardian exit.
+   A one-use Python exec trampoline captures its own PID, boot ID and start ticks
+   before becoming that provider. Its identity descriptor closes on exec; the
+   guardian forwards those retained bytes before the native outcome.
+   An explicit exec error on that one-use channel withholds the identity/spawn
+   notification and reports the original error without a started-only outcome.
+   Delayed parent status delivery therefore records the actual provider identity even
+   after a fast provider has been reaped, without looking up its numeric PID.
+   The existing callback's optional second argument carries that identity;
+   PID-only injected services retain their previous live-lookup compatibility.
+   Control EOF kills the guardian's current group; unexpected guardian death
+   permanently closes that authority and reports an integrity failure without
+   rediscovering a target. The selected supervisor retains any inherited release
+   lock through awaited guardian cleanup; the provider inherits neither the lock
+   descriptor nor its attestation markers, and receives no guardian control or
+   status descriptor. Successful release still does not promise completion of
+   detached descendants that have closed their inherited output streams. Lost
+   guardian authority likewise provides no survivor-cleanup claim.
+   The release-check child launcher uses the same signal authority for its owned
+   group, retains nested helpers in their enclosing group, and separately waits
+   for native group/thread completion before any passing cleanup receipt. Its
+   inherited-pipe and parent-hard-death checks exercise automatic exact-pipe EOF
+   cleanup; no post-close numeric-group signal is used to repair that check.
 6. The CLI returns structured `repair_committed` with an exact commit and next
    action, or `blocked` with a concrete blocker and next action. A blocked,
    missing or malformed result parks immediately. A claimed repair must match

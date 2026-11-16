@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import {createHash} from 'node:crypto';
 import {db} from './state';
 import {CURRENT_INBOX_ID_SQL} from './inbox-lineage-sql';
@@ -54,11 +56,11 @@ function openThreads(sessionId:number):Thread[] {
 
 const dot=(a:Float32Array,b:Float32Array)=>{let sum=0;for(let i=0;i<a.length;i++)sum+=a[i]!*b[i]!;return sum;};
 
-async function file() {
+async function file() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const index=meaningIndex(),sessionId=inboxSessionId();
   if(!index?.installed||sessionId===null){pending.clear();return;}
   const threads=openThreads(sessionId);
-  const vectors=await index.documentVectors(threads.map(thread=>({key:`thread:${thread.id}`,text:thread.text})));
+  const vectors=(yield index.documentVectors(threads.map(thread=>({key:`thread:${thread.id}`,text:thread.text}))));
   const vectorOf=(id:string)=>vectors.get(`thread:${id}`);
   const open=new Set(threads.map(thread=>thread.id));
   const changed=catchUp?[...open]:[...pending].filter(id=>open.has(id));
@@ -96,9 +98,9 @@ async function file() {
     if(near.length>=CLUSTER&&suggestTheme(sessionId,[topicId,...near.map(other=>other.id)],all,open.size,titleOf,names))suggested++;
   }
   // The same changes also link each new message to his earlier work.
-  const posted=search?await linkEarlierWork({inboxSessionId:sessionId,topicIds:changed,startedMs,search,threads}):0;
+  const posted=search?(yield linkEarlierWork({inboxSessionId:sessionId,topicIds:changed,startedMs,search,threads})):0;
   if(linked||suggested||posted)log('info','area_filing_pass',{threads:changed.length,linked,suggested,posted});
-}
+}).call(this));}
 
 /** A group of open threads close in meaning that no theme area holds is offered to the router once. */
 function suggestTheme(sessionId:number,group:string[],all:Map<string,Set<string>>,openCount:number,titleOf:Map<string,string>,names:Map<string,string>) {
@@ -121,16 +123,16 @@ function suggestTheme(sessionId:number,group:string[],all:Map<string,Set<string>
   return true;
 }
 
-async function drain() {
+async function drain() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   timer=null;
   if(running)return;
   running=true;
-  try{await file();}
+  try{(yield file());}
   catch(error){log('warn','area_filing_failed',{error:error instanceof Error?error.message:String(error)});}
   finally{running=false;}
   if(pending.size)schedule();
-}
-function schedule(){if(admit&&!timer)timer=setTimeout(()=>void drain(),DEBOUNCE_MS);}
+}).call(this));}
+function schedule(){if(admit&&!timer)timer=setTimeout(ledgerCallback(()=>void drain()),DEBOUNCE_MS);}
 
 /**
  * Started once per composition, after the owner can admit inputs. The first pass files every open

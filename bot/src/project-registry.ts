@@ -2,6 +2,11 @@ import { Database } from "bun:sqlite";
 import { dirname } from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
 import { ledgerWriteResults } from './ledger-write-results';
+import {isLiveLedgerPath} from './ledger-access-policy';
+
+function assertOfflineRegistry(path:string):void {
+  if(isLiveLedgerPath(path))throw new Error('Direct registry writes cannot open the live ledger. Use the owner project entrance; existing project folders are discovered without channel registration.');
+}
 
 export interface ManagedProjectRow {
   slack_channel_id: string | null;
@@ -24,6 +29,7 @@ export function replaceManagedProjectMapping(input: {
   expected: ProjectMapping;
   replacement: ProjectMapping;
 }) {
+  assertOfflineRegistry(input.stateDbPath);
   if (!existsSync(input.stateDbPath)) throw new Error(`Concierge registry does not exist: ${input.stateDbPath}`);
   const database = ledgerWriteResults(new Database(input.stateDbPath, { strict: true }));
   try {
@@ -73,6 +79,7 @@ export function registerAdoptedProject(input: {
   group: string | null;
   name: string;
 }) {
+  assertOfflineRegistry(input.stateDbPath);
   mkdirSync(dirname(input.stateDbPath), { recursive: true });
   const database = ledgerWriteResults(new Database(input.stateDbPath, { create: true, strict: true }));
   try {

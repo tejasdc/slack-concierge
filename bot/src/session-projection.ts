@@ -8,6 +8,7 @@ import {recordUnsaidTurnOutcome} from './session-turn-outcome';
 import {errorFields,log} from './log';
 import {clearFocusForEndedRun} from './session-topics';
 import type {ProviderHistoryMessage} from './provider-history';
+import {runLedgerSegment,runSynchronousLedgerSegment} from './ledger-admission';
 
 type PendingProgressEvent={eventId:string;sessionId:number;inputId:string|null;turnId:number;kind:'message';payload:{message:ProviderHistoryMessage};versionKey:string;content:string;bytes:number};
 const pendingProgressEvents:PendingProgressEvent[]=[];
@@ -41,6 +42,10 @@ function progressBatchIdentity(events:readonly PendingProgressEvent[]=pendingPro
 }
 
 export function flushPendingProviderProgressEvents(){
+  return runSynchronousLedgerSegment(flushProgressSegment);
+}
+
+function flushProgressSegment(){
   if(progressFlushTimer){clearTimeout(progressFlushTimer);progressFlushTimer=null;}
   if(!pendingProgressEvents.length)return;
   const rootCommit=!db.inTransaction;
@@ -76,9 +81,11 @@ export function flushPendingProviderProgressEvents(){
 function scheduleProgressFlush(){
   if(progressFlushTimer)return;
   progressFlushTimer=setTimeout(()=>{
-    progressFlushTimer=null;
     // The flush itself logs the failed batch and schedules the next attempt.
-    try {flushPendingProviderProgressEvents();} catch {}
+    void runLedgerSegment(()=>{
+      progressFlushTimer=null;
+      flushPendingProviderProgressEvents();
+    }).catch(()=>{});
   },1_000);
   progressFlushTimer.unref();
 }
@@ -143,6 +150,10 @@ function restoreSpilledProviderProgressEvents() {
 }
 
 export function projectSessionProviderMessage(turnId:number,message:ProviderHistoryMessage) {
+  return runSynchronousLedgerSegment(()=>projectProviderMessageSegment(turnId,message));
+}
+
+function projectProviderMessageSegment(turnId:number,message:ProviderHistoryMessage) {
   const turn=db.query('SELECT session_id,accepted_input_id,status,provider_turn_id FROM turns WHERE id=?').get(turnId) as any;
   if(!turn||turn.status!=='running')return;
   if(!message.id||message.turnId&&turn.provider_turn_id&&message.turnId!==turn.provider_turn_id)throw new Error('Provider message does not match the active native execution.');
@@ -198,6 +209,10 @@ function messageContent(message:ProviderHistoryMessage) {
 
 /** Projects existing turn facts; it neither admits input nor executes work. */
 export function installSessionProjection(owner:SessionOwner) {
+  return runSynchronousLedgerSegment(()=>installProjectionSegment(owner));
+}
+
+function installProjectionSegment(owner:SessionOwner) {
   // Only the projecting owner holds a progress queue, so only it saves or spills one at exit.
   restoreSpilledProviderProgressEvents();
   if(!progressExitHookInstalled){
@@ -210,7 +225,7 @@ export function installSessionProjection(owner:SessionOwner) {
         OR (input.turn_id IS NULL AND json_extract(input.receipt_json,'$.state') IN ('failed','uncertain')))
       AND NOT EXISTS(SELECT 1 FROM session_inputs continuation WHERE continuation.id='turn-continuation:' || turn.id)
       AND NOT EXISTS(SELECT 1 FROM session_owner_events event WHERE event.event_id='attention:' || input.id || ':' || COALESCE(turn.dispatch_attempt,0))`).all() as {id:string}[])recordSessionInputAttention(input.id);
-  return observeTurnFacts((turnId,kind)=>{
+  return observeTurnFacts((turnId,kind)=>runSynchronousLedgerSegment(()=>{
     const turn=db.query('SELECT * FROM turns WHERE id=?').get(turnId) as any;
     if(!turn)return;
     if(turn.turn_kind==='native') {
@@ -246,5 +261,5 @@ export function installSessionProjection(owner:SessionOwner) {
         updateSessionMetadata(session.id,{generation:(sessionMetadata(getSessionById(session.id)!).generation??0)+1});
       }
     }
-  });
+  }));
 }

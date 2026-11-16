@@ -7,6 +7,8 @@
  * run named in X-Concierge-Agent-Source) and it delivers the `notify` list each write returns, so a
  * mentioned session is woken once with a notice that owes no reply.
  */
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import {readFileSync} from 'node:fs';
 import {resolveSessionAddress} from './session-owner';
 import {peerSessionView} from './session-topics';
@@ -72,16 +74,16 @@ const localLabSession=(identity:string):number|null=>{
 };
 const pair=(value:string)=>{const at=value.indexOf('::');if(at<0)throw new BoardError(`Write "<address> :: <reason>": ${value}`);return {address:value.slice(0,at).trim(),reason:value.slice(at+2).trim()};};
 
-async function lab(method:'GET'|'POST',path:string,actor:BoardActor,body?:unknown):Promise<any> {
+async function lab(method:'GET'|'POST',path:string,actor:BoardActor,body?:unknown):Promise<any> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if(actor.labProxy)return actor.labProxy(method,path,body);
   let key:string;
   try {key=readFileSync(KEY_FILE(),'utf8').trim();}
   catch {throw new BoardError('The server cannot read its Lab access key.');}
-  const response=await fetch(`${ORIGIN()}/api/lab${path}`,{method,signal:AbortSignal.timeout(20_000),
+  const response=(yield fetch(`${ORIGIN()}/api/lab${path}`,{method,signal:AbortSignal.timeout(20_000),
     headers:{authorization:`Bearer ${key}`,'x-concierge-agent-source':`${actor.inputId} ${actor.runId}`,...(body?{'content-type':'application/json'}:{})},
-    ...(body?{body:JSON.stringify(body)}:{})});
+    ...(body?{body:JSON.stringify(body)}:{})}));
   // A refusal body can be absent or the JSON literal null; the refusal must still name the status and route.
-  const answer=(await response.json().catch(()=>null))??{};
+  const answer=((yield response.json().catch(ledgerCallback(()=>null))))??{};
   if(!response.ok) {
     // A blocked verdict names the sections still in the way (LAB_VERDICT_BLOCKED: {sections:[{title,address,why}]}).
     const sections=Array.isArray(answer.sections)&&answer.sections.length
@@ -90,10 +92,10 @@ async function lab(method:'GET'|'POST',path:string,actor:BoardActor,body?:unknow
     throw new BoardError(`${answer.error??answer.code??response.status}: ${answer.reason??answer.message??`the lab record refused this (HTTP ${response.status} from ${method} /api/lab${path})`}${sections}`,response.status);
   }
   return answer;
-}
+}).call(this));}
 
 /** The server's peer entrance supplies its Lab key; the Lab resolves the Mac source itself. */
-export async function peerLabRequest(input:unknown):Promise<any> {
+export async function peerLabRequest(input:unknown):Promise<any> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if(!input||typeof input!=='object'||Array.isArray(input))throw new BoardError('A Lab request is required.');
   const request=input as Record<string,unknown>;
   if(Object.keys(request).some(key=>!['method','path','inputId','runId','body'].includes(key))
@@ -104,7 +106,7 @@ export async function peerLabRequest(input:unknown):Promise<any> {
     ||typeof request.runId!=='string'||!request.runId.trim()
     ||(request.method==='GET'&&request.body!==undefined))throw new BoardError('Invalid peer Lab request.');
   return lab(request.method as 'GET'|'POST',request.path,{session:0,inputId:request.inputId,runId:request.runId},request.body);
-}
+}).call(this));}
 
 /** A design section's address: the design's handle and the passage number of its `## ` heading. */
 const DESIGN_PASSAGE=/^lab:[a-z0-9][a-z0-9-]*\.\d+$/;
@@ -117,17 +119,17 @@ const BARE_RECORD=/^lab:[a-z0-9][a-z0-9-]*$/;
  * entries and the replies nested under them, so a session sees what it owes. Concierge adds only `owed`, the
  * addresses of sections still `asked`, and never computes a state of its own. Not a design: null.
  */
-async function readDesign(address:string,actor:BoardActor) {
+async function readDesign(address:string,actor:BoardActor) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const trimmed=address.trim();
   if(!BARE_RECORD.test(trimmed))return null;
-  const record=await lab('GET',`/records/${encodeURIComponent(trimmed.slice(4))}`,actor);
+  const record=(yield lab('GET',`/records/${encodeURIComponent(trimmed.slice(4))}`,actor));
   if(record.kind!=='product'||record.record?.product!=='design')return null;
   const review=record.review??null;
   const sections:{address:string;state:string}[]=review?.sections??[];
   return {kind:'design',record:record.record,supersededBy:record.supersededBy??null,links:record.links??null,review,
     owed:sections.filter(section=>section.state==='asked').map(section=>section.address),
     ...(review?{}:{note:'This thnkr.ing does not publish the section review yet; the design text and links are above.'})};
-}
+}).call(this));}
 
 function noticeText(notice:Notice,writer:string,summary:string) {
   const open=`${ORIGIN()}/lab`;
@@ -140,7 +142,7 @@ function noticeText(notice:Notice,writer:string,summary:string) {
 }
 
 /** Wakes each session the write names, once: a local session by admission under the notice's own id, a Mac session by an informational request. */
-async function deliver(notify:Notice[],actor:BoardActor,writer:string,summary:string,delivery:BoardDelivery) {
+async function deliver(notify:Notice[],actor:BoardActor,writer:string,summary:string,delivery:BoardDelivery) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const results:{to:string;delivered:boolean;detail?:string}[]=[];
   for(const [index,notice] of notify.entries()) {
     if(notice.to==='tejas'||localLabSession(notice.to)===actor.session)continue;
@@ -152,7 +154,7 @@ async function deliver(notify:Notice[],actor:BoardActor,writer:string,summary:st
       else {
         const address=peerSessionView(notice.to)?.address;
         if(!address)throw new BoardError(`No session ${notice.to} in the peer catalogue.`);
-        await delivery.askPeer({address,actionId:`lab-${index}-${notice.address.replace(/[^A-Za-z0-9_-]/g,'-')}`.slice(0,120),text:noticeText(notice,writer,summary),sourceInputId:actor.inputId,sourceRunId:actor.runId});
+        (yield delivery.askPeer({address,actionId:`lab-${index}-${notice.address.replace(/[^A-Za-z0-9_-]/g,'-')}`.slice(0,120),text:noticeText(notice,writer,summary),sourceInputId:actor.inputId,sourceRunId:actor.runId}));
       }
       results.push({to:notice.to,delivered:true});
     } catch(error) {
@@ -162,16 +164,16 @@ async function deliver(notify:Notice[],actor:BoardActor,writer:string,summary:st
     }
   }
   return results;
-}
+}).call(this));}
 
 /** One board command from an admitted live run. */
-export async function boardCommand(input:BoardInput,actor:BoardActor|null,delivery:BoardDelivery) {
+export async function boardCommand(input:BoardInput,actor:BoardActor|null,delivery:BoardDelivery) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if(input.verb==='status'||input.verb==='sweep')
     return {moved:'The board is the lab record in thnkr.ing now; every mention is delivered when it is written, so there is nothing to sweep. Read it at /lab.'};
   if(!actor?.inputId||!actor.runId)throw new BoardError('Board commands come from an admitted live run: pass --source-input and --source-run.');
   if(input.verb==='read') {
     if(input.address) {
-      const design=await readDesign(input.address,actor);
+      const design=(yield readDesign(input.address,actor));
       return design??lab('GET',`/resolve?address=${encodeURIComponent(input.address)}`,actor);
     }
     if(input.thread)return lab('GET',`/records/${encodeURIComponent(input.thread)}`,actor);
@@ -198,46 +200,46 @@ export async function boardCommand(input:BoardInput,actor:BoardActor|null,delive
   let written:{id:string;address:string;duplicate:boolean;notify:Notice[]};
   if(input.verb==='thread') {
     if(!text.trim())throw new BoardError('Open a thread with its first words after --.');
-    written=await lab('POST','/threads',actor,{actionId,kind:input.kind,title:input.title,text,...(input.board?{board:input.board}:{}),...(input.blind?{blind:input.blind}:{}),
-      ...(input.members?.length?{members:input.members.map(identityOf)}:{}),...(input.decider?{decider:identityOf(input.decider)}:{}),...(mentions?.length?{mentions}:{})});
+    written=(yield lab('POST','/threads',actor,{actionId,kind:input.kind,title:input.title,text,...(input.board?{board:input.board}:{}),...(input.blind?{blind:input.blind}:{}),
+      ...(input.members?.length?{members:input.members.map(identityOf)}:{}),...(input.decider?{decider:identityOf(input.decider)}:{}),...(mentions?.length?{mentions}:{})}));
   } else if(input.verb==='product') {
     if(!input.from?.length)throw new BoardError('A finding, decision, skill or design names where it came from: --from "<lab address> :: <reason>" (a design links to the open Lab thread whose sessions answer him).');
-    written=await lab('POST','/products',actor,{actionId,product:input.product,title:input.title,text,from:input.from.map(pair),
+    written=(yield lab('POST','/products',actor,{actionId,product:input.product,title:input.title,text,from:input.from.map(pair),
       ...(input.supersedes?{supersedes:pair(input.supersedes)}:{}),...(mentions?.length?{mentions}:{}),
-      ...inbox});
+      ...inbox}));
   } else if(input.verb==='verdict') {
     if(!designHandle||!input.verdict)throw new BoardError('board verdict needs --design <design handle> and --verdict approve|revise|stop.');
     const scope=input.scope?.trim();
-    written=await lab('POST',`/records/${encodeURIComponent(designHandle)}/verdict`,actor,{actionId,verdict:input.verdict.trim(),
-      ...(scope&&scope!=='none'?{scope}:{}),...(text.trim()?{text}:{})});
+    written=(yield lab('POST',`/records/${encodeURIComponent(designHandle)}/verdict`,actor,{actionId,verdict:input.verdict.trim(),
+      ...(scope&&scope!=='none'?{scope}:{}),...(text.trim()?{text}:{})}));
   } else if(input.verb==='cards') {
     if(!designHandle||!input.cards?.length||!input.inbox_session)throw new BoardError('board cards needs --design, --inbox-session, --inbox-message and --json-file with at least one card.');
-    const answer=await lab('POST',`/records/${encodeURIComponent(designHandle)}/cards`,actor,{actionId,...inbox,cards:input.cards});
+    const answer=(yield lab('POST',`/records/${encodeURIComponent(designHandle)}/cards`,actor,{actionId,...inbox,cards:input.cards}));
     const cards:{id:string;address:string;duplicate:boolean;notify?:Notice[];inbox?:unknown}[]=answer.cards??[];
     const notified=[];
-    for(const card of cards)notified.push(...await deliver(card.notify??[],actor,actorIdentity(actor),`card at ${card.address}`,delivery));
+    for(const card of cards)notified.push(...(yield deliver(card.notify??[],actor,actorIdentity(actor),`card at ${card.address}`,delivery)));
     return {cards:cards.map(card=>({id:card.id,address:card.address,duplicate:card.duplicate,inbox:card.inbox??null})),notified};
   } else if(input.verb==='cite') {
-    written=await lab('POST','/citations',actor,{actionId,medium:input.medium,address:input.address,title:input.title,text});
+    written=(yield lab('POST','/citations',actor,{actionId,medium:input.medium,address:input.address,title:input.title,text}));
   } else if(input.verb==='link') {
-    written=await lab('POST','/links',actor,{actionId,from:input.address,to:input.to,relation:input.relation,reason:input.reason});
+    written=(yield lab('POST','/links',actor,{actionId,from:input.address,to:input.to,relation:input.relation,reason:input.reason}));
   } else {
     if(!input.thread)throw new BoardError(`board ${input.verb} needs --thread <thread handle>.`);
     if(input.verb==='post'&&!text.trim())throw new BoardError('A post needs words after --.');
     let replyToEntryId:string|undefined;
     if(input.reply_to) {
-      const target=await lab('GET',`/resolve?address=${encodeURIComponent(input.reply_to)}`,actor);
+      const target=(yield lab('GET',`/resolve?address=${encodeURIComponent(input.reply_to)}`,actor));
       if(target.handle!==input.thread.replace(/^lab:/,'')||!target.entryId)throw new BoardError('--reply-to must name an entry in this thread.');
       replyToEntryId=target.entryId;
     }
-    written=await lab('POST',`/records/${encodeURIComponent(input.thread.replace(/^lab:/,''))}/entries`,actor,{actionId,act:input.verb,text,
+    written=(yield lab('POST',`/records/${encodeURIComponent(input.thread.replace(/^lab:/,''))}/entries`,actor,{actionId,act:input.verb,text,
       ...(replyToEntryId?{replyToEntryId}:{}),...(input.target?{targetAddress:input.target.trim()}:{}),...(input.intent?{intent:input.intent.trim()}:{}),
       ...(input.disposition?{disposition:input.disposition}:{}),
       ...(input.responseTargets!==undefined?{responseTargets:input.responseTargets.map(identityOf)}:{}),
       ...(input.speaker?{speaker:'tejas',source:input.his_input!.trim(),...inbox}:{}),
-      ...(mentions?.length?{mentions}:{}),...(input.sealed?{sealed:true}:{}),...(input.end?{end:input.end}:{}),...(input.outcome?{outcome:input.outcome}:{})});
+      ...(mentions?.length?{mentions}:{}),...(input.sealed?{sealed:true}:{}),...(input.end?{end:input.end}:{}),...(input.outcome?{outcome:input.outcome}:{})}));
   }
   const summary=(input.title??(input.verb==='verdict'?`verdict ${input.verdict} on lab:${designHandle}`:text)).trim().split('\n')[0]!.slice(0,200);
-  const notified=await deliver(written.notify??[],actor,actorIdentity(actor),summary,delivery);
+  const notified=(yield deliver(written.notify??[],actor,actorIdentity(actor),summary,delivery));
   return {id:written.id,address:written.address,duplicate:written.duplicate,notified,...('inbox' in written?{inbox:(written as {inbox?:unknown}).inbox}:{})};
-}
+}).call(this));}

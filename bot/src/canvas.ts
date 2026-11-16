@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps,runLedgerSegment} from './ledger-admission';
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ChannelRow, getChannel, type SlackChannelRow, updateChannelCanvasId } from "./state";
@@ -289,17 +291,17 @@ export type CanvasSyncResult =
 
 const canvasSyncTails = new Map<string, Promise<void>>();
 
-async function serializeCanvasSync<T>(channelId: string, sync: () => Promise<T>): Promise<T> {
+async function serializeCanvasSync<T>(channelId: string, sync: () => Promise<T>): Promise<T> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const prior = canvasSyncTails.get(channelId) || Promise.resolve();
   const result = prior.catch(() => {}).then(sync);
   const tail = result.then(() => {}, () => {});
   canvasSyncTails.set(channelId, tail);
   try {
-    return await result;
+    return (yield result);
   } finally {
     if (canvasSyncTails.get(channelId) === tail) canvasSyncTails.delete(channelId);
   }
-}
+}).call(this));}
 
 export async function syncAgentsCanvas(input: {
   client: any;
@@ -307,13 +309,13 @@ export async function syncAgentsCanvas(input: {
   user?: string | null;
   reason: string;
   source?: AgentsCanvasSource;
-}): Promise<CanvasSyncResult> {
+}): Promise<CanvasSyncResult> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const channelId = input.channel.slack_channel_id;
-  return await serializeCanvasSync(channelId, async () => await performCanvasSync({
+  return (yield serializeCanvasSync(channelId, async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {return (yield performCanvasSync({
     ...input,
     channel: getChannel(channelId) || input.channel,
-  }));
-}
+  }));}).call(this));}));
+}).call(this));}
 
 async function performCanvasSync(input: {
   client: any;
@@ -321,7 +323,7 @@ async function performCanvasSync(input: {
   user?: string | null;
   reason: string;
   source?: AgentsCanvasSource;
-}): Promise<CanvasSyncResult> {
+}): Promise<CanvasSyncResult> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const payload = buildAgentsCanvasPayload(input.channel, input.source);
   const context = { channel: input.channel.slack_channel_id, user: input.user || undefined };
   log("info", "canvas_sync_started", {
@@ -338,9 +340,9 @@ async function performCanvasSync(input: {
   // canvas_id reset + restart cycle.
   if (!input.channel.canvas_id) {
     try {
-      const info: any = await canvasSlackCall(input.client, "conversations.info", {
+      const info: any = (yield canvasSlackCall(input.client, "conversations.info", {
         channel: input.channel.slack_channel_id,
-      }, context);
+      }, context));
       const tabs = info?.channel?.properties?.tabs || [];
       const canvasTabs = tabs.filter((t: any) => t?.type === "canvas");
       if (canvasTabs.length > 0) {
@@ -361,7 +363,7 @@ async function performCanvasSync(input: {
           const fid = extra.data?.file_id;
           if (fid) {
             try {
-              await canvasSlackCall(input.client, "canvases.delete", { canvas_id: fid }, context);
+              (yield canvasSlackCall(input.client, "canvases.delete", { canvas_id: fid }, context));
               log("info", "canvas_duplicate_deleted", {
                 channel: input.channel.slack_channel_id,
                 deleted_canvas_id: fid,
@@ -375,13 +377,13 @@ async function performCanvasSync(input: {
 
   if (input.channel.canvas_id) {
     try {
-      await canvasSlackCall(input.client, "canvases.edit", {
+      (yield canvasSlackCall(input.client, "canvases.edit", {
         canvas_id: input.channel.canvas_id,
         changes: [{
           operation: "replace",
           document_content: payload.document_content,
         }],
-      }, context);
+      }, context));
       log("info", "canvas_update_done", {
         channel: input.channel.slack_channel_id,
         canvas_id: input.channel.canvas_id,
@@ -390,13 +392,13 @@ async function performCanvasSync(input: {
       return { ok: true, canvasId: input.channel.canvas_id, operation: "update" };
     } catch (err) {
       if (missingScopes(err).length) {
-        await notifyMissingScope({
+        (yield notifyMissingScope({
           client: input.client,
           channel: input.channel.slack_channel_id,
           user: input.user,
           method: "canvases.edit",
           err,
-        });
+        }));
         return { ok: false, error: slackErrorCode(err) };
       }
       const code = slackErrorCode(err);
@@ -421,11 +423,11 @@ async function performCanvasSync(input: {
   }
 
   try {
-    const created: any = await canvasSlackCall(input.client, "conversations.canvases.create", {
+    const created: any = (yield canvasSlackCall(input.client, "conversations.canvases.create", {
       channel_id: input.channel.slack_channel_id,
       title: payload.title,
       document_content: payload.document_content,
-    }, context);
+    }, context));
     const canvasId = String(created.canvas_id || "");
     if (!canvasId) throw new Error("conversations.canvases.create did not return canvas_id");
     updateChannelCanvasId(input.channel.slack_channel_id, canvasId);
@@ -437,13 +439,13 @@ async function performCanvasSync(input: {
     return { ok: true, canvasId, operation: "create" };
   } catch (err) {
     if (missingScopes(err).length) {
-      await notifyMissingScope({
+      (yield notifyMissingScope({
         client: input.client,
         channel: input.channel.slack_channel_id,
         user: input.user,
         method: "conversations.canvases.create",
         err,
-      });
+      }));
       return { ok: false, error: slackErrorCode(err) };
     }
     log("error", "canvas_create_failed", {
@@ -454,38 +456,38 @@ async function performCanvasSync(input: {
     });
     return { ok: false, error: slackErrorCode(err) };
   }
-}
+}).call(this));}
 
-export async function lookupCanvasSections(input: { client: any; canvasId: string; containsText: string }) {
-  return await canvasSlackCall(input.client, "canvases.sections.lookup", {
+export async function lookupCanvasSections(input: { client: any; canvasId: string; containsText: string }) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  return (yield canvasSlackCall(input.client, "canvases.sections.lookup", {
     canvas_id: input.canvasId,
     criteria: { contains_text: input.containsText },
-  });
-}
+  }));
+}).call(this));}
 
 export async function syncAllAgentsCanvases(input: {
   channels: SlackChannelRow[];
   requireSuccess: boolean;
   sync: (channel: SlackChannelRow) => Promise<{ ok: true } | { ok: false; error: string }>;
-}) {
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const failures: Array<{ channel: string; error: string }> = [];
   for (const channel of input.channels) {
-    const result = await input.sync(channel);
+    const result = (yield input.sync(channel));
     if (!result.ok) failures.push({ channel: channel.slack_channel_id, error: result.error });
   }
   if (input.requireSuccess && failures.length > 0) {
     throw new Error(`Required Canvas refresh failed: ${JSON.stringify(failures)}`);
   }
   return { refreshed: input.channels.length - failures.length, failures };
-}
+}).call(this));}
 
 export async function startRuntimeWithRequiredCanvasRefresh(input: {
   requireCanvasRefresh: boolean;
   refreshCanvases: () => Promise<void>;
   startRuntime: () => Promise<void>;
-}) {
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if (input.requireCanvasRefresh) {
-    await input.refreshCanvases();
+    (yield input.refreshCanvases());
   }
-  await input.startRuntime();
-}
+  (yield input.startRuntime());
+}).call(this));}

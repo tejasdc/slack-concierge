@@ -1,3 +1,4 @@
+import { StringDecoder } from "node:string_decoder";
 import { open, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -74,13 +75,14 @@ export function watchClaudeTranscript(input: {
   sessionUuid: string;
   fromStart: boolean;
   environment?: Record<string, string>;
-  onPickup: (pickup: ClaudeTranscriptPickup) => void;
+  onPickup: (pickup: ClaudeTranscriptPickup) => void | Promise<void>;
 }): () => void {
   const configDir = claudeConfigDir(input.environment);
   const locateUntil = Date.now() + LOCATE_FOR_MS;
   let path: string | null = null;
   let offset = 0;
   let partial = "";
+  const decoder = new StringDecoder("utf8");
   let stopped = false;
   let reading = false;
   let reportedFailure = false;
@@ -105,17 +107,20 @@ export function watchClaudeTranscript(input: {
       if (size <= offset) return;
       const handle = await open(path, "r");
       try {
-        const buffer = Buffer.alloc(size - offset);
-        await handle.read(buffer, 0, buffer.length, offset);
-        offset = size;
-        const lines = (partial + buffer.toString("utf8")).split("\n");
-        partial = lines.pop() ?? "";
-        for (const line of lines) {
-          if (stopped || !line.trim()) continue;
-          let row: unknown;
-          try { row = JSON.parse(line); } catch { continue; }
-          const pickup = claudeTranscriptPickup(row);
-          if (pickup) input.onPickup(pickup);
+        const buffer = Buffer.alloc(64 * 1024);
+        while (!stopped && offset < size) {
+          const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, size - offset), offset);
+          if (!bytesRead) break;
+          offset += bytesRead;
+          const lines = (partial + decoder.write(buffer.subarray(0, bytesRead))).split("\n");
+          partial = lines.pop() ?? "";
+          for (const line of lines) {
+            if (stopped || !line.trim()) continue;
+            let row: unknown;
+            try { row = JSON.parse(line); } catch { continue; }
+            const pickup = claudeTranscriptPickup(row);
+            if (pickup) await input.onPickup(pickup);
+          }
         }
       } finally {
         await handle.close();

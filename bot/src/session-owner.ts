@@ -1,5 +1,7 @@
 import {withContentReader,trustedContentReader,verifiedContentSource,contentReader,contentReaderHeaders,assertInputContent,inputContentVisible,assertMessageContent,messageContentVisible,evidenceContentVisible,assertOpaqueSession,opaqueSessionProtected,LabDisclosureError} from './lab-content-disclosure';
 import {comparisonContext} from './lab-invocation-facts';
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import {requirementsFor} from './request-history';
 import {parseAgentPrincipalHeader} from './agent-token-verify';
 import {LabConversations,LabConversationError,type LabParticipantChoice,type LabPreparedParticipant,type LabMaterial,type LabMaterialRequest,type LabActor} from './lab-conversations';
@@ -702,7 +704,7 @@ export class SessionOwner {
     const prepared=await this.prepareLabParticipantBase(choice,actor);
     return choice.materials?.length?{...prepared,materials:this.materializeLabMaterials(choice.materials)}:prepared;
   }
-  private async prepareLabParticipantBase(choice:LabParticipantChoice,actor?:LabActor):Promise<LabPreparedParticipant> {
+  private async prepareLabParticipantBase(choice:LabParticipantChoice,actor?:LabActor):Promise<LabPreparedParticipant> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(choice.sessionId){
       const session=this.session(choice.sessionId),metadata=sessionMetadata(session);
       if(metadata.inbox||metadata.canvasObservation||metadata.outside||metadata.interactionPolicy==='consultation-only'||metadata.origin==='imported'&&!metadata.nativeBinding||supersededBy(session.id))throw new LabConversationError('Choose a native participant that can continue this conversation; the Inbox does not coordinate Lab threads.',409,'LAB_PARTICIPANT_UNAVAILABLE');
@@ -717,7 +719,7 @@ export class SessionOwner {
       return {choice,provider:'chatgpt',metadata:{title:choice.label,purpose:'chat',model,cwd:this.defaultCwd}};
     }
     if(!['codex','claude-code','antigravity','auto'].includes(provider??''))throw new LabConversationError('This provider has no native Lab invocation and retained-answer capability.',400,'LAB_PROVIDER_UNSUPPORTED');
-    const location=choice.project?await this.locateProject(choice.project):null;
+    const location=choice.project?(yield this.locateProject(choice.project)):null;
     if(!location)throw new LabConversationError('Choose an exact registered project for the participant.');
     let selector=provider!;
     if(choice.model){
@@ -731,7 +733,7 @@ export class SessionOwner {
     if(refused)throw new LabConversationError(refused,409,'MODEL_ESCALATION_REASON_REQUIRED');
     const {provider:resolved,...metadata}=target;
     return {choice,provider:resolved,metadata:{...metadata,title:choice.label,...(humanChoice&&target.model?{explicitThinkingModelChoice:target.model}:{})} as NativeSessionMetadata};
-  }
+  }).call(this));}
   private labActor(request:Request,body:unknown):LabActor|undefined {
     const input=object(body),bodySource=input.agentSource;
     if(bodySource!==undefined&&(!bodySource||typeof bodySource.inputId!=='string'||typeof bodySource.runId!=='string'))throw new LabConversationError('A marked Lab action needs its complete exact source pair.',403,'AGENT_SOURCE_REQUIRED');
@@ -761,11 +763,11 @@ export class SessionOwner {
     private readonly readPeerNames:readonly string[]=[]){}
   /** In-memory login state only; account files and usage belong to isolated readers. */
   authEphemera():ProviderAuthEphemera|null {const ephemera=this.runtime.auth?.ephemera?.();return ephemera?this.withPeerActions(ephemera):null;}
-  async refreshAuthEphemera():Promise<ProviderAuthEphemera> {
+  async refreshAuthEphemera():Promise<ProviderAuthEphemera> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const refresh=this.runtime.auth?.refreshEphemera;
     if(!refresh)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
-    return this.withPeerActions(await refresh());
-  }
+    return this.withPeerActions((yield refresh()));
+  }).call(this));}
   /**
    * Provider accounts exist per machine: each instance holds its own credentials and is the
    * only one allowed to write them. `machine` names which instance a call is about; absent,
@@ -778,18 +780,18 @@ export class SessionOwner {
     const pending=this.sourceRefreshPass;
     if(pending&&!pending.view.settledAt)return pending.settled;
     const view={startedAt:new Date().toISOString(),settledAt:null as string|null,refresh:null as unknown[]|null,error:null as {code:string;message:string}|null};
-    const settled=refresh().then(value=>{
+    const settled=refresh().then(ledgerCallback(value=>{
       view.settledAt=new Date().toISOString();
       view.refresh=Array.isArray(value?.refresh)?value.refresh:null;
       return value;
-    },error=>{
+    }),ledgerCallback(error=>{
       const failure=error instanceof SessionCapabilityError&&(error.status===null||error.status>=500)
         ?new SessionOwnerError('Thinkering did not answer the source refresh; its availability may be changing.',503,'SOURCE_REFRESH_UNAVAILABLE')
         :error;
       view.settledAt=new Date().toISOString();
       view.error={code:failure instanceof SessionOwnerError?failure.code:'OWNER_ERROR',message:(failure instanceof Error?failure.message:String(failure)).slice(0,500)};
       throw failure;
-    });
+    }));
     this.sourceRefreshPass={view,settled};
     return settled;
   }
@@ -802,10 +804,10 @@ export class SessionOwner {
   private get peers(){return this.communication?.peersOrNull()??null;}
   private get selfMachine(){return this.peers?.self??process.env.CONCIERGE_PEER_NAME??'cloud';}
   private pauseSync:Promise<void>|null=null;
-  async focusHoldStatus(){
+  async focusHoldStatus(){return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(this.selfMachine!=='cloud'){
       if(!this.peers)throw new SessionOwnerError('The focus hold owner is unreachable.',503,'FOCUS_HOLD_OWNER_UNREACHABLE');
-      const cloud=await this.peers.client('cloud').request('GET','/sessions/v1/focus-hold',undefined,5_000,false) as Record<string,unknown>;
+      const cloud=(yield this.peers.client('cloud').request('GET','/sessions/v1/focus-hold',undefined,5_000,false)) as Record<string,unknown>;
       const localHeldCaptureCount=(db.query('SELECT count(*) AS count FROM focus_held_captures WHERE released_at_ms IS NULL').get() as {count:number}).count;
       return {...cloud,localHeldCaptureCount};
     }
@@ -814,8 +816,8 @@ export class SessionOwner {
       .get() as {count:number}).count;
     const heldCaptureCount=(db.query('SELECT count(*) AS count FROM focus_held_captures WHERE released_at_ms IS NULL').get() as {count:number}).count;
     return {...focusHoldState(),waiting,heldCaptureCount};
-  }
-  async focusHoldControl(body:unknown){
+  }).call(this));}
+  async focusHoldControl(body:unknown){return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const input=object(body);only(input,['held','untilMs','label','reviewCaptures','clientActionId']);
     const held=input.held;
     if(typeof held!=='boolean')throw new SessionOwnerError('held must be a boolean.',400,'FOCUS_HOLD_INVALID');
@@ -862,7 +864,7 @@ export class SessionOwner {
       executionChanged();this.runtime.wake();
     }
     return this.focusHoldStatus();
-  }
+  }).call(this));}
   globalPauseStatus(){return db.transaction(()=>{
     const state=globalPauseState();
     const running=db.query(`SELECT target.session_id,target.run_id,target.title,target.turn_id,target.stop_error,turn.status,
@@ -1011,16 +1013,16 @@ export class SessionOwner {
       WHERE target.generation=? AND turn.status='running' AND session.provider_id<>'chatgpt'
         AND NOT EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=?
           AND allowed.machine=? AND allowed.session_id=target.session_id)`).all(state.generation,state.generation,this.selfMachine) as Array<{session_id:number;turn_id:number}>;
-    for(const target of targets)void (this.runtime.safeStop?.(target.session_id,target.turn_id)??Promise.resolve(false)).then(confirmed=>{
+    for(const target of targets)void (this.runtime.safeStop?.(target.session_id,target.turn_id)??Promise.resolve(false)).then(ledgerCallback(confirmed=>{
       db.query('UPDATE global_pause_targets SET stop_error=? WHERE generation=? AND turn_id=?')
         .run(confirmed?null:'Execution host did not confirm this Stop.',state.generation,target.turn_id);
-    }).catch(error=>{
+    })).catch(ledgerCallback(error=>{
       db.query('UPDATE global_pause_targets SET stop_error=? WHERE generation=? AND turn_id=?')
         .run(String(error).slice(0,300),state.generation,target.turn_id);
       log('warn','global_pause_stop_unconfirmed',{turn_id:target.turn_id,error:String(error)});
-    });
+    }));
   }
-  async globalPauseControl(paused:boolean,body:unknown){
+  async globalPauseControl(paused:boolean,body:unknown){return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const input=object(body);only(input,['clientActionId','sessionIds']);
     const sessionIds=input.sessionIds===undefined?[]:input.sessionIds;
     if(!Array.isArray(sessionIds)||sessionIds.some(id=>typeof id!=='string'))
@@ -1033,7 +1035,7 @@ export class SessionOwner {
     const status=this.applyGlobalPause(paused,actionId(input),undefined,sessionIds);
     void this.syncGlobalPausePeers();
     return status;
-  }
+  }).call(this));}
   globalPausePeer(body:unknown){
     const input=object(body);only(input,['paused','generation','allowedSessionIds','continueSessionIds']);
     if(this.selfMachine==='cloud'||typeof input.paused!=='boolean'||!Number.isSafeInteger(input.generation)||input.generation<1)
@@ -1056,9 +1058,9 @@ export class SessionOwner {
     if(this.selfMachine!=='cloud')return this.refreshGlobalPauseFromOwner();
     if(!this.peers||!this.peers.names().length)return Promise.resolve();
     if(this.pauseSync)return this.pauseSync;
-    this.pauseSync=(async()=>{
+    this.pauseSync=(async()=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
       const state=globalPauseState();
-      await Promise.all(this.peers!.names().map(async name=>{
+      (yield Promise.all(this.peers!.names().map(async name=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         const row=db.query('SELECT acknowledged_generation,updated_at_ms FROM global_pause_peer_state WHERE peer=?').get(name) as {acknowledged_generation:number;updated_at_ms:number}|null;
         const acknowledged=state.generation===0||row?.acknowledged_generation===state.generation;
         // A sleeping peer is observed in the background, even when no pause is active.
@@ -1072,9 +1074,9 @@ export class SessionOwner {
           const continued=(JSON.parse(action?.session_ids_json??'[]') as string[])
             .filter(id=>id.startsWith(`${name}:`)).map(id=>Number(id.slice(name.length+1)));
           const snapshot=acknowledged
-            ?await this.peers!.client(name).request('GET','/sessions/v1/pause-all',undefined,5_000,false)
-            :await this.peers!.client(name).request('POST','/sessions/v1/pause-all/peer',
-              {paused:state.paused,generation:state.generation,allowedSessionIds:allowed.map(row=>row.session_id),continueSessionIds:continued},5_000,false);
+            ?(yield this.peers!.client(name).request('GET','/sessions/v1/pause-all',undefined,5_000,false))
+            :(yield this.peers!.client(name).request('POST','/sessions/v1/pause-all/peer',
+              {paused:state.paused,generation:state.generation,allowedSessionIds:allowed.map(row=>row.session_id),continueSessionIds:continued},5_000,false));
           const reachedAt=Date.now();
           db.query(`INSERT INTO global_pause_peer_state(peer,generation,acknowledged_generation,last_error,snapshot_json,last_reached_at_ms,updated_at_ms)
             VALUES(?,?,?,?,?,?,?) ON CONFLICT(peer) DO UPDATE SET generation=excluded.generation,
@@ -1087,14 +1089,14 @@ export class SessionOwner {
             last_error=excluded.last_error,updated_at_ms=excluded.updated_at_ms`)
             .run(name,state.generation,String(error).slice(0,300),Date.now());
         }
-      }));
-    })().finally(()=>{this.pauseSync=null;});
+      }).call(this));})));
+    }).call(this));})().finally(()=>{this.pauseSync=null;});
     return this.pauseSync;
   }
-  async refreshGlobalPauseFromOwner(failClosed=false){
+  async refreshGlobalPauseFromOwner(failClosed=false){return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(this.selfMachine==='cloud'||!this.peers)return;
     try{
-      const status=await this.peers.client('cloud').request('GET','/sessions/v1/pause-all',undefined,5_000,false) as {
+      const status=(yield this.peers.client('cloud').request('GET','/sessions/v1/pause-all',undefined,5_000,false)) as {
         paused:boolean;generation:number;allowed:string[];continued?:string[]};
       const localState=globalPauseState();
       if(status.generation<localState.generation)return;
@@ -1112,7 +1114,7 @@ export class SessionOwner {
       if(failClosed){db.query('UPDATE global_pause SET paused=1 WHERE singleton=1').run();executionChanged();}
       log('warn','global_pause_owner_unreachable',{error:String(error)});
     }
-  }
+  }).call(this));}
   /**
    * Which Inbox thread a change was made for. thnkr.ing names the change (its commit, subject and
    * time); this instance finds the session that made it from its own turns and transcripts, and
@@ -1120,18 +1122,18 @@ export class SessionOwner {
    * stamped session and input, where an agent's checkout added them, answer directly.
    * `local=1` is a peer asking: it answers only which session here made the change.
    */
-  private async workThreadFor(url:URL){
+  private async workThreadFor(url:URL){return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const param=(key:string,max:number)=>{const value=url.searchParams.get(key);if(value&&value.length>max)throw new SessionOwnerError(`The ${key} is too long.`);return value||null;};
     let session=param('session',200),input=param('input',400);
     const commit=param('commit',40),subject=param('subject',300),at=param('at',40),localOnly=url.searchParams.get('local')==='1';
     if(!session&&!input&&!(commit&&at))throw new SessionOwnerError('Name the change, or the session or input it was made in.');
     if(!session&&!input){
-      const local=await commitWork(commit!,subject,at!);
+      const local=(yield commitWork(commit!,subject,at!));
       if(local){session=`${this.selfMachine==='cloud'?'concierge':this.selfMachine}:${local.sessionId}`;input=local.input;}
       else if(!localOnly&&this.peers){
         for(const name of this.peers.names()){
           try{
-            const answer=await this.peers.client(name).request('GET','/sessions/v1/work-thread?'+new URLSearchParams({commit:commit!,at:at!,...(subject?{subject}:{}),local:'1'}),undefined,8_000,false) as {session?:unknown;input?:unknown};
+            const answer=(yield this.peers.client(name).request('GET','/sessions/v1/work-thread?'+new URLSearchParams({commit:commit!,at:at!,...(subject?{subject}:{}),local:'1'}),undefined,8_000,false)) as {session?:unknown;input?:unknown};
             if(typeof answer?.session==='string'){session=answer.session;input=typeof answer.input==='string'?answer.input:null;break;}
           }catch{/* A sleeping Mac answers next time; the line stays plain meanwhile. */}
         }
@@ -1139,7 +1141,7 @@ export class SessionOwner {
     } else input=originInput(input);
     if(localOnly)return {session,input};
     return {...workThread(session,input),session};
-  }
+  }).call(this));}
   /** Which peer a call belongs to, or null for this instance. */
   private remoteMachine(machine:unknown):string|null {
     const name=this.machineName(machine);
@@ -1159,29 +1161,29 @@ export class SessionOwner {
     if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
     return this.runtime.auth;
   }
-  private async localMachineView(fresh=false){
-    return {name:this.selfMachine,self:true,reachable:true,note:null,providers:await this.localAuth().status(fresh)};
-  }
+  private async localMachineView(fresh=false){return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+    return {name:this.selfMachine,self:true,reachable:true,note:null,providers:(yield this.localAuth().status(fresh))};
+  }).call(this));}
   /**
    * Every machine's accounts, read in parallel. A peer that is unreachable, unauthorized or
    * slow contributes its reason and no providers: he has to see that his laptop is not
    * answering rather than wonder where it went, and one silent machine must not cost him
    * the surface for the other.
    */
-  async authProviders(machine?:unknown,fresh=false){
+  async authProviders(machine?:unknown,fresh=false){return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const remote=this.remoteMachine(machine);
     if(remote){
       try {
-        const answer=await this.peers!.authProviders(remote,fresh) as {providers?:unknown;machines?:{name:string}[]};
+        const answer=(yield this.peers!.authProviders(remote,fresh)) as {providers?:unknown;machines?:{name:string}[]};
         const providers=answer?.providers??[];
         return {providers,machines:[{name:remote,self:false,reachable:true,note:null,providers}]};
       } catch(error) {return this.peerFailure(remote,error);}
     }
-    const here=await this.localMachineView(fresh);
+    const here=(yield this.localMachineView(fresh));
     if(this.machineName(machine)!==null)return {providers:here.providers,machines:[here]};
-    const peers=await Promise.all((this.peers?.names()??[]).map(name=>this.peerAccountView(name,fresh)));
+    const peers=(yield Promise.all((this.peers?.names()??[]).map(name=>this.peerAccountView(name,fresh))));
     return {providers:here.providers,machines:[here,...peers]};
-  }
+  }).call(this));}
   // Other machines' account answers; see PeerAccountAnswers. `peerAuthActedAt` is when a sign-in
   // action on each machine last finished, published to the read worker in the sign-in state.
   private peerAccountAnswers=new PeerAccountAnswers();
@@ -1190,24 +1192,24 @@ export class SessionOwner {
     return {...ephemera,peerAuthActedAtMs:Object.fromEntries(this.peerAuthActedAt)};
   }
   private peerAccountView(name:string,fresh:boolean):Promise<Record<string,unknown>>{
-    return this.peerAccountAnswers.view(name,fresh,this.peerAuthActedAt.get(name)??0,async()=>{
+    return this.peerAccountAnswers.view(name,fresh,this.peerAuthActedAt.get(name)??0,async()=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
       try {
-        return {answered:true,view:{name,self:false,reachable:true,note:null,providers:(await this.peers!.authProviders(name,fresh) as {providers?:unknown})?.providers??[]}};
+        return {answered:true,view:{name,self:false,reachable:true,note:null,providers:((yield this.peers!.authProviders(name,fresh)) as {providers?:unknown})?.providers??[]}};
       } catch(error) {
         const note=error instanceof PeerError&&error.kind==='unreachable'
           ?`${name} is not answering right now, so its accounts cannot be read.`
           :error instanceof PeerError?error.message:`${name} could not be read right now.`;
         return {answered:false,view:{name,self:false,reachable:false,note,providers:[]}};
       }
-    });
+    }).call(this));});
   }
-  private async authAction(machine:unknown,path:string,body:Record<string,unknown>,timeoutMs:number,local:()=>unknown){
+  private async authAction(machine:unknown,path:string,body:Record<string,unknown>,timeoutMs:number,local:()=>unknown){return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const remote=this.remoteMachine(machine);
     if(!remote)return local();
-    try {return await this.peers!.authAction(remote,path,body,timeoutMs);}
+    try {return (yield this.peers!.authAction(remote,path,body,timeoutMs));}
     catch(error) {return this.peerFailure(remote,error);}
     finally {this.peerAuthActedAt.set(remote,Date.now());}
-  }
+  }).call(this));}
   // Timeouts follow what the same call can take locally: the login manager waits up to 20s
   // for a URL and 60s for a pasted code to settle, and activating Codex restarts its App
   // Server with a 90s budget.
@@ -1698,12 +1700,12 @@ export class SessionOwner {
    * hears only what it declares needs him (`repair-notices.ts`). One input carries every notice
    * pending at that moment, so a burst of crashes is one turn, not one each.
    */
-  async deliverRepairNotices():Promise<number> {
+  async deliverRepairNotices():Promise<number> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const pending=pendingRepairNotices(db);
     if(!pending.length)return 0;
     let session=standingAgentSession(this.defaultCwd,'concierge-repair')??unboundRepairAgentSession(this.defaultCwd);
     if(!session) {
-      const project=await this.standingProjectLocation('concierge-repair');
+      const project=(yield this.standingProjectLocation('concierge-repair'));
       if(!project)throw new SessionOwnerError('The concierge repair project is unavailable on its configured runner.',424,'PROJECT_UNAVAILABLE');
       const target=this.requestTarget({provider:REPAIR_AGENT_PROVIDER,project:project.cwd,projectLocation:project});
       if(!this.runtime.available(target.provider))return 0;
@@ -1721,7 +1723,7 @@ export class SessionOwner {
     markRepairNoticesDelivered(db,pending.map(notice=>notice.key),inputId);
     this.sendSignInRenewals(session,admitted,pending);
     return pending.length;
-  }
+  }).call(this));}
   /**
    * An expired Claude or Codex login goes straight to the Mac's browser agent as the repair agent's request,
    * without waiting for a provider turn: when every Claude account here is signed out, the repair
@@ -1760,7 +1762,7 @@ export class SessionOwner {
   savedWorkList(cursor:string|null=null){return savedWorkListPage(db,cursor);}
   savedWorkControl(turnId:number,action:string,body:Record<string,unknown>){return updateSavedTurn(turnId,action,body);}
   private configuredProjectRunner():string|null { return process.env.CONCIERGE_TURN_RUNNER?.trim()||null; }
-  async prepareProjectLocation(location:string,runner?:string|null) { return this.locateProject(location,runner); }
+  async prepareProjectLocation(location:string,runner?:string|null) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> { return this.locateProject(location,runner); }).call(this));}
   private persistedProjectRunner(metadata:NativeSessionMetadata,session?:SessionRow):string|null {
     if(Object.hasOwn(metadata,'providerRunner'))return metadata.providerRunner??null;
     if(session?.agent_session_uuid){
@@ -1779,10 +1781,10 @@ export class SessionOwner {
     }
     return this.configuredProjectRunner();
   }
-  async preparePersistedProjectLocation(metadata:NativeSessionMetadata,session?:SessionRow):Promise<{name:string|null;path:string;cwd:string;runner:string|null}> {
+  async preparePersistedProjectLocation(metadata:NativeSessionMetadata,session?:SessionRow):Promise<{name:string|null;path:string;cwd:string;runner:string|null}> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const runner=this.persistedProjectRunner(metadata,session);
     if(runner){
-      const resolved=await resolveRunnerProjectLocation(runner,metadata);
+      const resolved=(yield resolveRunnerProjectLocation(runner,metadata));
       return {name:resolved.project,path:resolved.path,cwd:resolved.cwd,runner};
     }
     const location=typeof metadata.projectName==='string'
@@ -1794,20 +1796,20 @@ export class SessionOwner {
     const project=containingProject(this.defaultCwd,local.cwd);
     if(!project)throw new SessionOwnerError('This session folder is outside a registered project.',424,'PROJECT_UNAVAILABLE');
     return {name:project.name,path:relative(project.cwd,local.cwd),cwd:local.cwd,runner:null};
-  }
-  async hasRegisteredProject(session:SessionRow):Promise<boolean> {
-    try{return !!(await this.preparePersistedProjectLocation(sessionMetadata(session),session)).name;}
+  }).call(this));}
+  async hasRegisteredProject(session:SessionRow):Promise<boolean> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+    try{return !!((yield this.preparePersistedProjectLocation(sessionMetadata(session),session))).name;}
     catch{return false;}
-  }
-  private async standingProjectLocation(role:StandingAgentRole) {
+  }).call(this));}
+  private async standingProjectLocation(role:StandingAgentRole) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const agent=standingAgent(role);
     if(!agent)return null;
     return this.locateProject(agent.project);
-  }
-  private async locateProject(location:string,runnerOverride?:string|null):Promise<{name:string;path:string;cwd:string;runner:string|null}> {
+  }).call(this));}
+  private async locateProject(location:string,runnerOverride?:string|null):Promise<{name:string;path:string;cwd:string;runner:string|null}> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const runner=runnerOverride??this.configuredProjectRunner();
     if(runner) {
-      const located=await this.runnerProjectCall<{project:string;path:string;cwd:string}>('projects.locate',{location},runner);
+      const located=(yield this.runnerProjectCall<{project:string;path:string;cwd:string}>('projects.locate',{location},runner));
       if(!located)throw new SessionOwnerError('The configured project runner did not resolve this project.',424,'PROJECT_RUNNER_UNAVAILABLE');
       return {name:located.project,path:located.path,cwd:located.cwd,runner};
     }
@@ -1816,41 +1818,41 @@ export class SessionOwner {
     const project=containingProject(this.defaultCwd,local.cwd);
     if(!project)throw new SessionOwnerError('This folder is outside a registered project.');
     return {name:project.name,path:relative(project.cwd,local.cwd),cwd:local.cwd,runner:null};
-  }
-  async prepareImplementationWorktree(project:string,sourceInputId:string,actionId:string) {
-    const selected=await this.locateProject(project);
+  }).call(this));}
+  async prepareImplementationWorktree(project:string,sourceInputId:string,actionId:string) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+    const selected=(yield this.locateProject(project));
     if(selected.path)throw new SessionOwnerError('Implementation handoff needs the registered Git project root, not a nested folder.');
     const key=createHash('sha256').update(sourceInputId).update('\0').update(actionId).digest('hex').slice(0,20);
     const params={project:selected.name,key};
     const created=selected.runner
-      ?await runnerMachineCall<{project:string;path:string;cwd:string}>(selected.runner,'projects.implementationWorktree',params,300_000)
-      :await serveProjectCall('projects.implementationWorktree',params) as {project:string;path:string;cwd:string};
+      ?(yield runnerMachineCall<{project:string;path:string;cwd:string}>(selected.runner,'projects.implementationWorktree',params,300_000))
+      :(yield serveProjectCall('projects.implementationWorktree',params)) as {project:string;path:string;cwd:string};
     if(created.project!==selected.name||created.path!==`.wt/impl-${key}`)
       throw new SessionOwnerError('Implementation worktree did not match the requested project.');
     return {name:created.project,path:created.path,cwd:created.cwd,runner:selected.runner};
-  }
-  private async runnerProjectCall<T>(method:string,params:Record<string,unknown>,runnerOverride?:string|null):Promise<T|null> {
+  }).call(this));}
+  private async runnerProjectCall<T>(method:string,params:Record<string,unknown>,runnerOverride?:string|null):Promise<T|null> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const runner=runnerOverride??this.configuredProjectRunner();if(!runner)return null;
-    try{return await runnerMachineCall<T>(runner,method,params);}
+    try{return (yield runnerMachineCall<T>(runner,method,params));}
     catch(error){
       const message=error instanceof Error?error.message:String(error);
       if(method==='projects.todos.update'&&message.includes('Canonical TODOs changed'))
         throw new SessionOwnerError('Canonical TODOs changed. Reload before saving.',409,'PROJECT_TODOS_CONFLICT');
       throw new SessionOwnerError(`Runner ${runner} is unavailable for this project operation: ${message}`,424,'PROJECT_RUNNER_UNAVAILABLE');
     }
-  }
-  async projects() {
+  }).call(this));}
+  async projects() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const canvasTitles=this.projectSetup?.canvasProjectTitles();
-    const remote=await this.runnerProjectCall<{workspaceRoot:string;projects:{name:string;path:string}[]}>('projects.list',{});
+    const remote=(yield this.runnerProjectCall<{workspaceRoot:string;projects:{name:string;path:string}[]}>('projects.list',{}));
     const projects=remote?remote.projects.map(project=>({name:project.name,cwd:join(remote.workspaceRoot,project.path)})):sessionProjects(this.defaultCwd);
     return {projects:projects.map(project=>({...project,...(canvasTitles?.has(project.name)?{canvasTitle:canvasTitles.get(project.name)}:{}),defaultProvider:project.name==='slack-inbox'?(claudeAllowanceHeld()?'codex':'cc-opus-1m'):configuredProviderDefault(remote?this.managedProjectRecord(project.name)?.provider_default:getChannelByCodePath(project.cwd)?.provider_default)}))};
-  }
+  }).call(this));}
   private managedProjectRecord(id:string) {
     const rows=db.query('SELECT rowid AS rowId,* FROM channels WHERE code_path IS NOT NULL').all() as Array<{rowId:number;name:string;code_path:string;provider_default:string;slack_channel_id:string|null}>;
     const matches=rows.filter(row=>row.name===id||basename(row.code_path)===id);
     return matches.length===1?matches[0]!:null;
   }
-  async standingAgents() {return {...standingAgentView(db,this.defaultCwd),hostTimers:await hostTimerView()};}
+  async standingAgents() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {return {...standingAgentView(db,this.defaultCwd),hostTimers:(yield hostTimerView())};}).call(this));}
   private project(id:string) {
     const project=sessionProject(this.defaultCwd,id);
     if(!project)throw new SessionOwnerError('Project is unknown or unavailable.',404,'PROJECT_UNAVAILABLE');
@@ -1861,11 +1863,11 @@ export class SessionOwner {
     if(!record)throw new SessionOwnerError('This trusted project has no canonical task record.',409,'PROJECT_METADATA_UNAVAILABLE');
     return {project,record};
   }
-  async projectDefault(id:string,body:unknown) {
+  async projectDefault(id:string,body:unknown) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const input=object(body);only(input,['provider']);
     const selector=typeof input.provider==='string'?parseProviderSelector(input.provider):null;
     if(!selector)throw new SessionOwnerError('Choose a supported provider/model alias.');
-    const remote=await this.runnerProjectCall<{project:string;path:string;cwd:string}>('projects.resolve',{project:id,path:''});
+    const remote=(yield this.runnerProjectCall<{project:string;path:string;cwd:string}>('projects.resolve',{project:id,path:''}));
     const project=remote?{name:remote.project,cwd:remote.cwd}:this.project(id);
     const record=remote?this.managedProjectRecord(id):getChannelByCodePath(project.cwd);
     if(!record)throw new SessionOwnerError('This trusted project has no canonical task record.',409,'PROJECT_METADATA_UNAVAILABLE');
@@ -1875,20 +1877,20 @@ export class SessionOwner {
     if(remote)db.query('UPDATE channels SET provider_default=? WHERE rowid=?').run(stored,record.rowId);
     else updateManagedProjectProvider(project.cwd,stored);
     return {project:{...project,defaultProvider:stored}};
-  }
+  }).call(this));}
   /**
    * One Markdown file under a workspace root, read on the machine that holds it. `machine`
    * names that instance when the caller knows it — the session a path was mentioned in ran
    * somewhere. Without it an absolute path under a peer's home routes there, and anything
    * else (including `~`) is resolved here.
    */
-  async file(path:unknown,machine:string|null):Promise<{file:WorkspaceFile}> {
+  async file(path:unknown,machine:string|null):Promise<{file:WorkspaceFile}> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(typeof path!=='string'||!path.trim())throw new SessionOwnerError('A file path is required.',400,'FILE_PATH_INVALID');
     const peers=this.peers,self=this.selfMachine;
     const remote=machine!==null?this.remoteMachine(machine):peers?.instanceForPath(expandHome(path))??null;
     if(remote){
       if(!peers)throw new SessionOwnerError(`This machine does not know ${remote}.`,404,'MACHINE_UNKNOWN');
-      try {return await peers.readFile(remote,path) as {file:WorkspaceFile};}
+      try {return (yield peers.readFile(remote,path)) as {file:WorkspaceFile};}
       catch(error) {
         // This instance answered; only the peer did not. A gateway status would read to the
         // caller as this owner being unreachable.
@@ -1898,7 +1900,7 @@ export class SessionOwner {
       }
     }
     if(machine===null&&this.configuredProjectRunner()) {
-      const remote=await this.runnerProjectCall<{workspaceRoot:string;matched:boolean;file?:WorkspaceFile}>('projects.fileAt',{path:expandHome(path)});
+      const remote=(yield this.runnerProjectCall<{workspaceRoot:string;matched:boolean;file?:WorkspaceFile}>('projects.fileAt',{path:expandHome(path)}));
       if(remote?.matched&&remote.file)return {file:remote.file};
       if(remote&&remote.workspaceRoot!==''&&isAbsolute(remote.workspaceRoot)) {
         const requested=expandHome(path),root=remote.workspaceRoot;
@@ -1907,25 +1909,25 @@ export class SessionOwner {
     }
     try {return {file:readWorkspaceFile({machine:self,workspaceRoot:this.defaultCwd,path})};}
     catch(error) {throw error instanceof WorkspaceFileError?new SessionOwnerError(error.message,error.status,error.code):error;}
-  }
+  }).call(this));}
   /**
    * One bounded folder in a registered project. The project name, rather than a caller supplied
    * root, chooses the authority boundary. Relative paths cannot cross it; hidden/sensitive names
    * and every symlink are omitted, so entries returned here remain safe inputs to `file()`.
    */
-  async projectFiles(id:string,path:unknown,machine:string|null):Promise<ProjectFilesView> {
+  async projectFiles(id:string,path:unknown,machine:string|null):Promise<ProjectFilesView> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const peers=this.peers;
     const remote=machine!==null?this.remoteMachine(machine):null;
     if(remote){
       if(!peers)throw new SessionOwnerError(`This machine does not know ${remote}.`,404,'MACHINE_UNKNOWN');
-      try {return await peers.projectFiles(remote,id,typeof path==='string'?path:'') as ProjectFilesView;}
+      try {return (yield peers.projectFiles(remote,id,typeof path==='string'?path:'')) as ProjectFilesView;}
       catch(error) {
         if(error instanceof PeerError)throw new SessionOwnerError(error.kind==='unreachable'?`${remote} is not answering, so its project files cannot be listed right now.`:error.message,
           error.kind==='unreachable'?424:error.status??502,error.kind==='unreachable'?'MACHINE_UNREACHABLE':error.code??'PEER_REFUSED');
         throw error;
       }
     }
-    const runnerFiles=await this.runnerProjectCall<ProjectFilesView>('projects.files',{project:id,path:typeof path==='string'?path:''});
+    const runnerFiles=(yield this.runnerProjectCall<ProjectFilesView>('projects.files',{project:id,path:typeof path==='string'?path:''}));
     if(runnerFiles)return runnerFiles;
     const project=this.project(id);
     const requested=path===null||path===undefined?'':typeof path==='string'?path.trim():'';
@@ -1955,38 +1957,38 @@ export class SessionOwner {
     } finally {directory.closeSync();}
     entries.sort((a,b)=>a.kind===b.kind?a.name.localeCompare(b.name):a.kind==='directory'?-1:1);
     return {project:{name:project.name,cwd:project.cwd},path:relativePath,entries,truncated};
-  }
-  async projectInstructions(id:string) {
-    const remote=await this.runnerProjectCall<{project:string;path:string;content:string}>('projects.instructions',{project:id});
+  }).call(this));}
+  async projectInstructions(id:string) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+    const remote=(yield this.runnerProjectCall<{project:string;path:string;content:string}>('projects.instructions',{project:id}));
     if(remote)return remote;
     const project=this.project(id),path=join(project.cwd,'AGENTS.md');
     if(!existsSync(path))throw new SessionOwnerError('Canonical project instructions are unavailable.',404,'PROJECT_INSTRUCTIONS_UNAVAILABLE');
     return {project:project.name,path:'AGENTS.md',content:readFileSync(path,'utf8')};
-  }
-  async projectTodos(id:string) {
-    const remote=await this.runnerProjectCall<{project:string;content:string;sha256:string}>('projects.todos',{project:id});
+  }).call(this));}
+  async projectTodos(id:string) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+    const remote=(yield this.runnerProjectCall<{project:string;content:string;sha256:string}>('projects.todos',{project:id}));
     if(remote)return remote;
     const {project,record}=this.managedProject(id),path=join(record.vault_path,'notes','TODOS.md');
     if(!existsSync(path))throw new SessionOwnerError('Canonical project TODOs are unavailable.',404,'PROJECT_TODOS_UNAVAILABLE');
     const content=readFileSync(path,'utf8');
     return {project:project.name,content,sha256:hash(content)};
-  }
-  async updateProjectTodos(id:string,body:unknown) {
+  }).call(this));}
+  async updateProjectTodos(id:string,body:unknown) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const input=object(body);only(input,['content','sha256']);
     if(typeof input.content!=='string'||typeof input.sha256!=='string'||!input.content.endsWith('\n'))throw new SessionOwnerError('TODO update requires complete newline-terminated canonical content and its observed hash.');
-    const remote=await this.runnerProjectCall<{project:string;content:string;sha256:string}>('projects.todos.update',{project:id,content:input.content,sha256:input.sha256});
+    const remote=(yield this.runnerProjectCall<{project:string;content:string;sha256:string}>('projects.todos.update',{project:id,content:input.content,sha256:input.sha256}));
     if(remote)return remote;
     const {project,record}=this.managedProject(id),path=join(record.vault_path,'notes','TODOS.md');
     if(!existsSync(path)||hash(readFileSync(path,'utf8'))!==input.sha256)throw new SessionOwnerError('Canonical TODOs changed. Reload before saving.',409,'PROJECT_TODOS_CONFLICT');
     const temporary=join(dirname(path),`.TODOS.${randomUUID()}.tmp`);
     try {writeFileSync(temporary,input.content,{encoding:'utf8',flag:'wx',mode:0o600});renameSync(temporary,path);} catch(error) {try {if(existsSync(temporary)) unlinkSync(temporary);} catch {} throw error;}
     return {project:project.name,content:input.content,sha256:hash(input.content)};
-  }
-  async status() {
-    const projects=await this.projects();
-    return {owner:{available:true},capabilities:{passiveContext:1},captureDelivery:this.captureDeliveryStatus?.()??null,providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),antigravity:this.runtime.available('antigravity'),chatgpt:this.runtime.available('chatgpt')},projects:projects.projects.length,deployment:await this.deploymentWait(),deploymentStuck:await this.stuckUpdate(),
+  }).call(this));}
+  async status() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+    const projects=(yield this.projects());
+    return {owner:{available:true},capabilities:{passiveContext:1},captureDelivery:this.captureDeliveryStatus?.()??null,providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),antigravity:this.runtime.available('antigravity'),chatgpt:this.runtime.available('chatgpt')},projects:projects.projects.length,deployment:(yield this.deploymentWait()),deploymentStuck:(yield this.stuckUpdate()),
       executionsOnPreviousVersion:this.executionsOnPreviousVersion()};
-  }
+  }).call(this));}
   /**
    * Running conversations whose agents still run on a previous release's execution host: they carry
    * on through an installed update and finish there, and this falls to zero as they do. Compared by
@@ -2007,7 +2009,7 @@ export class SessionOwner {
     } catch {return 0;}
   }
   /** A release waits for every running turn to end; name the sessions it is waiting on. */
-  private async deploymentWait() {
+  private async deploymentWait() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const run=getActiveDeploymentRun();
     if(!run||!['prepared','draining'].includes(run.status))return null;
     // The run and its first prepared event are inserted together. Re-reading event history
@@ -2032,12 +2034,12 @@ export class SessionOwner {
       : run.desired_commit??run.candidate_commit;
     // He is told what every change in the update does, including the commit subject when its
     // sentence is missing; no change is exempt for being invisible on a screen (2026-09-23).
-    const holds=commit?await pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,commit):{notes:[],subjects:[]};
+    const holds=commit?(yield pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,commit)):{notes:[],subjects:[]};
     // Only commits accepted after activation need another update.
     const newest=getDeploymentDesiredState('concierge')?.desired_commit??null;
-    const queued=commit&&newest&&newest!==commit?await pendingUpdateSummary(commit,newest):{notes:[],subjects:[]};
+    const queued=commit&&newest&&newest!==commit?(yield pendingUpdateSummary(commit,newest)):{notes:[],subjects:[]};
     return {runId:run.id,commit,waitingSince:iso(run.created_at),sessions,continuing,notes:holds.notes,subjects:holds.subjects,queued};
-  }
+  }).call(this));}
   /**
    * An update that failed and is still not installed. These are the runner's own rows — every
    * attempt since the last one that succeeded — so the fact stands until one succeeds. A fresh
@@ -2045,7 +2047,7 @@ export class SessionOwner {
    * disappears the moment something retries is how four failed updates became invisible
    * (2026-09-23, capture c60c6162).
    */
-  private async stuckUpdate() {
+  private async stuckUpdate() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const target='concierge';
     const succeeded=(db.query("SELECT MAX(completed_at) AS at FROM deployment_runs WHERE target=? AND status='succeeded'").get(target) as {at:string|null}|null)?.at??'';
     const failures=db.query("SELECT * FROM deployment_runs WHERE target=? AND status IN ('failed','ambiguous') AND completed_at>? ORDER BY created_at").all(target,succeeded) as DeploymentRunRow[];
@@ -2054,17 +2056,17 @@ export class SessionOwner {
     // What has not installed is the whole gap between what is running and what should be, not
     // only the attempt that failed last: later commits queue up behind a failing update.
     const commit=getDeploymentDesiredState(target)?.desired_commit??latest.desired_commit??latest.candidate_commit;
-    const holds=commit?await pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,commit):{notes:[],subjects:[]};
+    const holds=commit?(yield pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,commit)):{notes:[],subjects:[]};
     return {runId:latest.id,commit,notes:holds.notes,subjects:holds.subjects,tries:failures.length,since:iso(first.created_at),failedAt:iso(latest.completed_at??latest.updated_at),
       repair:repairEffort(latest),stopped:whereItStopped(latest.error)};
-  }
+  }).call(this));}
   /**
    * An update can be stuck without ever failing: on 2026-09-23 a wake loop kept the runner from
    * starting one at all, so there was no failed run to report and nothing was waiting either.
    * A commit that should be running, is not running, has no attempt in flight and has stood for
    * longer than a deployment takes to start is stuck, and says so with no attempts to count.
    */
-  private async updateNeverStarted(target:string) {
+  private async updateNeverStarted(target:string) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const desiredState=getDeploymentDesiredState(target);
     const desired=desiredState?.desired_commit;
     if(!desired||getActiveDeploymentRun(target))return null;
@@ -2076,10 +2078,10 @@ export class SessionOwner {
     // A pending update deliberately waits for main to go quiet; it is late only after it may start.
     const startsAtMs=automaticDeploymentStartsAtMs(target)??Date.parse(observed??'');
     if(!observed||!Number.isFinite(startsAtMs)||Date.now()-startsAtMs<NEVER_STARTED_MS)return null;
-    const holds=await pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,desired);
+    const holds=(yield pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,desired));
     return {runId:null,commit:desired,notes:holds.notes,subjects:holds.subjects,
       tries:0,since:new Date(startsAtMs).toISOString(),failedAt:null,repair:null,stopped:null};
-  }
+  }).call(this));}
   private ensureInboxSession() {
     const current=inboxSession(),meta=current?sessionMetadata(current):null;
     if(current&&meta?.inboxRole==='project-router'&&meta.standingRole==='inbox'){
@@ -2194,7 +2196,7 @@ export class SessionOwner {
     if(!messages.length||messages.at(-1)?.id!==selected.message.id)throw new SessionOwnerError('The selected message boundary is no longer retained.',409,'MESSAGE_REFERENCE_CHANGED');
     return messages;
   }
-  async compare(id:string,body:unknown) {
+  async compare(id:string,body:unknown) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const session=this.session(id),input=object(body);only(input,['clientActionId','reference','provider']);const action=actionId(input);
     if(!['codex','claude-code','antigravity','chatgpt'].includes(input.provider))throw new SessionOwnerError('Choose another supported agent provider.');
     if(input.provider===session.provider_id)throw new SessionOwnerError('Choose another agent provider for comparison.');
@@ -2215,7 +2217,7 @@ export class SessionOwner {
       return getAcceptedSessionInput(saved.id)!;
     })();
     return {session:this.view(child),operation:this.receipt(this.dispatch(accepted))};
-  }
+  }).call(this));}
   captureSelectedMessage(id:string,body:unknown) {
     const session=this.session(id),input=object(body);only(input,['clientActionId','reference','intent']);const action=actionId(input);
     if(input.intent!=='note'&&input.intent!=='action')throw new SessionOwnerError('Choose whether this Inbox capture is a note or an action.');
@@ -2236,12 +2238,12 @@ export class SessionOwner {
     const inbox=getSessionById(accepted.session_id)!;
     return {inbox:{sessionId:`concierge:${inbox.id}`,address:sessionAddress(inbox)},operation:this.receipt(accepted)};
   }
-  async createTask(id:string,body:unknown) {
+  async createTask(id:string,body:unknown) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const session=this.session(id),input=object(body);only(input,['clientActionId','reference']);const action=actionId(input),selected=this.selectedMessage(session,input.reference),metadata=sessionMetadata(session);
     const runner=this.persistedProjectRunner(metadata,session);
     let projectName:string|null=null,project:ReturnType<typeof containingProject>=null;
     if(runner) {
-      const location=await this.preparePersistedProjectLocation(metadata,session);
+      const location=(yield this.preparePersistedProjectLocation(metadata,session));
       projectName=location.name;
     } else project=metadata.project?containingProject(this.defaultCwd,metadata.project):null;
     if(runner&&!projectName)throw new SessionOwnerError('This session has no stable runner project identity for task creation.',409,'PROJECT_UNAVAILABLE');
@@ -2255,7 +2257,7 @@ export class SessionOwner {
     if(prior.state==='completed')return {operation:this.receipt(accepted)};
     try {
       const path=runner
-        ?(await this.runnerProjectCall<{path:string}>('projects.todos.append',{project:projectName,text:selected.message.content,marker:captureMarker(accepted.id,'native-session-owner')}))?.path
+        ?((yield this.runnerProjectCall<{path:string}>('projects.todos.append',{project:projectName,text:selected.message.content,marker:captureMarker(accepted.id,'native-session-owner')})))?.path
         :appendTodoFile(db,{path:join(project!.cwd,'notes','TODOS.md'),channelName:project!.name,text:selected.message.content,idempotencyKey:accepted.id,idempotencySecret:'native-session-owner'});
       if(!path)throw new SessionOwnerError('Runner did not confirm the project task append.',424,'PROJECT_RUNNER_UNAVAILABLE');
       db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',task:{path,reference:selected.reference}}),accepted.id);
@@ -2265,7 +2267,7 @@ export class SessionOwner {
       db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'uncertain',error:{code:'PROJECT_TASK_UNCONFIRMED',message:error instanceof Error?error.message:String(error)}}),accepted.id);
       throw error;
     }
-  }
+  }).call(this));}
   inboxCapture(captureId:string) {
     const input=retainedInboxCapture(captureId),body=JSON.parse(input.payload_json);
     const held=!!db.query('SELECT 1 FROM focus_held_captures WHERE capture_id=? AND released_at_ms IS NULL').get(captureId);
@@ -2297,7 +2299,7 @@ export class SessionOwner {
     const original=this.upload({clientActionId:`capture-original:${captureId}`,name:'inbox-capture.txt',contentType:'text/plain',base64:Buffer.from(body.text).toString('base64')}).attachment.id;
     return [original,...(body.attachments??[])];
   }
-  async reportAgentIssue(body:unknown) {
+  async reportAgentIssue(body:unknown) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const input=object(body);only(input,['source','actionId','title','text','files','issueKey']);
     const source=object(input.source);only(source,['inputId','runId']);
     const agent=agentTestSource(source)!;
@@ -2314,7 +2316,7 @@ export class SessionOwner {
     if(this.selfMachine==='cloud')return this.acceptInboxCapture(capture);
     if(!this.peers)throw new SessionOwnerError('The server Inbox is unreachable.',503,'INBOX_PEER_UNAVAILABLE');
     return this.peers.client('cloud').request('POST','/sessions/v1/inbox',capture);
-  }
+  }).call(this));}
   acceptInboxCapture(body:unknown,verifiedPeer=false) {
     const input=object(body);only(input,['source','text','files','importOnly','urgency','holdForReview']);inputText(input);
     const source=object(input.source);only(source,['kind','id','recordedAt','title','metadata']);
@@ -2432,7 +2434,7 @@ export class SessionOwner {
     return {inbox:{sessionId:`concierge:${session.id}`,address:sessionAddress(session)},item:this.inboxCapture(captureId),operation:{...this.receipt(current),id:current.id},
       ...(source.kind==='agent-report'?{report:{topicId:topicOfRoot(current.id),requestId:`req:agent-report:${current.id}`}}:{})};
   }
-  async releaseHeldCaptures(body:unknown) {
+  async releaseHeldCaptures(body:unknown) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const input=object(body);only(input,['captureIds','clientActionId']);
     const clientActionId=actionId(input);
     if(!Array.isArray(input.captureIds)||input.captureIds.length<1||input.captureIds.length>100
@@ -2441,7 +2443,7 @@ export class SessionOwner {
       throw new SessionOwnerError('Choose one to 100 unique held captures.',400,'FOCUS_CAPTURE_SELECTION_INVALID');
     if(this.selfMachine!=='cloud'){
       if(!this.peers)throw new SessionOwnerError('The focus hold owner is unreachable.',503,'FOCUS_HOLD_OWNER_UNREACHABLE');
-      const cloud=await this.peers.client('cloud').request('GET','/sessions/v1/focus-hold',undefined,5_000,false) as {held:boolean};
+      const cloud=(yield this.peers.client('cloud').request('GET','/sessions/v1/focus-hold',undefined,5_000,false)) as {held:boolean};
       if(cloud.held)throw new SessionOwnerError('Finish Focus before releasing held captures.',409,'FOCUS_STILL_ACTIVE');
     }
     const captureIds=input.captureIds as string[];
@@ -2495,7 +2497,7 @@ export class SessionOwner {
       this.runtime.wake();this.communication?.wake();
     }
     return {captureIds,released,heldCaptureCount:(db.query('SELECT count(*) AS count FROM focus_held_captures WHERE released_at_ms IS NULL').get() as {count:number}).count};
-  }
+  }).call(this));}
   /**
    * The words to save as a note: a retained capture, or any message the owner retained (`messageId`):
    * an accepted input of any origin in any session, or an Inbox entry such as a post, a forwarded
@@ -2588,7 +2590,7 @@ export class SessionOwner {
     const markedTest=row.origin==='agent'&&source?.kind!=='agent-report'&&typeof marked?.inputId==='string'&&typeof marked?.runId==='string';
     return markedTest?`agent-test-${raw}`:raw;
   }
-  async saveInboxNote(input:{sourceInputId:string;sourceRunId:string;sourceSessionId:number;actionId:string;captureId?:string;messageId?:string;summary?:string;addTo?:string;person?:string;journal?:'entry'|'checkin'}) {
+  async saveInboxNote(input:{sourceInputId:string;sourceRunId:string;sourceSessionId:number;actionId:string;captureId?:string;messageId?:string;summary?:string;addTo?:string;person?:string;journal?:'entry'|'checkin'}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(!this.runtime.saveCaptureNote)throw new SessionOwnerError('Thinkering note capability unavailable.',409,'CAPABILITY_UNAVAILABLE');
     const journalContinuation=input.journal==='entry'&&Boolean(input.addTo?.trim());
     if(input.journal!==undefined&&input.journal!=='entry'&&input.journal!=='checkin')
@@ -2610,7 +2612,7 @@ export class SessionOwner {
     try {
       // The note capability deduplicates this immutable captureId. Retrying a
       // lost response reads the same note and preserves later human edits.
-      const note=await this.runtime.saveCaptureNote({captureId:from.noteId,text:from.text,title:from.title,capturedAt:from.capturedAt,...('inboxMessage' in from&&from.inboxMessage?{inboxMessage:from.inboxMessage}:{}),...(input.summary===undefined?{}:{summary:input.summary}),...(input.addTo===undefined?{}:{addTo:this.noteKey(input.addTo)}),...(input.person===undefined?{}:{person:input.person}),...(input.journal===undefined?{}:{journal:input.journal})});
+      const note=(yield this.runtime.saveCaptureNote({captureId:from.noteId,text:from.text,title:from.title,capturedAt:from.capturedAt,...('inboxMessage' in from&&from.inboxMessage?{inboxMessage:from.inboxMessage}:{}),...(input.summary===undefined?{}:{summary:input.summary}),...(input.addTo===undefined?{}:{addTo:this.noteKey(input.addTo)}),...(input.person===undefined?{}:{person:input.person}),...(input.journal===undefined?{}:{journal:input.journal})}));
       const result=object(note);
       for(const key of ['source','note'])if(typeof result[key]?.objectId!=='string'||typeof result[key]?.revision!=='string')throw new SessionOwnerError('Note capability returned incomplete object revisions.',502);
       if(typeof result.created!=='boolean')throw new SessionOwnerError('Note capability omitted its creation disposition.',502);
@@ -2621,7 +2623,7 @@ export class SessionOwner {
       db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'uncertain',error:{code:'NOTE_SAVE_UNCONFIRMED',message:error instanceof Error?error.message:String(error)}}),operation.id);
       throw error;
     }
-  }
+  }).call(this));}
   private requestTarget(input:{provider:string;effort?:string;project?:string;projectLocation?:{name:string;path:string;cwd:string;runner:string|null};choiceKey?:string;smallTask?:boolean},delegatedFrom: 'claude-code' | 'codex' | null = null) {
     if(input.provider==='chatgpt') {
       if(input.project!==undefined)throw new SessionOwnerError('ChatGPT creation does not accept a development project.');
@@ -2650,7 +2652,7 @@ export class SessionOwner {
       ...('runner' in project?{projectName:project.name,projectPath:project.path,...(project.runner?{providerRunner:project.runner}:{})}:{}),
       ...(input.provider==='auto'?{automaticProviderChoice:true,...(input.smallTask?{automaticSmallTask:true}:{})}:{})};
   }
-  async create(body:unknown,projectLocationOverride?:{name:string;path:string;cwd:string;runner:string|null}) {
+  async create(body:unknown,projectLocationOverride?:{name:string;path:string;cwd:string;runner:string|null}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const input=object(body);only(input,['clientActionId','provider','purpose','title','workflowId','project','model','reasoningEffort','effort','firstInput','door','savedWork']);
     const savedWork=input.savedWork===undefined?null:object(input.savedWork);
     if(savedWork){only(savedWork,['kind','atMs','expiresAtMs','repeatEveryMs','daily','quietOnly']);if(!input.firstInput||!input.title||input.provider==='chatgpt'||!['scheduled','banked'].includes(savedWork.kind))
@@ -2670,7 +2672,7 @@ export class SessionOwner {
     if(input.provider==='auto'&&(input.model!==undefined||input.reasoningEffort!==undefined))throw new SessionOwnerError('Choose a provider before setting its model or effort.');
     if(input.purpose==='develop'&&input.project===undefined)throw new SessionOwnerError('Development sessions require an explicit project.');
     if(input.project!==undefined&&typeof input.project!=='string')throw new SessionOwnerError('Choose an exact project from the project list.');
-    const project=input.project===undefined?null:projectLocationOverride??await this.locateProject(input.project);
+    const project=input.project===undefined?null:projectLocationOverride??(yield this.locateProject(input.project));
     if(savedWork?.repeatEveryMs!==undefined&&(!project||(!project.runner&&!canOwnStandingWork(this.defaultCwd,this.managedProjectRecord(project.name)?.code_path??project.cwd))))
       throw new SessionOwnerError(STANDING_WORK_REFUSAL,409,'STANDING_WORK_PROJECT_REQUIRED');
     if(input.model!==undefined){
@@ -2721,7 +2723,7 @@ export class SessionOwner {
     })();
     if(input.firstInput&&this.runtime.available(getSessionById(saved.session_id)!.provider_id)&&!saved.receipt_json) this.dispatch(saved);
     return {session:this.view(getSessionById(saved.session_id)!),operation:this.receipt(getAcceptedSessionInput(saved.id)!)};
-  }
+  }).call(this));}
   createCanvasObservation(body:unknown) {
     const input=object(body);only(input,['clientActionId','title','boardId']);
     const action=actionId(input),title=String(input.title??'').trim().slice(0,120);
@@ -3064,7 +3066,7 @@ export class SessionOwner {
       ...(nestedRoot?{messageThreadRootId:nestedRoot}:{}),...(nestedAuthor?.requestId?{messageThreadRequestId:nestedAuthor.requestId}:{})};
   }
   /** Commit attribution is resolved now, never inherited from a durable provider shell. */
-  async commitIdentity(body:unknown):Promise<{session:string;input:string}|null> {
+  async commitIdentity(body:unknown):Promise<{session:string;input:string}|null> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const input=object(body);only(input,["session","codexThread"]);
     const named=typeof input.session==="string"?input.session:null;
     if(named&&!/^[a-z][a-z0-9-]*:[1-9][0-9]*$/.test(named))throw new SessionOwnerError("Invalid commit session.");
@@ -3086,7 +3088,7 @@ export class SessionOwner {
     const match=matches[0]!;
     if(local&&match.session_id!==local)throw new SessionOwnerError("Commit session and provider conversation disagree.",409);
     return {session:commitSessionIdentity(match.session_id),input:match.accepted_input_id};
-  }
+  }).call(this));}
   admit(input:OwnerAdmission) {
     const target=getSessionById(input.sessionId);
     if(!target||sessionMetadata(target).canvasObservation)throw new SessionOwnerError('This canvas record accepts only on-device speech and observed action results.',409,'CANVAS_OBSERVATION_ONLY');
@@ -3116,7 +3118,7 @@ export class SessionOwner {
     db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify(receipt),intent.id);
     return receipt;
   }
-  async reviewJournal(body:unknown,revalidate?:()=>void) {
+  async reviewJournal(body:unknown,revalidate?:()=>void) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const input=object(body);only(input,['source','action_id','review']);
     const source=object(input.source);only(source,['input_id','run_id']);
     const actor=agentTestSource({inputId:source.input_id,runId:source.run_id})!;
@@ -3129,7 +3131,7 @@ export class SessionOwner {
     if(prior&&stablePayload(JSON.parse(prior.payload_json))!==stablePayload(review))throw new Error('Journal review idempotency conflict.');
     if(prior?.receipt_json)return JSON.parse(prior.receipt_json);
     if(!this.runtime.readJournalEntry)throw new Error('Private journal source reader unavailable.');
-    const canonical=await this.runtime.readJournalEntry(review.rootId);
+    const canonical=(yield this.runtime.readJournalEntry(review.rootId));
     const portions=validateJournalReview(review,canonical);
     revalidate?.();
     const live=db.query("SELECT status,stop_requested_at FROM turns WHERE native_run_id=? AND accepted_input_id=?").get(actor.runId,actor.inputId) as any;
@@ -3166,7 +3168,7 @@ export class SessionOwner {
     const receipt={state:'completed',rootId:review.rootId,revision:review.revision,sourceVersion:review.sourceVersion,disposition:review.disposition,reason:review.reason,source:canonical,reports};
     db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify(receipt),saved.id);
     return receipt;
-  }
+  }).call(this));}
   submitJournalObservation(body:unknown) {
     const input=object(body);only(input,['clientActionId','objectId','processingVersion']);
     if(input.processingVersion!==undefined&&input.processingVersion!==1)throw new Error("Unsupported journal processing version.");
@@ -3297,21 +3299,21 @@ export class SessionOwner {
    * history reads: live message events, the Inbox's ledger rows (requests, results and
    * thread posts), or the provider transcript for older turns that never streamed here.
    */
-  private async retainedMessage(session:SessionRow,messageId:string):Promise<{content:string}|null> {
+  private async retainedMessage(session:SessionRow,messageId:string):Promise<{content:string}|null> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const event=db.query(`SELECT payload_json FROM session_owner_events WHERE session_id=? AND kind='message'
       AND json_extract(payload_json,'$.message.id')=? ORDER BY sequence DESC LIMIT 1`).get(session.id,messageId) as {payload_json:string}|null;
     if(event){const message=JSON.parse(event.payload_json).message;return {content:typeof message?.content==='string'?message.content:''};}
     if(sessionMetadata(session).inbox){const message=inboxMessageById(session.id,messageId);return message?{content:message.content}:null;}
     let cursor:string|null=null;
     for(let page=0;page<SAVED_MESSAGE_SEARCH_PAGES;page++) {
-      const history=await this.readHistory(`concierge:${session.id}`,cursor,200) as ProviderHistoryPage;
+      const history=(yield this.readHistory(`concierge:${session.id}`,cursor,200)) as ProviderHistoryPage;
       const message=history.messages.find(candidate=>candidate.id===messageId);
       if(message)return {content:typeof message.content==='string'?message.content:''};
       if(history.nextCursor==null)return null;
       cursor=String(history.nextCursor);
     }
     return null;
-  }
+  }).call(this));}
   private acceptedInputText(session:SessionRow,inputId:string):{content:string}|null {
     const row=db.query('SELECT payload_json FROM session_inputs WHERE session_id=? AND id=?').get(session.id,inputId) as {payload_json:string}|null;
     if(!row)return null;
@@ -3323,13 +3325,13 @@ export class SessionOwner {
     return {messageId,reactions,saved:!!db.query('SELECT 1 FROM session_saved_messages WHERE session_id=? AND message_id=?').get(sessionId,messageId),
       followed:!!db.query('SELECT 1 FROM session_followed_messages WHERE session_id=? AND message_id=?').get(sessionId,messageId)};
   }
-  async messageAction(id:string,body:unknown) {
+  async messageAction(id:string,body:unknown) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const session=this.session(id),input=object(body);only(input,['clientActionId','action']);
     const action=object(input.action);only(action,['kind','messageId','emoji','present']);
     if(!['reaction','save','follow','unthread'].includes(action.kind)||typeof action.messageId!=='string'||!action.messageId||action.messageId.length>500||(action.kind==='unthread'?action.present!==undefined:typeof action.present!=='boolean'))throw new SessionOwnerError('Exact message action required.');
     // Following belongs to the conversation, not to a message's delivery state: a queued or
     // unanswered message the owner accepted can be followed before any provider history exists.
-    const retained=await this.retainedMessage(session,action.messageId)??(action.kind==='follow'?this.acceptedInputText(session,action.messageId):null);
+    const retained=(yield this.retainedMessage(session,action.messageId))??(action.kind==='follow'?this.acceptedInputText(session,action.messageId):null);
     if(!retained)throw new SessionOwnerError('The exact retained message is unavailable.',409,'MESSAGE_UNAVAILABLE');
     if(action.kind==='reaction'&&(typeof action.emoji!=='string'||!action.emoji.trim()||action.emoji.length>80))throw new SessionOwnerError('A supported reaction is required.');
     if(action.kind!=='reaction'&&action.emoji!==undefined)throw new SessionOwnerError('Saved and followed messages do not accept an emoji.');
@@ -3353,7 +3355,7 @@ export class SessionOwner {
       return this.messageMarks(session.id,action.messageId);
     });
     return {session:this.view(getSessionById(session.id)!),marks:this.messageMarks(session.id,action.messageId),operation:this.receipt(operation)};
-  }
+  }).call(this));}
   saved(kind:'messages'|'followed'='messages',cursor:string|null=null) {
     const page=savedMessagePage(db,kind,cursor);
     const items=page.items.map(row=>({session:this.view(getSessionById(row.session_id)!),messageId:row.message_id,
@@ -3471,7 +3473,7 @@ export class SessionOwner {
    * conversation on another provider, which stops the stuck one so it cannot answer twice.
    * Only a model the offer checked is accepted; the session's own model is never changed.
    */
-  async outageChoice(id:string,body:unknown) {
+  async outageChoice(id:string,body:unknown) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const session=this.session(id),input=object(body);only(input,['clientActionId','inputId','choice']);
     if(typeof input.inputId!=='string'||typeof input.choice!=='string')throw new SessionOwnerError('An exact input and choice are required.');
     const prior=this.existingAction(session.id,'outage-choice',input);
@@ -3486,13 +3488,13 @@ export class SessionOwner {
     let rerunSessionId:string|null=null;
     if(chosen&&chosen.provider!==session.provider_id) {
       const meta=sessionMetadata(session),payload=JSON.parse(target.payload_json),first=target.kind==='create'?payload.firstInput:payload;
-      const persisted=await this.preparePersistedProjectLocation(meta,session);
+      const persisted=(yield this.preparePersistedProjectLocation(meta,session));
       if(meta.purpose==='develop'&&!persisted.name)throw new SessionOwnerError('This session has no runner-resolved project for its outage rerun.',424,'PROJECT_UNAVAILABLE');
       const location=persisted.name?{name:persisted.name,path:persisted.path,cwd:persisted.cwd,runner:persisted.runner}:undefined;
       const project=location?`${location.name}${location.path?`/${location.path}`:''}`:undefined;
-      const created=await this.create({clientActionId:`${actionId(input)}:rerun`,provider:chosen.provider,purpose:meta.purpose==='develop'?'develop':'chat',
+      const created=(yield this.create({clientActionId:`${actionId(input)}:rerun`,provider:chosen.provider,purpose:meta.purpose==='develop'?'develop':'chat',
         title:`${this.catalogueLabels(session).title} (on ${chosen.label} during ${modelLabel(offer.model)}'s outage)`,...(project?{project}:{}),model:chosen.model,
-        firstInput:{text:first.text??'',...(Array.isArray(first.attachments)&&first.attachments.length?{attachments:first.attachments}:{})}},location);
+        firstInput:{text:first.text??'',...(Array.isArray(first.attachments)&&first.attachments.length?{attachments:first.attachments}:{})}},location));
       rerunSessionId=created.session.id;
     }
     const operation=this.saveControl(session,'outage-choice',input,()=>{
@@ -3508,14 +3510,14 @@ export class SessionOwner {
     });
     if(chosen&&chosen.provider===session.provider_id&&turn.status==='running')restartRetryingTurn(turn.id);
     if(chosen&&chosen.provider!==session.provider_id&&turn.status==='running')
-      await this.stop(id,{clientActionId:`${actionId(input)}:stop`,runId:turn.native_run_id}).catch(()=>null);
+      (yield this.stop(id,{clientActionId:`${actionId(input)}:stop`,runId:turn.native_run_id}).catch(ledgerCallback(()=>null)));
     executionChanged();this.runtime.wake();
     return {operation:this.receipt(operation),target:this.receipt(this.input(target.id))};
-  }
-  async stop(id:string,body:unknown) {
+  }).call(this));}
+  async stop(id:string,body:unknown) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     return this.stopExact(id,body);
-  }
-  private async stopExact(id:string,body:unknown,actor?:{inputId:string;runId:string;targetAddress:string;authorityInputId:string}) {
+  }).call(this));}
+  private async stopExact(id:string,body:unknown,actor?:{inputId:string;runId:string;targetAddress:string;authorityInputId:string}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const session=this.session(id),input=object(body);only(input,['clientActionId','runId']);
     const scope=actor?`communication:${actor.inputId}`:'surface:thinkering';
     const prior=actor
@@ -3543,7 +3545,7 @@ export class SessionOwner {
       return saved;
     })();
     try {
-      const confirmed=await this.runtime.stop(session.id,turn.id);
+      const confirmed=(yield this.runtime.stop(session.id,turn.id));
       if(confirmed&&!actor)withdrawChatGptTasksForStoppedTurnByTejas({turnId:turn.id,humanInputId:operation.id,
         actionId:actionId(input),now:Date.now()});
       db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(confirmed?{state:'running'}:{state:'uncertain',error:{code:'STOP_UNCONFIRMED',message:'Stop intent is retained; provider cancellation is not confirmed.'}}),operation.id);
@@ -3552,8 +3554,8 @@ export class SessionOwner {
     }
     recordSessionEvent({eventId:`control:${operation.id}`,sessionId:session.id,inputId:operation.id,kind:'stop',payload:{runId:input.runId,...(actor?{actor:'agent'}:{})}});
     return {session:this.view(getSessionById(session.id)!),operation:this.receipt(this.input(operation.id))};
-  }
-  private async agentTestConnectionLoss(id:string,body:unknown,source:{inputId:string;runId:string},createInputId:string) {
+  }).call(this));}
+  private async agentTestConnectionLoss(id:string,body:unknown,source:{inputId:string;runId:string},createInputId:string) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const session=this.session(id),input=object(body);only(input,['clientActionId','runId']);
     if(session.provider_id!=='codex'||typeof input.runId!=='string'||!input.runId)
       throw new SessionOwnerError('Connection loss requires this exact Codex run.',409,'AGENT_TEST_TARGET_REFUSED');
@@ -3584,7 +3586,7 @@ export class SessionOwner {
     db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'intent',executionId:binding.executionId,
       dispatchAttempt:binding.dispatchAttempt,generation:binding.generation,faultDeadlineMs:binding.faultDeadlineMs}),operation.id);
     try {
-      const outcome=await this.runtime.codexTestConnectionLoss?.(session.id,turn.id,binding)??'stale';
+      const outcome=(yield this.runtime.codexTestConnectionLoss?.(session.id,turn.id,binding))??'stale';
       db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(
         {...binding,state:outcome==='observed'?'observed':'refused',...(outcome==='observed'?{generationLost:true}:
           {error:{code:'TEST_CONNECTION_STALE',message:'The exact owned connection generation was no longer current.'}})}),operation.id);
@@ -3596,9 +3598,9 @@ export class SessionOwner {
       recordSessionEvent({eventId:`control:${operation.id}`,sessionId:session.id,inputId:operation.id,turnId:turn.id,kind:'codex_test_connection_loss',payload:{runId:input.runId,outcome:'uncertain'}});
       return {operation:this.receipt(this.input(operation.id))};
     }
-  }
+  }).call(this));}
   /** A side question answered through a saved final-response copy; the question turn is unsaved. */
-  async aside(id:string,body:unknown) {
+  async aside(id:string,body:unknown) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const session=this.session(id),input=object(body);only(input,['asideId','question','passage','earlier']);
     if(typeof input.asideId!=='string'||!/^[A-Za-z0-9:_-]{8,120}$/.test(input.asideId))throw new SessionOwnerError('A side question needs its id.');
     const text=(value:unknown,name:string,max:number)=>{
@@ -3620,20 +3622,20 @@ export class SessionOwner {
     if(executionRunner&&!executionRunner.runner)throw new SessionOwnerError('The runner that owns this conversation is not known.',424,'PROVIDER_RUNNER_UNKNOWN');
     const runner=typeof persistedRunner==='string'?persistedRunner:executionRunner?.runner??(
       persistedRunner===undefined&&session.provider_id==='codex'?process.env.CONCIERGE_CODEX_RUNNER?.trim()||null:null);
-    const location=runner?await resolveRunnerProjectLocation(runner,meta):null;
+    const location=runner?(yield resolveRunnerProjectLocation(runner,meta)):null;
     try {
       // Under the gateway's 120 s command deadline; a longer answer is collected by asking again with the same id.
       // The wait is for the throwaway copy, not the owner: it is recorded as awaited, never as owner slowness.
-      return await awaitingOutside(()=>askAsideOnce(`${session.id}:${input.asideId}`,()=>({provider:session.provider_id,
+      return (yield awaitingOutside(()=>askAsideOnce(`${session.id}:${input.asideId}`,()=>({provider:session.provider_id,
         sessionUuid:session.agent_session_uuid!,cwd,model:meta.model??null,
         boundary:(db.query(`SELECT provider_turn_id FROM turns WHERE session_id=? AND status='done'
           AND provider_turn_id IS NOT NULL ORDER BY id DESC LIMIT 1`).get(session.id) as {provider_turn_id:string}|null)?.provider_turn_id??null,
         passage,question,earlier,
-        ...(runner?{runner,account:meta.providerAccount??meta.claudeAccount??null,project:location?.project??null,projectPath:location?.path??''}:{})}),90_000));
+        ...(runner?{runner,account:meta.providerAccount??meta.claudeAccount??null,project:location?.project??null,projectPath:location?.path??''}:{})}),90_000)));
     } catch(error) {
       throw new SessionOwnerError(error instanceof Error?error.message:String(error),502,'ASIDE_FAILED');
     }
-  }
+  }).call(this));}
   fork(id:string,body:unknown) {
     const session=this.session(id),input=object(body);only(input,['clientActionId','boundary','provider']);
     if(typeof input.boundary!=='string'||!input.boundary.trim())throw new SessionOwnerError('An exact native fork boundary is required.');
@@ -3650,7 +3652,7 @@ export class SessionOwner {
     this.runtime.wake();
     return {operation:this.receipt(operation)};
   }
-  async reconcile(id:string,body:unknown) {
+  async reconcile(id:string,body:unknown) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const session=this.session(id),input=object(body);only(input,['clientActionId','operationId']);
     const prior=this.existingAction(session.id,'reconcile',input);
     if(prior)return {session:this.view(session),operation:this.receipt(prior)};
@@ -3661,37 +3663,37 @@ export class SessionOwner {
     const operation=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:actionId(input),kind:'reconcile',origin:'human',payload:input}).input;
     db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'running'}),operation.id);
     try {
-      await this.runtime.recover(session,target);
+      (yield this.runtime.recover(session,target));
       db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed'}),operation.id);
     } catch(error) {
       db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'failed',error:{code:'RECONCILE_FAILED',message:error instanceof Error?error.message:String(error)}}),operation.id);
     }
     recordSessionEvent({eventId:`control:${operation.id}`,sessionId:session.id,inputId:operation.id,kind:'reconciled',payload:{operationId:target.id}});
     return {session:this.view(this.session(id)),operation:this.receipt(this.input(operation.id))};
-  }
+  }).call(this));}
   /** Agent recovery is scoped by the communication owner's original request and accepted
    * source before this method is reached. The browser owner supplies the no-send proof. */
-  async requeueProvenUnsentChatGpt(sessionId:number,inputId:string) {
+  async requeueProvenUnsentChatGpt(sessionId:number,inputId:string) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const session=this.session(`concierge:${sessionId}`);
     const operation=this.input(inputId);
     if(operation.session_id!==session.id||session.provider_id!=='chatgpt'||!this.runtime.requeueProvenUnsentChatGpt)
       throw new SessionOwnerError('The original ChatGPT operation is unavailable for exact recovery.',409,'CAPABILITY_UNAVAILABLE');
     return this.runtime.requeueProvenUnsentChatGpt(session,operation);
-  }
-  async requeueProvenUnacknowledgedCodex(sessionId:number,inputId:string,input:{requestId:string;actionId:string;sourceInputId:string;sourceRunId:string;validateSource?:()=>void}) {
+  }).call(this));}
+  async requeueProvenUnacknowledgedCodex(sessionId:number,inputId:string,input:{requestId:string;actionId:string;sourceInputId:string;sourceRunId:string;validateSource?:()=>void}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const session=this.session(`concierge:${sessionId}`),operation=this.input(inputId);
     if(operation.session_id!==session.id||session.provider_id!=='codex'||!this.runtime.requeueProvenUnacknowledgedCodex)
       throw new SessionOwnerError('The original Codex continuation is unavailable for exact recovery.',409,'CAPABILITY_UNAVAILABLE');
     return this.runtime.requeueProvenUnacknowledgedCodex(session,operation,input);
-  }
+  }).call(this));}
   /** The caller separately verifies original request and obligation custody. */
-  async proveRejectedChatGptAttachment(sessionId:number,inputId:string) {
+  async proveRejectedChatGptAttachment(sessionId:number,inputId:string) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const session=this.session(`concierge:${sessionId}`);
     const operation=this.input(inputId);
     if(operation.session_id!==session.id||session.provider_id!=='chatgpt'||!this.runtime.proveRejectedChatGptAttachment)
       throw new SessionOwnerError('The original ChatGPT operation is unavailable for attachment correction.',409,'CAPABILITY_UNAVAILABLE');
     return this.runtime.proveRejectedChatGptAttachment(session,operation);
-  }
+  }).call(this));}
   /** Every page states the ledger position it reflects, read before the page itself so
    * nothing recorded during the read is lost; a client upserts, so an overlap is harmless. */
   /**
@@ -3701,24 +3703,24 @@ export class SessionOwner {
    * walk is bounded in pages and time so a conversation of nothing but tools still answers; the
    * continuation is the last page's and the delta position the newest page's.
    */
-  async history(id:string,cursor:string|null,limit:number,activity=false,want={dialogue:0,untilInput:false}) {
+  async history(id:string,cursor:string|null,limit:number,activity=false,want={dialogue:0,untilInput:false}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const windowed=!!(want.dialogue||want.untilInput),started=performance.now();
-    const first=await this.historyPage(id,cursor,limit,activity,windowed?want:undefined) as any;
+    const first=(yield this.historyPage(id,cursor,limit,activity,windowed?want:undefined)) as any;
     if(!windowed||typeof first.collectedPages==='number')return first;
     let last=first,messages=[...first.messages],reads=1;
     const enough=()=>want.untilInput?messages.some((message:any)=>message.role==='user')
       :messages.filter((message:any)=>message.role!=='tool').length>=want.dialogue;
     while(last.nextCursor&&last.coverage?.complete!==false&&!enough()&&reads<HISTORY_WINDOW_PAGES&&performance.now()-started<HISTORY_WINDOW_MS){
-      last=await this.historyPage(id,last.nextCursor,HISTORY_WINDOW_CONTINUATION,activity) as any;reads++;
+      last=(yield this.historyPage(id,last.nextCursor,HISTORY_WINDOW_CONTINUATION,activity)) as any;reads++;
       messages=[...last.messages,...messages];
     }
     return {...first,messages,nextCursor:last.nextCursor,...(last.coverage?{coverage:last.coverage}:{}),collectedPages:reads};
-  }
-  private async historyPage(id:string,cursor:string|null,limit:number,activity=false,want?:{dialogue:number;untilInput:boolean}) {
-    const page=await this.rawHistoryPage(id,cursor,limit,activity,want) as any;
+  }).call(this));}
+  private async historyPage(id:string,cursor:string|null,limit:number,activity=false,want?:{dialogue:number;untilInput:boolean}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+    const page=(yield this.rawHistoryPage(id,cursor,limit,activity,want)) as any;
     return {...page,messages:page.messages.filter((message:any)=>messageContentVisible(parseSessionId(id),message))};
-  }
-  private async rawHistoryPage(id:string,cursor:string|null,limit:number,activity=false,want?:{dialogue:number;untilInput:boolean}) {
+  }).call(this));}
+  private async rawHistoryPage(id:string,cursor:string|null,limit:number,activity=false,want?:{dialogue:number;untilInput:boolean}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const session=this.session(id);
     // Continuation pages of a window may be larger than a client page, but only where the page
     // comes from the provider; ledger-backed positions stay bounded by the client window.
@@ -3736,7 +3738,7 @@ export class SessionOwner {
         coverage:{complete:true},asOf:encodePosition(pagePosition('none',ledgerHead(),session.binding_generation??1,[]))};
     }
     if(this.runtime.projectedHistory&&['claude-code','codex'].includes(session.provider_id)&&!(activity&&sessionMetadata(session).inbox)){
-      try{return await this.runtime.projectedHistory(session,'page',cursor,pageLimit,null,want);}
+      try{return (yield this.runtime.projectedHistory(session,'page',cursor,pageLimit,null,want));}
       catch(error){if(error instanceof Error&&error.message==='HISTORY_PAGE_STILL_PREPARING')
         return {messages:[],nextCursor:null,coverage:{complete:false,code:'history_indexing',retryAfterMs:1000,
           omissions:['Conversation history is still being prepared.']}};
@@ -3752,23 +3754,23 @@ export class SessionOwner {
           status===503?'HISTORY_PAGE_UNAVAILABLE':'HISTORY_PAGE_INVALID');}
     }
     const head=ledgerHead();
-    const page=await this.readHistory(id,cursor,pageLimit,activity) as ProviderHistoryPage,metadata=sessionMetadata(session);
+    const page=(yield this.readHistory(id,cursor,pageLimit,activity)) as ProviderHistoryPage,metadata=sessionMetadata(session);
     const asOf=encodePosition(pagePosition((page as any)[historyPath]??'none',head,session.binding_generation??1,page.messages,activity));
     if((page as any)[ledgerHistory])return {...page,asOf,messages:page.messages.map(previewHistoryMessage)};
     if(metadata.origin==='imported'&&!metadata.nativeBinding)return {...page,asOf,messages:page.messages.map(message=>previewHistoryMessage({...message,author:{kind:message.role==='user'?'unknown':'agent'} as const}))};
     const projected=projectSessionHistory(parseSessionId(id),page);
     return {...projected,asOf,messages:projected.messages.map(previewHistoryMessage)};
-  }
+  }).call(this));}
   /**
    * Everything added or changed since a page's `asOf`, as complete projected messages,
    * or `{reset:true}` whenever the owner cannot say so truthfully. A reset costs one
    * latest-page read; a wrong delta would leave a client silently showing stale history.
    */
-  async historyDelta(id:string,after:string,activity=false) {
-    const page=await this.rawHistoryDelta(id,after,activity) as any;
+  async historyDelta(id:string,after:string,activity=false) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+    const page=(yield this.rawHistoryDelta(id,after,activity)) as any;
     return page.messages?{...page,messages:page.messages.filter((message:any)=>messageContentVisible(parseSessionId(id),message))}:page;
-  }
-  private async rawHistoryDelta(id:string,after:string,activity=false) {
+  }).call(this));}
+  private async rawHistoryDelta(id:string,after:string,activity=false) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const delegated=this.session(id);
     if(sessionMetadata(delegated).canvasObservation){
       const position=decodePosition(after),head=ledgerHead();
@@ -3780,7 +3782,7 @@ export class SessionOwner {
       return {messages:rows.map(row=>previewHistoryMessage(JSON.parse(row.payload_json).message)),asOf:encodePosition({...position,s:head})};
     }
     if(this.runtime.projectedHistory&&['claude-code','codex'].includes(delegated.provider_id)&&!(activity&&sessionMetadata(delegated).inbox)){
-      try{return await this.runtime.projectedHistory(delegated,'delta',null,HISTORY_WINDOW,after);}
+      try{return (yield this.runtime.projectedHistory(delegated,'delta',null,HISTORY_WINDOW,after));}
       catch(error){if(error instanceof Error&&['HISTORY_PAGE_STILL_PREPARING','STALE_HISTORY_CURSOR'].includes(error.message))return {reset:true};
         const status=typeof error==='object'&&error!==null&&'status' in error?Number(error.status):503;
         throw new SessionOwnerError(error instanceof Error?error.message:'History changes unavailable.',status,
@@ -3800,7 +3802,7 @@ export class SessionOwner {
     if(!['codex','claude-code'].includes(session.provider_id)||!this.runtime.history)return reset;
     // Read the transcript itself, the source of the page the client holds: enough to find
     // that window again plus a full page of anything newer.
-    const page=await this.runtime.history(session,null,position.n+HISTORY_WINDOW) as ProviderHistoryPage|null;
+    const page=(yield this.runtime.history(session,null,position.n+HISTORY_WINDOW)) as ProviderHistoryPage|null;
     if(!page)return reset;
     const ids=page.messages.map(message=>message.id);
     let fresh:readonly ProviderHistoryMessage[],held=new Set<string>();
@@ -3824,24 +3826,24 @@ export class SessionOwner {
     const messages=page.messages.filter(message=>freshIds.has(message.id)||held.has(message.id)&&changed.has(message.id));
     return {messages:projectSessionHistory(session.id,{...page,messages}).messages.map(previewHistoryMessage),
       asOf:encodePosition(pagePosition('provider',head,session.binding_generation??1,page.messages))};
-  }
-  async historyMessageDetail(id:string,messageId:string,digest:string,part:number|null,turnId:string|null) {
+  }).call(this));}
+  async historyMessageDetail(id:string,messageId:string,digest:string,part:number|null,turnId:string|null) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(!messageId||messageId.length>512||!/^[a-f0-9]{64}$/.test(digest)
       ||part!==null&&(!Number.isSafeInteger(part)||part<0)||turnId!==null&&turnId.length>512)
       throw new SessionOwnerError('An exact message version and part are required.');
     const session=this.session(id),metadata=sessionMetadata(session);
     assertMessageContent(session.id,{id:messageId});
     const key=JSON.stringify([session.id,session.binding_generation??1,messageId,turnId,digest]);
-    try{const load=async()=>{
+    try{const load=async()=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const event=db.query(`SELECT payload_json FROM session_owner_events WHERE session_id=? AND kind='message'
       AND json_extract(payload_json,'$.message.id')=? ORDER BY sequence DESC LIMIT 1`)
       .get(session.id,messageId) as {payload_json:string}|null;
     let message=event?(JSON.parse(event.payload_json) as {message:ProviderHistoryMessage}).message:null;
     if(!message&&metadata.inbox)message=inboxMessageById(session.id,messageId);
     if(!message&&metadata.origin==='imported'&&!metadata.nativeBinding&&metadata.source&&this.runtime.sources?.historyMessage)
-      message=await this.runtime.sources.historyMessage({sourceId:metadata.source.id,sourceVersion:metadata.source.version,
-        branch:metadata.source.branch,messageId});
-    if(!message&&this.runtime.historyMessage)message=await this.runtime.historyMessage(session,messageId,turnId);
+      message=(yield this.runtime.sources.historyMessage({sourceId:metadata.source.id,sourceVersion:metadata.source.version,
+        branch:metadata.source.branch,messageId}));
+    if(!message&&this.runtime.historyMessage)message=(yield this.runtime.historyMessage(session,messageId,turnId));
     if(!message&&/^(input|output):[1-9][0-9]*$/.test(messageId)) {
       const turnIdNumber=Number(messageId.split(':')[1]);
       const turn=db.query('SELECT id,user_text,agent_text FROM turns WHERE id=? AND session_id=?')
@@ -3859,27 +3861,27 @@ export class SessionOwner {
     if(!metadata.canvasObservation&&!metadata.inbox&&metadata.origin!=='imported')message=projectSessionHistoryMessage(session.id,message).message;
     else if(metadata.inbox)message=this.projectInboxMessage({...message,sourceSessionId:session.id} as any);
     return historyContent(message);
-    };
-    return await (part===null?this.historyDetails.body(key,digest,load):this.historyDetails.part(key,digest,part,load));}
+    }).call(this));};
+    return (yield (part===null?this.historyDetails.body(key,digest,load):this.historyDetails.part(key,digest,part,load)));}
     catch(error){if(error instanceof Error&&error.message==='HISTORY_DETAIL_PART_NOT_FOUND')
       throw new SessionOwnerError('That message part does not exist.',404,'MESSAGE_PART_NOT_FOUND');
       if(error instanceof Error&&error.message==='HISTORY_DETAIL_RESET_REQUIRED')
         throw new SessionOwnerError('That message changed. Refresh it and try again.',409,'HISTORY_DETAIL_RESET_REQUIRED');
       throw error;}
-  }
+  }).call(this));}
   private projectInboxMessage(message:{sourceSessionId:number;id:string;role:string}&Record<string,any>) {
     return inboxAttribution(db)(message);
   }
-  private async readHistory(id:string,cursor:string|null,limit:number,activity=false) {
-    const page=await this.rawReadHistory(id,cursor,limit,activity) as any;
+  private async readHistory(id:string,cursor:string|null,limit:number,activity=false) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+    const page=(yield this.rawReadHistory(id,cursor,limit,activity)) as any;
     return {...page,messages:page.messages.filter((message:any)=>messageContentVisible(parseSessionId(id),message))};
-  }
-  private async rawReadHistory(id:string,cursor:string|null,limit:number,activity=false) {
+  }).call(this));}
+  private async rawReadHistory(id:string,cursor:string|null,limit:number,activity=false) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const session=this.session(id);
     const inbox=inboxHistory(session,cursor,limit,activity);if(inbox)return {...inbox,[ledgerHistory]:true,[historyPath]:'inbox',messages:inbox.messages.map(message=>this.projectInboxMessage(message))};
     const source=sessionMetadata(session).source;
     if(sessionMetadata(session).origin==='imported'&&!sessionMetadata(session).nativeBinding&&source&&this.runtime.sources?.history)return this.runtime.sources.history({sourceId:source.id,sourceVersion:source.version,branch:source.branch,cursor,limit});
-    if(this.runtime.history) {const history=await this.runtime.history(session,cursor,limit);
+    if(this.runtime.history) {const history=(yield this.runtime.history(session,cursor,limit));
       if(history)return ['codex','claude-code'].includes(session.provider_id)?{...(history as object),[historyPath]:'provider'}:history;}
     const rows=db.query('SELECT id,user_text,agent_text,provider_turn_id,ended_at FROM turns WHERE session_id=? AND id>? ORDER BY id LIMIT ?').all(session.id,Number(cursor)||0,limit) as any[];
     return {[ledgerHistory]:true,messages:rows.filter(row=>acceptedInputForTurn(row.id)?.kind!=='fork').flatMap(row=>[
@@ -3891,7 +3893,7 @@ export class SessionOwner {
         ...(acceptedInputForTurn(row.id)?{inputId:acceptedInputForTurn(row.id)!.id}:{}),
         ...(row.ended_at?{createdAt:iso(row.ended_at),timestampSource:'received'}:{}),
         ...(row.provider_turn_id?{turnId:row.provider_turn_id}:{})}]:[])]),nextCursor:rows.length===limit?String(rows.at(-1).id):null,coverage:{complete:false,reason:'Accepted input and retained output; provider transcript adapter is unavailable.'}};
-  }
+  }).call(this));}
   /**
    * Proves one exact archived source version is still retained before a search shows it. The
    * proof is Thinkering's prepared history page of that version: built once from the digest-checked
@@ -3933,7 +3935,7 @@ export class SessionOwner {
     }
     return session;
   }
-  async search(body:unknown,routingSource?:{beforeTs:string;excludeChannel:string;excludeRootTs:string}) {
+  async search(body:unknown,routingSource?:{beforeTs:string;excludeChannel:string;excludeRootTs:string}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const started=performance.now();
     const timing={word_ms:0,routing_ms:0,meaning_ms:0,archive_search_ms:0,archive_retention_ms:0,meaning_retention_ms:0};
     const input=object(body);only(input,['query','limit','includeTools','everywhere']);
@@ -3969,12 +3971,12 @@ export class SessionOwner {
     };
     let routing:Awaited<typeof routingSearch>|null=null;
     let routingFailure:string|null=null;
-    try { routing=await routingSearch; }
+    try { routing=(yield routingSearch); }
     catch(error) {
       // Retired Slack bindings are historical evidence, not a prerequisite for native discovery.
       routingFailure=`Historical Slack routing evidence unavailable: ${error instanceof Error?error.message:String(error)}`;
     }
-    const words=await wordSearch;
+    const words=(yield wordSearch);
     for(const hit of words?.hits??[]) {
       const session=getSessionById(hit.sessionId);
       if(!session)continue;
@@ -3998,7 +4000,7 @@ export class SessionOwner {
     coverage.wordIndex=words?.coverage??{complete:false};
     if(this.runtime.sources) {
       try {
-        const archived=await archiveSearch!;
+        const archived=(yield archiveSearch!);
         if(archived.error)throw archived.error;
         const found=archived.found!;
         const candidates=(found.sources??[]).map((source:any)=>({source,matches:(found.matches??[]).filter((evidence:any)=>evidence.sourceId===source.id&&evidence.sourceVersion===source.version
@@ -4019,7 +4021,7 @@ export class SessionOwner {
         }
         // Retention checks run together, so search is as slow as the slowest one, not their sum.
         const retentionStarted=performance.now();
-        const retained=await Promise.allSettled(examined.map((candidate:any)=>this.retainArchiveSource({sourceId:candidate.source.id,sourceVersion:candidate.source.version,branch:candidate.source.branch,eventId:candidate.matches[0].eventId})));
+        const retained=(yield Promise.allSettled(examined.map((candidate:any)=>this.retainArchiveSource({sourceId:candidate.source.id,sourceVersion:candidate.source.version,branch:candidate.source.branch,eventId:candidate.matches[0].eventId}))));
         timing.archive_retention_ms=Math.round(performance.now()-retentionStarted);
         let unavailable=0;
         for(const [index,candidate] of examined.entries()) {
@@ -4043,14 +4045,14 @@ export class SessionOwner {
     // (docs/brainstorms/2026-09-03-router-session-search-and-routing.md): a session both find rises.
     const lexicalRank=new Map([...results.keys()].map((id,rank)=>[id,rank] as const)),meaningRank=new Map<number,number>(),meaningScore=new Map<number,number>();
     const peerHits:{rank:number;view:any;evidence:any[];score:number}[]=[];
-    const meaning=meaningSearch?await meaningSearch.catch((error:unknown)=>({available:false,hits:[],reason:String(error),indexed:0,pending:false})):null;
+    const meaning=meaningSearch?(yield meaningSearch.catch(ledgerCallback((error:unknown)=>({available:false,hits:[],reason:String(error),indexed:0,pending:false})))):null;
     if(meaning?.available) {
       // Archive matches that are not a session here are retained together, as the word path does above.
       const native=(nativeId:string|null|undefined)=>nativeId?db.query('SELECT * FROM sessions WHERE agent_session_uuid=? ORDER BY id LIMIT 1').get(nativeId) as SessionRow|null:null;
       const meaningRetentionStarted=performance.now();
-      const retained=await Promise.allSettled(meaning.hits.map(hit=>hit.target.kind==='archive'&&!native(hit.target.nativeId)&&this.runtime.sources
+      const retained=(yield Promise.allSettled(meaning.hits.map(hit=>hit.target.kind==='archive'&&!native(hit.target.nativeId)&&this.runtime.sources
         ?this.retainArchiveSource({sourceId:hit.target.sourceId,sourceVersion:hit.target.sourceVersion,branch:hit.target.branch,eventId:hit.target.eventId})
-        :Promise.resolve(null)));
+        :Promise.resolve(null))));
       timing.meaning_retention_ms=Math.round(performance.now()-meaningRetentionStarted);
       let unretained=0;
       for(const [index,hit] of meaning.hits.entries()) {
@@ -4097,8 +4099,8 @@ export class SessionOwner {
       results:response.results.length,evidence:response.results.reduce((sum,result)=>sum+result.evidence.length,0),
       response_bytes:Buffer.byteLength(JSON.stringify(response))});
     return response;
-  }
-  async context(body:unknown) {
+  }).call(this));}
+  async context(body:unknown) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const input=object(body);only(input,['address','sourceId','sourceVersion','eventId']);
     const session=resolveSessionAddress(input.address),meta=sessionMetadata(session);
     for(const key of ['sourceId','eventId'])if(input[key]!==undefined&&(typeof input[key]!=='string'||!input[key]))throw new SessionOwnerError(`Nonempty ${key} required.`);
@@ -4124,7 +4126,7 @@ export class SessionOwner {
     if(meta.source&&(!input.sourceId||input.sourceId===meta.source.id)) {
       assertOpaqueSession(session.id);
       if(!this.runtime.sources)throw new SessionOwnerError('Archive source adapter unavailable.',409,'CAPABILITY_UNAVAILABLE');
-      const context=await this.runtime.sources.context({sourceId:meta.source.id,sourceVersion:input.sourceVersion??meta.source.version,branch:meta.source.branch,eventId:input.eventId});
+      const context=(yield this.runtime.sources.context({sourceId:meta.source.id,sourceVersion:input.sourceVersion??meta.source.version,branch:meta.source.branch,eventId:input.eventId}));
       return {session:this.view(session),evidence:context.evidence.map((item:any)=>({...item,sessionId:`concierge:${session.id}`})),hasMore:context.hasMore};
     }
     if(input.sourceId&&input.sourceId!==nativeSource)throw new SessionOwnerError('Source does not belong to this exact session.',409);
@@ -4150,7 +4152,7 @@ export class SessionOwner {
     let cursor:string|null=null,offset=0;
     const visited=new Set<string>();
     for(;;) {
-      const history=await this.readHistory(sessionId,cursor,100) as any;
+      const history=(yield this.readHistory(sessionId,cursor,100)) as any;
       const index=input.eventId?history.messages.findIndex((message:any)=>message.id===input.eventId):-1;
       if(!input.eventId||index>=0) {
         if(input.sourceVersion!=null&&hash(stablePayload(history.messages[index]))!==input.sourceVersion)throw new SessionOwnerError('Exact native history message version changed.',409);
@@ -4161,15 +4163,15 @@ export class SessionOwner {
       if(typeof history.nextCursor!=='string'||visited.has(history.nextCursor))throw new SessionOwnerError('Native history cursor did not advance.',502,'PROVIDER_HISTORY_INVALID');
       visited.add(history.nextCursor);cursor=history.nextCursor;offset+=history.messages.length;
     }
-  }
-  async importSource(body:unknown) {
+  }).call(this));}
+  async importSource(body:unknown) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const input=object(body);only(input,['clientActionId','name','content','scope']);actionId(input);
     if(!this.runtime.sources)throw new SessionOwnerError('Archive source adapter unavailable.',409,'CAPABILITY_UNAVAILABLE');
     const {name,content,scope}=input;
-    const result=await this.runtime.sources.import({name,content,scope});
+    const result=(yield this.runtime.sources.import({name,content,scope}));
     return {sessions:result.sources.map((source:any)=>this.view(this.sourceSession(source))),sources:result.sources};
-  }
-  async bind(id:string,body:unknown) {
+  }).call(this));}
+  async bind(id:string,body:unknown) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const input=object(body);only(input,['clientActionId','reference']);const action=actionId(input);
     const session=this.session(id),metadata=sessionMetadata(session);
     const reference=object(input.reference);only(reference,['accountScope','sessionId','anchor']);
@@ -4189,7 +4191,7 @@ export class SessionOwner {
     })();
     if(!accepted.duplicate) {
       try {
-        const verified=await this.runtime.bind!(session,accepted.input,reference as ChatGptBinding);
+        const verified=(yield this.runtime.bind!(session,accepted.input,reference as ChatGptBinding));
         if(stablePayload(verified.binding)!==stablePayload(reference))throw new SessionOwnerError('The verified native binding changed.',409,'BINDING_CHANGED');
         db.transaction(()=>{
           const current=this.session(id);
@@ -4208,7 +4210,7 @@ export class SessionOwner {
       }
     }
     return {session:this.view(this.session(id)),operation:this.receipt(this.input(accepted.input.id))};
-  }
+  }).call(this));}
   upload(body:unknown) {
     const input=object(body);only(input,['clientActionId','name','contentType','base64','sessionId','agentSource']);const action=actionId(input),agent=agentTestSource(input.agentSource);
     if(typeof input.name!=='string'||!input.name||input.name.includes('/')||input.name.includes('\\')||input.name==='.'||input.name==='..'||input.name.includes('\0'))throw new SessionOwnerError('Attachment name must be a file name.');
@@ -4294,7 +4296,7 @@ export class SessionOwner {
     }
     return settled;
   }
-  async transcribeAttachment(id:string,body?:unknown,asyncResult=false):Promise<{text:string}|ReturnType<SessionOwner['transcriptionState']>> {
+  async transcribeAttachment(id:string,body?:unknown,asyncResult=false):Promise<{text:string}|ReturnType<SessionOwner['transcriptionState']>> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if(body&&typeof body==='object'&&Object.keys(body).length)return this.acceptDeviceTranscript(id,body);
     if(process.platform==='linux'){
       let state=this.transcriptionState(id);
@@ -4304,13 +4306,13 @@ export class SessionOwner {
         if(!row.content_type.startsWith('audio/'))throw new SessionOwnerError('Only retained audio can be transcribed.',409,'CAPABILITY_UNAVAILABLE');
         if(row.transcript_text!==null)return asyncResult?{state:'done',text:row.transcript_text}:{text:row.transcript_text};
         const staged=stageSpeechJob(speechRoot(process.env.CONCIERGE_STATE_DIR!),{attachmentId:id,sha256:row.sha256,name:row.name,contentType:row.content_type,bytes:row.bytes});
-        await awaitingOutside(()=>staged);
+        (yield awaitingOutside(()=>staged));
         state=this.transcriptionState(id);
       }
       const worker=ensureSpeechWorker(process.env.CONCIERGE_STATE_DIR!);
-      await awaitingOutside(()=>worker).catch(()=>{
+      (yield awaitingOutside(()=>worker).catch(ledgerCallback(()=>{
         throw new SessionOwnerError('The speech worker is unavailable. Your recording is kept and can be retried.',424,'AUDIO_WORKER_UNAVAILABLE');
-      });
+      })));
       if(asyncResult)return state;
       // Existing clients expect words from POST. A restart drops only this waiter; the
       // supervised job and retained audio survive, so the retry rejoins by attachment ID.
@@ -4322,16 +4324,16 @@ export class SessionOwner {
           ?'Speech-to-text is not installed on this computer, so it cannot turn recordings into words. Your recording is kept.'
           :'Speech-to-text could not turn this recording into words. Your recording is kept.',422,
           current.reason==='transcriber_missing'?'AUDIO_TRANSCRIBER_UNAVAILABLE':'AUDIO_TRANSCRIPTION_FAILED');
-        await awaitingOutside(()=>new Promise(resolve=>setTimeout(resolve,250)));
+        (yield awaitingOutside(()=>new Promise(resolve=>setTimeout(resolve,250))));
       }
     }
     const pending=this.transcribing.get(id);
-    if(pending){const result=await awaitingOutside(()=>pending);return asyncResult?{state:'done' as const,text:result.text}:result;}
+    if(pending){const result=(yield awaitingOutside(()=>pending));return asyncResult?{state:'done' as const,text:result.text}:result;}
     const job=this.transcribeAttachmentOnce(id).finally(()=>this.transcribing.delete(id));
     this.transcribing.set(id,job);
-    const result=await job;
+    const result=(yield job);
     return asyncResult?{state:'done' as const,text:result.text}:result;
-  }
+  }).call(this));}
   // The person's own phone can turn a recording into words before this server does. Those words
   // are kept beside the verified audio with the engine that produced them, and never replace words
   // already retained: whichever transcript arrives first is the recording's transcript.
@@ -4348,34 +4350,34 @@ export class SessionOwner {
     if(accepted)log('info','transcript_accepted',{attachment_id:id,source:'device',engine,engine_version:engineVersion,audio_ms:durationMs,text_chars:text.length});
     return {text:(db.query('SELECT transcript_text FROM session_attachments WHERE id=?').get(id) as {transcript_text:string}).transcript_text};
   }
-  private async transcribeAttachmentOnce(id:string) {
+  private async transcribeAttachmentOnce(id:string) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const row=db.query('SELECT id,name,content_type,sha256,bytes,transcript_text FROM session_attachments WHERE id=?').get(id) as {id:string;name:string;content_type:string;sha256:string;bytes:Uint8Array;transcript_text:string|null}|null;
     if(!row)throw new SessionOwnerError('Unknown attachment custody ID.',404);
     if(!row.content_type.startsWith('audio/'))throw new SessionOwnerError('Only retained audio can be transcribed.',409,'CAPABILITY_UNAVAILABLE');
     if(row.transcript_text)return {text:row.transcript_text};
     if(createHash('sha256').update(row.bytes).digest('hex')!==row.sha256)throw new SessionOwnerError('Retained audio failed verification.',409);
-    const directory=await mkdtemp(join(tmpdir(),'concierge-voice-'));
+    const directory=(yield mkdtemp(join(tmpdir(),'concierge-voice-')));
     try{
       const path=join(directory,row.id+'.'+(row.content_type.includes('mp4')?'m4a':row.content_type.includes('ogg')?'ogg':'webm'));
-      await writeFile(path,row.bytes,{mode:0o600});
+      (yield writeFile(path,row.bytes,{mode:0o600}));
       // A machine without speech-to-text installed (a Mac peer, say) must say so in words, not
       // hand a raw exit status to the person dictating (report capture 35af2f2a).
       // A recording with no speech in it (a cancelled dictation, a report that was only an image)
       // has no words; answering that as a failure told him dictation failed on the server and
       // held his report (capture 4a659382).
       const transcription=transcribeAudioPath({slackFileId:row.id,title:row.name,path});
-      const result=await awaitingOutside(()=>transcription).catch((error:unknown)=>{
+      const result=(yield awaitingOutside(()=>transcription).catch(ledgerCallback((error:unknown)=>{
         if(error instanceof NoSpeech)return null;
         const missing=error instanceof Error&&/exited 127|ENOENT/.test(error.message);
         log('warn','audio_transcription_failed',{attachment_id:row.id,reason:missing?'transcriber_missing':'transcriber_failed'});
         if(missing)throw new SessionOwnerError('Speech-to-text is not installed on this computer, so it cannot turn recordings into words. Your recording is kept.',422,'AUDIO_TRANSCRIBER_UNAVAILABLE');
         throw error;
-      });
+      })));
       if(!result)return {text:''};
       db.query("UPDATE session_attachments SET transcript_text=?,transcript_source='server',transcript_engine=?,duration_ms=? WHERE id=? AND transcript_text IS NULL").run(result.text,result.source,result.audioMs??null,row.id);
       return {text:(db.query('SELECT transcript_text FROM session_attachments WHERE id=?').get(row.id) as {transcript_text:string}).transcript_text};
-    }finally{await rm(directory,{recursive:true,force:true});}
-  }
+    }finally{(yield rm(directory,{recursive:true,force:true}));}
+  }).call(this));}
   /** Stable identity for a bounded restore, so a retry rejoins the same runner transfer. */
   private restoreOperationId(value:string){const hash=createHash('sha256').update(value).digest('hex');
     return `${hash.slice(0,8)}-${hash.slice(8,12)}-4${hash.slice(13,16)}-8${hash.slice(17,20)}-${hash.slice(20,32)}`;}
@@ -4402,7 +4404,7 @@ export class SessionOwner {
     log('info','native_transcript_restored',{provider,native_id:nativeId,bytes:bytes.length,sha256:packet.sha256});
   }
   /** Bind an existing provider transcript on the machine whose folder contains it. */
-  private async resumeNative(body:unknown) {
+  private async resumeNative(body:unknown) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const body_=object(body);only(body_,['clientActionId','provider','nativeId','project','title','sourceAddress','sourceSessionId','sourcePeer','restore']);
     const {restore,...input}=body_;const action=actionId(input);
     const provider=input.provider,nativeId=input.nativeId,cwd=input.project;
@@ -4414,15 +4416,15 @@ export class SessionOwner {
     const runner=provider==='codex'?process.env.CONCIERGE_CODEX_RUNNER?.trim()||null:process.env.CONCIERGE_TURN_RUNNER?.trim()||null;
     let location:{cwd:string;project:string|null;path:string}|null=null,account:string|null=null;
     if(runner){
-      location=await resolveRunnerProjectLocation(runner,{project:cwd,cwd});
-      const found=await runnerMachineCall<{account:string|null;resolution:'unique'|'shared'|'missing'|'ambiguous'}>(runner,'accounts.transcript',
-        {provider,account:null,nativeId});
+      location=(yield resolveRunnerProjectLocation(runner,{project:cwd,cwd}));
+      const found=(yield runnerMachineCall<{account:string|null;resolution:'unique'|'shared'|'missing'|'ambiguous'}>(runner,'accounts.transcript',
+        {provider,account:null,nativeId}));
       if(found.resolution==='ambiguous')throw new SessionOwnerError('This provider conversation has more than one account copy on its runner.',409,'NATIVE_TRANSCRIPT_AMBIGUOUS');
       account=found.resolution==='unique'?found.account:null;
       if(found.resolution==='shared'){
         const selected=provider==='claude-code'?selectedClaudeHome()?.label:null;
         if(!selected)throw new SessionOwnerError('Choose a Claude account available on the runner to continue this shared conversation.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
-        const validation=await runnerMachineCall<{available:boolean}>(runner,'accounts.validate',{provider,account:selected});
+        const validation=(yield runnerMachineCall<{available:boolean}>(runner,'accounts.validate',{provider,account:selected}));
         if(!validation.available)throw new SessionOwnerError('The selected Claude account is unavailable on this runner.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
         account=selected;
       }
@@ -4436,11 +4438,11 @@ export class SessionOwner {
           ||!bytes.subarray(0,262_144).toString('utf8').includes(nativeId))
           throw new SessionOwnerError('The archived copy does not match this conversation.',409,'NATIVE_TRANSCRIPT_RESTORE_REFUSED');
         const selected=provider==='claude-code'?selectedClaudeHome()?.label:null;
-        const active=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider,...(selected?{account:selected}:{})});
+        const active=(yield runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider,...(selected?{account:selected}:{})}));
         if(!active?.label)throw new SessionOwnerError('No signed-in account is available on the runner for this conversation.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
         account=active.label;
-        await restoreRunnerProviderTranscript({runner,account,provider:provider as 'claude-code'|'codex',nativeId,
-          cwd:location.cwd,name:packet.name,bytes,restoreId:this.restoreOperationId(`native:${action}`)});
+        (yield restoreRunnerProviderTranscript({runner,account,provider:provider as 'claude-code'|'codex',nativeId,
+          cwd:location.cwd,name:packet.name,bytes,restoreId:this.restoreOperationId(`native:${action}`)}));
       }
     } else {
       let actual:string,root:string;
@@ -4469,9 +4471,9 @@ export class SessionOwner {
       return {session:getSessionById(session.id)!,reused:false};
     })();
     return {session:this.view(created.session),reused:created.reused};
-  }
+  }).call(this));}
   /** Continue peer archive copies or imported native conversations through one control. */
-  async resurrect(body:unknown) {
+  async resurrect(body:unknown) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const input=object(body);only(input,['clientActionId','address']);const action=actionId(input);
     const peers=this.communication?.peersOrNull();
     const remote=peers?.splitAddress(input.address);
@@ -4492,80 +4494,80 @@ export class SessionOwner {
       if(machine){
         try{
           let value:{session:any;reused:boolean};
-          try{value=await peers!.client(machine).request<{session:any;reused:boolean}>('POST','/sessions/v1/resurrections/native',packet);}
+          try{value=(yield peers!.client(machine).request<{session:any;reused:boolean}>('POST','/sessions/v1/resurrections/native',packet));}
           catch(error){
             const archived=error instanceof PeerError&&error.code==='NATIVE_TRANSCRIPT_UNAVAILABLE'?peers!.archivedTranscript(machine,nativeId):null;
             if(!archived)throw error;
             const bytes=readFileSync(archived.path);
-            value=await peers!.client(machine).request<{session:any;reused:boolean}>('POST','/sessions/v1/resurrections/native',
-              {...packet,restore:{name:basename(archived.path),sha256:createHash('sha256').update(bytes).digest('hex'),base64:bytes.toString('base64')}},120_000);
+            value=(yield peers!.client(machine).request<{session:any;reused:boolean}>('POST','/sessions/v1/resurrections/native',
+              {...packet,restore:{name:basename(archived.path),sha256:createHash('sha256').update(bytes).digest('hex'),base64:bytes.toString('base64')}},120_000));
           }
           target={...value.session,id:`${machine}:${value.session.id.slice(10)}`,address:`${machine}/${value.session.address}`,peer:machine};
         }
         catch(error){if(error instanceof PeerError&&error.kind==='unreachable')throw new SessionOwnerError(`${machine} is not answering. This conversation lives in ${project} there; try again when it is on.`,424,'MACHINE_UNREACHABLE');if(error instanceof PeerError)throw new SessionOwnerError(error.message,error.status??502,error.code??'PEER_REFUSED');throw error;}
-      }else target=(await this.resumeNative(packet)).session;
+      }else target=((yield this.resumeNative(packet))).session;
       const operation=this.saveControl(source,'resurrect',input,()=>({sessionId:target.id,session:target}));
       return {session:target,operation:this.receipt(operation)};
     }
     if(!peers)throw new SessionOwnerError('No peer instance is configured here.',503,'CAPABILITY_UNAVAILABLE');
     const runnerResurrection=process.env.CONCIERGE_TURN_RUNNER?.trim()||process.env.CONCIERGE_CODEX_RUNNER?.trim();
-    const created=await peers.resurrect(remote.peer,remote.address,{defaultCwd:this.defaultCwd,
+    const created=(yield peers.resurrect(remote.peer,remote.address,{defaultCwd:this.defaultCwd,
       createSession:(provider,metadata)=>createNativeSession(provider,metadata as any),
       bind:(sessionId,provider,uuid)=>bindSessionProvider(sessionId,provider,uuid),
       ...(runnerResurrection?{prepare:async ({provider,threadId,archived,projectName,projectPath}:{
         provider:'claude-code'|'codex';threadId:string;archived:{path:string;archivedAt:string};projectName:string|null;projectPath:string|null;
-      })=>{
+      })=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         const runner=(provider==='codex'?process.env.CONCIERGE_CODEX_RUNNER:process.env.CONCIERGE_TURN_RUNNER)?.trim();
         if(!runner)throw new SessionOwnerError('This provider has no runner for restored conversations.',409,'RUNNER_UNAVAILABLE');
-        const location=await resolveRunnerProjectLocation(runner,{projectName,projectPath});
-        const found=await runnerMachineCall<{account:string|null;resolution:'unique'|'shared'|'missing'|'ambiguous'}>(runner,'accounts.transcript',
-          {provider,account:null,nativeId:threadId});
+        const location=(yield resolveRunnerProjectLocation(runner,{projectName,projectPath}));
+        const found=(yield runnerMachineCall<{account:string|null;resolution:'unique'|'shared'|'missing'|'ambiguous'}>(runner,'accounts.transcript',
+          {provider,account:null,nativeId:threadId}));
         if(found.resolution==='ambiguous')throw new SessionOwnerError('This conversation has more than one account copy on its runner.',409,'NATIVE_TRANSCRIPT_AMBIGUOUS');
         let account=found.resolution==='unique'?found.account:null;
         if(found.resolution==='shared'){
           const selected=provider==='claude-code'?selectedClaudeHome()?.label:null;
           if(!selected)throw new SessionOwnerError('Choose a Claude account available on the runner to continue this shared conversation.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
-          const validation=await runnerMachineCall<{available:boolean}>(runner,'accounts.validate',{provider,account:selected});
+          const validation=(yield runnerMachineCall<{available:boolean}>(runner,'accounts.validate',{provider,account:selected}));
           if(!validation.available)throw new SessionOwnerError('The selected Claude account is unavailable on this runner.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
           account=selected;
         }
         if(!account){
           const selected=provider==='claude-code'?selectedClaudeHome()?.label:null;
-          const active=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider,...(selected?{account:selected}:{})});
+          const active=(yield runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider,...(selected?{account:selected}:{})}));
           if(!active?.label)throw new SessionOwnerError('No signed-in account is available on the runner for this conversation.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
           account=active.label;
           const size=statSync(archived.path).size;
           if(size<1||size>64*1024*1024)throw new SessionOwnerError('The archived conversation is outside the supported restore size.',409,'NATIVE_TRANSCRIPT_RESTORE_REFUSED');
           const bytes=readFileSync(archived.path);
           if(!bytes.subarray(0,262_144).toString('utf8').includes(threadId))throw new SessionOwnerError('The archived copy does not match this conversation.',409,'NATIVE_TRANSCRIPT_RESTORE_REFUSED');
-          await restoreRunnerProviderTranscript({runner,account,provider,nativeId:threadId,cwd:location.cwd,
-            name:basename(archived.path),bytes,restoreId:this.restoreOperationId(`peer:${remote.peer}:${remote.address}:${threadId}`)});
+          (yield restoreRunnerProviderTranscript({runner,account,provider,nativeId:threadId,cwd:location.cwd,
+            name:basename(archived.path),bytes,restoreId:this.restoreOperationId(`peer:${remote.peer}:${remote.address}:${threadId}`)}));
         }
         return {cwd:location.cwd,project:location.cwd,projectName:location.project,projectPath:location.path,
           providerRunner:runner,providerAccount:account};
-      }}:{}),
-    });
+      }).call(this));}}:{}),
+    }));
     const session=getSessionById(created.sessionId)!;
     const operation=this.saveControl(session,'resurrect',input,()=>({sessionId:`concierge:${session.id}`,reused:created.reused}));
     return {session:this.view(session),operation:this.receipt(operation)};
-  }
-  async consult(body:unknown) {
+  }).call(this));}
+  async consult(body:unknown) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const input=object(body);only(input,['clientActionId','address','sourceId','sourceVersion','boundary','text']);inputText(input);const action=actionId(input);
     const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
     if(prior){const payload=JSON.parse(prior.payload_json);delete payload.preparedPrompt;if(prior.kind!=='consultation'||stablePayload(payload)!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);return {operation:this.receipt(prior)};}
-    const prepared=await this.prepareConsultation(input.address,{sourceId:input.sourceId,sourceVersion:input.sourceVersion,boundary:input.boundary});
+    const prepared=(yield this.prepareConsultation(input.address,{sourceId:input.sourceId,sourceVersion:input.sourceVersion,boundary:input.boundary}));
     const accepted=db.transaction(()=>{
       const raced=db.query("SELECT id FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action);if(raced)throw new SessionOwnerError('Concurrent consultation accepted; inspect and retry this action.',409);
       return this.createConsultation(prepared,{scope:'surface:thinkering',actionId:action,origin:'human',payload:input});
     })();
     return {operation:this.receipt(this.dispatch(accepted))};
-  }
-  async prepareConsultation(address:string,pin?:{sourceId:string;sourceVersion:string;boundary:string},evidence?:unknown[]):Promise<PreparedConsultation> {
+  }).call(this));}
+  async prepareConsultation(address:string,pin?:{sourceId:string;sourceVersion:string;boundary:string},evidence?:unknown[]):Promise<PreparedConsultation> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const parent=resolveSessionAddress(address),meta=sessionMetadata(parent);
     if(!this.view(parent).capabilities.consult||!this.runtime.sources)throw new SessionOwnerError('This source has no proven information-only consultation provider.',409,'CAPABILITY_UNAVAILABLE');
     const selected=pin??{sourceId:meta.source?.id,sourceVersion:meta.source?.version,boundary:meta.source?.consultation?.boundary};
     if(!selected.boundary||selected.sourceId!==meta.source?.id||selected.sourceVersion!==meta.source?.version||selected.boundary!==meta.source?.consultation?.boundary)throw new SessionOwnerError('Consultation requires the exact retained source version and branch boundary.',409);
-    const context=await this.runtime.sources.context({sourceId:selected.sourceId,sourceVersion:selected.sourceVersion,branch:meta.source.branch});
+    const context=(yield this.runtime.sources.context({sourceId:selected.sourceId,sourceVersion:selected.sourceVersion,branch:meta.source.branch}));
     const source=context.source;
     if(source?.id!==selected.sourceId||source.version!==selected.sourceVersion||source.branch!==meta.source.branch||source.consultation?.boundary!==selected.boundary)throw new SessionOwnerError('Source evidence changed before consultation.',409);
     const messages=source.messages.filter((message:any)=>['user','assistant'].includes(message.role));
@@ -4573,7 +4575,7 @@ export class SessionOwner {
     const packet=messages.map((message:any)=>({role:message.role,eventId:message.eventId,locator:message.locator,textHash:message.textHash,text:message.text}));
     if(evidence?.some(value=>{const item=value as any;return !item||item.sourceId!==source.id||item.sourceVersion!==source.version||(item.branch!==undefined&&item.branch!==source.branch)||!packet.some((message:any)=>message.eventId===item.eventId&&(item.textHash===undefined||message.textHash===item.textHash));}))throw new SessionOwnerError('Question evidence does not belong to this exact retained dialogue.',409);
     return {address,parent,source,packet};
-  }
+  }).call(this));}
   private createConsultation(prepared:PreparedConsultation,input:{id?:string;scope:string;actionId:string;origin:'human'|'agent';payload:Record<string,any>;sourceInputId?:string;sourceRunId?:string;requestId?:string}) {
       const {source,packet}=prepared,parent=resolveSessionAddress(prepared.address),meta=sessionMetadata(parent);
       if(parent.id!==prepared.parent.id||meta.source?.version!==source.version||meta.source?.branch!==source.branch||meta.source?.consultation?.boundary!==source.consultation.boundary||!this.view(parent).capabilities.consult)throw new SessionOwnerError('Consultation source changed before acceptance.',409);
@@ -4656,7 +4658,7 @@ export class SessionOwner {
       // Sent as one read it held the owner 5.6 s and queued 674 MB (incident bfb3021e).
       // A filtered subscription advances past the events it scanned, not only the ones
       // it sent, so a narrow filter never rescans the same skipped rows on every change.
-      const drain=async()=>{
+      const drain=async()=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if(draining){changed=true;return;}
         draining=true;
         try{
@@ -4665,24 +4667,24 @@ export class SessionOwner {
             scope?.();
             const query=new URLSearchParams({after:String(after),limit:String(STREAM_PAGE_EVENTS)});
             for(const name of ['sessionId','runId','kind'] as const){const value=url.searchParams.get(name);if(value!==null)query.set(name,value);}
-            const response=await fetch('http://localhost/internal/event-stream-page?'+query,{
+            const response=(yield fetch('http://localhost/internal/event-stream-page?'+query,{
               unix:join(process.env.CONCIERGE_STATE_DIR!,'requests.sock'),signal:request.signal,headers:readerHeaders,
-            } as RequestInit);
+            } as RequestInit));
             if(!response.ok)throw new Error(`Event stream reader returned ${response.status}.`);
             const nextCursor=response.headers.get('x-event-next-cursor');
             const hasMore=response.headers.get('x-event-has-more')==='1';
-            const bytes=new Uint8Array(await response.arrayBuffer());
+            const bytes=new Uint8Array((yield response.arrayBuffer()));
             scope?.();
             if(bytes.byteLength)controller.enqueue(bytes);
             if(nextCursor)after=Number(nextCursor);
             if(!hasMore&&!changed)break;
-            if((controller.desiredSize??1)<=0)await new Promise<void>(resolve=>{waiting=resolve;});
-            else await new Promise<void>(resolve=>setImmediate(resolve));
+            if((controller.desiredSize??1)<=0)(yield new Promise<void>(resolve=>{waiting=resolve;}));
+            else (yield new Promise<void>(resolve=>setImmediate(resolve)));
           }
           if(!caughtUp){caughtUp=true;controller.enqueue(new TextEncoder().encode(`id: ${after}\nevent: caught-up\ndata: ${JSON.stringify({cursor:String(after)})}\n\n`));}
         }catch(error){if(!closed)log('warn','session_event_stream_failed',{error:String(error)});stop();}
         finally{draining=false;}
-      };
+      }).call(this));};
       dispose=()=>{if(closed)return false;closed=true;this.openStreams.delete(stop);detach();request.signal.removeEventListener('abort',stop);readable();return true;};
       // A consumer that cancelled has already closed the controller, so only an owner-side end closes it here.
       const stop=()=>{if(dispose())try{controller.close();}catch{}};
@@ -4768,7 +4770,7 @@ export class SessionOwner {
       return ownerJson({error:{code:'READ_BUDGET_EXCEEDED',message:'This page exceeded its declared read size.'}},{status:503});
     return response;
   }
-  private async handleRequest(request:Request):Promise<Response|null> {
+  private async handleRequest(request:Request):Promise<Response|null> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const url=new URL(request.url);
     if(url.pathname!=='/sessions/v1'&&!url.pathname.startsWith('/sessions/v1/'))return null;
     try {
@@ -4777,11 +4779,11 @@ export class SessionOwner {
       // The body arrives from outside the owner: a Mac agent's reply with screenshots crosses the
       // Tailscale relay while this awaits. On 2026-10-24 a 7.3 MB reply took 13.7 s to arrive and
       // was counted as owner slowness (work-flow supervisor incident a8216a4c). It is awaited time.
-      const body=request.method==='POST'?await awaitingOutside(()=>request.json()):null;
+      const body=request.method==='POST'?(yield awaitingOutside(()=>request.json())):null;
       if(parts[0]==='lab'&&parts[1]==='conversations'){
-        if(request.method==='POST'&&parts.length===2)return ownerJson(await this.labConversations.create(body,this.labActor(request,body)),{status:202});
+        if(request.method==='POST'&&parts.length===2)return ownerJson((yield this.labConversations.create(body,this.labActor(request,body))),{status:202});
         if(request.method==='POST'&&parts.length===4&&parts[3]==='respond')return ownerJson(this.labConversations.respond(parts[2]!,body,this.labActor(request,body)),{status:202});
-        if(request.method==='POST'&&parts.length===4&&parts[3]==='participants')return ownerJson(await this.labConversations.participants(parts[2]!,body,this.labActor(request,body)),{status:202});
+        if(request.method==='POST'&&parts.length===4&&parts[3]==='participants')return ownerJson((yield this.labConversations.participants(parts[2]!,body,this.labActor(request,body))),{status:202});
         if(request.method==='GET'&&parts.length===3)return ownerJson(this.labConversations.view(parts[2]!,url.searchParams.has('before')?Number(url.searchParams.get('before')):undefined));
         if(request.method==='GET'&&parts.length===5&&parts[3]==='requests')return ownerJson(this.labConversations.requestFacts(parts[2]!,parts[4]!));
         if(request.method==='GET'&&parts.length===5&&parts[3]==='memberships')return ownerJson(this.labConversations.membership(parts[2]!,Number(parts[4])));
@@ -4798,9 +4800,9 @@ export class SessionOwner {
           only(input,['clientActionId','runId','agentSource','createInputId']);
           const {source,sessionId}=this.agentBrowserBinding(request,parts[2],input,true);
           const control={clientActionId:input.clientActionId,runId:input.runId};
-          if(parts[3]==='stop')return ownerJson(await this.stopExact(sessionId,control,{inputId:source.inputId,runId:source.runId,
-            targetAddress:sessionId,authorityInputId:String(input.createInputId??request.headers.get('x-concierge-agent-test-create'))}));
-          return ownerJson(await this.agentTestConnectionLoss(sessionId,control,source,String(input.createInputId??request.headers.get('x-concierge-agent-test-create'))));
+          if(parts[3]==='stop')return ownerJson((yield this.stopExact(sessionId,control,{inputId:source.inputId,runId:source.runId,
+            targetAddress:sessionId,authorityInputId:String(input.createInputId??request.headers.get('x-concierge-agent-test-create'))})));
+          return ownerJson((yield this.agentTestConnectionLoss(sessionId,control,source,String(input.createInputId??request.headers.get('x-concierge-agent-test-create')))));
         }
         if(request.method!=='GET'||parts.length<4)throw new SessionOwnerError('Unknown agent browser read.',404);
         const {source,sessionId}=this.agentBrowserBinding(request,parts[2]);
@@ -4895,7 +4897,7 @@ export class SessionOwner {
         // The private service socket and authenticated peer listener may carry Lab publication.
         // A run/runner token cannot choose another actor by supplying source IDs.
         if(request.headers.has('x-concierge-agent-principal'))throw new SessionOwnerError('Inbox publication requires a trusted service or peer.',403,'SERVICE_ONLY');
-        result=parts[0]==='inbox'?await this.communication.publishInbox(body):this.communication.publicationSource(body);
+        result=parts[0]==='inbox'?(yield this.communication.publishInbox(body)):this.communication.publicationSource(body);
       }
       else if(request.method==='GET'&&parts[0]==='reports'&&parts[1]==='chain'&&parts.length===3)
         result=reportSourceChain(db,parts[2]!);
@@ -4905,17 +4907,17 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='obligations'&&parts.length===2)
         result=url.searchParams.get('view')==='count'?openInboxObligationCount():openInboxObligations();
       else if(request.method==='POST'&&parts[0]==='mac-browser-fallback'&&parts.length===1)result=this.macBrowserFallback(body);
-      else if(request.method==='GET'&&parts[0]==='focus-hold'&&parts.length===1)result=await this.focusHoldStatus();
-      else if(request.method==='GET'&&parts[0]==='requirements'&&parts.length===1)result=await requirementsFor((url.searchParams.get('text')??'').slice(0,4000));
-      else if(request.method==='POST'&&parts[0]==='focus-hold'&&parts.length===1)result=await this.focusHoldControl(body);
-      else if(request.method==='POST'&&parts[0]==='focus-hold'&&parts[1]==='release'&&parts.length===2)result=await this.releaseHeldCaptures(body);
+      else if(request.method==='GET'&&parts[0]==='focus-hold'&&parts.length===1)result=(yield this.focusHoldStatus());
+      else if(request.method==='GET'&&parts[0]==='requirements'&&parts.length===1)result=(yield requirementsFor((url.searchParams.get('text')??'').slice(0,4000)));
+      else if(request.method==='POST'&&parts[0]==='focus-hold'&&parts.length===1)result=(yield this.focusHoldControl(body));
+      else if(request.method==='POST'&&parts[0]==='focus-hold'&&parts[1]==='release'&&parts.length===2)result=(yield this.releaseHeldCaptures(body));
       else if(request.method==='GET'&&parts[0]==='pause-all'&&parts.length===1)result=this.globalPauseStatus();
-      else if(request.method==='POST'&&parts[0]==='pause-all'&&parts.length===1)result=await this.globalPauseControl(true,body);
-      else if(request.method==='POST'&&parts[0]==='pause-all'&&parts[1]==='resume'&&parts.length===2)result=await this.globalPauseControl(false,body);
+      else if(request.method==='POST'&&parts[0]==='pause-all'&&parts.length===1)result=(yield this.globalPauseControl(true,body));
+      else if(request.method==='POST'&&parts[0]==='pause-all'&&parts[1]==='resume'&&parts.length===2)result=(yield this.globalPauseControl(false,body));
       else if(request.method==='POST'&&parts[0]==='pause-all'&&parts[1]==='peer'&&parts.length===2)result=this.globalPausePeer(body);
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts.length===1)
         result=this.acceptInboxCapture(body,request.headers.get('x-concierge-verified-peer')==='1');
-      else if(request.method==='POST'&&parts[0]==='agent-report'&&parts.length===1)result=await this.reportAgentIssue(body);
+      else if(request.method==='POST'&&parts[0]==='agent-report'&&parts.length===1)result=(yield this.reportAgentIssue(body));
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='inbox-queue'&&parts.length===2)
         result=this.inboxQueue(url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),50)??50);
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='captures'&&parts.length===2)
@@ -4928,7 +4930,7 @@ export class SessionOwner {
         result=this.inboxQueueAction(body);
       // Which thread a piece of work served, so thnkr.ing's update list can link each change to it. Not
       // under inbox/topics/: every GET there is rewritten to the prepared thread reads above.
-      else if(request.method==='GET'&&parts[0]==='work-thread'&&parts.length===1)result=await this.workThreadFor(url);
+      else if(request.method==='GET'&&parts[0]==='work-thread'&&parts.length===1)result=(yield this.workThreadFor(url));
       // Topics: the Inbox's recognizable conversations. Reads are projections; the two POSTs
       // are his own management actions, retained like every other human control.
       else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts[3]==='coordination'&&parts.length===4)
@@ -4976,45 +4978,45 @@ export class SessionOwner {
       }
       else if(request.method==='GET'&&parts[0]==='saved-work'&&parts.length===1) result=this.savedWorkList(url.searchParams.get('cursor'));
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='agents'&&parts.length===2)
-        result=await this.standingAgents();
+        result=(yield this.standingAgents());
       else if(request.method==='GET'&&parts[0]==='saved-work'&&parts[1]==='settings'&&parts.length===2) result={settings:savedWorkSettings()};
       else if(request.method==='GET'&&parts[0]==='usage'&&parts[1]==='breakdown'&&parts.length===2){
         const period=url.searchParams.get('period')??'today';
         if(period!=='today'&&period!=='week')throw new SessionOwnerError('Use period=today or period=week.');
-        result=await usageBreakdown(period);
+        result=(yield usageBreakdown(period));
       }
       else if(request.method==='GET'&&parts[0]==='usage'&&parts[1]==='allowance'&&parts.length===2){
         const sessions=url.searchParams.getAll('session'),topics=url.searchParams.getAll('topic');
         if(!validUsageAllowanceLookup(sessions,topics))
           throw new SessionOwnerError('Ask for at most 100 rows: sessions as <machine>:<number>, threads by their id.');
-        result=await usageAllowanceLookup(sessions,topics,url.searchParams.get('overview')==='1');
+        result=(yield usageAllowanceLookup(sessions,topics,url.searchParams.get('overview')==='1'));
       }
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts[1]==='settings'&&parts.length===2) result={settings:changeSavedWorkSettings(object(body))};
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts.length===3) result=this.savedWorkControl(Number(parts[1]),parts[2]!,object(body));
-      else if(request.method==='GET'&&parts[0]==='projects'&&parts.length===1) result=await this.projects();
+      else if(request.method==='GET'&&parts[0]==='projects'&&parts.length===1) result=(yield this.projects());
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='canvas-policy'&&parts.length===2&&this.projectSetup) result=this.projectSetup.setCanvasPolicy(body);
-      else if(request.method==='POST'&&parts[0]==='canvas-projects'&&parts[1]==='ensure'&&parts.length===2&&this.projectSetup) result=await this.projectSetup.ensureCanvas(body);
+      else if(request.method==='POST'&&parts[0]==='canvas-projects'&&parts[1]==='ensure'&&parts.length===2&&this.projectSetup) result=(yield this.projectSetup.ensureCanvas(body));
       else if(request.method==='GET'&&parts[0]==='canvas-projects'&&parts.length===2&&this.projectSetup){
-        const canvas=await this.projectSetup.canvas(parts[1]!);if(!canvas)throw new SessionOwnerError('This Canvas has no project setup yet.',404,'CANVAS_PROJECT_NOT_FOUND');result=canvas;
+        const canvas=(yield this.projectSetup.canvas(parts[1]!));if(!canvas)throw new SessionOwnerError('This Canvas has no project setup yet.',404,'CANVAS_PROJECT_NOT_FOUND');result=canvas;
       }
-      else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='files'&&parts.length===3) result=await this.projectFiles(parts[1]!,url.searchParams.get('path'),url.searchParams.get('machine'));
-      else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='new'&&parts.length===2&&this.projectSetup)result=await this.projectSetup.new(body);
-      else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='share'&&parts.length===2&&this.projectSetup)result=await this.projectSetup.share(body);
+      else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='files'&&parts.length===3) result=(yield this.projectFiles(parts[1]!,url.searchParams.get('path'),url.searchParams.get('machine')));
+      else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='new'&&parts.length===2&&this.projectSetup)result=(yield this.projectSetup.new(body));
+      else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='share'&&parts.length===2&&this.projectSetup)result=(yield this.projectSetup.share(body));
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='cancel'&&parts.length===2&&this.projectSetup)result=this.projectSetup.cancel(body);
       else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='status'&&parts.length===3&&this.projectSetup)result=this.projectSetup.status(parts[1]!,url.searchParams.get('peer')??undefined);
-      else if(request.method==='GET'&&parts[0]==='status'&&parts.length===1) result={...await this.status(),operations:[...(this.projectSetup?['project.setup',PROJECT_FOLDERS_OPERATION,PROJECT_NESTED_EXPERTISE_OPERATION]:[]),...(this.peerLinks?['link.open']:[])]};
-      else if(request.method==='GET'&&parts[0]==='releases'&&parts.length===1) result=await releaseHistory();
-      else if(request.method==='GET'&&parts[0]==='files'&&parts.length===1) result=await this.file(url.searchParams.get('path'),url.searchParams.get('machine'));
-      else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='instructions'&&parts.length===3) result=await this.projectInstructions(parts[1]!);
-      else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='todos'&&parts.length===3) result=await this.projectTodos(parts[1]!);
-      else if(request.method==='POST'&&parts[0]==='projects'&&parts[2]==='default'&&parts.length===3) result=await this.projectDefault(parts[1]!,body);
-      else if(request.method==='POST'&&parts[0]==='projects'&&parts[2]==='todos'&&parts.length===3) result=await this.updateProjectTodos(parts[1]!,body);
+      else if(request.method==='GET'&&parts[0]==='status'&&parts.length===1) result={...(yield this.status()),operations:[...(this.projectSetup?['project.setup',PROJECT_FOLDERS_OPERATION,PROJECT_NESTED_EXPERTISE_OPERATION]:[]),...(this.peerLinks?['link.open']:[])]};
+      else if(request.method==='GET'&&parts[0]==='releases'&&parts.length===1) result=(yield releaseHistory());
+      else if(request.method==='GET'&&parts[0]==='files'&&parts.length===1) result=(yield this.file(url.searchParams.get('path'),url.searchParams.get('machine')));
+      else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='instructions'&&parts.length===3) result=(yield this.projectInstructions(parts[1]!));
+      else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='todos'&&parts.length===3) result=(yield this.projectTodos(parts[1]!));
+      else if(request.method==='POST'&&parts[0]==='projects'&&parts[2]==='default'&&parts.length===3) result=(yield this.projectDefault(parts[1]!,body));
+      else if(request.method==='POST'&&parts[0]==='projects'&&parts[2]==='todos'&&parts.length===3) result=(yield this.updateProjectTodos(parts[1]!,body));
       // The selectable models, so a client picker never keeps its own list. Derived from
       // the alias table, so it cannot disagree with what a session can actually run.
       else if(request.method==='GET'&&parts[0]==='models'&&parts.length===1)
         result={models:modelCatalogue(),efforts:[...REASONING_EFFORTS],chatgptThinkingLevels:[...CHATGPT_THINKING_LEVELS],chatgptProvider:{key:'chatgpt',provider:'chatgpt',model:chatgptSessionModel(undefined),label:providerDisplayName('chatgpt')},selectors:providerSelectorCatalogue()};
       else if(request.method==='GET'&&parts[0]==='auth'&&parts[1]==='providers'&&parts.length===2)
-        result=await this.authProviders(url.searchParams.get('machine')??undefined,url.searchParams.get('fresh')==='1');
+        result=(yield this.authProviders(url.searchParams.get('machine')??undefined,url.searchParams.get('fresh')==='1'));
       else if(request.method==='GET'&&parts[0]==='auth'&&parts[1]==='claude-launch-choice'&&parts.length===2){
         if(claudeAllowanceHeld())throw new SessionOwnerError(CLAUDE_ALLOWANCE_HOLD_MESSAGE,409,'CLAUDE_ALLOWANCE_HELD');
         if(!this.runtime.auth?.chooseClaudeLaunch)throw new SessionOwnerError('Claude account selection is unavailable.',503);
@@ -5123,8 +5125,8 @@ export class SessionOwner {
         const activity=url.searchParams.get('activity')==='true';
         if(after!==null&&url.searchParams.get('cursor')!==null)throw new SessionOwnerError('Read older history with cursor or changes with after, not both.');
         const want={dialogue:Math.min(40,Math.max(0,Math.floor(Number(url.searchParams.get('dialogue'))||0))),untilInput:url.searchParams.get('untilInput')==='true'};
-        result=after!==null?await this.historyDelta(parts[1]!,after,activity)
-          :await this.history(parts[1]!,url.searchParams.get('cursor'),Math.min(HISTORY_WINDOW,Math.max(1,Number(url.searchParams.get('limit'))||HISTORY_WINDOW)),activity,want);
+        result=after!==null?(yield this.historyDelta(parts[1]!,after,activity))
+          :(yield this.history(parts[1]!,url.searchParams.get('cursor'),Math.min(HISTORY_WINDOW,Math.max(1,Number(url.searchParams.get('limit'))||HISTORY_WINDOW)),activity,want));
         // Which kind of conversation and read this was, so a history timing can be split by them:
         // the nightly review could not tell ChatGPT history apart (2026-11-02).
         answerHeaders['x-concierge-conversation-kind']=this.conversationKind(parts[1]!);
@@ -5132,13 +5134,13 @@ export class SessionOwner {
       }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='history'&&parts[3]==='messages'&&parts[5]==='detail'&&parts.length===6){
         const part=url.searchParams.has('part')?Number(url.searchParams.get('part')):null;
-        result=await this.historyMessageDetail(parts[1]!,parts[4]!,url.searchParams.get('digest')??'',part,url.searchParams.get('turnId'));
+        result=(yield this.historyMessageDetail(parts[1]!,parts[4]!,url.searchParams.get('digest')??'',part,url.searchParams.get('turnId')));
         if(part===null){const body=result as Buffer;
           return new Response(body,{status:200,headers:{'content-type':'application/json; charset=utf-8',
             'content-length':String(body.byteLength),'x-content-sha256':url.searchParams.get('digest')??''}});}
       }
-      else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='details'&&parts.length===4&&this.runtime.detail)result=await this.runtime.detail(this.session(parts[1]!),parts[3]!);
-      else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='artifacts'&&parts.length===4&&this.runtime.artifact)result=await this.runtime.artifact(this.session(parts[1]!),parts[3]!);
+      else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='details'&&parts.length===4&&this.runtime.detail)result=(yield this.runtime.detail(this.session(parts[1]!),parts[3]!));
+      else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='artifacts'&&parts.length===4&&this.runtime.artifact)result=(yield this.runtime.artifact(this.session(parts[1]!),parts[3]!));
       // Exact operation reads authorize provider admission and recovery. A failed operation can be
       // reopened, so another reader's settled cache is not authority for its current execution.
       else if(request.method==='GET'&&parts[0]==='operations'&&parts.length===2) result=this.buildReceipt(this.input(parts[1]!));
@@ -5149,34 +5151,34 @@ export class SessionOwner {
       }
       else if(request.method==='GET'&&parts[0]==='runs'&&parts.length===2)result={run:this.run(parts[1]!)};
       else if(request.method==='GET'&&parts[0]==='attachments'&&parts.length===2)result=this.attachment(parts[1]!);
-      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===1) result=await this.create(body);
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===1) result=(yield this.create(body));
       else if(request.method==='POST'&&parts[0]==='canvas-observations'&&parts.length===1) result=this.createCanvasObservation(body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='canvas-observations') result=this.appendCanvasObservation(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='journal'&&parts[1]==='observations'&&parts.length===2) result=this.submitJournalObservation(body);
-      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='inputs') result=await this.submit(parts[1]!,body);
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='inputs') result=(yield this.submit(parts[1]!,body));
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='feature-requests') result=this.submitFeatureRequest(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===5&&parts[2]==='actions'&&parts[4]==='cancel') result=this.cancelAction(parts[1]!,parts[3]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='actions') result=this.action(parts[1]!,body);
-      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='message-actions') result=await this.messageAction(parts[1]!,body);
-      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='stop') result=await this.stop(parts[1]!,body);
-      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='outage-choice') result=await this.outageChoice(parts[1]!,body);
-      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='bind') result=await this.bind(parts[1]!,body);
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='message-actions') result=(yield this.messageAction(parts[1]!,body));
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='stop') result=(yield this.stop(parts[1]!,body));
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='outage-choice') result=(yield this.outageChoice(parts[1]!,body));
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='bind') result=(yield this.bind(parts[1]!,body));
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='forks') result=this.fork(parts[1]!,body);
-      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='asides') result=await this.aside(parts[1]!,body);
-      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='comparisons') result=await this.compare(parts[1]!,body);
-      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='tasks') result=await this.createTask(parts[1]!,body);
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='asides') result=(yield this.aside(parts[1]!,body));
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='comparisons') result=(yield this.compare(parts[1]!,body));
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='tasks') result=(yield this.createTask(parts[1]!,body));
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='captures') result=this.captureSelectedMessage(parts[1]!,body);
-      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='reconcile') result=await this.reconcile(parts[1]!,body);
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='reconcile') result=(yield this.reconcile(parts[1]!,body));
       else if(request.method==='POST'&&parts[0]==='operations'&&parts.length===3&&parts[2]==='cancel') result=this.cancel(parts[1]!,body);
-      else if(request.method==='POST'&&parts[0]==='search'&&parts.length===1)result=await this.search(body);
-      else if(request.method==='POST'&&parts[0]==='commit-identity'&&parts.length===1)result=await this.commitIdentity(body);
-      else if(request.method==='POST'&&parts[0]==='context'&&parts.length===1)result=await this.context(body);
-      else if(request.method==='POST'&&parts[0]==='imports'&&parts.length===1)result=await this.importSource(body);
+      else if(request.method==='POST'&&parts[0]==='search'&&parts.length===1)result=(yield this.search(body));
+      else if(request.method==='POST'&&parts[0]==='commit-identity'&&parts.length===1)result=(yield this.commitIdentity(body));
+      else if(request.method==='POST'&&parts[0]==='context'&&parts.length===1)result=(yield this.context(body));
+      else if(request.method==='POST'&&parts[0]==='imports'&&parts.length===1)result=(yield this.importSource(body));
       else if(request.method==='POST'&&parts[0]==='sources'&&parts[1]==='refresh'&&parts.length===2){
         const input=object(body);only(input,['provider']);
         if(input.provider!=='chatgpt')throw new SessionOwnerError('Only the configured ChatGPT inventory supports explicit refresh.');
         if(!this.runtime.sources?.refresh)throw new SessionOwnerError('Source refresh is unavailable.',503,'CAPABILITY_UNAVAILABLE');
-        result=await awaitingOutside(()=>this.sourceRefresh(()=>this.runtime.sources!.refresh!()));
+        result=(yield awaitingOutside(()=>this.sourceRefresh(()=>this.runtime.sources!.refresh!())));
       }
       else if(request.method==='GET'&&parts[0]==='sources'&&parts[1]==='refresh'&&parts.length===2)
         result={pass:this.sourceRefreshPass?{...this.sourceRefreshPass.view}:null};
@@ -5186,47 +5188,47 @@ export class SessionOwner {
         const input=object(body);only(input,['provider','machine','profileId']);
         if(typeof input.provider!=='string')throw new SessionOwnerError('Provider authentication target is required.');
         if(input.profileId!==undefined&&(typeof input.profileId!=='string'||!input.profileId.trim()))throw new SessionOwnerError('A saved account must be named by its id.');
-        result=await this.startAuth(input.provider,input.machine,input.profileId as string|undefined);
+        result=(yield this.startAuth(input.provider,input.machine,input.profileId as string|undefined));
       }
       else if(request.method==='POST'&&parts[0]==='auth'&&parts[1]==='refresh'&&parts[2]==='complete'&&parts.length===3) {
         const input=object(body);only(input,['provider','code','machine']);
         if(typeof input.provider!=='string'||typeof input.code!=='string'||!input.code.trim())throw new SessionOwnerError('Provider and approval code are required.');
-        result=await this.completeAuth(input.provider,input.code,input.machine);
+        result=(yield this.completeAuth(input.provider,input.code,input.machine));
       }
       else if(request.method==='POST'&&parts[0]==='auth'&&parts[1]==='profiles'&&parts[2]==='save'&&parts.length===3) {
         const input=object(body);only(input,['provider','label','machine']);
         if(typeof input.provider!=='string'||typeof input.label!=='string'||!input.label.trim())throw new SessionOwnerError('Provider and account name are required.');
-        result=await this.saveAuthProfile(input.provider,input.label,input.machine);
+        result=(yield this.saveAuthProfile(input.provider,input.label,input.machine));
       }
       else if(request.method==='POST'&&parts[0]==='auth'&&parts[1]==='profiles'&&parts[2]==='switch'&&parts.length===3) {
         const input=object(body);only(input,['provider','profileId','machine']);
         if(typeof input.provider!=='string'||typeof input.profileId!=='string'||!input.profileId.trim())throw new SessionOwnerError('Provider and saved account are required.');
-        result=await this.switchAuthProfile(input.provider,input.profileId,input.machine);
+        result=(yield this.switchAuthProfile(input.provider,input.profileId,input.machine));
       }
       else if(request.method==='POST'&&parts[0]==='auth'&&parts[1]==='reset-credit'&&parts[2]==='use'&&parts.length===3) {
         const input=object(body);only(input,['provider','account','machine']);
         if(typeof input.provider!=='string'||typeof input.account!=='string'||!input.account.trim())throw new SessionOwnerError('Provider and account are required.');
-        result=await this.useResetCredit(input.provider,input.account,input.machine);
+        result=(yield this.useResetCredit(input.provider,input.account,input.machine));
       }
       else if(request.method==='POST'&&parts[0]==='auth'&&parts[1]==='usage'&&parts[2]==='retry'&&parts.length===3) {
         const input=object(body);only(input,['machine']);
-        result=await this.retryHeldUsage(input.machine);
+        result=(yield this.retryHeldUsage(input.machine));
       }
       else if(request.method==='POST'&&parts[0]==='attachments'&&parts.length===1)result=this.upload(body);
       else if(request.method==='GET'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=this.transcriptionState(parts[1]!);
-      else if(request.method==='POST'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts[3]==='start'&&parts.length===4)result=await this.transcribeAttachment(parts[1]!,body,true);
-      else if(request.method==='POST'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=await this.transcribeAttachment(parts[1]!,body,url.searchParams.get('async')==='1');
-      else if(request.method==='POST'&&parts[0]==='consultations'&&parts.length===1)result=await this.consult(body);
-      else if(request.method==='POST'&&parts[0]==='resurrections'&&parts.length===1)result=await this.resurrect(body);
-      else if(request.method==='POST'&&parts[0]==='resurrections'&&parts[1]==='native'&&parts.length===2)result=await this.resumeNative(body);
+      else if(request.method==='POST'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts[3]==='start'&&parts.length===4)result=(yield this.transcribeAttachment(parts[1]!,body,true));
+      else if(request.method==='POST'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=(yield this.transcribeAttachment(parts[1]!,body,url.searchParams.get('async')==='1'));
+      else if(request.method==='POST'&&parts[0]==='consultations'&&parts.length===1)result=(yield this.consult(body));
+      else if(request.method==='POST'&&parts[0]==='resurrections'&&parts.length===1)result=(yield this.resurrect(body));
+      else if(request.method==='POST'&&parts[0]==='resurrections'&&parts[1]==='native'&&parts.length===2)result=(yield this.resumeNative(body));
       else if(parts[0]==='peers'&&this.communication?.peersOrNull()) {
         const peers=this.communication.peersOrNull()!;
         if(request.method==='GET'&&parts.length===1)result=peers.inventory();
         else if(request.method==='POST'&&parts[1]==='project-notices'&&parts.length===2&&this.projectSetup)result=this.projectSetup.acceptNotice(body);
-        else if(request.method==='POST'&&parts[1]==='links'&&parts.length===2&&this.peerLinks)result=await this.peerLinks.receive(body);
-        else if(request.method==='POST'&&parts[1]==='lab'&&parts.length===2&&this.selfMachine==='cloud')result=await peerLabRequest(body);
+        else if(request.method==='POST'&&parts[1]==='links'&&parts.length===2&&this.peerLinks)result=(yield this.peerLinks.receive(body));
+        else if(request.method==='POST'&&parts[1]==='lab'&&parts.length===2&&this.selfMachine==='cloud')result=(yield peerLabRequest(body));
         else if(parts[1]==='operations'&&this.projectSetup){
-          if(request.method==='POST'&&parts.length===2)result=await this.projectSetup.receive(body);
+          if(request.method==='POST'&&parts.length===2)result=(yield this.projectSetup.receive(body));
           else if(request.method==='GET'&&parts.length===3)result=this.projectSetup.receipt(parts[2]!);
           else if(request.method==='POST'&&parts[3]==='outcome'&&parts.length===4)result=this.projectSetup.pushed(parts[2]!,body);
           else throw new SessionOwnerError('Unknown peer operation route.',404);
@@ -5235,11 +5237,11 @@ export class SessionOwner {
           &&(parts.length===2||parts[2]==='corrected-attachment'&&parts.length===3)){
           if(request.headers.get('x-concierge-verified-peer')!=='1')
             throw new SessionOwnerError('Peer request intake requires an authenticated peer.',403,'PEER_UNAUTHORIZED');
-          result=await peers.accept(body,parts.length===3);
+          result=(yield peers.accept(body,parts.length===3));
         }
         else if(request.method==='GET'&&parts[1]==='requests'&&parts.length===3)result=peers.status(parts[2]!);
         else if(request.method==='POST'&&parts[1]==='requests'&&parts[3]==='replies'&&parts.length===4)result=peers.receiveReply(parts[2]!,body);
-        else if(request.method==='POST'&&parts[1]==='requests'&&parts[3]==='notify'&&parts.length===4)result=await peers.notified(parts[2]!);
+        else if(request.method==='POST'&&parts[1]==='requests'&&parts[3]==='notify'&&parts.length===4)result=(yield peers.notified(parts[2]!));
         else if(request.method==='POST'&&parts[1]==='requests'&&parts[3]==='cancel'&&parts.length===4)result=peers.canceledByOrigin(parts[2]!);
         else if(request.method==='POST'&&parts[1]==='requests'&&parts[3]==='prompt-answer'&&parts.length===4){
           if(request.headers.get('x-concierge-verified-peer')!=='1')throw new SessionOwnerError('Answer clock updates require an authenticated peer.',403,'PEER_UNAUTHORIZED');
@@ -5257,8 +5259,8 @@ export class SessionOwner {
         if(request.method==='GET'&&parts.length===2)result={operation:requestOperation(parts[1]!),events:this.communication.inspect(parts[1]!).events};
         else {
           object(body);const source={input_id:body.sourceInputId,run_id:body.sourceRunId};
-          if(request.method==='POST'&&parts.length===1){only(body,['clientActionId','sourceInputId','sourceRunId','targetAddress','targetProvider','effort','project','title','text','attachments','files','captureId','evidence','requestedEffect','afterRequestIds','forTask','recoveryOf','correctionOf']);const accepted=await this.communication.ask({source,action_id:actionId(body),address:body.targetAddress,provider:body.targetProvider,effort:body.effort,project:body.project,title:body.title,text:inputText(body),after:body.afterRequestIds,attachments:body.attachments,files:body.files,captureId:body.captureId,evidence:body.evidence,requestedEffect:body.requestedEffect,for_task:body.forTask,recovery_of:body.recoveryOf,correction_of:body.correctionOf});result='request_id' in accepted?{operation:requestOperation(accepted.request_id)}:{answer:accepted};}
-          else if(request.method==='POST'&&parts[2]==='replies'){only(body,['clientActionId','sourceInputId','sourceRunId','kind','text','evidence','workDisposition','attachments','files']);if(!['partial','final'].includes(body.kind))throw new SessionOwnerError('Reply kind must be partial or final.');await this.communication.reply({source,action_id:actionId(body),request_id:parts[1]!,text:replyText(body),final:body.kind==='final',workDisposition:body.workDisposition,evidence:body.evidence,attachments:body.attachments,files:body.files});result={operation:requestOperation(parts[1]!,'reply',body.sourceInputId,body.clientActionId)};}
+          if(request.method==='POST'&&parts.length===1){only(body,['clientActionId','sourceInputId','sourceRunId','targetAddress','targetProvider','effort','project','title','text','attachments','files','captureId','evidence','requestedEffect','afterRequestIds','forTask','recoveryOf','correctionOf']);const accepted=(yield this.communication.ask({source,action_id:actionId(body),address:body.targetAddress,provider:body.targetProvider,effort:body.effort,project:body.project,title:body.title,text:inputText(body),after:body.afterRequestIds,attachments:body.attachments,files:body.files,captureId:body.captureId,evidence:body.evidence,requestedEffect:body.requestedEffect,for_task:body.forTask,recovery_of:body.recoveryOf,correction_of:body.correctionOf}));result='request_id' in accepted?{operation:requestOperation(accepted.request_id)}:{answer:accepted};}
+          else if(request.method==='POST'&&parts[2]==='replies'){only(body,['clientActionId','sourceInputId','sourceRunId','kind','text','evidence','workDisposition','attachments','files']);if(!['partial','final'].includes(body.kind))throw new SessionOwnerError('Reply kind must be partial or final.');(yield this.communication.reply({source,action_id:actionId(body),request_id:parts[1]!,text:replyText(body),final:body.kind==='final',workDisposition:body.workDisposition,evidence:body.evidence,attachments:body.attachments,files:body.files}));result={operation:requestOperation(parts[1]!,'reply',body.sourceInputId,body.clientActionId)};}
           else if(request.method==='POST'&&parts[2]==='cancel'){only(body,['clientActionId','sourceInputId','sourceRunId','reason']);this.communication.cancel({source,action_id:actionId(body),request_id:parts[1]!,reason:body.reason});result={operation:requestOperation(parts[1]!)};}
           else throw new SessionOwnerError('Unknown request route.',404);
         }
@@ -5267,14 +5269,14 @@ export class SessionOwner {
         object(body);const source={input_id:body.sourceInputId,run_id:body.sourceRunId};
         if(request.method==='POST'&&parts.length===1){
           only(body,['clientActionId','sourceInputId','sourceRunId','predecessorAddress','provider','model','effort','reason','sessionName']);
-          result=await this.communication.handoff({source,verb:'propose',address:body.predecessorAddress,provider:body.provider,
-            model:body.model,effort:body.effort,reason:body.reason,session_name:body.sessionName,action_id:actionId(body)});
+          result=(yield this.communication.handoff({source,verb:'propose',address:body.predecessorAddress,provider:body.provider,
+            model:body.model,effort:body.effort,reason:body.reason,session_name:body.sessionName,action_id:actionId(body)}));
         } else if(request.method==='POST'&&parts.length===3&&parts[2]==='accept'){
           only(body,['clientActionId','sourceInputId','sourceRunId','digest']);
-          result=await this.communication.handoff({source,verb:'accept',handoff_id:parts[1]!,digest:body.digest,action_id:actionId(body)});
+          result=(yield this.communication.handoff({source,verb:'accept',handoff_id:parts[1]!,digest:body.digest,action_id:actionId(body)}));
         } else if(request.method==='POST'&&parts.length===3&&parts[2]==='withdraw'){
           only(body,['clientActionId','sourceInputId','sourceRunId']);
-          result=await this.communication.handoff({source,verb:'withdraw',handoff_id:parts[1]!,action_id:actionId(body)});
+          result=(yield this.communication.handoff({source,verb:'withdraw',handoff_id:parts[1]!,action_id:actionId(body)}));
         } else throw new SessionOwnerError('Unknown handoff route.',404);
       }
       else throw new SessionOwnerError('Unknown session owner route.',404);
@@ -5295,5 +5297,5 @@ export class SessionOwner {
       if(isTransientDatabaseError(error))return ownerJson({error:{code:'DATABASE_BUSY',message:error instanceof Error?error.message:String(error)}},{status:503});
       return ownerJson({error:{code:error instanceof SessionOwnerError||error instanceof LabConversationError||error instanceof LabDisclosureError?error.code:'OWNER_ERROR',message:error instanceof Error?error.message:String(error)}},{status:error instanceof SessionOwnerError||error instanceof LabConversationError||error instanceof LabDisclosureError?error.status:error instanceof Error&&error.message.includes('conflict')?409:400});
     }
-  }
+  }).call(this));}
 }

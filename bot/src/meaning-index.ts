@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import {spawn,type ChildProcess} from 'node:child_process';
 import {existsSync,realpathSync,rmSync,statSync} from 'node:fs';
 import {createHash} from 'node:crypto';
@@ -75,7 +77,7 @@ class WorkersAiEngine implements EmbeddingEngine {
   installed(){return workersAiEmbeddingsEnabled();}
   servable(){return workersAiEmbeddingsServe();}
   // Cloudflare refuses an empty text, and Qwen documents carry no prefix to fill one.
-  async embed(texts:string[],timeoutMs=60_000){return (await embedWithWorkersAi(texts.map(text=>text||" "),timeoutMs)).map(vector=>normalized(vector.slice(0,DIMENSIONS)));}
+  async embed(texts:string[],timeoutMs=60_000){return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {return ((yield embedWithWorkersAi(texts.map(text=>text||" "),timeoutMs))).map(vector=>normalized(vector.slice(0,DIMENSIONS)));}).call(this));}
   stop(){}
 }
 
@@ -114,7 +116,7 @@ class LocalEngine implements EmbeddingEngine {
   private call(path:string,init:RequestInit={}){
     return this.seat.socket?fetch(`http://localhost${path}`,{...init,unix:this.seat.socket} as RequestInit):fetch(`http://127.0.0.1:${PORT}${path}`,init);
   }
-  private async healthy(){try{return (await this.call('/health',{signal:AbortSignal.timeout(1_000)})).ok;}catch{return false;}}
+  private async healthy(){return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {try{return ((yield this.call('/health',{signal:AbortSignal.timeout(1_000)}))).ok;}catch{return false;}}).call(this));}
   private start():Promise<void> {
     if(this.ready)return this.ready;
     this.ready=this.spawnOrAdopt();
@@ -122,9 +124,9 @@ class LocalEngine implements EmbeddingEngine {
     return this.ready;
   }
   /** An engine left on the port by an earlier Concierge process is used rather than fought: a second one could not bind and would exit in a loop. */
-  private async spawnOrAdopt():Promise<void> {
+  private async spawnOrAdopt():Promise<void> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const where=this.seat.socket??PORT;
-    if(await this.healthy()){log('info','meaning_engine_adopted',{at:where});return;}
+    if((yield this.healthy())){log('info','meaning_engine_adopted',{at:where});return;}
     // A socket file left by an engine that died would stop the new one from listening.
     if(this.seat.socket)rmSync(this.seat.socket,{force:true});
     const listen=this.seat.socket?['--host',this.seat.socket]:['--host','127.0.0.1','--port',String(PORT)];
@@ -138,29 +140,29 @@ class LocalEngine implements EmbeddingEngine {
     child.on('exit',code=>{if(this.child===child){this.child=null;this.ready=null;log('warn','meaning_engine_exited',{code});}});
     child.on('error',error=>{if(this.child===child){this.child=null;this.ready=null;log('warn','meaning_engine_failed',{error:error.message});}});
     for(let attempt=0;attempt<60;attempt++){
-      if(await this.healthy())return;
+      if((yield this.healthy()))return;
       if(this.child!==child)throw new Error('meaning engine exited while starting');
-      await Bun.sleep(250);
+      (yield Bun.sleep(250));
     }
     child.kill();throw new Error('meaning engine did not become ready');
-  }
+  }).call(this));}
   /** One deadline covers starting the engine and the request, so a caller never waits longer than it asked. */
-  async embed(texts:string[],timeoutMs=60_000):Promise<Float32Array[]> {
+  async embed(texts:string[],timeoutMs=60_000):Promise<Float32Array[]> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     // A released engine stays released: a late caller must not start a process nothing will stop.
     if(this.released)throw new Error('the local meaning engine was released for Workers AI');
     const deadline=AbortSignal.timeout(timeoutMs);
-    await Promise.race([this.start(),new Promise<never>((_,reject)=>deadline.addEventListener('abort',()=>reject(new Error('meaning engine did not start in time')),{once:true}))]);
+    (yield Promise.race([this.start(),new Promise<never>((_,reject)=>deadline.addEventListener('abort',()=>reject(new Error('meaning engine did not start in time')),{once:true}))]));
     let response:Response;
-    try{response=await this.call('/v1/embeddings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({input:texts}),signal:deadline});}
+    try{response=(yield this.call('/v1/embeddings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({input:texts}),signal:deadline}));}
     catch(error){
       // An engine that stopped answering (adopted and then gone, or hung) is replaced on the next call.
-      if(!(await this.healthy())){this.child?.kill();this.child=null;this.ready=null;}
+      if(!((yield this.healthy()))){this.child?.kill();this.child=null;this.ready=null;}
       throw error;
     }
     if(!response.ok)throw new Error(`meaning engine answered ${response.status}`);
-    const body=await response.json() as {data:{index:number;embedding:number[]}[]};
+    const body=(yield response.json()) as {data:{index:number;embedding:number[]}[]};
     return body.data.sort((a,b)=>a.index-b.index).map(item=>normalized(item.embedding.slice(0,DIMENSIONS)));
-  }
+  }).call(this));}
   private released=false;
   stop(){this.released=true;this.child?.kill();this.child=null;this.ready=null;}
 }
@@ -243,15 +245,15 @@ export class MeaningIndex {
    * restarts. Same batches and the same courtesy to waiting searches as indexing.
    */
   /** Vectors for texts used as questions, prefixed as the session search prefixes its query. */
-  async queryVectors(texts:string[]):Promise<Float32Array[]> {
+  async queryVectors(texts:string[]):Promise<Float32Array[]> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const out:Float32Array[]=[];
     for(let start=0;start<texts.length;start+=this.engine.batch){
-      while(this.searching>0)await Bun.sleep(50);
-      out.push(...await this.questions.embed(texts.slice(start,start+this.engine.batch).map(text=>this.questions.queryPrefix+text.slice(0,PASSAGE_CHARS))));
+      while(this.searching>0)(yield Bun.sleep(50));
+      out.push(...(yield this.questions.embed(texts.slice(start,start+this.engine.batch).map(text=>this.questions.queryPrefix+text.slice(0,PASSAGE_CHARS)))));
     }
     return out;
-  }
-  async documentVectors(items:{key:string;text:string}[]):Promise<Map<string,Float32Array>> {
+  }).call(this));}
+  async documentVectors(items:{key:string;text:string}[]):Promise<Map<string,Float32Array>> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const out=new Map<string,Float32Array>(),missing:{key:string;text:string;digest:string}[]=[];
     const read=this.store.query('SELECT digest,vector FROM documents WHERE key=?');
     for(const item of items){
@@ -261,13 +263,13 @@ export class MeaningIndex {
     }
     const write=this.store.query('INSERT OR REPLACE INTO documents(key,digest,vector) VALUES(?,?,?)');
     for(let start=0;start<missing.length;start+=this.engine.batch){
-      while(this.searching>0)await Bun.sleep(50);
+      while(this.searching>0)(yield Bun.sleep(50));
       const batch=missing.slice(start,start+this.engine.batch);
-      const vectors=await this.engine.embed(batch.map(item=>this.engine.documentPrefix+item.text.slice(0,PASSAGE_CHARS)));
+      const vectors=(yield this.engine.embed(batch.map(item=>this.engine.documentPrefix+item.text.slice(0,PASSAGE_CHARS))));
       this.store.transaction(()=>{for(const [index,item] of batch.entries()){write.run(item.key,item.digest,new Uint8Array(vectors[index]!.buffer));out.set(item.key,vectors[index]!);}})();
     }
     return out;
-  }
+  }).call(this));}
   private remember(key:string,target:MeaningHit['target'],text:string,at:string|null,values:Int8Array,scale:number) {
     if(this.count*DIMENSIONS>=this.matrix.length){const grown=new Int8Array(this.matrix.length*2);grown.set(this.matrix);this.matrix=grown;}
     this.matrix.set(values,this.count*DIMENSIONS);this.rowOf.set(key,this.count);this.keys.push(key);this.scales.push(scale);this.targets.push(target);this.texts.push(text);this.times.push(at);this.count++;
@@ -275,7 +277,7 @@ export class MeaningIndex {
   private watermark(name:string){return (this.store.query('SELECT value FROM watermarks WHERE name=?').get(name) as {value:string}|null)?.value??null;}
   private setWatermark(name:string,value:string){this.store.query('INSERT INTO watermarks(name,value) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET value=excluded.value').run(name,value);}
   private known(key:string){return !!this.store.query('SELECT 1 FROM passages WHERE key=?').get(key);}
-  private async save(rows:Row[]) {
+  private async save(rows:Row[]) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const pageKeys=new Set<string>();
     const fresh=rows.filter(row=>row.text.length>=(row.key.startsWith('title:')?3:12)&&!pageKeys.has(row.key)&&!this.known(row.key)&&!!pageKeys.add(row.key));
     if(!fresh.length)return;
@@ -283,13 +285,13 @@ export class MeaningIndex {
     // and steps aside while a search is waiting (a 24-passage batch held a query for 3.7 s).
     const vectors:Float32Array[]=[];
     for(let start=0;start<fresh.length;start+=this.engine.batch){
-      while(this.searching>0)await Bun.sleep(50);
-      vectors.push(...await this.engine.embed(fresh.slice(start,start+this.engine.batch).map(row=>this.engine.documentPrefix+row.text.slice(0,PASSAGE_CHARS))));
+      while(this.searching>0)(yield Bun.sleep(50));
+      vectors.push(...(yield this.engine.embed(fresh.slice(start,start+this.engine.batch).map(row=>this.engine.documentPrefix+row.text.slice(0,PASSAGE_CHARS)))));
     }
     const insert=this.store.query('INSERT OR REPLACE INTO passages(key,target_json,text,at,scale,vector) VALUES(?,?,?,?,?,?)');
     this.store.transaction(()=>{for(const [index,row] of fresh.entries()){const {values,scale}=quantize(vectors[index]!);insert.run(row.key,JSON.stringify(row.target),row.text.slice(0,SNIPPET_CHARS),row.at,scale,values);}})();
     for(const [index,row] of fresh.entries()){const {values,scale}=quantize(vectors[index]!);if(row.key.startsWith('title:')){const prior=(this.rowOf.get(row.key)??-1);if(prior>=0){this.matrix.set(values,prior*DIMENSIONS);this.scales[prior]=scale;this.texts[prior]=row.text.slice(0,SNIPPET_CHARS);continue;}}this.remember(row.key,row.target,row.text.slice(0,SNIPPET_CHARS),row.at,values,scale);}
-  }
+  }).call(this));}
   /**
    * Everything said in the ledger's conversations, a small page at a time, credited to whoever
    * wrote it: his messages and agents' requests to the session that received them, a reply to the
@@ -311,7 +313,7 @@ export class MeaningIndex {
     }
     return {kind:'session',sessionId:row.session_id};
   }
-  private async ledgerPage():Promise<boolean> {
+  private async ledgerPage():Promise<boolean> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const after=Number(this.watermark('ledger')??0);
     const rows=db.query(`SELECT rowid,id,session_id,kind,origin,payload_json,created_at FROM session_inputs WHERE rowid>? AND kind IN ('input','create','request','reply') ORDER BY rowid LIMIT ${PAGE}`).all(after) as any[];
     if(!rows.length)return false;
@@ -323,17 +325,17 @@ export class MeaningIndex {
       const who=target.kind==='session'?`s:${target.sessionId}`:target.kind==='peer'?`p:${target.peer}:${target.remoteSessionId}`:'a';
       passages.push({key:`said:${who}:${hash(text)}`,target,text,at:row.created_at});
     }
-    await this.save(passages);
+    (yield this.save(passages));
     this.setWatermark('ledger',String(rows[rows.length-1].rowid));
     return true;
-  }
+  }).call(this));}
   /** Session titles change as sessions name themselves; re-embed only the ones that changed. */
-  private async titles() {
+  private async titles() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const sessions=db.query('SELECT id FROM sessions ORDER BY id').all() as {id:number}[];
     for(let start=0;start<sessions.length;start+=PAGE){
       const rows:Row[]=[];
       for(const {id} of sessions.slice(start,start+PAGE)){const title=this.titleOf(id);if(!title||title.length<3||title==='Agent session'||title==='Imported session'||title.startsWith('{'))continue;const key=`title:${id}`;const index=this.rowOf.get(key)??-1;if(index>=0&&this.texts[index]===title.slice(0,SNIPPET_CHARS))continue;this.store.query('DELETE FROM passages WHERE key=?').run(key);rows.push({key,target:{kind:'session',sessionId:id},text:title,at:null});}
-      await this.save(rows);
+      (yield this.save(rows));
     }
     // The Mac's sessions as this machine last saw them, credited to the Mac sessions themselves.
     const peers=db.query('SELECT peer,remote_session_id,view_json FROM session_peer_catalogue').all() as {peer:string;remote_session_id:string;view_json:string}[];
@@ -347,9 +349,9 @@ export class MeaningIndex {
         this.store.query('DELETE FROM passages WHERE key=?').run(key);
         rows.push({key,target:{kind:'peer',peer:row.peer,remoteSessionId:row.remote_session_id},text:title,at:null});
       }
-      await this.save(rows);
+      (yield this.save(rows));
     }
-  }
+  }).call(this));}
   /** The archive's prompts (both machines' transcripts), read from Thinkering's disposable index without touching any transcript file. */
   // One connection held while the index file stays the same. Opening it per page or per search
   // made SQLite open and chown its log on the root disk each time, and under load each open held
@@ -367,7 +369,7 @@ export class MeaningIndex {
     this.held={db:archive,identity};
     return archive;
   }
-  private async archivePage():Promise<boolean> {
+  private async archivePage():Promise<boolean> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const archive=this.archive();
     // Thinkering rebuilds its archive index; while it is missing this index is not complete.
     this.archiveAbsent=!archive;if(!archive)return false;
@@ -378,22 +380,22 @@ export class MeaningIndex {
       if(highest<after){after=0;this.setWatermark('archive','0');log('info','meaning_index_archive_rebuilt',{highest});}
       const rows=archive.query(`SELECT b.id,b.hash,b.body FROM bodies b WHERE b.lane='dialogue' AND b.id>? AND EXISTS(SELECT 1 FROM evidence e WHERE e.bodyId=b.id AND e.role='user') ORDER BY b.id LIMIT ${PAGE}`).all(after) as any[];
       if(!rows.length)return false;
-      await this.save(rows.map(row=>({key:`archive:${row.hash}`,target:{kind:'archive',sourceId:'',sourceVersion:'',eventId:''},text:meaningText(inflateRawSync(row.body).toString('utf8')),at:null})));
+      (yield this.save(rows.map(row=>({key:`archive:${row.hash}`,target:{kind:'archive',sourceId:'',sourceVersion:'',eventId:''},text:meaningText(inflateRawSync(row.body).toString('utf8')),at:null}))));
       this.setWatermark('archive',String(rows[rows.length-1].id));
       return true;
     }catch(error){this.held?.db.close();this.held=null;throw error;}
-  }
+  }).call(this));}
   /** Indexing runs on its own timer, one page per tick, so it never holds the owner for long. */
   start() {
     if(!this.engine.installed()){log('info','meaning_index_unavailable',{reason:'engine not installed',model:this.engine.model});return;}
     let titlesAt=0;
-    const tick=async()=>{
+    const tick=async()=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
       if(this.stopped)return;
       let worked=false;
       try{
-        worked=await this.ledgerPage();
-        if(!worked&&Date.now()-titlesAt>IDLE_POLL_MS){await this.titles();titlesAt=Date.now();}
-        if(!worked)worked=await this.archivePage();
+        worked=(yield this.ledgerPage());
+        if(!worked&&Date.now()-titlesAt>IDLE_POLL_MS){(yield this.titles());titlesAt=Date.now();}
+        if(!worked)worked=(yield this.archivePage());
         this.failure=null;
       }catch(error){this.failure=error instanceof Error?error.message:String(error);log('warn','meaning_index_failed',{error:this.failure});}
       if(!worked&&!this.caughtUp&&!this.failure){this.caughtUp=true;log('info','meaning_index_caught_up',{passages:this.count,model:this.engine.model});}
@@ -401,9 +403,9 @@ export class MeaningIndex {
       if(!worked&&!this.failure&&!this.archiveAbsent&&this.watermark('complete')!=='1')this.setWatermark('complete','1');
       if(this.onComplete&&this.complete&&this.servable()){const done=this.onComplete;this.onComplete=null;done();}
       if(worked)this.caughtUp=false;
-      this.timer=setTimeout(tick,worked?50:this.failure?IDLE_POLL_MS*5:IDLE_POLL_MS);
-    };
-    this.timer=setTimeout(tick,5_000);
+      this.timer=setTimeout(ledgerCallback(tick),worked?50:this.failure?IDLE_POLL_MS*5:IDLE_POLL_MS);
+    }).call(this));};
+    this.timer=setTimeout(ledgerCallback(tick),5_000);
     // Loading the model takes seconds; pay it now rather than inside the first search's 6 s. The
     // shared engine is started too, because thnkr.ing's Reader expects it on port 8796 even when
     // the index has nothing new to embed.
@@ -424,27 +426,27 @@ export class MeaningIndex {
         source:metadata};
     }catch{return null;}
   }
-  async search(query:string,limit:number):Promise<MeaningSearch> {
+  async search(query:string,limit:number):Promise<MeaningSearch> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const indexed=this.count;
     if(!this.engine.installed())return {available:false,hits:[],reason:'The meaning search engine is not installed on this machine.',indexed,pending:false};
     if(!indexed)return {available:false,hits:[],reason:'The meaning index is still being built.',indexed,pending:true};
     let vector:Float32Array;
     this.searching++;
-    try{[vector]=(await this.questions.embed([this.questions.queryPrefix+query.slice(0,PASSAGE_CHARS)],6_000)) as [Float32Array];}
+    try{[vector]=((yield this.questions.embed([this.questions.queryPrefix+query.slice(0,PASSAGE_CHARS)],6_000))) as [Float32Array];}
     catch(error){return {available:false,hits:[],reason:`Meaning search unavailable: ${error instanceof Error?error.message:String(error)}`,indexed,pending:!this.caughtUp};}
     finally{this.searching--;}
     return this.ranked(vector,limit,indexed);
-  }
+  }).call(this));}
   /**
    * The same search for a question already embedded with queryVectors, so a caller comparing one
    * question against sessions and other documents pays for one embedding (request-history.ts).
    */
   /** A question embedded at search priority: indexing steps aside for it as it does for a search, where queryVectors waits behind searches. */
-  async questionVector(query:string):Promise<Float32Array> {
+  async questionVector(query:string):Promise<Float32Array> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     this.searching++;
-    try{const [vector]=await this.questions.embed([this.questions.queryPrefix+query.slice(0,PASSAGE_CHARS)],6_000) as [Float32Array];return vector;}
+    try{const [vector]=(yield this.questions.embed([this.questions.queryPrefix+query.slice(0,PASSAGE_CHARS)],6_000)) as [Float32Array];return vector;}
     finally{this.searching--;}
-  }
+  }).call(this));}
   searchVector(vector:Float32Array,limit:number):MeaningSearch {
     const indexed=this.count;
     if(!indexed)return {available:false,hits:[],reason:'The meaning index is still being built.',indexed,pending:true};

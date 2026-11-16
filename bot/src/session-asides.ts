@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps,runLedgerSegment} from './ledger-admission';
 import {spawn} from 'node:child_process';
 import {unlink} from 'node:fs/promises';
 import {claudeConfigDir,locateClaudeTranscript} from './claude-transcript-watch';
@@ -80,13 +82,13 @@ function run(command:string,args:string[],options:{cwd:string;env:NodeJS.Process
  * behind or ahead". Prompts are no guide, because a running turn also carries text written into it
  * (his mid-turn messages, notices). Null when no answer has finished, and the copy is then whole.
  */
-async function claudeAside(input:AsideInput,prompt:string):Promise<AsideAnswer> {
+async function claudeAside(input:AsideInput,prompt:string):Promise<AsideAnswer> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const started=Date.now();
   const account=claudeAsideAccount(input.model);
   const sourceHome=claudeConfigDir(),spendHome=account?.home??sourceHome;
-  const boundary=await latestClaudeBoundary(input.sessionUuid,input.cwd);
-  const fork=await sideCopy({provider:'claude-code',source:input.sessionUuid,boundary,cwd:input.cwd,home:sourceHome});
-  const source=await locateClaudeTranscript(sourceHome,fork);
+  const boundary=(yield latestClaudeBoundary(input.sessionUuid,input.cwd));
+  const fork=(yield sideCopy({provider:'claude-code',source:input.sessionUuid,boundary,cwd:input.cwd,home:sourceHome}));
+  const source=(yield locateClaudeTranscript(sourceHome,fork));
   if(!source)throw new Error('The saved side question copy is unavailable.');
   let copied:string|null=null;
   try {
@@ -95,11 +97,11 @@ async function claudeAside(input:AsideInput,prompt:string):Promise<AsideAnswer> 
       mkdirSync(directory,{recursive:true,mode:0o700});copied=join(directory,`${fork}.jsonl`);
       if(!samePhysicalFile(source,copied))copyFileSync(source,copied,constants.COPYFILE_EXCL);
     }
-    return await claudeAnswer({...input,sessionUuid:fork},prompt,{...process.env,CLAUDE_CONFIG_DIR:spendHome},started);
+    return (yield claudeAnswer({...input,sessionUuid:fork},prompt,{...process.env,CLAUDE_CONFIG_DIR:spendHome},started));
   } finally {
-    if(copied)await unlink(copied).catch(()=>{});
+    if(copied)(yield unlink(copied).catch(()=>{}));
   }
-}
+}).call(this));}
 
 /**
  * The account a side question runs on is the one an ordinary turn would run on now, chosen by the
@@ -119,14 +121,14 @@ function claudeAsideAccount(model:string|null):{account:string;home:string|null}
   }
 }
 
-async function claudeAnswer(input:AsideInput,prompt:string,env:NodeJS.ProcessEnv,started:number):Promise<AsideAnswer> {
+async function claudeAnswer(input:AsideInput,prompt:string,env:NodeJS.ProcessEnv,started:number):Promise<AsideAnswer> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   // The saved fork supplies context, --no-session-persistence keeps this question turn off disk, and
   // --tools "" with --strict-mcp-config (and no MCP config) leaves it nothing to act with: the
   // built-in tools and every MCP server (his Mac's include a vault delete) are absent, so the
   // session's files, history and accounts stay untouched.
   const args=['-p','--resume',input.sessionUuid,'--no-session-persistence','--tools','','--strict-mcp-config',
     '--output-format','json',...(input.model?['--model',input.model]:[]),prompt];
-  const result=await run(process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE||'claude',args,{cwd:input.cwd,env});
+  const result=(yield run(process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE||'claude',args,{cwd:input.cwd,env}));
   let parsed:any=null;
   // One result record, or (where the CLI's settings make JSON output verbose, as on the Mac) the
   // whole event list, whose result record comes last.
@@ -143,19 +145,19 @@ async function claudeAnswer(input:AsideInput,prompt:string,env:NodeJS.ProcessEnv
   }
   const model=Object.keys(parsed.modelUsage??{})[0]??input.model;
   return {answer:parsed.result.trim(),model,durationMs:Date.now()-started};
-}
+}).call(this));}
 
-async function codexAside(input:AsideInput,prompt:string):Promise<AsideAnswer> {
+async function codexAside(input:AsideInput,prompt:string):Promise<AsideAnswer> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const started=Date.now();
   if(!input.boundary)throw new Error('This conversation has no completed final answer yet.');
-  const fork=await sideCopy({provider:'codex',source:input.sessionUuid,boundary:input.boundary,cwd:input.cwd,
-    home:process.env.CODEX_HOME||join(process.env.HOME||'', '.codex')});
+  const fork=(yield sideCopy({provider:'codex',source:input.sessionUuid,boundary:input.boundary,cwd:input.cwd,
+    home:process.env.CODEX_HOME||join(process.env.HOME||'', '.codex')}));
   const out=join(mkdtempSync(join(tmpdir(),'concierge-aside-')),'answer.txt');
   // codex exec's own options precede the fork subcommand; --ephemeral writes no session file and
   // the read-only sandbox refuses any change the model might still attempt.
   const args=['exec','--ephemeral','-s','read-only','--skip-git-repo-check','-o',out,
     '-m',input.model??CODEX_INVESTIGATOR_MODEL,'fork',fork,prompt];
-  const result=await run(MANAGED_CODEX,args,{cwd:input.cwd,env:process.env});
+  const result=(yield run(MANAGED_CODEX,args,{cwd:input.cwd,env:process.env}));
   let answer='';
   try{answer=readFileSync(out,'utf8').trim();}catch{}
   if(!answer){
@@ -163,9 +165,9 @@ async function codexAside(input:AsideInput,prompt:string):Promise<AsideAnswer> {
     throw new Error('Codex could not answer the side question.');
   }
   return {answer,model:input.model??CODEX_INVESTIGATOR_MODEL,durationMs:Date.now()-started};
-}
+}).call(this));}
 
-async function askAsideNow(input:AsideInput):Promise<AsideAnswer> {
+async function askAsideNow(input:AsideInput):Promise<AsideAnswer> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const prompt=asidePrompt(input);
   if(input.runner){
     if(!input.operationId)throw new Error('A runner side question needs its operation identity.');
@@ -178,13 +180,13 @@ async function askAsideNow(input:AsideInput):Promise<AsideAnswer> {
   if(input.provider==='claude-code')return claudeAside(input,prompt);
   if(input.provider==='codex')return codexAside(input,prompt);
   throw new Error('Side questions are available for Claude and Codex sessions.');
-}
+}).call(this));}
 
 const copyQueues=new Map<string,Promise<void>>();
 export function askAside(input:AsideInput):Promise<AsideAnswer>{
   const key=`${input.provider}:${input.sessionUuid}`;
   const previous=copyQueues.get(key)??Promise.resolve();
-  const answer=previous.catch(()=>{}).then(()=>askAsideNow(input));
+  const answer=previous.catch(()=>{}).then(ledgerCallback(()=>askAsideNow(input)));
   const tail=answer.then(()=>{},()=>{});
   copyQueues.set(key,tail);
   void tail.then(()=>{if(copyQueues.get(key)===tail)copyQueues.delete(key);});
@@ -199,19 +201,19 @@ export function askAside(input:AsideInput):Promise<AsideAnswer>{
 const jobs=new Map<string,{promise:Promise<AsideAnswer>;settled:{answer?:AsideAnswer;error?:string}|null;at:number}>();
 const JOB_KEEP_MS=10*60_000;
 
-export async function askAsideOnce(id:string,input:()=>AsideInput,waitMs:number):Promise<({state:'answered'}&AsideAnswer)|{state:'asking'}> {
+export async function askAsideOnce(id:string,input:()=>AsideInput,waitMs:number):Promise<({state:'answered'}&AsideAnswer)|{state:'asking'}> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const now=Date.now();
   for(const [key,job] of jobs)if(job.settled&&now-job.at>JOB_KEEP_MS)jobs.delete(key);
   let job=jobs.get(id);
   if(!job){
     const created={promise:askAside({...input(),operationId:id}),settled:null as {answer?:AsideAnswer;error?:string}|null,at:now};
-    created.promise.then(answer=>{created.settled={answer};created.at=Date.now();},
-      error=>{created.settled={error:error instanceof Error?error.message:String(error)};created.at=Date.now();});
+    created.promise.then(ledgerCallback(answer=>{created.settled={answer};created.at=Date.now();}),
+      ledgerCallback(error=>{created.settled={error:error instanceof Error?error.message:String(error)};created.at=Date.now();}));
     jobs.set(id,created);job=created;
   }
-  const settled=await Promise.race([job.promise.then(()=>true,()=>true),new Promise<false>(resolve=>setTimeout(()=>resolve(false),waitMs))]);
+  const settled=(yield Promise.race([job.promise.then(()=>true,()=>true),new Promise<false>(resolve=>setTimeout(()=>resolve(false),waitMs))]));
   if(!settled)return {state:'asking'};
-  await Promise.resolve();
+  (yield Promise.resolve());
   if(job.settled?.error){jobs.delete(id);throw new Error(job.settled.error);}
   return {state:'answered',...job.settled!.answer!};
-}
+}).call(this));}

@@ -4,6 +4,7 @@ import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, resolve } from "node:path";
 import { observedDatabase } from './storage-observation';
+import {assertLedgerSql} from './ledger-admission';
 import { ledgerWriteResults } from './ledger-write-results';
 import { ledgerAccess } from './ledger-access-policy';
 import {PROTECTED_DURABILITY_TEST_AUTHORIZATION} from './test-authorizations';
@@ -84,7 +85,7 @@ export const ownerServedDeploymentCommand = access.ownerServedDeploymentCommand;
 // more than five seconds (2026-11-11). The service's pre-start recovery runs while nothing
 // is serving, so it waits longer rather than failing the start and costing a restart cycle.
 const ledgerLockWaitMs = basename(Bun.main).replace(/\.[cm]?[jt]s$/, '') === 'recover-deployment' ? 30_000 : 5_000;
-export const db = observedDatabase(ledgerWriteResults(new Database(`${canonicalDir}/state.db`, access.readonly ? { readonly: true } : { readwrite: true, create: !access.live || access.schema }), ledgerLockWaitMs));
+export const db = observedDatabase(ledgerWriteResults(new Database(`${canonicalDir}/state.db`, access.readonly ? { readonly: true } : { readwrite: true, create: !access.live || access.schema }), ledgerLockWaitMs),assertLedgerSql);
 if (access.readonly) db.exec("PRAGMA query_only = ON");
 // On Linux the owner's checkpoint thread is the ledger's only checkpointer. With SQLite's default,
 // the first commit by any short-lived writer (the update runner's state commands, release

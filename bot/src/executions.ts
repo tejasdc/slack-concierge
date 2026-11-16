@@ -5,6 +5,8 @@
  * this table holds custody and what a later coordinator needs to take the run back.
  * `turns.owner_instance_id` stays the coordinator's claim on the turn and nothing else.
  */
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import { rm } from "node:fs/promises";
 import { db, executionChanged, queuedTurnClaimRow, settleSupersededParkedTurn, type QueuedTurnClaimRow } from "./state";
 import { log, errorFields } from "./log";
@@ -109,7 +111,7 @@ const EXECUTION_RECORD_RETENTION_MS = 30 * 24 * 60 * 60_000;
  * executions; scanning every historical release before the request entrance opens made a
  * no-op cleanup cost seconds on a cold ledger. A primary-key page bounds each owner-loop read.
  */
-export async function pruneExecutionRecordsInPages(shouldStop: () => boolean, nowMs = Date.now()) {
+export async function pruneExecutionRecordsInPages(shouldStop: () => boolean, nowMs = Date.now()) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   type PruneRow = { execution_id: string; directory: string; state: string; updated_at_ms: number; detail: string | null };
   let after = '';
   let scanned = 0;
@@ -147,7 +149,7 @@ export async function pruneExecutionRecordsInPages(shouldStop: () => boolean, no
       } else {
         if (!eligible()) continue;
         try {
-          await rm(row.directory, { recursive: true, force: true });
+          (yield rm(row.directory, { recursive: true, force: true }));
           const marked = db.query(`UPDATE executions SET detail='pruned' WHERE execution_id=? AND directory=?
             AND state IN ('released','lost') AND updated_at_ms<? AND detail IS NOT 'pruned'`)
             .run(row.execution_id, row.directory, cutoff);
@@ -159,17 +161,17 @@ export async function pruneExecutionRecordsInPages(shouldStop: () => boolean, no
       if (changed >= 2) break;
     }
     if (handled === page.length && page.length < 64) break;
-    await new Promise(resolve => setTimeout(resolve, 250));
+    (yield new Promise(resolve => setTimeout(resolve, 250)));
   }
   log('info', 'execution_record_prune_completed', { scanned, pruned });
-}
+}).call(this));}
 
 /** How a run is taken back: attached to its live host, or rebuilt from the record its gone host left. */
 export type Adoption = { execution: ExecutionRow; claim: QueuedTurnClaimRow; processor: any; mode: "adopt" | "adopt-record" };
 
 type HostProbe = "answering" | "unresponsive" | "gone-with-exit" | "gone";
 
-async function probeHost(execution: ExecutionRow): Promise<HostProbe> {
+async function probeHost(execution: ExecutionRow): Promise<HostProbe> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   // The Codex daemon outlives Concierge on its own; the turn is followed by its exact thread, which
   // exists once the session is bound to it. Without that binding nothing can identify the turn.
   if (execution.supervisor === "codex-daemon")
@@ -179,14 +181,14 @@ async function probeHost(execution: ExecutionRow): Promise<HostProbe> {
   // next coordinator asks it for that exact run (reconcile, then observe), so it is always followable.
   if (execution.supervisor === "capability-host") return "answering";
   if (execution.supervisor === RUNNER_SUPERVISOR) {
-    const custody = await new RunnerHostAccess(execution.execution_id).custody();
+    const custody = (yield new RunnerHostAccess(execution.execution_id).custody());
     return custody === "answering" ? "answering" : custody === "held" ? "unresponsive" : custody === "settle-from-record" ? "gone-with-exit" : "gone";
   }
   // The same decision a live run makes when its connection breaks (hostCustody): the unit name is
   // derived from the execution id, so a launch that crashed before recording it is still checked.
-  const custody = await hostCustody(execution.directory, execution.execution_id);
+  const custody = (yield hostCustody(execution.directory, execution.execution_id));
   return custody === "answering" ? "answering" : custody === "held" ? "unresponsive" : custody === "settle-from-record" ? "gone-with-exit" : "gone";
-}
+}).call(this));}
 
 /**
  * Taking a run back makes it this coordinator's in one transaction: same turn, run and dispatch
@@ -235,7 +237,7 @@ export type HeldExecution = { execution: ExecutionRow; reason: "unresponsive" | 
  * - its host is gone with no exit: left to ordinary recovery, interrupted and unconfirmed.
  */
 export async function claimAdoptableExecutions(input: { instanceId: string; onlyParked?: boolean;
-  isOwnerAlive(identity: { pid: number; bootId: string; startTicks: string }): boolean }): Promise<{ adopted: Adoption[]; held: HeldExecution[] }> {
+  isOwnerAlive(identity: { pid: number; bootId: string; startTicks: string }): boolean }): Promise<{ adopted: Adoption[]; held: HeldExecution[] }> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const ownerAlive = (owner: string) => {
     const process = db.query("SELECT pid, boot_id AS bootId, process_start_ticks AS startTicks FROM process_instances WHERE instance_id=?").get(owner) as any;
     return !!process && input.isOwnerAlive(process);
@@ -252,18 +254,18 @@ export async function claimAdoptableExecutions(input: { instanceId: string; only
         AND (later.provider_admission_intended_at IS NOT NULL OR later.provider_started_at IS NOT NULL
           OR later.provider_input_acknowledged_at IS NOT NULL))`)
     .all() as ExecutionRow[];
-  await Promise.all(superseded.map(async execution => {
+  (yield Promise.all(superseded.map(async execution => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     try {
-      const probe = await probeHost(execution);
+      const probe = (yield probeHost(execution));
       if ((probe === 'answering' || probe === 'unresponsive')
-        && !await (execution.supervisor === RUNNER_SUPERVISOR ? new RunnerHostAccess(execution.execution_id).stopSuperseded()
-          : stopSupersededHost(execution.directory,execution.execution_id))) return;
+        && !(yield (execution.supervisor === RUNNER_SUPERVISOR ? new RunnerHostAccess(execution.execution_id).stopSuperseded()
+          : stopSupersededHost(execution.directory,execution.execution_id)))) return;
       if (probe === 'gone') recordExecutionLost(execution.execution_id,'The superseded execution host stopped without a recorded exit.');
       if (settleSupersededParkedTurn(execution.turn_id))
         log('warn','superseded_parked_execution_stopped',{turn_id:execution.turn_id,execution_id:execution.execution_id});
-      if (probe !== 'gone') await releaseExecution({...execution,state:'exited'});
+      if (probe !== 'gone') (yield releaseExecution({...execution,state:'exited'}));
     } catch (error) { log('error','superseded_parked_execution_stop_failed',{turn_id:execution.turn_id,execution_id:execution.execution_id,...errorFields(error)}); }
-  }));
+  }).call(this));})));
   // A Codex turn that parked while this Concierge ran had its record released at once, so before
   // 2026-11-12 nothing took it back: ten turns parked by a lost App Server connection waited 50
   // minutes for an agent to notice. A recently parked one is followed again from its thread's history
@@ -292,7 +294,7 @@ export async function claimAdoptableExecutions(input: { instanceId: string; only
     const parked = turn.status === "parked";
     if (!parked && turn.owner_instance_id === input.instanceId) continue;
     if (!parked && turn.owner_instance_id && turn.owner_instance_id !== input.instanceId && ownerAlive(turn.owner_instance_id)) continue;
-    const probe = await probeHost(execution);
+    const probe = (yield probeHost(execution));
     if (probe === "gone") {
       recordExecutionLost(execution.execution_id, "The execution host was gone, with no recorded exit, when Concierge started.");
       continue;
@@ -324,11 +326,11 @@ export async function claimAdoptableExecutions(input: { instanceId: string; only
   }
   if (adopted.length || held.length) executionChanged();
   if (!input.onlyParked) {
-    await releaseSettledExecutions();
-    await retireFinishedHostJobs();
+    (yield releaseSettledExecutions());
+    (yield retireFinishedHostJobs());
   }
   return { adopted, held };
-}
+}).call(this));}
 
 /**
  * Keeps trying a held execution: once its host answers it is taken back, once the supervisor has
@@ -341,9 +343,9 @@ export function watchHeldExecution(held: HeldExecution, handlers: {
   interrupt(turnId: number, reason: string): void;
 }) {
   if (held.reason === "protocol") return; // only a compatible coordinator can take it; it adopts on its own start
-  const attempt = async () => {
+  const attempt = async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if (handlers.stopped()) return;
-    const probe = await probeHost(held.execution);
+    const probe = (yield probeHost(held.execution));
     const claim = queuedTurnClaimRow(held.execution.turn_id);
     if (!claim) return;
     if (probe === "answering" || probe === "gone-with-exit") {
@@ -356,26 +358,26 @@ export function watchHeldExecution(held: HeldExecution, handlers: {
       handlers.interrupt(held.execution.turn_id, "The agent's execution host stopped without recording how the run ended; what it did is unconfirmed.");
       return;
     }
-    setTimeout(() => void attempt(), 30_000).unref?.();
-  };
-  setTimeout(() => void attempt(), 30_000).unref?.();
+    setTimeout(ledgerCallback(() => void attempt()), 30_000).unref?.();
+  }).call(this));};
+  setTimeout(ledgerCallback(() => void attempt()), 30_000).unref?.();
 }
 
 /** Hosts still holding the record of a run whose turn has already settled let it go. */
-async function releaseSettledExecutions() {
+async function releaseSettledExecutions() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   // Match the existing partial index's predicate before narrowing to settled-host states.
   // Otherwise SQLite scans every historical released execution during owner recovery.
   const settled = db.query(`SELECT e.* FROM executions e JOIN turns t ON t.id=e.turn_id
       WHERE e.state IN ('intended','live','exited') AND e.state IN ('live','exited')
         AND (t.status NOT IN ('running','delivering') OR t.dispatch_attempt<>e.dispatch_attempt)`).all() as ExecutionRow[];
-  for (const execution of settled) await releaseExecution(execution);
-}
+  for (const execution of settled) (yield releaseExecution(execution));
+}).call(this));}
 
 /**
  * Ends custody of a run whose outcome is durably settled: the host lets its record go, and a host
  * the supervisor positively reports gone needs no socket to be let go of.
  */
-export async function releaseExecution(execution: ExecutionRow) {
+export async function releaseExecution(execution: ExecutionRow) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if (execution.supervisor === "capability-host") { recordExecutionReleased(execution.execution_id); return; }
   if (execution.supervisor === "codex-daemon") {
     recordExecutionReleased(execution.execution_id);
@@ -388,26 +390,26 @@ export async function releaseExecution(execution: ExecutionRow) {
     // The runner lets the host go only on this command, sent after the turn is settled; a job that
     // already ended (its lease passed, or released before) holds nothing.
     const access = new RunnerHostAccess(execution.execution_id);
-    if (await access.release()) recordExecutionReleased(execution.execution_id);
+    if ((yield access.release())) recordExecutionReleased(execution.execution_id);
     return;
   }
-  if (execution.state === "exited" && await releaseHost(execution.directory, execution.execution_id)) recordExecutionReleased(execution.execution_id);
-  else if (await hostSupervisorView(execution.execution_id) === "gone") recordExecutionReleased(execution.execution_id);
+  if (execution.state === "exited" && (yield releaseHost(execution.directory, execution.execution_id))) recordExecutionReleased(execution.execution_id);
+  else if ((yield hostSupervisorView(execution.execution_id)) === "gone") recordExecutionReleased(execution.execution_id);
   // A released host leaves within moments; its launchd job is removed once launchd reports it stopped.
-  if (execution.supervisor === "launchd") setTimeout(() => {
+  if (execution.supervisor === "launchd") setTimeout(ledgerCallback(() => {
     void retireFinishedHostJobs().catch(error => log("warn", "execution_host_retire_failed", errorFields(error)));
-  }, 10_000).unref?.();
-}
+  }), 10_000).unref?.();
+}).call(this));}
 
 /**
  * launchd keeps a per-execution job loaded after its process ends. Jobs of released or lost runs are
  * removed; retireHostJob removes only a job launchd reports as stopped, never a running one.
  */
-export async function retireFinishedHostJobs() {
+export async function retireFinishedHostJobs() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if (process.platform !== "darwin") return;
   const ended = db.query(`SELECT execution_id FROM executions WHERE supervisor='launchd' AND state IN ('released','lost')
       AND detail IS NOT 'job retired' AND updated_at_ms > ?`).all(Date.now() - EXECUTION_RECORD_RETENTION_MS) as { execution_id: string }[];
   for (const { execution_id } of ended)
-    if (await retireHostJob(execution_id)) db.query("UPDATE executions SET detail='job retired' WHERE execution_id=? AND detail IS NOT 'pruned'").run(execution_id);
-}
+    if ((yield retireHostJob(execution_id))) db.query("UPDATE executions SET detail='job retired' WHERE execution_id=? AND detail IS NOT 'pruned'").run(execution_id);
+}).call(this));}
 

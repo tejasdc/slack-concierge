@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import { randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -267,20 +269,20 @@ export class CaptureDeliveryWorker {
     this.pollIntervalMs = options.pollIntervalMs ?? 250;
   }
 
-  async start(): Promise<void> {
+  async start(): Promise<void> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if (this.running) return;
     this.stopping = false;
     this.running = this.run()
-      .catch((error) => {
+      .catch(ledgerCallback((error) => {
         if (error instanceof CaptureWorkerStopped || this.stopping) return;
         this.stopping = true;
         if (this.fatalReported) return;
         this.fatalReported = true;
         log("error", "capture_delivery_worker_fatal", errorFields(error));
         this.options.onFatal?.(error);
-      });
+      }));
     log("info", "capture_delivery_worker_started", { queue_url: this.options.queueUrl, owner_pid: this.owner.pid });
-  }
+  }).call(this));}
 
   status() {
     return { available: this.queueAvailable, reason: this.queueAvailable ? null : this.queueError ?? "Waiting for capture ingress." };
@@ -314,13 +316,13 @@ export class CaptureDeliveryWorker {
     });
   }
 
-  private async run() {
+  private async run() {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     while (!this.stopping) {
       let delivered = false;
       try {
         const claimId = randomUUID();
         this.activity = "claim";
-        const event = await this.claimNext(claimId);
+        const event = (yield this.claimNext(claimId));
         if (this.stopping) throw new CaptureWorkerStopped();
         if (!this.queueAvailable) {
           this.queueAvailable = true;
@@ -330,7 +332,7 @@ export class CaptureDeliveryWorker {
           log("info", this.queueObservedFailure ? "capture_delivery_queue_reconnected" : "capture_delivery_queue_connected",
             { queue_url: this.options.queueUrl });
         }
-        if (event) { this.activity = "delivery"; await this.deliver(claimId, event); delivered = true; }
+        if (event) { this.activity = "delivery"; (yield this.deliver(claimId, event)); delivered = true; }
       } catch (error) {
         if (!(error instanceof CaptureQueueUnavailable)) throw error;
         this.queueObservedFailure = true;
@@ -346,18 +348,18 @@ export class CaptureDeliveryWorker {
         }
       }
       // A burst of captures is delivered back to back; the pause is only for an empty or unreachable queue.
-      if (!this.stopping && !delivered) { this.activity = "idle"; await this.wait(this.pollIntervalMs); }
+      if (!this.stopping && !delivered) { this.activity = "idle"; (yield this.wait(this.pollIntervalMs)); }
     }
-  }
+  }).call(this));}
 
-  private async queueRequest(path: string, body?: Record<string, unknown>): Promise<Response> {
+  private async queueRequest(path: string, body?: Record<string, unknown>): Promise<Response> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if (this.stopping) throw new CaptureWorkerStopped();
     const isClaim = path === "/claim";
     return withRetry({ operation: "capture-queue", key: this.options.queueUrl, policy: RETRY_POLICIES.captureDelivery,
       wait: milliseconds => isClaim ? this.waitForQueueRetry(milliseconds) : this.wait(milliseconds),
-      run: async () => {
+      run: async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         if (isClaim && this.stopping) throw new CaptureWorkerStopped();
-        const response = await this.fetchImpl(`${this.options.queueUrl}${path}`, {
+        const response = (yield this.fetchImpl(`${this.options.queueUrl}${path}`, {
           method: body ? "POST" : "GET",
           headers: {
             authorization: `Bearer ${this.options.queueToken}`,
@@ -367,24 +369,24 @@ export class CaptureDeliveryWorker {
           signal: isClaim
             ? AbortSignal.any([this.stopController.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
             : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-        });
+        }));
         if (response.status >= 500) throw new Error(`Capture queue answered ${response.status}.`);
         return response;
-      },
+      }).call(this));},
       classifyError: () => {
         if (isClaim && this.stopping) throw new CaptureWorkerStopped();
         return "transient";
       },
-    }).catch((error) => {
+    }).catch(ledgerCallback((error) => {
       if (error instanceof CaptureWorkerStopped) throw error;
       throw new CaptureQueueUnavailable(error);
-    });
-  }
+    }));
+  }).call(this));}
 
-  private async claimNext(claimId: string): Promise<CaptureEventRow | null> {
-    const response = await this.queueRequest("/claim", { claim_id: claimId, owner: processIdentityPayload(this.owner) });
+  private async claimNext(claimId: string): Promise<CaptureEventRow | null> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+    const response = (yield this.queueRequest("/claim", { claim_id: claimId, owner: processIdentityPayload(this.owner) }));
     if (response.status === 204) return null;
-    const result: any = await response.json().catch(() => null);
+    const result: any = (yield response.json().catch(ledgerCallback(() => null)));
     if (!response.ok || !result?.event) throw new Error(`Capture queue claim failed: ${String(result?.error || response.status)}`);
     const event = result.event as CaptureEventRow;
     if (event.delivery_claim_id !== claimId
@@ -394,25 +396,25 @@ export class CaptureDeliveryWorker {
       throw new Error("Capture queue returned an event owned by a different claim.");
     }
     return event;
-  }
+  }).call(this));}
 
   private async acknowledge(
     operation: "delivered" | "retry" | "park",
     claimId: string,
     event: CaptureEventRow,
     fields: Record<string, unknown>,
-  ) {
-    const response = await this.queueRequest(
+  ) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+    const response = (yield this.queueRequest(
       `/events/${encodeURIComponent(event.event_id)}/${operation}`,
       { claim_id: claimId, owner: processIdentityPayload(this.owner), ...fields },
-    );
-    const result: any = await response.json().catch(() => null);
+    ));
+    const result: any = (yield response.json().catch(ledgerCallback(() => null)));
     if (!response.ok || !result?.ok) {
       throw new Error(`Capture queue ${operation} failed: ${String(result?.error || response.status)}`);
     }
-  }
+  }).call(this));}
 
-  private async deliver(claimId: string, event: CaptureEventRow) {
+  private async deliver(claimId: string, event: CaptureEventRow) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     try {
       if (event.delivery_kind === "session") {
         if (!this.options.deliverInboxCapture) throw new SessionCaptureDeliveryError("Native Inbox delivery is unavailable", false);
@@ -421,7 +423,7 @@ export class CaptureDeliveryWorker {
         const urgency=source.metadata?.urgency;
         let result: any;
         try {
-          result = await this.options.deliverInboxCapture({
+          result = (yield this.options.deliverInboxCapture({
             source,
             text: event.message_text,
             files: retainedCaptureAttachments(event.attachment_snapshot_json).map(file => ({
@@ -429,7 +431,7 @@ export class CaptureDeliveryWorker {
             })),
             ...(urgency === 'data-loss' || urgency === 'medication' ? {urgency} : {}),
             ...(source.metadata?.holdForReview === true ? {holdForReview:true} : {}),
-          });
+          }));
         } catch (error) {
           const status = Number((error as any)?.status);
           const code = String((error as any)?.code || "");
@@ -443,9 +445,9 @@ export class CaptureDeliveryWorker {
           || result?.item?.source?.id !== source.id || result?.item?.source?.kind !== source.kind) {
           throw new SessionCaptureDeliveryError("Native Inbox receipt does not match the retained capture", false);
         }
-        await this.acknowledge("delivered", claimId, event, {
+        (yield this.acknowledge("delivered", claimId, event, {
           session_id: result.inbox.sessionId, session_input_id: result.operation.id,
-        });
+        }));
         clearRetryBreaker(`capture:${event.event_id}`);
         log("info", "capture_delivery_ok", { event_id: event.event_id, route_id: event.route_id,
           destination_kind: "session", terminal_receipt: result.operation.id, session_id: result.inbox.sessionId });
@@ -467,7 +469,7 @@ export class CaptureDeliveryWorker {
           })[String(event.journal_sink)] || journalPermanentFailure("Capture event names an unknown journal sink."),
         }),
       };
-      await this.acknowledge("delivered", claimId, event, { [receipt.field]: receipt.value });
+      (yield this.acknowledge("delivered", claimId, event, { [receipt.field]: receipt.value }));
       clearRetryBreaker(`capture:${event.event_id}`);
       log("info", "capture_delivery_ok", {
         event_id: event.event_id,
@@ -486,15 +488,15 @@ export class CaptureDeliveryWorker {
           restartSignal: "the capture is retried explicitly" },
       });
       if (decision.action !== "retry") {
-        await this.acknowledge("park", claimId, event, { error: deliveryError.message });
+        (yield this.acknowledge("park", claimId, event, { error: deliveryError.message }));
         log("error", "capture_delivery_parked", { event_id: event.event_id, route_id: event.route_id, error: deliveryError.message });
         return;
       }
       const delayMs = decision.atMs - Date.now();
-      await this.acknowledge("retry", claimId, event, {
+      (yield this.acknowledge("retry", claimId, event, {
         error: deliveryError.message,
         next_attempt_ms: Date.now() + delayMs,
-      });
+      }));
       log("warn", "capture_delivery_retry", {
         event_id: event.event_id,
         route_id: event.route_id,
@@ -503,5 +505,5 @@ export class CaptureDeliveryWorker {
         error: deliveryError.message,
       });
     }
-  }
+  }).call(this));}
 }

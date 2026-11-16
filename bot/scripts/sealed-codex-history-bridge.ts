@@ -28,7 +28,7 @@ try {
   installRoot:join(scratch,'install'),bunExecutable:process.execPath});
  const prepared=await manager.prepare('sealed-bridge-fixture',candidate);
  manager.verify(prepared.artifactPath);
- const releaseCheck=checkReleaseApplication(prepared.artifactPath,repository,join(scratch,'releases'));
+ const releaseCheck=await checkReleaseApplication(prepared.artifactPath,repository,join(scratch,'releases'));
  assert.equal(releaseCheck.status,'passed');
  const worker=join(prepared.artifactPath,'control/application/provider-history-page-worker.js');
  const bridge=join(prepared.artifactPath,'bot/src/codex-app-server-bridge.mjs');

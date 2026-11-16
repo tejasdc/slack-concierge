@@ -1,3 +1,4 @@
+import {ledgerCallback} from './ledger-admission';
 import { db } from "./state-database";
 import { log } from "./log";
 import { claimableNotClaimed } from "./state";
@@ -32,10 +33,10 @@ let noticeOpen = false;
 export function startStuckWorkWatch(wake: () => string[], activeSessionIds: () => readonly number[]): void {
   if (timer) return;
   noticeOpen = openNoticeExists();
-  timer = setInterval(() => {
+  timer = setInterval(ledgerCallback(() => {
     try { evaluate(Date.now(), wake, activeSessionIds); }
     catch (error) { log("error", "stuck_work_watch_failed", { error: String(error) }); }
-  }, EVERY_MS);
+  }), EVERY_MS);
   timer.unref?.();
   log("info", "stuck_work_watch_started", { every_ms: EVERY_MS, waiting_at_least_ms: WAITING_AT_LEAST_MS, open_notice: noticeOpen });
 }

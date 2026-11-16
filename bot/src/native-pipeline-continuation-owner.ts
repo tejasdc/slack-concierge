@@ -1,3 +1,4 @@
+import {runLedgerSteps} from './ledger-admission';
 import { readFile } from 'node:fs/promises';
 import { db, getSessionById } from './state';
 import { getAcceptedSessionInput, queueTurnContinuation, recordSessionEvent, sessionMetadata, stablePayload } from './session-inputs';
@@ -34,7 +35,7 @@ export function enrollNativePipelineContinuation(id: string, payload: any) {
   return {status:'enrolled',eventId,sessionId:source.session_id,sourceTurnId:turn.id,deadlineMs:payload.deadlineMs};
 }
 
-export async function tickNativePipelineContinuation(id: string) {
+export async function tickNativePipelineContinuation(id: string) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const eventId = `continuation:${id}`;
   const event = savedEvent(id);
   if (!event) throw new Error('Continuation was not enrolled.');
@@ -57,14 +58,14 @@ export async function tickNativePipelineContinuation(id: string) {
 
   let health: Record<string,unknown> = {ready:false};
   try {
-    const manifest = JSON.parse(await readFile('/var/lib/slack-concierge-deployment/current/manifest.json','utf8'));
+    const manifest = JSON.parse((yield readFile('/var/lib/slack-concierge-deployment/current/manifest.json','utf8')));
     const run = db.query("SELECT id,status,deployed_commit,service_invocation_id FROM deployment_runs WHERE status='succeeded' AND deployed_commit=? ORDER BY completed_at DESC LIMIT 1").get(manifest.git_commit) as any;
     const git = Bun.spawn(['git','-C',process.env.CONCIERGE_REPO || '/var/lib/slack-concierge-deployment/source','merge-base','--is-ancestor',payload.requiredCommit,manifest.git_commit],
       {stdout:'ignore',stderr:'ignore'});
-    const contains = await git.exited;
+    const contains = (yield git.exited);
     if (run && contains === 0) {
-      const response = await fetch('http://localhost/sessions/v1/inbox', {unix:`${process.env.CONCIERGE_STATE_DIR}/requests.sock`,signal:AbortSignal.timeout(5000)} as any);
-      const body = response.ok ? await response.json() as any : null;
+      const response = (yield fetch('http://localhost/sessions/v1/inbox', {unix:`${process.env.CONCIERGE_STATE_DIR}/requests.sock`,signal:AbortSignal.timeout(5000)} as any));
+      const body = response.ok ? (yield response.json()) as any : null;
       health = {ready:response.ok && body && Object.hasOwn(body,'session'),runId:run.id,commit:manifest.git_commit,serviceInvocationId:run.service_invocation_id,receiverStatus:response.status};
     } else health = {ready:false,commit:manifest.git_commit,successfulRun:run?.id??null};
   } catch (error) { health = {ready:false,error:error instanceof Error ? error.message : String(error)}; }
@@ -76,4 +77,4 @@ export async function tickNativePipelineContinuation(id: string) {
   if(!accepted)return {status:'canceled',complete:true,reason:'The source stopped, was superseded, or its session is paused.'};
   const turn=sourceTurn(accepted);
   return {status:'queued',inputId,sessionId:event.session_id,runId:turn?.native_run_id??null,health,complete:false};
-}
+}).call(this));}

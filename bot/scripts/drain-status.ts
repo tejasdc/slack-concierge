@@ -8,6 +8,8 @@ import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION } from "../src/executio
 import { provenRunKinds, turnContinuesThroughRestart } from "../src/execution-survival";
 import {checkReleaseApplication} from '../src/deployment-application-check';
 import { ledgerWriteResults } from '../src/ledger-write-results';
+import {deploymentLedgerMode} from '../src/deployment-launch-authority';
+import {deploymentOwnerJson} from '../src/deployment-owner-fetch';
 
 function finish(code: number, payload: Record<string, unknown>): never {
   console.log(JSON.stringify(payload));
@@ -62,7 +64,7 @@ try {
   if(command==='application-check'||command==='adoptable-check'&&!flag('--candidate-contract')){
     const artifact=resolve(import.meta.dir,'..');
     if(existsSync(join(artifact,'manifest.json'))){
-      const proof=checkReleaseApplication(artifact,process.env.CONCIERGE_REPO||'/var/lib/slack-concierge-deployment/source',dirname(dirname(artifact)));
+      const proof=await checkReleaseApplication(artifact,process.env.CONCIERGE_REPO||'/var/lib/slack-concierge-deployment/source',dirname(dirname(artifact)));
       if(command==='application-check')finish(0,proof);
       console.error(JSON.stringify({event:'candidate_application_checked',...proof}));
     }else if(command==='application-check'||process.argv[1]?.endsWith('.js'))throw new Error('Application checks require a sealed release.');
@@ -72,7 +74,17 @@ try {
   if (!["check", "claim", "recover", "release", "holds", "adoptable-check"].includes(command)) {
     finish(1, { status: "error", error: "usage: bun scripts/drain-status.ts <check|claim|recover|release TOKEN|adoptable-check (--running ARTIFACT|--running-contract FILE) (--rollback ARTIFACT|--no-rollback) [--candidate-contract FILE]|host-protocols>" });
   }
-  const database = ledgerWriteResults(new Database(`${stateDir}/state.db`, { readonly: command === "check" || command === "adoptable-check", strict: true }));
+  const ownerCommands=await deploymentLedgerMode()==='owner';
+  const mutate=async(input:Record<string,unknown>)=>{
+    const {response,body}=await deploymentOwnerJson('/internal/deployment-drain',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(input)},{replaySafe:input.operation!=='release'});
+    if(!response.ok)throw Error(`Serving owner refused drain command: ${JSON.stringify(body)}`);
+    return body as {code:number;status:string;claimed?:boolean};
+  };
+  if(ownerCommands&&['release','recover'].includes(command)){
+    const result=await mutate({operation:command,token:command==='release'?process.argv[3]:undefined});
+    finish(result.code,result);
+  }
+  const database = ledgerWriteResults(new Database(`${stateDir}/state.db`, { readonly: ownerCommands || ["check","adoptable-check","holds"].includes(command), strict: true }));
   database.exec("PRAGMA busy_timeout=5000");
   if (command === "holds") {
     // Whether the update gate is held under exactly this token by a live owner (the Mac installer's
@@ -246,7 +258,7 @@ try {
   }
   // Derive kernel identity ourselves; caller supplies only its PID.
   const identity = processIdentity(ownerPid);
-  const claimed = database.transaction(() => {
+  const claimed = ownerCommands?(await mutate({operation:'claim',token,identity})).claimed:database.transaction(() => {
     // The gate write is the admission boundary. The later inspection may be
     // slow, so commit this writer transaction before starting it.
     database.query(`INSERT INTO deployment_drain

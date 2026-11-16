@@ -5,6 +5,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { log } from "./log";
+import {runLedgerSegment} from './ledger-admission';
 import { WEEKLY_ALMOST_EXHAUSTED_PERCENT } from "./provider-reset-policy";
 
 /**
@@ -130,12 +131,16 @@ function automaticTargetValidUntil(limits: any, accountId: string, alternateVali
 }
 
 /** A short-lived app-server session for exactly one account home. */
-async function withAppServer<T>(home: string, action: (call: (method: string, params: unknown) => Promise<any>) => Promise<T>): Promise<T> {
+async function withAppServer<T>(home: string, action: (call: (method: string, params: unknown) => Promise<any>, available: () => boolean) => Promise<T>): Promise<T> {
   const child = spawn(CODEX_CLI, ["app-server", "--stdio"], {
     env: { ...process.env, CODEX_HOME: home }, stdio: ["pipe", "pipe", "pipe"],
   });
   const pending = new Map<number, { resolve(value: any): void; reject(error: Error): void }>();
+  let unavailable: Error | null = null;
+  const available = () => unavailable === null && child.exitCode === null && child.signalCode === null
+    && !child.stdin.destroyed && !child.stdin.writableEnded;
   const failPending = (error: Error) => {
+    unavailable ??= error;
     for (const waiting of pending.values()) waiting.reject(error);
     pending.clear();
   };
@@ -144,6 +149,7 @@ async function withAppServer<T>(home: string, action: (call: (method: string, pa
   let id = 0;
   const send = (message: unknown) => child.stdin.write(jsonLine(message));
   const call = (name: string, body: unknown) => new Promise<any>((resolve, reject) => {
+    if (!available()) { reject(unavailable ?? new Error('Codex App Server is no longer available.')); return; }
     const requestId = ++id;
     pending.set(requestId, { resolve, reject });
     child.stdin.write(jsonLine({ jsonrpc: "2.0", id: requestId, method: name, params: body ?? {} }),
@@ -166,7 +172,7 @@ async function withAppServer<T>(home: string, action: (call: (method: string, pa
       capabilities: { experimentalApi: true, requestAttestation: false },
     });
     send({ jsonrpc: "2.0", method: "initialized", params: {} });
-    return await action(call);
+    return await action(call, available);
   } finally { clearTimeout(timer); child.kill(); }
 }
 
@@ -220,30 +226,39 @@ export async function useCodexResetCredit(account: string, idempotencyKey = rand
   let requestSent = false;
   try {
     if (automatic) {
-      // The final read, deadline check, durable reservation and consume RPC share one
+      // The final read, deadline check, reservation and consume RPC share one
       // initialized child. There is no second process startup after the last check.
-      const attempt = await withAppServer(home, async call => {
+      const attempt = await withAppServer(home, async (call, available) => {
         const fresh = await call("account/rateLimits/read", {});
+        // Bind the target-only freshness clock to receipt of this read, before
+        // admission can wait; queuing must never renew sixty-second evidence.
         const validUntilMs = automaticTargetValidUntil(fresh, accountId, automaticEvidenceValidUntilMs);
+        const enqueued = await runLedgerSegment(() => {
         const sameGrant = fresh?.rateLimitResetCredits?.credits?.some((entry: any) =>
           entry?.id === credit.id && entry?.status === "available" && entry?.resetType === "codexRateLimits");
-        if (validUntilMs === null || !sameGrant || Date.now() >= validUntilMs)
+        if (!available() || validUntilMs === null || !sameGrant || Date.now() >= validUntilMs)
           return { declined: true as const, result: null };
         beforeConsume?.();
-        // A synchronous ledger reservation can cross the deadline. Check it again at
+        // Admission may have waited since the fresh read. Validate before reserving;
+        // a synchronous reservation can also cross the deadline. Check again at
         // the last point before writing the RPC to the already initialized child.
         if (Date.now() >= validUntilMs) return { declined: true as const, result: null };
         requestSent = true;
         return { declined: false as const,
-          result: await call("account/rateLimitResetCredit/consume", { creditId: credit.id, idempotencyKey }) };
+          result: call("account/rateLimitResetCredit/consume", { creditId: credit.id, idempotencyKey }) };
+        });
+        return enqueued.declined ? enqueued : {declined:false as const,result:await enqueued.result};
       });
       if (attempt.declined)
         return { status: "failed", detail: "Fresh allowance evidence did not justify an automatic reset. No credit was spent." };
       result = attempt.result;
     } else {
+      const enqueued = await runLedgerSegment(() => {
       beforeConsume?.();
       requestSent = true;
-      result = await callAppServer(home, "account/rateLimitResetCredit/consume", { creditId: credit.id, idempotencyKey });
+      return {result:callAppServer(home, "account/rateLimitResetCredit/consume", { creditId: credit.id, idempotencyKey })};
+      });
+      result = await enqueued.result;
     }
   } catch (error) {
     if (!requestSent) {

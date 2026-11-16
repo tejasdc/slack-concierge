@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { execFile,spawnSync } from "node:child_process";
+import {promisify} from 'node:util';
 
 export interface ProcessIdentity { pid: number; bootId: string; startTicks: string }
 /** Capture ingress has one process-identity wire shape for every claiming worker. */
@@ -84,3 +85,41 @@ export function isProcessIdentityAlive(identity: ProcessIdentity): boolean {
     return false;
   }
 }
+
+const inspectNative=promisify(execFile);
+const nativeExitInspection=`import json,os,select,sys
+identities=json.loads(sys.argv[1])
+boot=open('/proc/sys/kernel/random/boot_id').read().strip()
+def ticks(pid):
+ text=open('/proc/%d/stat'%pid).read()
+ return text[text.rfind(')')+2:].split()[19]
+def ended(identity):
+ pid=identity['pid']; expected=identity['startTicks']
+ if not isinstance(pid,int) or pid<=0 or not expected or not identity['bootId']: raise ValueError('exact native identity required')
+ if identity['bootId']!=boot:return True
+ try:
+  if ticks(pid)!=expected:return True
+  descriptor=os.pidfd_open(pid,0)
+ except (FileNotFoundError,ProcessLookupError):return True
+ try:
+  try:
+   if ticks(pid)!=expected:return True
+  except (FileNotFoundError,ProcessLookupError):return True
+  poller=select.poll();poller.register(descriptor,select.POLLIN)
+  return any(events&select.POLLIN for _,events in poller.poll(0))
+ finally:os.close(descriptor)
+print(json.dumps(all(ended(identity) for identity in identities)))
+`;
+
+/** pidfd_open(flags=0) becomes readable after the last thread exits. Bind that
+ * kernel witness to boot/start identity around open, rather than treating a
+ * zombie leader or one task-directory snapshot as completed native cleanup. */
+export async function processNativeLifetimesEnded(identities:ProcessIdentity[]):Promise<boolean>{
+ if(!identities.length)return true;
+ if(process.platform!=='linux')throw Error('Native release lifetime inspection requires Linux pidfd support.');
+ const {stdout}=await inspectNative('/usr/bin/python3',['-I','-S','-c',nativeExitInspection,JSON.stringify(identities)]);
+ const result=JSON.parse(stdout.trim());
+ if(typeof result!=='boolean')throw Error('Native lifetime inspection returned no kernel proof.');
+ return result;
+}
+export function processNativeLifetimeEnded(identity:ProcessIdentity):Promise<boolean>{return processNativeLifetimesEnded([identity]);}

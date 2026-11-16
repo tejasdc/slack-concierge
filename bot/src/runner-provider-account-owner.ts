@@ -1,4 +1,6 @@
 /** Owner-only guard around a runner's Codex App Server account replacement. */
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps,runLedgerSegment} from './ledger-admission';
 import { codexAdmissionRecoveryHolds, holdCodexAdmission } from "./state";
 import { runningCodexTurns } from "./provider-activation";
 import { runnerMachineCall } from "./runner-machine-calls";
@@ -12,22 +14,22 @@ function terminalActivation(answer:any):boolean {
   return answer?.status==='applied'||answer?.status==='failed';
 }
 
-async function reconcileActivation(runner:string,account:string,operationId:string):Promise<void>{
+async function reconcileActivation(runner:string,account:string,operationId:string):Promise<void>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if(activationReconciliations.has(operationId))return;
-  const work=(async()=>{
+  const work=(async()=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     for(;;){
       try{
-        const result=await withCodexRestartLock(()=>runnerMachineCall<any>(runner,"accounts.codex.activate",{account,operationId},130_000));
+        const result=(yield withCodexRestartLock(()=>runnerMachineCall<any>(runner,"accounts.codex.activate",{account,operationId},130_000)));
         if(terminalActivation(result)){if(activeActivationOperationId===operationId)activeActivationOperationId=null;holdCodexAdmission(`codex:runner-activation:${runner}:${operationId}`,false);return;}
         if(result?.status==='uncertain')return;
       }catch{}
-      await new Promise(resolve=>setTimeout(resolve,5_000));
+      (yield new Promise(resolve=>setTimeout(resolve,5_000)));
     }
-  })().finally(()=>activationReconciliations.delete(operationId));
+  }).call(this));})().finally(()=>activationReconciliations.delete(operationId));
   activationReconciliations.set(operationId,work);
-}
+}).call(this));}
 
-export async function activateRunnerCodexAccount(runner: string, account: string, operationId: string, excludeTurnId?: number): Promise<unknown> {
+export async function activateRunnerCodexAccount(runner: string, account: string, operationId: string, excludeTurnId?: number): Promise<unknown> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if (!runner.trim() || !account.trim() || !operationId.trim()) throw new Error("A runner, Codex account and stable activation operation id are required.");
   if(activeActivationOperationId&&activeActivationOperationId!==operationId)
     return {status:'deferred',detail:'Another runner Codex account switch is unresolved; admission remains held until that exact operation is confirmed.'};
@@ -36,7 +38,7 @@ export async function activateRunnerCodexAccount(runner: string, account: string
   holdCodexAdmission(admissionHolder,true,{kind:'runner-activation',runner,account,operationId});
   try {
     let result:any;
-    try{result=await withCodexRestartLock(async()=>{
+    try{result=(yield withCodexRestartLock(async()=>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
         // Recheck after queueing: an App Server re-home may have held this operation behind it,
         // and a Mac Codex client can start independently of the owner's turn queue.
         const running=runningCodexTurns(excludeTurnId),external=externallyRunningCodexTurns();
@@ -44,7 +46,7 @@ export async function activateRunnerCodexAccount(runner: string, account: string
           ?'Codex activity could not be checked, so the runner was left alone.'
           :'A Codex turn is active on the owner or another Codex client, so the runner was left alone.'};
         return runnerMachineCall<any>(runner,"accounts.codex.activate",{account,operationId},130_000);
-      });}
+      }).call(this));}));}
     catch(error){
       void reconcileActivation(runner,account,operationId);
       return {status:'uncertain',detail:`The runner did not confirm the Codex account switch; new Codex turns remain held while Concierge checks this same operation again. ${error instanceof Error?error.message:String(error)}`};
@@ -57,7 +59,7 @@ export async function activateRunnerCodexAccount(runner: string, account: string
     void reconcileActivation(runner,account,operationId);
     return {status:'uncertain',detail:'The runner has not yet confirmed the Codex account switch; new Codex turns remain held while Concierge checks this same operation again.'};
   } catch(error) { activeActivationOperationId=null;holdCodexAdmission(admissionHolder,false); throw error; }
-}
+}).call(this));}
 
 /** Reconcile durable runner operations after an owner process restart, without gating startup. */
 export function resumeRunnerCodexAdmissionHolds():void{

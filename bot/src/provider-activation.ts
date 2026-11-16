@@ -1,3 +1,5 @@
+import {ledgerCallback} from './ledger-admission';
+import {runLedgerSteps} from './ledger-admission';
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -109,7 +111,7 @@ const LOCAL_CODEX_ACTIVATION_HOLD='codex:local-account-activation';
 function oneCodexRestartAtATime<T>(work: () => Promise<T>): Promise<T> { return withCodexRestartLock(work); }
 
 function activateCodex(): Promise<ActivationReport> { return oneCodexRestartAtATime(activateCodexNow); }
-async function activateCodexNow(): Promise<ActivationReport> {
+async function activateCodexNow(): Promise<ActivationReport> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   // New Codex work is held for the few seconds of the restart, and only then is running work
   // counted: counting first left a window in which a turn could be claimed onto a server about to
   // stop (outage review, 2026-10-08). Running work is never waited on here; the restart is
@@ -130,7 +132,7 @@ async function activateCodexNow(): Promise<ActivationReport> {
       return { status: "failed", restartFailed: true,
         detail: "Codex's automatic background update setting could not be confirmed, so its service was left running. Your sign-in is kept; nothing was switched." };
     }
-    const before = await run(MANAGED_CODEX, ["app-server", "daemon", "version"], 20_000);
+    const before = (yield run(MANAGED_CODEX, ["app-server", "daemon", "version"], 20_000));
     const unmanaged = before.code === 0 && before.output.includes("\"running\"") && !before.output.includes("\"backend\"");
     // The replacement finds servers through /proc, so it runs only on the server; a Mac keeps the
     // old answer below and its own installer's managed start.
@@ -139,13 +141,13 @@ async function activateCodexNow(): Promise<ActivationReport> {
       return { status: "failed", restartFailed: true,
         detail: "Codex's background service on this machine was started outside its manager, so it could not be restarted onto the new account. Your sign-in is kept; nothing was switched." };
     }
-    const restart = unmanaged ? await replaceUnmanagedServer() : await run(MANAGED_CODEX, ["app-server", "daemon", "restart"], 90_000);
+    const restart = unmanaged ? (yield replaceUnmanagedServer()) : (yield run(MANAGED_CODEX, ["app-server", "daemon", "restart"], 90_000));
     if (restart.code !== 0) {
       log("error", "provider_activation_failed", { provider: "codex", exit_code: restart.code, unmanaged, output: restart.output.slice(0, 500) });
       return { status: "failed", restartFailed: true,
         detail: "Codex on this machine could not be restarted onto the new account. Your sign-in is kept; nothing was switched." };
     }
-    const version = await run(MANAGED_CODEX, ["app-server", "daemon", "version"], 20_000);
+    const version = (yield run(MANAGED_CODEX, ["app-server", "daemon", "version"], 20_000));
     const healthy = version.code === 0 && version.output.includes("\"backend\":\"pid\"");
     log("info", "provider_activation_applied", { provider: "codex", healthy, replaced_unmanaged: unmanaged });
     return healthy
@@ -154,7 +156,7 @@ async function activateCodexNow(): Promise<ActivationReport> {
   } finally {
     holdCodexAdmission(LOCAL_CODEX_ACTIVATION_HOLD,false);
   }
-}
+}).call(this));}
 
 function childrenOf(pids: number[]): number[] {
   const wanted = new Set(pids), found: number[] = [];
@@ -187,7 +189,7 @@ function socketAnswers(path: string): Promise<boolean> {
  * managed server in its own scope. Concierge's own start-when-absent is held meanwhile so it cannot
  * bind a socket this then moves aside; if anything else brought a server up first, it is kept.
  */
-async function replaceUnmanagedServer(): Promise<{ code: number | null; output: string }> {
+async function replaceUnmanagedServer(): Promise<{ code: number | null; output: string }> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const servers = controlSocketListeners(CONTROL_SOCKET);
   if (!servers.length) return { code: 1, output: "No process holds the Codex control socket." };
   const helpers = childrenOf(servers);
@@ -196,25 +198,25 @@ async function replaceUnmanagedServer(): Promise<{ code: number | null; output: 
   try {
     for (const pid of servers) { try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ } }
     const deadline = Date.now() + 70_000;
-    while (servers.some(alive) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 500));
+    while (servers.some(alive) && Date.now() < deadline) (yield new Promise(resolve => setTimeout(resolve, 500)));
     for (const pid of [...servers, ...helpers]) if (alive(pid)) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
     // A killed listener can still accept for a moment; probe only once it is gone.
     const gone = Date.now() + 5_000;
-    while (servers.some(alive) && Date.now() < gone) await new Promise(resolve => setTimeout(resolve, 100));
-    if (await socketAnswers(CONTROL_SOCKET)) return { code: 0, output: "Another start already brought a server up." };
+    while (servers.some(alive) && Date.now() < gone) (yield new Promise(resolve => setTimeout(resolve, 100)));
+    if ((yield socketAnswers(CONTROL_SOCKET))) return { code: 0, output: "Another start already brought a server up." };
     // lstat, not exists: the control path is a link, and its target may already be gone.
     let present = false; try { lstatSync(CONTROL_SOCKET); present = true; } catch { /* absent */ }
     if (present) renameSync(CONTROL_SOCKET, `${CONTROL_SOCKET}.stale-${new Date().toISOString().replace(/[:.]/g, "-")}`);
-    return await startCodexDaemonInOwnScope();
+    return (yield startCodexDaemonInOwnScope());
   } finally {
     holdCodexDaemonAutoStart(false);
   }
-}
+}).call(this));}
 
-async function codexServerUnmanaged(): Promise<boolean> {
-  const version = await run(MANAGED_CODEX, ["app-server", "daemon", "version"], 20_000);
+async function codexServerUnmanaged(): Promise<boolean> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  const version = (yield run(MANAGED_CODEX, ["app-server", "daemon", "version"], 20_000));
   return version.code === 0 && version.output.includes("\"running\"") && !version.output.includes("\"backend\"");
-}
+}).call(this));}
 
 /** Codex turns another client (the Mac Codex app) is running on the shared server, as last observed. */
 export function externallyRunningCodexTurns(): number {
@@ -228,14 +230,14 @@ export function externallyRunningCodexTurns(): number {
 let pendingCodexRepair = false;
 const runnerRepairReconciliations=new Set<string>();
 const RUNNER_REPAIR_TIMEOUT_MS=220_000;
-async function reconcileRunnerCodexRepair(runner:string):Promise<void>{
+async function reconcileRunnerCodexRepair(runner:string):Promise<void>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if(runnerRepairReconciliations.has(runner))return;
   runnerRepairReconciliations.add(runner);
   try{
-      const result=await withRetry({operation:'runner-codex-rehome-reconcile',key:runner,
+      const result=(yield withRetry({operation:'runner-codex-rehome-reconcile',key:runner,
         policy:RETRY_POLICIES.peerRequest,
         run:()=>withCodexRestartLock(()=>runnerMachineCall<{status:string;detail?:string}>(runner,'accounts.codex.repairUnmanaged',{},RUNNER_REPAIR_TIMEOUT_MS)),
-        classifyError:()=> 'transient'});
+        classifyError:()=> 'transient'}));
       if(result.status==='busy'){
         // A busy runner has not proved that a previously lost repair response was harmless.
         // Keep its durable hold until the execution-change repair path can check it again.
@@ -251,7 +253,7 @@ async function reconcileRunnerCodexRepair(runner:string):Promise<void>{
   }catch(error){
     log('error','codex_runner_rehome_reconcile_exhausted',{runner,error:error instanceof Error?error.message:String(error)});
   }finally{runnerRepairReconciliations.delete(runner);}
-}
+}).call(this));}
 /**
  * Puts a server started outside its manager back under it, at a moment nothing would be cut: no
  * Concierge Codex turn running, none observed running from another client, and new Codex work held
@@ -260,7 +262,7 @@ async function reconcileRunnerCodexRepair(runner:string):Promise<void>{
  * attempt, successful or not, is not repeated until the next start or account switch.
  */
 function repairUnmanagedCodexServer(): Promise<void> {
-  return oneCodexRestartAtATime(async () => {
+  return oneCodexRestartAtATime(async () => {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const runner=providerRunnerTarget('codex');
     if(runner){
       if(process.platform!=='linux'){pendingCodexRepair=false;return;}
@@ -272,7 +274,7 @@ function repairUnmanagedCodexServer(): Promise<void> {
       try{
         const running=runningCodexTurns(),external=externallyRunningCodexTurns();
         if(running!==0||external!==0){log('info','codex_unmanaged_server_repair_waiting',{runner,running,external});return;}
-        const result=await runnerMachineCall<{status:string;detail?:string}>(runner,'accounts.codex.repairUnmanaged',{},RUNNER_REPAIR_TIMEOUT_MS);
+        const result=(yield runnerMachineCall<{status:string;detail?:string}>(runner,'accounts.codex.repairUnmanaged',{},RUNNER_REPAIR_TIMEOUT_MS));
         if(result.status==='busy'){
           log('info','codex_unmanaged_server_repair_waiting',{runner,reason:result.detail??'runner_has_active_turn'});
           retainAdmission=recovering;
@@ -293,7 +295,7 @@ function repairUnmanagedCodexServer(): Promise<void> {
       }finally{if(!retainAdmission)holdCodexAdmission(repairHold,false);}
       return;
     }
-    if (process.platform !== "linux" || !(await codexServerUnmanaged())) { pendingCodexRepair = false; return; }
+    if (process.platform !== "linux" || !((yield codexServerUnmanaged()))) { pendingCodexRepair = false; return; }
     pendingCodexRepair = true;
     if (!codexUpdaterDisabled()) { log("error", "codex_unmanaged_server_repair_refused", { reason: "automatic_updater_not_disabled" }); return; }
     const repairHold='codex:local-rehome';
@@ -301,8 +303,8 @@ function repairUnmanagedCodexServer(): Promise<void> {
     try {
       const running = runningCodexTurns(), external = externallyRunningCodexTurns();
       if (running !== 0 || external !== 0) { log("info", "codex_unmanaged_server_repair_waiting", { running, external }); return; }
-      const result = await replaceUnmanagedServer();
-      const healthy = !(await codexServerUnmanaged()) && result.code === 0;
+      const result = (yield replaceUnmanagedServer());
+      const healthy = !((yield codexServerUnmanaged())) && result.code === 0;
       log(healthy ? "warn" : "error", healthy ? "codex_unmanaged_server_replaced" : "codex_unmanaged_server_repair_failed",
         { code: result.code, output: result.output.slice(0, 300) });
       // A failed replacement is not retried by itself: each attempt stops a server. The next start of
@@ -311,7 +313,7 @@ function repairUnmanagedCodexServer(): Promise<void> {
     } finally {
       holdCodexAdmission(repairHold,false);
     }
-  });
+  }).call(this));});
 }
 
 /**
@@ -342,7 +344,7 @@ export type ClaudeAccountCheck=Readonly<{ok:boolean;reason:'works'|'signed_out'|
  * GPT-6 Astra's review asked for exactly this test. Each failure is named for what it is, because
  * calling every failure "needs signing in" sent him to sign in by hand.
  */
-export async function claudeAccountWorks(home:string|null=null,expectedAccount:string|null=null):Promise<ClaudeAccountCheck>{
+export async function claudeAccountWorks(home:string|null=null,expectedAccount:string|null=null):Promise<ClaudeAccountCheck>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const started=Date.now();
   const environment=providerOwnerEnvironment({...process.env});
   if(home)environment.CLAUDE_CONFIG_DIR=home;
@@ -351,12 +353,12 @@ export async function claudeAccountWorks(home:string|null=null,expectedAccount:s
   const written=join(folder,`${secret}.write`),commanded=join(folder,`${secret}.bash`);
   mkdirSync(folder,{recursive:true,mode:0o700});
   const cwd=process.env.CONCIERGE_WORKSPACE_ROOT||join(homedir(),'workspace');
-  const probe=await run(process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE||'claude',
+  const probe=(yield run(process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE||'claude',
     ['-p','--verbose','--output-format','stream-json','--model',SMALLEST_CLAUDE_MODEL,'--no-session-persistence',
       '--settings',CLAUDE_AGENT_HOOK_SETTINGS,
       ...(process.env.CONCIERGE_CLAUDE_CODE_SKIP_PERMISSIONS==='1'?['--dangerously-skip-permissions']:[]),
       `Do exactly two things with your tools, then reply DONE.\n1. Use the Write tool to create ${written} containing exactly: ${secret}\n2. Use the Bash tool to run: printf %s ${secret} > ${commanded}`],
-    120_000,environment,cwd);
+    120_000,environment,cwd));
   const readBack=(path:string)=>{try {return readFileSync(path,'utf8')===secret;} catch {return false;}};
   const wrote=readBack(written),ran=readBack(commanded);
   for(const path of [written,commanded])try {rmSync(path,{force:true});} catch {/* temporary */}
@@ -384,7 +386,7 @@ export async function claudeAccountWorks(home:string|null=null,expectedAccount:s
   else if(denied||result.is_error!==true)reason='settings_not_in_effect';
   else reason='failed';
   if(reason==='works'&&expectedAccount){
-    const status=await run(process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE||'claude',['auth','status','--json'],15_000,environment);
+    const status=(yield run(process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE||'claude',['auth','status','--json'],15_000,environment));
     try {const value=JSON.parse(status.output) as {loggedIn?:boolean;email?:string};
       if(!(status.code===0&&value.loggedIn===true&&value.email===expectedAccount))reason='wrong_account';
     } catch {reason='wrong_account';}
@@ -392,13 +394,13 @@ export async function claudeAccountWorks(home:string|null=null,expectedAccount:s
   log('info','provider_activation_probed',{provider:'claude-code',ok:reason==='works',reason,wrote,ran,
     tools:[...succeeded],duration_ms:Date.now()-started});
   return {ok:reason==='works',reason};
-}
+}).call(this));}
 
-export async function claudeCredentialsAnswer(home:string|null=null,expectedAccount:string|null=null):Promise<boolean>{
-  return (await claudeAccountWorks(home,expectedAccount)).ok;
-}
+export async function claudeCredentialsAnswer(home:string|null=null,expectedAccount:string|null=null):Promise<boolean>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
+  return ((yield claudeAccountWorks(home,expectedAccount))).ok;
+}).call(this));}
 
-async function codexCredentialsAnswer(expectedAccount:string|null):Promise<boolean>{
+async function codexCredentialsAnswer(expectedAccount:string|null):Promise<boolean>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   // Asked of the running daemon, the process that does his work, and with a renewal forced.
   // A separate `codex exec` answered here before: it ran on its own copy of the token, so it
   // said OK on 2026-09-29 while the daemon had already been refused ("refresh token reused")
@@ -408,17 +410,17 @@ async function codexCredentialsAnswer(expectedAccount:string|null):Promise<boole
   let account:string|null=null,refused=false;
   // The daemon was just restarted, so its socket may take a moment to answer.
   try {
-    const answer=await withRetry({operation:'codex-credential-probe',key:'running-daemon',
+    const answer=(yield withRetry({operation:'codex-credential-probe',key:'running-daemon',
       policy:RETRY_POLICIES.providerCredentialProbe,
       run:()=>sharedCodexAppServerClient().request('account/read',{refreshToken:true},{requestTimeoutMs:20_000}),
-      classifyError:()=> 'transient'});
+      classifyError:()=> 'transient'}));
     account=typeof answer?.account?.email==='string'?answer.account.email:null;
     refused=!account;
   } catch {}
   const ok=!!account&&(!expectedAccount||account===expectedAccount);
   log('info','provider_activation_probed',{provider:'codex',ok,signed_out:refused,other_account:!!account&&!ok,duration_ms:Date.now()-started});
   return ok;
-}
+}).call(this));}
 
 /**
  * Make the credentials currently on disk the ones the provider actually uses.
@@ -432,7 +434,7 @@ async function codexCredentialsAnswer(expectedAccount:string|null):Promise<boole
  * is waiting is in a good state; nothing may take it out of that state on the strength of a
  * file copy.
  */
-async function performActivation(provider: ProviderKey, releasedBy: ReleaseSource): Promise<ActivationReport> {
+async function performActivation(provider: ProviderKey, releasedBy: ReleaseSource): Promise<ActivationReport> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   if (provider === "claude-code") {
     // Every `claude` run reads the credential file at launch, so there is no loaded copy to
     // invalidate — but the file being readable says nothing about it being usable.
@@ -440,7 +442,7 @@ async function performActivation(provider: ProviderKey, releasedBy: ReleaseSourc
     // login whose answer can release held work; the main folder's is a terminal's.
     const ownHomes = claudeRunsFromOwnHomes(), selected = ownHomes ? selectedClaudeHome() : null;
     if (ownHomes && !selected) return { status: "failed", detail: "No Claude account is selected for agents on this machine. Choose one in Accounts." };
-    if (!await claudeCredentialsAnswer(selected?.home ?? null, selected?.label ?? null)) {
+    if (!(yield claudeCredentialsAnswer(selected?.home ?? null, selected?.label ?? null))) {
       log("warn", "provider_activation_failed", { provider, reason: "credentials_did_not_answer" });
       return { status: "failed", detail: "That account is signed in on disk but did not answer, "
         + "so this machine is not using it. Work waiting for the other account's allowance is still waiting." };
@@ -453,19 +455,19 @@ async function performActivation(provider: ProviderKey, releasedBy: ReleaseSourc
     releaseAuthHold(provider, releasedBy);
     return { status: "applied", detail: "Done. This machine is using the new account now." };
   }
-  const report = await activateCodex();
+  const report = (yield activateCodex());
   pendingCodexActivation = report.status === "deferred";
   // Codex only actually changes account when its App Server comes back on the new token, and
   // a restart that came back healthy says nothing about whether that token renews.
   if (report.status === "applied") {
-    if(!await codexCredentialsAnswer(currentAccount('codex')?.label??null))return {status:'failed',
+    if(!(yield codexCredentialsAnswer(currentAccount('codex')?.label??null)))return {status:'failed',
       detail:'Codex restarted, but that account could not sign in from this machine.'};
     releaseUsageContinuationHolds(provider);
     releaseUsageHeldWork(provider);
     if(authHeldInputCount(provider)>0)releaseAuthHold(provider, releasedBy);
   }
   return report;
-}
+}).call(this));}
 
 export function activateCredentials(provider: ProviderKey, releasedBy: ReleaseSource = "owner_signin"): Promise<ActivationReport> {
   const existing = activationFlights.get(provider);
@@ -486,7 +488,7 @@ export function watchAuthHeldCredentials(): () => void {
   const held=()=>providers.some(provider=>authHeldInputCount(provider)>0);
   const updateInterval=()=>{
     if(stopped || !held()) { if(interval)clearInterval(interval);interval=null;return; }
-    if(!interval){interval=setInterval(()=>{for(const provider of providers)check(provider,"interval");},180_000);interval.unref?.();}
+    if(!interval){interval=setInterval(ledgerCallback(()=>{for(const provider of providers)check(provider,"interval");}),180_000);interval.unref?.();}
   };
   const check=(provider:ProviderKey,source:ReleaseSource)=>{
     if(stopped || checking.has(provider) || (!authHeldInputCount(provider) && !(provider==='codex'&&pendingCodexActivation)))return;
@@ -494,7 +496,7 @@ export function watchAuthHeldCredentials(): () => void {
     const runner=providerRunnerTarget(provider);
     const work=runner?checkRunnerAuthHeld(provider,runner,source):activateCredentials(provider,source);
     void work.catch(error=>log('error',runner?'runner_provider_auth_hold_check_failed':'provider_auth_hold_activation_failed',{
-      provider,runner,source,error:error instanceof Error?error.message:String(error)})).finally(()=>{checking.delete(provider);updateInterval();});
+      provider,runner,source,error:error instanceof Error?error.message:String(error)})).finally(ledgerCallback(()=>{checking.delete(provider);updateInterval();}));
   };
   const watchCredential=(path:string,provider:ProviderKey,source:ReleaseSource)=>{
     try {
@@ -503,7 +505,7 @@ export function watchAuthHeldCredentials(): () => void {
         if(changed && String(changed)!==filename)return;
         forgetAccountFiles();
         const prior=debounce.get(provider);if(prior)clearTimeout(prior);
-        debounce.set(provider,setTimeout(()=>{debounce.delete(provider);check(provider,source);},350));
+        debounce.set(provider,setTimeout(ledgerCallback(()=>{debounce.delete(provider);check(provider,source);}),350));
       });
       watcher.on('error',error=>log('error','provider_auth_hold_watch_failed',{provider,source,error:String(error)}));
       watchers.push(watcher);
@@ -522,7 +524,7 @@ export function watchAuthHeldCredentials(): () => void {
     void repairUnmanagedCodexServer().catch(error=>log('error','codex_unmanaged_server_repair_failed',{error:String(error)})).finally(()=>{repairing=false;});};
   const durableCodexHolds=codexAdmissionRecoveryHolds();
   if(durableCodexHolds.some(({recovery})=>recovery.kind==='runner-rehome'))pendingCodexRepair=true;
-  void import('./runner-provider-account-owner').then(module=>module.resumeRunnerCodexAdmissionHolds())
+  void import('./runner-provider-account-owner').then(ledgerCallback(module=>module.resumeRunnerCodexAdmissionHolds()))
     .catch(error=>log('error','codex_runner_admission_recovery_failed',{error:error instanceof Error?error.message:String(error)}));
   repair();
   const detach=observeExecutionChanges(()=>{
@@ -537,11 +539,11 @@ export function watchAuthHeldCredentials(): () => void {
 }
 
 /** A runner's fresh usage/auth answer clears an auth hold without probing owner credentials. */
-async function checkRunnerAuthHeld(provider:ProviderKey,runner:string,source:ReleaseSource):Promise<void>{
+async function checkRunnerAuthHeld(provider:ProviderKey,runner:string,source:ReleaseSource):Promise<void>{return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const selected=provider==='claude-code'?selectedClaudeHome()?.label:null;
-  const identity=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider,...(selected?{account:selected}:{})});
-  const readings=await runnerMachineCall<Record<string,{observedAt:string;accounts:readonly {label:string;signedOut?:boolean;problem:string|null;readAt?:string|null}[];problem:string|null}>>(
-    runner,'accounts.readings',{},100_000);
+  const identity=(yield runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider,...(selected?{account:selected}:{})}));
+  const readings=(yield runnerMachineCall<Record<string,{observedAt:string;accounts:readonly {label:string;signedOut?:boolean;problem:string|null;readAt?:string|null}[];problem:string|null}>>(
+    runner,'accounts.readings',{},100_000));
   const usage=readings?.[provider],account=usage?.accounts.find(item=>item.label===identity?.label);
   const observed=usage?Date.parse(usage.observedAt):NaN;
   const readAt=account?.readAt?Date.parse(account.readAt):observed;
@@ -554,4 +556,4 @@ async function checkRunnerAuthHeld(provider:ProviderKey,runner:string,source:Rel
   }
   const released=releaseAuthHold(provider,source);
   if(released)log('info','runner_provider_auth_hold_released',{provider,runner,account:identity.label,source,released});
-}
+}).call(this));}

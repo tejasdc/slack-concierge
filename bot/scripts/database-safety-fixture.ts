@@ -1,3 +1,4 @@
+import ts from 'typescript';
 import { strict as assert } from 'node:assert';
 import { Database } from 'bun:sqlite';
 import { accessSync, constants, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -114,7 +115,18 @@ try {
       // still exercises live-entrypoint policy without exposing the real live directory.
       const control = join(root, 'slack-concierge-deployment/releases', 'a'.repeat(40), 'control');
       mkdirSync(control, { recursive: true });
-      const build = await Bun.build({entrypoints:[join(import.meta.dir,'release-manager.ts')],target:'bun',outdir:control});
+      // This check owns packaged transport/import behavior, not sealed service
+      // attestation. Launcher acceptance exercises that boundary separately.
+      let controlledOwnerSelections=0;
+      const build = await Bun.build({entrypoints:[join(import.meta.dir,'release-manager.ts')],target:'bun',outdir:control,plugins:[{
+        name:'scratch-owner-selection',setup(builder){builder.onLoad({filter:/deployment-launch-authority\.ts$/},args=>{
+          const source=readFileSync(args.path,'utf8'),tree=ts.createSourceFile(args.path,source,ts.ScriptTarget.Latest,true);
+          const selection=tree.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='deploymentLedgerMode') as ts.FunctionDeclaration|undefined;
+          assert(selection?.body,'the exact mode boundary must exist before compiling the collaborator');controlledOwnerSelections++;
+          return{contents:source.slice(0,selection.body.getStart(tree))+'{return "owner";}'+source.slice(selection.body.end),loader:'ts'};
+        });}
+      }]});
+      assert.equal(controlledOwnerSelections,1,'the actual packaged CLI selects the declared scratch owner collaborator');
       assert(build.success, build.logs.map(String).join('\n'));
       // The canonical mount selects the live release path, whose read belongs to the
       // serving owner. Give that path a scratch owner socket; the held writer still proves
@@ -152,8 +164,8 @@ try {
         {env,stdout:'pipe',stderr:'pipe',timeout:3_000});
       assert.equal(writing.exitCode,1,writing.stderr.toString());
       assert.match(JSON.parse(writing.stdout.toString()).error,/usage: release-manager/);
-      // The repair supervisor is another legitimate writer, but must never initialize schema.
-      // Exercise just its entrypoint policy, without starting a repair agent.
+      // Serving repair uses semantic owner commands. An unattested direct canonical
+      // constructor must be refused, and must never initialize schema. No repair agent starts.
       const repair = join(control,'deployment-repair.js');
       writeFileSync(repair,`import {ledgerAccess} from ${JSON.stringify(join(import.meta.dir,'../src/ledger-access-policy.ts'))}; console.log(JSON.stringify(ledgerAccess(process.env.CONCIERGE_STATE_DIR,import.meta.path,false)));`);
       const repairPolicy=Bun.spawnSync(['/usr/bin/bwrap','--die-with-parent','--bind','/','/','--dev','/dev',
@@ -161,11 +173,11 @@ try {
         '--',process.execPath,repair],{env,stdout:'pipe',stderr:'pipe',timeout:3_000});
       assert.equal(repairPolicy.exitCode,0,repairPolicy.stderr.toString());
       assert.deepEqual(JSON.parse(repairPolicy.stdout.toString()),{live:true,schema:false,readonly:false,
-        ownerServedReleaseCommand:false,ownerServedDeploymentCommand:false,forbidControllerLedgerOpen:false});
+        ownerServedReleaseCommand:false,ownerServedDeploymentCommand:false,forbidControllerLedgerOpen:true});
     }
   } finally { owner.exec('ROLLBACK'); owner.close(); }
   if (process.platform === 'linux') {
-    const command = privateDatabaseCommand(['/usr/bin/python3', '-c', 'import os; p=os.path.expanduser("~/.local/state/concierge/state.db");\ntry: open(p,"rb")\nexcept PermissionError: print("refused")\nelse: raise SystemExit("live file was accessible")']);
+    const command = privateDatabaseCommand(['/usr/bin/python3', '-c', 'import os; p=os.path.expanduser("~/.local/state/concierge/state.db");\ntry: open(p,"rb")\nexcept (PermissionError,FileNotFoundError): print("refused")\nelse: raise SystemExit("live file was accessible")']);
     if (existsSync(join(homedir(),'.local/state/concierge'))) {
       const isolated = Bun.spawnSync(command, { stdout:'pipe', stderr:'pipe', timeout:5_000 });
       assert.equal(isolated.exitCode, 0, isolated.stderr.toString());
@@ -176,38 +188,61 @@ try {
     // Only a fresh boundary can exercise the new launcher's mounts and backing-image mask.
     if (canMountCanonical) {
       const overlay = join(root, 'mount-capable-check');
+      // This mount tests private visibility, not crash survival. Default OverlayFS
+      // teardown can synchronize the entire upper filesystem; disposable mode
+      // keeps this check from depending on unrelated writes during native cleanup.
       for (const name of ['lower', 'upper', 'work', 'merged']) mkdirSync(join(overlay, name), { recursive: true });
       writeFileSync(join(overlay, 'lower', 'visible'), 'overlay works');
       const mountCheck = privateDatabaseCommand(['/usr/bin/sh', '-c',
+        'echo isolation-mount:locked-mask-refusal pid=$$ >&2; ' +
         'if umount "$PROTECTED_STATE" 2>/dev/null; then exit 10; fi; ' +
         'if test -e "$PROTECTED_STATE/state.db"; then exit 11; fi; ' +
+        'echo isolation-mount:owned-overlay-namespace >&2; ' +
         'unshare --mount --propagation private sh -c \'' +
+        'echo isolation-mount:owned-whiteout pid=$$ >&2; ' +
         'mknod /dev/shm/whiteout c 0 0 && ' +
-        'mount -t overlay overlay -o "nosymfollow,lowerdir=$OVERLAY/lower,upperdir=$OVERLAY/upper,workdir=$OVERLAY/work" "$OVERLAY/merged" && ' +
-        'test "$(cat "$OVERLAY/merged/visible")" = "overlay works"\''], true);
+        'echo isolation-mount:owned-overlay >&2 && ' +
+        'mount -t overlay overlay -o "volatile,nosymfollow,lowerdir=$OVERLAY/lower,upperdir=$OVERLAY/upper,workdir=$OVERLAY/work" "$OVERLAY/merged" && ' +
+        'test "$(cat "$OVERLAY/merged/visible")" = "overlay works" && echo isolation-mount:passed >&2 && ' +
+        'echo isolation-mount:unmount-owned-overlay >&2 && ' +
+        '/usr/bin/python3 -c "import ctypes,sys; c=ctypes.CDLL(None,use_errno=True); print(sys.argv[1],file=sys.stderr,flush=True); r=c.umount2(sys.argv[1].encode(),0); print(r,ctypes.get_errno(),file=sys.stderr,flush=True); assert r==0,ctypes.get_errno()" "$OVERLAY/merged" && ' +
+        'echo isolation-mount:unmounted-owned-overlay >&2\'; ' +
+        'result=$?; echo isolation-mount:namespace-exit status=$result >&2; exit "$result"'], true);
       const mounted = Bun.spawnSync(mountCheck, {
         env: { ...process.env, PROTECTED_STATE: join(homedir(), '.local/state/concierge'), OVERLAY: overlay },
         stdout: 'pipe', stderr: 'pipe', timeout: 5_000,
       });
-      assert.equal(mounted.exitCode, 0, mounted.stderr.toString());
-      const ledgerSource = Bun.spawnSync(['/usr/bin/findmnt', '-no', 'SOURCE', '-T', join(homedir(), '.local/state/concierge/state.db')],
-        { stdout: 'pipe', stderr: 'pipe' });
-      assert.equal(ledgerSource.exitCode, 0, ledgerSource.stderr.toString());
-      const device = basename(ledgerSource.stdout.toString().trim());
-      if (/^loop\d+$/.test(device)) {
-        const image = readFileSync(`/sys/block/${device}/loop/backing_file`, 'utf8').trim();
-        assert(statSync(image).size > 0);
-        for (const mountCapable of [false, true]) {
-          const imageCheck = Bun.spawnSync(privateDatabaseCommand(['/usr/bin/stat', '-c', '%s', image], mountCapable),
-            { stdout: 'pipe', stderr: 'pipe', timeout: 5_000 });
-          assert.equal(imageCheck.exitCode, 0, imageCheck.stderr.toString());
-          assert.equal(imageCheck.stdout.toString().trim(), '0', `loop backing image exposed with mountCapable=${mountCapable}`);
+      assert.equal(mounted.exitCode, 0, JSON.stringify({pid:mounted.pid,boundaryReused:mountCheck[0]==='/usr/bin/sh',exitCode:mounted.exitCode,signalCode:mounted.signalCode,stderr:mounted.stderr.toString()}));
+      const identityProbe=['/usr/bin/true'];
+      const inherited=privateDatabaseCommand(identityProbe,true)===identityProbe;
+      const images:string[]=[];
+      if(inherited){
+        // The verified root concealed backing files before imports. Check retained
+        // mask identity instead of trying to discover the now-hidden original device.
+        const masks=JSON.parse(process.env.CONCIERGE_PRIVATE_DATABASE_MASKS!);
+        for(const image of masks.backingFiles){
+          const item=statSync(image);assert(item.isCharacterDevice());
+          assert.equal(item.dev,masks.nullIdentity.device);assert.equal(item.ino,masks.nullIdentity.inode);
+          images.push(image);
         }
+      }else{
+        const ledgerSource=Bun.spawnSync(['/usr/bin/findmnt','-no','SOURCE','-T',join(homedir(),'.local/state/concierge/state.db')],{stdout:'pipe',stderr:'pipe'});
+        assert.equal(ledgerSource.exitCode,0,ledgerSource.stderr.toString());
+        const device=basename(ledgerSource.stdout.toString().trim());
+        if(/^loop\d+$/.test(device)){
+          const image=readFileSync(`/sys/block/${device}/loop/backing_file`,'utf8').trim();
+          assert(statSync(image).size>0);images.push(image);
+        }
+      }
+      for(const image of images)for(const mountCapable of [false,true]){
+        const imageCheck=Bun.spawnSync(privateDatabaseCommand(['/usr/bin/stat','-c','%s',image],mountCapable),{stdout:'pipe',stderr:'pipe',timeout:5_000});
+        assert.equal(imageCheck.exitCode,0,imageCheck.stderr.toString());
+        assert.equal(imageCheck.stdout.toString().trim(),'0',`loop backing image exposed with mountCapable=${mountCapable}`);
       }
     }
     console.log(JSON.stringify({check:'database-isolation-boundary',
-      freshBoundary:canMountCanonical?'exercised':'not-exercised',
+      freshBoundary:process.env.CONCIERGE_PRIVATE_CODE_BOUNDARY_VERIFIED==='1'?'inherited-verified':canMountCanonical?'exercised':'not-exercised',
       reason:canMountCanonical?'canonical-directory-accessible':'canonical-directory-unavailable'}));
   }
-  console.log(JSON.stringify({check:'database-safety',status:'passed',atomicPublication:true,verifiedRetention:true,readHelperUnderWriter:true,rawScriptRefusal:true}));
+  console.log(JSON.stringify({check:'database-safety',status:'passed',atomicPublication:true,verifiedRetention:true,readHelperUnderWriter:true,packagedOwnerSelection:'controlled collaborator; actual socket and central policy',unattestedRepairOpenRefused:true,rawScriptRefusal:true}));
 } finally { rmSync(root, { recursive: true, force: true }); }

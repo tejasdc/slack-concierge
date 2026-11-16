@@ -92,6 +92,67 @@ Old-commit preparation omits the marker when that source predates it.
 Run `bun bot/scripts/installed-control-command-fixture.ts` for disposable forward,
 rollback, control-recovery and refused-publication acceptance; no cache workload or
 real systemd operation is part of that fixture.
+
+### Ledger command selection and native lifetime
+
+The installed Bun command now routes the closed supported ledger-helper vocabulary through
+that same verified release authority before any writable state import. Ordinary Bun commands
+and application startup use a shell `exec` of the selected immutable engine, retaining their
+process identity. Documented source queue commands retain their semantic action: when a
+capable application serves, its sealed application-owned helper calls the existing protected
+owner interface. Deployment commands group each database decision and mutation as one owner
+operation; their external Git, restore, provider and systemd effects keep existing ownership.
+Complete JSON response consumption is inside retry only for explicitly replay-safe commands
+with the same stable command identity. An uncertain response does not authorize new effects.
+The central canonical opener derives its helper set from that same vocabulary and refuses
+an unattested serving helper before construction. The offline environment flag grants no
+writer authority. Known native canonical-reader roles are physically readonly even when a
+caller omits their role environment; creators still pass the role before static imports.
+
+Application capability is an explicit versioned ESM export in the verified application's main
+bundle, inspected statically without executing it. Controller capability is declared separately
+by its controller-owned marker. This distinguishes an old application built with a new
+controller from a capable new application built with an old controller. Mutable `current`
+paths and inherited manifest environment strings do not identify loaded code: the authority
+binds the actual supervised PID, boot/start identity, InvocationID and kernel working directory
+to a sealed artifact. Exact legacy alias entry is accepted only for an incapable legacy
+application; capable startup requires its canonical loaded artifact identity.
+
+Before any capable authority is installed, a supported current-source helper may retain FULL
+legacy behavior only after verifying the actual supervised sealed legacy application and
+anchor absence. That decision is process-local, not an environment permission. Publication
+closes future selection before capturing that exact already-selected process through native
+cleanup, even if it had not yet opened SQLite. Once the anchor exists, source helpers enter
+its verified authority directly; an old raw Bun executable is never recursively respawned as
+if it were a dispatcher. Socket failure or HTTP absence is never compatibility evidence.
+
+Selection exclusion is short and distinct from inherited legacy-generation descriptors.
+Existing selected launchers, enclosing old supervisors and accepted managed launch intents
+retain custody through native cleanup. The success response records pending handover in
+existing release events without waiting on its own ancestor. Existing owner reconciliation
+later checks those obligations, primes the WAL and fences completion before recycling is
+enabled. Bootstrap includes preselected stable launchers outside managed units and queued
+managed jobs, not just a process snapshot. Exact outside-unit identities use Linux pidfd
+readiness, which waits for the final native thread. Artifact verification runs off the serving
+event loop. This boundary closes supported selection; it is not a security claim against
+arbitrary privileged execution of retained bytes.
+
+The installed runtime owns derived engines at `engines/<sha256>/bun` beneath its existing
+runtime root. Each shell wrapper pins those immutable bytes. Copying the wrapper for the old
+capture runtime preserves the old binary snapshot: ordinary release selection leaves its
+fingerprint stable, while a legitimate engine update changes the wrapper identity. Existing
+release pruning retains active generation artifacts, selected engines, copied capture runtime
+references and actual live executable references. It retires only verified owned engine
+entries; it never unlinks a locked generation inode or adds another retention service.
+
+The candidate service's existing file-only pre-start bootstrap selects its application-owned
+release manager when available and otherwise preserves the prior capability-marker path.
+It installs the authority before recovery while an unchanged old controller can still be
+selected. Startup recovery and offline migration remain foreground exclusive-lifecycle roles;
+the recovery command also used by a serving supervisor uses the owner interface instead.
+Disposable `deployment-launch-schedules-fixture.ts` and
+`deployment-ledger-handover-fixture.ts` checks cover controlled installed selection and actual
+owner receipt/native-worker composition respectively; neither performs real systemd changes.
 Prepared candidates move into an unpublished `.preparing-<uuid>` sibling beneath
 the releases directory while writable, are sealed there, then become their digest
 name through a same-parent atomic rename. Linux requires directory write permission
@@ -661,15 +722,17 @@ written before staging is removed and named in the error as `complete output:`; 
 are kept. The tail alone lost the failing assertion of run b264626d on 2026-10-21 and its repair
 parked for lack of evidence. The check prints each lifecycle failure on its own
 `presentation-check: lifecycle failure:` line, and a fixture child's error leads with the child's
-own `failure=` line. Preparation and preactivation
-presentation checks allow 180 seconds: successful preparation took about 47 seconds, and
-the same candidate passed in 52 seconds under load after a 90-second timeout. This gives
-ordinary disk contention room while retaining a finite hang guard. The candidate's
-own child checks retain their specific deadlines and diagnostics. The running-agent copy guard
-applies its ten-second hang bound to each child operation, not to the sum of bundle builds and
-all sequential wrapper invocations. It streams numbered start/completion markers to retained
-stderr and reports exit status, signal and elapsed time on child failure. The controller's
-180-second presentation deadline still bounds the complete sequence; no assertion is skipped.
+own `failure=` line. Preparation and preactivation presentation checks have a total
+120-second execution-and-cleanup budget. Their candidate-owned supervisor grants
+115 seconds to the check tree and reserves five seconds to stop the owned process
+group and await complete owned native group cleanup, including live threads behind a
+zombie leader. Nested fixture helpers share that group, so a
+hung child or inherited output pipe cannot escape the outer cancellation. The
+specific lifecycle assertions, checkpoints, and failure diagnostics remain in place.
+The shared command inventory and budget also bound the required CI check; see
+[bounded release checks](RELEASE-CHECKS.md) for coverage, reproduction, and measured
+execution times. Remote runner queueing and dependency installation are separate
+from the check execution budget.
 The controller's commands whose output it reads and whose failure stops the update (the run
 claim and show, the desired-commit read, the migration backup, candidate preparation, the current
 and last-known-good release reads, the adoptability check and activation) keep both streams when
@@ -1226,8 +1289,8 @@ bun run bot/scripts/private-code-command.ts -- bun run bot/scripts/history-cache
 bun run bot/scripts/private-code-command.ts -- bun run bot/scripts/history-cache-admission-fixture.ts
 ```
 
-The normal GitHub Release check runs these three native fixtures after its build
-gate with Restic installed in the disposable runner. It injects backup/load state
+The normal GitHub Release check runs these three native fixtures together with
+its package checks under one bounded coordinator, with Restic installed in the disposable runner. It injects backup/load state
 for deterministic failure acceptance; the explicit host-observation probe remains
 separate and cannot claim production evidence from that CI run.
 

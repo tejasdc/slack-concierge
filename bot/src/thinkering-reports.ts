@@ -1,3 +1,4 @@
+import {runLedgerSteps} from './ledger-admission';
 import { db, getChannel } from "./state";
 import type { CaptureEventRow } from "./capture-state";
 import { postCaptureToSlack, SlackCaptureDeliveryError } from "./capture-delivery-worker";
@@ -7,7 +8,7 @@ import { operationalResponseInstructions } from "./operational-response";
 export async function deliverThinkeringReport(input: {
   event: CaptureEventRow; channel: string; operatorUserId: string; botToken: string;
   wakeTurns(): void; fetch?: typeof fetch;
-}) {
+}) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const { event } = input;
   if (event.route_id !== "thinkering" || event.source_client !== "thinkering-bug-report"
       || !/^[a-f0-9]{64}$/.test(event.event_id) || !/^U[A-Z0-9]+$/.test(input.operatorUserId)
@@ -20,7 +21,7 @@ export async function deliverThinkeringReport(input: {
   if (existing) { input.wakeTurns(); return existing.root; }
   // The capture queue owns sending intent, exclusivity, retries and ambiguous
   // owner-death parking. Persist native admission before acknowledging its receipt.
-  const rootTs = await postCaptureToSlack({ event, token: input.botToken, fetch: input.fetch });
+  const rootTs = (yield postCaptureToSlack({ event, token: input.botToken, fetch: input.fetch }));
   try {
     admitOperationalTurn({
       channel: input.channel, rootTs, trigger, operatorUserId: input.operatorUserId,
@@ -37,4 +38,4 @@ export async function deliverThinkeringReport(input: {
   }
   input.wakeTurns();
   return rootTs;
-}
+}).call(this));}

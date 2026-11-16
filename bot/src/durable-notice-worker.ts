@@ -2,6 +2,7 @@ import { clearRetryBreaker, recordRetryFailure, type RetrySite } from "./retry-b
 import { createDatabaseRetry, isTransientDatabaseError } from "./database-retry";
 import { nextRetry, withRetry } from "./retry";
 import { RETRY_POLICY_FOR_SITE } from "./retry-policies";
+import { runLedgerSegment } from "./ledger-admission";
 
 export { isTransientDatabaseError } from "./database-retry";
 export const retryTransientDatabaseOperation = createDatabaseRetry(withRetry);
@@ -20,8 +21,10 @@ export function createKeyedTaskScheduler(
   return (key: string, run: () => Promise<void>) => {
     const existing = activeTasks.get(key);
     if (existing) return existing;
-    const task = run()
-      .catch((error) => onError(key, error))
+    // Admit synchronous launch without keeping permission across the returned task's awaits.
+    const task = runLedgerSegment(() => ({ execution: run() }))
+      .then(({ execution }) => execution)
+      .catch((error) => runLedgerSegment(() => onError(key, error)))
       .finally(() => {
         if (activeTasks.get(key) === task) activeTasks.delete(key);
       });
@@ -90,21 +93,23 @@ export async function runDurableNoticeWorker<Row extends DurableNoticeRow>(input
     if (deliveryError === null) {
       const delivered = await retryPersistence(input.markDelivered);
       if (delivered.stopped) return "stopped";
-      if (input.breakerKey) clearRetryBreaker(input.breakerKey);
+      await runLedgerSegment(() => { if (input.breakerKey) clearRetryBreaker(input.breakerKey); });
       return "delivered";
     }
-    const retryable = input.isRetryable(deliveryError);
-    const failure = { kind: retryable ? "transient" as const : "permanent" as const, reason: String(deliveryError),
-      restartSignal: "the notice is retried explicitly" };
-    const decision = input.breakerKey ? recordRetryFailure({ key: input.breakerKey,
-      site: input.retrySite ?? "notice", what: input.breakerWhat ?? "A service notice", failure }) : nextRetry({
-      policy: RETRY_POLICY_FOR_SITE[input.retrySite ?? "notice"], attempt: claimed.attempts,
-      startedAtMs: claimed.startedAtMs ?? now(), nowMs: now(), classification: failure.kind,
+    const decision = await runLedgerSegment(() => {
+      const retryable = input.isRetryable(deliveryError);
+      const failure = { kind: retryable ? "transient" as const : "permanent" as const, reason: String(deliveryError),
+        restartSignal: "the notice is retried explicitly" };
+      return input.breakerKey ? recordRetryFailure({ key: input.breakerKey,
+        site: input.retrySite ?? "notice", what: input.breakerWhat ?? "A service notice", failure }) : nextRetry({
+        policy: RETRY_POLICY_FOR_SITE[input.retrySite ?? "notice"], attempt: claimed.attempts,
+        startedAtMs: claimed.startedAtMs ?? now(), nowMs: now(), classification: failure.kind,
+      });
     });
     if (decision.action !== "retry" || claimed.attempts >= (input.maximumAttempts ?? RETRY_POLICY_FOR_SITE[input.retrySite ?? "notice"].maxAttempts)) {
       const parked = await retryPersistence(() => input.markParked(String(deliveryError)));
       if (parked.stopped) return "stopped";
-      input.onBreakerTrip?.(deliveryError, now());
+      await runLedgerSegment(() => input.onBreakerTrip?.(deliveryError, now()));
       return "permanent_failure";
     }
     const retryAtMs = decision.atMs;

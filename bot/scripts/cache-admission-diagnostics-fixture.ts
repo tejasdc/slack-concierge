@@ -11,8 +11,8 @@ import {DisposableCacheEvidence, parseForegroundJournalRow} from "./cache-admiss
 // Child mode must precede every acceptance case, including custody checks.
 if (process.argv[2] === "--native-blocked") {
   const child = Bun.spawn(["sleep", "120"], {stdout: "ignore", stderr: "ignore"});
-  writeFileSync(process.argv[3]!, String(child.pid));
   process.on("SIGTERM", () => {});
+  writeFileSync(process.argv[3]!, String(child.pid));
   await Bun.sleep(120_000);
   process.exit(1);
 }
@@ -177,13 +177,13 @@ if (process.argv.includes("--native-collision")) {
     const trace = new CacheBackupTrace();
     const before = readFileSync(f.path), pidFile = join(f.state, "diagnostic-transport-pid");
     const folder = join(f.state, "native-diagnostics"); mkdirSync(folder);
-    let available = true;
     const loadNow = load(performance.now(), 0);
     const admission = new CacheBackupAdmission(join(f.state, "native-diagnostics"),
-      () => { if (!available) throw new Error("backup_collision"); },
+      // Refuse after this exact scratch transport is ready, regardless of how
+      // long snapshot preparation took before the native operation existed.
+      () => { if (existsSync(pidFile)) throw new Error("backup_collision"); },
       () => ({...loadNow, at: performance.now(), available: CACHE_BACKUP_POLICY.minAvailableBytes + 1}), trace);
     let failure: unknown;
-    const flip = setTimeout(() => { available = false; }, 1500);
     try {
       await admission.start();
       const restic = new HostCacheRestic([process.execPath, import.meta.path, "--native-blocked", pidFile], admission);
@@ -191,7 +191,6 @@ if (process.argv.includes("--native-collision")) {
       await assert.rejects(maintenance.prepare(f.session), /backup_collision/);
       failure = new Error("backup_collision");
     } finally {
-      clearTimeout(flip);
       admission.finish(failure);
     }
     assert.ok(existsSync(pidFile));

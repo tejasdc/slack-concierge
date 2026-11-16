@@ -1,3 +1,4 @@
+import {runLedgerSteps} from './ledger-admission';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -74,7 +75,7 @@ export class CodexAccountLogin {
    * shared history link, and this used to delete the whole folder to make room; a login
    * already there is set aside instead, never deleted.
    */
-  private async settle(home: string) {
+  private async settle(home: string) {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     if (!existsSync(join(home, "auth.json"))) { this.discard(home); return; }
     const email = this.signedInEmail(home);
     let settled = home;
@@ -98,27 +99,27 @@ export class CodexAccountLogin {
     this.staging = null;
     log("info", "codex_account_signed_in", { named: !!email });
     this.settling = true;
-    try { await this.activate(settled); } finally { this.settling = false; }
-  }
+    try { (yield this.activate(settled)); } finally { this.settling = false; }
+  }).call(this));}
 
   hasPending(): boolean { return this.settling || this.manager.hasPendingLogin("codex"); }
 
-  async start(): Promise<CodexSignInStart> {
+  async start(): Promise<CodexSignInStart> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     this.discard(this.staging);
     const home = this.freshHome();
     this.staging = home;
-    const started = await this.manager.start("codex", this.command, homedir(), "device", { CODEX_HOME: home });
-    if (started.status === "completed") { await this.settle(home); return started; }
+    const started = (yield this.manager.start("codex", this.command, homedir(), "device", { CODEX_HOME: home }));
+    if (started.status === "completed") { (yield this.settle(home)); return started; }
     if (started.status === "failed") { this.discard(home); this.staging = null; }
     return started;
-  }
+  }).call(this));}
 
   /** Codex finished on its own once he approved; the home it wrote is now an account. */
-  async completed(): Promise<void> {
+  async completed(): Promise<void> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
     const home = this.staging;
     if (!home) return;
-    await this.settle(home);
-  }
+    (yield this.settle(home));
+  }).call(this));}
 
   async stop(): Promise<void> { this.discard(this.staging); this.staging = null; }
 }

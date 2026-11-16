@@ -1,3 +1,4 @@
+import {runLedgerSteps} from './ledger-admission';
 import { randomUUID } from "node:crypto";
 import { db, initializeLedgerSchema } from "./state-database";
 import type { ProviderId, SessionRow } from "./state";
@@ -6,7 +7,7 @@ import { recordRepairNotice } from "./repair-notices";
 import { CURRENT_INBOX_ID_SQL } from "./inbox-lineage-sql";
 import { logToStderr } from "./log";
 
-function writeDeploymentTransaction<T>(work: () => T): () => T {
+export function writeDeploymentTransaction<T>(work: () => T): () => T {
   // The runner and service share WAL: claim writer ownership before reading state we may change.
   return () => {
     const started = performance.now();
@@ -934,6 +935,19 @@ export function getDeploymentRelease(artifactDigest: string): DeploymentReleaseR
     .get(artifactDigest) as DeploymentReleaseRow | null;
 }
 
+/** Prepared release and accepted controller intents remain release-owned references,
+ * even before systemd has created their queued unit or selected a helper path. */
+export function deploymentReleaseFilesInUse():string[]{
+ const prepared=db.query(`SELECT release.artifact_path FROM deployment_releases release
+  JOIN deployment_runs run ON run.id=release.run_id
+  WHERE run.status NOT IN ('succeeded','failed','ambiguous')`).all() as {artifact_path:string}[];
+ const intents=db.query(`SELECT json_extract(event.detail_json,'$.artifactPath') AS artifact_path
+  FROM deployment_run_events event JOIN deployment_runs run
+   ON run.id=json_extract(event.detail_json,'$.runId')
+  WHERE event.event='control_recovery_intended' AND run.status NOT IN ('succeeded','failed','ambiguous')`).all() as {artifact_path:string}[];
+ return [...new Set([...prepared,...intents].map(row=>row.artifact_path).filter(Boolean))];
+}
+
 export function getLastKnownGoodRelease(): DeploymentReleaseRow | null {
   return db.query("SELECT * FROM deployment_releases WHERE state='lkg' LIMIT 1")
     .get() as DeploymentReleaseRow | null;
@@ -1032,6 +1046,7 @@ export function beginDeploymentRepair(input: {
 }): DeploymentRepairIncidentRow {
   assertCommit(input.failedCommit);
   assertCommit(input.restoredCommit);
+  return writeDeploymentTransaction(() => {
   const incident = writeDeploymentTransaction(() => {
     const run = getDeploymentRun(input.runId);
     if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) {
@@ -1107,6 +1122,34 @@ export function beginDeploymentRepair(input: {
     );
   }
   return incident;
+  })();
+}
+
+/** Replay protection belongs to an accepted command, not the direct state operation.
+ * The caller reuses this ID across transport retries and gives each new attempt a new ID. */
+export function beginDeploymentRepairCommand(input: {
+  runId:string;failedCommit:string;restoredCommit:string;failureFingerprint:string;error:string;
+}, commandId:string):DeploymentRepairIncidentRow {
+  if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(commandId))
+    throw new Error("Repair command requires a stable UUID.");
+  const commandFingerprint=JSON.stringify([input.runId,input.failedCommit,input.restoredCommit,input.failureFingerprint,input.error]);
+  return writeDeploymentTransaction(()=>{
+    const accepted=db.query(`SELECT detail_json FROM deployment_run_events
+      WHERE run_id=? AND event='repair_failure_accepted'
+        AND json_extract(detail_json,'$.command_id')=? ORDER BY sequence DESC LIMIT 1`)
+      .get(input.runId,commandId) as {detail_json:string}|null;
+    if(accepted){
+      const receipt=JSON.parse(accepted.detail_json) as {commandFingerprint?:string;incidentId?:string};
+      if(receipt.commandFingerprint!==commandFingerprint||typeof receipt.incidentId!=="string")
+        throw new Error("Repair command ID was reused with different contents.");
+      const incident=getDeploymentRepairIncident(receipt.incidentId);
+      if(!incident)throw new Error("Accepted repair command lost its incident.");
+      return incident;
+    }
+    const incident=beginDeploymentRepair(input);
+    appendRunEvent(input.runId,"repair_failure_accepted",{command_id:commandId,commandFingerprint,incidentId:incident.id});
+    return incident;
+  })();
 }
 
 export function claimDeploymentRepair(input: {
@@ -1175,6 +1218,10 @@ export function recordDeploymentRepairWorkspace(
   return getDeploymentRepairIncident(incidentId)!;
 }
 
+export function getDeploymentRepairAgentRun(id:string):DeploymentRepairAgentRunRow|null {
+  return db.query("SELECT * FROM deployment_repair_agent_runs WHERE id=?").get(id) as DeploymentRepairAgentRunRow|null;
+}
+
 export function latestDeploymentRepairAgentRun(
   incidentId: string,
   kind: "repair" | "review",
@@ -1194,6 +1241,7 @@ export function getDeploymentRepairBudget(incidentId: string) {
 }
 
 export function prepareDeploymentRepairAgentLaunch(input: {
+  id?: string;
   incidentId: string;
   kind: "repair" | "review";
   supervisorPid: number;
@@ -1205,6 +1253,17 @@ export function prepareDeploymentRepairAgentLaunch(input: {
   reviewedRevision?: string | null;
 }) {
   if (input.kind !== "repair") throw new Error("Autonomous deployment reviews are prohibited by current human policy.");
+  return writeDeploymentTransaction(() => {
+  const id = input.id || randomUUID();
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error("Invalid repair launch identity.");
+  const existing = db.query("SELECT * FROM deployment_repair_agent_runs WHERE id=?").get(id) as DeploymentRepairAgentRunRow | null;
+  if (existing) {
+    const expected = [input.incidentId,input.kind,input.supervisorPid,input.supervisorBootId,input.supervisorStartTicks,input.outputPath,input.requestedSessionUuid || null,input.finalMessagePath || null,input.reviewedRevision || null];
+    const actual = [existing.incident_id,existing.kind,existing.supervisor_pid,existing.supervisor_boot_id,existing.supervisor_start_ticks,existing.output_path,existing.requested_session_uuid,existing.final_message_path,existing.reviewed_revision];
+    if (JSON.stringify(actual)!==JSON.stringify(expected)) throw new Error("Repair launch identity was reused with different immutable fields.");
+    return existing;
+  }
+  assertDeploymentRepairOwner(input.incidentId,{pid:input.supervisorPid,bootId:input.supervisorBootId,startTicks:input.supervisorStartTicks});
   const budget = getDeploymentRepairBudget(input.incidentId);
   if (budget.attempts >= budget.maximumAttempts || !Number.isFinite(budget.deadlineMs) || budget.deadlineMs <= Date.now()) {
     throw new Error("Autonomous deployment repair budget exhausted; operator help is required.");
@@ -1213,7 +1272,6 @@ export function prepareDeploymentRepairAgentLaunch(input: {
   if (!incident || incident.status === "parked" || incident.status === "completed") {
     throw new Error("Repair incident is not launchable.");
   }
-  const id = randomUUID();
   db.query(`INSERT INTO deployment_repair_agent_runs (
     id, incident_id, kind, launch_state, supervisor_pid, supervisor_boot_id,
     supervisor_start_ticks, output_path, requested_session_uuid, final_message_path, reviewed_revision
@@ -1234,7 +1292,8 @@ export function prepareDeploymentRepairAgentLaunch(input: {
     .run("repairing", input.incidentId);
   db.query(`UPDATE deployment_runs SET repair_state=?, updated_at=CURRENT_TIMESTAMP
     WHERE id=?`).run("repairing", incident.run_id);
-  return latestDeploymentRepairAgentRun(input.incidentId, input.kind)!;
+  return db.query("SELECT * FROM deployment_repair_agent_runs WHERE id=?").get(id) as DeploymentRepairAgentRunRow;
+  })();
 }
 
 export function recordDeploymentRepairChild(
@@ -1272,6 +1331,12 @@ export function bindDeploymentRepairSession(agentRunId: string, sessionUuid: str
 }
 
 export function completeDeploymentRepairAgentRun(agentRunId: string, result: Record<string, unknown>) {
+  const existing=getDeploymentRepairAgentRun(agentRunId);
+  if(!existing)throw new Error("Unknown repair agent launch.");
+  if(["completed","parked"].includes(existing.launch_state)) {
+    if(existing.launch_state==="completed" && existing.result_json===JSON.stringify(result))return;
+    throw new Error("Repair agent terminal settlement differs from the original.");
+  }
   db.query(`UPDATE deployment_repair_agent_runs
     SET launch_state='completed', result_json=?, error=NULL,
         completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
@@ -1280,12 +1345,31 @@ export function completeDeploymentRepairAgentRun(agentRunId: string, result: Rec
 }
 
 export function parkDeploymentRepairAgentRun(agentRunId: string, error: string) {
+  const existing=getDeploymentRepairAgentRun(agentRunId);
+  if(!existing)throw new Error("Unknown repair agent launch.");
+  if(["completed","parked"].includes(existing.launch_state)) {
+    if(existing.launch_state==="parked" && existing.error===error)return;
+    throw new Error("Repair agent terminal settlement differs from the original.");
+  }
   db.query(`UPDATE deployment_repair_agent_runs
     SET launch_state='parked', error=?, completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
     WHERE id=? AND launch_state IN ('launch_intended', 'session_bound')`).run(error, agentRunId);
 }
 
+export function settleDeploymentRepairAgent(input:{agentRunId:string;result?:Record<string,unknown>;error?:string;parkError?:string}) {
+  return writeDeploymentTransaction(()=>{
+    const agent=getDeploymentRepairAgentRun(input.agentRunId);
+    if(!agent)throw new Error("Unknown repair agent launch.");
+    if(input.result)completeDeploymentRepairAgentRun(agent.id,input.result);
+    else if(typeof input.error==="string")parkDeploymentRepairAgentRun(agent.id,input.error);
+    else throw new Error("Repair settlement has no terminal outcome.");
+    if(input.parkError)parkDeploymentRepair(agent.incident_id,input.parkError,{noticeReason:input.parkError});
+    return getDeploymentRepairAgentRun(agent.id)!;
+  })();
+}
+
 export function recordDeploymentRepairCommit(incidentId: string, repairCommit: string) {
+  return writeDeploymentTransaction(() => {
   assertCommit(repairCommit);
   if (getDeploymentRepairIncident(incidentId)?.review_verdict) {
     throw new Error("Historical review evidence requires operator resolution; it cannot be overwritten by unreviewed repair.");
@@ -1298,6 +1382,7 @@ export function recordDeploymentRepairCommit(incidentId: string, repairCommit: s
   db.query("UPDATE deployment_runs SET repair_state='repairing', updated_at=CURRENT_TIMESTAMP WHERE id=?")
     .run(incident.run_id);
   return incident;
+  })();
 }
 
 export function recordDeploymentRepairReview(
@@ -1318,6 +1403,7 @@ export function prepareDeploymentRetry(incidentId: string) {
       throw new Error("Deployment retry requires a committed repair under the current no-review policy; historical reviews need operator resolution.");
     }
     const run = getDeploymentRun(incident.run_id);
+    if(run?.status==="prepared"&&run.repair_state==="retrying"&&incident.status==="retrying")return run;
     if (!run || run.status !== "releasing") throw new Error("Deployment run is not held for retry.");
     db.query(`UPDATE deployment_repair_incidents SET status='retrying', updated_at=CURRENT_TIMESTAMP WHERE id=?`)
       .run(incidentId);
@@ -1357,6 +1443,7 @@ export function parkDeploymentRepair(
   error: string,
   options: DeploymentFailureOptions = {},
 ): DeploymentRepairIncidentRow {
+  return writeDeploymentTransaction(() => {
   const incident = getDeploymentRepairIncident(incidentId);
   if (!incident) throw new Error("Unknown deployment repair incident.");
   db.query(`UPDATE deployment_repair_incidents
@@ -1379,6 +1466,7 @@ export function parkDeploymentRepair(
         + `Tell Tejas only if the remaining action truly requires him. Blocker: ${error.slice(0, 2000)}`,
     });
   return getDeploymentRepairIncident(incidentId)!;
+  })();
 }
 
 /** Retire terminal repair claims after a newer deployment proves the same target healthy. */
@@ -1649,6 +1737,10 @@ export function prepareLostRegistryControlRecovery(input: {
       "deployment_repair_incidents", "deployment_repair_agent_runs", "deployment_requests",
       "deployment_turn_reactions", "deployment_notices", "deployment_control_handoff_projections",
       "deployment_drain", "deployment_wakes"]) {
+      // This unused projection is absent from the current schema. Absence has no
+      // retained rows; if a relation exists, the same occupancy refusal still applies.
+      if(table==='deployment_control_handoff_projections'
+        &&!db.query("SELECT 1 FROM sqlite_master WHERE name=? AND type IN ('table','view')").get(table))continue;
       const occupied = db.query(`SELECT 1 FROM ${table} LIMIT 1`).get();
       if (occupied) throw new Error(`Deployment registry is not empty: ${table}. Refusing recovery import.`);
     }
@@ -2163,7 +2255,7 @@ export async function completeDeploymentRunOnOwner(input: {
   deployedCommit: string;
   serviceInvocationId: string;
   evidence: Record<string, unknown>;
-}): Promise<DeploymentRunRow> {
+}): Promise<DeploymentRunRow> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   assertCommit(input.deployedCommit);
   const ancestry = new Map<string, boolean>();
   for (;;) {
@@ -2179,7 +2271,7 @@ export async function completeDeploymentRunOnOwner(input: {
       if (ancestry.has(commit)) continue;
       const git = Bun.spawn(['git', '-C', input.repo, 'merge-base', '--is-ancestor', commit, input.deployedCommit],
         {stdout:'ignore',stderr:'ignore'});
-      ancestry.set(commit, (await git.exited) === 0);
+      ancestry.set(commit, ((yield git.exited)) === 0);
     }
     try {
       return completeDeploymentRun({...input, expectedRequestIds:new Set(requests.map(request => request.id)),
@@ -2194,7 +2286,7 @@ export async function completeDeploymentRunOnOwner(input: {
       if (!(error instanceof DeploymentRequestSetChanged)) throw error;
     }
   }
-}
+}).call(this));}
 
 export function failDeploymentRun(
   runId: string,
