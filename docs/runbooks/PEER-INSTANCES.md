@@ -63,20 +63,30 @@ Older `begin` callers remain valid and have unknown mode and page session ID.
 `endedAt` means the recording actually finished or was cancelled. If the 120-second observation
 limit arrives first, the record has `cutoffAt` and no `endedAt`; the limit is not a speech stop.
 
-The observer names a page renderer only when the Web App's own WebKit main-frame commit and
-close logs leave one live page proxy, `launchctl print pid/<Web App PID>` still lists that
-WebContent child, its birth identity matches the process reading, and no service-worker-only
-log has ever named that PID in the bounded log window. Missing logs, a renderer older than the
-30-minute log window, multiple pages or reused service-worker processes produce unknown.
-Each event since 2026-11-16 also keeps content-free `attributionDiagnostics`: the outcome class
-(ok, timeout, exit code, signal, output limit, spawn error) and elapsed time of the log query and
-of one `ps` start-time read of every candidate, a finer reason (for example
-`multiple_open_main_frame_proxies` or `log_query_failed`), line counts, every still-open
-main-frame page proxy with its PID and commit time, and each candidate's start time and whether it
-predates the log window. The start-time read runs even when the log query fails. These fields show
-which boundary failed and keep ambiguity visible; they never choose a page from the largest child
-or a matching start time, and the attribution values above are unchanged. Records written before
-this field exist stay as they were.
+The observer names a page renderer only from WebKit's own per-recording capture report. When a
+thnkr.ing page opens the microphone, the Web App logs `WebPageProxy::updateReportedMediaCaptureState`
+with that page proxy, its WebContent PID and the old and new capture state. At each `begin` the
+observer reads the last two minutes of those reports (plus page-close and service-worker-only
+lines) for the Web App PID. It names the renderer (`unique_webkit_capture_page`) only when exactly
+one Web App page proxy is capturing, the window shows that page starting active audio capture
+(state bit 2048), the page was not closed afterwards, `launchctl print pid/<Web App PID>` still
+lists its WebContent child with a matching birth identity, the PID is not a service-worker-only
+process, and the listener had no other active recording at `begin`. Everything else stays
+unknown; size, renderer start time and nearness of timestamps never choose a page. Remaining
+platform limit: a Web App page that has held the microphone since before the window, outside any
+listener recording, is invisible.
+Why not page-load history: `log show` decodes every persisted entry in its range before
+filtering, so cost follows whole-system log volume (Mac, 2026-11-16: about 0.8 s fixed, 1.9 s for
+30 minutes, 3.4 s for two hours; the two-minute capture read used about 0.1 s of CPU), and this
+app's WebKit lines were retained for only about six hours, so a long-lived renderer's main-frame
+commit is gone at any query length. The 30-minute main-frame lifecycle read used until then timed
+out at 3 s on a real recording.
+Each event keeps content-free `attributionDiagnostics` (version 2): outcome class (ok, timeout,
+exit code, signal, output limit, spawn error) and elapsed time of the log read and of one `ps`
+start-time read of every candidate (context only), a reason such as `multiple_capturing_pages`,
+`concurrent_listener_recording` or `log_query_failed`, line counts, the last 16 capture
+transitions, every capturing page proxy and each candidate's start time. Version 1 records from
+the earlier main-frame lifecycle read, and records with no diagnostics, stay as written.
 The request's optional mode and page session ID are correlation hints, not independent proof
 of a renderer. Browser network routing may prevent proof that the process making a loopback
 request is that renderer, so this is a conservative Web App page candidate rather than a
