@@ -1,6 +1,30 @@
 import {createHash} from 'node:crypto';
 import {db} from './state';
-import {getAcceptedSessionInput} from './session-inputs';
+import {getAcceptedSessionInput,humanAuthored} from './session-inputs';
+import {reportSourceChain} from './agent-report-reads';
+
+export function existingJournalRequestEvidence(requestId:string,rootId:string,lineId:string,quote:string) {
+  const inbox=db.query('SELECT sources_json FROM inbox_requests WHERE request_id=?').get(requestId) as {sources_json:string}|null;
+  const request=db.query('SELECT request_id FROM session_communication_requests WHERE request_id=?').get(requestId);
+  if(!inbox&&!request)throw new Error('JOURNAL_EXISTING_RELATION_UNCONFIRMED: the named request is not retained; do not replay an uncertain effect.');
+  const sourceIds=new Set<string>(inbox?JSON.parse(inbox.sources_json).map((source:{inputId:string})=>source.inputId):[]);
+  const chain=request?reportSourceChain(db,requestId):null;
+  if(chain){
+    for(const hop of chain.hops)sourceIds.add(hop.id);
+    for(const id of chain.carriedReports)sourceIds.add(id);
+    for(const link of chain.inboxLinks)for(const source of link.sources)sourceIds.add(source.inputId);
+  }
+  for(const id of sourceIds){
+    const input=getAcceptedSessionInput(id);if(!input)continue;
+    const payload=JSON.parse(input.payload_json),journal=payload.capture?.source?.metadata?.journal;
+    const version=createHash('sha256').update(input.payload_json).digest('hex');
+    if(journal?.rootId===rootId&&journal.lineId===lineId&&typeof journal.quote==='string'&&journal.quote.includes(quote))
+      return {method:'journal-source-metadata',requestId,inputId:id,version,rootId,lineId,quote,journal};
+    if(humanAuthored(input)&&typeof payload.text==='string'&&payload.text.includes(quote))
+      return {method:'legacy-human-source-chain',requestId,inputId:id,version,quote,offset:payload.text.indexOf(quote),sourceAt:input.created_at,association:chain?{hops:chain.hops.map(hop=>({id:hop.id,sourceInput:hop.sourceInput,sourceRun:hop.sourceRun})),carriedReports:chain.carriedReports,inboxLinks:chain.inboxLinks.filter(link=>link.sources.some(source=>source.inputId===id)).map(link=>({requestId:link.inboxRequestId,topicId:link.topicId,inputId:id}))}:{inboxRequestId:requestId,inputId:id}};
+  }
+  throw new Error('JOURNAL_EXISTING_RELATION_UNCONFIRMED: the retained request source does not contain this journal quote; do not replay an uncertain effect.');
+}
 
 export type JournalReview = {rootId:string;revision:string;sourceVersion:string;disposition:'context-only'|'actionable';reason:string;items:{lineId:string;quote:string;offset?:number;classification:'explicit-request'|'actionable-reason';title:string;reason:string;existingRequestId?:string}[]};
 export function journalPortionIdentity(root:string,line:string,quote:string) {
