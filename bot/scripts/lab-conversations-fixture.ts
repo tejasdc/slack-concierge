@@ -213,7 +213,7 @@ async function child(){
  const newcomerActivation=lab.view('roster').activations.find((value:any)=>value.actionId==='ask-newcomer');assert.equal(newcomerActivation.independent,false);assert.equal(newcomerActivation.membershipRevision,2);
  const newcomerInput=getAcceptedSessionInput(newcomerActivation.invocations[0].inputId)!,newcomerPrompt=JSON.parse(newcomerInput.payload_json).text;
  assert.ok(newcomerPrompt.includes('An intervening shared discussion before the newcomer.'));assert.ok(newcomerPrompt.includes(rosterChange.add[0].instructions));assert.ok(newcomerPrompt.includes('Actual selected source material.'));
- assert.ok(newcomerPrompt.includes('keep your reply concise by default'));assert.ok(newcomerPrompt.includes('fuller answer when the human asks for depth'));
+ assert.ok(newcomerPrompt.includes('roughly 60 to 120 words'));assert.ok(newcomerPrompt.includes('Go longer only when Tejas asks for depth'));
  updateSessionMetadata(newcomerNumber,{model:'gpt-6.1-sol'});
  lab.respond('roster',{clientActionId:'newcomer-drift',entryId:'newcomer-drift-entry',targets:[newcomer]});await lab.reconcile();
  assert.equal(lab.view('roster').activations.find((value:any)=>value.actionId==='newcomer-drift').invocations[0].state,'refused');
