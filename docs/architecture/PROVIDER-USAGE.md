@@ -1140,8 +1140,9 @@ from agents'; scheduled and saved turns are named as such; calls in a Concierge 
 that match no turn are `between turns`, and conversations Concierge does not own are
 `outside Concierge`. The overview carries the same `notInThread` per account. A turn
 the direct joins cannot place is resolved by the owner's own thread rule
-(`bot/src/work-thread-root.ts`, also behind `topicRootFor`): its input is followed through
-retained provenance to the human message behind it, so a report-back, watch wake or
+(`bot/src/work-thread-root.ts`, also behind `topicRootFor`): its input is followed back to the
+nearest request that carries a thread, otherwise through retained provenance to the human
+message behind it, so a report-back, watch wake or
 continuation of threaded work counts under that thread. Until 2026-11-16 the report stopped
 at the turn's request row and counted such work as "Not in a thread". Topic and routine rows carry optional display
 titles read from the existing owner ledger after runner merge. Existing token
