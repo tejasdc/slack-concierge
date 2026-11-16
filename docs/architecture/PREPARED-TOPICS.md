@@ -61,6 +61,10 @@ marked complete only after every page and durable topic dependency finishes. The
 and the original start time with each committed page. Worker or release restart resumes
 the next unprocessed page, including a root keyset whose last row was deleted, then drains
 remaining dependencies. Already-completed version-2 stores need no new semantic upgrade.
+Each catch-up pass gives the upgrade at most two seconds of pages, then processes live
+changes, so new messages keep appearing while old placements are repaired; live changes
+already use the corrected lineage. On 2026-11-15 the uninterrupted pass took over 23 minutes,
+three releases restarted it, and thnkr.ing showed no new message for more than an hour.
 An interrupted old worker had no cursor to recover; its first run with this correction
 starts safely from the beginning once. The canonical ledger is opened read-only; no filing operation,
 provider action, or accepted input is replayed. One completion log records generation,
