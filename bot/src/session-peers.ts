@@ -2318,18 +2318,24 @@ export class SessionPeers {
     this.wake();
     return this.deliveryReceipt(row);
   }
-  /** Forward a recipient's replies and execution changes to the origin; both are retried until the origin has them. */
-  private async report(row:DeliveryRow) {
+  /** Forward a recipient's stored replies to the origin. This is its own task, apart from the
+   * status notify in `report`, so a reply never queues behind that notify's retry window: on
+   * 2026-11-16 a Mac progress note written in the same instant as a forwarded final sat unsent for
+   * 17 minutes until a restart. Its retry window counts from this process's first try. */
+  private async forwardReplies(row:DeliveryRow) {
     if(this.stopped)return;
     const client=this.dependencies.clients.get(row.peer);
     if(!client)return;
+    let forwarded=false;
     for(const reply of db.query("SELECT * FROM session_peer_replies WHERE request_id=? AND status='pending' ORDER BY rowid").all(row.request_id) as ReplyRow[]) {
       const turnNeed=JSON.parse(reply.payload_json).turnOutcome==='needs_you';
       try {
         const answer=await withRetry({operation:'peer-reply',key:reply.event_id,policy:RETRY_POLICIES.peerReply,
           // A final reply may already have closed the origin's request, so it will not poll
           // this status again. Keep a turn question eligible for later bounded retry windows.
-          startedAtMs:turnNeed?this.now():reply.created_at_ms,
+          // Other replies count from this process's first try, so a reply stored before a
+          // restart or while a peer slept gets a full window instead of being dropped unsent.
+          startedAtMs:turnNeed?this.now():this.replyFirstTry(reply.event_id),
           run:async()=>{
             const response=await client.request<{eventId?:string;recorded?:string;reason?:string}>('POST',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies`,this.replyBody(row,reply),undefined,false);
             if(response?.eventId!==reply.event_id||!['recorded','duplicate','refused','pending'].includes(response.recorded??''))
@@ -2350,6 +2356,8 @@ export class SessionPeers {
           continue;
         }
         db.query("UPDATE session_peer_replies SET status='forwarded',error=NULL WHERE event_id=?").run(reply.event_id);
+        this.replyFirstTries.delete(reply.event_id);
+        forwarded=true;
         this.unreachable.delete(row.peer);
         log('info','session_peer_reply_forwarded',{request_id:row.request_id,peer:row.peer,event_id:reply.event_id,kind:reply.kind});
       } catch(error) {
@@ -2361,10 +2369,25 @@ export class SessionPeers {
         const deadline=error instanceof RetryBudgetExhaustedError&&error.reason==='deadline';
         const status=deadline?'failed_deadline':'failed_budget';
         db.query('UPDATE session_peer_replies SET status=?,error=? WHERE event_id=?').run(status,error instanceof Error?error.message:String(error),reply.event_id);
+        this.replyFirstTries.delete(reply.event_id);
         log('error',deadline?'session_peer_reply_deadline_exhausted':'session_peer_reply_budget_exhausted',
           {request_id:row.request_id,peer:row.peer,event_id:reply.event_id,attempts:error instanceof RetryBudgetExhaustedError?error.attempts:null,...errorFields(error)});
       }
     }
+    // The status notify reports reply states; let it see the forwarded ones.
+    if(forwarded)this.wake();
+  }
+  private readonly replyFirstTries=new Map<string,number>();
+  private replyFirstTry(eventId:string) {
+    let at=this.replyFirstTries.get(eventId);
+    if(at===undefined){at=this.now();this.replyFirstTries.set(eventId,at);}
+    return at;
+  }
+  /** Report execution changes to the origin; retried until the origin has them. Replies travel in `forwardReplies`. */
+  private async report(row:DeliveryRow) {
+    if(this.stopped)return;
+    const client=this.dependencies.clients.get(row.peer);
+    if(!client)return;
     if(row.closed_at_ms)return;
     this.chaseStranded(row,this.status(row.request_id));
     row=this.delivery(row.request_id);
@@ -2460,6 +2483,8 @@ export class SessionPeers {
             const target=getAcceptedSessionInput(row.target_input_id)!;
             if(target.turn_id===null)this.dependencies.owner.dispatch(target);
           }
+          if(db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND status='pending' LIMIT 1").get(row.request_id))
+            this.schedule(`replies:${row.request_id}`,()=>this.forwardReplies(this.delivery(row.request_id)));
           this.schedule(`report:${row.request_id}`,()=>this.report(this.delivery(row.request_id)));
         });
       await this.scanRows<DeliveryRow>('session_peer_deliveries',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_deliveries WHERE closed_at_ms IS NULL AND prompt_reminded_at_ms IS NULL

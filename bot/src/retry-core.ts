@@ -57,7 +57,10 @@ export async function withRetry<T>(input: Retryable<T>): Promise<T> {
     throw error;
   };
   for (let attempt = 1; attempt <= input.policy.maxAttempts; attempt++) {
-    if (now() - startedAtMs >= input.policy.maxAgeMs) exhausted(attempt - 1, "deadline");
+    // A deadline bounds retrying, never the first try: work that waited (behind a restart, a
+    // sleeping laptop, another task) past its window is still attempted once. On 2026-11-16 a
+    // Mac reply that sat 17 minutes was dropped as "stopped after 0 attempts: deadline".
+    if (attempt > 1 && now() - startedAtMs >= input.policy.maxAgeMs) exhausted(attempt - 1, "deadline");
     try { return await input.run(attempt); }
     catch (error) {
       lastError = error;
